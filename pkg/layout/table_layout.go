@@ -137,6 +137,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// BEFORE computing column widths and laying out cells.
 	// CSS 2.1 §17.6.2.1: each shared edge uses half the winning border's width.
 	var collapsedStyles map[string]*css.Style
+	var collapsedOutward map[string]collapsedBorderOutwardExtension
 	if borderCollapse {
 		grid := newCellBorderGrid(rows, numCols)
 		// Collect row and row-group styles for element-type precedence.
@@ -166,7 +167,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
-		collapsedStyles = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, colStyles, colGroupStyles, tla.style)
+		collapsedStyles, collapsedOutward = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, colStyles, colGroupStyles, tla.style)
 
 		// Swap cell node styles to the collapsed versions so that
 		// column width computation and cell layout use half-border widths.
@@ -809,6 +810,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellFrag := cl.result.Fragment
 			contentBlockSize := cl.contentBlockSize
 
+			// Propagate per-cell collapsed-border outward paint extensions
+			// onto the cell fragment so the renderer can paint the
+			// outside half of a missing-neighbor collapsed border per
+			// CSS 2.1 §17.6.3. Zero on all sides for cells whose every
+			// neighbor exists (the common case).
+			applyCollapsedOutward(cellFrag, collapsedOutward, rowIdx, cl.cell.colIndex)
+
 			// §17.5.4: stretch the cell fragment to the final row
 			// block-size and apply vertical-align. For anon-cell wrappers
 			// contentBlockSize equals the row's intrinsic size, so this
@@ -1060,6 +1068,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		cellFrag := cl.result.Fragment
+		// Propagate per-cell collapsed-border outward paint extensions
+		// onto the rowspan cell fragment (parallel to the non-rowspan
+		// path above; CSS 2.1 §17.6.3).
+		applyCollapsedOutward(cellFrag, collapsedOutward, rowIdx, cl.cell.colIndex)
 		cellLogical := NewLogicalFragment(wdm, cellFrag)
 		contentBlockSize := cellLogical.BlockSize()
 
@@ -1981,6 +1993,54 @@ type borderEdgeInfo struct {
 	color css.Color
 }
 
+// collapsedBorderOutwardExtension holds, for a single border-collapse table
+// cell, the per-physical-side outward paint extension (px). When a cell has
+// no neighbor on a given side (the neighbor cell was removed from the grid,
+// or the cell sits at the table's outer edge with no element-level border
+// to share), the collapsed border paints centered on the cell-edge grid
+// line — half inside the cell's border-box (handled by the cell's normal
+// drawBorders), half outside it. The "outside half" width per side is
+// captured here for the paint pipeline to consume.
+//
+// Spec: CSS 2.1 §17.6.3 + CSS Tables 3 §4.2.
+// Blink reference: TablePainter::PaintCollapsedBorders paint rect spans
+// grid_line ± edge.BorderWidth()/2 regardless of whether the neighbor cell
+// exists (table_painters.cc:356-362 @ Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Where louis14 differs from
+// Blink — Blink paints collapsed borders at the table level, walking a
+// per-edge grid; louis14 paints them per cell — we recover spec-correct
+// extent by piping the missing-neighbor outward half through to the cell's
+// paint layer as an additive outward strip.
+//
+// Zero default = no outward extension on any side (the common case: every
+// neighbor exists).
+type collapsedBorderOutwardExtension struct {
+	top    float64
+	right  float64
+	bottom float64
+	left   float64
+}
+
+// applyCollapsedOutward copies the outward-extension entry for cell
+// (rowIdx, colIdx) — produced by resolveCollapsedBorders — onto the cell's
+// PhysicalFragment so paint can consume it. No-op when outward is nil
+// (border-collapse:separate or no missing neighbors) or when no entry
+// exists for the cell (every side has a real neighbor).
+//
+// Used by both the non-rowspan and rowspan branches of TableLayoutAlgorithm.Layout
+// — same lookup, same assignment, kept as one helper per CLAUDE.md §5
+// (one definition per value).
+func applyCollapsedOutward(cellFrag *PhysicalFragment, outward map[string]collapsedBorderOutwardExtension, rowIdx, colIdx int) {
+	if outward == nil || cellFrag == nil {
+		return
+	}
+	ext, ok := outward[fmt.Sprintf("%d,%d", rowIdx, colIdx)]
+	if !ok {
+		return
+	}
+	cellFrag.CollapsedBorderOutwardExtension = [4]float64{ext.top, ext.right, ext.bottom, ext.left}
+}
+
 // physicalSideNames maps logical edges to physical CSS property side names
 // based on writing mode and direction.
 // Returns (inlineStart, inlineEnd, blockStart, blockEnd) as "top"/"right"/"bottom"/"left".
@@ -2161,21 +2221,58 @@ func resolveBorderConflict(a, b borderEdgeInfo, startCellWins bool) borderEdgeIn
 type cellBorderGrid struct {
 	numRows int
 	numCols int
-	// grid[row][col] stores the cell's style, or nil if empty.
+	// grid[row][col] stores the cell's style at its originating slot, or
+	// nil if no cell originates there. A rowspan/colspan cell appears in
+	// styles[r0][c0] only; the slots it occupies in subsequent rows or
+	// columns leave styles[r][c] == nil.
 	styles [][]*css.Style
+	// occupied[row][col] is true if the slot is covered by a
+	// rowspan/colspan cell that originates elsewhere. Used by
+	// resolveCollapsedBorders to distinguish a true grid hole (no cell at
+	// all — the C56 outward-extension case) from a slot covered by a
+	// spanning cell (whose border is one continuous edge, no hole).
+	occupied [][]bool
 }
 
 func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
 	g := &cellBorderGrid{
-		numRows: len(rows),
-		numCols: numCols,
-		styles:  make([][]*css.Style, len(rows)),
+		numRows:  len(rows),
+		numCols:  numCols,
+		styles:   make([][]*css.Style, len(rows)),
+		occupied: make([][]bool, len(rows)),
+	}
+	for rowIdx := range rows {
+		g.styles[rowIdx] = make([]*css.Style, numCols)
+		g.occupied[rowIdx] = make([]bool, numCols)
 	}
 	for rowIdx, row := range rows {
-		g.styles[rowIdx] = make([]*css.Style, numCols)
 		for _, cell := range row.cells {
-			if cell.colIndex < numCols {
-				g.styles[rowIdx][cell.colIndex] = cell.style
+			if cell.colIndex >= numCols {
+				continue
+			}
+			g.styles[rowIdx][cell.colIndex] = cell.style
+			// Mark every slot covered by the cell's row- and column-span
+			// (excluding the origin) as occupied. CSS Tables 3 / HTML
+			// §4.9.11: a rowspan/colspan cell visually fills every
+			// slot it spans; there is no border-grid hole inside its
+			// extent. Without this, C56's missing-neighbor outward
+			// strip incorrectly fires on the spanning cell's interior
+			// edges (regression: rowspan-cell-border-after-color.html).
+			rs := cell.rowSpan
+			if rs < 1 {
+				rs = 1
+			}
+			cs := cell.colSpan
+			if cs < 1 {
+				cs = 1
+			}
+			for r := rowIdx; r < rowIdx+rs && r < g.numRows; r++ {
+				for c := cell.colIndex; c < cell.colIndex+cs && c < numCols; c++ {
+					if r == rowIdx && c == cell.colIndex {
+						continue
+					}
+					g.occupied[r][c] = true
+				}
 			}
 		}
 	}
@@ -2183,13 +2280,40 @@ func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
 }
 
 // resolveCollapsedBorders computes half-border widths and winning colors for
-// all cells in the grid. Returns a map from "row,col" to a cloned style with
-// adjusted border properties. Only cells with modified borders are included.
+// all cells in the grid. Returns:
+//   - styles: map from "row,col" to a cloned style with adjusted (halved)
+//     border properties. Only cells with modified borders are included.
+//   - outward: map from "row,col" to per-side outward paint extensions for
+//     cells whose neighbor on that side is missing (cell removed from grid,
+//     so the full collapsed border's outside half has nowhere to live
+//     except as an additive outward strip on the live cell's paint). CSS
+//     2.1 §17.6.3 / CSS Tables 3 §4.2.
 //
 // CSS 2.1 §17.6.2.1 precedence (highest first): cell > row > row-group > col > col-group > table.
-func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles, colStyles, colGroupStyles []*css.Style, tableStyle *css.Style) map[string]*css.Style {
+func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles, colStyles, colGroupStyles []*css.Style, tableStyle *css.Style) (map[string]*css.Style, map[string]collapsedBorderOutwardExtension) {
 	iStart, iEnd, bStart, bEnd := physicalSideNames(wdm)
 	result := make(map[string]*css.Style)
+	outward := make(map[string]collapsedBorderOutwardExtension)
+
+	// setOutward records an outward paint extension for cell (row, col) on
+	// the given physical side. Used when the cell's neighbor on that side
+	// is absent from the grid; the collapsed border's outside half has no
+	// neighbor to paint it, so the live cell carries the extension.
+	setOutward := func(row, col int, side string, width float64) {
+		key := fmt.Sprintf("%d,%d", row, col)
+		ext := outward[key]
+		switch side {
+		case "top":
+			ext.top = width
+		case "right":
+			ext.right = width
+		case "bottom":
+			ext.bottom = width
+		case "left":
+			ext.left = width
+		}
+		outward[key] = ext
+	}
 
 	// Helper to ensure a cloned style exists for a cell.
 	getClone := func(row, col int) *css.Style {
@@ -2238,12 +2362,27 @@ func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowSt
 				if clone != nil {
 					setBorderEdge(clone, iEnd, halfWidth, winner.style, winner.color)
 				}
+				// If A's inline-end neighbor is missing, A's normal
+				// drawBorders paints only the inside half (halfWidth);
+				// the spec-mandated outside half must be painted by the
+				// live cell as an outward strip. CSS 2.1 §17.6.3 /
+				// table_painters.cc:356-362 @ SHA 4883d11fef.
+				//
+				// A slot "occupied" by a rowspan/colspan cell originating
+				// elsewhere is NOT a hole — the spanning cell's border is
+				// continuous through it — so suppress outward extension.
+				if sB == nil && !g.occupied[row][col+1] && winner.width > 0 && winner.style != css.BorderStyleNone {
+					setOutward(row, col, iEnd, halfWidth)
+				}
 			}
 			// Apply to cell B's inline-start.
 			if sB != nil {
 				clone := getClone(row, col+1)
 				if clone != nil {
 					setBorderEdge(clone, iStart, halfWidth, winner.style, winner.color)
+				}
+				if sA == nil && !g.occupied[row][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
+					setOutward(row, col+1, iStart, halfWidth)
 				}
 			}
 		}
@@ -2277,11 +2416,19 @@ func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowSt
 				if clone != nil {
 					setBorderEdge(clone, bEnd, halfWidth, winner.style, winner.color)
 				}
+				// Suppress outward extension when the missing neighbor is
+				// actually a rowspan/colspan-covered slot — not a hole.
+				if sB == nil && !g.occupied[row+1][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
+					setOutward(row, col, bEnd, halfWidth)
+				}
 			}
 			if sB != nil {
 				clone := getClone(row+1, col)
 				if clone != nil {
 					setBorderEdge(clone, bStart, halfWidth, winner.style, winner.color)
+				}
+				if sA == nil && !g.occupied[row][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
+					setOutward(row+1, col, bStart, halfWidth)
 				}
 			}
 		}
@@ -2412,7 +2559,7 @@ func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowSt
 		}
 	}
 
-	return result
+	return result, outward
 }
 
 // setBorderEdge sets a specific physical border edge on a cloned style.

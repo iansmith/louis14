@@ -327,19 +327,20 @@ func findRootElement(node *html.Node) *html.Node {
 // this fragment's border-box top-left corner.
 func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box {
 	box := &Box{
-		Node:                   frag.Node,
-		Style:                  frag.Style,
-		X:                      absX,
-		Y:                      absY,
-		Width:                  frag.Size.WidthF64(),
-		Height:                 frag.Size.HeightF64(),
-		Parent:                 parent,
-		ClipContentToBorderBox: frag.ClipContentToBorderBox,
-		RenderedColumnCount:    frag.RenderedColumnCount,
-		GapGeometry:            frag.GapGeometry,
-		IsColumnBox:            frag.IsColumnBox(),
-		IsMulticolContainer:    frag.IsMulticolContainer,
-		AppliedTextDecorations: frag.AppliedTextDecorations,
+		Node:                            frag.Node,
+		Style:                           frag.Style,
+		X:                               absX,
+		Y:                               absY,
+		Width:                           frag.Size.WidthF64(),
+		Height:                          frag.Size.HeightF64(),
+		Parent:                          parent,
+		ClipContentToBorderBox:          frag.ClipContentToBorderBox,
+		RenderedColumnCount:             frag.RenderedColumnCount,
+		GapGeometry:                     frag.GapGeometry,
+		IsColumnBox:                     frag.IsColumnBox(),
+		IsMulticolContainer:             frag.IsMulticolContainer,
+		AppliedTextDecorations:          frag.AppliedTextDecorations,
+		CollapsedBorderOutwardExtension: frag.CollapsedBorderOutwardExtension,
 	}
 
 	// Text fragments carry their rendered text content.

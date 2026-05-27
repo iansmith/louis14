@@ -139,6 +139,84 @@ func TestResolveBorderConflict_SubpixelFloor(t *testing.T) {
 	}
 }
 
+// TestResolveCollapsedBorders_MissingNeighborOutwardExtension is the C56
+// regression guard. CSS 2.1 §17.6.3 / CSS Tables 3 §4.2: when a cell has no
+// neighbor on one side (cell removed from grid, or table outer edge with no
+// element-level border to share), the collapsed border still paints centered
+// on the cell-edge grid line — half inside the live cell's border-box, half
+// outside it. The live cell's own paint covers only the inside half; the
+// outside half must be captured separately so the renderer can paint it as
+// an outward extension.
+//
+// Mirrors Blink's TableBorders/CollapsedTableBordersGeometry behavior
+// (table_painters.cc:356-362 @ Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+// `block_size = edge.BorderWidth()` regardless of whether a neighbor exists.
+// In louis14 the cloned-style map carries the HALF the cell uses for its own
+// paint; the outwardExtensions map captures the matching OUTSIDE half that
+// the renderer paints as an outward strip.
+//
+// Setup: 2x2 grid with cell (1,1) removed (mimics the
+// collapsed-border-remove-cell.html test after JS removes #target).
+//
+// Expectations:
+//   - cell (0,1).bottom: hole-facing — winning width 1px, outward extension 0.5px down
+//   - cell (1,0).right:  hole-facing — winning width 1px, outward extension 0.5px right
+//   - cell (0,0) all interior edges (right/bottom): zero outward extension (neighbors exist)
+func TestResolveCollapsedBorders_MissingNeighborOutwardExtension(t *testing.T) {
+	mkCell := func() *css.Style {
+		s := css.NewStyle()
+		s.Set("border-top-style", "solid")
+		s.Set("border-top-width", "1px")
+		s.Set("border-top-color", "black")
+		s.Set("border-right-style", "solid")
+		s.Set("border-right-width", "1px")
+		s.Set("border-right-color", "black")
+		s.Set("border-bottom-style", "solid")
+		s.Set("border-bottom-width", "1px")
+		s.Set("border-bottom-color", "black")
+		s.Set("border-left-style", "solid")
+		s.Set("border-left-width", "1px")
+		s.Set("border-left-color", "black")
+		return s
+	}
+
+	rows := []tableRow{
+		{cells: []tableCell{
+			{colIndex: 0, colSpan: 1, rowSpan: 1, style: mkCell()},
+			{colIndex: 1, colSpan: 1, rowSpan: 1, style: mkCell()},
+		}},
+		{cells: []tableCell{
+			{colIndex: 0, colSpan: 1, rowSpan: 1, style: mkCell()},
+			// (1,1) removed — only one cell in this row.
+		}},
+	}
+	grid := newCellBorderGrid(rows, 2)
+	wdm := WritingDirectionMode{WM: WritingModeHorizontalTB, Dir: DirectionLTR}
+	rowStyles := []*css.Style{nil, nil}
+	groupStyles := []*css.Style{nil, nil}
+	colStyles := []*css.Style{nil, nil}
+	colGroupStyles := []*css.Style{nil, nil}
+	_, outward := grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, colStyles, colGroupStyles, nil)
+
+	// Hole-facing edges should have 0.5px outward extension (full winning
+	// width is 1px; cell paints 0.5px inside its border-box, the remaining
+	// 0.5px must extend outside per §17.6.3).
+	if got := outward["0,1"].bottom; got != 0.5 {
+		t.Errorf("cell (0,1) bottom outward extension = %v, want 0.5 (hole-facing edge)", got)
+	}
+	if got := outward["1,0"].right; got != 0.5 {
+		t.Errorf("cell (1,0) right outward extension = %v, want 0.5 (hole-facing edge)", got)
+	}
+
+	// Interior edges (neighbor exists) should have zero outward extension.
+	if got := outward["0,0"].right; got != 0 {
+		t.Errorf("cell (0,0) right outward extension = %v, want 0 (neighbor (0,1) exists)", got)
+	}
+	if got := outward["0,0"].bottom; got != 0 {
+		t.Errorf("cell (0,0) bottom outward extension = %v, want 0 (neighbor (1,0) exists)", got)
+	}
+}
+
 // TestReadBorderEdge_FloorsSubpixelWidth verifies that border widths are
 // floored to integer pixels at the readBorderEdge boundary, matching Blink's
 // collapsed-border model (table_borders.h BorderWidth → LayoutUnit(int
