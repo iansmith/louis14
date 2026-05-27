@@ -1001,6 +1001,22 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock && finalBlockSize < explicitBlockSize && !hasOuterFrag {
 		finalBlockSize = explicitBlockSize
 	}
+	// CSS Contain 1 §4.2: size containment treats the multicol container as
+	// if it had no in-flow content for sizing purposes. With auto block-size
+	// the cumulative blockCursor (from column heights) does NOT contribute
+	// to the container's block-size — only `min-height` / explicit `height`
+	// remains. Mirrors Blink's
+	// `length_utils.cc :: CalculateIntrinsicBlockSizeIgnoringChildren`
+	// gated on `ShouldApplyBlockSizeContainment()` at SHA 4883d11fef. The
+	// downstream min-block-size apply at fragment_geometry.go:730 ensures
+	// `min-height` still bumps the result.
+	if mla.style != nil && mla.style.HasSizeContainment() && !hasExplicitBlock {
+		finalBlockSize = 0
+		minBlock := ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
+		if finalBlockSize < minBlock {
+			finalBlockSize = minBlock
+		}
+	}
 	// Phase 25 Cmt-8: when a nested multicol finishes with blockCursor <
 	// remainingContentBlockSize (all in-flow content placed but CSS declared
 	// height not yet satisfied), absorb the remaining height into this
