@@ -5188,23 +5188,31 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		return
 	}
 
-	// Legacy fallback (anonymous boxes / synthetic styles).
+	// Legacy fallback (anonymous boxes / synthetic styles). Same rect-top
+	// semantics as drawOneAppliedTextDecoration above — see the paintLine
+	// comments there for the contract: rectTop for solid, centerY for
+	// non-solid.
 	r.setColor(layer.TextDecorationColor)
 	r.dc.SetLineWidth(layer.TextDecorationThickness)
 
-	var lineY float64
+	thickness := layer.TextDecorationThickness
+
+	var rectTop, centerY float64
+	var isLineThrough bool
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
-		lineY = box.Y + ascent + math.Abs(descent)*0.25 + layer.TextUnderlineOffset
+		centerY = box.Y + ascent + math.Abs(descent)*0.25 + layer.TextUnderlineOffset
+		rectTop = centerY // pre-port lineY value is already Blink's paint_underline_offset (rect TOP)
 	case css.TextDecorationOverline:
-		lineY = box.Y
+		centerY = box.Y
+		rectTop = centerY - thickness // overline rect grows UPWARD from TextTop
 	case css.TextDecorationLineThrough:
-		lineY = box.Y + ascent*0.65
+		centerY = box.Y + ascent*0.65
+		rectTop = centerY // unused for line-through (stays stroke-centered)
+		isLineThrough = true
 	default:
 		return
 	}
-
-	thickness := layer.TextDecorationThickness
 
 	legacyXStart := box.X + skipStartWidth
 	legacyXEnd := box.X + textWidth - skipEndWidth
@@ -5213,17 +5221,23 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	}
 	switch layer.TextDecorationStyle {
 	case "dashed":
-		r.drawDashedLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
+		r.drawDashedLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "dotted":
-		r.drawDottedLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
+		r.drawDottedLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "double":
-		r.drawDoubleLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
+		r.drawDoubleLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "wavy":
-		r.drawWavyLine(legacyXStart, lineY, legacyXEnd-legacyXStart, thickness)
+		r.drawWavyLine(legacyXStart, centerY, legacyXEnd-legacyXStart, thickness)
 	default: // "solid"
-		r.dc.MoveTo(legacyXStart, lineY)
-		r.dc.LineTo(legacyXEnd, lineY)
-		r.dc.Stroke()
+		if isLineThrough {
+			r.dc.MoveTo(legacyXStart, centerY)
+			r.dc.LineTo(legacyXEnd, centerY)
+			r.dc.Stroke()
+		} else {
+			// See paintLine above for why path-fill, not FillRectangle.
+			r.dc.DrawRectangle(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness)
+			r.dc.Fill()
+		}
 	}
 }
 
@@ -5306,7 +5320,66 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	r.setColor(td.Color)
 	r.dc.SetLineWidth(thickness)
 
-	stroke := func(lineY float64) {
+	// paintLine paints one decoration stroke (under/over/through) on the
+	// SOLID path as a top-aligned filled rectangle, or on a non-solid path
+	// (dashed/dotted/double/wavy) using stroke-centered geometry around
+	// `centerY`. Mirrors Blink's `TextDecorationInfo::ComputeLineData`
+	// (text_decoration_info.cc @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f),
+	// which builds the line rect as
+	//   gfx::RectF(start_point, gfx::SizeF(width, thickness))
+	// growing DOWN from `start_point.y`. For under/over the rect-top differs
+	// from the stroke center; for line-through Blink's offset already centers
+	// the rect on `2*ascent/3` (it subtracts thickness/2 from the rect top),
+	// so we can keep the existing stroke-centered geometry there.
+	//
+	// rectTop = the y-coordinate of the rect's TOP edge for the SOLID path.
+	// centerY = the y-coordinate of the stroke's CENTER for non-solid styles.
+	paintLine := func(rectTop, centerY float64) {
+		switch td.Style {
+		case "dashed":
+			r.drawDashedLinePhased(xStart, centerY, xEnd, centerY, thickness, phaseFromLogicalStart)
+		case "dotted":
+			r.drawDottedLinePhased(xStart, centerY, xEnd, centerY, thickness, phaseFromLogicalStart)
+		case "double":
+			r.drawDoubleLine(xStart, centerY, xEnd, centerY, thickness)
+		case "wavy":
+			r.drawWavyLinePhased(xStart, centerY, xEnd-xStart, thickness, phaseFromLogicalStart)
+		default: // "solid"
+			// Path-based fill respects the layer's overflow:auto/hidden clip
+			// (the rasterizer's fillWithPattern applies dc.gs.clipMask/
+			// clipRect). FillRectangle's fast path bypasses that clip and
+			// leaks underlines outside the scroll box (regresses
+			// text-underline-offset-scroll-001).
+			r.dc.DrawRectangle(xStart, rectTop, xEnd-xStart, thickness)
+			r.dc.Fill()
+		}
+	}
+
+	if td.Lines.Has(css.TextDecorationLineUnderline) {
+		// computeUnderlineLineY returns Blink's `paint_underline_offset`
+		// (= rect TOP for solid). The same value is the stroke center for
+		// non-solid styles in louis14's pre-port renderer — keeping it for
+		// dashed/dotted/double/wavy preserves their pixel-exact baseline.
+		lineY := info.computeUnderlineLineY(td)
+		paintLine(lineY, lineY)
+	}
+	if td.Lines.Has(css.TextDecorationLineOverline) {
+		// computeOverlineLineY returns the TextTop position (box.Y), which
+		// is the stroke center for the non-solid path (matches the
+		// pre-port baseline). Blink's overline rect spans
+		// [TextTop - thickness, TextTop], so for the SOLID path the rect
+		// TOP is `TextTop - thickness` (overline grows UPWARD from
+		// text-top — see text-decoration-thickness-overline-001).
+		centerY := info.computeOverlineLineY()
+		paintLine(centerY-thickness, centerY)
+	}
+	if td.Lines.Has(css.TextDecorationLineLineThrough) {
+		// Line-through stays stroke-centered for all styles. Blink centers
+		// at `2*ascent/3` (it adds the `-thickness/2` offset to keep the
+		// stroke around that center point). Switching to rect-top would
+		// regress text-decoration-thickness-linethrough-001 which uses
+		// 1.1em thickness on a 1em-tall box.
+		lineY := info.computeLineThroughLineY(thickness)
 		switch td.Style {
 		case "dashed":
 			r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
@@ -5321,16 +5394,6 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 			r.dc.LineTo(xEnd, lineY)
 			r.dc.Stroke()
 		}
-	}
-
-	if td.Lines.Has(css.TextDecorationLineUnderline) {
-		stroke(info.computeUnderlineLineY(td))
-	}
-	if td.Lines.Has(css.TextDecorationLineOverline) {
-		stroke(info.computeOverlineLineY())
-	}
-	if td.Lines.Has(css.TextDecorationLineLineThrough) {
-		stroke(info.computeLineThroughLineY(thickness))
 	}
 }
 
