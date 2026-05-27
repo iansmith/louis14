@@ -5980,10 +5980,22 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
 		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink: when `auto`
 		// (default), the under/overline is interrupted where it crosses a
-		// glyph extent. Compute per-character extents once for all decorations
-		// in the AppliedTextDecorations vector — they share the same glyphs.
+		// glyph's ink bounding box.
+		//
+		// IMPLEMENTATION SCOPE — louis14 today does not have per-glyph ink
+		// bounding boxes; the closest stand-in is the per-character advance,
+		// which is correct ONLY for Ahem (1em-square solid glyphs where
+		// advance ≡ ink). For real fonts (Liberation, Atkinson, …) the
+		// advance is a broad superset of the ink — applying skip-ink on
+		// advance over-skips and regresses text-decoration-inset-*, text-
+		// decoration-skip-spaces-*, and text-underline-position-* tests whose
+		// Blink-generated references show uninterrupted underlines (Blink's
+		// skip-ink uses real ink bboxes and doesn't fire there). Until a
+		// glyph-ink-bbox API ships through textshape, gate skip-ink on
+		// `FontAhem` so it stays a no-op for real fonts and matches the
+		// Blink references on those.
 		var glyphs []glyphExtent
-		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto {
+		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto && layer.FontAhem {
 			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.FontFeatures, box.X, layer.LetterSpacing, layer.WordSpacing)
 		}
 		for _, td := range layer.AppliedTextDecorations {
@@ -6285,11 +6297,11 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, bo
 
 	if len(layer.AppliedTextDecorations) > 0 {
 		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink for the upright
-		// vertical paint path. Glyphs are stacked along the inline axis (Y),
-		// each glyph cell is FontSize tall (+ letterSpacing). The skip-ink
-		// helper is axis-agnostic; we pass Y extents instead of X.
+		// vertical paint path. Same Ahem-only gate as the horizontal path
+		// (see drawTextDecoration for the rationale: louis14 lacks per-
+		// glyph ink-bbox data, so advance-as-ink is only safe for Ahem).
 		var glyphs []glyphExtent
-		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto {
+		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto && layer.FontAhem {
 			glyphs = buildGlyphExtentsVertical(text, layer.FontSize, box.Y, layer.LetterSpacing)
 		}
 		for _, td := range layer.AppliedTextDecorations {
