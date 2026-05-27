@@ -553,12 +553,12 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// `color` value per CSS Color 4 §4.4. ParseColor doesn't recognize
 	// `currentcolor` as a color literal, so we resolve it here against the
 	// same Style.GetColor() that other color-property accessors use
-	// (e.g. GetColumnRuleColor in pkg/css/style.go).
+	// (e.g. GetColumnRuleColor in pkg/css/style.go). The same accessor handles
+	// CSS Color 5 §4 relative-color forms `<func>(from currentColor ...)`
+	// where the base color is the element's computed `color` value.
 	if box.Text == "" {
 		if bg, ok := s.Get("background-color"); ok {
-			if strings.EqualFold(strings.TrimSpace(bg), "currentcolor") {
-				layer.BackgroundColor = s.GetColor()
-			} else if c, ok := css.ParseColor(bg); ok {
+			if c, ok := css.ParseColorWithCurrentColor(bg, s.GetColor()); ok {
 				layer.BackgroundColor = c
 			}
 		}
