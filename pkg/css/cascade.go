@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"louis14/pkg/html"
@@ -1306,10 +1307,14 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 		return
 	}
 
-	// Resolve font-size em and percentage values using parent's font-size.
+	// Resolve font-size em, lh, and percentage values using parent's metrics.
 	// Parent has already been processed (top-down cascade), so its font-size
 	// is resolved to an absolute px value. This propagates through to
 	// children so 1em and 100% both resolve correctly per CSS 2.1 §15.7.
+	// For lh: CSS Values 4 §6.1 says "when used in font-size, lh refers to
+	// the computed metrics of the parent element". Mirrors Blink's cascade
+	// behavior in css_to_length_conversion_data.cc at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
 		trimmed := strings.TrimSpace(fsVal)
 		parentFS := 16.0
@@ -1323,6 +1328,14 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 		} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
 			if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
+			}
+		} else if strings.HasSuffix(trimmed, "lh") {
+			// lh in font-size resolves against the parent's computed line-height.
+			if parentStyle != nil {
+				if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
+					parentLh := parentStyle.GetLineHeight()
+					style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
+				}
 			}
 		}
 	}
@@ -1408,6 +1421,9 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.XHeight = parent.XHeight
+	s.CapHeight = parent.CapHeight
+	s.LhSize = parent.LhSize
 	s.Set("display", "block")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -1450,6 +1466,9 @@ func NewAnonymousTableCellStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.XHeight = parent.XHeight
+	s.CapHeight = parent.CapHeight
+	s.LhSize = parent.LhSize
 	s.Set("display", "table-cell")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -1470,6 +1489,9 @@ func NewAnonymousTableRowStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.XHeight = parent.XHeight
+	s.CapHeight = parent.CapHeight
+	s.LhSize = parent.LhSize
 	s.Set("display", "table-row")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -1499,6 +1521,9 @@ func NewAnonymousInlineRubyStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.XHeight = parent.XHeight
+	s.CapHeight = parent.CapHeight
+	s.LhSize = parent.LhSize
 	s.Set("display", "ruby")
 	for prop := range inheritableProperties {
 		if val, ok := parent.Get(prop); ok {
@@ -1518,6 +1543,9 @@ func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.XHeight = parent.XHeight
+	s.CapHeight = parent.CapHeight
+	s.LhSize = parent.LhSize
 	s.Set("display", "table-row-group")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
