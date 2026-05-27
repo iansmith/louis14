@@ -3375,6 +3375,12 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 			}
 
 		case "round":
+			// Per CSS Backgrounds 3 §6.5 and Blink's ComputeTileParameters at
+			// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, 'round' adjusts the
+			// tile size so an integer number of tiles fits exactly. To avoid
+			// accumulated rounding error when n × int(tile) ≠ destination,
+			// compute tile origins in float (exact dw/n spacing) and round to
+			// pixels only at draw time.
 			if horizontal {
 				tileH := int(math.Round(dh))
 				naturalTileW := float64(sw) * dh / float64(sh)
@@ -3382,26 +3388,22 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					return
 				}
 				n := math.Max(1, math.Round(dw/naturalTileW))
-				tileW := int(math.Round(dw / n))
-				if tileW <= 0 {
+				tileSize := dw / n
+				if tileSize <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
-				edgeX0 := int(math.Round(dx))
-				edgeX1 := int(math.Round(dx + dw))
 				edgeY := int(math.Round(dy))
-				for tx := edgeX0; tx < edgeX1; tx += tileW {
-					tw := tileW
-					if tx+tw > edgeX1 {
-						tw = edgeX1 - tx
-					}
+				for i := 0; i < int(n); i++ {
+					tx0 := dx + float64(i)*tileSize
+					tx1 := tx0 + tileSize
+					itx0 := int(math.Round(tx0))
+					itx1 := int(math.Round(tx1))
+					tw := itx1 - itx0
 					if tw <= 0 {
-						break
+						continue
 					}
-					sub := tile.(interface {
-						SubImage(image.Rectangle) image.Image
-					}).SubImage(image.Rect(0, 0, tw, tileH))
-					r.dc.DrawImage(sub, tx, edgeY)
+					tile := scaleImageNearest(srcImg, sw, sh, tw, tileH)
+					r.dc.DrawImage(tile, itx0, edgeY)
 				}
 			} else {
 				tileW := int(math.Round(dw))
@@ -3410,26 +3412,22 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					return
 				}
 				n := math.Max(1, math.Round(dh/naturalTileH))
-				tileH := int(math.Round(dh / n))
-				if tileH <= 0 {
+				tileSize := dh / n
+				if tileSize <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
-				edgeY0 := int(math.Round(dy))
-				edgeY1 := int(math.Round(dy + dh))
 				edgeX := int(math.Round(dx))
-				for ty := edgeY0; ty < edgeY1; ty += tileH {
-					th := tileH
-					if ty+th > edgeY1 {
-						th = edgeY1 - ty
-					}
+				for i := 0; i < int(n); i++ {
+					ty0 := dy + float64(i)*tileSize
+					ty1 := ty0 + tileSize
+					ity0 := int(math.Round(ty0))
+					ity1 := int(math.Round(ty1))
+					th := ity1 - ity0
 					if th <= 0 {
-						break
+						continue
 					}
-					sub := tile.(interface {
-						SubImage(image.Rectangle) image.Image
-					}).SubImage(image.Rect(0, 0, tileW, th))
-					r.dc.DrawImage(sub, edgeX, ty)
+					tile := scaleImageNearest(srcImg, sw, sh, tileW, th)
+					r.dc.DrawImage(tile, edgeX, ity0)
 				}
 			}
 
