@@ -5978,8 +5978,16 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
 		// to auto (which is correct, just lossy).
 		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
+		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink: when `auto`
+		// (default), the under/overline is interrupted where it crosses a
+		// glyph extent. Compute per-character extents once for all decorations
+		// in the AppliedTextDecorations vector — they share the same glyphs.
+		var glyphs []glyphExtent
+		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto {
+			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.FontFeatures, box.X, layer.LetterSpacing, layer.WordSpacing)
+		}
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth)
+			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs)
 		}
 		return
 	}
@@ -6045,7 +6053,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 //
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
-func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64) {
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64, glyphs []glyphExtent) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -6140,26 +6148,55 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// the rect on `2*ascent/3` (it subtracts thickness/2 from the rect top),
 	// so we can keep the existing stroke-centered geometry there.
 	//
+	// glyphYTop and glyphYBottom approximate the vertical (perpendicular)
+	// extent of the glyph ink for horizontal text. For Ahem (1em-square
+	// solid glyphs) this is exact — the em-square IS the ink. For real
+	// fonts it's a conservative superset (the box can overestimate ink),
+	// matching the spec's intent of skipping where the line "would cross"
+	// the glyph; non-Ahem cases are not covered by the C65 reftests but
+	// the gate prevents over-eager skipping when the underline is offset
+	// well below the text (text-decoration-skip-ink-003 — `text-underline-
+	// offset: .5em` puts the line BELOW the em-square, and skip-ink must
+	// NOT trigger).
+	glyphYTop := box.Y
+	glyphYBottom := box.Y + info.ascent + info.descent
+
 	// rectTop = the y-coordinate of the rect's TOP edge for the SOLID path.
 	// centerY = the y-coordinate of the stroke's CENTER for non-solid styles.
-	paintLine := func(rectTop, centerY float64) {
-		switch td.Style {
-		case "dashed":
-			r.drawDashedLinePhased(xStart, centerY, xEnd, centerY, thickness, phaseFromLogicalStart)
-		case "dotted":
-			r.drawDottedLinePhased(xStart, centerY, xEnd, centerY, thickness, phaseFromLogicalStart)
-		case "double":
-			r.drawDoubleLine(xStart, centerY, xEnd, centerY, thickness)
-		case "wavy":
-			r.drawWavyLinePhased(xStart, centerY, xEnd-xStart, thickness, phaseFromLogicalStart)
-		default: // "solid"
-			// Path-based fill respects the layer's overflow:auto/hidden clip
-			// (the rasterizer's fillWithPattern applies dc.gs.clipMask/
-			// clipRect). FillRectangle's fast path bypasses that clip and
-			// leaks underlines outside the scroll box (regresses
-			// text-underline-offset-scroll-001).
-			r.dc.DrawRectangle(xStart, rectTop, xEnd-xStart, thickness)
-			r.dc.Fill()
+	// skipInk: when true and the decoration's perpendicular position overlaps
+	// the glyph ink extent, the paint is split into sub-segments that avoid
+	// the glyph extents (CSS Text Decor 4 §1.1.5). Skip-ink does NOT apply
+	// to line-through per spec.
+	paintLine := func(rectTop, centerY float64, skipInk bool) {
+		segments := []inkSegment{{Start: xStart, End: xEnd}}
+		// Apply skip-ink only when the line's perpendicular position
+		// (rect [rectTop, rectTop+thickness]) overlaps the glyph ink.
+		lineTop := rectTop
+		lineBottom := rectTop + thickness
+		linePerpOverlapsGlyph := lineBottom > glyphYTop && lineTop < glyphYBottom
+		if skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph {
+			segments = skipInkSegments(xStart, xEnd, thickness, glyphs)
+		}
+		for _, seg := range segments {
+			segPhase := phaseFromLogicalStart + (seg.Start - xStart)
+			switch td.Style {
+			case "dashed":
+				r.drawDashedLinePhased(seg.Start, centerY, seg.End, centerY, thickness, segPhase)
+			case "dotted":
+				r.drawDottedLinePhased(seg.Start, centerY, seg.End, centerY, thickness, segPhase)
+			case "double":
+				r.drawDoubleLine(seg.Start, centerY, seg.End, centerY, thickness)
+			case "wavy":
+				r.drawWavyLinePhased(seg.Start, centerY, seg.End-seg.Start, thickness, segPhase)
+			default: // "solid"
+				// Path-based fill respects the layer's overflow:auto/hidden clip
+				// (the rasterizer's fillWithPattern applies dc.gs.clipMask/
+				// clipRect). FillRectangle's fast path bypasses that clip and
+				// leaks underlines outside the scroll box (regresses
+				// text-underline-offset-scroll-001).
+				r.dc.DrawRectangle(seg.Start, rectTop, seg.End-seg.Start, thickness)
+				r.dc.Fill()
+			}
 		}
 	}
 
@@ -6169,7 +6206,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// non-solid styles in louis14's pre-port renderer — keeping it for
 		// dashed/dotted/double/wavy preserves their pixel-exact baseline.
 		lineY := info.computeUnderlineLineY(td)
-		paintLine(lineY, lineY)
+		paintLine(lineY, lineY, true)
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
 		// computeOverlineLineY returns the TextTop position (box.Y), which
@@ -6179,7 +6216,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// TOP is `TextTop - thickness` (overline grows UPWARD from
 		// text-top — see text-decoration-thickness-overline-001).
 		centerY := info.computeOverlineLineY()
-		paintLine(centerY-thickness, centerY)
+		paintLine(centerY-thickness, centerY, true)
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
 		// Line-through stays stroke-centered for all styles. Blink centers
@@ -6247,8 +6284,16 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, bo
 	info := newVerticalTextDecorationInfo(box, inlineLen, layer.FontSize, ascent, descent, 0, dir)
 
 	if len(layer.AppliedTextDecorations) > 0 {
+		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink for the upright
+		// vertical paint path. Glyphs are stacked along the inline axis (Y),
+		// each glyph cell is FontSize tall (+ letterSpacing). The skip-ink
+		// helper is axis-agnostic; we pass Y extents instead of X.
+		var glyphs []glyphExtent
+		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto {
+			glyphs = buildGlyphExtentsVertical(text, layer.FontSize, box.Y, layer.LetterSpacing)
+		}
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedVerticalDecoration(td, info)
+			r.drawOneAppliedVerticalDecoration(td, info, glyphs)
 		}
 		return
 	}
@@ -6285,7 +6330,11 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, bo
 // drawOneAppliedVerticalDecoration paints a single AppliedTextDecoration entry
 // for an upright vertical text run. Perpendicular coordinate (physical X) is
 // derived from textDecorationInfo with axis=decorationAxisVertical.
-func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo) {
+//
+// `glyphs` carries the per-glyph Y-extents along the inline axis used by CSS
+// Text Decor 4 §1.1.5 skip-ink. Nil/empty disables skip-ink. Skip-ink does
+// NOT apply to line-through per spec.
+func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo, glyphs []glyphExtent) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -6294,12 +6343,35 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 
 	lineStart := info.box.Y
 	inlineLen := info.width
+	lineEnd := lineStart + inlineLen
+
+	// Glyph perpendicular (X) extent: the upright vertical glyph cell
+	// spans the block-axis width (box.Width). The skip-ink gate requires
+	// the decoration rect [rectLeft, rectLeft+thickness] to overlap
+	// [box.X, box.X + box.Width] before any glyph extents are removed —
+	// mirroring the horizontal path's lineY-vs-em-square gate so an
+	// out-of-glyph underline (large positive offset) still paints
+	// uninterrupted.
+	glyphPerpL := info.box.X
+	glyphPerpR := info.box.X + info.box.Width
+
+	paintVertSegment := func(rectLeft float64, skipInk bool) {
+		segments := []inkSegment{{Start: lineStart, End: lineEnd}}
+		rectRight := rectLeft + thickness
+		linePerpOverlapsGlyph := rectRight > glyphPerpL && rectLeft < glyphPerpR
+		if skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph {
+			segments = skipInkSegments(lineStart, lineEnd, thickness, glyphs)
+		}
+		for _, seg := range segments {
+			r.dc.DrawRectangle(rectLeft, seg.Start, thickness, seg.End-seg.Start)
+			r.dc.Fill()
+		}
+	}
 
 	if td.Lines.Has(css.TextDecorationLineUnderline) {
 		perpX := info.computeUnderlinePerpX(td)
 		rectLeft := vertDecorationRectLeft(perpX, thickness, info.underDir)
-		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
-		r.dc.Fill()
+		paintVertSegment(rectLeft, true)
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
 		perpX := info.computeOverlinePerpX()
@@ -6309,14 +6381,13 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 			overDir = blockUnderLeft
 		}
 		rectLeft := vertDecorationRectLeft(perpX, thickness, overDir)
-		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
-		r.dc.Fill()
+		paintVertSegment(rectLeft, true)
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
 		perpX := info.computeLineThroughPerpX()
 		rectLeft := perpX - thickness/2
-		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
-		r.dc.Fill()
+		// Line-through is NOT subject to skip-ink (CSS Text Decor 4 §1.1.5).
+		paintVertSegment(rectLeft, false)
 	}
 }
 

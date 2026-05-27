@@ -1,6 +1,11 @@
 package render
 
-import "sort"
+import (
+	"sort"
+	"unicode"
+
+	"mazarin/textshape"
+)
 
 // glyphExtent describes one glyph's inline extent in the same frame as the
 // decoration line — for horizontal text it is the glyph's [x, x+width]
@@ -100,6 +105,63 @@ func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkS
 	}
 	if cursor < end {
 		out = append(out, inkSegment{Start: cursor, End: end})
+	}
+	return out
+}
+
+// buildGlyphExtentsVertical returns the inline-axis (Y) extents of each
+// non-whitespace glyph in `text` stacked vertically starting at `startY`,
+// using fontSize as the cell height and adding `letterSpacing` between
+// cells. Mirrors buildGlyphExtentsHorizontal but for the upright-vertical
+// (Strategy B) paint path where the inline axis runs along Y.
+func buildGlyphExtentsVertical(text string, fontSize, startY, letterSpacing float64) []glyphExtent {
+	if text == "" {
+		return nil
+	}
+	out := make([]glyphExtent, 0, len(text))
+	y := startY
+	for _, ch := range text {
+		if !unicode.IsSpace(ch) {
+			out = append(out, glyphExtent{Start: y, End: y + fontSize})
+		}
+		y += fontSize
+		if letterSpacing != 0 {
+			y += letterSpacing
+		}
+	}
+	return out
+}
+
+// buildGlyphExtentsHorizontal returns the inline-axis (X) extents of each
+// non-whitespace glyph in `text` rendered at `startX`, using the given
+// font + features + letter/word spacing. Whitespace runs are excluded so
+// skip-ink does not punch holes in spaces between words — per CSS Text
+// Decor 4 §1.1.5 the property only skips over glyphs (visible ink), and
+// the spec's separate text-decoration-skip-spaces property covers
+// whitespace handling.
+//
+// This is the louis14 stand-in for Blink's per-glyph ink-bounding-box
+// data. For Ahem (1em-square solid glyphs) the per-character advance
+// equals the ink extent exactly, so it matches the spec contract for the
+// text-decoration-skip-ink-*-002 reftests. For real fonts the advance is
+// a superset of the ink extent (in particular for italic / kerning), so
+// the approximation is conservative: it may skip slightly more than the
+// minimum required.
+func (r *Renderer) buildGlyphExtentsHorizontal(text string, fontID int32, features []textshape.FontFeature, startX, letterSpacing, wordSpacing float64) []glyphExtent {
+	if text == "" {
+		return nil
+	}
+	out := make([]glyphExtent, 0, len(text))
+	x := startX
+	for _, ch := range text {
+		cw := r.measureTextStr(string(ch), fontID, features)
+		if !unicode.IsSpace(ch) {
+			out = append(out, glyphExtent{Start: x, End: x + cw})
+		}
+		x += cw + letterSpacing
+		if ch == ' ' {
+			x += wordSpacing
+		}
 	}
 	return out
 }
