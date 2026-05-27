@@ -4672,6 +4672,15 @@ func ParseColorWithCurrentColor(colorStr string, currentColor Color) (Color, boo
 	if c, ok := parseRelativeColor(colorStr, currentColor); ok {
 		return c, true
 	}
+	// color-mix() may contain "currentcolor" as one of its operands; resolve
+	// those operands against the known currentColor rather than falling through
+	// to the static ParseColor path (which can't resolve "currentcolor").
+	// Mirrors Blink's CSSColorMixValue::Resolve() late-resolution path @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	lower := strings.ToLower(colorStr)
+	if strings.HasPrefix(lower, "color-mix(") && strings.HasSuffix(lower, ")") {
+		return parseColorMixWithCurrentColor(colorStr, currentColor)
+	}
 	return ParseColor(colorStr)
 }
 
