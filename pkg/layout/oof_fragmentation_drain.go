@@ -60,10 +60,20 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentB
 }
 
 // layoutFragmentainerDescendant lays out a single deferred OOF descendant
-// against the inner multicol's column flow whose fragmentainers contain its
-// CB, splitting the OOF's block extent across successive inner columns.
-// Mirrors Blink's `LayoutFragmentainerDescendants` per-descendant body
-// (out_of_flow_layout_part.cc:1531-1758) for the inner-multicol path.
+// against the column flow whose fragmentainers contain its CB, splitting the
+// OOF's block extent across successive columns. Mirrors Blink's
+// `LayoutFragmentainerDescendants` per-descendant body
+// (out_of_flow_layout_part.cc:1531-1758).
+//
+// Two cases are handled:
+//
+//  1. The CB is inside a nested inner multicol (CB.Fragment lives under an
+//     entry in `pendingMulticols`). The OOF slices across the inner multicol's
+//     column fragmentainers — the existing path for `multicol-nested-032`.
+//
+//  2. C38: the CB is a non-multicol positioned block fragmented across THIS
+//     outer multicol's columns. The OOF slices across this multicol's own
+//     column children — covers `column-balancing-with-span-and-oof-{001,002}`.
 func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendant(
 	builder *BoxFragmentBuilder,
 	d LogicalOofNodeForFragmentation,
@@ -71,11 +81,9 @@ func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendant(
 ) {
 	innerMcNode := mla.findInnerMulticolForCB(builder, d.ContainingBlock.Fragment, pendingMulticols)
 	if innerMcNode == nil {
-		// CB is not inside a known pending inner multicol. Either the OOF's
-		// CB is the outer multicol itself (handled by the non-fragmented OOF
-		// path which lays it out across outer columns), or this is a case
-		// not yet covered by Cmt-3 (paged media, fragmentation outside
-		// multicol). Skip silently.
+		// C38: outer-multicol CB case. The CB is an ordinary positioned block
+		// whose fragments live in THIS multicol's column flow.
+		mla.layoutFragmentainerDescendantInOuter(builder, d)
 		return
 	}
 
@@ -180,11 +188,331 @@ func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendant(
 	}
 }
 
+// layoutFragmentainerDescendantInOuter lays out a single deferred OOF
+// descendant whose CB is a non-multicol positioned block fragmented across
+// THIS multicol's columns. C38 — mirrors Blink's
+// `LayoutFragmentainerDescendants` outer-CB branch
+// (out_of_flow_layout_part.cc:1531-1758).
+//
+// Algorithm:
+//  1. Gather this multicol's column-box children in fragmentation order.
+//  2. Find the CB's fragments by LayoutNode identity across those columns;
+//     record each CB fragment's column index and column-relative block offset.
+//  3. Resolve the OOF's CB-stitched static position into a (column, offset)
+//     pair by walking the CB fragments. If the static position is past every
+//     CB fragment, advance into subsequent columns of THIS multicol (the
+//     OOF's stitched extent flows past the CB into the multicol's column
+//     flow). Zero-height fragmentainers (e.g. a spanner-detector empty col)
+//     are skipped.
+//  4. Slice the OOF's block extent across successive columns starting from
+//     the resolved (column, offset), emitting one synthesized piece fragment
+//     per column.
+func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendantInOuter(
+	builder *BoxFragmentBuilder, d LogicalOofNodeForFragmentation,
+) {
+	cbStyle := d.ContainingBlock.Fragment.Style
+	if cbStyle == nil {
+		return
+	}
+	cbInline := d.ContainingBlock.Fragment.Size.WidthF64()
+	cbBlock := d.ContainingBlock.Fragment.Size.HeightF64()
+	if data := d.ContainingBlock.Fragment.BoxData; data != nil {
+		cbInline -= data.Border.Left + data.Border.Right + data.Padding.Left + data.Padding.Right
+		cbBlock -= data.Border.Top + data.Border.Bottom + data.Padding.Top + data.Padding.Bottom
+	}
+
+	oofStyle := d.Candidate.Node.Style()
+	if oofStyle == nil {
+		return
+	}
+	// For now require explicit width/height on the OOF (matches the inner
+	// path's scope guard). IMCB / inset-based sizing is deferred follow-up.
+	oofInline, oofBlock, ok := resolveExplicitOOFSize(oofStyle, cbInline, cbBlock)
+	if !ok {
+		return
+	}
+
+	// Step 1: enumerate this multicol's column-box children in fragmentation
+	// order. Each is the multicol's own per-column fragmentainer.
+	cols := mla.findOuterColumnFragmentainers(builder)
+	if len(cols) == 0 {
+		return
+	}
+
+	// Step 2: find the CB's fragments across these columns. A single OOF
+	// candidate may have been promoted from one CB fragment, but the CB
+	// itself has multiple fragments — we need them all to compute the
+	// stitched-CB-to-column-flow mapping.
+	cbNode := d.ContainingBlock.Fragment.LayoutNode
+	if cbNode == nil {
+		return
+	}
+	cbFrags := findCBFragmentsInColumns(cols, cbNode)
+	if len(cbFrags) == 0 {
+		return
+	}
+
+	// Step 3a: lay the OOF out once at its full size to materialize children.
+	oofWDM := NewWritingDirectionMode(oofStyle)
+	wdm := mla.space.WritingDirection
+	space := NewConstraintSpaceBuilder(wdm, oofWDM, true).
+		SetAvailableSize(LogicalSize{InlineSize: oofInline, BlockSize: oofBlock}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: cbInline, BlockSize: cbBlock}).
+		SetIsFixedInlineSize(true).
+		SetIsFixedBlockSize(true).
+		Build()
+	oofResult := layoutElement(mla.ctx, d.Candidate.Node, space)
+	if oofResult == nil || oofResult.Fragment == nil {
+		return
+	}
+
+	// Step 3b: resolve the OOF's CB-stitched start block position.
+	//
+	// Insets (`top`/`bottom`) override the static position per CSS 2.1
+	// §10.6.4: if `top` is set, use it directly (CB-relative); else if
+	// `bottom` is set, anchor from the CB's stitched-bottom; else fall back
+	// to the static position. The stitched CB block-size is the sum of CB
+	// fragment block-sizes — which equals the CB's logical block-size as
+	// known at OOF-resolution time. For our outer-CB case we have CB
+	// fragments listed in `cbFrags`; their sum is the stitched extent.
+	stitchedCBBlock := 0.0
+	for _, cf := range cbFrags {
+		stitchedCBBlock += cf.cbFragmentBlock
+	}
+	cbPhys := PhysicalSize{Width: cbInline, Height: stitchedCBBlock}
+	insets := oofStyle.GetPositionOffsetResolved(cbPhys.Width, cbPhys.Height)
+	var staticBlock float64
+	switch {
+	case insets.HasTop:
+		staticBlock = insets.Top
+	case insets.HasBottom:
+		staticBlock = stitchedCBBlock - insets.Bottom - oofBlock
+	default:
+		staticBlock = d.Candidate.StaticPosition.Offset.BlockOffset
+	}
+	startColIdx := -1
+	startColOffset := 0.0
+	cumulativeCB := 0.0
+	for _, cf := range cbFrags {
+		if staticBlock < cumulativeCB+cf.cbFragmentBlock {
+			startColIdx = cf.colIdx
+			startColOffset = cf.colRelativeOffset + (staticBlock - cumulativeCB)
+			break
+		}
+		cumulativeCB += cf.cbFragmentBlock
+	}
+	if startColIdx < 0 {
+		// Static position is past every CB fragment. Continue into the
+		// multicol's column flow after the LAST CB fragment's column.
+		lastCBCol := cbFrags[len(cbFrags)-1]
+		remainder := staticBlock - cumulativeCB
+		// Advance through subsequent columns of THIS multicol, eating their
+		// block-sizes against the remainder. Zero-height columns (spanner
+		// detector emptys) are stepped over without consuming the remainder
+		// since they contribute no block extent.
+		startColIdx = lastCBCol.colIdx + 1
+		for startColIdx < len(cols) {
+			cb := cols[startColIdx].Size.BlockSize
+			if cb <= 0 {
+				startColIdx++
+				continue
+			}
+			if remainder < cb {
+				startColOffset = remainder
+				break
+			}
+			remainder -= cb
+			startColIdx++
+		}
+		if startColIdx >= len(cols) {
+			return // off the end of the column flow
+		}
+	}
+
+	// Step 3c: account for the OOF's CB-relative inline static position. For
+	// this case the abspos's column-relative inline position is the
+	// CB-fragment's column-relative-inline-offset + the OOF's static inline.
+	// The CB-fragment's column-relative-inline-offset is captured per CB
+	// fragment; for the start column use cbFrags[start CB fragment].
+	// For simplicity we use the start column's CB fragment if any.
+	startInline := d.Candidate.StaticPosition.Offset.InlineOffset
+	for _, cf := range cbFrags {
+		if cf.colIdx == startColIdx {
+			startInline += cf.colRelativeInlineOffset
+			break
+		}
+	}
+
+	// Step 4: slice the OOF's block extent across successive columns. The
+	// per-column block-extent used for slicing is the column's BALANCE-SLOT
+	// height (the colBlockSize chosen by the balancer for this row), not the
+	// column fragment's intrinsic block-size which may be zero for an empty
+	// trailing column. Mirrors Blink's behaviour: an OOF crosses the
+	// fragmentainer flow at the chosen column height regardless of the
+	// column's content occupancy.
+	rowSlot := mla.outerColumnRowSlot(cols, startColIdx)
+	remaining := oofBlock
+	pieceBlockStart := startColOffset
+	for k := startColIdx; k < len(cols) && remaining > 0; k++ {
+		col := cols[k]
+		slot := col.Size.BlockSize
+		if slot <= 0 {
+			// Empty trailing column in this row: use the row's slot height.
+			slot = rowSlot
+		} else {
+			// New row encountered — refresh rowSlot for subsequent empty
+			// columns within it.
+			rowSlot = slot
+		}
+		if slot <= 0 {
+			// Still zero — nothing to slice into.
+			continue
+		}
+		availInThisCol := slot - pieceBlockStart
+		if availInThisCol <= 0 {
+			pieceBlockStart = 0
+			continue
+		}
+		pieceBlock := remaining
+		if pieceBlock > availInThisCol {
+			pieceBlock = availInThisCol
+		}
+
+		piece := mla.makeOOFPiece(d.Candidate.Node, oofStyle, oofInline, pieceBlock)
+		piecePos := LogicalOffset{
+			InlineOffset: col.OuterContentBoxOffset.InlineOffset + startInline,
+			BlockOffset:  col.OuterContentBoxOffset.BlockOffset + pieceBlockStart,
+		}
+		builder.AddChild(piece, piecePos)
+
+		remaining -= pieceBlock
+		pieceBlockStart = 0
+	}
+}
+
+// outerColumnRowSlot returns the BALANCE-SLOT block-size for the row that
+// starts at `startColIdx`. Columns are grouped into rows by their
+// OuterContentBoxOffset.BlockOffset; the slot is the maximum column
+// block-size in the row (i.e. the row's column-height as picked by the
+// balancer). When the start column has a positive block-size, that's the
+// slot; otherwise we scan siblings sharing the same row's block-offset.
+func (mla *MulticolLayoutAlgorithm) outerColumnRowSlot(
+	cols []innerColumnFragmentainer, startColIdx int,
+) float64 {
+	if startColIdx < 0 || startColIdx >= len(cols) {
+		return 0
+	}
+	rowBlockOffset := cols[startColIdx].OuterContentBoxOffset.BlockOffset
+	maxBS := cols[startColIdx].Size.BlockSize
+	for _, c := range cols {
+		if c.OuterContentBoxOffset.BlockOffset == rowBlockOffset && c.Size.BlockSize > maxBS {
+			maxBS = c.Size.BlockSize
+		}
+	}
+	return maxBS
+}
+
+// cbFragmentInColumn records a single CB fragment's location within one of
+// this multicol's column children. Used by the outer-CB drain path to map
+// CB-stitched coordinates onto the multicol's column-flow.
+type cbFragmentInColumn struct {
+	colIdx                  int
+	cbFragmentBlock         float64 // block-size of this CB fragment
+	colRelativeOffset       float64 // CB fragment's block-offset within the column
+	colRelativeInlineOffset float64 // CB fragment's inline-offset within the column
+}
+
+// findCBFragmentsInColumns walks each column's fragment tree looking for
+// fragments whose LayoutNode equals cbNode. Returns one entry per CB fragment
+// in fragmentation order. HTB-only.
+func findCBFragmentsInColumns(
+	cols []innerColumnFragmentainer, cbNode *LayoutInputNode,
+) []cbFragmentInColumn {
+	var out []cbFragmentInColumn
+	for ci, col := range cols {
+		// Walk inside this column for any descendant fragment with LayoutNode == cbNode.
+		walkForCBFragments(col, ci, LogicalOffset{}, cbNode, &out)
+	}
+	return out
+}
+
+func walkForCBFragments(
+	col innerColumnFragmentainer, colIdx int,
+	parentOffset LogicalOffset, cbNode *LayoutInputNode, out *[]cbFragmentInColumn,
+) {
+	// col.OuterContentBoxOffset is where the column is in the multicol; we
+	// walk INSIDE the column. To compute column-relative offsets we accumulate
+	// against the column's own top-left, not the multicol's.
+	walkChildrenForCBFragments(col, col.columnFragment(), LogicalOffset{}, colIdx, cbNode, out)
+}
+
+func walkChildrenForCBFragments(
+	col innerColumnFragmentainer, frag *PhysicalFragment,
+	parentInColumn LogicalOffset, colIdx int, cbNode *LayoutInputNode,
+	out *[]cbFragmentInColumn,
+) {
+	if frag == nil {
+		return
+	}
+	for _, ch := range frag.Children {
+		if ch.Fragment == nil {
+			continue
+		}
+		childInCol := LogicalOffset{
+			InlineOffset: parentInColumn.InlineOffset + ch.Offset.LeftF64(),
+			BlockOffset:  parentInColumn.BlockOffset + ch.Offset.TopF64(),
+		}
+		if ch.Fragment.LayoutNode == cbNode {
+			*out = append(*out, cbFragmentInColumn{
+				colIdx:                  colIdx,
+				cbFragmentBlock:         ch.Fragment.Size.HeightF64(),
+				colRelativeOffset:       childInCol.BlockOffset,
+				colRelativeInlineOffset: childInCol.InlineOffset,
+			})
+			// Don't recurse into the CB itself for further CB fragments —
+			// CB cannot contain another fragment of itself.
+			continue
+		}
+		walkChildrenForCBFragments(col, ch.Fragment, childInCol, colIdx, cbNode, out)
+	}
+}
+
+// findOuterColumnFragmentainers returns this multicol's own column-box
+// children in fragmentation order. They are the immediate column-box children
+// of `builder.children` (multicol_layout.go:1595 commits column fragments
+// onto the builder). Spanners and other non-column children are excluded.
+func (mla *MulticolLayoutAlgorithm) findOuterColumnFragmentainers(
+	builder *BoxFragmentBuilder,
+) []innerColumnFragmentainer {
+	var out []innerColumnFragmentainer
+	for _, ch := range builder.children {
+		if ch.fragment == nil || !ch.fragment.IsColumnBox() {
+			continue
+		}
+		out = append(out, innerColumnFragmentainer{
+			OuterContentBoxOffset: ch.offset,
+			Size: LogicalSize{
+				InlineSize: ch.fragment.Size.WidthF64(),
+				BlockSize:  ch.fragment.Size.HeightF64(),
+			},
+			columnFrag: ch.fragment,
+		})
+	}
+	return out
+}
+
 // innerColumnFragmentainer records an inner multicol column box's position
 // and size in the outer multicol's content-box logical coordinates.
 type innerColumnFragmentainer struct {
 	OuterContentBoxOffset LogicalOffset
 	Size                  LogicalSize
+	columnFrag            *PhysicalFragment // populated only by findOuterColumnFragmentainers for outer-CB drain
+}
+
+// columnFragment returns the PhysicalFragment of this column. Used by the
+// outer-CB drain path to walk the column's subtree for CB fragments.
+func (c innerColumnFragmentainer) columnFragment() *PhysicalFragment {
+	return c.columnFrag
 }
 
 // findInnerColumnFragmentainers walks `builder.children` (the outer
