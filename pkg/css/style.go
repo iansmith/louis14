@@ -2568,17 +2568,46 @@ func expandShorthand(style *Style, property, value string) {
 		// Normalize vendor-prefixed size keywords before storing
 		style.Set(property, normalizeVendorPrefixedValue(value))
 	case "border-image":
-		// border-image shorthand: <source> [<slice> [ / <width> [ / <outset> ]] ] <repeat>
-		// We split on "/" to separate source+slice from width from outset+repeat.
-		// Find the source (url() or gradient function) first.
+		// border-image shorthand per CSS Backgrounds 3 §6.6:
+		//   <source> [<slice>{1,4}[/<width>{1,4}[/<outset>{1,4}]]?]? <repeat>{1,2}?
+		// Every omitted longhand resets to its initial value per the CSS
+		// shorthand resolution rule. The <repeat> keywords (stretch | repeat |
+		// round | space) terminate the last whitespace-separated section.
+		// Mirrors Blink's CSSBorderImageShorthand parser at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		v := strings.TrimSpace(value)
-		// Split into slash-separated parts (but be careful of slashes inside parens)
+		// Reset all longhands to initial; the assignments below override
+		// whichever components the value supplies.
+		style.Set("border-image-source", "none")
+		style.Set("border-image-slice", "100%")
+		style.Set("border-image-width", "1")
+		style.Set("border-image-outset", "0")
+		style.Set("border-image-repeat", "stretch")
+		// Split into slash-separated parts (but be careful of slashes inside parens).
 		slashParts := splitBorderImageSlashes(v)
-		// First part contains source, possibly followed by slice
+		// extractRepeat splits trailing repeat keywords off a slash-section's
+		// trailing whitespace-separated tokens.
+		isRepeatKw := func(s string) bool {
+			switch s {
+			case "stretch", "repeat", "round", "space":
+				return true
+			}
+			return false
+		}
+		extractRepeat := func(section string) (prefix, repeatStr string) {
+			fields := strings.Fields(section)
+			n := len(fields)
+			for n > 0 && isRepeatKw(fields[n-1]) {
+				n--
+			}
+			if n == len(fields) {
+				return section, ""
+			}
+			return strings.Join(fields[:n], " "), strings.Join(fields[n:], " ")
+		}
+		var repeatStr string
 		if len(slashParts) >= 1 {
 			firstPart := strings.TrimSpace(slashParts[0])
-			// Identify where the source image ends and slice begins.
-			// Source is a url() or *-gradient(...) function.
 			srcEnd := findBorderImageSourceEnd(firstPart)
 			src := strings.TrimSpace(firstPart[:srcEnd])
 			rest := strings.TrimSpace(firstPart[srcEnd:])
@@ -2586,23 +2615,39 @@ func expandShorthand(style *Style, property, value string) {
 				src = "none"
 			}
 			style.Set("border-image-source", src)
-			if rest != "" {
+			if len(slashParts) == 1 {
+				// No slashes: trailing tokens may be the repeat keyword(s).
+				slice, rep := extractRepeat(rest)
+				if rep != "" {
+					repeatStr = rep
+				}
+				if slice != "" {
+					style.Set("border-image-slice", slice)
+				}
+			} else if rest != "" {
 				style.Set("border-image-slice", rest)
 			}
 		}
-		if len(slashParts) >= 2 {
+		if len(slashParts) == 2 {
+			widthSec, rep := extractRepeat(strings.TrimSpace(slashParts[1]))
+			if rep != "" {
+				repeatStr = rep
+			}
+			if widthSec != "" {
+				style.Set("border-image-width", widthSec)
+			}
+		} else if len(slashParts) >= 3 {
 			style.Set("border-image-width", strings.TrimSpace(slashParts[1]))
+			outsetSec, rep := extractRepeat(strings.TrimSpace(slashParts[2]))
+			if rep != "" {
+				repeatStr = rep
+			}
+			if outsetSec != "" {
+				style.Set("border-image-outset", outsetSec)
+			}
 		}
-		if len(slashParts) >= 3 {
-			// Could be "outset repeat" or just "outset"
-			last := strings.TrimSpace(slashParts[2])
-			parts := strings.Fields(last)
-			if len(parts) >= 1 {
-				style.Set("border-image-outset", parts[0])
-			}
-			if len(parts) >= 2 {
-				style.Set("border-image-repeat", strings.Join(parts[1:], " "))
-			}
+		if repeatStr != "" {
+			style.Set("border-image-repeat", repeatStr)
 		}
 	case "text-decoration":
 		// CSS Text Decor 4 §2.6: text-decoration is a shorthand for:
