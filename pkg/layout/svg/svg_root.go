@@ -208,6 +208,12 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	if elt == nil {
 		return nil
 	}
+	// Track ALL id-bearing elements so feImage (and any future
+	// reference primitive) can resolve `href="#id"` to the underlying
+	// DOM element. Resource elements (gradients, filters, …) ALSO end
+	// up in this map, but the typed lookups via LookupAs* still apply
+	// for those. Mirrors Blink's per-tree-scope id→Element table.
+	resources.RegisterElement(elt)
 	tag := elt.TagName()
 	switch tag {
 	case "lineargradient":

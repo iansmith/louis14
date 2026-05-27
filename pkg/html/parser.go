@@ -58,9 +58,51 @@ func (p *Parser) Parse() (*Document, error) {
 				}
 				if token.TagName == "script" {
 					content := p.tokenizer.ReadRawUntil("script")
-					if strings.TrimSpace(content) != "" {
-						p.doc.Scripts = append(p.doc.Scripts, content)
+					// HTML §4.12.1: only `type=""`, `type="text/javascript"`,
+					// or a JavaScript MIME-type subset cause the script to
+					// be executed. Other types (`text/html`,
+					// `application/json`, …) are DATA blocks — they remain
+					// in the DOM as inert `<script>` elements whose
+					// textContent can be read by other scripts. The
+					// effect-reference-feimage-003.html WPT reftest uses
+					// `<script type="text/html" id="source">` as a template
+					// container and copies its textContent via
+					// document.getElementById; treating it as executable JS
+					// drops the markup entirely and silently breaks the
+					// test.
+					typ := ""
+					if t, ok := token.Attributes["type"]; ok {
+						typ = strings.ToLower(strings.TrimSpace(t))
 					}
+					isExecutableJS := typ == "" || typ == "text/javascript" ||
+						typ == "application/javascript" || typ == "application/ecmascript" ||
+						typ == "text/ecmascript" || typ == "module"
+					if isExecutableJS {
+						if strings.TrimSpace(content) != "" {
+							p.doc.Scripts = append(p.doc.Scripts, content)
+						}
+						continue
+					}
+					// Non-JS `<script>` — preserve as a DOM element with
+					// its content as a text-node child so the JS engine can
+					// read `.textContent`.
+					node := &Node{
+						Type:       ElementNode,
+						TagName:    "script",
+						Attributes: token.Attributes,
+						Children:   make([]*Node, 0),
+					}
+					if content != "" {
+						node.Children = append(node.Children, &Node{
+							Type:    TextNode,
+							Text:    content,
+							RawText: content,
+							Parent:  node,
+						})
+					}
+					parent := p.currentParent()
+					node.Parent = parent
+					parent.Children = append(parent.Children, node)
 					continue
 				}
 			}

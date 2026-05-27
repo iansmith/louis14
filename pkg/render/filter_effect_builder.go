@@ -40,6 +40,12 @@ type FilterEffectBuilder struct {
 	// paints unfiltered, matching Blink's tainted-resource behavior
 	// per Filter Effects 1 §3.1). LOU-130 Phase 2 wiring.
 	ExternalSVGFetcher func(uri string) ([]byte, error)
+	// ImageFetcher resolves `<feImage href="path.png">` external image
+	// references. May be nil — feImage falls back to LoadImage which
+	// handles data: URIs and absolute filesystem paths without a
+	// fetcher. Same fetcher the renderer's `<img>`/background-image
+	// path uses; see Renderer.imageFetcher.
+	ImageFetcher func(uri string) ([]byte, error)
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -196,12 +202,15 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 	// filter reference operates on the element's reference box, so
 	// its "user-space origin" equivalent is the reference box origin.
 	adapter := &svgFilterElementAdapter{
-		filter:          filter,
-		filterRegion:    region,
-		referenceBox:    b.ReferenceBox,
-		userSpaceOrigin: b.ReferenceBox.Min,
-		space:           space,
-		resolveStyle:    b.ResolveStyle,
+		filter:             filter,
+		filterRegion:       region,
+		referenceBox:       b.ReferenceBox,
+		userSpaceOrigin:    b.ReferenceBox.Min,
+		space:              space,
+		resolveStyle:       b.ResolveStyle,
+		resources:          b.Resources,
+		imageFetcher:       b.ImageFetcher,
+		externalSVGFetcher: b.ExternalSVGFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)
@@ -279,7 +288,10 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		space:           space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.
-		resolveStyle: nil,
+		resolveStyle:       nil,
+		resources:          b.Resources,
+		imageFetcher:       b.ImageFetcher,
+		externalSVGFetcher: b.ExternalSVGFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)

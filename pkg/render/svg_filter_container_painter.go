@@ -122,11 +122,14 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	// Build + apply the filter graph. Mirrors paintWithSVGFilter's
 	// post-source-render steps.
 	adapter := &svgFilterElementAdapter{
-		filter:          filter,
-		filterRegion:    region,
-		referenceBox:    referenceBox,
-		userSpaceOrigin: image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
-		space:           space,
+		filter:             filter,
+		filterRegion:       region,
+		referenceBox:       referenceBox,
+		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		space:              space,
+		resources:          pctx.Resources,
+		imageFetcher:       pctx.Renderer.imageFetcher,
+		externalSVGFetcher: pctx.Renderer.externalSVGFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	graph := builder.BuildGraph(adapter)

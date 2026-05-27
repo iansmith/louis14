@@ -39,6 +39,28 @@ type svgFilterElementAdapter struct {
 	// flood-opacity) through the cascade. May be nil — in that case
 	// the adapter falls back to raw attribute lookup + SVG defaults.
 	resolveStyle func(svg.ElementAdapter) *css.Style
+
+	// resources is the SVG resource registry used by `<feImage>` to
+	// resolve internal `href="#id"` references via
+	// SVGResourceRegistry.LookupElement (which covers ALL id-bearing
+	// elements, not just gradient/filter resources). Mirrors Blink's
+	// SVGFEImageElement::ReferencedLayoutObject (svg_fe_image_element.cc)
+	// which resolves against the tree scope of the feImage element. May
+	// be nil — feImage then falls back to transparent output for
+	// internal hrefs.
+	resources *svg.SVGResourceRegistry
+
+	// imageFetcher loads external images referenced by `<feImage
+	// href="path.png">` or data: URLs. May be nil — feImage then
+	// falls back to transparent output for external hrefs.
+	imageFetcher func(string) ([]byte, error)
+
+	// externalSVGFetcher loads external SVG documents referenced by
+	// `<feImage href="path.svg">` or `<feImage href="path.svg#id">`.
+	// May be nil — feImage then falls back to the imageFetcher for
+	// those URIs (which may also fail if the content type is SVG and
+	// the image decoder doesn't handle it).
+	externalSVGFetcher func(string) ([]byte, error)
 }
 
 // FilterRegion implements filters.SVGFilterElement.
@@ -88,8 +110,11 @@ func (a *svgFilterElementAdapter) Primitives() []filters.SVGFilterPrimitive {
 	out := make([]filters.SVGFilterPrimitive, 0, len(a.filter.FePrimitives))
 	for _, p := range a.filter.FePrimitives {
 		out = append(out, &svgFilterPrimitiveAdapter{
-			elt:          p,
-			resolveStyle: a.resolveStyle,
+			elt:                p,
+			resolveStyle:       a.resolveStyle,
+			resources:          a.resources,
+			imageFetcher:       a.imageFetcher,
+			externalSVGFetcher: a.externalSVGFetcher,
 		})
 	}
 	return out
@@ -101,6 +126,15 @@ func (a *svgFilterElementAdapter) Primitives() []filters.SVGFilterPrimitive {
 type svgFilterPrimitiveAdapter struct {
 	elt          svg.ElementAdapter
 	resolveStyle func(svg.ElementAdapter) *css.Style
+
+	// resources / imageFetcher / externalSVGFetcher are propagated
+	// from the parent svgFilterElementAdapter so the feImage adapter
+	// can resolve internal `href="#id"` and external href references
+	// without a back-reference to the host renderer. See the parent
+	// struct's fields for the full doc.
+	resources          *svg.SVGResourceRegistry
+	imageFetcher       func(string) ([]byte, error)
+	externalSVGFetcher func(string) ([]byte, error)
 }
 
 // TagName implements filters.SVGFilterPrimitive.
@@ -128,8 +162,11 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 	out := make([]filters.SVGFilterPrimitive, 0, len(kids))
 	for _, c := range kids {
 		out = append(out, &svgFilterPrimitiveAdapter{
-			elt:          c,
-			resolveStyle: p.resolveStyle,
+			elt:                c,
+			resolveStyle:       p.resolveStyle,
+			resources:          p.resources,
+			imageFetcher:       p.imageFetcher,
+			externalSVGFetcher: p.externalSVGFetcher,
 		})
 	}
 	return out
@@ -188,6 +225,16 @@ func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool {
 	case strings.EqualFold(tag, "fediffuselighting"),
 		strings.EqualFold(tag, "fespecularlighting"):
 		return p.readColorAttr("lighting-color") == "currentcolor"
+	case strings.EqualFold(tag, "feimage"):
+		// feImage taints when the resolved source is cross-origin
+		// without CORS. The bucket-J feimage tests all reference
+		// same-origin support files or in-page IDs, so this returns
+		// false in practice — but the placeholder is here so a
+		// downstream feDisplacementMap consuming a cross-origin
+		// feImage degrades to passthrough, matching Blink
+		// SVGFEImageElement::TaintsOrigin. A future cross-origin
+		// hostile-content test would flip this on.
+		return false
 	}
 	return false
 }

@@ -1,5 +1,7 @@
 package svg
 
+import "strings"
+
 // SVGResourceRegistry is the `id` → resource map for `url(#…)`
 // references. Mirrors Blink's per-document SVGTreeScopeResources
 // (core/svg/svg_resource.{h,cc}, core/svg/svg_tree_scope_resources.{h,cc}).
@@ -19,13 +21,68 @@ package svg
 // which returns nullptr for a wrong-typed cast).
 type SVGResourceRegistry struct {
 	resources map[string]SVGResource
+	// elements is the auxiliary `id` → ElementAdapter map covering ALL
+	// elements declaring an `id` attribute in the SVG subtree —
+	// gradient/filter/etc. resources AS WELL AS plain shapes (`<rect
+	// id="x">`, `<text id="y">`, …) that the renderer would otherwise
+	// not bother registering. This mirrors what
+	// document.getElementById('x') sees in Blink (a tree-scope-wide
+	// `id` → Element map maintained at parse time).
+	//
+	// Populated by the SVG tree builder (svg_root.go) for every
+	// element that has an `id` attribute. Read by `<feImage
+	// href="#id">` resolution (see svg_filter_image_source.go) to
+	// locate the referenced element for rasterisation. Other
+	// renderer paths use the typed resource maps directly via
+	// LookupAs* helpers.
+	elements map[string]ElementAdapter
 }
 
 // NewSVGResourceRegistry builds an empty registry.
 func NewSVGResourceRegistry() *SVGResourceRegistry {
 	return &SVGResourceRegistry{
 		resources: make(map[string]SVGResource),
+		elements:  make(map[string]ElementAdapter),
 	}
+}
+
+// RegisterElement adds (id → elt) to the auxiliary element map for
+// `<feImage href="#id">`-style references. Empty id silently rejected.
+// First-wins, like Register. Mirrors Blink's per-tree-scope id-to-
+// Element map maintained at parse time (the same map that backs
+// document.getElementById).
+func (r *SVGResourceRegistry) RegisterElement(elt ElementAdapter) {
+	if r == nil || elt == nil {
+		return
+	}
+	id, ok := elt.Attribute("id")
+	if !ok {
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	if _, exists := r.elements[id]; exists {
+		return
+	}
+	r.elements[id] = elt
+}
+
+// LookupElement returns the ElementAdapter registered under `id` via
+// RegisterElement, or (nil, false) when not present. Used by feImage
+// to resolve internal `href="#id"` references against the in-page DOM
+// tree without back-references to the renderer.
+func (r *SVGResourceRegistry) LookupElement(id string) (ElementAdapter, bool) {
+	if r == nil {
+		return nil, false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	elt, ok := r.elements[id]
+	return elt, ok
 }
 
 // Register attaches a resource by ID. Empty ID is silently rejected
