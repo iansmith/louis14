@@ -4252,6 +4252,13 @@ func isValidColorValue(value string) bool {
 	if containsVarFunction(value) {
 		return true
 	}
+	// attr() references (CSS Values 5 §11.5) are resolved at cascade time via
+	// resolveAttrReferences — always valid at parse time. The attr() type
+	// annotation declares what type the attribute value should be resolved as;
+	// the parse-time validator cannot check that without element access.
+	if containsAttrFunction(value) {
+		return true
+	}
 	_, ok := ParseColor(value)
 	return ok
 }
@@ -4950,6 +4957,17 @@ func closeUnmatchedTokens(s string) string {
 // Single-source-of-truth replacement for `strings.Contains(value, "var(")`.
 func containsVarFunction(s string) bool {
 	return indexVarFunction(s) >= 0
+}
+
+// containsAttrFunction reports whether s contains a typed attr() function call
+// (CSS Values 5 §11.5). This is used to defer shorthand expansion when the
+// value contains an attr() reference that needs element-attribute access for
+// resolution — analogous to the containsVarFunction guard for var().
+//
+// Only typed attr() matters here; the legacy CSS2.1 content: attr(name) form
+// is handled separately in ParseContentValues and never reaches shorthand expansion.
+func containsAttrFunction(s string) bool {
+	return indexAttrFunction(s) >= 0
 }
 
 // indexVarFunction returns the byte index of the first `v`/`V` of a `var(`
