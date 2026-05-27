@@ -6243,11 +6243,12 @@ func (s *Style) GetTextTransform() TextTransform {
 type WhiteSpace string
 
 const (
-	WhiteSpaceNormal  WhiteSpace = "normal"
-	WhiteSpaceNowrap  WhiteSpace = "nowrap"
-	WhiteSpacePre     WhiteSpace = "pre"
-	WhiteSpacePreWrap WhiteSpace = "pre-wrap"
-	WhiteSpacePreLine WhiteSpace = "pre-line"
+	WhiteSpaceNormal      WhiteSpace = "normal"
+	WhiteSpaceNowrap      WhiteSpace = "nowrap"
+	WhiteSpacePre         WhiteSpace = "pre"
+	WhiteSpacePreWrap     WhiteSpace = "pre-wrap"
+	WhiteSpacePreLine     WhiteSpace = "pre-line"
+	WhiteSpaceBreakSpaces WhiteSpace = "break-spaces"
 )
 
 // GetWhiteSpace returns the white-space value (default: normal)
@@ -6262,6 +6263,8 @@ func (s *Style) GetWhiteSpace() WhiteSpace {
 			return WhiteSpacePreWrap
 		case "pre-line":
 			return WhiteSpacePreLine
+		case "break-spaces":
+			return WhiteSpaceBreakSpaces
 		case "normal":
 			return WhiteSpaceNormal
 		}

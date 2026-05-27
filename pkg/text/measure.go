@@ -710,6 +710,27 @@ func ShapeAdvances(textStr string, fontSize float64, fontPath string) (ShapeCumu
 	return shapeAdvancePairSnap(cum), true
 }
 
+// runeIndexToByteOffsets builds a slice mapping rune index → UTF-8 byte offset
+// for s. The returned slice has length len([]rune(s))+1; element i is the byte
+// offset of the i-th rune, and the final element equals len(s).
+//
+// mazzy's HarfBuzz shaper calls buf.AddRunes, so HarfBuzz cluster values are
+// rune (codepoint) indices, not byte offsets. This mapping converts them back
+// to byte offsets so the cumulative advance array is indexed by byte position.
+func runeIndexToByteOffsets(s string) []int {
+	nRunes := utf8.RuneCountInString(s)
+	offsets := make([]int, nRunes+1)
+	i := 0
+	for bytePos := 0; bytePos < len(s); {
+		offsets[i] = bytePos
+		_, size := utf8.DecodeRuneInString(s[bytePos:])
+		bytePos += size
+		i++
+	}
+	offsets[nRunes] = len(s)
+	return offsets
+}
+
 // shapeAdvancesFloat computes the per-byte cumulative-position float64 slice
 // before snapping. Internal helper: the public ShapeAdvances wraps this with
 // the FLOOR/CEIL snap pair at the boundary.
@@ -729,6 +750,11 @@ func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]fl
 		return nil, false
 	}
 
+	// mazzy returns g.Cluster as a rune (codepoint) index because AddRunes is
+	// used. Convert to byte offsets so cum is indexed by byte position.
+	runeOffsets := runeIndexToByteOffsets(textStr)
+	nRunes := len(runeOffsets) - 1
+
 	cum := make([]float64, len(textStr)+1)
 	// Fill with -1 as sentinel to detect missing cluster samples.
 	for i := range cum {
@@ -737,9 +763,12 @@ func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]fl
 	cum[0] = 0
 	var x int32
 	for _, g := range run.Glyphs {
-		c := int(g.Cluster)
-		if c >= 0 && c <= len(textStr) && cum[c] < 0 {
-			cum[c] = float64(x) / 64.0
+		ri := int(g.Cluster)
+		if ri >= 0 && ri <= nRunes {
+			c := runeOffsets[ri]
+			if c >= 0 && c <= len(textStr) && cum[c] < 0 {
+				cum[c] = float64(x) / 64.0
+			}
 		}
 		x += g.XAdvance
 	}
@@ -829,6 +858,11 @@ func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float
 			return nil, false
 		}
 
+		// mazzy returns g.Cluster as a rune (codepoint) index within subText.
+		// Build a rune-index → byte-offset map so we can translate back.
+		subRuneOffsets := runeIndexToByteOffsets(subText)
+		subNRunes := len(subRuneOffsets) - 1
+
 		// Accumulate (cluster, advance) pairs and sort by cluster ascending so
 		// we can produce a logical-order prefix sum. For RTL output, glyphs are
 		// emitted in descending cluster order; the sort restores logical order.
@@ -839,10 +873,12 @@ func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float
 		entries := make([]clusterEntry, 0, len(result.Glyphs))
 		var totalAdvance int32
 		for _, g := range result.Glyphs {
-			c := int(g.Cluster)
-			if c < 0 || c > len(subText) {
+			ri := int(g.Cluster)
+			if ri < 0 || ri > subNRunes {
 				continue
 			}
+			// Convert rune index to byte offset within subText.
+			c := subRuneOffsets[ri]
 			entries = append(entries, clusterEntry{c, g.XAdvance})
 			totalAdvance += g.XAdvance
 		}

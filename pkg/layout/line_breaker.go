@@ -20,12 +20,14 @@ func isCSSCollapsibleSpace(r rune) bool {
 // cssPreservesWhitespace returns true when the style's white-space value
 // mandates that spaces at line start and end must not be stripped.
 // CSS 2.1 §16.6.1: 'pre' and 'pre-wrap' preserve all whitespace verbatim.
+// CSS Text 4: 'break-spaces' also preserves all spaces (including at line
+// edges) — spaces always occupy width and are never discarded.
 func cssPreservesWhitespace(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
 	ws := style.GetWhiteSpace()
-	return ws == css.WhiteSpacePre || ws == css.WhiteSpacePreWrap
+	return ws == css.WhiteSpacePre || ws == css.WhiteSpacePreWrap || ws == css.WhiteSpaceBreakSpaces
 }
 
 // LineBreakerMode controls line breaking behavior.

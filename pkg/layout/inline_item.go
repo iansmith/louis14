@@ -506,7 +506,7 @@ func collectTextNode(
 		}
 	}
 
-	preserveNewlines := whiteSpace == "pre" || whiteSpace == "pre-wrap" || whiteSpace == "pre-line"
+	preserveNewlines := whiteSpace == "pre" || whiteSpace == "pre-wrap" || whiteSpace == "pre-line" || whiteSpace == "break-spaces"
 	collapseSpaces := whiteSpace == "normal" || whiteSpace == "nowrap" || whiteSpace == "pre-line"
 
 	startOffset := text.Len()
