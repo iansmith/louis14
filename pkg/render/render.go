@@ -4435,63 +4435,178 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 }
 
 // drawOutline draws the CSS outline around the border-box, offset by outline-offset.
+//
+// Geometry (CSS UI 4 §4.3): The outline is a band whose INNER edge sits at
+// `border-box ± outline-offset`, and whose OUTER edge sits another
+// `outline-width` further out.
+//
+//	Inner-edge  = border-box + outline-offset   (the gap)
+//	Outer-edge  = Inner-edge + outline-width    (the visible band)
+//
+// For positive offsets the outline draws outside the border-box; for negative
+// offsets the inner edge moves inward into the border-box (and the band can
+// extend over content/background).
+//
+// CSS UI §4.3 negative-offset clamp: the outside of the outline shape must
+// never become smaller than `2 × outline-width` in either dimension. Without
+// this clamp, a sufficiently negative offset collapses the outline; the spec
+// mandates clamping the outer rectangle to a minimum of 2*outline-width.
+// Mirrors Blink's OutlinePainter::ComputeOutlineRect adjustment at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Painting strategy: rectangular (non-rounded) outlines are filled as 4
+// trapezoid sides — the same approach drawBorders uses — so adjacent sides
+// meet at mitered diagonals with no rounded-join artefacts.
 func (r *Renderer) drawOutline(layer *PaintLayer) {
 	box := layer.Box
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 
-	// Outline is drawn at: border-box + offset + width/2 (stroke centered on path).
-	off := layer.OutlineOffset + layer.OutlineWidth/2
-	ox := x - off
-	oy := y - off
-	ow := w + 2*off
-	oh := h + 2*off
+	width := layer.OutlineWidth
+	offset := layer.OutlineOffset
 
-	if ow <= 0 || oh <= 0 {
+	// Inner edge (the gap-edge facing the border-box).
+	innerX := x - offset
+	innerY := y - offset
+	innerW := w + 2*offset
+	innerH := h + 2*offset
+
+	// Outer edge: extend outward by outline-width.
+	outerX := innerX - width
+	outerY := innerY - width
+	outerW := innerW + 2*width
+	outerH := innerH + 2*width
+
+	// CSS UI §4.3: clamp the outer rectangle so that neither dimension shrinks
+	// below 2*outline-width. Apply per-dimension (long boxes with extreme
+	// negative offset clamp width and height independently — see outline-014/-015).
+	minDim := 2 * width
+	if outerW < minDim {
+		// Re-center on the original box and grow to minDim.
+		outerX = x + w/2 - minDim/2
+		outerW = minDim
+	}
+	if outerH < minDim {
+		outerY = y + h/2 - minDim/2
+		outerH = minDim
+	}
+
+	if outerW <= 0 || outerH <= 0 || width <= 0 {
 		return
 	}
 
 	r.setColor(layer.OutlineColor)
 
-	switch layer.OutlineStyle {
-	case "solid":
-		r.dc.SetLineWidth(layer.OutlineWidth)
-		if hasBorderRadius(layer) {
-			expandedRadii := layer.BorderRadius.Outset(off, off, off, off)
-			r.buildRoundedRectPath(ox, oy, ow, oh, expandedRadii)
-		} else {
-			r.dc.DrawRectangle(ox, oy, ow, oh)
-		}
-		r.dc.Stroke()
-	case "dashed":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDashedLine(mx, my, mx+mw, my, layer.OutlineWidth)       // top
-		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth) // right
-		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth) // bottom
-		r.drawDashedLine(mx, my, mx, my+mh, layer.OutlineWidth)       // left
-	case "dotted":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDottedLine(mx, my, mx+mw, my, layer.OutlineWidth)
-		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDottedLine(mx, my, mx, my+mh, layer.OutlineWidth)
-	case "double":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDoubleLine(mx, my, mx+mw, my, layer.OutlineWidth)
-		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDoubleLine(mx, my, mx, my+mh, layer.OutlineWidth)
-	default:
-		// Treat unknown styles as solid.
-		r.dc.SetLineWidth(layer.OutlineWidth)
-		r.dc.DrawRectangle(ox, oy, ow, oh)
-		r.dc.Stroke()
+	// Treat `auto` as `solid` — louis14 has no focus-ring concept (CSS UI 4
+	// §4 explicitly permits this fallback).
+	style := layer.OutlineStyle
+	if style == "auto" {
+		style = "solid"
 	}
+
+	switch style {
+	case "solid":
+		if hasBorderRadius(layer) {
+			// For rounded corners, draw the outline as a filled ring between
+			// the outer rounded rect and an inner rounded rect inset by
+			// outline-width. Use even-odd fill so the inner shape punches
+			// the outline interior cleanly.
+			outerRadii := layer.BorderRadius.Outset(offset+width, offset+width, offset+width, offset+width)
+			innerRadii := layer.BorderRadius.Outset(offset, offset, offset, offset)
+			r.buildRoundedRectPath(outerX, outerY, outerW, outerH, outerRadii)
+			iX := outerX + width
+			iY := outerY + width
+			iW := outerW - 2*width
+			iH := outerH - 2*width
+			if iW > 0 && iH > 0 {
+				r.buildRoundedRectPath(iX, iY, iW, iH, innerRadii)
+			}
+			r.dc.SetFillRule(textshape.FillRuleEvenOdd)
+			r.dc.Fill()
+			r.dc.SetFillRule(textshape.FillRuleWinding)
+		} else {
+			// Rectangular outline as 4 trapezoid sides (mitered corners).
+			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
+		}
+	case "dashed":
+		// Center each dashed segment on the geometric centerline of the outline band.
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDashedLine(mx, my, mx+mw, my, width)       // top
+		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, width) // right
+		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, width) // bottom
+		r.drawDashedLine(mx, my, mx, my+mh, width)       // left
+	case "dotted":
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDottedLine(mx, my, mx+mw, my, width)
+		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, width)
+		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, width)
+		r.drawDottedLine(mx, my, mx, my+mh, width)
+	case "double":
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDoubleLine(mx, my, mx+mw, my, width)
+		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, width)
+		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, width)
+		r.drawDoubleLine(mx, my, mx, my+mh, width)
+	default:
+		// Treat unknown / not-yet-implemented styles (groove/ridge/inset/outset)
+		// as solid for visibility — matches Blink's fallback behavior for
+		// outline-style values that don't have a distinct platform rendering.
+		r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
+	}
+}
+
+// fillOutlineSides paints a rectangular outline as 4 trapezoid sides with
+// mitered diagonal joins at the corners. Mirrors drawBorders' Fill-path
+// approach for solid borders — see drawBorders at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f Blink's BoxBorderPainter::PaintSide.
+func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float64) {
+	outerL := outerX
+	outerT := outerY
+	outerR := outerX + outerW
+	outerB := outerY + outerH
+	innerL := outerL + width
+	innerT := outerT + width
+	innerR := outerR - width
+	innerB := outerB - width
+	if innerL > innerR {
+		innerL, innerR = (outerL+outerR)/2, (outerL+outerR)/2
+	}
+	if innerT > innerB {
+		innerT, innerB = (outerT+outerB)/2, (outerT+outerB)/2
+	}
+	// Top
+	r.dc.MoveTo(outerL, outerT)
+	r.dc.LineTo(outerR, outerT)
+	r.dc.LineTo(innerR, innerT)
+	r.dc.LineTo(innerL, innerT)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Right
+	r.dc.MoveTo(outerR, outerT)
+	r.dc.LineTo(outerR, outerB)
+	r.dc.LineTo(innerR, innerB)
+	r.dc.LineTo(innerR, innerT)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Bottom
+	r.dc.MoveTo(outerL, outerB)
+	r.dc.LineTo(innerL, innerB)
+	r.dc.LineTo(innerR, innerB)
+	r.dc.LineTo(outerR, outerB)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Left
+	r.dc.MoveTo(outerL, outerT)
+	r.dc.LineTo(innerL, innerT)
+	r.dc.LineTo(innerL, innerB)
+	r.dc.LineTo(outerL, outerB)
+	r.dc.ClosePath()
+	r.dc.Fill()
 }
 
 // drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.

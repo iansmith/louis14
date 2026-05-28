@@ -3316,7 +3316,25 @@ func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSn
 
 // expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
 // Format: "3px solid blue" — order of components is not significant.
+// Per CSS Cascade 4 §3.2, a CSS-wide keyword as the shorthand value applies to every
+// longhand (mirroring Blink's StylePropertyShorthand::longhand expansion at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func expandOutlineShorthand(style *Style, value string) {
+	// CSS-wide keyword as the entire shorthand value: route to every longhand
+	// so that the post-cascade resolveInheritValues / resolveCSSWideKeywords
+	// pass picks them all up. This is what makes `outline: inherit` inherit
+	// the parent's outline-width / outline-style / outline-color (not just the
+	// color). Without this, `outline: inherit` resets width to medium and
+	// style to none, producing no visible outline on the inheriting element.
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		style.Set("outline-width", trimmed)
+		style.Set("outline-style", trimmed)
+		style.Set("outline-color", trimmed)
+		return
+	}
+
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
@@ -3326,8 +3344,12 @@ func expandOutlineShorthand(style *Style, value string) {
 	for _, part := range parts {
 		if part == "none" {
 			style.Set("outline-style", "none")
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+		} else if part == "auto" || part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
 			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			// CSS UI 4 §4: `auto` is a valid outline-style. We treat it as
+			// `solid` at paint time (no platform focus ring); recording it as
+			// `auto` keeps the computed-value reflection honest for getters
+			// that compare against the keyword.
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
@@ -3665,10 +3687,17 @@ func (s *Style) GetOutlineWidth() float64 {
 
 // GetOutlineColor returns the outline color as RGBA components.
 // Defaults to currentColor (element's text color), falling back to black.
+// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
+// the UA has no specific focus-ring colour to apply (mirrors Blink's
+// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
+// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	colorStr := "currentcolor"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
+	}
+	if strings.EqualFold(colorStr, "auto") {
+		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
 		// Use element's text color
