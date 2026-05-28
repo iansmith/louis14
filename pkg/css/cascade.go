@@ -1550,6 +1550,13 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true, "font-kerning": true,
+	// CSS Fonts 4 §6.4: font-variant-ligatures and font-variant-numeric
+	// inherit by default. Mirrors Blink's FontDescription propagation via
+	// inherited ComputedStyle (font_description.h::VariantLigatures /
+	// VariantNumeric fields, Chromium SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	"font-variant-ligatures": true,
+	"font-variant-numeric":   true,
 	// CSS Fonts 4 §6.6: each font-synthesis-* longhand is inherited.
 	// https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
 	"font-synthesis-weight": true, "font-synthesis-style": true,
