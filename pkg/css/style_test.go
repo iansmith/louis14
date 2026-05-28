@@ -591,3 +591,77 @@ func TestGetTextDecorationSkipInk(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveTransformOriginPx_AxisClassification verifies the per-token
+// <position> axis-classification algorithm from CSS Values 3 §6.1:
+//
+//   - An unambiguous horizontal keyword (left/right) locks the x axis.
+//   - An unambiguous vertical keyword (top/bottom) locks the y axis.
+//   - `center` is a wildcard; the OTHER token determines its axis.
+//   - Lengths/percentages are positional (first→x, second→y) unless paired
+//     with an unambiguous keyword that locks the other axis.
+//   - With two keywords, source order is irrelevant.
+//
+// Regression: prior implementation only swapped tokens when BOTH parts were
+// unambiguous left/right + top/bottom, so `top center` and `top 10%` mapped
+// to the wrong axes (transform-origin-name-004 failed with 34611 px diff).
+func TestResolveTransformOriginPx_AxisClassification(t *testing.T) {
+	const boxW, boxH = 100.0, 200.0
+	cases := []struct {
+		raw   string
+		wantX float64
+		wantY float64
+	}{
+		// Single-keyword cases.
+		{"", 50, 100},      // default center center
+		{"top", 50, 0},     // y-locked → top, x defaults to center
+		{"bottom", 50, 200}, // y-locked → bottom
+		{"left", 0, 100},   // x-locked → left
+		{"right", 100, 100},
+		{"center", 50, 100},
+		{"25%", 25, 100},   // positional → x
+
+		// Two unambiguous keywords; order independent.
+		{"left top", 0, 0},
+		{"top left", 0, 0},
+		{"right bottom", 100, 200},
+		{"bottom right", 100, 200},
+
+		// Keyword + center (center is wildcard).
+		{"top center", 50, 0},
+		{"center top", 50, 0},
+		{"bottom center", 50, 200},
+		{"center bottom", 50, 200},
+		{"left center", 0, 100},
+		{"center left", 0, 100},
+		{"right center", 100, 100},
+		{"center right", 100, 100},
+
+		// Keyword + length/percent (keyword locks its axis, length goes to other).
+		{"top 25%", 25, 0},
+		{"25% top", 25, 0},
+		{"left 25%", 0, 50},  // 25% of boxH=200=50
+		{"25% left", 0, 50},
+
+		// All-positional (no axis keyword): source order x first, y second.
+		{"25% 75%", 25, 150}, // 75% of 200 = 150
+		{"10px 20px", 10, 20},
+
+		// 3-component (z) — z token discarded, x/y resolved normally.
+		{"50% 50% 0", 50, 100},
+		{"top center 1px", 50, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			s := NewStyle()
+			if c.raw != "" {
+				s.Set("transform-origin", c.raw)
+			}
+			gotX, gotY := s.ResolveTransformOriginPx(boxW, boxH)
+			if gotX != c.wantX || gotY != c.wantY {
+				t.Errorf("ResolveTransformOriginPx(%q) = (%v, %v), want (%v, %v)",
+					c.raw, gotX, gotY, c.wantX, c.wantY)
+			}
+		})
+	}
+}
