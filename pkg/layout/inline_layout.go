@@ -747,6 +747,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Apply text-indent to the first line only.
 		appliedTextIndent := 0.0
 		lineInlineOffset := lineInlineOffsetFromFloat
+		// Save isFirstLine before mutation so we can forward it to
+		// createLineBoxEx (which uses it to stamp multi-line block
+		// decorating-box metadata per CSS Text Decor 4 §3.6).
+		isFirstLineForCreate := isFirstLine
 		if isFirstLine && textIndent != 0 {
 			lineInlineOffset += textIndent
 			lineAvailableInline -= textIndent
@@ -1000,7 +1004,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
 
@@ -1280,7 +1284,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil)
+	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
 	return frag, h, a
 }
 
@@ -1308,6 +1312,7 @@ func createLineBoxEx(
 	parentStyle *css.Style,
 	enteringSpanStack []*InlineItem,
 	firstLineStyle *css.Style,
+	isFirstLine bool,
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
@@ -1406,7 +1411,7 @@ func createLineBoxEx(
 	// AppliedTextDecorations (the common case). Consumed by the text-fragment
 	// construction below; paint_layer reads Box.AppliedTextDecorations in
 	// preference to Style.GetAppliedTextDecorations() when non-nil.
-	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack)
+	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack, isFirstLine)
 
 	// CSS Pseudo 4 §3.2: ::first-line background paints behind the first
 	// formatted line. Emit BEFORE inline span backgrounds and text fragments

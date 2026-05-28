@@ -338,6 +338,32 @@ type PaintLayer struct {
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	HasBlendingDescendant bool
 
+	// IsBackdropRoot is true when this layer's style forms a Backdrop Root
+	// per CSS Filter Effects 2 §3.5 (opacity < 1, filter, mask, mask-image,
+	// mask-border, clip-path, backdrop-filter, mix-blend-mode, or
+	// will-change of any of the above). Backdrop Roots BOUND the backdrop
+	// sample that a descendant's `backdrop-filter` consumes — the captured
+	// region of the canvas only includes content painted within this layer
+	// (and descendants painted before the backdrop-filter element), not
+	// content painted further up the ancestor chain.
+	//
+	// Set by buildPaintSubtree from `style.IsBackdropRoot()`. Notably
+	// transform/perspective/z-index DO NOT trigger backdrop-root, even
+	// though they create a stacking context — the spec intentionally
+	// separates the two predicates.
+	//
+	// Mirrors Blink's `effect_paint_property_node.cc::DetermineBackdropRoot`
+	// at 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	IsBackdropRoot bool
+
+	// HasBackdropFilterDescendant is true when this layer is a Backdrop
+	// Root that contains a descendant (within the backdrop-root boundary)
+	// with `backdrop-filter != none`. When set, paintLayer routes the layer
+	// through paintLayerIsolated so the descendant's backdrop-filter samples
+	// the isolated buffer instead of the canvas underneath the backdrop-
+	// root. The flag is only meaningful in combination with IsBackdropRoot.
+	HasBackdropFilterDescendant bool
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -396,12 +422,22 @@ type PaintLayer struct {
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
 // The root box is always treated as a stacking context root
 // (CSS 2.1 Appendix E: root element establishes the initial stacking context).
+//
+// The implicit root Backdrop Root per CSS Filter Effects 2 §3.5 is left as
+// a NIL currentBackdropRoot: when a top-level descendant has backdrop-filter,
+// the nearest ancestor backdrop-root search returns nil, which the renderer
+// reads as "sample the canvas directly" — exactly the implicit-root
+// semantics. Routing the root layer itself through paintLayerIsolated would
+// pre-fill the buffer with transparent black instead of the canvas
+// background, breaking descendants whose backdrop-filter expects to invert
+// the white canvas. Mirrors Blink's effect tree, where the root's
+// kBackdropRoot flag is implicit and not realised as an isolation group.
 func BuildPaintTree(root *layout.Box) *PaintLayer {
 	if root == nil {
 		return nil
 	}
 	rootLayer := newPaintLayer(root)
-	buildPaintSubtree(root, rootLayer, rootLayer)
+	buildPaintSubtree(root, rootLayer, rootLayer, nil)
 	rootLayer.sortZLists()
 	// CSS Transforms L2 §11: propagate backface-hidden down the DOM tree so
 	// out-of-flow descendants (which the layout engine hoists into a higher
@@ -1007,6 +1043,54 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		)
 	}
 
+	// CSS Fonts 4 §6.4 font-variant-ligatures: each sub-property keyword
+	// toggles a fixed OpenType feature tag (CSS Fonts 4 §6.4 table). Emitted
+	// AFTER font-feature-settings so the high-level property wins per CSS
+	// Fonts 4 §7 "Resolution of font feature values". Mirrors Blink's
+	// FontDescription::SetVariantLigatures →
+	// FontDescription::FeatureSettings path in
+	// third_party/blink/renderer/platform/fonts/font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   normal                  -- HarfBuzz defaults (no emit needed).
+	//   none                    -- liga/clig/calt/hlig/dlig all off.
+	//   common-ligatures        -- liga=1, clig=1.
+	//   no-common-ligatures     -- liga=0, clig=0.
+	//   discretionary-ligatures -- dlig=1.
+	//   no-discretionary-ligatures -- dlig=0.
+	//   historical-ligatures    -- hlig=1.
+	//   no-historical-ligatures -- hlig=0.
+	//   contextual              -- calt=1.
+	//   no-contextual           -- calt=0.
+	//
+	// Multiple keywords (space-separated) combine; conflicting pairs in the
+	// same declaration are an authoring error and CSS Fonts 4 §6.4 leaves
+	// last-wins to the UA; we honor whichever keyword appears last by
+	// emission order (HarfBuzz also takes last-wins on duplicate tags).
+	if ligs := s.GetFontVariantLigatures(); ligs != "" && ligs != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantLigatureFeatures(ligs)...)
+	}
+
+	// CSS Fonts 4 §6.4 font-variant-numeric: keyword → OpenType tag table.
+	// Same emission-order rules as ligatures above. Mirrors
+	// FontDescription::SetVariantNumeric() in font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   normal             -- HarfBuzz defaults (no emit needed).
+	//   lining-nums        -- lnum=1.
+	//   oldstyle-nums      -- onum=1.
+	//   proportional-nums  -- pnum=1.
+	//   tabular-nums       -- tnum=1.
+	//   diagonal-fractions -- frac=1.
+	//   stacked-fractions  -- afrc=1.
+	//   ordinal            -- ordn=1.
+	//   slashed-zero       -- zero=1.
+	if num := s.GetFontVariantNumeric(); num != "" && num != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantNumericFeatures(num)...)
+	}
+
 	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
 	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
 	// (HarfBuzz enables kern for horizontal text by default). When `none`,
@@ -1170,6 +1254,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// CSS mix-blend-mode.
 	layer.BlendMode = s.GetMixBlendMode()
+
+	// CSS Filter Effects 2 §3.5: Backdrop Root predicate. The flag is
+	// consumed by paintLayer in combination with HasBackdropFilterDescendant
+	// (set in the subtree walk) to decide whether to route this layer
+	// through paintLayerIsolated so a descendant's backdrop-filter samples
+	// the isolated buffer instead of the underlying canvas.
+	if s.IsBackdropRoot() {
+		layer.IsBackdropRoot = true
+	}
 
 	// Column rules for multicol containers.
 	// Guards:
@@ -1435,14 +1528,19 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 // buildPaintSubtree walks the Box tree, creating PaintLayers and assigning
 // them to the correct parent/stacking-context lists.
 //
-// parentLayer: the PaintLayer that owns FlowChildren at this level.
-// currentSC:   the nearest ancestor stacking context's PaintLayer.
-func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
+// parentLayer:        the PaintLayer that owns FlowChildren at this level.
+// currentSC:          the nearest ancestor stacking context's PaintLayer.
+// currentBackdropRoot: the nearest ancestor PaintLayer with IsBackdropRoot set.
+//                     Per CSS Filter Effects 2 §3.5, this is the boundary of
+//                     the backdrop sampled by any backdrop-filter descendant
+//                     within the subtree. Set by HasBackdropFilterDescendant
+//                     when a descendant with backdrop-filter is encountered.
+func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer) {
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
 			// Unstyled box (line box, text run) — no PaintLayer.
 			// Recurse to find any styled descendants.
-			buildPaintSubtree(child, parentLayer, currentSC)
+			buildPaintSubtree(child, parentLayer, currentSC, currentBackdropRoot)
 			continue
 		}
 		// Text fragments (LayoutNode==nil with Text set) carry their parent
@@ -1468,6 +1566,27 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			currentSC.HasBlendingDescendant = true
 		}
 
+		// CSS Filter Effects 2 §3.5: a backdrop-filter element samples its
+		// backdrop only back to the nearest Backdrop Root ancestor. Mark that
+		// ancestor so paintLayer can route it through an isolated buffer; the
+		// descendant's backdrop-filter then samples that buffer instead of
+		// the canvas content painted further up the ancestor chain.
+		//
+		// currentBackdropRoot may be nil for descendants of the implicit
+		// root backdrop-root — in that case the canvas IS the backdrop, and
+		// no extra isolation is needed (sampling r.target directly is
+		// already correct).
+		if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
+			currentBackdropRoot.HasBackdropFilterDescendant = true
+		}
+
+		// The child becomes the new currentBackdropRoot for its own subtree
+		// if it is itself a backdrop-root.
+		childBackdropRoot := currentBackdropRoot
+		if childLayer.IsBackdropRoot {
+			childBackdropRoot = childLayer
+		}
+
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest
 		// ancestor stacking context's z-lists, just like positioned elements
@@ -1483,7 +1602,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			continue
 		}
 
@@ -1500,15 +1619,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				} else {
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 				}
-				buildPaintSubtree(child, childLayer, childLayer)
+				buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			} else if isFloat(child) {
 				// CSS 2.1 Appendix E step 4: floats paint after non-float block
 				// backgrounds (step 3) so they appear above block backgrounds.
 				parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			} else {
 				parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			}
 			continue
 		}
@@ -1537,7 +1656,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			continue
 		}
 
@@ -1545,7 +1664,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		// contained children stay in DOM-order painting (FlowChildren).
 		if isContainedByOverflow(child, box) {
 			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-			buildPaintSubtree(child, childLayer, currentSC)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			continue
 		}
 
@@ -1554,9 +1673,9 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		if hasOverflowClipping(child) {
 			// Overflow containment boundary — positioned descendants
 			// stay within this subtree.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 		} else {
-			buildPaintSubtree(child, childLayer, currentSC)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 		}
 	}
 }
@@ -1640,6 +1759,116 @@ func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4
 		clips = append(clips, [4]float64{clipX, clipY, clipW, clipH})
 	}
 	return clips
+}
+
+// fontVariantLigatureFeatures maps a CSS font-variant-ligatures value (one
+// or more space-separated keywords from §6.4) to the OpenType feature tag
+// list per CSS Fonts 4 §6.4 (Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
+// FontDescription::SetVariantLigatures in
+// third_party/blink/renderer/platform/fonts/font_description.cc).
+//
+// Callers handle `normal` (empty/default) themselves; this function assumes
+// non-default input. `none` emits the full five-tag off list per spec.
+func fontVariantLigatureFeatures(value string) []textshape.FontFeature {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "none" {
+		return []textshape.FontFeature{
+			{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 0},
+			{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 0},
+			{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 0},
+			{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 0},
+			{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 0},
+		}
+	}
+	var features []textshape.FontFeature
+	for _, kw := range strings.Fields(value) {
+		switch kw {
+		case "common-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 1},
+				textshape.FontFeature{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-common-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 0},
+				textshape.FontFeature{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "discretionary-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-discretionary-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "historical-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-historical-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "contextual":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 1},
+			)
+		case "no-contextual":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 0},
+			)
+		}
+	}
+	return features
+}
+
+// fontVariantNumericFeatures maps a CSS font-variant-numeric value to the
+// OpenType feature tag list per CSS Fonts 4 §6.4. Mirrors Blink's
+// FontDescription::SetVariantNumeric in font_description.cc at Chromium
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Callers handle `normal`/empty themselves.
+func fontVariantNumericFeatures(value string) []textshape.FontFeature {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var features []textshape.FontFeature
+	for _, kw := range strings.Fields(value) {
+		switch kw {
+		case "lining-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "oldstyle-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'o', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "proportional-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'p', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "tabular-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'t', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "diagonal-fractions":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'f', 'r', 'a', 'c'}, Value: 1},
+			)
+		case "stacked-fractions":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'a', 'f', 'r', 'c'}, Value: 1},
+			)
+		case "ordinal":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'o', 'r', 'd', 'n'}, Value: 1},
+			)
+		case "slashed-zero":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'z', 'e', 'r', 'o'}, Value: 1},
+			)
+		}
+	}
+	return features
 }
 
 // parseFontFeatureSettings parses a CSS font-feature-settings value like

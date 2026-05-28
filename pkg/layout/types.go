@@ -216,8 +216,12 @@ func (b *Box) CreatesStackingContext() bool {
 		return true
 	}
 	// CSS Masking Level 1 §3.1: a computed clip-path other than 'none'
-	// creates a stacking context (and, in Blink, a PaintLayer).
-	if b.Style.GetClipPath() != nil {
+	// creates a stacking context (and, in Blink, a PaintLayer). Use a raw
+	// property lookup so unparsed shape values (e.g. `clip-path: inset(...)`,
+	// which GetClipPath does not yet recognise) still create the SC — the
+	// spec only asks whether the computed value differs from `none`, not
+	// whether the parser can model the shape.
+	if cp, ok := b.Style.Get("clip-path"); ok && cp != "" && cp != "none" {
 		return true
 	}
 	// CSS Masking Level 1 §6.1: a computed mask/mask-image other than 'none'
@@ -246,11 +250,20 @@ func (b *Box) CreatesStackingContext() bool {
 	}
 	// CSS Will Change Level 1 §2.2: will-change of certain properties creates
 	// a stacking context (same properties that create one when actually set).
+	// Mirrors Blink's willChangeStackingContextSet at computed_style.cc:1319
+	// (4883d11fef4a8713e32cd582ecef6dc5457c8c3f). We accept BOTH the resolved
+	// longhand names AND the shorthand `mask` so the raw ident list (which is
+	// what GetWillChange returns) is read correctly regardless of whether the
+	// author wrote `will-change: mask` or `will-change: mask-image`.
 	for _, prop := range b.Style.GetWillChange() {
 		switch prop {
 		case "transform", "opacity", "filter", "backdrop-filter",
-			"clip-path", "mask", "mix-blend-mode", "isolation",
-			"perspective", "offset-path":
+			"clip-path", "mask", "mask-image", "mask-border",
+			"-webkit-mask-box-image-source",
+			"mix-blend-mode", "isolation",
+			"perspective", "offset-path", "offset-position",
+			"translate", "rotate", "scale",
+			"transform-style", "contain", "view-transition-name":
 			return true
 		}
 	}

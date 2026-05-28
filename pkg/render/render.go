@@ -825,6 +825,23 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Filter Effects 2 §3.5: a Backdrop Root that contains a descendant
+	// with backdrop-filter must render its subtree into an isolated buffer
+	// so the descendant's backdrop sample is bounded by the backdrop-root
+	// rather than reaching out to the canvas underneath. Without this,
+	// applyBackdropFilter samples r.target — which holds the full canvas
+	// including ancestor content painted before this layer — and the
+	// descendant filter is computed against the wrong backdrop. The
+	// isolation buffer pre-fills to transparent black, so a descendant's
+	// backdrop-filter that samples outside the layer's own painted area
+	// sees transparent (not the ancestor canvas). Mirrors Blink's backdrop-
+	// root paint-property promotion at effect_paint_property_node.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if layer.IsBackdropRoot && layer.HasBackdropFilterDescendant {
+		r.paintLayerIsolated(layer)
+		return
+	}
+
 	// CSS Transforms 1 §6 / CSS Backgrounds 3 §3.13: the canvas background
 	// (root or propagated body bg) is owned by the root canvas, NOT the
 	// layer that supplies it. A `transform` on the body or root element must
@@ -1384,12 +1401,20 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	}
 	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
-	// A blur on the backdrop samples pixels outside the element's border
-	// box, so the captured region is inflated by the blur extent — otherwise
-	// the blur sees transparent black off the edges and darkens the result.
-	// The filtered output is clipped back to the border box afterwards.
-	// Filter Effects 2 treats the backdrop root image as effectively
-	// unbounded; capturing a margin around the box approximates that.
+	// CSS Filter Effects 2 §3.4: the filter input is the backdrop content
+	// within the element's filter region (border box). Samples the blur
+	// kernel would pull from outside the border box are NOT canvas pixels
+	// — that would import content the spec excludes from the backdrop
+	// (e.g. green boxes painted before but outside the filter element).
+	// Mirrors Blink's `core/paint/filter_painter.cc` at
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which clips the source to
+	// the filter region and edge-extends pixels for the blur kernel.
+	//
+	// Our model: snapshot the canvas pixels for the padded region but
+	// clamp (sx,sy) into the border-box rect before reading from r.target.
+	// Pixels in the pad area thus replicate the nearest border-box pixel
+	// — equivalent to SVG `feGaussianBlur edgeMode="duplicate"`, which is
+	// the behaviour WPT's backdrop-filter-edge-clipping reference asserts.
 	pad := 0
 	for _, f := range layer.BackdropFilters {
 		if f.Name == "blur" {
@@ -1399,20 +1424,31 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
 	rw, rh := region.Dx(), region.Dy()
 
-	// Snapshot the backdrop image: the canvas content under the region.
+	// Snapshot the backdrop image, edge-clamped to the border box so blur
+	// padding does not import canvas content from outside the filter region.
 	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
 	targetBounds := r.target.Bounds()
 	for y := 0; y < rh; y++ {
-		dy := region.Min.Y + y
-		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
+		sy := region.Min.Y + y
+		if sy < by {
+			sy = by
+		} else if sy >= by+bh {
+			sy = by + bh - 1
+		}
+		if sy < targetBounds.Min.Y || sy >= targetBounds.Max.Y {
 			continue
 		}
 		for x := 0; x < rw; x++ {
-			dx := region.Min.X + x
-			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
+			sx := region.Min.X + x
+			if sx < bx {
+				sx = bx
+			} else if sx >= bx+bw {
+				sx = bx + bw - 1
+			}
+			if sx < targetBounds.Min.X || sx >= targetBounds.Max.X {
 				continue
 			}
-			si := r.target.PixOffset(dx, dy)
+			si := r.target.PixOffset(sx, sy)
 			di := backdrop.PixOffset(x, y)
 			backdrop.Pix[di+0] = r.target.Pix[si+0]
 			backdrop.Pix[di+1] = r.target.Pix[si+1]
@@ -2411,18 +2447,80 @@ func backgroundClipRectForClip(box *layout.Box, clip css.BackgroundClipType) (fl
 	}
 }
 
-// backgroundClipRect returns the clip rect for background-color.
-// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
-func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+// backgroundPaintRectForLayer returns the background painting area for a
+// fill layer. Per CSS Backgrounds 3 §2.11.2, the painting area of the root
+// element's background covers the entire canvas (regardless of background-clip
+// or the root box's margins). For non-canvas layers, the painting area is
+// the standard background-clip rect.
+//
+// Mirrors Blink's ViewPainter::PaintRootGroup canvas extension at chromium
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, clip css.BackgroundClipType) (float64, float64, float64, float64) {
+	if layer.PaintsCanvasBackground {
+		bounds := r.target.Bounds()
+		return float64(bounds.Min.X), float64(bounds.Min.Y),
+			float64(bounds.Dx()), float64(bounds.Dy())
+	}
+	return backgroundClipRectForClip(layer.Box, clip)
+}
+
+// isScrollContainer reports whether the given style declares an overflow
+// value that establishes a scroll container (hidden, scroll, auto, clip).
+// Per CSS Overflow Level 3 §3, these values create a scrolling area; with
+// background-attachment: local the background is positioned relative to
+// (and clipped against) that area's padding-box.
+func isScrollContainer(s *css.Style) bool {
+	if s == nil {
+		return false
+	}
+	x := s.GetOverflowX()
+	y := s.GetOverflowY()
+	if x == css.OverflowVisible && y == css.OverflowVisible {
+		return false
+	}
+	return true
+}
+
+// effectiveBackgroundClip returns the clip type for the bottom-most fill
+// layer's background-color paint. Mirrors Blink's
+// FillLayerInfo::is_clipped_with_local_scrolling: when the element is a
+// scroll container and the bottom fill layer is `background-attachment:
+// local`, the clip is forced to padding-box regardless of the declared
+// background-clip (CSS Backgrounds 3 §3.5).
+func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 	clip := layer.BackgroundClip
+	var bottom *css.FillLayer
 	if fl := layer.BackgroundLayers; fl != nil {
-		// Find the bottom layer's clip for background-color.
 		for cur := fl; cur != nil; cur = cur.Next {
 			if cur.Next == nil {
+				bottom = cur
 				clip = cur.Clip
 			}
 		}
 	}
+	// Local-attachment scroll-container clip override (CSS Backgrounds 3
+	// §3.5 / Blink FillLayerInfo::is_clipped_with_local_scrolling).
+	// Read attachment from the bottom layer when one exists; otherwise
+	// fall back to the element's style (covers the no-fill-layer case where
+	// only background-color + background-attachment are declared).
+	if layer.Box != nil && isScrollContainer(layer.Box.Style) {
+		var bottomAttachment css.BackgroundAttachmentType
+		if bottom != nil {
+			bottomAttachment = bottom.Attachment
+		} else if layer.Box.Style != nil {
+			bottomAttachment = layer.Box.Style.GetBackgroundAttachment()
+		}
+		if bottomAttachment == css.BackgroundAttachmentLocal {
+			return css.BackgroundClipPaddingBox
+		}
+	}
+	return clip
+}
+
+// backgroundClipRect returns the clip rect for background-color.
+// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
+func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+	clip := effectiveBackgroundClip(layer)
 	return backgroundClipRectForClip(layer.Box, clip)
 }
 
@@ -2445,16 +2543,10 @@ func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) 
 }
 
 // backgroundClipRadii returns radii for background-color's clip area.
+// Mirrors backgroundClipRect's local-attachment override so the rounded
+// corner inset matches the rectangular clip inset.
 func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
-	clip := layer.BackgroundClip
-	if fl := layer.BackgroundLayers; fl != nil {
-		for cur := fl; cur != nil; cur = cur.Next {
-			if cur.Next == nil {
-				clip = cur.Clip
-			}
-		}
-	}
-	return backgroundClipRadiiForClip(layer, clip)
+	return backgroundClipRadiiForClip(layer, effectiveBackgroundClip(layer))
 }
 
 // drawBackground paints the layer's background color and image layers (pre-computed).
@@ -2521,7 +2613,9 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		}
 
 		// Per-layer clip rect and radii for gradient/image content.
-		lx, ly, lw, lh := backgroundClipRectForClip(layer.Box, bg.Clip)
+		// For canvas-bg layers (root element promoted), the painting area
+		// extends to the canvas per CSS Backgrounds 3 §2.11.2.
+		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
 		lRadii := backgroundClipRadiiForClip(layer, bg.Clip)
 		lHasRadius := !lRadii.IsZero()
 
@@ -2968,22 +3062,32 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		originW = float64(bounds.Dx())
 		originH = float64(bounds.Dy())
 	} else {
+		// For canvas-bg (root element), the positioning area is the root's
+		// padding-box per CSS Backgrounds 3 §2.11.2. Louis14's layout
+		// records the root box at the ICB origin (0,0) with margins stored
+		// separately, so the padding-box position includes margin.left/top
+		// as an offset and the dimensions are reduced by the margins.
+		mt, mr, mb, ml := 0.0, 0.0, 0.0, 0.0
+		if layer.PaintsCanvasBackground {
+			mt, mr, mb, ml = posBox.Margin.Top, posBox.Margin.Right, posBox.Margin.Bottom, posBox.Margin.Left
+		}
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X, posBox.Y, posBox.Width, posBox.Height)
+				posBox.X+ml, posBox.Y+mt,
+				posBox.Width-ml-mr, posBox.Height-mt-mb)
 		case css.BackgroundOriginContentBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left+posBox.Padding.Left,
-				posBox.Y+posBox.Border.Top+posBox.Padding.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+				posBox.X+ml+posBox.Border.Left+posBox.Padding.Left,
+				posBox.Y+mt+posBox.Border.Top+posBox.Padding.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
 		default: // padding-box
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left,
-				posBox.Y+posBox.Border.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
+				posBox.X+ml+posBox.Border.Left,
+				posBox.Y+mt+posBox.Border.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW <= 0 || originH <= 0 {
@@ -3099,7 +3203,11 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	// duration of the tile loop. drawGradient reads r.dc.ClipBounds()
 	// for its direct-pixel write bounds and picks up the tighter region
 	// automatically.
-	lx, ly, lw, lh := backgroundClipRectForClip(box, bg.Clip)
+	//
+	// For canvas-bg layers (root element promoted), the painting area
+	// extends to the canvas per CSS Backgrounds 3 §2.11.2, so the clip
+	// is the target bounds rather than the root box's background-clip.
+	lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
 	r.dc.Push()
 	r.dc.DrawRectangle(lx, ly, lw, lh)
 	r.dc.Clip()
@@ -4487,63 +4595,178 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 }
 
 // drawOutline draws the CSS outline around the border-box, offset by outline-offset.
+//
+// Geometry (CSS UI 4 §4.3): The outline is a band whose INNER edge sits at
+// `border-box ± outline-offset`, and whose OUTER edge sits another
+// `outline-width` further out.
+//
+//	Inner-edge  = border-box + outline-offset   (the gap)
+//	Outer-edge  = Inner-edge + outline-width    (the visible band)
+//
+// For positive offsets the outline draws outside the border-box; for negative
+// offsets the inner edge moves inward into the border-box (and the band can
+// extend over content/background).
+//
+// CSS UI §4.3 negative-offset clamp: the outside of the outline shape must
+// never become smaller than `2 × outline-width` in either dimension. Without
+// this clamp, a sufficiently negative offset collapses the outline; the spec
+// mandates clamping the outer rectangle to a minimum of 2*outline-width.
+// Mirrors Blink's OutlinePainter::ComputeOutlineRect adjustment at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Painting strategy: rectangular (non-rounded) outlines are filled as 4
+// trapezoid sides — the same approach drawBorders uses — so adjacent sides
+// meet at mitered diagonals with no rounded-join artefacts.
 func (r *Renderer) drawOutline(layer *PaintLayer) {
 	box := layer.Box
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 
-	// Outline is drawn at: border-box + offset + width/2 (stroke centered on path).
-	off := layer.OutlineOffset + layer.OutlineWidth/2
-	ox := x - off
-	oy := y - off
-	ow := w + 2*off
-	oh := h + 2*off
+	width := layer.OutlineWidth
+	offset := layer.OutlineOffset
 
-	if ow <= 0 || oh <= 0 {
+	// Inner edge (the gap-edge facing the border-box).
+	innerX := x - offset
+	innerY := y - offset
+	innerW := w + 2*offset
+	innerH := h + 2*offset
+
+	// Outer edge: extend outward by outline-width.
+	outerX := innerX - width
+	outerY := innerY - width
+	outerW := innerW + 2*width
+	outerH := innerH + 2*width
+
+	// CSS UI §4.3: clamp the outer rectangle so that neither dimension shrinks
+	// below 2*outline-width. Apply per-dimension (long boxes with extreme
+	// negative offset clamp width and height independently — see outline-014/-015).
+	minDim := 2 * width
+	if outerW < minDim {
+		// Re-center on the original box and grow to minDim.
+		outerX = x + w/2 - minDim/2
+		outerW = minDim
+	}
+	if outerH < minDim {
+		outerY = y + h/2 - minDim/2
+		outerH = minDim
+	}
+
+	if outerW <= 0 || outerH <= 0 || width <= 0 {
 		return
 	}
 
 	r.setColor(layer.OutlineColor)
 
-	switch layer.OutlineStyle {
-	case "solid":
-		r.dc.SetLineWidth(layer.OutlineWidth)
-		if hasBorderRadius(layer) {
-			expandedRadii := layer.BorderRadius.Outset(off, off, off, off)
-			r.buildRoundedRectPath(ox, oy, ow, oh, expandedRadii)
-		} else {
-			r.dc.DrawRectangle(ox, oy, ow, oh)
-		}
-		r.dc.Stroke()
-	case "dashed":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDashedLine(mx, my, mx+mw, my, layer.OutlineWidth)       // top
-		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth) // right
-		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth) // bottom
-		r.drawDashedLine(mx, my, mx, my+mh, layer.OutlineWidth)       // left
-	case "dotted":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDottedLine(mx, my, mx+mw, my, layer.OutlineWidth)
-		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDottedLine(mx, my, mx, my+mh, layer.OutlineWidth)
-	case "double":
-		midOff := layer.OutlineOffset + layer.OutlineWidth/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDoubleLine(mx, my, mx+mw, my, layer.OutlineWidth)
-		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
-		r.drawDoubleLine(mx, my, mx, my+mh, layer.OutlineWidth)
-	default:
-		// Treat unknown styles as solid.
-		r.dc.SetLineWidth(layer.OutlineWidth)
-		r.dc.DrawRectangle(ox, oy, ow, oh)
-		r.dc.Stroke()
+	// Treat `auto` as `solid` — louis14 has no focus-ring concept (CSS UI 4
+	// §4 explicitly permits this fallback).
+	style := layer.OutlineStyle
+	if style == "auto" {
+		style = "solid"
 	}
+
+	switch style {
+	case "solid":
+		if hasBorderRadius(layer) {
+			// For rounded corners, draw the outline as a filled ring between
+			// the outer rounded rect and an inner rounded rect inset by
+			// outline-width. Use even-odd fill so the inner shape punches
+			// the outline interior cleanly.
+			outerRadii := layer.BorderRadius.Outset(offset+width, offset+width, offset+width, offset+width)
+			innerRadii := layer.BorderRadius.Outset(offset, offset, offset, offset)
+			r.buildRoundedRectPath(outerX, outerY, outerW, outerH, outerRadii)
+			iX := outerX + width
+			iY := outerY + width
+			iW := outerW - 2*width
+			iH := outerH - 2*width
+			if iW > 0 && iH > 0 {
+				r.buildRoundedRectPath(iX, iY, iW, iH, innerRadii)
+			}
+			r.dc.SetFillRule(textshape.FillRuleEvenOdd)
+			r.dc.Fill()
+			r.dc.SetFillRule(textshape.FillRuleWinding)
+		} else {
+			// Rectangular outline as 4 trapezoid sides (mitered corners).
+			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
+		}
+	case "dashed":
+		// Center each dashed segment on the geometric centerline of the outline band.
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDashedLine(mx, my, mx+mw, my, width)       // top
+		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, width) // right
+		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, width) // bottom
+		r.drawDashedLine(mx, my, mx, my+mh, width)       // left
+	case "dotted":
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDottedLine(mx, my, mx+mw, my, width)
+		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, width)
+		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, width)
+		r.drawDottedLine(mx, my, mx, my+mh, width)
+	case "double":
+		midOff := offset + width/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDoubleLine(mx, my, mx+mw, my, width)
+		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, width)
+		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, width)
+		r.drawDoubleLine(mx, my, mx, my+mh, width)
+	default:
+		// Treat unknown / not-yet-implemented styles (groove/ridge/inset/outset)
+		// as solid for visibility — matches Blink's fallback behavior for
+		// outline-style values that don't have a distinct platform rendering.
+		r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
+	}
+}
+
+// fillOutlineSides paints a rectangular outline as 4 trapezoid sides with
+// mitered diagonal joins at the corners. Mirrors drawBorders' Fill-path
+// approach for solid borders — see drawBorders at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f Blink's BoxBorderPainter::PaintSide.
+func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float64) {
+	outerL := outerX
+	outerT := outerY
+	outerR := outerX + outerW
+	outerB := outerY + outerH
+	innerL := outerL + width
+	innerT := outerT + width
+	innerR := outerR - width
+	innerB := outerB - width
+	if innerL > innerR {
+		innerL, innerR = (outerL+outerR)/2, (outerL+outerR)/2
+	}
+	if innerT > innerB {
+		innerT, innerB = (outerT+outerB)/2, (outerT+outerB)/2
+	}
+	// Top
+	r.dc.MoveTo(outerL, outerT)
+	r.dc.LineTo(outerR, outerT)
+	r.dc.LineTo(innerR, innerT)
+	r.dc.LineTo(innerL, innerT)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Right
+	r.dc.MoveTo(outerR, outerT)
+	r.dc.LineTo(outerR, outerB)
+	r.dc.LineTo(innerR, innerB)
+	r.dc.LineTo(innerR, innerT)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Bottom
+	r.dc.MoveTo(outerL, outerB)
+	r.dc.LineTo(innerL, innerB)
+	r.dc.LineTo(innerR, innerB)
+	r.dc.LineTo(outerR, outerB)
+	r.dc.ClosePath()
+	r.dc.Fill()
+	// Left
+	r.dc.MoveTo(outerL, outerT)
+	r.dc.LineTo(innerL, innerT)
+	r.dc.LineTo(innerL, innerB)
+	r.dc.LineTo(outerL, outerB)
+	r.dc.ClosePath()
+	r.dc.Fill()
 }
 
 // drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.
@@ -5207,6 +5430,25 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		decorExt := 0
 		topExt := 0
 
+		// Inline-axis buffer extensions for text-decoration-inset with
+		// negative values (which extend the decoration past the fragment's
+		// inline-start / inline-end edges). The buffer X axis is the inline
+		// axis pre-rotation; without extending the buffer, a negative inset
+		// would clip at the buffer edge and produce no extension after
+		// rotation. CSS Text Decor 4 §3.6 (text-decoration-inset).
+		//
+		// Gated on HasDecoratingBox + IsFirstFragment/IsLastFragment so the
+		// extension only fires at the actual outer edges of the decorating
+		// box (per LOU-149 Phase 4 metadata + the C68 multi-line block
+		// extension). For a single-fragment inline decoration (e.g.
+		// `<u>brown</u>` in a vertical writing mode) the layout-side
+		// stamping marks HasDecoratingBox=true with IsFirstFragment=true
+		// AND IsLastFragment=true so both edges extend. For multi-line
+		// block decorations, only the first line's first-frag and last
+		// line's last-frag extend.
+		inlineStartExt := 0
+		inlineEndExt := 0
+
 		// underBelow: which side of the text the underline grows toward in the
 		// pre-rotation buffer. Overline support in this branch is currently
 		// limited — see the paint block below for the rationale.
@@ -5234,14 +5476,57 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 						topExt = needed
 					}
 				}
+				// Inline-axis extension for negative insets.
+				//
+				// Two stamp paths for "this fragment IS at the decorating-
+				// box edge":
+				//
+				//  (a) HasDecoratingBox=true: LOU-149 inline-multi-fragment
+				//      or C68 multi-line-block layout-stamped metadata.
+				//      Trust td.IsFirstFragment / td.IsLastFragment.
+				//
+				//  (b) HasDecoratingBox=false: layout didn't stamp because
+				//      no fragmentation is happening. Cascade default has
+				//      IsFirstFragment=true AND IsLastFragment=true. Treat
+				//      this fragment as the complete decorating box and
+				//      extend at both edges — this is the single-fragment
+				//      inline path (e.g. `<u>brown</u>` in vertical-rl).
+				//
+				// Branch (b) requires BOTH flags true so we don't over-
+				// extend in a non-LOU-149-tracked path where they might
+				// differ (defensive).
+				appliesAtStart := false
+				appliesAtEnd := false
+				if td.HasDecoratingBox {
+					appliesAtStart = td.IsFirstFragment
+					appliesAtEnd = td.IsLastFragment
+				} else if td.IsFirstFragment && td.IsLastFragment {
+					appliesAtStart = true
+					appliesAtEnd = true
+				}
+				if appliesAtStart && td.Inset.InlineStart < 0 {
+					ext := int(math.Ceil(-td.Inset.InlineStart))
+					if ext > inlineStartExt {
+						inlineStartExt = ext
+					}
+				}
+				if appliesAtEnd && td.Inset.InlineEnd < 0 {
+					ext := int(math.Ceil(-td.Inset.InlineEnd))
+					if ext > inlineEndExt {
+						inlineEndExt = ext
+					}
+				}
 			}
 		}
 
-		lhExt := lh + decorExt + topExt // enlarged buffer height
-		textOff := topExt               // srcY where text glyph top lands
+		lhExt := lh + decorExt + topExt              // enlarged buffer height
+		taExt := ta + inlineStartExt + inlineEndExt  // enlarged buffer width (inline axis)
+		textOff := topExt                            // srcY where text glyph top lands
 
-		// Draw horizontal text into an off-screen buffer.
-		src := image.NewRGBA(image.Rect(0, 0, ta, lhExt))
+		// Draw horizontal text into an off-screen buffer. Text is painted
+		// at buffer X = inlineStartExt so the inlineStartExt columns to
+		// its left remain available for negative-inset overflow.
+		src := image.NewRGBA(image.Rect(0, 0, taExt, lhExt))
 		childDC := r.dc.NewChildContext(src)
 		childDC.SetColor(color.RGBA{
 			R: layer.TextColor.R,
@@ -5250,9 +5535,9 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			A: uint8(layer.TextColor.A * 255),
 		})
 		if len(layer.FontFeatures) > 0 {
-			childDC.DrawTextWithFeatures(text, fontID, 0, ascent+float64(textOff), layer.FontFeatures)
+			childDC.DrawTextWithFeatures(text, fontID, float64(inlineStartExt), ascent+float64(textOff), layer.FontFeatures)
 		} else {
-			childDC.DrawText(text, fontID, 0, ascent+float64(textOff))
+			childDC.DrawText(text, fontID, float64(inlineStartExt), ascent+float64(textOff))
 		}
 
 		// Paint decorations into the buffer (Strategy A). Temporarily swap r.dc
@@ -5292,13 +5577,24 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			origDC := r.dc
 			r.dc = childDC
 			if underBelow {
-				virtualBox := &layout.Box{X: 0, Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+				// virtualBox X = inlineStartExt anchors the inset math so
+				// drawOneAppliedTextDecoration's
+				//   logicalStart = box.X + Inset.InlineStart
+				//   logicalEnd   = box.X + textWidth - Inset.InlineEnd
+				// lands the painted rect inside the extended buffer
+				// [0, taExt) — and HasDecoratingBox=true branches anchor
+				// at box.X + DecoratingBoxOffsetX, which Stays valid too.
+				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
 				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent)
 			} else if len(layer.AppliedTextDecorations) > 0 {
 				// Above-text underline path: paint each rect manually with the
 				// offset moving srcY UP (away from text), so after rotation
 				// the offset moves the decoration FURTHER from the text in
-				// the under-direction.
+				// the under-direction. Inset trims/extends the rect on the
+				// inline axis (buffer X); HasDecoratingBox/first/last
+				// fragment flags gate inset application at the decorating-
+				// box edges so interior line breaks don't extend at the line
+				// wrap. Mirrors drawOneAppliedTextDecoration's logic.
 				gap := descent * 0.25
 				info := newTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0)
 				for _, td := range layer.AppliedTextDecorations {
@@ -5307,23 +5603,41 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					}
 					th := info.computeThickness(td)
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
+					xStart := float64(inlineStartExt)
+					xEnd := float64(inlineStartExt + ta)
+					if td.HasDecoratingBox {
+						if td.IsFirstFragment {
+							xStart += td.Inset.InlineStart
+						}
+						if td.IsLastFragment {
+							xEnd -= td.Inset.InlineEnd
+						}
+					} else {
+						xStart += td.Inset.InlineStart
+						xEnd -= td.Inset.InlineEnd
+					}
+					if xEnd <= xStart {
+						continue
+					}
 					childDC.SetColor(color.RGBA{
 						R: td.Color.R,
 						G: td.Color.G,
 						B: td.Color.B,
 						A: uint8(td.Color.A * 255),
 					})
-					childDC.DrawRectangle(0, rectTopSrcY, float64(ta), th)
+					childDC.DrawRectangle(xStart, rectTopSrcY, xEnd-xStart, th)
 					childDC.Fill()
 				}
 			}
 			r.dc = origDC
 		}
 
-		// Rotate pixels 90° into destination (lhExt × ta) buffer.
-		rot := image.NewRGBA(image.Rect(0, 0, lhExt, ta))
+		// Rotate pixels 90° into destination (lhExt × taExt) buffer. The
+		// extended buffer width (taExt = ta + inlineStartExt + inlineEndExt)
+		// carries negative-inset decoration overflow on the inline axis.
+		rot := image.NewRGBA(image.Rect(0, 0, lhExt, taExt))
 		for y := 0; y < lhExt; y++ {
-			for x := 0; x < ta; x++ {
+			for x := 0; x < taExt; x++ {
 				c := src.RGBAAt(x, y)
 				if c.A == 0 {
 					continue
@@ -5332,8 +5646,8 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					// 90° CW: (x,y) → (lhExt-1-y, x)
 					rot.SetRGBA(lhExt-1-y, x, c)
 				} else {
-					// 90° CCW: (x,y) → (y, ta-1-x)
-					rot.SetRGBA(y, ta-1-x, c)
+					// 90° CCW: (x,y) → (y, taExt-1-x)
+					rot.SetRGBA(y, taExt-1-x, c)
 				}
 			}
 		}
@@ -5358,7 +5672,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			blitShift = topExt
 		}
 		blitX := int(math.Round(box.X)) - blitShift
-		r.dc.DrawImage(rot, blitX, int(math.Round(box.Y)))
+		// Inline-axis blit shift accounts for the inlineStartExt /
+		// inlineEndExt columns that carry negative-inset overflow.
+		//   CW rotation: low buffer X → low dest Y. Text glyphs sit at
+		//     buffer X = inlineStartExt → dest Y = inlineStartExt; shift
+		//     blitY up by inlineStartExt to land them at dest Y = box.Y.
+		//   CCW rotation: low buffer X → high dest Y. Text glyphs at
+		//     buffer X = inlineStartExt → dest Y = taExt-1-inlineStartExt;
+		//     the inlineEndExt rows extend off the original destination
+		//     bottom, so shift blitY up by inlineEndExt to keep the text
+		//     rows where they were.
+		blitY := int(math.Round(box.Y))
+		if rotCW {
+			blitY -= inlineStartExt
+		} else {
+			blitY -= inlineEndExt
+		}
+		r.dc.DrawImage(rot, blitX, blitY)
 
 		// Per-character emphasis marks: each mark renders as its own small
 		// rotated off-screen buffer at the annotation-equivalent screen

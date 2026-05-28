@@ -187,6 +187,26 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// CSS Overflow Module Level 4 §3.7 / Blink html.css:
+	//   embed, iframe, img, video {
+	//     overflow: clip;
+	//     overflow-clip-margin: content-box;
+	//   }
+	// "Host languages should define UA style sheet rules that apply a
+	// default value of clip to such elements and set their
+	// overflow-clip-margin to content-box."
+	// Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+	// (third_party/blink/renderer/core/html/resources/html.css).
+	switch node.TagName {
+	case "embed", "iframe", "img", "video":
+		if _, ok := style.Get("overflow"); !ok {
+			style.Set("overflow", "clip")
+		}
+		if _, ok := style.Get("overflow-clip-margin"); !ok {
+			style.Set("overflow-clip-margin", "content-box")
+		}
+	}
+
 	// Ruby UA stylesheet. Mirrors Blink html.css:1701-1720 exactly
 	// (vetted at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). In
 	// modern Blink only `ruby` and `rt` have ruby-specific UA display
@@ -1530,6 +1550,13 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true, "font-kerning": true,
+	// CSS Fonts 4 §6.4: font-variant-ligatures and font-variant-numeric
+	// inherit by default. Mirrors Blink's FontDescription propagation via
+	// inherited ComputedStyle (font_description.h::VariantLigatures /
+	// VariantNumeric fields, Chromium SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	"font-variant-ligatures": true,
+	"font-variant-numeric":   true,
 	// CSS Fonts 4 §6.6: each font-synthesis-* longhand is inherited.
 	// https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
 	"font-synthesis-weight": true, "font-synthesis-style": true,

@@ -3337,28 +3337,103 @@ func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSn
 
 // expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
 // Format: "3px solid blue" — order of components is not significant.
+// Per CSS Cascade 4 §3.2, a CSS-wide keyword as the shorthand value applies to every
+// longhand (mirroring Blink's StylePropertyShorthand::longhand expansion at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func expandOutlineShorthand(style *Style, value string) {
+	// CSS-wide keyword as the entire shorthand value: route to every longhand
+	// so that the post-cascade resolveInheritValues / resolveCSSWideKeywords
+	// pass picks them all up. This is what makes `outline: inherit` inherit
+	// the parent's outline-width / outline-style / outline-color (not just the
+	// color). Without this, `outline: inherit` resets width to medium and
+	// style to none, producing no visible outline on the inheriting element.
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		style.Set("outline-width", trimmed)
+		style.Set("outline-style", trimmed)
+		style.Set("outline-color", trimmed)
+		return
+	}
+
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
 	style.Set("outline-color", "currentcolor")
 
-	parts := strings.Fields(value)
+	// Tokenize while keeping balanced parens together so var() / calc() etc.
+	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
+	// outside a function block separates tokens; the simple strings.Fields
+	// path splits `var(--w)` if the value contains internal whitespace.
+	parts := tokenizeShorthand(value)
+	widthSet := false
 	for _, part := range parts {
 		if part == "none" {
 			style.Set("outline-style", "none")
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+		} else if part == "auto" || part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
 			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			// CSS UI 4 §4: `auto` is a valid outline-style. We treat it as
+			// `solid` at paint time (no platform focus ring); recording it as
+			// `auto` keeps the computed-value reflection honest for getters
+			// that compare against the keyword.
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
+			widthSet = true
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("outline-width", part)
+			widthSet = true
+		} else if !widthSet && (strings.HasPrefix(part, "var(") || strings.HasPrefix(part, "calc(")) {
+			// Ambiguous functional value: outline shorthand normally lists
+			// width as a length and color as a color. With no width set yet,
+			// treat the first var()/calc() token as width — typical CSS
+			// patterns use var() for dimensional values in shorthands
+			// (matches Blink's CSSPropertyParser::ParseSingleValue type-coercion
+			// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			style.Set("outline-width", part)
+			widthSet = true
 		} else if part != "" {
 			// Assume it's a color
 			style.Set("outline-color", part)
 		}
 	}
+}
+
+// tokenizeShorthand splits a CSS shorthand value into top-level tokens while
+// preserving balanced parens — so `var(--w)`, `calc(1em + 2px)`, and
+// `rgba(0, 0, 0, 0.5)` each survive as a single token instead of being split
+// at internal whitespace.
+func tokenizeShorthand(value string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '(':
+			depth++
+			cur.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				if cur.Len() > 0 {
+					out = append(out, cur.String())
+					cur.Reset()
+				}
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // expandColumnRuleShorthand parses the column-rule shorthand into column-rule-width, column-rule-style, column-rule-color.
@@ -3686,10 +3761,17 @@ func (s *Style) GetOutlineWidth() float64 {
 
 // GetOutlineColor returns the outline color as RGBA components.
 // Defaults to currentColor (element's text color), falling back to black.
+// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
+// the UA has no specific focus-ring colour to apply (mirrors Blink's
+// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
+// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	colorStr := "currentcolor"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
+	}
+	if strings.EqualFold(colorStr, "auto") {
+		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
 		// Use element's text color
@@ -11951,6 +12033,87 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 	return parseFilterList(val)
 }
 
+// IsBackdropRoot mirrors the predicate enumerated in CSS Filter Effects 2 §3.5
+// (https://drafts.csswg.org/filter-effects-2/#BackdropRoot). An element forms
+// a Backdrop Root when any of these hold:
+//   - filter is not "none"
+//   - opacity is < 1
+//   - mask, mask-image, mask-border, or clip-path is not "none"
+//   - backdrop-filter is not "none"
+//   - mix-blend-mode is not "normal"
+//   - will-change names any property whose non-initial value would itself
+//     create a Backdrop Root
+//
+// The root element is also a Backdrop Root, but that is handled separately
+// by the renderer (the canvas itself is the implicit backdrop), so it is not
+// reported here.
+//
+// Notably, transform, perspective, z-index, and fixed/sticky positioning DO
+// NOT create a Backdrop Root — the spec deliberately excludes them so a
+// transformed ancestor still lets a descendant's backdrop-filter sample
+// further-up ancestors. This is what distinguishes Backdrop Root from the
+// general stacking-context predicate.
+//
+// Mirrors Blink's `ComputedStyle::IsBackdropRoot()` /
+// `effect_paint_property_node.cc::DetermineBackdropRoot()` at Chromium
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) IsBackdropRoot() bool {
+	if s.GetOpacity() < 1.0 {
+		return true
+	}
+	if len(s.GetFilter()) > 0 {
+		return true
+	}
+	if len(s.GetBackdropFilter()) > 0 {
+		return true
+	}
+	if m := s.GetMaskImage(); m != "" && m != "none" {
+		return true
+	}
+	// Use raw property lookup for clip-path so unparsed shape values
+	// (e.g. `clip-path: inset(-100%)`, which GetClipPath does not yet
+	// recognise) still report as Backdrop Root creators. The spec only
+	// asks whether the computed value differs from `none`, not whether
+	// the parser can model the shape.
+	if cp, ok := s.Get("clip-path"); ok && cp != "" && cp != "none" {
+		return true
+	}
+	if bm := s.GetMixBlendMode(); bm != MixBlendModeNormal && bm != "" {
+		return true
+	}
+	// will-change: any property that would itself form a backdrop-root
+	// when set to a non-initial value (per spec). We consult a small
+	// dedicated set rather than the broader stacking-context will-change
+	// set because backdrop-root has a narrower trigger list (transform/
+	// z-index/position-related properties are intentionally excluded).
+	wc := s.GetWillChangeData()
+	if wc != nil {
+		for lh := range wc.Longhands {
+			if willChangeBackdropRootSet[lh] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// willChangeBackdropRootSet enumerates the resolved longhands whose
+// non-initial value would, on their own, create a backdrop-root per the
+// trigger list in IsBackdropRoot. Sourced from CSS Filter Effects 2 §3.5 and
+// the implementation in Blink at
+// `effect_paint_property_node.cc::DetermineBackdropRoot()`
+// (4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+var willChangeBackdropRootSet = map[string]bool{
+	"opacity":         true,
+	"filter":          true,
+	"backdrop-filter": true,
+	"mask":            true,
+	"mask-image":      true,
+	"mask-border":     true,
+	"clip-path":       true,
+	"mix-blend-mode":  true,
+}
+
 // GetBorderImageSource returns the border-image-source value.
 func (s *Style) GetBorderImageSource() string {
 	if v, ok := s.Get("border-image-source"); ok {
@@ -13498,6 +13661,18 @@ type AppliedTextDecoration struct {
 	DecoratingBoxWidth   float64 // total inline-content width across all fragments of this decorating box on this row
 	IsFirstFragment      bool    // source-order first fragment of the decorating box on this line (matches layout.Box.IsFirstFragment)
 	IsLastFragment       bool    // source-order last fragment of the decorating box on this line (matches layout.Box.IsLastFragment)
+
+	// IsClone caches whether the originating decoration-establishing element
+	// resolved `box-decoration-break: clone`. With clone, every fragment is
+	// its own logical edge for inset trimming — text-decoration-inset
+	// applies at BOTH ends of every fragment, not just the outer
+	// decorating-box edges. Set at cascade time
+	// (computeOwnTextDecorationContribution) and consulted by the layout-
+	// side multi-fragment stamper to keep IsFirstFragment / IsLastFragment
+	// both true on every fragment of a clone decoration. Mirrors
+	// Blink's BoxDecorationData::SidesToInclude returning "all sides" on
+	// every fragment when box-decoration-break: clone is resolved.
+	IsClone bool
 }
 
 // GetAppliedTextDecorations returns the accumulated decoration vector for this
@@ -13747,6 +13922,7 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		// (LOU-149 Item 2) overwrites these per fragment when it knows better.
 		IsFirstFragment: true,
 		IsLastFragment:  true,
+		IsClone:         s.GetBoxDecorationBreak() == BoxDecorationBreakClone,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c

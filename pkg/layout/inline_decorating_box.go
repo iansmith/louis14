@@ -62,6 +62,7 @@ func computeDecoratingBoxMetadataPerLine(
 	line *LineInfo,
 	alignOffset float64,
 	enteringSpanStack []*InlineItem,
+	isFirstLine bool,
 ) map[*InlineItem][]css.AppliedTextDecoration {
 	hasAny := false
 	for _, r := range line.Results {
@@ -229,9 +230,21 @@ func computeDecoratingBoxMetadataPerLine(
 
 		// externalIsFragmented is true when an external (block / above-IFC)
 		// contributor genuinely spans multiple text fragments on this line.
-		// For a single-fragment line, the external contributor's extent IS
-		// the only fragment's extent, so we leave it on the LOU-142 path.
+		// For a single-fragment line that is ALSO the only line of the
+		// decorating box (isFirstLine && line.IsLastLine), the external
+		// contributor's extent IS the only fragment's extent, so we leave
+		// it on the LOU-142 path.
+		//
+		// CSS Text Decor 4 §3.6 (text-decoration-inset): for a multi-LINE
+		// block-level decoration, the inset applies at the OUTER inline-
+		// start of the first line and the OUTER inline-end of the last
+		// line, NOT at interior line breaks. Without per-line stamping,
+		// the painter applies inset on both ends of every line (wrong).
+		// Stamp the external contributors when this line is part of a
+		// multi-line decorating box.
 		externalIsFragmented := firstLineTextIdx != lastLineTextIdx
+		isMultiLineExternal := !isFirstLine || !line.IsLastLine
+		shouldStampExternal := externalIsFragmented || isMultiLineExternal
 
 		// fragX is this text fragment's line-local start; subtracting from
 		// the decorator's origin gives an offset that the painter can apply
@@ -242,13 +255,28 @@ func computeDecoratingBoxMetadataPerLine(
 		k := len(inlineContribInnerFirst)
 		nEntries := len(vec)
 		// External (block / above-IFC) contributor entries [0..N-K-1].
-		if externalIsFragmented {
+		if shouldStampExternal {
 			for i := range nEntries - k {
 				stamped[i].HasDecoratingBox = true
 				stamped[i].DecoratingBoxOffsetX = lineContentMinX - fragX
 				stamped[i].DecoratingBoxWidth = lineContentMaxX - lineContentMinX
-				stamped[i].IsFirstFragment = fragIdx == firstLineTextIdx
-				stamped[i].IsLastFragment = fragIdx == lastLineTextIdx
+				// IsFirstFragment is true only on the first-line + first-frag
+				// of the multi-line decorating box. IsLastFragment is true
+				// only on the last-line + last-frag. Interior fragments
+				// (middle line, or middle-of-line on first/last line) get
+				// neither — the painter then skips the inset trim/extend at
+				// those edges.
+				//
+				// box-decoration-break: clone overrides — every fragment is
+				// its own logical edge, so IsFirstFragment and IsLastFragment
+				// are both true on every fragment.
+				if stamped[i].IsClone {
+					stamped[i].IsFirstFragment = true
+					stamped[i].IsLastFragment = true
+				} else {
+					stamped[i].IsFirstFragment = isFirstLine && fragIdx == firstLineTextIdx
+					stamped[i].IsLastFragment = line.IsLastLine && fragIdx == lastLineTextIdx
+				}
 				stampedAny = true
 			}
 		}
