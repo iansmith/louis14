@@ -665,6 +665,19 @@ func resolveExplicitOOFSize(style *css.Style, cbInline, cbBlock float64) (float6
 }
 
 func resolveExplicitAxis(style *css.Style, prop string, cbExtent float64) (float64, bool) {
+	// CSS Values 4 §10: math functions with a % term resolve against the
+	// containing block's axis extent. Mirrors fragment_geometry.Resolve*
+	// for in-flow elements — out-of-flow elements need the same dispatch
+	// because their direct property reads bypass the constraint-space
+	// percent-base flow. Without this branch, e.g. width: calc(100vw + 50%)
+	// on absolute-positioned children returns false (the % term won't
+	// resolve under GetLength's base-0 calc context) and the element falls
+	// back to auto-sizing — see css-values/vh-calc-support-pct.
+	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) && cbExtent > 0 {
+		if result, calcOK := css.EvalMathFunctionWithPercent(val, style.GetFontSize(), cbExtent); calcOK {
+			return result, true
+		}
+	}
 	if v, ok := style.GetLength(prop); ok {
 		return v, true
 	}

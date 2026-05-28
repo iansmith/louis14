@@ -4447,6 +4447,19 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
+		// CSS Values 4 §10.10: a math function whose arguments mix types
+		// in a way the spec calls out as invalid (e.g. unitless 0 alongside
+		// a length-percentage in min()/max()/clamp()) drops the entire
+		// declaration so a previously valid one survives. Mirrors Blink's
+		// CSSMathFunctionValue::Create returning nullptr on type-check
+		// failure (css_math_function_value.cc @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		if isLengthProperty(property) && IsMathFunction(value) {
+			if !isValidLPMathFunctionAtParseTime(value) {
+				continue
+			}
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {
