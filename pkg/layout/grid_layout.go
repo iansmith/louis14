@@ -30,13 +30,19 @@ func NewGridLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Con
 type gridItem struct {
 	node     *LayoutInputNode
 	style    *css.Style
-	colStart int // 0-indexed column start
-	colEnd   int // 0-indexed column end (exclusive)
-	rowStart int // 0-indexed row start
-	rowEnd   int // 0-indexed row end (exclusive)
-	result   *LayoutResult
-	wdm      WritingDirectionMode
-	margins  LogicalEdges
+	colStart int // 0-indexed column start (-1 if auto)
+	colEnd   int // 0-indexed column end (exclusive, -1 if auto)
+	rowStart int // 0-indexed row start (-1 if auto)
+	rowEnd   int // 0-indexed row end (exclusive, -1 if auto)
+	// Span counts requested by the item via `grid-column/row: span N` when the
+	// start is auto. Auto-placement (CSS Grid 2 §8.5) consumes these to size
+	// the item as it slots into the grid. Default 1 when the item declared no
+	// span (or when the span resolved into explicit start/end already).
+	colSpan int
+	rowSpan int
+	result  *LayoutResult
+	wdm     WritingDirectionMode
+	margins LogicalEdges
 }
 
 // Layout performs CSS Grid layout.
@@ -106,6 +112,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			colEnd:   -1,
 			rowStart: -1,
 			rowEnd:   -1,
+			colSpan:  1,
+			rowSpan:  1,
 		})
 	}
 
@@ -449,6 +457,10 @@ func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, namedAreas 
 	}
 
 	// grid-column placement (handles grid-column, grid-column-start/end, named lines).
+	// Per CSS Grid 2 §8.3, `span N` with no start defers placement to the
+	// auto-placement algorithm; we capture SpanCount on the item so autoPlace
+	// can size the slot correctly. With an explicit start, we resolve the
+	// span immediately into an explicit end.
 	if col := s.GetGridColumnWithNames(colLineNames); col != nil {
 		if col.Start > 0 || col.End > 0 || col.IsSpan {
 			if col.Start > 0 {
@@ -460,6 +472,9 @@ func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, namedAreas 
 				item.colEnd = item.colStart + col.SpanCount
 			} else if col.Start > 0 {
 				item.colEnd = item.colStart + 1
+			}
+			if col.SpanCount > 0 {
+				item.colSpan = col.SpanCount
 			}
 		}
 	}
@@ -476,6 +491,9 @@ func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, namedAreas 
 				item.rowEnd = item.rowStart + row.SpanCount
 			} else if row.Start > 0 {
 				item.rowEnd = item.rowStart + 1
+			}
+			if row.SpanCount > 0 {
+				item.rowSpan = row.SpanCount
 			}
 		}
 	}
@@ -503,14 +521,22 @@ func (gla *GridLayoutAlgorithm) autoPlace(items []*gridItem, numCols, numRows *i
 			continue // already placed
 		}
 
-		// Determine span sizes.
-		colSpan := 1
-		rowSpan := 1
+		// Determine span sizes. When the item has an explicit range, that
+		// dominates; otherwise honour the requested span from
+		// `grid-{column,row}: span N` recorded at placement-resolution time.
+		colSpan := item.colSpan
+		rowSpan := item.rowSpan
 		if item.colEnd > item.colStart && item.colStart >= 0 {
 			colSpan = item.colEnd - item.colStart
 		}
 		if item.rowEnd > item.rowStart && item.rowStart >= 0 {
 			rowSpan = item.rowEnd - item.rowStart
+		}
+		if colSpan < 1 {
+			colSpan = 1
+		}
+		if rowSpan < 1 {
+			rowSpan = 1
 		}
 
 		// If item has a fixed row but no column (or vice versa), handle partial placement.
