@@ -260,7 +260,8 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 	// Each stack entry records the inline ancestor node and whether it also
 	// contains fixed-position descendants. A non-static inline contains only
 	// abs-pos; a filtered inline (filter != none) is a containing block for
-	// fixed too — Filter Effects 1 §"The filter property".
+	// fixed too — Filter Effects 1 §"The filter property". Filter Effects 2
+	// extends the same rule to backdrop-filter.
 	type inlineCB struct {
 		node          *html.Node
 		containsFixed bool
@@ -275,6 +276,7 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 					stack = append(stack, inlineCB{
 						node: item.Node,
 						containsFixed: len(item.Style.GetFilter()) > 0 ||
+							len(item.Style.GetBackdropFilter()) > 0 ||
 							item.Style.WillChangeEstablishesInlineContainingBlock(),
 					})
 				}
@@ -326,6 +328,9 @@ func inlineEstablishesContainingBlock(style *css.Style) bool {
 		return true
 	}
 	if len(style.GetFilter()) > 0 {
+		return true
+	}
+	if len(style.GetBackdropFilter()) > 0 {
 		return true
 	}
 	if style.WillChangeEstablishesInlineContainingBlock() {

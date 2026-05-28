@@ -1339,6 +1339,14 @@ func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	box := layer.Box
 
+	// A logically zero-area border box paints no backdrop. Skip before
+	// snapping to device pixels — otherwise floor/ceil on fractional Y
+	// inflates 0 logical height to 1 device row and lets the filter
+	// (e.g. invert) stamp a 1px-tall strip onto the canvas.
+	if box.Width <= 0 || box.Height <= 0 {
+		return
+	}
+
 	// Element's border-box region in absolute device pixels.
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
