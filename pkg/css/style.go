@@ -4262,6 +4262,23 @@ func expandBackgroundProperty(style *Style, value string) {
 		style.Set("background-image", "none")
 		return
 	}
+	// CSS Backgrounds 3 §3.10: CSS-wide keywords on the `background`
+	// shorthand apply to every longhand. Without this branch the keyword
+	// falls through the token-classification loop, no longhand gets set,
+	// and the parent's background never propagates. Mirrors the shorthand
+	// expansion path in `core/css/properties/shorthands/background.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	switch strings.ToLower(trimmed) {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		for _, lh := range []string{
+			"background-color", "background-image", "background-repeat",
+			"background-position", "background-size", "background-origin",
+			"background-clip", "background-attachment",
+		} {
+			style.Set(lh, strings.ToLower(trimmed))
+		}
+		return
+	}
 
 	// Split into comma-separated layers (depth-aware).
 	layers := splitCommaSeparated(trimmed)
