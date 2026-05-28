@@ -200,15 +200,19 @@ type PaintLayer struct {
 	// for "left"/"right"/"under".
 	TextUnderlinePosition string
 
-	// TextLangIsCJK is reserved for an eventual HTML `lang` attribute
-	// plumbing pass. Per CSS Text Decor 3 §3.5, CJK convention flips the
-	// default underline direction in vertical writing modes (the "auto"
-	// underline moves to the over-side, and the overline flips to the
-	// under-side). louis14 doesn't yet thread the `lang` attribute through
-	// styling; `font-language-override` is NOT a usable proxy because the
-	// text-underline-position-vertical-ja WPT reference declares `"JAN"`
-	// while explicitly setting lang="en", so reading the override would
-	// mis-classify the reference. Stays unset until lang plumbing lands.
+	// TextLangIsCJK is set when this layer's inherited HTML `lang` attribute
+	// resolves to a CJK locale (zh, ja, ko, mn). Per CSS Text Decor 3 §3.5
+	// CJK convention flips the default underline direction in vertical
+	// writing modes — the "auto" underline default moves to the over-side
+	// and `flip_underline_and_overline_` swaps the bits so a `text-decoration:
+	// underline` paints on the over-side and `text-decoration: overline`
+	// paints on the under-side. Computed from html.Node.InheritedLanguage()
+	// at PaintLayer construction (DOM tree inheritance, not CSS cascade —
+	// `lang` is NOT a cascaded inherited property in louis14). Mirrors how
+	// Blink's `ResolveUnderlinePosition` consults ComputedStyle::Locale()
+	// derived from Element::ComputeInheritedLanguage() at
+	// third_party/blink/renderer/core/paint/text_decoration_info.cc:23-52 @
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	TextLangIsCJK bool
 
 	// AppliedTextDecorations is the accumulated CSS Text Decor 3 vector for
@@ -830,10 +834,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if tup, ok := s.Get("text-underline-position"); ok {
 		layer.TextUnderlinePosition = tup
 	}
-	// CJK language hint (TextLangIsCJK) is reserved for the eventual lang-
-	// attribute plumbing (CSS Text Decor 3 §3.5). Currently unset; see
-	// sidewaysUnderlineGoesRight for the rationale on why `font-language-
-	// override` is not a usable proxy.
+	// CJK language hint for CSS Text Decor 3 §3.5's default-flip rule:
+	// resolve the inherited `lang` attribute via DOM-tree walk (not cascade —
+	// `lang` is HTML attribute inheritance) and classify the locale prefix.
+	// Mirrors Blink's ComputeInheritedLanguage() → ComputedStyle::Locale()
+	// chain consumed by ResolveUnderlinePosition. Box.Node may be the text
+	// fragment's parent element; either way the walk terminates at the first
+	// ancestor that declares `lang` (typically <body lang="ja"> or <html>).
+	if box.Node != nil {
+		layer.TextLangIsCJK = isCJKLocale(box.Node.InheritedLanguage())
+	}
 	layer.TextShadows = s.GetTextShadow()
 	layer.FontVariantCaps = s.GetFontVariantCaps()
 

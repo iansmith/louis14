@@ -4848,9 +4848,13 @@ func (r *Renderer) familyDeclaredViaFontFace(family string) bool {
 //   - `position:left` triggers a flip in vertical-lr (LEFT = over-side)
 //     but NOT in vertical-rl (LEFT = under-side).
 //
-// CJK script flipping (the "default = kOver" case for ja/zh/ko in vertical
-// modes) is NOT YET implemented because lang plumbing isn't done — see
-// sidewaysUnderlineGoesRight's CJK note.
+// For central-baseline vertical runs (IsUprightVertical), CJK (TextLangIsCJK):
+// Per CSS Text Decor 3 §3.5 the default underline placement flips to the
+// over-side. Mirrors Blink's ResolveUnderlinePosition() CJK branch which
+// returns kOver for any position other than explicit `kLeft`
+// (text_decoration_info.cc:42-47 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+//   - position: auto / from-font / under / right → kOver → flip
+//   - position: left → kUnder → no flip (explicit override of CJK default)
 func shouldFlipUnderlineAndOverline(layer *PaintLayer) bool {
 	if !layer.IsUprightVertical {
 		return false
@@ -4862,6 +4866,39 @@ func shouldFlipUnderlineAndOverline(layer *PaintLayer) bool {
 	}
 	// `position:left` is the over-side in vertical-lr (and only there).
 	if strings.Contains(pos, "left") && layer.IsWritingModeVerticalLR {
+		return true
+	}
+	// CJK script default: position resolves to kOver unless the author
+	// explicitly opted out with `left`. Independent of writing-mode (rl/lr)
+	// — Blink's CJK branch doesn't condition on the inline direction.
+	if layer.TextLangIsCJK && !strings.Contains(pos, "left") {
+		return true
+	}
+	return false
+}
+
+// isCJKLocale reports whether the given BCP47 language tag has a primary
+// language subtag that triggers the CSS Text Decor 3 §3.5 vertical-default
+// flip (Chinese, Japanese, Korean). Mirrors the script check in Blink's
+// ResolveUnderlinePosition() at third_party/blink/renderer/core/paint/
+// text_decoration_info.cc:42 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// (USCRIPT_KATAKANA_OR_HIRAGANA / USCRIPT_HANGUL), promoted here to a locale
+// prefix check because louis14 doesn't yet derive script from the font's
+// Unicode coverage. Mongolian (`mn`) is also included per CSS Text Decor 3
+// §3.5's explicit enumeration; Chinese (`zh`) covers both Han variants.
+//
+// Matching is case-insensitive and tolerates region/script subtags
+// (`ja-JP`, `zh-Hant`, etc.) by checking only the primary subtag prefix
+// up to the first hyphen.
+func isCJKLocale(lang string) bool {
+	if lang == "" {
+		return false
+	}
+	if i := strings.IndexByte(lang, '-'); i >= 0 {
+		lang = lang[:i]
+	}
+	switch strings.ToLower(lang) {
+	case "zh", "ja", "ko", "mn":
 		return true
 	}
 	return false
@@ -4955,14 +4992,13 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	// auto / from-font / empty (and left|right when ignored): follow rotation
 	// direction. CCW (IsSidewaysLR) → RIGHT; CW (everything else) → LEFT.
 	//
-	// Note: CSS Text Decor 3 §3.5 specifies a CJK-language flip for the
-	// "auto" default (underline moves to the over-side for ja/ko/zh in
-	// vertical modes), but louis14 doesn't yet thread the HTML `lang`
-	// attribute through styling. `font-language-override` is NOT a reliable
-	// proxy — text-underline-position-vertical-ja's reference page declares
-	// `font-language-override: "JAN"` but `lang="en"`, so the convention
-	// flip must remain disabled until lang is properly plumbed. See
-	// docs/campaign4/C64-* for the partial-implementation memo.
+	// Note: the CSS Text Decor 3 §3.5 CJK-default flip (underline auto-resolves
+	// to kOver for ja/ko/zh in upright vertical) is realized through
+	// shouldFlipUnderlineAndOverline + flipUnderlineOverlineBits — the
+	// decoration bits swap upstream, then sidewaysUnderlineGoesRight reports
+	// the post-flip placement (still kUnder side). The "RIGHT = over-side"
+	// physical placement of the originally-overline (now-underline) flows
+	// through the overline-painting branch in drawText.
 	return layer.IsSidewaysLR
 }
 
@@ -5157,9 +5193,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// upward from text-top, so srcY < textOff). After rotation:
 		//   CW (vertical-rl/-lr mixed, sideways-rl): above-text → physical RIGHT
 		//   CCW (sideways-lr): above-text → physical LEFT
-		// This matches the lang=en default. CSS Text Decor 3 §3.5's CJK lang
-		// flip (overline → physical LEFT for ja/zh vertical-rl) is not yet
-		// supported — see sidewaysUnderlineGoesRight for the rationale.
+		// This matches the non-CJK default. For CJK upright vertical
+		// (TextLangIsCJK), shouldFlipUnderlineAndOverline swaps the
+		// underline/overline bits upstream, so a `text-decoration: overline`
+		// reaches this branch as underline (painted on physical LEFT in
+		// vertical-rl, matching the lang=en underline reference), and a
+		// `text-decoration: underline` reaches the overline-painting path
+		// (physical RIGHT in vertical-rl, the CJK over-side default).
 		if hasDecor {
 			origDC := r.dc
 			r.dc = childDC

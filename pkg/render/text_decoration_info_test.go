@@ -143,3 +143,34 @@ func TestOverlineRectCoversBoxAboveAfterRelativeTopShift(t *testing.T) {
 			rectTop, rectBottom, overlap, visibleBottom-visibleTop)
 	}
 }
+
+// isCJKLocale mirrors Blink's CJK detection in ResolveUnderlinePosition() at
+// text_decoration_info.cc:42 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
+// promoted to a locale-prefix check (louis14 doesn't yet derive script from
+// font Unicode coverage). Locks in case-insensitivity and BCP47-subtag
+// tolerance behavior.
+func TestIsCJKLocale(t *testing.T) {
+	cases := []struct {
+		lang string
+		want bool
+	}{
+		{"", false},
+		{"en", false},
+		{"en-US", false},
+		{"ja", true},
+		{"JA", true},
+		{"ja-JP", true},
+		{"zh", true},
+		{"zh-Hant", true},
+		{"ko", true},
+		{"mn", true},
+		{"mn-Mong", true},
+		{"de", false},
+		{"jp", false}, // ISO-639 for Japanese is "ja", not "jp"
+	}
+	for _, c := range cases {
+		if got := isCJKLocale(c.lang); got != c.want {
+			t.Errorf("isCJKLocale(%q) = %v, want %v", c.lang, got, c.want)
+		}
+	}
+}
