@@ -2109,32 +2109,83 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 		b.viewportWidth, b.viewportHeight, parentStyle,
 	)
 
+	// preserveBreaks mirrors Blink's ShouldPreserveBreaks: white-space
+	// values that preserve newlines (pre / pre-wrap / pre-line / break-spaces)
+	// cause a leading LF to terminate first-letter discovery rather than be
+	// treated as skippable leading space.
+	preserveBreaks := whiteSpacePreservesBreaks(parentStyle.GetWhiteSpace())
+
 	// Find and split the first non-whitespace character in the inline content.
 	// We only look at direct text children or text inside inline children.
-	return b.splitFirstLetter(children, node, flStyle)
+	return b.splitFirstLetter(children, node, flStyle, preserveBreaks)
+}
+
+// whiteSpacePreservesBreaks reports whether the given white-space value
+// preserves newline characters. Mirrors Blink's ShouldPreserveBreaks @
+// 4883d11fef which is true for pre, pre-wrap, pre-line and break-spaces.
+func whiteSpacePreservesBreaks(ws css.WhiteSpace) bool {
+	switch ws {
+	case css.WhiteSpacePre, css.WhiteSpacePreWrap, css.WhiteSpacePreLine, css.WhiteSpaceBreakSpaces:
+		return true
+	}
+	return false
 }
 
 // isFirstLetterPunctuation reports whether r is a punctuation character that
 // should be included in the ::first-letter pseudo-element per CSS Pseudo-4 §3.2.
-// Mirrors Blink's IsPunctuationForFirstLetter (Ps/Pe/Pi/Pf/Po). Go's
-// unicode.IsPunct also returns true for Pd (Punctuation Dash) and Pc
-// (Punctuation Connector), which matches the broader spec wording "P*" and
-// is consistent with WPT tests such as first-letter-punctuation-and-space
-// (leading em-dash). Blink reference: third_party/blink/renderer/core/dom/
-// first_letter_pseudo_element.cc @ Chromium 4883d11fef.
+// Mirrors Blink's IsPunctuationForFirstLetter (Po/Ps/Pe/Pi/Pf only — Pd and Pc
+// are deliberately excluded). Blink reference: third_party/blink/renderer/
+// core/dom/first_letter_pseudo_element.cc @ Chromium 4883d11fef.
 func isFirstLetterPunctuation(r rune) bool {
-	return unicode.IsPunct(r)
+	return unicode.Is(unicode.Po, r) ||
+		unicode.Is(unicode.Ps, r) ||
+		unicode.Is(unicode.Pe, r) ||
+		unicode.Is(unicode.Pi, r) ||
+		unicode.Is(unicode.Pf, r)
 }
 
+// firstLetterPunctuationState tracks the cross-text-node accumulation state
+// used by Blink's FirstLetterPseudoElement::FirstLetterLength @ 4883d11fef:
+//
+//   - firstLetterPunctNotSeen:  initial; leading spaces and leading punctuation
+//     may both be skipped/consumed.
+//   - firstLetterPunctSeen:     only punctuation has been found so far in
+//     earlier text nodes; subsequent leading spaces are no longer allowed
+//     but more leading punctuation may still be accumulated.
+//   - firstLetterPunctDisallow: a typographic letter unit has been found;
+//     further leading punctuation in later text nodes is rejected.
+type firstLetterPunctuationState int
+
+const (
+	firstLetterPunctNotSeen firstLetterPunctuationState = iota
+	firstLetterPunctSeen
+	firstLetterPunctDisallow
+)
+
 // isFirstLetterSpace reports whether r is whitespace skipped by the
-// ::first-letter algorithm. Mirrors Blink's IsSpaceForFirstLetter (ASCII
-// space/tab/newline/CR + U+00A0 NO-BREAK SPACE).
-func isFirstLetterSpace(r rune) bool {
+// ::first-letter algorithm. Mirrors Blink's IsSpaceForFirstLetter at
+// 4883d11fef: ASCII space/tab and U+00A0 NO-BREAK SPACE are always
+// treated as skippable spaces; LF/CR are skippable only when not
+// preserving line breaks (i.e. with white-space: normal/nowrap, not
+// pre/pre-wrap/pre-line). When preserveBreaks is true, leading LF/CR
+// is NOT a skippable space and instead terminates first-letter
+// discovery via isFirstLetterNewline.
+func isFirstLetterSpace(r rune, preserveBreaks bool) bool {
 	switch r {
-	case ' ', '\t', '\n', '\r', ' ':
+	case ' ', '\t', ' ':
 		return true
+	case '\n', '\r':
+		return !preserveBreaks
 	}
 	return false
+}
+
+// isFirstLetterNewline reports whether r is a line-break character.
+// Mirrors Blink's IsNewLine — used to terminate first-letter discovery
+// when the leading non-space character is a newline (e.g. white-space:
+// pre with a leading "\n").
+func isFirstLetterNewline(r rune) bool {
+	return r == '\n' || r == '\r'
 }
 
 // firstLetterGraphemeLen returns the byte length of the grapheme cluster
@@ -2157,34 +2208,66 @@ func firstLetterGraphemeLen(text string) int {
 	return n
 }
 
-// firstLetterLength returns the byte length of the leading typographic letter
-// unit in text per CSS Pseudo-4 §3.2 — leading whitespace, then optional
-// leading punctuation grapheme clusters, then one non-punctuation grapheme
-// cluster (the letter), then trailing punctuation grapheme clusters. Returns
-// (skipped, length) where skipped is the byte count of leading whitespace and
-// length is the byte count of the first-letter unit starting at skipped.
-// Returns (0, 0) if no first-letter unit is found in text.
+// firstLetterLength returns the byte position and length of the leading
+// typographic letter unit in text per CSS Pseudo-4 §3.2 and updates the
+// cross-text-node punctuation state. The unit is: optional leading whitespace,
+// then optional leading punctuation grapheme clusters, then one
+// non-punctuation grapheme cluster (the letter), then trailing punctuation
+// grapheme clusters.
+//
+// state threads Blink's Punctuation across text nodes (see
+// firstLetterPunctuationState). preserveBreaks is whether the parent's
+// white-space property preserves line breaks (pre / pre-wrap / pre-line /
+// break-spaces) — when true, leading LF/CR is NOT skippable and instead
+// terminates the search.
+//
+// Returns (skipped, length, newState):
+//
+//   - When (length > 0) and newState == firstLetterPunctSeen: only leading
+//     punctuation was found in this text node; the walker should remember
+//     this node as a candidate "punctuation host" and continue scanning the
+//     next text node carrying the new state.
+//   - When (length > 0) and newState == firstLetterPunctDisallow: the
+//     letter was found in this text node; the walker should wrap here (or
+//     wrap the earlier "punctuation host" if one was recorded).
+//   - When length == 0 and newState == firstLetterPunctDisallow: the leading
+//     non-space char was a newline or post-punctuation space; first-letter
+//     does not apply for this originating block.
+//   - When length == 0 and newState == state (unchanged): the text node was
+//     all whitespace; the walker should continue without recording anything.
 //
 // Mirrors Blink's FirstLetterPseudoElement::FirstLetterLength at Chromium
-// 4883d11fef. The cross-text-node punctuation accumulation (Punctuation::kSeen)
-// is omitted: we operate on one text node at a time per the louis14 layout
-// builder.
-func firstLetterLength(text string) (skipped, length int) {
-	// Skip leading whitespace.
-	for skipped < len(text) {
-		r, sz := utf8.DecodeRuneInString(text[skipped:])
-		if !isFirstLetterSpace(r) {
-			break
-		}
-		skipped += sz
-	}
-	if skipped == len(text) {
-		return 0, 0
+// 4883d11fef.
+func firstLetterLength(text string, state firstLetterPunctuationState, preserveBreaks bool) (skipped, length int, newState firstLetterPunctuationState) {
+	newState = state
+	textLen := len(text)
+	if textLen == 0 {
+		return 0, 0, newState
 	}
 
-	// Consume leading punctuation grapheme clusters.
-	pos := skipped
-	for pos < len(text) {
+	pos := 0
+	// Account for leading whitespace only when we haven't started accumulating
+	// punctuation from a previous text node. Once punctuation has been seen,
+	// intervening spaces break the first-letter unit (Blink kSeen semantics).
+	if newState == firstLetterPunctNotSeen {
+		for pos < textLen {
+			r, sz := utf8.DecodeRuneInString(text[pos:])
+			if !isFirstLetterSpace(r, preserveBreaks) {
+				break
+			}
+			pos += sz
+		}
+		if pos == textLen {
+			// All whitespace: leave state unchanged so the walker keeps
+			// scanning subsequent text nodes.
+			return 0, 0, newState
+		}
+	}
+	skipped = pos
+
+	// Accumulate leading punctuation grapheme clusters.
+	punctStart := pos
+	for pos < textLen {
 		r, _ := utf8.DecodeRuneInString(text[pos:])
 		if !isFirstLetterPunctuation(r) {
 			break
@@ -2192,24 +2275,32 @@ func firstLetterLength(text string) (skipped, length int) {
 		pos += firstLetterGraphemeLen(text[pos:])
 	}
 
-	// If only punctuation was found, this text node has no first-letter unit.
-	// Blink would set Punctuation::kSeen and continue scanning the next text
-	// node; we don't model that yet, so abort.
-	if pos == len(text) {
-		return 0, 0
+	if pos == textLen {
+		if pos > punctStart {
+			// Text ends at allowed leading punctuation. Signal continuation;
+			// the walker may find the letter in a subsequent text node.
+			newState = firstLetterPunctSeen
+			return skipped, pos - skipped, newState
+		}
+		// Only whitespace in the original kNotSeen path is handled above;
+		// in the kSeen path we get here only when the text node is empty.
+		return 0, 0, newState
 	}
 
-	// After leading punctuation, whitespace breaks the first-letter unit.
+	// From here on, no further leading punctuation will be allowed in later
+	// text nodes (kDisallow). If the next char is a space or newline, the
+	// first-letter unit is broken.
+	newState = firstLetterPunctDisallow
 	r, _ := utf8.DecodeRuneInString(text[pos:])
-	if isFirstLetterSpace(r) {
-		return 0, 0
+	if isFirstLetterSpace(r, preserveBreaks) || isFirstLetterNewline(r) {
+		return 0, 0, newState
 	}
 
 	// Consume one grapheme cluster as the letter.
 	pos += firstLetterGraphemeLen(text[pos:])
 
-	// Consume trailing punctuation grapheme clusters.
-	for pos < len(text) {
+	// Consume trailing punctuation grapheme clusters within this text node.
+	for pos < textLen {
 		r, _ := utf8.DecodeRuneInString(text[pos:])
 		if !isFirstLetterPunctuation(r) {
 			break
@@ -2217,10 +2308,52 @@ func firstLetterLength(text string) (skipped, length int) {
 		pos += firstLetterGraphemeLen(text[pos:])
 	}
 
-	return skipped, pos - skipped
+	return skipped, pos - skipped, newState
 }
 
-// splitFirstLetter walks children to find the first text character and wraps
+// firstLetterPunctHost records a text node that has accumulated leading
+// punctuation but no letter yet — Blink's `punctuation_text` in
+// FirstLetterPseudoElement::FirstLetterTextLayoutObject @ 4883d11fef.
+// When a subsequent text node provides the letter, the ::first-letter wrap
+// is applied to THIS earlier punctuation host (covering its punctuation
+// portion only). The parentSlice + index let the walker rewrite the
+// host's enclosing children slice; descendChildren records the chain of
+// ancestor children-slice owners that need their children replaced when
+// the wrap is applied in a nested descendant.
+type firstLetterPunctHost struct {
+	// child is the text LayoutInputNode that contains leading punctuation.
+	child *LayoutInputNode
+	// text is child.TextContent() at the time of recording.
+	text string
+	// skipped is the byte offset of the first punctuation rune.
+	skipped int
+	// length is the byte count of the leading punctuation grapheme clusters
+	// (covering the entire first-letter span on this node).
+	length int
+	// parentNode is the DOM host for the synthetic ::first-letter wrapper
+	// when wrapping at this site.
+	parentNode *html.Node
+	// owner is the children slice that directly contains `child`; index is
+	// child's position within owner. ancestors records the descend chain so
+	// the walker can update each parent's children pointer when the wrap
+	// rewrites the host's slice. Each entry stores (parent node, the index
+	// of the child whose .children needs replacing at unwind time).
+	owner   []*LayoutInputNode
+	index   int
+	ancestors []firstLetterAncestor
+}
+
+// firstLetterAncestor records one rung in the descend chain from the
+// originating block down to a punctuation host. When the wrap is applied
+// to the host, the owner slice is rewritten; each ancestor's child .children
+// pointer must be updated to refer to the rewritten owner.
+type firstLetterAncestor struct {
+	// parent is the LayoutInputNode whose .children should be replaced with
+	// `rewritten` once the wrap is applied below.
+	parent *LayoutInputNode
+}
+
+// splitFirstLetter walks children to find the first letter unit and wraps
 // it in a synthetic inline span with the first-letter style.
 //
 // Mirrors Blink's FirstLetterPseudoElement::FirstLetterTextLayoutObject at
@@ -2238,6 +2371,9 @@ func firstLetterLength(text string) (skipped, length int) {
 //   - Recursively descends into all other element children, block- AND
 //     inline-level, including empty-inline chains and nested block
 //     list-items.
+//   - Threads Blink's Punctuation state across text nodes so a leading
+//     punctuation in one node (e.g. `<span>"</span>abc`) is the wrap
+//     site once the letter is located in a subsequent node.
 //
 // When the letter is found inside a descendant, the wrap is applied to
 // that descendant's child list (mutated in place) — not pulled out to the
@@ -2246,16 +2382,20 @@ func firstLetterLength(text string) (skipped, length int) {
 //
 // Returns the (possibly modified) `children` slice for the originating block.
 func (b *LayoutTreeBuilder) splitFirstLetter(
-	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style,
+	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style, preserveBreaks bool,
 ) []*LayoutInputNode {
-	newChildren, _ := b.walkFirstLetter(children, parentNode, flStyle)
+	state := firstLetterPunctNotSeen
+	var pendingHost *firstLetterPunctHost
+	newChildren, _, _ := b.walkFirstLetter(children, parentNode, flStyle, preserveBreaks, state, &pendingHost, nil)
 	return newChildren
 }
 
 // walkFirstLetter implements the recursive tree walk. Returns the
-// (possibly modified) children slice plus a bool indicating whether the
+// (possibly modified) children slice, a bool indicating whether the
 // first-letter wrap was applied somewhere in the subtree rooted at these
-// children. Once `applied` flips to true, the walk short-circuits.
+// children, and the updated punctuation state for the caller to continue
+// scanning later siblings. Once `applied` flips to true, the walk
+// short-circuits and the wrap is committed.
 //
 // The walk is pre-order over the layout subtree, mirroring Blink's
 // FirstLetterPseudoElement::FirstLetterTextLayoutObject which uses
@@ -2264,9 +2404,15 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 // (see css-pseudo first-letter-exclude-block-child-marker, where the
 // originating `<li>`'s first letter is the 'i' inside its block `<span>`
 // list-item child, after that span's own ::marker is skipped).
+//
+// pendingHost is a pointer into the call chain so a nested descendant can
+// see a sibling's earlier kSeen punctuation node and apply the wrap there
+// even when the letter is discovered deep in another subtree.
 func (b *LayoutTreeBuilder) walkFirstLetter(
 	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style,
-) (newChildren []*LayoutInputNode, applied bool) {
+	preserveBreaks bool, state firstLetterPunctuationState,
+	pendingHost **firstLetterPunctHost, ancestors []firstLetterAncestor,
+) (newChildren []*LayoutInputNode, applied bool, newState firstLetterPunctuationState) {
 	for i, child := range children {
 		// Skip ::marker generated content per CSS Pseudo-4 §3.3 — the
 		// originating element's own marker AND any descendant element's
@@ -2296,17 +2442,57 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 		// otherwise look like a flow-root child of itself and be
 		// skipped, defeating ibi::first-letter on its own content.
 		if child.IsElement() && child.Style() != nil && child.Style().EstablishesNewFormattingContext() {
-			return children, true // consume the slot without wrapping
+			return children, true, firstLetterPunctDisallow // consume the slot without wrapping
 		}
 
 		if child.IsText() {
 			text := child.TextContent()
-			idx, letterLen := firstLetterLength(text)
+			idx, letterLen, ns := firstLetterLength(text, state, preserveBreaks)
+			state = ns
 			if letterLen == 0 {
+				if state == firstLetterPunctDisallow {
+					// Leading non-space char was newline / post-punctuation
+					// space — no first-letter for this originating block.
+					return children, true, state
+				}
 				continue
 			}
+			if state == firstLetterPunctSeen {
+				// Only leading punctuation found here; remember as the
+				// wrap candidate and continue searching subsequent text
+				// nodes for the letter.
+				if *pendingHost == nil {
+					ancs := make([]firstLetterAncestor, len(ancestors))
+					copy(ancs, ancestors)
+					*pendingHost = &firstLetterPunctHost{
+						child:      child,
+						text:       text,
+						skipped:    idx,
+						length:     letterLen,
+						parentNode: parentNode,
+						owner:      children,
+						index:      i,
+						ancestors:  ancs,
+					}
+				}
+				continue
+			}
+			// state == kDisallow with letterLen > 0 — the letter is in
+			// THIS text node. If we previously recorded a punctuation
+			// host in an earlier text node, wrap there instead so the
+			// pseudo styles only the leading punctuation.
+			if host := *pendingHost; host != nil {
+				newOwner := b.wrapFirstLetterInChildren(host.owner, host.index, host.child, host.text, host.skipped, host.length, host.parentNode, flStyle)
+				// Propagate the rewritten owner up through the descend
+				// chain so each ancestor's .children pointer matches.
+				for _, a := range host.ancestors {
+					a.parent.children = newOwner
+				}
+				_ = newOwner
+				return children, true, firstLetterPunctDisallow
+			}
 			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, flStyle)
-			return result, true
+			return result, true, firstLetterPunctDisallow
 		}
 
 		// Element or anonymous container — recurse into its children
@@ -2314,14 +2500,16 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 		// child's children slice has been replaced in place; we return
 		// the parent slice unchanged.
 		if child.IsElement() || child.IsAnonymous() {
-			grandchildren, didApply := b.walkFirstLetter(child.children, b.firstLetterHostNode(child, parentNode), flStyle)
+			descAnc := append(ancestors[:len(ancestors):len(ancestors)], firstLetterAncestor{parent: child})
+			grandchildren, didApply, ns := b.walkFirstLetter(child.children, b.firstLetterHostNode(child, parentNode), flStyle, preserveBreaks, state, pendingHost, descAnc)
+			state = ns
 			if didApply {
 				child.children = grandchildren
-				return children, true
+				return children, true, state
 			}
 		}
 	}
-	return children, false
+	return children, false, state
 }
 
 // firstLetterHostNode returns the DOM node that should host the synthetic
