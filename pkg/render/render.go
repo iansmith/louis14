@@ -5864,6 +5864,24 @@ type ellipsisPaint struct {
 // default replacement when text-overflow: ellipsis applies.
 const ellipsisChar = "…"
 
+// isBlockContainerForTextOverflow reports whether `style` describes a
+// box that is a block container for the purpose of CSS UI 4 §6.2.
+// `display: inline` and similar inline-level values do NOT make a
+// block container — text-overflow on the parent of an inline element
+// still applies to text inside that inline. But `display: block`,
+// `inline-block`, table cells, list items, flex/grid items, etc.
+// establish their own block context and shadow a more distant
+// ancestor's text-overflow.
+func isBlockContainerForTextOverflow(style *css.Style) bool {
+	switch style.GetDisplay() {
+	case css.DisplayInline:
+		// True inline elements (spans) are NOT block containers; the
+		// text inside them belongs to the enclosing block.
+		return false
+	}
+	return true
+}
+
 // textOverflowReplacement returns the replacement string the inline
 // run's own text-overflow value implies, or "" if it implies none.
 func textOverflowReplacement(layer *PaintLayer) string {
@@ -5888,12 +5906,20 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		layer.TextOverflow == css.TextOverflowString
 	replacement := textOverflowReplacement(layer)
 
-	// Walk up the box tree to find the nearest ancestor with overflow-x
-	// in {hidden, scroll, auto, clip} per CSS UI 4 §6.2. Pick up that
-	// ancestor's text-overflow value if the inline run didn't carry one.
+	// Walk up the box tree to the FIRST block-container ancestor — that
+	// is, the block container the text fragment belongs to. CSS UI 4
+	// §6.2 says text-overflow "applies to block container elements",
+	// meaning the block container of the text is the one that decides
+	// whether and how to truncate. A more distant ancestor's
+	// text-overflow does NOT reach through an intervening block (which
+	// establishes its own block formatting context). text-overflow-020
+	// is the canonical "nested paragraph won't ellipse" case.
 	var clipAncestor *layout.Box
 	for p := box.Parent; p != nil; p = p.Parent {
 		if p.Style == nil {
+			continue
+		}
+		if !isBlockContainerForTextOverflow(p.Style) {
 			continue
 		}
 		overflowX := p.Style.GetOverflowX()
@@ -5914,8 +5940,12 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 			if hasOverflow {
 				clipAncestor = p
 			}
-			break
 		}
+		// First block container reached: stop the walk regardless of
+		// whether it has overflow:hidden or text-overflow:ellipsis.
+		// A more distant ancestor's text-overflow is not visible to
+		// this run.
+		break
 	}
 
 	if !hasOverflow || clipAncestor == nil || replacement == "" {
@@ -5996,14 +6026,35 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	}
 
 	if truncW <= 0 {
-		// Replacement doesn't fit in availW. Two cases:
-		//   - Leading run: keep the first glyph (clipped by overflow) and
-		//     suppress the ellipsis — the leading-run guard above already
-		//     handled the case where the first glyph itself exceeds
-		//     availW, so here the first glyph fits but the replacement
-		//     doesn't. text-overflow-008 / -010 / -020.
-		//   - Non-leading run: emit only the replacement anchored at
-		//     box.X (no inline glyphs from this run). text-overflow-014.
+		// Replacement (in container font) is wider than the available
+		// space.
+		//
+		// CSS UI 4 §6.2: when the replacement is a <string> "and there
+		// is insufficient space for the entire string, then the string
+		// can be clipped to make it fit". Accept as many inline glyphs
+		// as fit in availW (in inline font), then emit a clipped
+		// replacement filling the remaining space. text-overflow-string-002.
+		//
+		// For ellipsis (the U+2026 character), the leading-run rule from
+		// Blink's text_overflow.cc::PlaceEllipsis applies instead: keep
+		// the first glyph clipped by overflow and suppress the ellipsis.
+		// text-overflow-008 / -010 / -020.
+		if layer.TextOverflow == css.TextOverflowString ||
+			(layer.TextOverflow != css.TextOverflowEllipsis && replacement != ellipsisChar) {
+			// Custom <string>: accept text in inline font, clip replacement.
+			textTaken, textW2 := acceptInlineGlyphs(r, layer, fontID, runes, availW, ls, ws)
+			remaining := availW - textW2
+			clipped := clipReplacement(r, replacement, containerFontID, fontID, layer.FontFeatures, remaining)
+			if clipped == "" {
+				return textTaken, nil
+			}
+			return textTaken, &ellipsisPaint{
+				str:            clipped,
+				x:              box.X + textW2,
+				containerStyle: clipAncestor.Style,
+			}
+		}
+		// Ellipsis case.
 		if isLeadingRun && len(runes) >= 1 {
 			return string(runes[0]), nil
 		}
@@ -6042,6 +6093,62 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		x:              box.X + truncAdvance,
 		containerStyle: clipAncestor.Style,
 	}
+}
+
+// acceptInlineGlyphs walks `runes` accepting cumulative inline glyphs
+// up to `limitW` in the inline font, returning the byte index just
+// past the accepted prefix and the cumulative advance.
+//
+// Used by the CSS UI 4 §6.2 clipped-<string> path where the
+// replacement is wider than availW: as many text glyphs are accepted
+// as fit, then the replacement is clipped to fill the rest.
+func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []rune, limitW, ls, ws float64) (string, float64) {
+	w := 0.0
+	idx := 0
+	for i, ch := range runes {
+		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+		stepAdvance := cw
+		if i < len(runes)-1 {
+			stepAdvance += ls
+		}
+		if ch == ' ' {
+			stepAdvance += ws
+		}
+		if w+cw > limitW {
+			break
+		}
+		w += stepAdvance
+		idx = len(string(runes[:i+1]))
+	}
+	return string(runes)[:idx], w
+}
+
+// clipReplacement returns the longest prefix of `replacement` whose
+// width in the container font is <= `limitW`. The result may be empty
+// when even the first character does not fit, per CSS UI 4 §6.2's
+// "the string can be clipped" allowance.
+func clipReplacement(r *Renderer, replacement string, containerFontID, inlineFontID int32, inlineFeatures []textshape.FontFeature, limitW float64) string {
+	if limitW <= 0 {
+		return ""
+	}
+	fid := containerFontID
+	features := []textshape.FontFeature(nil)
+	if fid < 0 {
+		fid = inlineFontID
+		features = inlineFeatures
+	}
+	runes := []rune(replacement)
+	w := 0.0
+	idx := 0
+	for i, ch := range runes {
+		cw := r.measureTextStr(string(ch), fid, features)
+		if w+cw > limitW {
+			break
+		}
+		w += cw
+		idx = len(string(runes[:i+1]))
+	}
+	return replacement[:idx]
 }
 
 // openContainerFont opens a fontID for the given clip ancestor's
