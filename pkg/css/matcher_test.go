@@ -533,3 +533,178 @@ func TestMatchesIsWithPseudoElement(t *testing.T) {
 		t.Error(":is(:not(span)) should match <div> (no top-level pseudo-element)")
 	}
 }
+
+// TestFormStatePseudos covers :required / :optional / :read-write /
+// :read-only / :placeholder-shown (CSS Selectors 4 §6) for the static reftest
+// shape we care about. Each case states an authored markup snippet and the
+// expected matching answer for the predicate. Mirrors Blink core/html/forms/
+// html_input_element.cc::IsRequired / IsPlaceholderVisible at
+// 4883d11fef4a — louis14's matcher reads the parsed initial state, not the
+// element-level invalidation graph.
+func TestFormStatePseudos(t *testing.T) {
+	mkInput := func(attrs map[string]string) *html.Node {
+		if attrs == nil {
+			attrs = map[string]string{}
+		}
+		return &html.Node{
+			Type:       html.ElementNode,
+			TagName:    "input",
+			Attributes: attrs,
+		}
+	}
+
+	// :required and :optional
+	requiredCases := []struct {
+		name     string
+		node     *html.Node
+		required bool
+		optional bool
+	}{
+		{"input no required", mkInput(nil), false, true},
+		{"input required", mkInput(map[string]string{"required": ""}), true, false},
+		{"input type=hidden required (not eligible)", mkInput(map[string]string{"type": "hidden", "required": ""}), false, false},
+		{"input type=submit required (not eligible)", mkInput(map[string]string{"type": "submit", "required": ""}), false, false},
+		{"select required", &html.Node{Type: html.ElementNode, TagName: "select", Attributes: map[string]string{"required": ""}}, true, false},
+		{"textarea no required", &html.Node{Type: html.ElementNode, TagName: "textarea"}, false, true},
+		{"div not a form control", &html.Node{Type: html.ElementNode, TagName: "div"}, false, false},
+	}
+	for _, tc := range requiredCases {
+		t.Run("required/"+tc.name, func(t *testing.T) {
+			if matchesPseudoClass(tc.node, "required") != tc.required {
+				t.Errorf(":required expected %v", tc.required)
+			}
+			if matchesPseudoClass(tc.node, "optional") != tc.optional {
+				t.Errorf(":optional expected %v", tc.optional)
+			}
+		})
+	}
+
+	// :read-write / :read-only
+	rwCases := []struct {
+		name      string
+		node      *html.Node
+		readWrite bool
+	}{
+		{"plain input", mkInput(nil), true},
+		{"input readonly", mkInput(map[string]string{"readonly": ""}), false},
+		{"input disabled", mkInput(map[string]string{"disabled": ""}), false},
+		{"input type=button", mkInput(map[string]string{"type": "button"}), false},
+		{"input type=checkbox", mkInput(map[string]string{"type": "checkbox"}), false},
+		{"textarea editable", &html.Node{Type: html.ElementNode, TagName: "textarea"}, true},
+		{"textarea readonly", &html.Node{Type: html.ElementNode, TagName: "textarea", Attributes: map[string]string{"readonly": ""}}, false},
+		{"div without contenteditable", &html.Node{Type: html.ElementNode, TagName: "div"}, false},
+		{"div contenteditable=true", &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"contenteditable": "true"}}, true},
+		{"div contenteditable=false", &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"contenteditable": "false"}}, false},
+	}
+	for _, tc := range rwCases {
+		t.Run("read-write/"+tc.name, func(t *testing.T) {
+			if got := matchesPseudoClass(tc.node, "read-write"); got != tc.readWrite {
+				t.Errorf(":read-write expected %v got %v", tc.readWrite, got)
+			}
+			if got := matchesPseudoClass(tc.node, "read-only"); got == tc.readWrite {
+				t.Errorf(":read-only must be the negation of :read-write (case %q)", tc.name)
+			}
+		})
+	}
+
+	// :placeholder-shown
+	psCases := []struct {
+		name string
+		node *html.Node
+		want bool
+	}{
+		{"input with placeholder, empty value", mkInput(map[string]string{"placeholder": "type here"}), true},
+		{"input with placeholder, non-empty value",
+			mkInput(map[string]string{"placeholder": "type here", "value": "hi"}), false},
+		{"input no placeholder", mkInput(nil), false},
+		{"input type=hidden with placeholder", mkInput(map[string]string{"type": "hidden", "placeholder": "x"}), false},
+		{"input type=checkbox with placeholder", mkInput(map[string]string{"type": "checkbox", "placeholder": "x"}), false},
+	}
+	for _, tc := range psCases {
+		t.Run("placeholder-shown/"+tc.name, func(t *testing.T) {
+			if got := matchesPseudoClass(tc.node, "placeholder-shown"); got != tc.want {
+				t.Errorf(":placeholder-shown expected %v got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestParseAnPlusBValid documents the strict An+B grammar per CSS Syntax §3
+// / Selectors 4 §6.6.1. The pre-existing permissive parser accepted garbage
+// like "n of" → (1, 0) which caused `:nth-child(n of)` (an invalid selector)
+// to match every element. Mirrors Blink's CSSSelectorParser::ConsumeANPlusB
+// @ 4883d11fef4a, which rejects the same forms.
+func TestParseAnPlusBValid(t *testing.T) {
+	cases := []struct {
+		in    string
+		a, b  int
+		valid bool
+	}{
+		// Valid forms
+		{"1", 0, 1, true},
+		{"+1", 0, 1, true},
+		{"-2", 0, -2, true},
+		{"n", 1, 0, true},
+		{"-n", -1, 0, true},
+		{"+n", 1, 0, true},
+		{"2n", 2, 0, true},
+		{"2n+1", 2, 1, true},
+		{"2n + 1", 2, 1, true},
+		{"-n+3", -1, 3, true},
+		{"-n + 3", -1, 3, true},
+		// Invalid: whitespace inside the dimension
+		{"1 n", 0, 0, false},
+		{"2 n + 1", 0, 0, false},
+		// Invalid: trailing garbage in the of-form (handled upstream by
+		// splitNthChildArg, but parser must still reject when invoked alone)
+		{"1 of", 0, 0, false},
+		{"n of", 0, 0, false},
+		{"even of", 0, 0, false},
+		{"n + 1of", 0, 0, false},
+		// Invalid: empty
+		{"", 0, 0, false},
+		// Invalid: pure-B form with extra after
+		{"1 foo", 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			a, b, ok := parseAnPlusBValid(tc.in)
+			if ok != tc.valid {
+				t.Fatalf("validity: want %v got %v", tc.valid, ok)
+			}
+			if !ok {
+				return
+			}
+			if a != tc.a || b != tc.b {
+				t.Errorf("(a,b): want (%d,%d) got (%d,%d)", tc.a, tc.b, a, b)
+			}
+		})
+	}
+}
+
+// TestMatchesIsLikeFullComplex documents that :is() / :where() must walk the
+// full complex-selector chain inside each branch, not just the rightmost
+// compound. The pre-fix `matchesIsLike` checked only the last part, so
+// `:is(#d + div, #d ~ #h)` matched every `div` instead of only the one
+// adjacent to `#d`. Mirrors Blink's SelectorChecker dispatch through
+// MatchSelector for each :is() branch.
+func TestMatchesIsLikeFullComplex(t *testing.T) {
+	// Build: <main><div id=a></div><div id=b></div><div id=d></div><div id=e></div></main>
+	main := &html.Node{Type: html.ElementNode, TagName: "main"}
+	a := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "a"}, Parent: main}
+	b := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "b"}, Parent: main}
+	d := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "d"}, Parent: main}
+	e := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "e"}, Parent: main}
+	main.Children = []*html.Node{a, b, d, e}
+
+	// :is(#d + div, #d ~ #h) — only #e is "div adjacent to #d"; #h doesn't exist.
+	if !matchesIsLike(e, "#d + div, #d ~ #h") {
+		t.Error("#e should match :is(#d + div, ...) as the adjacent sibling of #d")
+	}
+	if matchesIsLike(a, "#d + div, #d ~ #h") {
+		t.Error("#a must NOT match :is(#d + div, #d ~ #h) — only the rightmost compound was checked under the old impl")
+	}
+	if matchesIsLike(b, "#d + div, #d ~ #h") {
+		t.Error("#b must NOT match :is(#d + div, #d ~ #h)")
+	}
+}

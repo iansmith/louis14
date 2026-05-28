@@ -125,6 +125,23 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// <input type="hidden"> is not rendered. Per HTML "the input element"
+	// and the UA stylesheet `input[type="hidden" i] { display: none ! important }`
+	// (Blink html.css @ 4883d11fef4a). Author CSS cannot override this via
+	// normal !important (the UA !important wins per cascade origin priority);
+	// our implementation matches by setting display:none here, which sits at
+	// the UA-default precedence — author rules that explicitly target a
+	// hidden input with display still flow through the normal cascade. The
+	// type-change reftests in css-selectors/ depend on this becoming
+	// display:none after JS sets `type=hidden` so the visible input box
+	// disappears.
+	if node.TagName == "input" {
+		if t, ok := node.GetAttribute("type"); ok &&
+			strings.EqualFold(strings.TrimSpace(t), "hidden") {
+			style.Set("display", "none")
+		}
+	}
+
 	// HTML5 semantic elements default to display: block
 	switch node.TagName {
 	case "main", "nav", "header", "footer", "section", "article", "aside",
@@ -1602,6 +1619,15 @@ var inheritableProperties = map[string]bool{
 	// `quotes` on the container and observe open-quote behavior on
 	// descendant pseudo-elements).
 	"quotes": true,
+	// CSS Text Decor 4 §3.2: text-emphasis-color, text-emphasis-style,
+	// text-emphasis-position are all inherited. Mirrors Blink
+	// core/style/computed_style.cc @ 4883d11fef4a — the text-emphasis
+	// longhands live on the inherited ComputedStyleBase via the
+	// `inherited` flag in computed_style_initial_values.json5.
+	// https://drafts.csswg.org/css-text-decor-4/#text-emphasis-color-property
+	"text-emphasis-color":    true,
+	"text-emphasis-style":    true,
+	"text-emphasis-position": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.

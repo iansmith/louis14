@@ -3630,9 +3630,25 @@ func parseSelectorPart(s string) SelectorPart {
 	return part
 }
 
-// parseAttributeSelector parses an attribute selector like "type=text" or "href^=https"
+// parseAttributeSelector parses an attribute selector like "type=text" or "href^=https".
+//
+// Per CSS Selectors 4 §6 and CSS Namespaces 3 §6.2, an attribute name may be
+// prefixed with a namespace: `ns|attr` selects attributes in namespace `ns`,
+// `*|attr` selects any namespace, and `|attr` selects the no-namespace form
+// (equivalent to a bare `attr` in HTML, where all author-supplied attributes
+// are in no namespace by default). Mirrors Blink core/css/parser/
+// css_selector_parser.cc::ConsumeAttrName @ 4883d11fef4a.
+//
+// Whitespace IS permitted around the operator and between brackets and the
+// attribute name (CSS Selectors 4 §6.1), but NOT inside the namespace prefix
+// (e.g. `| attr` is invalid). The bracket-stripping caller trims outer
+// whitespace; this function handles operator-adjacent whitespace via
+// strings.TrimSpace.
 func parseAttributeSelector(s string) AttributeSelector {
-	// Find the operator
+	// `|=` is a value-match operator (lang-hyphen). Distinguish it from the
+	// namespace prefix `|attr` by requiring the `|` to be followed by `=`.
+	// Look for ` |=` or `=` first; otherwise `|` at the start of the name
+	// is the no-namespace prefix.
 	operators := []string{"^=", "$=", "*=", "~=", "|=", "="}
 
 	for _, op := range operators {
@@ -3644,7 +3660,7 @@ func parseAttributeSelector(s string) AttributeSelector {
 			// Handle CSS escape sequences (e.g., second\ two → second two)
 			value = strings.ReplaceAll(value, `\ `, " ")
 			return AttributeSelector{
-				Name:     name,
+				Name:     normalizeAttrName(name),
 				Operator: op,
 				Value:    value,
 			}
@@ -3653,10 +3669,51 @@ func parseAttributeSelector(s string) AttributeSelector {
 
 	// No operator, just attribute name (existence check)
 	return AttributeSelector{
-		Name:     strings.TrimSpace(s),
+		Name:     normalizeAttrName(strings.TrimSpace(s)),
 		Operator: "",
 		Value:    "",
 	}
+}
+
+// normalizeAttrName handles the namespace prefix on attribute selectors.
+// In HTML (no @namespace context), all attributes live in no namespace, so:
+//   - `attr`     — matches `attr` (no-namespace, the common form)
+//   - `|attr`    — matches `attr` (explicit no-namespace, same set in HTML)
+//   - `*|attr`   — matches `attr` in any namespace (in HTML, same as bare)
+//   - `ns|attr`  — matches `attr` in namespace `ns` (in HTML with no @namespace
+//                  rules declared, this matches nothing — we leave the prefix
+//                  attached so a later @namespace-aware path can refuse it)
+//
+// Whitespace inside the namespace prefix (`| attr` / `ns | attr`) is invalid
+// per CSS Selectors 4 §6.1; we detect that by checking for a space adjacent
+// to `|` and return the name unchanged so it won't match anything (the
+// invalid selector is silently skipped, mirroring Blink's parser-reject).
+//
+// Mirrors Blink core/css/parser/css_selector_parser.cc::ConsumeAttrName
+// @ 4883d11fef4a.
+func normalizeAttrName(name string) string {
+	idx := strings.Index(name, "|")
+	if idx < 0 {
+		return name
+	}
+	// Whitespace adjacent to the bar makes the selector invalid.
+	if idx > 0 && name[idx-1] == ' ' {
+		return name
+	}
+	if idx+1 < len(name) && name[idx+1] == ' ' {
+		return name
+	}
+	prefix := name[:idx]
+	local := name[idx+1:]
+	switch prefix {
+	case "", "*":
+		// `|attr` and `*|attr` — match the bare attribute name in HTML.
+		return local
+	}
+	// Named-namespace prefix: keep as-is. With no @namespace registry the
+	// selector matches nothing, which is the correct behavior for an
+	// unregistered prefix per CSS Namespaces 3 §6.2.
+	return name
 }
 
 // Phase 22: EvaluateMediaQuery returns the 3-valued result of evaluating a
