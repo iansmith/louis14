@@ -3336,28 +3336,103 @@ func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSn
 
 // expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
 // Format: "3px solid blue" — order of components is not significant.
+// Per CSS Cascade 4 §3.2, a CSS-wide keyword as the shorthand value applies to every
+// longhand (mirroring Blink's StylePropertyShorthand::longhand expansion at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func expandOutlineShorthand(style *Style, value string) {
+	// CSS-wide keyword as the entire shorthand value: route to every longhand
+	// so that the post-cascade resolveInheritValues / resolveCSSWideKeywords
+	// pass picks them all up. This is what makes `outline: inherit` inherit
+	// the parent's outline-width / outline-style / outline-color (not just the
+	// color). Without this, `outline: inherit` resets width to medium and
+	// style to none, producing no visible outline on the inheriting element.
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		style.Set("outline-width", trimmed)
+		style.Set("outline-style", trimmed)
+		style.Set("outline-color", trimmed)
+		return
+	}
+
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
 	style.Set("outline-color", "currentcolor")
 
-	parts := strings.Fields(value)
+	// Tokenize while keeping balanced parens together so var() / calc() etc.
+	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
+	// outside a function block separates tokens; the simple strings.Fields
+	// path splits `var(--w)` if the value contains internal whitespace.
+	parts := tokenizeShorthand(value)
+	widthSet := false
 	for _, part := range parts {
 		if part == "none" {
 			style.Set("outline-style", "none")
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+		} else if part == "auto" || part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
 			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			// CSS UI 4 §4: `auto` is a valid outline-style. We treat it as
+			// `solid` at paint time (no platform focus ring); recording it as
+			// `auto` keeps the computed-value reflection honest for getters
+			// that compare against the keyword.
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
+			widthSet = true
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("outline-width", part)
+			widthSet = true
+		} else if !widthSet && (strings.HasPrefix(part, "var(") || strings.HasPrefix(part, "calc(")) {
+			// Ambiguous functional value: outline shorthand normally lists
+			// width as a length and color as a color. With no width set yet,
+			// treat the first var()/calc() token as width — typical CSS
+			// patterns use var() for dimensional values in shorthands
+			// (matches Blink's CSSPropertyParser::ParseSingleValue type-coercion
+			// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			style.Set("outline-width", part)
+			widthSet = true
 		} else if part != "" {
 			// Assume it's a color
 			style.Set("outline-color", part)
 		}
 	}
+}
+
+// tokenizeShorthand splits a CSS shorthand value into top-level tokens while
+// preserving balanced parens — so `var(--w)`, `calc(1em + 2px)`, and
+// `rgba(0, 0, 0, 0.5)` each survive as a single token instead of being split
+// at internal whitespace.
+func tokenizeShorthand(value string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '(':
+			depth++
+			cur.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				if cur.Len() > 0 {
+					out = append(out, cur.String())
+					cur.Reset()
+				}
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // expandColumnRuleShorthand parses the column-rule shorthand into column-rule-width, column-rule-style, column-rule-color.
@@ -3685,10 +3760,17 @@ func (s *Style) GetOutlineWidth() float64 {
 
 // GetOutlineColor returns the outline color as RGBA components.
 // Defaults to currentColor (element's text color), falling back to black.
+// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
+// the UA has no specific focus-ring colour to apply (mirrors Blink's
+// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
+// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	colorStr := "currentcolor"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
+	}
+	if strings.EqualFold(colorStr, "auto") {
+		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
 		// Use element's text color
