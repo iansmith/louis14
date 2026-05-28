@@ -76,18 +76,17 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	namedAreas := gla.style.GetGridTemplateAreas()
 
 	// Build list of grid children (skip OOF and whitespace-only text nodes).
+	// CSS Grid §6.1: contiguous runs of non-whitespace text directly inside
+	// the grid container are wrapped into anonymous block-level grid items so
+	// that they can be placed by the auto-placement algorithm. Mirrors the
+	// flex container's buildFlexChildren behaviour (CSS Flexbox §4).
+	gridChildren := buildGridChildren(gla.node, gla.style)
+
 	var items []*gridItem
-	for _, child := range gla.node.Children() {
-		// CSS Grid §4: whitespace-only text nodes are not grid items.
-		if child.IsText() {
-			if strings.TrimSpace(child.TextContent()) == "" {
-				continue
-			}
-		}
-		// Skip anonymous blocks wrapping only whitespace text.
-		if child.IsAnonymous() && isAnonymousWhitespaceOnly(child) {
-			continue
-		}
+	for _, child := range gridChildren {
+		// Anonymous wrappers created by buildGridChildren have a style,
+		// but original children that lost theirs (e.g. broken DOM) are
+		// skipped defensively.
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
@@ -922,6 +921,81 @@ func (gla *GridLayoutAlgorithm) spannedSize(sizes []float64, start, end int, gap
 		}
 	}
 	return total
+}
+
+// buildGridChildren implements CSS Grid §6.1 anonymous grid-item wrapping.
+//
+// Each contiguous run of text nodes (with display:none being transparent and
+// position:absolute/fixed interrupting the run) is grouped into a single
+// anonymous block-level grid item so that the run participates in
+// auto-placement. Mirrors the flex container's buildFlexChildren (CSS
+// Flexbox §4) so the two layout modes follow the same wrapping rules.
+func buildGridChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutInputNode {
+	var result []*LayoutInputNode
+	var textRun []*LayoutInputNode
+
+	flushTextRun := func() {
+		if len(textRun) == 0 {
+			return
+		}
+		// Per CSS Grid §6.1 (which defers to Flexbox §4): a sequence of
+		// child text content that is only collapsible white space is not
+		// rendered, so we don't wrap whitespace-only runs.
+		hasContent := false
+		for _, n := range textRun {
+			if n.IsText() {
+				if !isCSSWhitespaceOnly(n.TextContent()) {
+					hasContent = true
+					break
+				}
+			} else {
+				hasContent = true
+				break
+			}
+		}
+		if hasContent {
+			anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+			result = append(result, &LayoutInputNode{
+				style:       anonStyle,
+				children:    textRun,
+				isAnonymous: true,
+			})
+		}
+		textRun = nil
+	}
+
+	for _, child := range node.Children() {
+		if child.IsText() {
+			textRun = append(textRun, child)
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			flushTextRun()
+			continue
+		}
+		// display:none is transparent — don't interrupt the text run.
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+		// OOF children interrupt text runs (Blink behaviour).
+		pos := childStyle.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			flushTextRun()
+			result = append(result, child)
+			continue
+		}
+		// <br> joins surrounding text (LayoutBR is a LayoutText subclass in
+		// Blink), so the contiguous run wrapping picks it up.
+		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			textRun = append(textRun, child)
+			continue
+		}
+		flushTextRun()
+		result = append(result, child)
+	}
+	flushTextRun()
+	return result
 }
 
 // isAnonymousWhitespaceOnly checks if an anonymous node wraps only whitespace.
