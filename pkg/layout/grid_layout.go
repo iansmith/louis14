@@ -117,6 +117,17 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		})
 	}
 
+	// Handle auto-fill/auto-fit BEFORE placement: repeat(auto-fill, …) /
+	// repeat(auto-fit, …) is resolved against the container's free space
+	// at layout time (CSS Grid 2 §7.2.2.1). Auto-placement and explicit
+	// line resolution both depend on the final column count, so we expand
+	// the sentinel first. The block axis has no auto-fill use here, but if
+	// it had a definite size the same reasoning would apply.
+	colTracks = gla.expandAutoFillFit(colTracks, contentInlineSize, colGap)
+	if explicitBlockSize > 0 {
+		rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
+	}
+
 	// Resolve explicit placements from grid-column/grid-row/grid-area.
 	for _, item := range items {
 		gla.resolveItemPlacement(item, namedAreas, colLineNames, rowLineNames, len(colTracks), len(rowTracks))
@@ -153,14 +164,6 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	colTracks = gla.extendTracks(colTracks, numCols, autoColTrack)
 	rowTracks = gla.extendTracks(rowTracks, numRows, autoRowTrack)
-
-	// Handle auto-fill/auto-fit: expand track templates based on available space.
-	colTracks = gla.expandAutoFillFit(colTracks, contentInlineSize, colGap)
-
-	// Recount columns after expansion (auto-fill may change count).
-	if len(colTracks) > numCols {
-		numCols = len(colTracks)
-	}
 
 	// --- Track sizing: columns ---
 	colSizes := gla.resolveTrackSizes(colTracks, contentInlineSize, colGap, true, items, numCols, numRows, wdm, geom)
