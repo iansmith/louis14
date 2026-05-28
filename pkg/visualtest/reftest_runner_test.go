@@ -9,9 +9,41 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"louis14/pkg/html"
 )
+
+// perReftestTimeout caps how long a single reftest may take before the
+// outer wrapper marks it FAILED with a timeout sentinel. The inner worker
+// goroutine continues running (Go's testing package cannot safely kill
+// arbitrary goroutines), so a leaked hang costs one goroutine slot's worth
+// of memory until the test binary exits. Set high enough that legitimately
+// slow tests don't trip it, low enough that a hanging test in a 750-file
+// region (css-multicol, css-contain) does not blow the outer region budget.
+// Each hang costs perReftestTimeout seconds of wall time before the next
+// test starts.
+const perReftestTimeout = 30 * time.Second
+
+// reftestOutcome is the return code from runReftestInner. The outer
+// runReftest wrapper translates these into testing.T method calls on the
+// test's own goroutine (t.Fatal*/t.Skip* are unsafe to call from a
+// non-test goroutine per Go testing docs).
+type reftestOutcome int
+
+const (
+	reftestPass  reftestOutcome = iota // test rendered and matched a reference
+	reftestFail                        // test rendered but did not match (or panicked)
+	reftestSkip                        // test was skipped (missing ref, dom flag, etc.)
+	reftestFatal                       // unrecoverable error (file read failure)
+)
+
+// reftestResult carries the outcome of runReftestInner back to the outer
+// runReftest wrapper across a channel.
+type reftestResult struct {
+	outcome reftestOutcome
+	msg     string
+}
 
 // wptFuzzy holds the parsed WPT fuzzy annotation values.
 type wptFuzzy struct {
@@ -217,26 +249,109 @@ func TestWPTCSS3Reftests(t *testing.T) {
 
 // runReftest renders a single test file and its reference, then compares.
 // Returns true if the test passed.
+//
+// runReftest is a watchdog wrapper around runReftestInner: the inner work
+// runs in a separate goroutine, and if it doesn't return within
+// perReftestTimeout the wrapper marks the test FAILED with a timeout
+// sentinel. This bounds the cost of an infinite-loop layout bug (multiple
+// such hangs were known in css-multicol and css-contain regions before
+// C110) so the rest of a region sweep can still complete.
+//
+// The inner goroutine is leaked on timeout — Go's testing package cannot
+// safely kill arbitrary goroutines, and t.Fatal* / t.Skip* must be called
+// from the test's own goroutine per Go docs. So runReftestInner returns
+// a structured reftestResult instead of calling those methods directly;
+// the outer wrapper translates the result on the calling goroutine.
 func runReftest(t *testing.T, testPath string) bool {
+	t.Helper()
+	return runReftestWithTimeout(t, perReftestTimeout, func() reftestResult {
+		return runReftestInner(t, testPath)
+	})
+}
+
+// runReftestWithTimeout is the watchdog mechanism extracted for
+// testability. work runs in a separate goroutine; if it doesn't return
+// within timeout, runReftestWithTimeout records a timeout error on t
+// and returns false. The work goroutine is leaked on timeout.
+//
+// Note: t.Fatal* / t.Skip* in work would be unsafe — work runs on a
+// different goroutine. runReftestInner returns a reftestResult instead
+// of calling those directly; the wrapper translates here on t's
+// goroutine.
+func runReftestWithTimeout(t *testing.T, timeout time.Duration, work func() reftestResult) bool {
+	t.Helper()
+
+	r, timedOut := watchdogResult(timeout, work)
+	if timedOut {
+		t.Errorf("REFTEST TIMEOUT after %v (worker goroutine leaked; see goroutine dump on test binary exit for the hang signature)", timeout)
+		return false
+	}
+	switch r.outcome {
+	case reftestPass:
+		return true
+	case reftestFail:
+		if r.msg != "" {
+			t.Errorf("%s", r.msg)
+		}
+		return false
+	case reftestSkip:
+		t.Skip(r.msg)
+		return false
+	case reftestFatal:
+		t.Fatalf("%s", r.msg)
+		return false
+	}
+	return false
+}
+
+// watchdogResult is the pure (T-free) watchdog: run work in a goroutine,
+// return its reftestResult, or (zeroResult, true) if it didn't return
+// within timeout. Decoupled from testing.T for direct unit-test coverage
+// of the timeout mechanism.
+func watchdogResult(timeout time.Duration, work func() reftestResult) (reftestResult, bool) {
+	resultCh := make(chan reftestResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				resultCh <- reftestResult{
+					outcome: reftestFail,
+					msg:     fmt.Sprintf("REFTEST PANIC in worker: %v", r),
+				}
+			}
+		}()
+		resultCh <- work()
+	}()
+	select {
+	case r := <-resultCh:
+		return r, false
+	case <-time.After(timeout):
+		return reftestResult{}, true
+	}
+}
+
+// runReftestInner does the actual reftest work. It MUST NOT call
+// t.Fatal*, t.Skip*, or t.FailNow — those use runtime.Goexit and are
+// unsafe outside the test's own goroutine. t.Log* and t.Error* are
+// safe and may be called freely. Skip/Fatal outcomes are communicated
+// by returning a reftestResult with the corresponding outcome; the
+// outer wrapper translates them.
+func runReftestInner(t *testing.T, testPath string) reftestResult {
 	t.Helper()
 
 	content, err := os.ReadFile(testPath)
 	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-		return false
+		return reftestResult{reftestFatal, fmt.Sprintf("failed to read test file: %v", err)}
 	}
 
 	refHrefs := findRefLinks(string(content))
 	if len(refHrefs) == 0 {
-		t.Skip("no <link rel=\"match\"> found")
-		return false
+		return reftestResult{reftestSkip, "no <link rel=\"match\"> found"}
 	}
 
 	// WPT tests with flags="dom" require JavaScript DOM scripting which our
 	// static renderer does not support. Skip them rather than fail incorrectly.
 	if hasWPTFlag(string(content), "dom") {
-		t.Skip("requires dom scripting (flags=dom)")
-		return false
+		return reftestResult{reftestSkip, "requires dom scripting (flags=dom)"}
 	}
 
 	// WPT tests are designed for 800x600 minimum viewport (standard browser default).
@@ -250,8 +365,7 @@ func runReftest(t *testing.T, testPath string) bool {
 	testContent := ApplyWPTSubstitutions(string(content), testPath, testWPTRoot)
 
 	if err := RenderHTMLToFileWithBase(testContent, testPNG, width, height, testBasePath); err != nil {
-		t.Fatalf("failed to render test: %v", err)
-		return false
+		return reftestResult{reftestFatal, fmt.Sprintf("failed to render test: %v", err)}
 	}
 
 	// Try each reference. The test passes if it matches ANY reference.
@@ -307,7 +421,7 @@ func runReftest(t *testing.T, testPath string) bool {
 			} else {
 				t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
 			}
-			return true
+			return reftestResult{outcome: reftestPass}
 		}
 
 		// Strict comparison failed. If a WPT fuzzy annotation is present,
@@ -332,18 +446,17 @@ func runReftest(t *testing.T, testPath string) bool {
 				fuzzy.MaxDifference, fuzzy.TotalPixels,
 				result.TotalPixels, result.MaxDifference, result.DifferentPixels, pct,
 				edgeResult.OnEdgePixels, i+1, len(refHrefs))
-			return true
+			return reftestResult{outcome: reftestPass}
 		}
 	}
 
 	// None of the references matched.
 	if lastResult == nil {
-		t.Skipf("no usable reference files found")
-		return false
+		return reftestResult{reftestSkip, "no usable reference files found"}
 	}
 
 	pct := float64(lastResult.DifferentPixels) / float64(lastResult.TotalPixels) * 100
-	t.Errorf("REFTEST FAIL: %d/%d pixels differ (%.1f%%, max diff: %d)",
+	failMsg := fmt.Sprintf("REFTEST FAIL: %d/%d pixels differ (%.1f%%, max diff: %d)",
 		lastResult.DifferentPixels, lastResult.TotalPixels, pct, lastResult.MaxDifference)
 
 	// Save images to persistent output directory for debugging
@@ -359,7 +472,7 @@ func runReftest(t *testing.T, testPath string) bool {
 		copyFile(lastDiffPNG, filepath.Join(outputDir, baseName+"_diff.png"))
 		t.Logf("  saved to output/reftests/%s_*.png", baseName)
 	}
-	return false
+	return reftestResult{reftestFail, failMsg}
 }
 
 // copyFile copies src to dst.
@@ -569,6 +682,87 @@ func TestListReftestResults(t *testing.T) {
 	t.Logf("  Pass %%:  %.0f%%", float64(passed)/float64(len(testFiles))*100)
 
 	_ = fmt.Sprintf("placeholder") // use fmt
+}
+
+// TestReftestWatchdogTimeout asserts the per-test watchdog reports
+// timeout when the worker hangs, rather than waiting forever and
+// blocking the rest of the region sweep. Falsifiability of C110's
+// watchdog: if the watchdog regresses (e.g. the select drops the
+// time.After case), this test catches it in well under a second.
+func TestReftestWatchdogTimeout(t *testing.T) {
+	const watchdogTimeout = 200 * time.Millisecond
+
+	start := time.Now()
+	r, timedOut := watchdogResult(watchdogTimeout, func() reftestResult {
+		select {} // block forever
+	})
+	elapsed := time.Since(start)
+
+	if !timedOut {
+		t.Fatalf("watchdog did not fire: got result %+v, expected timeout", r)
+	}
+	// Watchdog must fire close to the deadline. Allow generous slack
+	// for slow CI hosts (5×).
+	if elapsed < watchdogTimeout {
+		t.Errorf("watchdog fired too early: %v < %v", elapsed, watchdogTimeout)
+	}
+	if elapsed > 5*watchdogTimeout {
+		t.Errorf("watchdog took too long: %v > %v", elapsed, 5*watchdogTimeout)
+	}
+}
+
+// TestReftestWatchdogPassthrough asserts the watchdog returns the
+// worker's result unchanged when the worker completes before the
+// deadline. Catches regressions where the watchdog forces every
+// result to timeout.
+func TestReftestWatchdogPassthrough(t *testing.T) {
+	const watchdogTimeout = 5 * time.Second
+
+	for _, tc := range []struct {
+		name string
+		want reftestResult
+	}{
+		{"pass", reftestResult{outcome: reftestPass}},
+		{"fail", reftestResult{outcome: reftestFail, msg: "deliberate fail"}},
+		{"skip", reftestResult{outcome: reftestSkip, msg: "deliberate skip"}},
+		{"fatal", reftestResult{outcome: reftestFatal, msg: "deliberate fatal"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			got, timedOut := watchdogResult(watchdogTimeout, func() reftestResult {
+				return tc.want
+			})
+			elapsed := time.Since(start)
+			if timedOut {
+				t.Fatalf("watchdog fired on fast worker (%v)", elapsed)
+			}
+			if got.outcome != tc.want.outcome || got.msg != tc.want.msg {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+			if elapsed > 500*time.Millisecond {
+				t.Errorf("pass-through too slow: %v", elapsed)
+			}
+		})
+	}
+}
+
+// TestReftestWatchdogPanicRecovery asserts the watchdog converts a
+// worker-goroutine panic into a reftestFail result rather than
+// crashing the test binary.
+func TestReftestWatchdogPanicRecovery(t *testing.T) {
+	const watchdogTimeout = 5 * time.Second
+	got, timedOut := watchdogResult(watchdogTimeout, func() reftestResult {
+		panic("boom")
+	})
+	if timedOut {
+		t.Fatal("watchdog timed out instead of recovering panic")
+	}
+	if got.outcome != reftestFail {
+		t.Errorf("expected reftestFail outcome on panic; got %+v", got)
+	}
+	if !strings.Contains(got.msg, "boom") {
+		t.Errorf("expected panic message in msg; got %q", got.msg)
+	}
 }
 
 func TestParseFuzzy(t *testing.T) {
