@@ -836,6 +836,19 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		r.transformDepth++
 	}
 
+	// Apply inherited ancestor overflow clips. Populated only on
+	// layers that escaped a parent's overflow via z-list escalation
+	// (positioned stacking-context children of an overflow-clipping
+	// parent). See PaintLayer.AncestorOverflowClips for rationale.
+	// Pushed innermost→outermost so the clip stack matches Blink's
+	// property-tree-inherited clip nodes.
+	for _, clip := range layer.AncestorOverflowClips {
+		r.dc.Push()
+		ox, oy, ow, oh := pixelSnap(clip[0], clip[1], clip[2], clip[3])
+		r.dc.DrawRectangle(ox, oy, ow, oh)
+		r.dc.Clip()
+	}
+
 	if layer.Opacity < 1.0 {
 		// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
 		r.dc.PushGroup()
@@ -843,6 +856,10 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+
+	for range layer.AncestorOverflowClips {
+		r.dc.Pop()
 	}
 
 	if layer.HasTransformPaint {
