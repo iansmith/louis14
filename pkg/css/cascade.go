@@ -278,12 +278,20 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 		switch inputType {
 		case "checkbox", "radio":
-			if _, ok := style.Get("width"); !ok {
-				style.Set("width", "13px")
-			}
-			if _, ok := style.Get("height"); !ok {
-				style.Set("height", "13px")
-			}
+			// Do NOT inject explicit width/height for checkbox/radio. Their
+			// 13×13 default is intrinsic (see pkg/layout/intrinsic_sizing.go),
+			// not a user-agent-supplied CSS declaration. Mirroring Blink:
+			// declaring it as CSS makes `width: auto` checks fail and
+			// disables justify-self/align-self: stretch in grid/flex
+			// containers (Chromium bug 768999). Keeping these auto lets the
+			// replaced-element sizing path consult intrinsic info while still
+			// honouring stretch when the container demands it.
+			//
+			// Browsers default checkbox/radio to box-sizing: border-box so
+			// that `width: 50px` on the input describes the rendered box
+			// (border included), matching how authors think about form
+			// controls and the WPT reftests that compare to a stretched cell.
+			style.Set("box-sizing", "border-box")
 			setFormBorder(style, "1px", "solid", "#767676")
 			if _, ok := style.Get("background-color"); !ok {
 				style.Set("background-color", "white")
