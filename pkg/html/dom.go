@@ -183,6 +183,28 @@ func (n *Node) GetAttribute(name string) (string, bool) {
 	return val, ok
 }
 
+// InheritedLanguage returns the language tag inherited from the DOM tree by
+// walking up the parent chain until a `lang` attribute is found (or the root
+// is reached). Mirrors Blink's `Element::ComputeInheritedLanguage()` at
+// third_party/blink/renderer/core/dom/element.cc:10328 @ SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Returns "" if no ancestor declares
+// a `lang` attribute.
+//
+// Note: louis14 ignores `xml:lang` (Blink's algorithm consults it first because
+// xml:lang takes precedence per XHTML §C.7). This is fine for HTML inputs;
+// XHTML documents are not in scope.
+func (n *Node) InheritedLanguage() string {
+	for cur := n; cur != nil; cur = cur.Parent {
+		if cur.Type != ElementNode {
+			continue
+		}
+		if v, ok := cur.GetAttribute("lang"); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // AddChild adds a child node and sets up the parent relationship
 func (n *Node) AddChild(child *Node) {
 	child.Parent = n

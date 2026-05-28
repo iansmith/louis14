@@ -254,3 +254,42 @@ func TestIsReplacedElementTag(t *testing.T) {
 		}
 	}
 }
+
+func TestInheritedLanguage(t *testing.T) {
+	// <html lang="ja"><body><div><span>x</span></div></body></html>
+	// span has no lang; should inherit "ja" from html.
+	htmlNode := &Node{Type: ElementNode, TagName: "html", Attributes: map[string]string{"lang": "ja"}}
+	body := &Node{Type: ElementNode, TagName: "body"}
+	htmlNode.AddChild(body)
+	div := &Node{Type: ElementNode, TagName: "div"}
+	body.AddChild(div)
+	span := &Node{Type: ElementNode, TagName: "span"}
+	div.AddChild(span)
+	span.AppendText("x")
+	textNode := span.Children[0]
+
+	if got := span.InheritedLanguage(); got != "ja" {
+		t.Errorf("span.InheritedLanguage() = %q, want %q", got, "ja")
+	}
+	if got := textNode.InheritedLanguage(); got != "ja" {
+		t.Errorf("textNode.InheritedLanguage() = %q, want %q", got, "ja")
+	}
+
+	// Nearer lang shadows the outer one.
+	div.Attributes = map[string]string{"lang": "en"}
+	if got := span.InheritedLanguage(); got != "en" {
+		t.Errorf("with div lang=en, span.InheritedLanguage() = %q, want %q", got, "en")
+	}
+
+	// No ancestor lang → "".
+	bare := &Node{Type: ElementNode, TagName: "div"}
+	if got := bare.InheritedLanguage(); got != "" {
+		t.Errorf("bare.InheritedLanguage() = %q, want %q", got, "")
+	}
+
+	// Empty-string lang is treated as absent (per the implementation).
+	bareWithEmpty := &Node{Type: ElementNode, TagName: "div", Attributes: map[string]string{"lang": ""}}
+	if got := bareWithEmpty.InheritedLanguage(); got != "" {
+		t.Errorf("empty lang attr: got %q, want %q", got, "")
+	}
+}
