@@ -2587,21 +2587,31 @@ func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, floa
 }
 
 // backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
-// Uses Blink's Inset operation: shrink Rx by horizontal inset, Ry by vertical.
+// Uses Blink's Inset operation: shrink Rx by horizontal inset, Ry by vertical,
+// then constrains the result so it fits inside the inset rect (Skia/Blink's
+// SkRRect::setRectRadii auto-scales any radii pair exceeding half a side).
+// Without the constrain step, e.g. border-radius:100% on an outer box shrunk
+// by border+padding can produce inset radii larger than the content box,
+// which the path generator emits as a backward LineTo and a malformed shape.
 func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) css.EllipticalRadii {
 	radii := layer.BorderRadius
 	box := layer.Box
+	var top, right, bottom, left float64
 	switch clip {
 	case css.BackgroundClipPaddingBox:
-		return radii.Inset(box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left)
+		top, right, bottom, left = box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left
 	case css.BackgroundClipContentBox:
-		return radii.Inset(
-			box.Border.Top+box.Padding.Top,
-			box.Border.Right+box.Padding.Right,
-			box.Border.Bottom+box.Padding.Bottom,
-			box.Border.Left+box.Padding.Left)
+		top = box.Border.Top + box.Padding.Top
+		right = box.Border.Right + box.Padding.Right
+		bottom = box.Border.Bottom + box.Padding.Bottom
+		left = box.Border.Left + box.Padding.Left
+	default: // border-box
+		return radii
 	}
-	return radii
+	inset := radii.Inset(top, right, bottom, left)
+	innerW := box.Width - left - right
+	innerH := box.Height - top - bottom
+	return inset.ConstrainRadii(innerW, innerH)
 }
 
 // backgroundClipRadii returns radii for background-color's clip area.
@@ -4435,12 +4445,17 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	// between outer and inner rounded rects, clipped to each side's region.
 	outerRadii := layer.BorderRadius
 
-	// Inner rounded rect (border-box inset by border widths) — Blink's Inset.
+	// Inner rounded rect (border-box inset by border widths) — Blink's Inset,
+	// then Skia/Blink's auto-constrain so the inner radii fit inside the inner
+	// rect. Without the constrain, e.g. border-radius:100% with a thick border
+	// produces inner radii larger than the inner rect and the path-reverse
+	// pass emits a backward LineTo, leaking a wedge of the BR corner area.
 	ix := x + bw.Left
 	iy := y + bw.Top
 	iw := w - bw.Left - bw.Right
 	ih := h - bw.Top - bw.Bottom
-	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left)
+	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left).
+		ConstrainRadii(iw, ih)
 
 	type borderSide struct {
 		width                      float64
