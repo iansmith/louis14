@@ -580,6 +580,23 @@ func parseColorWithPercentCC(s string, currentColorPtr *Color) (Color, float64) 
 		return *currentColorPtr, pct
 	}
 
+	// Nested color-mix() as an operand: propagate the currentColor down so
+	// the inner mix's `currentcolor` references resolve against the same
+	// element-level value, not against the static ParseColor path (which
+	// can't see currentcolor). Mirrors Blink's
+	// `CSSColorMixValue::Resolve()` which threads the resolution context
+	// through nested CSSColorMixValue children
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if currentColorPtr != nil {
+		lower := strings.ToLower(colorStr)
+		if strings.HasPrefix(lower, "color-mix(") && strings.HasSuffix(lower, ")") {
+			if c, ok := parseColorMixInner(colorStr, currentColorPtr); ok {
+				return c, pct
+			}
+			return Color{}, pct
+		}
+	}
+
 	c, ok := ParseColor(colorStr)
 	if !ok {
 		return Color{}, pct
