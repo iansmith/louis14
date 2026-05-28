@@ -359,13 +359,26 @@ func expandNesting(css string, parentSelector string) string {
 		}
 		body := part[bracePos+1 : closePos]
 
-		// Handle at-rules nested inside a selector block (e.g., @media, @supports, @container)
+		// Handle conditional at-rules nested inside a selector block. Per CSS
+		// Nesting 1 §3.2, when a conditional group at-rule (CSS Conditional
+		// 4 §1: @media, @supports, @container, @layer, @scope) is nested
+		// inside a style rule, the wrapper applies to a synthesized "nested
+		// declarations rule" whose selector is the parent. Even at TOP level,
+		// the body of these at-rules must be passed through expandNesting
+		// recursively so nested selectors inside the body get expanded —
+		// otherwise `@supports selector(&) { p { & { ... } } }` leaves the
+		// inner `& { ... }` unexpanded and the cascade silently loses the
+		// override.
 		selLower := strings.ToLower(sel)
 		if strings.HasPrefix(selLower, "@media") || strings.HasPrefix(selLower, "@supports") ||
-			strings.HasPrefix(selLower, "@container") {
+			strings.HasPrefix(selLower, "@container") || strings.HasPrefix(selLower, "@layer") ||
+			strings.HasPrefix(selLower, "@scope") {
 			if parentSelector != "" {
-				// Nested @media inside a selector: lift and wrap parent selector inside
-				// @media (cond) { parentSel { decls } }
+				// Nested at-rule inside a selector: lift and wrap the parent
+				// selector inside the at-rule, e.g.
+				//   .test-11 { @layer { & { decls } } }
+				// becomes
+				//   @layer { :is(.test-11) { decls } }
 				flatDecls, nestedParts := separateDeclsAndNested(body)
 				var innerBlock strings.Builder
 				if strings.TrimSpace(flatDecls) != "" {
@@ -374,16 +387,33 @@ func expandNesting(css string, parentSelector string) string {
 					innerBlock.WriteString(flatDecls)
 					innerBlock.WriteString(" }\n")
 				}
-				// Recurse for any nested rules inside the @media body
+				// Recurse for any nested rules inside the at-rule body.
 				innerBlock.WriteString(expandNesting(nestedParts, parentSelector))
-				result.WriteString(sel)
+				// For @scope (<scope-start>) the prelude itself may contain
+				// `&` — resolve before emission so the lifted selector is
+				// consistent with the rest of the cascade. @layer's prelude
+				// is an <ident> and never references &; @media / @supports /
+				// @container preludes are queries and don't either, but a
+				// blanket resolve is harmless.
+				resolvedSel := sel
+				if strings.Contains(sel, "&") {
+					resolvedSel = strings.ReplaceAll(sel, "&", wrapParentInIs(parentSelector))
+				}
+				result.WriteString(resolvedSel)
 				result.WriteString(" { ")
 				result.WriteString(innerBlock.String())
 				result.WriteString("}\n")
 			} else {
-				// Top-level at-rule — pass through unchanged
-				result.WriteString(part)
-				result.WriteByte('\n')
+				// Top-level at-rule: still recurse into the body so any
+				// nested rules inside (e.g. `p { & { ... } }`) get expanded
+				// against their own parent selector. We hand the body to
+				// expandNesting with parentSelector="" — same context as
+				// top-level — letting the normal style-rule branch handle
+				// each inner rule.
+				result.WriteString(sel)
+				result.WriteString(" { ")
+				result.WriteString(expandNesting(body, ""))
+				result.WriteString("}\n")
 			}
 			continue
 		}
