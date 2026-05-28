@@ -5119,6 +5119,25 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		decorExt := 0
 		topExt := 0
 
+		// Inline-axis buffer extensions for text-decoration-inset with
+		// negative values (which extend the decoration past the fragment's
+		// inline-start / inline-end edges). The buffer X axis is the inline
+		// axis pre-rotation; without extending the buffer, a negative inset
+		// would clip at the buffer edge and produce no extension after
+		// rotation. CSS Text Decor 4 §3.6 (text-decoration-inset).
+		//
+		// Gated on HasDecoratingBox + IsFirstFragment/IsLastFragment so the
+		// extension only fires at the actual outer edges of the decorating
+		// box (per LOU-149 Phase 4 metadata + the C68 multi-line block
+		// extension). For a single-fragment inline decoration (e.g.
+		// `<u>brown</u>` in a vertical writing mode) the layout-side
+		// stamping marks HasDecoratingBox=true with IsFirstFragment=true
+		// AND IsLastFragment=true so both edges extend. For multi-line
+		// block decorations, only the first line's first-frag and last
+		// line's last-frag extend.
+		inlineStartExt := 0
+		inlineEndExt := 0
+
 		// underBelow: which side of the text the underline grows toward in the
 		// pre-rotation buffer. Overline support in this branch is currently
 		// limited — see the paint block below for the rationale.
@@ -5146,14 +5165,57 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 						topExt = needed
 					}
 				}
+				// Inline-axis extension for negative insets.
+				//
+				// Two stamp paths for "this fragment IS at the decorating-
+				// box edge":
+				//
+				//  (a) HasDecoratingBox=true: LOU-149 inline-multi-fragment
+				//      or C68 multi-line-block layout-stamped metadata.
+				//      Trust td.IsFirstFragment / td.IsLastFragment.
+				//
+				//  (b) HasDecoratingBox=false: layout didn't stamp because
+				//      no fragmentation is happening. Cascade default has
+				//      IsFirstFragment=true AND IsLastFragment=true. Treat
+				//      this fragment as the complete decorating box and
+				//      extend at both edges — this is the single-fragment
+				//      inline path (e.g. `<u>brown</u>` in vertical-rl).
+				//
+				// Branch (b) requires BOTH flags true so we don't over-
+				// extend in a non-LOU-149-tracked path where they might
+				// differ (defensive).
+				appliesAtStart := false
+				appliesAtEnd := false
+				if td.HasDecoratingBox {
+					appliesAtStart = td.IsFirstFragment
+					appliesAtEnd = td.IsLastFragment
+				} else if td.IsFirstFragment && td.IsLastFragment {
+					appliesAtStart = true
+					appliesAtEnd = true
+				}
+				if appliesAtStart && td.Inset.InlineStart < 0 {
+					ext := int(math.Ceil(-td.Inset.InlineStart))
+					if ext > inlineStartExt {
+						inlineStartExt = ext
+					}
+				}
+				if appliesAtEnd && td.Inset.InlineEnd < 0 {
+					ext := int(math.Ceil(-td.Inset.InlineEnd))
+					if ext > inlineEndExt {
+						inlineEndExt = ext
+					}
+				}
 			}
 		}
 
-		lhExt := lh + decorExt + topExt // enlarged buffer height
-		textOff := topExt               // srcY where text glyph top lands
+		lhExt := lh + decorExt + topExt              // enlarged buffer height
+		taExt := ta + inlineStartExt + inlineEndExt  // enlarged buffer width (inline axis)
+		textOff := topExt                            // srcY where text glyph top lands
 
-		// Draw horizontal text into an off-screen buffer.
-		src := image.NewRGBA(image.Rect(0, 0, ta, lhExt))
+		// Draw horizontal text into an off-screen buffer. Text is painted
+		// at buffer X = inlineStartExt so the inlineStartExt columns to
+		// its left remain available for negative-inset overflow.
+		src := image.NewRGBA(image.Rect(0, 0, taExt, lhExt))
 		childDC := r.dc.NewChildContext(src)
 		childDC.SetColor(color.RGBA{
 			R: layer.TextColor.R,
@@ -5162,9 +5224,9 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			A: uint8(layer.TextColor.A * 255),
 		})
 		if len(layer.FontFeatures) > 0 {
-			childDC.DrawTextWithFeatures(text, fontID, 0, ascent+float64(textOff), layer.FontFeatures)
+			childDC.DrawTextWithFeatures(text, fontID, float64(inlineStartExt), ascent+float64(textOff), layer.FontFeatures)
 		} else {
-			childDC.DrawText(text, fontID, 0, ascent+float64(textOff))
+			childDC.DrawText(text, fontID, float64(inlineStartExt), ascent+float64(textOff))
 		}
 
 		// Paint decorations into the buffer (Strategy A). Temporarily swap r.dc
@@ -5204,13 +5266,24 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			origDC := r.dc
 			r.dc = childDC
 			if underBelow {
-				virtualBox := &layout.Box{X: 0, Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+				// virtualBox X = inlineStartExt anchors the inset math so
+				// drawOneAppliedTextDecoration's
+				//   logicalStart = box.X + Inset.InlineStart
+				//   logicalEnd   = box.X + textWidth - Inset.InlineEnd
+				// lands the painted rect inside the extended buffer
+				// [0, taExt) — and HasDecoratingBox=true branches anchor
+				// at box.X + DecoratingBoxOffsetX, which Stays valid too.
+				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
 				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent)
 			} else if len(layer.AppliedTextDecorations) > 0 {
 				// Above-text underline path: paint each rect manually with the
 				// offset moving srcY UP (away from text), so after rotation
 				// the offset moves the decoration FURTHER from the text in
-				// the under-direction.
+				// the under-direction. Inset trims/extends the rect on the
+				// inline axis (buffer X); HasDecoratingBox/first/last
+				// fragment flags gate inset application at the decorating-
+				// box edges so interior line breaks don't extend at the line
+				// wrap. Mirrors drawOneAppliedTextDecoration's logic.
 				gap := descent * 0.25
 				info := newTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0)
 				for _, td := range layer.AppliedTextDecorations {
@@ -5219,23 +5292,41 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					}
 					th := info.computeThickness(td)
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
+					xStart := float64(inlineStartExt)
+					xEnd := float64(inlineStartExt + ta)
+					if td.HasDecoratingBox {
+						if td.IsFirstFragment {
+							xStart += td.Inset.InlineStart
+						}
+						if td.IsLastFragment {
+							xEnd -= td.Inset.InlineEnd
+						}
+					} else {
+						xStart += td.Inset.InlineStart
+						xEnd -= td.Inset.InlineEnd
+					}
+					if xEnd <= xStart {
+						continue
+					}
 					childDC.SetColor(color.RGBA{
 						R: td.Color.R,
 						G: td.Color.G,
 						B: td.Color.B,
 						A: uint8(td.Color.A * 255),
 					})
-					childDC.DrawRectangle(0, rectTopSrcY, float64(ta), th)
+					childDC.DrawRectangle(xStart, rectTopSrcY, xEnd-xStart, th)
 					childDC.Fill()
 				}
 			}
 			r.dc = origDC
 		}
 
-		// Rotate pixels 90° into destination (lhExt × ta) buffer.
-		rot := image.NewRGBA(image.Rect(0, 0, lhExt, ta))
+		// Rotate pixels 90° into destination (lhExt × taExt) buffer. The
+		// extended buffer width (taExt = ta + inlineStartExt + inlineEndExt)
+		// carries negative-inset decoration overflow on the inline axis.
+		rot := image.NewRGBA(image.Rect(0, 0, lhExt, taExt))
 		for y := 0; y < lhExt; y++ {
-			for x := 0; x < ta; x++ {
+			for x := 0; x < taExt; x++ {
 				c := src.RGBAAt(x, y)
 				if c.A == 0 {
 					continue
@@ -5244,8 +5335,8 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					// 90° CW: (x,y) → (lhExt-1-y, x)
 					rot.SetRGBA(lhExt-1-y, x, c)
 				} else {
-					// 90° CCW: (x,y) → (y, ta-1-x)
-					rot.SetRGBA(y, ta-1-x, c)
+					// 90° CCW: (x,y) → (y, taExt-1-x)
+					rot.SetRGBA(y, taExt-1-x, c)
 				}
 			}
 		}
@@ -5270,7 +5361,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			blitShift = topExt
 		}
 		blitX := int(math.Round(box.X)) - blitShift
-		r.dc.DrawImage(rot, blitX, int(math.Round(box.Y)))
+		// Inline-axis blit shift accounts for the inlineStartExt /
+		// inlineEndExt columns that carry negative-inset overflow.
+		//   CW rotation: low buffer X → low dest Y. Text glyphs sit at
+		//     buffer X = inlineStartExt → dest Y = inlineStartExt; shift
+		//     blitY up by inlineStartExt to land them at dest Y = box.Y.
+		//   CCW rotation: low buffer X → high dest Y. Text glyphs at
+		//     buffer X = inlineStartExt → dest Y = taExt-1-inlineStartExt;
+		//     the inlineEndExt rows extend off the original destination
+		//     bottom, so shift blitY up by inlineEndExt to keep the text
+		//     rows where they were.
+		blitY := int(math.Round(box.Y))
+		if rotCW {
+			blitY -= inlineStartExt
+		} else {
+			blitY -= inlineEndExt
+		}
+		r.dc.DrawImage(rot, blitX, blitY)
 
 		// Per-character emphasis marks: each mark renders as its own small
 		// rotated off-screen buffer at the annotation-equivalent screen

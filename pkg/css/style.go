@@ -12993,6 +12993,18 @@ type AppliedTextDecoration struct {
 	DecoratingBoxWidth   float64 // total inline-content width across all fragments of this decorating box on this row
 	IsFirstFragment      bool    // source-order first fragment of the decorating box on this line (matches layout.Box.IsFirstFragment)
 	IsLastFragment       bool    // source-order last fragment of the decorating box on this line (matches layout.Box.IsLastFragment)
+
+	// IsClone caches whether the originating decoration-establishing element
+	// resolved `box-decoration-break: clone`. With clone, every fragment is
+	// its own logical edge for inset trimming — text-decoration-inset
+	// applies at BOTH ends of every fragment, not just the outer
+	// decorating-box edges. Set at cascade time
+	// (computeOwnTextDecorationContribution) and consulted by the layout-
+	// side multi-fragment stamper to keep IsFirstFragment / IsLastFragment
+	// both true on every fragment of a clone decoration. Mirrors
+	// Blink's BoxDecorationData::SidesToInclude returning "all sides" on
+	// every fragment when box-decoration-break: clone is resolved.
+	IsClone bool
 }
 
 // GetAppliedTextDecorations returns the accumulated decoration vector for this
@@ -13242,6 +13254,7 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		// (LOU-149 Item 2) overwrites these per fragment when it knows better.
 		IsFirstFragment: true,
 		IsLastFragment:  true,
+		IsClone:         s.GetBoxDecorationBreak() == BoxDecorationBreakClone,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c
