@@ -244,6 +244,25 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 					continue
 				}
 			}
+			// CSS-wide keywords in a keyframe value (`initial`, `inherit`,
+			// `unset`, `revert`, `revert-layer`) resolve against the
+			// underlying cascaded value when the effect is sampled (Web
+			// Animations §3.4.3 / CSS Animations §2.2). For the animation
+			// origin, the underlying value is the value cascaded BEFORE
+			// animations applied — which is exactly `base`. We substitute
+			// here so subsequent interpolation works on real values.
+			//
+			// `revert-layer` in a keyframe rolls back to the value the
+			// property would have without the keyframe's own (animation)
+			// origin, which for the simple cases below is also base.
+			// Mirrors Blink CSSToStyleMap::MapAnimationFromTo +
+			// StyleResolver::ApplyAnimation behavior at SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			if base != nil && isAnimationCSSWideKeyword(v) {
+				if bv, bok := base.Get(prop); bok {
+					v = bv
+				}
+			}
 			list = append(list, pkf{offset: kf.offsetOrSelf(), value: v, easing: kf.Easing})
 		}
 		if len(list) == 0 {
@@ -340,11 +359,64 @@ func interpolateValue(prop, from, to string, t float64) string {
 			return lerpColor(c1, c2, t)
 		}
 	}
+	// <length> interpolation for px values (and unitless `0`).
+	// Mirrors Blink LengthInterpolationFunctions::MaybeConvertCSSValue at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, narrowed to the px
+	// case the in-scope reftests exercise (revert-layer-010,
+	// revert-layer-011 substitute base px values into keyframes).
+	if v, ok := interpolatePxLength(from, to, t); ok {
+		return v
+	}
 	// Discrete fallback for unsupported value types.
 	if t < 1 {
 		return from
 	}
 	return to
+}
+
+// interpolatePxLength linearly interpolates between two CSS lengths whose
+// values are bare numbers or `<number>px`. Returns the result as a px string,
+// or false if either input is not a recognized px-or-zero length.
+func interpolatePxLength(from, to string, t float64) (string, bool) {
+	a, aok := parsePxOrZero(from)
+	b, bok := parsePxOrZero(to)
+	if !aok || !bok {
+		return "", false
+	}
+	v := a + (b-a)*t
+	return formatPx(v), true
+}
+
+// parsePxOrZero parses a CSS length expressed in px (e.g. "150px") or the
+// unitless `0`. Returns the numeric value in px and true on success.
+func parsePxOrZero(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "0" {
+		return 0, true
+	}
+	if strings.HasSuffix(s, "px") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "px"), 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	return 0, false
+}
+
+// isAnimationCSSWideKeyword reports whether a keyframe value is a CSS-wide
+// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`) that
+// must be substituted with the underlying cascaded value before
+// interpolation (Web Animations §3.4.3 / CSS Animations §2.2). The list
+// excludes `default` / `none` because they are not CSS-wide keywords for
+// property values (cf. style.go::isCSSWideKeyword, which serves a different
+// caller and includes the broader custom-ident reservation set).
+func isAnimationCSSWideKeyword(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "initial", "inherit", "unset", "revert", "revert-layer":
+		return true
+	}
+	return false
 }
 
 // lerpColor linearly interpolates two colors in (non-premultiplied) sRGB and
