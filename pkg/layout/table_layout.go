@@ -99,13 +99,59 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		availableInline = 0
 	}
 
+	// CSS Tables §11.5 / §11.5.3 "Computing the table height":
+	// the table's used block-size is max(intrinsic content, explicit height,
+	// min-height) clamped by max-height. Tables treat width/height as
+	// border-box per the table border-box quirk (see fragment_geometry.go
+	// "isTable && box-sizing != border-box" branch).
+	//
+	// CalculateInitialFragmentGeometry only applies min/max-block-size when
+	// the resolved block-size is definite (fragment_geometry.go ~L879). For
+	// tables where height is auto but min-height is set (e.g.
+	// css-tables/min-height-table.html), that bypasses min-height entirely.
+	// Resolve a separate explicitTableBorderBoxBlock that combines the
+	// definite-height path with min/max-block-size so both the row excess
+	// distribution (CSS 2.1 §17.5.3) and the final-size floor below see the
+	// floored value.
+	//
+	// Mirrors Blink's TableLayoutAlgorithm::ComputeBlockSize at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which always honors
+	// min/max-block-size on tables regardless of whether height is auto.
+	explicitTableBorderBoxBlock := geom.BorderBoxSize.BlockSize
+	minBlockContent := ResolveMinBlockSize(tla.style, wdm, tla.space, geom).Float64()
+	maxBlockContentLU, hasMaxBlock := ResolveMaxBlockSize(tla.style, wdm, tla.space, geom)
+	tableUsesBorderBoxQuirk := tla.style.GetBoxSizing() != "border-box"
+	contentToBorderBox := func(content float64) float64 {
+		if tableUsesBorderBoxQuirk {
+			// Table border-box quirk (see fragment_geometry.go ~L795):
+			// for content-box tables, declared height is treated as
+			// border-box. applyBoxSizingBlock didn't subtract BP, so the
+			// content value IS the border-box value here.
+			return content
+		}
+		return content + geom.BlockBorderPadding()
+	}
+	// CSS Sizing §1.2: apply max first, then min. min wins when min > max.
+	if hasMaxBlock {
+		maxBorderBox := contentToBorderBox(maxBlockContentLU.Float64())
+		if explicitTableBorderBoxBlock != Indefinite && explicitTableBorderBoxBlock > maxBorderBox {
+			explicitTableBorderBoxBlock = maxBorderBox
+		}
+	}
+	if minBlockContent > 0 {
+		minBorderBox := contentToBorderBox(minBlockContent)
+		if explicitTableBorderBoxBlock == Indefinite || minBorderBox > explicitTableBorderBoxBlock {
+			explicitTableBorderBoxBlock = minBorderBox
+		}
+	}
+
 	// Record the table's content-box size so row / section / cell fragments
 	// added via builder.AddChild get their position:relative offset resolved
 	// against the correct CB (CSS 2.1 §9.4.3). Mirrors Blink's
 	// FragmentBuilder::SetAvailableSize usage in table_layout_algorithm.cc.
 	tableContentBlock := Indefinite
-	if geom.BorderBoxSize.BlockSize != Indefinite {
-		tableContentBlock = geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+	if explicitTableBorderBoxBlock != Indefinite {
+		tableContentBlock = explicitTableBorderBoxBlock - geom.BlockBorderPadding()
 		if tableContentBlock < 0 {
 			tableContentBlock = 0
 		}
@@ -426,6 +472,20 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.
 				cellBlockForRow = cellResult.Fragment.Size.WidthF64()
+			} else if !isOrthogonalCell {
+				// CSS Tables 3 §height-distribution: a cell's contribution to
+				// its row's intrinsic block-size is max(cell's explicit
+				// height-clamped fragment, cell's intrinsic content
+				// block-size). When the cell has `overflow:hidden` + a small
+				// `height`, the fragment is clamped at the explicit height
+				// but the content's natural extent (IntrinsicBlockSize) is
+				// still what the row should grow to (the cell will be
+				// re-laid-out at the row's final height in Phase 3).
+				// Mirrors Blink's TableLayoutUtils::ComputeMinimumRowBlockSize
+				// taking max(explicit, content) at SHA 4883d11fef.
+				if cellResult.IntrinsicBlockSize > cellBlockForRow {
+					cellBlockForRow = cellResult.IntrinsicBlockSize
+				}
 			}
 			// For anonymous cell wrappers (non-table-structural children wrapped per
 			// CSS Tables §2.1), the child's block margins must be included in the row
@@ -552,8 +612,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §17.5.3: if the table has an explicit block-size larger
 	// than its intrinsic content, distribute the excess across the rows.
-	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
-		explicitContentBlock := geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+	// `explicitTableBorderBoxBlock` is geom.BorderBoxSize.BlockSize floored
+	// by min-block-size and clamped by max-block-size — see the comment at
+	// the top of Layout(). Reading from it (not directly from geom) ensures
+	// min-height triggers the distribution even when CSS height is auto.
+	if explicitTableBorderBoxBlock != Indefinite && len(rows) > 0 {
+		explicitContentBlock := explicitTableBorderBoxBlock - geom.BlockBorderPadding()
 		if explicitContentBlock < 0 {
 			explicitContentBlock = 0
 		}
@@ -1184,15 +1248,22 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	contentInlineSize += spacingForCols // include inline spacing in total
 	finalBlockSize := blockOffset
 
-	// CSS 2.1 §17.5.3: honor an explicit table block-size as a floor, even
-	// when the table has no rows (or fewer rows than the specified height
-	// requires). The per-row distribution above (line 489) only runs when
-	// len(rows) > 0; for empty tables we still need to apply the specified
-	// height so `<table style="height:30px"></table>` renders 30px tall.
+	// CSS 2.1 §17.5.3 + CSS Tables 3 §11.5.3 "Computing the table height":
+	// honor an explicit table block-size as a floor, even when the table has
+	// no rows (or fewer rows than the specified height requires).
+	// `explicitTableBorderBoxBlock` is min/max-height-resolved — see the top
+	// of Layout().
+	//
+	// CSS Tables 3 §11.5.3 specifies that the used table block-size is the
+	// MAX of intrinsic content and the explicit/min/max-resolved value —
+	// i.e. max-height cannot shrink the table below its intrinsic content
+	// (`max-height: 0` on a table with rows still renders content). This
+	// differs from the standard CSS Sizing model and matches Blink/Gecko
+	// behavior (css-tables/max-height-table.html).
 	borderBoxBlock := finalBlockSize + geom.BlockBorderPadding()
-	if geom.BorderBoxSize.BlockSize != Indefinite &&
-		geom.BorderBoxSize.BlockSize > borderBoxBlock {
-		borderBoxBlock = geom.BorderBoxSize.BlockSize
+	if explicitTableBorderBoxBlock != Indefinite &&
+		explicitTableBorderBoxBlock > borderBoxBlock {
+		borderBoxBlock = explicitTableBorderBoxBlock
 	}
 
 	// Inline-size floor mirroring the block-size floor above: when a parent
