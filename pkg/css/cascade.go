@@ -1037,8 +1037,26 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	// ParseStylesheet uses for embedded sheets.
 	ctx := NewParserContextFromDocument(doc)
 
+	// CSS Values 4 §5.1.2: When non-overlay scrollbars are unconditionally
+	// present on the root element, `vw`/`vh` resolve against the small
+	// viewport (viewport minus classic scrollbar reservation). Mirrors
+	// Blink's `LayoutView::ViewportSizeForViewportUnits` selection between
+	// small/large viewport size at
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// We don't know the final layout-time html box until layout runs, so
+	// detect unconditional scrollbars from the cascaded `overflow*`/`width`
+	// properties: `overflow:scroll` unconditionally reserves; `overflow:
+	// auto` with html.width that resolves larger than the viewport (e.g.
+	// `width: 200%`) overflows the ICB and thus also reserves. A first-
+	// pass cascade with the raw viewport gives us the cascaded overflow +
+	// width to make the decision; the final pass uses the resulting
+	// effective viewport size for all elements (consistent vw/vh across
+	// the document, matching Blink).
+	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
+
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight, ctx)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -1049,6 +1067,137 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	}
 
 	return styles
+}
+
+// effectiveViewportForUnits returns the viewport (width, height) to use for
+// vw/vh/vmin/vmax resolution. When the root `<html>` element has
+// unconditional non-overlay scrollbars (overflow:scroll on either axis, or
+// overflow:auto with content that overflows the ICB), the viewport is
+// reduced by the classic scrollbar width on the affected axis. Mirrors the
+// Blink `LayoutView::ViewportSizeForViewportUnits` switch between
+// small/large viewport at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Performs a first-pass cascade for just the root html element using the
+// raw viewport so we have its cascaded `overflow*` and `width` to inspect.
+// The cascade is cheap (single element), and the result is discarded; the
+// final cascade in ApplyStylesToDocument uses the reduced viewport size.
+func effectiveViewportForUnits(doc *html.Document, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) (float64, float64) {
+	if doc == nil || doc.Root == nil {
+		return viewportWidth, viewportHeight
+	}
+	htmlNode := findHTMLElement(doc.Root)
+	if htmlNode == nil {
+		return viewportWidth, viewportHeight
+	}
+	// First-pass cascade for root html with raw viewport.
+	rootStyle := ComputeStyle(htmlNode, stylesheets, viewportWidth, viewportHeight, ctx)
+	if rootStyle == nil {
+		return viewportWidth, viewportHeight
+	}
+
+	// Classic scrollbar width per CSS Scrollbars Styling Module Level 1.
+	// Louis14's classicScrollbarWidth (pkg/layout/fragment_geometry.go)
+	// returns 17 px for `auto`, 10 px for `thin`, and 0 for `none`. Mirror
+	// that exact policy here so the vw/vh reduction is consistent with the
+	// layout-time scrollbar reservation.
+	var scrollbarWidth float64
+	switch rootStyle.GetScrollbarWidth() {
+	case "thin":
+		scrollbarWidth = 10
+	case "none":
+		scrollbarWidth = 0
+	default:
+		scrollbarWidth = 17
+	}
+
+	reduceX, reduceY := scrollbarReservationForRoot(rootStyle, viewportWidth, viewportHeight)
+	effW := viewportWidth
+	effH := viewportHeight
+	if reduceX {
+		effW -= scrollbarWidth
+	}
+	if reduceY {
+		effH -= scrollbarWidth
+	}
+	return effW, effH
+}
+
+// scrollbarReservationForRoot reports whether the root html element will
+// have unconditional non-overlay scrollbars on the inline / block axes,
+// indicating that vw / vh should resolve against the small viewport.
+//
+// Returns (reduceX, reduceY). reduceX is true when the X-axis scrollbar
+// reservation is unconditional (overflow-x: scroll, or overflow-x: auto
+// with html width that exceeds the viewport). Same for Y.
+func scrollbarReservationForRoot(rootStyle *Style, viewportWidth, viewportHeight float64) (bool, bool) {
+	if rootStyle == nil {
+		return false, false
+	}
+	overflowX := rootStyle.GetOverflowX()
+	overflowY := rootStyle.GetOverflowY()
+	// overflow: scroll unconditionally reserves.
+	scrollX := overflowX == OverflowScroll
+	scrollY := overflowY == OverflowScroll
+	// overflow: auto reserves only when content actually overflows. We
+	// approximate the overflow check by comparing the cascaded `width` /
+	// `height` against the viewport — when set to a value larger than the
+	// viewport (e.g. `width: 200%` or `width: 1600px` on an 800px viewport),
+	// the html element itself overflows the ICB and scrollbars appear.
+	autoX := overflowX == OverflowAuto
+	autoY := overflowY == OverflowAuto
+	if autoX || autoY {
+		w, h := rootDeclaredSizeAgainstViewport(rootStyle, viewportWidth, viewportHeight)
+		if autoX && w > viewportWidth {
+			scrollX = true
+		}
+		if autoY && h > viewportHeight {
+			scrollY = true
+		}
+	}
+	return scrollX, scrollY
+}
+
+// rootDeclaredSizeAgainstViewport returns the cascaded width and height of
+// the root html element resolved against the viewport (for percentage /
+// vw / vh values). Returns (0, 0) when not declared. Used by
+// scrollbarReservationForRoot to detect when the root element overflows
+// the ICB and triggers unconditional scrollbar reservation.
+func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHeight float64) (float64, float64) {
+	if rootStyle == nil {
+		return 0, 0
+	}
+	var w, h float64
+	if wVal, ok := rootStyle.Get("width"); ok {
+		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+			w = length
+		} else if pct, ok := ParsePercentage(wVal); ok {
+			w = pct / 100.0 * viewportWidth
+		}
+	}
+	if hVal, ok := rootStyle.Get("height"); ok {
+		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+			h = length
+		} else if pct, ok := ParsePercentage(hVal); ok {
+			h = pct / 100.0 * viewportHeight
+		}
+	}
+	return w, h
+}
+
+// findHTMLElement returns the root <html> element, or nil if none.
+func findHTMLElement(node *html.Node) *html.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Type == html.ElementNode && node.TagName == "html" {
+		return node
+	}
+	for _, child := range node.Children {
+		if found := findHTMLElement(child); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // ParseDocumentStylesheets parses all stylesheets from a document and
