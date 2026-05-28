@@ -4175,6 +4175,33 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
+		// CSS Multi-column 1 §3.2 `column-count`: <integer [1,∞]> | auto. A
+		// non-integer (`2.1`), zero, or negative value is invalid and must NOT
+		// overwrite an earlier valid declaration. Required by WPT
+		// multicol-count-non-integer-001/002/003,
+		// multicol-count-negative-001/002. Mirrors Blink's
+		// CSSPropertyParserHelpers::ConsumeColumnCount at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if property == "column-count" && !isValidColumnCountValue(value) {
+			continue
+		}
+
+		// CSS Multi-column 1 §3.1 `column-width`: <length [0,∞]> | auto. A
+		// non-length keyword or a negative length is invalid.
+		if property == "column-width" && !isValidColumnWidthValue(value) {
+			continue
+		}
+
+		// CSS Multi-column 1 §3.3 `columns` shorthand:
+		// `auto | [ <column-width> || <column-count> ] [ / <column-height> ]?`.
+		// At most 2 head tokens (one width, one count, or `auto`). Each must
+		// itself be a valid <column-width> or <column-count>. Required by WPT
+		// multicol-columns-invalid-001/002. We validate before expandShorthand
+		// so an invalid shorthand never poisons the cascade.
+		if property == "columns" && !isValidColumnsShorthand(value) {
+			continue
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {
@@ -4591,6 +4618,137 @@ func isSystemFontKeyword(lowered string) bool {
 		return true
 	}
 	return false
+}
+
+// isValidColumnCountValue checks if value is a valid CSS column-count:
+// `auto | <integer [1,∞]>` (CSS Multi-column 1 §3.2). Defers var()/attr()/
+// CSS-wide keywords to cascade-time resolution.
+func isValidColumnCountValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "auto" {
+		return true
+	}
+	// CSS-wide keywords accepted on every property; resolved later.
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	// Must be a positive integer literal (no decimal point, no exponent).
+	if trimmed == "" {
+		return false
+	}
+	for i, c := range trimmed {
+		if i == 0 && (c == '+' || c == '-') {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	n, err := strconv.Atoi(trimmed)
+	return err == nil && n >= 1
+}
+
+// isValidColumnWidthValue checks if value is a valid CSS column-width:
+// `auto | <length [0,∞]>` (CSS Multi-column 1 §3.1).
+func isValidColumnWidthValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "auto" {
+		return true
+	}
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	w, ok := ParseLength(trimmed)
+	if !ok {
+		return false
+	}
+	return w >= 0
+}
+
+// isValidColumnsShorthand checks if value is a valid CSS columns shorthand:
+// `auto | [ <column-width> || <column-count> ] [ / <column-height> ]?`
+// (CSS Multi-column 1 §3.3 + L2 §4.1 height suffix).
+//
+// The head segment (before `/`) is at most two whitespace-separated tokens:
+// at most one column-width and at most one column-count. The tail segment
+// (after `/`) is a single <column-height> token: a length or `auto`.
+func isValidColumnsShorthand(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "auto" || lower == "inherit" || lower == "initial" ||
+		lower == "unset" || lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	headValue, heightValue, hasSlash := strings.Cut(trimmed, "/")
+	parts := strings.Fields(headValue)
+	if len(parts) == 0 || len(parts) > 2 {
+		return false
+	}
+	// `auto` may stand in for either a column-width or a column-count slot;
+	// at most one explicit width and one explicit count appear.
+	hasWidth := false
+	hasCount := false
+	for _, part := range parts {
+		partLower := strings.ToLower(part)
+		if partLower == "auto" {
+			continue
+		}
+		// Try integer (column-count): strict — no decimal, no exponent.
+		isInt := true
+		for i, c := range part {
+			if i == 0 && (c == '+' || c == '-') {
+				continue
+			}
+			if c < '0' || c > '9' {
+				isInt = false
+				break
+			}
+		}
+		if isInt {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 1 {
+				return false
+			}
+			if hasCount {
+				return false // duplicate count
+			}
+			hasCount = true
+			continue
+		}
+		// Otherwise must be a non-negative length (column-width).
+		w, ok := ParseLength(part)
+		if !ok || w < 0 {
+			return false
+		}
+		if hasWidth {
+			return false // duplicate width
+		}
+		hasWidth = true
+	}
+	if hasSlash {
+		h := strings.TrimSpace(heightValue)
+		hLower := strings.ToLower(h)
+		if hLower == "auto" {
+			return true
+		}
+		if _, ok := ParseLength(h); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // isInvalidBareNumber returns true if value is a non-zero number with no unit
