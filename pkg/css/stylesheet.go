@@ -1856,6 +1856,15 @@ func evaluateSupportsSelector(sel string) bool {
 // <complex-selector>: balanced brackets/parens, no stray combinators, every
 // pseudo-class and pseudo-element recognised, every functional-pseudo's
 // inner selector list also valid.
+//
+// A leading combinator (e.g. `> .test-1`) is NOT a valid <complex-selector>
+// — it is a <relative-selector> per Selectors 4 §17.1, accepted only in
+// nesting / :has() / @scope <scope-start> position. The @supports
+// `selector()` function tests against <complex-selector> (per CSS Conditional
+// 4 §2.5.1), so leading-combinator selectors fail support. This mirrors
+// Blink's CSSSelectorParser::ConsumeComplexSelector @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which only consumes a leading
+// combinator when invoked in nesting / forgiving-nested mode.
 func isValidComplexSelector(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1863,6 +1872,12 @@ func isValidComplexSelector(s string) bool {
 	}
 	// Balanced brackets/parens, no nested string failure.
 	if !hasBalancedBrackets(s) {
+		return false
+	}
+	// Reject leading combinator — that's a <relative-selector>, not a
+	// <complex-selector>. Required for at-supports nesting tests like
+	// `@supports(not selector(> .test-1))` which expect FALSE.
+	if len(s) > 0 && (s[0] == '>' || s[0] == '+' || s[0] == '~') {
 		return false
 	}
 	// Walk compound selectors split by descendant/child/sibling combinators.
@@ -1946,6 +1961,13 @@ func isValidCompoundSelector(s string) bool {
 		case c == '*':
 			i++
 		case c == '|':
+			i++
+		case c == '&':
+			// `&` is the CSS Nesting nesting-selector (CSS Nesting 1 §2),
+			// and is a valid simple-selector inside any compound. Required
+			// for `@supports(selector(&))` to evaluate TRUE — see Blink's
+			// CSSSelectorParser::ConsumeNestingParent @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			i++
 		case c == '.' || c == '#':
 			// class or id — read until next selector boundary
