@@ -1358,12 +1358,20 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	}
 	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
-	// A blur on the backdrop samples pixels outside the element's border
-	// box, so the captured region is inflated by the blur extent — otherwise
-	// the blur sees transparent black off the edges and darkens the result.
-	// The filtered output is clipped back to the border box afterwards.
-	// Filter Effects 2 treats the backdrop root image as effectively
-	// unbounded; capturing a margin around the box approximates that.
+	// CSS Filter Effects 2 §3.4: the filter input is the backdrop content
+	// within the element's filter region (border box). Samples the blur
+	// kernel would pull from outside the border box are NOT canvas pixels
+	// — that would import content the spec excludes from the backdrop
+	// (e.g. green boxes painted before but outside the filter element).
+	// Mirrors Blink's `core/paint/filter_painter.cc` at
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which clips the source to
+	// the filter region and edge-extends pixels for the blur kernel.
+	//
+	// Our model: snapshot the canvas pixels for the padded region but
+	// clamp (sx,sy) into the border-box rect before reading from r.target.
+	// Pixels in the pad area thus replicate the nearest border-box pixel
+	// — equivalent to SVG `feGaussianBlur edgeMode="duplicate"`, which is
+	// the behaviour WPT's backdrop-filter-edge-clipping reference asserts.
 	pad := 0
 	for _, f := range layer.BackdropFilters {
 		if f.Name == "blur" {
@@ -1373,20 +1381,31 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
 	rw, rh := region.Dx(), region.Dy()
 
-	// Snapshot the backdrop image: the canvas content under the region.
+	// Snapshot the backdrop image, edge-clamped to the border box so blur
+	// padding does not import canvas content from outside the filter region.
 	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
 	targetBounds := r.target.Bounds()
 	for y := 0; y < rh; y++ {
-		dy := region.Min.Y + y
-		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
+		sy := region.Min.Y + y
+		if sy < by {
+			sy = by
+		} else if sy >= by+bh {
+			sy = by + bh - 1
+		}
+		if sy < targetBounds.Min.Y || sy >= targetBounds.Max.Y {
 			continue
 		}
 		for x := 0; x < rw; x++ {
-			dx := region.Min.X + x
-			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
+			sx := region.Min.X + x
+			if sx < bx {
+				sx = bx
+			} else if sx >= bx+bw {
+				sx = bx + bw - 1
+			}
+			if sx < targetBounds.Min.X || sx >= targetBounds.Max.X {
 				continue
 			}
-			si := r.target.PixOffset(dx, dy)
+			si := r.target.PixOffset(sx, sy)
 			di := backdrop.PixOffset(x, y)
 			backdrop.Pix[di+0] = r.target.Pix[si+0]
 			backdrop.Pix[di+1] = r.target.Pix[si+1]
