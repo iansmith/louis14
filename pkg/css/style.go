@@ -4262,6 +4262,23 @@ func expandBackgroundProperty(style *Style, value string) {
 		style.Set("background-image", "none")
 		return
 	}
+	// CSS Backgrounds 3 §3.10: CSS-wide keywords on the `background`
+	// shorthand apply to every longhand. Without this branch the keyword
+	// falls through the token-classification loop, no longhand gets set,
+	// and the parent's background never propagates. Mirrors the shorthand
+	// expansion path in `core/css/properties/shorthands/background.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	switch strings.ToLower(trimmed) {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		for _, lh := range []string{
+			"background-color", "background-image", "background-repeat",
+			"background-position", "background-size", "background-origin",
+			"background-clip", "background-attachment",
+		} {
+			style.Set(lh, strings.ToLower(trimmed))
+		}
+		return
+	}
 
 	// Split into comma-separated layers (depth-aware).
 	layers := splitCommaSeparated(trimmed)
@@ -4409,6 +4426,19 @@ func expandBackgroundProperty(style *Style, value string) {
 					colorFound = true
 					colorValue = part
 				}
+			} else if strings.EqualFold(part, "currentcolor") {
+				// CSS Color 4 §4.4 currentcolor is a valid <color> token in
+				// the background shorthand. ParseColor returns false for
+				// currentcolor (it's resolved late at paint time against
+				// the element's `color` value), so accept it here so the
+				// shorthand doesn't drop to background-color: transparent.
+				// Mirrors Blink's `CSSParserFastPaths::IsValidColor` which
+				// admits `currentcolor` as a system-color analogue
+				// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+				if !colorFound {
+					colorFound = true
+					colorValue = "currentcolor"
+				}
 			} else if part == "transparent" {
 				if !colorFound {
 					colorFound = true
@@ -4526,14 +4556,27 @@ func parseSpaceSeparatedColorArgs(inner string) (parts []string, alpha float64) 
 }
 
 // parseAlpha parses a CSS alpha component, which may be a <number> in
-// [0,1] or a <percentage> in [0%, 100%] per CSS Color 4 §1.4. Returns
-// 1.0 on parse failure (caller treats this as the default).
+// [0,1] or a <percentage> in [0%, 100%] per CSS Color 4 §1.4. Out-of-range
+// values are clamped to [0,1] (CSS Color 4 §4.1.1: "alpha values outside
+// this range are clamped"). Returns 1.0 on parse failure (caller treats
+// this as the default).
+//
+// Mirrors Blink's `ConsumeAlpha()` clamp step in
+// `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func parseAlpha(s string) float64 {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 1.0
 	}
-	return parseColorFloat01(s, 1.0)
+	a := parseColorFloat01(s, 1.0)
+	if a < 0 {
+		return 0
+	}
+	if a > 1 {
+		return 1
+	}
+	return a
 }
 
 // parseColorFloat01 parses a color component value as a fraction in [0,1].
@@ -4556,10 +4599,48 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 // CSS Color Level 4 §"rgb()". Returns the byte value and a validity flag
 // (false if out of range). Mirrors Blink's CSSPropertyParserHelpers handling
 // where percent and number forms produce the same final byte after rounding.
+// legacyRGBComponentsMixed reports whether the three R/G/B components of a
+// legacy comma-form rgb()/rgba() function mix <number> and <percentage>
+// types. Per CSS Color 4 §5.1 such mixed-type forms are invalid in legacy
+// notation (the modern space-separated form has no such restriction).
+// Mirrors Blink's `ConsumeRGBParameters()` post-comma type-mismatch check
+// in `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func legacyRGBComponentsMixed(parts []string) bool {
+	if len(parts) < 3 {
+		return false
+	}
+	hasNumber := false
+	hasPercent := false
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t == "" {
+			continue
+		}
+		if strings.HasSuffix(t, "%") {
+			hasPercent = true
+		} else {
+			hasNumber = true
+		}
+	}
+	return hasNumber && hasPercent
+}
+
 func parseRGBByte(s string) (uint8, bool) {
 	v := parseColorFloat01(s, 255.0)
-	if v < 0 || v > 1 {
-		return 0, false
+	// CSS Color 4 §4.1: out-of-range RGB component values in the legacy
+	// rgb()/rgba() functional notations are clamped to the [0, 255] range
+	// (after percentage resolution). The function must still return a
+	// valid Color — never reject the whole declaration just because a
+	// component is out of gamut. Mirrors Blink's
+	// `LegacyRGB::ToRGBA8()` clamp in
+	// `third_party/blink/renderer/core/css/properties/css_color_parsing.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); see
+	// crbug.com/1483736 for the regression this guard prevents.
+	if v < 0 {
+		v = 0
+	} else if v > 1 {
+		v = 1
 	}
 	return uint8(math.Round(v * 255)), true
 }
@@ -4626,30 +4707,84 @@ func parseLabComponent(s string, maxVal float64) float64 {
 // per CSS Values 4 §6.1 <angle>. The "grad" check must precede "rad"
 // because HasSuffix("Xgrad", "rad") is also true.
 func parseHueDegrees(s string) float64 {
+	v, _ := parseHueDegreesValidated(s)
+	return v
+}
+
+// parseHueDegreesValidated parses a CSS <hue> value (CSS Values 4 §7.4) and
+// returns it in degrees. Accepts the canonical units `deg`, `grad`, `rad`,
+// `turn`, plus a unitless <number> per CSS Color 4 §4.3 (interpreted as
+// degrees). Returns ok=false on any unrecognized unit (e.g. `0px`, `0%`),
+// so the surrounding hsl()/hsla()/hwb() parser can reject the declaration
+// instead of silently producing 0.
+//
+// Mirrors Blink's `ConsumeHue()` in `core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func parseHueDegreesValidated(s string) (float64, bool) {
 	s = strings.TrimSpace(s)
+	if s == "none" {
+		return 0, true
+	}
 	if strings.HasSuffix(s, "deg") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
-		return v
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
+		return v, n == 1
 	}
 	if strings.HasSuffix(s, "grad") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "grad"), "%f", &v)
-		return v * 360.0 / 400.0
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "grad"), "%f", &v)
+		return v * 360.0 / 400.0, n == 1
 	}
 	if strings.HasSuffix(s, "rad") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "rad"), "%f", &v)
-		return v * 180.0 / math.Pi
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "rad"), "%f", &v)
+		return v * 180.0 / math.Pi, n == 1
 	}
 	if strings.HasSuffix(s, "turn") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "turn"), "%f", &v)
-		return v * 360.0
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "turn"), "%f", &v)
+		return v * 360.0, n == 1
+	}
+	// A bare hue token must be a <number> (degrees). A percentage or any
+	// other dimension is invalid here. Accept only digits, sign, dot, and
+	// exponent characters.
+	if !isHueNumberToken(s) {
+		return 0, false
 	}
 	var v float64
-	fmt.Sscanf(s, "%f", &v)
-	return v
+	n, _ := fmt.Sscanf(s, "%f", &v)
+	return v, n == 1
+}
+
+// isHueNumberToken reports whether s consists solely of characters legal in
+// a CSS <number> token (sign, digits, dot, exponent). Rejects percentages
+// and dimensions so the bare-number branch of parseHueDegreesValidated does
+// not silently accept e.g. "0px" or "100%".
+func isHueNumberToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.':
+		case r == '+' || r == '-':
+			if i != 0 {
+				// Sign only allowed at the start or after 'e'/'E'.
+				prev := rune(s[i-1])
+				if prev != 'e' && prev != 'E' {
+					return false
+				}
+			}
+		case r == 'e' || r == 'E':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseHSLArgs parses the inner argument string of an hsl()/hsla()
@@ -4663,16 +4798,26 @@ func parseHueDegrees(s string) float64 {
 func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
 	a = 1.0
 	var hStr, sStr, lStr string
+	legacyForm := false
 	if strings.Contains(inner, ",") {
+		legacyForm = true
 		parts := strings.Split(inner, ",")
-		if len(parts) < 3 {
+		// Legacy hsl()/hsla() form takes exactly 3 args (H,S,L) or 4
+		// (H,S,L,A). Trailing commas or extra arguments are invalid per
+		// CSS Color 4 §4.3. Mirrors Blink's `ConsumeHslColor()` arity
+		// check in `css_color_parsing.cc` (Chromium @ 4883d11f...).
+		if len(parts) != 3 && len(parts) != 4 {
 			return
 		}
 		hStr = strings.TrimSpace(parts[0])
 		sStr = strings.TrimSpace(parts[1])
 		lStr = strings.TrimSpace(parts[2])
-		if len(parts) >= 4 {
-			a = parseAlpha(parts[3])
+		if len(parts) == 4 {
+			aStr := strings.TrimSpace(parts[3])
+			if aStr == "" {
+				return
+			}
+			a = parseAlpha(aStr)
 		}
 	} else {
 		var parts []string
@@ -4684,9 +4829,38 @@ func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
 		sStr = parts[1]
 		lStr = parts[2]
 	}
-	h = parseHueDegrees(hStr)
+	var hOK bool
+	h, hOK = parseHueDegreesValidated(hStr)
+	if !hOK {
+		return
+	}
+	// CSS Color 4 §4.3: in the legacy comma form, saturation and lightness
+	// MUST be percentages (`hsl(0, 100%, 50%)`). Mirrors Blink's
+	// `ConsumeHslColor()` legacy-syntax-validation step in
+	// `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if legacyForm {
+		if !strings.HasSuffix(sStr, "%") || !strings.HasSuffix(lStr, "%") {
+			return
+		}
+	}
 	s = parseColorFloat01(sStr, 100.0)
 	l = parseColorFloat01(lStr, 100.0)
+	// CSS Color 4 §4.3: negative saturation is clamped to 0; saturation
+	// above 100% is clamped to 100%. Lightness is similarly clamped to
+	// [0,100%]. Mirrors Blink's `ParseHSLParameters()` clamp step in
+	// `third_party/blink/renderer/core/css/parser/css_parser_fast_paths.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if s < 0 {
+		s = 0
+	} else if s > 1 {
+		s = 1
+	}
+	if l < 0 {
+		l = 0
+	} else if l > 1 {
+		l = 1
+	}
 	ok = true
 	return
 }
@@ -5419,6 +5593,15 @@ func ParseColor(colorStr string) (Color, bool) {
 		// is treated as `rgb(10, 175, 10)`.
 		values = stripCSSComments(values)
 		parts := strings.Split(values, ",")
+		// CSS Color 4 §5.1 legacy comma form: the three RGB components must
+		// be all <number> or all <percentage>; mixing rejects. Modern
+		// space-separated form (§5.1, parseSpaceSeparatedRGB) permits any
+		// mix. Mirrors Blink's ConsumeRGBParameters() which tracks the
+		// expected component-type after the first one and fails on mismatch
+		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		if (len(parts) == 3 || len(parts) == 4) && legacyRGBComponentsMixed(parts[:3]) {
+			return Color{}, false
+		}
 		if len(parts) == 3 {
 			r, rOK := parseRGBByte(parts[0])
 			g, gOK := parseRGBByte(parts[1])
@@ -5573,13 +5756,17 @@ func ParseColor(colorStr string) (Color, bool) {
 		return parseColorMix(colorStr)
 	}
 
-	// Try hex color first (#RGB or #RRGGBB)
+	// Try hex color first (#RGB, #RGBA, #RRGGBB, #RRGGBBAA per CSS Color 4 §5.2).
+	// Mirrors Blink's CSSParserFastPaths::ParseColor() hex branch which accepts
+	// 3/4/6/8 hex-digit forms @ third_party/blink/renderer/core/css/parser/
+	// css_parser_fast_paths.cc::ParseColor (Chromium 4883d11f).
 	if strings.HasPrefix(colorStr, "#") {
 		hex := colorStr[1:]
-		var r, g, b uint8
+		var r, g, b, a uint8
 
-		if len(hex) == 3 {
-			// #RGB format - expand to #RRGGBB
+		switch len(hex) {
+		case 3:
+			// #RGB format - expand each nibble to a full byte
 			n, _ := fmt.Sscanf(hex, "%1x%1x%1x", &r, &g, &b)
 			if n != 3 {
 				return Color{}, false
@@ -5588,119 +5775,39 @@ func ParseColor(colorStr string) (Color, bool) {
 			g = g*16 + g
 			b = b*16 + b
 			return Color{r, g, b, 1.0}, true
-		} else if len(hex) == 6 {
+		case 4:
+			// #RGBA format - expand each nibble to a full byte (alpha included)
+			n, _ := fmt.Sscanf(hex, "%1x%1x%1x%1x", &r, &g, &b, &a)
+			if n != 4 {
+				return Color{}, false
+			}
+			r = r*16 + r
+			g = g*16 + g
+			b = b*16 + b
+			a = a*16 + a
+			return Color{r, g, b, float64(a) / 255.0}, true
+		case 6:
 			// #RRGGBB format
 			n, _ := fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
 			if n != 3 {
 				return Color{}, false
 			}
 			return Color{r, g, b, 1.0}, true
+		case 8:
+			// #RRGGBBAA format
+			n, _ := fmt.Sscanf(hex, "%02x%02x%02x%02x", &r, &g, &b, &a)
+			if n != 4 {
+				return Color{}, false
+			}
+			return Color{r, g, b, float64(a) / 255.0}, true
 		}
 	}
 
-	// Try named colors
-	namedColors := map[string]Color{
-		"red":            {255, 0, 0, 1.0},
-		"green":          {0, 128, 0, 1.0},
-		"blue":           {0, 0, 255, 1.0},
-		"yellow":         {255, 255, 0, 1.0},
-		"cyan":           {0, 255, 255, 1.0},
-		"aqua":           {0, 255, 255, 1.0},
-		"magenta":        {255, 0, 255, 1.0},
-		"fuchsia":        {255, 0, 255, 1.0},
-		"white":          {255, 255, 255, 1.0},
-		"black":          {0, 0, 0, 1.0},
-		"gray":           {128, 128, 128, 1.0},
-		"grey":           {128, 128, 128, 1.0},
-		"orange":         {255, 165, 0, 1.0},
-		"purple":         {128, 0, 128, 1.0},
-		"pink":           {255, 192, 203, 1.0},
-		"brown":          {165, 42, 42, 1.0},
-		"lime":           {0, 255, 0, 1.0},
-		"navy":           {0, 0, 128, 1.0},
-		"teal":           {0, 128, 128, 1.0},
-		"silver":         {192, 192, 192, 1.0},
-		"maroon":         {128, 0, 0, 1.0},
-		"olive":          {128, 128, 0, 1.0},
-		"lightblue":      {173, 216, 230, 1.0},
-		"lightgreen":     {144, 238, 144, 1.0},
-		"lightgray":      {211, 211, 211, 1.0},
-		"lightgrey":      {211, 211, 211, 1.0},
-		"lightyellow":    {255, 255, 224, 1.0},
-		"lightcoral":     {240, 128, 128, 1.0},
-		"lightcyan":      {224, 255, 255, 1.0},
-		"lightpink":      {255, 182, 193, 1.0},
-		"turquoise":      {64, 224, 208, 1.0},
-		"coral":          {255, 127, 80, 1.0},
-		"violet":         {238, 130, 238, 1.0},
-		"bisque":         {255, 228, 196, 1.0},
-		"limegreen":      {50, 205, 50, 1.0},
-		"darkgreen":      {0, 100, 0, 1.0},
-		"darkblue":       {0, 0, 139, 1.0},
-		"darkred":        {139, 0, 0, 1.0},
-		"darkgray":       {169, 169, 169, 1.0},
-		"darkgrey":       {169, 169, 169, 1.0},
-		"dimgray":        {105, 105, 105, 1.0},
-		"dimgrey":        {105, 105, 105, 1.0},
-		"gold":           {255, 215, 0, 1.0},
-		"indigo":         {75, 0, 130, 1.0},
-		"khaki":          {240, 230, 140, 1.0},
-		"lavender":       {230, 230, 250, 1.0},
-		"salmon":         {250, 128, 114, 1.0},
-		"crimson":        {220, 20, 60, 1.0},
-		"tomato":         {255, 99, 71, 1.0},
-		"skyblue":        {135, 206, 235, 1.0},
-		"steelblue":      {70, 130, 180, 1.0},
-		"slategray":      {112, 128, 144, 1.0},
-		"slategrey":      {112, 128, 144, 1.0},
-		"whitesmoke":     {245, 245, 245, 1.0},
-		"ivory":          {255, 255, 240, 1.0},
-		"beige":          {245, 245, 220, 1.0},
-		"wheat":          {245, 222, 179, 1.0},
-		"tan":            {210, 180, 140, 1.0},
-		"chocolate":      {210, 105, 30, 1.0},
-		"firebrick":      {178, 34, 34, 1.0},
-		"orangered":      {255, 69, 0, 1.0},
-		"deeppink":       {255, 20, 147, 1.0},
-		"hotpink":        {255, 105, 180, 1.0},
-		"mediumblue":     {0, 0, 205, 1.0},
-		"royalblue":      {65, 105, 225, 1.0},
-		"dodgerblue":     {30, 144, 255, 1.0},
-		"cornflowerblue": {100, 149, 237, 1.0},
-		"darkviolet":     {148, 0, 211, 1.0},
-		"plum":           {221, 160, 221, 1.0},
-		"orchid":         {218, 112, 214, 1.0},
-		"sienna":         {160, 82, 45, 1.0},
-		"peru":           {205, 133, 63, 1.0},
-		"linen":          {250, 240, 230, 1.0},
-		"seagreen":       {46, 139, 87, 1.0},
-		"forestgreen":    {34, 139, 34, 1.0},
-		"olivedrab":      {107, 142, 35, 1.0},
-		"yellowgreen":    {154, 205, 50, 1.0},
-		"darkslategray":  {47, 79, 79, 1.0},
-		"darkslategrey":  {47, 79, 79, 1.0},
-		"darkorange":     {255, 140, 0, 1.0},
-		"darkcyan":       {0, 139, 139, 1.0},
-		"aquamarine":     {127, 255, 212, 1.0},
-		"rosybrown":      {188, 143, 143, 1.0},
-		"thistle":        {216, 191, 216, 1.0},
-		"gainsboro":      {220, 220, 220, 1.0},
-		"aliceblue":      {240, 248, 255, 1.0},
-		"ghostwhite":     {248, 248, 255, 1.0},
-		"honeydew":       {240, 255, 240, 1.0},
-		"seashell":       {255, 245, 238, 1.0},
-		"mintcream":      {245, 255, 250, 1.0},
-		"snow":           {255, 250, 250, 1.0},
-		"floralwhite":    {255, 250, 240, 1.0},
-		"oldlace":        {253, 245, 230, 1.0},
-		"papayawhip":     {255, 239, 213, 1.0},
-		"blanchedalmond": {255, 235, 205, 1.0},
-		"moccasin":       {255, 228, 181, 1.0},
-		"navajowhite":    {255, 222, 173, 1.0},
-		"peachpuff":      {255, 218, 185, 1.0},
-		"mistyrose":      {255, 228, 225, 1.0},
-		"antiquewhite":   {250, 235, 215, 1.0},
-	}
+	// CSS Color 4 §6.1 named colors. The canonical list of 148 color keywords
+	// (147 distinct values + the "grey" spellings that alias the "gray" forms).
+	// Mirrors Blink's `NamedColor` table in
+	// third_party/blink/renderer/platform/graphics/color.cc (Chromium
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	if color, ok := namedColors[colorStr]; ok {
 		return color, true
 	}

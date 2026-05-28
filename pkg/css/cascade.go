@@ -125,6 +125,23 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// <input type="hidden"> is not rendered. Per HTML "the input element"
+	// and the UA stylesheet `input[type="hidden" i] { display: none ! important }`
+	// (Blink html.css @ 4883d11fef4a). Author CSS cannot override this via
+	// normal !important (the UA !important wins per cascade origin priority);
+	// our implementation matches by setting display:none here, which sits at
+	// the UA-default precedence — author rules that explicitly target a
+	// hidden input with display still flow through the normal cascade. The
+	// type-change reftests in css-selectors/ depend on this becoming
+	// display:none after JS sets `type=hidden` so the visible input box
+	// disappears.
+	if node.TagName == "input" {
+		if t, ok := node.GetAttribute("type"); ok &&
+			strings.EqualFold(strings.TrimSpace(t), "hidden") {
+			style.Set("display", "none")
+		}
+	}
+
 	// HTML5 semantic elements default to display: block
 	switch node.TagName {
 	case "main", "nav", "header", "footer", "section", "article", "aside",
@@ -278,12 +295,20 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 		switch inputType {
 		case "checkbox", "radio":
-			if _, ok := style.Get("width"); !ok {
-				style.Set("width", "13px")
-			}
-			if _, ok := style.Get("height"); !ok {
-				style.Set("height", "13px")
-			}
+			// Do NOT inject explicit width/height for checkbox/radio. Their
+			// 13×13 default is intrinsic (see pkg/layout/intrinsic_sizing.go),
+			// not a user-agent-supplied CSS declaration. Mirroring Blink:
+			// declaring it as CSS makes `width: auto` checks fail and
+			// disables justify-self/align-self: stretch in grid/flex
+			// containers (Chromium bug 768999). Keeping these auto lets the
+			// replaced-element sizing path consult intrinsic info while still
+			// honouring stretch when the container demands it.
+			//
+			// Browsers default checkbox/radio to box-sizing: border-box so
+			// that `width: 50px` on the input describes the rendered box
+			// (border included), matching how authors think about form
+			// controls and the WPT reftests that compare to a stretched cell.
+			style.Set("box-sizing", "border-box")
 			setFormBorder(style, "1px", "solid", "#767676")
 			if _, ok := style.Get("background-color"); !ok {
 				style.Set("background-color", "white")
@@ -1524,9 +1549,54 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 	return false
 }
 
+// containsCurrentColorToken reports whether s contains a `currentcolor`
+// token, case-insensitive. Used to decide whether the `color` property's
+// declared value needs early substitution against the parent's color (see
+// resolveInheritValues for the CSS Color 4 §4.4 rule).
+func containsCurrentColorToken(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "currentcolor")
+}
+
+// formatColorAsRGBA renders a Color back to a CSS rgba() literal so a
+// downstream ParseColor or inheritor sees a concrete color value rather
+// than a still-deferred functional form.
+func formatColorAsRGBA(c Color) string {
+	return fmt.Sprintf("rgba(%d, %d, %d, %g)", c.R, c.G, c.B, c.A)
+}
+
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property, value := range style.Properties {
+		// CSS Color 4 §4.4: "If the currentcolor keyword is the specified
+		// value of the color property itself, it is treated as
+		// color: inherit." Rewrite the value before the inherit-resolution
+		// pass below so the parent's computed `color` propagates here.
+		// Mirrors Blink's `StyleBuilderConverter::ConvertColor` in
+		// `third_party/blink/renderer/core/css/resolver/style_builder_converter.cc`
+		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		if property == "color" && strings.EqualFold(strings.TrimSpace(value), "currentcolor") {
+			value = "inherit"
+			style.Set(property, value)
+		}
+		// CSS Color 5 §3 + Color 4 §4.4: when the `color` property's value
+		// contains a color-mix() / relative-color form referencing
+		// currentcolor, the currentcolor reference resolves to the
+		// *inherited* color (the parent's computed color), not to this
+		// element's own (not-yet-final) color. Substitute now so the value
+		// stored on this element is a concrete color and downstream
+		// inheritors see the same color.
+		if property == "color" && containsCurrentColorToken(value) &&
+			!strings.EqualFold(strings.TrimSpace(value), "currentcolor") &&
+			node.Parent != nil {
+			if parentStyle, ok := styles[node.Parent]; ok {
+				parentCC := parentStyle.GetColor()
+				if resolved, ok := ParseColorWithCurrentColor(value, parentCC); ok {
+					value = formatColorAsRGBA(resolved)
+					style.Set(property, value)
+				}
+			}
+		}
 		if value != "inherit" {
 			continue
 		}
@@ -1594,6 +1664,15 @@ var inheritableProperties = map[string]bool{
 	// `quotes` on the container and observe open-quote behavior on
 	// descendant pseudo-elements).
 	"quotes": true,
+	// CSS Text Decor 4 §3.2: text-emphasis-color, text-emphasis-style,
+	// text-emphasis-position are all inherited. Mirrors Blink
+	// core/style/computed_style.cc @ 4883d11fef4a — the text-emphasis
+	// longhands live on the inherited ComputedStyleBase via the
+	// `inherited` flag in computed_style_initial_values.json5.
+	// https://drafts.csswg.org/css-text-decor-4/#text-emphasis-color-property
+	"text-emphasis-color":    true,
+	"text-emphasis-style":    true,
+	"text-emphasis-position": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.

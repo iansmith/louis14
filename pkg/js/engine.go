@@ -56,6 +56,41 @@ func New() *Engine {
 		return goja.Undefined()
 	})
 
+	// setTimeout(fn, ms, args…) and setInterval(fn, ms, args…): in a static
+	// reftest engine we have no real event loop, so we execute the callback
+	// synchronously on the same task. WPT reftests use setTimeout to defer
+	// past the first restyle (the "wait one tick after onload" idiom in the
+	// :placeholder-shown / :required / :read-write type-change tests).
+	// Executing it inline produces the same final DOM state the post-tick
+	// callback would have reached, and the visualtest harness captures the
+	// final state regardless of when the script settles. Mirrors the same
+	// synchronous-execution shape we use for requestAnimationFrame above.
+	var timerID int64
+	timerFn := func(call goja.FunctionCall) goja.Value {
+		timerID++
+		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
+			args := make([]goja.Value, 0)
+			// Skip arg 0 (the callback) and arg 1 (the delay); pass through
+			// the rest verbatim per WHATWG HTML "setTimeout(handler, timeout,
+			// ...arguments)".
+			for i := 2; i < len(call.Arguments); i++ {
+				args = append(args, call.Arguments[i])
+			}
+			fn(goja.Undefined(), args...) //nolint:errcheck
+		}
+		return vm.ToValue(timerID)
+	}
+	vm.Set("setTimeout", timerFn)
+	vm.Set("setInterval", timerFn)
+	// clearTimeout / clearInterval: no-op — by the time JS could cancel, the
+	// timer has already fired synchronously.
+	vm.Set("clearTimeout", func(call goja.FunctionCall) goja.Value {
+		return goja.Undefined()
+	})
+	vm.Set("clearInterval", func(call goja.FunctionCall) goja.Value {
+		return goja.Undefined()
+	})
+
 	// WPT reftest helpers. Tests load these via external
 	// <script src="/common/rendering-utils.js"> and
 	// <script src="/common/reftest-wait.js">, which the HTML parser does

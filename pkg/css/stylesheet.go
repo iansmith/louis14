@@ -344,7 +344,11 @@ func expandNesting(css string, parentSelector string) string {
 			continue
 		}
 
-		bracePos := strings.Index(part, "{")
+		// Use the paren-aware brace finder — `@supports not unknown(!@#% {
+		// ... } ...)` has braces inside the prelude that are part of
+		// <general-enclosed>, not the body. indexTopLevelBrace tracks
+		// parens/strings to skip them.
+		bracePos := indexTopLevelBrace(part)
 		if bracePos < 0 {
 			// No block — pass through (e.g., @layer statement)
 			result.WriteString(part)
@@ -359,13 +363,26 @@ func expandNesting(css string, parentSelector string) string {
 		}
 		body := part[bracePos+1 : closePos]
 
-		// Handle at-rules nested inside a selector block (e.g., @media, @supports, @container)
+		// Handle conditional at-rules nested inside a selector block. Per CSS
+		// Nesting 1 §3.2, when a conditional group at-rule (CSS Conditional
+		// 4 §1: @media, @supports, @container, @layer, @scope) is nested
+		// inside a style rule, the wrapper applies to a synthesized "nested
+		// declarations rule" whose selector is the parent. Even at TOP level,
+		// the body of these at-rules must be passed through expandNesting
+		// recursively so nested selectors inside the body get expanded —
+		// otherwise `@supports selector(&) { p { & { ... } } }` leaves the
+		// inner `& { ... }` unexpanded and the cascade silently loses the
+		// override.
 		selLower := strings.ToLower(sel)
 		if strings.HasPrefix(selLower, "@media") || strings.HasPrefix(selLower, "@supports") ||
-			strings.HasPrefix(selLower, "@container") {
+			strings.HasPrefix(selLower, "@container") || strings.HasPrefix(selLower, "@layer") ||
+			strings.HasPrefix(selLower, "@scope") {
 			if parentSelector != "" {
-				// Nested @media inside a selector: lift and wrap parent selector inside
-				// @media (cond) { parentSel { decls } }
+				// Nested at-rule inside a selector: lift and wrap the parent
+				// selector inside the at-rule, e.g.
+				//   .test-11 { @layer { & { decls } } }
+				// becomes
+				//   @layer { :is(.test-11) { decls } }
 				flatDecls, nestedParts := separateDeclsAndNested(body)
 				var innerBlock strings.Builder
 				if strings.TrimSpace(flatDecls) != "" {
@@ -374,16 +391,33 @@ func expandNesting(css string, parentSelector string) string {
 					innerBlock.WriteString(flatDecls)
 					innerBlock.WriteString(" }\n")
 				}
-				// Recurse for any nested rules inside the @media body
+				// Recurse for any nested rules inside the at-rule body.
 				innerBlock.WriteString(expandNesting(nestedParts, parentSelector))
-				result.WriteString(sel)
+				// For @scope (<scope-start>) the prelude itself may contain
+				// `&` — resolve before emission so the lifted selector is
+				// consistent with the rest of the cascade. @layer's prelude
+				// is an <ident> and never references &; @media / @supports /
+				// @container preludes are queries and don't either, but a
+				// blanket resolve is harmless.
+				resolvedSel := sel
+				if strings.Contains(sel, "&") {
+					resolvedSel = strings.ReplaceAll(sel, "&", wrapParentInIs(parentSelector))
+				}
+				result.WriteString(resolvedSel)
 				result.WriteString(" { ")
 				result.WriteString(innerBlock.String())
 				result.WriteString("}\n")
 			} else {
-				// Top-level at-rule — pass through unchanged
-				result.WriteString(part)
-				result.WriteByte('\n')
+				// Top-level at-rule: still recurse into the body so any
+				// nested rules inside (e.g. `p { & { ... } }`) get expanded
+				// against their own parent selector. We hand the body to
+				// expandNesting with parentSelector="" — same context as
+				// top-level — letting the normal style-rule branch handle
+				// each inner rule.
+				result.WriteString(sel)
+				result.WriteString(" { ")
+				result.WriteString(expandNesting(body, ""))
+				result.WriteString("}\n")
 			}
 			continue
 		}
@@ -395,34 +429,37 @@ func expandNesting(css string, parentSelector string) string {
 			continue
 		}
 
-		// Regular selector block
-		flatDecls, nestedParts := separateDeclsAndNested(body)
+		// Regular selector block — emit segments in SOURCE ORDER so the
+		// cascade sees declarations and nested rules at their authored
+		// position. Per CSS Nesting 1 §3.3, declarations after a nested
+		// rule act as if in a separate style rule whose selector is the
+		// parent's; equal-specificity overrides depend on source order
+		// (e.g. nesting-basic test-10 / test-11).
+		segments := splitBodySegments(body)
 
+		// Resolve the effective selector for declaration segments.
+		// - Top-level: "& at the top level counts as :scope" per CSS
+		//   Nesting 1 §2.1, so swap any `&` in sel for `:scope`.
+		// - Nested: use resolveNestedSelector against the parent.
+		var declSel, childParent string
 		if parentSelector != "" {
-			// This is a NESTED rule inside a parent rule
-			resolvedSel := resolveNestedSelector(parentSelector, sel)
-			// Emit flat rule with this selector's declarations
-			if strings.TrimSpace(flatDecls) != "" {
-				result.WriteString(resolvedSel)
-				result.WriteString(" { ")
-				result.WriteString(flatDecls)
-				result.WriteString(" }\n")
-			}
-			// Recursively expand nested rules inside this nested rule
-			if strings.TrimSpace(nestedParts) != "" {
-				result.WriteString(expandNesting(nestedParts, resolvedSel))
-			}
+			declSel = resolveNestedSelector(parentSelector, sel)
+			childParent = declSel
 		} else {
-			// Top-level rule — separate flat declarations from nested rules
-			if strings.TrimSpace(flatDecls) != "" {
-				result.WriteString(sel)
+			declSel = resolveTopLevelNestingSelector(sel)
+			childParent = declSel
+		}
+
+		for _, seg := range segments {
+			if seg.isDecls {
+				result.WriteString(declSel)
 				result.WriteString(" { ")
-				result.WriteString(flatDecls)
+				result.WriteString(seg.Text)
 				result.WriteString(" }\n")
-			}
-			// Expand any nested rules inside, passing sel as parent
-			if strings.TrimSpace(nestedParts) != "" {
-				result.WriteString(expandNesting(nestedParts, sel))
+			} else {
+				// A nested rule — recurse with childParent (which already
+				// has & substituted) as the parent.
+				result.WriteString(expandNesting(seg.Text, childParent))
 			}
 		}
 	}
@@ -450,6 +487,18 @@ func resolveNestedSelector(parent, nested string) string {
 	return wrappedParent + " " + nested
 }
 
+// resolveTopLevelNestingSelector substitutes occurrences of `&` in a top-
+// level selector with `:scope`. Per CSS Nesting 1 §2.1 / Selectors 4
+// §17.2, "& at the top level counts as :scope" — i.e. the scoping root,
+// which in a static document is the document's root element. Required
+// by css-nesting/nesting-basic.html test-12 (`& .test-12 { ... }`).
+func resolveTopLevelNestingSelector(sel string) string {
+	if !strings.Contains(sel, "&") {
+		return sel
+	}
+	return strings.ReplaceAll(sel, "&", ":scope")
+}
+
 // wrapParentInIs wraps a parent selector in :is(...) for nesting substitution.
 // Single simple selectors that already are bare functional pseudo-classes
 // (e.g. ":is(.foo)") or that are unambiguous as compounds (single .class, #id,
@@ -462,6 +511,90 @@ func wrapParentInIs(parent string) string {
 		return parent
 	}
 	return ":is(" + parent + ")"
+}
+
+// bodySegment represents one segment of a rule body — either a run of
+// declarations or a single nested rule. Returned in source order from
+// splitBodySegments so callers can preserve interleaving for cascade
+// purposes.
+type bodySegment struct {
+	isDecls bool   // true: Text is flat declarations; false: Text is `selector { body }`
+	Text    string // trimmed segment content
+}
+
+// splitBodySegments walks a CSS rule body and returns its top-level
+// segments in source order. A run of consecutive flat declarations
+// collapses into a single isDecls segment; each nested block (selector
+// or at-rule) becomes its own segment. Used by expandNesting to preserve
+// the interleaving between flat declarations and nested rules — required
+// by CSS Nesting 1 §3.3 ("declarations after a nested rule apply as if
+// in a separate style rule") so that, e.g.,
+//
+//	.x { & { color: red; } color: green; }
+//
+// emits `:is(.x) { color: red }` BEFORE `.x { color: green }`, letting
+// `color: green` win on source-order at equal specificity.
+func splitBodySegments(body string) []bodySegment {
+	var segments []bodySegment
+	var declRun strings.Builder
+
+	flushDecls := func() {
+		if trimmed := strings.TrimSpace(declRun.String()); trimmed != "" {
+			segments = append(segments, bodySegment{isDecls: true, Text: trimmed})
+		}
+		declRun.Reset()
+	}
+
+	depth := 0
+	start := 0
+	nestedBlockStart := -1
+	inString := false
+	var stringChar byte
+
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString {
+			if ch == stringChar && (i == 0 || body[i-1] != '\\') {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = true
+			stringChar = ch
+			continue
+		}
+		switch ch {
+		case '{':
+			if depth == 0 {
+				nestedBlockStart = start
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && nestedBlockStart >= 0 {
+				// Flush any pending declarations before emitting the nested block.
+				flushDecls()
+				segments = append(segments, bodySegment{
+					isDecls: false,
+					Text:    strings.TrimSpace(body[nestedBlockStart : i+1]),
+				})
+				start = i + 1
+				nestedBlockStart = -1
+			}
+		case ';':
+			if depth == 0 {
+				declRun.WriteString(body[start : i+1])
+				start = i + 1
+			}
+		}
+	}
+	if remaining := strings.TrimSpace(body[start:]); remaining != "" && depth == 0 {
+		declRun.WriteString(remaining)
+	}
+	flushDecls()
+
+	return segments
 }
 
 // separateDeclsAndNested splits a CSS rule body into:
@@ -1856,6 +1989,15 @@ func evaluateSupportsSelector(sel string) bool {
 // <complex-selector>: balanced brackets/parens, no stray combinators, every
 // pseudo-class and pseudo-element recognised, every functional-pseudo's
 // inner selector list also valid.
+//
+// A leading combinator (e.g. `> .test-1`) is NOT a valid <complex-selector>
+// — it is a <relative-selector> per Selectors 4 §17.1, accepted only in
+// nesting / :has() / @scope <scope-start> position. The @supports
+// `selector()` function tests against <complex-selector> (per CSS Conditional
+// 4 §2.5.1), so leading-combinator selectors fail support. This mirrors
+// Blink's CSSSelectorParser::ConsumeComplexSelector @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which only consumes a leading
+// combinator when invoked in nesting / forgiving-nested mode.
 func isValidComplexSelector(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1863,6 +2005,12 @@ func isValidComplexSelector(s string) bool {
 	}
 	// Balanced brackets/parens, no nested string failure.
 	if !hasBalancedBrackets(s) {
+		return false
+	}
+	// Reject leading combinator — that's a <relative-selector>, not a
+	// <complex-selector>. Required for at-supports nesting tests like
+	// `@supports(not selector(> .test-1))` which expect FALSE.
+	if len(s) > 0 && (s[0] == '>' || s[0] == '+' || s[0] == '~') {
 		return false
 	}
 	// Walk compound selectors split by descendant/child/sibling combinators.
@@ -1946,6 +2094,13 @@ func isValidCompoundSelector(s string) bool {
 		case c == '*':
 			i++
 		case c == '|':
+			i++
+		case c == '&':
+			// `&` is the CSS Nesting nesting-selector (CSS Nesting 1 §2),
+			// and is a valid simple-selector inside any compound. Required
+			// for `@supports(selector(&))` to evaluate TRUE — see Blink's
+			// CSSSelectorParser::ConsumeNestingParent @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			i++
 		case c == '.' || c == '#':
 			// class or id — read until next selector boundary
@@ -3475,9 +3630,25 @@ func parseSelectorPart(s string) SelectorPart {
 	return part
 }
 
-// parseAttributeSelector parses an attribute selector like "type=text" or "href^=https"
+// parseAttributeSelector parses an attribute selector like "type=text" or "href^=https".
+//
+// Per CSS Selectors 4 §6 and CSS Namespaces 3 §6.2, an attribute name may be
+// prefixed with a namespace: `ns|attr` selects attributes in namespace `ns`,
+// `*|attr` selects any namespace, and `|attr` selects the no-namespace form
+// (equivalent to a bare `attr` in HTML, where all author-supplied attributes
+// are in no namespace by default). Mirrors Blink core/css/parser/
+// css_selector_parser.cc::ConsumeAttrName @ 4883d11fef4a.
+//
+// Whitespace IS permitted around the operator and between brackets and the
+// attribute name (CSS Selectors 4 §6.1), but NOT inside the namespace prefix
+// (e.g. `| attr` is invalid). The bracket-stripping caller trims outer
+// whitespace; this function handles operator-adjacent whitespace via
+// strings.TrimSpace.
 func parseAttributeSelector(s string) AttributeSelector {
-	// Find the operator
+	// `|=` is a value-match operator (lang-hyphen). Distinguish it from the
+	// namespace prefix `|attr` by requiring the `|` to be followed by `=`.
+	// Look for ` |=` or `=` first; otherwise `|` at the start of the name
+	// is the no-namespace prefix.
 	operators := []string{"^=", "$=", "*=", "~=", "|=", "="}
 
 	for _, op := range operators {
@@ -3489,7 +3660,7 @@ func parseAttributeSelector(s string) AttributeSelector {
 			// Handle CSS escape sequences (e.g., second\ two → second two)
 			value = strings.ReplaceAll(value, `\ `, " ")
 			return AttributeSelector{
-				Name:     name,
+				Name:     normalizeAttrName(name),
 				Operator: op,
 				Value:    value,
 			}
@@ -3498,10 +3669,51 @@ func parseAttributeSelector(s string) AttributeSelector {
 
 	// No operator, just attribute name (existence check)
 	return AttributeSelector{
-		Name:     strings.TrimSpace(s),
+		Name:     normalizeAttrName(strings.TrimSpace(s)),
 		Operator: "",
 		Value:    "",
 	}
+}
+
+// normalizeAttrName handles the namespace prefix on attribute selectors.
+// In HTML (no @namespace context), all attributes live in no namespace, so:
+//   - `attr`     — matches `attr` (no-namespace, the common form)
+//   - `|attr`    — matches `attr` (explicit no-namespace, same set in HTML)
+//   - `*|attr`   — matches `attr` in any namespace (in HTML, same as bare)
+//   - `ns|attr`  — matches `attr` in namespace `ns` (in HTML with no @namespace
+//                  rules declared, this matches nothing — we leave the prefix
+//                  attached so a later @namespace-aware path can refuse it)
+//
+// Whitespace inside the namespace prefix (`| attr` / `ns | attr`) is invalid
+// per CSS Selectors 4 §6.1; we detect that by checking for a space adjacent
+// to `|` and return the name unchanged so it won't match anything (the
+// invalid selector is silently skipped, mirroring Blink's parser-reject).
+//
+// Mirrors Blink core/css/parser/css_selector_parser.cc::ConsumeAttrName
+// @ 4883d11fef4a.
+func normalizeAttrName(name string) string {
+	idx := strings.Index(name, "|")
+	if idx < 0 {
+		return name
+	}
+	// Whitespace adjacent to the bar makes the selector invalid.
+	if idx > 0 && name[idx-1] == ' ' {
+		return name
+	}
+	if idx+1 < len(name) && name[idx+1] == ' ' {
+		return name
+	}
+	prefix := name[:idx]
+	local := name[idx+1:]
+	switch prefix {
+	case "", "*":
+		// `|attr` and `*|attr` — match the bare attribute name in HTML.
+		return local
+	}
+	// Named-namespace prefix: keep as-is. With no @namespace registry the
+	// selector matches nothing, which is the correct behavior for an
+	// unregistered prefix per CSS Namespaces 3 §6.2.
+	return name
 }
 
 // Phase 22: EvaluateMediaQuery returns the 3-valued result of evaluating a
