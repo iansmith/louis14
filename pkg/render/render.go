@@ -16,6 +16,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	"louis14/pkg/layout/svg"
@@ -2211,6 +2212,12 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 //   - Flex items (CSS Flexbox §13: "flex items paint exactly the
 //     same as inline blocks").
 //   - Grid items (CSS Grid §17 painting, same treatment).
+//   - Replaced elements with non-visible overflow (CSS Overflow 4 §3.7
+//     applies a UA `overflow: clip` rule to embed/iframe/img/video;
+//     routing them through paintLayer is the only path that honors
+//     the established clip rectangle around the replaced content,
+//     mirroring Blink's LayoutReplaced::PaintReplaced @
+//     4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
 // Atomic-paint boxes short-circuit the phase walk: the parent calls
 // paintLayer during PhaseForeground, driving the box's own full
@@ -2240,6 +2247,20 @@ func isAtomicInlineForPaint(layer *PaintLayer) bool {
 	// paintSVGRoot draws the SVG subtree.
 	if isInlineSVGLayer(layer) {
 		return true
+	}
+	// Replaced inline elements with non-visible overflow (e.g. UA
+	// `overflow: clip` on <img>/<video>/<embed>/<iframe>) must paint
+	// atomically through paintLayer so the established clip rectangle
+	// constrains the replaced content paint. Without this routing the
+	// content paints through the parent's inline phase with no clip,
+	// and a sub-pixel content size that rounds UP can spill past the
+	// content-box into the border ring — diverging from a sibling flex
+	// or inline-block path that DOES route through paintLayer.
+	if layer.Box.Node != nil && html.IsReplacedElementTag(layer.Box.Node.TagName) {
+		s := layer.Box.Style
+		if s.GetOverflowX() != css.OverflowVisible || s.GetOverflowY() != css.OverflowVisible {
+			return true
+		}
 	}
 	return false
 }
