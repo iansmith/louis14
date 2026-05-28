@@ -373,6 +373,47 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "src":
 		src, _ := e.node.GetAttribute("src")
 		return vm.ToValue(src)
+	case "type":
+		// HTMLInputElement.type / HTMLButtonElement.type IDL attribute
+		// reflects the `type` content attribute. For <input>, an invalid or
+		// missing keyword is normalized to "text" per HTML "the input element"
+		// spec; for <button> the missing default is "submit". Mirrors Blink
+		// core/html/forms/html_input_element.cc::type @ 4883d11fef4a.
+		typeAttr, _ := e.node.GetAttribute("type")
+		typeAttr = strings.ToLower(strings.TrimSpace(typeAttr))
+		switch e.node.TagName {
+		case "input":
+			switch typeAttr {
+			case "text", "search", "url", "tel", "email", "password", "number",
+				"date", "datetime-local", "month", "time", "week",
+				"hidden", "submit", "image", "reset", "button",
+				"checkbox", "radio", "file", "color", "range":
+				return vm.ToValue(typeAttr)
+			}
+			return vm.ToValue("text")
+		case "button":
+			switch typeAttr {
+			case "submit", "reset", "button", "menu":
+				return vm.ToValue(typeAttr)
+			}
+			return vm.ToValue("submit")
+		}
+		return vm.ToValue("")
+	case "value":
+		// HTMLInputElement.value / HTMLTextAreaElement.value IDL attribute.
+		// For <input>, returns the `value` content attribute (default ""
+		// before user interaction). For <textarea>, returns the current
+		// text content (which is the default value before any user input).
+		// Mirrors Blink core/html/forms/html_input_element.cc::value @
+		// 4883d11fef4a.
+		switch e.node.TagName {
+		case "input":
+			v, _ := e.node.GetAttribute("value")
+			return vm.ToValue(v)
+		case "textarea":
+			return vm.ToValue(getTextContent(e.node))
+		}
+		return vm.ToValue("")
 	case "dir":
 		// HTMLElement.dir IDL attribute (HTML §3.2.6) reflects the
 		// "dir" content attribute, restricted to the canonical keyword
@@ -745,6 +786,42 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["src"] = val.String()
 		return true
+	case "type":
+		// HTMLInputElement.type / HTMLButtonElement.type / HTMLSelectElement.type
+		// setter: reflects to the `type` content attribute. Per HTML spec, the
+		// `<input>` getter normalizes invalid types to "text"; the setter
+		// stores the raw value and lets selector matching consult it. Mirrors
+		// Blink core/html/forms/html_input_element.cc::setType @
+		// 4883d11fef4a — invalid types reflect verbatim so the getter is the
+		// place that normalizes.
+		switch e.node.TagName {
+		case "input", "button", "select":
+			if e.node.Attributes == nil {
+				e.node.Attributes = make(map[string]string)
+			}
+			e.node.Attributes["type"] = val.String()
+			return true
+		}
+		return false
+	case "value":
+		// HTMLInputElement.value / HTMLTextAreaElement.value setter: reflects
+		// to the `value` content attribute for <input> (the DOM value and the
+		// content attribute are kept in sync until the form is reset). For
+		// <textarea> the IDL setter replaces the element's text content.
+		// Mirrors Blink core/html/forms/html_input_element.cc::setValue and
+		// html_text_area_element.cc::setValue @ 4883d11fef4a.
+		switch e.node.TagName {
+		case "input":
+			if e.node.Attributes == nil {
+				e.node.Attributes = make(map[string]string)
+			}
+			e.node.Attributes["value"] = val.String()
+			return true
+		case "textarea":
+			setTextContent(e.node, val.String())
+			return true
+		}
+		return false
 	case "dir":
 		// HTMLElement.dir setter: reflects to the "dir" content
 		// attribute verbatim (the IDL setter does not normalize —
@@ -771,7 +848,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerText", "innerHTML", "outerHTML", "src", "dir", "splitText", "data", "appendData",
+		"textContent", "innerText", "innerHTML", "outerHTML", "src", "dir", "type", "value", "splitText", "data", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -799,7 +876,7 @@ func (e *elementAccessor) Keys() []string {
 	return []string{
 		"tagName", "nodeName", "nodeType", "nodeValue", "data", "id", "className",
 		"textContent", "innerText", "innerHTML", "outerHTML",
-		"src", "dir",
+		"src", "dir", "type", "value",
 		"splitText", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",

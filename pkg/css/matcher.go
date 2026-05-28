@@ -303,8 +303,33 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		// :target matches element with matching URL fragment — not available in static renderer
 		return false
 	case pc == "placeholder-shown":
-		// :placeholder-shown: inputs don't show placeholders in static render
-		return false
+		// :placeholder-shown matches an <input> or <textarea> whose effective
+		// "show placeholder" flag is set: the element accepts placeholder, has
+		// a non-empty `placeholder` attribute, and the current value is empty.
+		// Per HTML "the placeholder IDL attribute" and CSS Selectors 4 §6.4.
+		// Mirrors Blink core/html/forms/html_input_element.cc::
+		// ShouldShowPlaceholder @ 4883d11fef4a.
+		return matchesPlaceholderShown(node)
+	case pc == "required":
+		// :required matches input/select/textarea with the `required` attribute.
+		// Per CSS Selectors 4 §6.5 and HTML form-control validity. Mirrors
+		// Blink core/html/forms/html_form_control_element.cc::IsRequiredFormControl
+		// @ 4883d11fef4a.
+		return canBeRequired(node) && hasAttribute(node, "required")
+	case pc == "optional":
+		// :optional is the negation of :required, restricted to controls that
+		// can have a required state. CSS Selectors 4 §6.5.
+		return canBeRequired(node) && !hasAttribute(node, "required")
+	case pc == "read-write":
+		// :read-write matches a user-editable control. For an <input> or
+		// <textarea>, that means not disabled and not readonly (and for input,
+		// a type that supports text editing). For contenteditable elements,
+		// see the contenteditable branch. CSS Selectors 4 §6.6.
+		return matchesReadWrite(node)
+	case pc == "read-only":
+		// :read-only matches anything that is not :read-write. Per spec,
+		// elements that cannot be either are :read-only by default.
+		return !matchesReadWrite(node)
 	case pc == "autofill", pc == "-webkit-autofill":
 		// Autofill state: never applies in static renderer
 		return false
@@ -341,7 +366,25 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		}
 		return false
 	case pc == "link":
-		return node.TagName == "a"
+		// Per CSS Selectors 4 §6.6.1, `:link` matches a non-visited hyperlink
+		// and `:visited` matches a visited one — they are mutually exclusive
+		// in general matching, but §6.6.1.1 carves out a privacy exception
+		// for `:has()`: inside `:has()`, `:link` must match ANY hyperlink and
+		// `:visited` must never match (to avoid history-leak side channels).
+		//
+		// louis14 treats `<a href="">` as the only :visited link (its href
+		// resolves to the current document URL, unconditionally in history).
+		// We can't distinguish "is inside :has()" cheaply at this layer, so
+		// we ALSO treat the visited link as matching :link — which is the
+		// spec-mandated behavior inside `:has()` and the simplest
+		// pre-:has()-aware approximation for general matching (it preserves
+		// existing test passes that rely on `:link` matching any hyperlink).
+		switch node.TagName {
+		case "a", "area", "link":
+			_, hasHref := node.GetAttribute("href")
+			return hasHref
+		}
+		return false
 	case strings.HasPrefix(pc, "is("):
 		// :is() matches if ANY selector in the comma-separated list matches.
 		// Per CSS Selectors 4 §3.7, pseudo-elements are not allowed inside
@@ -550,8 +593,11 @@ func matchesNthChild(node *html.Node, arg string) bool {
 		return nthChildIndex(node)%2 == 0
 	}
 
-	// Parse An+B
-	a, b := parseAnPlusB(arg)
+	// Parse An+B; invalid arguments drop the selector (no element matches).
+	a, b, ok := parseAnPlusBValid(arg)
+	if !ok {
+		return false
+	}
 	idx := nthChildIndex(node)
 	if a == 0 {
 		return idx == b
@@ -765,34 +811,119 @@ func nthChildIndex(node *html.Node) int {
 }
 
 // parseAnPlusB parses an An+B expression like "2n+1", "3n", "5", "-n+3".
-func parseAnPlusB(s string) (a, b int) {
+// parseAnPlusB parses an An+B production per CSS Syntax §3 / Selectors 4 §6.6.1.
+// Returns (a, b, ok). When ok is false, the argument is not a valid An+B
+// expression and the caller should treat the surrounding pseudo-class as a
+// non-match (per the CSS error-recovery rule: an invalid selector is dropped).
+// Mirrors Blink's CSSSelectorParser::ConsumeANPlusB @ 4883d11fef4a.
+//
+// Per the grammar, the only whitespace permitted is around the `+` / `-`
+// joining the A-part dimension to the B-part integer — i.e. `An + B` or
+// `An - B`. Whitespace BETWEEN the A coefficient and `n` (e.g. `1 n`) or
+// inside the dimension is a parse error because A-and-n must form a single
+// dimension token (`1n`, `2n`, `-n`). The strict check below tokenises
+// around the central `+`/`-` separator before collapsing internal whitespace.
+//
+// Examples: "1" → (0, 1, true), "n" → (1, 0, true), "2n+1" → (2, 1, true),
+// "-n+3" → (-1, 3, true), "1 n" → (_, _, false), "1 of" → (_, _, false).
+func parseAnPlusBValid(s string) (a, b int, ok bool) {
 	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, " ", "")
-
-	nIdx := strings.IndexByte(s, 'n')
-	if nIdx < 0 {
-		// Just B
-		b, _ = parseInt(s)
-		return 0, b
+	if s == "" {
+		return 0, 0, false
 	}
 
-	// Parse A
-	aStr := s[:nIdx]
+	// Split the input into the A-part (dimension/identifier containing 'n')
+	// and the B-part (integer), joined by `+` or `-` with optional whitespace
+	// around the operator. CSS Syntax §4 tokenisation: the operator must be
+	// surrounded by whitespace if it follows a dimension (`2n+1` is a single
+	// dimension+signed-integer; `2n + 1` is dimension, ws, +, ws, integer).
+	// Both forms parse to the same An+B value.
+	aPart := s
+	bPart := ""
+	bSign := 1
+	// Search for a `+`/`-` that joins the parts. Skip a leading sign on the
+	// whole expression (e.g. `-n+3`).
+	for i := 1; i < len(s); i++ {
+		ch := s[i]
+		if ch != '+' && ch != '-' {
+			continue
+		}
+		// The operator must be preceded by `n`, an `n`+whitespace, or a digit
+		// run (the An dimension can be just `n` with no leading number).
+		left := strings.TrimRight(s[:i], " \t")
+		if left == "" {
+			continue
+		}
+		last := left[len(left)-1]
+		if last != 'n' && last != 'N' {
+			continue
+		}
+		aPart = left
+		if ch == '-' {
+			bSign = -1
+		}
+		bPart = strings.TrimLeft(s[i+1:], " \t")
+		break
+	}
+
+	// The A-part must end in 'n' / 'N' to introduce the coefficient, OR be
+	// just an integer (no n) — the B-only form.
+	if strings.IndexAny(aPart, " \t") >= 0 {
+		// Whitespace inside the A-part (e.g. "1 n") is invalid: the dimension
+		// token must be contiguous.
+		return 0, 0, false
+	}
+
+	nIdx := strings.IndexAny(aPart, "nN")
+	if nIdx < 0 {
+		// Pure B form: aPart must be an integer; bPart must be absent.
+		if bPart != "" {
+			return 0, 0, false
+		}
+		bVal, parsed := parseInt(aPart)
+		if !parsed {
+			return 0, 0, false
+		}
+		return 0, bVal, true
+	}
+
+	// A-part has 'n'. The portion after 'n' in aPart must be empty — the
+	// integer after 'n' is the B-part split by `+`/`-`.
+	if nIdx != len(aPart)-1 {
+		return 0, 0, false
+	}
+
+	aStr := aPart[:nIdx]
 	switch aStr {
 	case "", "+":
 		a = 1
 	case "-":
 		a = -1
 	default:
-		a, _ = parseInt(aStr)
+		var parsed bool
+		a, parsed = parseInt(aStr)
+		if !parsed {
+			return 0, 0, false
+		}
 	}
 
-	// Parse B
-	rest := s[nIdx+1:]
-	if rest == "" {
-		return a, 0
+	if bPart == "" {
+		return a, 0, true
 	}
-	b, _ = parseInt(rest)
+	bVal, parsed := parseInt(bPart)
+	if !parsed {
+		return 0, 0, false
+	}
+	return a, bSign * bVal, true
+}
+
+// parseAnPlusB is the legacy permissive entry point that returns (a, b)
+// only. Existing callers that don't need validity (the An+B-only branches
+// after splitNthChildArg has rejected `of`-form garbage) keep using it for
+// brevity. Returns the same (a, b) as the strict parser for valid inputs and
+// (0, 0) for invalid ones — equivalent to "match no element".
+func parseAnPlusB(s string) (a, b int) {
+	a, b, _ = parseAnPlusBValid(s)
 	return a, b
 }
 
@@ -836,10 +967,17 @@ func matchesIsLike(node *html.Node, arg string) bool {
 	}
 	for _, sel := range selectors {
 		innerSel := ParseSelector(strings.TrimSpace(sel))
-		if len(innerSel.Parts) > 0 {
-			if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
-				return true
-			}
+		if len(innerSel.Parts) == 0 {
+			continue
+		}
+		// MatchesSelector walks the full compound + combinator chain. The
+		// previous implementation matched only the rightmost compound, which
+		// caused `:is(#d + div, #d ~ #h)` to match every `div` instead of
+		// only the one adjacent to `#d`. Mirrors Blink's
+		// SelectorChecker::MatchSelector recursion @ 4883d11fef4a — :is()
+		// dispatches each branch through the regular complex-selector path.
+		if MatchesSelector(node, innerSel) {
+			return true
 		}
 	}
 	return false
@@ -1026,7 +1164,12 @@ func matchesAnPlusB(position int, arg string) bool {
 	if arg == "even" {
 		return position%2 == 0
 	}
-	a, b := parseAnPlusB(arg)
+	a, b, ok := parseAnPlusBValid(arg)
+	if !ok {
+		// Invalid An+B — the surrounding selector is a parse error and
+		// matches no element. Mirrors CSS Syntax §4 invalid-selector recovery.
+		return false
+	}
 	if a == 0 {
 		return position == b
 	}
@@ -1056,6 +1199,120 @@ func isCheckableElement(node *html.Node) bool {
 func hasAttribute(node *html.Node, name string) bool {
 	_, exists := node.GetAttribute(name)
 	return exists
+}
+
+// canBeRequired reports whether the element is a form control to which the
+// `required` attribute applies. Per HTML §form-control-content-attributes,
+// `required` applies to <input> (most types), <select>, and <textarea>.
+// Mirrors Blink core/html/forms/html_form_control_element.cc::IsRequiredFormControl
+// @ 4883d11fef4a — `:required` and `:optional` only match elements that *can*
+// be either; otherwise neither pseudo matches.
+func canBeRequired(node *html.Node) bool {
+	switch node.TagName {
+	case "select", "textarea":
+		return true
+	case "input":
+		// Per HTML "the input element": required does NOT apply to type=
+		// hidden, range, color, submit, image, reset, button.
+		inputType, _ := node.GetAttribute("type")
+		switch strings.ToLower(strings.TrimSpace(inputType)) {
+		case "hidden", "range", "color", "submit", "image", "reset", "button":
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// matchesPlaceholderShown reports whether the element is currently showing its
+// placeholder. The element must be an <input> or <textarea> whose type accepts
+// a placeholder, has a non-empty `placeholder` attribute, and whose current
+// value is empty. Mirrors Blink core/html/forms/html_input_element.cc::
+// IsPlaceholderVisible / TextControlElement::IsPlaceholderVisible @
+// 4883d11fef4a.
+//
+// Scope: static reftests start from the parsed initial state. The current
+// value is read from the `value` attribute (textarea uses text content as the
+// default). JS-driven mutation of the value flips via the engine's existing
+// attribute path.
+func matchesPlaceholderShown(node *html.Node) bool {
+	switch node.TagName {
+	case "input":
+		// Only text-like types accept a placeholder. Per HTML "the input
+		// element", `placeholder` applies to: text, search, url, tel, email,
+		// password, number. Other types (hidden, checkbox, radio, file,
+		// submit, image, reset, button, range, color, date, time, etc.) do
+		// not show a placeholder.
+		inputType, _ := node.GetAttribute("type")
+		switch strings.ToLower(strings.TrimSpace(inputType)) {
+		case "", "text", "search", "url", "tel", "email", "password", "number":
+			// accepts placeholder
+		default:
+			return false
+		}
+	case "textarea":
+		// <textarea> always accepts placeholder.
+	default:
+		return false
+	}
+	placeholder, ok := node.GetAttribute("placeholder")
+	if !ok || placeholder == "" {
+		return false
+	}
+	if node.TagName == "textarea" {
+		// textarea default value is its text content.
+		for _, c := range node.Children {
+			if c.Type == html.TextNode && c.Text != "" {
+				return false
+			}
+		}
+		return true
+	}
+	value, _ := node.GetAttribute("value")
+	return value == ""
+}
+
+// matchesReadWrite reports whether the element is editable for :read-write
+// purposes. Per CSS Selectors 4 §6.6, the user-editable controls are:
+//   - <input> whose type accepts text editing and that is neither :disabled
+//     nor :readonly,
+//   - <textarea> that is neither :disabled nor :readonly,
+//   - any element with `contenteditable` (other than "false").
+//
+// All other elements are :read-only. Mirrors Blink core/html/forms/
+// html_form_control_element.cc::MatchesReadWritePseudoClass and
+// core/dom/element.cc::MatchesReadOnlyPseudoClass @ 4883d11fef4a.
+func matchesReadWrite(node *html.Node) bool {
+	switch node.TagName {
+	case "input":
+		// Only text-editable input types are :read-write.
+		inputType, _ := node.GetAttribute("type")
+		switch strings.ToLower(strings.TrimSpace(inputType)) {
+		case "", "text", "search", "url", "tel", "email", "password",
+			"number", "date", "datetime-local", "month", "time", "week":
+			// editable types
+		default:
+			return false
+		}
+		if hasAttribute(node, "disabled") || hasAttribute(node, "readonly") {
+			return false
+		}
+		return true
+	case "textarea":
+		if hasAttribute(node, "disabled") || hasAttribute(node, "readonly") {
+			return false
+		}
+		return true
+	}
+	// contenteditable: matches if the element is user-editable.
+	if ce, ok := node.GetAttribute("contenteditable"); ok {
+		switch strings.ToLower(strings.TrimSpace(ce)) {
+		case "false":
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // FindMatchingRules returns all rules that match the given node
