@@ -4735,16 +4735,24 @@ func isValidColumnsShorthand(value string) bool {
 		}
 		if isInt {
 			n, err := strconv.Atoi(part)
-			if err != nil || n < 1 {
+			if err != nil {
 				return false
 			}
-			if hasCount {
-				return false // duplicate count
+			if n >= 1 {
+				if hasCount {
+					return false // duplicate count
+				}
+				hasCount = true
+				continue
 			}
-			hasCount = true
-			continue
+			// n == 0 or negative: cannot satisfy <column-count> (which is
+			// [1,∞]); fall through to the column-width branch which accepts
+			// bare "0" as a zero-length. `-1` will be rejected there because
+			// column-width is [0,∞]. Mirrors Blink's columns parser, where
+			// `columns: 0` resolves as column-width:0 rather than the
+			// invalid count.
 		}
-		// Otherwise must be a non-negative length (column-width).
+		// Non-negative length (column-width). Bare "0" qualifies as a length.
 		w, ok := ParseLength(part)
 		if !ok || w < 0 {
 			return false
