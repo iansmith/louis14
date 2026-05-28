@@ -360,6 +360,17 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return matchesIsLike(node, arg)
 	case strings.HasPrefix(pc, "has("):
 		arg := pc[len("has(") : len(pc)-1]
+		// Per CSS Selectors 4 §17.1.4 and CSSWG resolution
+		// (https://github.com/w3c/csswg-drafts/issues/9600), :has() inside
+		// :has() is invalid — the whole selector matches nothing. Detect
+		// this at the matcher (rather than the parser) so nesting
+		// expansion (which can produce :has(> :is(... :has(...) ...)))
+		// is handled uniformly with author-written nested :has(). Mirrors
+		// Blink's CSSSelectorParser::RestrictedWhere / has-pseudo gating
+		// at 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if containsHas(arg) {
+			return false
+		}
 		return matchesHas(node, strings.TrimSpace(arg))
 	case pc == "first-of-type":
 		return nthOfTypeIndex(node) == 1
@@ -865,6 +876,38 @@ func containsPseudoElementArg(selectors []string) bool {
 			if findTopLevelPseudoElement(sel, tok) >= 0 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// containsHas reports whether s contains a `:has(` token outside of a string
+// literal — used to enforce the "no nested :has()" rule from CSS Selectors 4
+// §17.1.4. We scan character-by-character (not regex) so attribute selectors
+// like `[data-x="…has(…)…"]` don't false-positive. Brackets, parens, and
+// quotes are tracked to skip non-selector context.
+func containsHas(s string) bool {
+	inStr := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inStr {
+				inStr = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			inStr = c
+			continue
+		}
+		// Look for `:has(` — only when preceded by selector-context
+		// (not inside an identifier).
+		if c == ':' && i+4 < len(s) && strings.HasPrefix(s[i:], ":has(") {
+			return true
 		}
 	}
 	return false
