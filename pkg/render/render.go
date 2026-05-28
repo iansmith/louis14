@@ -1272,7 +1272,23 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// The filter region is the graph's forward-mapped bounds over the actual
 	// source extent (not just the border box) so the offscreen buffer covers
 	// every pixel the filter draws.
-	filter.FilterRegion = filter.MapRect(sourceExtent)
+	//
+	// When the element has zero painted extent (a 0x0 box with no
+	// descendants) the MapRect-of-source-extent yields empty — losing any
+	// SVG-resolved filter region from the referenced `<filter>` element
+	// (Filter Effects 1 §6.4: `<filter>` x/y/width/height define the
+	// result buffer for generators like feFlood whose output does not
+	// depend on the source extent). Fall back to the SVG-resolved region
+	// in that case so generator-only filters on empty elements still emit
+	// pixels — mirrors Blink's FilterPainter which treats the
+	// `<filter>` element's region as authoritative when MapRect(SourceGraphic)
+	// would otherwise collapse to zero.
+	mapped := filter.MapRect(sourceExtent)
+	if mapped.Empty() && !filter.FilterRegion.Empty() {
+		// Keep filter.FilterRegion as set by the SVG reference.
+	} else {
+		filter.FilterRegion = mapped
+	}
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
@@ -1546,13 +1562,59 @@ func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 	r.dc = childDC
 	r.target = buf
 
-	r.paintLayerContentDirect(layer)
+	// Inside the isolation, paint WITHOUT the PushGroup/PopGroupWithAlpha
+	// opacity wrap: PushGroup swaps dc.im to a fresh buffer for the
+	// group, but r.target stays pointed at `buf` — so a descendant's
+	// backdrop-filter sees the empty buf instead of the layer's painted
+	// content. Apply opacity by post-modulating the alpha channel of buf
+	// at composite-out time, which preserves the same composited result
+	// (per CSS Color §15: applying alpha to premultiplied colour values
+	// before source-over composite is equivalent to PushGroup with the
+	// same alpha). Mirrors Blink's PaintLayer using SkBlendMode::kSrcOver
+	// with a constant-alpha layer rather than a separate group surface
+	// for opacity-only stacking contexts (paint_layer_painter.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	r.paintLayerContentDirectNoOpacityGroup(layer)
 
 	// Restore original DC and alpha-composite the isolated buffer onto
-	// r.target with source-over (DrawImage).
+	// r.target with source-over (DrawImage), modulating by the layer's
+	// opacity since the inner paint skipped the PushGroup wrap.
 	r.dc = origDC
 	r.target = origTarget
-	r.dc.DrawImage(buf, bx, by)
+	if layer.Opacity < 1.0 {
+		compositeBufferWithOpacityOnto(r.target, buf, 0, 0, layer.Opacity)
+	} else {
+		r.dc.DrawImage(buf, bx, by)
+	}
+}
+
+// paintLayerContentDirectNoOpacityGroup mirrors paintLayerContentDirect but
+// skips the PushGroup/PopGroupWithAlpha opacity wrap. The caller (typically
+// paintLayerIsolated) applies the layer's opacity at composite-out time so
+// that r.target stays pointed at the surface the layer is actually painting
+// into — necessary for descendants whose backdrop-filter samples r.target.
+func (r *Renderer) paintLayerContentDirectNoOpacityGroup(layer *PaintLayer) {
+	r.paintLayerCanvasBackground(layer)
+
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
+
+	r.paintLayerContent(layer)
+
+	if layer.HasTransformPaint {
+		r.transformDepth--
+	}
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+	if r.canvasBgPaintedLayer == layer {
+		r.canvasBgPaintedLayer = nil
+	}
 }
 
 // paintLayerContentDirect runs the canvas-background + transform + opacity
