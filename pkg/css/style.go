@@ -4409,6 +4409,19 @@ func expandBackgroundProperty(style *Style, value string) {
 					colorFound = true
 					colorValue = part
 				}
+			} else if strings.EqualFold(part, "currentcolor") {
+				// CSS Color 4 §4.4 currentcolor is a valid <color> token in
+				// the background shorthand. ParseColor returns false for
+				// currentcolor (it's resolved late at paint time against
+				// the element's `color` value), so accept it here so the
+				// shorthand doesn't drop to background-color: transparent.
+				// Mirrors Blink's `CSSParserFastPaths::IsValidColor` which
+				// admits `currentcolor` as a system-color analogue
+				// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+				if !colorFound {
+					colorFound = true
+					colorValue = "currentcolor"
+				}
 			} else if part == "transparent" {
 				if !colorFound {
 					colorFound = true
@@ -4558,8 +4571,19 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 // where percent and number forms produce the same final byte after rounding.
 func parseRGBByte(s string) (uint8, bool) {
 	v := parseColorFloat01(s, 255.0)
-	if v < 0 || v > 1 {
-		return 0, false
+	// CSS Color 4 §4.1: out-of-range RGB component values in the legacy
+	// rgb()/rgba() functional notations are clamped to the [0, 255] range
+	// (after percentage resolution). The function must still return a
+	// valid Color — never reject the whole declaration just because a
+	// component is out of gamut. Mirrors Blink's
+	// `LegacyRGB::ToRGBA8()` clamp in
+	// `third_party/blink/renderer/core/css/properties/css_color_parsing.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); see
+	// crbug.com/1483736 for the regression this guard prevents.
+	if v < 0 {
+		v = 0
+	} else if v > 1 {
+		v = 1
 	}
 	return uint8(math.Round(v * 255)), true
 }
@@ -4687,6 +4711,21 @@ func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
 	h = parseHueDegrees(hStr)
 	s = parseColorFloat01(sStr, 100.0)
 	l = parseColorFloat01(lStr, 100.0)
+	// CSS Color 4 §4.3: negative saturation is clamped to 0; saturation
+	// above 100% is clamped to 100%. Lightness is similarly clamped to
+	// [0,100%]. Mirrors Blink's `ParseHSLParameters()` clamp step in
+	// `third_party/blink/renderer/core/css/parser/css_parser_fast_paths.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if s < 0 {
+		s = 0
+	} else if s > 1 {
+		s = 1
+	}
+	if l < 0 {
+		l = 0
+	} else if l > 1 {
+		l = 1
+	}
 	ok = true
 	return
 }
@@ -5573,13 +5612,17 @@ func ParseColor(colorStr string) (Color, bool) {
 		return parseColorMix(colorStr)
 	}
 
-	// Try hex color first (#RGB or #RRGGBB)
+	// Try hex color first (#RGB, #RGBA, #RRGGBB, #RRGGBBAA per CSS Color 4 §5.2).
+	// Mirrors Blink's CSSParserFastPaths::ParseColor() hex branch which accepts
+	// 3/4/6/8 hex-digit forms @ third_party/blink/renderer/core/css/parser/
+	// css_parser_fast_paths.cc::ParseColor (Chromium 4883d11f).
 	if strings.HasPrefix(colorStr, "#") {
 		hex := colorStr[1:]
-		var r, g, b uint8
+		var r, g, b, a uint8
 
-		if len(hex) == 3 {
-			// #RGB format - expand to #RRGGBB
+		switch len(hex) {
+		case 3:
+			// #RGB format - expand each nibble to a full byte
 			n, _ := fmt.Sscanf(hex, "%1x%1x%1x", &r, &g, &b)
 			if n != 3 {
 				return Color{}, false
@@ -5588,119 +5631,39 @@ func ParseColor(colorStr string) (Color, bool) {
 			g = g*16 + g
 			b = b*16 + b
 			return Color{r, g, b, 1.0}, true
-		} else if len(hex) == 6 {
+		case 4:
+			// #RGBA format - expand each nibble to a full byte (alpha included)
+			n, _ := fmt.Sscanf(hex, "%1x%1x%1x%1x", &r, &g, &b, &a)
+			if n != 4 {
+				return Color{}, false
+			}
+			r = r*16 + r
+			g = g*16 + g
+			b = b*16 + b
+			a = a*16 + a
+			return Color{r, g, b, float64(a) / 255.0}, true
+		case 6:
 			// #RRGGBB format
 			n, _ := fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
 			if n != 3 {
 				return Color{}, false
 			}
 			return Color{r, g, b, 1.0}, true
+		case 8:
+			// #RRGGBBAA format
+			n, _ := fmt.Sscanf(hex, "%02x%02x%02x%02x", &r, &g, &b, &a)
+			if n != 4 {
+				return Color{}, false
+			}
+			return Color{r, g, b, float64(a) / 255.0}, true
 		}
 	}
 
-	// Try named colors
-	namedColors := map[string]Color{
-		"red":            {255, 0, 0, 1.0},
-		"green":          {0, 128, 0, 1.0},
-		"blue":           {0, 0, 255, 1.0},
-		"yellow":         {255, 255, 0, 1.0},
-		"cyan":           {0, 255, 255, 1.0},
-		"aqua":           {0, 255, 255, 1.0},
-		"magenta":        {255, 0, 255, 1.0},
-		"fuchsia":        {255, 0, 255, 1.0},
-		"white":          {255, 255, 255, 1.0},
-		"black":          {0, 0, 0, 1.0},
-		"gray":           {128, 128, 128, 1.0},
-		"grey":           {128, 128, 128, 1.0},
-		"orange":         {255, 165, 0, 1.0},
-		"purple":         {128, 0, 128, 1.0},
-		"pink":           {255, 192, 203, 1.0},
-		"brown":          {165, 42, 42, 1.0},
-		"lime":           {0, 255, 0, 1.0},
-		"navy":           {0, 0, 128, 1.0},
-		"teal":           {0, 128, 128, 1.0},
-		"silver":         {192, 192, 192, 1.0},
-		"maroon":         {128, 0, 0, 1.0},
-		"olive":          {128, 128, 0, 1.0},
-		"lightblue":      {173, 216, 230, 1.0},
-		"lightgreen":     {144, 238, 144, 1.0},
-		"lightgray":      {211, 211, 211, 1.0},
-		"lightgrey":      {211, 211, 211, 1.0},
-		"lightyellow":    {255, 255, 224, 1.0},
-		"lightcoral":     {240, 128, 128, 1.0},
-		"lightcyan":      {224, 255, 255, 1.0},
-		"lightpink":      {255, 182, 193, 1.0},
-		"turquoise":      {64, 224, 208, 1.0},
-		"coral":          {255, 127, 80, 1.0},
-		"violet":         {238, 130, 238, 1.0},
-		"bisque":         {255, 228, 196, 1.0},
-		"limegreen":      {50, 205, 50, 1.0},
-		"darkgreen":      {0, 100, 0, 1.0},
-		"darkblue":       {0, 0, 139, 1.0},
-		"darkred":        {139, 0, 0, 1.0},
-		"darkgray":       {169, 169, 169, 1.0},
-		"darkgrey":       {169, 169, 169, 1.0},
-		"dimgray":        {105, 105, 105, 1.0},
-		"dimgrey":        {105, 105, 105, 1.0},
-		"gold":           {255, 215, 0, 1.0},
-		"indigo":         {75, 0, 130, 1.0},
-		"khaki":          {240, 230, 140, 1.0},
-		"lavender":       {230, 230, 250, 1.0},
-		"salmon":         {250, 128, 114, 1.0},
-		"crimson":        {220, 20, 60, 1.0},
-		"tomato":         {255, 99, 71, 1.0},
-		"skyblue":        {135, 206, 235, 1.0},
-		"steelblue":      {70, 130, 180, 1.0},
-		"slategray":      {112, 128, 144, 1.0},
-		"slategrey":      {112, 128, 144, 1.0},
-		"whitesmoke":     {245, 245, 245, 1.0},
-		"ivory":          {255, 255, 240, 1.0},
-		"beige":          {245, 245, 220, 1.0},
-		"wheat":          {245, 222, 179, 1.0},
-		"tan":            {210, 180, 140, 1.0},
-		"chocolate":      {210, 105, 30, 1.0},
-		"firebrick":      {178, 34, 34, 1.0},
-		"orangered":      {255, 69, 0, 1.0},
-		"deeppink":       {255, 20, 147, 1.0},
-		"hotpink":        {255, 105, 180, 1.0},
-		"mediumblue":     {0, 0, 205, 1.0},
-		"royalblue":      {65, 105, 225, 1.0},
-		"dodgerblue":     {30, 144, 255, 1.0},
-		"cornflowerblue": {100, 149, 237, 1.0},
-		"darkviolet":     {148, 0, 211, 1.0},
-		"plum":           {221, 160, 221, 1.0},
-		"orchid":         {218, 112, 214, 1.0},
-		"sienna":         {160, 82, 45, 1.0},
-		"peru":           {205, 133, 63, 1.0},
-		"linen":          {250, 240, 230, 1.0},
-		"seagreen":       {46, 139, 87, 1.0},
-		"forestgreen":    {34, 139, 34, 1.0},
-		"olivedrab":      {107, 142, 35, 1.0},
-		"yellowgreen":    {154, 205, 50, 1.0},
-		"darkslategray":  {47, 79, 79, 1.0},
-		"darkslategrey":  {47, 79, 79, 1.0},
-		"darkorange":     {255, 140, 0, 1.0},
-		"darkcyan":       {0, 139, 139, 1.0},
-		"aquamarine":     {127, 255, 212, 1.0},
-		"rosybrown":      {188, 143, 143, 1.0},
-		"thistle":        {216, 191, 216, 1.0},
-		"gainsboro":      {220, 220, 220, 1.0},
-		"aliceblue":      {240, 248, 255, 1.0},
-		"ghostwhite":     {248, 248, 255, 1.0},
-		"honeydew":       {240, 255, 240, 1.0},
-		"seashell":       {255, 245, 238, 1.0},
-		"mintcream":      {245, 255, 250, 1.0},
-		"snow":           {255, 250, 250, 1.0},
-		"floralwhite":    {255, 250, 240, 1.0},
-		"oldlace":        {253, 245, 230, 1.0},
-		"papayawhip":     {255, 239, 213, 1.0},
-		"blanchedalmond": {255, 235, 205, 1.0},
-		"moccasin":       {255, 228, 181, 1.0},
-		"navajowhite":    {255, 222, 173, 1.0},
-		"peachpuff":      {255, 218, 185, 1.0},
-		"mistyrose":      {255, 228, 225, 1.0},
-		"antiquewhite":   {250, 235, 215, 1.0},
-	}
+	// CSS Color 4 §6.1 named colors. The canonical list of 148 color keywords
+	// (147 distinct values + the "grey" spellings that alias the "gray" forms).
+	// Mirrors Blink's `NamedColor` table in
+	// third_party/blink/renderer/platform/graphics/color.cc (Chromium
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	if color, ok := namedColors[colorStr]; ok {
 		return color, true
 	}
