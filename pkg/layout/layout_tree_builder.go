@@ -326,14 +326,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			}
 		}
 		// For list-style-type: <string> without ::marker rules, use the string
-		// as marker content when list-style-position: inside.
-		if lin.MarkerContent == "" && style.GetListStylePosition() == "inside" {
+		// as marker content. Applies to both inside and outside positions
+		// (CSS Lists 3 §3.2 list-style-type accepts <string>; Blink
+		// ListMarker::MarkerText returns the string for the StaticString
+		// category regardless of position).
+		if lin.MarkerContent == "" {
 			lst := style.GetListStyleType()
-			if lst != "" {
-				s := string(lst)
-				if !isBuiltinListStyleType(lst) {
-					lin.MarkerContent = s
-				}
+			if lst != "" && !isBuiltinListStyleType(lst) {
+				lin.MarkerContent = string(lst)
 			}
 		}
 	}
