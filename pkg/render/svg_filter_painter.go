@@ -380,8 +380,20 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if !ok {
 		return false
 	}
+	// `drop-shadow(... currentcolor)` resolves to the shape's computed CSS
+	// `color` at paint time (Filter Effects 1 §3, mirroring Blink's
+	// FEDropShadow currentColor resolution via the element's
+	// ComputedStyle::VisitedDependentColor(GetCSSPropertyColor())). The HTML
+	// box path populates this from layer.TextColor in paintLayerWithFilter;
+	// without the same wiring here, drop-shadow on an SVG shape sees a
+	// zero-alpha black and the shadow never appears.
+	var currentColor css.Color
+	if sp.shape != nil && sp.shape.Style != nil {
+		currentColor = sp.shape.Style.GetColor()
+	}
 	builder := &FilterEffectBuilder{
 		ReferenceBox:       referenceBox,
+		CurrentColor:       currentColor,
 		Resources:          sp.ctx.Resources,
 		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
 		ImageFetcher:       sp.ctx.Renderer.imageFetcher,

@@ -310,6 +310,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		pendingDropAtBlockOffsetEnabled  bool
 		pendingIntrinsicAtBreak          float64
 		pendingHaveIntrinsicAtBreak      bool
+		// inlineFullyPlaced is set to true when this block has only inline
+		// children AND the IFC completed without overflow (no inline break
+		// token emitted). Used when the block self-fragments via didBreakSelf
+		// to set HasSeenAllChildren=true on the outgoing break token, so the
+		// continuation fragment's BLA does not re-lay out the same inline
+		// content. Mirrors Blink's `InlineBreakToken::is_finished_` carried
+		// on the block break token via the inline child path.
+		inlineFullyPlaced bool
 	)
 	pendingDropAtBlockOffset = -1
 	pendingBreakAppeal = BreakAppealPerfect
@@ -379,10 +387,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
 			inlineStartTextOffset = incomingBreakToken.InlineTextOffset
 		}
+		// HasSeenAllChildren on the incoming token: a previous fragment of
+		// this block self-fragmented (didBreakSelf) AFTER the IFC fully placed
+		// all inline content (no overflow → no inline break token). The
+		// remaining fragments are pure box continuation — empty area below the
+		// last line. Skip the IFC entirely so the text is not re-laid at the
+		// top of every continuation column. Driver:
+		// multicol-span-all-children-height-001 — block1 (CSS height:100px,
+		// one line of "block1" text) self-fragments at the 50px column
+		// boundary; col1 must show empty 50px box continuation, not the text
+		// repeated. Mirrors Blink's `InlineBreakToken::is_finished_` on the
+		// block's child path.
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
 		var inlineBreakToken *BlockBreakToken
-		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
+			// Skip IFC; everything was placed in a prior fragment.
+		} else {
+			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+		}
+		// IFC completed without overflow: track so we can flag the outgoing
+		// break token's HasSeenAllChildren if the block self-fragments. See
+		// the inlineFullyPlaced declaration above.
+		if inlineBreakToken == nil {
+			inlineFullyPlaced = true
+		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
@@ -967,6 +996,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// and all of its in-flow children's margins (if any) are collapsed.
 			// We approximate this by checking that the element has no fragment
 			// children (no content).
+			//
+			// Paint-isolation properties (filter, opacity<1, transform, mask,
+			// clip-path, mix-blend-mode, isolation, backdrop-filter) produce
+			// visible output independently of the box's content — e.g. a
+			// 0x0 box with `filter:url(#flood)` paints flood pixels via the
+			// SVG filter's own region. Such boxes must NOT collapse through
+			// because louis14's collapse-through path drops the fragment
+			// entirely (the `if collapseThrough { ... continue }` branch
+			// below), which would hide the box from the paint walk.
+			// Mirrors Blink's effective behavior where the fragment is
+			// always emitted regardless of self-collapse — LayoutNG's
+			// `BlockLayoutAlgorithm::Layout` adds every child fragment via
+			// `AddChild`, and self-collapse only affects margin resolution,
+			// not fragment-tree membership. Blink @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
@@ -976,7 +1020,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
-				!isChildNewFC
+				!isChildNewFC &&
+				!hasPaintIsolation(childStyle)
 
 			// Step 4: Position child in the inline direction.
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist.
@@ -1914,6 +1959,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				isTransformCB = true
 			} else if bla.style.WillChangeEstablishesContainingBlock(true) {
 				isTransformCB = true
+			} else if bla.style.GetTransformStyle() == css.TransformStylePreserve3D {
+				// CSS Transforms L2 §11 / Blink's HasTransformRelatedProperty:
+				// transform-style:preserve-3d establishes a containing block
+				// for all positioned descendants (including fixed). Mirrors
+				// Blink's ComputedStyle::HasTransformRelatedProperty at SHA
+				// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+				isTransformCB = true
+			} else if bla.style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
+				// CSS Transforms L2 §11: backface-visibility:hidden establishes
+				// a containing block (and stacking context) when the element
+				// participates in a 3D rendering context. WPT
+				// backface-visibility-hidden-003 covers the case where the
+				// parent has transform-style:preserve-3d. Blink's
+				// HasTransformRelatedProperty treats backface-visibility:hidden
+				// as CB-establishing unconditionally; we mirror that.
+				isTransformCB = true
 			}
 		}
 		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
@@ -2076,6 +2137,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// the line-2012 reader did the same.
 			childBreakTokens = result.BreakToken.ChildBreakTokens
 			hasSeenAllChildren = result.BreakToken.HasSeenAllChildren
+		}
+		// didBreakSelf on an inline-only block whose IFC completed without
+		// overflow: signal HasSeenAllChildren so the continuation fragment
+		// does not re-lay out the same inline content. Without this, an
+		// inline-only block (e.g. `<div>block1</div>`) with CSS height taller
+		// than its only line of text and taller than the column box self-
+		// fragments at the column boundary, and the continuation column
+		// re-renders the text at the top of the next column. Driver:
+		// multicol-span-all-children-height-001.
+		if didBreakSelf && inlineFullyPlaced {
+			hasSeenAllChildren = true
 		}
 		// Option-b step 6.5.A — Site B setter (plan §1.9 / §3.3 row 4).
 		// Blink's FinishFragmentation at fragmentation_utils.cc:735-739:
@@ -2709,6 +2781,50 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
+	return false
+}
+
+// hasPaintIsolation returns true if the style has any property that produces
+// visible paint output independently of the box's content — filter,
+// opacity<1, transform, mask, clip-path, mix-blend-mode, isolation:isolate,
+// backdrop-filter. Such boxes must NOT be dropped by margin collapse-through
+// (the `collapseThrough` branch in BlockLayoutAlgorithm.Layout, which
+// `continue`s without appending the child fragment) because their paint
+// depends only on the box itself, not its descendants.
+//
+// Mirrors the property set tested in Blink's
+// `ComputedStyle::HasPropertyThatCreatesStackingContext` (computed_style.cc
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), restricted to those that
+// produce pixels (z-index, will-change auto-layer creation, etc. are
+// excluded — they create a stacking context but don't paint independently).
+func hasPaintIsolation(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	if len(style.GetFilter()) > 0 {
+		return true
+	}
+	if len(style.GetBackdropFilter()) > 0 {
+		return true
+	}
+	if style.GetOpacity() < 1.0 {
+		return true
+	}
+	if len(style.GetTransforms()) > 0 {
+		return true
+	}
+	if cp := style.GetClipPath(); cp != nil && cp.Type != css.ClipPathNone {
+		return true
+	}
+	if m := style.GetMaskImage(); m != "" && m != "none" {
+		return true
+	}
+	if bm := style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
+		return true
+	}
+	if iso, ok := style.Get("isolation"); ok && iso == "isolate" {
+		return true
+	}
 	return false
 }
 

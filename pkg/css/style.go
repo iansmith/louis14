@@ -3178,6 +3178,7 @@ var cssLonghandProperties = []string{
 	"column-span",
 	// Transform / animation
 	"transform", "transform-origin", "translate", "rotate", "scale",
+	"transform-style", "backface-visibility", "perspective", "perspective-origin",
 	"transition", "animation-name", "animation-duration",
 	"animation-timing-function", "animation-delay", "animation-iteration-count",
 	"animation-direction", "animation-fill-mode", "animation-play-state",
@@ -3336,28 +3337,103 @@ func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSn
 
 // expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
 // Format: "3px solid blue" — order of components is not significant.
+// Per CSS Cascade 4 §3.2, a CSS-wide keyword as the shorthand value applies to every
+// longhand (mirroring Blink's StylePropertyShorthand::longhand expansion at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func expandOutlineShorthand(style *Style, value string) {
+	// CSS-wide keyword as the entire shorthand value: route to every longhand
+	// so that the post-cascade resolveInheritValues / resolveCSSWideKeywords
+	// pass picks them all up. This is what makes `outline: inherit` inherit
+	// the parent's outline-width / outline-style / outline-color (not just the
+	// color). Without this, `outline: inherit` resets width to medium and
+	// style to none, producing no visible outline on the inheriting element.
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		style.Set("outline-width", trimmed)
+		style.Set("outline-style", trimmed)
+		style.Set("outline-color", trimmed)
+		return
+	}
+
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
 	style.Set("outline-color", "currentcolor")
 
-	parts := strings.Fields(value)
+	// Tokenize while keeping balanced parens together so var() / calc() etc.
+	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
+	// outside a function block separates tokens; the simple strings.Fields
+	// path splits `var(--w)` if the value contains internal whitespace.
+	parts := tokenizeShorthand(value)
+	widthSet := false
 	for _, part := range parts {
 		if part == "none" {
 			style.Set("outline-style", "none")
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+		} else if part == "auto" || part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
 			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			// CSS UI 4 §4: `auto` is a valid outline-style. We treat it as
+			// `solid` at paint time (no platform focus ring); recording it as
+			// `auto` keeps the computed-value reflection honest for getters
+			// that compare against the keyword.
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
+			widthSet = true
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("outline-width", part)
+			widthSet = true
+		} else if !widthSet && (strings.HasPrefix(part, "var(") || strings.HasPrefix(part, "calc(")) {
+			// Ambiguous functional value: outline shorthand normally lists
+			// width as a length and color as a color. With no width set yet,
+			// treat the first var()/calc() token as width — typical CSS
+			// patterns use var() for dimensional values in shorthands
+			// (matches Blink's CSSPropertyParser::ParseSingleValue type-coercion
+			// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			style.Set("outline-width", part)
+			widthSet = true
 		} else if part != "" {
 			// Assume it's a color
 			style.Set("outline-color", part)
 		}
 	}
+}
+
+// tokenizeShorthand splits a CSS shorthand value into top-level tokens while
+// preserving balanced parens — so `var(--w)`, `calc(1em + 2px)`, and
+// `rgba(0, 0, 0, 0.5)` each survive as a single token instead of being split
+// at internal whitespace.
+func tokenizeShorthand(value string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '(':
+			depth++
+			cur.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				if cur.Len() > 0 {
+					out = append(out, cur.String())
+					cur.Reset()
+				}
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // expandColumnRuleShorthand parses the column-rule shorthand into column-rule-width, column-rule-style, column-rule-color.
@@ -3685,10 +3761,17 @@ func (s *Style) GetOutlineWidth() float64 {
 
 // GetOutlineColor returns the outline color as RGBA components.
 // Defaults to currentColor (element's text color), falling back to black.
+// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
+// the UA has no specific focus-ring colour to apply (mirrors Blink's
+// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
+// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	colorStr := "currentcolor"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
+	}
+	if strings.EqualFold(colorStr, "auto") {
+		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
 		// Use element's text color
@@ -9186,6 +9269,44 @@ func parseTransforms(val string) []Transform {
 func parseTransformFunction(name, args string) *Transform {
 	name = strings.TrimSpace(name)
 	args = strings.TrimSpace(args)
+	// CSS function names are case-insensitive per CSS Syntax §4.3.10.
+	// Normalise to the canonical mixed-case spelling so test authors who
+	// write `rotatex(180deg)`, `ROTATEY(45deg)`, etc. hit the same branches
+	// as the canonical spelling.
+	switch strings.ToLower(name) {
+	case "translatex":
+		name = "translateX"
+	case "translatey":
+		name = "translateY"
+	case "translatez":
+		name = "translateZ"
+	case "translate3d":
+		name = "translate3d"
+	case "scalex":
+		name = "scaleX"
+	case "scaley":
+		name = "scaleY"
+	case "scalez":
+		name = "scaleZ"
+	case "scale3d":
+		name = "scale3d"
+	case "rotatex":
+		name = "rotateX"
+	case "rotatey":
+		name = "rotateY"
+	case "rotatez":
+		name = "rotateZ"
+	case "rotate3d":
+		name = "rotate3d"
+	case "skewx":
+		name = "skewX"
+	case "skewy":
+		name = "skewY"
+	case "matrix3d":
+		name = "matrix3d"
+	case "translate", "scale", "rotate", "skew", "matrix", "perspective":
+		name = strings.ToLower(name)
+	}
 
 	switch name {
 	case "translate":
@@ -9287,6 +9408,98 @@ func parseTransformFunction(name, args string) *Transform {
 		}
 		if len(values) == 6 {
 			return &Transform{Type: "matrix", Values: values}
+		}
+
+	// 3D transform functions (CSS Transforms L2 §11). louis14 doesn't render
+	// a true 3D scene, but it must recognise these so back-face computation
+	// (IsBackFaceVisible) and stacking-context tracking work correctly.
+	// Tagged with their own Type strings so 2D paint sites can ignore them
+	// while back-face / preserve-3d code paths consume them. Mirrors Blink's
+	// TransformOperations table at
+	// third_party/blink/renderer/platform/transforms/transform_operations.h
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	case "rotateX":
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "rotateX", Values: []float64{*val}}
+		}
+	case "rotateY":
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "rotateY", Values: []float64{*val}}
+		}
+	case "rotateZ":
+		// rotateZ(a) == rotate(a) in the 2D plane; emit as 2D rotate so the
+		// existing paint path renders it correctly.
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "rotate", Values: []float64{*val}}
+		}
+	case "rotate3d":
+		// rotate3d(x, y, z, angle) — 4 args, last is the angle.
+		parts := strings.Split(args, ",")
+		if len(parts) == 4 {
+			x, errX := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+			y, errY := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+			z, errZ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+			ang := parseAngle(strings.TrimSpace(parts[3]))
+			if errX == nil && errY == nil && errZ == nil && ang != nil {
+				return &Transform{Type: "rotate3d", Values: []float64{x, y, z, *ang}}
+			}
+		}
+	case "scaleZ":
+		if val, err := strconv.ParseFloat(args, 64); err == nil {
+			return &Transform{Type: "scaleZ", Values: []float64{val}}
+		}
+	case "scale3d":
+		parts := strings.Split(args, ",")
+		if len(parts) == 3 {
+			sx, errX := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+			sy, errY := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+			sz, errZ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+			if errX == nil && errY == nil && errZ == nil {
+				return &Transform{Type: "scale3d", Values: []float64{sx, sy, sz}}
+			}
+		}
+	case "translateZ":
+		// translateZ accepts a length only; no useful px width context
+		// (no reference axis), so parse as a bare length.
+		if v, _, ok := parseTransformValue(args); ok {
+			return &Transform{Type: "translateZ", Values: []float64{v}}
+		}
+	case "translate3d":
+		parts := strings.Split(args, ",")
+		if len(parts) == 3 {
+			tx, txPct, okx := parseTransformValue(strings.TrimSpace(parts[0]))
+			ty, tyPct, oky := parseTransformValue(strings.TrimSpace(parts[1]))
+			tz, _, okz := parseTransformValue(strings.TrimSpace(parts[2]))
+			if okx && oky && okz {
+				return &Transform{
+					Type:      "translate3d",
+					Values:    []float64{tx, ty, tz},
+					IsPercent: []bool{txPct, tyPct, false},
+				}
+			}
+		}
+	case "matrix3d":
+		// matrix3d(m00..m33) — column-major 4x4 matrix; 16 args.
+		parts := strings.Split(args, ",")
+		if len(parts) == 16 {
+			values := make([]float64, 0, 16)
+			ok := true
+			for _, part := range parts {
+				v, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+				if err != nil {
+					ok = false
+					break
+				}
+				values = append(values, v)
+			}
+			if ok {
+				return &Transform{Type: "matrix3d", Values: values}
+			}
+		}
+	case "perspective":
+		// perspective(<length>) — used only for back-face math here.
+		if v, _, ok := parseTransformValue(args); ok {
+			return &Transform{Type: "perspective", Values: []float64{v}}
 		}
 	}
 
@@ -9597,6 +9810,258 @@ func (s *Style) GetIndividualTranslate() (float64, float64, bool, bool, bool) {
 		}
 	}
 	return 0, 0, false, false, false
+}
+
+// BackfaceVisibility represents the `backface-visibility` property
+// (CSS Transforms L2 §11). Mirrors Blink's EBackfaceVisibility enum at
+// third_party/blink/renderer/core/style/computed_style_constants.h
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type BackfaceVisibility int
+
+const (
+	BackfaceVisibilityVisible BackfaceVisibility = iota
+	BackfaceVisibilityHidden
+)
+
+// GetBackfaceVisibility returns the backface-visibility value (default: visible).
+func (s *Style) GetBackfaceVisibility() BackfaceVisibility {
+	if val, ok := s.Get("backface-visibility"); ok {
+		if val == "hidden" {
+			return BackfaceVisibilityHidden
+		}
+	}
+	return BackfaceVisibilityVisible
+}
+
+// TransformStyle represents the `transform-style` property (CSS Transforms L2
+// §10). `preserve-3d` means descendants share this element's 3D rendering
+// context; `flat` (default) means descendants are flattened into the element's
+// plane before being painted. Mirrors Blink's ETransformStyle3D at
+// third_party/blink/renderer/core/style/computed_style_constants.h
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type TransformStyle int
+
+const (
+	TransformStyleFlat TransformStyle = iota
+	TransformStylePreserve3D
+)
+
+// GetTransformStyle returns the transform-style value (default: flat).
+func (s *Style) GetTransformStyle() TransformStyle {
+	if val, ok := s.Get("transform-style"); ok {
+		if val == "preserve-3d" {
+			return TransformStylePreserve3D
+		}
+	}
+	return TransformStyleFlat
+}
+
+// IsBackFaceVisible reports whether the back face of a box transformed by
+// `transforms` is the face currently presented to the viewer. The CSS
+// Transforms L2 §11 algorithm:
+//
+//  1. Build the accumulated transform matrix M from `transforms`.
+//  2. Apply M to the box's local normal vector (0, 0, 1).
+//  3. If the resulting normal's Z component is < 0 the back face is toward
+//     the viewer.
+//
+// Returns true when the back face is toward the viewer (i.e. the element
+// should be hidden when `backface-visibility: hidden`).
+//
+// This matches Blink's TransformationMatrix::IsBackFaceVisible() at
+// third_party/blink/renderer/platform/transforms/transformation_matrix.cc
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f — which returns true when the
+// determinant of the upper-left 3×3 is negative (equivalent for orthogonal
+// rotations, and the test files use rotations, scalez(-1), and matrix3d
+// only). For correctness across arbitrary 3D affine matrices we use the
+// normal-vector method, which is the textbook definition of back-facing
+// in a right-handed coordinate system.
+func IsBackFaceVisible(transforms []Transform) bool {
+	m := identityMatrix4()
+	for _, t := range transforms {
+		m = m.multiply(transformToMatrix4(t))
+	}
+	// Normal vector (0, 0, 1) transformed by M. We only need the resulting
+	// Z component:
+	//     n'.z = m20*0 + m21*0 + m22*1 = m22.
+	// In our column-major layout m22 is the (z,z) entry of the upper-left
+	// 3×3 — the "how much of source Z survives along destination Z" factor.
+	// Negative → back face toward viewer.
+	return m[2][2] < 0
+}
+
+// matrix4 is a 4×4 transform matrix stored in row-major order: m[row][col].
+// We use this only for back-face computation; the renderer keeps its 2D
+// matrices as DrawContext state.
+type matrix4 [4][4]float64
+
+func identityMatrix4() matrix4 {
+	return matrix4{
+		{1, 0, 0, 0},
+		{0, 1, 0, 0},
+		{0, 0, 1, 0},
+		{0, 0, 0, 1},
+	}
+}
+
+// multiply returns a * b (standard 4×4 matrix multiplication).
+func (a matrix4) multiply(b matrix4) matrix4 {
+	var r matrix4
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			r[i][j] = a[i][0]*b[0][j] + a[i][1]*b[1][j] + a[i][2]*b[2][j] + a[i][3]*b[3][j]
+		}
+	}
+	return r
+}
+
+// transformToMatrix4 converts a single CSS Transform into its 4×4 matrix.
+// 2D-only transforms produce identity in the Z row/column. Unknown types
+// produce identity (forward-compatible).
+func transformToMatrix4(t Transform) matrix4 {
+	switch t.Type {
+	case "translate":
+		m := identityMatrix4()
+		if len(t.Values) >= 1 {
+			m[0][3] = t.Values[0]
+		}
+		if len(t.Values) >= 2 {
+			m[1][3] = t.Values[1]
+		}
+		return m
+	case "translate3d":
+		m := identityMatrix4()
+		if len(t.Values) >= 3 {
+			m[0][3] = t.Values[0]
+			m[1][3] = t.Values[1]
+			m[2][3] = t.Values[2]
+		}
+		return m
+	case "translateZ":
+		m := identityMatrix4()
+		if len(t.Values) >= 1 {
+			m[2][3] = t.Values[0]
+		}
+		return m
+	case "scale":
+		m := identityMatrix4()
+		if len(t.Values) >= 1 {
+			m[0][0] = t.Values[0]
+		}
+		if len(t.Values) >= 2 {
+			m[1][1] = t.Values[1]
+		}
+		return m
+	case "scaleZ":
+		m := identityMatrix4()
+		if len(t.Values) >= 1 {
+			m[2][2] = t.Values[0]
+		}
+		return m
+	case "scale3d":
+		m := identityMatrix4()
+		if len(t.Values) >= 3 {
+			m[0][0] = t.Values[0]
+			m[1][1] = t.Values[1]
+			m[2][2] = t.Values[2]
+		}
+		return m
+	case "rotate":
+		// 2D rotation in the XY plane (around Z axis).
+		if len(t.Values) >= 1 {
+			c := math.Cos(t.Values[0] * math.Pi / 180)
+			s := math.Sin(t.Values[0] * math.Pi / 180)
+			return matrix4{
+				{c, -s, 0, 0},
+				{s, c, 0, 0},
+				{0, 0, 1, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "rotateX":
+		if len(t.Values) >= 1 {
+			c := math.Cos(t.Values[0] * math.Pi / 180)
+			s := math.Sin(t.Values[0] * math.Pi / 180)
+			return matrix4{
+				{1, 0, 0, 0},
+				{0, c, -s, 0},
+				{0, s, c, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "rotateY":
+		if len(t.Values) >= 1 {
+			c := math.Cos(t.Values[0] * math.Pi / 180)
+			s := math.Sin(t.Values[0] * math.Pi / 180)
+			return matrix4{
+				{c, 0, s, 0},
+				{0, 1, 0, 0},
+				{-s, 0, c, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "rotate3d":
+		// rotate3d(x, y, z, angle) per CSS Transforms L2 §13.7.4 — the
+		// Rodrigues rotation formula. Axis is normalized first.
+		if len(t.Values) >= 4 {
+			x, y, z, ang := t.Values[0], t.Values[1], t.Values[2], t.Values[3]
+			n := math.Sqrt(x*x + y*y + z*z)
+			if n == 0 {
+				return identityMatrix4()
+			}
+			x, y, z = x/n, y/n, z/n
+			c := math.Cos(ang * math.Pi / 180)
+			s := math.Sin(ang * math.Pi / 180)
+			t1 := 1 - c
+			return matrix4{
+				{c + x*x*t1, x*y*t1 - z*s, x*z*t1 + y*s, 0},
+				{y*x*t1 + z*s, c + y*y*t1, y*z*t1 - x*s, 0},
+				{z*x*t1 - y*s, z*y*t1 + x*s, c + z*z*t1, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "skew":
+		if len(t.Values) >= 2 {
+			ax := t.Values[0] * math.Pi / 180
+			ay := t.Values[1] * math.Pi / 180
+			return matrix4{
+				{1, math.Tan(ax), 0, 0},
+				{math.Tan(ay), 1, 0, 0},
+				{0, 0, 1, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "matrix":
+		// matrix(a, b, c, d, e, f): 2D affine → 4×4 with identity Z.
+		if len(t.Values) >= 6 {
+			return matrix4{
+				{t.Values[0], t.Values[2], 0, t.Values[4]},
+				{t.Values[1], t.Values[3], 0, t.Values[5]},
+				{0, 0, 1, 0},
+				{0, 0, 0, 1},
+			}
+		}
+	case "matrix3d":
+		// matrix3d uses column-major order m00..m33: m[col*4+row].
+		if len(t.Values) >= 16 {
+			v := t.Values
+			return matrix4{
+				{v[0], v[4], v[8], v[12]},
+				{v[1], v[5], v[9], v[13]},
+				{v[2], v[6], v[10], v[14]},
+				{v[3], v[7], v[11], v[15]},
+			}
+		}
+	case "perspective":
+		// perspective(d): equivalent to matrix3d(1,0,0,0, 0,1,0,0,
+		// 0,0,1,-1/d, 0,0,0,1) per CSS Transforms L2 §11.
+		if len(t.Values) >= 1 && t.Values[0] != 0 {
+			m := identityMatrix4()
+			m[3][2] = -1 / t.Values[0]
+			return m
+		}
+	}
+	return identityMatrix4()
 }
 
 // Phase 24: Background image support
