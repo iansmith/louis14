@@ -1892,14 +1892,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// CSS Containment: layout and paint containment establish a containing
 		// block for absolutely positioned descendants (same as positioned elements).
 		isContainmentCB := bla.style != nil && (bla.style.HasLayoutContainment() || bla.style.HasPaintContainment())
-		// CSS Transforms §2.1 / Will Change §2.2: transform, perspective,
-		// filter, and any will-change of a CB-establishing property create a
+		// CSS Transforms §2.1 / Filter Effects 1+2 §"The filter property" /
+		// Will Change §2.2: transform, perspective, filter, backdrop-filter,
+		// and any will-change of a CB-establishing property create a
 		// containing block for all positioned descendants (including fixed).
 		isTransformCB := false
 		if bla.style != nil && !isContainmentCB {
 			if transforms := bla.style.GetTransforms(); len(transforms) > 0 {
 				isTransformCB = true
 			} else if filters := bla.style.GetFilter(); len(filters) > 0 {
+				isTransformCB = true
+			} else if bdFilters := bla.style.GetBackdropFilter(); len(bdFilters) > 0 {
 				isTransformCB = true
 			} else if bla.style.WillChangeEstablishesContainingBlock(true) {
 				isTransformCB = true
