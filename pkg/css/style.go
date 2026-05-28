@@ -11483,7 +11483,12 @@ func (s *Style) IsBackdropRoot() bool {
 	if m := s.GetMaskImage(); m != "" && m != "none" {
 		return true
 	}
-	if cp := s.GetClipPath(); cp != nil {
+	// Use raw property lookup for clip-path so unparsed shape values
+	// (e.g. `clip-path: inset(-100%)`, which GetClipPath does not yet
+	// recognise) still report as Backdrop Root creators. The spec only
+	// asks whether the computed value differs from `none`, not whether
+	// the parser can model the shape.
+	if cp, ok := s.Get("clip-path"); ok && cp != "" && cp != "none" {
 		return true
 	}
 	if bm := s.GetMixBlendMode(); bm != MixBlendModeNormal && bm != "" {
