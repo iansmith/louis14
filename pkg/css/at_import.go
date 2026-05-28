@@ -209,6 +209,7 @@ func resolveAtImport(ctx *ParserContext, atImportRule string, dst *Stylesheet) {
 	dst.Rules = append(dst.Rules, imported.Rules...)
 	dst.FontFaces = append(dst.FontFaces, imported.FontFaces...)
 	dst.CounterStyles = append(dst.CounterStyles, imported.CounterStyles...)
+	dst.FontFeatureValues = append(dst.FontFeatureValues, imported.FontFeatureValues...)
 	for _, name := range imported.LayerOrder {
 		found := false
 		for _, existing := range dst.LayerOrder {

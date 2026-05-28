@@ -191,13 +191,46 @@ type AdditiveSymbol struct {
 	Symbol string
 }
 
+// FontFeatureValuesRule represents a parsed @font-feature-values at-rule
+// (CSS Fonts 4 §11.4). Maps each named alternate to a one-or-more-element
+// OpenType feature index list, scoped to a family list.
+//
+// Mirrors Blink's CSSFontFeatureValuesRule type
+// (third_party/blink/renderer/core/css/css_font_feature_values_rule.h at
+// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), modulo the
+// camelCase Go naming.
+//
+// Note: louis14 stores ONE rule per family per @font-feature-values
+// at-rule occurrence. Multiple at-rules targeting the same family combine
+// per CSS Fonts 4 §11.4: later @-blocks override earlier same-name
+// declarations within the same alternate type (per the
+// font-variant-alternates-layers test). The combining happens at lookup
+// time via lookupFontFeatureValues which walks the rule list last-to-first
+// so later definitions win.
+type FontFeatureValuesRule struct {
+	Families         []string         // Comma-separated family list in the prelude.
+	Stylistic        map[string][]int // @stylistic { name: index, ... }
+	Styleset         map[string][]int // @styleset { name: index[, index]*, ... }
+	CharacterVariant map[string][]int // @character-variant
+	Swash            map[string][]int // @swash
+	Ornaments        map[string][]int // @ornaments
+	Annotation       map[string][]int // @annotation
+
+	// LayerName is the cascade-layer name this rule was declared in (empty =
+	// unlayered, which has the highest priority per CSS Cascade 5 §2.4).
+	// Used at lookup time to honor the document's `LayerOrder` when merging
+	// per-name entries — same precedence rules as style rules.
+	LayerName string
+}
+
 // Stylesheet represents a parsed CSS stylesheet
 type Stylesheet struct {
-	Rules         []Rule
-	FontFaces     []FontFaceRule
-	LayerOrder    []string                  // @layer declaration order (first declared = lowest priority)
-	Keyframes     map[string][]KeyframeRule // animation name → keyframe stops
-	CounterStyles []CounterStyleRule        // @counter-style rules
+	Rules             []Rule
+	FontFaces         []FontFaceRule
+	LayerOrder        []string                  // @layer declaration order (first declared = lowest priority)
+	Keyframes         map[string][]KeyframeRule // animation name → keyframe stops
+	CounterStyles     []CounterStyleRule        // @counter-style rules
+	FontFeatureValues []FontFeatureValuesRule   // @font-feature-values rules
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source, while
@@ -814,6 +847,17 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 			ss.CounterStyles = append(ss.CounterStyles, cs)
 		}
 		return nil
+	case strings.HasPrefix(trimmed, "@font-feature-values"):
+		// CSS Fonts 4 §11.4. Dispatched only at top level / inside
+		// conditional bodies — ss == nil means we're inside a
+		// statically-false condition and should drop.
+		if ss == nil {
+			return nil
+		}
+		if ffv := parseFontFeatureValuesRule(trimmed); ffv != nil {
+			ss.FontFeatureValues = append(ss.FontFeatureValues, *ffv)
+		}
+		return nil
 	}
 	// Unknown at-rules (@charset inside conditional body, @three-dee, @unknown,
 	// @namespace nested where invalid per CSS Namespaces, …) are silently
@@ -1398,7 +1442,21 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet)
 			case strings.HasPrefix(innerTrimmed, "@supports"):
 				nested = parseSupportsRule(innerRuleStr, ss)
 			default:
+				// Capture pre-dispatch FFV count so we can tag any
+				// @font-feature-values inserted by this nested at-rule with
+				// the current cascade-layer name. Other at-rules (@font-face,
+				// @keyframes, @counter-style) don't yet honor layers in
+				// louis14 — that's tracked separately.
+				var ffvBefore int
+				if ss != nil {
+					ffvBefore = len(ss.FontFeatureValues)
+				}
 				nested = dispatchAtRuleIntoStylesheet(innerRuleStr, ss)
+				if ss != nil {
+					for i := ffvBefore; i < len(ss.FontFeatureValues); i++ {
+						ss.FontFeatureValues[i].LayerName = layerName
+					}
+				}
 			}
 			for i := range nested {
 				nested[i].LayerName = layerName
@@ -2913,9 +2971,11 @@ var supportedCSSProperties = map[string]struct{}{
 	"color": {},
 	"font":  {}, "font-family": {}, "font-size": {}, "font-style": {},
 	"font-weight": {}, "font-variant": {}, "font-stretch": {},
-	"font-variant-ligatures": {},
-	"font-variant-numeric":   {},
-	"font-kerning":           {}, "font-feature-settings": {},
+	"font-variant-ligatures":  {},
+	"font-variant-numeric":    {},
+	"font-variant-east-asian": {},
+	"font-variant-alternates": {},
+	"font-kerning":            {}, "font-feature-settings": {},
 	"font-synthesis":            {},
 	"font-synthesis-weight":     {},
 	"font-synthesis-style":      {},
@@ -3681,8 +3741,8 @@ func parseAttributeSelector(s string) AttributeSelector {
 //   - `|attr`    — matches `attr` (explicit no-namespace, same set in HTML)
 //   - `*|attr`   — matches `attr` in any namespace (in HTML, same as bare)
 //   - `ns|attr`  — matches `attr` in namespace `ns` (in HTML with no @namespace
-//                  rules declared, this matches nothing — we leave the prefix
-//                  attached so a later @namespace-aware path can refuse it)
+//     rules declared, this matches nothing — we leave the prefix
+//     attached so a later @namespace-aware path can refuse it)
 //
 // Whitespace inside the namespace prefix (`| attr` / `ns | attr`) is invalid
 // per CSS Selectors 4 §6.1; we detect that by checking for a space adjacent

@@ -758,7 +758,49 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// attribute and substitutes the typed value into the property's token list.
 	resolveAttrReferences(node, finalStyle)
 
+	// CSS Fonts 4 §11.4: collect all @font-feature-values rules from every
+	// active stylesheet so font-variant-alternates' named values can resolve
+	// at paint time. Shared by reference; never mutated post-cascade.
+	finalStyle.FontFeatureValues = collectFontFeatureValues(stylesheets)
+
 	return finalStyle
+}
+
+// collectFontFeatureValues flattens all @font-feature-values rules across
+// every stylesheet into a single slice sorted by cascade-layer priority
+// (ascending — lowest priority first, so the LAST element wins on per-name
+// collisions during the later-wins merge in LookupFontFeatureValues). Rules
+// within the same layer preserve document order.
+//
+// Per CSS Fonts 4 §11.4 + CSS Cascade 5 §6.2: unlayered @font-feature-values
+// rules dominate any layered rule, and within layered rules later-declared
+// layers dominate earlier-declared. Mirrors Blink's
+// FontFeatureValuesStorage layer-aware merge in
+// font_feature_values_storage.cc at Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func collectFontFeatureValues(stylesheets []*Stylesheet) []FontFeatureValuesRule {
+	var total int
+	for _, ss := range stylesheets {
+		if ss != nil {
+			total += len(ss.FontFeatureValues)
+		}
+	}
+	if total == 0 {
+		return nil
+	}
+	out := make([]FontFeatureValuesRule, 0, total)
+	for _, ss := range stylesheets {
+		if ss == nil {
+			continue
+		}
+		out = append(out, ss.FontFeatureValues...)
+	}
+	layerOrder := buildLayerOrder(stylesheets)
+	sort.SliceStable(out, func(i, j int) bool {
+		return layerPriority(out[i].LayerName, layerOrder) <
+			layerPriority(out[j].LayerName, layerOrder)
+	})
+	return out
 }
 
 // ApplyStylesToDocument applies stylesheets to all nodes in the document
@@ -1774,8 +1816,10 @@ var inheritableProperties = map[string]bool{
 	// inherited ComputedStyle (font_description.h::VariantLigatures /
 	// VariantNumeric fields, Chromium SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	"font-variant-ligatures": true,
-	"font-variant-numeric":   true,
+	"font-variant-ligatures":  true,
+	"font-variant-numeric":    true,
+	"font-variant-east-asian": true,
+	"font-variant-alternates": true,
 	// CSS Fonts 4 §6.6: each font-synthesis-* longhand is inherited.
 	// https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
 	"font-synthesis-weight": true, "font-synthesis-style": true,

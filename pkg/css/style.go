@@ -84,6 +84,18 @@ type Style struct {
 	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Populated post-cascade by
 	// ResolveAppliedTextDecorations.
 	AppliedTextDecorations []AppliedTextDecoration
+
+	// FontFeatureValues is the document-wide @font-feature-values rule list,
+	// snapshot at cascade time. CSS Fonts 4 §11.4: named alternates in
+	// `font-variant-alternates: stylistic(name) | styleset(name) | …` resolve
+	// against this list, filtered by the element's first font-family.
+	// Mirrors Blink's CSSFontFeatureValuesStorage attached to ComputedStyle
+	// (third_party/blink/renderer/platform/fonts/font_feature_values_storage.h
+	// at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	//
+	// Shared by reference across all Style values in a document — never
+	// mutated post-cascade, so the slice can be safely reused.
+	FontFeatureValues []FontFeatureValuesRule
 }
 
 func NewStyle() *Style {
@@ -93,16 +105,17 @@ func NewStyle() *Style {
 // Clone returns a deep copy of this Style with all properties copied.
 func (s *Style) Clone() *Style {
 	dst := &Style{
-		Properties:      make(map[string]string, len(s.Properties)),
-		ViewportWidth:   s.ViewportWidth,
-		ViewportHeight:  s.ViewportHeight,
-		ChWidth:         s.ChWidth,
-		UsedFontSize:    s.UsedFontSize,
-		UsedFontSizeSet: s.UsedFontSizeSet,
-		XHeight:         s.XHeight,
-		CapHeight:       s.CapHeight,
-		LhSize:          s.LhSize,
-		BaseDir:         s.BaseDir,
+		Properties:        make(map[string]string, len(s.Properties)),
+		ViewportWidth:     s.ViewportWidth,
+		ViewportHeight:    s.ViewportHeight,
+		ChWidth:           s.ChWidth,
+		UsedFontSize:      s.UsedFontSize,
+		UsedFontSizeSet:   s.UsedFontSizeSet,
+		XHeight:           s.XHeight,
+		CapHeight:         s.CapHeight,
+		LhSize:            s.LhSize,
+		BaseDir:           s.BaseDir,
+		FontFeatureValues: s.FontFeatureValues, // shared by reference; never mutated post-cascade
 	}
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
@@ -3145,7 +3158,8 @@ var cssLonghandProperties = []string{
 	"font-synthesis-weight", "font-synthesis-style",
 	"font-synthesis-small-caps", "font-synthesis-position",
 	"font-variant-caps", "font-variant-ligatures",
-	"font-variant-numeric",
+	"font-variant-numeric", "font-variant-east-asian",
+	"font-variant-alternates",
 	// Text
 	"line-height", "text-align", "text-align-last", "text-indent",
 	"text-transform", "text-decoration-line", "text-decoration-style",
@@ -6116,6 +6130,46 @@ func (s *Style) GetInitialLetter() InitialLetterValue {
 func (s *Style) GetFontVariantLigatures() string {
 	v, _ := s.Get("font-variant-ligatures")
 	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "normal"
+	}
+	return v
+}
+
+// GetFontVariantEastAsian returns the font-variant-east-asian value per
+// CSS Fonts 4 §6.5. Grammar: `normal | [ <east-asian-variant-values> ||
+// <east-asian-width-values> || ruby ]`, where east-asian-variant-values is
+// one of `jis78 | jis83 | jis90 | jis04 | simplified | traditional` and
+// east-asian-width-values is one of `full-width | proportional-width`.
+//
+// Mirrors Blink's font_variant_east_asian.cc parser
+// (third_party/blink/renderer/core/css/properties/longhands/
+// font_variant_east_asian.cc) at Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. The OpenType feature emission
+// for each keyword happens in [fontVariantEastAsianFeatures] in
+// pkg/render/paint_layer.go.
+func (s *Style) GetFontVariantEastAsian() string {
+	v, _ := s.Get("font-variant-east-asian")
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "normal"
+	}
+	return v
+}
+
+// GetFontVariantAlternates returns the font-variant-alternates value per
+// CSS Fonts 4 §6.6. Accepts `normal | historical-forms` plus functional
+// notations: `stylistic(<name>)`, `styleset(<name>#)`,
+// `character-variant(<name>#)`, `swash(<name>)`, `ornaments(<name>)`,
+// `annotation(<name>)`. Named values are resolved at paint time via
+// `@font-feature-values` rules (CSS Fonts 4 §11.4).
+//
+// Mirrors Blink's css_font_variant_alternates_value.cc parser at Chromium
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. The OT-tag emission
+// happens in [fontVariantAlternatesFeatures] in pkg/render/paint_layer.go.
+func (s *Style) GetFontVariantAlternates() string {
+	v, _ := s.Get("font-variant-alternates")
+	v = strings.TrimSpace(v) // Don't lower-case: name args inside parens are case-sensitive.
 	if v == "" {
 		return "normal"
 	}
