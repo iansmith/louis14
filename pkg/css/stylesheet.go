@@ -344,7 +344,11 @@ func expandNesting(css string, parentSelector string) string {
 			continue
 		}
 
-		bracePos := strings.Index(part, "{")
+		// Use the paren-aware brace finder — `@supports not unknown(!@#% {
+		// ... } ...)` has braces inside the prelude that are part of
+		// <general-enclosed>, not the body. indexTopLevelBrace tracks
+		// parens/strings to skip them.
+		bracePos := indexTopLevelBrace(part)
 		if bracePos < 0 {
 			// No block — pass through (e.g., @layer statement)
 			result.WriteString(part)
