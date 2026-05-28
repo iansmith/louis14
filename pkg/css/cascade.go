@@ -1527,6 +1527,17 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property, value := range style.Properties {
+		// CSS Color 4 §4.4: "If the currentcolor keyword is the specified
+		// value of the color property itself, it is treated as
+		// color: inherit." Rewrite the value before the inherit-resolution
+		// pass below so the parent's computed `color` propagates here.
+		// Mirrors Blink's `StyleBuilderConverter::ConvertColor` in
+		// `third_party/blink/renderer/core/css/resolver/style_builder_converter.cc`
+		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		if property == "color" && strings.EqualFold(strings.TrimSpace(value), "currentcolor") {
+			value = "inherit"
+			style.Set(property, value)
+		}
 		if value != "inherit" {
 			continue
 		}
