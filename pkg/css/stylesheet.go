@@ -4202,6 +4202,22 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
+		// CSS Multi-column 1 §4.5 `column-rule` shorthand:
+		// `<column-rule-width> || <column-rule-style> || <column-rule-color>`.
+		// At most three whitespace-separated tokens, each matching exactly one
+		// slot. Tokens like `normal` are not valid for any slot and must reject
+		// the whole declaration (no overwrite of an earlier valid rule).
+		// Required by WPT multicol-rule-shorthand-001/2, multicol-shorthand-001.
+		if property == "column-rule" && !isValidColumnRuleShorthand(value) {
+			continue
+		}
+
+		// Reject negative `column-gap` (CSS Multi-column 1 §4.1: <length [0,∞]>
+		// | normal). Required by WPT multicol-gap-negative-001.
+		if property == "column-gap" && !isValidColumnGapValue(value) {
+			continue
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {
@@ -4749,6 +4765,116 @@ func isValidColumnsShorthand(value string) bool {
 		}
 	}
 	return true
+}
+
+// isValidColumnRuleShorthand checks if value is a valid CSS column-rule
+// shorthand: `<column-rule-width> || <column-rule-style> || <column-rule-color>`
+// (CSS Multi-column 1 §4.5).
+//
+// Each component appears at most once, in any order. `currentcolor`, color
+// literals, the `<line-style>` keywords, the `thin/medium/thick` width
+// keywords, and explicit length widths are accepted. Tokens that don't match
+// any slot (e.g. `normal`) make the declaration invalid.
+func isValidColumnRuleShorthand(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 || len(parts) > 3 {
+		return false
+	}
+	hasWidth := false
+	hasStyle := false
+	hasColor := false
+	for _, part := range parts {
+		partLower := strings.ToLower(part)
+		if isLineStyleKeyword(partLower) {
+			if hasStyle {
+				return false
+			}
+			hasStyle = true
+			continue
+		}
+		if partLower == "thin" || partLower == "medium" || partLower == "thick" {
+			if hasWidth {
+				return false
+			}
+			hasWidth = true
+			continue
+		}
+		if w, ok := ParseLength(part); ok && w >= 0 {
+			if hasWidth {
+				return false
+			}
+			hasWidth = true
+			continue
+		}
+		// Color slot — must be a valid color (no CSS-wide keywords here; the
+		// whole-value CSS-wide branch above already returned).
+		if isValidColorValue(part) && partLower != "inherit" && partLower != "initial" &&
+			partLower != "unset" && partLower != "revert" && partLower != "revert-layer" {
+			if hasColor {
+				return false
+			}
+			hasColor = true
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isLineStyleKeyword reports whether part is one of the CSS Backgrounds 3
+// `<line-style>` keywords accepted by border-style / column-rule-style etc.
+// (https://drafts.csswg.org/css-backgrounds-3/#typedef-line-style).
+func isLineStyleKeyword(part string) bool {
+	switch part {
+	case "none", "hidden", "dotted", "dashed", "solid", "double",
+		"groove", "ridge", "inset", "outset":
+		return true
+	}
+	return false
+}
+
+// isValidColumnGapValue checks if value is a valid CSS column-gap:
+// `normal | <length-percentage [0,∞]>` (CSS Multi-column 1 §4.1 +
+// CSS Box Alignment 3). Negative values are invalid.
+func isValidColumnGapValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "normal" {
+		return true
+	}
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	// Percentage.
+	if strings.HasSuffix(trimmed, "%") {
+		numStr := strings.TrimSuffix(trimmed, "%")
+		if num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil && num >= 0 {
+			return true
+		}
+		return false
+	}
+	// calc() defers to runtime resolution; assume valid.
+	if strings.HasPrefix(strings.ToLower(trimmed), "calc(") {
+		return true
+	}
+	w, ok := ParseLength(trimmed)
+	if !ok {
+		return false
+	}
+	return w >= 0
 }
 
 // isInvalidBareNumber returns true if value is a non-zero number with no unit
