@@ -511,3 +511,73 @@ func TestBlockLayout_DeeplyNested(t *testing.T) {
 		t.Errorf("inner width: got %v, want 600", innerFrag.Size.WidthF64())
 	}
 }
+
+// TestBlockLayout_PaintIsolationInhibitsCollapseThrough proves that a zero-
+// sized child with `filter` (or other paint-isolation property) is NOT
+// dropped via margin collapse-through, so its fragment remains in the
+// parent's children and reaches the paint walk. Regression guard for the
+// WPT filter-effects/empty-element-with-filter-{002,004} tests, where a
+// 0x0 div with `filter:url(#flood)` must still paint flood pixels.
+func TestBlockLayout_PaintIsolationInhibitsCollapseThrough(t *testing.T) {
+	flooded := makeNode("div")
+	sibling := makeNode("div")
+	parent := makeNode("div", flooded, sibling)
+
+	styles := map[*html.Node]*css.Style{
+		parent:  makeStyle("width", "400px", "display", "block"),
+		flooded: makeStyle("width", "0px", "height", "0px", "display", "block", "filter", "url(#f)"),
+		sibling: makeStyle("height", "10px", "display", "block"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+
+	// The filtered child must remain in the fragment tree even though
+	// its own block size is zero — paint isolation inhibits collapse-
+	// through. Without this guard, the paint walk has no way to reach
+	// the layer and the filter never runs.
+	if len(result.Fragment.Children) != 2 {
+		t.Fatalf("filtered 0x0 child dropped by collapse-through: got %d children, want 2", len(result.Fragment.Children))
+	}
+}
+
+// TestBlockLayout_EmptyDivStillCollapsesThrough proves the negative — an
+// element with no paint-isolation property still collapses through, so
+// the new guard is narrowly targeted and doesn't perturb the baseline
+// CSS 2.1 §8.3.1 behavior.
+func TestBlockLayout_EmptyDivStillCollapsesThrough(t *testing.T) {
+	empty := makeNode("div")
+	sibling := makeNode("div")
+	parent := makeNode("div", empty, sibling)
+
+	styles := map[*html.Node]*css.Style{
+		parent:  makeStyle("width", "400px", "display", "block"),
+		empty:   makeStyle("width", "0px", "height", "0px", "display", "block"),
+		sibling: makeStyle("height", "10px", "display", "block"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+
+	// CSS 2.1 §8.3.1 collapse-through: the empty 0x0 div with no
+	// paint-isolation property must still be dropped from the
+	// fragment tree (existing behavior; ensures the new guard is
+	// not a blanket "always emit").
+	if len(result.Fragment.Children) != 1 {
+		t.Fatalf("plain empty 0x0 child unexpectedly kept: got %d children, want 1", len(result.Fragment.Children))
+	}
+}

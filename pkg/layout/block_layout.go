@@ -996,6 +996,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// and all of its in-flow children's margins (if any) are collapsed.
 			// We approximate this by checking that the element has no fragment
 			// children (no content).
+			//
+			// Paint-isolation properties (filter, opacity<1, transform, mask,
+			// clip-path, mix-blend-mode, isolation, backdrop-filter) produce
+			// visible output independently of the box's content — e.g. a
+			// 0x0 box with `filter:url(#flood)` paints flood pixels via the
+			// SVG filter's own region. Such boxes must NOT collapse through
+			// because louis14's collapse-through path drops the fragment
+			// entirely (the `if collapseThrough { ... continue }` branch
+			// below), which would hide the box from the paint walk.
+			// Mirrors Blink's effective behavior where the fragment is
+			// always emitted regardless of self-collapse — LayoutNG's
+			// `BlockLayoutAlgorithm::Layout` adds every child fragment via
+			// `AddChild`, and self-collapse only affects margin resolution,
+			// not fragment-tree membership. Blink @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
@@ -1005,7 +1020,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
-				!isChildNewFC
+				!isChildNewFC &&
+				!hasPaintIsolation(childStyle)
 
 			// Step 4: Position child in the inline direction.
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist.
@@ -2765,6 +2781,50 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
+	return false
+}
+
+// hasPaintIsolation returns true if the style has any property that produces
+// visible paint output independently of the box's content — filter,
+// opacity<1, transform, mask, clip-path, mix-blend-mode, isolation:isolate,
+// backdrop-filter. Such boxes must NOT be dropped by margin collapse-through
+// (the `collapseThrough` branch in BlockLayoutAlgorithm.Layout, which
+// `continue`s without appending the child fragment) because their paint
+// depends only on the box itself, not its descendants.
+//
+// Mirrors the property set tested in Blink's
+// `ComputedStyle::HasPropertyThatCreatesStackingContext` (computed_style.cc
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), restricted to those that
+// produce pixels (z-index, will-change auto-layer creation, etc. are
+// excluded — they create a stacking context but don't paint independently).
+func hasPaintIsolation(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	if len(style.GetFilter()) > 0 {
+		return true
+	}
+	if len(style.GetBackdropFilter()) > 0 {
+		return true
+	}
+	if style.GetOpacity() < 1.0 {
+		return true
+	}
+	if len(style.GetTransforms()) > 0 {
+		return true
+	}
+	if cp := style.GetClipPath(); cp != nil && cp.Type != css.ClipPathNone {
+		return true
+	}
+	if m := style.GetMaskImage(); m != "" && m != "none" {
+		return true
+	}
+	if bm := style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
+		return true
+	}
+	if iso, ok := style.Get("isolation"); ok && iso == "isolate" {
+		return true
+	}
 	return false
 }
 
