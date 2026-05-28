@@ -897,12 +897,33 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				if cl.cell.style != nil {
 					va = cl.cell.style.GetVerticalAlign()
 				}
+				// CSS Tables 3 §height-distribution: the VA shift positions
+				// the cell's CONTENT extent within the row block-size. When
+				// the cell's intrinsic content (IntrinsicBlockSize) exceeded
+				// the cell's explicit height, the row grew to match the
+				// intrinsic extent, so the "effective content size" for VA
+				// is the intrinsic, not the (clamped) fragment block-size.
+				// Using the clamped fragment size here would over-shift the
+				// content downward when it already fills the row
+				// (e.g. `<td height: 20px overflow: hidden>` with a 300px
+				// child: row grew to 319, content extends 0..319, no shift
+				// needed; using fragment block 20 here would shift content
+				// down by ~150px). Mirrors Blink's
+				// TableCellLayoutAlgorithm::ApplyIntrinsicPadding which
+				// reasons over intrinsic extent.
+				effectiveContent := contentBlockSize
+				if cl.result.IntrinsicBlockSize > effectiveContent {
+					effectiveContent = cl.result.IntrinsicBlockSize
+					if effectiveContent > rowHeight {
+						effectiveContent = rowHeight
+					}
+				}
 				var blockShift float64
 				switch va {
 				case css.VerticalAlignMiddle:
-					blockShift = (rowHeight - contentBlockSize) / 2
+					blockShift = (rowHeight - effectiveContent) / 2
 				case css.VerticalAlignBottom:
-					blockShift = rowHeight - contentBlockSize
+					blockShift = rowHeight - effectiveContent
 				}
 				if blockShift > 0 {
 					conv := NewConverter(wdm, geomSizeToOld(cellFrag.Size))
