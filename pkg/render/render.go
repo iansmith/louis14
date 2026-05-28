@@ -2938,22 +2938,32 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		originW = float64(bounds.Dx())
 		originH = float64(bounds.Dy())
 	} else {
+		// For canvas-bg (root element), the positioning area is the root's
+		// padding-box per CSS Backgrounds 3 §2.11.2. Louis14's layout
+		// records the root box at the ICB origin (0,0) with margins stored
+		// separately, so the padding-box position includes margin.left/top
+		// as an offset and the dimensions are reduced by the margins.
+		mt, mr, mb, ml := 0.0, 0.0, 0.0, 0.0
+		if layer.PaintsCanvasBackground {
+			mt, mr, mb, ml = posBox.Margin.Top, posBox.Margin.Right, posBox.Margin.Bottom, posBox.Margin.Left
+		}
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X, posBox.Y, posBox.Width, posBox.Height)
+				posBox.X+ml, posBox.Y+mt,
+				posBox.Width-ml-mr, posBox.Height-mt-mb)
 		case css.BackgroundOriginContentBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left+posBox.Padding.Left,
-				posBox.Y+posBox.Border.Top+posBox.Padding.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+				posBox.X+ml+posBox.Border.Left+posBox.Padding.Left,
+				posBox.Y+mt+posBox.Border.Top+posBox.Padding.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
 		default: // padding-box
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left,
-				posBox.Y+posBox.Border.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
+				posBox.X+ml+posBox.Border.Left,
+				posBox.Y+mt+posBox.Border.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW <= 0 || originH <= 0 {

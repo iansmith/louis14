@@ -275,7 +275,65 @@ func (p *Parser) Parse() (*Document, error) {
 		}
 	}
 
+	// HTML5 §13.2.6 / CSS Backgrounds 3 §2.11.2: the html element is
+	// always implicit. When a document contains only head-level content
+	// (title, link, style) with no body content to trigger ensureBody,
+	// no implicit <html> is created during parsing. Synthesize one here
+	// so CSS rules targeting `html { ... }` (e.g. body-less canvas
+	// backgrounds) can apply to a real root element.
+	if !p.fragmentMode {
+		p.ensureFinalHTML()
+	}
+
 	return p.doc, nil
+}
+
+// ensureFinalHTML synthesizes an implicit <html> at document close when
+// no html element exists in doc.Root, moving all head-level orphans
+// (title, link, style, etc.) into a <head> under it. Mirrors the
+// "after html" insertion-mode fallback in HTML5 §13.2.6.
+func (p *Parser) ensureFinalHTML() {
+	root := p.doc.Root
+	if root == nil {
+		return
+	}
+	for _, child := range root.Children {
+		if child.Type == ElementNode && child.TagName == "html" {
+			return // already present
+		}
+	}
+	htmlNode := &Node{
+		Type:       ElementNode,
+		TagName:    "html",
+		Attributes: map[string]string{},
+		Children:   make([]*Node, 0),
+	}
+	p.moveOrphanedHeadElements(root, htmlNode)
+	// Move any remaining non-head children into an implicit <body>.
+	var bodyChildren []*Node
+	var remaining []*Node
+	for _, child := range root.Children {
+		if child.Type == ElementNode && isHeadElement(child.TagName) {
+			remaining = append(remaining, child)
+			continue
+		}
+		bodyChildren = append(bodyChildren, child)
+	}
+	if len(bodyChildren) > 0 {
+		bodyNode := &Node{
+			Type:       ElementNode,
+			TagName:    "body",
+			Attributes: map[string]string{},
+			Children:   make([]*Node, 0),
+		}
+		for _, c := range bodyChildren {
+			c.Parent = bodyNode
+			bodyNode.Children = append(bodyNode.Children, c)
+		}
+		htmlNode.AddChild(bodyNode)
+	}
+	htmlNode.Parent = root
+	root.Children = append(remaining, htmlNode)
 }
 
 // currentParent returns the current parent node (top of stack)
