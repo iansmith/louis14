@@ -1384,6 +1384,31 @@ func createLineBoxEx(
 	// Step 2: Compute text-align offset.
 	alignOffset := computeTextAlignOffset(line, availableInline, wdm)
 
+	// Step 2a: text-align: justify — compute per-gap expansion to distribute
+	// the slack between content end and the line's inline-end edge across
+	// inter-word boundaries (space characters) on this line. CSS Text 3 §6.2:
+	// the last line is not justified (computeTextAlignOffset already returns
+	// the start offset for line.IsLastLine / line.HasForcedBreak above, so
+	// we mirror the same gate here).
+	//
+	// Mirrors Blink's "auto" justification model in
+	// third_party/blink/renderer/core/layout/inline/justification_utils.cc
+	// (ApplyJustifyToLine @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f),
+	// which distributes slack across word-boundary expansion opportunities.
+	// We count ASCII spaces inside InlineItemText results on this line as
+	// the opportunity set; intra-word (grapheme-cluster) expansion is not
+	// needed for the WPT auto-justify-001 test which is purely inter-word.
+	justifyExpansion := 0.0
+	if line.TextAlign == "justify" && !line.IsLastLine && !line.HasForcedBreak {
+		slack := availableInline - line.Width
+		if slack > 0 {
+			gaps := countJustifyOpportunities(line, itemsData)
+			if gaps > 0 {
+				justifyExpansion = slack / float64(gaps)
+			}
+		}
+	}
+
 	// Step 3: Build line box fragment with positioned children.
 	// Use LTR direction for the line box's internal coordinate system.
 	// Items are already in visual order (after bidi reordering in
@@ -1800,45 +1825,99 @@ func createLineBoxEx(
 				parentNode = parentNode.Parent
 			}
 
-			textFrag := &PhysicalFragment{
-				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-					InlineSize: r.InlineSize,
-					BlockSize:  fontSize,
-				}, wdm.WM)),
-				Type:             FragmentText,
-				TextContent:      content,
-				BidiLevel:        r.Item.BidiLevel,
-				Node:             parentNode,
-				Style:            rStyle,
-				WritingDirection: wdm,
-			}
-			// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
-			// the painter draws a continuous line across bidi-split, line-
-			// wrapped, and nested-inline fragments instead of restarting at
-			// each fragment boundary.
-			if decoratingBoxMetadata != nil {
-				if stamped, ok := decoratingBoxMetadata[r.Item]; ok {
-					textFrag.AppliedTextDecorations = stamped
+			// CSS Text 3 §6.2: text-align: justify distributes slack across
+			// space characters on the line. When justifyExpansion > 0 we
+			// split this text result at space boundaries into per-piece
+			// fragments so each space's effective advance is widened by the
+			// per-gap expansion. Mirrors Blink's per-glyph offset model in
+			// justification_utils.cc (ApplyJustifyToLine, @ SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — louis14 splits
+			// fragments since the rasterizer draws each text fragment at a
+			// fixed inline offset, while Blink mutates per-glyph offsets in
+			// ShapeResult.
+			fontPath := resolveFontPath(rStyle, fonts)
+			emitTextFragment := func(piece string, pieceInline float64, pieceOffset float64) {
+				if len(piece) == 0 {
+					return
 				}
+				frag := &PhysicalFragment{
+					Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+						InlineSize: pieceInline,
+						BlockSize:  fontSize,
+					}, wdm.WM)),
+					Type:             FragmentText,
+					TextContent:      piece,
+					BidiLevel:        r.Item.BidiLevel,
+					Node:             parentNode,
+					Style:            rStyle,
+					WritingDirection: wdm,
+				}
+				// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
+				// the painter draws a continuous line across bidi-split, line-
+				// wrapped, and nested-inline fragments instead of restarting at
+				// each fragment boundary.
+				if decoratingBoxMetadata != nil {
+					if stamped, ok := decoratingBoxMetadata[r.Item]; ok {
+						frag.AppliedTextDecorations = stamped
+					}
+				}
+
+				// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
+				// text fragments. Only applies when the parent is a true inline element
+				// (display:inline), not a block container. Block containers handle their
+				// own position:relative offset in block layout — applying it here would
+				// double-offset the text.
+				if rStyle != nil && rStyle.GetDisplay() == css.DisplayInline {
+					pos := rStyle.GetPosition()
+					if pos == css.PositionRelative {
+						offset := rStyle.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+						frag.RelativeOffset = computeRelativeOffset(offset, wdm)
+					}
+				}
+				lineBuilder.AddChild(frag, LogicalOffset{
+					InlineOffset: pieceOffset,
+					BlockOffset:  blockPos,
+				})
 			}
 
-			// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
-			// text fragments. Only applies when the parent is a true inline element
-			// (display:inline), not a block container. Block containers handle their
-			// own position:relative offset in block layout — applying it here would
-			// double-offset the text.
-			if rStyle != nil && rStyle.GetDisplay() == css.DisplayInline {
-				pos := rStyle.GetPosition()
-				if pos == css.PositionRelative {
-					offset := rStyle.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
-					textFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
+			if justifyExpansion > 0 && strings.Contains(content, " ") {
+				// Measure each "word" piece (segment between spaces) and
+				// emit one fragment per piece, shifting each subsequent
+				// piece's inline offset by spaceWidth + justifyExpansion.
+				// Empty pieces (consecutive spaces) collapse naturally
+				// because measureTextContent of "" is 0 — we still advance
+				// by the space's expanded width to keep glyph positions in
+				// sync with the line's measured Width.
+				letterSpacing := 0.0
+				wordSpacing := 0.0
+				if rStyle != nil {
+					letterSpacing = rStyle.GetLetterSpacing()
+					wordSpacing = rStyle.GetWordSpacing()
 				}
+				// Measure once for the space character; Ahem at 16px is 16px.
+				spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
+				piecePos := inlinePos
+				pieces := strings.Split(content, " ")
+				for i, piece := range pieces {
+					pieceWidth := measureTextContent(piece, fontSize, fontPath, letterSpacing, 0, false)
+					if i > 0 {
+						// Emit a "space" fragment for inter-word painting
+						// continuity (carries any decoration). Empty content
+						// is fine — emitTextFragment short-circuits.
+						emitTextFragment(" ", spaceWidth+justifyExpansion+wordSpacing, piecePos)
+						piecePos += spaceWidth + justifyExpansion + wordSpacing
+					}
+					emitTextFragment(piece, pieceWidth, piecePos)
+					piecePos += pieceWidth
+				}
+				// Skip the default `inlinePos += r.InlineSize` advance below;
+				// the loop above has already advanced piecePos past the
+				// expanded content. Set inlinePos = piecePos and continue
+				// so we don't double-advance.
+				inlinePos = piecePos
+				continue
 			}
-
-			lineBuilder.AddChild(textFrag, LogicalOffset{
-				InlineOffset: inlinePos,
-				BlockOffset:  blockPos,
-			})
+			emitTextFragment(content, r.InlineSize, inlinePos)
 
 		case InlineItemOpenRubyColumn:
 			// CSS Ruby Phase 2: paint the base + annotation sub-line
@@ -2399,6 +2478,30 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 	}
 
 	return
+}
+
+// countJustifyOpportunities counts the inter-word boundaries on a line that
+// are eligible for text-align: justify expansion. The "auto" justification
+// model (CSS Text 3 §6.2; Blink's default) distributes slack between ASCII
+// space characters within text content; trailing whitespace is already
+// stripped by LineBreaker.finishLine, so every space we count produces visible
+// expansion. Mirrors Blink's CountJustificationOpportunities helper in
+// third_party/blink/renderer/core/layout/inline/justification_utils.cc
+// (@ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func countJustifyOpportunities(line *LineInfo, itemsData *InlineItemsData) int {
+	n := 0
+	for i := range line.Results {
+		r := &line.Results[i]
+		if r.Item.Type != InlineItemText {
+			continue
+		}
+		if r.TextEnd <= r.TextStart || r.TextEnd > len(itemsData.TextContent) {
+			continue
+		}
+		content := itemsData.TextContent[r.TextStart:r.TextEnd]
+		n += strings.Count(content, " ")
+	}
+	return n
 }
 
 // computeTextAlignOffset computes the starting inline offset for text-align.
