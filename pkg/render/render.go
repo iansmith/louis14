@@ -2395,18 +2395,80 @@ func backgroundClipRectForClip(box *layout.Box, clip css.BackgroundClipType) (fl
 	}
 }
 
-// backgroundClipRect returns the clip rect for background-color.
-// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
-func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+// backgroundPaintRectForLayer returns the background painting area for a
+// fill layer. Per CSS Backgrounds 3 §2.11.2, the painting area of the root
+// element's background covers the entire canvas (regardless of background-clip
+// or the root box's margins). For non-canvas layers, the painting area is
+// the standard background-clip rect.
+//
+// Mirrors Blink's ViewPainter::PaintRootGroup canvas extension at chromium
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, clip css.BackgroundClipType) (float64, float64, float64, float64) {
+	if layer.PaintsCanvasBackground {
+		bounds := r.target.Bounds()
+		return float64(bounds.Min.X), float64(bounds.Min.Y),
+			float64(bounds.Dx()), float64(bounds.Dy())
+	}
+	return backgroundClipRectForClip(layer.Box, clip)
+}
+
+// isScrollContainer reports whether the given style declares an overflow
+// value that establishes a scroll container (hidden, scroll, auto, clip).
+// Per CSS Overflow Level 3 §3, these values create a scrolling area; with
+// background-attachment: local the background is positioned relative to
+// (and clipped against) that area's padding-box.
+func isScrollContainer(s *css.Style) bool {
+	if s == nil {
+		return false
+	}
+	x := s.GetOverflowX()
+	y := s.GetOverflowY()
+	if x == css.OverflowVisible && y == css.OverflowVisible {
+		return false
+	}
+	return true
+}
+
+// effectiveBackgroundClip returns the clip type for the bottom-most fill
+// layer's background-color paint. Mirrors Blink's
+// FillLayerInfo::is_clipped_with_local_scrolling: when the element is a
+// scroll container and the bottom fill layer is `background-attachment:
+// local`, the clip is forced to padding-box regardless of the declared
+// background-clip (CSS Backgrounds 3 §3.5).
+func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 	clip := layer.BackgroundClip
+	var bottom *css.FillLayer
 	if fl := layer.BackgroundLayers; fl != nil {
-		// Find the bottom layer's clip for background-color.
 		for cur := fl; cur != nil; cur = cur.Next {
 			if cur.Next == nil {
+				bottom = cur
 				clip = cur.Clip
 			}
 		}
 	}
+	// Local-attachment scroll-container clip override (CSS Backgrounds 3
+	// §3.5 / Blink FillLayerInfo::is_clipped_with_local_scrolling).
+	// Read attachment from the bottom layer when one exists; otherwise
+	// fall back to the element's style (covers the no-fill-layer case where
+	// only background-color + background-attachment are declared).
+	if layer.Box != nil && isScrollContainer(layer.Box.Style) {
+		var bottomAttachment css.BackgroundAttachmentType
+		if bottom != nil {
+			bottomAttachment = bottom.Attachment
+		} else if layer.Box.Style != nil {
+			bottomAttachment = layer.Box.Style.GetBackgroundAttachment()
+		}
+		if bottomAttachment == css.BackgroundAttachmentLocal {
+			return css.BackgroundClipPaddingBox
+		}
+	}
+	return clip
+}
+
+// backgroundClipRect returns the clip rect for background-color.
+// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
+func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+	clip := effectiveBackgroundClip(layer)
 	return backgroundClipRectForClip(layer.Box, clip)
 }
 
@@ -2429,16 +2491,10 @@ func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) 
 }
 
 // backgroundClipRadii returns radii for background-color's clip area.
+// Mirrors backgroundClipRect's local-attachment override so the rounded
+// corner inset matches the rectangular clip inset.
 func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
-	clip := layer.BackgroundClip
-	if fl := layer.BackgroundLayers; fl != nil {
-		for cur := fl; cur != nil; cur = cur.Next {
-			if cur.Next == nil {
-				clip = cur.Clip
-			}
-		}
-	}
-	return backgroundClipRadiiForClip(layer, clip)
+	return backgroundClipRadiiForClip(layer, effectiveBackgroundClip(layer))
 }
 
 // drawBackground paints the layer's background color and image layers (pre-computed).
@@ -2505,7 +2561,9 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		}
 
 		// Per-layer clip rect and radii for gradient/image content.
-		lx, ly, lw, lh := backgroundClipRectForClip(layer.Box, bg.Clip)
+		// For canvas-bg layers (root element promoted), the painting area
+		// extends to the canvas per CSS Backgrounds 3 §2.11.2.
+		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
 		lRadii := backgroundClipRadiiForClip(layer, bg.Clip)
 		lHasRadius := !lRadii.IsZero()
 
@@ -2952,22 +3010,32 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		originW = float64(bounds.Dx())
 		originH = float64(bounds.Dy())
 	} else {
+		// For canvas-bg (root element), the positioning area is the root's
+		// padding-box per CSS Backgrounds 3 §2.11.2. Louis14's layout
+		// records the root box at the ICB origin (0,0) with margins stored
+		// separately, so the padding-box position includes margin.left/top
+		// as an offset and the dimensions are reduced by the margins.
+		mt, mr, mb, ml := 0.0, 0.0, 0.0, 0.0
+		if layer.PaintsCanvasBackground {
+			mt, mr, mb, ml = posBox.Margin.Top, posBox.Margin.Right, posBox.Margin.Bottom, posBox.Margin.Left
+		}
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X, posBox.Y, posBox.Width, posBox.Height)
+				posBox.X+ml, posBox.Y+mt,
+				posBox.Width-ml-mr, posBox.Height-mt-mb)
 		case css.BackgroundOriginContentBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left+posBox.Padding.Left,
-				posBox.Y+posBox.Border.Top+posBox.Padding.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+				posBox.X+ml+posBox.Border.Left+posBox.Padding.Left,
+				posBox.Y+mt+posBox.Border.Top+posBox.Padding.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
 		default: // padding-box
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left,
-				posBox.Y+posBox.Border.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
+				posBox.X+ml+posBox.Border.Left,
+				posBox.Y+mt+posBox.Border.Top,
+				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
+				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW <= 0 || originH <= 0 {
@@ -3083,7 +3151,11 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	// duration of the tile loop. drawGradient reads r.dc.ClipBounds()
 	// for its direct-pixel write bounds and picks up the tighter region
 	// automatically.
-	lx, ly, lw, lh := backgroundClipRectForClip(box, bg.Clip)
+	//
+	// For canvas-bg layers (root element promoted), the painting area
+	// extends to the canvas per CSS Backgrounds 3 §2.11.2, so the clip
+	// is the target bounds rather than the root box's background-clip.
+	lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
 	r.dc.Push()
 	r.dc.DrawRectangle(lx, ly, lw, lh)
 	r.dc.Clip()

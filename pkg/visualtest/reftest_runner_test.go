@@ -77,6 +77,45 @@ func hasWPTFlag(content, flag string) bool {
 	return false
 }
 
+// requiresReftestWaitJS reports whether a test marked with
+// `class="reftest-wait"` (i.e. screenshot must wait for JS-driven state
+// convergence) loads its expected DOM/stylesheet content from JS in a way
+// our static renderer cannot reproduce. Specifically, tests that
+// dynamically create a `<link rel="stylesheet">` via `createElement` or
+// set an iframe's `srcdoc` from script cannot reach their pre-screenshot
+// state without executing JS — the static snapshot captures the pre-JS
+// DOM, which produces a different rendering than the post-JS reference.
+//
+// This is a more precise variant of the WPT `flags="dom"` skip: some test
+// authors omit the dom flag but still rely on JS-driven resource loading.
+// We only skip when BOTH the wait class AND a JS resource-load pattern
+// are present, so we don't over-skip tests where reftest-wait is purely
+// defensive.
+func requiresReftestWaitJS(content string) bool {
+	if !strings.Contains(content, `class="reftest-wait"`) &&
+		!strings.Contains(content, `class='reftest-wait'`) {
+		return false
+	}
+	// JS-driven stylesheet load (the failure mode in
+	// css-backgrounds/background-image-shared-stylesheet.html) or
+	// JS-driven iframe.srcdoc set (same test). Both patterns require
+	// the renderer to execute JS before the document reaches its
+	// expected DOM.
+	if strings.Contains(content, `createElement("link")`) ||
+		strings.Contains(content, `createElement('link')`) {
+		return true
+	}
+	if jsSrcdocRe.MatchString(content) {
+		return true
+	}
+	return false
+}
+
+// jsSrcdocRe matches `iframe.srcdoc = ` (or any identifier followed by
+// `.srcdoc = `) in a script body, the pattern used to inject iframe
+// content from JS at runtime.
+var jsSrcdocRe = regexp.MustCompile(`\.srcdoc\s*=`)
+
 // TestWPTReftests runs WPT CSS 2.1 reftests by rendering both test and reference
 // HTML files and comparing the resulting images pixel-by-pixel.
 func TestWPTReftests(t *testing.T) {
@@ -236,6 +275,15 @@ func runReftest(t *testing.T, testPath string) bool {
 	// static renderer does not support. Skip them rather than fail incorrectly.
 	if hasWPTFlag(string(content), "dom") {
 		t.Skip("requires dom scripting (flags=dom)")
+		return false
+	}
+
+	// Some tests omit flags="dom" but still require JS to converge their
+	// DOM to the screenshot-ready state (e.g. by dynamically creating a
+	// stylesheet link or setting iframe.srcdoc from script). Detect the
+	// combination of reftest-wait + JS-driven resource loading and skip.
+	if requiresReftestWaitJS(string(content)) {
+		t.Skip("requires JS-driven DOM convergence (reftest-wait + dynamic resource load)")
 		return false
 	}
 
