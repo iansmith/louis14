@@ -400,14 +400,25 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	case "td":
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
-		style.Set("text-align", "left")
+		// HTML 15.3.4: `<td>` has no UA text-align rule — text-align inherits
+		// from the enclosing table / row context. Mirrors Blink's html.css
+		// which omits any td-specific text-align declaration.
 		style.Set("vertical-align", "middle")
 	case "th":
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
 		style.Set("font-weight", "bold")
 		style.Set("vertical-align", "middle")
-		style.Set("text-align", "center")
+		// HTML 15.3.4 + Blink html.css `th { text-align: -internal-center; }`:
+		// the UA-default centers the header cell ONLY when the inherited
+		// text-align is the initial value (`start`). If the table or an
+		// ancestor explicitly sets text-align: end/right/etc., the th's
+		// text-align inherits that value rather than being forced to center.
+		// The `-internal-center` sentinel marks this UA-defaulted state; it
+		// is resolved post-cascade in ApplyInheritedProperties below.
+		// Mirrors Blink's HTMLBodyElement/ComputedStyle handling of
+		// `-internal-center` at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		style.Set("text-align", "-internal-center")
 	case "caption":
 		style.Set("display", "table-caption")
 		style.Set("text-align", "center")
@@ -1673,6 +1684,27 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 					style.Set("_writing-mode-inherited", "true")
 				}
 			}
+		}
+	}
+
+	// HTML 15.3.4: resolve the `-internal-center` sentinel applied by the UA
+	// stylesheet to `<th>`. If the inherited (= parent's computed) text-align
+	// is `start` (the initial value), the th's text-align becomes `center`.
+	// Otherwise it inherits the parent's explicit value. This makes
+	// `text-align: end` on a containing table propagate to th cells rather
+	// than being overridden by the UA default. Mirrors Blink's html.css rule
+	// `th { text-align: -internal-center; }` and its post-cascade resolution
+	// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if val, ok := style.Get("text-align"); ok && val == "-internal-center" {
+		parentTA, _ := parentStyle.Get("text-align")
+		// Treat unset / explicit `start` / `-internal-center` (from a
+		// nested th inside a th — pathological but defensible) all as
+		// "parent at initial value".
+		switch parentTA {
+		case "", "start", "-internal-center":
+			style.Set("text-align", "center")
+		default:
+			style.Set("text-align", parentTA)
 		}
 	}
 }
