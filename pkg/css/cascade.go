@@ -1524,6 +1524,22 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 	return false
 }
 
+// containsCurrentColorToken reports whether s contains a `currentcolor`
+// token, case-insensitive. Used to decide whether the `color` property's
+// declared value needs early substitution against the parent's color (see
+// resolveInheritValues for the CSS Color 4 §4.4 rule).
+func containsCurrentColorToken(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "currentcolor")
+}
+
+// formatColorAsRGBA renders a Color back to a CSS rgba() literal so a
+// downstream ParseColor or inheritor sees a concrete color value rather
+// than a still-deferred functional form.
+func formatColorAsRGBA(c Color) string {
+	return fmt.Sprintf("rgba(%d, %d, %d, %g)", c.R, c.G, c.B, c.A)
+}
+
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property, value := range style.Properties {
@@ -1537,6 +1553,24 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 		if property == "color" && strings.EqualFold(strings.TrimSpace(value), "currentcolor") {
 			value = "inherit"
 			style.Set(property, value)
+		}
+		// CSS Color 5 §3 + Color 4 §4.4: when the `color` property's value
+		// contains a color-mix() / relative-color form referencing
+		// currentcolor, the currentcolor reference resolves to the
+		// *inherited* color (the parent's computed color), not to this
+		// element's own (not-yet-final) color. Substitute now so the value
+		// stored on this element is a concrete color and downstream
+		// inheritors see the same color.
+		if property == "color" && containsCurrentColorToken(value) &&
+			!strings.EqualFold(strings.TrimSpace(value), "currentcolor") &&
+			node.Parent != nil {
+			if parentStyle, ok := styles[node.Parent]; ok {
+				parentCC := parentStyle.GetColor()
+				if resolved, ok := ParseColorWithCurrentColor(value, parentCC); ok {
+					value = formatColorAsRGBA(resolved)
+					style.Set(property, value)
+				}
+			}
 		}
 		if value != "inherit" {
 			continue
