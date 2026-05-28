@@ -251,8 +251,11 @@ type PaintLayer struct {
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
-	// CSS text-overflow (clip or ellipsis):
-	TextOverflow css.TextOverflowType
+	// CSS text-overflow (CSS UI 4 §6.2): clip, ellipsis, or a custom
+	// <string>. When TextOverflow == css.TextOverflowString the
+	// replacement string is in TextOverflowString.
+	TextOverflow       css.TextOverflowType
+	TextOverflowString string
 
 	// List markers are real laid-out ::marker boxes in the fragment tree
 	// (marker-foundation Phases 3-4) — they paint as ordinary box fragments
@@ -922,6 +925,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	layer.TextTransform = s.GetTextTransform()
 	layer.TextOverflow = s.GetTextOverflow()
+	if layer.TextOverflow == css.TextOverflowString {
+		layer.TextOverflowString = s.GetTextOverflowString()
+	}
 
 	// List markers are real laid-out ::marker boxes (marker-foundation Phases
 	// 3-4) — no paint-layer marker setup is needed; the marker box fragment
