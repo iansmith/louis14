@@ -4539,14 +4539,27 @@ func parseSpaceSeparatedColorArgs(inner string) (parts []string, alpha float64) 
 }
 
 // parseAlpha parses a CSS alpha component, which may be a <number> in
-// [0,1] or a <percentage> in [0%, 100%] per CSS Color 4 §1.4. Returns
-// 1.0 on parse failure (caller treats this as the default).
+// [0,1] or a <percentage> in [0%, 100%] per CSS Color 4 §1.4. Out-of-range
+// values are clamped to [0,1] (CSS Color 4 §4.1.1: "alpha values outside
+// this range are clamped"). Returns 1.0 on parse failure (caller treats
+// this as the default).
+//
+// Mirrors Blink's `ConsumeAlpha()` clamp step in
+// `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func parseAlpha(s string) float64 {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 1.0
 	}
-	return parseColorFloat01(s, 1.0)
+	a := parseColorFloat01(s, 1.0)
+	if a < 0 {
+		return 0
+	}
+	if a > 1 {
+		return 1
+	}
+	return a
 }
 
 // parseColorFloat01 parses a color component value as a fraction in [0,1].
@@ -4569,6 +4582,33 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 // CSS Color Level 4 §"rgb()". Returns the byte value and a validity flag
 // (false if out of range). Mirrors Blink's CSSPropertyParserHelpers handling
 // where percent and number forms produce the same final byte after rounding.
+// legacyRGBComponentsMixed reports whether the three R/G/B components of a
+// legacy comma-form rgb()/rgba() function mix <number> and <percentage>
+// types. Per CSS Color 4 §5.1 such mixed-type forms are invalid in legacy
+// notation (the modern space-separated form has no such restriction).
+// Mirrors Blink's `ConsumeRGBParameters()` post-comma type-mismatch check
+// in `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func legacyRGBComponentsMixed(parts []string) bool {
+	if len(parts) < 3 {
+		return false
+	}
+	hasNumber := false
+	hasPercent := false
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t == "" {
+			continue
+		}
+		if strings.HasSuffix(t, "%") {
+			hasPercent = true
+		} else {
+			hasNumber = true
+		}
+	}
+	return hasNumber && hasPercent
+}
+
 func parseRGBByte(s string) (uint8, bool) {
 	v := parseColorFloat01(s, 255.0)
 	// CSS Color 4 §4.1: out-of-range RGB component values in the legacy
@@ -4650,30 +4690,84 @@ func parseLabComponent(s string, maxVal float64) float64 {
 // per CSS Values 4 §6.1 <angle>. The "grad" check must precede "rad"
 // because HasSuffix("Xgrad", "rad") is also true.
 func parseHueDegrees(s string) float64 {
+	v, _ := parseHueDegreesValidated(s)
+	return v
+}
+
+// parseHueDegreesValidated parses a CSS <hue> value (CSS Values 4 §7.4) and
+// returns it in degrees. Accepts the canonical units `deg`, `grad`, `rad`,
+// `turn`, plus a unitless <number> per CSS Color 4 §4.3 (interpreted as
+// degrees). Returns ok=false on any unrecognized unit (e.g. `0px`, `0%`),
+// so the surrounding hsl()/hsla()/hwb() parser can reject the declaration
+// instead of silently producing 0.
+//
+// Mirrors Blink's `ConsumeHue()` in `core/css/parser/css_color_parsing.cc`
+// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func parseHueDegreesValidated(s string) (float64, bool) {
 	s = strings.TrimSpace(s)
+	if s == "none" {
+		return 0, true
+	}
 	if strings.HasSuffix(s, "deg") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
-		return v
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
+		return v, n == 1
 	}
 	if strings.HasSuffix(s, "grad") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "grad"), "%f", &v)
-		return v * 360.0 / 400.0
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "grad"), "%f", &v)
+		return v * 360.0 / 400.0, n == 1
 	}
 	if strings.HasSuffix(s, "rad") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "rad"), "%f", &v)
-		return v * 180.0 / math.Pi
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "rad"), "%f", &v)
+		return v * 180.0 / math.Pi, n == 1
 	}
 	if strings.HasSuffix(s, "turn") {
 		var v float64
-		fmt.Sscanf(strings.TrimSuffix(s, "turn"), "%f", &v)
-		return v * 360.0
+		n, _ := fmt.Sscanf(strings.TrimSuffix(s, "turn"), "%f", &v)
+		return v * 360.0, n == 1
+	}
+	// A bare hue token must be a <number> (degrees). A percentage or any
+	// other dimension is invalid here. Accept only digits, sign, dot, and
+	// exponent characters.
+	if !isHueNumberToken(s) {
+		return 0, false
 	}
 	var v float64
-	fmt.Sscanf(s, "%f", &v)
-	return v
+	n, _ := fmt.Sscanf(s, "%f", &v)
+	return v, n == 1
+}
+
+// isHueNumberToken reports whether s consists solely of characters legal in
+// a CSS <number> token (sign, digits, dot, exponent). Rejects percentages
+// and dimensions so the bare-number branch of parseHueDegreesValidated does
+// not silently accept e.g. "0px" or "100%".
+func isHueNumberToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.':
+		case r == '+' || r == '-':
+			if i != 0 {
+				// Sign only allowed at the start or after 'e'/'E'.
+				prev := rune(s[i-1])
+				if prev != 'e' && prev != 'E' {
+					return false
+				}
+			}
+		case r == 'e' || r == 'E':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseHSLArgs parses the inner argument string of an hsl()/hsla()
@@ -4687,16 +4781,26 @@ func parseHueDegrees(s string) float64 {
 func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
 	a = 1.0
 	var hStr, sStr, lStr string
+	legacyForm := false
 	if strings.Contains(inner, ",") {
+		legacyForm = true
 		parts := strings.Split(inner, ",")
-		if len(parts) < 3 {
+		// Legacy hsl()/hsla() form takes exactly 3 args (H,S,L) or 4
+		// (H,S,L,A). Trailing commas or extra arguments are invalid per
+		// CSS Color 4 §4.3. Mirrors Blink's `ConsumeHslColor()` arity
+		// check in `css_color_parsing.cc` (Chromium @ 4883d11f...).
+		if len(parts) != 3 && len(parts) != 4 {
 			return
 		}
 		hStr = strings.TrimSpace(parts[0])
 		sStr = strings.TrimSpace(parts[1])
 		lStr = strings.TrimSpace(parts[2])
-		if len(parts) >= 4 {
-			a = parseAlpha(parts[3])
+		if len(parts) == 4 {
+			aStr := strings.TrimSpace(parts[3])
+			if aStr == "" {
+				return
+			}
+			a = parseAlpha(aStr)
 		}
 	} else {
 		var parts []string
@@ -4708,7 +4812,21 @@ func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
 		sStr = parts[1]
 		lStr = parts[2]
 	}
-	h = parseHueDegrees(hStr)
+	var hOK bool
+	h, hOK = parseHueDegreesValidated(hStr)
+	if !hOK {
+		return
+	}
+	// CSS Color 4 §4.3: in the legacy comma form, saturation and lightness
+	// MUST be percentages (`hsl(0, 100%, 50%)`). Mirrors Blink's
+	// `ConsumeHslColor()` legacy-syntax-validation step in
+	// `third_party/blink/renderer/core/css/parser/css_color_parsing.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if legacyForm {
+		if !strings.HasSuffix(sStr, "%") || !strings.HasSuffix(lStr, "%") {
+			return
+		}
+	}
 	s = parseColorFloat01(sStr, 100.0)
 	l = parseColorFloat01(lStr, 100.0)
 	// CSS Color 4 §4.3: negative saturation is clamped to 0; saturation
@@ -5458,6 +5576,15 @@ func ParseColor(colorStr string) (Color, bool) {
 		// is treated as `rgb(10, 175, 10)`.
 		values = stripCSSComments(values)
 		parts := strings.Split(values, ",")
+		// CSS Color 4 §5.1 legacy comma form: the three RGB components must
+		// be all <number> or all <percentage>; mixing rejects. Modern
+		// space-separated form (§5.1, parseSpaceSeparatedRGB) permits any
+		// mix. Mirrors Blink's ConsumeRGBParameters() which tracks the
+		// expected component-type after the first one and fails on mismatch
+		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		if (len(parts) == 3 || len(parts) == 4) && legacyRGBComponentsMixed(parts[:3]) {
+			return Color{}, false
+		}
 		if len(parts) == 3 {
 			r, rOK := parseRGBByte(parts[0])
 			g, gOK := parseRGBByte(parts[1])
