@@ -2764,39 +2764,39 @@ var supportedCSSProperties = map[string]struct{}{
 	"font-synthesis-style":      {},
 	"font-synthesis-small-caps": {},
 	"font-synthesis-position":   {},
-	"line-height": {}, "letter-spacing": {}, "word-spacing": {},
+	"line-height":               {}, "letter-spacing": {}, "word-spacing": {},
 	"text-align": {}, "text-decoration": {}, "text-decoration-line": {},
 	"text-decoration-color": {}, "text-decoration-style": {}, "text-decoration-thickness": {},
 	"text-decoration-skip-ink": {},
-	"text-emphasis": {}, "text-emphasis-color": {}, "text-emphasis-style": {}, "text-emphasis-position": {},
+	"text-emphasis":            {}, "text-emphasis-color": {}, "text-emphasis-style": {}, "text-emphasis-position": {},
 	"text-indent": {}, "text-transform": {}, "text-shadow": {}, "text-overflow": {},
 	"white-space": {}, "word-break": {}, "word-wrap": {}, "overflow-wrap": {},
 	"writing-mode": {}, "direction": {}, "unicode-bidi": {},
 	// Layout
-	"display":          {},
-	"position":         {},
-	"top":              {},
-	"right":            {},
-	"bottom":           {},
-	"left":             {},
-	"float":            {},
-	"clear":            {},
-	"z-index":          {},
-	"visibility":       {},
+	"display":              {},
+	"position":             {},
+	"top":                  {},
+	"right":                {},
+	"bottom":               {},
+	"left":                 {},
+	"float":                {},
+	"clear":                {},
+	"z-index":              {},
+	"visibility":           {},
 	"overflow":             {},
 	"overflow-x":           {},
 	"overflow-y":           {},
 	"overflow-clip-margin": {},
-	"vertical-align":   {},
-	"aspect-ratio":     {},
-	"opacity":          {},
-	"transform":        {},
-	"transform-origin": {},
-	"filter":           {},
-	"clip":             {},
-	"clip-path":        {},
-	"will-change":      {},
-	"isolation":        {},
+	"vertical-align":       {},
+	"aspect-ratio":         {},
+	"opacity":              {},
+	"transform":            {},
+	"transform-origin":     {},
+	"filter":               {},
+	"clip":                 {},
+	"clip-path":            {},
+	"will-change":          {},
+	"isolation":            {},
 	// Flexbox
 	"flex": {}, "flex-direction": {}, "flex-wrap": {}, "flex-flow": {},
 	"flex-grow": {}, "flex-shrink": {}, "flex-basis": {},
@@ -2863,8 +2863,8 @@ var supportedCSSProperties = map[string]struct{}{
 	// @font-face metric override descriptors (CSS Fonts 4 §6.1-§6.3).
 	// Listed here so @supports (ascent-override: 100%) evaluates correctly
 	// now that louis14 parses and applies these descriptors.
-	"ascent-override":  {},
-	"descent-override": {},
+	"ascent-override":   {},
+	"descent-override":  {},
 	"line-gap-override": {},
 }
 
@@ -3079,6 +3079,21 @@ func parseSelector(selectorStr string) Selector {
 	// strings.Contains so we only extract top-level pseudo-elements.
 	pseudoElement := ""
 	pseudoElementForDescendants := false
+	// CSS Pseudo-Elements 4 §3 highlight pseudos (`::selection`,
+	// `::highlight(name)`, `::target-text`, `::spelling-error`,
+	// `::grammar-error`) and the originating-element-styled pseudos
+	// (`::before`, `::after`, `::marker`, `::first-letter`, `::first-line`)
+	// are extracted here so the rule's PseudoElement field records them.
+	// `FindMatchingRules` skips any rule with a non-empty PseudoElement when
+	// computing the originating element's normal cascade, which prevents the
+	// highlight rule's declarations from leaking onto every element via the
+	// empty-Part universal-match fallback. Mirrors Blink's
+	// CSSSelectorParser::ConsumePseudo() classification of these tokens as
+	// pseudo-elements rather than pseudo-classes (Chromium @ 4883d11f).
+	//
+	// `::highlight(name)` carries a custom highlight name; it is handled
+	// separately below because its token has a variable-length argument.
+	//
 	// Ordered so longer/double-colon variants are tried first (e.g. "::before"
 	// matched before ":before", "::first-letter" before ":first-letter").
 	pseudoElementTokens := []struct {
@@ -3090,6 +3105,10 @@ func parseSelector(selectorStr string) Selector {
 		{"::first-letter", "first-letter"},
 		{"::first-line", "first-line"},
 		{"::marker", "marker"},
+		{"::selection", "selection"},
+		{"::target-text", "target-text"},
+		{"::spelling-error", "spelling-error"},
+		{"::grammar-error", "grammar-error"},
 		{":before", "before"},
 		{":after", "after"},
 		{":first-letter", "first-letter"},
@@ -3107,6 +3126,40 @@ func parseSelector(selectorStr string) Selector {
 		selectorStr = selectorStr[:idx] + selectorStr[idx+len(pe.token):]
 		selectorStr = strings.TrimSpace(selectorStr)
 		break
+	}
+	// `::highlight(NAME)` — CSS Custom Highlight API. The functional notation
+	// holds the highlight registry key; extract the whole `::highlight(name)`
+	// token and store the pseudo-element as "highlight(name)" so distinct
+	// highlight names produce distinct PseudoElement values. Only applied when
+	// no other pseudo-element was extracted above.
+	if pseudoElement == "" {
+		const hlTok = "::highlight("
+		if idx := findTopLevelPseudoElement(selectorStr, hlTok); idx >= 0 {
+			// Find matching closing paren.
+			depth := 1
+			end := idx + len(hlTok)
+			for end < len(selectorStr) && depth > 0 {
+				switch selectorStr[end] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+				}
+				if depth == 0 {
+					break
+				}
+				end++
+			}
+			if depth == 0 && end < len(selectorStr) {
+				name := strings.TrimSpace(selectorStr[idx+len(hlTok) : end])
+				pseudoElement = "highlight(" + name + ")"
+				if idx > 0 && selectorStr[idx-1] == ' ' {
+					pseudoElementForDescendants = true
+				}
+				selectorStr = selectorStr[:idx] + selectorStr[end+1:]
+				selectorStr = strings.TrimSpace(selectorStr)
+			}
+		}
 	}
 	// If pseudo-element is for descendants only, clear it from direct matching
 	// but record it somehow (we'll use a convention: if PseudoElement starts with "descendant:",
