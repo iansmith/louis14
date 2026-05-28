@@ -1091,6 +1091,37 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			fontVariantNumericFeatures(num)...)
 	}
 
+	// CSS Fonts 4 §6.5 font-variant-east-asian: keyword → OpenType tag table.
+	// Same emission-order rules as ligatures/numeric above. Mirrors Blink's
+	// FontDescription::SetVariantEastAsian() in font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   jis78               -- jp78=1.
+	//   jis83               -- jp83=1.
+	//   jis90               -- jp90=1.
+	//   jis04               -- jp04=1.
+	//   simplified          -- smpl=1.
+	//   traditional         -- trad=1.
+	//   full-width          -- fwid=1.
+	//   proportional-width  -- pwid=1.
+	//   ruby                -- ruby=1.
+	if ea := s.GetFontVariantEastAsian(); ea != "" && ea != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantEastAsianFeatures(ea)...)
+	}
+
+	// CSS Fonts 4 §6.6 font-variant-alternates: keyword + functional notation
+	// → OpenType tag table. Functional values (stylistic/styleset/
+	// character-variant/swash/ornaments/annotation) carry @font-feature-values
+	// names that resolve to a per-family index list at paint time. Mirrors
+	// Blink's FontDescription::SetVariantAlternates() in font_description.cc
+	// at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if alt := s.GetFontVariantAlternates(); alt != "" && alt != "normal" {
+		family, _ := s.Get("font-family")
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantAlternatesFeatures(alt, family, s.FontFeatureValues)...)
+	}
+
 	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
 	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
 	// (HarfBuzz enables kern for horizontal text by default). When `none`,
@@ -1531,10 +1562,11 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 // parentLayer:        the PaintLayer that owns FlowChildren at this level.
 // currentSC:          the nearest ancestor stacking context's PaintLayer.
 // currentBackdropRoot: the nearest ancestor PaintLayer with IsBackdropRoot set.
-//                     Per CSS Filter Effects 2 §3.5, this is the boundary of
-//                     the backdrop sampled by any backdrop-filter descendant
-//                     within the subtree. Set by HasBackdropFilterDescendant
-//                     when a descendant with backdrop-filter is encountered.
+//
+//	Per CSS Filter Effects 2 §3.5, this is the boundary of
+//	the backdrop sampled by any backdrop-filter descendant
+//	within the subtree. Set by HasBackdropFilterDescendant
+//	when a descendant with backdrop-filter is encountered.
 func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer) {
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
@@ -1869,6 +1901,249 @@ func fontVariantNumericFeatures(value string) []textshape.FontFeature {
 		}
 	}
 	return features
+}
+
+// fontVariantEastAsianFeatures maps a CSS font-variant-east-asian value
+// (CSS Fonts 4 §6.5) to the OpenType feature tag list. Mirrors Blink's
+// FontDescription::SetVariantEastAsian in
+// third_party/blink/renderer/platform/fonts/font_description.cc at Chromium
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Callers handle `normal`/empty themselves.
+func fontVariantEastAsianFeatures(value string) []textshape.FontFeature {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var features []textshape.FontFeature
+	for _, kw := range strings.Fields(value) {
+		switch kw {
+		case "jis78":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'j', 'p', '7', '8'}, Value: 1},
+			)
+		case "jis83":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'j', 'p', '8', '3'}, Value: 1},
+			)
+		case "jis90":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'j', 'p', '9', '0'}, Value: 1},
+			)
+		case "jis04":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'j', 'p', '0', '4'}, Value: 1},
+			)
+		case "simplified":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'s', 'm', 'p', 'l'}, Value: 1},
+			)
+		case "traditional":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'t', 'r', 'a', 'd'}, Value: 1},
+			)
+		case "full-width":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'f', 'w', 'i', 'd'}, Value: 1},
+			)
+		case "proportional-width":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'p', 'w', 'i', 'd'}, Value: 1},
+			)
+		case "ruby":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'r', 'u', 'b', 'y'}, Value: 1},
+			)
+		}
+	}
+	return features
+}
+
+// fontVariantAlternatesFeatures maps a CSS font-variant-alternates value to
+// the OpenType feature tag list per CSS Fonts 4 §6.6. Functional notations
+// (stylistic/styleset/character-variant/swash/ornaments/annotation) carry
+// @font-feature-values names that resolve against `ffvRules` filtered by
+// `family` (the element's first font-family).
+//
+// Mirrors Blink's FontDescription::SetVariantAlternates path in
+// font_description.cc at Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Callers handle `normal`/empty themselves.
+func fontVariantAlternatesFeatures(value, family string, ffvRules []css.FontFeatureValuesRule) []textshape.FontFeature {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	// Resolve the @font-feature-values rule for this family once.
+	ffv := css.LookupFontFeatureValues(ffvRules, firstFontFamily(family))
+
+	var features []textshape.FontFeature
+
+	// Tokenize: the value is a space-separated mix of bare keywords and
+	// functional notations like `stylistic(name)` or `styleset(a, b, c)`.
+	tokens := splitAlternatesTokens(value)
+	for _, tok := range tokens {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		// Bare `historical-forms` keyword (the only non-functional positional).
+		if strings.EqualFold(tok, "historical-forms") {
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'h', 'i', 's', 't'}, Value: 1},
+			)
+			continue
+		}
+		// Functional: name(args).
+		openParen := strings.IndexByte(tok, '(')
+		if openParen < 0 || !strings.HasSuffix(tok, ")") {
+			continue
+		}
+		fnName := strings.ToLower(strings.TrimSpace(tok[:openParen]))
+		argStr := tok[openParen+1 : len(tok)-1]
+		args := splitCommaArgs(argStr)
+		for _, name := range args {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			features = append(features,
+				resolveAlternateName(fnName, name, ffv)...)
+		}
+	}
+	return features
+}
+
+// resolveAlternateName produces the OpenType feature(s) for one functional
+// notation `fn(name)` per CSS Fonts 4 §6.6. The mapping from function name
+// to OT tag is fixed; the index comes from the @font-feature-values rule
+// lookup.
+func resolveAlternateName(fn, name string, ffv css.FontFeatureValuesRule) []textshape.FontFeature {
+	switch fn {
+	case "stylistic":
+		// salt <index>
+		if idxs, ok := ffv.Stylistic[name]; ok && len(idxs) > 0 {
+			return []textshape.FontFeature{
+				{Tag: [4]byte{'s', 'a', 'l', 't'}, Value: uint32(idxs[0])},
+			}
+		}
+	case "styleset":
+		// ssXX for each index (capped at 99 per spec / ss01..ss20 are the
+		// canonical set, but the CSS spec allows up to ss99).
+		if idxs, ok := ffv.Styleset[name]; ok {
+			out := make([]textshape.FontFeature, 0, len(idxs))
+			for _, i := range idxs {
+				if i < 1 || i > 99 {
+					continue
+				}
+				tag := ssTag("ss", i)
+				out = append(out, textshape.FontFeature{Tag: tag, Value: 1})
+			}
+			return out
+		}
+	case "character-variant":
+		// cvXX. Index 1..99 → "cv01".."cv99". Two-value form: `name: 1 3` →
+		// cv01=3 (per CSS Fonts 4 §6.6 — selects variant 3 of cv01).
+		if idxs, ok := ffv.CharacterVariant[name]; ok && len(idxs) >= 1 {
+			i := idxs[0]
+			if i < 1 || i > 99 {
+				return nil
+			}
+			tag := ssTag("cv", i)
+			val := uint32(1)
+			if len(idxs) >= 2 && idxs[1] >= 0 {
+				val = uint32(idxs[1])
+			}
+			return []textshape.FontFeature{{Tag: tag, Value: val}}
+		}
+	case "swash":
+		// Per spec, swash() activates BOTH swsh AND cswh at the named index.
+		if idxs, ok := ffv.Swash[name]; ok && len(idxs) > 0 {
+			i := uint32(idxs[0])
+			return []textshape.FontFeature{
+				{Tag: [4]byte{'s', 'w', 's', 'h'}, Value: i},
+				{Tag: [4]byte{'c', 's', 'w', 'h'}, Value: i},
+			}
+		}
+	case "ornaments":
+		// ornm <index>
+		if idxs, ok := ffv.Ornaments[name]; ok && len(idxs) > 0 {
+			return []textshape.FontFeature{
+				{Tag: [4]byte{'o', 'r', 'n', 'm'}, Value: uint32(idxs[0])},
+			}
+		}
+	case "annotation":
+		// nalt <index>
+		if idxs, ok := ffv.Annotation[name]; ok && len(idxs) > 0 {
+			return []textshape.FontFeature{
+				{Tag: [4]byte{'n', 'a', 'l', 't'}, Value: uint32(idxs[0])},
+			}
+		}
+	}
+	return nil
+}
+
+// ssTag returns the 4-byte OT tag for a ssXX or cvXX feature: prefix + 2
+// decimal digits zero-padded. prefix must be 2 bytes ("ss" or "cv"); i in
+// 1..99.
+func ssTag(prefix string, i int) [4]byte {
+	var t [4]byte
+	t[0] = prefix[0]
+	t[1] = prefix[1]
+	t[2] = byte('0' + i/10)
+	t[3] = byte('0' + i%10)
+	return t
+}
+
+// splitAlternatesTokens splits a font-variant-alternates value into its
+// space-separated tokens, respecting parenthesized argument lists. So
+// `swash(foo) styleset(bar, baz)` → ["swash(foo)", "styleset(bar, baz)"].
+func splitAlternatesTokens(value string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ' ', '\t':
+			if depth == 0 {
+				if i > start {
+					out = append(out, value[start:i])
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(value) {
+		out = append(out, value[start:])
+	}
+	return out
+}
+
+// splitCommaArgs splits a comma-separated argument list, trimming each
+// element.
+func splitCommaArgs(s string) []string {
+	var out []string
+	for _, a := range strings.Split(s, ",") {
+		out = append(out, strings.TrimSpace(a))
+	}
+	return out
+}
+
+// firstFontFamily returns the first comma-separated entry from a CSS
+// font-family value, unquoted.
+func firstFontFamily(family string) string {
+	for _, f := range strings.Split(family, ",") {
+		f = strings.TrimSpace(f)
+		f = strings.Trim(f, `"'`)
+		if f != "" {
+			return f
+		}
+	}
+	return ""
 }
 
 // parseFontFeatureSettings parses a CSS font-feature-settings value like
