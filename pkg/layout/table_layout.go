@@ -958,17 +958,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// Copy row style for background/border rendering. Anonymous row
 		// wrappers have zero border/padding per CSS 2.1 §17.2.1, so this
 		// block safely degrades to a no-op for them.
+		//
+		// CSS 2.1 §17.2 + CSS Tables 3 §11.3: In BOTH border models, rows
+		// have no border (in separate mode borders are not defined on rows;
+		// in collapse mode rows participate in the collapsed model rather
+		// than painting their own). Per CSS Tables 3 row padding also has
+		// no effect (cell padding is the relevant property). Mirrors
+		// Blink's TableRowLayoutAlgorithm which zeroes row geometry in
+		// both border models.
 		if row.style != nil {
-			rowPhysBorder := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Border, wdm)
-			if borderCollapse {
-				// In border-collapse mode, row borders participate in the
-				// collapsed model — the row fragment must not paint them.
-				rowPhysBorder = PhysicalEdges{}
-			}
-			physPadding := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Padding, wdm)
 			rowBuilder.SetBoxData(&PhysicalBoxData{
-				Border:  rowPhysBorder,
-				Padding: physPadding,
+				Border:  PhysicalEdges{},
+				Padding: PhysicalEdges{},
 			})
 		}
 
