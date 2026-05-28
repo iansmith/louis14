@@ -11254,22 +11254,76 @@ func (s *Style) GetMixBlendMode() MixBlendMode {
 	return MixBlendModeNormal
 }
 
-// TextOverflowType represents the text-overflow CSS property
+// TextOverflowType represents the text-overflow CSS property.
+// Mirrors Blink's TextOverflow enum in
+// third_party/blink/renderer/core/style/computed_style_constants.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 type TextOverflowType int
 
 const (
 	TextOverflowClip TextOverflowType = iota
 	TextOverflowEllipsis
+	TextOverflowString
 )
 
-// GetTextOverflow returns the text-overflow value (default: clip)
+// GetTextOverflow returns the text-overflow type (default: clip).
+// CSS UI 4 §6.2 allows `clip | ellipsis | <string>`. When the property
+// value is a string literal, this returns TextOverflowString; the
+// actual replacement string is available via GetTextOverflowString().
 func (s *Style) GetTextOverflow() TextOverflowType {
-	if val, ok := s.Get("text-overflow"); ok {
-		if val == "ellipsis" {
-			return TextOverflowEllipsis
-		}
+	val, ok := s.Get("text-overflow")
+	if !ok {
+		return TextOverflowClip
+	}
+	switch val {
+	case "ellipsis":
+		return TextOverflowEllipsis
+	case "clip":
+		return TextOverflowClip
+	}
+	// Anything else that looks like a quoted string literal (the parser
+	// preserves the surrounding quotes) is a custom replacement string.
+	if isQuotedStringValue(val) {
+		return TextOverflowString
 	}
 	return TextOverflowClip
+}
+
+// GetTextOverflowString returns the replacement string used when
+// text-overflow is a <string>. Empty when the property is not set to a
+// string. Surrounding quotes are stripped and CSS string escapes
+// (\xxxx, \\, \") are resolved.
+func (s *Style) GetTextOverflowString() string {
+	val, ok := s.Get("text-overflow")
+	if !ok || !isQuotedStringValue(val) {
+		return ""
+	}
+	return unquoteCSSString(val)
+}
+
+// isQuotedStringValue reports whether val is a CSS <string> token
+// (single- or double-quoted, length ≥ 2).
+func isQuotedStringValue(val string) bool {
+	if len(val) < 2 {
+		return false
+	}
+	q := val[0]
+	if q != '"' && q != '\'' {
+		return false
+	}
+	return val[len(val)-1] == q
+}
+
+// unquoteCSSString strips matching outer quotes from a CSS <string>
+// token. Per CSS Syntax 3 §4.3.5, hex and backslash escapes inside the
+// quoted body are resolved by the parser before the value reaches the
+// declaration map (see `unescapeCSS` in `stylesheet.go`), so the only
+// remaining work here is the quote-stripping step.
+func unquoteCSSString(val string) string {
+	if !isQuotedStringValue(val) {
+		return val
+	}
+	return val[1 : len(val)-1]
 }
 
 // GetWordBreak returns the word-break value (default: "normal")

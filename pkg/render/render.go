@@ -5349,11 +5349,14 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		return
 	}
 
-	// Text overflow: ellipsis — truncate text if it overflows the
-	// nearest ancestor block container that has overflow:hidden.
-	// CSS text-overflow applies to the block container; we check both
-	// the text run's own style and ancestor styles for the property.
-	text = r.applyTextOverflowEllipsis(layer, text, box, fontID)
+	// Text overflow: ellipsis or custom <string> — truncate text if it
+	// overflows the nearest ancestor block container that has
+	// overflow-x in {hidden, scroll, auto, clip}. CSS UI 4 §6.2 has the
+	// replacement string rendered in the block container's font, so
+	// applyTextOverflowEllipsis returns the truncated text plus an
+	// `ellipsisPaint` describing where/what to draw separately.
+	var ellipsisPaintInfo *ellipsisPaint
+	text, ellipsisPaintInfo = r.applyTextOverflowEllipsis(layer, text, box, fontID)
 
 	// Draw text shadows (behind actual text).
 	if len(layer.TextShadows) > 0 {
@@ -5426,6 +5429,16 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	// Draw text emphasis marks (small marks above/below each character).
 	if layer.TextEmphasisMark != "" {
 		r.drawTextEmphasis(layer, text, box, fontID, ascent)
+	}
+
+	// Paint the text-overflow replacement (CSS UI 4 §6.2). Drawn LAST so
+	// it sits on top of the (truncated) inline text. The replacement uses
+	// the block container's font and color, not the inline run's, and
+	// must NOT receive the run's text-decoration or text-emphasis marks
+	// — string-004 explicitly checks that text-emphasis on the container
+	// does not decorate the ellipsis.
+	if ellipsisPaintInfo != nil {
+		r.paintTextOverflowEllipsis(layer, box, ellipsisPaintInfo)
 	}
 }
 
@@ -5866,48 +5879,126 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 	}
 }
 
-// applyTextOverflowEllipsis truncates text and appends "…" when
-// text-overflow:ellipsis is active on a block container with overflow:hidden.
-// Returns the (possibly truncated) text string.
-func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box *layout.Box, fontID int32) string {
-	// Determine if text-overflow:ellipsis applies.
-	// It may be set on the text run's own style (when the text node's
-	// parent element is the block container) or on an ancestor.
-	hasEllipsis := layer.TextOverflow == css.TextOverflowEllipsis
+// ellipsisPaint carries the information drawText needs to paint a
+// text-overflow replacement (the ellipsis character "…" or a custom
+// <string>) in the block container's font rather than the inline run's
+// font. CSS UI 4 §6.2 stipulates that the replacement string is
+// rendered using the styles of the block container, so the truncated
+// run's font is irrelevant for the ellipsis itself.
+//
+// Mirrors Blink's logic where the text-overflow algorithm builds a
+// separate fragment item for the ellipsis tied to the block container's
+// ComputedStyle (see `text_overflow.cc::PlaceEllipsis` @ SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+type ellipsisPaint struct {
+	str            string     // replacement string, e.g. "…" or "123"
+	x              float64    // physical x of the LEFT edge of the replacement
+	containerStyle *css.Style // block container whose font/color to use
+}
 
-	// Walk up the box tree to find the nearest ancestor with overflow-x:hidden
-	// and text-overflow:ellipsis.
+// ellipsisChar is the U+2026 HORIZONTAL ELLIPSIS character used as the
+// default replacement when text-overflow: ellipsis applies.
+const ellipsisChar = "…"
+
+// isBlockContainerForTextOverflow reports whether `style` describes a
+// box that is a block container for the purpose of CSS UI 4 §6.2.
+// `display: inline` and similar inline-level values do NOT make a
+// block container — text-overflow on the parent of an inline element
+// still applies to text inside that inline. But `display: block`,
+// `inline-block`, table cells, list items, flex/grid items, etc.
+// establish their own block context and shadow a more distant
+// ancestor's text-overflow.
+func isBlockContainerForTextOverflow(style *css.Style) bool {
+	switch style.GetDisplay() {
+	case css.DisplayInline:
+		// True inline elements (spans) are NOT block containers; the
+		// text inside them belongs to the enclosing block.
+		return false
+	}
+	return true
+}
+
+// textOverflowReplacement returns the replacement string the inline
+// run's own text-overflow value implies, or "" if it implies none.
+func textOverflowReplacement(layer *PaintLayer) string {
+	switch layer.TextOverflow {
+	case css.TextOverflowEllipsis:
+		return ellipsisChar
+	case css.TextOverflowString:
+		return layer.TextOverflowString
+	}
+	return ""
+}
+
+// applyTextOverflowEllipsis decides whether text-overflow truncation
+// applies to this text run. If so, it returns the truncated text plus
+// an *ellipsisPaint describing where and what to draw for the
+// replacement. The replacement is drawn separately by the caller in
+// the block container's font (per CSS UI 4 §6.2), NOT in the inline
+// run's font.
+func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box *layout.Box, fontID int32) (string, *ellipsisPaint) {
+	// Determine if text-overflow applies on this run.
+	hasOverflow := layer.TextOverflow == css.TextOverflowEllipsis ||
+		layer.TextOverflow == css.TextOverflowString
+	replacement := textOverflowReplacement(layer)
+
+	// Walk up the box tree to the FIRST block-container ancestor — that
+	// is, the block container the text fragment belongs to. CSS UI 4
+	// §6.2 says text-overflow "applies to block container elements",
+	// meaning the block container of the text is the one that decides
+	// whether and how to truncate. A more distant ancestor's
+	// text-overflow does NOT reach through an intervening block (which
+	// establishes its own block formatting context). text-overflow-020
+	// is the canonical "nested paragraph won't ellipse" case.
 	var clipAncestor *layout.Box
 	for p := box.Parent; p != nil; p = p.Parent {
 		if p.Style == nil {
 			continue
 		}
+		if !isBlockContainerForTextOverflow(p.Style) {
+			continue
+		}
 		overflowX := p.Style.GetOverflowX()
-		if overflowX == css.OverflowHidden || overflowX == css.OverflowScroll || overflowX == css.OverflowAuto {
-			if !hasEllipsis && p.Style.GetTextOverflow() == css.TextOverflowEllipsis {
-				hasEllipsis = true
+		if overflowX == css.OverflowHidden || overflowX == css.OverflowScroll ||
+			overflowX == css.OverflowAuto || overflowX == css.OverflowClip {
+			if !hasOverflow {
+				switch p.Style.GetTextOverflow() {
+				case css.TextOverflowEllipsis:
+					hasOverflow = true
+					if replacement == "" {
+						replacement = ellipsisChar
+					}
+				case css.TextOverflowString:
+					hasOverflow = true
+					replacement = p.Style.GetTextOverflowString()
+				}
 			}
-			if hasEllipsis {
+			if hasOverflow {
 				clipAncestor = p
 			}
-			break
 		}
+		// First block container reached: stop the walk regardless of
+		// whether it has overflow:hidden or text-overflow:ellipsis.
+		// A more distant ancestor's text-overflow is not visible to
+		// this run.
+		break
 	}
 
-	if !hasEllipsis || clipAncestor == nil {
-		return text
+	if !hasOverflow || clipAncestor == nil || replacement == "" {
+		return text, nil
 	}
 
 	// Compute available width: right edge of ancestor's padding box minus
-	// the text run's starting X position.  The padding box is the overflow
-	// clip boundary (CSS Overflow §3), so the ellipsis must fit within it.
+	// the text run's starting X position. The padding box is the overflow
+	// clip boundary (CSS Overflow §3), so the replacement must fit within
+	// it.
 	paddingRight := clipAncestor.X + clipAncestor.Width - clipAncestor.Border.Right
 	availW := paddingRight - box.X
 	if availW <= 0 {
-		return text
+		return text, nil
 	}
 
-	// Account for letter-spacing and word-spacing in width measurements.
+	// Account for letter-spacing and word-spacing in run-width measurements.
 	ls := layer.LetterSpacing
 	ws := layer.WordSpacing
 	measureRunWidth := func(s string) float64 {
@@ -5930,23 +6021,91 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 
 	textW := measureRunWidth(text)
 	if textW <= availW {
-		return text
+		return text, nil
 	}
 
-	// Text overflows — truncate and append ellipsis.
-	const ellipsis = "\u2026" // "…"
-	ellipsisW := r.measureTextStr(ellipsis, fontID, layer.FontFeatures)
-	truncW := availW - ellipsisW
+	// Measure the replacement in the *block container's* font (CSS UI 4
+	// §6.2), not the inline run's font. Open a fontID for the container
+	// so the inline run's Ahem (or other large) font doesn't inflate the
+	// replacement width and chew up too many inline glyphs.
+	containerFontID := r.openContainerFont(clipAncestor)
+	var replacementW float64
+	if containerFontID >= 0 {
+		replacementW = r.measureTextStr(replacement, containerFontID, nil)
+	} else {
+		// Fallback: measure with inline font.
+		replacementW = r.measureTextStr(replacement, fontID, layer.FontFeatures)
+	}
+	truncW := availW - replacementW
+
+	// CSS UI 4 §6.2 / Blink `text_overflow.cc::PlaceEllipsis`: the FIRST
+	// glyph of the line is always preserved — it is clipped by
+	// overflow:hidden rather than replaced by the ellipsis. This handles
+	// the degenerate case where availW is smaller than the first glyph's
+	// advance: we keep the first glyph and suppress the ellipsis entirely
+	// (its insertion would shift the first glyph or hide it, neither of
+	// which the spec permits). See text-overflow-008 / -014 / -020.
+	//
+	// Note that this only applies when the text run is anchored at the
+	// content edge (i.e., box.X is at or before the padding box's left
+	// edge); a non-leading run that exceeds available width still gets a
+	// normal ellipsis.
+	runes := []rune(text)
+	leadingX := clipAncestor.X + clipAncestor.Border.Left
+	isLeadingRun := box.X <= leadingX+0.5
+	if len(runes) >= 1 {
+		firstAdvance := r.measureTextStr(string(runes[0]), fontID, layer.FontFeatures)
+		if isLeadingRun && firstAdvance > availW {
+			// First glyph doesn't fit; preserve it and skip the ellipsis.
+			return string(runes[0]), nil
+		}
+	}
 
 	if truncW <= 0 {
-		// Not enough room even for the ellipsis — just show ellipsis.
-		return ellipsis
+		// Replacement (in container font) is wider than the available
+		// space.
+		//
+		// CSS UI 4 §6.2: when the replacement is a <string> "and there
+		// is insufficient space for the entire string, then the string
+		// can be clipped to make it fit". Accept as many inline glyphs
+		// as fit in availW (in inline font), then emit a clipped
+		// replacement filling the remaining space. text-overflow-string-002.
+		//
+		// For ellipsis (the U+2026 character), the leading-run rule from
+		// Blink's text_overflow.cc::PlaceEllipsis applies instead: keep
+		// the first glyph clipped by overflow and suppress the ellipsis.
+		// text-overflow-008 / -010 / -020.
+		if layer.TextOverflow == css.TextOverflowString ||
+			(layer.TextOverflow != css.TextOverflowEllipsis && replacement != ellipsisChar) {
+			// Custom <string>: accept text in inline font, clip replacement.
+			textTaken, textW2 := acceptInlineGlyphs(r, layer, fontID, runes, availW, ls, ws)
+			remaining := availW - textW2
+			clipped := clipReplacement(r, replacement, containerFontID, fontID, layer.FontFeatures, remaining)
+			if clipped == "" {
+				return textTaken, nil
+			}
+			return textTaken, &ellipsisPaint{
+				str:            clipped,
+				x:              box.X + textW2,
+				containerStyle: clipAncestor.Style,
+			}
+		}
+		// Ellipsis case.
+		if isLeadingRun && len(runes) >= 1 {
+			return string(runes[0]), nil
+		}
+		return "", &ellipsisPaint{
+			str:            replacement,
+			x:              box.X,
+			containerStyle: clipAncestor.Style,
+		}
 	}
 
-	// Find the truncation point by measuring characters.
+	// Find the truncation point: walk the run measuring in the inline
+	// font; stop just before the cumulative advance would exceed truncW.
 	w := 0.0
 	truncIdx := 0
-	runes := []rune(text)
+	truncAdvance := 0.0
 	for i, ch := range runes {
 		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 		advance := cw
@@ -5962,9 +6121,242 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		}
 		w += advance
 		truncIdx = len(string(runes[:i+1]))
+		truncAdvance = w
 	}
 
-	return text[:truncIdx] + ellipsis
+	return text[:truncIdx], &ellipsisPaint{
+		str:            replacement,
+		x:              box.X + truncAdvance,
+		containerStyle: clipAncestor.Style,
+	}
+}
+
+// acceptInlineGlyphs walks `runes` accepting cumulative inline glyphs
+// up to `limitW` in the inline font, returning the byte index just
+// past the accepted prefix and the cumulative advance.
+//
+// Used by the CSS UI 4 §6.2 clipped-<string> path where the
+// replacement is wider than availW: as many text glyphs are accepted
+// as fit, then the replacement is clipped to fill the rest.
+func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []rune, limitW, ls, ws float64) (string, float64) {
+	w := 0.0
+	idx := 0
+	for i, ch := range runes {
+		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+		stepAdvance := cw
+		if i < len(runes)-1 {
+			stepAdvance += ls
+		}
+		if ch == ' ' {
+			stepAdvance += ws
+		}
+		if w+cw > limitW {
+			break
+		}
+		w += stepAdvance
+		idx = len(string(runes[:i+1]))
+	}
+	return string(runes)[:idx], w
+}
+
+// clipReplacement returns the longest prefix of `replacement` whose
+// width in the container font is <= `limitW`. The result may be empty
+// when even the first character does not fit, per CSS UI 4 §6.2's
+// "the string can be clipped" allowance.
+func clipReplacement(r *Renderer, replacement string, containerFontID, inlineFontID int32, inlineFeatures []textshape.FontFeature, limitW float64) string {
+	if limitW <= 0 {
+		return ""
+	}
+	fid := containerFontID
+	features := []textshape.FontFeature(nil)
+	if fid < 0 {
+		fid = inlineFontID
+		features = inlineFeatures
+	}
+	runes := []rune(replacement)
+	w := 0.0
+	idx := 0
+	for i, ch := range runes {
+		cw := r.measureTextStr(string(ch), fid, features)
+		if w+cw > limitW {
+			break
+		}
+		w += cw
+		idx = len(string(runes[:i+1]))
+	}
+	return replacement[:idx]
+}
+
+// openContainerFont opens a fontID for the given clip ancestor's
+// computed font (family / size / weight / style). Returns -1 when the
+// ancestor has no style.
+func (r *Renderer) openContainerFont(ancestor *layout.Box) int32 {
+	if ancestor == nil || ancestor.Style == nil {
+		return -1
+	}
+	st := ancestor.Style
+	fontSize := st.GetUsedFontSize()
+	if fontSize <= 0 {
+		fontSize = 16
+	}
+	bold := st.GetFontWeight() == css.FontWeightBold
+	italic := st.GetFontStyle() == css.FontStyleItalic
+	mono := st.IsMonospaceFamily()
+	ahem := st.IsAhemFamily()
+	family, _ := st.Get("font-family")
+	synth := st.GetFontSynthesis()
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		family, bold, italic, mono, ahem,
+		synth.Weight, synth.Style)
+	return r.openFont(fontPath, fontSize)
+}
+
+// paintTextOverflowEllipsis draws the ellipsis (or custom replacement
+// string) in the block container's font at the previously-computed x
+// position, aligned to the inline run's baseline (so the replacement
+// sits on the same baseline as the truncated text).
+//
+// Per CSS UI 4 §6.2 the replacement is rendered using the styles of
+// the block container; when the inline run is on the container's first
+// line, the container's ::first-line pseudo styles (color/font subset)
+// apply to the ellipsis as well — matching Blink's behavior where the
+// ellipsis fragment is built into the first line's fragments.
+func (r *Renderer) paintTextOverflowEllipsis(layer *PaintLayer, box *layout.Box, ep *ellipsisPaint) {
+	if ep == nil || ep.containerStyle == nil {
+		return
+	}
+	st := ep.containerStyle
+
+	// If the container has a ::first-line pseudo and the inline run sits
+	// on its first line, layer first-line property overrides on top of
+	// the container's style for color/font resolution. Detection:
+	// box.Y matches the container's content-top within line-height (i.e.,
+	// this text fragment is on the first formatted line of the
+	// container). The first-line allowed-properties subset (CSS Pseudo
+	// §3) is the same one that `applyFirstLineStyles` in inline layout
+	// uses; we only need the color/font subset here.
+	colorStyle := st
+	fontStyle := st
+	if firstLineSt := containerFirstLineStyle(box, ep.containerStyle); firstLineSt != nil {
+		colorStyle = firstLineSt
+		fontStyle = firstLineSt
+	}
+
+	fontSize := fontStyle.GetUsedFontSize()
+	if fontSize <= 0 {
+		fontSize = 16
+	}
+	bold := fontStyle.GetFontWeight() == css.FontWeightBold
+	italic := fontStyle.GetFontStyle() == css.FontStyleItalic
+	mono := fontStyle.IsMonospaceFamily()
+	ahem := fontStyle.IsAhemFamily()
+	family, _ := fontStyle.Get("font-family")
+	synth := fontStyle.GetFontSynthesis()
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		family, bold, italic, mono, ahem,
+		synth.Weight, synth.Style)
+	containerFontID := r.openFont(fontPath, fontSize)
+	if containerFontID < 0 {
+		return
+	}
+
+	// Baseline alignment: inline run's baseline = box.Y + inlineAscent.
+	// Use the container font's ascent so the replacement's baseline
+	// matches the inline run's baseline.
+	inlineFontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	inlineFontID := r.openFont(inlineFontPath, layer.FontSize)
+	if inlineFontID < 0 {
+		return
+	}
+	inlineAscent := float64(r.dc.GetFontMetrics(inlineFontID).Ascent) / 64.0
+	baselineY := box.Y + inlineAscent
+
+	// Draw the replacement in the container's text color (CSS UI 4 §6.2:
+	// the replacement uses the styles of the block container, optionally
+	// overridden by ::first-line on the first line).
+	containerColor := colorStyle.GetColor()
+	r.setColor(containerColor)
+	r.drawTextStr(ep.str, containerFontID, ep.x, baselineY, nil)
+	// Restore the layer's text color so subsequent paint operations
+	// (decorations, emphasis) continue with the inline run's color.
+	r.setColor(layer.TextColor)
+}
+
+// containerFirstLineStyle returns a *css.Style with the container's
+// ::first-line overrides layered on top of its base style, if and only
+// if `box` is positioned on the container's first formatted line.
+// Returns nil otherwise (the caller falls back to the base container
+// style).
+//
+// Detection: louis14's inline layout (`applyFirstLineStyles` at
+// `pkg/layout/inline_layout.go:1196`) sets each first-line result's
+// Style to a cloned style with the first-line property overrides
+// applied. We detect that override by checking whether the fragment's
+// own style has the same color value as the ::first-line color
+// override — if so, the fragment belongs to the first line.
+//
+// Mirrors Blink's `LayoutObject::FirstLineStyle` for the purpose of
+// styling the text-overflow ellipsis (`text_overflow.cc::PaintLine` @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func containerFirstLineStyle(box *layout.Box, containerStyle *css.Style) *css.Style {
+	if box == nil || containerStyle == nil {
+		return nil
+	}
+	// Walk to the clip ancestor (the box whose Style == containerStyle).
+	var ancestor *layout.Box
+	for p := box.Parent; p != nil; p = p.Parent {
+		if p.Style == containerStyle {
+			ancestor = p
+			break
+		}
+	}
+	if ancestor == nil || ancestor.LayoutNode == nil || ancestor.LayoutNode.FirstLineStyle == nil {
+		return nil
+	}
+	firstLineStyle := ancestor.LayoutNode.FirstLineStyle
+	// Sentinel comparison: a property that the first-line pseudo
+	// changes from the container's value indicates the fragment is on
+	// the first line.
+	if !boxOnFirstLine(box, containerStyle, firstLineStyle) {
+		return nil
+	}
+	// Build a merged style: clone the container's base style, then
+	// overlay first-line properties.
+	merged := containerStyle.Clone()
+	for prop, val := range firstLineStyle.Properties {
+		if val != "" {
+			merged.Properties[prop] = val
+		}
+	}
+	return merged
+}
+
+// boxOnFirstLine reports whether `box` (a text fragment) lives on the
+// container's first formatted line. It walks the first-line property
+// set looking for a property whose value differs between the container
+// and the ::first-line pseudo, then compares the fragment's resolved
+// value to the ::first-line value.
+func boxOnFirstLine(box *layout.Box, containerStyle, firstLineStyle *css.Style) bool {
+	if box == nil || box.Style == nil {
+		return false
+	}
+	for prop, flVal := range firstLineStyle.Properties {
+		if flVal == "" {
+			continue
+		}
+		containerVal, _ := containerStyle.Get(prop)
+		if containerVal == flVal {
+			continue
+		}
+		fragVal, _ := box.Style.Get(prop)
+		if fragVal == flVal {
+			return true
+		}
+	}
+	return false
 }
 
 // drawTextShadows paints text shadows behind the actual text glyphs.
