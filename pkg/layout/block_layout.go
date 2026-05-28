@@ -302,6 +302,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		pendingDropAtBlockOffsetEnabled  bool
 		pendingIntrinsicAtBreak          float64
 		pendingHaveIntrinsicAtBreak      bool
+		// inlineFullyPlaced is set to true when this block has only inline
+		// children AND the IFC completed without overflow (no inline break
+		// token emitted). Used when the block self-fragments via didBreakSelf
+		// to set HasSeenAllChildren=true on the outgoing break token, so the
+		// continuation fragment's BLA does not re-lay out the same inline
+		// content. Mirrors Blink's `InlineBreakToken::is_finished_` carried
+		// on the block break token via the inline child path.
+		inlineFullyPlaced bool
 	)
 	pendingDropAtBlockOffset = -1
 	pendingBreakAppeal = BreakAppealPerfect
@@ -371,10 +379,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
 			inlineStartTextOffset = incomingBreakToken.InlineTextOffset
 		}
+		// HasSeenAllChildren on the incoming token: a previous fragment of
+		// this block self-fragmented (didBreakSelf) AFTER the IFC fully placed
+		// all inline content (no overflow → no inline break token). The
+		// remaining fragments are pure box continuation — empty area below the
+		// last line. Skip the IFC entirely so the text is not re-laid at the
+		// top of every continuation column. Driver:
+		// multicol-span-all-children-height-001 — block1 (CSS height:100px,
+		// one line of "block1" text) self-fragments at the 50px column
+		// boundary; col1 must show empty 50px box continuation, not the text
+		// repeated. Mirrors Blink's `InlineBreakToken::is_finished_` on the
+		// block's child path.
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
 		var inlineBreakToken *BlockBreakToken
-		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
+			// Skip IFC; everything was placed in a prior fragment.
+		} else {
+			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+		}
+		// IFC completed without overflow: track so we can flag the outgoing
+		// break token's HasSeenAllChildren if the block self-fragments. See
+		// the inlineFullyPlaced declaration above.
+		if inlineBreakToken == nil {
+			inlineFullyPlaced = true
+		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
@@ -2065,6 +2094,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// the line-2012 reader did the same.
 			childBreakTokens = result.BreakToken.ChildBreakTokens
 			hasSeenAllChildren = result.BreakToken.HasSeenAllChildren
+		}
+		// didBreakSelf on an inline-only block whose IFC completed without
+		// overflow: signal HasSeenAllChildren so the continuation fragment
+		// does not re-lay out the same inline content. Without this, an
+		// inline-only block (e.g. `<div>block1</div>`) with CSS height taller
+		// than its only line of text and taller than the column box self-
+		// fragments at the column boundary, and the continuation column
+		// re-renders the text at the top of the next column. Driver:
+		// multicol-span-all-children-height-001.
+		if didBreakSelf && inlineFullyPlaced {
+			hasSeenAllChildren = true
 		}
 		// Option-b step 6.5.A — Site B setter (plan §1.9 / §3.3 row 4).
 		// Blink's FinishFragmentation at fragmentation_utils.cc:735-739:
