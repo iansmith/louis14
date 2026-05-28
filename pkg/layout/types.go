@@ -237,6 +237,17 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.Style.GetIsolation() == "isolate" {
 		return true
 	}
+	// CSS Transforms L2 §10: a used value of `preserve-3d` on `transform-style`
+	// or `hidden` on `backface-visibility` makes the element form a stacking
+	// context. Mirrors Blink's HasPropertyThatCreatesStackingContext at
+	// computed_style.cc :1319 (kTransformStyle + kBackfaceVisibility), pinned
+	// to SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if b.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+		return true
+	}
+	if b.Style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
+		return true
+	}
 	// CSS Will Change Level 1 §2.2: will-change of certain properties creates
 	// a stacking context (same properties that create one when actually set).
 	// Mirrors Blink's willChangeStackingContextSet at computed_style.cc:1319

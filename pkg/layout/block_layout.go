@@ -1943,6 +1943,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				isTransformCB = true
 			} else if bla.style.WillChangeEstablishesContainingBlock(true) {
 				isTransformCB = true
+			} else if bla.style.GetTransformStyle() == css.TransformStylePreserve3D {
+				// CSS Transforms L2 §11 / Blink's HasTransformRelatedProperty:
+				// transform-style:preserve-3d establishes a containing block
+				// for all positioned descendants (including fixed). Mirrors
+				// Blink's ComputedStyle::HasTransformRelatedProperty at SHA
+				// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+				isTransformCB = true
+			} else if bla.style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
+				// CSS Transforms L2 §11: backface-visibility:hidden establishes
+				// a containing block (and stacking context) when the element
+				// participates in a 3D rendering context. WPT
+				// backface-visibility-hidden-003 covers the case where the
+				// parent has transform-style:preserve-3d. Blink's
+				// HasTransformRelatedProperty treats backface-visibility:hidden
+				// as CB-establishing unconditionally; we mirror that.
+				isTransformCB = true
 			}
 		}
 		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
