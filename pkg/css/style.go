@@ -2336,9 +2336,10 @@ func expandShorthand(style *Style, property, value string) {
 	case "list-style":
 		// list-style shorthand: sets list-style-type, list-style-position, list-style-image
 		// Parse the shorthand by tokenizing and categorizing each component.
-		// Positions: inside, outside. Types: none, disc, circle, square, decimal, etc.
+		// Positions: inside, outside. Types: none, disc, circle, square, decimal,
+		// or a quoted <string> (CSS Lists 3 §3.2 list-style-type accepts <string>).
 		// Image: url(...) or none.
-		// Tokenize preserving url(...) as a single token.
+		// Tokenize preserving url(...) and quoted strings as single tokens.
 		var listTokens []string
 		rest := value
 		for rest != "" {
@@ -2367,6 +2368,25 @@ func expandShorthand(style *Style, property, value string) {
 							i++
 							break
 						}
+					}
+					i++
+				}
+				listTokens = append(listTokens, rest[:i])
+				rest = rest[i:]
+			} else if rest[0] == '"' || rest[0] == '\'' {
+				// Quoted string token for list-style-type: <string> (CSS Lists 3 §3.2).
+				// Preserve the quote bytes so downstream type-classification can
+				// distinguish a string literal from a keyword.
+				q := rest[0]
+				i := 1
+				for i < len(rest) {
+					if rest[i] == '\\' && i+1 < len(rest) {
+						i += 2
+						continue
+					}
+					if rest[i] == q {
+						i++
+						break
 					}
 					i++
 				}
