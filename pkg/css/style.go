@@ -11446,6 +11446,82 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 	return parseFilterList(val)
 }
 
+// IsBackdropRoot mirrors the predicate enumerated in CSS Filter Effects 2 §3.5
+// (https://drafts.csswg.org/filter-effects-2/#BackdropRoot). An element forms
+// a Backdrop Root when any of these hold:
+//   - filter is not "none"
+//   - opacity is < 1
+//   - mask, mask-image, mask-border, or clip-path is not "none"
+//   - backdrop-filter is not "none"
+//   - mix-blend-mode is not "normal"
+//   - will-change names any property whose non-initial value would itself
+//     create a Backdrop Root
+//
+// The root element is also a Backdrop Root, but that is handled separately
+// by the renderer (the canvas itself is the implicit backdrop), so it is not
+// reported here.
+//
+// Notably, transform, perspective, z-index, and fixed/sticky positioning DO
+// NOT create a Backdrop Root — the spec deliberately excludes them so a
+// transformed ancestor still lets a descendant's backdrop-filter sample
+// further-up ancestors. This is what distinguishes Backdrop Root from the
+// general stacking-context predicate.
+//
+// Mirrors Blink's `ComputedStyle::IsBackdropRoot()` /
+// `effect_paint_property_node.cc::DetermineBackdropRoot()` at Chromium
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) IsBackdropRoot() bool {
+	if s.GetOpacity() < 1.0 {
+		return true
+	}
+	if len(s.GetFilter()) > 0 {
+		return true
+	}
+	if len(s.GetBackdropFilter()) > 0 {
+		return true
+	}
+	if m := s.GetMaskImage(); m != "" && m != "none" {
+		return true
+	}
+	if cp := s.GetClipPath(); cp != nil {
+		return true
+	}
+	if bm := s.GetMixBlendMode(); bm != MixBlendModeNormal && bm != "" {
+		return true
+	}
+	// will-change: any property that would itself form a backdrop-root
+	// when set to a non-initial value (per spec). We consult a small
+	// dedicated set rather than the broader stacking-context will-change
+	// set because backdrop-root has a narrower trigger list (transform/
+	// z-index/position-related properties are intentionally excluded).
+	wc := s.GetWillChangeData()
+	if wc != nil {
+		for lh := range wc.Longhands {
+			if willChangeBackdropRootSet[lh] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// willChangeBackdropRootSet enumerates the resolved longhands whose
+// non-initial value would, on their own, create a backdrop-root per the
+// trigger list in IsBackdropRoot. Sourced from CSS Filter Effects 2 §3.5 and
+// the implementation in Blink at
+// `effect_paint_property_node.cc::DetermineBackdropRoot()`
+// (4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+var willChangeBackdropRootSet = map[string]bool{
+	"opacity":         true,
+	"filter":          true,
+	"backdrop-filter": true,
+	"mask":            true,
+	"mask-image":      true,
+	"mask-border":     true,
+	"clip-path":       true,
+	"mix-blend-mode":  true,
+}
+
 // GetBorderImageSource returns the border-image-source value.
 func (s *Style) GetBorderImageSource() string {
 	if v, ok := s.Get("border-image-source"); ok {

@@ -306,6 +306,32 @@ type PaintLayer struct {
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	HasBlendingDescendant bool
 
+	// IsBackdropRoot is true when this layer's style forms a Backdrop Root
+	// per CSS Filter Effects 2 §3.5 (opacity < 1, filter, mask, mask-image,
+	// mask-border, clip-path, backdrop-filter, mix-blend-mode, or
+	// will-change of any of the above). Backdrop Roots BOUND the backdrop
+	// sample that a descendant's `backdrop-filter` consumes — the captured
+	// region of the canvas only includes content painted within this layer
+	// (and descendants painted before the backdrop-filter element), not
+	// content painted further up the ancestor chain.
+	//
+	// Set by buildPaintSubtree from `style.IsBackdropRoot()`. Notably
+	// transform/perspective/z-index DO NOT trigger backdrop-root, even
+	// though they create a stacking context — the spec intentionally
+	// separates the two predicates.
+	//
+	// Mirrors Blink's `effect_paint_property_node.cc::DetermineBackdropRoot`
+	// at 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	IsBackdropRoot bool
+
+	// HasBackdropFilterDescendant is true when this layer is a Backdrop
+	// Root that contains a descendant (within the backdrop-root boundary)
+	// with `backdrop-filter != none`. When set, paintLayer routes the layer
+	// through paintLayerIsolated so the descendant's backdrop-filter samples
+	// the isolated buffer instead of the canvas underneath the backdrop-
+	// root. The flag is only meaningful in combination with IsBackdropRoot.
+	HasBackdropFilterDescendant bool
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -364,12 +390,22 @@ type PaintLayer struct {
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
 // The root box is always treated as a stacking context root
 // (CSS 2.1 Appendix E: root element establishes the initial stacking context).
+//
+// The implicit root Backdrop Root per CSS Filter Effects 2 §3.5 is left as
+// a NIL currentBackdropRoot: when a top-level descendant has backdrop-filter,
+// the nearest ancestor backdrop-root search returns nil, which the renderer
+// reads as "sample the canvas directly" — exactly the implicit-root
+// semantics. Routing the root layer itself through paintLayerIsolated would
+// pre-fill the buffer with transparent black instead of the canvas
+// background, breaking descendants whose backdrop-filter expects to invert
+// the white canvas. Mirrors Blink's effect tree, where the root's
+// kBackdropRoot flag is implicit and not realised as an isolation group.
 func BuildPaintTree(root *layout.Box) *PaintLayer {
 	if root == nil {
 		return nil
 	}
 	rootLayer := newPaintLayer(root)
-	buildPaintSubtree(root, rootLayer, rootLayer)
+	buildPaintSubtree(root, rootLayer, rootLayer, nil)
 	rootLayer.sortZLists()
 	return rootLayer
 }
@@ -1037,6 +1073,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// CSS mix-blend-mode.
 	layer.BlendMode = s.GetMixBlendMode()
 
+	// CSS Filter Effects 2 §3.5: Backdrop Root predicate. The flag is
+	// consumed by paintLayer in combination with HasBackdropFilterDescendant
+	// (set in the subtree walk) to decide whether to route this layer
+	// through paintLayerIsolated so a descendant's backdrop-filter samples
+	// the isolated buffer instead of the underlying canvas.
+	if s.IsBackdropRoot() {
+		layer.IsBackdropRoot = true
+	}
+
 	// Column rules for multicol containers.
 	// Guards:
 	//   - !IsColumnBox: per-column fragmentainers are tagged BoxTypeColumn
@@ -1301,14 +1346,19 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 // buildPaintSubtree walks the Box tree, creating PaintLayers and assigning
 // them to the correct parent/stacking-context lists.
 //
-// parentLayer: the PaintLayer that owns FlowChildren at this level.
-// currentSC:   the nearest ancestor stacking context's PaintLayer.
-func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
+// parentLayer:        the PaintLayer that owns FlowChildren at this level.
+// currentSC:          the nearest ancestor stacking context's PaintLayer.
+// currentBackdropRoot: the nearest ancestor PaintLayer with IsBackdropRoot set.
+//                     Per CSS Filter Effects 2 §3.5, this is the boundary of
+//                     the backdrop sampled by any backdrop-filter descendant
+//                     within the subtree. Set by HasBackdropFilterDescendant
+//                     when a descendant with backdrop-filter is encountered.
+func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer) {
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
 			// Unstyled box (line box, text run) — no PaintLayer.
 			// Recurse to find any styled descendants.
-			buildPaintSubtree(child, parentLayer, currentSC)
+			buildPaintSubtree(child, parentLayer, currentSC, currentBackdropRoot)
 			continue
 		}
 		// Text fragments (LayoutNode==nil with Text set) carry their parent
@@ -1334,6 +1384,27 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			currentSC.HasBlendingDescendant = true
 		}
 
+		// CSS Filter Effects 2 §3.5: a backdrop-filter element samples its
+		// backdrop only back to the nearest Backdrop Root ancestor. Mark that
+		// ancestor so paintLayer can route it through an isolated buffer; the
+		// descendant's backdrop-filter then samples that buffer instead of
+		// the canvas content painted further up the ancestor chain.
+		//
+		// currentBackdropRoot may be nil for descendants of the implicit
+		// root backdrop-root — in that case the canvas IS the backdrop, and
+		// no extra isolation is needed (sampling r.target directly is
+		// already correct).
+		if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
+			currentBackdropRoot.HasBackdropFilterDescendant = true
+		}
+
+		// The child becomes the new currentBackdropRoot for its own subtree
+		// if it is itself a backdrop-root.
+		childBackdropRoot := currentBackdropRoot
+		if childLayer.IsBackdropRoot {
+			childBackdropRoot = childLayer
+		}
+
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest
 		// ancestor stacking context's z-lists, just like positioned elements
@@ -1349,7 +1420,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			continue
 		}
 
@@ -1366,15 +1437,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				} else {
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 				}
-				buildPaintSubtree(child, childLayer, childLayer)
+				buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			} else if isFloat(child) {
 				// CSS 2.1 Appendix E step 4: floats paint after non-float block
 				// backgrounds (step 3) so they appear above block backgrounds.
 				parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			} else {
 				parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			}
 			continue
 		}
@@ -1395,7 +1466,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			continue
 		}
 
@@ -1403,7 +1474,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		// contained children stay in DOM-order painting (FlowChildren).
 		if isContainedByOverflow(child, box) {
 			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-			buildPaintSubtree(child, childLayer, currentSC)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 			continue
 		}
 
@@ -1412,9 +1483,9 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		if hasOverflowClipping(child) {
 			// Overflow containment boundary — positioned descendants
 			// stay within this subtree.
-			buildPaintSubtree(child, childLayer, childLayer)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 		} else {
-			buildPaintSubtree(child, childLayer, currentSC)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 		}
 	}
 }

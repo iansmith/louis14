@@ -816,6 +816,23 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Filter Effects 2 §3.5: a Backdrop Root that contains a descendant
+	// with backdrop-filter must render its subtree into an isolated buffer
+	// so the descendant's backdrop sample is bounded by the backdrop-root
+	// rather than reaching out to the canvas underneath. Without this,
+	// applyBackdropFilter samples r.target — which holds the full canvas
+	// including ancestor content painted before this layer — and the
+	// descendant filter is computed against the wrong backdrop. The
+	// isolation buffer pre-fills to transparent black, so a descendant's
+	// backdrop-filter that samples outside the layer's own painted area
+	// sees transparent (not the ancestor canvas). Mirrors Blink's backdrop-
+	// root paint-property promotion at effect_paint_property_node.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if layer.IsBackdropRoot && layer.HasBackdropFilterDescendant {
+		r.paintLayerIsolated(layer)
+		return
+	}
+
 	// CSS Transforms 1 §6 / CSS Backgrounds 3 §3.13: the canvas background
 	// (root or propagated body bg) is owned by the root canvas, NOT the
 	// layer that supplies it. A `transform` on the body or root element must
