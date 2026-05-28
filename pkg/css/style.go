@@ -9324,9 +9324,17 @@ func (s *Style) GetTransformOrigin() TransformOrigin {
 // pixels, relative to the box's top-left corner. Defaults to center center.
 // Mirrors Blink's TransformOrigin::ResolveAxisFromConvert with width/height.
 //
-// Per CSS Transforms 1 §6: with two keyword tokens, order is interchangeable —
-// `top left` is equivalent to `left top`. Length/percent components must
-// appear in (x, y) order.
+// Per CSS Transforms 1 §6 + CSS Values 3 §6.1 (<position>): with two values,
+// if EITHER value is `top`/`bottom`/`left`/`right`, the natural axis of the
+// keyword wins regardless of token order. Examples:
+//   - `top center`, `center top`              → x=center, y=top
+//   - `top left`, `left top`                  → x=left,   y=top
+//   - `top 10%`, `10% top`                    → x=10%,    y=top
+//   - `center 10%`                            → x=center, y=10% (no axis keyword → positional)
+//   - `10% 50%`                               → x=10%,    y=50% (no axis keyword → positional)
+//
+// The third (z-axis) component, if present, is ignored for the 2D paint
+// pipeline.
 func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) {
 	val, ok := s.Get("transform-origin")
 	if !ok {
@@ -9336,29 +9344,53 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 	fs := s.GetFontSize()
 	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
 	cap, lh := s.CapHeight, s.LhSize
+	xPart, yPart := classifyOriginParts(parts)
 	x := 0.5 * boxW
 	y := 0.5 * boxH
-	if len(parts) == 1 {
-		// Single value: y-keyword applies to vertical axis (x defaults to center);
-		// anything else applies to horizontal axis (y defaults to center).
-		if isVerticalKeyword(parts[0]) {
-			y = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, xh, cap, lh, boxH)
-		} else {
-			x = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, xh, cap, lh, boxW)
-		}
-		return x, y
+	if xPart != "" {
+		x = resolveOriginAxisKeywordOrLength(xPart, fs, vw, vh, ch, xh, cap, lh, boxW)
 	}
-	if len(parts) >= 2 {
-		// Two values: swap if the first is a vertical keyword AND the second
-		// is a horizontal keyword (e.g. `top left` → treat as `left top`).
-		first, second := parts[0], parts[1]
-		if isVerticalKeyword(first) && isHorizontalKeyword(second) {
-			first, second = second, first
-		}
-		x = resolveOriginAxisKeywordOrLength(first, fs, vw, vh, ch, xh, cap, lh, boxW)
-		y = resolveOriginAxisKeywordOrLength(second, fs, vw, vh, ch, xh, cap, lh, boxH)
+	if yPart != "" {
+		y = resolveOriginAxisKeywordOrLength(yPart, fs, vw, vh, ch, xh, cap, lh, boxH)
 	}
 	return x, y
+}
+
+// classifyOriginParts maps a list of <position> tokens to (xToken, yToken),
+// applying CSS Values 3 §6.1's axis-classification rule: an unambiguous
+// horizontal keyword (left/right) anchors the x axis; an unambiguous vertical
+// keyword (top/bottom) anchors the y axis; center and lengths/percentages are
+// positional. Returns "" for an axis that should fall back to center.
+//
+// Algorithm:
+//   - 1 token: if it's a vertical keyword, assign to y; otherwise x.
+//   - 2 tokens: if either token is an unambiguous axis keyword, that token
+//     locks its axis; the other token fills the remaining axis. Otherwise
+//     the tokens stay in source order (x first, y second).
+//   - 3 tokens: same as 2-token logic, with the third (z) token discarded.
+func classifyOriginParts(parts []string) (xPart, yPart string) {
+	if len(parts) == 0 {
+		return "", ""
+	}
+	if len(parts) == 1 {
+		if isVerticalKeyword(parts[0]) {
+			return "", parts[0]
+		}
+		return parts[0], ""
+	}
+	first, second := parts[0], parts[1]
+	switch {
+	case isHorizontalKeyword(first):
+		return first, second
+	case isVerticalKeyword(first):
+		return second, first
+	case isHorizontalKeyword(second):
+		return second, first
+	case isVerticalKeyword(second):
+		return first, second
+	default:
+		return first, second
+	}
 }
 
 // isHorizontalKeyword reports whether val names an x-axis position keyword.

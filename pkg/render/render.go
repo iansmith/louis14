@@ -1690,10 +1690,21 @@ func clampByte(v float64) uint8 {
 
 // applyTransforms applies the CSS transform list to the draw context.
 // Transforms are applied relative to the transform-origin point.
+//
+// The transform-origin's absolute position is computed against the *snapped*
+// border-box, not the raw layout box. Blink does the same in
+// `TransformPaintPropertyNode::Build` (paint_property_tree_builder.cc
+// @ 4883d11fef): the origin is added to `EnclosingLayoutRect(border_box)`
+// rather than the unsnapped origin so that the paint-time transform pivots
+// against the same pixel grid the box itself is rasterized to. Without this,
+// a 0.0625-px sub-pixel offset in `box.Y` is compounded by the rotation
+// matrix and leaks one full pixel of color across an axis-aligned edge after
+// 180° / 90° rotations.
 func (r *Renderer) applyTransforms(layer *PaintLayer) {
 	box := layer.Box
-	ox := box.X + layer.TransformOrigin[0]
-	oy := box.Y + layer.TransformOrigin[1]
+	sx, sy, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	ox := sx + layer.TransformOrigin[0]
+	oy := sy + layer.TransformOrigin[1]
 
 	// Move origin to transform-origin point.
 	r.dc.Translate(ox, oy)
