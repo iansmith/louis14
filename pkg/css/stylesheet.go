@@ -425,34 +425,37 @@ func expandNesting(css string, parentSelector string) string {
 			continue
 		}
 
-		// Regular selector block
-		flatDecls, nestedParts := separateDeclsAndNested(body)
+		// Regular selector block — emit segments in SOURCE ORDER so the
+		// cascade sees declarations and nested rules at their authored
+		// position. Per CSS Nesting 1 §3.3, declarations after a nested
+		// rule act as if in a separate style rule whose selector is the
+		// parent's; equal-specificity overrides depend on source order
+		// (e.g. nesting-basic test-10 / test-11).
+		segments := splitBodySegments(body)
 
+		// Resolve the effective selector for declaration segments.
+		// - Top-level: "& at the top level counts as :scope" per CSS
+		//   Nesting 1 §2.1, so swap any `&` in sel for `:scope`.
+		// - Nested: use resolveNestedSelector against the parent.
+		var declSel, childParent string
 		if parentSelector != "" {
-			// This is a NESTED rule inside a parent rule
-			resolvedSel := resolveNestedSelector(parentSelector, sel)
-			// Emit flat rule with this selector's declarations
-			if strings.TrimSpace(flatDecls) != "" {
-				result.WriteString(resolvedSel)
-				result.WriteString(" { ")
-				result.WriteString(flatDecls)
-				result.WriteString(" }\n")
-			}
-			// Recursively expand nested rules inside this nested rule
-			if strings.TrimSpace(nestedParts) != "" {
-				result.WriteString(expandNesting(nestedParts, resolvedSel))
-			}
+			declSel = resolveNestedSelector(parentSelector, sel)
+			childParent = declSel
 		} else {
-			// Top-level rule — separate flat declarations from nested rules
-			if strings.TrimSpace(flatDecls) != "" {
-				result.WriteString(sel)
+			declSel = resolveTopLevelNestingSelector(sel)
+			childParent = declSel
+		}
+
+		for _, seg := range segments {
+			if seg.isDecls {
+				result.WriteString(declSel)
 				result.WriteString(" { ")
-				result.WriteString(flatDecls)
+				result.WriteString(seg.Text)
 				result.WriteString(" }\n")
-			}
-			// Expand any nested rules inside, passing sel as parent
-			if strings.TrimSpace(nestedParts) != "" {
-				result.WriteString(expandNesting(nestedParts, sel))
+			} else {
+				// A nested rule — recurse with childParent (which already
+				// has & substituted) as the parent.
+				result.WriteString(expandNesting(seg.Text, childParent))
 			}
 		}
 	}
@@ -480,6 +483,18 @@ func resolveNestedSelector(parent, nested string) string {
 	return wrappedParent + " " + nested
 }
 
+// resolveTopLevelNestingSelector substitutes occurrences of `&` in a top-
+// level selector with `:scope`. Per CSS Nesting 1 §2.1 / Selectors 4
+// §17.2, "& at the top level counts as :scope" — i.e. the scoping root,
+// which in a static document is the document's root element. Required
+// by css-nesting/nesting-basic.html test-12 (`& .test-12 { ... }`).
+func resolveTopLevelNestingSelector(sel string) string {
+	if !strings.Contains(sel, "&") {
+		return sel
+	}
+	return strings.ReplaceAll(sel, "&", ":scope")
+}
+
 // wrapParentInIs wraps a parent selector in :is(...) for nesting substitution.
 // Single simple selectors that already are bare functional pseudo-classes
 // (e.g. ":is(.foo)") or that are unambiguous as compounds (single .class, #id,
@@ -492,6 +507,90 @@ func wrapParentInIs(parent string) string {
 		return parent
 	}
 	return ":is(" + parent + ")"
+}
+
+// bodySegment represents one segment of a rule body — either a run of
+// declarations or a single nested rule. Returned in source order from
+// splitBodySegments so callers can preserve interleaving for cascade
+// purposes.
+type bodySegment struct {
+	isDecls bool   // true: Text is flat declarations; false: Text is `selector { body }`
+	Text    string // trimmed segment content
+}
+
+// splitBodySegments walks a CSS rule body and returns its top-level
+// segments in source order. A run of consecutive flat declarations
+// collapses into a single isDecls segment; each nested block (selector
+// or at-rule) becomes its own segment. Used by expandNesting to preserve
+// the interleaving between flat declarations and nested rules — required
+// by CSS Nesting 1 §3.3 ("declarations after a nested rule apply as if
+// in a separate style rule") so that, e.g.,
+//
+//	.x { & { color: red; } color: green; }
+//
+// emits `:is(.x) { color: red }` BEFORE `.x { color: green }`, letting
+// `color: green` win on source-order at equal specificity.
+func splitBodySegments(body string) []bodySegment {
+	var segments []bodySegment
+	var declRun strings.Builder
+
+	flushDecls := func() {
+		if trimmed := strings.TrimSpace(declRun.String()); trimmed != "" {
+			segments = append(segments, bodySegment{isDecls: true, Text: trimmed})
+		}
+		declRun.Reset()
+	}
+
+	depth := 0
+	start := 0
+	nestedBlockStart := -1
+	inString := false
+	var stringChar byte
+
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString {
+			if ch == stringChar && (i == 0 || body[i-1] != '\\') {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = true
+			stringChar = ch
+			continue
+		}
+		switch ch {
+		case '{':
+			if depth == 0 {
+				nestedBlockStart = start
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && nestedBlockStart >= 0 {
+				// Flush any pending declarations before emitting the nested block.
+				flushDecls()
+				segments = append(segments, bodySegment{
+					isDecls: false,
+					Text:    strings.TrimSpace(body[nestedBlockStart : i+1]),
+				})
+				start = i + 1
+				nestedBlockStart = -1
+			}
+		case ';':
+			if depth == 0 {
+				declRun.WriteString(body[start : i+1])
+				start = i + 1
+			}
+		}
+	}
+	if remaining := strings.TrimSpace(body[start:]); remaining != "" && depth == 0 {
+		declRun.WriteString(remaining)
+	}
+	flushDecls()
+
+	return segments
 }
 
 // separateDeclsAndNested splits a CSS rule body into:
