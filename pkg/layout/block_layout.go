@@ -204,7 +204,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// axis via the ratio. In that case ComputeReplacedSize's value may
 					// exceed the shrink-to-fit intrinsic contentInlineSize — use it.
 					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
-					if inlineSize < contentInlineSize || blockFixed {
+					// CSS Sizing 4 §3.4: when the element has an aspect ratio and a
+					// min/max block-size set, those constraints transfer through the
+					// ratio to constrain inline-size. ComputeReplacedSize accounts for
+					// this; honor its inline-size even when it exceeds the shrink-to-
+					// fit contentInlineSize (e.g., min-height: 100px on a 1×1 image
+					// transfers via the 1:1 ratio to force inline-size = 100px).
+					blockConstraintTransfers := replacedBlockConstraintTransfersToInline(
+						bla.ctx, bla.node, bla.style, wdm, bla.space, geom)
+					if inlineSize < contentInlineSize || blockFixed || blockConstraintTransfers {
 						contentInlineSize = inlineSize
 					}
 				}

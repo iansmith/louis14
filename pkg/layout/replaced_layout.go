@@ -1,6 +1,77 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"strings"
+)
+
+// resolveReplacedIntrinsicInlineKeyword resolves min-width or max-width when
+// it's an intrinsic-sizing keyword (min-content, max-content, fit-content) on
+// a replaced element. For a replaced element the intrinsic min/max-content
+// inline-size is the inline-size determined by the constraint resolution
+// (e.g., derived from definite block-size via aspect ratio). We pass in the
+// already-computed inlineSize from the constraint resolution since it is the
+// best available "content" inline-size for a replaced box.
+//
+// kind is "min" or "max" — determines which property to read.
+// Returns the resolved length and true if the value was a keyword; false
+// otherwise (caller falls back to ResolveMin/MaxInlineSize).
+func resolveReplacedIntrinsicInlineKeyword(
+	style *css.Style, wdm WritingDirectionMode, kind string, inlineSize float64,
+) (float64, bool) {
+	if style == nil {
+		return 0, false
+	}
+	prop := kind + "-width"
+	if wdm.IsVertical() {
+		prop = kind + "-height"
+	}
+	v, ok := style.Get(prop)
+	if !ok {
+		return 0, false
+	}
+	switch strings.TrimSpace(v) {
+	case "min-content", "max-content", "fit-content",
+		"-webkit-min-content", "-webkit-max-content", "-webkit-fill-available",
+		"-moz-min-content", "-moz-max-content", "-moz-fit-content":
+		return inlineSize, true
+	}
+	return 0, false
+}
+
+// replacedBlockConstraintTransfersToInline reports whether the element's
+// min-block-size or max-block-size constraints can transfer through its
+// aspect ratio to affect the inline-size, per CSS Sizing 4 §3.4. When true,
+// callers should honor ComputeReplacedSize's inline value even when it
+// exceeds the shrink-to-fit / stretch-fit intrinsic width — the block-axis
+// constraint is mandatory and dominates the otherwise-preferred intrinsic
+// inline contribution. Mirrors the constraint-resolution flow in Blink's
+// LayoutReplaced::ComputeIntrinsicSizingInfoForReplacedContent.
+func replacedBlockConstraintTransfersToInline(
+	ctx *LayoutContext, node *LayoutInputNode, style *css.Style,
+	wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry,
+) bool {
+	if style == nil || node == nil {
+		return false
+	}
+	info := GetIntrinsicSizingInfo(ctx, node)
+	hasRatio := info.HasAspectRatio
+	if !hasRatio {
+		if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+			hasRatio = true
+		}
+	}
+	if !hasRatio {
+		return false
+	}
+	if ResolveMinBlockSize(style, wdm, space, geom).Float64() > 0 {
+		return true
+	}
+	if _, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+		return true
+	}
+	return false
+}
 
 // ComputeReplacedIntrinsicInlineSize returns the intrinsic inline-size for a
 // replaced element without applying min/max block-size constraints that would
@@ -172,6 +243,20 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 			inlineSize = intrinsicInline
 		} else if logicalRatio > 0 && intrinsicBlock > 0 {
 			inlineSize = intrinsicBlock * logicalRatio
+		} else if logicalRatio > 0 {
+			// CSS 2.1 §10.3.2 + CSS Sizing 4 §6.3: auto/auto replaced element
+			// with an intrinsic ratio but no intrinsic dimensions uses the
+			// stretch-fit available inline-size (the block-level non-replaced
+			// constraint equation) when the containing block's width doesn't
+			// depend on the element's width. block-size then transfers from
+			// inline-size via the ratio. Falls back to 300 when available
+			// inline-size is indefinite (e.g., max-content measurement).
+			avail := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
+			if avail > 0 && avail < 1e8 {
+				inlineSize = avail
+			} else {
+				inlineSize = 300
+			}
 		} else {
 			inlineSize = 300
 		}
@@ -192,40 +277,62 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	maxBlockLU, hasMaxBlock := ResolveMaxBlockSize(style, wdm, space, geom)
 	maxBlock := maxBlockLU.Float64()
 
+	// CSS Sizing 4 §3.4 + §5.1: intrinsic-keyword min/max constraints
+	// (min-content, max-content, fit-content) on the inline axis of a
+	// replaced element resolve to the inline-size derived from the
+	// definite block-size via the aspect ratio (or the stretch-fit / 300
+	// default when block-size is also indefinite). For replaced elements
+	// these keywords use the post-constraint-resolution inline-size as
+	// their value — without this, ResolveMinInlineSize returns 0 and the
+	// min/max constraint is effectively dropped.
+	if minVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "min", inlineSize); ok {
+		if minVal > minInline {
+			minInline = minVal
+		}
+	}
+	if maxVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "max", inlineSize); ok {
+		if !hasMaxInline || maxVal < maxInline {
+			maxInline = maxVal
+			hasMaxInline = true
+		}
+	}
+
 	// Clamp inline, re-derive block if needed.
-	if inlineSize < minInline {
-		inlineSize = minInline
+	// CSS 2.1 §10.4: apply max first, then min — so min-width wins when min > max.
+	if hasMaxInline && inlineSize > maxInline {
+		inlineSize = maxInline
 		if logicalRatio > 0 {
 			blockSize = inlineSize / logicalRatio
 		}
 	}
-	if hasMaxInline && inlineSize > maxInline {
-		inlineSize = maxInline
+	if inlineSize < minInline {
+		inlineSize = minInline
 		if logicalRatio > 0 {
 			blockSize = inlineSize / logicalRatio
 		}
 	}
 
 	// Clamp block, re-derive inline if needed.
-	if blockSize < minBlock {
-		blockSize = minBlock
-		if logicalRatio > 0 {
-			inlineSize = blockSize * logicalRatio
-		}
-	}
+	// Same CSS 2.1 §10.4 ordering: max first, then min.
 	if hasMaxBlock && blockSize > maxBlock {
 		blockSize = maxBlock
 		if logicalRatio > 0 {
 			inlineSize = blockSize * logicalRatio
 		}
 	}
+	if blockSize < minBlock {
+		blockSize = minBlock
+		if logicalRatio > 0 {
+			inlineSize = blockSize * logicalRatio
+		}
+	}
 
 	// Final inline clamp (after block re-derivation).
-	if inlineSize < minInline {
-		inlineSize = minInline
-	}
 	if hasMaxInline && inlineSize > maxInline {
 		inlineSize = maxInline
+	}
+	if inlineSize < minInline {
+		inlineSize = minInline
 	}
 
 	return inlineSize, blockSize
