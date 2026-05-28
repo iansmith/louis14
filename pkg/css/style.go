@@ -3340,7 +3340,12 @@ func expandOutlineShorthand(style *Style, value string) {
 	style.Set("outline-style", "none")
 	style.Set("outline-color", "currentcolor")
 
-	parts := strings.Fields(value)
+	// Tokenize while keeping balanced parens together so var() / calc() etc.
+	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
+	// outside a function block separates tokens; the simple strings.Fields
+	// path splits `var(--w)` if the value contains internal whitespace.
+	parts := tokenizeShorthand(value)
+	widthSet := false
 	for _, part := range parts {
 		if part == "none" {
 			style.Set("outline-style", "none")
@@ -3353,13 +3358,61 @@ func expandOutlineShorthand(style *Style, value string) {
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
+			widthSet = true
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("outline-width", part)
+			widthSet = true
+		} else if !widthSet && (strings.HasPrefix(part, "var(") || strings.HasPrefix(part, "calc(")) {
+			// Ambiguous functional value: outline shorthand normally lists
+			// width as a length and color as a color. With no width set yet,
+			// treat the first var()/calc() token as width — typical CSS
+			// patterns use var() for dimensional values in shorthands
+			// (matches Blink's CSSPropertyParser::ParseSingleValue type-coercion
+			// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			style.Set("outline-width", part)
+			widthSet = true
 		} else if part != "" {
 			// Assume it's a color
 			style.Set("outline-color", part)
 		}
 	}
+}
+
+// tokenizeShorthand splits a CSS shorthand value into top-level tokens while
+// preserving balanced parens — so `var(--w)`, `calc(1em + 2px)`, and
+// `rgba(0, 0, 0, 0.5)` each survive as a single token instead of being split
+// at internal whitespace.
+func tokenizeShorthand(value string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '(':
+			depth++
+			cur.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				if cur.Len() > 0 {
+					out = append(out, cur.String())
+					cur.Reset()
+				}
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // expandColumnRuleShorthand parses the column-rule shorthand into column-rule-width, column-rule-style, column-rule-color.
