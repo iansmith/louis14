@@ -230,7 +230,7 @@ func (b *Box) CreatesStackingContext() bool {
 		return true
 	}
 	// CSS Containment: layout and paint containment create a stacking context.
-	if b.Style.HasLayoutContainment() || b.Style.HasPaintContainment() {
+	if b.Style.ShouldApplyLayoutContainment() || b.Style.ShouldApplyPaintContainment() {
 		return true
 	}
 	// CSS Compositing Level 1 §2: isolation: isolate creates a stacking context.

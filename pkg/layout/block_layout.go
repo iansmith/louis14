@@ -111,7 +111,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// contain:size must be kept in one column.
 	//
 	// Cmt-5a: narrowed from unconditional to float-only for contain:size.
-	if bla.style != nil && bla.style.HasSizeContainment() &&
+	if bla.style != nil && bla.style.ShouldApplySizeContainment() &&
 		bla.style.GetFloat() != css.FloatNone {
 		builder.SetIsMonolithic(true)
 	}
@@ -156,7 +156,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.3.2 (replaced inline): inline-size = intrinsic width.
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
 	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
-	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
+	hasSizeContain := bla.style != nil && bla.style.ShouldApplySizeContainment()
 	isReplaced := bla.node.DOMNode != nil && IsReplacedElement(bla.node.DOMNode)
 	if isReplaced {
 		if hasSizeContain {
@@ -1661,7 +1661,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	intrinsicBlockSize := blockCursor
 	// CSS Containment: size containment — element is sized as if empty.
 	// If block-size is auto (not explicit), intrinsic size is 0.
-	if bla.style != nil && bla.style.HasSizeContainment() && !hasExplicitBlock {
+	if bla.style != nil && bla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
 		intrinsicBlockSize = 0
 	}
 
@@ -1944,7 +1944,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
 		// CSS Containment: layout and paint containment establish a containing
 		// block for absolutely positioned descendants (same as positioned elements).
-		isContainmentCB := bla.style != nil && (bla.style.HasLayoutContainment() || bla.style.HasPaintContainment())
+		isContainmentCB := bla.style != nil && (bla.style.ShouldApplyLayoutContainment() || bla.style.ShouldApplyPaintContainment())
 		// CSS Transforms §2.1 / Filter Effects 1+2 §"The filter property" /
 		// Will Change §2.2: transform, perspective, filter, backdrop-filter,
 		// and any will-change of a CB-establishing property create a
@@ -2777,7 +2777,7 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	}
 
 	// CSS Containment: layout and paint containment establish a BFC.
-	if style.HasLayoutContainment() || style.HasPaintContainment() {
+	if style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() {
 		return true
 	}
 
