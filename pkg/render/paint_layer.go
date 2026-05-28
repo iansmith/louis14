@@ -296,6 +296,16 @@ type PaintLayer struct {
 	// background_image_geometry.cc @ 4883d11fef.
 	HasTransformPaint bool
 
+	// BackfaceHidden is true when the element's computed back-face is
+	// currently facing the viewer AND `backface-visibility: hidden` is set.
+	// Per CSS Transforms L2 §11 the entire layer (and its subtree) is then
+	// skipped at paint time. Computed from the element's own transform
+	// composed with any preserve-3d ancestor transforms above the nearest
+	// 3D rendering context boundary. Mirrors Blink's
+	// PaintLayerPainter::ShouldPaintForBackfaceHidden() at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	BackfaceHidden bool
+
 	// CSS Filters:
 	Filters   []css.FilterFunction
 	HasFilter bool
@@ -429,7 +439,87 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	rootLayer := newPaintLayer(root)
 	buildPaintSubtree(root, rootLayer, rootLayer, nil)
 	rootLayer.sortZLists()
+	// CSS Transforms L2 §11: propagate backface-hidden down the DOM tree so
+	// out-of-flow descendants (which the layout engine hoists into a higher
+	// containing block's z-list) still inherit the back-face skip. Without
+	// this pass, a position:fixed descendant of a back-face-hidden subtree
+	// would be promoted into an ancestor SC's z-list and painted even though
+	// its hosting subtree is back-facing. Mirrors Blink's PaintLayerPainter
+	// behaviour where the entire subtree paint is short-circuited.
+	propagateBackfaceHidden(rootLayer)
 	return rootLayer
+}
+
+// propagateBackfaceHidden ensures every layer whose DOM ancestor (in the
+// document tree, not the layout tree) is back-face-hidden also carries the
+// flag. We build a `Node → *PaintLayer` index from the assembled tree, then
+// for each layer walk its element's DOM Node.Parent chain looking up each
+// ancestor's pre-computed BackfaceHidden flag.
+func propagateBackfaceHidden(root *PaintLayer) {
+	if root == nil {
+		return
+	}
+	// Index every layer by its element node.
+	idx := make(map[*html.Node]*PaintLayer)
+	var collect func(*PaintLayer)
+	collect = func(l *PaintLayer) {
+		if l == nil || l.Box == nil {
+			return
+		}
+		if l.Box.Node != nil {
+			if _, ok := idx[l.Box.Node]; !ok {
+				idx[l.Box.Node] = l
+			}
+		}
+		for _, c := range l.NegativeZ {
+			collect(c)
+		}
+		for _, c := range l.AutoZero {
+			collect(c)
+		}
+		for _, c := range l.PositiveZ {
+			collect(c)
+		}
+		for _, c := range l.FlowChildren {
+			collect(c)
+		}
+		for _, c := range l.FloatChildren {
+			collect(c)
+		}
+	}
+	collect(root)
+	// For each layer, walk its DOM ancestors and inherit BackfaceHidden if
+	// any ancestor element layer carries it.
+	var propagate func(*PaintLayer)
+	propagate = func(l *PaintLayer) {
+		if l == nil || l.Box == nil {
+			return
+		}
+		if !l.BackfaceHidden && l.Box.Node != nil {
+			for n := l.Box.Node.Parent; n != nil; n = n.Parent {
+				if anc, ok := idx[n]; ok && anc.BackfaceHidden {
+					l.BackfaceHidden = true
+					break
+				}
+			}
+		}
+		for _, c := range l.NegativeZ {
+			propagate(c)
+		}
+		for _, c := range l.AutoZero {
+			propagate(c)
+		}
+		for _, c := range l.PositiveZ {
+			propagate(c)
+		}
+		for _, c := range l.FlowChildren {
+			propagate(c)
+		}
+		for _, c := range l.FloatChildren {
+			propagate(c)
+		}
+	}
+	propagate(root)
 }
 
 func newPaintLayer(box *layout.Box) *PaintLayer {
@@ -953,6 +1043,54 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		)
 	}
 
+	// CSS Fonts 4 §6.4 font-variant-ligatures: each sub-property keyword
+	// toggles a fixed OpenType feature tag (CSS Fonts 4 §6.4 table). Emitted
+	// AFTER font-feature-settings so the high-level property wins per CSS
+	// Fonts 4 §7 "Resolution of font feature values". Mirrors Blink's
+	// FontDescription::SetVariantLigatures →
+	// FontDescription::FeatureSettings path in
+	// third_party/blink/renderer/platform/fonts/font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   normal                  -- HarfBuzz defaults (no emit needed).
+	//   none                    -- liga/clig/calt/hlig/dlig all off.
+	//   common-ligatures        -- liga=1, clig=1.
+	//   no-common-ligatures     -- liga=0, clig=0.
+	//   discretionary-ligatures -- dlig=1.
+	//   no-discretionary-ligatures -- dlig=0.
+	//   historical-ligatures    -- hlig=1.
+	//   no-historical-ligatures -- hlig=0.
+	//   contextual              -- calt=1.
+	//   no-contextual           -- calt=0.
+	//
+	// Multiple keywords (space-separated) combine; conflicting pairs in the
+	// same declaration are an authoring error and CSS Fonts 4 §6.4 leaves
+	// last-wins to the UA; we honor whichever keyword appears last by
+	// emission order (HarfBuzz also takes last-wins on duplicate tags).
+	if ligs := s.GetFontVariantLigatures(); ligs != "" && ligs != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantLigatureFeatures(ligs)...)
+	}
+
+	// CSS Fonts 4 §6.4 font-variant-numeric: keyword → OpenType tag table.
+	// Same emission-order rules as ligatures above. Mirrors
+	// FontDescription::SetVariantNumeric() in font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   normal             -- HarfBuzz defaults (no emit needed).
+	//   lining-nums        -- lnum=1.
+	//   oldstyle-nums      -- onum=1.
+	//   proportional-nums  -- pnum=1.
+	//   tabular-nums       -- tnum=1.
+	//   diagonal-fractions -- frac=1.
+	//   stacked-fractions  -- afrc=1.
+	//   ordinal            -- ordn=1.
+	//   slashed-zero       -- zero=1.
+	if num := s.GetFontVariantNumeric(); num != "" && num != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantNumericFeatures(num)...)
+	}
+
 	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
 	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
 	// (HarfBuzz enables kern for horizontal text by default). When `none`,
@@ -1070,6 +1208,25 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// background_image_geometry.cc @ 4883d11fef.
 	if s.HasWillChangeAnyTransformProperty() {
 		layer.HasTransformPaint = true
+	}
+
+	// CSS Transforms L2 §11 backface-visibility: when set to `hidden`, an
+	// element is not painted if its back face is currently presented to the
+	// viewer. The back face is determined by applying the element's own
+	// transform (plus any preserve-3d ancestor transforms that share the
+	// 3D rendering context) to the local normal vector (0, 0, 1) and
+	// checking the sign of the resulting Z. Mirrors Blink's
+	// PaintLayerPainter::ShouldPaintForBackfaceHidden @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// The subtree of a back-face-hidden ancestor is also skipped, including
+	// out-of-flow descendants that have been hoisted into a higher
+	// containing block (Blink handles this implicitly because the paint
+	// walk descends through the parent's stacking-context paint subtree;
+	// in louis14 OOF promotion would expose the escapee for paint, so we
+	// propagate the flag down the DOM parent chain).
+	if s.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
+		layer.BackfaceHidden = computeBackfaceHidden(box, layer.Transforms)
 	}
 
 	// CSS Filters.
@@ -1604,6 +1761,116 @@ func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4
 	return clips
 }
 
+// fontVariantLigatureFeatures maps a CSS font-variant-ligatures value (one
+// or more space-separated keywords from §6.4) to the OpenType feature tag
+// list per CSS Fonts 4 §6.4 (Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
+// FontDescription::SetVariantLigatures in
+// third_party/blink/renderer/platform/fonts/font_description.cc).
+//
+// Callers handle `normal` (empty/default) themselves; this function assumes
+// non-default input. `none` emits the full five-tag off list per spec.
+func fontVariantLigatureFeatures(value string) []textshape.FontFeature {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "none" {
+		return []textshape.FontFeature{
+			{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 0},
+			{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 0},
+			{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 0},
+			{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 0},
+			{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 0},
+		}
+	}
+	var features []textshape.FontFeature
+	for _, kw := range strings.Fields(value) {
+		switch kw {
+		case "common-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 1},
+				textshape.FontFeature{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-common-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'i', 'g', 'a'}, Value: 0},
+				textshape.FontFeature{Tag: [4]byte{'c', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "discretionary-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-discretionary-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'d', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "historical-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 1},
+			)
+		case "no-historical-ligatures":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'h', 'l', 'i', 'g'}, Value: 0},
+			)
+		case "contextual":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 1},
+			)
+		case "no-contextual":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'c', 'a', 'l', 't'}, Value: 0},
+			)
+		}
+	}
+	return features
+}
+
+// fontVariantNumericFeatures maps a CSS font-variant-numeric value to the
+// OpenType feature tag list per CSS Fonts 4 §6.4. Mirrors Blink's
+// FontDescription::SetVariantNumeric in font_description.cc at Chromium
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Callers handle `normal`/empty themselves.
+func fontVariantNumericFeatures(value string) []textshape.FontFeature {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var features []textshape.FontFeature
+	for _, kw := range strings.Fields(value) {
+		switch kw {
+		case "lining-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'l', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "oldstyle-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'o', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "proportional-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'p', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "tabular-nums":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'t', 'n', 'u', 'm'}, Value: 1},
+			)
+		case "diagonal-fractions":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'f', 'r', 'a', 'c'}, Value: 1},
+			)
+		case "stacked-fractions":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'a', 'f', 'r', 'c'}, Value: 1},
+			)
+		case "ordinal":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'o', 'r', 'd', 'n'}, Value: 1},
+			)
+		case "slashed-zero":
+			features = append(features,
+				textshape.FontFeature{Tag: [4]byte{'z', 'e', 'r', 'o'}, Value: 1},
+			)
+		}
+	}
+	return features
+}
+
 // parseFontFeatureSettings parses a CSS font-feature-settings value like
 // `"kern" 1, "liga" 0` into a slice of FontFeature.
 // CSS syntax: each entry is a 4-character tag in quotes, optionally followed by
@@ -1698,4 +1965,56 @@ func (layer *PaintLayer) sortZLists() {
 	for _, child := range layer.FloatChildren {
 		child.sortZLists()
 	}
+}
+
+// computeBackfaceHidden returns true when the element's back face is currently
+// facing the viewer, taking into account the chain of preserve-3d ancestors
+// that share the element's 3D rendering context.
+//
+// Per CSS Transforms L2 §11 the back-face test consults the element's
+// "accumulated transformation matrix": start with the element's own
+// transform and prepend each ancestor transform whose parent uses
+// `transform-style: preserve-3d`. The walk stops at the first flattening
+// boundary (default `transform-style: flat`) — that ancestor's transform
+// is NOT included because flattening collapses the descendant subtree
+// into the ancestor's plane before the back-face check fires on the
+// descendant. Mirrors Blink's `TransformPaintPropertyNode::Build`
+// flattening logic at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// `selfTransforms` already contains the element's own resolved transforms
+// (with percent translates resolved against its own border-box).
+func computeBackfaceHidden(box *layout.Box, selfTransforms []css.Transform) bool {
+	cumulative := append([]css.Transform(nil), selfTransforms...)
+	// Walk ancestors: include each ancestor's transform iff its PARENT
+	// is preserve-3d (the standard 3D rendering context rule). The first
+	// ancestor whose parent is flat (or which has no parent) terminates
+	// the walk — its own transform IS still included because that
+	// ancestor itself sits in a flat context, but its own contribution to
+	// the back-face check is only relevant when the descendant shares
+	// its 3D context. Concretely: walk while `ancestor.Style.GetTransformStyle()
+	// == preserve-3d`; that means "descendants see my transform".
+	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil; ancestor = ancestor.Parent {
+		if ancestor.Style.GetTransformStyle() != css.TransformStylePreserve3D {
+			break
+		}
+		// Compose ancestor's transform into the cumulative list (prepended
+		// because parent transforms apply first). Convert the parsed CSS
+		// transforms directly — percent translates on an ancestor don't
+		// affect back-face math (translates touch tx/ty only).
+		ancTransforms := ancestor.Style.GetTransforms()
+		if len(ancTransforms) > 0 {
+			cumulative = append(append([]css.Transform(nil), ancTransforms...), cumulative...)
+		}
+		// Also include the ancestor's individual transform properties
+		// (translate / rotate / scale longhands) in canonical order.
+		if deg, ok := ancestor.Style.GetIndividualRotate(); ok {
+			cumulative = append([]css.Transform{{Type: "rotate", Values: []float64{deg}}}, cumulative...)
+		}
+		if sx, sy, ok := ancestor.Style.GetIndividualScale(); ok {
+			cumulative = append([]css.Transform{{Type: "scale", Values: []float64{sx, sy}}}, cumulative...)
+		}
+		// translate ancestor longhand: not relevant to back-face math.
+		_ = ancestor
+	}
+	return css.IsBackFaceVisible(cumulative)
 }
