@@ -67,6 +67,25 @@ type PaintLayer struct {
 	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
 	ClipRect [4]float64 // x, y, w, h of padding box
 
+	// AncestorOverflowClips: pre-computed chain of ancestor overflow clip
+	// rectangles (in absolute coordinates) that should be applied before
+	// painting this layer's content. Populated only on layers that escape
+	// their parent's overflow clip via z-list escalation (positioned
+	// stacking contexts whose nearest ancestor SC is above the overflow
+	// clip ancestor). For each entry the renderer must Push a clip rect
+	// in addition to (and BEFORE) the layer's own HasClip rect.
+	//
+	// Blink models clips orthogonally to stacking via the paint property
+	// tree, so any descendant inherits the chain of ancestor clip nodes
+	// regardless of where it paints in z-order. Louis14's paint model
+	// brackets each layer's clip via Push/Pop in paintLayer, so we need
+	// to carry the chain explicitly on layers that escape.
+	//
+	// Each entry is [x, y, w, h] in absolute coordinates of the ancestor's
+	// overflow-clip rectangle (padding box by default). Order is innermost
+	// → outermost (the renderer Pushes in this order and Pops in reverse).
+	AncestorOverflowClips [][4]float64
+
 	// Overflow-clip-margin geometry (CSS Overflow 3 §3.2).
 	//
 	// The clip path is built in two steps, mirroring Blink's
@@ -1384,7 +1403,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		// child is z-sorted in the nearest ancestor stacking context even
 		// when clipped by a parent's overflow. Clipping is applied at paint
 		// time; it does not change z-order.
+		//
+		// When the child is contained by an ancestor's overflow clip but
+		// escapes to a higher stacking context for paint, capture the
+		// chain of intervening ancestor overflow clips on the child so
+		// the renderer can Push them before painting. Blink achieves the
+		// same effect via the paint property tree, which all descendants
+		// inherit regardless of stacking. See AncestorOverflowClips above.
 		if child.CreatesStackingContext() {
+			childLayer.AncestorOverflowClips = collectAncestorOverflowClips(child, currentSC)
 			z := child.ZIndex
 			switch {
 			case z < 0:
@@ -1426,6 +1453,78 @@ func isFloat(box *layout.Box) bool {
 	}
 	f := box.Style.GetFloat()
 	return f == css.FloatLeft || f == css.FloatRight
+}
+
+// collectAncestorOverflowClips walks from `child`'s parent up to (but not
+// including) the box that owns `currentSC`, collecting overflow-clip
+// rectangles from any ancestor that has overflow clipping AND would
+// contain `child`. Returns clip rects in innermost→outermost order.
+//
+// This is the louis14 substitute for the Blink paint property tree's
+// inherited clip chain. It runs only on positioned stacking-context
+// children that escape their parent box's overflow via z-list escalation
+// (see buildPaintSubtree). The collected clips are Pushed by the renderer
+// before painting the child layer, ensuring the overflow clip honoured
+// even though the child paints outside its parent's HasClip bracket.
+//
+// Per CSS Overflow 3 §3.3, `overflow: clip` clips descendants without
+// establishing a stacking context — the very case that requires this
+// helper. Hidden/scroll/auto behave the same in louis14's model
+// because none of them are SCs by themselves in this codebase.
+func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4]float64 {
+	var scBox *layout.Box
+	if currentSC != nil {
+		scBox = currentSC.Box
+	}
+	var clips [][4]float64
+	for ancestor := child.Parent; ancestor != nil && ancestor != scBox; ancestor = ancestor.Parent {
+		if !hasOverflowClipping(ancestor) {
+			continue
+		}
+		if !isContainedByOverflow(child, ancestor) {
+			continue
+		}
+		// Padding-box clip rectangle. Matches the default clip in
+		// newPaintLayer's overflow-clip path (paint_layer.go:557-560).
+		// overflow-clip-margin extension is not modelled here; the
+		// failing tests do not exercise it. When/if needed, mirror the
+		// applyMargin geometry from newPaintLayer.
+		clipX := ancestor.X + ancestor.Border.Left
+		clipY := ancestor.Y + ancestor.Border.Top
+		clipW := ancestor.Width - ancestor.Border.Left - ancestor.Border.Right
+		clipH := ancestor.Height - ancestor.Border.Top - ancestor.Border.Bottom
+		if clipW < 0 {
+			clipW = 0
+		}
+		if clipH < 0 {
+			clipH = 0
+		}
+		// Per-axis: when only one axis is clipped (overflow: clip per CSS
+		// Overflow 3 §3.3 keeps the other axis visible when paired with
+		// `visible`), extend the unclipped axis to a large range so the
+		// rectangle effectively clips only the active axis. Mirrors the
+		// large-extent encoding in newPaintLayer (paint_layer.go:572-579).
+		ancStyle := ancestor.Style
+		overflowX := ancStyle.GetOverflowX()
+		overflowY := ancStyle.GetOverflowY()
+		clipAxisActive := func(o css.OverflowType) bool {
+			return o == css.OverflowHidden || o == css.OverflowScroll ||
+				o == css.OverflowAuto || o == css.OverflowClip
+		}
+		axisClipX := clipAxisActive(overflowX) || ancStyle.HasPaintContainment()
+		axisClipY := clipAxisActive(overflowY) || ancStyle.HasPaintContainment()
+		const largeExtent = 1e7
+		if !axisClipX {
+			clipX = -largeExtent / 2
+			clipW = largeExtent
+		}
+		if !axisClipY {
+			clipY = -largeExtent / 2
+			clipH = largeExtent
+		}
+		clips = append(clips, [4]float64{clipX, clipY, clipW, clipH})
+	}
+	return clips
 }
 
 // parseFontFeatureSettings parses a CSS font-feature-settings value like

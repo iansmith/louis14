@@ -6386,9 +6386,15 @@ func (s *Style) GetOverflow() OverflowType {
 	return OverflowVisible
 }
 
-// GetOverflowX returns the overflow-x value (default: overflow value)
-// CSS Overflow Level 3: if overflow-y is non-visible and overflow-x is visible,
-// overflow-x computes to auto.
+// GetOverflowX returns the overflow-x value (default: overflow value).
+//
+// CSS Overflow Level 3 §3.2: "The visible/clip values of overflow compute
+// to auto/hidden (respectively) if one of overflow-x or overflow-y is
+// neither visible nor clip." In particular, a `visible` paired with `clip`
+// remains `visible` (and a `clip` paired with `visible` remains `clip`).
+// This mirrors Blink's `StyleAdjuster::AdjustStyleForDisplay` logic where
+// the upgrade from visible→auto / clip→hidden only fires when the *other*
+// axis is one of {scroll, auto, hidden}.
 func (s *Style) GetOverflowX() OverflowType {
 	result := s.GetOverflow()
 	if overflowX, ok := s.Get("overflow-x"); ok {
@@ -6405,18 +6411,24 @@ func (s *Style) GetOverflowX() OverflowType {
 			result = OverflowClip
 		}
 	}
-	if result == OverflowVisible {
-		otherAxis := s.getRawOverflowY()
-		if otherAxis != OverflowVisible {
+	otherAxis := s.getRawOverflowY()
+	otherIsScrollish := otherAxis == OverflowHidden || otherAxis == OverflowScroll || otherAxis == OverflowAuto
+	if otherIsScrollish {
+		switch result {
+		case OverflowVisible:
 			return OverflowAuto
+		case OverflowClip:
+			return OverflowHidden
 		}
 	}
 	return result
 }
 
-// GetOverflowY returns the overflow-y value (default: overflow value)
-// CSS Overflow Level 3: if overflow-x is non-visible and overflow-y is visible,
-// overflow-y computes to auto.
+// GetOverflowY returns the overflow-y value (default: overflow value).
+//
+// CSS Overflow Level 3 §3.2: see GetOverflowX. The promotion of
+// visible→auto / clip→hidden fires only when the other axis is scroll,
+// auto, or hidden. `visible` paired with `clip` stays `visible`.
 func (s *Style) GetOverflowY() OverflowType {
 	result := s.GetOverflow()
 	if overflowY, ok := s.Get("overflow-y"); ok {
@@ -6433,10 +6445,14 @@ func (s *Style) GetOverflowY() OverflowType {
 			result = OverflowClip
 		}
 	}
-	if result == OverflowVisible {
-		otherAxis := s.getRawOverflowX()
-		if otherAxis != OverflowVisible {
+	otherAxis := s.getRawOverflowX()
+	otherIsScrollish := otherAxis == OverflowHidden || otherAxis == OverflowScroll || otherAxis == OverflowAuto
+	if otherIsScrollish {
+		switch result {
+		case OverflowVisible:
 			return OverflowAuto
+		case OverflowClip:
+			return OverflowHidden
 		}
 	}
 	return result
