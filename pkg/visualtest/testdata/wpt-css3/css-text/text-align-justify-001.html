@@ -1,20 +1,26 @@
 <!DOCTYPE html>
-<title>CSS text-align: justify distributes space between words</title>
-<link rel="match" href="text-align-justify-001-ref.html">
-<style>
-  body { margin: 0; }
-  div {
-    width: 160px;
-    font-size: 16px;
-    line-height: 20px;
-    font-family: Ahem;
-    text-align: justify;
-    background: lime;
-  }
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>text-align: justify, direction: rtl</title>
+<link rel='match' href='reference/text-align-justify-ref-001.html'>
+<link rel='author' title='Richard Ishida' href='mailto:ishida@w3.org'>
+<link rel='help' href='https://drafts.csswg.org/css-text-3/#text-align-property'>
+<meta name="assert" content="text-align:justify aligns text in order to exactly fill the line box. Unless otherwise specified by text-align-last, the last line before a forced break or the end of the block is start-aligned – in this case, to the right.">
+<link rel="stylesheet" type="text/css" href="/fonts/ahem.css">
+<style type='text/css'>
+.test { text-align: justify; direction: rtl; }
+/* the CSS below is not part of the test */
+.test, .ref { border: 1px solid orange; margin: 20px; width: 450px; color: orange; font: 25px/1 Ahem; }
 </style>
-<!-- With Ahem at 16px: each "XX" is 32px, space is 16px.
-     "XX XX XX" = 128px fits in 160px. "XX XX XX XX" = 176px doesn't.
-     Line 1: "XX XX XX" = 3 words, 96px word-content + 2 gaps.
-     Justified to 160px: (160-96)/2 = 32px each gap.
-     Line 2 (last line): "XX XX XX" left-aligned. -->
-<div>XX XX XX XX XX XX</div>
+</head>
+<body>
+<div id='instructions'>Test passes if the shading in both orange boxes is the same.</div>
+<div class="test">TES TES TES TES TES TES TES TES TES TES TES </div>
+<div class="ref">
+<div style="word-spacing: 1em;">REF REF REF REF</div>
+<div style="word-spacing: 1em;">REF REF REF REF</div>
+<div style="text-align: right;">REF REF REF</div>
+</div>
+</body>
+</html>
