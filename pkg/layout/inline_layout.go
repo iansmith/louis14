@@ -1238,6 +1238,10 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style, fonts text.
 	// glyph rasterization (GetUsedFontSize). It returns the base unchanged
 	// when no allowed property is overridden, so the per-result Style stays
 	// nil in that case (EffectiveStyle falls back to Item.Style).
+	// Items on the first line commonly share a base style; mergeFirstLineStyle
+	// clones + re-resolves font metrics on each call, so memoize by base-style
+	// identity to collapse O(items) merges to O(distinct base styles).
+	mergeCache := make(map[*css.Style]*css.Style)
 	for i := range line.Results {
 		r := &line.Results[i]
 		if r.Item == nil || r.Item.Style == nil {
@@ -1246,7 +1250,12 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style, fonts text.
 		// Only apply to text items and open/close tags (inline spans).
 		switch r.Item.Type {
 		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
-			if merged := mergeFirstLineStyle(r.Item.Style, firstLineStyle, fonts); merged != r.Item.Style {
+			merged, ok := mergeCache[r.Item.Style]
+			if !ok {
+				merged = mergeFirstLineStyle(r.Item.Style, firstLineStyle, fonts)
+				mergeCache[r.Item.Style] = merged
+			}
+			if merged != r.Item.Style {
 				r.Style = merged
 			}
 		}
