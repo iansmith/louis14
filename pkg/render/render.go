@@ -7652,7 +7652,7 @@ func hasOverflowClipping(box *layout.Box) bool {
 		return true
 	}
 	// CSS Containment: paint containment clips content and contains descendants.
-	return box.Style.HasPaintContainment()
+	return box.Style.ShouldApplyPaintContainment()
 }
 
 // isContainedByOverflow returns true if the child is clipped by the parent's
@@ -7663,7 +7663,7 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 	}
 	// CSS Containment: layout and paint containment contain all positioned
 	// descendants (absolute and fixed), acting as a containing block.
-	if parent.Style.HasLayoutContainment() || parent.Style.HasPaintContainment() {
+	if parent.Style.ShouldApplyLayoutContainment() || parent.Style.ShouldApplyPaintContainment() {
 		if child.Position != css.PositionStatic {
 			return true
 		}

@@ -558,7 +558,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		overflowX = css.OverflowVisible
 		overflowY = css.OverflowVisible
 	}
-	hasPaintContain := s.HasPaintContainment()
+	hasPaintContain := s.ShouldApplyPaintContainment()
 	isClippedAxis := func(o css.OverflowType) bool {
 		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
 	}
@@ -1777,8 +1777,8 @@ func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4
 			return o == css.OverflowHidden || o == css.OverflowScroll ||
 				o == css.OverflowAuto || o == css.OverflowClip
 		}
-		axisClipX := clipAxisActive(overflowX) || ancStyle.HasPaintContainment()
-		axisClipY := clipAxisActive(overflowY) || ancStyle.HasPaintContainment()
+		axisClipX := clipAxisActive(overflowX) || ancStyle.ShouldApplyPaintContainment()
+		axisClipY := clipAxisActive(overflowY) || ancStyle.ShouldApplyPaintContainment()
 		const largeExtent = 1e7
 		if !axisClipX {
 			clipX = -largeExtent / 2

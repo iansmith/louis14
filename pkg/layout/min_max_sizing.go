@@ -142,7 +142,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 
 	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
 	// Inline-size containment also zeroes intrinsic inline sizes.
-	if style.HasSizeContainment() || style.HasInlineSizeContainment() {
+	if style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment() {
 		return MinMaxSizes{}
 	}
 
@@ -604,7 +604,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	// in ComputeMinMaxSizes (this file :99) and Blink's
 	// `length_utils.cc :: CalculateMinMaxSizesIgnoringChildren` at SHA
 	// 4883d11fef.
-	if style.HasSizeContainment() || style.HasInlineSizeContainment() {
+	if style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment() {
 		var result MinMaxSizes
 		minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 		if result.MinContent < minInline {

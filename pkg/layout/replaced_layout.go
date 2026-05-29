@@ -363,7 +363,7 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	geom := ComputeFragmentGeometry(rla.style, wdm)
 
 	var contentInline, contentBlock float64
-	if rla.style != nil && rla.style.HasSizeContainment() {
+	if rla.style != nil && rla.style.ShouldApplySizeContainment() {
 		// CSS Containment: size containment — replaced element intrinsic dimensions
 		// are suppressed (treated as 0), but the element's intrinsic aspect ratio
 		// is preserved per CSS Containment §3.1.2.

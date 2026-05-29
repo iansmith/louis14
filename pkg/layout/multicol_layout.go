@@ -1010,7 +1010,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// gated on `ShouldApplyBlockSizeContainment()` at SHA 4883d11fef. The
 	// downstream min-block-size apply at fragment_geometry.go:730 ensures
 	// `min-height` still bumps the result.
-	if mla.style != nil && mla.style.HasSizeContainment() && !hasExplicitBlock {
+	if mla.style != nil && mla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
 		finalBlockSize = 0
 		minBlock := ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
 		if finalBlockSize < minBlock {

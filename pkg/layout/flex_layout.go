@@ -1579,7 +1579,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// `length_utils.cc :: CalculateIntrinsicBlockSizeIgnoringChildren`
 	// short-circuit gated on `ShouldApplyBlockSizeContainment()` at SHA
 	// 4883d11fef.
-	if fla.style != nil && fla.style.HasSizeContainment() && !hasExplicitBlock {
+	if fla.style != nil && fla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
 		intrinsicBlockSize = 0
 	}
 
