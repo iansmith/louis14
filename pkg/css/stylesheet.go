@@ -3278,6 +3278,59 @@ func findTopLevelPseudoElement(s, token string) int {
 }
 
 // Phase 17: parseSelector parses a complex CSS selector
+// pseudoElementTokens lists the pseudo-element selector tokens that
+// parseSelector extracts from a selector string. CSS Pseudo-Elements 4 §3
+// highlight pseudos (`::selection`, `::highlight(name)`, `::target-text`,
+// `::spelling-error`, `::grammar-error`) and the originating-element-styled
+// pseudos (`::before`, `::after`, `::marker`, `::first-letter`,
+// `::first-line`) are recorded in the rule's PseudoElement field.
+// `FindMatchingRules` skips any rule with a non-empty PseudoElement when
+// computing the originating element's normal cascade, which prevents the
+// rule's declarations from leaking onto every element via the empty-Part
+// universal-match fallback. Mirrors Blink's CSSSelectorParser::ConsumePseudo()
+// classification of these tokens as pseudo-elements rather than pseudo-classes
+// (Chromium @ 4883d11f). `::highlight(name)` is handled separately because its
+// token has a variable-length argument.
+//
+// Ordered so longer/double-colon variants are tried first (e.g. "::before"
+// before ":before", "::first-letter" before ":first-letter", and each longer
+// "::-webkit-scrollbar-*" prefix before the shorter "::-webkit-scrollbar"):
+// findTopLevelPseudoElement does a plain substring match and the caller breaks
+// on the first hit. Hoisted to package scope so it is not re-allocated on every
+// parseSelector call.
+var pseudoElementTokens = []struct {
+	token string
+	name  string
+}{
+	{"::before", "before"},
+	{"::after", "after"},
+	{"::first-letter", "first-letter"},
+	{"::first-line", "first-line"},
+	{"::marker", "marker"},
+	{"::selection", "selection"},
+	{"::target-text", "target-text"},
+	{"::spelling-error", "spelling-error"},
+	{"::grammar-error", "grammar-error"},
+	// Vendor-prefixed scrollbar pseudo-elements (CSS Scrollbars §color-compat).
+	// louis14 paints no scrollbar pseudo-elements, so recording a non-empty
+	// PseudoElement makes FindMatchingRules skip the rule from the normal
+	// element cascade — without this the empty-Part fallback in
+	// matchesCompoundSelector universally matches every element and the
+	// declarations (e.g. ::-webkit-scrollbar-corner{background}) leak onto the
+	// whole page.
+	{"::-webkit-scrollbar-track-piece", "-webkit-scrollbar-track-piece"},
+	{"::-webkit-scrollbar-button", "-webkit-scrollbar-button"},
+	{"::-webkit-scrollbar-corner", "-webkit-scrollbar-corner"},
+	{"::-webkit-scrollbar-track", "-webkit-scrollbar-track"},
+	{"::-webkit-scrollbar-thumb", "-webkit-scrollbar-thumb"},
+	{"::-webkit-scrollbar", "-webkit-scrollbar"},
+	{"::-webkit-resizer", "-webkit-resizer"},
+	{":before", "before"},
+	{":after", "after"},
+	{":first-letter", "first-letter"},
+	{":first-line", "first-line"},
+}
+
 func parseSelector(selectorStr string) Selector {
 	selectorStr = strings.TrimSpace(selectorStr)
 
@@ -3296,59 +3349,8 @@ func parseSelector(selectorStr string) Selector {
 	// strings.Contains so we only extract top-level pseudo-elements.
 	pseudoElement := ""
 	pseudoElementForDescendants := false
-	// CSS Pseudo-Elements 4 §3 highlight pseudos (`::selection`,
-	// `::highlight(name)`, `::target-text`, `::spelling-error`,
-	// `::grammar-error`) and the originating-element-styled pseudos
-	// (`::before`, `::after`, `::marker`, `::first-letter`, `::first-line`)
-	// are extracted here so the rule's PseudoElement field records them.
-	// `FindMatchingRules` skips any rule with a non-empty PseudoElement when
-	// computing the originating element's normal cascade, which prevents the
-	// highlight rule's declarations from leaking onto every element via the
-	// empty-Part universal-match fallback. Mirrors Blink's
-	// CSSSelectorParser::ConsumePseudo() classification of these tokens as
-	// pseudo-elements rather than pseudo-classes (Chromium @ 4883d11f).
-	//
-	// `::highlight(name)` carries a custom highlight name; it is handled
-	// separately below because its token has a variable-length argument.
-	//
-	// Ordered so longer/double-colon variants are tried first (e.g. "::before"
-	// matched before ":before", "::first-letter" before ":first-letter").
-	pseudoElementTokens := []struct {
-		token string
-		name  string
-	}{
-		{"::before", "before"},
-		{"::after", "after"},
-		{"::first-letter", "first-letter"},
-		{"::first-line", "first-line"},
-		{"::marker", "marker"},
-		{"::selection", "selection"},
-		{"::target-text", "target-text"},
-		{"::spelling-error", "spelling-error"},
-		{"::grammar-error", "grammar-error"},
-		// Vendor-prefixed scrollbar pseudo-elements (CSS Scrollbars §color-compat).
-		// Blink's CSSSelectorParser::ConsumePseudo classifies these as
-		// pseudo-elements. louis14 paints no scrollbar pseudo-elements, so
-		// recording a non-empty PseudoElement makes FindMatchingRules skip the
-		// rule from the normal element cascade — without this the empty-Part
-		// fallback in matchesCompoundSelector universally matches every element
-		// and the declarations (e.g. ::-webkit-scrollbar-corner{background})
-		// leak onto the whole page. Ordered longest-first so a shorter prefix
-		// token (`::-webkit-scrollbar`) never shadows a longer one
-		// (`::-webkit-scrollbar-track-piece`): findTopLevelPseudoElement does a
-		// plain substring match and the caller breaks on the first hit.
-		{"::-webkit-scrollbar-track-piece", "-webkit-scrollbar-track-piece"},
-		{"::-webkit-scrollbar-button", "-webkit-scrollbar-button"},
-		{"::-webkit-scrollbar-corner", "-webkit-scrollbar-corner"},
-		{"::-webkit-scrollbar-track", "-webkit-scrollbar-track"},
-		{"::-webkit-scrollbar-thumb", "-webkit-scrollbar-thumb"},
-		{"::-webkit-scrollbar", "-webkit-scrollbar"},
-		{"::-webkit-resizer", "-webkit-resizer"},
-		{":before", "before"},
-		{":after", "after"},
-		{":first-letter", "first-letter"},
-		{":first-line", "first-line"},
-	}
+	// pseudoElementTokens (declared above parseSelector) is scanned
+	// top-level-first; see its declaration for the ordering rationale.
 	for _, pe := range pseudoElementTokens {
 		idx := findTopLevelPseudoElement(selectorStr, pe.token)
 		if idx < 0 {
