@@ -8,10 +8,10 @@ import "testing"
 // at Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func TestGetInitialLetter(t *testing.T) {
 	cases := []struct {
-		val      string
-		wantSet  bool
-		wantSize float64
-		wantSink int
+		val       string
+		wantSet   bool
+		wantSize  float64
+		wantSink  int
 		wantRaise bool
 	}{
 		{"", false, 0, 0, false},
@@ -33,6 +33,13 @@ func TestGetInitialLetter(t *testing.T) {
 		// invalid → not set.
 		{"0", false, 0, 0, false},
 		{"-2", false, 0, 0, false},
+		// invalid token combinations per the grammar (keyword XOR explicit sink;
+		// at most one keyword; positive integer sink) → declaration ignored.
+		{"3 2 raise", false, 0, 0, false},    // raise + explicit sink
+		{"3 drop 2", false, 0, 0, false},     // drop + explicit sink
+		{"drop raise 3", false, 0, 0, false}, // two keywords
+		{"3 0", false, 0, 0, false},          // non-positive sink
+		{"3 2 2", false, 0, 0, false},        // multiple sinks
 	}
 	for _, c := range cases {
 		s := NewStyle()

@@ -6141,18 +6141,30 @@ func (s *Style) GetInitialLetter() InitialLetterValue {
 		return InitialLetterValue{}
 	}
 
+	// After <number>, the grammar has two mutually exclusive forms:
+	// `<number> <integer>?` (optional explicit sink, no keyword) or
+	// `<number> && [drop|raise]?` (optional keyword, no explicit sink). So an
+	// explicit integer sink and a drop/raise keyword cannot co-occur, at most
+	// one keyword is allowed, and the sink must be a positive integer. Any
+	// other combination is an invalid declaration and is ignored (→ normal).
 	var size float64
 	haveSize := false
 	var sinkInt int
 	haveSink := false
 	raise := false
+	drop := false
 	for _, part := range strings.Fields(v) {
 		switch strings.ToLower(part) {
 		case "drop":
-			// `drop` is the default sink behaviour (floor(size)); the keyword
-			// is accepted but needs no extra state.
+			if drop || raise || haveSink {
+				return InitialLetterValue{}
+			}
+			drop = true
 			continue
 		case "raise":
+			if drop || raise || haveSink {
+				return InitialLetterValue{}
+			}
 			raise = true
 			continue
 		}
@@ -6166,6 +6178,9 @@ func (s *Style) GetInitialLetter() InitialLetterValue {
 			size = f
 			haveSize = true
 		} else if i, err := strconv.Atoi(part); err == nil {
+			if haveSink || drop || raise || i <= 0 {
+				return InitialLetterValue{}
+			}
 			sinkInt = i
 			haveSink = true
 		} else {
@@ -6176,14 +6191,14 @@ func (s *Style) GetInitialLetter() InitialLetterValue {
 		return InitialLetterValue{}
 	}
 
-	// Default sink is floor(size) (bare number / `drop`); `raise` forces sink=1;
-	// an explicit integer overrides.
+	// Sink defaults to floor(size) (bare number / `drop`); `raise` forces sink=1;
+	// an explicit integer sink overrides. The three are mutually exclusive.
 	sink := int(math.Floor(size))
 	switch {
-	case raise:
-		sink = 1
 	case haveSink:
 		sink = sinkInt
+	case raise:
+		sink = 1
 	}
 	return InitialLetterValue{Size: size, Sink: sink, Raise: raise, Set: true}
 }
