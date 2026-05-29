@@ -2080,6 +2080,33 @@ func (s *Style) GetPositionOffsetResolved(cbWidth, cbHeight float64) PositionOff
 	return offset
 }
 
+// EvalMathWithBase evaluates a CSS math function (calc/min/max/clamp) using
+// the style's full font/viewport context plus the supplied percent base.
+// Returns (result, true) on success, (0, false) on parse/type errors or when
+// val isn't a math function.
+//
+// Use this in preference to the package-level EvalMathFunctionWithPercent
+// when the call site has a Style available — that wrapper sets viewport to 0,
+// which silently zeroes vw/vh terms inside the expression (see
+// css-values/vh-calc-support-pct: width: calc(100vw + 50%)). This method
+// mirrors resolveLengthOrPercent's context construction.
+func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool) {
+	if !IsMathFunction(val) {
+		return 0, false
+	}
+	ctx := calcContext{
+		fontSize:       s.GetFontSize(),
+		percentBase:    percentBase,
+		viewportWidth:  s.ViewportWidth,
+		viewportHeight: s.ViewportHeight,
+		chScale:        s.chScale(),
+		xHeight:        s.XHeight,
+		capHeight:      s.CapHeight,
+		lhSize:         s.LhSize,
+	}
+	return EvalMathFunction(val, ctx)
+}
+
 // resolveLengthOrPercent tries to parse a property as a length or percentage.
 // If it's a percentage, it's resolved against the given reference value.
 func (s *Style) resolveLengthOrPercent(property string, reference float64) (float64, bool) {
@@ -2115,13 +2142,29 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 	return 0, false
 }
 
-// GetZIndex returns the z-index value (default: 0)
+// GetZIndex returns the z-index value (default: 0). A `calc()`-resolved
+// z-index is rounded toward positive infinity per CSS Values 4 §6.3:
+// "Halfway values are rounded toward positive infinity." So
+// `z-index: calc(3 / 2)` → 2, not 1.
 func (s *Style) GetZIndex() int {
 	if zindex, ok := s.Get("z-index"); ok {
-		// Simple integer parsing
+		// Simple integer parsing first (most common case).
 		var z int
 		if _, err := fmt.Sscanf(zindex, "%d", &z); err == nil {
 			return z
+		}
+		// calc()/min()/max()/clamp() — compute the numeric value and
+		// round per §6.3 (round half toward +inf).
+		if IsMathFunction(zindex) {
+			ctx := calcContext{
+				fontSize:       s.GetFontSize(),
+				viewportWidth:  s.ViewportWidth,
+				viewportHeight: s.ViewportHeight,
+				chScale:        s.chScale(),
+			}
+			if v, ok := EvalMathFunction(zindex, ctx); ok {
+				return int(math.Floor(v + 0.5))
+			}
 		}
 	}
 	return 0
@@ -2136,8 +2179,23 @@ func (s *Style) HasExplicitZIndex() bool {
 		return false
 	}
 	var z int
-	_, err := fmt.Sscanf(zindex, "%d", &z)
-	return err == nil
+	if _, err := fmt.Sscanf(zindex, "%d", &z); err == nil {
+		return true
+	}
+	// calc() z-index: treat as explicit when the expression resolves to
+	// a number. Mirrors Blink's CSSPropertyParser, which accepts any
+	// <integer> form for z-index including math functions.
+	if IsMathFunction(zindex) {
+		ctx := calcContext{
+			fontSize:       s.GetFontSize(),
+			viewportWidth:  s.ViewportWidth,
+			viewportHeight: s.ViewportHeight,
+			chScale:        s.chScale(),
+		}
+		_, ok := EvalMathFunction(zindex, ctx)
+		return ok
+	}
+	return false
 }
 
 // stripImportantSuffix returns (value-without-!important, true) if value has a
@@ -7521,12 +7579,38 @@ func (s *Style) GetVerticalAlign() VerticalAlign {
 
 // GetVerticalAlignOffset returns the pixel offset for length-based vertical-align values
 // (e.g., "10px" → 10.0). Positive means raise up (toward smaller Y). Returns 0 if not a length.
+//
+// CSS 2.1 §10.8.1: percentages on vertical-align resolve against the line-height
+// of the element itself. calc()/min()/max()/clamp() are accepted per CSS Values 4
+// §10 and threaded through the math evaluator with that percent base.
 func (s *Style) GetVerticalAlignOffset() float64 {
 	if align, ok := s.Get("vertical-align"); ok {
 		switch align {
 		case "top", "middle", "bottom", "baseline", "sub", "super", "text-top", "text-bottom":
 			return 0
 		default:
+			// Math functions (calc/min/max/clamp): percent base is the
+			// element's own line-height per §10.8.1.
+			if IsMathFunction(align) {
+				ctx := calcContext{
+					fontSize:       s.GetFontSize(),
+					viewportWidth:  s.ViewportWidth,
+					viewportHeight: s.ViewportHeight,
+					chScale:        s.chScale(),
+					xHeight:        s.XHeight,
+					capHeight:      s.CapHeight,
+					lhSize:         s.LhSize,
+					percentBase:    s.GetLineHeight(),
+				}
+				if v, ok := EvalMathFunction(align, ctx); ok {
+					return v
+				}
+				return 0
+			}
+			// Bare percentage (e.g., "50%"): also against line-height.
+			if pct, ok := ParsePercentage(align); ok {
+				return pct / 100.0 * s.GetLineHeight()
+			}
 			if px, ok := ParseLength(align); ok {
 				return px
 			}

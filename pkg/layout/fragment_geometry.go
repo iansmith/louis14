@@ -406,10 +406,11 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 	// CSS Values 4 §10: math functions (calc/min/max/clamp) with a %
 	// term: resolve against the containing block's inline-size. GetLength
 	// alone resolves percentages with base=0, so calc(52px + 100% + 52px)
-	// or max(50%, 100px) would lose the percentage term.
+	// or max(50%, 100px) would lose the percentage term. Style.EvalMathWithBase
+	// threads viewport/em/ch context so vw-with-% expressions like
+	// calc(100vw + 50%) (css-values/vh-calc-support-pct) resolve correctly.
 	if css.IsMathFunctionWithPercent(val) {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.InlineSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
@@ -454,8 +455,7 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) &&
 		!space.IsInsideFlexibleBox &&
 		space.PercentageResolutionSize.InlineSize.Float64() > 0 {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.InlineSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result))
@@ -501,8 +501,7 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 	// computes the right values once the container size is determined.
 	if css.IsMathFunctionWithPercent(val) && !space.IsInsideFlexibleBox &&
 		space.PercentageResolutionSize.InlineSize.Float64() > 0 {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.InlineSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
@@ -538,8 +537,7 @@ func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 	// Flex item branch is skipped — see ResolveMaxInlineSize.
 	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) &&
 		!space.IsBlockSizeIndefinite() && !space.IsInsideFlexibleBox {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.BlockSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result))
@@ -579,8 +577,7 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 	// ResolveMaxInlineSize.
 	if css.IsMathFunctionWithPercent(val) && !space.IsBlockSizeIndefinite() &&
 		!space.IsInsideFlexibleBox {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.BlockSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result)), true
@@ -620,8 +617,7 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 	// max(100%, 50px) would lose the percentage term. The %-against-
 	// indefinite-CB gate matches the bare-percentage branch below.
 	if css.IsMathFunctionWithPercent(val) && !space.IsBlockSizeIndefinite() {
-		if result, calcOK := css.EvalMathFunctionWithPercent(
-			val, style.GetFontSize(),
+		if result, calcOK := style.EvalMathWithBase(val,
 			space.PercentageResolutionSize.BlockSize.Float64(),
 		); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result)), true

@@ -27,7 +27,8 @@ type gradientStop struct {
 	a         float64 // 0-1
 	pos       float64 // position along gradient line in pixels (after resolution)
 	posIsSet  bool
-	isPercent bool // true if pos is a percentage (0-100) needing lineLen resolution
+	isPercent bool   // true if pos is a percentage (0-100) needing lineLen resolution
+	calcExpr  string // raw calc()/min()/max()/clamp() expression; evaluated against lineLen at resolve time
 }
 
 // parseLinearGradient parses a linear-gradient(...) value.
@@ -140,22 +141,24 @@ func parseColorStops(s string) []gradientStop {
 		return []gradientStop{base}
 	}
 
+	// Math functions cover the whole position token (a calc/min/max/clamp
+	// call is one token even though strings.Fields would split inside it).
+	// Handle the single-position calc case before falling through to the
+	// fields-based two-token split.
+	if css.IsMathFunction(posStr) {
+		base.calcExpr = posStr
+		base.posIsSet = true
+		return []gradientStop{base}
+	}
+
 	// Try to split posStr into two position tokens. We split on whitespace
 	// and accept either one or two tokens; anything else falls back to
 	// treating the whole token as a single position (existing behavior).
-	posTokens := strings.Fields(posStr)
+	posTokens := splitStopPositionTokens(posStr)
 	if len(posTokens) == 2 {
-		p1, ok1, pct1 := parseStopPosition(posTokens[0])
-		p2, ok2, pct2 := parseStopPosition(posTokens[1])
+		s1, ok1 := singleStopFromToken(base, posTokens[0])
+		s2, ok2 := singleStopFromToken(base, posTokens[1])
 		if ok1 && ok2 {
-			s1 := base
-			s1.pos = p1
-			s1.posIsSet = true
-			s1.isPercent = pct1
-			s2 := base
-			s2.pos = p2
-			s2.posIsSet = true
-			s2.isPercent = pct2
 			return []gradientStop{s1, s2}
 		}
 	}
@@ -166,6 +169,56 @@ func parseColorStops(s string) []gradientStop {
 		base.isPercent = isPct
 	}
 	return []gradientStop{base}
+}
+
+// splitStopPositionTokens splits a stop position string on whitespace, but
+// keeps a single math function call (calc/min/max/clamp) together as one
+// token even if it contains spaces.
+func splitStopPositionTokens(s string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '(' {
+			depth++
+			cur.WriteByte(c)
+		} else if c == ')' {
+			depth--
+			cur.WriteByte(c)
+		} else if (c == ' ' || c == '\t') && depth == 0 {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		} else {
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// singleStopFromToken builds a gradientStop from a base color and a single
+// position token (which may be a calc/min/max/clamp call or a plain value).
+func singleStopFromToken(base gradientStop, tok string) (gradientStop, bool) {
+	tok = strings.TrimSpace(tok)
+	if css.IsMathFunction(tok) {
+		s := base
+		s.calcExpr = tok
+		s.posIsSet = true
+		return s, true
+	}
+	if pos, ok, isPct := parseStopPosition(tok); ok {
+		s := base
+		s.pos = pos
+		s.posIsSet = true
+		s.isPercent = isPct
+		return s, true
+	}
+	return gradientStop{}, false
 }
 
 // parseColorStop parses a single color stop like "green 25px", "red 50%",
@@ -181,36 +234,54 @@ func parseColorStop(s string) (gradientStop, bool) {
 }
 
 // splitColorAndPosition splits "green 25px" into ("green", "25px").
+// A `(` at the head of the string is treated as part of the color only when
+// the preceding identifier is a known color function (rgb/rgba/hsl/hsla/
+// hwb/lab/lch/oklab/oklch/color/color-mix). Otherwise the `(` belongs to
+// a position-side function like calc()/min()/max()/clamp() and the split
+// falls back to the named-color path.
 func splitColorAndPosition(s string) (colorStr, posStr string) {
 	s = strings.TrimSpace(s)
 
-	// Color function like rgb(...), hsl(...), etc.
 	if parenIdx := strings.Index(s, "("); parenIdx >= 0 {
-		depth := 0
-		closeIdx := -1
-		for i := parenIdx; i < len(s); i++ {
-			if s[i] == '(' {
-				depth++
-			} else if s[i] == ')' {
-				depth--
-				if depth == 0 {
-					closeIdx = i
-					break
+		head := strings.ToLower(strings.TrimSpace(s[:parenIdx]))
+		if isColorFunctionHead(head) {
+			depth := 0
+			closeIdx := -1
+			for i := parenIdx; i < len(s); i++ {
+				if s[i] == '(' {
+					depth++
+				} else if s[i] == ')' {
+					depth--
+					if depth == 0 {
+						closeIdx = i
+						break
+					}
 				}
 			}
-		}
-		if closeIdx >= 0 {
-			return s[:closeIdx+1], strings.TrimSpace(s[closeIdx+1:])
+			if closeIdx >= 0 {
+				return s[:closeIdx+1], strings.TrimSpace(s[closeIdx+1:])
+			}
 		}
 	}
 
-	// Named color or hex: split on last space.
-	// A color stop "green 25px" or just "green" with no position.
-	// The color part has no spaces for named colors / hex.
+	// Named color or hex: split on first space (color has no spaces).
 	if idx := strings.Index(s, " "); idx >= 0 {
 		return s[:idx], strings.TrimSpace(s[idx+1:])
 	}
 	return s, ""
+}
+
+// isColorFunctionHead reports whether the given lowercased identifier is the
+// head of a CSS color function. The list mirrors the CSS Color 4 function
+// set recognized by css.ParseColor.
+func isColorFunctionHead(head string) bool {
+	switch head {
+	case "rgb", "rgba", "hsl", "hsla", "hwb",
+		"lab", "lch", "oklab", "oklch",
+		"color", "color-mix", "device-cmyk":
+		return true
+	}
+	return false
 }
 
 // parseStopPosition parses "25px", "50%", "0" as a stop position.
@@ -262,9 +333,21 @@ func resolveStopPositions(stops []gradientStop, lineLen float64) {
 	if n == 0 {
 		return
 	}
-	// First resolve percentage stops to pixel positions.
+	// First resolve percentage and calc/min/max/clamp stops to pixel positions
+	// (percent base is the gradient line length per CSS Images 3 §3.4).
 	for i := range stops {
-		if stops[i].posIsSet && stops[i].isPercent {
+		if !stops[i].posIsSet {
+			continue
+		}
+		if stops[i].calcExpr != "" {
+			if v, ok := css.EvalMathFunctionWithPercent(stops[i].calcExpr, 0, lineLen); ok {
+				stops[i].pos = v
+			} else {
+				stops[i].pos = 0
+			}
+			stops[i].calcExpr = ""
+			stops[i].isPercent = false
+		} else if stops[i].isPercent {
 			stops[i].pos = stops[i].pos / 100.0 * lineLen
 			stops[i].isPercent = false
 		}
@@ -933,9 +1016,9 @@ func parseRadialConfigPart(config string, shape, size *string, rx, ry *float64) 
 		return false
 	}
 	sizeKw := map[string]bool{
-		"closest-side":   true,
-		"farthest-side":  true,
-		"closest-corner": true,
+		"closest-side":    true,
+		"farthest-side":   true,
+		"closest-corner":  true,
 		"farthest-corner": true,
 	}
 	var lengthTokens []string
@@ -1041,7 +1124,10 @@ func parseRadialLength(s string) float64 {
 // disambiguation between "px-form" and "fraction-form" is the same one used
 // by Blink's GradientPosition resolution.
 func parseRadialPositionPart(pos string, boxW, boxH float64, cxFrac, cyFrac *float64, cxPx, cyPx *float64) {
-	tokens := strings.Fields(pos)
+	// splitStopPositionTokens keeps a paren-balanced math call together as
+	// one token so `calc(50px + 50%) calc(100% - 30px)` parses as two
+	// tokens, not five.
+	tokens := splitStopPositionTokens(pos)
 	if len(tokens) == 0 {
 		return
 	}
@@ -1062,6 +1148,22 @@ func parseRadialPositionPart(pos string, boxW, boxH float64, cxFrac, cyFrac *flo
 		case "bottom":
 			*cyFrac = 1
 		default:
+			if css.IsMathFunction(tok) {
+				// Resolve calc/min/max/clamp against the axis size in pixels;
+				// store as the px-form so the caller treats it as resolved.
+				axis := boxW
+				if !isX {
+					axis = boxH
+				}
+				if v, ok := css.EvalMathFunctionWithPercent(tok, 0, axis); ok {
+					if isX {
+						*cxPx = v
+					} else {
+						*cyPx = v
+					}
+				}
+				return
+			}
 			if strings.HasSuffix(tok, "%") {
 				v, err := strconv.ParseFloat(strings.TrimSuffix(tok, "%"), 64)
 				if err == nil {
@@ -1559,4 +1661,3 @@ func (r *Renderer) drawConicGradient(gradVal string, x, y, w, h float64) {
 		}
 	}
 }
-

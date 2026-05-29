@@ -674,7 +674,7 @@ func resolveExplicitAxis(style *css.Style, prop string, cbExtent float64) (float
 	// resolve under GetLength's base-0 calc context) and the element falls
 	// back to auto-sizing — see css-values/vh-calc-support-pct.
 	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) && cbExtent > 0 {
-		if result, calcOK := css.EvalMathFunctionWithPercent(val, style.GetFontSize(), cbExtent); calcOK {
+		if result, calcOK := style.EvalMathWithBase(val, cbExtent); calcOK {
 			return result, true
 		}
 	}
