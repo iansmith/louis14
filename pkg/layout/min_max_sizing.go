@@ -149,9 +149,22 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// Replaced elements (img, canvas, etc.): compute intrinsic inline-size without
 	// block-axis min/max constraints transferring through aspect ratio.
 	// CSS Sizing 3 §5.1: intrinsic sizes are based on content, not block constraints.
+	//
+	// Form controls like <button> are tagged "replaced" by louis14's
+	// IsReplacedElementTag (for text-decoration / atomic-inline boundary
+	// purposes), but they have no intrinsic size and no aspect ratio — their
+	// inline-size is determined by their child content (and the UA-supplied
+	// inline-flex layout), not by a default 300×150 from ComputeReplacedSize.
+	// Skip the replaced fast-path for these "content-sized replaced" cases
+	// (intrinsics 0×0 with no ratio) so the content measurement below runs.
+	// Mirrors Blink, where <button> is LayoutFlexibleBox, not LayoutReplaced.
 	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
-		inlineSize := ComputeReplacedIntrinsicInlineSize(ctx, node, style, space)
-		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
+		info := GetIntrinsicSizingInfo(ctx, node)
+		hasIntrinsicDims := info.IntrinsicWidth > 0 || info.IntrinsicHeight > 0
+		if hasIntrinsicDims || info.HasAspectRatio {
+			inlineSize := ComputeReplacedIntrinsicInlineSize(ctx, node, style, space)
+			return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
+		}
 	}
 
 	// Compute intrinsic sizes based on children (content-box).
@@ -748,6 +761,21 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+		// CSS Flexbox §9.8 / CSS Sizing 4 §3.4: when the row flex container has
+		// a definite cross-size (height for row), propagate it as the percentage
+		// resolution block-size so replaced items with aspect-ratio + height:100%
+		// can transfer their percentage block-size through the ratio to give an
+		// intrinsic inline contribution. Without this, an <img height: 100%>
+		// inside <button height: 100px> measures with indefinite-base height,
+		// falls back to natural width, and the button's intrinsic main-size is
+		// wrong (it would use the img's natural width instead of the
+		// height-transferred-via-ratio value).
+		if isRow && hasDefiniteCross && containerCrossContent > 0 {
+			csb.SetPercentageResolutionSize(LogicalSize{
+				InlineSize: space.PercentageResolutionInlineSize,
+				BlockSize:  containerCrossContent,
+			})
+		}
 		childSpace := csb.Build()
 
 		childGeom := ComputeFragmentGeometry(childStyle, childWDM, space.PercentageResolutionInlineSize)
