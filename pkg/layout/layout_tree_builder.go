@@ -9,6 +9,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 )
 
 // LayoutTreeBuilder constructs the layout tree from a DOM tree and
@@ -21,6 +22,12 @@ type LayoutTreeBuilder struct {
 	stylesheets    []*css.Stylesheet
 	viewportWidth  float64
 	viewportHeight float64
+
+	// fontConfig resolves font-family → font path for measuring the scaled
+	// initial-letter font (CSS Inline Layout 3 §7.5.1). Zero-value is safe:
+	// initial-letter sizing falls back to the cap-unit heuristic when no
+	// usable font path / measured metric is available.
+	fontConfig text.FontConfig
 
 	// counterCtx is the Blink-faithful CountersAttachmentContext used
 	// to resolve counter() / counters() in content and ::marker text.
@@ -2109,6 +2116,13 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 		b.viewportWidth, b.viewportHeight, parentStyle,
 	)
 
+	// CSS Inline Layout 3 §7.3-7.5: when the ::first-letter style declares
+	// `initial-letter`, the first letter becomes an initial-letter box — an
+	// inline-start float sized so its cap-height spans <size> line-boxes.
+	// Mutate flStyle in place so the existing first-letter discovery + the
+	// float/exclusion system render and flow lines around it.
+	b.applyInitialLetter(flStyle, parentStyle)
+
 	// preserveBreaks mirrors Blink's ShouldPreserveBreaks: white-space
 	// values that preserve newlines (pre / pre-wrap / pre-line / break-spaces)
 	// cause a leading LF to terminate first-letter discovery rather than be
@@ -2118,6 +2132,106 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 	// Find and split the first non-whitespace character in the inline content.
 	// We only look at direct text children or text inside inline children.
 	return b.splitFirstLetter(children, node, flStyle, preserveBreaks)
+}
+
+// applyInitialLetter mutates the ::first-letter style `flStyle` into an
+// initial-letter box when it declares the `initial-letter` property
+// (CSS Inline Layout 3 §7.3). The box is realised as an inline-start float
+// whose font is scaled so its cap-height spans <size> line-boxes, and which is
+// dropped (its block-start offset) so the surrounding lines flow around it.
+//
+// This mirrors the two Blink steps, faithfully ported into our model:
+//
+//   - Font scaling — StyleResolver::ComputeInitialLetterFont
+//     (style_resolver.cc:3658-3695 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+//     desired_cap_height = line_height * (size - 1) + cap_height_of_para
+//     adjusted_font_size = desired_cap_height * font_size / cap_height
+//     The big and paragraph fonts share a family here, so cap_height scales
+//     linearly with size: cap_height/font_size == cap_height_of_para/para_size.
+//     We therefore use the paragraph's measured cap-ratio rather than
+//     re-measuring the big font, which is exact for a single family.
+//
+//   - Block-position offset — ComputeInitialLetterBoxBlockOffset
+//     (initial_letter_utils.cc:22-105 @ 4883d11fef): for the drop case
+//     (size >= sink, horizontal text)
+//     block_offset = line_height * size - big_ascent - para_line_descent
+//     where para_line_descent is the paragraph font descent plus its half-
+//     leading (CalculateLeadingSpace + AddLeading in line_utils.h). The float
+//     carries this as a block-start margin.
+//
+// Reusing CapHeight (pkg/css/style.go) per the project rule: no hardcoded cap
+// ratio — the cap-unit 0.7em heuristic is used only when CapHeight is unmeasured.
+func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) {
+	if flStyle == nil || parentStyle == nil {
+		return
+	}
+	il := flStyle.GetInitialLetter()
+	if !il.Set {
+		return
+	}
+
+	paraFontSize := parentStyle.GetFontSize()
+	lineHeight := parentStyle.GetLineHeight()
+	if paraFontSize <= 0 || lineHeight <= 0 {
+		return
+	}
+
+	// Paragraph cap-height: prefer the measured OS/2 sCapHeight (Style.CapHeight,
+	// set in engine.go from the font metrics pass). Fall back to the spec's
+	// 0.7em heuristic only when unmeasured.
+	paraCap := parentStyle.CapHeight
+	if paraCap <= 0 {
+		paraCap = 0.7 * paraFontSize
+	}
+
+	// ComputeInitialLetterFont: scale so the big font's cap-height spans
+	// (size-1) line-boxes plus one paragraph cap-height.
+	desiredCapHeight := lineHeight*(il.Size-1) + paraCap
+	capRatio := paraCap / paraFontSize
+	adjustedFontSize := desiredCapHeight / capRatio
+	if adjustedFontSize <= 0 {
+		return
+	}
+
+	// The big initial-letter font ascent, measured at the adjusted size.
+	bigFontPath := resolveFontPath(flStyle, b.fontConfig)
+	bigAscent := text.FontAscentFromFont(adjustedFontSize, bigFontPath, nil)
+	if bigAscent <= 0 {
+		bigAscent = capRatio * adjustedFontSize
+	}
+
+	// Paragraph line descent = font descent + half-leading on the descent side
+	// (CalculateLeadingSpace → AddLeading). Half-leading is split from the
+	// difference between the computed line-height and the font's em-height.
+	paraFontPath := resolveFontPath(parentStyle, b.fontConfig)
+	paraAscent := text.FontAscentFromFont(paraFontSize, paraFontPath, nil)
+	paraDescent := text.FontDescentFromFont(paraFontSize, paraFontPath, nil)
+	leading := lineHeight - (paraAscent + paraDescent)
+	paraLineDescent := paraDescent + leading/2
+
+	// Drop offset (horizontal text). The `raise` keyword (sink=1) instead
+	// pushes the surrounding text below the letter; that block-start-adjust
+	// path is not yet modelled here (documented in the ticket report) — for
+	// drop and explicit-sink the box is offset down by:
+	blockOffset := lineHeight*il.Size - bigAscent - paraLineDescent
+	if blockOffset < 0 {
+		blockOffset = 0
+	}
+
+	// Realise the initial-letter box as an inline-start float. font-size and
+	// line-height are overridden (CSS Inline Layout 3 §7.5.1 — the author's
+	// font-size/line-height on ::first-letter do not apply to the box); the
+	// float hugs the scaled glyph (line-height == 1em of the adjusted font).
+	floatSide := "left"
+	if parentStyle.GetDirection() == css.DirectionRTL {
+		floatSide = "right"
+	}
+	px := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) + "px" }
+	fontSizePx := px(adjustedFontSize)
+	flStyle.Set("float", floatSide)
+	flStyle.Set("font-size", fontSizePx)
+	flStyle.Set("line-height", fontSizePx)
+	flStyle.Set("margin-top", px(blockOffset))
 }
 
 // whiteSpacePreservesBreaks reports whether the given white-space value
@@ -2338,8 +2452,8 @@ type firstLetterPunctHost struct {
 	// the walker can update each parent's children pointer when the wrap
 	// rewrites the host's slice. Each entry stores (parent node, the index
 	// of the child whose .children needs replacing at unwind time).
-	owner   []*LayoutInputNode
-	index   int
+	owner     []*LayoutInputNode
+	index     int
 	ancestors []firstLetterAncestor
 }
 
