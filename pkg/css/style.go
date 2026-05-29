@@ -6113,15 +6113,24 @@ func (s *Style) GetFontVariantNumeric() string {
 
 // InitialLetterValue holds the parsed initial-letter property.
 type InitialLetterValue struct {
-	Size float64 // how many lines tall
-	Sink int     // how many lines to sink (default = floor(Size))
-	Set  bool    // true if initial-letter is specified
+	Size  float64 // how many lines tall
+	Sink  int     // how many lines to sink (default = floor(Size); 1 for raise)
+	Raise bool    // true when the `raise` keyword is used (top-aligned)
+	Set   bool    // true if initial-letter is specified
 }
 
-// GetInitialLetter parses the initial-letter property.
-// Syntax: initial-letter: <size> [<sink>]
-// Where <size> is the number of lines the initial letter spans,
-// and <sink> is the number of lines it sinks (defaults to floor(size)).
+// GetInitialLetter parses the initial-letter property per CSS Inline Layout 3
+// §7.3 (https://drafts.csswg.org/css-inline/#initial-letter-property).
+//
+// Grammar: `normal | [ <number> <integer>? ] | [ <number> && [ drop | raise ] ]`
+//
+// <number> (Size) is the number of lines the initial letter spans. The second
+// component is either an explicit integer sink count, or one of the keywords
+// `drop` / `raise`. Per Blink StyleInitialLetter (style_initial_letter.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): a bare number and `drop` both
+// default the sink to floor(size); `raise` forces sink=1 (the letter is raised
+// so its top aligns with the first line and surrounding text is pushed below).
+// The keyword may appear on either side of the number (the `&&` combinator).
 func (s *Style) GetInitialLetter() InitialLetterValue {
 	v, ok := s.Get("initial-letter")
 	if !ok {
@@ -6131,18 +6140,67 @@ func (s *Style) GetInitialLetter() InitialLetterValue {
 	if v == "" || v == "normal" {
 		return InitialLetterValue{}
 	}
-	parts := strings.Fields(v)
-	size, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil || size <= 0 {
-		return InitialLetterValue{}
-	}
-	sink := int(math.Floor(size))
-	if len(parts) >= 2 {
-		if s2, err2 := strconv.Atoi(parts[1]); err2 == nil {
-			sink = s2
+
+	// After <number>, the grammar has two mutually exclusive forms:
+	// `<number> <integer>?` (optional explicit sink, no keyword) or
+	// `<number> && [drop|raise]?` (optional keyword, no explicit sink). So an
+	// explicit integer sink and a drop/raise keyword cannot co-occur, at most
+	// one keyword is allowed, and the sink must be a positive integer. Any
+	// other combination is an invalid declaration and is ignored (→ normal).
+	var size float64
+	haveSize := false
+	var sinkInt int
+	haveSink := false
+	raise := false
+	drop := false
+	for _, part := range strings.Fields(v) {
+		switch strings.ToLower(part) {
+		case "drop":
+			if drop || raise || haveSink {
+				return InitialLetterValue{}
+			}
+			drop = true
+			continue
+		case "raise":
+			if drop || raise || haveSink {
+				return InitialLetterValue{}
+			}
+			raise = true
+			continue
+		}
+		// Numeric token: the first is Size (a <number>), a later one is the
+		// explicit integer <sink>.
+		if !haveSize {
+			f, err := strconv.ParseFloat(part, 64)
+			if err != nil {
+				return InitialLetterValue{}
+			}
+			size = f
+			haveSize = true
+		} else if i, err := strconv.Atoi(part); err == nil {
+			if haveSink || drop || raise || i <= 0 {
+				return InitialLetterValue{}
+			}
+			sinkInt = i
+			haveSink = true
+		} else {
+			return InitialLetterValue{}
 		}
 	}
-	return InitialLetterValue{Size: size, Sink: sink, Set: true}
+	if !haveSize || size <= 0 {
+		return InitialLetterValue{}
+	}
+
+	// Sink defaults to floor(size) (bare number / `drop`); `raise` forces sink=1;
+	// an explicit integer sink overrides. The three are mutually exclusive.
+	sink := int(math.Floor(size))
+	switch {
+	case haveSink:
+		sink = sinkInt
+	case raise:
+		sink = 1
+	}
+	return InitialLetterValue{Size: size, Sink: sink, Raise: raise, Set: true}
 }
 
 // GetFontVariantLigatures returns the font-variant-ligatures value.

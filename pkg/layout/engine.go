@@ -102,6 +102,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		stylesheets:    stylesheets,
 		viewportWidth:  le.viewport.width,
 		viewportHeight: le.viewport.height,
+		fontConfig:     fontConfig,
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
@@ -237,6 +238,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		stylesheets:    stylesheets,
 		viewportWidth:  vpWidth,
 		viewportHeight: vpHeight,
+		fontConfig:     ctx.FontConfig,
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
