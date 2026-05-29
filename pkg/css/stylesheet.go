@@ -3326,6 +3326,24 @@ func parseSelector(selectorStr string) Selector {
 		{"::target-text", "target-text"},
 		{"::spelling-error", "spelling-error"},
 		{"::grammar-error", "grammar-error"},
+		// Vendor-prefixed scrollbar pseudo-elements (CSS Scrollbars §color-compat).
+		// Blink's CSSSelectorParser::ConsumePseudo classifies these as
+		// pseudo-elements. louis14 paints no scrollbar pseudo-elements, so
+		// recording a non-empty PseudoElement makes FindMatchingRules skip the
+		// rule from the normal element cascade — without this the empty-Part
+		// fallback in matchesCompoundSelector universally matches every element
+		// and the declarations (e.g. ::-webkit-scrollbar-corner{background})
+		// leak onto the whole page. Ordered longest-first so a shorter prefix
+		// token (`::-webkit-scrollbar`) never shadows a longer one
+		// (`::-webkit-scrollbar-track-piece`): findTopLevelPseudoElement does a
+		// plain substring match and the caller breaks on the first hit.
+		{"::-webkit-scrollbar-track-piece", "-webkit-scrollbar-track-piece"},
+		{"::-webkit-scrollbar-button", "-webkit-scrollbar-button"},
+		{"::-webkit-scrollbar-corner", "-webkit-scrollbar-corner"},
+		{"::-webkit-scrollbar-track", "-webkit-scrollbar-track"},
+		{"::-webkit-scrollbar-thumb", "-webkit-scrollbar-thumb"},
+		{"::-webkit-scrollbar", "-webkit-scrollbar"},
+		{"::-webkit-resizer", "-webkit-resizer"},
 		{":before", "before"},
 		{":after", "after"},
 		{":first-letter", "first-letter"},

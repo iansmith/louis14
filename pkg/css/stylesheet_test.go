@@ -180,3 +180,34 @@ func TestParseStylesheet_MultipleProperties(t *testing.T) {
 		t.Errorf("expected height='50px'")
 	}
 }
+
+// TestParseSelector_WebkitScrollbarPseudoElements guards against the
+// ::-webkit-scrollbar* selector leak (css-scrollbars). Blink's
+// CSSSelectorParser::ConsumePseudo classifies these vendor-prefixed tokens as
+// pseudo-elements. If parseSelector leaves PseudoElement empty, the rule's
+// Parts list ends up empty, matchesCompoundSelector treats it as a universal
+// match, and the declarations leak onto every element. With the tokens
+// registered, PseudoElement is non-empty so FindMatchingRules skips the rule
+// from the normal element cascade (louis14 paints no scrollbar pseudos).
+func TestParseSelector_WebkitScrollbarPseudoElements(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"::-webkit-scrollbar", "-webkit-scrollbar"},
+		{"::-webkit-scrollbar-button", "-webkit-scrollbar-button"},
+		{"::-webkit-scrollbar-track", "-webkit-scrollbar-track"},
+		{"::-webkit-scrollbar-track-piece", "-webkit-scrollbar-track-piece"},
+		{"::-webkit-scrollbar-thumb", "-webkit-scrollbar-thumb"},
+		{"::-webkit-scrollbar-corner", "-webkit-scrollbar-corner"},
+		{"::-webkit-resizer", "-webkit-resizer"},
+		// Compound: the pseudo-element token must be peeled off whole, leaving
+		// only the originating compound (.container) in the Parts list.
+		{".container::-webkit-scrollbar-corner", "-webkit-scrollbar-corner"},
+		{":root::-webkit-scrollbar", "-webkit-scrollbar"},
+	}
+	for _, tc := range cases {
+		sel := parseSelector(tc.raw)
+		if sel.PseudoElement != tc.want {
+			t.Errorf("parseSelector(%q): PseudoElement = %q, want %q",
+				tc.raw, sel.PseudoElement, tc.want)
+		}
+	}
+}
