@@ -151,6 +151,52 @@ type LineBreaker struct {
 	position float64
 	// Whether we've finished all items.
 	done bool
+
+	// useFirstLineStyle, when true, makes the breaker measure text with the
+	// ::first-line-merged style (firstLineStyle merged over each item's base
+	// style) instead of the base style alone — so the first formatted line
+	// breaks at the correct character count when ::first-line changes
+	// font-size/letter-spacing/word-spacing. The caller sets this true before
+	// breaking the first formatted line and false afterward, mirroring Blink's
+	// `LineBreaker::use_first_line_style_` lifecycle (set in the ctor
+	// `core/layout/inline/line_breaker.cc:467` when
+	// `is_first_formatted_line_ && node.UseFirstLineStyleItemsData()`, cleared
+	// in `PrepareNextLine` `:800` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	// louis14 measures width on the fly, so the flag + on-the-fly font swap is
+	// the faithful analog of Blink's pre-shaped first_line_items_.
+	useFirstLineStyle bool
+	// firstLineStyle is the ::first-line pseudo-element style to merge over the
+	// base item style when useFirstLineStyle is set. Nil when the block has no
+	// ::first-line rule.
+	firstLineStyle *css.Style
+	// firstLineMergeCache memoizes mergeFirstLineStyle results keyed by the
+	// base item style, so the many measuring sites that call measuringStyle for
+	// the same item during one line's breaking each reuse one clone+metric
+	// resolution instead of repeating it. Only populated while
+	// useFirstLineStyle is set (the first formatted line).
+	firstLineMergeCache map[*css.Style]*css.Style
+}
+
+// measuringStyle returns the style the breaker should measure text with for an
+// item carrying itemStyle. On the first formatted line (useFirstLineStyle set)
+// it returns the ::first-line-merged style — the same merge that
+// inline_layout.go applies to the line's metrics and paint, so breaking,
+// metrics, and paint all agree on the first-line font. On every other line it
+// returns the base item style unchanged. Mirrors Blink routing all first-line
+// measurement through `items_data_(&node.ItemsData(use_first_line_style_))`.
+func (lb *LineBreaker) measuringStyle(itemStyle *css.Style) *css.Style {
+	if !lb.useFirstLineStyle || lb.firstLineStyle == nil {
+		return itemStyle
+	}
+	if cached, ok := lb.firstLineMergeCache[itemStyle]; ok {
+		return cached
+	}
+	merged := mergeFirstLineStyle(itemStyle, lb.firstLineStyle, lb.fonts)
+	if lb.firstLineMergeCache == nil {
+		lb.firstLineMergeCache = make(map[*css.Style]*css.Style)
+	}
+	lb.firstLineMergeCache[itemStyle] = merged
+	return merged
 }
 
 // isVerticalMeasurement returns true when text in the given style should be
@@ -343,20 +389,23 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		}
 	}
 
-	// Get font properties from style.
-	fontSize, _, _, _, _ := fontPropsFromStyle(item.Style)
-	fontPath := resolveFontPath(item.Style, lb.fonts)
+	// Get font properties from style. On the first formatted line this is the
+	// ::first-line-merged style so the line breaks at the first-line font's
+	// glyph advances (WI-1).
+	measureStyle := lb.measuringStyle(item.Style)
+	fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+	fontPath := resolveFontPath(measureStyle, lb.fonts)
 
 	// CSS 2.1 §16.4: letter-spacing adds inter-character space.
 	letterSpacing := 0.0
-	if item.Style != nil {
-		letterSpacing = item.Style.GetLetterSpacing()
+	if measureStyle != nil {
+		letterSpacing = measureStyle.GetLetterSpacing()
 	}
 
 	// CSS 2.1 §16.4: word-spacing adds extra space between words.
 	wordSpacing := 0.0
-	if item.Style != nil {
-		wordSpacing = item.Style.GetWordSpacing()
+	if measureStyle != nil {
+		wordSpacing = measureStyle.GetWordSpacing()
 	}
 
 	// Measure the full text segment. In vertical writing modes, use vertical
@@ -497,10 +546,12 @@ func (lb *LineBreaker) breakTextAtWord(
 		return false
 	}
 
-	// CSS 2.1 §16.4: letter-spacing.
+	// CSS 2.1 §16.4: letter-spacing. Use the ::first-line-merged style on the
+	// first formatted line so spacing matches the breaking font (WI-1).
+	measureStyle := lb.measuringStyle(item.Style)
 	letterSpacing := 0.0
-	if item.Style != nil {
-		letterSpacing = item.Style.GetLetterSpacing()
+	if measureStyle != nil {
+		letterSpacing = measureStyle.GetLetterSpacing()
 	}
 
 	// Try to fit as many words as possible.
@@ -517,8 +568,8 @@ func (lb *LineBreaker) breakTextAtWord(
 
 	// CSS 2.1 §16.4: word-spacing adds extra space between words.
 	wordSpacing := 0.0
-	if item.Style != nil {
-		wordSpacing = item.Style.GetWordSpacing()
+	if measureStyle != nil {
+		wordSpacing = measureStyle.GetWordSpacing()
 	}
 
 	isVertical := lb.isVerticalMeasurement(item.Style)
@@ -1085,9 +1136,11 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		return false
 	}
 
+	// Use the ::first-line-merged style on the first formatted line so spacing
+	// matches the breaking font (WI-1).
 	letterSpacing := 0.0
-	if item.Style != nil {
-		letterSpacing = item.Style.GetLetterSpacing()
+	if measureStyle := lb.measuringStyle(item.Style); measureStyle != nil {
+		letterSpacing = measureStyle.GetLetterSpacing()
 	}
 
 	isVertical := lb.isVerticalMeasurement(item.Style)
@@ -1405,8 +1458,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
-				fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
+				// Re-measure with the same font handleText used for the
+				// initial InlineSize so the width delta stays consistent —
+				// the ::first-line-merged font on the first line (WI-1).
+				measureStyle := lb.measuringStyle(r.Item.Style)
+				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+				fontPath := resolveFontPath(measureStyle, lb.fonts)
 				var newWidth float64
 				if isVertical {
 					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
@@ -1445,8 +1502,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
-				fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
+				// Re-measure with the same font handleText used for the
+				// initial InlineSize so the width delta stays consistent —
+				// the ::first-line-merged font on the first line (WI-1).
+				measureStyle := lb.measuringStyle(r.Item.Style)
+				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+				fontPath := resolveFontPath(measureStyle, lb.fonts)
 				var newWidth float64
 				if isVertical {
 					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
@@ -1592,12 +1653,16 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 		// including the advance adjustment applied to the LAST glyph of an
 		// item by a kern pair that spans into the NEXT item.
 		first := &line.Results[textIndices[0]]
-		fontSize, _, _, _, _ := fontPropsFromStyle(first.Item.Style)
-		fontPath := resolveFontPath(first.Item.Style, lb.fonts)
+		// Re-shape with the same font handleText measured with so the merged-
+		// shape slices match the per-item widths — the ::first-line-merged
+		// font on the first formatted line (WI-1).
+		firstMeasureStyle := lb.measuringStyle(first.Item.Style)
+		fontSize, _, _, _, _ := fontPropsFromStyle(firstMeasureStyle)
+		fontPath := resolveFontPath(firstMeasureStyle, lb.fonts)
 		letterSpacing, wordSpacing := 0.0, 0.0
-		if first.Item.Style != nil {
-			letterSpacing = first.Item.Style.GetLetterSpacing()
-			wordSpacing = first.Item.Style.GetWordSpacing()
+		if firstMeasureStyle != nil {
+			letterSpacing = firstMeasureStyle.GetLetterSpacing()
+			wordSpacing = firstMeasureStyle.GetWordSpacing()
 		}
 
 		var combined strings.Builder

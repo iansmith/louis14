@@ -8,12 +8,19 @@
     p {
       margin: 0;
       font-size: 20px;
+    }
+    /* The ::first-line generated box behaves like an inline-level element
+       (CSS Pseudo-4 §first-line-styling), so its background covers the line's
+       text content, not the full block width — matching the genuine WPT
+       first-line-line-height-00{1,2} and first-line-and-marker references,
+       which all model ::first-line as an inline <span>. */
+    span {
       background-color: green;
       color: white;
     }
   </style>
 </head>
 <body>
-  <p>Green background line</p>
+  <p><span>Green background line</span></p>
 </body>
 </html>

@@ -586,6 +586,17 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lb.availableWidth = lineAvailableInline
 		}
 
+		// CSS Pseudo 4 §3.2: measure the first formatted line with the
+		// ::first-line font so it breaks at the correct character count when
+		// ::first-line changes font-size/letter-spacing/word-spacing. Mirrors
+		// Blink's `LineBreaker::use_first_line_style_` lifecycle: set for the
+		// first formatted line, cleared for every subsequent line
+		// (`line_breaker.cc:467` set / `:800` clear @ 4883d11fef). The
+		// post-break `applyFirstLineStyles` below only changes paint metrics;
+		// the breaker needs the font BEFORE breaking, which this provides.
+		lb.useFirstLineStyle = isFirstLine && bla.node.FirstLineStyle != nil
+		lb.firstLineStyle = bla.node.FirstLineStyle
+
 		if !lb.NextLine(&line) {
 			break
 		}
@@ -736,12 +747,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 		// CSS Pseudo-Elements §3: Apply ::first-line styles to items on the
 		// first formatted line. We override item styles after line breaking so
-		// that color, text-decoration, background, etc. take effect. Font
-		// properties that affect line breaking are not yet handled (would need
-		// two-pass layout).
+		// that color, text-decoration, background, etc. take effect at paint
+		// time. Font properties that affect WHERE the line breaks (font-size,
+		// letter-spacing, word-spacing) were already fed into the breaker above
+		// via lb.useFirstLineStyle (WI-1), so the break position and the paint
+		// metrics agree on the first-line font.
 		isFirstLineForBox := isFirstLine && bla.node.FirstLineStyle != nil
 		if isFirstLineForBox {
-			applyFirstLineStyles(&line, bla.node.FirstLineStyle)
+			applyFirstLineStyles(&line, bla.node.FirstLineStyle, fonts)
 		}
 
 		// Apply text-indent to the first line only.
@@ -991,20 +1004,25 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineSize: contentInlineSize,
 			BlockSize:  cbBlockSize,
 		}, wdm.WM)
-		// CSS Pseudo 4 §3.2.1: when this is the first formatted line and the
-		// block has ::first-line rules, the line's strut (computeLineMetricsEx
-		// parentStyle) must use the block's style with first-line font/line-
-		// height overrides merged in. Mirrors Blink's
-		// InlineLayoutAlgorithm::CreateLine using FirstLineStyle for the root
-		// inline-box metrics.
-		strutStyle := bla.style
+		// CSS Pseudo 4 §3.2.1: the ::first-line generated box "behaves similar to
+		// that of an inline-level element" (the WPT first-line-line-height
+		// reftests model it as a `<span class="fl">` inside an unchanged block).
+		// So the first line's STRUT — the anonymous root inline box, sized by
+		// computeLineMetricsEx's parentStyle — keeps the BLOCK's font and
+		// line-height; the ::first-line styles ride on the line's text items via
+		// their per-result EffectiveStyle (set by applyFirstLineStyles), which
+		// grow the line when the first-line font/line-height is TALLER than the
+		// block (test 001) but never shrink it below the block strut when it is
+		// SHORTER (test 002). Merging ::first-line line-height into the strut
+		// here would wrongly collapse the first line to the smaller height.
+		// Mirrors Blink keeping the block-flow strut (bla.style) while the
+		// first-line ComputedStyle applies to the inline content.
 		var firstLineBgStyle *css.Style
 		if isFirstLineForBox {
-			strutStyle = mergeFirstLineStyle(bla.style, bla.node.FirstLineStyle)
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
 
@@ -1166,7 +1184,17 @@ var firstLineAllowedProperties = []string{
 // declares no allowed properties. Mirrors Blink's
 // ComputedStyle::ApplyFirstLineStyle but only for properties in the spec
 // allow-list — anything outside (margin, padding, etc.) stays at base.
-func mergeFirstLineStyle(base, firstLine *css.Style) *css.Style {
+//
+// fonts drives re-resolution of the merged style's cached font-relative
+// metrics. base.Clone() copies base's UsedFontSize / ChWidth / XHeight /
+// CapHeight / LhSize, which GetUsedFontSize and the ch/ex/cap/lh unit
+// resolvers read in preference to the raw Properties. When the merge
+// overrides font-size or line-height, those caches go stale (the base font's
+// size wins over the overridden Properties), so we re-resolve them against
+// the merged font — the same metric pass computeChWidths runs over every
+// node style. Blink's ::first-line ComputedStyle is itself a fully resolved
+// style; this re-resolution is the louis14 analog.
+func mergeFirstLineStyle(base, firstLine *css.Style, fonts text.FontConfig) *css.Style {
 	if base == nil || firstLine == nil {
 		return base
 	}
@@ -1174,7 +1202,6 @@ func mergeFirstLineStyle(base, firstLine *css.Style) *css.Style {
 	for _, prop := range firstLineAllowedProperties {
 		if val, ok := firstLine.Properties[prop]; ok && val != "" {
 			hasOverride = true
-			_ = val
 			break
 		}
 	}
@@ -1187,6 +1214,7 @@ func mergeFirstLineStyle(base, firstLine *css.Style) *css.Style {
 			merged.Properties[prop] = val
 		}
 	}
+	resolveFontMetricsForStyle(merged, fonts, newFontMetricsMeasurer(fonts))
 	return merged
 }
 
@@ -1197,24 +1225,23 @@ func mergeFirstLineStyle(base, firstLine *css.Style) *css.Style {
 // its original style. Mirrors Blink's FirstLineStyleIterator
 // (`core/css/first_line_style_iterator.cc`), which yields a per-fragment
 // first-line style without mutating the LayoutObject's stored style.
-func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style) {
+func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style, fonts text.FontConfig) {
 	if firstLineStyle == nil {
-		return
-	}
-
-	// Collect the allowed property overrides from the first-line style.
-	overrides := make(map[string]string)
-	for _, prop := range firstLineAllowedProperties {
-		if val, ok := firstLineStyle.Properties[prop]; ok && val != "" {
-			overrides[prop] = val
-		}
-	}
-	if len(overrides) == 0 {
 		return
 	}
 
 	// Apply overrides to each item on the line that has a style. Write into
 	// the per-result Style override field; never mutate r.Item.Style itself.
+	// mergeFirstLineStyle clones the base, applies the allowed ::first-line
+	// properties, and re-resolves the merged font's metric caches — so the
+	// per-result style reports the first-line font-size for both metrics and
+	// glyph rasterization (GetUsedFontSize). It returns the base unchanged
+	// when no allowed property is overridden, so the per-result Style stays
+	// nil in that case (EffectiveStyle falls back to Item.Style).
+	// Items on the first line commonly share a base style; mergeFirstLineStyle
+	// clones + re-resolves font metrics on each call, so memoize by base-style
+	// identity to collapse O(items) merges to O(distinct base styles).
+	mergeCache := make(map[*css.Style]*css.Style)
 	for i := range line.Results {
 		r := &line.Results[i]
 		if r.Item == nil || r.Item.Style == nil {
@@ -1223,11 +1250,14 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style) {
 		// Only apply to text items and open/close tags (inline spans).
 		switch r.Item.Type {
 		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
-			cloned := r.Item.Style.Clone()
-			for prop, val := range overrides {
-				cloned.Properties[prop] = val
+			merged, ok := mergeCache[r.Item.Style]
+			if !ok {
+				merged = mergeFirstLineStyle(r.Item.Style, firstLineStyle, fonts)
+				mergeCache[r.Item.Style] = merged
 			}
-			r.Style = cloned
+			if merged != r.Item.Style {
+				r.Style = merged
+			}
 		}
 	}
 }
@@ -1438,19 +1468,25 @@ func createLineBoxEx(
 	// preference to Style.GetAppliedTextDecorations() when non-nil.
 	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack, isFirstLine)
 
-	// CSS Pseudo 4 §3.2: ::first-line background paints behind the first
-	// formatted line. Emit BEFORE inline span backgrounds and text fragments
-	// so it lands at the bottom of the line's paint stack. Mirrors Blink's
-	// `PaintFirstLineBackground` (`core/paint/box_painter.cc` @ 4883d11fef)
-	// which paints the line-box-wide (originating block's content area width)
-	// background in the BackgroundPhase. Engines diverge on extent — Blink/
-	// WebKit paint line-box-wide, Firefox paints line-content-wide; louis14
-	// follows Blink so `<p>` ::first-line bg matches `<p>` element bg for
-	// one-line content, which is what users tend to expect.
+	// CSS Pseudo 4 §3.2: the ::first-line background paints behind the first
+	// formatted line. Emit BEFORE inline span backgrounds and text fragments so
+	// it lands at the bottom of the line's paint stack. Per the spec, the
+	// generated ::first-line box "behaves similar to that of an inline-level
+	// element" (the assertion the first-line-line-height WPT reftests check by
+	// modelling ::first-line as a `<span>`): so its background covers the same
+	// box an inline span on this line would — the line's CONTENT inline extent
+	// (line.Width starting at the text-align offset), at the full line-box
+	// HEIGHT (lineHeight). This mirrors the inline span-background pre-pass
+	// below, which sizes each span fragment as `lineHeight` tall and
+	// content-wide (`fragEnd − fragStart`); the ::first-line band is the
+	// degenerate single-span case. Mirrors Blink's
+	// `LineBoxFragmentPainter::PaintBackgroundBorderShadow`
+	// (`core/paint/inline_box_fragment_painter.cc` @ 4883d11fef), whose
+	// `line_style_` is the ::first-line-aware style.
 	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
 		bgFrag := &PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-				InlineSize: availableInline,
+				InlineSize: line.Width,
 				BlockSize:  lineHeight,
 			}, wdm.WM)),
 			Type:             FragmentBox,
@@ -1458,7 +1494,7 @@ func createLineBoxEx(
 			WritingDirection: wdm,
 		}
 		lineBuilder.AddChild(bgFrag, LogicalOffset{
-			InlineOffset: 0,
+			InlineOffset: alignOffset,
 			BlockOffset:  0,
 		})
 	}
