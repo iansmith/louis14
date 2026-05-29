@@ -2,6 +2,7 @@ package render
 
 import (
 	"louis14/pkg/geometry"
+	"louis14/pkg/layout"
 	"louis14/pkg/layout/svg"
 )
 
@@ -133,4 +134,36 @@ func isInlineSVGLayer(layer *PaintLayer) bool {
 	}
 	root, ok := layer.Box.LayoutNode.SVGRoot.(*svg.SVGRoot)
 	return ok && root != nil
+}
+
+// isSVGContentBox reports whether the given box represents an SVG content
+// element nested inside an inline <svg> root (i.e. a <rect>, <g>, <text>,
+// <feImage>, …). The <svg> root itself returns false — it is an HTML
+// replaced element and participates in normal CSS layer dispatch.
+//
+// Walks Box.Parent → Box.Parent.Parent → … looking for a `<svg>` ancestor.
+// Cheap (SVG nesting is typically shallow) and avoids reaching into the
+// layout tree's SVGRoot model. Used by paint_layer.go to suppress
+// CSS-layer-side filter / mask / mix-blend dispatch on SVG content,
+// because the SVG paint walk (svg_shape_painter.go,
+// svg_container_painter.go) is the authoritative consumer for those
+// properties on SVG elements. Mirrors Blink's LayoutSVGShape/
+// LayoutSVGContainer paint dispatch — those types route through
+// SVGObjectPainter rather than the LayoutBox PaintLayer pipeline.
+func isSVGContentBox(box *layout.Box) bool {
+	if box == nil || box.Node == nil {
+		return false
+	}
+	// The <svg> root itself is not "SVG content" — its paint dispatch
+	// uses the standard CSS-replaced-element path until paintSelfForeground
+	// hands off to paintSVGRoot.
+	if box.Node.TagName == "svg" {
+		return false
+	}
+	for p := box.Parent; p != nil; p = p.Parent {
+		if p.Node != nil && p.Node.TagName == "svg" {
+			return true
+		}
+	}
+	return false
 }

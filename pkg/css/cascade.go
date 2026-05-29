@@ -2917,6 +2917,16 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 		"stroke-dashoffset",
 		"opacity",
 		"color",
+		// CSS Inherited-property attributes carried as SVG presentation
+		// attributes per SVG 1.1 §6.4 / SVG 2 §11.7. `visibility` on a
+		// shape/container/text (and `display`) controls whether the
+		// element renders; the cascade must surface it so the paint walk
+		// sees the right computed value. Without `visibility`, an SVG
+		// `<text visibility="hidden">` keeps its default `visible` style
+		// and the HTML text fragment still paints over the filter result
+		// (svg-visibility-hidden-element-with-filter-003).
+		"visibility",
+		"display",
 		"clip-rule",
 		"clip-path",
 		"mask",

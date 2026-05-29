@@ -1260,9 +1260,22 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.BackfaceHidden = computeBackfaceHidden(box, layer.Transforms)
 	}
 
-	// CSS Filters.
+	// CSS Filters. SVG content elements (descendants of an inline <svg> other
+	// than the SVG root itself) carry CSS `filter` only because the SVG
+	// presentation attribute `filter="url(#id)"` maps to the CSS property
+	// through the cascade. The SVG paint walk (svg_shape_painter.go) is the
+	// authoritative consumer: paintWithSVGFilter is called from
+	// svgShapePainter.paint when the shape has a `filter` style. Letting the
+	// generic CSS-layer dispatch ALSO run paintLayerWithFilter would
+	// double-paint the filter, and on the CSS path the reference box / region
+	// resolves from the layer's HTML border-box (which has degenerate
+	// 1-pixel-tall dimensions for an SVG <rect>'s flex/inline-box layout),
+	// producing a wrong-sized FEImage source that leaks pixels past the SVG
+	// content. Mirrors Blink's split: LayoutSVGShape/LayoutSVGContainer use
+	// SVGObjectPainter (which routes filters through SVGFilterPainter); the
+	// PaintLayer.Filter dispatch only fires for HTML LayoutBox descendants.
 	filters := s.GetFilter()
-	if len(filters) > 0 {
+	if len(filters) > 0 && !isSVGContentBox(box) {
 		layer.Filters = filters
 		layer.HasFilter = true
 	}

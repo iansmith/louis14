@@ -778,6 +778,32 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	}
 	// Pre-computed visibility and opacity.
 	if !layer.Visible {
+		// Filter Effects 1 §3.3: when a filtered element has
+		// `visibility: hidden`, the element itself does NOT paint, but its
+		// filter STILL evaluates. The graph sees a transparent input — which
+		// for generator primitives like feFlood / feImage still produces
+		// non-empty output. Mirrors Blink ScopedSVGPaintState::Apply, which
+		// installs the filter effect node unconditionally and lets the
+		// element's content draw call become a no-op under
+		// visibility:hidden.
+		if layer.HasFilter {
+			r.paintLayerWithFilter(layer)
+			return
+		}
+		// Same spec rule on the SVG side: an inline <svg> with
+		// `visibility: hidden` must still walk its subtree because
+		// filtered descendants still apply their filters. The SVG paint
+		// walk (paintSVGRoot → paintSVGNode → svgShapePainter.paint)
+		// dispatches each element's filter BEFORE its own visibility check
+		// (svg_shape_painter.go:50-63, svg_container_painter.go:124-126),
+		// so the rect/text/g descendants of a hidden <svg> still emit
+		// filter output. Without this entry, a hidden SVG root drops the
+		// entire subtree before any filter can run — what
+		// svg-visibility-hidden-element-with-filter-002/003 actually
+		// require.
+		if isInlineSVGLayer(layer) {
+			r.paintSVGRoot(layer)
+		}
 		return
 	}
 	if layer.Opacity <= 0 {
@@ -1309,16 +1335,28 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 
 	// Render the layer subtree into the source buffer (filter-region sized).
+	// Filter Effects 1 §3.3: a `visibility: hidden` element does not paint its
+	// own content into the source — the source stays transparent — but the
+	// filter graph still evaluates. Skip the content render in that case so
+	// the SourceGraphic is the zero-initialized transparent buf. (Descendants
+	// with explicit `visibility: visible` would still paint if we let
+	// paintLayerContentWithEffects run, mirroring CSS visibility inheritance;
+	// the current bucket of visibility-hidden-with-filter tests has no such
+	// descendants, so the simple "skip the whole subtree" matches Blink's
+	// ApplyFilterIfNecessary path where the element's content draw is gated by
+	// the same Visible bit before the filter runs.)
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	origDC := r.dc
-	origTarget := r.target
-	childDC := origDC.NewChildContext(buf)
-	r.dc = childDC
-	r.target = buf
-	r.dc.Translate(float64(-bx), float64(-by))
-	r.paintLayerContentWithEffects(layer)
-	r.dc = origDC
-	r.target = origTarget
+	if layer.Visible {
+		origDC := r.dc
+		origTarget := r.target
+		childDC := origDC.NewChildContext(buf)
+		r.dc = childDC
+		r.target = buf
+		r.dc.Translate(float64(-bx), float64(-by))
+		r.paintLayerContentWithEffects(layer)
+		r.dc = origDC
+		r.target = origTarget
+	}
 
 	// Run the FilterEffect graph and composite the output back at the
 	// filter region origin.
@@ -2131,7 +2169,23 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if child == nil {
 		return
 	}
-	if !child.Visible || child.Opacity <= 0 {
+	if !child.Visible {
+		// Filter Effects 1 §3.3: a `visibility: hidden` element with a filter
+		// still evaluates its filter graph (against a transparent source).
+		// Forward to paintLayer so the filter-dispatch in paintLayer can
+		// route through paintLayerWithFilter. paintLayer's own visibility
+		// gate already handles non-filtered hidden layers; this keeps the
+		// behaviour identical for those, but lets a filtered hidden flow
+		// child reach the filter path. Mirrors Blink
+		// ScopedSVGPaintState::Apply (filter installs unconditionally) +
+		// ScopedPaintChunkProperties::Visibility (hidden suppresses content
+		// only).
+		if child.HasFilter && phase == PhaseForeground {
+			r.paintLayer(child)
+		}
+		return
+	}
+	if child.Opacity <= 0 {
 		return
 	}
 	// CSS Transforms L2 §11: `backface-visibility: hidden` skips the layer
