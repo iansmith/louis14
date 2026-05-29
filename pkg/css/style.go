@@ -2510,7 +2510,12 @@ func expandShorthand(style *Style, property, value string) {
 			if part == "auto" {
 				continue
 			}
-			if _, err := strconv.Atoi(part); err == nil {
+			if n, err := strconv.Atoi(part); err == nil && n >= 1 {
+				// <column-count> requires an integer in [1,∞]. `0` and
+				// negatives fall through to the column-width branch (a bare
+				// `0` is a valid zero-length; negatives are rejected by the
+				// parse-time isValidColumnsShorthand check before reaching
+				// expandShorthand). Mirrors Blink's column-shorthand parser.
 				style.Set("column-count", part)
 			} else {
 				style.Set("column-width", part)
@@ -7764,7 +7769,12 @@ func (s *Style) GetColumnCount() int {
 	return 0
 }
 
-// GetColumnWidth returns the column-width value (0 means "auto"/not set)
+// GetColumnWidth returns the column-width value. 0 means "auto"/not set
+// (no multi-column behavior from column-width alone). A specified value of
+// 0 is clamped up to 1px per CSS Multi-column 1 §3.1: "the used value of
+// column-width may differ from the specified value (e.g., if there is not
+// enough room) but it will not be less than 1px (or some other minimum)."
+// Required by WPT zero-column-width-layout.
 func (s *Style) GetColumnWidth() float64 {
 	if val, ok := s.Get("column-width"); ok {
 		val = strings.TrimSpace(val)
@@ -7772,6 +7782,9 @@ func (s *Style) GetColumnWidth() float64 {
 			return 0
 		}
 		if w, ok := ParseLength(val); ok {
+			if w < 1 && w >= 0 {
+				return 1
+			}
 			return w
 		}
 	}
