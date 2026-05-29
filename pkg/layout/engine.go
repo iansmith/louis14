@@ -698,6 +698,14 @@ func bidiMirror(r rune) rune {
 	return r
 }
 
+// fontMetrics holds the per-font measurements that drive CSS font-relative
+// unit resolution (ch/ex/cap) for a given (font, size).
+type fontMetrics struct {
+	chWidth float64
+	xHeight float64
+	capHght float64
+}
+
 // computeChWidths measures per-font metrics needed to resolve CSS font-
 // relative units (ex, ch) and applies CSS Fonts 5 §1.7 `font-size-adjust`
 // to produce a used font-size. Populates `ChWidth`, `XHeight`, and
@@ -713,18 +721,81 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 	// Per-font metric cache keyed by (path, sizeRounded). Sub-pixel size jitter
 	// is rare; rounding stabilises the cache for tests rendering many elements
 	// at one size.
+	measure := newFontMetricsMeasurer(fc)
+	for _, style := range styles {
+		if style == nil {
+			continue
+		}
+		resolveFontMetricsForStyle(style, fc, measure)
+	}
+}
+
+// resolveFontMetricsForStyle populates the font-relative cached metric fields
+// (UsedFontSize, ChWidth, XHeight, CapHeight, LhSize) on a single style from
+// its current font properties, applying CSS Fonts 5 §1.7 font-size-adjust.
+// Shared by the bulk computeChWidths pass and by mergeFirstLineStyle, which
+// must re-resolve these caches after overriding font-size/line-height so the
+// merged ::first-line style does not carry the base font's stale metrics
+// (the GetUsedFontSize cache otherwise wins over the overridden Properties).
+// `measure` is the caller's metric cache.
+func resolveFontMetricsForStyle(style *css.Style, fc text.FontConfig, measure func(fontPath string, fontSize float64) fontMetrics) {
+	specifiedSize := style.GetFontSize()
+	family, _ := style.Get("font-family")
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	synth := style.GetFontSynthesis()
+	fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
+
+	// Measure metrics at the specified size so we can read the first font's
+	// actual aspect ratio for font-size-adjust resolution.
+	baseMetrics := measure(fontPath, specifiedSize)
+
+	// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
+	// `none` and `from-font` leave the used size equal to the specified
+	// size (from-font matches the first font's own aspect → factor 1).
+	usedSize := specifiedSize
+	adjust := style.GetFontSizeAdjust()
+	if adjust.IsActive() && specifiedSize > 0 {
+		actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
+		if actualRatio > 0 {
+			usedSize = specifiedSize * adjust.Value / actualRatio
+		} else {
+			// Spec: when the first font lacks the requested metric, the used
+			// size is undefined; clamp to 0 to match Blink's behavior of
+			// hiding the glyphs (matches font-size-adjust-zero-* refs).
+			usedSize = 0
+		}
+	}
+
+	usedMetrics := baseMetrics
+	if usedSize != specifiedSize {
+		usedMetrics = measure(fontPath, usedSize)
+	}
+
+	style.UsedFontSize = usedSize
+	style.UsedFontSizeSet = true
+	style.ChWidth = usedMetrics.chWidth
+	style.XHeight = usedMetrics.xHeight
+	style.CapHeight = usedMetrics.capHght
+	// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
+	// unit equals the element's computed line-height. Mirrors Blink's
+	// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	style.LhSize = style.GetLineHeight()
+}
+
+// newFontMetricsMeasurer returns a freshly-cached metric measurer over fc —
+// the same closure computeChWidths builds, hoisted so a one-off caller
+// (mergeFirstLineStyle) can resolve a single style without the bulk pass.
+func newFontMetricsMeasurer(fc text.FontConfig) func(fontPath string, fontSize float64) fontMetrics {
 	type fontKey struct {
 		path     string
 		fontSize int32
 	}
-	type fontMetrics struct {
-		chWidth float64
-		xHeight float64
-		capHght float64
-	}
 	cache := make(map[fontKey]fontMetrics)
-
-	measure := func(fontPath string, fontSize float64) fontMetrics {
+	return func(fontPath string, fontSize float64) fontMetrics {
 		k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
 		if m, ok := cache[k]; ok {
 			return m
@@ -737,57 +808,6 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		}
 		cache[k] = m
 		return m
-	}
-
-	for _, style := range styles {
-		if style == nil {
-			continue
-		}
-		specifiedSize := style.GetFontSize()
-		family, _ := style.Get("font-family")
-		bold := style.GetFontWeight() == css.FontWeightBold
-		italic := style.GetFontStyle() == css.FontStyleItalic
-		mono := style.IsMonospaceFamily()
-		ahem := style.IsAhemFamily()
-		synth := style.GetFontSynthesis()
-		fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
-
-		// Measure metrics at the specified size so we can read the first font's
-		// actual aspect ratio for font-size-adjust resolution.
-		baseMetrics := measure(fontPath, specifiedSize)
-
-		// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
-		// `none` and `from-font` leave the used size equal to the specified
-		// size (from-font matches the first font's own aspect → factor 1).
-		usedSize := specifiedSize
-		adjust := style.GetFontSizeAdjust()
-		if adjust.IsActive() && specifiedSize > 0 {
-			actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
-			if actualRatio > 0 {
-				usedSize = specifiedSize * adjust.Value / actualRatio
-			} else {
-				// Spec: when the first font lacks the requested metric, the used
-				// size is undefined; clamp to 0 to match Blink's behavior of
-				// hiding the glyphs (matches font-size-adjust-zero-* refs).
-				usedSize = 0
-			}
-		}
-
-		usedMetrics := baseMetrics
-		if usedSize != specifiedSize {
-			usedMetrics = measure(fontPath, usedSize)
-		}
-
-		style.UsedFontSize = usedSize
-		style.UsedFontSizeSet = true
-		style.ChWidth = usedMetrics.chWidth
-		style.XHeight = usedMetrics.xHeight
-		style.CapHeight = usedMetrics.capHght
-		// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
-		// unit equals the element's computed line-height. Mirrors Blink's
-		// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		style.LhSize = style.GetLineHeight()
 	}
 }
 
