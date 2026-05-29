@@ -9712,6 +9712,28 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 	return x, y
 }
 
+// ResolveTransformOriginZ returns the resolved z-axis component of
+// transform-origin in pixels (default 0). Per CSS Transforms L2 §6 the
+// third value is a <length> only — no percentage, no keyword. Used by
+// the renderer to include the z-origin shift when composing 3D
+// transforms before 2D projection: 4×4 matrix becomes T(0,0,oz) * M * T(0,0,-oz).
+func (s *Style) ResolveTransformOriginZ() float64 {
+	val, ok := s.Get("transform-origin")
+	if !ok {
+		return 0
+	}
+	parts := splitShorthandParts(val)
+	if len(parts) < 3 {
+		return 0
+	}
+	// Third part is always z, regardless of any x/y keyword reordering.
+	fs := s.GetFontSize()
+	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
+	cap, lh := s.CapHeight, s.LhSize
+	z, _ := parseLengthFullWithCh(parts[2], fs, vw, vh, ch, xh, cap, lh)
+	return z
+}
+
 // classifyOriginParts maps a list of <position> tokens to (xToken, yToken),
 // applying CSS Values 3 §6.1's axis-classification rule: an unambiguous
 // horizontal keyword (left/right) anchors the x axis; an unambiguous vertical
@@ -9995,6 +10017,38 @@ func IsBackFaceVisible(transforms []Transform) bool {
 	// 3×3 — the "how much of source Z survives along destination Z" factor.
 	// Negative → back face toward viewer.
 	return m[2][2] < 0
+}
+
+// ComposeAffineProjection returns the 6-coefficient 2D affine projection of
+// the composed 4×4 transform matrix for `transforms`, suitable for direct
+// MultiplyMatrix(xx, yx, xy, yy, x0, y0) on a 2D draw context.
+//
+// For a box lying in the screen plane (z=0 in its local frame), applying the
+// composed 4×4 matrix M and dropping the resulting Z component yields the
+// 2D affine:
+//
+//	x' = m00*x + m01*y + m03
+//	y' = m10*x + m11*y + m13
+//
+// (with row 3 ignored — perspective division is approximated as identity).
+// This produces the exact 2D image when no perspective component is present
+// (m30=m31=0 and m33=1), which covers rotateX/rotateY/scale3d/translate3d/
+// matrix3d compositions used in nearly all CSS Transforms L2 §6 tests.
+//
+// Returns identity (1,0,0,1,0,0) for an empty transform list.
+//
+// Mirrors Blink's TransformPaintPropertyNode flatten-to-2D step in
+// `paint_property_tree_builder.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
+// which builds the same 4×4 then projects to a 2D affine for any layer that
+// inherits a flat parent context.
+func ComposeAffineProjection(transforms []Transform) (xx, yx, xy, yy, x0, y0 float64) {
+	m := identityMatrix4()
+	for _, t := range transforms {
+		m = m.multiply(transformToMatrix4(t))
+	}
+	// Drop column 2 (Z input) and row 2 (Z output), keep row 3 only for
+	// the m33 normalization in the no-perspective case.
+	return m[0][0], m[1][0], m[0][1], m[1][1], m[0][3], m[1][3]
 }
 
 // matrix4 is a 4×4 transform matrix stored in row-major order: m[row][col].

@@ -283,9 +283,10 @@ type PaintLayer struct {
 	// has been retired.
 
 	// CSS Transforms:
-	Transforms      []css.Transform
-	TransformOrigin [2]float64 // resolved to px: (origin-x, origin-y)
-	HasTransform    bool
+	Transforms       []css.Transform
+	TransformOrigin  [2]float64 // resolved to px: (origin-x, origin-y)
+	TransformOriginZ float64    // resolved z-component of transform-origin (default 0)
+	HasTransform     bool
 
 	// HasTransformPaint is true when this layer participates in transform
 	// paint semantics — either it has an actual `transform` (HasTransform)
@@ -1180,6 +1181,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			// (including calc-with-percent) relative to the border box.
 			ox, oy := s.ResolveTransformOriginPx(box.Width, box.Height)
 			layer.TransformOrigin = [2]float64{ox, oy}
+			// Z-component (length only; default 0). Used by applyTransforms to
+			// expand the 4×4 composition with T(0,0,oz) * M * T(0,0,-oz) so the
+			// projected 2D affine correctly accounts for the 3D origin shift.
+			layer.TransformOriginZ = s.ResolveTransformOriginZ()
 			// Resolve percentage translate values in shorthand transforms via the
 			// explicit IsPercent flag from the parser.
 			resolved := make([]css.Transform, len(transforms))

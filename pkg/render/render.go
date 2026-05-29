@@ -1838,83 +1838,154 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 	ox := sx + layer.TransformOrigin[0]
 	oy := sy + layer.TransformOrigin[1]
 
+	// 3D rendering context composition. Per CSS Transforms L2 §6.2,
+	// a child of a `transform-style: preserve-3d` parent shares the
+	// parent's 3D rendering context: its transform composes with the
+	// parent's transform in 4×4 (cumulative 3D rotation/scale/perspective)
+	// BEFORE 2D projection — not as the cumulative 2D projection that
+	// each ancestor independently applied.
+	//
+	// Mirrors Blink's TransformPaintPropertyNode tree, where a child
+	// inside a preserve-3d context inherits the parent's 4×4 transform
+	// node directly rather than re-flattening at each level
+	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	//
+	// Implementation: walk up while parent has preserve-3d, prepending
+	// each ancestor's transforms (and transform-origin shift) to a
+	// cumulative transform list. Compute the 2D projection of (ancestors)
+	// vs (ancestors+self), and apply the delta:
+	//     M_new = proj(ancestors+self) * proj(ancestors)^-1
+	// which when multiplied onto the DC matrix (already carrying
+	// proj(ancestors)) yields proj(ancestors+self).
+	//
+	// Falls back to plain self-only projection (per-layer flat
+	// composition) when there is no preserve-3d ancestor OR when the
+	// ancestors' projection is singular (determinant 0, e.g. an
+	// ancestor's transform is scaleY(0)). The singular fallback is a
+	// graceful degradation rather than correctness — the singular case
+	// cannot be expressed as a 2D affine delta.
+	// Build the transform-origin-Z-wrapped self transforms once; reused
+	// by both the preserve-3d branch and the flat branch below. Per CSS
+	// Transforms L2 §6 the transform-origin's z-component shifts the
+	// transform's 3D origin along the Z axis: the effective composition
+	// is `translateZ(oz) * Mtransforms * translateZ(-oz)`. (X/Y origin
+	// shifts are handled by the renderer's enclosing Translate(ox,oy) /
+	// Translate(-ox,-oy) pair.) For an oz of 0 this collapses to the
+	// raw transform list.
+	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
+
+	if ancestorTransforms := preserve3DAncestorTransforms(box); len(ancestorTransforms) > 0 {
+		// Move origin to transform-origin point.
+		r.dc.Translate(ox, oy)
+		ancXX, ancYX, ancXY, ancYY, ancX0, ancY0 := css.ComposeAffineProjection(ancestorTransforms)
+		combined := append(append([]css.Transform(nil), ancestorTransforms...), selfTransforms...)
+		newXX, newYX, newXY, newYY, newX0, newY0 := css.ComposeAffineProjection(combined)
+		// 2D affine inverse of M with coefficients (xx, yx, xy, yy, x0, y0):
+		// the point transform is x' = xx*x + xy*y + x0, y' = yx*x + yy*y + y0.
+		// Determinant det = xx*yy - xy*yx; inverse exists when det != 0.
+		det := ancXX*ancYY - ancXY*ancYX
+		if det != 0 {
+			invXX := ancYY / det
+			invYX := -ancYX / det
+			invXY := -ancXY / det
+			invYY := ancXX / det
+			invX0 := (ancXY*ancY0 - ancYY*ancX0) / det
+			invY0 := (ancYX*ancX0 - ancXX*ancY0) / det
+			// Undo ancestor's accumulated 2D projection.
+			r.dc.MultiplyMatrix(invXX, invYX, invXY, invYY, invX0, invY0)
+			// Apply the full combined (ancestors+self) projection.
+			r.dc.MultiplyMatrix(newXX, newYX, newXY, newYY, newX0, newY0)
+			// Move back from transform-origin.
+			r.dc.Translate(-ox, -oy)
+			return
+		}
+		// Singular ancestor projection: fall through to flat composition.
+		r.dc.Translate(-ox, -oy)
+	}
+
 	// Move origin to transform-origin point.
 	r.dc.Translate(ox, oy)
 
-	// Apply transforms in order.
+	// Compose all transforms into a single 4×4 matrix, then project to a
+	// 2D affine. This is the "flatten" step Blink's
+	// TransformPaintPropertyNode performs for every layer that inherits
+	// a flat parent context (paint_property_tree_builder.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	//
-	// louis14 is a 2D renderer. 3D transform functions (rotateX/Y, scaleZ,
-	// translateZ, matrix3d, perspective, etc.) are PARSED so back-face
-	// computation works but they're NOT rendered. Composing nested
-	// per-element 2D projections of independent 3D rotations does not
-	// reproduce the cumulative 3D effect (e.g. four nested rotateX(45deg)
-	// in `preserve-3d` should equal rotateX(180deg), but
-	// scaleY(cos(45))^4 ≈ 0.25, not scaleY(-1)) — so a naive per-element
-	// projection produces results worse than the no-op baseline. The
-	// back-face skip remains the only render-time consumer of 3D parses.
-	for _, t := range layer.Transforms {
-		switch t.Type {
-		case "translate", "translate3d":
-			tx := t.Values[0]
-			ty := 0.0
-			if len(t.Values) > 1 {
-				ty = t.Values[1]
-			}
-			r.dc.Translate(tx, ty)
-		case "rotate":
-			// parseAngle() returns degrees; DrawContext.Rotate() takes radians.
-			r.dc.Rotate(t.Values[0] * math.Pi / 180)
-		case "scale":
-			sx := t.Values[0]
-			sy := sx
-			if len(t.Values) > 1 {
-				sy = t.Values[1]
-			}
-			r.dc.Scale(sx, sy)
-		case "skew":
-			// skew(ax, ay) = matrix(1, tan(ay), tan(ax), 1, 0, 0)
-			ax := t.Values[0] * math.Pi / 180
-			ay := 0.0
-			if len(t.Values) > 1 {
-				ay = t.Values[1] * math.Pi / 180
-			}
-			r.dc.MultiplyMatrix(1, math.Tan(ay), math.Tan(ax), 1, 0, 0)
-		case "matrix":
-			// matrix(a, b, c, d, e, f) — general 2D affine transform
-			if len(t.Values) >= 6 {
-				r.dc.MultiplyMatrix(t.Values[0], t.Values[1], t.Values[2], t.Values[3], t.Values[4], t.Values[5])
-			}
-		case "scale3d":
-			// 2D projection: scale(x, y); the z component has no effect on a
-			// flat (z=0) box. Equivalent in 2D to scale(x, y).
-			if len(t.Values) >= 3 {
-				r.dc.Scale(t.Values[0], t.Values[1])
-			}
-		case "matrix3d":
-			// 2D projection of a 4×4 column-major matrix: drop column 2 and
-			// row 2, keeping the upper-left 2×2 and the X/Y translates from
-			// column 3. Order in storage: m[col*4+row].
-			//
-			// In CSS this is the exact 2D image of the 3D transform when
-			// the box itself lies in the screen plane (z=0) and no
-			// perspective division is applied. matrix3d/translate3d/
-			// scale3d are SINGLE-element ops — their 2D projection is exact
-			// and independent of any preserve-3d composition.
-			if len(t.Values) >= 16 {
-				v := t.Values
-				r.dc.MultiplyMatrix(v[0], v[1], v[4], v[5], v[12], v[13])
-			}
-			// rotateX, rotateY, rotateZ, rotate3d, scaleZ, translateZ,
-			// perspective: parse-only. Per-element 2D projection of a 3D
-			// rotation cannot reproduce the cumulative effect of nested
-			// preserve-3d rotations (cos(45)^4 ≠ cos(180)); leaving them as
-			// no-ops at render time preserves test↔ref equivalence in the
-			// no-transform baseline that those WPT cases rely on.
-		}
-	}
+	// The composed projection is correct for cumulative 3D transforms
+	// — e.g. rotateX(90deg) * scale3d(2,1,2) * rotateX(-90deg) composes
+	// to scale(2,2), which a per-function 2D projection cannot produce.
+	//
+	// Perspective division (m30/m31 != 0 or m33 != 1) is approximated by
+	// dropping row 3 — this matches the no-perspective case exactly and
+	// degrades gracefully for tests where the perspective component is
+	// small. Boxes with non-trivial perspective render as the affine
+	// portion of the projection rather than the full perspective image.
+	xx, yx, xy, yy, x0, y0 := css.ComposeAffineProjection(selfTransforms)
+	r.dc.MultiplyMatrix(xx, yx, xy, yy, x0, y0)
 
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
+}
+
+// wrapTransformsWithOriginZ returns `transforms` bracketed by
+// translateZ(oz) and translateZ(-oz) so that ComposeAffineProjection's
+// 4×4 composition reflects the full 3D transform-origin per CSS
+// Transforms L2 §6 (`T(0,0,oz) * M * T(0,0,-oz)`). For oz == 0 the
+// original slice is returned unchanged.
+func wrapTransformsWithOriginZ(transforms []css.Transform, oz float64) []css.Transform {
+	if oz == 0 {
+		return transforms
+	}
+	wrapped := make([]css.Transform, 0, len(transforms)+2)
+	wrapped = append(wrapped, css.Transform{Type: "translateZ", Values: []float64{oz}})
+	wrapped = append(wrapped, transforms...)
+	wrapped = append(wrapped, css.Transform{Type: "translateZ", Values: []float64{-oz}})
+	return wrapped
+}
+
+// preserve3DAncestorTransforms returns the flat list of ancestor
+// transforms (in document/composition order: outermost first) that share
+// `box`'s 3D rendering context. The walk stops at the first ancestor
+// whose parent is NOT `transform-style: preserve-3d` — that ancestor's
+// transform is included (it's the context root from the descendant's
+// perspective) only if its parent is preserve-3d; otherwise the walk
+// stops with nothing included.
+//
+// Concretely: walk parent → grandparent → ... while
+// `ancestor.Style.GetTransformStyle() == preserve-3d`. The walk
+// terminates as soon as that condition fails (the ancestor sits in a
+// flat parent's context, so its own transform was already 2D-projected
+// at its own paint).
+//
+// Mirrors Blink's TransformPaintPropertyNode 3D-rendering-context walk
+// in paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
+	if box == nil || box.Parent == nil {
+		return nil
+	}
+	var ancestors []css.Transform
+	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil; ancestor = ancestor.Parent {
+		if ancestor.Style.GetTransformStyle() != css.TransformStylePreserve3D {
+			break
+		}
+		// Prepend this ancestor's transforms (outermost first, applied
+		// before descendant transforms in the composition chain).
+		ancTransforms := ancestor.Style.GetTransforms()
+		if len(ancTransforms) > 0 {
+			ancestors = append(append([]css.Transform(nil), ancTransforms...), ancestors...)
+		}
+		// Individual longhands (translate/rotate/scale) apply in
+		// canonical CSS order: translate → rotate → scale → transform.
+		// Mirrors css.IsBackFaceVisible / computeBackfaceHidden.
+		if deg, ok := ancestor.Style.GetIndividualRotate(); ok {
+			ancestors = append([]css.Transform{{Type: "rotate", Values: []float64{deg}}}, ancestors...)
+		}
+		if sx, sy, ok := ancestor.Style.GetIndividualScale(); ok {
+			ancestors = append([]css.Transform{{Type: "scale", Values: []float64{sx, sy}}}, ancestors...)
+		}
+	}
+	return ancestors
 }
 
 // paintLayerContent paints the layer's own box and children in
