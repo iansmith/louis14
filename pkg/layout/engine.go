@@ -815,11 +815,7 @@ func newFontMetricsMeasurer(fc text.FontConfig) func(fontPath string, fontSize f
 // for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Returns 0 when
 // the font has no usable value for the metric — callers treat that as a
 // zero-sized used font-size.
-func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m struct {
-	chWidth float64
-	xHeight float64
-	capHght float64
-}, fontSize float64, fontPath string) float64 {
+func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSize float64, fontPath string) float64 {
 	if fontSize <= 0 {
 		return 0
 	}

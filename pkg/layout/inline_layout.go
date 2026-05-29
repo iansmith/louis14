@@ -1015,15 +1015,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// block (test 001) but never shrink it below the block strut when it is
 		// SHORTER (test 002). Merging ::first-line line-height into the strut
 		// here would wrongly collapse the first line to the smaller height.
-		// Mirrors Blink keeping the block-flow strut while the first-line
-		// ComputedStyle applies to the inline content.
-		strutStyle := bla.style
+		// Mirrors Blink keeping the block-flow strut (bla.style) while the
+		// first-line ComputedStyle applies to the inline content.
 		var firstLineBgStyle *css.Style
 		if isFirstLineForBox {
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
 
