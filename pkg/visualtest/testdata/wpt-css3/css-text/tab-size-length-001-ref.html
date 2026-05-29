@@ -1,17 +1,29 @@
-<!DOCTYPE html>
-<title>CSS tab-size: length reference</title>
-<style>
-  body { margin: 0; }
-  /* With Ahem at 16px and tab-size:80px, "X" is 16px.
-     Tab advances to next 80px stop. Gap = 64px. Next "X" at 80px. */
-  div {
-    font-family: Ahem;
-    font-size: 16px;
-    line-height: 20px;
-    background: lime;
-    margin: 0;
-    padding: 0;
-  }
-  span.gap { display: inline-block; width: 64px; }
-</style>
-<div>X<span class="gap"></span>X</div>
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Text Test: tab-size: length</title>
+    <link rel="author" title="David Storey" href="mailto:david@openweb.io">
+    <link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
+    <style type="text/css">
+        .container {
+            position: absolute;
+        }
+        .test {
+            font-family: Ahem;
+            font-size: 20px;
+
+            position: absolute;
+            top: 0;
+            left: 0;
+            background: green;
+
+        }
+    </style>
+</head>
+<body>
+    <p>The test passes if there is no red.</p>
+    <div class="container">
+        <pre class="green test">  </pre>
+    </div>
+</body>
+</html>

@@ -1,23 +1,16 @@
 <!DOCTYPE html>
-<html>
-<head>
-  <title>Reference: overflow-wrap break-word</title>
-  <meta charset="utf-8">
-  <style>
-    body { margin: 0; }
-    /* Same text broken at character boundaries within 100px.
-       Text is hidden (green on green) — only box height matters. */
-    .box {
-      width: 100px;
-      overflow-wrap: break-word;
-      background: green;
-      color: green;
-      font-size: 16px;
-      line-height: 19px;
-    }
-  </style>
-</head>
+<meta charset="utf-8">
+<title>CSS Text Test Reference File</title>
+<link rel="author" title="Intel" href="http://www.intel.com">
+<link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
+<style>
+  #test {
+    border: 5px solid orange;
+    font: 20px/1 Ahem;
+    width: 200px;
+  }
+</style>
 <body>
-  <div class="box">ABCDEFGHIJKLMNOPQRSTUVWXYZ</div>
+  <p class="instructions">Test passes if the black box is within the orange box.</p>
+  <p id="test">FillerText<br>FillerText<br>FillerText<br>FillerText</p>
 </body>
-</html>
