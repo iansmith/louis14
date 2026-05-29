@@ -772,6 +772,18 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["id"] = val.String()
 		return true
+	case "style":
+		// CSSStyleDeclaration is `[SameObject, PutForwards=cssText]` on the
+		// HTMLElement.style attribute (CSSOM §6.7.1): `element.style = "..."`
+		// forwards to `element.style.cssText = "..."`, which replaces the whole
+		// inline declaration block with the assigned string. We set the `style`
+		// content attribute directly to the string form, matching the classList
+		// PutForwards case above. Assigning "" clears the inline style.
+		if e.node.Attributes == nil {
+			e.node.Attributes = make(map[string]string)
+		}
+		e.node.Attributes["style"] = val.String()
+		return true
 	case "innerHTML":
 		e.setInnerHTML(val.String())
 		return true
