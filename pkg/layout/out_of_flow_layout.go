@@ -450,6 +450,7 @@ func isNonStretchableDisplay(style *css.Style) bool {
 // given direction of the containing block's writing mode.
 // If inline is true, checks the CB's inline axis; otherwise the block axis.
 func isAutoSizeInDirection(childStyle interface {
+	Get(string) (string, bool)
 	GetLength(string) (float64, bool)
 	GetPercentage(string) (float64, bool)
 }, cbWDM WritingDirectionMode, inline bool) bool {
@@ -473,6 +474,16 @@ func isAutoSizeInDirection(childStyle interface {
 		return false
 	}
 	if _, ok := childStyle.GetPercentage(prop); ok {
+		return false
+	}
+	// CSS Values 4 §10: a math function (calc / min / max / clamp) on
+	// width/height is also a definite (non-auto) size — GetLength returns
+	// false here because the percent term won't resolve without a base.
+	// Mirrors fragment_geometry.Resolve* which DOES resolve such values
+	// downstream. Treating it as auto would route the OOF child through
+	// the "fill IMCB" stretch-fit path, which then ignores the explicit
+	// width entirely (regression in css-values/vh-calc-support-pct).
+	if val, ok := childStyle.Get(prop); ok && css.IsMathFunction(val) {
 		return false
 	}
 	return true

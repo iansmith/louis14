@@ -708,67 +708,6 @@ func splitCSSFunctionArgs(s string) []string {
 	return parts
 }
 
-// parseMathArg resolves a CSS value that may be a length or percentage
-// Percentages are resolved against the viewport width (best approximation)
-func parseMathArg(s string, fontSize, vw, vh float64) (float64, bool) {
-	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "%") {
-		numStr := strings.TrimSuffix(s, "%")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err == nil && vw > 0 {
-			return num * vw / 100, true
-		}
-		return 0, false
-	}
-	return ParseLengthFull(s, fontSize, vw, vh)
-}
-
-func evalMinMax(argsStr, mode string, fontSize, vw, vh float64) (float64, bool) {
-	args := splitCSSFunctionArgs(argsStr)
-	// CSS Values 4 §10.3: min() and max() accept one or more arguments.
-	// A single-argument form (e.g. max(200px)) is valid and resolves to
-	// that single value.
-	if len(args) < 1 {
-		return 0, false
-	}
-	result, ok := parseMathArg(args[0], fontSize, vw, vh)
-	if !ok {
-		return 0, false
-	}
-	for _, arg := range args[1:] {
-		val, ok := parseMathArg(arg, fontSize, vw, vh)
-		if !ok {
-			return 0, false
-		}
-		if mode == "min" && val < result {
-			result = val
-		} else if mode == "max" && val > result {
-			result = val
-		}
-	}
-	return result, true
-}
-
-func evalClamp(argsStr string, fontSize, vw, vh float64) (float64, bool) {
-	args := splitCSSFunctionArgs(argsStr)
-	if len(args) != 3 {
-		return 0, false
-	}
-	minVal, ok1 := parseMathArg(args[0], fontSize, vw, vh)
-	prefVal, ok2 := parseMathArg(args[1], fontSize, vw, vh)
-	maxVal, ok3 := parseMathArg(args[2], fontSize, vw, vh)
-	if !ok1 || !ok2 || !ok3 {
-		return 0, false
-	}
-	if prefVal < minVal {
-		return minVal, true
-	}
-	if prefVal > maxVal {
-		return maxVal, true
-	}
-	return prefVal, true
-}
-
 // ParseLengthFull parses a length value with em, rem, and viewport unit support.
 // Uses a default ch multiplier of 0.5em (horizontal writing mode approximation).
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
@@ -792,19 +731,13 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 		val = resolveEnvValue(val)
 		val = strings.TrimSpace(val)
 	}
-	// Handle min(), max(), clamp() functions
-	if strings.HasPrefix(val, "min(") && strings.HasSuffix(val, ")") {
-		return evalMinMax(val[4:len(val)-1], "min", fontSize, viewportWidth, viewportHeight)
-	}
-	if strings.HasPrefix(val, "max(") && strings.HasSuffix(val, ")") {
-		return evalMinMax(val[4:len(val)-1], "max", fontSize, viewportWidth, viewportHeight)
-	}
-	if strings.HasPrefix(val, "clamp(") && strings.HasSuffix(val, ")") {
-		return evalClamp(val[6:len(val)-1], fontSize, viewportWidth, viewportHeight)
-	}
-	// Handle calc() expressions — pass full context so ch/vw/vh/ex/cap/lh units resolve correctly.
-	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
-		expr := val[5 : len(val)-1] // strip "calc(" and ")"
+	// Math functions (calc / min / max / clamp). Route through the
+	// shared EvalMathFunction dispatch so nested calls and percent-base
+	// propagation behave the same regardless of the head identifier.
+	// Note: percentBase is left 0 here — callers that have a layout-time
+	// percentage resolution size go through EvalMathFunctionWithPercent
+	// directly from the layout layer (fragment_geometry.Resolve*).
+	if IsMathFunction(val) {
 		ctx := calcContext{
 			fontSize:       fontSize,
 			viewportWidth:  viewportWidth,
@@ -814,11 +747,7 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 			capHeight:      capHeight,
 			lhSize:         lhSize,
 		}
-		result, ok := evalCalcFull(expr, ctx)
-		if ok {
-			return result, true
-		}
-		return 0, false
+		return EvalMathFunction(val, ctx)
 	}
 	// Dynamic/static/large viewport units — treat all as equivalent to vh/vw
 	// in static renderer (no browser chrome changes). Must be checked before
@@ -1265,6 +1194,18 @@ func parseCalcAtom(tokens []string, pos int, ctx calcContext) (calcResult, bool)
 		result.pos++ // consume ")"
 		return result, true
 	}
+	// Handle nested math functions inside a calc() atom: `calc`, `min`,
+	// `max`, `clamp` followed by `(` ... matching `)`. Mirrors Blink's
+	// CSSMathExpressionOperation::ParseMathFunction (css_math_expression_node.cc
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) where each math-function head
+	// is a CSSValueID switch arm in ConsumeMathFunctionArguments.
+	if expr, consumed, ok := extractNestedMathCall(tokens, pos); ok {
+		val, evalOK := EvalMathFunction(expr, ctx)
+		if !evalOK {
+			return calcResult{}, false
+		}
+		return calcResult{value: val, pos: pos + consumed}, true
+	}
 	// Handle percentage values: resolve against percentBase. With
 	// percentResolvesToZero, percent terms evaluate to 0 (used in intrinsic
 	// sizing where there is no containing block to resolve against).
@@ -1304,6 +1245,17 @@ func tokenizeCalc(expr string) []string {
 		}
 		if ch == '+' || ch == '*' || ch == '/' {
 			tokens = append(tokens, string(ch))
+			i++
+			continue
+		}
+		// Comma — argument separator for nested math functions. Must be
+		// preserved as a distinct token so extractNestedMathCall can
+		// reconstruct min()/max()/clamp() argument lists faithfully.
+		// (calcContext-level evaluators never see commas — they only
+		// appear in re-fed sub-call strings, which splitCSSFunctionArgs
+		// then splits on.)
+		if ch == ',' {
+			tokens = append(tokens, ",")
 			i++
 			continue
 		}
@@ -2128,6 +2080,33 @@ func (s *Style) GetPositionOffsetResolved(cbWidth, cbHeight float64) PositionOff
 	return offset
 }
 
+// EvalMathWithBase evaluates a CSS math function (calc/min/max/clamp) using
+// the style's full font/viewport context plus the supplied percent base.
+// Returns (result, true) on success, (0, false) on parse/type errors or when
+// val isn't a math function.
+//
+// Use this in preference to the package-level EvalMathFunctionWithPercent
+// when the call site has a Style available — that wrapper sets viewport to 0,
+// which silently zeroes vw/vh terms inside the expression (see
+// css-values/vh-calc-support-pct: width: calc(100vw + 50%)). This method
+// mirrors resolveLengthOrPercent's context construction.
+func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool) {
+	if !IsMathFunction(val) {
+		return 0, false
+	}
+	ctx := calcContext{
+		fontSize:       s.GetFontSize(),
+		percentBase:    percentBase,
+		viewportWidth:  s.ViewportWidth,
+		viewportHeight: s.ViewportHeight,
+		chScale:        s.chScale(),
+		xHeight:        s.XHeight,
+		capHeight:      s.CapHeight,
+		lhSize:         s.LhSize,
+	}
+	return EvalMathFunction(val, ctx)
+}
+
 // resolveLengthOrPercent tries to parse a property as a length or percentage.
 // If it's a percentage, it's resolved against the given reference value.
 func (s *Style) resolveLengthOrPercent(property string, reference float64) (float64, bool) {
@@ -2135,17 +2114,22 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 	if !ok || val == "auto" {
 		return 0, false
 	}
-	// Handle calc() with percentage terms using the correct percentage base.
-	// Pass full context (viewport, ch scale) so that ch/vw/vh units resolve correctly.
-	if IsCalcWithPercent(val) {
+	// CSS Values 4 §10: math functions (calc/min/max/clamp) with a %
+	// term need the supplied reference as percent base. Pass full context
+	// (viewport, ch scale, x-height, etc.) so font-relative and viewport
+	// units inside the expression resolve correctly.
+	if IsMathFunctionWithPercent(val) {
 		ctx := calcContext{
 			fontSize:       s.GetFontSize(),
 			percentBase:    reference,
 			viewportWidth:  s.ViewportWidth,
 			viewportHeight: s.ViewportHeight,
 			chScale:        s.chScale(),
+			xHeight:        s.XHeight,
+			capHeight:      s.CapHeight,
+			lhSize:         s.LhSize,
 		}
-		if result, calcOK := evalCalcFull(val[5:len(val)-1], ctx); calcOK {
+		if result, calcOK := EvalMathFunction(val, ctx); calcOK {
 			return result, true
 		}
 	}
@@ -2158,13 +2142,29 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 	return 0, false
 }
 
-// GetZIndex returns the z-index value (default: 0)
+// GetZIndex returns the z-index value (default: 0). A `calc()`-resolved
+// z-index is rounded toward positive infinity per CSS Values 4 §6.3:
+// "Halfway values are rounded toward positive infinity." So
+// `z-index: calc(3 / 2)` → 2, not 1.
 func (s *Style) GetZIndex() int {
 	if zindex, ok := s.Get("z-index"); ok {
-		// Simple integer parsing
+		// Simple integer parsing first (most common case).
 		var z int
 		if _, err := fmt.Sscanf(zindex, "%d", &z); err == nil {
 			return z
+		}
+		// calc()/min()/max()/clamp() — compute the numeric value and
+		// round per §6.3 (round half toward +inf).
+		if IsMathFunction(zindex) {
+			ctx := calcContext{
+				fontSize:       s.GetFontSize(),
+				viewportWidth:  s.ViewportWidth,
+				viewportHeight: s.ViewportHeight,
+				chScale:        s.chScale(),
+			}
+			if v, ok := EvalMathFunction(zindex, ctx); ok {
+				return int(math.Floor(v + 0.5))
+			}
 		}
 	}
 	return 0
@@ -2179,8 +2179,23 @@ func (s *Style) HasExplicitZIndex() bool {
 		return false
 	}
 	var z int
-	_, err := fmt.Sscanf(zindex, "%d", &z)
-	return err == nil
+	if _, err := fmt.Sscanf(zindex, "%d", &z); err == nil {
+		return true
+	}
+	// calc() z-index: treat as explicit when the expression resolves to
+	// a number. Mirrors Blink's CSSPropertyParser, which accepts any
+	// <integer> form for z-index including math functions.
+	if IsMathFunction(zindex) {
+		ctx := calcContext{
+			fontSize:       s.GetFontSize(),
+			viewportWidth:  s.ViewportWidth,
+			viewportHeight: s.ViewportHeight,
+			chScale:        s.chScale(),
+		}
+		_, ok := EvalMathFunction(zindex, ctx)
+		return ok
+	}
+	return false
 }
 
 // stripImportantSuffix returns (value-without-!important, true) if value has a
@@ -7564,12 +7579,38 @@ func (s *Style) GetVerticalAlign() VerticalAlign {
 
 // GetVerticalAlignOffset returns the pixel offset for length-based vertical-align values
 // (e.g., "10px" → 10.0). Positive means raise up (toward smaller Y). Returns 0 if not a length.
+//
+// CSS 2.1 §10.8.1: percentages on vertical-align resolve against the line-height
+// of the element itself. calc()/min()/max()/clamp() are accepted per CSS Values 4
+// §10 and threaded through the math evaluator with that percent base.
 func (s *Style) GetVerticalAlignOffset() float64 {
 	if align, ok := s.Get("vertical-align"); ok {
 		switch align {
 		case "top", "middle", "bottom", "baseline", "sub", "super", "text-top", "text-bottom":
 			return 0
 		default:
+			// Math functions (calc/min/max/clamp): percent base is the
+			// element's own line-height per §10.8.1.
+			if IsMathFunction(align) {
+				ctx := calcContext{
+					fontSize:       s.GetFontSize(),
+					viewportWidth:  s.ViewportWidth,
+					viewportHeight: s.ViewportHeight,
+					chScale:        s.chScale(),
+					xHeight:        s.XHeight,
+					capHeight:      s.CapHeight,
+					lhSize:         s.LhSize,
+					percentBase:    s.GetLineHeight(),
+				}
+				if v, ok := EvalMathFunction(align, ctx); ok {
+					return v
+				}
+				return 0
+			}
+			// Bare percentage (e.g., "50%"): also against line-height.
+			if pct, ok := ParsePercentage(align); ok {
+				return pct / 100.0 * s.GetLineHeight()
+			}
 			if px, ok := ParseLength(align); ok {
 				return px
 			}
