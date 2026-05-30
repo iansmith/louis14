@@ -10805,32 +10805,32 @@ type BackgroundPosition struct {
 	YExpr string
 }
 
+// resolveBackgroundAxis resolves one background-position axis to a pixel
+// offset against base = (positioning area − image size), which may be
+// negative. A deferred min()/max()/clamp() expr takes precedence; otherwise
+// a pixel value is returned as-is and a percentage (stored negative) resolves
+// against base. Shared by ResolveX/ResolveY so the two axes stay in lockstep.
+func resolveBackgroundAxis(expr string, isPixel bool, val, offset, base float64) float64 {
+	if expr != "" {
+		return resolvePositionExpr(expr, base)
+	}
+	if isPixel {
+		return val
+	}
+	if val < 0 {
+		return base*(-val)/100 + offset
+	}
+	return val + offset
+}
+
 // ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
-	if p.XExpr != "" {
-		return resolvePositionExpr(p.XExpr, containerW-imageW)
-	}
-	if p.XIsPixel {
-		return p.X
-	}
-	if p.X < 0 {
-		return (containerW-imageW)*(-p.X)/100 + p.XOffset
-	}
-	return p.X + p.XOffset
+	return resolveBackgroundAxis(p.XExpr, p.XIsPixel, p.X, p.XOffset, containerW-imageW)
 }
 
 // ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
-	if p.YExpr != "" {
-		return resolvePositionExpr(p.YExpr, containerH-imageH)
-	}
-	if p.YIsPixel {
-		return p.Y
-	}
-	if p.Y < 0 {
-		return (containerH-imageH)*(-p.Y)/100 + p.YOffset
-	}
-	return p.Y + p.YOffset
+	return resolveBackgroundAxis(p.YExpr, p.YIsPixel, p.Y, p.YOffset, containerH-imageH)
 }
 
 // resolvePositionExpr resolves a deferred min()/max()/clamp() background-position
