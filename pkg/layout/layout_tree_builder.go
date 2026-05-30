@@ -1814,19 +1814,19 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	case css.ListStyleTypeSquare:
 		return "▪" // black small square
 	case css.ListStyleTypeDecimal:
-		return strconv.Itoa(value) + "."
+		return strconv.Itoa(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDecimalLeadingZero:
-		return fmt.Sprintf("%02d.", value)
+		return fmt.Sprintf("%02d", value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return css.ToAlpha(value) + "."
+		return css.ToAlpha(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(css.ToAlpha(value)) + "."
+		return strings.ToUpper(css.ToAlpha(value)) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(css.ToRoman(value)) + "."
+		return strings.ToLower(css.ToRoman(value)) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeUpperRoman:
-		return css.ToRoman(value) + "."
+		return css.ToRoman(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerGreek:
-		return css.ToGreek(value) + "."
+		return css.ToGreek(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDisclosureOpen:
 		return "▼" // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:

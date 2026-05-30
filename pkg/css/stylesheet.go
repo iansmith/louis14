@@ -174,6 +174,13 @@ type KeyframeRule struct {
 	Declarations map[string]string // CSS declarations at this stop
 }
 
+// DefaultCounterStyleSuffix is the CSS Counter Styles L3 default `suffix`
+// descriptor value (full stop + space, `\2E\20`), appended after predefined
+// numeric/alphabetic counter representations (e.g. "1. "). Single source of
+// truth for every predefined-counter-style marker suffix; mirrors Blink's
+// CounterStyle::suffix_ default (`core/css/counter_style.h` @4883d11f).
+const DefaultCounterStyleSuffix = ". "
+
 // CounterStyleRule represents a parsed @counter-style rule.
 type CounterStyleRule struct {
 	Name            string           // Counter style name
@@ -5889,7 +5896,7 @@ func parseCounterStyleRule(ruleStr string) CounterStyleRule {
 	rule := CounterStyleRule{
 		Name:    nameStr,
 		System:  "symbolic",
-		Suffix:  ". ",
+		Suffix:  DefaultCounterStyleSuffix,
 		Prefix:  "",
 		Symbols: nil,
 	}

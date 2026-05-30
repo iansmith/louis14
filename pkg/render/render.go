@@ -5144,19 +5144,19 @@ func capitalizeWords(s string) string {
 func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 	switch lst {
 	case css.ListStyleTypeDecimal:
-		return fmt.Sprintf("%d.", index)
+		return fmt.Sprintf("%d", index) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDecimalLeadingZero:
-		return fmt.Sprintf("%02d.", index)
+		return fmt.Sprintf("%02d", index) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return css.ToAlpha(index) + "."
+		return css.ToAlpha(index) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(css.ToAlpha(index)) + "."
+		return strings.ToUpper(css.ToAlpha(index)) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(css.ToRoman(index)) + "."
+		return strings.ToLower(css.ToRoman(index)) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeUpperRoman:
-		return css.ToRoman(index) + "."
+		return css.ToRoman(index) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerGreek:
-		return css.ToGreek(index) + "."
+		return css.ToGreek(index) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDisclosureOpen:
 		return "\u25BE" // ▾ downward-pointing triangle
 	case css.ListStyleTypeDisclosureClosed:
@@ -5299,18 +5299,18 @@ func fallbackCounter(value int, fallback string, allStyles map[string]css.Counte
 		// Check if fallback is a built-in style
 		switch fallback {
 		case "decimal":
-			return fmt.Sprintf("%d.", value)
+			return fmt.Sprintf("%d", value) + css.DefaultCounterStyleSuffix
 		case "lower-alpha", "lower-latin":
-			return css.ToAlpha(value) + "."
+			return css.ToAlpha(value) + css.DefaultCounterStyleSuffix
 		case "upper-alpha", "upper-latin":
-			return strings.ToUpper(css.ToAlpha(value)) + "."
+			return strings.ToUpper(css.ToAlpha(value)) + css.DefaultCounterStyleSuffix
 		case "lower-roman":
-			return strings.ToLower(css.ToRoman(value)) + "."
+			return strings.ToLower(css.ToRoman(value)) + css.DefaultCounterStyleSuffix
 		case "upper-roman":
-			return css.ToRoman(value) + "."
+			return css.ToRoman(value) + css.DefaultCounterStyleSuffix
 		}
 	}
-	return fmt.Sprintf("%d.", value)
+	return fmt.Sprintf("%d", value) + css.DefaultCounterStyleSuffix
 }
 
 // List markers are real laid-out ::marker boxes (marker-foundation Phases
@@ -5742,9 +5742,9 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			}
 		}
 
-		lhExt := lh + decorExt + topExt              // enlarged buffer height
-		taExt := ta + inlineStartExt + inlineEndExt  // enlarged buffer width (inline axis)
-		textOff := topExt                            // srcY where text glyph top lands
+		lhExt := lh + decorExt + topExt             // enlarged buffer height
+		taExt := ta + inlineStartExt + inlineEndExt // enlarged buffer width (inline axis)
+		textOff := topExt                           // srcY where text glyph top lands
 
 		// Draw horizontal text into an off-screen buffer. Text is painted
 		// at buffer X = inlineStartExt so the inlineStartExt columns to
