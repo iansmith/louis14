@@ -184,9 +184,12 @@ func TestBackgroundPositionMinMaxNegativeBase(t *testing.T) {
 		{"min/max negative base", "min(0%, 100%) max(0%, 100%)", -50, 0},
 		// Sanity: against this same negative base, `right top` is the reference.
 		{"right top reference", "right top", -50, 0},
-		// clamp() should also resolve at the used-value level.
-		// clamp(0%, 100%, 100%) = max(0%, min(100%,100%)) = 100% -> used -50.
-		{"clamp negative base", "clamp(0%, 100%, 100%) clamp(0%, 0%, 100%)", -50, 0},
+		// clamp() resolves at the used-value level too. At base -50 the used
+		// values invert, so clamp(MIN, VAL, MAX) is compared as
+		// max(used(MIN), min(used(VAL), used(MAX))):
+		//   X: clamp(100%, 50%, 0%) -> max(-50, min(-25, 0)) = max(-50,-25) = -25
+		//   Y: clamp(0%, 50%, 100%) -> max(0, min(-25, -50)) = max(0,-50)   = 0
+		{"clamp negative base", "clamp(100%, 50%, 0%) clamp(0%, 50%, 100%)", -25, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

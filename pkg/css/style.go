@@ -10791,10 +10791,25 @@ type BackgroundPosition struct {
 	// offset is in XOffset/YOffset.
 	XOffset float64
 	YOffset float64
+	// XExpr/YExpr hold a raw min()/max()/clamp() expression for the axis,
+	// left unresolved at parse time because its resolution base
+	// (positioning area − image size) is only known at paint time and may be
+	// negative. ResolveX/ResolveY evaluate the comparison at the used-value
+	// (pixel) level so a negative base inverts the ordering correctly.
+	// Mirrors Blink storing a CSSMathFunctionValue as a Length(calc) that
+	// preserves the percentage and resolves in BackgroundImageGeometry
+	// against (positioning_area − image_size); Chromium
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+	// core/paint/background_image_geometry.cc.
+	XExpr string
+	YExpr string
 }
 
 // ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
+	if p.XExpr != "" {
+		return resolvePositionExpr(p.XExpr, containerW-imageW)
+	}
 	if p.XIsPixel {
 		return p.X
 	}
@@ -10806,6 +10821,9 @@ func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
 
 // ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
+	if p.YExpr != "" {
+		return resolvePositionExpr(p.YExpr, containerH-imageH)
+	}
 	if p.YIsPixel {
 		return p.Y
 	}
@@ -10813,6 +10831,68 @@ func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
 		return (containerH-imageH)*(-p.Y)/100 + p.YOffset
 	}
 	return p.Y + p.YOffset
+}
+
+// resolvePositionExpr resolves a deferred min()/max()/clamp() background-position
+// component to a pixel offset against base = (positioning area − image size),
+// which may be negative. Each argument is resolved to its used pixel value
+// first, and min/max/clamp then compares those used values — so a negative base
+// inverts the percentage ordering, matching Blink's BackgroundImageGeometry,
+// which resolves percentages against (positioning_area − image_size) before
+// comparing; Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// core/paint/background_image_geometry.cc.
+func resolvePositionExpr(expr string, base float64) float64 {
+	resolveArg := func(arg string) float64 {
+		// Font-relative units inside the math function resolve against the
+		// default font size (matching ParseBackgroundPosition's convention);
+		// background-position math args are percentages in practice.
+		r := parsePositionComponentFull(strings.TrimSpace(arg), 16.0)
+		if r.expr != "" { // nested math function
+			return resolvePositionExpr(r.expr, base)
+		}
+		if r.isPixel {
+			return r.value + r.offset
+		}
+		// Percentages are stored negative (see BackgroundPosition); the used
+		// offset is base * percentage.
+		return base*(-r.value)/100 + r.offset
+	}
+	var head, inner string
+	switch {
+	case strings.HasPrefix(expr, "min("):
+		head, inner = "min", expr[len("min("):len(expr)-1]
+	case strings.HasPrefix(expr, "max("):
+		head, inner = "max", expr[len("max("):len(expr)-1]
+	case strings.HasPrefix(expr, "clamp("):
+		head, inner = "clamp", expr[len("clamp("):len(expr)-1]
+	default:
+		return 0
+	}
+	args := splitCSSFunctionArgs(inner)
+	if head == "clamp" {
+		// clamp(min, val, max) ≡ max(minVal, min(val, maxVal)), compared at the
+		// used-value level. CSS Values 4 §10.4: when the resolved minimum
+		// exceeds the maximum (which a negative base can cause), the minimum
+		// wins — the max(min(...)) form yields that without a special case.
+		if len(args) != 3 {
+			return 0
+		}
+		lo, val, hi := resolveArg(args[0]), resolveArg(args[1]), resolveArg(args[2])
+		return math.Max(lo, math.Min(val, hi))
+	}
+	if len(args) == 0 {
+		return 0
+	}
+	result := resolveArg(args[0])
+	for _, a := range args[1:] {
+		v := resolveArg(a)
+		if head == "min" && v < result {
+			result = v
+		} else if head == "max" && v > result {
+			result = v
+		}
+	}
+	return result
 }
 
 // GetBackgroundPosition parses background-position (default: 0 0)
@@ -10891,14 +10971,14 @@ func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
 			pos.Y = -50 // center
 		default:
 			rx := parsePositionComponentFull(parts[0], fontSize)
-			pos.X, pos.XIsPixel, pos.XOffset = rx.value, rx.isPixel, rx.offset
+			pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
 			pos.Y = -50 // center
 		}
 	} else if len(parts) >= 2 {
 		rx := parsePositionComponentFull(parts[0], fontSize)
 		ry := parsePositionComponentFull(parts[1], fontSize)
-		pos.X, pos.XIsPixel, pos.XOffset = rx.value, rx.isPixel, rx.offset
-		pos.Y, pos.YIsPixel, pos.YOffset = ry.value, ry.isPixel, ry.offset
+		pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
+		pos.Y, pos.YIsPixel, pos.YOffset, pos.YExpr = ry.value, ry.isPixel, ry.offset, ry.expr
 	}
 	return pos
 }
@@ -10909,6 +10989,10 @@ type positionComponentResult struct {
 	value   float64 // percentage (negative) or pixel value
 	isPixel bool
 	offset  float64 // additional pixel offset from calc()
+	// expr holds a raw min()/max()/clamp() expression deferred to resolve
+	// time (see BackgroundPosition.XExpr). When set, value/isPixel/offset
+	// are unused for that axis.
+	expr string
 }
 
 func parsePositionComponent(val string, fontSize float64) (float64, bool) {
@@ -10929,6 +11013,17 @@ func parsePositionComponentFull(val string, fontSize float64) positionComponentR
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		inner := val[5 : len(val)-1]
 		return parseCalcPositionComponent(inner, fontSize)
+	}
+	// Handle min()/max()/clamp() (calc() is handled above, so IsMathFunction
+	// only matches these three here). These can't be reduced to a single
+	// percentage at parse time: their resolution base (positioning area −
+	// image size) is only known at paint time and may be negative, in which
+	// case the min/max ordering inverts. Defer the raw expression to
+	// ResolveX/ResolveY, mirroring Blink's CSSMathFunctionValue → Length(calc)
+	// preserved to BackgroundImageGeometry; Chromium
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if IsMathFunction(val) {
+		return positionComponentResult{expr: val}
 	}
 	if strings.HasSuffix(val, "%") {
 		if pct, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
