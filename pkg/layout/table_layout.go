@@ -336,7 +336,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// and that DistributeRowspanCellToRows distributes across spanned
 		// rows for rowSpan > 1 cells. Includes anon-cell child margins.
 		intrinsicBlockSize float64
-		rowIndex           int // originating row for rowspan cells
+		// intrinsicContentBorderBox is the cell's laid-out content extent in
+		// the table block axis, expressed as a BORDER-box value
+		// (content-box IntrinsicBlockSize + cell block border+padding). Unlike
+		// intrinsicBlockSize it is never substituted with the column width for
+		// orthogonal cells, so it is the correct extent for the §17.5.4
+		// vertical-align shift of overflow-clamped content.
+		intrinsicContentBorderBox float64
+		rowIndex                  int // originating row for rowspan cells
 	}
 	type rowMeasurement struct {
 		intrinsic       float64
@@ -468,6 +475,19 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// determines the row height for orthogonal cells.
 			isOrthogonalCell := wdm.IsVertical() != cellWDM.IsVertical()
 			cellBlockForRow := cellLogical.BlockSize() // table's block direction = physical height
+			// Border-box intrinsic-content extent in the table block axis:
+			// content-box IntrinsicBlockSize lifted to border-box by the cell's
+			// block border+padding. IntrinsicBlockSize is a content-box value
+			// (block_layout.go's blockCursor, "position within content box"),
+			// whereas the cell fragment's block-size is BORDER-box; lifting puts
+			// them on the same basis. Mirrors Blink's
+			// TableLayoutUtils::ComputeMinimumRowBlockSize comparand
+			// `border_box_block_size = intrinsic_block_size + border_padding`
+			// (SHA 4883d11fef).
+			intrinsicContentBorderBox := cellResult.IntrinsicBlockSize
+			if cell.style != nil {
+				intrinsicContentBorderBox += ComputeFragmentGeometry(cell.style, cellWDM).BlockBorderPadding()
+			}
 			if isOrthogonalCell && colHasExplicit[colIdx] {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.
@@ -478,13 +498,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				// height-clamped fragment, cell's intrinsic content
 				// block-size). When the cell has `overflow:hidden` + a small
 				// `height`, the fragment is clamped at the explicit height
-				// but the content's natural extent (IntrinsicBlockSize) is
-				// still what the row should grow to (the cell will be
-				// re-laid-out at the row's final height in Phase 3).
-				// Mirrors Blink's TableLayoutUtils::ComputeMinimumRowBlockSize
-				// taking max(explicit, content) at SHA 4883d11fef.
-				if cellResult.IntrinsicBlockSize > cellBlockForRow {
-					cellBlockForRow = cellResult.IntrinsicBlockSize
+				// but the content's natural extent is still what the row
+				// should grow to (the cell will be re-laid-out at the row's
+				// final height in Phase 3). Compared on a border-box basis so
+				// the row does not fall short by the cell's own block
+				// border+padding (4px in the test's `border:2px` cells).
+				if intrinsicContentBorderBox > cellBlockForRow {
+					cellBlockForRow = intrinsicContentBorderBox
 				}
 			}
 			// For anonymous cell wrappers (non-table-structural children wrapped per
@@ -530,13 +550,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			cellLayouts = append(cellLayouts, cellMeasurement{
-				result:             cellResult,
-				inlineOffset:       cellInlineOffset,
-				cell:               cell,
-				contentBlockSize:   contentBlockSize,
-				cellBlockOffset:    cellBlockOffset,
-				intrinsicBlockSize: cellBlockForRow,
-				rowIndex:           rowIdx,
+				result:                    cellResult,
+				inlineOffset:              cellInlineOffset,
+				cell:                      cell,
+				contentBlockSize:          contentBlockSize,
+				cellBlockOffset:           cellBlockOffset,
+				intrinsicBlockSize:        cellBlockForRow,
+				intrinsicContentBorderBox: intrinsicContentBorderBox,
+				rowIndex:                  rowIdx,
 			})
 		}
 
@@ -899,21 +920,28 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				// CSS Tables 3 §height-distribution: the VA shift positions
 				// the cell's CONTENT extent within the row block-size. When
-				// the cell's intrinsic content (IntrinsicBlockSize) exceeded
-				// the cell's explicit height, the row grew to match the
-				// intrinsic extent, so the "effective content size" for VA
-				// is the intrinsic, not the (clamped) fragment block-size.
-				// Using the clamped fragment size here would over-shift the
-				// content downward when it already fills the row
-				// (e.g. `<td height: 20px overflow: hidden>` with a 300px
-				// child: row grew to 319, content extends 0..319, no shift
-				// needed; using fragment block 20 here would shift content
-				// down by ~150px). Mirrors Blink's
-				// TableCellLayoutAlgorithm::ApplyIntrinsicPadding which
-				// reasons over intrinsic extent.
+				// the cell's intrinsic content exceeded the cell's explicit
+				// height, the row grew to match the intrinsic extent, so the
+				// "effective content size" for VA is that intrinsic extent,
+				// not the (clamped) fragment block-size. Using the clamped
+				// fragment size here would over-shift the content downward
+				// when it already fills the row (e.g. `<td height:20px
+				// overflow:hidden>` with a 300px child: row grew to the
+				// intrinsic, content extends 0..rowHeight, no shift needed;
+				// using fragment block 20 here would shift content down by
+				// ~150px). cl.intrinsicContentBorderBox is the cell's laid-out
+				// content extent on a BORDER-box basis (the same basis as
+				// rowHeight) — and, unlike cl.intrinsicBlockSize, it is never
+				// substituted with the column width for orthogonal cells, so it
+				// stays a true content extent here. Comparing it against the
+				// border-box rowHeight avoids the content-box/border-box
+				// mismatch that would otherwise over-shift by the cell's block
+				// border+padding. Mirrors Blink's
+				// TableCellLayoutAlgorithm::ApplyIntrinsicPadding which reasons
+				// over intrinsic extent.
 				effectiveContent := contentBlockSize
-				if cl.result.IntrinsicBlockSize > effectiveContent {
-					effectiveContent = cl.result.IntrinsicBlockSize
+				if cl.intrinsicContentBorderBox > effectiveContent {
+					effectiveContent = cl.intrinsicContentBorderBox
 					if effectiveContent > rowHeight {
 						effectiveContent = rowHeight
 					}
