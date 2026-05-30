@@ -1857,6 +1857,27 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 	return colWidths
 }
 
+// cellExplicitInlineSize returns the cell's specified inline-size measured along
+// the TABLE's inline axis (CSS "width" for a horizontal table, "height" for a
+// vertical one), and whether one is specified. For an orthogonal cell the cell's
+// physical width still equals the table's inline extent, so the same property
+// applies. Mirrors Blink CellInlineConstraint.is_constrained — "true if this cell
+// has a specified inline-size" (ng_table_layout_algorithm_types.h @ Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func cellExplicitInlineSize(cell tableCell, tableWD WritingDirectionMode) (float64, bool) {
+	if cell.style == nil {
+		return 0, false
+	}
+	inlineProp := "width"
+	if tableWD.IsVertical() {
+		inlineProp = "height"
+	}
+	if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
+		return w, true
+	}
+	return 0, false
+}
+
 // computeColumnWidths computes column widths using the auto table layout
 // algorithm (CSS 2.1 §17.5.2).
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
@@ -1869,11 +1890,16 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	colMin := make([]float64, numCols)
 	colMax := make([]float64, numCols)
 
-	// Track which columns have explicit col/colgroup widths.
-	// When a column has an explicit col width, that width is authoritative:
-	// intrinsic cell sizing (which may return the cell's logical inline-size
-	// instead of the table's column width for orthogonal cells) is skipped.
-	colHasExplicit := make([]bool, numCols)
+	// colConstrained is the order-independent "this column has a specified width"
+	// set — Blink's Column.is_constrained ("true if any cell for this column is
+	// constrained"; ng_table_layout_algorithm_types.h @ Chromium SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). When a column is constrained, that
+	// width is authoritative: leftover space (CSS 2.1 §17.5.2.2) is not distributed
+	// into it, and an orthogonal cell's unreliable intrinsic sizing is skipped. The
+	// set is populated in FULL before the intrinsic-sizing loop — col/colgroup widths
+	// just below, cell widths in the pre-pass — so both readers are independent of
+	// the order cells/rows are visited.
+	colConstrained := make([]bool, numCols)
 
 	// Apply col/colgroup explicit widths first (CSS Tables §9.1).
 	// These establish the column widths from the column model.
@@ -1889,7 +1915,23 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 			if cws.width > colMax[ci] {
 				colMax[ci] = cws.width
 			}
-			colHasExplicit[ci] = true
+			colConstrained[ci] = true
+		}
+	}
+
+	// Pre-pass: fold cell-level specified widths into colConstrained before the
+	// intrinsic-sizing loop below reads it. A colSpan==1 cell with a specified
+	// inline-size constrains its column (Blink CellInlineConstraint.is_constrained →
+	// Column.is_constrained). Computing this up-front is what makes the orthogonal-
+	// cell skipIntrinsic decision independent of cell/row visitation order.
+	for _, row := range rows {
+		for _, cell := range row.cells {
+			if cell.colIndex >= numCols || cell.colSpan != 1 {
+				continue
+			}
+			if _, ok := cellExplicitInlineSize(cell, tla.space.WritingDirection); ok {
+				colConstrained[cell.colIndex] = true
+			}
 		}
 	}
 
@@ -1900,24 +1942,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				continue
 			}
 
-			// Check for explicit inline-size on the cell from the TABLE's perspective.
-			// Column widths are the table's inline dimension:
-			//   HTB table: inline=horizontal → use CSS "width"
-			//   VLR/VRL table: inline=vertical → use CSS "height"
-			// For orthogonal cells (cell WM differs from table WM), the cell's physical
-			// "width" equals the table's inline extent regardless of writing mode.
-			explicitW := 0.0
-			hasExplicit := false
-			if cell.style != nil {
-				inlineProp := "width"
-				if tla.space.WritingDirection.IsVertical() {
-					inlineProp = "height"
-				}
-				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
-					explicitW = w
-					hasExplicit = true
-				}
-			}
+			// Explicit inline-size on the cell, from the table's axis. Shared with the
+			// colConstrained pre-pass above via cellExplicitInlineSize.
+			explicitW, hasExplicit := cellExplicitInlineSize(cell, tla.space.WritingDirection)
 
 			if cell.colSpan == 1 {
 				if hasExplicit {
@@ -1935,6 +1962,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					if explicitBB > colMax[colIdx] {
 						colMax[colIdx] = explicitBB
 					}
+					// (colConstrained for this column was set in the pre-pass above.)
 				} else {
 					// Compute intrinsic size.
 					// For orthogonal cells (e.g. vertical-rl cell in horizontal table),
@@ -1945,14 +1973,18 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					// because the cell's logical inline-size (= physical height for vertical-rl)
 					// represents the cell's contribution to column sizing in those cases.
 					//
-					// When an explicit col/colgroup width IS provided, it takes priority
-					// and we skip intrinsic sizing for orthogonal cells to avoid overriding it.
+					// When the column is constrained by a specified width (col/colgroup
+					// OR any cell — Blink Column.is_constrained), that width is
+					// authoritative, so we skip the orthogonal cell's unreliable intrinsic
+					// sizing rather than let it override the constraint. colConstrained is
+					// fully populated before this loop, so the decision does not depend on
+					// the order cells/rows are visited.
 					childWDM := tla.space.WritingDirection
 					if cell.style != nil {
 						childWDM = NewWritingDirectionMode(cell.style)
 					}
 					isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
-					skipIntrinsic := isOrthogonal && colHasExplicit[colIdx]
+					skipIntrinsic := isOrthogonal && colConstrained[colIdx]
 					if !skipIntrinsic {
 						childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
 							SetOrthogonalFallbackInlineSize(
@@ -2016,13 +2048,38 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 			totalMax += w
 		}
 		if totalMax <= availableInline {
-			// Everything fits at max — distribute extra evenly.
+			// Everything fits at max — distribute the leftover.
+			// CSS 2.1 §17.5.2.2: leftover space goes ONLY to columns
+			// without a specified width. Mirrors Blink's
+			// DistributeInlineSizeToComputedInlineSizeAuto kAboveMax case
+			// (table_layout_utils.cc @ Chromium SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): when
+			// auto_columns_count > 0 grow the unconstrained columns; only
+			// when every column is constrained does the leftover spread
+			// across all columns. This is the inline-axis dual of the
+			// unconstrainedIdx row distributor below.
 			copy(colWidths, colMax)
 			remaining := availableInline - totalMax
 			if remaining > 0 && numCols > 0 {
-				each := remaining / float64(numCols)
-				for i := range colWidths {
-					colWidths[i] += each
+				// Grow only the unconstrained columns. When every column is
+				// constrained, fall back to spreading across all of them so
+				// the extra space is still consumed.
+				unconstrained := 0
+				for i := 0; i < numCols; i++ {
+					if !colConstrained[i] {
+						unconstrained++
+					}
+				}
+				targetAll := unconstrained == 0
+				divisor := unconstrained
+				if targetAll {
+					divisor = numCols
+				}
+				each := remaining / float64(divisor)
+				for i := 0; i < numCols; i++ {
+					if targetAll || !colConstrained[i] {
+						colWidths[i] += each
+					}
 				}
 			}
 		} else {
