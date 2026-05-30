@@ -1935,6 +1935,12 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					if explicitBB > colMax[colIdx] {
 						colMax[colIdx] = explicitBB
 					}
+					// A cell with a specified width constrains its column
+					// (CSS 2.1 §17.5.2.2). Mirrors Blink column.is_constrained
+					// (table_layout_utils.cc @ Chromium SHA
+					// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): leftover space
+					// must not be distributed into constrained columns.
+					colHasExplicit[colIdx] = true
 				} else {
 					// Compute intrinsic size.
 					// For orthogonal cells (e.g. vertical-rl cell in horizontal table),
@@ -2016,13 +2022,38 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 			totalMax += w
 		}
 		if totalMax <= availableInline {
-			// Everything fits at max — distribute extra evenly.
+			// Everything fits at max — distribute the leftover.
+			// CSS 2.1 §17.5.2.2: leftover space goes ONLY to columns
+			// without a specified width. Mirrors Blink's
+			// DistributeInlineSizeToComputedInlineSizeAuto kAboveMax case
+			// (table_layout_utils.cc @ Chromium SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): when
+			// auto_columns_count > 0 grow the unconstrained columns; only
+			// when every column is constrained does the leftover spread
+			// across all columns. This is the inline-axis dual of the
+			// unconstrainedIdx row distributor below.
 			copy(colWidths, colMax)
 			remaining := availableInline - totalMax
 			if remaining > 0 && numCols > 0 {
-				each := remaining / float64(numCols)
-				for i := range colWidths {
-					colWidths[i] += each
+				// Grow only the unconstrained columns. When every column is
+				// constrained, fall back to spreading across all of them so
+				// the extra space is still consumed.
+				unconstrained := 0
+				for i := 0; i < numCols; i++ {
+					if !colHasExplicit[i] {
+						unconstrained++
+					}
+				}
+				targetAll := unconstrained == 0
+				divisor := unconstrained
+				if targetAll {
+					divisor = numCols
+				}
+				each := remaining / float64(divisor)
+				for i := 0; i < numCols; i++ {
+					if targetAll || !colHasExplicit[i] {
+						colWidths[i] += each
+					}
 				}
 			}
 		} else {
