@@ -23,7 +23,11 @@ type LayoutResult struct {
 	IntrinsicBlockSize float64
 
 	// Baseline is the first baseline position in the block direction,
-	// relative to the fragment's block-start edge. Used for alignment.
+	// relative to the fragment's block-start edge. Used for alignment. For
+	// multicol containers this is the baseline propagated across columns and
+	// spanners by PropagateBaselineFromChild. Mirrors Blink's
+	// BoxFragmentBuilder::first_baseline_, read back by ancestors (notably
+	// FlexLayoutAlgorithm for align-items:baseline).
 	Baseline float64
 
 	// HasBaseline indicates whether the Baseline value was explicitly set
@@ -33,13 +37,6 @@ type LayoutResult struct {
 	// at position 0 (e.g. line-height:0), while HasBaseline=false means no
 	// baseline was found and the parent should synthesize one.
 	HasBaseline bool
-
-	// FirstBaseline is the propagated first baseline for multicol containers,
-	// computed by PropagateBaselineFromChild across all column and spanner
-	// children. Mirrors Blink's LayoutResult::FirstBaseline (BoxFragmentBuilder
-	// first_baseline_ field). HasFirstBaseline guards the zero value.
-	FirstBaseline    float64
-	HasFirstBaseline bool
 
 	// LastBaseline is the last baseline position in the block direction,
 	// relative to the fragment's block-start edge. Used for inline-block

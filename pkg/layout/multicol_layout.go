@@ -2230,12 +2230,12 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 	result *LayoutResult, builder *BoxFragmentBuilder, blockOffset float64) {
 
 	if result.HasBaseline {
-		cur, has := builder.FirstBaseline()
+		cur, has := builder.Baseline()
 		if !has {
 			cur = math.MaxFloat64
 		}
 		bl := math.Min(blockOffset+result.Baseline, cur)
-		builder.SetFirstBaseline(bl)
+		builder.SetBaseline(bl)
 	}
 
 	if result.LastBaseline > 0 {

@@ -40,7 +40,10 @@ type BoxFragmentBuilder struct {
 	// endMarginStrut for margin collapsing propagation.
 	endMarginStrut MarginStrut
 
-	// baseline position (first baseline).
+	// baseline position (first baseline) — the single first-baseline source.
+	// Set by SetBaseline (block/table/flex directly, multicol via
+	// PropagateBaselineFromChild) and read back by ancestors as
+	// LayoutResult.Baseline. Mirrors Blink's BoxFragmentBuilder::first_baseline_.
 	baseline    float64
 	hasBaseline bool
 
@@ -53,12 +56,6 @@ type BoxFragmentBuilder struct {
 	// AttemptToPositionListMarker or PositionAnyUnclaimedListMarker.
 	// Mirrors Blink's FragmentBuilder::unpositioned_list_marker_.
 	unpositionedListMarker *UnpositionedListMarker
-
-	// firstBaseline is the first baseline position across all column/spanner
-	// children, updated via SetFirstBaseline during PropagateBaselineFromChild.
-	// Mirrors Blink's BoxFragmentBuilder::first_baseline_ (std::optional).
-	firstBaseline    float64
-	hasFirstBaseline bool
 
 	// lastBaseline position (last baseline, for inline-block alignment).
 	lastBaseline float64
@@ -226,24 +223,20 @@ func (b *BoxFragmentBuilder) SetEndMarginStrut(ms MarginStrut) {
 	b.endMarginStrut = ms
 }
 
-// SetBaseline sets the first baseline position.
+// SetBaseline sets the first baseline position. This is the single
+// first-baseline source ancestors read back via LayoutResult.Baseline
+// (block, table, flex, and — via PropagateBaselineFromChild — multicol).
+// Mirrors Blink's BoxFragmentBuilder::SetFirstBaseline writing first_baseline_.
 func (b *BoxFragmentBuilder) SetBaseline(v float64) {
 	b.baseline = v
 	b.hasBaseline = true
 }
 
-// SetFirstBaseline sets the first baseline, keeping the minimum value across
-// multiple calls (earlier column wins). Mirrors Blink's
-// BoxFragmentBuilder::SetFirstBaseline used by PropagateBaselineFromChild.
-func (b *BoxFragmentBuilder) SetFirstBaseline(v float64) {
-	b.firstBaseline = v
-	b.hasFirstBaseline = true
-}
-
-// FirstBaseline returns the current first-baseline value and whether it has
-// been set. Used by PropagateBaselineFromChild to apply min semantics.
-func (b *BoxFragmentBuilder) FirstBaseline() (float64, bool) {
-	return b.firstBaseline, b.hasFirstBaseline
+// Baseline returns the current first-baseline value and whether it has been
+// set. Used by PropagateBaselineFromChild to apply min semantics across
+// columns. Mirrors reading Blink's BoxFragmentBuilder::first_baseline_.
+func (b *BoxFragmentBuilder) Baseline() (float64, bool) {
+	return b.baseline, b.hasBaseline
 }
 
 // SetLastBaseline sets the last baseline position.
@@ -814,8 +807,6 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		IntrinsicBlockSize:               b.intrinsicBlockSize,
 		Baseline:                         b.baseline,
 		HasBaseline:                      b.hasBaseline,
-		FirstBaseline:                    b.firstBaseline,
-		HasFirstBaseline:                 b.hasFirstBaseline,
 		LastBaseline:                     b.lastBaseline,
 		UseLastBaselineForInlineBaseline: b.useLastBaselineForInlineBaseline,
 		UnpositionedListMarker:           b.unpositionedListMarker,
