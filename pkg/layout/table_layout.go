@@ -482,9 +482,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				// still what the row should grow to (the cell will be
 				// re-laid-out at the row's final height in Phase 3).
 				// Mirrors Blink's TableLayoutUtils::ComputeMinimumRowBlockSize
-				// taking max(explicit, content) at SHA 4883d11fef.
-				if cellResult.IntrinsicBlockSize > cellBlockForRow {
-					cellBlockForRow = cellResult.IntrinsicBlockSize
+				// taking max(explicit, content) at SHA 4883d11fef. Blink uses
+				// `border_box_block_size = intrinsic_block_size + border_padding`
+				// as the comparand: IntrinsicBlockSize is a content-box value
+				// (block_layout.go's blockCursor, "position within content box"),
+				// whereas cellBlockForRow is the fragment's BORDER-box block-size.
+				// Adding the cell's block border+padding lifts the content-box
+				// intrinsic to border-box so the two are compared on the same
+				// basis; otherwise the row falls short by the cell's block
+				// border+padding (4px in the test's `border:2px` cells).
+				intrinsicBorderBox := cellResult.IntrinsicBlockSize
+				if cell.style != nil {
+					intrinsicBorderBox += ComputeFragmentGeometry(cell.style, cellWDM).BlockBorderPadding()
+				}
+				if intrinsicBorderBox > cellBlockForRow {
+					cellBlockForRow = intrinsicBorderBox
 				}
 			}
 			// For anonymous cell wrappers (non-table-structural children wrapped per
@@ -899,21 +911,26 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				// CSS Tables 3 §height-distribution: the VA shift positions
 				// the cell's CONTENT extent within the row block-size. When
-				// the cell's intrinsic content (IntrinsicBlockSize) exceeded
-				// the cell's explicit height, the row grew to match the
-				// intrinsic extent, so the "effective content size" for VA
-				// is the intrinsic, not the (clamped) fragment block-size.
-				// Using the clamped fragment size here would over-shift the
-				// content downward when it already fills the row
-				// (e.g. `<td height: 20px overflow: hidden>` with a 300px
-				// child: row grew to 319, content extends 0..319, no shift
-				// needed; using fragment block 20 here would shift content
-				// down by ~150px). Mirrors Blink's
-				// TableCellLayoutAlgorithm::ApplyIntrinsicPadding which
+				// the cell's intrinsic content exceeded the cell's explicit
+				// height, the row grew to match the intrinsic extent, so the
+				// "effective content size" for VA is that intrinsic extent,
+				// not the (clamped) fragment block-size. Using the clamped
+				// fragment size here would over-shift the content downward
+				// when it already fills the row (e.g. `<td height:20px
+				// overflow:hidden>` with a 300px child: row grew to the
+				// intrinsic, content extends 0..rowHeight, no shift needed;
+				// using fragment block 20 here would shift content down by
+				// ~150px). cl.intrinsicBlockSize is the cell's BORDER-box row
+				// contribution (the same border-box basis as rowHeight) — the
+				// single source of truth computed in the measurement pass —
+				// so comparing it against the border-box rowHeight avoids the
+				// content-box/border-box mismatch that would otherwise
+				// over-shift by the cell's block border+padding. Mirrors
+				// Blink's TableCellLayoutAlgorithm::ApplyIntrinsicPadding which
 				// reasons over intrinsic extent.
 				effectiveContent := contentBlockSize
-				if cl.result.IntrinsicBlockSize > effectiveContent {
-					effectiveContent = cl.result.IntrinsicBlockSize
+				if cl.intrinsicBlockSize > effectiveContent {
+					effectiveContent = cl.intrinsicBlockSize
 					if effectiveContent > rowHeight {
 						effectiveContent = rowHeight
 					}
