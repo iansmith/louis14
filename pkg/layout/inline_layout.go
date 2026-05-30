@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -1525,8 +1526,29 @@ func createLineBoxEx(
 			isFirstFragment  bool
 			isLastFragment   bool
 			cumulativeVAOffs float64 // sum of vertical-align: <length> from this span + all open ancestor spans
+			openSeq          int     // monotonically increasing push order: ancestor-before-descendant, earlier-sibling-first
 		}
 		var spanStack []spanEntry
+		// openSeqCounter assigns a unique, monotonically increasing index to each
+		// span as it is pushed. Spans entering from prior lines (outermost) are
+		// pushed first, then OpenTags in source order — so a lower openSeq is
+		// always an ancestor or earlier sibling of a higher one.
+		openSeqCounter := 0
+		// pendingBg buffers the inline span-background fragments produced by emit
+		// so they can be added to the line box in ancestor-first order. CloseTag
+		// fires innermost-first, which would otherwise place descendant
+		// backgrounds before their ancestors; the line box paints in insertion
+		// order, so an opaque ancestor background would overpaint a descendant's.
+		// Blink's InlineBoxFragmentPainter::Paint paints an inline box's own
+		// background FIRST, then recurses into descendants, so ancestor inline
+		// backgrounds paint behind descendant ones
+		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		type pendingBgFrag struct {
+			frag   *PhysicalFragment
+			offset LogicalOffset
+			seq    int
+		}
+		var pendingBg []pendingBgFrag
 		emit := func(span spanEntry, endPos float64) {
 			// Emit a fragment when there is something to paint OR when the span
 			// establishes a containing block for positioned descendants.
@@ -1602,9 +1624,13 @@ func createLineBoxEx(
 			// offset, matching the shift applied to its text children. Use
 			// the cumulative offset so nested spans stack correctly.
 			spanBlockOffset := -blockOverhang - span.cumulativeVAOffs
-			lineBuilder.AddChild(bgFrag, LogicalOffset{
-				InlineOffset: fragStart,
-				BlockOffset:  spanBlockOffset,
+			pendingBg = append(pendingBg, pendingBgFrag{
+				frag: bgFrag,
+				offset: LogicalOffset{
+					InlineOffset: fragStart,
+					BlockOffset:  spanBlockOffset,
+				},
+				seq: span.openSeq,
 			})
 		}
 
@@ -1627,7 +1653,9 @@ func createLineBoxEx(
 				isFirstFragment:  false,
 				isLastFragment:   false,
 				cumulativeVAOffs: parentCum + item.Style.GetVerticalAlignOffset(),
+				openSeq:          openSeqCounter,
 			})
+			openSeqCounter++
 		}
 
 		trackPos := alignOffset
@@ -1653,7 +1681,9 @@ func createLineBoxEx(
 						isFirstFragment:  r.Item.IsFirstFragment,
 						isLastFragment:   r.Item.IsLastFragment,
 						cumulativeVAOffs: parentCum + effStyle.GetVerticalAlignOffset(),
+						openSeq:          openSeqCounter,
 					})
+					openSeqCounter++
 				}
 			case InlineItemCloseTag:
 				if len(spanStack) > 0 && effStyle != nil {
@@ -1679,6 +1709,17 @@ func createLineBoxEx(
 		for _, span := range spanStack {
 			emit(span, trackPos)
 			residualSpanStack = append(residualSpanStack, span.item)
+		}
+
+		// Add the buffered inline-background fragments in ancestor-first order
+		// (lowest openSeq first), so descendant inline backgrounds paint on top
+		// of their ancestors' (matching Blink's paint-own-background-then-recurse
+		// order). openSeq is unique per push; SliceStable is belt-and-suspenders.
+		sort.SliceStable(pendingBg, func(a, b int) bool {
+			return pendingBg[a].seq < pendingBg[b].seq
+		})
+		for _, p := range pendingBg {
+			lineBuilder.AddChild(p.frag, p.offset)
 		}
 	}
 
