@@ -1873,7 +1873,18 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// When a column has an explicit col width, that width is authoritative:
 	// intrinsic cell sizing (which may return the cell's logical inline-size
 	// instead of the table's column width for orthogonal cells) is skipped.
+	// colHasExplicit marks columns constrained by the COLUMN MODEL (col/colgroup
+	// width). It is the only signal read mid-loop by the orthogonal-cell
+	// skipIntrinsic decision below, which is intentionally scoped to col/colgroup
+	// widths. Because it is written only in this pre-loop pass, that decision is
+	// independent of cell/row order.
 	colHasExplicit := make([]bool, numCols)
+	// colConstrained marks columns with ANY specified width (col/colgroup OR a cell
+	// width). Leftover space (CSS 2.1 §17.5.2.2) must not be distributed into these.
+	// It is read only AFTER the cell loop completes, so folding cell-level widths in
+	// here — unlike folding them into colHasExplicit — cannot make column sizing
+	// depend on the order cells are visited.
+	colConstrained := make([]bool, numCols)
 
 	// Apply col/colgroup explicit widths first (CSS Tables §9.1).
 	// These establish the column widths from the column model.
@@ -1890,6 +1901,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				colMax[ci] = cws.width
 			}
 			colHasExplicit[ci] = true
+			colConstrained[ci] = true
 		}
 	}
 
@@ -1939,8 +1951,11 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					// (CSS 2.1 §17.5.2.2). Mirrors Blink column.is_constrained
 					// (table_layout_utils.cc @ Chromium SHA
 					// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): leftover space
-					// must not be distributed into constrained columns.
-					colHasExplicit[colIdx] = true
+					// must not be distributed into constrained columns. Recorded in
+					// colConstrained (NOT colHasExplicit) so it influences only the
+					// post-loop leftover distribution, never the mid-loop skipIntrinsic
+					// check — keeping column sizing independent of cell/row order.
+					colConstrained[colIdx] = true
 				} else {
 					// Compute intrinsic size.
 					// For orthogonal cells (e.g. vertical-rl cell in horizontal table),
@@ -2040,7 +2055,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				// the extra space is still consumed.
 				unconstrained := 0
 				for i := 0; i < numCols; i++ {
-					if !colHasExplicit[i] {
+					if !colConstrained[i] {
 						unconstrained++
 					}
 				}
@@ -2051,7 +2066,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				}
 				each := remaining / float64(divisor)
 				for i := 0; i < numCols; i++ {
-					if targetAll || !colHasExplicit[i] {
+					if targetAll || !colConstrained[i] {
 						colWidths[i] += each
 					}
 				}
