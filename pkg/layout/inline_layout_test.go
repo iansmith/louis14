@@ -433,3 +433,80 @@ func TestInlineLayout_LineBreaker(t *testing.T) {
 		t.Errorf("expected 1 line for short text, got %d", lineCount)
 	}
 }
+
+// TestInlineLayout_NestedInlineBackgroundOrder is the regression guard for the
+// selectors/not-links.html nested-inline background paint-order bug. Two opaque
+// inline backgrounds nest (outer wraps inner). The inline span-background
+// pre-pass must emit the OUTER (ancestor) background fragment BEFORE the INNER
+// (descendant) one, so that — painting in insertion order — the descendant's
+// background lands on top of the ancestor's. Mirrors Blink's
+// InlineBoxFragmentPainter::Paint (paint own background, THEN recurse into
+// descendant inline boxes): ancestor inline backgrounds paint behind descendant
+// inline backgrounds (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Before the fix, CloseTag fires innermost-first, so the inner (green) fragment
+// was emitted before the outer (white) one; the white then overpainted green.
+func TestInlineLayout_NestedInlineBackgroundOrder(t *testing.T) {
+	// <div><span bg=white>a<span bg=green>b</span></span></div>
+	textA := makeTextNode("a")
+	textB := makeTextNode("b")
+	inner := makeNode("span", textB)
+	outer := makeNode("span", textA, inner)
+	parent := makeNode("div", outer)
+
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	outerStyle := makeStyle("display", "inline", "font-size", "16px", "background-color", "white")
+	innerStyle := makeStyle("display", "inline", "font-size", "16px", "background-color", "green")
+	styles := map[*html.Node]*css.Style{
+		parent: parentStyle,
+		outer:  outerStyle,
+		inner:  innerStyle,
+	}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
+	if len(lineBoxes) < 1 {
+		t.Fatal("expected at least 1 line box")
+	}
+
+	bgColor := func(s *css.Style) string {
+		if s == nil {
+			return ""
+		}
+		if v, ok := s.Get("background-color"); ok {
+			return v
+		}
+		return ""
+	}
+
+	// Collect the insertion order of the two inline background box fragments.
+	outerIdx, innerIdx := -1, -1
+	for _, lb := range lineBoxes {
+		for i, child := range lb.Children {
+			f := child.Fragment
+			if f == nil || f.Type != FragmentBox {
+				continue
+			}
+			switch bgColor(f.Style) {
+			case "white":
+				if outerIdx < 0 {
+					outerIdx = i
+				}
+			case "green":
+				if innerIdx < 0 {
+					innerIdx = i
+				}
+			}
+		}
+	}
+
+	if outerIdx < 0 {
+		t.Fatal("outer (white) inline background fragment not found")
+	}
+	if innerIdx < 0 {
+		t.Fatal("inner (green) inline background fragment not found")
+	}
+	if outerIdx >= innerIdx {
+		t.Errorf("ancestor inline background must be emitted before descendant: "+
+			"got outer(white)@%d, inner(green)@%d (want outer < inner)", outerIdx, innerIdx)
+	}
+}
