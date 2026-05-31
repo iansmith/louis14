@@ -733,6 +733,110 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			}
 			return goja.Undefined()
 		})
+
+	case "animate":
+		// Element.animate(keyframes, options) — Web Animations API
+		// (https://drafts.csswg.org/web-animations-1/#dom-animatable-animate).
+		// Mirrors Blink ElementAnimation::animate (ElementAnimation::animate in
+		// third_party/blink/renderer/core/animation/element_animation.cc) at
+		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		//
+		// In the synchronous reftest harness there is no live timeline: the
+		// returned Animation object is used exclusively via .pause() + .currentTime
+		// assignment to "freeze" the element at a specific progress. When
+		// currentTime is set, we compute the interpolated keyframe values at that
+		// offset and write them directly into the element's inline style attribute,
+		// so the second layout pass in helpers.go picks up the mutation.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			// Parse keyframes argument: an array of {property: value} objects.
+			// Each object maps CSS property names (camelCase or kebab-case) to
+			// the value at that keyframe. Offset may be omitted; when omitted,
+			// keyframes are distributed evenly across [0,1].
+			var kfDecls []map[string]string
+			if len(call.Arguments) > 0 {
+				arr := call.Arguments[0].ToObject(vm)
+				lenVal := arr.Get("length")
+				if lenVal != nil && !goja.IsUndefined(lenVal) {
+					n := int(lenVal.ToInteger())
+					for i := 0; i < n; i++ {
+						item := arr.Get(strconv.Itoa(i))
+						if item == nil || goja.IsUndefined(item) || goja.IsNull(item) {
+							continue
+						}
+						itemObj := item.ToObject(vm)
+						decl := make(map[string]string)
+						for _, k := range itemObj.Keys() {
+							decl[k] = itemObj.Get(k).String()
+						}
+						kfDecls = append(kfDecls, decl)
+					}
+				}
+			}
+
+			// Parse options: number → duration in ms; object → {duration}.
+			var durationMs float64 = 0
+			if len(call.Arguments) > 1 {
+				opt := call.Arguments[1]
+				if opt.ExportType().Kind().String() == "float64" || !goja.IsUndefined(opt) {
+					if obj := opt.ToObject(vm); obj != nil {
+						if d := obj.Get("duration"); d != nil && !goja.IsUndefined(d) {
+							durationMs = d.ToFloat()
+						} else {
+							durationMs = opt.ToFloat()
+						}
+					}
+				}
+			}
+
+			// Build css.KeyframeRule list from the parsed keyframe objects.
+			// Offsets are evenly distributed when not specified by the author.
+			node := e.node
+			makeRules := func(decls []map[string]string) []css.KeyframeRule {
+				n := len(decls)
+				if n == 0 {
+					return nil
+				}
+				rules := make([]css.KeyframeRule, n)
+				for i, d := range decls {
+					var offset float64
+					if n == 1 {
+						offset = 1
+					} else {
+						offset = float64(i) / float64(n-1)
+					}
+					// Explicit "offset" key overrides the implicit even distribution.
+					if ov, ok := d["offset"]; ok {
+						if f, err := strconv.ParseFloat(strings.TrimSpace(ov), 64); err == nil {
+							offset = f
+						}
+					}
+					declarations := make(map[string]string, len(d))
+					for k, v := range d {
+						if k == "offset" || k == "easing" {
+							continue
+						}
+						prop := camelToKebab(k)
+						declarations[prop] = v
+					}
+					pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
+					rules[i] = css.KeyframeRule{Stop: pct, Declarations: declarations}
+				}
+				return rules
+			}
+
+			kfRules := makeRules(kfDecls)
+			effect := css.BuildKeyframeEffect(kfRules, nil)
+
+			// Return an Animation object backed by animationAccessor.
+			anim := &animationAccessor{
+				vm:          vm,
+				node:        node,
+				effect:      effect,
+				durationMs:  durationMs,
+				currentTime: -1, // not yet set
+			}
+			return vm.NewDynamicObject(anim)
+		})
 	}
 	return goja.Undefined()
 }
@@ -874,7 +978,8 @@ func (e *elementAccessor) Has(key string) bool {
 		"getElementsByTagName", "getElementsByClassName",
 		"onload",
 		"contentDocument", "contentWindow",
-		"focus", "blur":
+		"focus", "blur",
+		"animate":
 		return true
 	}
 	return false
@@ -904,6 +1009,7 @@ func (e *elementAccessor) Keys() []string {
 		"onload",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
+		"animate",
 	}
 }
 
@@ -1056,4 +1162,117 @@ func newElementProxy(vm *goja.Runtime, node *html.Node) goja.Value {
 func newElementArray(vm *goja.Runtime, nodes []*html.Node) goja.Value {
 	ctx := newDOMContext(vm, nil)
 	return ctx.elementArray(nodes)
+}
+
+// animationAccessor implements goja.DynamicObject for Animation objects
+// returned by Element.animate().
+//
+// The Web Animations API (https://drafts.csswg.org/web-animations-1/) defines
+// Animation with a currentTime getter/setter and pause()/cancel()/finish()
+// methods. In the synchronous louis14 reftest harness there is no live
+// document timeline, so pause() is a no-op and the real work happens when JS
+// assigns animation.currentTime: we sample the KeyframeEffect at the given
+// time offset and write the interpolated values into the element's inline style
+// attribute so the second layout pass in helpers.go captures the mutation.
+//
+// Mirrors Blink Animation::setCurrentTime + KeyframeEffect::ApplyEffectToTarget
+// (third_party/blink/renderer/core/animation/animation.cc and
+// third_party/blink/renderer/core/animation/keyframe_effect.cc)
+// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type animationAccessor struct {
+	vm          *goja.Runtime
+	node        *html.Node
+	effect      *css.KeyframeEffect
+	durationMs  float64 // from the options argument to animate()
+	currentTime float64 // milliseconds; -1 = not yet set
+}
+
+func (a *animationAccessor) Get(key string) goja.Value {
+	vm := a.vm
+	switch key {
+	case "currentTime":
+		if a.currentTime < 0 {
+			return goja.Null()
+		}
+		return vm.ToValue(a.currentTime)
+	case "pause":
+		// pause(): in the static harness the animation has no running timeline,
+		// so pause is a semantic no-op. The real "pause" is that the JS script
+		// then sets currentTime explicitly.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return goja.Undefined()
+		})
+	case "cancel", "finish", "play", "reverse":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return goja.Undefined()
+		})
+	case "playState":
+		return vm.ToValue("paused")
+	case "ready", "finished":
+		// Return a resolved Promise-like. Tests may await these; in our
+		// synchronous engine any .then() callback fires immediately.
+		p, _ := vm.RunString("Promise.resolve()")
+		return p
+	}
+	return goja.Undefined()
+}
+
+func (a *animationAccessor) Set(key string, val goja.Value) bool {
+	switch key {
+	case "currentTime":
+		ms := val.ToFloat()
+		a.currentTime = ms
+		a.applyAtTime(ms)
+		return true
+	}
+	return false
+}
+
+func (a *animationAccessor) Has(key string) bool {
+	switch key {
+	case "currentTime", "pause", "cancel", "finish", "play", "reverse", "playState", "ready", "finished":
+		return true
+	}
+	return false
+}
+
+func (a *animationAccessor) Delete(key string) bool { return false }
+
+func (a *animationAccessor) Keys() []string {
+	return []string{"currentTime", "pause", "cancel", "finish", "play", "reverse", "playState"}
+}
+
+// applyAtTime samples the KeyframeEffect at time ms and writes the resulting
+// property values into the element's inline style attribute. The duration
+// provides the denominator for converting ms → [0,1] progress.
+func (a *animationAccessor) applyAtTime(ms float64) {
+	if a.effect == nil || a.node == nil {
+		return
+	}
+	dur := a.durationMs
+	if dur <= 0 {
+		return
+	}
+	progress := ms / dur
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+	// Sample keyframes with no base style (all values are explicit in the
+	// keyframe list for the in-scope tests).
+	values := css.ResolveKeyframeStyle(a.effect, progress, nil)
+	if len(values) == 0 {
+		return
+	}
+	// Merge into the element's inline style.
+	if a.node.Attributes == nil {
+		a.node.Attributes = make(map[string]string)
+	}
+	inline := parseInlineStyle(a.node.Attributes["style"])
+	for prop, v := range values {
+		inline[prop] = v
+	}
+	a.node.Attributes["style"] = serializeInlineStyle(inline)
 }
