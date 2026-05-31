@@ -114,6 +114,14 @@ type LineInfo struct {
 	IsLastLine bool
 	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
 	HasForcedBreak bool
+	// TextAlignLastJustify is true when text-align was overridden to "justify"
+	// by the text-align-last property. Unlike text-align: justify, which falls
+	// back to start on the last line, text-align-last: justify expands even the
+	// last line. This flag lets createLineBoxEx and computeTextAlignOffset
+	// distinguish the two cases.
+	// CSS Text 3 §9.7; mirrors Blink's distinction between kJustify (from
+	// text-align) and text-align-last: justify at computedStyle level.
+	TextAlignLastJustify bool
 
 	// IsRubyBase is true if this LineInfo is the sub-line of a ruby
 	// column's base. Set by LineBreaker.CreateSubLineInfo when building
@@ -257,6 +265,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.AvailableWidth = lb.availableWidth
 	line.HasForcedBreak = false
 	line.IsLastLine = false
+	line.TextAlignLastJustify = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
 	// CSS Ruby Phase 2: reset the ruby-specific fields too so a
 	// LineInfo reused across NextLine calls doesn't carry stale ruby

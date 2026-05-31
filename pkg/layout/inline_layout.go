@@ -741,7 +741,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// "auto" means use text-align, except justify falls back to start.
 				// The justify fallback is already handled in computeTextAlignOffset,
 				// so nothing extra needed here.
-			case "start", "end", "left", "right", "center", "justify":
+			case "justify":
+				line.TextAlign = "justify"
+				// text-align-last: justify expands the last line (unlike text-align:
+				// justify which falls back to start on the last line). Set the flag
+				// so createLineBoxEx and computeTextAlignOffset honour the expansion.
+				// CSS Text 3 §9.7; mirrors Blink's kJustify vs text-align-last path.
+				line.TextAlignLastJustify = true
+			case "start", "end", "left", "right", "center":
 				line.TextAlign = textAlignLast
 			}
 		}
@@ -1522,7 +1529,13 @@ func createLineBoxEx(
 	// the opportunity set; intra-word (grapheme-cluster) expansion is not
 	// needed for the WPT auto-justify-001 test which is purely inter-word.
 	justifyExpansion := 0.0
-	if line.TextAlign == "justify" && !line.IsLastLine && !line.HasForcedBreak {
+	// Expand inter-word gaps for text-align: justify (not on the last line,
+	// which falls back to start) and for text-align-last: justify (which DOES
+	// expand the last line — CSS Text 3 §9.7 distinguishes the two cases).
+	justifyActive := line.TextAlign == "justify" &&
+		(!line.IsLastLine || line.TextAlignLastJustify) &&
+		!line.HasForcedBreak
+	if justifyActive {
 		slack := availableInline - line.Width
 		if slack > 0 {
 			gaps := countJustifyOpportunities(line, itemsData)
@@ -2121,6 +2134,7 @@ func createLineBoxEx(
 					maxAscent, // base baseline
 					annotationBlockTop,
 					itemsData.TextContent,
+					r.RubyColumn.RubyAlign,
 					wdm, fonts, centralBaseline, sidewaysVLR,
 					lineBuilder,
 				)
@@ -2705,14 +2719,18 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 		}
 		return 0 // LTR start = physical left
 	case "justify":
-		if line.IsLastLine || line.HasForcedBreak {
-			// Last line falls back to start alignment.
+		// text-align: justify falls back to start on the last line.
+		// text-align-last: justify expands the last line (CSS Text 3 §9.7).
+		if (line.IsLastLine || line.HasForcedBreak) && !line.TextAlignLastJustify {
+			// Last line (from text-align: justify) falls back to start.
 			if wdm.IsRTL() {
 				return slack // RTL start = physical right
 			}
 			return 0 // LTR start = physical left
 		}
-		// TODO: distribute inter-word spacing for justify.
+		// Distribute inter-word spacing (justifyExpansion) handles the actual
+		// gap widening; the line's start offset is 0 (expansion happens
+		// per-fragment in createLineBoxEx, not via a shift here).
 		return 0
 	default: // "left", ""
 		return 0

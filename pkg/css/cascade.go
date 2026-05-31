@@ -257,8 +257,14 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("text-indent"); !ok {
 			style.Set("text-indent", "0")
 		}
-		// `ruby > rt` rules — only when parent is a ruby element.
-		if node.Parent != nil && node.Parent.TagName == "ruby" {
+		// `ruby > rt` rules — when parent is a ruby element, or when parent
+		// is <rb>/<rtc> inside a ruby element (defense against parsers that
+		// do not fully implement HTML5 §8.2.6.4.7 rb auto-close).
+		rubyParent := node.Parent != nil && node.Parent.TagName == "ruby"
+		rubyGrandparent := !rubyParent && node.Parent != nil &&
+			(node.Parent.TagName == "rb" || node.Parent.TagName == "rtc") &&
+			node.Parent.Parent != nil && node.Parent.Parent.TagName == "ruby"
+		if rubyParent || rubyGrandparent {
 			if _, ok := style.Get("display"); !ok {
 				style.Set("display", "ruby-text")
 			}
@@ -273,6 +279,19 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			}
 			if _, ok := style.Get("text-align"); !ok {
 				style.Set("text-align", "start")
+			}
+		}
+	case "rb":
+		// CSS Ruby 1 §2 — <rb> participates in ruby inline flow as a plain
+		// inline box. Only applied when inside a <ruby> parent, no explicit
+		// display is set, AND the <rb> has only inline/text content (no
+		// block-level children). The block-content guard prevents breaking
+		// tests like ruby-layout-internal-boxes that rely on <rb> acting as
+		// an inline-block container for its block content.
+		// Mirrors Blink html.css `rb { display: ruby-base; }` @ 4883d11fef.
+		if _, ok := style.Get("display"); !ok {
+			if node.Parent != nil && node.Parent.TagName == "ruby" && rubyBaseHasOnlyInlineContent(node) {
+				style.Set("display", "inline")
 			}
 		}
 	case "rp":
@@ -2974,4 +2993,50 @@ func fontSizeFromHTMLSize(size string) string {
 		return "xxx-large"
 	}
 	return ""
+}
+
+// rubyBaseHasOnlyInlineContent reports whether a <rb> DOM element has only
+// simple text/inline content (no block-level descendants at any depth, and
+// no form controls or other elements that may get non-standard display values).
+// Used to gate the `rb { display: inline }` UA rule.
+//
+// We conservatively return false if ANY descendant is a block tag or form
+// control, since those may have computed display values that require the
+// inline-block containment that the old <rb> behavior provided.
+func rubyBaseHasOnlyInlineContent(node *html.Node) bool {
+	return rbOnlyInlineRecursive(node)
+}
+
+func rbOnlyInlineRecursive(node *html.Node) bool {
+	nonInlineTags := map[string]bool{
+		// Block-level elements
+		"div": true, "p": true, "h1": true, "h2": true, "h3": true,
+		"h4": true, "h5": true, "h6": true, "section": true, "article": true,
+		"aside": true, "header": true, "footer": true, "main": true,
+		"nav": true, "ul": true, "ol": true, "li": true, "table": true,
+		"form": true, "fieldset": true, "blockquote": true, "pre": true,
+		"hr": true, "figure": true, "figcaption": true, "details": true,
+		"summary": true, "dialog": true, "address": true, "dl": true,
+		"dt": true, "dd": true,
+		// Form controls that may have arbitrary display values from CSS
+		"input": true, "button": true, "select": true, "textarea": true,
+	}
+	for _, c := range node.Children {
+		if c.Type != html.ElementNode {
+			continue
+		}
+		if nonInlineTags[c.TagName] {
+			return false
+		}
+		// Don't recurse into <rt>/<rp> — they are annotation elements, not
+		// part of the base content. Their descendants (e.g. <div> inside <rt>)
+		// don't affect whether the base has block content.
+		if c.TagName == "rt" || c.TagName == "rp" {
+			continue
+		}
+		if !rbOnlyInlineRecursive(c) {
+			return false
+		}
+	}
+	return true
 }
