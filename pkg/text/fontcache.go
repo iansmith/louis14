@@ -36,12 +36,18 @@ type MetricsOverride struct {
 // (`Variant`) still folds italic + oblique into the same italic-variant
 // bucket because mazzy `textshape.BoolsToVariant` exposes only italic vs
 // normal; the verbatim `Style` field is louis14's distinguishing axis.
+//
+// `UnicodeRanges` holds the @font-face unicode-range descriptor ranges, nil
+// meaning "all codepoints" (CSS Fonts 3 §4.5 default). Mirrors Blink's
+// UnicodeRangeSet usage in CSSSegmentedFontFace (core/css/css_segmented_font_face.h
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 type bufferEntry struct {
-	Family  string
-	Weight  string
-	Style   string
-	Variant int32
-	Data    []byte
+	Family        string
+	Weight        string
+	Style         string
+	Variant       int32
+	Data          []byte
+	UnicodeRanges []css.UnicodeRange // nil = all codepoints
 }
 
 // FontRegistry holds fetched @font-face font buffers and applies them to a
@@ -164,6 +170,93 @@ func (fr *FontRegistry) SetFontFaceOverride(path string, mo MetricsOverride) {
 	}
 	fr.overridesByPath[path] = mo
 	fr.mu.Unlock()
+}
+
+// SetUnicodeRanges stores the unicode-range descriptor for a font face,
+// identified by the synthetic path returned by RegisterFontFace. A nil/empty
+// ranges slice is a no-op (nil means "all codepoints" — the default).
+// Mirrors Blink's UnicodeRangeSet stored per CSSFontFace (core/css/css_font_face.h
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (fr *FontRegistry) SetUnicodeRanges(path string, ranges []css.UnicodeRange) {
+	if len(ranges) == 0 {
+		return
+	}
+	synthPath := path
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	for i := range fr.entries {
+		if syntheticFontPath(fr.entries[i].Family, fr.entries[i].Variant) == synthPath {
+			fr.entries[i].UnicodeRanges = ranges
+			return
+		}
+	}
+}
+
+// LookupForCodepoint returns the synthetic path for a font matching the given
+// family, weight, and style that also covers the given codepoint (per the
+// unicode-range descriptor). Skips entries whose unicode-range excludes cp.
+// Falls back to LookupWithPolicy when no codepoint restriction is needed
+// (cp == 0). Mirrors Blink's CSSSegmentedFontFace::FontDataForCharacter and
+// FontFallbackIterator primary-font selection (core/css/css_segmented_font_face.cc
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (fr *FontRegistry) LookupForCodepoint(family string, cp rune, bold, italic bool, synthStyle css.FontSynthesisStyleValue) string {
+	if fr == nil {
+		return ""
+	}
+	if cp == 0 {
+		return fr.LookupWithPolicy(family, bold, italic, synthStyle)
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+
+	lowerFamily := strings.ToLower(family)
+	targetWeight := "normal"
+	if bold {
+		targetWeight = "bold"
+	}
+
+	// Exact match — same logic as LookupWithPolicy but with coverage gate.
+	if italic {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "italic" && css.CoversCodepoint(e.UnicodeRanges, cp) {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+	} else {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "normal" && css.CoversCodepoint(e.UnicodeRanges, cp) {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+	}
+	// Oblique fallback (italic requested, no italic face covering cp).
+	if italic && synthStyle != css.FontSynthesisStyleObliqueOnly {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "oblique" && css.CoversCodepoint(e.UnicodeRanges, cp) {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+	}
+	// Family-only fallback with coverage gate.
+	if italic && synthStyle == css.FontSynthesisStyleObliqueOnly {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Style == "normal" && css.CoversCodepoint(e.UnicodeRanges, cp) {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Style != "oblique" && css.CoversCodepoint(e.UnicodeRanges, cp) {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+		return ""
+	}
+	for _, e := range fr.entries {
+		if e.Family == lowerFamily && css.CoversCodepoint(e.UnicodeRanges, cp) {
+			return syntheticFontPath(e.Family, e.Variant)
+		}
+	}
+	return ""
 }
 
 // SetFontFamilyOverride stores metric overrides keyed by family name (lowercase).

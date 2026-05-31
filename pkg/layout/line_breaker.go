@@ -1890,6 +1890,59 @@ func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
 	return fonts.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
 }
 
+// resolveStrutFontPath returns the font path for the CSS 2.1 §10.8.1 strut
+// ("first available font" per CSS Fonts 3 §5.4). Unlike resolveFontPath, it
+// uses FontPathForStrut which skips @font-face faces whose unicode-range
+// excludes U+0020 (SPACE) — the reference character for primary-font
+// determination. This matches Blink's FontFallbackList::DeterminePrimaryFont
+// (third_party/blink/renderer/platform/fonts/font_fallback_list.cc @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func resolveStrutFontPath(style *css.Style, fonts text.FontConfig) string {
+	if style == nil {
+		return fonts.Regular
+	}
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	family, _ := style.Get("font-family")
+	synth := style.GetFontSynthesis()
+	return fonts.FontPathForStrut(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
+}
+
+// resolveFontPathForRun returns the font path for a text run, accounting for
+// @font-face unicode-range coverage. When textContent is non-empty and
+// startOff/endOff describe a valid sub-slice, the first rune of the run is
+// used as the coverage character — a face whose unicode-range excludes that
+// rune is skipped in favour of the next family in the list. This mirrors
+// Blink's per-character font selection in CSSSegmentedFontFace::FontDataForCharacter
+// (core/css/css_segmented_font_face.cc @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// When textContent is empty or the offsets are invalid, falls back to
+// resolveFontPath (no coverage check — preserves behaviour for callers that
+// don't have text content available).
+func resolveFontPathForRun(style *css.Style, fonts text.FontConfig, textContent string, startOff, endOff int) string {
+	if textContent == "" || startOff < 0 || endOff <= startOff || startOff >= len(textContent) {
+		return resolveFontPath(style, fonts)
+	}
+	if style == nil {
+		return fonts.Regular
+	}
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	family, _ := style.Get("font-family")
+	synth := style.GetFontSynthesis()
+
+	// Extract the first rune of the run for coverage checking.
+	sub := textContent[startOff:]
+	cp, _ := utf8.DecodeRuneInString(sub)
+	if cp == utf8.RuneError {
+		return resolveFontPath(style, fonts)
+	}
+	return fonts.FontPathForCovering(family, bold, italic, mono, ahem, synth.Weight, synth.Style, cp)
+}
+
 // measureTextWithTabs computes the inline size of text containing tab characters.
 // CSS Text 3 §4.2: a tab character advances to the next tab stop, where tab
 // stops are at multiples of (tab-size × space-width) or (tab-size in px) from

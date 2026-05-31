@@ -365,6 +365,108 @@ func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic,
 	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
 }
 
+// FontPathForStrut returns the font path for the "first available font" per
+// CSS Fonts 3 §5.4, used when computing the strut (CSS 2.1 §10.8.1 root
+// inline box). The first available font is the first family in the list whose
+// @font-face unicode-range covers U+0020 (SPACE), the reference character for
+// primary-font determination. If no registered face covers U+0020, falls back
+// to the same family-list traversal as FontPathForFamilyWithSynthesis.
+//
+// Mirrors Blink's FontFallbackList::DeterminePrimaryFont which walks the
+// FontFallbackIterator checking FontDataForCharacter(' ') for the first
+// covering face (third_party/blink/renderer/platform/fonts/font_fallback_list.cc
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (fc FontConfig) FontPathForStrut(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
+	families := ParseFontFamilyList(family)
+	suppressBold := false
+	suppressItalic := false
+	for _, fam := range families {
+		if fc.Registry != nil {
+			// Use LookupForCodepoint with U+0020 (SPACE) so faces whose
+			// unicode-range excludes space are skipped — they are not the
+			// "first available" font per CSS Fonts 3 §5.4.
+			if path := fc.Registry.LookupForCodepoint(fam, ' ', bold, italic, synthStyle); path != "" {
+				return path
+			}
+			if fc.Registry.IsDeclared(fam) {
+				if bold && !synthBold {
+					suppressBold = true
+				}
+				if italic && synthStyle == css.FontSynthesisStyleNone {
+					suppressItalic = true
+				}
+			}
+		}
+		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
+			return path
+		}
+	}
+	fallbackBold := bold
+	fallbackItalic := italic
+	if suppressBold {
+		fallbackBold = false
+	}
+	if suppressItalic {
+		fallbackItalic = false
+	}
+	if !ahem && !mono {
+		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
+			return path
+		}
+	}
+	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
+}
+
+// FontPathForCovering returns the font path for the first family in the list
+// whose @font-face unicode-range covers the given codepoint cp. Used for
+// per-run font selection in line-metric computation (InlineItemText): a face
+// that does not cover the run's first character should not contribute its
+// metrics to the line height. When cp == 0 or no Registry is set, delegates
+// to FontPathForFamilyWithSynthesis (no coverage check).
+//
+// Mirrors Blink's per-character fallback via CSSSegmentedFontFace at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, cp rune) string {
+	if cp == 0 || fc.Registry == nil {
+		return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synthBold, synthStyle)
+	}
+	families := ParseFontFamilyList(family)
+	suppressBold := false
+	suppressItalic := false
+	for _, fam := range families {
+		if fc.Registry != nil {
+			if path := fc.Registry.LookupForCodepoint(fam, cp, bold, italic, synthStyle); path != "" {
+				return path
+			}
+			if fc.Registry.IsDeclared(fam) {
+				if bold && !synthBold {
+					suppressBold = true
+				}
+				if italic && synthStyle == css.FontSynthesisStyleNone {
+					suppressItalic = true
+				}
+			}
+		}
+		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
+			return path
+		}
+	}
+	fallbackBold := bold
+	fallbackItalic := italic
+	if suppressBold {
+		fallbackBold = false
+	}
+	if suppressItalic {
+		fallbackItalic = false
+	}
+	if !ahem && !mono {
+		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
+			return path
+		}
+	}
+	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
+}
+
 // ParseFontFamilyList splits a CSS `font-family` value into individual
 // family names, stripping the surrounding quotes from each entry. Empty
 // entries are dropped.
