@@ -225,3 +225,93 @@ func TestParseStylesheet_AtImportFoldsRulesInPosition(t *testing.T) {
 		t.Errorf("second rule color = %q, want %q (outer)", got, want)
 	}
 }
+
+// TestStripImportConditionPrefixesWithSupports verifies extraction of the
+// supports condition and media-query-list from @import suffixes.
+// The supports condition is returned with wrapping parens suitable for
+// evaluateSupportsCondition.
+func TestStripImportConditionPrefixesWithSupports(t *testing.T) {
+	cases := []struct {
+		input        string
+		wantMedia    string
+		wantSupports string
+	}{
+		{"supports(display: block)", "", "(display: block)"},
+		{"supports(display: block) (min-width: 1px)", "(min-width: 1px)", "(display: block)"},
+		{"supports(foo: bar)", "", "(foo: bar)"},
+		{"supports((display: block))", "", "((display: block))"},
+		{"(min-width: 1px)", "(min-width: 1px)", ""},
+		{"", "", ""},
+		{"layer(A) supports(display: block)", "", "(display: block)"},
+		{"layer(A) supports(display: block) (min-width: 1px)", "(min-width: 1px)", "(display: block)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			gotMedia, gotSupports := stripImportConditionPrefixesWithSupports(tc.input)
+			if gotMedia != tc.wantMedia {
+				t.Errorf("media: got %q, want %q", gotMedia, tc.wantMedia)
+			}
+			if gotSupports != tc.wantSupports {
+				t.Errorf("supports: got %q, want %q", gotSupports, tc.wantSupports)
+			}
+		})
+	}
+}
+
+// TestResolveAtImport_SupportsCondition verifies that @import is gated by
+// its supports condition: true conditions allow the import, false conditions
+// prevent it. Mirrors the WPT css-cascade/import-conditional-002 fixture.
+func TestResolveAtImport_SupportsCondition(t *testing.T) {
+	fetcher := func(uri string) (string, error) {
+		return `.test { background: green; }`, nil
+	}
+	ctx := &ParserContext{Fetcher: fetcher}
+
+	// True-branch: supports(display: block) is true. Rule must be imported.
+	t.Run("supports true", func(t *testing.T) {
+		dst := &Stylesheet{}
+		resolveAtImport(ctx, `@import "x.css" supports(display: block);`, dst)
+		if len(dst.Rules) != 1 {
+			t.Errorf("supports(display: block): got %d rules, want 1", len(dst.Rules))
+		}
+	})
+
+	// False-branch: supports(foo: bar) is false. Rule must NOT be imported.
+	t.Run("supports false", func(t *testing.T) {
+		dst := &Stylesheet{}
+		resolveAtImport(ctx, `@import "x.css" supports(foo: bar);`, dst)
+		if len(dst.Rules) != 0 {
+			t.Errorf("supports(foo: bar): got %d rules, want 0", len(dst.Rules))
+		}
+	})
+
+	// Negation: not (foo: bar) is true. Rule must be imported.
+	t.Run("supports negation", func(t *testing.T) {
+		dst := &Stylesheet{}
+		resolveAtImport(ctx, `@import "x.css" supports(not (foo: bar));`, dst)
+		if len(dst.Rules) != 1 {
+			t.Errorf("supports(not (foo: bar)): got %d rules, want 1", len(dst.Rules))
+		}
+	})
+
+	// Combined with media-query: both must be true.
+	t.Run("supports true + media query", func(t *testing.T) {
+		dst := &Stylesheet{}
+		resolveAtImport(ctx, `@import "x.css" supports(display: block) (min-width: 1px);`, dst)
+		if len(dst.Rules) != 1 {
+			t.Errorf("supports + media both true: got %d rules, want 1", len(dst.Rules))
+		}
+		if !RuleMediaApplies(&dst.Rules[0], 800, 600) {
+			t.Errorf("rule should have media gate for (min-width: 1px)")
+		}
+	})
+
+	// False supports condition ignores the rule; media-query-list is not added.
+	t.Run("supports false + media query", func(t *testing.T) {
+		dst := &Stylesheet{}
+		resolveAtImport(ctx, `@import "x.css" supports(foo: bar) (min-width: 1px);`, dst)
+		if len(dst.Rules) != 0 {
+			t.Errorf("false supports condition: got %d rules, want 0 (import gated)", len(dst.Rules))
+		}
+	})
+}
