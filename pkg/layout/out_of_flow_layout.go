@@ -238,9 +238,17 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		// by ComputeReplacedSize (intrinsic size + ratio + specified sizes),
 		// never by stretch-fit to the IMCB. Mirrors Blink's abs-replaced
 		// dispatch in absolute_utils.cc.
+		// Exception: form controls are semi-replaced (input, textarea, select, button).
+		// They have intrinsic sizes but must stretch when positioned absolutely with
+		// explicit insets and auto width/height (CSS Position §10.3.7, csswg#6789).
+		// Blink does not treat them as LayoutReplaced, so they naturally take the
+		// stretch path; we mirror that by not blocking stretch for semi-replaced elements.
 		stretchable := !isNonStretchableDisplay(childStyle)
 		if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-			stretchable = false
+			// Check if this is a semi-replaced element (form control).
+			if !html.IsSemiReplacedElementTag(child.DOMNode.TagName) {
+				stretchable = false
+			}
 		}
 
 		if stretchable && insets.HasInlineStart && insets.HasInlineEnd &&
