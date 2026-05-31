@@ -179,6 +179,9 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 			}
 			continue
 		}
+		if len(face.UnicodeRanges) > 0 {
+			registry.SetUnicodeRanges(path, face.UnicodeRanges)
+		}
 		if hasOverride {
 			registry.SetFontFaceOverride(path, mo)
 		}

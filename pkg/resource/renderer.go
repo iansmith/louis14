@@ -254,6 +254,9 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 			}
 			continue
 		}
+		if len(face.UnicodeRanges) > 0 {
+			registry.SetUnicodeRanges(path, face.UnicodeRanges)
+		}
 		if hasOverride {
 			registry.SetFontFaceOverride(path, mo)
 		}
