@@ -702,11 +702,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			clipW = box.Width + edgeLeft + edgeRight
 			clipH = box.Height + edgeTop + edgeBottom
 		default:
-			// Overflow clip defaults to the padding box.
-			padX = box.X + box.Border.Left
-			padY = box.Y + box.Border.Top
-			clipW = box.Width - box.Border.Left - box.Border.Right
-			clipH = box.Height - box.Border.Top - box.Border.Bottom
+			// Overflow clip defaults to the padding box minus the scrollbar gutter.
+			// Per CSS Overflow §3, overflow:scroll/auto clips to the scrollable viewport,
+			// which excludes the scrollbar reservation.
+			padX = box.X + box.Border.Left + box.Scrollbar.Left
+			padY = box.Y + box.Border.Top + box.Scrollbar.Top
+			clipW = box.Width - box.Border.Left - box.Border.Right - box.Scrollbar.Left - box.Scrollbar.Right
+			clipH = box.Height - box.Border.Top - box.Border.Bottom - box.Scrollbar.Top - box.Scrollbar.Bottom
 		}
 		if clipW < 0 {
 			clipW = 0

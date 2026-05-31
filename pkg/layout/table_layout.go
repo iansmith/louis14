@@ -1073,8 +1073,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// both border models.
 		if row.style != nil {
 			rowBuilder.SetBoxData(&PhysicalBoxData{
-				Border:  PhysicalEdges{},
-				Padding: PhysicalEdges{},
+				Border:    PhysicalEdges{},
+				Padding:   PhysicalEdges{},
+				Scrollbar: PhysicalEdges{},
 			})
 		}
 
@@ -1431,11 +1432,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	// Mirrors Blink's single NGOutOfFlowLayoutPart::Run() at the end of
