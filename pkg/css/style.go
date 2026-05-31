@@ -7495,6 +7495,47 @@ func (s *Style) IsInlineRubyText() bool {
 	return s.GetDisplay() == DisplayRubyText
 }
 
+// RubyAlign represents the CSS ruby-align property value.
+//
+// CSS Ruby 1 §7 — https://drafts.csswg.org/css-ruby-1/#ruby-align-property.
+// Mirrors Blink's ERubyAlign in
+// core/style/computed_style_base.h @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type RubyAlign int
+
+const (
+	// RubyAlignSpaceAround is the initial value per CSS Ruby 1 §7.
+	RubyAlignSpaceAround RubyAlign = iota
+	RubyAlignStart
+	RubyAlignCenter
+	RubyAlignSpaceBetween
+)
+
+// GetRubyAlign returns the ruby-align computed value (default: space-around).
+//
+// CSS Ruby 1 §7 — the property controls how the shorter of the base/annotation
+// sub-lines is distributed within a ruby column's InlineSize slot.
+// Mirrors Blink's ComputedStyle::RubyAlign accessor at
+// core/style/computed_style_base.h @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) GetRubyAlign() RubyAlign {
+	if s == nil {
+		return RubyAlignSpaceAround
+	}
+	val, ok := s.Get("ruby-align")
+	if !ok {
+		return RubyAlignSpaceAround
+	}
+	switch strings.TrimSpace(val) {
+	case "start":
+		return RubyAlignStart
+	case "center":
+		return RubyAlignCenter
+	case "space-between":
+		return RubyAlignSpaceBetween
+	default:
+		return RubyAlignSpaceAround
+	}
+}
+
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)
 func (s *Style) GetLineClamp() int {
 	if val, ok := s.Get("-webkit-line-clamp"); ok {

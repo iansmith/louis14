@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 
+	"louis14/pkg/css"
 	"louis14/pkg/text"
 )
 
@@ -23,6 +24,11 @@ import (
 // sub-LineBreaker (CreateSubLineInfo) shares the same backing buffer,
 // so item TextStart/TextEnd offsets index directly into it.
 //
+// `rubyAlign` is the computed ruby-align value from the enclosing <ruby>
+// element, used to distribute the shorter sub-line within the column slot.
+// Mirrors Blink's ApplyRubyAlign at
+// core/layout/inline/ruby_utils.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
 // Phase 2 supports the single-level case (`ruby-position: over` only).
 // Mirrors Blink's inline_layout_algorithm.cc:396-418 column placement
 // flow at @ 4883d11fef — combined with UpdateRubyColumnInlinePositions
@@ -34,35 +40,55 @@ func emitRubyColumnFragments(
 	baseBlockBaseline float64,
 	annotationBlockTop float64,
 	textContent string,
+	rubyAlign css.RubyAlign,
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
 	sidewaysVLR bool,
 	lineBuilder *BoxFragmentBuilder,
 ) {
-	// Base sub-line: paint its text fragments at the column's inline
-	// position, with each fragment baseline-aligned to baseBlockBaseline.
+	// Base sub-line: apply ruby-align distribution when the base is the
+	// narrower side of the column (annotation is wider).
+	//
+	// CSS Ruby 1 §7: ruby-align distributes the shorter of the two sub-lines
+	// within the column's InlineSize. Mirrors Blink's ApplyRubyAlign path
+	// in ruby_utils.cc @ 4883d11fef.
 	if column.BaseLine != nil {
+		baseOffset, baseExpansion := rubyAlignSubLineOffset(
+			column.BaseLine.Width, column.InlineSize,
+			countSubLineSpaces(column.BaseLine, textContent),
+			rubyAlign,
+		)
 		emitSubLineTextFragments(
-			column.BaseLine, columnInlineOffset, baseBlockBaseline,
-			textContent, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
+			column.BaseLine, columnInlineOffset+baseOffset, baseBlockBaseline,
+			textContent, baseExpansion, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
 		)
 	}
 
-	// Annotation sub-lines: center each annotation horizontally within
-	// the column's `InlineSize` slot (so a narrow annotation appears
-	// centered over a wider base) and stack them above the base by
-	// their own ascent so the annotation's baseline sits at
-	// (annotationBlockTop + annotation.ascent). Phase 2 places all
-	// annotations on the over side; multi-level / under support is
-	// Phase 11.
+	// Annotation sub-lines: apply ruby-align distribution when the annotation
+	// is the narrower side (base is wider), otherwise fall back to center (the
+	// historical Phase 2 default).
+	//
+	// Per CSS Ruby 1 §7, the annotation gets the same alignment treatment as
+	// the base — both the shorter side and the longer side participate.
+	// Phase 2 default: when annotation is narrower, apply ruby-align;
+	// when annotation is wider or equal, it already fills the column so no
+	// offset is added. This mirrors Blink's behavior for the common case.
 	for _, anno := range column.AnnotationLines {
 		if anno == nil {
 			continue
 		}
-		annoOffset := columnInlineOffset
+		// Annotation distribution: apply ruby-align when annotation is narrower;
+		// use a fixed center fallback when annotation == column (i.e. it IS the
+		// wider side), as Blink does for the non-text annotation case.
+		var annoInlineOffset float64
 		if anno.Width < column.InlineSize {
-			annoOffset += (column.InlineSize - anno.Width) / 2
+			offset, _ := rubyAlignSubLineOffset(
+				anno.Width, column.InlineSize, 0, rubyAlign,
+			)
+			annoInlineOffset = columnInlineOffset + offset
+		} else {
+			annoInlineOffset = columnInlineOffset
 		}
 		// Mirror Blink's annotation positioning: layout works in sub-pixel
 		// font typo metrics, paint snaps to integer ascent (`int_ascent_`
@@ -77,10 +103,75 @@ func emitRubyColumnFragments(
 		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
 		annoBaseline := annotationBlockTop + math.Round(annoEmAscent)
 		emitSubLineTextFragments(
-			anno, annoOffset, annoBaseline,
-			textContent, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
+			anno, annoInlineOffset, annoBaseline,
+			textContent, 0, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
 		)
 	}
+}
+
+// rubyAlignSubLineOffset computes the inline start offset and per-space
+// justification expansion for a sub-line of width `lineWidth` within a
+// column slot of size `slotWidth`, according to the given ruby-align value.
+//
+// Returns (startOffset, spaceExpansion) where:
+//   - startOffset is added to columnInlineOffset before the first fragment.
+//   - spaceExpansion is the per-space-character expansion for space-between/
+//     space-around (0 if no expansion is needed).
+//
+// CSS Ruby 1 §7 — https://drafts.csswg.org/css-ruby-1/#ruby-align-property.
+// Mirrors Blink's ruby-align justification in ApplyRubyAlign at
+// core/layout/inline/ruby_utils.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func rubyAlignSubLineOffset(lineWidth, slotWidth float64, spaceCount int, align css.RubyAlign) (startOffset, spaceExpansion float64) {
+	slack := slotWidth - lineWidth
+	if slack <= 0 {
+		return 0, 0
+	}
+	switch align {
+	case css.RubyAlignStart:
+		return 0, 0
+	case css.RubyAlignCenter:
+		return slack / 2, 0
+	case css.RubyAlignSpaceBetween:
+		if spaceCount > 0 {
+			// Distribute all slack across space characters (text-align-last:
+			// justify semantics); no edge padding.
+			return 0, slack / float64(spaceCount)
+		}
+		// No spaces — fall back to centering (same as Blink for space-between
+		// when there are no expansion points).
+		return slack / 2, 0
+	default: // space-around
+		if spaceCount > 0 {
+			// Space-around: half-space at each edge + full-space between.
+			// n gaps (spaces) + 2 half-edges = n+1 units total.
+			// Each space gets 1 unit, each edge gets 0.5 unit.
+			unit := slack / float64(spaceCount+1)
+			return unit / 2, unit
+		}
+		// No spaces — center the content.
+		return slack / 2, 0
+	}
+}
+
+// countSubLineSpaces counts ASCII space characters in text items of a
+// sub-LineInfo. Used to compute ruby-align space-between/space-around
+// expansion points. Mirrors the opportunity-counting in
+// countJustifyOpportunities (inline_layout.go) but for sub-lines.
+func countSubLineSpaces(line *LineInfo, textContent string) int {
+	if line == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range line.Results {
+		if r.Item == nil || r.Item.Type != InlineItemText {
+			continue
+		}
+		if r.TextEnd <= r.TextStart || r.TextEnd > len(textContent) {
+			continue
+		}
+		n += strings.Count(textContent[r.TextStart:r.TextEnd], " ")
+	}
+	return n
 }
 
 // emitSubLineTextFragments walks a sub-LineInfo's Results and emits
@@ -90,6 +181,10 @@ func emitRubyColumnFragments(
 // position of the alphabetic baseline (so each fragment is placed at
 // blockBaseline - itemAscent). textContent is the shared outer
 // InlineItemsData.TextContent.
+//
+// justifyExpansion is the per-space-character inline expansion applied
+// for ruby-align: space-between and space-around distribution. Zero
+// means no expansion (start, center, or the wider side of the column).
 //
 // This is a slimmed-down version of the createLineBoxEx text path:
 // no vertical-align stack, no first-letter / first-line styling, no
@@ -101,6 +196,7 @@ func emitSubLineTextFragments(
 	inlineOrigin float64,
 	blockBaseline float64,
 	textContent string,
+	justifyExpansion float64,
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
@@ -140,6 +236,61 @@ func emitSubLineTextFragments(
 			parentNode := r.Item.Node
 			if parentNode != nil && parentNode.Parent != nil {
 				parentNode = parentNode.Parent
+			}
+
+			// ruby-align: space-between/space-around — when justifyExpansion > 0,
+			// split text at space boundaries and emit one fragment per piece, with
+			// each space expanded by justifyExpansion. Mirrors the justify-expansion
+			// path in createLineBoxEx (inline_layout.go) applied to ruby sub-lines.
+			if justifyExpansion > 0 && strings.Contains(content, " ") {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				letterSpacing := r.Item.Style.GetLetterSpacing()
+				wordSpacing := r.Item.Style.GetWordSpacing()
+				spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
+				pieces := strings.Split(content, " ")
+				for i, piece := range pieces {
+					if i > 0 {
+						spFrag := &PhysicalFragment{
+							Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+								InlineSize: spaceWidth + justifyExpansion + wordSpacing,
+								BlockSize:  fontSize,
+							}, wdm.WM)),
+							Type:             FragmentText,
+							TextContent:      " ",
+							BidiLevel:        r.Item.BidiLevel,
+							Node:             parentNode,
+							Style:            r.Item.Style,
+							WritingDirection: wdm,
+						}
+						lineBuilder.AddChild(spFrag, LogicalOffset{
+							InlineOffset: inlinePos,
+							BlockOffset:  blockPos,
+						})
+						inlinePos += spaceWidth + justifyExpansion + wordSpacing
+					}
+					if len(piece) == 0 {
+						continue
+					}
+					pieceWidth := measureTextContent(piece, fontSize, resolveFontPath(r.Item.Style, fonts), letterSpacing, 0, false)
+					pieceFrag := &PhysicalFragment{
+						Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+							InlineSize: pieceWidth,
+							BlockSize:  fontSize,
+						}, wdm.WM)),
+						Type:             FragmentText,
+						TextContent:      piece,
+						BidiLevel:        r.Item.BidiLevel,
+						Node:             parentNode,
+						Style:            r.Item.Style,
+						WritingDirection: wdm,
+					}
+					lineBuilder.AddChild(pieceFrag, LogicalOffset{
+						InlineOffset: inlinePos,
+						BlockOffset:  blockPos,
+					})
+					inlinePos += pieceWidth
+				}
+				continue
 			}
 
 			textFrag := &PhysicalFragment{
