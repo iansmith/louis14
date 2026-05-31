@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -188,6 +189,68 @@ func (f *SVGResourceFilter) ResourceBoundingBox(target geometry.RectF, userSpace
 	return target
 }
 
+// filterElementFontSize returns the font-size (in CSS px) of the given
+// filter element, used to resolve font-relative lengths (em, ex) on the
+// filter region attributes. Mirrors Blink's SVGLengthContext behaviour of
+// reading the element's computed font-size when converting kEms/kExs
+// (core/svg/svg_length_context.cc ConvertValueToUserUnits @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Resolution order (highest priority first):
+//  1. Computed style (when styleResolver is non-nil): reads the CSS
+//     `font-size` property — this is the cascade-resolved value and
+//     therefore most authoritative.
+//  2. `font-size` presentation attribute on the element: SVG allows
+//     font-size as a presentation attribute, which is exactly what the
+//     WPT test filter-region-units-001 uses
+//     (`<filter … font-size="10px">`).
+//  3. Default 16px (CSS initial value for font-size).
+func filterElementFontSize(elt ElementAdapter, styleResolver StyleResolver) float64 {
+	const defaultFontSize = 16.0
+	if elt == nil {
+		return defaultFontSize
+	}
+	// 1. Cascade-resolved computed style wins.
+	if styleResolver != nil {
+		if st := styleResolver(elt); st != nil {
+			if fsv, ok := st.Get("font-size"); ok {
+				if px := parseCSSPxLength(fsv); px > 0 {
+					return px
+				}
+			}
+		}
+	}
+	// 2. Presentation attribute fallback.
+	if raw, ok := elt.Attribute("font-size"); ok {
+		if px := parseCSSPxLength(raw); px > 0 {
+			return px
+		}
+	}
+	return defaultFontSize
+}
+
+// parseCSSPxLength parses a CSS <length> value that is in px (or
+// unitless, treated as px) and returns the float value. Returns 0 on
+// parse failure or when the unit is not px/unitless — other units (em,
+// %, rem, …) are not resolved here because this helper is only used for
+// already-resolved computed font-size values or explicit `10px` strings.
+func parseCSSPxLength(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	num, unit := splitNumberAndUnit(s)
+	unit = strings.ToLower(unit)
+	if unit != "" && unit != "px" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
 // NewSVGResourceFilter builds an SVGResourceFilter from a `<filter>`
 // ElementAdapter. Parses filterUnits/primitiveUnits/x/y/width/height
 // and collects the filter primitive children as ElementAdapters for
@@ -212,17 +275,29 @@ func NewSVGResourceFilter(elt ElementAdapter, parentCtx SVGLengthContext, styleR
 	if id, ok := elt.Attribute("id"); ok {
 		f.ResourceID = strings.TrimSpace(id)
 	}
+
+	// Resolve the filter element's own font-size so that font-relative
+	// lengths (em, ex) on x/y/width/height can be converted to user
+	// units at parse time. Mirrors Blink's SVGLengthContext resolution
+	// of kEms / kExs against the element's ComputedStyle font-size
+	// (core/svg/svg_length_context.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
+	// SVGLengthContext::ConvertValueToUserUnits).
+	//
+	// Source priority: computed style > presentation attribute. Default
+	// 16px (CSS initial value) when neither is present.
+	fontSize := filterElementFontSize(elt, styleResolver)
+
 	if v, ok := elt.Attribute("x"); ok {
-		f.X = parseGradientLength(v)
+		f.X = parseGradientLengthWithFontSize(v, fontSize)
 	}
 	if v, ok := elt.Attribute("y"); ok {
-		f.Y = parseGradientLength(v)
+		f.Y = parseGradientLengthWithFontSize(v, fontSize)
 	}
 	if v, ok := elt.Attribute("width"); ok {
-		f.Width = parseGradientLength(v)
+		f.Width = parseGradientLengthWithFontSize(v, fontSize)
 	}
 	if v, ok := elt.Attribute("height"); ok {
-		f.Height = parseGradientLength(v)
+		f.Height = parseGradientLengthWithFontSize(v, fontSize)
 	}
 	// filterUnits / primitiveUnits arrive in either spelling — HTML
 	// tokenizer lowercases SVG attribute names, but the canonical SVG
