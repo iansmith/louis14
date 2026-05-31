@@ -295,6 +295,19 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			}
 		}
 
+		// Non-reversed list-item implicit increment: HTML5 list items (li, dt, dd elements
+		// styled as display:list-item or display:inline-list-item) receive an implicit
+		// counter-increment: list-item 1 if they have no explicit counter-increment.
+		// This mirrors the reversed block above but applies +1 instead of -1 and only
+		// when the counter is NOT reversed.
+		if (disp == css.DisplayListItem || disp == css.DisplayInlineListItem) &&
+			!b.counterCtx.IsCounterReversed("list-item") {
+			_, hasExplicit := counterIncrementValue(style, "list-item")
+			if !hasExplicit {
+				b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, 1)
+			}
+		}
+
 		if style.HasStyleContainment() {
 			b.quoteDepthSaved = append(b.quoteDepthSaved, b.quoteDepth)
 			defer func() {
