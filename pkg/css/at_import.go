@@ -97,12 +97,25 @@ func parseImport(rule string) (url, mediaList string) {
 // the media-query-list here. Whitespace tolerant; case-insensitive on the
 // `layer` / `supports` keywords.
 func stripImportConditionPrefixes(s string) string {
+	s, _ = stripImportConditionPrefixesWithSupports(s)
+	return s
+}
+
+// stripImportConditionPrefixesWithSupports is like stripImportConditionPrefixes
+// but also extracts and returns the supports condition (if present) as a
+// separate value. Returns (mediaQueryListPart, supportsCondition).
+// The supportsCondition is the condition suitable for passing to
+// evaluateSupportsCondition (includes wrapping parens for declarations),
+// or "" if no supports condition is present.
+func stripImportConditionPrefixesWithSupports(s string) (string, string) {
 	s = strings.TrimSpace(s)
+	var supportsCondition string
+
 	// Layer prefix: `layer` or `layer(name)`.
 	if lower := strings.ToLower(s); strings.HasPrefix(lower, "layer") {
 		rest := s[len("layer"):]
 		if len(rest) == 0 {
-			return ""
+			return "", ""
 		}
 		switch rest[0] {
 		case '(':
@@ -110,7 +123,7 @@ func stripImportConditionPrefixes(s string) string {
 			if closeIdx := strings.IndexByte(rest, ')'); closeIdx >= 0 {
 				s = strings.TrimSpace(rest[closeIdx+1:])
 			} else {
-				return "" // malformed; drop the whole suffix.
+				return "", "" // malformed; drop the whole suffix.
 			}
 		case ' ', '\t', '\n':
 			s = strings.TrimSpace(rest)
@@ -139,12 +152,17 @@ func stripImportConditionPrefixes(s string) string {
 			}
 		}
 		if end >= 0 {
+			// Extract the condition: between "supports" and the closing )
+			// This includes the opening paren for <supports-in-parens>.
+			// E.g., "supports((display: block))" → "((display: block))"
+			//       "supports(display: block)"  → "(display: block)"
+			supportsCondition = strings.TrimSpace(s[len("supports") : end+1])
 			s = strings.TrimSpace(s[end+1:])
 		} else {
-			return "" // malformed; drop the whole suffix.
+			return "", "" // malformed; drop the whole suffix.
 		}
 	}
-	return s
+	return s, supportsCondition
 }
 
 // resolveAtImport handles a single `@import` at-rule encountered during
@@ -172,10 +190,53 @@ func resolveAtImport(ctx *ParserContext, atImportRule string, dst *Stylesheet) {
 	if ctx == nil || ctx.Fetcher == nil {
 		return
 	}
+
+	// Extract the URL using parseImport. This strips layer/supports/media
+	// from the suffix to get just the media-query-list.
+	// Per CSS Cascade 5 §3.1, the @import grammar is:
+	//   @import <url> <layer-prefix>? <supports-condition>? <media-query-list>?;
+	// Mirrors Blink's CSSImportRule supports-condition gating at
+	// third_party/blink/renderer/core/css/style_rule_import.cc @ 4883d11f.
 	rawURL, mediaListStr := parseImport(atImportRule)
 	if rawURL == "" {
 		return
 	}
+
+	// To extract the supports condition, we need to re-parse the rule's suffix
+	// before parseImport stripped it. Extract the raw conditional suffix here.
+	rule := strings.TrimSpace(atImportRule)
+	rule = strings.TrimSuffix(rule, ";")
+	rule = strings.TrimSpace(rule)
+	rule = strings.TrimPrefix(rule, "@import")
+	rule = strings.TrimSpace(rule)
+
+	var supportsCondition string
+	// Extract the conditional suffix (everything after the URL).
+	if strings.HasPrefix(rule, "url(") {
+		closeIdx := strings.Index(rule, ")")
+		if closeIdx >= 0 {
+			suffix := strings.TrimSpace(rule[closeIdx+1:])
+			_, supportsCondition = stripImportConditionPrefixesWithSupports(suffix)
+		}
+	} else if len(rule) >= 2 && (rule[0] == '"' || rule[0] == '\'') {
+		quote := rule[0]
+		if rule[len(rule)-1] == quote && strings.Count(rule, string(quote)) == 2 {
+			// Fast path: just the quoted URL, no suffix.
+			supportsCondition = ""
+		} else if endQuote := strings.IndexByte(rule[1:], quote); endQuote >= 0 {
+			suffix := strings.TrimSpace(rule[endQuote+2:])
+			_, supportsCondition = stripImportConditionPrefixesWithSupports(suffix)
+		}
+	}
+
+	// Evaluate the supports condition. If false, skip this @import.
+	if supportsCondition != "" {
+		if !evaluateSupportsCondition(supportsCondition) {
+			// Supports condition is false; skip importing this sheet.
+			return
+		}
+	}
+
 	importedURL := ctx.CompleteURL(rawURL)
 	importedCSS, err := ctx.Fetcher(importedURL)
 	if err != nil {
