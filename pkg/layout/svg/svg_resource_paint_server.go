@@ -357,6 +357,73 @@ func parseGradientLength(value string) SVGGradientLength {
 	return r
 }
 
+// parseGradientLengthWithFontSize is like parseGradientLength but
+// resolves font-relative units (em, ex) using the supplied fontSize (in
+// CSS px). Mirrors Blink's SVGLengthContext::ConvertValueToUserUnits for
+// the kEms / kExs cases (core/svg/svg_length_context.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Used by
+// NewSVGResourceFilter to resolve filter region lengths (x/y/width/height)
+// that may carry font-relative units against the filter element's own
+// font-size — Blink resolves these in SVGFilterElement::SetFilterRes /
+// SVGLengthContext::ResolveLength before building the filter region rect.
+//
+// ex (x-height) is approximated as 0.5 em per CSS Values 4 §7.4 (the
+// UA default when no glyph metrics are available), matching what Blink
+// does for SVG lengths when no font data is loaded.
+// parseFontRelativeUnit checks whether value ends with a known
+// font-relative unit suffix (em or ex) and, if so, returns the numeric
+// prefix and the unit. It handles the case where splitNumberAndUnit
+// misparses "1em" as number="1e"/unit="m" because it greedily treats
+// `e`/`E` as the start of a scientific-notation exponent. Using
+// strings.HasSuffix avoids that ambiguity.
+func parseFontRelativeUnit(value string) (num, unit string, ok bool) {
+	v := strings.ToLower(value)
+	switch {
+	case strings.HasSuffix(v, "em"):
+		return strings.TrimSpace(value[:len(value)-2]), "em", true
+	case strings.HasSuffix(v, "ex"):
+		return strings.TrimSpace(value[:len(value)-2]), "ex", true
+	}
+	return "", "", false
+}
+
+func parseGradientLengthWithFontSize(value string, fontSize float64) SVGGradientLength {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return SVGGradientLength{}
+	}
+	r := SVGGradientLength{Raw: value, HasValue: true}
+	if strings.HasSuffix(value, "%") {
+		num := strings.TrimSpace(strings.TrimSuffix(value, "%"))
+		if v, err := strconv.ParseFloat(num, 64); err == nil {
+			r.Value = v / 100.0
+			r.IsPercent = true
+		}
+		return r
+	}
+	// Handle em/ex before splitNumberAndUnit to avoid the "1em" → "1e"+"m"
+	// misparsing in splitNumberAndUnit (it treats 'e' as scientific-notation
+	// start). Mirrors Blink's SVGLengthContext::ConvertValueToUserUnits for
+	// kEms / kExs cases.
+	if numStr, unit, fontRel := parseFontRelativeUnit(value); fontRel {
+		if v, err := strconv.ParseFloat(numStr, 64); err == nil {
+			switch unit {
+			case "em":
+				r.Value = v * fontSize
+			case "ex":
+				// ex ≈ 0.5em when no font metrics are available — CSS Values 4 §7.4.
+				r.Value = v * fontSize * 0.5
+			}
+		}
+		return r
+	}
+	num, _ := splitNumberAndUnit(value)
+	if v, err := strconv.ParseFloat(num, 64); err == nil {
+		r.Value = v
+	}
+	return r
+}
+
 // ResolveAgainst resolves the length against a reference rect using
 // the specified unit mode + axis. For objectBoundingBox it returns a
 // FRACTION value (typically [0, 1]) that the caller multiplies into
