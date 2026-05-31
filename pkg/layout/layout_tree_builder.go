@@ -2110,19 +2110,6 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 		return children
 	}
 
-	// Compute the ::first-letter style.
-	flStyle := css.ComputePseudoElementStyle(
-		node, "first-letter", b.stylesheets,
-		b.viewportWidth, b.viewportHeight, parentStyle,
-	)
-
-	// CSS Inline Layout 3 §7.3-7.5: when the ::first-letter style declares
-	// `initial-letter`, the first letter becomes an initial-letter box — an
-	// inline-start float sized so its cap-height spans <size> line-boxes.
-	// Mutate flStyle in place so the existing first-letter discovery + the
-	// float/exclusion system render and flow lines around it.
-	b.applyInitialLetter(flStyle, parentStyle)
-
 	// preserveBreaks mirrors Blink's ShouldPreserveBreaks: white-space
 	// values that preserve newlines (pre / pre-wrap / pre-line / break-spaces)
 	// cause a leading LF to terminate first-letter discovery rather than be
@@ -2131,7 +2118,11 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 
 	// Find and split the first non-whitespace character in the inline content.
 	// We only look at direct text children or text inside inline children.
-	return b.splitFirstLetter(children, node, flStyle, preserveBreaks)
+	// Pass node and parentStyle so walkFirstLetter can compute the correct
+	// pseudo-element style based on the actual containing element's style,
+	// not just the originating block's style (mirrors Blink's
+	// FirstLetterPseudoElement::StyleForFirstLetter).
+	return b.splitFirstLetter(children, node, parentStyle, preserveBreaks)
 }
 
 // applyInitialLetter mutates the ::first-letter style `flStyle` into an
@@ -2447,6 +2438,10 @@ type firstLetterPunctHost struct {
 	// parentNode is the DOM host for the synthetic ::first-letter wrapper
 	// when wrapping at this site.
 	parentNode *html.Node
+	// parentStyle is the computed style of the element containing this text node.
+	// The ::first-letter pseudo-element inherits from this style, not the
+	// originating block's style (mirrors Blink FirstLetterPseudoElement::StyleForFirstLetter).
+	parentStyle *css.Style
 	// owner is the children slice that directly contains `child`; index is
 	// child's position within owner. ancestors records the descend chain so
 	// the walker can update each parent's children pointer when the wrap
@@ -2496,11 +2491,11 @@ type firstLetterAncestor struct {
 //
 // Returns the (possibly modified) `children` slice for the originating block.
 func (b *LayoutTreeBuilder) splitFirstLetter(
-	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style, preserveBreaks bool,
+	children []*LayoutInputNode, originatingBlockNode *html.Node, parentStyle *css.Style, preserveBreaks bool,
 ) []*LayoutInputNode {
 	state := firstLetterPunctNotSeen
 	var pendingHost *firstLetterPunctHost
-	newChildren, _, _ := b.walkFirstLetter(children, parentNode, flStyle, preserveBreaks, state, &pendingHost, nil)
+	newChildren, _, _ := b.walkFirstLetter(children, originatingBlockNode, originatingBlockNode, parentStyle, preserveBreaks, state, &pendingHost, nil)
 	return newChildren
 }
 
@@ -2522,8 +2517,14 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 // pendingHost is a pointer into the call chain so a nested descendant can
 // see a sibling's earlier kSeen punctuation node and apply the wrap there
 // even when the letter is discovered deep in another subtree.
+//
+// parentStyle is the style of the element at this level in the tree walk.
+// When the first letter is found, the ::first-letter pseudo-element inherits
+// from the element that actually contains the letter text, not from the
+// originating block (mirrors Blink FirstLetterPseudoElement::StyleForFirstLetter).
+// originatingBlockNode is the block element on which ::first-letter was declared.
 func (b *LayoutTreeBuilder) walkFirstLetter(
-	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style,
+	children []*LayoutInputNode, originatingBlockNode *html.Node, parentNode *html.Node, parentStyle *css.Style,
 	preserveBreaks bool, state firstLetterPunctuationState,
 	pendingHost **firstLetterPunctHost, ancestors []firstLetterAncestor,
 ) (newChildren []*LayoutInputNode, applied bool, newState firstLetterPunctuationState) {
@@ -2571,6 +2572,13 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 				}
 				continue
 			}
+			// The ::first-letter pseudo-element inherits from the element
+			// that contains the text, not from the originating block.
+			// Use the text node's computed style as the inheritance parent.
+			textStyle := child.Style()
+			if textStyle == nil {
+				textStyle = parentStyle
+			}
 			if state == firstLetterPunctSeen {
 				// Only leading punctuation found here; remember as the
 				// wrap candidate and continue searching subsequent text
@@ -2579,14 +2587,15 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 					ancs := make([]firstLetterAncestor, len(ancestors))
 					copy(ancs, ancestors)
 					*pendingHost = &firstLetterPunctHost{
-						child:      child,
-						text:       text,
-						skipped:    idx,
-						length:     letterLen,
-						parentNode: parentNode,
-						owner:      children,
-						index:      i,
-						ancestors:  ancs,
+						child:       child,
+						text:        text,
+						skipped:     idx,
+						length:      letterLen,
+						parentNode:  parentNode,
+						parentStyle: textStyle,
+						owner:       children,
+						index:       i,
+						ancestors:   ancs,
 					}
 				}
 				continue
@@ -2596,7 +2605,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 			// host in an earlier text node, wrap there instead so the
 			// pseudo styles only the leading punctuation.
 			if host := *pendingHost; host != nil {
-				newOwner := b.wrapFirstLetterInChildren(host.owner, host.index, host.child, host.text, host.skipped, host.length, host.parentNode, flStyle)
+				newOwner := b.wrapFirstLetterInChildren(host.owner, host.index, host.child, host.text, host.skipped, host.length, host.parentNode, host.parentStyle, originatingBlockNode)
 				// Propagate the rewritten owner up through the descend
 				// chain so each ancestor's .children pointer matches.
 				for _, a := range host.ancestors {
@@ -2605,7 +2614,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 				_ = newOwner
 				return children, true, firstLetterPunctDisallow
 			}
-			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, flStyle)
+			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, textStyle, originatingBlockNode)
 			return result, true, firstLetterPunctDisallow
 		}
 
@@ -2615,7 +2624,8 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 		// the parent slice unchanged.
 		if child.IsElement() || child.IsAnonymous() {
 			descAnc := append(ancestors[:len(ancestors):len(ancestors)], firstLetterAncestor{parent: child})
-			grandchildren, didApply, ns := b.walkFirstLetter(child.children, b.firstLetterHostNode(child, parentNode), flStyle, preserveBreaks, state, pendingHost, descAnc)
+			childStyle := child.Style()
+			grandchildren, didApply, ns := b.walkFirstLetter(child.children, originatingBlockNode, b.firstLetterHostNode(child, parentNode), childStyle, preserveBreaks, state, pendingHost, descAnc)
 			state = ns
 			if didApply {
 				child.children = grandchildren
@@ -2641,11 +2651,31 @@ func (b *LayoutTreeBuilder) firstLetterHostNode(child *LayoutInputNode, fallback
 // wrapFirstLetterInChildren replaces the text child at index i with the
 // leading-whitespace prefix (if any), the synthetic ::first-letter span,
 // and the trailing text. Returns the new children slice.
+// parentStyle is the computed style of the element containing the text.
+// originatingBlockNode is the element on which ::first-letter was declared.
+// The ::first-letter pseudo inherits from parentStyle (the containing element),
+// not from the originating block's style (mirrors Blink).
 func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
 	children []*LayoutInputNode, i int, child *LayoutInputNode,
 	text string, idx, letterLen int,
-	parentNode *html.Node, flStyle *css.Style,
+	parentNode *html.Node, parentStyle *css.Style, originatingBlockNode *html.Node,
 ) []*LayoutInputNode {
+	// Compute the ::first-letter pseudo-element style using the containing
+	// element's style (parentStyle), not the originating block's style.
+	// However, we need the originating block's style for initial-letter sizing.
+	originatingStyle := b.styles[originatingBlockNode]
+	if originatingStyle == nil {
+		originatingStyle = parentStyle
+	}
+	flStyle := css.ComputePseudoElementStyle(
+		originatingBlockNode, "first-letter", b.stylesheets,
+		b.viewportWidth, b.viewportHeight, parentStyle,
+	)
+
+	// Apply initial-letter transformation if needed.
+	// Use the originating block's style for line-height/font-size sizing context.
+	b.applyInitialLetter(flStyle, originatingStyle)
+
 	letterEnd := idx + letterLen
 	letter := text[idx:letterEnd]
 	rest := text[letterEnd:]
