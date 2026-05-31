@@ -1700,8 +1700,9 @@ func createLineBoxEx(
 				Node:             span.node,
 				WritingDirection: wdm,
 				BoxData: &PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				},
 			}
 			// CSS 2.1 §9.4.3: inline span backgrounds also shift with

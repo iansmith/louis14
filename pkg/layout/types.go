@@ -17,9 +17,10 @@ type Box struct {
 	Width  float64
 	Height float64
 
-	Margin  css.BoxEdge
-	Padding css.BoxEdge
-	Border  css.BoxEdge
+	Margin    css.BoxEdge
+	Padding   css.BoxEdge
+	Border    css.BoxEdge
+	Scrollbar css.BoxEdge
 
 	Children []*Box
 	Parent   *Box
