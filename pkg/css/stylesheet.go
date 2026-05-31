@@ -152,12 +152,41 @@ type ContainerCondition struct {
 // *CSSURIValue per LOU-138 phase 7.5 — mirrors Blink's `CSSURIValue`
 // wrapping of @font-face src tokens (core/css/css_uri_value.h @
 // d4ecdfed8). Nil when the rule had no parseable src.
+// UnicodeRange represents a contiguous codepoint range from the CSS
+// @font-face unicode-range descriptor. Mirrors Blink's UnicodeRange struct in
+// platform/fonts/unicode_range_set.h @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type UnicodeRange struct {
+	From rune
+	To   rune
+}
+
+// CoversCodepoint reports whether cp falls within any range in ranges.
+// A nil/empty slice means "all codepoints" (CSS Fonts 3 §4.5 default:
+// U+0-10FFFF), so it returns true.
+func CoversCodepoint(ranges []UnicodeRange, cp rune) bool {
+	if len(ranges) == 0 {
+		return true
+	}
+	for _, r := range ranges {
+		if cp >= r.From && cp <= r.To {
+			return true
+		}
+	}
+	return false
+}
+
 type FontFaceRule struct {
 	Family string       // font-family (unquoted)
 	Src    *CSSURIValue // URL from src: url(...); nil if missing
 	Format string       // "truetype", "opentype", "woff", "woff2", or ""
 	Weight string       // font-weight value (e.g. "bold", "400", "700")
 	Style  string       // font-style value (e.g. "italic", "normal")
+
+	// UnicodeRanges restricts the codepoints for which this face is active.
+	// nil/empty means the CSS Fonts 3 default (U+0-10FFFF — all codepoints).
+	// Mirrors Blink's UnicodeRangeSet (platform/fonts/unicode_range_set.h @
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	UnicodeRanges []UnicodeRange
 
 	// CSS Fonts 4 §6.1-§6.3 metric overrides. nil means "normal" (use the
 	// font's native OS/2 metric). Non-nil stores the ratio (percent / 100) so
@@ -5777,6 +5806,8 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 			ff.Weight = val
 		case "font-style":
 			ff.Style = val
+		case "unicode-range":
+			ff.UnicodeRanges = parseUnicodeRanges(val)
 		case "ascent-override":
 			ff.AscentOverride = parseFontMetricOverride(val)
 		case "descent-override":
@@ -5818,6 +5849,52 @@ func parseFontMetricOverride(val string) *float64 {
 	}
 	ratio := pct / 100.0
 	return &ratio
+}
+
+// parseUnicodeRanges parses a CSS unicode-range descriptor value into a slice
+// of UnicodeRange pairs. Handles three token forms per CSS Fonts 3 §4.5:
+//   - U+XXXX       — single codepoint (from == to)
+//   - U+XXXX-YYYY  — explicit range
+//   - U+XXX?       — wildcard range (? = any hex digit, 0-F)
+//
+// Mirrors Blink's ParseUnicodeRange in core/css/parser/css_parser_impl.cc @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func parseUnicodeRanges(val string) []UnicodeRange {
+	var result []UnicodeRange
+	for _, token := range strings.Split(val, ",") {
+		token = strings.TrimSpace(token)
+		// Strip leading "U+" or "u+"
+		upper := strings.ToUpper(token)
+		if !strings.HasPrefix(upper, "U+") {
+			continue
+		}
+		hex := token[2:]
+
+		if strings.Contains(hex, "?") {
+			// Wildcard: replace '?' with '0' for start, 'F' for end
+			lo := strings.ReplaceAll(hex, "?", "0")
+			hi := strings.ReplaceAll(hex, "?", "F")
+			loVal, err1 := strconv.ParseInt(lo, 16, 32)
+			hiVal, err2 := strconv.ParseInt(hi, 16, 32)
+			if err1 == nil && err2 == nil {
+				result = append(result, UnicodeRange{From: rune(loVal), To: rune(hiVal)})
+			}
+		} else if idx := strings.Index(hex, "-"); idx >= 0 {
+			// Explicit range: U+XXXX-YYYY
+			loVal, err1 := strconv.ParseInt(hex[:idx], 16, 32)
+			hiVal, err2 := strconv.ParseInt(hex[idx+1:], 16, 32)
+			if err1 == nil && err2 == nil {
+				result = append(result, UnicodeRange{From: rune(loVal), To: rune(hiVal)})
+			}
+		} else {
+			// Single codepoint
+			v, err := strconv.ParseInt(hex, 16, 32)
+			if err == nil {
+				result = append(result, UnicodeRange{From: rune(v), To: rune(v)})
+			}
+		}
+	}
+	return result
 }
 
 // parseKeyframesRule parses a @keyframes or @-webkit-keyframes rule.

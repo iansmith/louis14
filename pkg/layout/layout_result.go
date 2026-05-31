@@ -369,9 +369,10 @@ type ChildLink struct {
 
 // PhysicalBoxData stores the physical box model edges.
 type PhysicalBoxData struct {
-	Margin  PhysicalEdges
-	Border  PhysicalEdges
-	Padding PhysicalEdges
+	Margin    PhysicalEdges
+	Border    PhysicalEdges
+	Padding   PhysicalEdges
+	Scrollbar PhysicalEdges
 }
 
 // LogicalFragment is a read-only wrapper that presents a PhysicalFragment's

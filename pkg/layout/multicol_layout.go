@@ -447,7 +447,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// fragment. Only margin is needed for outer layout.
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
-			Margin: physMargin,
+			Margin:    physMargin,
+			Scrollbar: PhysicalEdges{},
 		})
 		result := builder.Build()
 		result.BlockSizeForFragmentation = explicitBlockSize + geom.BlockBorderPadding()
@@ -530,11 +531,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		physBorder := ToPhysicalEdges(border, wdm)
 		physPadding := ToPhysicalEdges(padding, wdm)
+		physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
-			Margin:  physMargin,
-			Border:  physBorder,
-			Padding: physPadding,
+			Margin:    physMargin,
+			Border:    physBorder,
+			Padding:   physPadding,
+			Scrollbar: physScrollbar,
 		})
 		// LOU-143: emit gap geometry on every outer-break-result path so the
 		// column-rule painter has accurate cross-gap positions and last-row
@@ -799,7 +802,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetIntrinsicBlockSize(0)
 				builder.SetLayoutNode(mla.node)
 				physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin})
+				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin, Scrollbar: PhysicalEdges{}})
 				result = builder.Build()
 				result.BreakToken = &BlockBreakToken{
 					Node: mla.node,
@@ -1172,11 +1175,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	physBorder := ToPhysicalEdges(border, wdm)
 	physPadding := ToPhysicalEdges(padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 	builder.SetIntrinsicBlockSize(blockCursor)
 

@@ -470,8 +470,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			builder.SetStyle(bla.style)
 			builder.SetLayoutNode(bla.node)
 			builder.SetBoxData(&PhysicalBoxData{
-				Border:  ToPhysicalEdges(geom.Border, wdm),
-				Padding: ToPhysicalEdges(geom.Padding, wdm),
+				Border:    ToPhysicalEdges(geom.Border, wdm),
+				Padding:   ToPhysicalEdges(geom.Padding, wdm),
+				Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 			})
 			result := builder.Build()
 			result.BreakToken = inlineBreakToken
@@ -621,8 +622,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetSize(geom.BorderBoxSize)
 				}
 				builder.SetBoxData(&PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				})
 				builder.SetEndMarginStrut(prevMarginStrut)
 				builder.SetExclusionSpace(exclusionSpace)
@@ -954,8 +956,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetSize(geom.BorderBoxSize)
 				}
 				builder.SetBoxData(&PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				})
 				builder.SetEndMarginStrut(prevMarginStrut)
 				builder.SetExclusionSpace(exclusionSpace)
@@ -1115,8 +1118,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetStyle(bla.style)
 					builder.SetLayoutNode(bla.node)
 					builder.SetBoxData(&PhysicalBoxData{
-						Border:  ToPhysicalEdges(geom.Border, wdm),
-						Padding: ToPhysicalEdges(geom.Padding, wdm),
+						Border:    ToPhysicalEdges(geom.Border, wdm),
+						Padding:   ToPhysicalEdges(geom.Padding, wdm),
+						Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 					})
 					builder.SetEndMarginStrut(prevMarginStrut)
 					builder.SetExclusionSpace(exclusionSpace)
@@ -1817,11 +1821,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Set box data for the renderer.
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	builder.SetEndMarginStrut(prevMarginStrut)

@@ -367,11 +367,56 @@ func interpolateValue(prop, from, to string, t float64) string {
 	if v, ok := interpolatePxLength(from, to, t); ok {
 		return v
 	}
+	// <number> interpolation for unitless numeric properties (opacity,
+	// z-index, flood-opacity, stop-opacity, etc.).
+	// Mirrors Blink CSSNumberInterpolationType::MaybeConvertValue at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+	// (third_party/blink/renderer/core/animation/css_number_interpolation_type.cc).
+	if v, ok := interpolateBareNumber(from, to, t); ok {
+		return v
+	}
 	// Discrete fallback for unsupported value types.
 	if t < 1 {
 		return from
 	}
 	return to
+}
+
+// interpolateBareNumber linearly interpolates between two bare CSS <number>
+// values (e.g. "0.8", "0.0"). Returns the result as a minimal decimal string,
+// or false if either input is not a plain number (no unit, no function).
+func interpolateBareNumber(from, to string, t float64) (string, bool) {
+	a, aok := parseBareNumber(from)
+	b, bok := parseBareNumber(to)
+	if !aok || !bok {
+		return "", false
+	}
+	v := a + (b-a)*t
+	return strconv.FormatFloat(v, 'f', -1, 64), true
+}
+
+// parseBareNumber parses a CSS <number> token — a plain decimal (e.g. "0.8",
+// "1", "-0.5") with no unit suffix or function syntax. Returns false if the
+// input contains any non-numeric characters after optional leading sign.
+func parseBareNumber(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	// Reject strings with units or function syntax.
+	if strings.ContainsAny(s, "%(") {
+		return 0, false
+	}
+	if strings.HasSuffix(s, "px") || strings.HasSuffix(s, "em") ||
+		strings.HasSuffix(s, "rem") || strings.HasSuffix(s, "deg") ||
+		strings.HasSuffix(s, "%") {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // interpolatePxLength linearly interpolates between two CSS lengths whose

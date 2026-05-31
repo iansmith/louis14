@@ -385,7 +385,20 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	case "feflood":
 		r, g, bb, a := prim.FloodColor()
 		fe := NewFEFlood(b.space, r, g, bb, a)
-		fe.Subregion = resolvePrimitiveSubregion(elt, prim)
+		sub := resolvePrimitiveSubregion(elt, prim)
+		if sub.Empty() {
+			// No explicit primitive subregion: feFlood covers the full
+			// filter region per SVG Filter Effects 1 §15.5. Default
+			// Subregion to the filter region so FEFlood.MapRect and
+			// paintLayerWithFilter's filter.MapRect(sourceExtent) call
+			// see the full flood area — otherwise a flood applied to a
+			// CSS-filtered HTML element clips to the smaller source
+			// extent and misses pixels the filter region extends into.
+			// Mirrors Blink FEFlood which fills filter_region when no
+			// primitive subregion is set.
+			sub = elt.FilterRegion()
+		}
+		fe.Subregion = sub
 		return fe
 	case "feimage":
 		// Per Filter Effects 1 §15.18: feImage is a leaf primitive

@@ -1445,7 +1445,7 @@ func createLineBoxEx(
 	isFirstLine bool,
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
-	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
+	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
 
 	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
 	// annotations (default `ruby-position: over` stacks them above
@@ -1713,8 +1713,9 @@ func createLineBoxEx(
 				Node:             span.node,
 				WritingDirection: wdm,
 				BoxData: &PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				},
 			}
 			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
@@ -2337,7 +2338,7 @@ func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string, reg 
 
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
-	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil)
+	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil, "")
 }
 
 // computeLineMetricsEx computes the maximum ascent and descent across all
@@ -2350,7 +2351,12 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 //
 // parentStyle is the block container's style, used to establish the root
 // inline box ("strut") per CSS 2.1 §10.8.1.
-func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style) (maxAscent, maxDescent float64) {
+//
+// textContent is InlineItemsData.TextContent; it is used to identify the first
+// codepoint of each InlineItemText run so that @font-face unicode-range
+// coverage is respected when selecting the font for line-height computation.
+// An empty string disables coverage-aware resolution (safe fallback).
+func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style, textContent string) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 
@@ -2365,7 +2371,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			strutAscent = fontSize / 2
 			strutDescent = fontSize / 2
 		} else {
-			fontPath := resolveFontPath(parentStyle, fonts)
+			fontPath := resolveStrutFontPath(parentStyle, fonts)
 			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 		}
@@ -2374,7 +2380,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		// strut height matches the font's built-in metrics.
 		lineHt := parentStyle.GetLineHeight()
 		if parentStyle.IsLineHeightNormal() && !centralBaseline {
-			fontPath := resolveFontPath(parentStyle, fonts)
+			fontPath := resolveStrutFontPath(parentStyle, fonts)
 			lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 		}
 		// CSS 2.1 §10.8.1: half-leading is allowed to be negative when
@@ -2476,7 +2482,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				ascent = fontSize / 2
 				descent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(rStyle, fonts)
+				// Use coverage-aware resolution: a face whose unicode-range
+				// excludes the run's first character is skipped, mirroring
+				// Blink's per-character font selection.
+				fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
@@ -2486,7 +2495,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			if rStyle != nil {
 				lineHt := rStyle.GetLineHeight()
 				if rStyle.IsLineHeightNormal() && !centralBaseline {
-					fontPath := resolveFontPath(rStyle, fonts)
+					fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
 					lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 				}
 				halfLeading := (lineHt - (ascent + descent)) / 2
