@@ -481,7 +481,14 @@ func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Nod
 		return
 	}
 	// Condition 1: previous entry's origin is an ancestor of node.
+	// HTML list containers (ol/ul/menu) for the list-item counter are special:
+	// their scope extends to following siblings per HTML spec / CSS Lists 3,
+	// so do NOT pop when a following sibling exists. All other elements and
+	// counter names pop normally.
 	if isStrictAncestorOf(prev.Origin, node) {
+		if name == "list-item" && isHTMLListContainer(node) && c.hasNextLayoutSibling(node) {
+			return
+		}
 		*stack = (*stack)[:len(*stack)-1]
 		return
 	}
@@ -934,6 +941,37 @@ func domChildrenOrder(a, b *html.Node) bool {
 		}
 		if sib == b {
 			return false
+		}
+	}
+	return false
+}
+
+// isHTMLListContainer reports whether node is an HTML list container element
+// (ol, ul, or menu) that participates in the implicit list-item counter model.
+func isHTMLListContainer(node *html.Node) bool {
+	if node == nil {
+		return false
+	}
+	tag := node.TagName
+	return tag == "ol" || tag == "ul" || tag == "menu"
+}
+
+// hasNextLayoutSibling reports whether `node` has a following sibling in the
+// layout tree. Used to detect when an HTML list container's counter scope
+// must extend to following siblings (list-item counter only).
+func (c *CountersAttachmentContext) hasNextLayoutSibling(node *html.Node) bool {
+	if node == nil || node.Parent == nil {
+		return false
+	}
+	found := false
+	for _, sib := range node.Parent.Children {
+		if sib == node {
+			found = true
+			continue
+		}
+		if found && sib != nil {
+			// node is this element, and we found a following sibling.
+			return true
 		}
 	}
 	return false

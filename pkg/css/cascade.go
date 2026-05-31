@@ -2835,7 +2835,15 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			if _, err := strconv.Atoi(startVal); err == nil {
 				style.Set("counter-reset", "list-item "+startVal)
 			}
+		} else {
+			// Plain <ol> without reversed or start: UA default counter-reset: list-item 0.
+			// This establishes the initial scope for list-item counters.
+			style.Set("counter-reset", "list-item 0")
 		}
+	case "ul", "menu":
+		// <ul> and <menu> also get UA counter-reset: list-item 0 to establish scope.
+		// They participate in the same list-item counter namespace as <ol>.
+		style.Set("counter-reset", "list-item 0")
 	case "li":
 		if val, ok := node.GetAttribute("value"); ok {
 			if _, err := strconv.Atoi(val); err == nil {
