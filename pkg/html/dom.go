@@ -438,3 +438,18 @@ func IsReplacedElementTag(tag string) bool {
 	}
 	return false
 }
+
+// IsSemiReplacedElementTag returns true for form control elements that have
+// intrinsic sizes but are NOT fully replaced: they must stretch when positioned
+// absolutely with explicit insets and auto width/height (CSS Position §10.3.7).
+// Per https://github.com/w3c/csswg-drafts/issues/6789, form controls are
+// semi-replaced: they differ from fully-replaced elements (img, video, etc.)
+// which never stretch. Mirrors Blink's exclusion of form controls from
+// LayoutReplaced (they are LayoutButton, LayoutTextControl, LayoutFlexibleBox).
+func IsSemiReplacedElementTag(tag string) bool {
+	switch tag {
+	case "input", "textarea", "select", "button":
+		return true
+	}
+	return false
+}

@@ -638,6 +638,13 @@ func (lb *LineBreaker) breakTextAtWord(
 			break
 		}
 
+		// If this is the first word on an empty line and it overflows,
+		// and overflow-wrap:break-word is set, break it at character boundaries.
+		if fitted == 0 && len(line.Results) == 0 && usedWidth+wordWidth > remaining &&
+			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+		}
+
 		if usedWidth+wordWidth > remaining && fitted > 0 {
 			// CSS 2.1 §16.6.1: trailing collapsible whitespace hangs and does
 			// not contribute to the line's width. If stripping trailing spaces
@@ -670,12 +677,10 @@ func (lb *LineBreaker) breakTextAtWord(
 	if fitted == 0 {
 		// Can't fit even the first word.
 		if len(line.Results) == 0 {
-			// overflow-wrap:break-word or anywhere — break the word at a
-			// character boundary so it fits the available width (CSS Text 3 §4.1).
-			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
-			}
-			// Force the whole word onto the empty line.
+			// The break-word/anywhere first-word-overflow case is handled by the
+			// early dispatch above (before the word is force-fitted), so only the
+			// non-breaking overflow-wrap:normal case reaches here: force the whole
+			// word onto the empty line (it overflows, per CSS Text 3 §4.1).
 			fitted = 1
 			usedWidth = measureWord(words[0])
 		} else {

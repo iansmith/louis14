@@ -398,6 +398,10 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 			Top: frag.BoxData.Padding.Top, Right: frag.BoxData.Padding.Right,
 			Bottom: frag.BoxData.Padding.Bottom, Left: frag.BoxData.Padding.Left,
 		}
+		box.Scrollbar = css.BoxEdge{
+			Top: frag.BoxData.Scrollbar.Top, Right: frag.BoxData.Scrollbar.Right,
+			Bottom: frag.BoxData.Scrollbar.Bottom, Left: frag.BoxData.Scrollbar.Left,
+		}
 	}
 
 	// CSS position applies to boxes (elements), never to text runs.
