@@ -481,13 +481,15 @@ func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Nod
 		return
 	}
 	// Condition 1: previous entry's origin is an ancestor of node.
-	// However, CSS counter scopes extend to following siblings, so we must NOT
-	// pop if the leaving node has a following sibling — that sibling will
-	// increment the counter at this nested scope level.
+	// HTML list containers (ol/ul/menu) for the list-item counter are special:
+	// their scope extends to following siblings per HTML spec / CSS Lists 3,
+	// so do NOT pop when a following sibling exists. All other elements and
+	// counter names pop normally.
 	if isStrictAncestorOf(prev.Origin, node) {
-		if !c.hasNextLayoutSibling(node) {
-			*stack = (*stack)[:len(*stack)-1]
+		if name == "list-item" && isHTMLListContainer(node) && c.hasNextLayoutSibling(node) {
+			return
 		}
+		*stack = (*stack)[:len(*stack)-1]
 		return
 	}
 	// Condition 2: previous entry's origin's LAYOUT parent is an
@@ -944,10 +946,19 @@ func domChildrenOrder(a, b *html.Node) bool {
 	return false
 }
 
+// isHTMLListContainer reports whether node is an HTML list container element
+// (ol, ul, or menu) that participates in the implicit list-item counter model.
+func isHTMLListContainer(node *html.Node) bool {
+	if node == nil {
+		return false
+	}
+	tag := node.TagName
+	return tag == "ol" || tag == "ul" || tag == "menu"
+}
+
 // hasNextLayoutSibling reports whether `node` has a following sibling in the
-// layout tree. In CSS, counter scopes extend to following siblings, so a
-// counter reset/increment on the leaving node should not be popped if the
-// node has following siblings that will use that scope.
+// layout tree. Used to detect when an HTML list container's counter scope
+// must extend to following siblings (list-item counter only).
 func (c *CountersAttachmentContext) hasNextLayoutSibling(node *html.Node) bool {
 	if node == nil || node.Parent == nil {
 		return false
