@@ -65,23 +65,22 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 
 	// SVG 2 §3.5: the outermost <svg> is always clipped to its viewport
 	// (the UA stylesheet sets overflow:hidden on the SVG element).
-	// When `overflow-clip-margin` is set, OR when overflow-x/overflow-y
-	// cause any clipping (layer.HasClip), the CSS-overflow paint path in
-	// `paintLayer` has already installed the correct per-axis clip rect
-	// (including extending the unclipped axis to a very large extent).
-	// We must NOT install a second viewport clip here — it would
-	// unconditionally clip both axes and override the per-axis
-	// semantics established by the CSS path.
+	// When overflow-x/overflow-y cause any clipping (layer.HasClip), the
+	// CSS-overflow paint path in `paintLayer` has already installed the
+	// correct per-axis clip rect — extending the unclipped axis to a very
+	// large extent so content overflows freely. HasClipMargin implies
+	// HasClip (it is set inside the same `if clipX || clipY` block in
+	// paint_layer.go), so checking HasClip alone covers both cases.
+	// Installing a second viewport clip here would unconditionally clip
+	// both axes and override the per-axis semantics set by the CSS path.
 	//
-	// We only install the SVG-side viewport clip when !layer.HasClip
-	// (neither overflow-x nor overflow-y triggers a CSS clip), which
-	// in practice is the `overflow: visible` override case. In that case
-	// no clipping is desired and we correctly skip it.
+	// We only reach the body when !layer.HasClip (both axes overflow:visible),
+	// in which case no clipping is desired and the block is a no-op fallback.
 	//
 	// Mirrors Blink's LayoutSVGRoot::ComputeOverflowClipAxes which
 	// returns kOverflowClipBothAxis by default but honors per-axis
 	// overflow:visible (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	if !layer.HasClip && !layer.HasClipMargin {
+	if !layer.HasClip {
 		r.dc.DrawRectangle(originX, originY,
 			root.ContainerSize.Width, root.ContainerSize.Height)
 		r.dc.Clip()
