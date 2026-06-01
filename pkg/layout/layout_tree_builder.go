@@ -105,7 +105,7 @@ func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 //     `EquivalentBlockDisplay` / `EquivalentInlineDisplay` pair at
 //     `core/css/resolver/style_adjuster.cc:247-356`.
 //  2. Orphan-wrap fixup (`#anon-gen-wrap-inlinize`): when a ruby-internal
-//     box (display:ruby-text or DOM element tagged rb/rbc/rtc) appears
+//     box (display:ruby-text or DOM element tagged rb/rbc/rtc/rt) appears
 //     as a child of a non-ruby block container, wrap it (and adjacent
 //     ruby-internal siblings) in an anonymous display:ruby box. Mirrors
 //     CSS Ruby §2.2 box-fixup.
@@ -176,7 +176,7 @@ func isRubyInternal(node *LayoutInputNode) bool {
 
 // wrapOrphanRubyChildren applies CSS Ruby §2.2 #anon-gen-wrap-inlinize
 // fixup: wraps consecutive runs of ruby-internal children (display:ruby-text,
-// or DOM elements tagged rb/rbc/rtc) that appear in a non-ruby block container.
+// or DOM elements tagged rb/rbc/rtc/rt) that appear in a non-ruby block container.
 // Non-ruby-internal inline content between ruby-internal elements splits the
 // run, creating separate anonymous ruby wrappers. Mirrors the table anonymous-box
 // pattern (wrapAnonymousTableBoxes) and Blink's InlineItemsBuilder column
