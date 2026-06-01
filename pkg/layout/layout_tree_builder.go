@@ -153,21 +153,21 @@ func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode) {
 }
 
 // isRubyInternal returns true if the node is a ruby-internal box: either
-// a box with display:ruby-text, or a DOM element tagged as rb/rbc/rtc.
+// a box with display:ruby-text, or a DOM element tagged as rb/rbc/rtc/rt.
 // Mirrors Blink's IsInlineRubyText() check at inline_items_builder.cc:1550-1595
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func isRubyInternal(node *LayoutInputNode) bool {
 	if node == nil || node.Style() == nil {
 		return false
 	}
-	// Check display:ruby-text (bare <rt> gets this).
+	// Check display:ruby-text (bare <rt> inside a ruby gets this).
 	if node.Style().GetDisplay() == css.DisplayRubyText {
 		return true
 	}
 	// Check DOM element tags that are ruby-internal even outside a ruby element.
 	if node.DOMNode != nil {
 		switch node.DOMNode.TagName {
-		case "rb", "rbc", "rtc":
+		case "rb", "rbc", "rtc", "rt":
 			return true
 		}
 	}
