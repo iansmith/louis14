@@ -116,6 +116,39 @@ const (
 	MediaRestrictorOnly
 )
 
+// ConditionKind classifies a node in the recursive media-condition tree.
+// Mirrors Blink's MediaCondition::ConditionType in
+// third_party/blink/renderer/core/css/media_condition.h @ 4883d11f.
+type ConditionKind int
+
+const (
+	// ConditionFeature is a leaf node: a single parenthesized media feature
+	// like `(min-width: 768px)` or `(color)`.
+	ConditionFeature ConditionKind = iota
+	// ConditionNot negates a single child condition: `(not (...))`.
+	ConditionNot
+	// ConditionAnd combines children with Kleene AND: `(A) and (B)`.
+	ConditionAnd
+	// ConditionOr combines children with Kleene OR: `(A) or (B)`.
+	ConditionOr
+)
+
+// ConditionNode is a node in the recursive media-condition tree. Leaf nodes
+// (ConditionFeature) carry Feature+Value; interior nodes (Not/And/Or) carry
+// Children. Mirrors Blink's MediaCondition recursive struct in
+// third_party/blink/renderer/core/css/media_condition.h @ 4883d11f.
+type ConditionNode struct {
+	Kind     ConditionKind
+	Feature  string          // ConditionFeature: "min-width", "color", "monochrome", …
+	Value    string          // ConditionFeature: "768px", "landscape", "" (boolean)
+	Children []ConditionNode // ConditionNot (1 child), ConditionAnd/Or (≥2 children)
+}
+
+// MediaCondition is a backward-compatible alias kept for any call sites that
+// still use the flat struct name. New code should use ConditionNode directly.
+// Deprecated: use ConditionNode.
+type MediaCondition = ConditionNode
+
 // Phase 22: MediaQuery represents a @media rule condition.
 // MediaType holds the bare type identifier exactly as parsed (e.g. "screen",
 // "print", "all", or an unknown identifier like "unknown"). Negation and
@@ -126,14 +159,7 @@ const (
 type MediaQuery struct {
 	Restrictor MediaQueryRestrictor // "not" / "only" / none
 	MediaType  string               // "screen", "print", "all", "" (no type given), or an unknown ident
-	Conditions []MediaCondition     // parenthesized media features
-}
-
-// Phase 22: MediaCondition represents a single parenthesized media feature
-// expression like `(min-width: 768px)` or `(unknown)`.
-type MediaCondition struct {
-	Feature string // "min-width", "max-width", "orientation", etc.
-	Value   string // "768px", "landscape", etc.
+	Conditions []ConditionNode      // parsed media-condition tree nodes (AND-combined at top level)
 }
 
 // ContainerQuery represents a @container rule condition
@@ -1575,6 +1601,10 @@ func parseContainerQuery(queryStr string) *ContainerQuery {
 // are NOT silently rewritten to "all" or "none". The negation is applied at
 // evaluation time via applyMediaRestrictor() so that unknown features
 // remain unknown (Kleene 3-valued logic).
+//
+// Media conditions are parsed into a recursive ConditionNode tree that
+// supports not/and/or nesting per CSS Media Queries 4 §3.1 (Blink:
+// MediaCondition recursive struct, media_query_parser.cc @ 4883d11f).
 func parseMediaQuery(mediaStr string) *MediaQuery {
 	// Remove @media prefix
 	mediaStr = strings.TrimPrefix(mediaStr, "@media")
@@ -1582,10 +1612,13 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 
 	mq := &MediaQuery{
 		Restrictor: MediaRestrictorNone,
-		Conditions: make([]MediaCondition, 0),
+		Conditions: make([]ConditionNode, 0),
 	}
 
-	// Handle "not" and "only" modifiers
+	// Handle "not" and "only" modifiers at the query level.
+	// "not" before a media type (e.g. `not screen`) is query-level not.
+	// "not" before a `(` (e.g. `not (monochrome)`) is also query-level not
+	// and the remainder is a condition list, NOT a media type.
 	if strings.HasPrefix(mediaStr, "not ") {
 		mq.Restrictor = MediaRestrictorNot
 		mediaStr = strings.TrimSpace(mediaStr[4:])
@@ -1610,48 +1643,175 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 		mediaStr = strings.TrimSpace(mediaStr[end:])
 	}
 
-	// Remove leading "and" keyword
+	// Remove leading "and" keyword (after a media type: `screen and (...)`)
 	mediaStr = strings.TrimPrefix(mediaStr, "and")
 	mediaStr = strings.TrimSpace(mediaStr)
 
-	// Parse conditions: (min-width: 768px) and (max-width: 1024px)
-	// Split by " and " at paren depth 0 to handle nested parens in values
+	// Parse the condition expression into a recursive ConditionNode tree.
+	// Top-level conditions separated by " and " become a list of ConditionAnd
+	// children; each condition is parsed recursively to handle not/or nesting.
 	conditionStrs := splitMediaConditions(mediaStr)
-
 	for _, condStr := range conditionStrs {
 		condStr = strings.TrimSpace(condStr)
 		if condStr == "" {
 			continue
 		}
-
-		// Remove outer parentheses
-		if strings.HasPrefix(condStr, "(") && strings.HasSuffix(condStr, ")") {
-			condStr = condStr[1 : len(condStr)-1]
-		}
-		condStr = strings.TrimSpace(condStr)
-
-		// Split by : to get feature and value
-		parts := strings.SplitN(condStr, ":", 2)
-		if len(parts) == 2 {
-			feature := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			mq.Conditions = append(mq.Conditions, MediaCondition{
-				Feature: feature,
-				Value:   value,
-			})
-		} else if len(parts) == 1 && condStr != "" {
-			// Boolean media feature like (color) or (hover) — no value
-			feature := strings.TrimSpace(parts[0])
-			if feature != "" {
-				mq.Conditions = append(mq.Conditions, MediaCondition{
-					Feature: feature,
-					Value:   "", // empty value = boolean true test
-				})
-			}
-		}
+		node := parseConditionNode(condStr)
+		mq.Conditions = append(mq.Conditions, node)
 	}
 
 	return mq
+}
+
+// parseConditionNode parses a single media condition expression (with its
+// outer parentheses still present) into a ConditionNode tree.
+//
+// Grammar (CSS Media Queries 4 §3.1, simplified):
+//
+//	condition         = not-condition | in-parens *( 'or' in-parens )
+//	                  | in-parens *( 'and' in-parens )
+//	not-condition     = 'not' in-parens
+//	in-parens         = '(' condition ')' | '(' media-feature ')'
+//	media-feature     = ident [ ':' value ]
+//
+// Mirrors Blink's MediaQueryParser::ConsumeCondition at
+// third_party/blink/renderer/core/css/parser/media_query_parser.cc @ 4883d11f.
+func parseConditionNode(s string) ConditionNode {
+	s = strings.TrimSpace(s)
+
+	// not-condition: starts with "not " (before a parenthesized block)
+	if strings.HasPrefix(s, "not ") || strings.HasPrefix(s, "not(") {
+		rest := strings.TrimSpace(s[3:])
+		child := parseConditionNode(rest)
+		return ConditionNode{Kind: ConditionNot, Children: []ConditionNode{child}}
+	}
+
+	// in-parens wrapper: strip balanced outer parens, then check for
+	// not/or/and inside, or fall through to feature parsing.
+	if strings.HasPrefix(s, "(") {
+		inner := stripOuterParens(s)
+		inner = strings.TrimSpace(inner)
+
+		// Inner starts with "not" → Not node
+		if strings.HasPrefix(inner, "not ") || strings.HasPrefix(inner, "not(") {
+			child := parseConditionNode(inner)
+			return child
+		}
+
+		// Look for " or " at paren depth 0 inside the parens.
+		orParts := splitAtDepthZero(inner, " or ")
+		if len(orParts) > 1 {
+			children := make([]ConditionNode, 0, len(orParts))
+			for _, p := range orParts {
+				children = append(children, parseConditionNode(strings.TrimSpace(p)))
+			}
+			return ConditionNode{Kind: ConditionOr, Children: children}
+		}
+
+		// Look for " and " at paren depth 0 inside the parens.
+		andParts := splitAtDepthZero(inner, " and ")
+		if len(andParts) > 1 {
+			children := make([]ConditionNode, 0, len(andParts))
+			for _, p := range andParts {
+				children = append(children, parseConditionNode(strings.TrimSpace(p)))
+			}
+			return ConditionNode{Kind: ConditionAnd, Children: children}
+		}
+
+		// No combinators — the inner content is a media feature.
+		return parseFeatureNode(inner)
+	}
+
+	// Look for " or " at paren depth 0 (outer-paren-free or/and forms).
+	orParts := splitAtDepthZero(s, " or ")
+	if len(orParts) > 1 {
+		children := make([]ConditionNode, 0, len(orParts))
+		for _, p := range orParts {
+			children = append(children, parseConditionNode(strings.TrimSpace(p)))
+		}
+		return ConditionNode{Kind: ConditionOr, Children: children}
+	}
+
+	andParts := splitAtDepthZero(s, " and ")
+	if len(andParts) > 1 {
+		children := make([]ConditionNode, 0, len(andParts))
+		for _, p := range andParts {
+			children = append(children, parseConditionNode(strings.TrimSpace(p)))
+		}
+		return ConditionNode{Kind: ConditionAnd, Children: children}
+	}
+
+	// Bare identifier or feature without parens — treat as unknown.
+	return ConditionNode{Kind: ConditionFeature, Feature: s}
+}
+
+// stripOuterParens removes the outermost balanced pair of parentheses from s
+// if and only if they wrap the entire string. Returns s unchanged otherwise.
+// E.g. "(foo)" → "foo", "(a) or (b)" → "(a) or (b)" (not wrapped).
+func stripOuterParens(s string) string {
+	if len(s) < 2 || s[0] != '(' {
+		return s
+	}
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				// The opening paren closes here.
+				if i == len(s)-1 {
+					// It wraps the entire string.
+					return s[1:i]
+				}
+				// It closes before the end — not a wrapping paren.
+				return s
+			}
+		}
+	}
+	return s
+}
+
+// splitAtDepthZero splits s by the literal separator sep at parenthesis depth
+// 0. Returns a single-element slice if sep is not found at depth 0.
+func splitAtDepthZero(s, sep string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && i+len(sep) <= len(s) && strings.EqualFold(s[i:i+len(sep)], sep) {
+			parts = append(parts, s[start:i])
+			start = i + len(sep)
+			i += len(sep) - 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+// parseFeatureNode parses a bare feature expression (without outer parens)
+// like "min-width: 768px" or "color" into a ConditionFeature node.
+func parseFeatureNode(s string) ConditionNode {
+	s = strings.TrimSpace(s)
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) == 2 {
+		return ConditionNode{
+			Kind:    ConditionFeature,
+			Feature: strings.TrimSpace(parts[0]),
+			Value:   strings.TrimSpace(parts[1]),
+		}
+	}
+	return ConditionNode{
+		Kind:    ConditionFeature,
+		Feature: s,
+	}
 }
 
 // parseMediaQueryList parses a comma-separated media-query-list
@@ -3955,14 +4115,42 @@ func mediaAnd(a, b MediaQueryResult) MediaQueryResult {
 	return MediaQueryTrue
 }
 
-// Phase 22: evaluateMediaCondition evaluates a single parenthesized media
-// feature expression. Returns Kleene 3-valued: True/False for recognized
-// features, Unknown for any feature name the renderer doesn't model.
-// Mirrors Blink's per-feature Eval*() dispatch in
-// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f,
-// which returns KleeneValue::kUnknown for features that the evaluator does
-// not implement.
-func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) MediaQueryResult {
+// Phase 22: evaluateMediaCondition evaluates a ConditionNode (leaf feature or
+// recursive Not/And/Or) into a Kleene 3-valued result. For leaf nodes it
+// dispatches per-feature evaluation. For interior nodes it recurses and
+// combines with the matching Kleene operation. Mirrors Blink's
+// MediaQueryEvaluator::Eval(MediaCondition) recursive dispatch at
+// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
+func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight float64) MediaQueryResult {
+	// Recursive interior nodes.
+	switch cond.Kind {
+	case ConditionNot:
+		if len(cond.Children) == 0 {
+			return MediaQueryUnknown
+		}
+		inner := evaluateMediaCondition(cond.Children[0], viewportWidth, viewportHeight)
+		return applyMediaRestrictor(MediaRestrictorNot, inner)
+	case ConditionAnd:
+		result := MediaQueryTrue
+		for _, child := range cond.Children {
+			result = mediaAnd(result, evaluateMediaCondition(child, viewportWidth, viewportHeight))
+			if result == MediaQueryFalse {
+				break
+			}
+		}
+		return result
+	case ConditionOr:
+		result := MediaQueryFalse
+		for _, child := range cond.Children {
+			result = mediaOr(result, evaluateMediaCondition(child, viewportWidth, viewportHeight))
+			if result == MediaQueryTrue {
+				break
+			}
+		}
+		return result
+	}
+
+	// ConditionFeature: evaluate the leaf feature.
 	feature := strings.TrimSpace(strings.ToLower(cond.Feature))
 	value := strings.TrimSpace(strings.ToLower(cond.Value))
 
@@ -4030,8 +4218,14 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 		// We don't use an indexed color palette
 		return boolToResult(value == "0" || value == "")
 	case "monochrome":
-		// We are not monochrome
-		return boolToResult(value == "0" || value == "")
+		// Our renderer is a colour display (0 bits per pixel of monochrome).
+		// Boolean `(monochrome)` asks "is this device monochrome?" → False.
+		// `(monochrome: 0)` asks "does the device have 0 monochrome bits?" → True.
+		// Mirrors Blink's EvalMonochrome in media_query_evaluator.cc @ 4883d11f.
+		if value == "" {
+			return MediaQueryFalse // boolean: not a monochrome device
+		}
+		return boolToResult(value == "0") // numeric: we have 0 monochrome bits
 
 	// Resolution — always match for static renderer
 	case "resolution", "min-resolution", "max-resolution":
