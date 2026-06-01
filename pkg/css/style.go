@@ -14426,6 +14426,18 @@ func (s *Style) GetTextDecorationSkipInk() TextDecorationSkipInk {
 	return TextDecorationSkipInkAuto
 }
 
+// GetTextCombineUpright returns true iff text-combine-upright is set to "all".
+// Per CSS Writing Modes 3 §9, the initial value is `none`.
+// Mirrors Blink's ComputedStyle::TextCombineUpright() at
+// core/style/computed_style_base.h @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) GetTextCombineUpright() bool {
+	val, ok := s.Get("text-combine-upright")
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(strings.ToLower(val)) == "all"
+}
+
 // computeOwnTextDecorationContribution returns the element's own contribution
 // to its AppliedTextDecorations vector — i.e. the `AppliedTextDecoration` that
 // would be *appended* to the parent's resolved vector, if any. Returns false
