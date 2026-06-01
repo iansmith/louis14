@@ -215,6 +215,13 @@ func (b *LayoutTreeBuilder) wrapOrphanRubyChildren(
 		if isRubyInternal(child) {
 			// Ruby-internal: accumulate in the current run.
 			rubyRun = append(rubyRun, child)
+		} else if len(rubyRun) > 0 && isWhitespaceOnly([]*LayoutInputNode{child}) {
+			// Whitespace-only text between ruby-internal siblings is absorbed
+			// into the current run rather than breaking it. CSS Ruby §2.2
+			// does not treat inter-element whitespace as a run boundary;
+			// the reference rendering groups adjacent rb/rt with only
+			// whitespace between them into a single anonymous ruby box.
+			rubyRun = append(rubyRun, child)
 		} else {
 			// Non-ruby-internal content: flush the run and append the child.
 			flush()
