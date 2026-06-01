@@ -308,7 +308,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			}
 		}
 
-		if style.HasStyleContainment() {
+		if style.ShouldApplyStyleContainment() {
 			b.quoteDepthSaved = append(b.quoteDepthSaved, b.quoteDepth)
 			defer func() {
 				n := len(b.quoteDepthSaved)

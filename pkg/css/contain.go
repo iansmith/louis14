@@ -74,6 +74,40 @@ func (s *Style) ShouldApplyInlineSizeContainment() bool {
 	return isEligibleForSizeContainment(s)
 }
 
+// ShouldApplyStyleContainment reports whether style containment is in
+// effect for this element — `HasStyleContainment` AND eligibility per
+// CSS Containment 1 §3.3. Mirrors Blink LayoutObject::
+// ShouldApplyStyleContainment() at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Style containment requires a principal box. display:contents elements
+// generate no principal box and must not be style-contained (CSS Contain 1
+// §3: "containment does not apply to ... elements that do not generate a
+// box"). In Blink, display:contents elements produce no LayoutObject so
+// ShouldApplyStyleContainment is never called for them; in louis14 we
+// explicitly filter at this layer because EnterObject IS called for
+// display:contents nodes.
+func (s *Style) ShouldApplyStyleContainment() bool {
+	if !s.HasStyleContainment() {
+		return false
+	}
+	return isEligibleForStyleContainment(s)
+}
+
+// isEligibleForStyleContainment reports whether the element's display type
+// permits style containment. The principal exclusion is display:contents,
+// which generates no box (CSS Containment 1 §3). Style containment does
+// not share the ruby-internal / table-internal-track exclusions of
+// layout/paint containment (those boxes have no quote or counter context
+// to contain anyway, but the spec text §3.3 only carves out the
+// principal-box requirement).
+func isEligibleForStyleContainment(s *Style) bool {
+	disp, ok := s.Get("display")
+	if !ok {
+		return true
+	}
+	return strings.TrimSpace(disp) != "contents"
+}
+
 // isEligibleForLayoutOrPaintContainment encodes the display-type
 // eligibility filter shared by layout and paint containment per CSS
 // Containment 1 §3 (preamble: "containment does not apply" list).

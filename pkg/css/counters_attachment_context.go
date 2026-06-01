@@ -258,7 +258,7 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 	for _, d := range c.parseCounterDirectives(node, style) {
 		c.ProcessCounter(node, d)
 	}
-	if style.HasStyleContainment() {
+	if style.ShouldApplyStyleContainment() {
 		c.EnterStyleContainmentScope()
 	}
 }
@@ -277,7 +277,7 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	if node == nil || style == nil {
 		return
 	}
-	if style.HasStyleContainment() {
+	if style.ShouldApplyStyleContainment() {
 		c.LeaveStyleContainmentScope()
 	}
 	for _, d := range c.parseCounterDirectives(node, style) {
