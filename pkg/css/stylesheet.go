@@ -144,11 +144,6 @@ type ConditionNode struct {
 	Children []ConditionNode // ConditionNot (1 child), ConditionAnd/Or (≥2 children)
 }
 
-// MediaCondition is a backward-compatible alias kept for any call sites that
-// still use the flat struct name. New code should use ConditionNode directly.
-// Deprecated: use ConditionNode.
-type MediaCondition = ConditionNode
-
 // Phase 22: MediaQuery represents a @media rule condition.
 // MediaType holds the bare type identifier exactly as parsed (e.g. "screen",
 // "print", "all", or an unknown identifier like "unknown"). Negation and
@@ -1679,9 +1674,10 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 func parseConditionNode(s string) ConditionNode {
 	s = strings.TrimSpace(s)
 
-	// not-condition: starts with "not " (before a parenthesized block)
-	if strings.HasPrefix(s, "not ") || strings.HasPrefix(s, "not(") {
-		rest := strings.TrimSpace(s[3:])
+	// not-condition: starts with "not " (CSS MQ4 always uses a space before the
+	// parenthesized argument, e.g. `not (monochrome)`).
+	if strings.HasPrefix(s, "not ") {
+		rest := strings.TrimSpace(s[4:])
 		child := parseConditionNode(rest)
 		return ConditionNode{Kind: ConditionNot, Children: []ConditionNode{child}}
 	}
@@ -1692,8 +1688,8 @@ func parseConditionNode(s string) ConditionNode {
 		inner := stripOuterParens(s)
 		inner = strings.TrimSpace(inner)
 
-		// Inner starts with "not" → Not node
-		if strings.HasPrefix(inner, "not ") || strings.HasPrefix(inner, "not(") {
+		// Inner starts with "not " → Not node
+		if strings.HasPrefix(inner, "not ") {
 			child := parseConditionNode(inner)
 			return child
 		}
@@ -1865,29 +1861,10 @@ func splitMediaQueryListBranches(s string) []string {
 	return parts
 }
 
-// splitMediaConditions splits a media query condition string by " and " at paren depth 0.
-// This handles cases like "(min-width: 100px) and (max-width: 500px)".
+// splitMediaConditions splits a media query condition string by " and " at
+// paren depth 0. Delegates to splitAtDepthZero.
 func splitMediaConditions(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	const sep = " and "
-
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth == 0 && i+len(sep) <= len(s) && strings.EqualFold(s[i:i+len(sep)], sep) {
-			parts = append(parts, s[start:i])
-			start = i + len(sep)
-			i += len(sep) - 1
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
+	return splitAtDepthZero(s, " and ")
 }
 
 // parseSupportsRule parses an @supports rule and returns the inner rules if
