@@ -703,10 +703,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// start at row offset 0 and re-paint the already-consumed slice.
 				if remainingToken != nil && isFirstRow && hasOuterFrag &&
 					mla.shouldWrapColumns() && mla.hasRowHeight() {
-					painted := outerAvailable - rowStart
-					if mla.rowHeight() > painted && painted > 0 {
+					// Bug A fix: use Blink's overflow formula instead of painted.
+					// overflow = remainingRowHeightAtOffset(rowStart) - (outerAvailable - rowStart)
+					// Only emit carrier when overflow > 0 (row TALLER than outer space).
+					overflow := mla.remainingRowHeightAtOffset(rowStart) - (outerAvailable - rowStart)
+					if overflow > 0 {
 						outgoingMulticolData = &MulticolBreakTokenData{
-							ConsumedRowBlockSize: painted,
+							ConsumedRowBlockSize: mla.rowHeight() - overflow,
 						}
 						outBuilder.AddBreakToken(remainingToken)
 						flushWalker()
@@ -721,6 +724,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// walker entry (mirrors Blink's
 				// MulticolPartWalker::AddNextColumnBreakToken).
 				if remainingToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
+					// Bug C fix: record the row gap boundary for column-rule painting.
+					// Blink calls gap_accumulator_->AddMainGap(line_offset - row_gap_size_)
+					// when has_wrapped && row_gap_size_ > LayoutUnit().
+					// At this point blockCursor = end of the row just laid out.
+					// The gap starts at blockCursor and extends to blockCursor + rowGapSize.
+					// We record this gap boundary whenever a row wraps to a new one.
+					if mla.rowGapSize > 0 {
+						mla.addMainGap(blockCursor, SpannerGapNone)
+					}
 					walker.AddNextColumnBreakToken(remainingToken)
 					isFirstRow = false
 					continue
@@ -887,9 +899,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// Blink cla.cc:1427-1459 (pre-commit row snap). Snap blockCursor
 			// to the next row-stride boundary if we're past the start of the
 			// current column row, so the spanner lands on a row boundary.
+			// Bug B: This unconditionally snaps whenever offsetInCurrentRow > 0,
+			// but should only snap when spanner doesn't fit.
 			if mla.shouldWrapColumns() && mla.hasRowHeight() && mla.rowHeight() > 0 &&
 				mla.offsetInCurrentRow(blockCursor) > 0 {
-				blockCursor += mla.offsetToNextRow(blockCursor)
+				remainingRow := mla.remainingRowHeightAtOffset(blockCursor)
+				// Bug B fix: Only snap if spanner doesn't fit in remaining row
+				if spanHeight > remainingRow {
+					blockCursor += mla.offsetToNextRow(blockCursor)
+				}
 			}
 			// Apply spanner margin-block-start. Skip when resuming a
 			// spanner — margins were consumed in the original outer column.
