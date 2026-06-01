@@ -593,18 +593,13 @@ func TestAppliedTextDecorations_PropagationBoundaries(t *testing.T) {
 	}
 }
 
-// TestFontSizeZeroEmMarginResolvesToZero is the Phase 0 / LOU-204 indicator test.
+// TestFontSizeZeroEmMarginResolvesToZero verifies the style layer for LOU-204.
 //
 // CSS spec: em margins resolve against the element's own computed font-size
 // (Blink: StyleRef().FontSize() in ComputedCSSValueFor / ResolveToLength,
 // verified at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 // When font-size:0, 1em == 0px — the computed block margins must be 0, not 16px.
-//
-// The WPT test css-fonts/font-size-zero-1.html exercises exactly this:
-//
-//	p { margin: 1em 0 }; p.zero { font-size: 0 }
-//
-// → .zero's top and bottom margins must be 0 (not 16px).
+// The layout-level indicator is TestBlockLayout_FontSizeZeroIFCHeight.
 func TestFontSizeZeroEmMarginResolvesToZero(t *testing.T) {
 	doc, _ := html.Parse(`<!DOCTYPE html>
 <style>
