@@ -4351,7 +4351,13 @@ type DeclarationResult struct {
 
 // parseDeclarations parses CSS declarations into a map.
 // Invalid declarations are silently skipped (error recovery).
-func parseDeclarations(declStr string) DeclarationResult {
+// When dropImportant is true, !important declarations are discarded entirely
+// rather than overwriting earlier normal declarations of the same property.
+// This implements CSS Animations §4.1, which treats !important inside
+// @keyframes as invalid. Blink: CSSParserImpl::ConsumeKeyframeStyleRule @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult {
+	skipImportant := len(dropImportant) > 0 && dropImportant[0]
 	result := DeclarationResult{
 		Declarations: make(map[string]string),
 		Important:    make(map[string]bool),
@@ -4454,6 +4460,12 @@ func parseDeclarations(declStr string) DeclarationResult {
 			if strings.EqualFold(afterRawBang, "important") {
 				rawValue = strings.TrimSpace(rawValue[:rawBangIdx])
 			}
+		}
+
+		// CSS Animations §4.1: !important inside @keyframes is invalid — drop
+		// the declaration entirely so it cannot overwrite a prior normal value.
+		if isImportant && skipImportant {
+			continue
 		}
 
 		// CSS Custom Properties §2 / §3: validate the custom-property name and
@@ -5943,7 +5955,12 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 			continue
 		}
 		declStr := part[bp+1 : declEnd]
-		decls := parseDeclarations(declStr)
+		// CSS Animations §4.1: !important declarations inside @keyframes are
+		// invalid and must be ignored — pass dropImportant=true so they are
+		// skipped before they can overwrite a prior normal declaration.
+		// Mirrors Blink's CSSParserImpl::ConsumeKeyframeStyleRule @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		decls := parseDeclarations(declStr, true)
 		frames = append(frames, KeyframeRule{
 			Stop:         stop,
 			Declarations: decls.Declarations,
