@@ -95,7 +95,7 @@ func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 // normalizeRubySubtrees walks the built layout tree and applies the
 // CSS Ruby §2.2 box-fixup rules that operate purely on the box tree.
 //
-// Two responsibilities:
+// Three responsibilities:
 //  1. For `display: block ruby` elements, generate the
 //     `LayoutRubyAsBlock` two-box structure: the principal box stays
 //     block-level (its display is rewritten in place to `block`) and
@@ -104,7 +104,12 @@ func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 //     `core/layout/layout_ruby_as_block.{h,cc}` and the
 //     `EquivalentBlockDisplay` / `EquivalentInlineDisplay` pair at
 //     `core/css/resolver/style_adjuster.cc:247-356`.
-//  2. Inlinification (`#anon-gen-inlinize`): when a node's layout
+//  2. Orphan-wrap fixup (`#anon-gen-wrap-inlinize`): when a ruby-internal
+//     box (display:ruby-text or DOM element tagged rb/rbc/rtc) appears
+//     as a child of a non-ruby block container, wrap it (and adjacent
+//     ruby-internal siblings) in an anonymous display:ruby box. Mirrors
+//     CSS Ruby §2.2 box-fixup.
+//  3. Inlinification (`#anon-gen-inlinize`): when a node's layout
 //     parent is a `display: ruby` or `display: ruby-text` box, set
 //     each in-flow child's used display to its
 //     `EquivalentInlineDisplay` and force `float: none`. Mirrors
@@ -138,9 +143,86 @@ func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode) {
 			return
 		}
 	}
+	// Orphan-wrap fixup: wrap bare ruby-internal children of block containers.
+	if s := node.Style(); s != nil && isBlockContainer(s.GetDisplay()) {
+		node.children = b.wrapOrphanRubyChildren(node.children, s)
+	}
 	for _, c := range node.children {
 		b.normalizeRubySubtrees(c)
 	}
+}
+
+// isRubyInternal returns true if the node is a ruby-internal box: either
+// a box with display:ruby-text, or a DOM element tagged as rb/rbc/rtc.
+// Mirrors Blink's IsInlineRubyText() check at inline_items_builder.cc:1550-1595
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func isRubyInternal(node *LayoutInputNode) bool {
+	if node == nil || node.Style() == nil {
+		return false
+	}
+	// Check display:ruby-text (bare <rt> gets this).
+	if node.Style().GetDisplay() == css.DisplayRubyText {
+		return true
+	}
+	// Check DOM element tags that are ruby-internal even outside a ruby element.
+	if node.DOMNode != nil {
+		switch node.DOMNode.TagName {
+		case "rb", "rbc", "rtc":
+			return true
+		}
+	}
+	return false
+}
+
+// wrapOrphanRubyChildren applies CSS Ruby §2.2 #anon-gen-wrap-inlinize
+// fixup: wraps consecutive runs of ruby-internal children (display:ruby-text,
+// or DOM elements tagged rb/rbc/rtc) that appear in a non-ruby block container.
+// Non-ruby-internal inline content between ruby-internal elements splits the
+// run, creating separate anonymous ruby wrappers. Mirrors the table anonymous-box
+// pattern (wrapAnonymousTableBoxes) and Blink's InlineItemsBuilder column
+// logic at inline_items_builder.cc:1550-1595
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (b *LayoutTreeBuilder) wrapOrphanRubyChildren(
+	children []*LayoutInputNode, parentStyle *css.Style,
+) []*LayoutInputNode {
+	if parentStyle == nil || len(children) == 0 {
+		return children
+	}
+
+	// Only wrap in block containers.
+	if !isBlockContainer(parentStyle.GetDisplay()) {
+		return children
+	}
+
+	var result []*LayoutInputNode
+	var rubyRun []*LayoutInputNode
+
+	flush := func() {
+		if len(rubyRun) == 0 {
+			return
+		}
+		// Wrap the run in an anonymous display:ruby box.
+		wrapperStyle := css.NewAnonymousInlineRubyStyle(parentStyle)
+		result = append(result, &LayoutInputNode{
+			style:       wrapperStyle,
+			children:    rubyRun,
+			isAnonymous: true,
+		})
+		rubyRun = nil
+	}
+
+	for _, child := range children {
+		if isRubyInternal(child) {
+			// Ruby-internal: accumulate in the current run.
+			rubyRun = append(rubyRun, child)
+		} else {
+			// Non-ruby-internal content: flush the run and append the child.
+			flush()
+			result = append(result, child)
+		}
+	}
+	flush()
+	return result
 }
 
 // wrapBlockRubyAsTwoBox rewrites a `display: block ruby` node into
