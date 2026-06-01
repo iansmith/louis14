@@ -4411,7 +4411,7 @@ func expandBackgroundProperty(style *Style, value string) {
 		// Extract color functions before field-splitting
 		colorFound := false
 		colorValue := ""
-		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "color("} {
+		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "contrast-color(", "color("} {
 			if idx := strings.Index(remaining, prefix); idx >= 0 {
 				depth := 0
 				end := -1
@@ -5109,14 +5109,23 @@ func ParseColorWithCurrentColor(colorStr string, currentColor Color) (Color, boo
 	if c, ok := parseRelativeColor(colorStr, currentColor); ok {
 		return c, true
 	}
-	// color-mix() may contain "currentcolor" as one of its operands; resolve
-	// those operands against the known currentColor rather than falling through
-	// to the static ParseColor path (which can't resolve "currentcolor").
-	// Mirrors Blink's CSSColorMixValue::Resolve() late-resolution path @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	// color-mix() and contrast-color() may contain "currentcolor" as an
+	// operand; resolve those operands against currentColor rather than falling
+	// through to the static ParseColor path (which can't resolve
+	// "currentcolor").
+	// Mirrors Blink's CSSColorMixValue::Resolve() and CSSColor::ContrastColor
+	// late-resolution paths @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	lower := strings.ToLower(colorStr)
 	if strings.HasPrefix(lower, "color-mix(") && strings.HasSuffix(lower, ")") {
 		return parseColorMixWithCurrentColor(colorStr, currentColor)
+	}
+	if strings.HasPrefix(lower, "contrast-color(") && strings.HasSuffix(lower, ")") {
+		inner := strings.TrimSpace(colorStr[len("contrast-color(") : len(colorStr)-1])
+		base, ok := ParseColorWithCurrentColor(inner, currentColor)
+		if !ok {
+			return Color{}, false
+		}
+		return contrastColorFor(base), true
 	}
 	return ParseColor(colorStr)
 }
@@ -5590,6 +5599,26 @@ func prophotoLinearToGamma(c float64) float64 {
 	return enc
 }
 
+// contrastColorFor returns white or black, whichever maximises the WCAG 2.x
+// contrast ratio against base. Used by both the ParseColor and
+// ParseColorWithCurrentColor dispatch paths for contrast-color().
+// Mirrors Blink's ContrastColorForBackground @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func contrastColorFor(base Color) Color {
+	// Compute WCAG relative luminance: linearise sRGB, then apply ITU
+	// coefficients (WCAG 2.x §G17).
+	lr := sRGBToLinear(float64(base.R) / 255)
+	lg := sRGBToLinear(float64(base.G) / 255)
+	lb := sRGBToLinear(float64(base.B) / 255)
+	lum := 0.2126729*lr + 0.7151522*lg + 0.0721750*lb
+	// Contrast ratio against white = 1.05/(lum+0.05).
+	// Contrast ratio against black = (lum+0.05)/0.05.
+	// White wins when lum < 0.179 (the crossover point).
+	if lum < 0.179 {
+		return Color{R: 255, G: 255, B: 255, A: 1.0}
+	}
+	return Color{R: 0, G: 0, B: 0, A: 1.0}
+}
+
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.TrimSpace(colorStr)
 
@@ -5788,6 +5817,20 @@ func ParseColor(colorStr string) (Color, bool) {
 	// Handle color-mix() format: color-mix(in colorspace, color1 [pct%], color2 [pct%])
 	if strings.HasPrefix(colorStr, "color-mix(") && strings.HasSuffix(colorStr, ")") {
 		return parseColorMix(colorStr)
+	}
+
+	// Handle contrast-color() — CSS Color 5 §9.
+	// Parses the single inner color argument, computes WCAG 2.x relative
+	// luminance, and returns black or white whichever gives the higher
+	// contrast ratio against that color.
+	// Mirrors Blink's CSSColor::ContrastColor @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if strings.HasPrefix(colorStr, "contrast-color(") && strings.HasSuffix(colorStr, ")") {
+		inner := strings.TrimSpace(colorStr[len("contrast-color(") : len(colorStr)-1])
+		base, ok := ParseColor(inner)
+		if !ok {
+			return Color{}, false
+		}
+		return contrastColorFor(base), true
 	}
 
 	// Try hex color first (#RGB, #RGBA, #RRGGBB, #RRGGBBAA per CSS Color 4 §5.2).
@@ -7096,7 +7139,7 @@ func isColor(s string) bool {
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
 		strings.HasPrefix(s, "oklab(") || strings.HasPrefix(s, "lab(") ||
 		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
-		strings.HasPrefix(s, "color(") {
+		strings.HasPrefix(s, "contrast-color(") || strings.HasPrefix(s, "color(") {
 		return true
 	}
 	// Bare numbers and lengths are not colors

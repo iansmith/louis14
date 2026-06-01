@@ -2883,7 +2883,7 @@ func isKnownCSSValueFunction(name string) bool {
 		return true
 	// Colors
 	case "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch",
-		"oklab", "oklch", "color", "color-mix", "color-contrast",
+		"oklab", "oklch", "color", "color-mix", "color-contrast", "contrast-color",
 		"device-cmyk", "light-dark":
 		return true
 	// Images / gradients
