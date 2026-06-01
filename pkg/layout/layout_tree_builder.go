@@ -1701,13 +1701,6 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		)
 		hasMarkerStyle = true
 
-		// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
-		if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
-			clone := markerStyle.Clone()
-			clone.Set("unicode-bidi", "isolate")
-			markerStyle = clone
-		}
-
 		// Capture the content values; the actual resolution happens
 		// after we've entered the marker's counter scope below so
 		// counter() reads use the right origin node.

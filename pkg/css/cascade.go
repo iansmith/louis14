@@ -1602,7 +1602,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// by an author ::marker rule. Inherited values from the originating element
 	// (e.g. text-transform:uppercase from the li) are NOT considered author-set
 	// and must not block the UA defaults.
-	if pseudoElement == "marker" {
+	if isMarker {
 		applyMarkerCascade(finalStyle, markerAuthorProps)
 	}
 
