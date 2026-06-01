@@ -581,3 +581,33 @@ func TestBlockLayout_EmptyDivStillCollapsesThrough(t *testing.T) {
 		t.Fatalf("plain empty 0x0 child unexpectedly kept: got %d children, want 1", len(result.Fragment.Children))
 	}
 }
+
+// TestBlockLayout_FontSizeZeroIFCHeight is the layout-level LOU-204 indicator test.
+//
+// A paragraph with font-size:0 that contains inline content must produce a
+// zero-height line box — the font-size:0 strut and the text items both have
+// zero ascent/descent. The former fallback in createLineBoxEx incorrectly
+// returned 16px for any zero-height line box regardless of font-size.
+//
+// Blink: em-based lengths (including strut computation) resolve against the
+// element's own ComputedStyle::FontSize(), not the inherited value.
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func TestBlockLayout_FontSizeZeroIFCHeight(t *testing.T) {
+	textNode := makeTextNode("zero")
+	p := makeNode("p", textNode)
+	pStyle := makeStyle("display", "block", "font-size", "0")
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(p, map[*html.Node]*css.Style{p: pStyle})
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+	h := result.Fragment.Size.HeightF64()
+	if h != 0 {
+		t.Errorf("p[font-size:0] fragment height = %v, want 0 (font-size:0 line boxes must have zero height)", h)
+	}
+}

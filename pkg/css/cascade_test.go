@@ -503,9 +503,9 @@ func TestAppliedTextDecorations_PropagationBoundaries(t *testing.T) {
 	cases := []struct {
 		name     string
 		html     string
-		findTag  string  // first element matching this tag receives the assertion
-		findAttr string  // optional class= attribute filter on the matched element
-		wantLen  int     // expected len(AppliedTextDecorations) on that element
+		findTag  string // first element matching this tag receives the assertion
+		findAttr string // optional class= attribute filter on the matched element
+		wantLen  int    // expected len(AppliedTextDecorations) on that element
 	}{
 		{
 			name:    "plain inline span inherits parent decoration",
@@ -526,34 +526,34 @@ func TestAppliedTextDecorations_PropagationBoundaries(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name:    "absolute-positioned descendant resets parent decoration",
-			html:    `<style>.outer{text-decoration:underline}.t{position:absolute}</style><div class="outer"><div class="t">hi</div></div>`,
-			findTag: "div",
+			name:     "absolute-positioned descendant resets parent decoration",
+			html:     `<style>.outer{text-decoration:underline}.t{position:absolute}</style><div class="outer"><div class="t">hi</div></div>`,
+			findTag:  "div",
 			findAttr: "t",
-			wantLen: 0,
+			wantLen:  0,
 		},
 		{
-			name:    "float descendant resets parent decoration",
-			html:    `<style>.outer{text-decoration:underline}.t{float:left}</style><div class="outer"><div class="t">hi</div></div>`,
-			findTag: "div",
+			name:     "float descendant resets parent decoration",
+			html:     `<style>.outer{text-decoration:underline}.t{float:left}</style><div class="outer"><div class="t">hi</div></div>`,
+			findTag:  "div",
 			findAttr: "t",
-			wantLen: 0,
+			wantLen:  0,
 		},
 		{
-			name:    "display:contents skips own contribution, passes parent through",
+			name: "display:contents skips own contribution, passes parent through",
 			// Parent overline; contents-span declares underline but contributes nothing;
 			// inner span inherits only overline.
-			html:    `<style>p{text-decoration:overline}.c{text-decoration:underline;display:contents}</style><p><span class="c"><span class="t">hi</span></span></p>`,
-			findTag: "span",
+			html:     `<style>p{text-decoration:overline}.c{text-decoration:underline;display:contents}</style><p><span class="c"><span class="t">hi</span></span></p>`,
+			findTag:  "span",
 			findAttr: "t",
-			wantLen: 1,
+			wantLen:  1,
 		},
 		{
-			name:    "nested block-level decorations DO accumulate (in-flow, not atomic)",
-			html:    `<style>.outer{text-decoration:underline}.inner{text-decoration:overline}</style><div class="outer"><div class="inner">hi</div></div>`,
-			findTag: "div",
+			name:     "nested block-level decorations DO accumulate (in-flow, not atomic)",
+			html:     `<style>.outer{text-decoration:underline}.inner{text-decoration:overline}</style><div class="outer"><div class="inner">hi</div></div>`,
+			findTag:  "div",
 			findAttr: "inner",
-			wantLen: 2,
+			wantLen:  2,
 		},
 	}
 	for _, c := range cases {
@@ -591,4 +591,51 @@ func TestAppliedTextDecorations_PropagationBoundaries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFontSizeZeroEmMarginResolvesToZero is the Phase 0 / LOU-204 indicator test.
+//
+// CSS spec: em margins resolve against the element's own computed font-size
+// (Blink: StyleRef().FontSize() in ComputedCSSValueFor / ResolveToLength,
+// verified at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// When font-size:0, 1em == 0px — the computed block margins must be 0, not 16px.
+//
+// The WPT test css-fonts/font-size-zero-1.html exercises exactly this:
+//
+//	p { margin: 1em 0 }; p.zero { font-size: 0 }
+//
+// → .zero's top and bottom margins must be 0 (not 16px).
+func TestFontSizeZeroEmMarginResolvesToZero(t *testing.T) {
+	doc, _ := html.Parse(`<!DOCTYPE html>
+<style>
+p { margin: 1em 0 }
+p.zero { font-size: 0 }
+</style>
+<p class="zero">zero</p>`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if node.TagName != "p" {
+			continue
+		}
+		cls, _ := node.GetAttribute("class")
+		if cls != "zero" {
+			continue
+		}
+		// Element's own font-size must be 0.
+		if fs := style.GetFontSize(); fs != 0 {
+			t.Errorf("p.zero GetFontSize() = %v, want 0", fs)
+		}
+		// em margins must resolve to 0 * 1 = 0, not parent's 16px * 1 = 16px.
+		margins := style.GetAllMarginsForWidth(800)
+		if margins.Top != 0 {
+			t.Errorf("p.zero margin-top = %v, want 0 (1em with font-size:0 must be 0px)", margins.Top)
+		}
+		if margins.Bottom != 0 {
+			t.Errorf("p.zero margin-bottom = %v, want 0 (1em with font-size:0 must be 0px)", margins.Bottom)
+		}
+		return
+	}
+	t.Error("p.zero element not found in styles map")
 }
