@@ -344,8 +344,9 @@ func collectInlinesRecursive(
 		switch {
 		case childStyle.IsInlineRuby():
 			childRubyState = &rubyCollectState{
-				rubyStyle: childStyle,
-				rubyNode:  child.DOMNode,
+				rubyStyle:         childStyle,
+				rubyNode:          child.DOMNode,
+				rubyAncestryDepth: 1,
 			}
 			// Carry forced-break suppression depth from any enclosing
 			// `<rt>` into the nested ruby — descendants of `<rt>`
@@ -364,7 +365,21 @@ func collectInlinesRecursive(
 			rubyState.textNestingLevel++
 			childRubyState = rubyState
 		default:
-			childRubyState = rubyState
+			// Handle standalone ruby-family elements (not wrapped in an
+			// enclosing `<ruby>`). When we encounter a ruby-family tag
+			// with no parent rubyState and no special ruby display value,
+			// create a sentinel rubyCollectState to suppress breaks inside.
+			// Blink handles this via HTML parser ruby fixup; louis14 uses
+			// tag-name detection instead.
+			// No Blink analog: Blink relies on parser normalization.
+			if rubyState == nil && child.DOMNode != nil &&
+				isRubyFamilyTag(child.DOMNode.TagName) {
+				childRubyState = &rubyCollectState{
+					rubyAncestryDepth: 1,
+				}
+			} else {
+				childRubyState = rubyState
+			}
 		}
 
 		collectInlinesRecursive(child, data, text, false, childRubyState)

@@ -36,6 +36,14 @@ type rubyCollectState struct {
 	// (mirrors `kDisableForcedBreakInRubyColumn`,
 	// `inline_items_builder.cc:74,801,1068`).
 	textNestingLevel int
+	// rubyAncestryDepth tracks nesting depth in ruby-family elements
+	// that should suppress forced breaks. When > 0, we're inside a
+	// `<ruby>`, `<rb>`, `<rbc>`, `<rt>`, or `<rtc>` element and
+	// forced breaks should be suppressed at the base content level
+	// (not inside `<rt>`). Mirrors Blink's `ruby_text_nesting_level_`
+	// for the outer ruby container (inline_items_builder.cc:1587-1589
+	// @ 4883d11fef).
+	rubyAncestryDepth int
 }
 
 // rubyColumnCheckpoint records the snapshot of (data.Items length,
@@ -180,9 +188,24 @@ func emitRubyAnnotationPlaceholder(
 // rubyForcedBreakSuppressed reports whether forced-break items
 // (`<br>`, preserved `\n`) being emitted now should be rewritten to a
 // regular space. True when the current collection point is inside an
-// `<rt>` (or any descendant), mirroring Blink's
-// `kDisableForcedBreakInRubyColumn` gate at
-// `inline_items_builder.cc:74,801,1068`.
+// `<rt>` (or any descendant) OR inside a ruby-family element at the
+// base content level, mirroring Blink's `kDisableForcedBreakInRubyColumn`
+// gate at `inline_items_builder.cc:74,801,1068` and the outer ruby
+// container nesting in `inline_items_builder.cc:1587-1589 @ 4883d11fef`.
 func rubyForcedBreakSuppressed(state *rubyCollectState) bool {
-	return state != nil && state.textNestingLevel > 0
+	return state != nil && (state.textNestingLevel > 0 || state.rubyAncestryDepth > 0)
+}
+
+// isRubyFamilyTag reports whether a tag name belongs to the CSS Ruby
+// family and should suppress forced breaks inside it. Covers `<ruby>`,
+// `<rb>`, `<rbc>`, `<rt>`, and `<rtc>` — standalone elements that need
+// break suppression. (Normally Blink's HTML parser wraps these in a
+// `<ruby>` wrapper via ruby fixup; louis14 handles standalone cases here.)
+// No Blink analog: Blink relies on HTML parser normalizing ruby elements.
+func isRubyFamilyTag(tag string) bool {
+	switch tag {
+	case "ruby", "rb", "rbc", "rt", "rtc":
+		return true
+	}
+	return false
 }
