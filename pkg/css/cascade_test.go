@@ -634,3 +634,34 @@ p.zero { font-size: 0 }
 	}
 	t.Error("p.zero element not found in styles map")
 }
+
+// TestApplyMarkerUADefaults_NoAuthorRules verifies that the no-author-rule fast
+// path in createMarkerPseudoElement applies UA ::marker defaults so that an li
+// with text-transform:uppercase still gets text-transform:none on its marker.
+// This is the indicator test for LOU-209.
+func TestApplyMarkerUADefaults_NoAuthorRules(t *testing.T) {
+	// Simulate the state of a cloned list-item style that has text-transform:uppercase
+	// inherited (as happens when the li itself has that property).
+	liStyle := NewStyle()
+	liStyle.Set("text-transform", "uppercase")
+
+	markerStyle := liStyle.Clone()
+	// Simulate what the no-author fast path does: also sets unicode-bidi and display.
+	markerStyle.Set("unicode-bidi", "isolate")
+	markerStyle.Set("display", "inline")
+
+	// Before the fix, applyMarkerCascade is NOT called here, so text-transform
+	// remains "uppercase" (inherited from li).  After the fix, calling
+	// ApplyMarkerUADefaults resets it to "none".
+	ApplyMarkerUADefaults(markerStyle)
+
+	if v, ok := markerStyle.Get("text-transform"); !ok || v != "none" {
+		t.Errorf("marker text-transform = %q, want %q (UA default must override inherited value)", v, "none")
+	}
+	if v, ok := markerStyle.Get("white-space"); !ok || v != "pre" {
+		t.Errorf("marker white-space = %q, want %q (UA default must be set)", v, "pre")
+	}
+	if v, ok := markerStyle.Get("font-variant-numeric"); !ok || v != "tabular-nums" {
+		t.Errorf("marker font-variant-numeric = %q, want %q (UA default must be set)", v, "tabular-nums")
+	}
+}

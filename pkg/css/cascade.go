@@ -1468,6 +1468,15 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// left alone — the restriction is on what a ::marker rule can specify).
 	isMarker := pseudoElement == "marker"
 
+	// For ::marker: track which properties were explicitly set by author rules
+	// (as opposed to inherited from the originating element). This lets
+	// applyMarkerCascade correctly defer only to author-set values — not to
+	// inherited values that happen to share the same property name.
+	var markerAuthorProps map[string]bool
+	if isMarker {
+		markerAuthorProps = make(map[string]bool)
+	}
+
 	// Capture the pre-author baseline for `revert` resolution (mirrors
 	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
 	// — the inheritance-only initialisation above is the closest analog —
@@ -1515,6 +1524,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				continue
 			}
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			if isMarker {
+				markerAuthorProps[property] = true
+			}
 		}
 	}
 	if currentLayerPriority != -1 {
@@ -1576,6 +1588,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
+				if isMarker {
+					markerAuthorProps[property] = true
+				}
 			}
 		}
 	}
@@ -1583,12 +1598,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// CSS Pseudo-4 §4.4: the ::marker pseudo-element only accepts the
 	// marker-allowed property subset, and the UA stylesheet sets specific
-	// defaults. Apply the filter to the cascaded author declarations, then
-	// layer the UA defaults underneath any author value. Done before the
-	// generic display:inline default so the ::marker UA display still wins
-	// only if the author did not set it.
-	if pseudoElement == "marker" {
-		applyMarkerCascade(finalStyle)
+	// defaults. Apply the UA defaults under any value that was explicitly set
+	// by an author ::marker rule. Inherited values from the originating element
+	// (e.g. text-transform:uppercase from the li) are NOT considered author-set
+	// and must not block the UA defaults.
+	if isMarker {
+		applyMarkerCascade(finalStyle, markerAuthorProps)
 	}
 
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
@@ -1679,22 +1694,39 @@ func markerAllowedProperty(name string) bool {
 	return false
 }
 
-// applyMarkerCascade layers the UA ::marker defaults underneath any surviving
-// author value of an already-cascaded ::marker style. Mirrors Blink's UA
-// ::marker rule: unicode-bidi: isolate; text-transform: none; white-space:
-// pre; font-variant-numeric: tabular-nums. The marker-allowed property filter
-// is applied during rule application in ComputePseudoElementStyle, not here.
-func applyMarkerCascade(style *Style) {
-	uaDefaults := [...][2]string{
-		{"unicode-bidi", "isolate"},
-		{"text-transform", "none"},
-		{"white-space", "pre"},
-		{"font-variant-numeric", "tabular-nums"},
-	}
-	for _, kv := range uaDefaults {
-		if _, ok := style.Get(kv[0]); !ok {
+// markerUADefaults lists the UA-stylesheet ::marker property defaults.
+// Mirrors Blink's html.css ::marker rule verified at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+var markerUADefaults = [...][2]string{
+	{"unicode-bidi", "isolate"},
+	{"text-transform", "none"},
+	{"white-space", "pre"},
+	{"font-variant-numeric", "tabular-nums"},
+}
+
+// applyMarkerCascade layers the UA ::marker defaults onto style, deferring
+// only to values that were explicitly set by an author ::marker rule
+// (authorSet). Inherited values from the originating element (e.g.
+// text-transform:uppercase from the li) are not author-set and must not block
+// the UA defaults — the UA ::marker rule takes precedence over inheritance.
+// The marker-allowed property filter is applied during rule application in
+// ComputePseudoElementStyle, not here.
+func applyMarkerCascade(style *Style, authorSet map[string]bool) {
+	for _, kv := range markerUADefaults {
+		if !authorSet[kv[0]] {
 			style.Set(kv[0], kv[1])
 		}
+	}
+}
+
+// ApplyMarkerUADefaults unconditionally stamps the UA ::marker defaults onto
+// style, overriding any inherited values. Called in the no-author-rule fast
+// path where the style is a clone of the list-item's computed style and may
+// carry inherited properties (e.g. text-transform:uppercase from the li) that
+// the UA stylesheet must override.
+func ApplyMarkerUADefaults(style *Style) {
+	for _, kv := range markerUADefaults {
+		style.Set(kv[0], kv[1])
 	}
 }
 

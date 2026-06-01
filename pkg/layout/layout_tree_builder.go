@@ -1701,13 +1701,6 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		)
 		hasMarkerStyle = true
 
-		// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
-		if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
-			clone := markerStyle.Clone()
-			clone.Set("unicode-bidi", "isolate")
-			markerStyle = clone
-		}
-
 		// Capture the content values; the actual resolution happens
 		// after we've entered the marker's counter scope below so
 		// counter() reads use the right origin node.
@@ -1720,9 +1713,14 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	// Step 2: Compute the effective marker style if no ::marker rules.
 	if !hasMarkerStyle {
 		// No ::marker rules; create a default marker style inheriting from
-		// parent with unicode-bidi: isolate (CSS Pseudo-4 §3) and display: inline.
+		// the list item, then stamp UA ::marker defaults on top. The clone
+		// carries all inherited properties (including text-transform, white-space,
+		// etc.) from the li; ApplyMarkerUADefaults overrides those with the UA
+		// ::marker values (text-transform:none, white-space:pre, tabular-nums,
+		// unicode-bidi:isolate) per CSS Pseudo-4 §3 + Blink html.css
+		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		markerStyle = style.Clone()
-		markerStyle.Set("unicode-bidi", "isolate")
+		css.ApplyMarkerUADefaults(markerStyle)
 		markerStyle.Set("display", "inline")
 	}
 
