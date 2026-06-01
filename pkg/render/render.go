@@ -1320,11 +1320,15 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// `<filter>` element's region as authoritative when MapRect(SourceGraphic)
 	// would otherwise collapse to zero.
 	mapped := filter.MapRect(sourceExtent)
-	if mapped.Empty() && !filter.FilterRegion.Empty() {
-		// Keep filter.FilterRegion as set by the SVG reference.
-	} else {
+	if filter.FilterRegion.Empty() {
+		// No SVG-specified region: size to the mapped content extent.
 		filter.FilterRegion = mapped
 	}
+	// When the SVG <filter> element provided an explicit x/y/width/height,
+	// filter.FilterRegion is already set and is authoritative (Filter Effects 1
+	// §10.4). Do not override it with the source-extent mapping — doing so
+	// collapses the filter canvas to the element's border box, dropping the
+	// outer filter region that generators (feFlood, feConvolveMatrix bias) fill.
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
@@ -1361,7 +1365,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// Run the FilterEffect graph and composite the output back at the
 	// filter region origin.
 	filter.SetSourceImage(buf)
-	out := filter.Apply()
+	out := filter.ApplyToSRGB()
 	if out == nil {
 		// Match the two earlier failure paths (filter == nil, oversize buffer):
 		// fall back to unfiltered paint so the element still renders rather

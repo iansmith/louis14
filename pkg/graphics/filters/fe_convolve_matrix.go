@@ -1,9 +1,6 @@
 package filters
 
-import (
-	"image"
-	"math"
-)
+import "image"
 
 // FEConvolveMatrix applies a 2D kernel convolution to its input image,
 // per SVG Filter Effects 1 §feConvolveMatrix. Mirrors
@@ -35,16 +32,14 @@ func NewFEConvolveMatrix(
 	kernelUnitLengthX, kernelUnitLengthY float64,
 	preserveAlpha bool,
 ) *FEConvolveMatrix {
-	// Compute default divisor if not provided: sum of kernel elements.
-	// If that sum is 0, divisor defaults to 1.
+	// Default divisor is the sum of the kernel elements (spec §feConvolveMatrix).
+	// Falls back to 1 if the sum is zero (all-zero kernel is a no-op anyway).
 	if divisor == 0 {
-		divisor = 1.0
 		for _, v := range kernelMatrix {
 			divisor += v
 		}
-		// Avoid division by zero; if sum is still 0, use 1.
 		if divisor == 0 {
-			divisor = 1.0
+			divisor = 1
 		}
 	}
 
@@ -72,50 +67,44 @@ func (e *FEConvolveMatrix) MapRect(r image.Rectangle) image.Rectangle {
 }
 
 // ApplyEffect applies the convolution kernel to the input image.
+// All arithmetic is in [0,1] float64; per SVG Filter Effects §feConvolveMatrix
+// the formula is result[c] = Σ(src[c]*kernel) / divisor + bias, with values
+// in [0,1] normalized space. The input is already in the declared operating
+// space (premultiplied); bias is added after the sum/divisor step, matching
+// Skia's MatrixConvolutionPaintFilter gain+bias model.
 func (e *FEConvolveMatrix) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
 	in := firstInput(inputs, region)
 	out := newRGBA(region)
 
 	w, h := region.Dx(), region.Dy()
-
-	// order should equal sqrt(len(kernelMatrix)); validate it's a perfect square.
-	expectedLen := e.Order * e.Order
-	if len(e.KernelMatrix) != expectedLen {
-		// Invalid kernel; return input unchanged as fallback.
+	order := e.Order
+	if len(e.KernelMatrix) != order*order || order < 1 {
 		copy(out.Pix, in.Pix)
 		return out
 	}
 
-	// The kernel center is at (targetX, targetY) within the kernel grid.
-	// For a 3x3 kernel with center at (1,1), pixel (x,y) convolves with
-	// the patch spanning [x-1, x+1] × [y-1, y+1].
+	const inv = 1.0 / 255.0
+	divisor := e.Divisor
+	bias := e.Bias
 
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			var r, g, b, a float64
+			var sumR, sumG, sumB, sumA float64
 
-			// Walk the kernel matrix.
-			for ky := 0; ky < e.Order; ky++ {
-				for kx := 0; kx < e.Order; kx++ {
-					// Source pixel relative to the target.
-					// Kernel is applied with the kernel center at (targetX, targetY),
-					// so the kernel top-left corner is at (targetX-targetX, targetY-targetY) = (0,0)
-					// in kernel space. To find the source pixel for kernel position (kx, ky),
-					// we want the pixel at (x - targetX + kx, y - targetY + ky) in the source.
+			for ky := 0; ky < order; ky++ {
+				for kx := 0; kx < order; kx++ {
 					sx := x - e.TargetX + kx
 					sy := y - e.TargetY + ky
 
-					// Resolve edge mode.
 					if sx < 0 || sx >= w || sy < 0 || sy >= h {
-						// Out of bounds.
 						switch e.EdgeMode {
 						case "wrap":
 							sx = ((sx % w) + w) % w
 							sy = ((sy % h) + h) % h
 						case "none":
-							// Treat as transparent black; skip this pixel.
+							// Transparent black contributes 0 to all channels.
 							continue
-						default: // "duplicate"
+						default: // "duplicate": clamp to nearest edge pixel (Skia kClamp).
 							if sx < 0 {
 								sx = 0
 							} else if sx >= w {
@@ -129,90 +118,44 @@ func (e *FEConvolveMatrix) ApplyEffect(inputs []*image.RGBA, region image.Rectan
 						}
 					}
 
-					// Fetch the source pixel.
-					var sr, sg, sb, sa float64
-					if sx >= 0 && sx < w && sy >= 0 && sy < h {
-						si := sy*in.Stride + sx*4
-						sr = float64(in.Pix[si])
-						sg = float64(in.Pix[si+1])
-						sb = float64(in.Pix[si+2])
-						sa = float64(in.Pix[si+3])
-					} else {
-						// Out of bounds in "none" mode (should be caught above).
-						sr, sg, sb, sa = 0, 0, 0, 0
-					}
-
-					// Kernel value (without reversing — let's test without the 180° rotation).
-					kv := e.KernelMatrix[ky*e.Order+kx]
-
-					// Accumulate.
-					r += sr * kv
-					g += sg * kv
-					b += sb * kv
-					// Alpha: only convolve if !preserveAlpha.
-					if !e.PreserveAlpha {
-						a += sa * kv
-					}
+					kv := e.KernelMatrix[ky*order+kx]
+					si := sy*in.Stride + sx*4
+					sumR += float64(in.Pix[si]) * inv * kv
+					sumG += float64(in.Pix[si+1]) * inv * kv
+					sumB += float64(in.Pix[si+2]) * inv * kv
+					sumA += float64(in.Pix[si+3]) * inv * kv
 				}
 			}
 
-			// Normalize and bias. Per spec: OUTPUT = (KERNEL_SUM + BIAS * ORDER * ORDER) / DIVISOR
-			kernelOrder := float64(e.Order)
-			biasAdjusted := e.Bias * kernelOrder * kernelOrder
-			r = (r + biasAdjusted) / e.Divisor
-			g = (g + biasAdjusted) / e.Divisor
-			b = (b + biasAdjusted) / e.Divisor
-			if !e.PreserveAlpha {
-				a = (a + biasAdjusted) / e.Divisor
-			} else {
-				// Preserve input alpha.
+			rOut := clamp01(sumR/divisor + bias)
+			gOut := clamp01(sumG/divisor + bias)
+			bOut := clamp01(sumB/divisor + bias)
+
+			var aOut float64
+			if e.PreserveAlpha {
 				si := y*in.Stride + x*4
-				a = float64(in.Pix[si+3])
+				aOut = float64(in.Pix[si+3]) * inv
+			} else {
+				aOut = clamp01(sumA/divisor + bias)
 			}
 
-			// Clamp to valid range: [0, 255] for RGB, [0, 1] for alpha.
-			r = maxF(0, minF(r, 255))
-			g = maxF(0, minF(g, 255))
-			b = maxF(0, minF(b, 255))
-			a = maxF(0, minF(a, 1))
-
-			// Write premultiplied RGBA.
 			di := y*out.Stride + x*4
-			out.Pix[di] = uint8(math.Round(r))
-			out.Pix[di+1] = uint8(math.Round(g))
-			out.Pix[di+2] = uint8(math.Round(b))
-			out.Pix[di+3] = uint8(math.Round(a * 255))
+			out.Pix[di] = uint8(rOut*255 + 0.5)
+			out.Pix[di+1] = uint8(gOut*255 + 0.5)
+			out.Pix[di+2] = uint8(bOut*255 + 0.5)
+			out.Pix[di+3] = uint8(aOut*255 + 0.5)
 		}
 	}
 
 	return out
 }
 
-// Helper functions.
-func min(a, b int) int {
-	if a < b {
-		return a
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
 	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
+	if v > 1 {
+		return 1
 	}
-	return b
-}
-
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxF(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
+	return v
 }

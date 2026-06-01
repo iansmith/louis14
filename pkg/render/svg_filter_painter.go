@@ -112,7 +112,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 		return
 	}
 	graph.SetSourceImage(srcBuf)
-	out := graph.Apply()
+	out := graph.ApplyToSRGB()
 	// Viewport clip is applied inside the composite helper: the composite
 	// path bypasses the DC's clip stack, and SVG 2 §3.5 requires the
 	// default 10% filter-region expansion to stay inside the host SVG
@@ -155,7 +155,6 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 		return
 	}
 	sb := buf.Bounds()
-	const m = 1<<16 - 1
 	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
 		ty := sy - sb.Min.Y + dy
 		if ty < effective.Min.Y || ty >= effective.Max.Y {
@@ -167,43 +166,23 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 				continue
 			}
 			si := buf.PixOffset(sx, sy)
-			ti := r.target.PixOffset(tx, ty)
 			sa := buf.Pix[si+3]
 			if sa == 0 {
 				continue
 			}
-			// Un-premultiply to recover straight-alpha RGB. The filter
-			// graph outputs premultiplied bytes per
-			// FilterEffect.ApplyEffect's contract; the page composite
-			// works in the louis14 straight-alpha convention.
-			var sR, sG, sB uint8
-			if sa == 255 {
-				sR, sG, sB = buf.Pix[si+0], buf.Pix[si+1], buf.Pix[si+2]
-			} else {
-				af := float64(sa) / 255.0
-				sR = clampU8Filter(float64(buf.Pix[si+0]) / af)
-				sG = clampU8Filter(float64(buf.Pix[si+1]) / af)
-				sB = clampU8Filter(float64(buf.Pix[si+2]) / af)
-			}
-			// Same blend formula as compositeBufferWithOpacityOnto in
-			// svg_mask_painter.go (the gg-pattern math), with the SOURCE
-			// pixel's straight-alpha RGB and a 16-bit expansion. This is
-			// what makes the filter path pixel-match the CSS path the
-			// reftest references go through.
-			cr := uint32(sR) * 0x101
-			cg := uint32(sG) * 0x101
-			cb := uint32(sB) * 0x101
-			ca := uint32(sa) * 0x101
-			ma := uint32(m) // full coverage
-			dr := uint32(r.target.Pix[ti+0])
-			dg := uint32(r.target.Pix[ti+1])
-			db := uint32(r.target.Pix[ti+2])
-			da := uint32(r.target.Pix[ti+3])
-			a := (m - ca*ma/m) * 0x101
-			r.target.Pix[ti+0] = uint8(((dr*a + cr*ma) / m) >> 8)
-			r.target.Pix[ti+1] = uint8(((dg*a + cg*ma) / m) >> 8)
-			r.target.Pix[ti+2] = uint8(((db*a + cb*ma) / m) >> 8)
-			r.target.Pix[ti+3] = uint8(((da*a + ca*ma) / m) >> 8)
+			// Porter-Duff Over on premultiplied values:
+			//   out = src + dst * (255 - src.A) / 255
+			// The filter graph outputs premultiplied RGBA (FilterEffect
+			// contract); the destination r.target is also premultiplied
+			// (image.RGBA). No un-premultiply needed — operating directly
+			// on premultiplied values avoids uint32 overflow that would
+			// occur if the source were un-premultiplied first.
+			ti := r.target.PixOffset(tx, ty)
+			inv := uint32(255 - sa)
+			r.target.Pix[ti+0] = uint8((uint32(buf.Pix[si+0])*255 + uint32(r.target.Pix[ti+0])*inv + 127) / 255)
+			r.target.Pix[ti+1] = uint8((uint32(buf.Pix[si+1])*255 + uint32(r.target.Pix[ti+1])*inv + 127) / 255)
+			r.target.Pix[ti+2] = uint8((uint32(buf.Pix[si+2])*255 + uint32(r.target.Pix[ti+2])*inv + 127) / 255)
+			r.target.Pix[ti+3] = uint8((uint32(buf.Pix[si+3])*255 + uint32(r.target.Pix[ti+3])*inv + 127) / 255)
 		}
 	}
 }
@@ -410,7 +389,7 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 
 	srcBuf := sp.renderShapeIntoFilterBuffer(region, bw, bh, willFill, willStroke, sp.shape.Style)
 	graph.SetSourceImage(srcBuf)
-	out := graph.Apply()
+	out := graph.ApplyToSRGB()
 	sp.compositeFilterResultOntoTarget(srcBuf, out, region)
 	return true
 }
