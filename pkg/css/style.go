@@ -755,6 +755,7 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 			xHeight:        xHeight,
 			capHeight:      capHeight,
 			lhSize:         lhSize,
+			icWidth:        icWidth,
 		}
 		return EvalMathFunction(val, ctx)
 	}
@@ -2119,6 +2120,7 @@ func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool
 		xHeight:        s.XHeight,
 		capHeight:      s.CapHeight,
 		lhSize:         s.LhSize,
+		icWidth:        s.IcWidth,
 	}
 	return EvalMathFunction(val, ctx)
 }
@@ -2144,6 +2146,7 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 			xHeight:        s.XHeight,
 			capHeight:      s.CapHeight,
 			lhSize:         s.LhSize,
+			icWidth:        s.IcWidth,
 		}
 		if result, calcOK := EvalMathFunction(val, ctx); calcOK {
 			return result, true
@@ -7763,6 +7766,7 @@ func (s *Style) GetVerticalAlignOffset() float64 {
 					xHeight:        s.XHeight,
 					capHeight:      s.CapHeight,
 					lhSize:         s.LhSize,
+					icWidth:        s.IcWidth,
 					percentBase:    s.GetLineHeight(),
 				}
 				if v, ok := EvalMathFunction(align, ctx); ok {
