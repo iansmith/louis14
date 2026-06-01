@@ -105,7 +105,7 @@ func isEligibleForStyleContainment(s *Style) bool {
 	if !ok {
 		return true
 	}
-	return strings.TrimSpace(disp) != "contents"
+	return !strings.EqualFold(strings.TrimSpace(disp), "contents")
 }
 
 // isEligibleForLayoutOrPaintContainment encodes the display-type
