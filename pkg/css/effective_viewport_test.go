@@ -26,7 +26,7 @@ func divVW(t *testing.T, htmlSrc string, vw, vh float64) float64 {
 			if !ok {
 				continue
 			}
-			if length, ok := parseLengthFullWithCh(val, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale, style.XHeight, style.CapHeight, style.LhSize); ok {
+			if length, ok := parseLengthFullWithCh(val, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale, style.XHeight, style.CapHeight, style.LhSize, style.IcWidth); ok {
 				return length
 			}
 		}

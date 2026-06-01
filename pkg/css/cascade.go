@@ -1240,14 +1240,14 @@ func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHe
 	}
 	var w, h float64
 	if wVal, ok := rootStyle.Get("width"); ok {
-		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
 			w = length
 		} else if pct, ok := ParsePercentage(wVal); ok {
 			w = pct / 100.0 * viewportWidth
 		}
 	}
 	if hVal, ok := rootStyle.Get("height"); ok {
-		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
 			h = length
 		} else if pct, ok := ParsePercentage(hVal); ok {
 			h = pct / 100.0 * viewportHeight
