@@ -1052,58 +1052,53 @@ func TestSVG_FilterFallbackOnUnknownID(t *testing.T) {
 // root must clip only the specified axis and let the other overflow freely.
 // ---------------------------------------------------------------------------
 
-// TestSVG_OverflowClipXVisibleY — an inline <svg width=100 height=100>
-// contains a <rect width=150 height=150>. CSS: overflow-x:clip;
-// overflow-y:visible. The expected result is a 100×150 green rectangle
-// (clipped to 100 on X, overflows to 150 on Y).
-//
-// Sample grid:
-//
-//	(50, 50)   — inside both axes, must be green
-//	(50, 120)  — inside X clip, beyond SVG height on Y (should overflow → green)
-//	(120, 50)  — beyond SVG width on X (should be clipped → white)
-//	(120, 120) — beyond both axes (both clipped in X, visible in Y) → white
-func TestSVG_OverflowClipXVisibleY(t *testing.T) {
-	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="100" height="100" style="overflow-x:clip;overflow-y:visible">` +
-		`<rect width="150" height="150" fill="green"/>` +
-		`</svg></body></html>`
-
-	img := renderToImage(t, htmlContent, 200, 200)
-
-	// Inside the SVG box: green.
-	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "inside svg box (50,50)")
-	// Beyond height but within width — Y is visible so must be green.
-	sampleColorClose(t, img, 50, 120, 0, 128, 0, 12, "overflow-y (50,120)")
-	// Beyond width — X is clipped so must be white (canvas).
-	sampleColorClose(t, img, 120, 50, 255, 255, 255, 12, "clipped-x (120,50)")
-	// Beyond both — X clipped, canvas white.
-	sampleColorClose(t, img, 120, 120, 255, 255, 255, 12, "clipped-x beyond-y (120,120)")
-}
-
-// TestSVG_OverflowClipYVisibleX — mirror: overflow-x:visible; overflow-y:clip.
-// Expected: a 150×100 green rectangle (overflows to 150 on X, clipped to 100 on Y).
-//
-// Sample grid:
-//
-//	(50, 50)   — inside both axes, must be green
-//	(120, 50)  — beyond SVG width on X (should overflow → green)
-//	(50, 120)  — beyond SVG height on Y (should be clipped → white)
-//	(120, 120) — beyond both axes (visible in X, clipped in Y) → white
-func TestSVG_OverflowClipYVisibleX(t *testing.T) {
-	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="100" height="100" style="overflow-x:visible;overflow-y:clip">` +
-		`<rect width="150" height="150" fill="green"/>` +
-		`</svg></body></html>`
-
-	img := renderToImage(t, htmlContent, 200, 200)
-
-	// Inside the SVG box: green.
-	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "inside svg box (50,50)")
-	// Beyond width but within height — X is visible so must be green.
-	sampleColorClose(t, img, 120, 50, 0, 128, 0, 12, "overflow-x (120,50)")
-	// Beyond height — Y is clipped so must be white (canvas).
-	sampleColorClose(t, img, 50, 120, 255, 255, 255, 12, "clipped-y (50,120)")
-	// Beyond both — Y clipped, canvas white.
-	sampleColorClose(t, img, 120, 120, 255, 255, 255, 12, "clipped-y beyond-x (120,120)")
+// TestSVG_OverflowClipPerAxis — table-driven test for per-axis SVG root
+// overflow clip. Each case sets a different axis as `clip` (the other
+// `visible`) on an inline <svg width=100 height=100> containing a
+// <rect width=150 height=150>. Samples confirm: inside the box → green;
+// beyond the visible axis → green (overflow); beyond the clipped axis → white.
+func TestSVG_OverflowClipPerAxis(t *testing.T) {
+	type sample struct {
+		x, y                int
+		wantR, wantG, wantB uint8
+		where               string
+	}
+	cases := []struct {
+		name string
+		css  string
+		pts  []sample
+	}{
+		{
+			name: "x-clip/y-visible",
+			css:  "overflow-x:clip;overflow-y:visible",
+			pts: []sample{
+				{50, 50, 0, 128, 0, "inside svg box (50,50)"},
+				{50, 120, 0, 128, 0, "overflow-y (50,120)"},
+				{120, 50, 255, 255, 255, "clipped-x (120,50)"},
+				{120, 120, 255, 255, 255, "clipped-x beyond-y (120,120)"},
+			},
+		},
+		{
+			name: "x-visible/y-clip",
+			css:  "overflow-x:visible;overflow-y:clip",
+			pts: []sample{
+				{50, 50, 0, 128, 0, "inside svg box (50,50)"},
+				{120, 50, 0, 128, 0, "overflow-x (120,50)"},
+				{50, 120, 255, 255, 255, "clipped-y (50,120)"},
+				{120, 120, 255, 255, 255, "clipped-y beyond-x (120,120)"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<!DOCTYPE html><html><body style="margin:0">` +
+				`<svg width="100" height="100" style="` + tc.css + `">` +
+				`<rect width="150" height="150" fill="green"/>` +
+				`</svg></body></html>`
+			img := renderToImage(t, html, 200, 200)
+			for _, p := range tc.pts {
+				sampleColorClose(t, img, p.x, p.y, p.wantR, p.wantG, p.wantB, 12, p.where)
+			}
+		})
+	}
 }
