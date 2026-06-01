@@ -4411,7 +4411,7 @@ func expandBackgroundProperty(style *Style, value string) {
 		// Extract color functions before field-splitting
 		colorFound := false
 		colorValue := ""
-		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "color("} {
+		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "contrast-color(", "color("} {
 			if idx := strings.Index(remaining, prefix); idx >= 0 {
 				depth := 0
 				end := -1
@@ -5790,6 +5790,33 @@ func ParseColor(colorStr string) (Color, bool) {
 		return parseColorMix(colorStr)
 	}
 
+	// Handle contrast-color() — CSS Color 5 §9.
+	// Parses the single inner color argument, computes WCAG 2.x relative
+	// luminance, and returns black or white whichever gives the higher
+	// contrast ratio against that color.
+	// Mirrors Blink's CSSColor::ContrastColor @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if strings.HasPrefix(colorStr, "contrast-color(") && strings.HasSuffix(colorStr, ")") {
+		inner := strings.TrimSpace(colorStr[len("contrast-color(") : len(colorStr)-1])
+		base, ok := ParseColor(inner)
+		if !ok {
+			return Color{}, false
+		}
+		// Compute WCAG relative luminance: linearise sRGB, then apply ITU
+		// coefficients (WCAG 2.x §G17; same as Blink's
+		// ContrastColorForBackground).
+		lr := sRGBToLinear(float64(base.R) / 255)
+		lg := sRGBToLinear(float64(base.G) / 255)
+		lb := sRGBToLinear(float64(base.B) / 255)
+		lum := 0.2126729*lr + 0.7151522*lg + 0.0721750*lb
+		// Contrast ratio against white = (lum + 0.05) relative to (1.05).
+		// Contrast ratio against black = (0.05) relative to (lum + 0.05).
+		// White wins when lum < 0.179 (the crossover point).
+		if lum < 0.179 {
+			return Color{R: 255, G: 255, B: 255, A: 1.0}, true
+		}
+		return Color{R: 0, G: 0, B: 0, A: 1.0}, true
+	}
+
 	// Try hex color first (#RGB, #RGBA, #RRGGBB, #RRGGBBAA per CSS Color 4 §5.2).
 	// Mirrors Blink's CSSParserFastPaths::ParseColor() hex branch which accepts
 	// 3/4/6/8 hex-digit forms @ third_party/blink/renderer/core/css/parser/
@@ -7096,7 +7123,7 @@ func isColor(s string) bool {
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
 		strings.HasPrefix(s, "oklab(") || strings.HasPrefix(s, "lab(") ||
 		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
-		strings.HasPrefix(s, "color(") {
+		strings.HasPrefix(s, "contrast-color(") || strings.HasPrefix(s, "color(") {
 		return true
 	}
 	// Bare numbers and lengths are not colors
