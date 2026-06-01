@@ -126,6 +126,45 @@ func TestParseColorMixWithCurrentColor(t *testing.T) {
 	}
 }
 
+// TestParseColorWithCurrentColor_ContrastColor verifies that
+// contrast-color(currentcolor) resolves through ParseColorWithCurrentColor's
+// late-resolution path rather than falling through to ParseColor (which cannot
+// resolve currentcolor).
+func TestParseColorWithCurrentColor_ContrastColor(t *testing.T) {
+	black := Color{R: 0, G: 0, B: 0, A: 1.0}
+	white := Color{R: 255, G: 255, B: 255, A: 1.0}
+	darkblue := Color{R: 0, G: 0, B: 139, A: 1.0}
+
+	tests := []struct {
+		name         string
+		input        string
+		currentColor Color
+		wantR        uint8
+		wantG        uint8
+		wantB        uint8
+	}{
+		// contrast-color(currentcolor) with dark currentcolor → white
+		{"currentcolor=black → white", "contrast-color(currentcolor)", black, 255, 255, 255},
+		// contrast-color(currentcolor) with light currentcolor → black
+		{"currentcolor=white → black", "contrast-color(currentcolor)", white, 0, 0, 0},
+		// contrast-color(currentcolor) with darkblue → white
+		{"currentcolor=darkblue → white", "contrast-color(currentcolor)", darkblue, 255, 255, 255},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ParseColorWithCurrentColor(tt.input, tt.currentColor)
+			if !ok {
+				t.Fatalf("ParseColorWithCurrentColor(%q) returned not ok", tt.input)
+			}
+			want := Color{R: tt.wantR, G: tt.wantG, B: tt.wantB, A: 1.0}
+			if !colorEq(got, want, 0) {
+				t.Errorf("ParseColorWithCurrentColor(%q, currentColor=%v) = rgb(%d,%d,%d), want rgb(%d,%d,%d)",
+					tt.input, tt.currentColor, got.R, got.G, got.B, tt.wantR, tt.wantG, tt.wantB)
+			}
+		})
+	}
+}
+
 // TestParseColor_ContrastColor verifies the CSS Color 5 contrast-color()
 // function returns black or white based on WCAG relative luminance.
 // Mirrors Blink's CSSColor::ContrastColor @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
