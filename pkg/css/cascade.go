@@ -1389,7 +1389,14 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// ::marker laid out as a real box) must inherit them so its
 			// inline/block axes and glyph orientation match the originating
 			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
-			"writing-mode", "direction", "text-orientation"}
+			"writing-mode", "direction", "text-orientation",
+			// CSS Text 3 §3.2, §9.1, §9.3: tab-size, overflow-wrap, word-break,
+			// hyphens are inherited. CSS Text Decor 4 §4: text-emphasis and its
+			// longhands are inherited. CSS Pseudo-4 §4.4: text-shadow is inherited
+			// by ::marker pseudo-elements.
+			"tab-size", "overflow-wrap", "word-break", "hyphens",
+			"text-shadow", "text-emphasis", "text-emphasis-style",
+			"text-emphasis-color", "text-emphasis-position"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -1683,7 +1690,9 @@ func markerAllowedProperty(name string) bool {
 	case "color", "direction", "font", "content",
 		"text-combine-upright", "unicode-bidi", "white-space",
 		"letter-spacing", "word-spacing", "line-height",
-		"text-shadow", "text-transform", "animation", "transition":
+		"text-shadow", "text-transform", "animation", "transition",
+		"hyphens", "overflow-wrap", "tab-size", "word-break",
+		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position":
 		// CSS Pseudo-4 §4.4: `display` is NOT marker-allowed — an author
 		// `::marker { display: ... }` rule must be rejected. The engine's own
 		// ::marker box display (inside = inline default, outside = inline-block)
