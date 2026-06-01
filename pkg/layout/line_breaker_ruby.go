@@ -71,6 +71,34 @@ func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int) *LineInfo {
 	return sub
 }
 
+// capTextCombineSubLineWidth caps the width of a sub-line to 1em if it
+// contains any items with text-combine-upright: all in a vertical writing mode.
+// Mirrors Blink's inline_layout_algorithm.cc:~1270 constraint.
+func capTextCombineSubLineWidth(subLine *LineInfo, columnOpenStyle *css.Style, isVerticalMode bool) {
+	if !isVerticalMode {
+		return
+	}
+	if subLine == nil {
+		return
+	}
+	// Check if any result item has text-combine-upright: all.
+	hasTextCombine := false
+	for _, r := range subLine.Results {
+		if r.Item != nil && r.Item.Style != nil && r.Item.Style.GetTextCombineUpright() {
+			hasTextCombine = true
+			break
+		}
+	}
+	if !hasTextCombine {
+		return
+	}
+	// Cap the width to 1em (parent font-size).
+	oneEm := columnOpenStyle.GetFontSize()
+	if subLine.Width > oneEm {
+		subLine.Width = oneEm
+	}
+}
+
 // handleRuby processes the InlineItemOpenRubyColumn currently at
 // lb.currentItemIndex. It builds base + annotation sub-LineInfos,
 // computes the column's inline size (= max of base/annotation
@@ -99,6 +127,16 @@ func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 		annoLine := lb.CreateSubLineInfo(idx.AnnotationStart+1, idx.ColumnEnd)
 		annoLine.IsRubyText = true
 		annotationLines = append(annotationLines, annoLine)
+	}
+
+	// Cap text-combine sub-line widths to 1em in vertical mode.
+	// Mirrors Blink's inline_layout_algorithm.cc:~1270.
+	isVerticalMode := lb.space.WritingDirection.UsesCentralBaseline()
+	if item.Style != nil {
+		capTextCombineSubLineWidth(baseLine, item.Style, isVerticalMode)
+		for _, a := range annotationLines {
+			capTextCombineSubLineWidth(a, item.Style, isVerticalMode)
+		}
 	}
 
 	// rubySize = max(base.Width, annotations[i].Width...).
@@ -154,4 +192,3 @@ func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 	lb.currentItemIndex = idx.ColumnEnd
 	return false
 }
-
