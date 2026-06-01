@@ -75,10 +75,7 @@ func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int) *LineInfo {
 // contains any items with text-combine-upright: all in a vertical writing mode.
 // Mirrors Blink's inline_layout_algorithm.cc:~1270 constraint.
 func capTextCombineSubLineWidth(subLine *LineInfo, columnOpenStyle *css.Style, isVerticalMode bool) {
-	if !isVerticalMode {
-		return
-	}
-	if subLine == nil {
+	if !isVerticalMode || subLine == nil {
 		return
 	}
 	// Check if any result item has text-combine-upright: all.
