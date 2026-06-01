@@ -1504,8 +1504,14 @@ func createLineBoxEx(
 	}
 
 	lineHeight := maxAscent + maxDescent
-	if lineHeight <= 0 {
-		// Empty line (forced break) — use default font metrics.
+	if lineHeight <= 0 && parentStyle == nil {
+		// No style context at all — use UA-default font metrics so the line box
+		// has a visible height. When parentStyle is non-nil the strut height was
+		// computed from the element's own font-size; a zero result is correct
+		// (e.g. font-size:0 produces zero-height line boxes per spec). Mirrors
+		// Blink's CSSToLengthConversionData / FontSizes contract: em-based
+		// lengths resolve against the element's own computed font-size, not the
+		// inherited value. Blink SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		maxAscent = 16 * 0.8
 		maxDescent = 16 * 0.2
 		lineHeight = maxAscent + maxDescent
