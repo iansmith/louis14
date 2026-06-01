@@ -37,6 +37,17 @@ func baseFontAscentFromSubLine(
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
 			continue
 		}
+		// CSS Writing Modes 3 §9.1.1: text-combine-upright: all in a vertical
+		// writing mode renders the combined text as a 1em upright unit. It
+		// behaves like an orthogonal atomic inline from the ruby block-axis
+		// perspective — it does not contribute to the base font ascent used
+		// to place over-side annotations. Mirrors the zero contribution of a
+		// LayoutResult=nil atomic inline in computeLineMetricsEx at
+		// core/layout/inline/inline_layout_algorithm.cc @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if wdm.IsVertical() && r.Item.Style.GetTextCombineUpright() {
+			continue
+		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
 		var asc float64
 		if centralBaseline {
@@ -93,6 +104,16 @@ func annotationEmHeightFromSubLine(
 	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
+			continue
+		}
+		// CSS Writing Modes 3 §9.1.1: text-combine-upright: all in a vertical
+		// writing mode renders as an orthogonal 1em upright unit. It does not
+		// contribute to the annotation em-height used for over-side block
+		// positioning; its block contribution is like a nil LayoutResult
+		// atomic inline (zero). Mirrors the zero contribution of
+		// LayoutResult=nil atomic inlines in ruby_utils.cc ComputeEmHeight @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if wdm.IsVertical() && r.Item.Style.GetTextCombineUpright() {
 			continue
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)

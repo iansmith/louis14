@@ -207,6 +207,18 @@ func emitSubLineTextFragments(
 	for _, r := range subLine.Results {
 		switch r.Item.Type {
 		case InlineItemText:
+			// CSS Writing Modes 3 §9.1.1: text-combine-upright: all in a
+			// vertical writing mode renders the combined text as a 1em upright
+			// unit (tcy run). In our sub-line rendering pipeline this item
+			// occupies inline space (already counted in rubySize) but does not
+			// emit a fragment directly — it behaves like an orthogonal atomic
+			// inline whose LayoutResult is nil, which emitSubLineTextFragments
+			// treats as the default (advance-only) case. Full tcy rendering
+			// (horizontal glyph inside the vertical column) is a later phase.
+			if wdm.IsVertical() && r.Item.Style != nil && r.Item.Style.GetTextCombineUpright() {
+				inlinePos += r.InlineSize
+				continue
+			}
 			content := textContent[r.TextStart:r.TextEnd]
 			if len(content) == 0 {
 				inlinePos += r.InlineSize
