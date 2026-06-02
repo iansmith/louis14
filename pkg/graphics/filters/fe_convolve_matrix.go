@@ -59,11 +59,14 @@ func NewFEConvolveMatrix(
 }
 
 // MapRect inflates the rectangle by the kernel reach in each direction.
-// A kernel of order N can affect pixels up to ~(N-1)/2 away from the center.
+// For an asymmetric target the reach differs per side: left=TargetX,
+// right=Order-1-TargetX, top=TargetY, bottom=Order-1-TargetY.
 func (e *FEConvolveMatrix) MapRect(r image.Rectangle) image.Rectangle {
-	// Spread is roughly (order-1)/2 pixels in each direction.
-	spread := (e.Order - 1) / 2
-	return r.Inset(-spread)
+	left := e.TargetX
+	right := e.Order - 1 - e.TargetX
+	top := e.TargetY
+	bottom := e.Order - 1 - e.TargetY
+	return image.Rect(r.Min.X-left, r.Min.Y-top, r.Max.X+right, r.Max.Y+bottom)
 }
 
 // ApplyEffect applies the convolution kernel to the input image.

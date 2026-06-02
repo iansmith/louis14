@@ -139,17 +139,16 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		int(pctx.originX+pctx.viewport.Width()),
 		int(pctx.originY+pctx.viewport.Height()),
 	)
-	if graph == nil {
-		compositeFilterOutputOntoTarget(pctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip, space)
-		return true
+	toComposite := srcBuf
+	compositeSpace := space
+	if graph != nil {
+		graph.SetSourceImage(srcBuf)
+		if out := graph.Apply(); out != nil {
+			toComposite = out
+			compositeSpace = graph.LastEffect.OperatingSpace()
+		}
 	}
-	graph.SetSourceImage(srcBuf)
-	out := graph.Apply()
-	if out == nil {
-		compositeFilterOutputOntoTarget(pctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip, space)
-		return true
-	}
-	compositeFilterOutputOntoTarget(pctx.Renderer, out, region.Min.X, region.Min.Y, viewportClip, graph.LastEffect.OperatingSpace())
+	compositeFilterOutputOntoTarget(pctx.Renderer, toComposite, region.Min.X, region.Min.Y, viewportClip, compositeSpace)
 	return true
 }
 

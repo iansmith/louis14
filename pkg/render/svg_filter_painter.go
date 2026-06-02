@@ -222,9 +222,17 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 				sG := float64(buf.Pix[si+1]) / 255
 				sB := float64(buf.Pix[si+2]) / 255
 				dA := float64(r.target.Pix[ti+3]) / 255
-				dR := svgSRGBToLinear(float64(r.target.Pix[ti+0]) / 255)
-				dG := svgSRGBToLinear(float64(r.target.Pix[ti+1]) / 255)
-				dB := svgSRGBToLinear(float64(r.target.Pix[ti+2]) / 255)
+				// Un-premultiply destination before linearizing: applying
+				// sRGBToLinear to a premultiplied byte gives the wrong answer
+				// when dA < 255. At dA=0 the destination is fully transparent
+				// so its RGB values are irrelevant.
+				var dR, dG, dB float64
+				if dA > 0 {
+					invDA := 1 / dA
+					dR = svgSRGBToLinear(float64(r.target.Pix[ti+0])/255*invDA) * dA
+					dG = svgSRGBToLinear(float64(r.target.Pix[ti+1])/255*invDA) * dA
+					dB = svgSRGBToLinear(float64(r.target.Pix[ti+2])/255*invDA) * dA
+				}
 				inv1 := 1 - srcA
 				oR := sR + dR*inv1
 				oG := sG + dG*inv1

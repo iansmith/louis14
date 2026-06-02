@@ -525,9 +525,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		kULx, _ := parseFloatAttr(prim, "kernelUnitLength", 1)
 		kULy := kULx // kernelUnitLength is a single number or two numbers
 		if s, ok := prim.Attribute("kernelUnitLength"); ok {
-			parts := strings.FieldsFunc(s, func(r rune) bool {
-				return r == ' ' || r == ',' || r == '\t' || r == '\n'
-			})
+			parts := splitSVGList(s)
 			if len(parts) >= 2 {
 				if f, err := strconv.ParseFloat(parts[1], 64); err == nil {
 					kULy = f
@@ -668,9 +666,7 @@ func parseStdDeviation(prim SVGFilterPrimitive) (float64, float64) {
 	if !ok {
 		return 0, 0
 	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(v)
 	if len(parts) == 0 {
 		return 0, 0
 	}
@@ -816,9 +812,7 @@ func parseColorMatrixAttrs(prim SVGFilterPrimitive) (ColorMatrixType, []float64)
 		tStr = strings.ToLower(strings.TrimSpace(v))
 	}
 	vStr, _ := prim.Attribute("values")
-	parts := strings.FieldsFunc(vStr, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(vStr)
 	values := make([]float64, 0, len(parts))
 	for _, p := range parts {
 		f, err := strconv.ParseFloat(p, 64)
@@ -912,6 +906,13 @@ func parseTransferFunc(prim SVGFilterPrimitive) TransferFunc {
 	return tf
 }
 
+// splitSVGList splits a whitespace/comma-separated SVG attribute value.
+func splitSVGList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+}
+
 // parseFloatList reads a whitespace/comma-separated list of floats.
 func parseFloatList(prim SVGFilterPrimitive, name string) []float64 {
 	v, ok := prim.Attribute(name)
@@ -922,9 +923,7 @@ func parseFloatList(prim SVGFilterPrimitive, name string) []float64 {
 	if !ok {
 		return nil
 	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(v)
 	out := make([]float64, 0, len(parts))
 	for _, p := range parts {
 		f, err := strconv.ParseFloat(p, 64)
