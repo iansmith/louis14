@@ -119,13 +119,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// Handle auto-fill/auto-fit BEFORE placement: repeat(auto-fill, …) /
 	// repeat(auto-fit, …) is resolved against the container's free space
 	// at layout time (CSS Grid 2 §7.2.2.1). Auto-placement and explicit
-	// line resolution both depend on the final column count, so we expand
-	// the sentinel first. The block axis has no auto-fill use here, but if
-	// it had a definite size the same reasoning would apply.
+	// line resolution both depend on the final row and column counts, so we expand
+	// the sentinels in both axes. Both axes expand auto-fill; when the available
+	// size is indefinite, the repetition count resolves to 1 per CSS Grid 2 §7.2.2.1.
 	colTracks = gla.expandAutoFillFit(colTracks, contentInlineSize, colGap)
-	if explicitBlockSize > 0 {
-		rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
-	}
+	rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
 
 	// Resolve explicit placements from grid-column/grid-row/grid-area.
 	for _, item := range items {
