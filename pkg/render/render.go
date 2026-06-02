@@ -819,16 +819,6 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
-	// Singular-transform cull: an edge-on flattened projection (e.g.
-	// rotateX(90deg) under flat transform-style) maps the layer to a
-	// zero-area quad. Cull here so HasMaskImage / HasFilter / blend /
-	// isolation paths do not paint an invisible layer into an offscreen
-	// buffer. The same cull is applied in the main-path transformSingular
-	// check below; this guard makes all paint branches consistent.
-	if isLayerTransformSingular(layer) {
-		return
-	}
-
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
 	if layer.HasMaskImage {
 		r.paintLayerWithMask(layer)
@@ -1053,6 +1043,10 @@ func (r *Renderer) paintDescendantCanvasBackground(layer *PaintLayer) {
 // For each pixel: result.A = element.A * maskValue
 // where maskValue is either mask.A (alpha mode) or luminance(mask) (luminance mode).
 func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
@@ -1288,6 +1282,10 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // subtree is recorded into a source buffer, fed to the filter graph as
 // SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 
 	// Reference box: the element's border box in absolute device pixels.
@@ -1590,6 +1588,10 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 // Mirrors Blink's PaintLayer isolation step (paint_layer_painter.cc /
 // paint_layer.cc) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	if box == nil {
 		r.paintLayerContent(layer)
@@ -1727,6 +1729,10 @@ func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 // buffer, then blend-composites the result onto the destination using the
 // specified CSS mix-blend-mode.
 func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
