@@ -819,6 +819,16 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// Singular-transform cull: an edge-on flattened projection (e.g.
+	// rotateX(90deg) under flat transform-style) maps the layer to a
+	// zero-area quad. Cull here so HasMaskImage / HasFilter / blend /
+	// isolation paths do not paint an invisible layer into an offscreen
+	// buffer. The same cull is applied in the main-path transformSingular
+	// check below; this guard makes all paint branches consistent.
+	if isLayerTransformSingular(layer) {
+		return
+	}
+
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
 	if layer.HasMaskImage {
 		r.paintLayerWithMask(layer)
@@ -1998,6 +2008,38 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
 	return flattens && isSingularProjection(xx, yx, xy, yy)
+}
+
+// isLayerTransformSingular returns true if layer.HasTransform is set and the
+// layer's flattened 2D projection is singular (edge-on / zero-area). Used to
+// cull the layer before any paint path — including the special-effect paths
+// (HasMaskImage, HasFilter, blend, isolated) that would otherwise bypass the
+// transformSingular check in the main paintLayer body.
+//
+// Conservative in the preserve-3d-ancestor case: if a preserve-3d ancestor
+// exists the combined projection is not computed here (returns false, no cull).
+// This is correct for the common case and avoids duplicating the full
+// preserve-3d delta-projection maths from applyTransforms.
+func isLayerTransformSingular(layer *PaintLayer) bool {
+	if !layer.HasTransform || layer.Box == nil {
+		return false
+	}
+	box := layer.Box
+	// preserve-3d layers are never culled by their own projection (children
+	// compose in 4×4 and can produce a visible quad even when the layer's
+	// own transform is edge-on). Same guard as applyTransforms.
+	if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+		return false
+	}
+	// If there is a preserve-3d ancestor, the combined projection may differ
+	// from the self-only projection. Conservatively skip culling (don't cull
+	// visible layers). The main-path applyTransforms handles this correctly.
+	if len(preserve3DAncestorTransforms(box)) > 0 {
+		return false
+	}
+	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
+	xx, yx, xy, yy, _, _ := css.ComposeAffineProjection(selfTransforms)
+	return isSingularProjection(xx, yx, xy, yy)
 }
 
 // singularProjectionEpsilon bounds the determinant magnitude below which a
