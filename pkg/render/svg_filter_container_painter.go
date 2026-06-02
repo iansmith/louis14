@@ -133,32 +133,22 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	graph := builder.BuildGraph(adapter)
-	if graph == nil {
-		// Fall back to compositing the unfiltered source so the
-		// children still render rather than vanishing.
-		viewportClip := image.Rect(
-			int(pctx.originX),
-			int(pctx.originY),
-			int(pctx.originX+pctx.viewport.Width()),
-			int(pctx.originY+pctx.viewport.Height()),
-		)
-		compositeFilterOutputOntoTarget(pctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip)
-		return true
-	}
-	graph.SetSourceImage(srcBuf)
-	out := graph.Apply()
-
 	viewportClip := image.Rect(
 		int(pctx.originX),
 		int(pctx.originY),
 		int(pctx.originX+pctx.viewport.Width()),
 		int(pctx.originY+pctx.viewport.Height()),
 	)
-	if out == nil {
-		compositeFilterOutputOntoTarget(pctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip)
-		return true
+	toComposite := srcBuf
+	compositeSpace := space
+	if graph != nil {
+		graph.SetSourceImage(srcBuf)
+		if out := graph.Apply(); out != nil {
+			toComposite = out
+			compositeSpace = graph.LastEffect.OperatingSpace()
+		}
 	}
-	compositeFilterOutputOntoTarget(pctx.Renderer, out, region.Min.X, region.Min.Y, viewportClip)
+	compositeFilterOutputOntoTarget(pctx.Renderer, toComposite, region.Min.X, region.Min.Y, viewportClip, compositeSpace)
 	return true
 }
 

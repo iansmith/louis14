@@ -30,17 +30,33 @@ func (f *Filter) SetSourceImage(img *image.RGBA) {
 	}
 }
 
-// Apply evaluates the graph and returns the filter result, an image sized to
-// FilterRegion (its origin maps to FilterRegion.Min in device space). It
-// evaluates the dependency DAG depth-first with memoisation, converting each
-// input image into the consuming effect's operating space at the graph edge —
-// mirroring FilterEffect's AdaptColorToOperatingInterpolationSpace discipline.
+// Apply evaluates the graph and returns the filter result in the last effect's
+// operating space, sized to FilterRegion.
 func (f *Filter) Apply() *image.RGBA {
 	if f.LastEffect == nil || f.FilterRegion.Empty() {
 		return nil
 	}
 	memo := make(map[FilterEffect]*image.RGBA)
 	return f.evaluate(f.LastEffect, memo)
+}
+
+// ApplyToSRGB evaluates the graph and converts the result to premultiplied
+// sRGB, ready for compositing with the page. SVG filters default to linearRGB
+// (color-interpolation-filters:linearRGB); the final output must be converted
+// back to sRGB before DrawImage composites it over the page content.
+// Mirrors Blink's FilterPainter::PaintFilteredContent post-conversion step.
+func (f *Filter) ApplyToSRGB() *image.RGBA {
+	out := f.Apply()
+	if out == nil || f.LastEffect == nil {
+		return out
+	}
+	if f.LastEffect.OperatingSpace() == InterpolationSpaceSRGB {
+		return out
+	}
+	converted := image.NewRGBA(out.Bounds())
+	copy(converted.Pix, out.Pix)
+	convertImageSpace(converted, f.LastEffect.OperatingSpace(), InterpolationSpaceSRGB)
+	return converted
 }
 
 func (f *Filter) evaluate(e FilterEffect, memo map[FilterEffect]*image.RGBA) *image.RGBA {
