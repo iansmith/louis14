@@ -216,12 +216,19 @@ func (b *LayoutTreeBuilder) wrapOrphanRubyChildren(
 			// Ruby-internal: accumulate in the current run.
 			rubyRun = append(rubyRun, child)
 		} else if len(rubyRun) > 0 && isWhitespaceOnly([]*LayoutInputNode{child}) {
-			// Whitespace-only text between ruby-internal siblings is absorbed
-			// into the current run rather than breaking it. CSS Ruby §2.2
-			// does not treat inter-element whitespace as a run boundary;
-			// the reference rendering groups adjacent rb/rt with only
-			// whitespace between them into a single anonymous ruby box.
-			rubyRun = append(rubyRun, child)
+			// Whitespace-only text between two adjacent ruby-internal boxes is
+			// stripped per CSS Ruby §2.2 #anon-gen-wrap-inlinize: "any white space
+			// between two adjacent ruby-internal boxes … is removed."
+			//
+			// We must NOT append the node to rubyRun — that places it inside the
+			// anonymous ruby box, where ruby layout silently drops it, removing
+			// the visible inter-word space from the outer flow (regression:
+			// ruby-dynamic-insertion-002, ruby-justification-002). We must NOT
+			// flush the run either — that would produce separate anonymous ruby
+			// wrappers for adjacent rb/rt pairs that belong in the same
+			// column-pairing context (regression: ruby-inlinize-blocks-* and
+			// ruby-justification-002 with wrong column structure). The node is
+			// simply discarded.
 		} else {
 			// Non-ruby-internal content: flush the run and append the child.
 			flush()
