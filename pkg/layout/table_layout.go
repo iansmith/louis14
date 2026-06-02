@@ -95,6 +95,10 @@ type tableColWidth struct {
 	colIndex int
 	span     int     // number of columns covered
 	width    float64 // resolved width in pixels (0 = not set)
+	minWidth float64 // resolved min-width in pixels; hasMin false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
+	hasMin   bool    // true if min-width is a concrete px length
+	maxWidth float64 // resolved max-width in pixels; hasMax false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
+	hasMax   bool    // true if max-width is a concrete px length
 }
 
 // tableColStyle carries a col/colgroup element's computed style for use in
@@ -1522,11 +1526,19 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					span = n
 				}
 			}
-			if w, ok := childStyle.GetLength("width"); ok && w > 0 {
+			w, okWidth := childStyle.GetLength("width")
+			mw, okMin := childStyle.GetLength("min-width")
+			xw, okMax := childStyle.GetLength("max-width")
+			// Append a spec when ANY of width>0, okMin, or okMax holds — a min-width-only col must still produce a spec.
+			if (okWidth && w > 0) || okMin || okMax {
 				colWidths = append(colWidths, tableColWidth{
 					colIndex: colIdx,
 					span:     span,
 					width:    w,
+					minWidth: mw,
+					hasMin:   okMin,
+					maxWidth: xw,
+					hasMax:   okMax,
 				})
 			}
 			// Collect style for border-collapse resolution (CSS 2.1 §17.6.2.1).
@@ -1554,11 +1566,19 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 							colChildSpan = n
 						}
 					}
-					if w, ok := colChildStyle.GetLength("width"); ok && w > 0 {
+					w, okWidth := colChildStyle.GetLength("width")
+					mw, okMin := colChildStyle.GetLength("min-width")
+					xw, okMax := colChildStyle.GetLength("max-width")
+					// Append a spec when ANY of width>0, okMin, or okMax holds — a min-width-only col must still produce a spec.
+					if (okWidth && w > 0) || okMin || okMax {
 						colWidths = append(colWidths, tableColWidth{
 							colIndex: colChildIdx,
 							span:     colChildSpan,
 							width:    w,
+							minWidth: mw,
+							hasMin:   okMin,
+							maxWidth: xw,
+							hasMax:   okMax,
 						})
 					}
 					colStyleSpecs = append(colStyleSpecs, tableColStyle{
@@ -1873,11 +1893,27 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 	// "A column element with a value other than 'auto' for the 'width'
 	// property sets the width for that column."
 	for _, cws := range colWidthSpecs {
-		if cws.width > 0 {
+		// Compute the effective per-column width: start from cws.width,
+		// apply max then min clamp (CSS used-value order: min wins over smaller max).
+		eff := cws.width
+		if cws.hasMax {
+			if eff > cws.maxWidth {
+				eff = cws.maxWidth
+			}
+		}
+		if cws.hasMin {
+			if eff < cws.minWidth {
+				eff = cws.minWidth
+			}
+		}
+		// Assign eff to columns only when the column has an effective constraint:
+		// width>0 OR hasMin (a min-raised column is constrained).
+		// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
+		if eff > 0 || cws.hasMin {
 			for s := 0; s < cws.span; s++ {
 				ci := cws.colIndex + s
 				if ci < numCols && !hasExplicit[ci] {
-					colWidths[ci] = cws.width
+					colWidths[ci] = eff
 					hasExplicit[ci] = true
 				}
 			}
@@ -2008,13 +2044,32 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 			if ci >= numCols {
 				break
 			}
-			if cws.width > colMin[ci] {
-				colMin[ci] = cws.width
+			// Compute the effective per-column width: start from cws.width,
+			// apply max then min clamp (CSS used-value order: min wins over smaller max).
+			eff := cws.width
+			if cws.hasMax {
+				if eff > cws.maxWidth {
+					eff = cws.maxWidth
+				}
 			}
-			if cws.width > colMax[ci] {
-				colMax[ci] = cws.width
+			if cws.hasMin {
+				if eff < cws.minWidth {
+					eff = cws.minWidth
+				}
 			}
-			colConstrained[ci] = true
+			// Fold eff into colMin/colMax exactly as cws.width was (only raise).
+			if eff > colMin[ci] {
+				colMin[ci] = eff
+			}
+			if eff > colMax[ci] {
+				colMax[ci] = eff
+			}
+			// Set colConstrained only when the column has an effective constraint:
+			// width>0 OR hasMin (a min-raised column is constrained).
+			// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
+			if cws.width > 0 || cws.hasMin {
+				colConstrained[ci] = true
+			}
 		}
 	}
 
