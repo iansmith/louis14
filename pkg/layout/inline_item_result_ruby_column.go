@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // InlineItemResultRubyColumn is the per-column payload attached to the
 // single InlineItemResult that the LineBreaker emits for a ruby column.
 // It carries the base sub-LineInfo and one annotation sub-LineInfo per
@@ -35,4 +37,15 @@ type InlineItemResultRubyColumn struct {
 	// `ruby_size = MaxLineWidth(base, annotations)` in
 	// `line_breaker.cc:3278-3449` HandleRuby).
 	InlineSize float64
+
+	// RubyAlign is the effective ruby-align value for this column.
+	// CSS Ruby 1 §7: ruby-align is inherited, so it may be set on the
+	// <ruby> element (the column-open item's style) or on the <rb>/<rt>
+	// elements within the column. handleRuby resolves this by checking
+	// the column-open item style first (the <ruby> parent), then falling
+	// back to the first explicit ruby-align found in the base sub-line's
+	// item styles (the <rb> case).
+	//
+	// Mirrors Blink's ApplyRubyAlign path in ruby_utils.cc @ 4883d11fef.
+	RubyAlign css.RubyAlign
 }

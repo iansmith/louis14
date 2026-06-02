@@ -7,17 +7,28 @@ import (
 
 // resolveReplacedIntrinsicInlineKeyword resolves min-width or max-width when
 // it's an intrinsic-sizing keyword (min-content, max-content, fit-content) on
-// a replaced element. For a replaced element the intrinsic min/max-content
-// inline-size is the inline-size determined by the constraint resolution
-// (e.g., derived from definite block-size via aspect ratio). We pass in the
-// already-computed inlineSize from the constraint resolution since it is the
-// best available "content" inline-size for a replaced box.
+// a replaced element. For a replaced element with an aspect ratio the
+// min/max-content intrinsic inline-size is the *transferred size* — the
+// definite block-size run through the aspect ratio (CSS Sizing 4 §5.1) — not
+// the resolved inline-size. When both axes are explicit the resolved
+// inline-size is the explicit width, so returning it would make the keyword a
+// no-op; the transferred size (e.g. an explicit height carried through the
+// ratio) is the value the keyword must resolve to. The caller passes
+// transferredInline = blockSize × logicalRatio when a ratio exists, falling
+// back to the resolved inline-size when there is no aspect ratio (no
+// transferred size is defined).
+//
+// Mirrors Blink's ResolveInlineLengthInternal kMinContent/kMaxContent →
+// MinMaxSizesFunc(kContent) → ComputeReplacedSizeInternal lambda →
+// InlineSizeFromAspectRatio (length_utils.cc:64-69, :1313-1316, :1083-1093
+// @ Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). min-content and
+// max-content are equal for a replaced box.
 //
 // kind is "min" or "max" — determines which property to read.
 // Returns the resolved length and true if the value was a keyword; false
 // otherwise (caller falls back to ResolveMin/MaxInlineSize).
 func resolveReplacedIntrinsicInlineKeyword(
-	style *css.Style, wdm WritingDirectionMode, kind string, inlineSize float64,
+	style *css.Style, wdm WritingDirectionMode, kind string, transferredInline float64,
 ) (float64, bool) {
 	if style == nil {
 		return 0, false
@@ -34,7 +45,7 @@ func resolveReplacedIntrinsicInlineKeyword(
 	case "min-content", "max-content", "fit-content",
 		"-webkit-min-content", "-webkit-max-content", "-webkit-fill-available",
 		"-moz-min-content", "-moz-max-content", "-moz-fit-content":
-		return inlineSize, true
+		return transferredInline, true
 	}
 	return 0, false
 }
@@ -277,20 +288,25 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	maxBlockLU, hasMaxBlock := ResolveMaxBlockSize(style, wdm, space, geom)
 	maxBlock := maxBlockLU.Float64()
 
-	// CSS Sizing 4 §3.4 + §5.1: intrinsic-keyword min/max constraints
-	// (min-content, max-content, fit-content) on the inline axis of a
-	// replaced element resolve to the inline-size derived from the
-	// definite block-size via the aspect ratio (or the stretch-fit / 300
-	// default when block-size is also indefinite). For replaced elements
-	// these keywords use the post-constraint-resolution inline-size as
-	// their value — without this, ResolveMinInlineSize returns 0 and the
+	// CSS Sizing 4 §5.1: intrinsic-keyword min/max constraints (min-content,
+	// max-content, fit-content) on the inline axis of a replaced element
+	// resolve to the *transferred size* — the definite block-size run through
+	// the aspect ratio. When both axes are explicit the resolved inlineSize is
+	// the explicit width, so using it would make the keyword a no-op; the
+	// transferred size (blockSize × logicalRatio) is the correct keyword value.
+	// With no aspect ratio there is no transferred size, so fall back to the
+	// resolved inlineSize. Without this, ResolveMinInlineSize returns 0 and the
 	// min/max constraint is effectively dropped.
-	if minVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "min", inlineSize); ok {
+	transferredInline := inlineSize
+	if logicalRatio > 0 {
+		transferredInline = blockSize * logicalRatio
+	}
+	if minVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "min", transferredInline); ok {
 		if minVal > minInline {
 			minInline = minVal
 		}
 	}
-	if maxVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "max", inlineSize); ok {
+	if maxVal, ok := resolveReplacedIntrinsicInlineKeyword(style, wdm, "max", transferredInline); ok {
 		if !hasMaxInline || maxVal < maxInline {
 			maxInline = maxVal
 			hasMaxInline = true
@@ -418,11 +434,13 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	// Set box data for the renderer (margins, borders, padding).
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(rla.style, wdm, rla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	// For iframe/object elements with a document source, lay out the nested

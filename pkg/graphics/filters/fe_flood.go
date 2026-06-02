@@ -23,6 +23,21 @@ func NewFEFlood(space InterpolationSpace, r, g, b uint8, a float64) *FEFlood {
 	}
 }
 
+// MapRect overrides baseEffect.MapRect. FEFlood is a generator: it fills
+// its Subregion with a constant colour, ignoring any input image. The
+// output therefore covers Subregion regardless of the input rect `r`, so
+// the forward bounds must include Subregion. Mirrors Blink's
+// FEFlood::MapRect (platform/graphics/filters/fe_flood.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): returns the union of the
+// input rect and the flood's output area (Subregion) so the filter graph's
+// canvas (filter.FilterRegion) is sized to cover the flood.
+func (e *FEFlood) MapRect(r image.Rectangle) image.Rectangle {
+	if !e.Subregion.Empty() {
+		return r.Union(e.Subregion)
+	}
+	return r
+}
+
 // ApplyEffect fills the region (or the subregion) with the flood colour.
 func (e *FEFlood) ApplyEffect(_ []*image.RGBA, region image.Rectangle) *image.RGBA {
 	out := newRGBA(region)

@@ -470,8 +470,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			builder.SetStyle(bla.style)
 			builder.SetLayoutNode(bla.node)
 			builder.SetBoxData(&PhysicalBoxData{
-				Border:  ToPhysicalEdges(geom.Border, wdm),
-				Padding: ToPhysicalEdges(geom.Padding, wdm),
+				Border:    ToPhysicalEdges(geom.Border, wdm),
+				Padding:   ToPhysicalEdges(geom.Padding, wdm),
+				Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 			})
 			result := builder.Build()
 			result.BreakToken = inlineBreakToken
@@ -621,8 +622,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetSize(geom.BorderBoxSize)
 				}
 				builder.SetBoxData(&PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				})
 				builder.SetEndMarginStrut(prevMarginStrut)
 				builder.SetExclusionSpace(exclusionSpace)
@@ -714,6 +716,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// orthogonal children (their inline axis is perpendicular to the
 			// parent's float axis). Skip the pre-layout check for orthogonal
 			// children; the post-layout check handles them correctly.
+			origPreLayoutFloatStartOff, origPreLayoutFloatEndOff := floatStartOff, floatEndOff
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
@@ -743,9 +746,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
 							hasClearance = true
+							// Preserve the original float offsets from pre-reposition
+							// position. After vertical repositioning, the element should
+							// stay at the original float-blocked inline position.
+							floatStartOff = origPreLayoutFloatStartOff
+							floatEndOff = origPreLayoutFloatEndOff
 						}
-						// Recompute float offsets at new position.
-						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin+blockCursor, 0, childAvailableInline)
 						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
 						if childInlineForSpace < 0 {
 							childInlineForSpace = 0
@@ -859,11 +865,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isChildNewFC {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
 				bfcBlockExtent := childLogicalTmp.BlockSize() + childMargins.BlockSum()
-				extentStartOff, extentEndOff := exclusionSpace.FindAvailableInlineSize(
+				origFloatStartOff, origFloatEndOff := exclusionSpace.FindAvailableInlineSize(
 					floatCheckBlock, bfcBlockExtent, childAvailableInline)
-				if extentStartOff > 0 || extentEndOff > 0 {
+				if origFloatStartOff > 0 || origFloatEndOff > 0 {
 					neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
-					availableInline := childAvailableInline - extentStartOff - extentEndOff
+					availableInline := childAvailableInline - origFloatStartOff - origFloatEndOff
 					if neededInline > availableInline {
 						// Child doesn't fit — find the earliest block position
 						// where the BFC fits alongside remaining floats.
@@ -875,8 +881,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
 							hasClearance = true
-							// Recompute float offsets at the new position.
-							floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin+blockCursor, 0, childAvailableInline)
+							// Preserve the original float offsets from the pre-reposition
+							// query position. After vertical repositioning, the element
+							// should stay at the original float-blocked inline position,
+							// not move to the cleared position.
+							floatStartOff = origFloatStartOff
+							floatEndOff = origFloatEndOff
 							childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
 							if childInlineForSpace < 0 {
 								childInlineForSpace = 0
@@ -954,8 +964,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetSize(geom.BorderBoxSize)
 				}
 				builder.SetBoxData(&PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				})
 				builder.SetEndMarginStrut(prevMarginStrut)
 				builder.SetExclusionSpace(exclusionSpace)
@@ -1115,8 +1126,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					builder.SetStyle(bla.style)
 					builder.SetLayoutNode(bla.node)
 					builder.SetBoxData(&PhysicalBoxData{
-						Border:  ToPhysicalEdges(geom.Border, wdm),
-						Padding: ToPhysicalEdges(geom.Padding, wdm),
+						Border:    ToPhysicalEdges(geom.Border, wdm),
+						Padding:   ToPhysicalEdges(geom.Padding, wdm),
+						Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 					})
 					builder.SetEndMarginStrut(prevMarginStrut)
 					builder.SetExclusionSpace(exclusionSpace)
@@ -1817,11 +1829,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Set box data for the renderer.
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	builder.SetEndMarginStrut(prevMarginStrut)
@@ -2729,8 +2743,11 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return false
 	}
 
-	// Flow root always creates a BFC.
-	if style.GetDisplay() == css.DisplayFlowRoot {
+	// EstablishesNewFormattingContext handles flow-root (including variants
+	// like `display: flow-root list-item` which GetDisplay() folds to
+	// DisplayListItem, losing the flow-root bit), inline-block, table-cell,
+	// table-caption, flex/grid.
+	if style.EstablishesNewFormattingContext() {
 		return true
 	}
 
@@ -2754,25 +2771,6 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		isBody = nodes[0].DOMNode.TagName == "body"
 	}
 	if !isBody && (style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible) {
-		return true
-	}
-
-	// Inline-block creates a BFC. So does an inline-level list item
-	// (`display: inline list-item` — the LayoutInlineListItem analogue, which
-	// is an atomic inline establishing its own formatting context).
-	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock || d == css.DisplayInlineListItem {
-		return true
-	}
-
-	// Flex/grid containers create a BFC.
-	if d == css.DisplayFlex || d == css.DisplayInlineFlex ||
-		d == css.DisplayGrid || d == css.DisplayInlineGrid {
-		return true
-	}
-
-	// Table boxes establish a BFC (CSS 2.1 §17.4).
-	if d == css.DisplayTable || d == css.DisplayInlineTable {
 		return true
 	}
 

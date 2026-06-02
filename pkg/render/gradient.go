@@ -31,10 +31,18 @@ type gradientStop struct {
 	calcExpr  string // raw calc()/min()/max()/clamp() expression; evaluated against lineLen at resolve time
 }
 
+// gradientDirection represents the direction of a linear gradient.
+// Either an angle in degrees, or a corner keyword that requires box dimensions to resolve.
+type gradientDirection struct {
+	isCorner   bool    // true if this is a corner keyword; false if a fixed angle
+	cornerType string  // "bottom-right", "bottom-left", "top-right", "top-left" when isCorner=true
+	angleDeg   float64 // fixed angle in degrees when isCorner=false
+}
+
 // parseLinearGradient parses a linear-gradient(...) value.
-// Returns angle in degrees (0=to top, 90=to right, 180=to bottom, 270=to left),
+// Returns a gradientDirection (either a fixed angle or a corner keyword),
 // and the list of color stops.
-func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok bool, repeating bool) {
+func parseLinearGradient(val string) (direction gradientDirection, stops []gradientStop, ok bool, repeating bool) {
 	lower := strings.ToLower(strings.TrimSpace(val))
 	var prefixLen int
 	if strings.HasPrefix(lower, "repeating-linear-gradient(") {
@@ -43,7 +51,7 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 	} else if strings.HasPrefix(lower, "linear-gradient(") {
 		prefixLen = len("linear-gradient(")
 	} else {
-		return 0, nil, false, false
+		return gradientDirection{}, nil, false, false
 	}
 	inner := val[prefixLen:]
 	if idx := strings.LastIndex(inner, ")"); idx >= 0 {
@@ -53,46 +61,50 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 
 	args := splitGradientArgs(inner)
 	if len(args) == 0 {
-		return 0, nil, false, false
+		return gradientDirection{}, nil, false, false
 	}
 
 	// Default direction: to bottom (180 degrees).
-	angleDeg = 180.0
+	direction = gradientDirection{isCorner: false, angleDeg: 180.0}
 	startIdx := 0
 
 	first := strings.TrimSpace(args[0])
 	firstLower := strings.ToLower(first)
 	if strings.HasPrefix(firstLower, "to ") {
-		direction := strings.TrimSpace(firstLower[3:])
-		switch direction {
+		directionStr := strings.TrimSpace(firstLower[3:])
+		switch directionStr {
 		case "bottom":
-			angleDeg = 180
+			direction.angleDeg = 180
 		case "top":
-			angleDeg = 0
+			direction.angleDeg = 0
 		case "right":
-			angleDeg = 90
+			direction.angleDeg = 90
 		case "left":
-			angleDeg = 270
+			direction.angleDeg = 270
 		case "bottom right", "right bottom":
-			angleDeg = 135
+			direction.isCorner = true
+			direction.cornerType = "bottom-right"
 		case "bottom left", "left bottom":
-			angleDeg = 225
+			direction.isCorner = true
+			direction.cornerType = "bottom-left"
 		case "top right", "right top":
-			angleDeg = 45
+			direction.isCorner = true
+			direction.cornerType = "top-right"
 		case "top left", "left top":
-			angleDeg = 315
+			direction.isCorner = true
+			direction.cornerType = "top-left"
 		}
 		startIdx = 1
 	} else if strings.HasSuffix(firstLower, "deg") {
 		numStr := strings.TrimSuffix(firstLower, "deg")
 		if f, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
-			angleDeg = f
+			direction.angleDeg = f
 			startIdx = 1
 		}
 	} else if strings.HasSuffix(firstLower, "turn") {
 		numStr := strings.TrimSuffix(firstLower, "turn")
 		if f, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
-			angleDeg = f * 360
+			direction.angleDeg = f * 360
 			startIdx = 1
 		}
 	}
@@ -108,9 +120,9 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 	}
 
 	if len(stops) < 2 {
-		return 0, nil, false, false
+		return gradientDirection{}, nil, false, false
 	}
-	return angleDeg, stops, true, repeating
+	return direction, stops, true, repeating
 }
 
 // parseColorStops parses a color stop token, returning one or two
@@ -456,12 +468,71 @@ func clamp01(v float64) float64 {
 	return v
 }
 
+// computeCornerAngle computes the angle to a corner keyword based on box dimensions.
+// Per CSS Images 3 § 3.2.3, the angle from the center of the box to a corner
+// is atan2(width_or_height, height_or_width) depending on the corner.
+// Angle is in degrees, where 0° = "to top", 90° = "to right", 180° = "to bottom", 270° = "to left".
+func computeCornerAngle(cornerType string, w, h float64) float64 {
+	// Safety check: avoid divide-by-zero and invalid angles.
+	if w <= 0 || h <= 0 {
+		// Fallback to the old hard-coded angle if box is degenerate.
+		switch cornerType {
+		case "bottom-right":
+			return 135
+		case "bottom-left":
+			return 225
+		case "top-right":
+			return 45
+		case "top-left":
+			return 315
+		default:
+			return 0
+		}
+	}
+
+	// Compute atan2 angle in radians, then convert to degrees.
+	// CSS Images 3 defines corner keyword angles as atan2(height, width),
+	// adjusted for each corner's position.
+	// For a 200x100 box: atan2(100, 200) ≈ 26.565°
+	// - "to right-top": 26.565°
+	// - "to bottom-right": 180° - 26.565° = 153.435°
+	// - "to bottom-left": 180° + 26.565° = 206.565°
+	// - "to left-top": -26.565° (or 333.435°)
+	//
+	// Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
+	// CSSGradientValue::EndPointsFromAngle (Chromium @ 4883d11fef)
+	cornerAngleRad := math.Atan2(h, w)
+	cornerAngleDeg := cornerAngleRad * 180 / math.Pi
+
+	switch cornerType {
+	case "top-right":
+		return cornerAngleDeg
+	case "bottom-right":
+		return 180 - cornerAngleDeg
+	case "bottom-left":
+		return 180 + cornerAngleDeg
+	case "top-left":
+		return -cornerAngleDeg
+	default:
+		return 0
+	}
+}
+
 // drawLinearGradient renders a linear-gradient onto the target RGBA image
 // within the box bounds [x, y, w, h].
 func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
-	angleDeg, stops, ok, repeating := parseLinearGradient(gradVal)
+	direction, stops, ok, repeating := parseLinearGradient(gradVal)
 	if !ok {
 		return
+	}
+
+	// Resolve the angle in degrees: either from the fixed angle, or compute
+	// the corner angle based on the box dimensions (CSS Images 3 § 3.2.3).
+	var angleDeg float64
+	if direction.isCorner {
+		angleDeg = computeCornerAngle(direction.cornerType, w, h)
+	} else {
+		angleDeg = direction.angleDeg
 	}
 
 	// Compute gradient line length.

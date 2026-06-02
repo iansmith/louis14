@@ -257,8 +257,14 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("text-indent"); !ok {
 			style.Set("text-indent", "0")
 		}
-		// `ruby > rt` rules — only when parent is a ruby element.
-		if node.Parent != nil && node.Parent.TagName == "ruby" {
+		// `ruby > rt` rules — when parent is a ruby element, or when parent
+		// is <rb>/<rtc> inside a ruby element (defense against parsers that
+		// do not fully implement HTML5 §8.2.6.4.7 rb auto-close).
+		rubyParent := node.Parent != nil && node.Parent.TagName == "ruby"
+		rubyGrandparent := !rubyParent && node.Parent != nil &&
+			(node.Parent.TagName == "rb" || node.Parent.TagName == "rtc") &&
+			node.Parent.Parent != nil && node.Parent.Parent.TagName == "ruby"
+		if rubyParent || rubyGrandparent {
 			if _, ok := style.Get("display"); !ok {
 				style.Set("display", "ruby-text")
 			}
@@ -273,6 +279,19 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			}
 			if _, ok := style.Get("text-align"); !ok {
 				style.Set("text-align", "start")
+			}
+		}
+	case "rb":
+		// CSS Ruby 1 §2 — <rb> participates in ruby inline flow as a plain
+		// inline box. Only applied when inside a <ruby> parent, no explicit
+		// display is set, AND the <rb> has only inline/text content (no
+		// block-level children). The block-content guard prevents breaking
+		// tests like ruby-layout-internal-boxes that rely on <rb> acting as
+		// an inline-block container for its block content.
+		// Mirrors Blink html.css `rb { display: ruby-base; }` @ 4883d11fef.
+		if _, ok := style.Get("display"); !ok {
+			if node.Parent != nil && node.Parent.TagName == "ruby" && rubyBaseHasOnlyInlineContent(node) {
+				style.Set("display", "inline")
 			}
 		}
 	case "rp":
@@ -1221,14 +1240,14 @@ func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHe
 	}
 	var w, h float64
 	if wVal, ok := rootStyle.Get("width"); ok {
-		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
 			w = length
 		} else if pct, ok := ParsePercentage(wVal); ok {
 			w = pct / 100.0 * viewportWidth
 		}
 	}
 	if hVal, ok := rootStyle.Get("height"); ok {
-		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize); ok {
+		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
 			h = length
 		} else if pct, ok := ParsePercentage(hVal); ok {
 			h = pct / 100.0 * viewportHeight
@@ -1370,7 +1389,14 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// ::marker laid out as a real box) must inherit them so its
 			// inline/block axes and glyph orientation match the originating
 			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
-			"writing-mode", "direction", "text-orientation"}
+			"writing-mode", "direction", "text-orientation",
+			// CSS Text 3 §3.2, §9.1, §9.3: tab-size, overflow-wrap, word-break,
+			// hyphens are inherited. CSS Text Decor 4 §4: text-emphasis and its
+			// longhands are inherited. CSS Pseudo-4 §4.4: text-shadow is inherited
+			// by ::marker pseudo-elements.
+			"tab-size", "overflow-wrap", "word-break", "hyphens",
+			"text-shadow", "text-emphasis", "text-emphasis-style",
+			"text-emphasis-color", "text-emphasis-position"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -1449,6 +1475,15 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// left alone — the restriction is on what a ::marker rule can specify).
 	isMarker := pseudoElement == "marker"
 
+	// For ::marker: track which properties were explicitly set by author rules
+	// (as opposed to inherited from the originating element). This lets
+	// applyMarkerCascade correctly defer only to author-set values — not to
+	// inherited values that happen to share the same property name.
+	var markerAuthorProps map[string]bool
+	if isMarker {
+		markerAuthorProps = make(map[string]bool)
+	}
+
 	// Capture the pre-author baseline for `revert` resolution (mirrors
 	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
 	// — the inheritance-only initialisation above is the closest analog —
@@ -1496,6 +1531,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				continue
 			}
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			if isMarker {
+				markerAuthorProps[property] = true
+			}
 		}
 	}
 	if currentLayerPriority != -1 {
@@ -1557,6 +1595,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
+				if isMarker {
+					markerAuthorProps[property] = true
+				}
 			}
 		}
 	}
@@ -1564,12 +1605,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// CSS Pseudo-4 §4.4: the ::marker pseudo-element only accepts the
 	// marker-allowed property subset, and the UA stylesheet sets specific
-	// defaults. Apply the filter to the cascaded author declarations, then
-	// layer the UA defaults underneath any author value. Done before the
-	// generic display:inline default so the ::marker UA display still wins
-	// only if the author did not set it.
-	if pseudoElement == "marker" {
-		applyMarkerCascade(finalStyle)
+	// defaults. Apply the UA defaults under any value that was explicitly set
+	// by an author ::marker rule. Inherited values from the originating element
+	// (e.g. text-transform:uppercase from the li) are NOT considered author-set
+	// and must not block the UA defaults.
+	if isMarker {
+		applyMarkerCascade(finalStyle, markerAuthorProps)
 	}
 
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
@@ -1649,7 +1690,9 @@ func markerAllowedProperty(name string) bool {
 	case "color", "direction", "font", "content",
 		"text-combine-upright", "unicode-bidi", "white-space",
 		"letter-spacing", "word-spacing", "line-height",
-		"text-shadow", "text-transform", "animation", "transition":
+		"text-shadow", "text-transform", "animation", "transition",
+		"hyphens", "overflow-wrap", "tab-size", "word-break",
+		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position":
 		// CSS Pseudo-4 §4.4: `display` is NOT marker-allowed — an author
 		// `::marker { display: ... }` rule must be rejected. The engine's own
 		// ::marker box display (inside = inline default, outside = inline-block)
@@ -1660,22 +1703,39 @@ func markerAllowedProperty(name string) bool {
 	return false
 }
 
-// applyMarkerCascade layers the UA ::marker defaults underneath any surviving
-// author value of an already-cascaded ::marker style. Mirrors Blink's UA
-// ::marker rule: unicode-bidi: isolate; text-transform: none; white-space:
-// pre; font-variant-numeric: tabular-nums. The marker-allowed property filter
-// is applied during rule application in ComputePseudoElementStyle, not here.
-func applyMarkerCascade(style *Style) {
-	uaDefaults := [...][2]string{
-		{"unicode-bidi", "isolate"},
-		{"text-transform", "none"},
-		{"white-space", "pre"},
-		{"font-variant-numeric", "tabular-nums"},
-	}
-	for _, kv := range uaDefaults {
-		if _, ok := style.Get(kv[0]); !ok {
+// markerUADefaults lists the UA-stylesheet ::marker property defaults.
+// Mirrors Blink's html.css ::marker rule verified at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+var markerUADefaults = [...][2]string{
+	{"unicode-bidi", "isolate"},
+	{"text-transform", "none"},
+	{"white-space", "pre"},
+	{"font-variant-numeric", "tabular-nums"},
+}
+
+// applyMarkerCascade layers the UA ::marker defaults onto style, deferring
+// only to values that were explicitly set by an author ::marker rule
+// (authorSet). Inherited values from the originating element (e.g.
+// text-transform:uppercase from the li) are not author-set and must not block
+// the UA defaults — the UA ::marker rule takes precedence over inheritance.
+// The marker-allowed property filter is applied during rule application in
+// ComputePseudoElementStyle, not here.
+func applyMarkerCascade(style *Style, authorSet map[string]bool) {
+	for _, kv := range markerUADefaults {
+		if !authorSet[kv[0]] {
 			style.Set(kv[0], kv[1])
 		}
+	}
+}
+
+// ApplyMarkerUADefaults unconditionally stamps the UA ::marker defaults onto
+// style, overriding any inherited values. Called in the no-author-rule fast
+// path where the style is a clone of the list-item's computed style and may
+// carry inherited properties (e.g. text-transform:uppercase from the li) that
+// the UA stylesheet must override.
+func ApplyMarkerUADefaults(style *Style) {
+	for _, kv := range markerUADefaults {
+		style.Set(kv[0], kv[1])
 	}
 }
 
@@ -2816,7 +2876,15 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			if _, err := strconv.Atoi(startVal); err == nil {
 				style.Set("counter-reset", "list-item "+startVal)
 			}
+		} else {
+			// Plain <ol> without reversed or start: UA default counter-reset: list-item 0.
+			// This establishes the initial scope for list-item counters.
+			style.Set("counter-reset", "list-item 0")
 		}
+	case "ul", "menu":
+		// <ul> and <menu> also get UA counter-reset: list-item 0 to establish scope.
+		// They participate in the same list-item counter namespace as <ol>.
+		style.Set("counter-reset", "list-item 0")
 	case "li":
 		if val, ok := node.GetAttribute("value"); ok {
 			if _, err := strconv.Atoi(val); err == nil {
@@ -2974,4 +3042,50 @@ func fontSizeFromHTMLSize(size string) string {
 		return "xxx-large"
 	}
 	return ""
+}
+
+// rubyBaseHasOnlyInlineContent reports whether a <rb> DOM element has only
+// simple text/inline content (no block-level descendants at any depth, and
+// no form controls or other elements that may get non-standard display values).
+// Used to gate the `rb { display: inline }` UA rule.
+//
+// We conservatively return false if ANY descendant is a block tag or form
+// control, since those may have computed display values that require the
+// inline-block containment that the old <rb> behavior provided.
+func rubyBaseHasOnlyInlineContent(node *html.Node) bool {
+	return rbOnlyInlineRecursive(node)
+}
+
+func rbOnlyInlineRecursive(node *html.Node) bool {
+	nonInlineTags := map[string]bool{
+		// Block-level elements
+		"div": true, "p": true, "h1": true, "h2": true, "h3": true,
+		"h4": true, "h5": true, "h6": true, "section": true, "article": true,
+		"aside": true, "header": true, "footer": true, "main": true,
+		"nav": true, "ul": true, "ol": true, "li": true, "table": true,
+		"form": true, "fieldset": true, "blockquote": true, "pre": true,
+		"hr": true, "figure": true, "figcaption": true, "details": true,
+		"summary": true, "dialog": true, "address": true, "dl": true,
+		"dt": true, "dd": true,
+		// Form controls that may have arbitrary display values from CSS
+		"input": true, "button": true, "select": true, "textarea": true,
+	}
+	for _, c := range node.Children {
+		if c.Type != html.ElementNode {
+			continue
+		}
+		if nonInlineTags[c.TagName] {
+			return false
+		}
+		// Don't recurse into <rt>/<rp> — they are annotation elements, not
+		// part of the base content. Their descendants (e.g. <div> inside <rt>)
+		// don't affect whether the base has block content.
+		if c.TagName == "rt" || c.TagName == "rp" {
+			continue
+		}
+		if !rbOnlyInlineRecursive(c) {
+			return false
+		}
+	}
+	return true
 }

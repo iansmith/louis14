@@ -162,6 +162,68 @@ func TestGetBackgroundPosition_Default(t *testing.T) {
 	}
 }
 
+// TestBackgroundPositionMinMaxNegativeBase reproduces LOU-184: min()/max()/
+// clamp() in background-position resolved against a NEGATIVE base (positioning
+// area smaller than the image). WPT
+// css-backgrounds/background-position-negative-percentage-comparison.html sets
+// `background-position: min(0%, 100%) max(0%, 100%)` on a 50x50 box with a
+// 100x100 image and expects it to render as `right top`. Because the base is
+// (area - image) = 50-100 = -50, min()/max() must compare at the used-value
+// (offset) level, not the percentage level — which inverts the naive ordering:
+//
+//	X = min(used(0%), used(100%)) = min(0, -50) = -50  (the 100% / `right` branch)
+//	Y = max(used(0%), used(100%)) = max(0, -50) =  0   (the 0%  / `top`   branch)
+func TestBackgroundPositionMinMaxNegativeBase(t *testing.T) {
+	const area, image = 50.0, 100.0 // base = area - image = -50
+	tests := []struct {
+		name  string
+		value string
+		wantX float64
+		wantY float64
+	}{
+		{"min/max negative base", "min(0%, 100%) max(0%, 100%)", -50, 0},
+		// Sanity: against this same negative base, `right top` is the reference.
+		{"right top reference", "right top", -50, 0},
+		// clamp() resolves at the used-value level too. At base -50 the used
+		// values invert, so clamp(MIN, VAL, MAX) is compared as
+		// max(used(MIN), min(used(VAL), used(MAX))):
+		//   X: clamp(100%, 50%, 0%) -> max(-50, min(-25, 0)) = max(-50,-25) = -25
+		//   Y: clamp(0%, 50%, 100%) -> max(0, min(-25, -50)) = max(0,-50)   = 0
+		{"clamp negative base", "clamp(100%, 50%, 0%) clamp(0%, 50%, 100%)", -25, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewStyle()
+			s.Set("background-position", tt.value)
+			pos := s.GetBackgroundPosition()
+			gotX := pos.ResolveX(area, image)
+			gotY := pos.ResolveY(area, image)
+			if gotX != tt.wantX || gotY != tt.wantY {
+				t.Errorf("ResolveX/Y(%q) = (%v, %v), want (%v, %v)",
+					tt.value, gotX, gotY, tt.wantX, tt.wantY)
+			}
+		})
+	}
+}
+
+// TestBackgroundPositionMinMaxPositiveBase guards the ordinary (positive-base)
+// case: when the positioning area is larger than the image, min()/max() at the
+// used-value level reduces to the naive percentage ordering.
+func TestBackgroundPositionMinMaxPositiveBase(t *testing.T) {
+	const area, image = 200.0, 100.0 // base = +100
+	s := NewStyle()
+	s.Set("background-position", "min(0%, 100%) max(0%, 100%)")
+	pos := s.GetBackgroundPosition()
+	// X = min(used(0%), used(100%)) = min(0, 100) = 0   (left)
+	// Y = max(used(0%), used(100%)) = max(0, 100) = 100 (bottom)
+	if gotX := pos.ResolveX(area, image); gotX != 0 {
+		t.Errorf("ResolveX positive base = %v, want 0", gotX)
+	}
+	if gotY := pos.ResolveY(area, image); gotY != 100 {
+		t.Errorf("ResolveY positive base = %v, want 100", gotY)
+	}
+}
+
 func TestExpandBackgroundShorthand_WithPosition(t *testing.T) {
 	s := NewStyle()
 	expandShorthand(s, "background", "url(sprite.png) -46px 0 no-repeat")

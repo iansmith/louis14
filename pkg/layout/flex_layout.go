@@ -1793,11 +1793,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(fla.style, wdm, fla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	// Layout OOF children. Same fixed/absolute split as block layout:
@@ -4366,7 +4368,21 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// definite main size, so we pass it for percentage resolution.
 	specifiedSuggestion := -1.0
 	{
-		pctBlockSize := 0.0
+		// Default to the Indefinite sentinel (not the float64 zero value):
+		// IsBlockSizeIndefinite() checks BlockSize < 0, so a 0.0 would be
+		// treated as DEFINITE and resolve a percentage main-size (e.g.
+		// `height:1%`) against base 0 to a definite 0 instead of leaving it
+		// auto. §4.5: the specified size suggestion only applies when the
+		// preferred main size is definite; a percentage main-size against an
+		// indefinite column container is NOT definite, so it must not feed a
+		// definite-zero suggestion that would clamp the automatic minimum size
+		// to 0. The `!mainIsItemInline && hasDefiniteMain` override below still
+		// resolves percentages against a definite column main size. Mirrors
+		// Blink core/layout/flex/flex_layout_algorithm.cc, where the flex-basis
+		// ConstraintSpace's percentage-resolution block-size defaults to
+		// kIndefiniteSize unless the container main size is definite (Chromium
+		// pin 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		pctBlockSize := float64(Indefinite)
 		availBlockSize := Indefinite
 		if !mainIsItemInline && hasDefiniteMain {
 			pctBlockSize = containerMainSize

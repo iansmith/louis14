@@ -741,7 +741,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// "auto" means use text-align, except justify falls back to start.
 				// The justify fallback is already handled in computeTextAlignOffset,
 				// so nothing extra needed here.
-			case "start", "end", "left", "right", "center", "justify":
+			case "justify":
+				line.TextAlign = "justify"
+				// text-align-last: justify expands the last line (unlike text-align:
+				// justify which falls back to start on the last line). Set the flag
+				// so createLineBoxEx and computeTextAlignOffset honour the expansion.
+				// CSS Text 3 §9.7; mirrors Blink's kJustify vs text-align-last path.
+				line.TextAlignLastJustify = true
+			case "start", "end", "left", "right", "center":
 				line.TextAlign = textAlignLast
 			}
 		}
@@ -755,7 +762,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// metrics agree on the first-line font.
 		isFirstLineForBox := isFirstLine && bla.node.FirstLineStyle != nil
 		if isFirstLineForBox {
-			applyFirstLineStyles(&line, bla.node.FirstLineStyle, fonts)
+			applyFirstLineStyles(&line, bla.node.FirstLineStyle, bla.style, openInlineStack, fonts)
 		}
 
 		// Apply text-indent to the first line only.
@@ -1196,11 +1203,29 @@ var firstLineAllowedProperties = []string{
 // node style. Blink's ::first-line ComputedStyle is itself a fully resolved
 // style; this re-resolution is the louis14 analog.
 func mergeFirstLineStyle(base, firstLine *css.Style, fonts text.FontConfig) *css.Style {
+	return mergeFirstLineStyleExcept(base, firstLine, nil, fonts)
+}
+
+// mergeFirstLineStyleExcept is mergeFirstLineStyle with a per-property skip set.
+// A property listed in `skip` is left at its `base` value rather than taking the
+// ::first-line value. The skip set carries the allowed properties that the
+// originating element specified directly — CSS Pseudo-4 §3.2.1: the ::first-line
+// box "behaves similar to that of an inline-level element", so its inherited
+// properties reach descendants only via inheritance and a descendant's own
+// specified value wins. Mirrors Blink's StyleResolver::StyleForFirstLineStyle,
+// which re-resolves each descendant with the ::first-line rules folded into the
+// cascade so a directly-specified declaration outranks the inherited
+// ::first-line value (core/css/resolver/style_resolver.cc +
+// core/style/computed_style.cc::ApplyFirstLineStyle @ 4883d11fef).
+func mergeFirstLineStyleExcept(base, firstLine *css.Style, skip map[string]bool, fonts text.FontConfig) *css.Style {
 	if base == nil || firstLine == nil {
 		return base
 	}
 	hasOverride := false
 	for _, prop := range firstLineAllowedProperties {
+		if skip[prop] {
+			continue
+		}
 		if val, ok := firstLine.Properties[prop]; ok && val != "" {
 			hasOverride = true
 			break
@@ -1211,12 +1236,44 @@ func mergeFirstLineStyle(base, firstLine *css.Style, fonts text.FontConfig) *css
 	}
 	merged := base.Clone()
 	for _, prop := range firstLineAllowedProperties {
+		if skip[prop] {
+			continue
+		}
 		if val, ok := firstLine.Properties[prop]; ok && val != "" {
 			merged.Properties[prop] = val
 		}
 	}
 	resolveFontMetricsForStyle(merged, fonts, newFontMetricsMeasurer(fonts))
 	return merged
+}
+
+// firstLineDirectlySpecified returns the set of ::first-line-allowed properties
+// that the originating element (with computed style `elem`) set directly,
+// detected as a value that differs from the value the element inherits from its
+// nearest ancestor element (`parent`). Only properties the ::first-line style
+// would actually override are reported, so the caller's skip set stays minimal.
+// These are the properties whose ::first-line value must NOT clobber the
+// element's own — the louis14 analog of a descendant declaration outranking the
+// inherited ::first-line value (see mergeFirstLineStyleExcept).
+func firstLineDirectlySpecified(elem, parent, firstLine *css.Style) map[string]bool {
+	if elem == nil || parent == nil || firstLine == nil {
+		return nil
+	}
+	var specified map[string]bool
+	for _, prop := range firstLineAllowedProperties {
+		flVal, ok := firstLine.Properties[prop]
+		if !ok || flVal == "" {
+			continue // ::first-line does not override this property
+		}
+		if elem.Properties[prop] == parent.Properties[prop] {
+			continue // inherited, not directly specified — ::first-line may apply
+		}
+		if specified == nil {
+			specified = make(map[string]bool)
+		}
+		specified[prop] = true
+	}
+	return specified
 }
 
 // applyFirstLineStyles stores ::first-line pseudo-element overrides as a
@@ -1226,23 +1283,45 @@ func mergeFirstLineStyle(base, firstLine *css.Style, fonts text.FontConfig) *css
 // its original style. Mirrors Blink's FirstLineStyleIterator
 // (`core/css/first_line_style_iterator.cc`), which yields a per-fragment
 // first-line style without mutating the LayoutObject's stored style.
-func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style, fonts text.FontConfig) {
+func applyFirstLineStyles(line *LineInfo, firstLineStyle, containerStyle *css.Style, openInlineStack []*InlineItem, fonts text.FontConfig) {
 	if firstLineStyle == nil {
 		return
 	}
 
 	// Apply overrides to each item on the line that has a style. Write into
 	// the per-result Style override field; never mutate r.Item.Style itself.
-	// mergeFirstLineStyle clones the base, applies the allowed ::first-line
-	// properties, and re-resolves the merged font's metric caches — so the
-	// per-result style reports the first-line font-size for both metrics and
-	// glyph rasterization (GetUsedFontSize). It returns the base unchanged
-	// when no allowed property is overridden, so the per-result Style stays
-	// nil in that case (EffectiveStyle falls back to Item.Style).
-	// Items on the first line commonly share a base style; mergeFirstLineStyle
-	// clones + re-resolves font metrics on each call, so memoize by base-style
-	// identity to collapse O(items) merges to O(distinct base styles).
-	mergeCache := make(map[*css.Style]*css.Style)
+	// mergeFirstLineStyleExcept clones the base, applies the allowed ::first-line
+	// properties (minus the per-item skip set), and re-resolves the merged
+	// font's metric caches — so the per-result style reports the first-line
+	// font-size for both metrics and glyph rasterization (GetUsedFontSize). It
+	// returns the base unchanged when no allowed property is overridden, so the
+	// per-result Style stays nil in that case (EffectiveStyle falls back to
+	// Item.Style).
+	//
+	// CSS Pseudo-4 §3.2.1: the ::first-line box behaves like an inline-level
+	// element, so its inherited properties reach descendants only via
+	// inheritance — an element on the first line that specifies a property
+	// directly keeps its own value. We detect a direct specification by
+	// comparing each element's computed value against the value it inherits
+	// from its nearest ancestor element. The enclosing-element style stack is
+	// seeded from openInlineStack (inline elements still open from prior lines)
+	// over the container style, then tracks open/close tags as we walk the
+	// line. Mirrors Blink resolving a per-descendant first-line ComputedStyle
+	// (StyleResolver::StyleForFirstLineStyle @ 4883d11fef).
+	stack := make([]*css.Style, 0, len(openInlineStack)+4)
+	stack = append(stack, containerStyle)
+	for _, open := range openInlineStack {
+		if open != nil && open.Style != nil {
+			stack = append(stack, open.Style)
+		}
+	}
+	enclosing := func() *css.Style { return stack[len(stack)-1] }
+
+	// Items on the first line commonly share a (base style, enclosing style)
+	// pair; the merge clones + re-resolves font metrics on each call, so
+	// memoize by that pair to collapse O(items) merges to O(distinct pairs).
+	type mergeKey struct{ base, parent *css.Style }
+	mergeCache := make(map[mergeKey]*css.Style)
 	for i := range line.Results {
 		r := &line.Results[i]
 		if r.Item == nil || r.Item.Style == nil {
@@ -1251,13 +1330,33 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style, fonts text.
 		// Only apply to text items and open/close tags (inline spans).
 		switch r.Item.Type {
 		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
-			merged, ok := mergeCache[r.Item.Style]
+			// The element this item belongs to inherits from `parent`: for an
+			// open tag, the currently-enclosing element; for text/close tags,
+			// the element below the one being closed (text shares its element's
+			// style, so comparing against that same element would never detect
+			// a direct specification — compare against the grandparent instead).
+			parent := enclosing()
+			if r.Item.Type != InlineItemOpenTag && len(stack) >= 2 {
+				parent = stack[len(stack)-2]
+			}
+			key := mergeKey{r.Item.Style, parent}
+			merged, ok := mergeCache[key]
 			if !ok {
-				merged = mergeFirstLineStyle(r.Item.Style, firstLineStyle, fonts)
-				mergeCache[r.Item.Style] = merged
+				skip := firstLineDirectlySpecified(r.Item.Style, parent, firstLineStyle)
+				merged = mergeFirstLineStyleExcept(r.Item.Style, firstLineStyle, skip, fonts)
+				mergeCache[key] = merged
 			}
 			if merged != r.Item.Style {
 				r.Style = merged
+			}
+		}
+		// Maintain the enclosing-element stack after deciding this item.
+		switch r.Item.Type {
+		case InlineItemOpenTag:
+			stack = append(stack, r.Item.Style)
+		case InlineItemCloseTag:
+			if len(stack) > 1 {
+				stack = stack[:len(stack)-1]
 			}
 		}
 	}
@@ -1346,7 +1445,7 @@ func createLineBoxEx(
 	isFirstLine bool,
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
-	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
+	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
 
 	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
 	// annotations (default `ruby-position: over` stacks them above
@@ -1405,8 +1504,14 @@ func createLineBoxEx(
 	}
 
 	lineHeight := maxAscent + maxDescent
-	if lineHeight <= 0 {
-		// Empty line (forced break) — use default font metrics.
+	if lineHeight <= 0 && parentStyle == nil {
+		// No style context at all — use UA-default font metrics so the line box
+		// has a visible height. When parentStyle is non-nil the strut height was
+		// computed from the element's own font-size; a zero result is correct
+		// (e.g. font-size:0 produces zero-height line boxes per spec). Mirrors
+		// Blink's CSSToLengthConversionData / FontSizes contract: em-based
+		// lengths resolve against the element's own computed font-size, not the
+		// inherited value. Blink SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		maxAscent = 16 * 0.8
 		maxDescent = 16 * 0.2
 		lineHeight = maxAscent + maxDescent
@@ -1430,7 +1535,13 @@ func createLineBoxEx(
 	// the opportunity set; intra-word (grapheme-cluster) expansion is not
 	// needed for the WPT auto-justify-001 test which is purely inter-word.
 	justifyExpansion := 0.0
-	if line.TextAlign == "justify" && !line.IsLastLine && !line.HasForcedBreak {
+	// Expand inter-word gaps for text-align: justify (not on the last line,
+	// which falls back to start) and for text-align-last: justify (which DOES
+	// expand the last line — CSS Text 3 §9.7 distinguishes the two cases).
+	justifyActive := line.TextAlign == "justify" &&
+		(!line.IsLastLine || line.TextAlignLastJustify) &&
+		!line.HasForcedBreak
+	if justifyActive {
 		slack := availableInline - line.Width
 		if slack > 0 {
 			gaps := countJustifyOpportunities(line, itemsData)
@@ -1608,8 +1719,9 @@ func createLineBoxEx(
 				Node:             span.node,
 				WritingDirection: wdm,
 				BoxData: &PhysicalBoxData{
-					Border:  ToPhysicalEdges(geom.Border, wdm),
-					Padding: ToPhysicalEdges(geom.Padding, wdm),
+					Border:    ToPhysicalEdges(geom.Border, wdm),
+					Padding:   ToPhysicalEdges(geom.Padding, wdm),
+					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				},
 			}
 			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
@@ -2029,6 +2141,7 @@ func createLineBoxEx(
 					maxAscent, // base baseline
 					annotationBlockTop,
 					itemsData.TextContent,
+					r.RubyColumn.RubyAlign,
 					wdm, fonts, centralBaseline, sidewaysVLR,
 					lineBuilder,
 				)
@@ -2231,7 +2344,7 @@ func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string, reg 
 
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
-	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil)
+	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil, "")
 }
 
 // computeLineMetricsEx computes the maximum ascent and descent across all
@@ -2244,7 +2357,12 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 //
 // parentStyle is the block container's style, used to establish the root
 // inline box ("strut") per CSS 2.1 §10.8.1.
-func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style) (maxAscent, maxDescent float64) {
+//
+// textContent is InlineItemsData.TextContent; it is used to identify the first
+// codepoint of each InlineItemText run so that @font-face unicode-range
+// coverage is respected when selecting the font for line-height computation.
+// An empty string disables coverage-aware resolution (safe fallback).
+func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style, textContent string) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 
@@ -2259,7 +2377,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			strutAscent = fontSize / 2
 			strutDescent = fontSize / 2
 		} else {
-			fontPath := resolveFontPath(parentStyle, fonts)
+			fontPath := resolveStrutFontPath(parentStyle, fonts)
 			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 		}
@@ -2268,7 +2386,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		// strut height matches the font's built-in metrics.
 		lineHt := parentStyle.GetLineHeight()
 		if parentStyle.IsLineHeightNormal() && !centralBaseline {
-			fontPath := resolveFontPath(parentStyle, fonts)
+			fontPath := resolveStrutFontPath(parentStyle, fonts)
 			lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 		}
 		// CSS 2.1 §10.8.1: half-leading is allowed to be negative when
@@ -2370,7 +2488,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				ascent = fontSize / 2
 				descent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(rStyle, fonts)
+				// Use coverage-aware resolution: a face whose unicode-range
+				// excludes the run's first character is skipped, mirroring
+				// Blink's per-character font selection.
+				fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
@@ -2380,7 +2501,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			if rStyle != nil {
 				lineHt := rStyle.GetLineHeight()
 				if rStyle.IsLineHeightNormal() && !centralBaseline {
-					fontPath := resolveFontPath(rStyle, fonts)
+					fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
 					lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 				}
 				halfLeading := (lineHt - (ascent + descent)) / 2
@@ -2613,14 +2734,18 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 		}
 		return 0 // LTR start = physical left
 	case "justify":
-		if line.IsLastLine || line.HasForcedBreak {
-			// Last line falls back to start alignment.
+		// text-align: justify falls back to start on the last line.
+		// text-align-last: justify expands the last line (CSS Text 3 §9.7).
+		if (line.IsLastLine || line.HasForcedBreak) && !line.TextAlignLastJustify {
+			// Last line (from text-align: justify) falls back to start.
 			if wdm.IsRTL() {
 				return slack // RTL start = physical right
 			}
 			return 0 // LTR start = physical left
 		}
-		// TODO: distribute inter-word spacing for justify.
+		// Distribute inter-word spacing (justifyExpansion) handles the actual
+		// gap widening; the line's start offset is 0 (expansion happens
+		// per-fragment in createLineBoxEx, not via a shift here).
 		return 0
 	default: // "left", ""
 		return 0

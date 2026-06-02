@@ -447,7 +447,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// fragment. Only margin is needed for outer layout.
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
-			Margin: physMargin,
+			Margin:    physMargin,
+			Scrollbar: PhysicalEdges{},
 		})
 		result := builder.Build()
 		result.BlockSizeForFragmentation = explicitBlockSize + geom.BlockBorderPadding()
@@ -530,11 +531,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		physBorder := ToPhysicalEdges(border, wdm)
 		physPadding := ToPhysicalEdges(padding, wdm)
+		physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
-			Margin:  physMargin,
-			Border:  physBorder,
-			Padding: physPadding,
+			Margin:    physMargin,
+			Border:    physBorder,
+			Padding:   physPadding,
+			Scrollbar: physScrollbar,
 		})
 		// LOU-143: emit gap geometry on every outer-break-result path so the
 		// column-rule painter has accurate cross-gap positions and last-row
@@ -700,10 +703,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// start at row offset 0 and re-paint the already-consumed slice.
 				if remainingToken != nil && isFirstRow && hasOuterFrag &&
 					mla.shouldWrapColumns() && mla.hasRowHeight() {
-					painted := outerAvailable - rowStart
-					if mla.rowHeight() > painted && painted > 0 {
+					// Blink overflow formula: how much of the row exceeds the outer
+					// available space. Only emit a carrier when overflow > 0.
+					overflow := mla.remainingRowHeightAtOffset(rowStart) - (outerAvailable - rowStart)
+					if overflow > 0 {
 						outgoingMulticolData = &MulticolBreakTokenData{
-							ConsumedRowBlockSize: painted,
+							ConsumedRowBlockSize: mla.rowHeight() - overflow,
 						}
 						outBuilder.AddBreakToken(remainingToken)
 						flushWalker()
@@ -718,6 +723,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// walker entry (mirrors Blink's
 				// MulticolPartWalker::AddNextColumnBreakToken).
 				if remainingToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
+					// Record the row gap boundary for column-rule painting
+					// (Blink: gap_accumulator_->AddMainGap when has_wrapped &&
+					// row_gap_size_ > LayoutUnit()). blockCursor is the end of the
+					// row just laid out; the gap extends from there by rowGapSize.
+					if mla.rowGapSize > 0 {
+						mla.addMainGap(blockCursor, SpannerGapNone)
+					}
 					walker.AddNextColumnBreakToken(remainingToken)
 					isFirstRow = false
 					continue
@@ -799,7 +811,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetIntrinsicBlockSize(0)
 				builder.SetLayoutNode(mla.node)
 				physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin})
+				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin, Scrollbar: PhysicalEdges{}})
 				result = builder.Build()
 				result.BreakToken = &BlockBreakToken{
 					Node: mla.node,
@@ -882,11 +894,14 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		if spanFrag != nil {
 			// Blink cla.cc:1427-1459 (pre-commit row snap). Snap blockCursor
-			// to the next row-stride boundary if we're past the start of the
-			// current column row, so the spanner lands on a row boundary.
+			// to the next row-stride boundary only when the spanner doesn't fit
+			// in the remaining space of the current row.
 			if mla.shouldWrapColumns() && mla.hasRowHeight() && mla.rowHeight() > 0 &&
 				mla.offsetInCurrentRow(blockCursor) > 0 {
-				blockCursor += mla.offsetToNextRow(blockCursor)
+				remainingRow := mla.remainingRowHeightAtOffset(blockCursor)
+				if spanHeight > remainingRow {
+					blockCursor += mla.offsetToNextRow(blockCursor)
+				}
 			}
 			// Apply spanner margin-block-start. Skip when resuming a
 			// spanner — margins were consumed in the original outer column.
@@ -1172,11 +1187,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	physBorder := ToPhysicalEdges(border, wdm)
 	physPadding := ToPhysicalEdges(padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 	builder.SetIntrinsicBlockSize(blockCursor)
 
@@ -2230,12 +2247,12 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 	result *LayoutResult, builder *BoxFragmentBuilder, blockOffset float64) {
 
 	if result.HasBaseline {
-		cur, has := builder.FirstBaseline()
+		cur, has := builder.Baseline()
 		if !has {
 			cur = math.MaxFloat64
 		}
 		bl := math.Min(blockOffset+result.Baseline, cur)
-		builder.SetFirstBaseline(bl)
+		builder.SetBaseline(bl)
 	}
 
 	if result.LastBaseline > 0 {

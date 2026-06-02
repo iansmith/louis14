@@ -114,6 +114,14 @@ type LineInfo struct {
 	IsLastLine bool
 	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
 	HasForcedBreak bool
+	// TextAlignLastJustify is true when text-align was overridden to "justify"
+	// by the text-align-last property. Unlike text-align: justify, which falls
+	// back to start on the last line, text-align-last: justify expands even the
+	// last line. This flag lets createLineBoxEx and computeTextAlignOffset
+	// distinguish the two cases.
+	// CSS Text 3 §9.7; mirrors Blink's distinction between kJustify (from
+	// text-align) and text-align-last: justify at computedStyle level.
+	TextAlignLastJustify bool
 
 	// IsRubyBase is true if this LineInfo is the sub-line of a ruby
 	// column's base. Set by LineBreaker.CreateSubLineInfo when building
@@ -257,6 +265,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.AvailableWidth = lb.availableWidth
 	line.HasForcedBreak = false
 	line.IsLastLine = false
+	line.TextAlignLastJustify = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
 	// CSS Ruby Phase 2: reset the ruby-specific fields too so a
 	// LineInfo reused across NextLine calls doesn't carry stale ruby
@@ -638,6 +647,13 @@ func (lb *LineBreaker) breakTextAtWord(
 			break
 		}
 
+		// If this is the first word on an empty line and it overflows,
+		// and overflow-wrap:break-word is set, break it at character boundaries.
+		if fitted == 0 && len(line.Results) == 0 && usedWidth+wordWidth > remaining &&
+			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+		}
+
 		if usedWidth+wordWidth > remaining && fitted > 0 {
 			// CSS 2.1 §16.6.1: trailing collapsible whitespace hangs and does
 			// not contribute to the line's width. If stripping trailing spaces
@@ -670,12 +686,10 @@ func (lb *LineBreaker) breakTextAtWord(
 	if fitted == 0 {
 		// Can't fit even the first word.
 		if len(line.Results) == 0 {
-			// overflow-wrap:break-word or anywhere — break the word at a
-			// character boundary so it fits the available width (CSS Text 3 §4.1).
-			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
-			}
-			// Force the whole word onto the empty line.
+			// The break-word/anywhere first-word-overflow case is handled by the
+			// early dispatch above (before the word is force-fitted), so only the
+			// non-breaking overflow-wrap:normal case reaches here: force the whole
+			// word onto the empty line (it overflows, per CSS Text 3 §4.1).
 			fitted = 1
 			usedWidth = measureWord(words[0])
 		} else {
@@ -1888,6 +1902,59 @@ func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
 	family, _ := style.Get("font-family")
 	synth := style.GetFontSynthesis()
 	return fonts.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
+}
+
+// resolveStrutFontPath returns the font path for the CSS 2.1 §10.8.1 strut
+// ("first available font" per CSS Fonts 3 §5.4). Unlike resolveFontPath, it
+// uses FontPathForStrut which skips @font-face faces whose unicode-range
+// excludes U+0020 (SPACE) — the reference character for primary-font
+// determination. This matches Blink's FontFallbackList::DeterminePrimaryFont
+// (third_party/blink/renderer/platform/fonts/font_fallback_list.cc @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func resolveStrutFontPath(style *css.Style, fonts text.FontConfig) string {
+	if style == nil {
+		return fonts.Regular
+	}
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	family, _ := style.Get("font-family")
+	synth := style.GetFontSynthesis()
+	return fonts.FontPathForStrut(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
+}
+
+// resolveFontPathForRun returns the font path for a text run, accounting for
+// @font-face unicode-range coverage. When textContent is non-empty and
+// startOff/endOff describe a valid sub-slice, the first rune of the run is
+// used as the coverage character — a face whose unicode-range excludes that
+// rune is skipped in favour of the next family in the list. This mirrors
+// Blink's per-character font selection in CSSSegmentedFontFace::FontDataForCharacter
+// (core/css/css_segmented_font_face.cc @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// When textContent is empty or the offsets are invalid, falls back to
+// resolveFontPath (no coverage check — preserves behaviour for callers that
+// don't have text content available).
+func resolveFontPathForRun(style *css.Style, fonts text.FontConfig, textContent string, startOff, endOff int) string {
+	if textContent == "" || startOff < 0 || endOff <= startOff || startOff >= len(textContent) {
+		return resolveFontPath(style, fonts)
+	}
+	if style == nil {
+		return fonts.Regular
+	}
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	family, _ := style.Get("font-family")
+	synth := style.GetFontSynthesis()
+
+	// Extract the first rune of the run for coverage checking.
+	sub := textContent[startOff:]
+	cp, _ := utf8.DecodeRuneInString(sub)
+	if cp == utf8.RuneError {
+		return resolveFontPath(style, fonts)
+	}
+	return fonts.FontPathForCovering(family, bold, italic, mono, ahem, synth.Weight, synth.Style, cp)
 }
 
 // measureTextWithTabs computes the inline size of text containing tab characters.

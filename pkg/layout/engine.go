@@ -398,6 +398,10 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 			Top: frag.BoxData.Padding.Top, Right: frag.BoxData.Padding.Right,
 			Bottom: frag.BoxData.Padding.Bottom, Left: frag.BoxData.Padding.Left,
 		}
+		box.Scrollbar = css.BoxEdge{
+			Top: frag.BoxData.Scrollbar.Top, Right: frag.BoxData.Scrollbar.Right,
+			Bottom: frag.BoxData.Scrollbar.Bottom, Left: frag.BoxData.Scrollbar.Left,
+		}
 	}
 
 	// CSS position applies to boxes (elements), never to text runs.
@@ -700,6 +704,8 @@ func bidiMirror(r rune) rune {
 
 // fontMetrics holds the per-font measurements that drive CSS font-relative
 // unit resolution (ch/ex/cap) for a given (font, size).
+// IcWidth is resolved separately via FontPathForCovering so that U+6C34 (水)
+// is always sourced from a font that actually contains the glyph.
 type fontMetrics struct {
 	chWidth float64
 	xHeight float64
@@ -779,6 +785,24 @@ func resolveFontMetricsForStyle(style *css.Style, fc text.FontConfig, measure fu
 	style.ChWidth = usedMetrics.chWidth
 	style.XHeight = usedMetrics.xHeight
 	style.CapHeight = usedMetrics.capHght
+
+	// ic unit: CSS Values 4 §6.1 defines ic as the advance of U+6C34 (水) in
+	// the element's font. Only measure from a font that explicitly covers 水 in
+	// the declared font-family list (via the registry). If no such font exists,
+	// IcWidth stays 0 and parseLengthFullWithCh falls back to 1em. We do NOT
+	// fall back to builtin serif/sans-serif here — doing so would pick up any
+	// system CJK font and produce wrong ic values for Latin-only declared fonts.
+	style.IcWidth = 0
+	if fc.Registry != nil {
+		for _, fam := range text.ParseFontFamilyList(family) {
+			if icPath := fc.Registry.LookupForCodepoint(fam, '水', bold, italic, synth.Style); icPath != "" {
+				icLU, _ := text.MeasureText("水", usedSize, icPath)
+				style.IcWidth = icLU.Float64()
+				break
+			}
+		}
+	}
+
 	// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
 	// unit equals the element's computed line-height. Mirrors Blink's
 	// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA

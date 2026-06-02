@@ -1042,3 +1042,63 @@ func TestSVG_FilterFallbackOnUnknownID(t *testing.T) {
 	// Unknown filter → rect renders as plain red.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "unknown filter fallback (red)")
 }
+
+// ---------------------------------------------------------------------------
+// LOU-206: SVG root per-axis overflow clip (ComputeOverflowClipAxes)
+//
+// Mirrors Blink's LayoutSVGRoot::ComputeOverflowClipAxes at
+// layout_svg_root.cc (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// When overflow-x: clip and overflow-y: visible (or vice-versa), the SVG
+// root must clip only the specified axis and let the other overflow freely.
+// ---------------------------------------------------------------------------
+
+// TestSVG_OverflowClipPerAxis — table-driven test for per-axis SVG root
+// overflow clip. Each case sets a different axis as `clip` (the other
+// `visible`) on an inline <svg width=100 height=100> containing a
+// <rect width=150 height=150>. Samples confirm: inside the box → green;
+// beyond the visible axis → green (overflow); beyond the clipped axis → white.
+func TestSVG_OverflowClipPerAxis(t *testing.T) {
+	type sample struct {
+		x, y                int
+		wantR, wantG, wantB uint8
+		where               string
+	}
+	cases := []struct {
+		name string
+		css  string
+		pts  []sample
+	}{
+		{
+			name: "x-clip/y-visible",
+			css:  "overflow-x:clip;overflow-y:visible",
+			pts: []sample{
+				{50, 50, 0, 128, 0, "inside svg box (50,50)"},
+				{50, 120, 0, 128, 0, "overflow-y (50,120)"},
+				{120, 50, 255, 255, 255, "clipped-x (120,50)"},
+				{120, 120, 255, 255, 255, "clipped-x beyond-y (120,120)"},
+			},
+		},
+		{
+			name: "x-visible/y-clip",
+			css:  "overflow-x:visible;overflow-y:clip",
+			pts: []sample{
+				{50, 50, 0, 128, 0, "inside svg box (50,50)"},
+				{120, 50, 0, 128, 0, "overflow-x (120,50)"},
+				{50, 120, 255, 255, 255, "clipped-y (50,120)"},
+				{120, 120, 255, 255, 255, "clipped-y beyond-x (120,120)"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<!DOCTYPE html><html><body style="margin:0">` +
+				`<svg width="100" height="100" style="` + tc.css + `">` +
+				`<rect width="150" height="150" fill="green"/>` +
+				`</svg></body></html>`
+			img := renderToImage(t, html, 200, 200)
+			for _, p := range tc.pts {
+				sampleColorClose(t, img, p.x, p.y, p.wantR, p.wantG, p.wantB, 12, p.where)
+			}
+		})
+	}
+}

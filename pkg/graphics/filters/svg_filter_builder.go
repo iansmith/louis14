@@ -385,7 +385,20 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	case "feflood":
 		r, g, bb, a := prim.FloodColor()
 		fe := NewFEFlood(b.space, r, g, bb, a)
-		fe.Subregion = resolvePrimitiveSubregion(elt, prim)
+		sub := resolvePrimitiveSubregion(elt, prim)
+		if sub.Empty() {
+			// No explicit primitive subregion: feFlood covers the full
+			// filter region per SVG Filter Effects 1 §15.5. Default
+			// Subregion to the filter region so FEFlood.MapRect and
+			// paintLayerWithFilter's filter.MapRect(sourceExtent) call
+			// see the full flood area — otherwise a flood applied to a
+			// CSS-filtered HTML element clips to the smaller source
+			// extent and misses pixels the filter region extends into.
+			// Mirrors Blink FEFlood which fills filter_region when no
+			// primitive subregion is set.
+			sub = elt.FilterRegion()
+		}
+		fe.Subregion = sub
 		return fe
 	case "feimage":
 		// Per Filter Effects 1 §15.18: feImage is a leaf primitive
@@ -508,6 +521,36 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		kULx, kULy := prim.KernelUnitLength()
 		return NewFESpecularLighting(in, b.space, r, g, bb, a,
 			surfaceScale, specularConstant, specularExponent, kULx, kULy, prim.LightSource())
+	case "feconvolvematrix":
+		// Per SVG Filter Effects 1 §feConvolveMatrix. Applies a 2D kernel
+		// convolution to the input image. The kernel is supplied as a
+		// space-separated list of numbers in kernelMatrix attribute, with
+		// order × order elements. Mirrors Blink
+		// svg_fe_convolve_matrix_element.cc and FEConvolveMatrix.
+		in := b.resolveInputAttr(prim, "in")
+		order, _ := parseIntAttr(prim, "order", 3)
+		kernelMatrix := parseFloatList(prim, "kernelMatrix")
+		divisor, _ := parseFloatAttr(prim, "divisor", 0) // 0 means compute from kernel sum
+		bias, _ := parseFloatAttr(prim, "bias", 0)
+		targetX, _ := parseIntAttr(prim, "targetX", order/2)
+		targetY, _ := parseIntAttr(prim, "targetY", order/2)
+		edgeMode := parseStringAttr(prim, "edgeMode", "duplicate")
+		kULx, _ := parseFloatAttr(prim, "kernelUnitLength", 1)
+		kULy := kULx // kernelUnitLength is a single number or two numbers
+		if s, ok := prim.Attribute("kernelUnitLength"); ok {
+			parts := splitSVGList(s)
+			if len(parts) >= 2 {
+				if f, err := strconv.ParseFloat(parts[1], 64); err == nil {
+					kULy = f
+				}
+			}
+		}
+		preserveAlpha := false
+		if s, ok := prim.Attribute("preserveAlpha"); ok {
+			preserveAlpha = strings.TrimSpace(s) == "true"
+		}
+		return NewFEConvolveMatrix(in, b.space, order, kernelMatrix, divisor, bias,
+			targetX, targetY, edgeMode, kULx, kULy, preserveAlpha)
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
 	// returns nullptr for unknown / unsupported primitives, which
@@ -636,9 +679,7 @@ func parseStdDeviation(prim SVGFilterPrimitive) (float64, float64) {
 	if !ok {
 		return 0, 0
 	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(v)
 	if len(parts) == 0 {
 		return 0, 0
 	}
@@ -668,6 +709,30 @@ func parseFloatAttr(prim SVGFilterPrimitive, name string, def float64) (float64,
 		return def, false
 	}
 	return f, true
+}
+
+// parseIntAttr reads an integer attribute. Returns the parsed value and
+// whether it was present; if missing or unparseable, returns the default.
+func parseIntAttr(prim SVGFilterPrimitive, name string, def int) (int, bool) {
+	v, ok := prim.Attribute(name)
+	if !ok {
+		return def, false
+	}
+	i, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def, false
+	}
+	return i, true
+}
+
+// parseStringAttr reads a string attribute. Returns the value and whether
+// it was present; if missing, returns the default.
+func parseStringAttr(prim SVGFilterPrimitive, name string, def string) string {
+	v, ok := prim.Attribute(name)
+	if !ok {
+		return def
+	}
+	return strings.TrimSpace(v)
 }
 
 // parseChannelSelector reads an feDisplacementMap `xChannelSelector` or
@@ -760,9 +825,7 @@ func parseColorMatrixAttrs(prim SVGFilterPrimitive) (ColorMatrixType, []float64)
 		tStr = strings.ToLower(strings.TrimSpace(v))
 	}
 	vStr, _ := prim.Attribute("values")
-	parts := strings.FieldsFunc(vStr, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(vStr)
 	values := make([]float64, 0, len(parts))
 	for _, p := range parts {
 		f, err := strconv.ParseFloat(p, 64)
@@ -856,6 +919,13 @@ func parseTransferFunc(prim SVGFilterPrimitive) TransferFunc {
 	return tf
 }
 
+// splitSVGList splits a whitespace/comma-separated SVG attribute value.
+func splitSVGList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+}
+
 // parseFloatList reads a whitespace/comma-separated list of floats.
 func parseFloatList(prim SVGFilterPrimitive, name string) []float64 {
 	v, ok := prim.Attribute(name)
@@ -866,9 +936,7 @@ func parseFloatList(prim SVGFilterPrimitive, name string) []float64 {
 	if !ok {
 		return nil
 	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
+	parts := splitSVGList(v)
 	out := make([]float64, 0, len(parts))
 	for _, p := range parts {
 		f, err := strconv.ParseFloat(p, 64)

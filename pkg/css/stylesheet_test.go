@@ -211,3 +211,42 @@ func TestParseSelector_WebkitScrollbarPseudoElements(t *testing.T) {
 		}
 	}
 }
+
+// TestParseKeyframesRule_ImportantDropped verifies that a !important declaration
+// inside a @keyframes block is dropped per CSS Animations §4.1, so it cannot
+// overwrite a prior normal declaration of the same property.
+//
+// Blink analog: CSSParserImpl::ConsumeKeyframeStyleRule drops !important
+// keyframe declarations (third_party/blink/renderer/core/css/parser/css_parser_impl.cc
+// @ Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func TestParseKeyframesRule_ImportantDropped(t *testing.T) {
+	// `border-color:green` is a normal declaration; `border-color:red !important`
+	// must be ignored. The keyframe must resolve to green.
+	css := `@keyframes override {
+		from, to {
+			border-color: green;
+			border-color: red !important;
+		}
+	}`
+	ss, err := ParseStylesheet(css, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet error: %v", err)
+	}
+	frames, ok := ss.Keyframes["override"]
+	if !ok {
+		t.Fatal("keyframe 'override' not found")
+	}
+	if len(frames) == 0 {
+		t.Fatal("no keyframe stops parsed")
+	}
+	// Check each stop — border-color longhands should be green (from the normal
+	// declaration), not red (from the dropped !important declaration).
+	for _, frame := range frames {
+		for _, longhand := range []string{"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"} {
+			got := frame.Declarations[longhand]
+			if got != "green" {
+				t.Errorf("stop %q: %s = %q, want %q (important declaration must be dropped)", frame.Stop, longhand, got, "green")
+			}
+		}
+	}
+}

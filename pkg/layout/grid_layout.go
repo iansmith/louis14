@@ -367,11 +367,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(gla.style, wdm, gla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
-		Margin:  physMargin,
-		Border:  physBorder,
-		Padding: physPadding,
+		Margin:    physMargin,
+		Border:    physBorder,
+		Padding:   physPadding,
+		Scrollbar: physScrollbar,
 	})
 
 	// Layout OOF children.
