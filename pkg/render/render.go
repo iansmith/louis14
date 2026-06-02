@@ -881,38 +881,49 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	r.paintLayerCanvasBackground(layer)
 
 	// Apply CSS transform if present (wraps around opacity handling).
+	// A flattened transform that maps the box to a zero-area quad (edge-on,
+	// e.g. rotateX(90deg) under the default flat transform-style) makes the
+	// layer and its subtree paint nothing — Blink culls such a layer because
+	// its concatenated transform is non-invertible and its visual rect is
+	// empty (GeometryMapper / TransformPaintPropertyNode invertibility,
+	// paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	// We still balance the Push/Pop and transformDepth so the paint walk and
+	// canvas-bg bookkeeping below stay consistent.
+	transformSingular := false
 	if layer.HasTransform {
 		r.dc.Push()
-		r.applyTransforms(layer)
+		transformSingular = r.applyTransforms(layer)
 	}
 	if layer.HasTransformPaint {
 		r.transformDepth++
 	}
 
-	// Apply inherited ancestor overflow clips. Populated only on
-	// layers that escaped a parent's overflow via z-list escalation
-	// (positioned stacking-context children of an overflow-clipping
-	// parent). See PaintLayer.AncestorOverflowClips for rationale.
-	// Pushed innermost→outermost so the clip stack matches Blink's
-	// property-tree-inherited clip nodes.
-	for _, clip := range layer.AncestorOverflowClips {
-		r.dc.Push()
-		ox, oy, ow, oh := pixelSnap(clip[0], clip[1], clip[2], clip[3])
-		r.dc.DrawRectangle(ox, oy, ow, oh)
-		r.dc.Clip()
-	}
+	if !transformSingular {
+		// Apply inherited ancestor overflow clips. Populated only on
+		// layers that escaped a parent's overflow via z-list escalation
+		// (positioned stacking-context children of an overflow-clipping
+		// parent). See PaintLayer.AncestorOverflowClips for rationale.
+		// Pushed innermost→outermost so the clip stack matches Blink's
+		// property-tree-inherited clip nodes.
+		for _, clip := range layer.AncestorOverflowClips {
+			r.dc.Push()
+			ox, oy, ow, oh := pixelSnap(clip[0], clip[1], clip[2], clip[3])
+			r.dc.DrawRectangle(ox, oy, ow, oh)
+			r.dc.Clip()
+		}
 
-	if layer.Opacity < 1.0 {
-		// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
-		r.dc.PushGroup()
-		r.paintLayerContent(layer)
-		r.dc.PopGroupWithAlpha(layer.Opacity)
-	} else {
-		r.paintLayerContent(layer)
-	}
+		if layer.Opacity < 1.0 {
+			// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
+			r.dc.PushGroup()
+			r.paintLayerContent(layer)
+			r.dc.PopGroupWithAlpha(layer.Opacity)
+		} else {
+			r.paintLayerContent(layer)
+		}
 
-	for range layer.AncestorOverflowClips {
-		r.dc.Pop()
+		for range layer.AncestorOverflowClips {
+			r.dc.Pop()
+		}
 	}
 
 	if layer.HasTransformPaint {
@@ -1032,6 +1043,10 @@ func (r *Renderer) paintDescendantCanvasBackground(layer *PaintLayer) {
 // For each pixel: result.A = element.A * maskValue
 // where maskValue is either mask.A (alpha mode) or luminance(mask) (luminance mode).
 func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
@@ -1267,6 +1282,10 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // subtree is recorded into a source buffer, fed to the filter graph as
 // SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 
 	// Reference box: the element's border box in absolute device pixels.
@@ -1573,6 +1592,10 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 // Mirrors Blink's PaintLayer isolation step (paint_layer_painter.cc /
 // paint_layer.cc) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	if box == nil {
 		r.paintLayerContent(layer)
@@ -1710,6 +1733,10 @@ func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 // buffer, then blend-composites the result onto the destination using the
 // specified CSS mix-blend-mode.
 func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
+	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	if isLayerTransformSingular(layer) {
+		return
+	}
 	box := layer.Box
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
@@ -1875,11 +1902,29 @@ func clampByte(v float64) uint8 {
 // a 0.0625-px sub-pixel offset in `box.Y` is compounded by the rotation
 // matrix and leaks one full pixel of color across an axis-aligned edge after
 // 180° / 90° rotations.
-func (r *Renderer) applyTransforms(layer *PaintLayer) {
+//
+// Returns whether the effective 2D affine it applied is singular — i.e. the
+// flattened transform maps the box to a zero-area quad (edge-on, e.g. after
+// rotateX(90deg)). The HasTransform paint scope uses this to cull the
+// subtree, mirroring Blink's GeometryMapper invertibility check.
+func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	box := layer.Box
 	sx, sy, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
 	ox := sx + layer.TransformOrigin[0]
 	oy := sy + layer.TransformOrigin[1]
+
+	// A layer that establishes a 3D rendering context (transform-style:
+	// preserve-3d) does NOT flatten: its children compose in 4×4 within the
+	// shared context, so the layer's own 2D projection being edge-on does
+	// not make the subtree empty — a child's transform can compose back to a
+	// visible (non-degenerate) quad (e.g. rotateX(90deg) preserve-3d wrapping
+	// rotateX(90deg) scale(2) → scale(2,-2)). The singular-projection cull is
+	// therefore only valid for flattening layers; preserve-3d layers are
+	// never culled by their own projection. Mirrors Blink, where the
+	// invertibility/empty-visual-rect cull applies to flattened
+	// TransformPaintPropertyNodes, not to the 3D-rendering-context root
+	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	flattens := box.Style == nil || box.Style.GetTransformStyle() != css.TransformStylePreserve3D
 
 	// 3D rendering context composition. Per CSS Transforms L2 §6.2,
 	// a child of a `transform-style: preserve-3d` parent shares the
@@ -1940,7 +1985,10 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 			r.dc.MultiplyMatrix(newXX, newYX, newXY, newYY, newX0, newY0)
 			// Move back from transform-origin.
 			r.dc.Translate(-ox, -oy)
-			return
+			// The effective applied projection is the combined ancestors+self
+			// affine; if it is edge-on the subtree maps to zero area (only
+			// when this layer flattens — preserve-3d layers are never culled).
+			return flattens && isSingularProjection(newXX, newYX, newXY, newYY)
 		}
 		// Singular ancestor projection: fall through to flat composition.
 		r.dc.Translate(-ox, -oy)
@@ -1969,6 +2017,61 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
+	return flattens && isSingularProjection(xx, yx, xy, yy)
+}
+
+// isLayerTransformSingular returns true if layer.HasTransform is set and the
+// layer's flattened 2D projection is singular (edge-on / zero-area). Used to
+// cull the layer before any paint path — including the special-effect paths
+// (HasMaskImage, HasFilter, blend, isolated) that would otherwise bypass the
+// transformSingular check in the main paintLayer body.
+//
+// Conservative in the preserve-3d-ancestor case: if a preserve-3d ancestor
+// exists the combined projection is not computed here (returns false, no cull).
+// This is correct for the common case and avoids duplicating the full
+// preserve-3d delta-projection maths from applyTransforms.
+func isLayerTransformSingular(layer *PaintLayer) bool {
+	if !layer.HasTransform || layer.Box == nil {
+		return false
+	}
+	box := layer.Box
+	// preserve-3d layers are never culled by their own projection (children
+	// compose in 4×4 and can produce a visible quad even when the layer's
+	// own transform is edge-on). Same guard as applyTransforms.
+	if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+		return false
+	}
+	// If there is a preserve-3d ancestor, the combined projection may differ
+	// from the self-only projection. Conservatively skip culling (don't cull
+	// visible layers). The main-path applyTransforms handles this correctly.
+	if len(preserve3DAncestorTransforms(box)) > 0 {
+		return false
+	}
+	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
+	xx, yx, xy, yy, _, _ := css.ComposeAffineProjection(selfTransforms)
+	return isSingularProjection(xx, yx, xy, yy)
+}
+
+// singularProjectionEpsilon bounds the determinant magnitude below which a
+// flattened 2D transform projection is treated as singular (degenerate to a
+// zero-area quad). It must catch the floating-point residue a 90° axis
+// rotation leaves in the projection (e.g. rotateX(90deg) yields
+// yy = cos(90°) ≈ 6.12e-17, so det ≈ 6.12e-17) while sitting far below any
+// determinant a legitimately-visible transform produces — the smallest
+// plausible legit determinant is from an aggressive uniform scale-down whose
+// det is the square of the scale factor, orders of magnitude above this bound.
+const singularProjectionEpsilon = 1e-12
+
+// isSingularProjection reports whether a flattened 2D affine projection with
+// linear coefficients (xx, yx, xy, yy) maps its input to a zero-area image —
+// i.e. the layer is edge-on after flattening and must paint nothing. Mirrors
+// Blink's GeometryMapper / TransformPaintPropertyNode invertibility check: a
+// layer whose concatenated transform produces a degenerate (non-invertible)
+// mapping has an empty visual rect and is culled rather than painted
+// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func isSingularProjection(xx, yx, xy, yy float64) bool {
+	det := xx*yy - xy*yx
+	return math.Abs(det) < singularProjectionEpsilon
 }
 
 // wrapTransformsWithOriginZ returns `transforms` bracketed by
