@@ -475,6 +475,20 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			}
 			return goja.Undefined()
 		})
+	case "dataset":
+		// Return a DOMStringMap-style object: data-foo-bar → dataset.fooBar
+		// Implements the HTML spec camelCase mapping so scripts can use
+		// e.dataset.myKey instead of e.getAttribute("data-my-key").
+		obj := vm.NewObject()
+		for k, v := range e.node.Attributes {
+			if !strings.HasPrefix(k, "data-") {
+				continue
+			}
+			camel := datasetToCamel(k[5:])
+			_ = obj.Set(camel, v)
+		}
+		return obj
+
 	case "getAttribute":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
@@ -1132,6 +1146,29 @@ func serializeInlineStyle(m map[string]string) string {
 }
 
 // camelToKebab converts a JS camelCase property name to CSS kebab-case.
+// datasetToCamel converts a data-attribute suffix (the part after "data-") to
+// its DOMStringMap camelCase key per the HTML spec §2.6.9 reflect rule:
+// replace each ASCII hyphen followed by an ASCII lowercase letter with the
+// uppercase form of that letter.  e.g. "my-foo-bar" → "myFooBar".
+func datasetToCamel(s string) string {
+	var sb strings.Builder
+	capitalize := false
+	for _, r := range s {
+		if r == '-' {
+			capitalize = true
+			continue
+		}
+		if capitalize && r >= 'a' && r <= 'z' {
+			sb.WriteRune(r - 32)
+			capitalize = false
+		} else {
+			sb.WriteRune(r)
+			capitalize = false
+		}
+	}
+	return sb.String()
+}
+
 func camelToKebab(s string) string {
 	if s == "cssFloat" {
 		return "float"
