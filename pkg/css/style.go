@@ -3090,6 +3090,11 @@ var nonDefaultInitialValues = map[string]string{
 	// `sup.unhide { color: initial; }` must render black against a
 	// `color: transparent` parent.
 	"color": "canvastext",
+	// CSS Color Adjust 1 §3: initial value of `color-scheme` is `normal`.
+	// `color-scheme` IS inherited (cascade.go inheritableProperties), so an
+	// explicit initial here prevents ApplyInheritedProperties from re-filling
+	// the slot with the parent's scheme after `color-scheme: initial`.
+	"color-scheme": "normal",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,
@@ -3215,7 +3220,7 @@ var cssLonghandProperties = []string{
 	"background-position", "background-size", "background-attachment",
 	"background-clip", "background-origin",
 	// Color & opacity
-	"color", "opacity",
+	"color", "color-scheme", "opacity",
 	// Font
 	"font-family", "font-size", "font-weight", "font-style", "font-variant",
 	"font-feature-settings", "font-optical-sizing", "font-size-adjust",

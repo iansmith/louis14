@@ -1842,10 +1842,22 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 	for property := range style.Properties {
 		if value, ok := style.Get(property); ok && strings.Contains(strings.ToLower(value), "light-dark(") {
 			if operand, ok := resolveLightDark(value, style.UsedColorSchemeDark()); ok {
-				// If the operand is "currentColor", resolve it to the element's own color.
+				// If the operand is "currentColor", resolve it to the appropriate color.
+				// For the "color" property itself, currentColor refers to the inherited
+				// (parent's) color — calling style.GetColor() would return the still-
+				// unresolved light-dark(...) string. For all other properties, currentColor
+				// refers to the element's own (now-computed) color.
 				if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
-					if _, ok := style.Get("color"); ok {
-						// Only resolve currentColor if the "color" property is explicitly set
+					if property == "color" {
+						// color: light-dark(currentColor, ...) — resolve against parent's color.
+						if node.Parent != nil {
+							if parentStyle, ok := styles[node.Parent]; ok {
+								parentCC := parentStyle.GetColor()
+								operand = formatColorAsRGBA(parentCC)
+							}
+						}
+					} else if _, ok := style.Get("color"); ok {
+						// Other properties: currentColor refers to element's own color.
 						cc := style.GetColor()
 						operand = formatColorAsRGBA(cc)
 					}

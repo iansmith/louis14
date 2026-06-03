@@ -558,7 +558,7 @@ func resolveLightDark(value string, dark bool) (string, bool) {
 	}
 
 	// Extract the inner part: light-dark(...) -> ...
-	inner := value[11 : len(value)-1]
+	inner := value[len("light-dark(") : len(value)-1]
 
 	// Split by commas respecting nested parentheses.
 	operands := splitColorMixArgs(inner)
