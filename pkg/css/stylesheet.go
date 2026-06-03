@@ -1650,7 +1650,9 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	// HOWEVER, if the identifier is a reserved keyword (not/and/or/only/layer),
 	// reject it per CSS Media Queries 4 §2.3 (mirrors Blink's ConsumeType
 	// returning nullptr for reserved keywords).
+	attemptedMediaType := false
 	if mediaStr != "" && mediaStr[0] != '(' {
+		attemptedMediaType = true
 		end := 0
 		for end < len(mediaStr) {
 			ch := mediaStr[end]
@@ -1720,12 +1722,16 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 		mq.Conditions = append(mq.Conditions, node)
 	}
 
-	// If the type slot is empty (null equivalent) AND no conditions were parsed,
-	// mark the query as invalid. This handles bare reserved keywords like
-	// `@media and`, `@media not`, `@media not and`, etc. (mirrors Blink's
-	// ConsumeQuery falling through from ConsumeType returning nullptr with no
-	// valid condition following).
-	if mq.MediaType == "" && len(mq.Conditions) == 0 {
+	// If we attempted to parse a media type (mediaStr started with identifier) but found
+	// no valid type (either rejected as reserved keyword, or was empty), combined with
+	// no conditions, the query is invalid. This handles:
+	// - `@media and`, `@media or`, `@media not`, `@media only`, `@media layer` (bare keywords)
+	// - `@media not and`, `@media only or`, etc. (restrictor + keyword)
+	// HOWEVER, a truly empty query like `@media` (no type, no conditions) is valid (matches "all").
+	// We distinguish by checking attemptedMediaType: if true, we tried to parse a type and
+	// rejected it (or found empty). If false and mq.MediaType == "", it means mediaStr
+	// started with "(" or was empty, so the query is valid (either has conditions or is empty).
+	if attemptedMediaType && mq.MediaType == "" && len(mq.Conditions) == 0 {
 		mq.Invalid = true
 	}
 
