@@ -1064,7 +1064,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if isFirstLineForBox {
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
-		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
+		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
 			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
@@ -1117,6 +1117,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
 		})
+
+		// Propagate OOF candidates collected from atomic inline children
+		// (e.g. abs-pos descendants of inline-blocks) to the parent block.
+		// Adjust static positions by the line's offset within the block.
+		for _, cand := range lineOOFCandidates {
+			adj := cand
+			adj.StaticPosition.Offset.InlineOffset += lineInlineOffset
+			adj.StaticPosition.Offset.BlockOffset += blockOffset
+			builder.AddOutOfFlowCandidate(adj)
+		}
 
 		// Emit deferred block-level OOF candidates at the block-end of the
 		// line box. Per Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned,
@@ -1449,7 +1459,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
+	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
 	return frag, h, a
 }
 
@@ -1478,9 +1488,10 @@ func createLineBoxEx(
 	enteringSpanStack []*InlineItem,
 	firstLineStyle *css.Style,
 	isFirstLine bool,
-) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
+) (*PhysicalFragment, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, residualSpanStack, oofCandidates)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
+	var lineOOFCandidates []OutOfFlowCandidate
 
 	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
 	// annotations (default `ruby-position: over` stacks them above
@@ -2313,6 +2324,22 @@ func createLineBoxEx(
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
 				})
+				// Propagate OOF candidates from atomic inline's subtree.
+				// These are abs/fixed children of the inline-block that need to
+				// reach the nearest positioned ancestor (or the root) for layout.
+				// Mirrors Blink's InlineLayoutAlgorithm collecting propagated OOF
+				// candidates from atomic-inline LayoutResults.
+				if len(r.LayoutResult.PropagatedOOFCandidates) > 0 && r.Item.Style != nil {
+					childGeom := ComputeFragmentGeometry(r.Item.Style, wdm)
+					inlineBP := childGeom.Border.InlineStart + childGeom.Padding.InlineStart
+					blockBP := childGeom.Border.BlockStart + childGeom.Padding.BlockStart
+					for _, cand := range r.LayoutResult.PropagatedOOFCandidates {
+						adj := cand
+						adj.StaticPosition.Offset.InlineOffset += inlinePos + inlineBP
+						adj.StaticPosition.Offset.BlockOffset += blockPos + blockBP
+						lineOOFCandidates = append(lineOOFCandidates, adj)
+					}
+				}
 			}
 			// Advance past content + trailing margin, skip default advance.
 			// For RTL items, InlineStart is the trailing (physical-right) gap.
@@ -2337,7 +2364,7 @@ func createLineBoxEx(
 
 	result := lineBuilder.Build()
 	result.Fragment.Type = FragmentLineBox
-	return result.Fragment, lineHeight, maxAscent, residualSpanStack
+	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates
 }
 
 // needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
