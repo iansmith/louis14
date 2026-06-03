@@ -101,6 +101,29 @@ type tableColWidth struct {
 	hasMax   bool    // true if max-width is a concrete px length
 }
 
+// extractColWidthSpec reads width/min-width/max-width constraints from a
+// col/colgroup computed style. Returns the populated spec and true if any
+// concrete constraint is present; (zero, false) otherwise.
+func extractColWidthSpec(style *css.Style, colIndex, span int) (tableColWidth, bool) {
+	w, okWidth := style.GetLength("width")
+	mw, okMin := style.GetLength("min-width")
+	xw, okMax := style.GetLength("max-width")
+	// Include a spec when ANY of width>0, okMin, or okMax holds — a
+	// min-width-only col must still produce a spec (col-definite-min-size row 1).
+	if (okWidth && w > 0) || okMin || okMax {
+		return tableColWidth{
+			colIndex: colIndex,
+			span:     span,
+			width:    w,
+			minWidth: mw,
+			hasMin:   okMin,
+			maxWidth: xw,
+			hasMax:   okMax,
+		}, true
+	}
+	return tableColWidth{}, false
+}
+
 // tableColStyle carries a col/colgroup element's computed style for use in
 // border-collapse resolution (CSS 2.1 §17.6.2.1).
 type tableColStyle struct {
@@ -1526,20 +1549,8 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					span = n
 				}
 			}
-			w, okWidth := childStyle.GetLength("width")
-			mw, okMin := childStyle.GetLength("min-width")
-			xw, okMax := childStyle.GetLength("max-width")
-			// Append a spec when ANY of width>0, okMin, or okMax holds — a min-width-only col must still produce a spec.
-			if (okWidth && w > 0) || okMin || okMax {
-				colWidths = append(colWidths, tableColWidth{
-					colIndex: colIdx,
-					span:     span,
-					width:    w,
-					minWidth: mw,
-					hasMin:   okMin,
-					maxWidth: xw,
-					hasMax:   okMax,
-				})
+			if spec, ok := extractColWidthSpec(childStyle, colIdx, span); ok {
+				colWidths = append(colWidths, spec)
 			}
 			// Collect style for border-collapse resolution (CSS 2.1 §17.6.2.1).
 			colStyleSpecs = append(colStyleSpecs, tableColStyle{
@@ -1566,20 +1577,8 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 							colChildSpan = n
 						}
 					}
-					w, okWidth := colChildStyle.GetLength("width")
-					mw, okMin := colChildStyle.GetLength("min-width")
-					xw, okMax := colChildStyle.GetLength("max-width")
-					// Append a spec when ANY of width>0, okMin, or okMax holds — a min-width-only col must still produce a spec.
-					if (okWidth && w > 0) || okMin || okMax {
-						colWidths = append(colWidths, tableColWidth{
-							colIndex: colChildIdx,
-							span:     colChildSpan,
-							width:    w,
-							minWidth: mw,
-							hasMin:   okMin,
-							maxWidth: xw,
-							hasMax:   okMax,
-						})
+					if spec, ok := extractColWidthSpec(colChildStyle, colChildIdx, colChildSpan); ok {
+						colWidths = append(colWidths, spec)
 					}
 					colStyleSpecs = append(colStyleSpecs, tableColStyle{
 						colIndex: colChildIdx,
@@ -1909,7 +1908,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 		// Assign eff to columns only when the column has an effective constraint:
 		// width>0 OR hasMin (a min-raised column is constrained).
 		// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
-		if eff > 0 || cws.hasMin {
+		// Use cws.width (declared width), not eff (clamped), so that width:Xpx; max-width:0
+		// still treats the column as constrained (it gets eff=0, not auto).
+		if cws.width > 0 || cws.hasMin {
 			for s := 0; s < cws.span; s++ {
 				ci := cws.colIndex + s
 				if ci < numCols && !hasExplicit[ci] {
