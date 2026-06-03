@@ -226,9 +226,9 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 // underline stroke for an upright vertical text run (axis=decorationAxisVertical).
 //
 // In vertical-rl the underline paints on the physical LEFT side (block-end):
-//   perpX = box.X - zeroPos - td.UnderlineOffset
+//   perpX = box.X - zeroPerpOffset - td.UnderlineOffset
 // In vertical-lr the underline paints on the physical RIGHT side (block-end):
-//   perpX = box.X + box.Width + zeroPos + td.UnderlineOffset
+//   perpX = box.X + box.Width + zeroPerpOffset + td.UnderlineOffset
 //
 // zeroPos is the perpendicular offset from box.X (or box.X+box.Width) to the
 // underline zero-position, computed by convertUnderlineZeroPerpToPerpX based on
