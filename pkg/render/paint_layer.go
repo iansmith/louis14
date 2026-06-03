@@ -456,21 +456,9 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	return rootLayer
 }
 
-// reparentZOrderByAncestorSC re-homes z-ordered layers to their nearest
-// stacking-context-creating DOM ancestor. This corrects out-of-flow children
-// hoisted past their DOM-ancestor SC by the layout containing-block rule.
-// Mirrors Blink's PaintLayerStackingNode::AncestorStackingContext semantics
-// (paint_layer_stacking_node.cc at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-//
-// Example: a static-position parent `#wc` establishes no containing block,
-// so its absolutely-positioned child hoists to the ICB/root. buildPaintSubtree
-// routes it to rootLayer.NegativeZ. This pass moves it back to #wc's z-list
-// if #wc creates a stacking context.
-func reparentZOrderByAncestorSC(root *PaintLayer) {
-	if root == nil {
-		return
-	}
-	// Index every layer by its element node.
+// buildLayerIndex builds a map from html.Node to PaintLayer for lookup
+// during post-passes. Only the first layer per node is stored.
+func buildLayerIndex(root *PaintLayer) map[*html.Node]*PaintLayer {
 	idx := make(map[*html.Node]*PaintLayer)
 	var collect func(*PaintLayer)
 	collect = func(l *PaintLayer) {
@@ -499,6 +487,24 @@ func reparentZOrderByAncestorSC(root *PaintLayer) {
 		}
 	}
 	collect(root)
+	return idx
+}
+
+// reparentZOrderByAncestorSC re-homes z-ordered layers to their nearest
+// stacking-context-creating DOM ancestor. This corrects out-of-flow children
+// hoisted past their DOM-ancestor SC by the layout containing-block rule.
+// Mirrors Blink's PaintLayerStackingNode::AncestorStackingContext semantics
+// (paint_layer_stacking_node.cc at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Example: a static-position parent `#wc` establishes no containing block,
+// so its absolutely-positioned child hoists to the ICB/root. buildPaintSubtree
+// routes it to rootLayer.NegativeZ. This pass moves it back to #wc's z-list
+// if #wc creates a stacking context.
+func reparentZOrderByAncestorSC(root *PaintLayer) {
+	if root == nil {
+		return
+	}
+	idx := buildLayerIndex(root)
 
 	// For each z-ordered layer, compute its correct z-order parent
 	// (nearest ancestor in the DOM tree whose layer creates a stacking context)
@@ -603,35 +609,7 @@ func propagateBackfaceHidden(root *PaintLayer) {
 	if root == nil {
 		return
 	}
-	// Index every layer by its element node.
-	idx := make(map[*html.Node]*PaintLayer)
-	var collect func(*PaintLayer)
-	collect = func(l *PaintLayer) {
-		if l == nil || l.Box == nil {
-			return
-		}
-		if l.Box.Node != nil {
-			if _, ok := idx[l.Box.Node]; !ok {
-				idx[l.Box.Node] = l
-			}
-		}
-		for _, c := range l.NegativeZ {
-			collect(c)
-		}
-		for _, c := range l.AutoZero {
-			collect(c)
-		}
-		for _, c := range l.PositiveZ {
-			collect(c)
-		}
-		for _, c := range l.FlowChildren {
-			collect(c)
-		}
-		for _, c := range l.FloatChildren {
-			collect(c)
-		}
-	}
-	collect(root)
+	idx := buildLayerIndex(root)
 	// For each layer, walk its DOM ancestors and inherit BackfaceHidden if
 	// any ancestor element layer carries it.
 	var propagate func(*PaintLayer)
