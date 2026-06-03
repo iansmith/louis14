@@ -30,11 +30,11 @@ type inkSegment struct {
 // Inputs:
 //   - start, end:  the decoration line's inline-axis range (start < end).
 //   - thickness:   the decoration line's stroke thickness; used as the
-//                  safety inflation on each side of each glyph extent so
-//                  the gap matches the spec's "ink intersection" intent.
-//                  Pass 0 for no inflation.
+//     safety inflation on each side of each glyph extent so
+//     the gap matches the spec's "ink intersection" intent.
+//     Pass 0 for no inflation.
 //   - glyphs:      glyph extents on the same inline axis. May be empty or
-//                  in any order.
+//     in any order.
 //
 // Returns the list of [start, end) sub-segments in increasing order.
 //

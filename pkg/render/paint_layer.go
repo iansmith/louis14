@@ -2338,6 +2338,21 @@ func parseFontFeatureSettings(value string) []textshape.FontFeature {
 	return features
 }
 
+// blockUnderDirection returns the physical direction that is "toward block-end"
+// (the canonical under-side) for an upright vertical text run on this layer.
+// vertical-rl: block-end = physical left  → blockUnderLeft.
+// vertical-lr: block-end = physical right → blockUnderRight.
+//
+// The condition mirrors the three inline call sites in render.go:
+// IsSidewaysRL && !IsWritingModeVerticalLR is true only for genuine vertical-rl.
+// vertical-lr is represented as IsSidewaysRL=true, IsWritingModeVerticalLR=true.
+func (layer *PaintLayer) blockUnderDirection() blockUnderDir {
+	if layer.IsSidewaysRL && !layer.IsWritingModeVerticalLR {
+		return blockUnderLeft
+	}
+	return blockUnderRight
+}
+
 // sortZLists sorts NegativeZ and PositiveZ by z-index (ascending). AutoZero
 // is DOMIndex-sorted only when no entry is a flex item: for CSS 2.1 Appendix
 // E step 6 we want tree order on z-index:auto positioned descendants, but

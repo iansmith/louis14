@@ -5785,7 +5785,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		underBelow := (rotCW && !underToRight) || (!rotCW && underToRight)
 		if hasDecor && len(layer.AppliedTextDecorations) > 0 {
 			virtualBox := &layout.Box{X: 0, Y: 0, Width: float64(ta), Height: float64(lh)}
-			tmpInfo := newTextDecorationInfo(virtualBox, textWidth, layer.FontSize, ascent, descent, 0)
+			tmpInfo := newVerticalTextDecorationInfo(virtualBox, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
 			for _, td := range layer.AppliedTextDecorations {
 				if !td.Lines.Has(css.TextDecorationLineUnderline) {
 					continue
@@ -5943,7 +5943,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// fragment flags gate inset application at the decorating-
 				// box edges so interior line breaks don't extend at the line
 				// wrap. Mirrors drawOneAppliedTextDecoration's logic.
-				info := newTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0)
+				info := newVerticalTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
 				for _, td := range layer.AppliedTextDecorations {
 					if !td.Lines.Has(css.TextDecorationLineUnderline) {
 						continue
@@ -7290,7 +7290,14 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// TODO: pass the font's underline-thickness metric here once it's
 		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
 		// to auto (which is correct, just lossy).
-		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
+		// For upright vertical text in the sideways paint path, use newVerticalTextDecorationInfo
+		// so that text-underline-position: under applies only to alphabetic-baseline runs.
+		var info textDecorationInfo
+		if layer.IsUprightVertical && (layer.IsSidewaysRL || layer.IsSidewaysLR) {
+			info = newVerticalTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
+		} else {
+			info = newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
+		}
 		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink: when `auto`
 		// (default), the under/overline is interrupted where it crosses a
 		// glyph's ink bounding box.

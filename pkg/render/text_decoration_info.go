@@ -148,10 +148,17 @@ func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float
 
 // baselineRelativeOffset returns the perpendicular distance from the box edge to
 // the underline zero-position for the given TextUnderlinePosition.
-// Under → ascent+descent (block-end edge); auto/from-font → ascent (alphabetic baseline).
+// Under → ascent+descent on alphabetic-baseline (horizontal), but 0 on central-baseline (vertical);
+// auto/from-font → ascent (alphabetic baseline) on both axes.
 // Single source of truth consumed by computeUnderlineZeroPosition and computeUnderlinePerpX.
+// Mirrors Blink's ResolveUnderlinePosition (text_decoration_info.cc:13-47 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (t textDecorationInfo) baselineRelativeOffset(pos css.TextUnderlinePosition) float64 {
 	if pos == css.TextUnderlinePositionUnder {
+		// Central-baseline (vertical axis): under behaves like auto, return ascent.
+		// Alphabetic-baseline (horizontal axis): under pushes to content-box edge.
+		if t.axis == decorationAxisVertical {
+			return t.ascent
+		}
 		return t.ascent + t.descent
 	}
 	return t.ascent
@@ -171,10 +178,18 @@ func (t textDecorationInfo) computeUnderlineZeroPosition(pos css.TextUnderlinePo
 // relative to the baseline (ascent = 0). Used by render.go's pre-paint buffer
 // computation to size extensions. For auto/from-font, returns 0 (alphabetic
 // baseline). For under, returns ascent + descent (block-end edge offset from
-// baseline).
+// baseline) ONLY on alphabetic-baseline (horizontal) axis; on central-baseline
+// (vertical) axis the under keyword does not push the line to the content-box
+// edge, matching Blink's ResolveUnderlinePosition (text_decoration_info.cc:13-47
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (t textDecorationInfo) computeUnderlineZeroOffset(pos css.TextUnderlinePosition) float64 {
 	switch pos {
 	case css.TextUnderlinePositionUnder:
+		// Central-baseline (vertical axis): under behaves like auto, return 0.
+		// Alphabetic-baseline (horizontal axis): under pushes to content-box edge.
+		if t.axis == decorationAxisVertical {
+			return 0
+		}
 		return t.ascent + t.descent
 	case css.TextUnderlinePositionAuto, css.TextUnderlinePositionFromFont:
 		return 0
@@ -226,9 +241,12 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 // underline stroke for an upright vertical text run (axis=decorationAxisVertical).
 //
 // In vertical-rl the underline paints on the physical LEFT side (block-end):
-//   perpX = box.X - zeroPerpOffset - td.UnderlineOffset
+//
+//	perpX = box.X - zeroPerpOffset - td.UnderlineOffset
+//
 // In vertical-lr the underline paints on the physical RIGHT side (block-end):
-//   perpX = box.X + box.Width + zeroPerpOffset + td.UnderlineOffset
+//
+//	perpX = box.X + box.Width + zeroPerpOffset + td.UnderlineOffset
 //
 // zeroPos is the perpendicular offset from box.X (or box.X+box.Width) to the
 // underline zero-position, computed by convertUnderlineZeroPerpToPerpX based on
