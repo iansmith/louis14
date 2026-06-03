@@ -1829,9 +1829,16 @@ func formatColorAsRGBA(c Color) string {
 
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
-	// First pass: resolve light-dark() in all properties using the element's own
-	// color-scheme. This must happen before inherit/currentColor resolution so
-	// light-dark() values are concrete before inheritance.
+	// First pass: resolve the "color" property's inherit and currentColor keywords
+	// so that light-dark(currentColor, ...) in other properties can reference it.
+	// Process "color" first due to map iteration randomness.
+	if colorVal, ok := style.Properties["color"]; ok {
+		resolveColorProperty(node, style, styles, "color", colorVal)
+	}
+
+	// Second pass: resolve light-dark() in all properties using the element's own
+	// color-scheme. Light-dark values become concrete before inheritance, and
+	// currentColor operands resolve to the element's own (now-computed) color.
 	for property := range style.Properties {
 		if value, ok := style.Get(property); ok && strings.Contains(strings.ToLower(value), "light-dark(") {
 			if operand, ok := resolveLightDark(value, style.UsedColorSchemeDark()); ok {
@@ -1848,17 +1855,10 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 		}
 	}
 
-	// Second pass: resolve the "color" property's inherit and currentColor keywords
-	// so that light-dark(currentColor, ...) in other properties (resolved in pass 1)
-	// can reference it. Process "color" first due to map iteration randomness.
-	if colorVal, ok := style.Properties["color"]; ok {
-		resolveColorProperty(node, style, styles, "color", colorVal)
-	}
-
-	// Third pass: resolve inherit and currentColor in all other properties.
+	// Third pass: resolve inherit keyword in all other properties.
 	for property := range style.Properties {
 		if property == "color" {
-			continue // Already processed in second pass
+			continue // Already processed in first pass
 		}
 		value, _ := style.Get(property)
 		if value == "inherit" {
