@@ -1662,10 +1662,15 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 			end++
 		}
 		candidate := strings.ToLower(mediaStr[:end])
-		if !isRestrictorOrLogicalOperator(candidate) {
+		if isRestrictorOrLogicalOperator(candidate) {
+			// Reserved keyword in type slot → invalid immediately. Mirrors Blink's
+			// ConsumeType returning nullptr: the query is dropped regardless of whether
+			// conditions follow (e.g. `@media and (min-width: 1px)` must not match).
+			mq.Invalid = true
+		} else {
 			mq.MediaType = candidate
 		}
-		// If candidate was a reserved keyword, leave mq.MediaType empty (null-equivalent).
+		// If candidate was a reserved keyword, mq.MediaType stays empty (null-equivalent).
 		mediaStr = strings.TrimSpace(mediaStr[end:])
 	}
 
@@ -1712,7 +1717,8 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 					}
 				}
 				// Leftover tokens that are NOT operators (or, and, not) are invalid.
-				if afterParens != "" && !strings.HasPrefix(afterParens, "or ") && !strings.HasPrefix(afterParens, "and ") && !strings.HasPrefix(afterParens, "not ") {
+				// Use hasLeadingKeyword (case-insensitive) so "OR"/"AND"/"NOT" are accepted.
+				if afterParens != "" && !hasLeadingKeyword(afterParens, "or") && !hasLeadingKeyword(afterParens, "and") && !hasLeadingKeyword(afterParens, "not") {
 					mq.Invalid = true
 					continue
 				}
