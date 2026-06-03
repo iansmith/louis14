@@ -3339,13 +3339,9 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 			resolvedVal = s.resolveVarReferences(val)
 		}
 
-		// Determine the effective keyword by trimming and lowercasing.
 		// Only collapse when the entire substituted value is a lone CSS-wide
 		// keyword, not when it's part of a larger token list.
-		effectiveVal := strings.TrimSpace(resolvedVal)
-		effectiveValLower := asciiToLower(effectiveVal)
-
-		switch effectiveValLower {
+		switch asciiToLower(strings.TrimSpace(resolvedVal)) {
 		case "initial":
 			if isCustom {
 				// CSS Custom Properties §3 (Initial Value): the initial value
