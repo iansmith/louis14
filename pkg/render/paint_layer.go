@@ -439,6 +439,11 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	}
 	rootLayer := newPaintLayer(root)
 	buildPaintSubtree(root, rootLayer, rootLayer, nil)
+	// Re-home z-ordered layers to their nearest stacking-context-creating
+	// DOM ancestor. This corrects out-of-flow children hoisted past their
+	// DOM-ancestor SC by the layout containing-block rule. Mirrors Blink's
+	// PaintLayerStackingNode::AncestorStackingContext semantics.
+	reparentZOrderByAncestorSC(rootLayer)
 	rootLayer.sortZLists()
 	// CSS Transforms L2 §11: propagate backface-hidden down the DOM tree so
 	// out-of-flow descendants (which the layout engine hoists into a higher
@@ -449,6 +454,144 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	// behaviour where the entire subtree paint is short-circuited.
 	propagateBackfaceHidden(rootLayer)
 	return rootLayer
+}
+
+// reparentZOrderByAncestorSC re-homes z-ordered layers to their nearest
+// stacking-context-creating DOM ancestor. This corrects out-of-flow children
+// hoisted past their DOM-ancestor SC by the layout containing-block rule.
+// Mirrors Blink's PaintLayerStackingNode::AncestorStackingContext semantics
+// (paint_layer_stacking_node.cc at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Example: a static-position parent `#wc` establishes no containing block,
+// so its absolutely-positioned child hoists to the ICB/root. buildPaintSubtree
+// routes it to rootLayer.NegativeZ. This pass moves it back to #wc's z-list
+// if #wc creates a stacking context.
+func reparentZOrderByAncestorSC(root *PaintLayer) {
+	if root == nil {
+		return
+	}
+	// Index every layer by its element node.
+	idx := make(map[*html.Node]*PaintLayer)
+	var collect func(*PaintLayer)
+	collect = func(l *PaintLayer) {
+		if l == nil || l.Box == nil {
+			return
+		}
+		if l.Box.Node != nil {
+			if _, ok := idx[l.Box.Node]; !ok {
+				idx[l.Box.Node] = l
+			}
+		}
+		for _, c := range l.NegativeZ {
+			collect(c)
+		}
+		for _, c := range l.AutoZero {
+			collect(c)
+		}
+		for _, c := range l.PositiveZ {
+			collect(c)
+		}
+		for _, c := range l.FlowChildren {
+			collect(c)
+		}
+		for _, c := range l.FloatChildren {
+			collect(c)
+		}
+	}
+	collect(root)
+
+	// For each z-ordered layer, compute its correct z-order parent
+	// (nearest ancestor in the DOM tree whose layer creates a stacking context)
+	// and move it there if needed. Walk all z-lists recursively.
+	var reparent func(*PaintLayer)
+	reparent = func(parent *PaintLayer) {
+		if parent == nil || parent.Box == nil {
+			return
+		}
+
+		// Process and potentially reparent z-list children.
+		parent.NegativeZ = reparentZList(parent.NegativeZ, parent, idx)
+		parent.AutoZero = reparentZList(parent.AutoZero, parent, idx)
+		parent.PositiveZ = reparentZList(parent.PositiveZ, parent, idx)
+
+		// Recurse into all children.
+		for _, c := range parent.NegativeZ {
+			reparent(c)
+		}
+		for _, c := range parent.AutoZero {
+			reparent(c)
+		}
+		for _, c := range parent.PositiveZ {
+			reparent(c)
+		}
+		for _, c := range parent.FlowChildren {
+			reparent(c)
+		}
+		for _, c := range parent.FloatChildren {
+			reparent(c)
+		}
+	}
+	reparent(root)
+}
+
+// reparentZList moves z-list entries to their correct ancestor stacking
+// context parent if they were hoisted past it. Returns the filtered list
+// for the current parent (entries that belong elsewhere are removed).
+//
+// Only absolutely-positioned children are reparented. Fixed-positioned
+// children stay where buildPaintSubtree routed them, because fixed-CB
+// semantics place them at the ICB or a fixed-CB ancestor, and the paint
+// layer must respect that layout decision (even if the DOM parent creates
+// a stacking context).
+func reparentZList(zlist []*PaintLayer, parent *PaintLayer, idx map[*html.Node]*PaintLayer) []*PaintLayer {
+	if len(zlist) == 0 {
+		return zlist
+	}
+
+	filtered := make([]*PaintLayer, 0, len(zlist))
+	for _, child := range zlist {
+		if child == nil || child.Box == nil || child.Box.Node == nil {
+			filtered = append(filtered, child)
+			continue
+		}
+
+		// Only reparent absolutely-positioned children, not fixed-positioned.
+		// Fixed children's layout CB (which may be an ancestor's fixed-CB or
+		// the ICB) takes precedence over DOM ancestry for paint tree routing.
+		if child.Box.Position == css.PositionFixed {
+			filtered = append(filtered, child)
+			continue
+		}
+
+		// Find the correct z-order parent by walking the DOM ancestor chain
+		// until we find a layer that creates a stacking context.
+		correctParent := parent
+		for n := child.Box.Node.Parent; n != nil; n = n.Parent {
+			if ancestorLayer, ok := idx[n]; ok && ancestorLayer.Box.CreatesStackingContext() {
+				correctParent = ancestorLayer
+				break
+			}
+		}
+
+		// If the child belongs in a different parent, move it there.
+		if correctParent != parent {
+			// Determine the z-index bucket and append to the correct parent.
+			z := child.ZIndex
+			switch {
+			case z < 0:
+				correctParent.NegativeZ = append(correctParent.NegativeZ, child)
+			case z > 0:
+				correctParent.PositiveZ = append(correctParent.PositiveZ, child)
+			default:
+				correctParent.AutoZero = append(correctParent.AutoZero, child)
+			}
+			// Do NOT add to filtered — this entry is moved elsewhere.
+		} else {
+			// Child stays in current parent.
+			filtered = append(filtered, child)
+		}
+	}
+	return filtered
 }
 
 // propagateBackfaceHidden ensures every layer whose DOM ancestor (in the

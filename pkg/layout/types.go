@@ -252,25 +252,15 @@ func (b *Box) CreatesStackingContext() bool {
 	// CSS Will Change Level 1 §2.2: will-change of certain properties creates
 	// a stacking context (same properties that create one when actually set).
 	// Mirrors Blink's willChangeStackingContextSet at computed_style.cc:1319
-	// (4883d11fef4a8713e32cd582ecef6dc5457c8c3f). We accept BOTH the resolved
-	// longhand names AND the shorthand `mask` so the raw ident list (which is
-	// what GetWillChange returns) is read correctly regardless of whether the
-	// author wrote `will-change: mask` or `will-change: mask-image`.
-	for _, prop := range b.Style.GetWillChange() {
-		switch prop {
-		case "transform", "opacity", "filter", "backdrop-filter",
-			"clip-path", "mask", "mask-image", "mask-border",
-			"-webkit-mask-box-image-source",
-			"mix-blend-mode", "isolation",
-			"perspective", "offset-path", "offset-position",
-			"translate", "rotate", "scale",
-			"transform-style", "contain", "view-transition-name":
-			return true
-		}
-	}
-	// CSS Flexbox §4.3: A flex item with an explicit z-index creates a
-	// stacking context even if position is static.
-	if b.IsFlexItem() && b.Style.HasExplicitZIndex() {
+	// and the HasPropertyThatCreatesStackingContext helper
+	// (4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	//
+	// The allowsZIndex gate reflects Blink's style_adjuster.cc:1240-1247:
+	// only positioned or flex/grid items have AllowsZIndex set, so a
+	// static-position non-flex/grid box with `will-change: z-index` does NOT
+	// establish a stacking context.
+	allowsZIndex := b.Position != css.PositionStatic || b.IsFlexItem()
+	if b.Style.WillChangeCreatesStackingContext(allowsZIndex) {
 		return true
 	}
 	return false
