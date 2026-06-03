@@ -23,11 +23,11 @@ import (
 // right border ring at column x=207 across rows y=63..82.
 func TestIsAtomicInlineForPaint_ReplacedWithClip(t *testing.T) {
 	tests := []struct {
-		name      string
-		tag       string
-		overflow  string
-		display   string
-		isAtomic  bool
+		name       string
+		tag        string
+		overflow   string
+		display    string
+		isAtomic   bool
 		isFlexItem bool
 	}{
 		{"img-display-inline-overflow-clip", "img", "clip", "inline", true, false},

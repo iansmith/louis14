@@ -13,7 +13,7 @@ func TestParseRubyInInlineItems_BaseOnly(t *testing.T) {
 	// Item stream for `<ruby>X</ruby>` (no <rt>):
 	//   [Open, BasePlaceholder, Text("X"), Close]
 	items := []*InlineItem{
-		mkItem(InlineItemOpenRubyColumn),    // 0
+		mkItem(InlineItemOpenRubyColumn),      // 0
 		mkItem(InlineItemRubyLinePlaceholder), // 1
 		mkItem(InlineItemText),                // 2
 		mkItem(InlineItemCloseRubyColumn),     // 3
