@@ -349,7 +349,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var lastChildBaseline float64    // Baseline of the last in-flow block child.
 	var lastChildBlockOffset float64 // Block offset of the last in-flow block child.
 	hasLastChildBaseline := false
-	hasSetFirstBaseline := false // Shared guard for first-baseline capture in layout order.
 
 	// Iframe/object with a document source: lay out the nested document
 	// instead of this element's DOM children.
@@ -417,13 +416,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			hasOwnFloats = true
 		}
 		firstLineAscent = inlineAscent
-		// Shared guard for first-baseline propagation in layout order (mirrors Blink).
-		// If the first baseline hasn't been set yet and this line has a baseline, set it.
-		if !hasSetFirstBaseline && inlineAscent > 0 {
+		// Shared guard: capture first baseline in layout order (mirrors Blink).
+		if !hasFirstChildBaseline && inlineAscent > 0 {
 			firstChildBaseline = inlineAscent
 			firstChildBlockOffset = 0
 			hasFirstChildBaseline = true
-			hasSetFirstBaseline = true
 		}
 		// Track the last line's baseline offset for inline-block alignment.
 		lastChildBaseline = lastBaselineOff
@@ -1268,13 +1265,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// first baseline as this container's first baseline.
 			// CSS Align §9.1: orthogonal children don't contribute baselines
 			// in the parent's writing mode, so skip them.
-			// Shared guard for first-baseline propagation in layout order (mirrors Blink).
-			// If the first baseline hasn't been set yet and this child has a baseline, set it.
-			if !isLegendOfFieldset && !isOrthogonal && !hasSetFirstBaseline && childResult.HasBaseline {
+			// Shared guard: capture first baseline in layout order (mirrors Blink).
+			if !isLegendOfFieldset && !isOrthogonal && !hasFirstChildBaseline && childResult.HasBaseline {
 				firstChildBaseline = childResult.Baseline
 				firstChildBlockOffset = actualChildBlockOff
 				hasFirstChildBaseline = true
-				hasSetFirstBaseline = true
 			}
 
 			// CSS Lists §3 / Blink PositionOrPropagateListMarker: claim a
