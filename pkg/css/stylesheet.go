@@ -141,6 +141,7 @@ type ConditionNode struct {
 	Kind     ConditionKind
 	Feature  string          // ConditionFeature: "min-width", "color", "monochrome", …
 	Value    string          // ConditionFeature: "768px", "landscape", "" (boolean)
+	Op       string          // ConditionFeature (range syntax): ">", ">=", "<", "<=", "=" (empty = no operator)
 	Children []ConditionNode // ConditionNot (1 child), ConditionAnd/Or (≥2 children)
 }
 
@@ -1796,6 +1797,45 @@ func splitAtDepthZero(s, sep string) []string {
 // like "min-width: 768px" or "color" into a ConditionFeature node.
 func parseFeatureNode(s string) ConditionNode {
 	s = strings.TrimSpace(s)
+
+	// Check for range syntax operators at depth 0 (>, <, >=, <=, =).
+	// These must appear at paren depth 0 to avoid conflicts with calc() contents.
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '>', '<', '=':
+			if depth == 0 {
+				// Found a potential range operator at depth 0.
+				// Match >=, <=, or single >, <, =.
+				var op string
+				var opEnd int
+				if i+1 < len(s) && s[i+1] == '=' {
+					op = s[i : i+2]
+					opEnd = i + 2
+				} else {
+					op = s[i : i+1]
+					opEnd = i + 1
+				}
+				// Extract feature name (before op) and value (after op).
+				feature := strings.TrimSpace(s[:i])
+				value := strings.TrimSpace(s[opEnd:])
+				if feature != "" && value != "" {
+					return ConditionNode{
+						Kind:    ConditionFeature,
+						Feature: feature,
+						Op:      op,
+						Value:   value,
+					}
+				}
+			}
+		}
+	}
+
+	// Legacy colon-based syntax: `feature: value`.
 	parts := strings.SplitN(s, ":", 2)
 	if len(parts) == 2 {
 		return ConditionNode{
@@ -1804,6 +1844,8 @@ func parseFeatureNode(s string) ConditionNode {
 			Value:   strings.TrimSpace(parts[1]),
 		}
 	}
+
+	// Feature name only (no value or operator).
 	return ConditionNode{
 		Kind:    ConditionFeature,
 		Feature: s,
@@ -4204,8 +4246,26 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 		}
 		return boolToResult(value == "0") // numeric: we have 0 monochrome bits
 
-	// Resolution — always match for static renderer
+		// Resolution — always match for static renderer, but parse the value
+	// to ensure calc() and resolution units are recognized.
 	case "resolution", "min-resolution", "max-resolution":
+		if cond.Op != "" {
+			// Range syntax: resolution > calc(...) etc.
+			// Parse the value to ensure it evaluates without error.
+			// We always return True in the static renderer (96dpi ≈ 1dppx is the baseline).
+			ctx := calcContext{fontSize: 16, chScale: 0.5}
+			if IsMathFunction(cond.Value) {
+				_, ok := EvalMathFunction(cond.Value, ctx)
+				if !ok {
+					return MediaQueryUnknown
+				}
+			} else {
+				_, ok := parseLengthFullWithCh(cond.Value, 16, 0, 0, 0.5, 0, 0, 0, 0)
+				if !ok {
+					return MediaQueryUnknown
+				}
+			}
+		}
 		return MediaQueryTrue
 
 	// Legacy device dimension features — approximate as viewport
@@ -4248,11 +4308,22 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 	case "update":
 		return boolToResult(value == "none" || value == "")
 
-	// grid — not a grid device (bitmap display)
+		// grid — not a grid device (bitmap display)
 	case "grid":
+		// If the value is a calc() expression, evaluate it numerically.
+		// Otherwise, compare the string form against "0".
+		if IsMathFunction(cond.Value) {
+			ctx := calcContext{fontSize: 16, chScale: 0.5}
+			numVal, ok := EvalMathFunction(cond.Value, ctx)
+			if !ok {
+				return MediaQueryUnknown
+			}
+			// grid matches when the value evaluates to 0.
+			return boolToResult(numVal == 0)
+		}
 		return boolToResult(value == "0" || value == "")
 
-	// aspect-ratio / device-aspect-ratio — Media Queries 4 §4.6/§4.7.
+		// aspect-ratio / device-aspect-ratio — Media Queries 4 §4.6/§4.7.
 	// louis14 treats device-aspect-ratio identically to aspect-ratio because
 	// the static renderer has no device pixel concept distinct from the
 	// viewport. Comparison uses cross-multiplication (vw*den vs vh*num) to
@@ -4273,6 +4344,24 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 		}
 		vwDen := viewportWidth * den
 		vhNum := viewportHeight * num
+		// If Op is set (range syntax), use the operator for comparison.
+		if cond.Op != "" {
+			switch cond.Op {
+			case ">":
+				return boolToResult(vwDen > vhNum)
+			case ">=":
+				return boolToResult(vwDen >= vhNum)
+			case "<":
+				return boolToResult(vwDen < vhNum)
+			case "<=":
+				return boolToResult(vwDen <= vhNum)
+			case "=":
+				return boolToResult(vwDen == vhNum)
+			default:
+				return MediaQueryUnknown
+			}
+		}
+		// Legacy colon-based syntax (min/max prefixes).
 		switch feature {
 		case "min-aspect-ratio", "min-device-aspect-ratio":
 			return boolToResult(vwDen >= vhNum)
@@ -4289,6 +4378,30 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 			// preserves the "don't apply" semantics without flipping under `not`.
 			return MediaQueryUnknown
 		}
+		// If Op is set (range syntax), use the operator for comparison.
+		if cond.Op != "" {
+			var viewport float64
+			if feature == "width" || feature == "min-width" || feature == "max-width" {
+				viewport = viewportWidth
+			} else {
+				viewport = viewportHeight
+			}
+			switch cond.Op {
+			case ">":
+				return boolToResult(viewport > numVal)
+			case ">=":
+				return boolToResult(viewport >= numVal)
+			case "<":
+				return boolToResult(viewport < numVal)
+			case "<=":
+				return boolToResult(viewport <= numVal)
+			case "=":
+				return boolToResult(viewport == numVal)
+			default:
+				return MediaQueryUnknown
+			}
+		}
+		// Legacy colon-based syntax (min/max prefixes).
 		switch feature {
 		case "min-width":
 			return boolToResult(viewportWidth >= numVal)
@@ -4314,34 +4427,81 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 
 // parseRatio parses a <ratio> per CSS Values 4 §4.5.6 / Media Queries 4 §4.6:
 // either `<number> / <number>` or a bare `<number>` (denominator defaults to
-// 1). Whitespace around the slash is allowed. Returns numerator, denominator,
-// ok. Negative values are rejected. The degenerate `0/0` case is rewritten to
-// `1/0` per the aspect-ratio-004 / device-aspect-ratio-002 / -004 spec note —
-// "0/0 is converted into 1/0" (infinity) — so that cross-multiplication in
-// the aspect-ratio comparison yields the spec-mandated min=never / max=always
-// behavior. Mirrors Blink's CSSRatioValue parse + MediaQueryExpValue::Ratio()
-// at third_party/blink/renderer/core/css/parser/media_query_parser.cc @
+// 1). Whitespace around the slash is allowed. Each operand may be a calc()
+// expression. Returns numerator, denominator, ok. Negative values are rejected.
+// The degenerate `0/0` case is rewritten to `1/0` per the aspect-ratio-004 /
+// device-aspect-ratio-002 / -004 spec note — "0/0 is converted into 1/0"
+// (infinity) — so that cross-multiplication in the aspect-ratio comparison
+// yields the spec-mandated min=never / max=always behavior. Mirrors Blink's
+// CSSRatioValue parse + MediaQueryExpValue::Ratio() at
+// third_party/blink/renderer/core/css/parser/media_query_parser.cc @
 // 4883d11f.
 func parseRatio(val string) (num, den float64, ok bool) {
 	val = strings.TrimSpace(val)
-	parts := strings.SplitN(val, "/", 2)
-	n, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	if err != nil || n < 0 {
-		return 0, 0, false
+
+	// Find the top-level "/" at depth 0 (not inside parens).
+	depth := 0
+	slashPos := -1
+	for i := 0; i < len(val); i++ {
+		switch val[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '/':
+			if depth == 0 {
+				slashPos = i
+				break
+			}
+		}
+		if slashPos >= 0 {
+			break
+		}
 	}
-	if len(parts) == 1 {
-		return n, 1, true
+
+	numStr := val
+	denStr := "1"
+	if slashPos >= 0 {
+		numStr = strings.TrimSpace(val[:slashPos])
+		denStr = strings.TrimSpace(val[slashPos+1:])
 	}
-	d, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if err != nil || d < 0 {
-		return 0, 0, false
+
+	// Parse numerator (may be calc()).
+	ctx := calcContext{fontSize: 16, chScale: 0.5}
+	if IsMathFunction(numStr) {
+		n, ok := EvalMathFunction(numStr, ctx)
+		if !ok || n < 0 {
+			return 0, 0, false
+		}
+		num = n
+	} else {
+		n, err := strconv.ParseFloat(numStr, 64)
+		if err != nil || n < 0 {
+			return 0, 0, false
+		}
+		num = n
 	}
-	// "0/0" → "1/0" (infinity) per Media Queries 4 spec note carried in the
-	// WPT aspect-ratio-004 / device-aspect-ratio-002 / -004 assertions.
-	if n == 0 && d == 0 {
-		n = 1
+
+	// Parse denominator (may be calc()).
+	if IsMathFunction(denStr) {
+		d, ok := EvalMathFunction(denStr, ctx)
+		if !ok || d < 0 {
+			return 0, 0, false
+		}
+		den = d
+	} else {
+		d, err := strconv.ParseFloat(denStr, 64)
+		if err != nil || d < 0 {
+			return 0, 0, false
+		}
+		den = d
 	}
-	return n, d, true
+
+	// "0/0" → "1/0" (infinity) per Media Queries 4 spec note.
+	if num == 0 && den == 0 {
+		num = 1
+	}
+	return num, den, true
 }
 
 // Phase 22: parseMediaLength parses a length value and returns value and unit

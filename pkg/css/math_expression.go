@@ -28,12 +28,13 @@
 package css
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
 
-// IsMathFunction reports whether val is one of the four math-function heads
-// recognized by CSS Values 4 §10: calc(), min(), max(), clamp().
+// IsMathFunction reports whether val is one of the six math-function heads
+// recognized by CSS Values 4 §10: calc(), min(), max(), clamp(), sign(), abs().
 //
 // The check is structural (prefix + balanced suffix), not validating. A
 // well-formed but type-mismatched call like `min(0, 100%)` still returns
@@ -46,7 +47,9 @@ func IsMathFunction(val string) bool {
 	return strings.HasPrefix(v, "calc(") ||
 		strings.HasPrefix(v, "min(") ||
 		strings.HasPrefix(v, "max(") ||
-		strings.HasPrefix(v, "clamp(")
+		strings.HasPrefix(v, "clamp(") ||
+		strings.HasPrefix(v, "sign(") ||
+		strings.HasPrefix(v, "abs(")
 }
 
 // IsMathFunctionWithPercent reports whether val is a math function whose
@@ -60,7 +63,7 @@ func IsMathFunctionWithPercent(val string) bool {
 	return strings.Contains(val, "%")
 }
 
-// EvalMathFunction evaluates a CSS math function (calc / min / max / clamp,
+// EvalMathFunction evaluates a CSS math function (calc / min / max / clamp / sign / abs,
 // possibly nested) with the supplied context. Returns (result, true) on
 // success, (0, false) on parse or type errors.
 //
@@ -81,6 +84,10 @@ func EvalMathFunction(val string, ctx calcContext) (float64, bool) {
 		return evalMinMaxCtx(v[len("max("):len(v)-1], "max", ctx)
 	case strings.HasPrefix(v, "clamp("):
 		return evalClampCtx(v[len("clamp("):len(v)-1], ctx)
+	case strings.HasPrefix(v, "sign("):
+		return evalSignCtx(v[len("sign("):len(v)-1], ctx)
+	case strings.HasPrefix(v, "abs("):
+		return evalAbsCtx(v[len("abs("):len(v)-1], ctx)
 	}
 	return 0, false
 }
@@ -297,6 +304,34 @@ func evalClampCtx(argsStr string, ctx calcContext) (float64, bool) {
 	return prefVal, true
 }
 
+// evalSignCtx evaluates a sign(x) call, returning -1, 0, or 1 based on the
+// sign of the argument, per CSS Values 4 §10.7. The argument is evaluated
+// as a math expression with the supplied context.
+func evalSignCtx(argStr string, ctx calcContext) (float64, bool) {
+	val, ok := parseMathArgCtx(argStr, ctx)
+	if !ok {
+		return 0, false
+	}
+	if val < 0 {
+		return -1, true
+	}
+	if val > 0 {
+		return 1, true
+	}
+	return 0, true
+}
+
+// evalAbsCtx evaluates an abs(x) call, returning the absolute value of the
+// argument, per CSS Values 4 §10.7. The argument is evaluated as a math
+// expression with the supplied context.
+func evalAbsCtx(argStr string, ctx calcContext) (float64, bool) {
+	val, ok := parseMathArgCtx(argStr, ctx)
+	if !ok {
+		return 0, false
+	}
+	return math.Abs(val), true
+}
+
 // isValidLPMathFunctionAtParseTime reports whether a top-level math function
 // is syntactically + type-wise valid for a length-percentage CSS property.
 // Run at declaration parse time so an invalid math expression cannot
@@ -417,7 +452,7 @@ func splitAdditiveTerms(s string) []string {
 	return out
 }
 
-// mathFunctionNames lists the four identifiers recognized as math-function
+// mathFunctionNames lists the six identifiers recognized as math-function
 // heads inside a calc() atom. Mirrors the CSSValueID switch in Blink's
 // CSSMathExpressionOperation::ParseMathFunction.
 var mathFunctionNames = map[string]bool{
@@ -425,6 +460,8 @@ var mathFunctionNames = map[string]bool{
 	"min":   true,
 	"max":   true,
 	"clamp": true,
+	"sign":  true,
+	"abs":   true,
 }
 
 // extractNestedMathCall examines tokens starting at pos. If they form a

@@ -1003,6 +1003,31 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 		}
 		return num * (96.0 / 72.0), true // 1pt = 96/72 px
 	}
+	// Resolution units (check longer suffixes first to avoid conflicts)
+	if strings.HasSuffix(val, "dppx") {
+		numStr := strings.TrimSuffix(val, "dppx")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num, true // dppx is the base resolution unit; return as-is for MQ comparisons
+	}
+	if strings.HasSuffix(val, "dpcm") {
+		numStr := strings.TrimSuffix(val, "dpcm")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num / 2.54 * 96.0, true // dpcm to dppx: 1dpcm ≈ 96/2.54 px per inch
+	}
+	if strings.HasSuffix(val, "dpi") {
+		numStr := strings.TrimSuffix(val, "dpi")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num / 96.0, true // dpi to dppx: 1dpi = 1/96 dppx (96dpi = 1dppx)
+	}
 	if strings.HasSuffix(val, "px") {
 		val = strings.TrimSuffix(val, "px")
 	} else {
