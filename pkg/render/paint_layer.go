@@ -1782,17 +1782,37 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		if !isPositioned {
 			if child.CreatesStackingContext() {
 				// Non-positioned elements that create stacking contexts (due to
-				// opacity, transform, contain:layout/paint, etc.) paint in DOM
-				// order at step 3/4/5 of CSS 2.1 Appendix E, not in z-order at
-				// step 6/7. This preserves overflow:hidden clipping from ancestor
-				// elements. They do, however, act as a new stacking context root
-				// for their own children.
+				// transform, opacity, will-change, contain:layout/paint, etc.)
+				// paint at CSS 2.1 Appendix E step 6 in DOM order, alongside
+				// positioned z-index:auto descendants. The CSS Stacking spec
+				// (and all browser implementations) treat all z-index:auto
+				// stacking contexts uniformly at step 6 — "flow order" (step 3/5)
+				// only applies to non-SC elements.
+				//
+				// Exception: if the SC is contained within an overflow-clipping
+				// ancestor, keep it in FlowChildren so the parent's HasClip bracket
+				// clips it naturally — same logic as the positioned path at line
+				// ~1844 below. A non-positioned SC contained by overflow must NOT
+				// escape to the ancestor SC's AutoZero list or the clip is lost.
 				if isFloat(child) {
 					parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-				} else {
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+				} else if isContainedByAnyOverflow(box, currentSC.Box) {
+					// Contained by an overflow-clipping ancestor between this box
+					// and the SC boundary — stay in flow order so the clip applies.
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+				} else if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+					// Inside a preserve-3d rendering context: children's visual
+					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
+					// applyTransforms' preserve-3d ancestor composition fires at
+					// PhaseForeground and the 3D z-order is respected.
+					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+				} else {
+					currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 				}
-				buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
 			} else if isFloat(child) {
 				// CSS 2.1 Appendix E step 4: floats paint after non-float block
 				// backgrounds (step 3) so they appear above block backgrounds.
@@ -1851,6 +1871,19 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
 		}
 	}
+}
+
+// isContainedByAnyOverflow returns true if immediateParent or any ancestor up
+// to (but not including) scRoot has overflow clipping. Used to decide whether a
+// non-positioned SC should stay in FlowChildren (where the parent's HasClip
+// bracket clips it naturally) or be promoted to AutoZero (step 6 paint order).
+func isContainedByAnyOverflow(immediateParent *layout.Box, scRoot *layout.Box) bool {
+	for ancestor := immediateParent; ancestor != nil && ancestor != scRoot; ancestor = ancestor.Parent {
+		if hasOverflowClipping(ancestor) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFloat returns true if the box has float:left or float:right.

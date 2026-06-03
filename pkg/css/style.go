@@ -10030,8 +10030,11 @@ func (s *Style) GetTransformOrigin() TransformOrigin {
 //
 // The third (z-axis) component, if present, is ignored for the 2D paint
 // pipeline.
-func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) {
-	val, ok := s.Get("transform-origin")
+// resolveOriginPropertyPx resolves a CSS <position>-syntax property (e.g.
+// transform-origin or perspective-origin) to pixel offsets within the element's
+// box. Shared by ResolveTransformOriginPx and ResolvePerspectiveOriginPx.
+func (s *Style) resolveOriginPropertyPx(property string, boxW, boxH float64) (float64, float64) {
+	val, ok := s.Get(property)
 	if !ok {
 		return 0.5 * boxW, 0.5 * boxH
 	}
@@ -10049,6 +10052,10 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 		y = resolveOriginAxisKeywordOrLength(yPart, fs, vw, vh, ch, xh, cap, lh, ic, boxH)
 	}
 	return x, y
+}
+
+func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) {
+	return s.resolveOriginPropertyPx("transform-origin", boxW, boxH)
 }
 
 // ResolveTransformOriginZ returns the resolved z-axis component of
@@ -10440,8 +10447,14 @@ func (s *Style) GetPerspective() (float64, bool) {
 		return 0, false
 	}
 	d, isPct, parsed := parseTransformValue(val)
-	if !parsed || isPct || d <= 0 {
+	if !parsed || isPct || d < 0 {
 		return 0, false
+	}
+	// CSS Transforms L2 §6 / csswg-drafts issue #413: perspective values
+	// below 1px (including 0) are clamped to 1px so the perspective matrix
+	// is still applied (d=0 ≡ perspective(1px), not "no perspective").
+	if d < 1 {
+		d = 1
 	}
 	return d, true
 }
@@ -10451,24 +10464,7 @@ func (s *Style) GetPerspective() (float64, bool) {
 // ResolveTransformOriginPx; perspective-origin uses the same <position> syntax
 // but has no z-component.
 func (s *Style) ResolvePerspectiveOriginPx(boxW, boxH float64) (float64, float64) {
-	val, ok := s.Get("perspective-origin")
-	if !ok {
-		return 0.5 * boxW, 0.5 * boxH
-	}
-	parts := splitShorthandParts(val)
-	fs := s.GetFontSize()
-	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
-	cap, lh, ic := s.CapHeight, s.LhSize, s.IcWidth
-	xPart, yPart := classifyOriginParts(parts)
-	x := 0.5 * boxW
-	y := 0.5 * boxH
-	if xPart != "" {
-		x = resolveOriginAxisKeywordOrLength(xPart, fs, vw, vh, ch, xh, cap, lh, ic, boxW)
-	}
-	if yPart != "" {
-		y = resolveOriginAxisKeywordOrLength(yPart, fs, vw, vh, ch, xh, cap, lh, ic, boxH)
-	}
-	return x, y
+	return s.resolveOriginPropertyPx("perspective-origin", boxW, boxH)
 }
 
 // translate4 returns a 4×4 translation matrix (x,y in the plane; z=0).
@@ -10499,6 +10495,8 @@ func ComposePerspectiveChildProjection(child []Transform, ocx, ocy, d, opx, opy 
 	// Child transform about its (screen-space) transform-origin.
 	childM := translate4(ocx, ocy).multiply(M).multiply(translate4(-ocx, -ocy))
 	// Parent perspective about its (screen-space) perspective-origin.
+	// d is always >= 1 when coming from GetPerspective (clamped); the d == 0
+	// guard is a defensive no-op for direct callers.
 	combined := childM
 	if d != 0 {
 		persp := identityMatrix4()
@@ -10678,9 +10676,16 @@ func transformToMatrix4(t Transform) matrix4 {
 	case "perspective":
 		// perspective(d): equivalent to matrix3d(1,0,0,0, 0,1,0,0,
 		// 0,0,1,-1/d, 0,0,0,1) per CSS Transforms L2 §11.
-		if len(t.Values) >= 1 && t.Values[0] != 0 {
+		// CSS Transforms L2 / csswg-drafts #413: perspective(d) with d < 1px
+		// (including d==0) is clamped to perspective(1px); negative values
+		// are treated as the identity (degenerate — no finite focal point).
+		if len(t.Values) >= 1 && t.Values[0] >= 0 {
+			d := t.Values[0]
+			if d < 1 {
+				d = 1
+			}
 			m := identityMatrix4()
-			m[3][2] = -1 / t.Values[0]
+			m[3][2] = -1 / d
 			return m
 		}
 	}
