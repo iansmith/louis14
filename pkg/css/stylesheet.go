@@ -5134,6 +5134,12 @@ func isValidColorValue(value string) bool {
 	if containsAttrFunction(value) {
 		return true
 	}
+	// light-dark() is a valid deferred color function resolved at cascade time
+	// by resolveInheritValues (CSS Color 5 §14.2). ParseColor doesn't handle it
+	// so we must allowlist it here before the parse-time validation gate.
+	if strings.HasPrefix(lower, "light-dark(") && strings.HasSuffix(lower, ")") {
+		return true
+	}
 	_, ok := ParseColor(value)
 	return ok
 }

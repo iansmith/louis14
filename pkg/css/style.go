@@ -3090,6 +3090,11 @@ var nonDefaultInitialValues = map[string]string{
 	// `sup.unhide { color: initial; }` must render black against a
 	// `color: transparent` parent.
 	"color": "canvastext",
+	// CSS Color Adjust 1 §3: initial value of `color-scheme` is `normal`.
+	// `color-scheme` IS inherited (cascade.go inheritableProperties), so an
+	// explicit initial here prevents ApplyInheritedProperties from re-filling
+	// the slot with the parent's scheme after `color-scheme: initial`.
+	"color-scheme": "normal",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,
@@ -3215,7 +3220,7 @@ var cssLonghandProperties = []string{
 	"background-position", "background-size", "background-attachment",
 	"background-clip", "background-origin",
 	// Color & opacity
-	"color", "opacity",
+	"color", "color-scheme", "opacity",
 	// Font
 	"font-family", "font-size", "font-weight", "font-style", "font-variant",
 	"font-feature-settings", "font-optical-sizing", "font-size-adjust",
@@ -5170,6 +5175,17 @@ func ParseColorWithCurrentColor(colorStr string, currentColor Color) (Color, boo
 			return Color{}, false
 		}
 		return contrastColorFor(base), true
+	}
+	// light-dark() may contain "currentcolor" as an operand; resolve the selected
+	// operand through ParseColorWithCurrentColor so currentcolor resolves correctly.
+	// Default to light (dark=false) since we have no element context here; the
+	// element's own used color-scheme is applied later in resolveInheritValues.
+	if strings.HasPrefix(lower, "light-dark(") && strings.HasSuffix(lower, ")") {
+		operand, ok := resolveLightDark(colorStr, false)
+		if !ok {
+			return Color{}, false
+		}
+		return ParseColorWithCurrentColor(operand, currentColor)
 	}
 	return ParseColor(colorStr)
 }
@@ -14609,4 +14625,23 @@ func isPropagationBoundary(s *Style, node *html.Node) bool {
 		return true
 	}
 	return false
+}
+
+// UsedColorSchemeDark returns true if the element's color-scheme property
+// is "dark", indicating a dark color scheme is in effect.
+// When multiple keywords are specified (e.g., "light dark"), the first keyword
+// is preferred, matching Blink's UsedColorScheme() behavior.
+// Absent, "normal", or "light" returns false (light is the default).
+func (s *Style) UsedColorSchemeDark() bool {
+	scheme, ok := s.Get("color-scheme")
+	if !ok || scheme == "" || strings.EqualFold(scheme, "normal") {
+		return false
+	}
+	// Extract the first keyword (before any space).
+	lower := strings.ToLower(scheme)
+	fields := strings.Fields(lower)
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "dark"
 }
