@@ -194,3 +194,66 @@ func TestMulticolNested_InnerEmitsBreakTokenWhenContentExceedsOuterCol(t *testin
 			NewLogicalFragment(wdm, frag).BlockSize())
 	}
 }
+
+// TestMulticol_ExportsFirstBaselineFromColumnLine is the LOU-262 indicator test.
+//
+// Mirrors css-multicol/baseline-002: a balanced 3-column multicol whose content
+// is a `break-inside:avoid; height:2em` empty block followed by three <br>s.
+// Each column slice is `[baseline-less 2em block][<br> line]`. The multicol must
+// export a first baseline (taken, per the assert, from the column with the
+// highest first baseline) so a baseline-aligned flex parent can position its
+// other items. Before the fix every column reported HasBaseline=false — the
+// line box that follows the baseline-less block child never contributed a first
+// baseline — so the multicol exported no baseline and the flex parent
+// synthesized one, dropping the sibling box ~50px.
+//
+// Blink: BlockLayoutAlgorithm::PropagateBaselineFromLineBox /
+// ::PropagateBaselineFromBlockChild share one `if (!FirstBaseline())` guard
+// applied per child in layout order, then
+// ColumnLayoutAlgorithm::PropagateBaselineFromChild min-merges across columns.
+// block_layout_algorithm.cc:3688-3752, column_layout_algorithm.cc PropagateBaselineFromChild,
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func TestMulticol_ExportsFirstBaselineFromColumnLine(t *testing.T) {
+	avoidBlock := makeNode("div")
+	br1 := makeNode("br")
+	br2 := makeNode("br")
+	br3 := makeNode("br")
+	mc := makeNode("div", avoidBlock, br1, br2, br3)
+
+	styles := map[*html.Node]*css.Style{
+		mc: makeStyle(
+			"display", "block",
+			"width", "50px",
+			"height", "100px",
+			"column-count", "3",
+			"orphans", "1",
+			"widows", "1",
+			"line-height", "2em",
+		),
+		avoidBlock: makeStyle(
+			"display", "block",
+			"break-inside", "avoid",
+			"height", "2em",
+			"line-height", "2em",
+		),
+	}
+
+	ctx := testContext()
+	mcNode := buildTestTree(mc, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 50, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 50, BlockSize: 100}).
+		Build()
+
+	result := layoutElement(ctx, mcNode, space)
+	if result == nil || result.Fragment == nil {
+		t.Fatal("multicol layout returned nil result")
+	}
+	if !result.HasBaseline {
+		t.Fatalf("multicol HasBaseline = false; want true — the multicol must export a first baseline from a column's <br> line (css-multicol/baseline-002)")
+	}
+	if result.Baseline <= 0 {
+		t.Errorf("multicol first Baseline = %v; want > 0 (a real line baseline)", result.Baseline)
+	}
+}
