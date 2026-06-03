@@ -1674,32 +1674,46 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	// Parse the condition expression into a recursive ConditionNode tree.
 	// Top-level conditions separated by " and " become a list of ConditionAnd
 	// children; each condition is parsed recursively to handle not/or nesting.
-	// HOWEVER, per CSS Media Queries 4 §2.3, conditions MUST start with "(" or "not".
-	// A bare media-type like `screen and (min-width: 480px) screen` (leftover media-type)
-	// is invalid (mirrors Blink's ConsumeQuery requiring full-stream consumption).
+	// Per CSS Media Queries 4 §2.3, each condition must start with "(" or "not".
+	// A bare identifier (e.g., "screen" appearing after a condition) indicates
+	// a leftover media-type and makes the query invalid (WI-4: test 006).
 	conditionStrs := splitMediaConditions(mediaStr)
 	for _, condStr := range conditionStrs {
 		condStr = strings.TrimSpace(condStr)
 		if condStr == "" {
 			continue
 		}
-		// Reject a condition fragment that doesn't start with "(" or "not ".
-		// This catches leftover media-types like the second "screen" in
-		// `screen and (min-width: 480px) screen and (...)`.
+		// Bare identifiers (not starting with "(" or "not ") are invalid.
 		if !strings.HasPrefix(condStr, "(") && !strings.HasPrefix(condStr, "not ") {
 			mq.Invalid = true
 			continue
 		}
-		// Also reject a fragment that starts with "(" but has leftover tokens after
-		// the balanced parens close (e.g., "(min-width: 480px) screen"). stripOuterParens
-		// returns the fragment unchanged when parens don't wrap the whole thing,
-		// signaling malformed content.
+		// Also invalid: a fragment starting with "(" but with leftover non-operator tokens
+		// after the closing paren (e.g., "(min-width: 480px) screen"). stripOuterParens
+		// detects when parens don't wrap. If they don't wrap, check if the remainder
+		// is a valid operator (or/and/not) or bare tokens (invalid).
 		if strings.HasPrefix(condStr, "(") {
 			stripped := stripOuterParens(condStr)
 			if stripped == condStr {
-				// Parens didn't wrap; there are leftover tokens.
-				mq.Invalid = true
-				continue
+				// Outer parens don't wrap. Check what comes after the first balanced paren.
+				depth := 0
+				var afterParens string
+				for i := 0; i < len(condStr); i++ {
+					if condStr[i] == '(' {
+						depth++
+					} else if condStr[i] == ')' {
+						depth--
+						if depth == 0 {
+							afterParens = strings.TrimSpace(condStr[i+1:])
+							break
+						}
+					}
+				}
+				// Leftover tokens that are NOT operators (or, and, not) are invalid.
+				if afterParens != "" && !strings.HasPrefix(afterParens, "or ") && !strings.HasPrefix(afterParens, "and ") && !strings.HasPrefix(afterParens, "not ") {
+					mq.Invalid = true
+					continue
+				}
 			}
 		}
 		node := parseConditionNode(condStr)
