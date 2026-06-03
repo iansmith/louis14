@@ -5786,12 +5786,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		if hasDecor && len(layer.AppliedTextDecorations) > 0 {
 			virtualBox := &layout.Box{X: 0, Y: 0, Width: float64(ta), Height: float64(lh)}
 			tmpInfo := newTextDecorationInfo(virtualBox, textWidth, layer.FontSize, ascent, descent, 0)
-			gap := int(math.Ceil(descent * 0.25))
 			for _, td := range layer.AppliedTextDecorations {
 				if !td.Lines.Has(css.TextDecorationLineUnderline) {
 					continue
 				}
 				th := int(math.Ceil(tmpInfo.computeThickness(td)))
+				gap := int(math.Ceil(tmpInfo.computeUnderlineZeroOffset(td.UnderlinePosition)))
 				offsetExt := int(math.Ceil(td.UnderlineOffset))
 				if offsetExt < 0 {
 					offsetExt = 0
@@ -5925,13 +5925,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// fragment flags gate inset application at the decorating-
 				// box edges so interior line breaks don't extend at the line
 				// wrap. Mirrors drawOneAppliedTextDecoration's logic.
-				gap := descent * 0.25
 				info := newTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0)
 				for _, td := range layer.AppliedTextDecorations {
 					if !td.Lines.Has(css.TextDecorationLineUnderline) {
 						continue
 					}
 					th := info.computeThickness(td)
+					gap := info.computeUnderlineZeroOffset(td.UnderlinePosition)
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
 					xStart := float64(inlineStartExt)
 					xEnd := float64(inlineStartExt + ta)
