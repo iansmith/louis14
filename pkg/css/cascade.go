@@ -280,19 +280,44 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			if _, ok := style.Get("text-align"); !ok {
 				style.Set("text-align", "start")
 			}
+		} else {
+			// Orphan <rt> (not inside <ruby>/<rb>/<rtc>) defaults to inline
+			// per CSS Display L3 initial value. The `ruby > rt` selector is
+			// parent-scoped, so orphan rt has no UA display set and would
+			// default to block. Mirrors Blink html.css behavior.
+			if _, ok := style.Get("display"); !ok {
+				style.Set("display", "inline")
+			}
 		}
 	case "rb":
 		// CSS Ruby 1 §2 — <rb> participates in ruby inline flow as a plain
-		// inline box. Only applied when inside a <ruby> parent, no explicit
-		// display is set, AND the <rb> has only inline/text content (no
-		// block-level children). The block-content guard prevents breaking
-		// tests like ruby-layout-internal-boxes that rely on <rb> acting as
-		// an inline-block container for its block content.
-		// Mirrors Blink html.css `rb { display: ruby-base; }` @ 4883d11fef.
+		// inline box. When inside <ruby>, set display: inline only if the
+		// element has only inline/text content; otherwise the layout-time
+		// inlinification in normalizeRubySubtrees handles box-fixup. When
+		// orphan (not in <ruby>), set display: inline per CSS Display L3
+		// initial value. Mirrors Blink html.css `rb { display: ruby-base; }`
+		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		if _, ok := style.Get("display"); !ok {
-			if node.Parent != nil && node.Parent.TagName == "ruby" && rubyBaseHasOnlyInlineContent(node) {
+			if node.Parent != nil && node.Parent.TagName == "ruby" {
+				// Inside <ruby>: only set inline if no block content.
+				// If block content, leave unset for layout-time inlinification.
+				if rubyBaseHasOnlyInlineContent(node) {
+					style.Set("display", "inline")
+				}
+			} else {
+				// Orphan <rb> (not inside <ruby>): default to inline.
 				style.Set("display", "inline")
 			}
+		}
+	case "rbc", "rtc":
+		// Ruby base container and ruby text container default to inline per
+		// CSS Display L3 initial value. When inside <ruby>, this inline
+		// default is overridden by layout-time box-fixup in
+		// normalizeRubySubtrees, which handles the ruby-specific display
+		// behavior. Mirrors Blink html.css `rb,rbc,rtc{display:inline}`.
+		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline")
 		}
 	case "rp":
 		// Hidden unconditionally per Blink html.css:972-975 (the flat
