@@ -5864,6 +5864,38 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			B: layer.TextColor.B,
 			A: uint8(layer.TextColor.A * 255),
 		})
+
+		// Phase 1 (underline/overline) must paint BEFORE text glyphs so glyphs
+		// render on top. Mirrors Blink's PaintDecorationsExceptLineThrough called
+		// before text in TextFragmentPainter::Paint @ 4883d11f. Only the
+		// below-text path (underBelow) uses drawTextDecoration here; the
+		// above-text path (else branch below) paints directly and is unaffected.
+		if hasDecor && underBelow {
+			origDC := r.dc
+			r.dc = childDC
+			// virtualBox X = inlineStartExt anchors the inset math so
+			// drawOneAppliedTextDecoration's
+			//   logicalStart = box.X + Inset.InlineStart
+			//   logicalEnd   = box.X + textWidth - Inset.InlineEnd
+			// lands the painted rect inside the extended buffer
+			// [0, taExt) — and HasDecoratingBox=true branches anchor
+			// at box.X + DecoratingBoxOffsetX, which Stays valid too.
+			virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+			r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, false)
+			r.dc = origDC
+			// drawTextDecoration mutates r.dc's color (via r.setColor). Since
+			// r.dc was childDC during the call, childDC's color is now the
+			// decoration color. Restore the text color so the glyph draw below
+			// uses the correct color. Mirrors the r.setColor(layer.TextColor)
+			// call in the non-rotation drawText path.
+			childDC.SetColor(color.RGBA{
+				R: layer.TextColor.R,
+				G: layer.TextColor.G,
+				B: layer.TextColor.B,
+				A: uint8(layer.TextColor.A * 255),
+			})
+		}
+
 		if len(layer.FontFeatures) > 0 {
 			childDC.DrawTextWithFeatures(text, fontID, float64(inlineStartExt), ascent+float64(textOff), layer.FontFeatures)
 		} else {
@@ -5873,23 +5905,14 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// Paint decorations into the buffer (Strategy A). Temporarily swap r.dc
 		// for childDC so the painter writes into src.
 		//
-		// For the below-text path (decorExt > 0), the standard horizontal
-		// underline geometry works: virtual box at Y=textOff means
-		// computeUnderlineLineY = textOff + ascent + 0.25*descent + offset,
-		// landing srcY just below the text glyphs (+ offset moves further down).
-		//
-		// For the above-text path (topExt > 0), we paint the underline rect
-		// directly at srcY = topExt - gap - th - offset (offset moves it
-		// further UP in the buffer; after CW rotation that maps to FURTHER
-		// RIGHT physically, matching the "offset moves away from text" spec
-		// in the under-right case).
-		// Paint decorations into the buffer (Strategy A). Temporarily swap r.dc
-		// for childDC so the painter writes into src.
-		//
 		// Underline painting is split by `underBelow` (the buffer side where
-		// the underline sits before rotation). The above-text path computes
-		// the rect manually because drawOneAppliedTextDecoration assumes srcY-
-		// down, which would re-introduce the offset-cancellation bug.
+		// the underline sits before rotation). The below-text path's phase 1
+		// (underline/overline) already ran above, before glyph drawing. Only
+		// phase 2 (line-through, onlyLineThrough=true) runs here.
+		//
+		// The above-text path computes the underline rect manually because
+		// drawOneAppliedTextDecoration assumes srcY-down, which would
+		// re-introduce the offset-cancellation bug.
 		//
 		// Overline painting is delegated to drawTextDecoration's standard
 		// horizontal geometry (rect [textTop - thickness, textTop] grows
@@ -5907,15 +5930,9 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			origDC := r.dc
 			r.dc = childDC
 			if underBelow {
-				// virtualBox X = inlineStartExt anchors the inset math so
-				// drawOneAppliedTextDecoration's
-				//   logicalStart = box.X + Inset.InlineStart
-				//   logicalEnd   = box.X + textWidth - Inset.InlineEnd
-				// lands the painted rect inside the extended buffer
-				// [0, taExt) — and HasDecoratingBox=true branches anchor
-				// at box.X + DecoratingBoxOffsetX, which Stays valid too.
+				// Phase 1 (underline/overline) already ran before glyph drawing.
+				// Phase 2: line-through only, painted after glyphs so it renders over them.
 				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
-				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, false)
 				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, true)
 			} else if len(layer.AppliedTextDecorations) > 0 {
 				// Above-text underline path: paint each rect manually with the

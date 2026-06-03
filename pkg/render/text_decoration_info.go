@@ -146,25 +146,25 @@ func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float
 	return math.Max(1.0, autoThickness)
 }
 
-// computeUnderlineZeroPosition returns the zero-position offset for the underline
-// stroke based on the text-underline-position value. Mirrors Blink's
-// TextDecorationOffset::ComputeUnderlineOffset (text_decoration_offset.cc
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), which switches on
-// position: auto anchors at the alphabetic baseline, under anchors at block-end
-// (the descender bottom).
-//
-// For auto and from-font (which falls back to auto until FontMetrics plumbing),
-// returns box.Y + ascent (the alphabetic baseline, zero offset).
-// For under, returns box.Y + ascent + descent (the block-end edge).
-func (t textDecorationInfo) computeUnderlineZeroPosition(pos css.TextUnderlinePosition) float64 {
-	switch pos {
-	case css.TextUnderlinePositionUnder:
-		return t.box.Y + t.ascent + t.descent
-	case css.TextUnderlinePositionAuto, css.TextUnderlinePositionFromFont:
-		return t.box.Y + t.ascent
-	default:
-		return t.box.Y + t.ascent
+// baselineRelativeOffset returns the perpendicular distance from the box edge to
+// the underline zero-position for the given TextUnderlinePosition.
+// Under → ascent+descent (block-end edge); auto/from-font → ascent (alphabetic baseline).
+// Single source of truth consumed by computeUnderlineZeroPosition and computeUnderlinePerpX.
+func (t textDecorationInfo) baselineRelativeOffset(pos css.TextUnderlinePosition) float64 {
+	if pos == css.TextUnderlinePositionUnder {
+		return t.ascent + t.descent
 	}
+	return t.ascent
+}
+
+// computeUnderlineZeroPosition returns the absolute Y coordinate of the underline
+// zero-position. Mirrors Blink's TextDecorationOffset::ComputeUnderlineOffset
+// (text_decoration_offset.cc @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+// auto anchors at the alphabetic baseline (box.Y+ascent); under anchors at the
+// block-end edge (box.Y+ascent+descent). from-font falls back to auto until
+// FontMetrics plumbing lands.
+func (t textDecorationInfo) computeUnderlineZeroPosition(pos css.TextUnderlinePosition) float64 {
+	return t.box.Y + t.baselineRelativeOffset(pos)
 }
 
 // computeUnderlineZeroOffset returns the underline zero-position offset in pixels,
@@ -239,18 +239,9 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 // Conceptually mirrors Blink's TextDecorationOffset::ComputeUnderlineOffset()
 // (cited in text_decoration_info.cc:259-273 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (t textDecorationInfo) computeUnderlinePerpX(td css.AppliedTextDecoration) float64 {
-	// Convert the vertical-axis zero-position to perpendicular (X) coordinates.
-	// For auto/from-font: perpendicular offset = ascent (the alphabetic baseline).
-	// For under: perpendicular offset = ascent + descent (the block-end edge).
-	var zeroPerpOffset float64
-	switch td.UnderlinePosition {
-	case css.TextUnderlinePositionUnder:
-		zeroPerpOffset = t.ascent + t.descent
-	case css.TextUnderlinePositionAuto, css.TextUnderlinePositionFromFont:
-		zeroPerpOffset = t.ascent
-	default:
-		zeroPerpOffset = t.ascent
-	}
+	// baselineRelativeOffset encodes the position switch (auto/from-font → ascent,
+	// under → ascent+descent); see its doc for the single source of truth.
+	zeroPerpOffset := t.baselineRelativeOffset(td.UnderlinePosition)
 
 	switch t.underDir {
 	case blockUnderLeft: // vertical-rl: under = left
