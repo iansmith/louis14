@@ -156,6 +156,7 @@ type MediaQuery struct {
 	Restrictor MediaQueryRestrictor // "not" / "only" / none
 	MediaType  string               // "screen", "print", "all", "" (no type given), or an unknown ident
 	Conditions []ConditionNode      // parsed media-condition tree nodes (AND-combined at top level)
+	Invalid    bool                 // true if query is invalid (e.g., reserved keyword in type slot, leftover media-type). Invalid queries are treated as dropped (never match, not flippable by `not`). Mirrors Blink's ConsumeQuery returning nullptr.
 }
 
 // ContainerQuery represents a @container rule condition
@@ -1345,6 +1346,11 @@ func anyMediaQueryStaticallyTruthy(list []*MediaQuery) bool {
 		if mq == nil {
 			return true
 		}
+		// Invalid queries are treated as dropped (ConsumeQuery returning nullptr),
+		// never matching. Skip them via continue, never contributing to truthy.
+		if mq.Invalid {
+			continue
+		}
 		// Type-level static truth: `all` / `screen` / empty match; other
 		// known types (`print`, `tty`, …) don't match a screen renderer.
 		typeMatches := false
@@ -1601,6 +1607,21 @@ func parseContainerQuery(queryStr string) *ContainerQuery {
 // Media conditions are parsed into a recursive ConditionNode tree that
 // supports not/and/or nesting per CSS Media Queries 4 §3.1 (Blink:
 // MediaCondition recursive struct, media_query_parser.cc @ 4883d11f).
+
+// isRestrictorOrLogicalOperator returns true if the lowercase identifier
+// is a CSS reserved keyword: "not", "and", "or", "only", "layer".
+// These keywords cannot appear in the media-type slot of a media query
+// (CSS Media Queries 4 §2.3). Mirrors Blink's MediaQueryParser::IsRestrictorOrLogicalOperator
+// @ third_party/blink/renderer/core/css/parser/media_query_parser.cc @ 4883d11f.
+// This is the single source of truth for reserved-keyword enumeration (CLAUDE.md §5).
+func isRestrictorOrLogicalOperator(ident string) bool {
+	switch ident {
+	case "not", "and", "or", "only", "layer":
+		return true
+	}
+	return false
+}
+
 func parseMediaQuery(mediaStr string) *MediaQuery {
 	// Remove @media prefix
 	mediaStr = strings.TrimPrefix(mediaStr, "@media")
@@ -1626,6 +1647,9 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	// If the remaining string starts with an identifier (not a "("), parse it
 	// as the media type identifier. The identifier is preserved as-is so the
 	// evaluator can recognize unknown types and apply 3-valued logic.
+	// HOWEVER, if the identifier is a reserved keyword (not/and/or/only/layer),
+	// reject it per CSS Media Queries 4 §2.3 (mirrors Blink's ConsumeType
+	// returning nullptr for reserved keywords).
 	if mediaStr != "" && mediaStr[0] != '(' {
 		end := 0
 		for end < len(mediaStr) {
@@ -1635,7 +1659,11 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 			}
 			end++
 		}
-		mq.MediaType = strings.ToLower(mediaStr[:end])
+		candidate := strings.ToLower(mediaStr[:end])
+		if !isRestrictorOrLogicalOperator(candidate) {
+			mq.MediaType = candidate
+		}
+		// If candidate was a reserved keyword, leave mq.MediaType empty (null-equivalent).
 		mediaStr = strings.TrimSpace(mediaStr[end:])
 	}
 
@@ -1646,14 +1674,45 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	// Parse the condition expression into a recursive ConditionNode tree.
 	// Top-level conditions separated by " and " become a list of ConditionAnd
 	// children; each condition is parsed recursively to handle not/or nesting.
+	// HOWEVER, per CSS Media Queries 4 §2.3, conditions MUST start with "(" or "not".
+	// A bare media-type like `screen and (min-width: 480px) screen` (leftover media-type)
+	// is invalid (mirrors Blink's ConsumeQuery requiring full-stream consumption).
 	conditionStrs := splitMediaConditions(mediaStr)
 	for _, condStr := range conditionStrs {
 		condStr = strings.TrimSpace(condStr)
 		if condStr == "" {
 			continue
 		}
+		// Reject a condition fragment that doesn't start with "(" or "not ".
+		// This catches leftover media-types like the second "screen" in
+		// `screen and (min-width: 480px) screen and (...)`.
+		if !strings.HasPrefix(condStr, "(") && !strings.HasPrefix(condStr, "not ") {
+			mq.Invalid = true
+			continue
+		}
+		// Also reject a fragment that starts with "(" but has leftover tokens after
+		// the balanced parens close (e.g., "(min-width: 480px) screen"). stripOuterParens
+		// returns the fragment unchanged when parens don't wrap the whole thing,
+		// signaling malformed content.
+		if strings.HasPrefix(condStr, "(") {
+			stripped := stripOuterParens(condStr)
+			if stripped == condStr {
+				// Parens didn't wrap; there are leftover tokens.
+				mq.Invalid = true
+				continue
+			}
+		}
 		node := parseConditionNode(condStr)
 		mq.Conditions = append(mq.Conditions, node)
+	}
+
+	// If the type slot is empty (null equivalent) AND no conditions were parsed,
+	// mark the query as invalid. This handles bare reserved keywords like
+	// `@media and`, `@media not`, `@media not and`, etc. (mirrors Blink's
+	// ConsumeQuery falling through from ConsumeType returning nullptr with no
+	// valid condition following).
+	if mq.MediaType == "" && len(mq.Conditions) == 0 {
+		mq.Invalid = true
 	}
 
 	return mq
@@ -4027,6 +4086,13 @@ func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) M
 	if mq == nil {
 		// No media query = always matches
 		return MediaQueryTrue
+	}
+
+	// Invalid queries are treated as dropped (ConsumeQuery returning nullptr),
+	// never matching and not flippable by `not`. Return MediaQueryFalse regardless
+	// of restrictor.
+	if mq.Invalid {
+		return MediaQueryFalse
 	}
 
 	// Type-level match (Blink's MediaTypeMatch): empty string and "all"
