@@ -5171,6 +5171,17 @@ func ParseColorWithCurrentColor(colorStr string, currentColor Color) (Color, boo
 		}
 		return contrastColorFor(base), true
 	}
+	// light-dark() may contain "currentcolor" as an operand; resolve the selected
+	// operand through ParseColorWithCurrentColor so currentcolor resolves correctly.
+	// Default to light (dark=false) since we have no element context here; the
+	// element's own used color-scheme is applied later in resolveInheritValues.
+	if strings.HasPrefix(lower, "light-dark(") && strings.HasSuffix(lower, ")") {
+		operand, ok := resolveLightDark(colorStr, false)
+		if !ok {
+			return Color{}, false
+		}
+		return ParseColorWithCurrentColor(operand, currentColor)
+	}
 	return ParseColor(colorStr)
 }
 
@@ -14609,4 +14620,23 @@ func isPropagationBoundary(s *Style, node *html.Node) bool {
 		return true
 	}
 	return false
+}
+
+// UsedColorSchemeDark returns true if the element's color-scheme property
+// is "dark", indicating a dark color scheme is in effect.
+// When multiple keywords are specified (e.g., "light dark"), the first keyword
+// is preferred, matching Blink's UsedColorScheme() behavior.
+// Absent, "normal", or "light" returns false (light is the default).
+func (s *Style) UsedColorSchemeDark() bool {
+	scheme, ok := s.Get("color-scheme")
+	if !ok || scheme == "" || strings.EqualFold(scheme, "normal") {
+		return false
+	}
+	// Extract the first keyword (before any space).
+	lower := strings.ToLower(scheme)
+	fields := strings.Fields(lower)
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "dark"
 }

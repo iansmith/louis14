@@ -548,6 +548,32 @@ func splitColorMixArgs(s string) []string {
 	return args
 }
 
+// resolveLightDark extracts and returns the operand from light-dark(a, b).
+// If dark is true, returns the second operand; otherwise the first.
+// Returns (operand, true) on success, ("", false) if value is not a light-dark form.
+func resolveLightDark(value string, dark bool) (string, bool) {
+	lower := strings.ToLower(value)
+	if !strings.HasPrefix(lower, "light-dark(") || !strings.HasSuffix(lower, ")") {
+		return "", false
+	}
+
+	// Extract the inner part: light-dark(...) -> ...
+	inner := value[11 : len(value)-1]
+
+	// Split by commas respecting nested parentheses.
+	operands := splitColorMixArgs(inner)
+	if len(operands) != 2 {
+		return "", false
+	}
+
+	// Return the appropriate operand.
+	idx := 0
+	if dark {
+		idx = 1
+	}
+	return strings.TrimSpace(operands[idx]), true
+}
+
 // parseColorWithPercent parses a color token optionally followed by a percentage
 // (e.g., "red 30%" or "blue"). Returns (color, percentage) where percentage is
 // -1 if not specified.

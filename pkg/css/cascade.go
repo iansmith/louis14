@@ -1829,45 +1829,96 @@ func formatColorAsRGBA(c Color) string {
 
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
-	for property, value := range style.Properties {
-		// CSS Color 4 §4.4: "If the currentcolor keyword is the specified
-		// value of the color property itself, it is treated as
-		// color: inherit." Rewrite the value before the inherit-resolution
-		// pass below so the parent's computed `color` propagates here.
-		// Mirrors Blink's `StyleBuilderConverter::ConvertColor` in
-		// `third_party/blink/renderer/core/css/resolver/style_builder_converter.cc`
-		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-		if property == "color" && strings.EqualFold(strings.TrimSpace(value), "currentcolor") {
-			value = "inherit"
-			style.Set(property, value)
-		}
-		// CSS Color 5 §3 + Color 4 §4.4: when the `color` property's value
-		// contains a color-mix() / relative-color form referencing
-		// currentcolor, the currentcolor reference resolves to the
-		// *inherited* color (the parent's computed color), not to this
-		// element's own (not-yet-final) color. Substitute now so the value
-		// stored on this element is a concrete color and downstream
-		// inheritors see the same color.
-		if property == "color" && containsCurrentColorToken(value) &&
-			!strings.EqualFold(strings.TrimSpace(value), "currentcolor") &&
-			node.Parent != nil {
-			if parentStyle, ok := styles[node.Parent]; ok {
-				parentCC := parentStyle.GetColor()
-				if resolved, ok := ParseColorWithCurrentColor(value, parentCC); ok {
-					value = formatColorAsRGBA(resolved)
-					style.Set(property, value)
+	// First pass: resolve light-dark() in all properties using the element's own
+	// color-scheme. This must happen before inherit/currentColor resolution so
+	// light-dark() values are concrete before inheritance.
+	for property := range style.Properties {
+		if value, ok := style.Get(property); ok && strings.Contains(strings.ToLower(value), "light-dark(") {
+			if operand, ok := resolveLightDark(value, style.UsedColorSchemeDark()); ok {
+				// If the operand is "currentColor", resolve it to the element's own color.
+				if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
+					if _, ok := style.Get("color"); ok {
+						// Only resolve currentColor if the "color" property is explicitly set
+						cc := style.GetColor()
+						operand = formatColorAsRGBA(cc)
+					}
 				}
+				style.Set(property, operand)
 			}
 		}
-		if value != "inherit" {
-			continue
+	}
+
+	// Second pass: resolve the "color" property's inherit and currentColor keywords
+	// so that light-dark(currentColor, ...) in other properties (resolved in pass 1)
+	// can reference it. Process "color" first due to map iteration randomness.
+	if colorVal, ok := style.Properties["color"]; ok {
+		resolveColorProperty(node, style, styles, "color", colorVal)
+	}
+
+	// Third pass: resolve inherit and currentColor in all other properties.
+	for property := range style.Properties {
+		if property == "color" {
+			continue // Already processed in second pass
 		}
+		value, _ := style.Get(property)
+		if value == "inherit" {
+			// Look up parent's computed style
+			if node.Parent != nil {
+				if parentStyle, ok := styles[node.Parent]; ok {
+					if parentVal, ok := parentStyle.Get(property); ok {
+						style.Set(property, parentVal)
+						continue
+					}
+				}
+			}
+			// No parent or parent doesn't have the property: remove the inherit value
+			// so the property falls back to its default
+			delete(style.Properties, property)
+		}
+	}
+}
+
+// resolveColorProperty resolves a color property value, handling currentColor and
+// color-mix/contrast-color that reference currentColor.
+func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*Style, property, value string) {
+	// CSS Color 4 §4.4: "If the currentcolor keyword is the specified
+	// value of the color property itself, it is treated as
+	// color: inherit." Rewrite the value before the inherit-resolution
+	// pass below so the parent's computed `color` propagates here.
+	// Mirrors Blink's `StyleBuilderConverter::ConvertColor` in
+	// `third_party/blink/renderer/core/css/resolver/style_builder_converter.cc`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if property == "color" && strings.EqualFold(strings.TrimSpace(value), "currentcolor") {
+		value = "inherit"
+		style.Set(property, value)
+	}
+	// CSS Color 5 §3 + Color 4 §4.4: when the `color` property's value
+	// contains a color-mix() / relative-color form referencing
+	// currentcolor, the currentcolor reference resolves to the
+	// *inherited* color (the parent's computed color), not to this
+	// element's own (not-yet-final) color. Substitute now so the value
+	// stored on this element is a concrete color and downstream
+	// inheritors see the same color.
+	if property == "color" && containsCurrentColorToken(value) &&
+		!strings.EqualFold(strings.TrimSpace(value), "currentcolor") &&
+		node.Parent != nil {
+		if parentStyle, ok := styles[node.Parent]; ok {
+			parentCC := parentStyle.GetColor()
+			if resolved, ok := ParseColorWithCurrentColor(value, parentCC); ok {
+				value = formatColorAsRGBA(resolved)
+				style.Set(property, value)
+			}
+		}
+		return // Exit early; the value is now concrete
+	}
+	// Handle inherit keyword
+	if value == "inherit" {
 		// Look up parent's computed style
 		if node.Parent != nil {
 			if parentStyle, ok := styles[node.Parent]; ok {
 				if parentVal, ok := parentStyle.Get(property); ok {
 					style.Set(property, parentVal)
-					continue
+					return
 				}
 			}
 		}
@@ -1875,6 +1926,8 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 		// so the property falls back to its default
 		delete(style.Properties, property)
 	}
+	// For other values (concrete colors, keywords), leave them as-is.
+	// They are already in the style.Properties map from Set().
 }
 
 // inheritableProperties lists CSS properties that inherit from parent to child by default
@@ -1937,6 +1990,8 @@ var inheritableProperties = map[string]bool{
 	"text-emphasis-color":    true,
 	"text-emphasis-style":    true,
 	"text-emphasis-position": true,
+	// CSS Color 4 §2.2: color-scheme is inherited.
+	"color-scheme": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
