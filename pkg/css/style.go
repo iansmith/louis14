@@ -14243,14 +14243,14 @@ type TextDecorationInset struct {
 // louis14-native field. HasColor=false means "currentcolor" — the resolver
 // freezes the resolved color at append-time so a descendant cannot change it.
 type AppliedTextDecoration struct {
-	Lines              TextDecorationLine
-	Style              string // solid | double | dotted | dashed | wavy
-	Color              Color  // valid only when HasColor
-	HasColor           bool   // false = currentcolor at the originating element
-	Thickness          TextDecorationThickness
-	UnderlineOffset    float64 // resolved pixels (0 = auto/initial)
-	UnderlinePosition  TextUnderlinePosition
-	Inset              TextDecorationInset
+	Lines             TextDecorationLine
+	Style             string // solid | double | dotted | dashed | wavy
+	Color             Color  // valid only when HasColor
+	HasColor          bool   // false = currentcolor at the originating element
+	Thickness         TextDecorationThickness
+	UnderlineOffset   float64 // resolved pixels (0 = auto/initial)
+	UnderlinePosition TextUnderlinePosition
+	Inset             TextDecorationInset
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
 	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
