@@ -337,6 +337,36 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// Set first/last baseline from baseline-participating items in first/last rows.
+	// Mirrors Blink GridLayoutAlgorithm::SetBaselineFromItems @ 4883d11f.
+	// CSS Grid §7.1: first baseline = first row; last baseline = last row.
+	lastRow := numRows - 1
+	var gridFirstBL, gridLastBL float64
+	for _, item := range items {
+		if item.result.Baseline > 0 && item.rowStart == 0 {
+			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
+				rowOffsets[0] + item.margins.BlockStart + item.result.Baseline
+			if gridFirstBL == 0 || bl < gridFirstBL {
+				gridFirstBL = bl
+			}
+		}
+		if item.result.Baseline > 0 && item.rowStart == lastRow {
+			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
+				rowOffsets[lastRow] + item.margins.BlockStart + item.result.Baseline
+			if gridLastBL == 0 || bl < gridLastBL {
+				gridLastBL = bl
+			}
+		}
+	}
+	if gridFirstBL > 0 {
+		builder.SetBaseline(gridFirstBL)
+	}
+	if gridLastBL > 0 {
+		builder.SetLastBaseline(gridLastBL)
+	} else if gridFirstBL > 0 {
+		builder.SetLastBaseline(gridFirstBL)
+	}
+
 	// Compute final block-size.
 	intrinsicBlockSize := totalRowSize
 	finalBlockSize := intrinsicBlockSize

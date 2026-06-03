@@ -1294,10 +1294,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// inline-block falls back to its bottom margin edge at
 			// atomic-inline placement time (inline_layout.go).
 			// CSS Align §9.1: orthogonal children don't contribute baselines.
-			if !isLegendOfFieldset && !isOrthogonal && childResult.LastBaseline > 0 {
-				lastChildBaseline = childResult.LastBaseline
-				lastChildBlockOffset = actualChildBlockOff
-				hasLastChildBaseline = true
+			//
+			// Flex/grid containers that don't set LastBaseline fall back to
+			// Baseline (first baseline): they export content-derived baseline
+			// regardless of overflow per CSS Align §4.3.
+			if !isLegendOfFieldset && !isOrthogonal {
+				childLastBL := childResult.LastBaseline
+				if childLastBL == 0 && childStyle != nil {
+					d := childStyle.GetDisplay()
+					if d == css.DisplayFlex || d == css.DisplayGrid ||
+						d == css.DisplayInlineFlex || d == css.DisplayInlineGrid {
+						childLastBL = childResult.Baseline
+					}
+				}
+				if childLastBL > 0 {
+					lastChildBaseline = childLastBL
+					lastChildBlockOffset = actualChildBlockOff
+					hasLastChildBaseline = true
+				}
 			}
 
 			// Reset margin strut to the child's block-end margin.
@@ -1818,11 +1832,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Set last baseline: for inline-block alignment §10.8.1 (uses last line box).
 	// For inline children, lastChildBaseline is the last line's baseline offset.
 	// For block children, it's the last child's propagated baseline.
-	if hasLastChildBaseline {
+	//
+	// Non-flex/grid scroll containers synthesize their §10.8.1 baseline from
+	// block end — mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline.
+	// This lets an enclosing non-scrollable inline-block propagate the correct
+	// synthesized value via its own LastBaseline.
+	if bla.style != nil {
+		d := bla.style.GetDisplay()
+		isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
+			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
+		if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
+			builder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding())
+		} else if hasLastChildBaseline {
+			builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+				lastChildBlockOffset + lastChildBaseline)
+		} else if firstLineAscent > 0 {
+			builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+		}
+	} else if hasLastChildBaseline {
 		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
 	} else if firstLineAscent > 0 {
-		// Single-line case: last baseline = first baseline.
 		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 	}
 

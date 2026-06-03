@@ -76,6 +76,41 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 	return false
 }
 
+// isAtomicBaselineDisplay returns true iff the display type participates in baseline
+// alignment as an atomic inline. These are the displays that export a baseline (either
+// from contents or synthesized from the margin box) to the parent line's baseline
+// calculation. Mirrors Blink's set of atomic-inline displays that reach
+// UseLogicalBottomMarginEdgeForInlineBlockBaseline.
+func isAtomicBaselineDisplay(d css.DisplayType) bool {
+	switch d {
+	case css.DisplayInlineBlock, css.DisplayInlineFlex, css.DisplayFlex,
+		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid:
+		return true
+	}
+	return false
+}
+
+// useLogicalBottomMarginEdgeForInlineBlockBaseline returns true iff the element should
+// synthesize its inline-level baseline from the logical bottom margin edge (border-box
+// block-end in the parent's writing direction), rather than deriving it from content.
+// Per CSS Align baseline-export (https://drafts.csswg.org/css-align/#baseline-export):
+// - inline-block, inline-table, table: synthesize from margin box when scrollable.
+// - inline-flex, inline-grid, flex, grid: always derive from content baseline.
+// This mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline
+// (third_party/blink/renderer/core/layout/layout_box.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css.Style) bool {
+	if st == nil {
+		return false
+	}
+	switch d {
+	case css.DisplayInlineBlock, css.DisplayTable, css.DisplayInlineTable:
+		// These displays synthesize from margin box when they are scroll containers.
+		return st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible
+	}
+	// Flex, grid, and other displays derive from content baseline regardless of overflow.
+	return false
+}
+
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
@@ -1029,7 +1064,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if isFirstLineForBox {
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
-		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
+		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
 			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
@@ -1082,6 +1117,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
 		})
+
+		// Propagate OOF candidates collected from atomic inline children
+		// (e.g. abs-pos descendants of inline-blocks) to the parent block.
+		// Adjust static positions by the line's offset within the block.
+		for _, cand := range lineOOFCandidates {
+			adj := cand
+			adj.StaticPosition.Offset.InlineOffset += lineInlineOffset
+			adj.StaticPosition.Offset.BlockOffset += blockOffset
+			builder.AddOutOfFlowCandidate(adj)
+		}
 
 		// Emit deferred block-level OOF candidates at the block-end of the
 		// line box. Per Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned,
@@ -1414,7 +1459,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
+	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
 	return frag, h, a
 }
 
@@ -1443,9 +1488,10 @@ func createLineBoxEx(
 	enteringSpanStack []*InlineItem,
 	firstLineStyle *css.Style,
 	isFirstLine bool,
-) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
+) (*PhysicalFragment, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, residualSpanStack, oofCandidates)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
+	var lineOOFCandidates []OutOfFlowCandidate
 
 	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
 	// annotations (default `ruby-position: over` stacks them above
@@ -2201,17 +2247,14 @@ func createLineBoxEx(
 						display = r.Item.Style.GetDisplay()
 					}
 					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-					isInlineBlockLike := r.Item.Style != nil &&
-						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-							display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-					isAtomicForBaseline := isInlineBlockLike || isReplaced
-					// For inline-flex, use first baseline (CSS Flexbox §4.2).
+					isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
+					// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
 					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 					// Replaced elements don't propagate baselines from line boxes.
 					// For orthogonal inline-blocks, synthesize baseline at the
 					// block-end edge in the outer writing mode (per Blink, matches
 					// CSS Writing Modes §4.3 "no baseline from orthogonal content").
+					// For scrollable inline-block/inline-table, synthesize from margin edge.
 					atomicBaseline := float64(0)
 					childIsOrthogonal := false
 					if r.Item.Style != nil {
@@ -2220,9 +2263,11 @@ func createLineBoxEx(
 					if !isReplaced {
 						if childIsOrthogonal {
 							atomicBaseline = blockSize
+						} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+							atomicBaseline = blockSize
 						} else {
 							atomicBaseline = r.LayoutResult.LastBaseline
-							if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+							if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 								atomicBaseline = r.LayoutResult.Baseline
 							}
 						}
@@ -2279,6 +2324,22 @@ func createLineBoxEx(
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
 				})
+				// Propagate OOF candidates from atomic inline's subtree.
+				// These are abs/fixed children of the inline-block that need to
+				// reach the nearest positioned ancestor (or the root) for layout.
+				// Mirrors Blink's InlineLayoutAlgorithm collecting propagated OOF
+				// candidates from atomic-inline LayoutResults.
+				if len(r.LayoutResult.PropagatedOOFCandidates) > 0 && r.Item.Style != nil {
+					childGeom := ComputeFragmentGeometry(r.Item.Style, wdm)
+					inlineBP := childGeom.Border.InlineStart + childGeom.Padding.InlineStart
+					blockBP := childGeom.Border.BlockStart + childGeom.Padding.BlockStart
+					for _, cand := range r.LayoutResult.PropagatedOOFCandidates {
+						adj := cand
+						adj.StaticPosition.Offset.InlineOffset += inlinePos + inlineBP
+						adj.StaticPosition.Offset.BlockOffset += blockPos + blockBP
+						lineOOFCandidates = append(lineOOFCandidates, adj)
+					}
+				}
 			}
 			// Advance past content + trailing margin, skip default advance.
 			// For RTL items, InlineStart is the trailing (physical-right) gap.
@@ -2303,7 +2364,7 @@ func createLineBoxEx(
 
 	result := lineBuilder.Build()
 	result.Fragment.Type = FragmentLineBox
-	return result.Fragment, lineHeight, maxAscent, residualSpanStack
+	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates
 }
 
 // needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
@@ -2589,16 +2650,13 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					display = r.Item.Style.GetDisplay()
 				}
 				isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-				isInlineBlockLike := r.Item.Style != nil &&
-					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-						display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-				isAtomicForBaseline := isInlineBlockLike || isReplaced
-				// For inline-flex, use first baseline (CSS Flexbox §4.2).
+				isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
+				// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
 				// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 				// Replaced elements don't propagate baselines from line boxes.
 				// For orthogonal inline-blocks, synthesize baseline at block-end
 				// (matches Blink for orthogonal writing-mode roots).
+				// For scrollable inline-block/inline-table, synthesize from margin edge.
 				atomicBaseline := float64(0)
 				childIsOrthogonal := false
 				if r.Item.Style != nil {
@@ -2607,7 +2665,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				if !isReplaced {
 					if childIsOrthogonal {
 						atomicBaseline = blockSize
-					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex) && r.LayoutResult.Baseline > 0 {
+					} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+						atomicBaseline = blockSize
+					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
 					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
