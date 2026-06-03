@@ -3329,7 +3329,23 @@ func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
 func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
 	for prop, val := range s.Properties {
 		isCustom := strings.HasPrefix(prop, "--")
-		switch val {
+
+		// For custom properties, check if the value contains a var() that might
+		// substitute to a CSS-wide keyword. Per Blink's CustomProperty::ApplyValue,
+		// collapse var()-substituted CSS-wide keywords at the declaring element so
+		// the computed value (not the raw token list) is inherited.
+		resolvedVal := val
+		if isCustom && containsVarFunction(val) {
+			resolvedVal = s.resolveVarReferences(val)
+		}
+
+		// Determine the effective keyword by trimming and lowercasing.
+		// Only collapse when the entire substituted value is a lone CSS-wide
+		// keyword, not when it's part of a larger token list.
+		effectiveVal := strings.TrimSpace(resolvedVal)
+		effectiveValLower := asciiToLower(effectiveVal)
+
+		switch effectiveValLower {
 		case "initial":
 			if isCustom {
 				// CSS Custom Properties §3 (Initial Value): the initial value
@@ -14243,14 +14259,14 @@ type TextDecorationInset struct {
 // louis14-native field. HasColor=false means "currentcolor" — the resolver
 // freezes the resolved color at append-time so a descendant cannot change it.
 type AppliedTextDecoration struct {
-	Lines              TextDecorationLine
-	Style              string // solid | double | dotted | dashed | wavy
-	Color              Color  // valid only when HasColor
-	HasColor           bool   // false = currentcolor at the originating element
-	Thickness          TextDecorationThickness
-	UnderlineOffset    float64 // resolved pixels (0 = auto/initial)
-	UnderlinePosition  TextUnderlinePosition
-	Inset              TextDecorationInset
+	Lines             TextDecorationLine
+	Style             string // solid | double | dotted | dashed | wavy
+	Color             Color  // valid only when HasColor
+	HasColor          bool   // false = currentcolor at the originating element
+	Thickness         TextDecorationThickness
+	UnderlineOffset   float64 // resolved pixels (0 = auto/initial)
+	UnderlinePosition TextUnderlinePosition
+	Inset             TextDecorationInset
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
 	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`

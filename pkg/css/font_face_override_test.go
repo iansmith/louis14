@@ -16,11 +16,11 @@ func TestParseFontFaceOverrideDescriptors(t *testing.T) {
 	ptr := func(f float64) *float64 { return &f }
 
 	tests := []struct {
-		name          string
-		css           string
-		wantAscent    *float64
-		wantDescent   *float64
-		wantLineGap   *float64
+		name        string
+		css         string
+		wantAscent  *float64
+		wantDescent *float64
+		wantLineGap *float64
 	}{
 		{
 			name: "no override descriptors — all nil",

@@ -665,3 +665,70 @@ func TestApplyMarkerUADefaults_NoAuthorRules(t *testing.T) {
 		t.Errorf("marker font-variant-numeric = %q, want %q (UA default must be set)", v, "tabular-nums")
 	}
 }
+
+// TestWideKeywordFallback verifies that a custom property whose var() fallback
+// is a CSS-wide keyword collapses that keyword at the declaring element, so the
+// computed value (not the raw token list) is inherited. This tests WI-1 of
+// LOU-266: --color: var(--foo, unset) should compute to the inherited green
+// (because unset→inherit for custom properties), not to black (initial color).
+func TestWideKeywordFallback(t *testing.T) {
+	// Parse HTML with a three-element tree:
+	//   .outer1 { --color: green; }          [parent of outer2]
+	//   .outer2 { --color: var(--foo, unset); }  [--foo undefined, fallback is unset]
+	//   .inner { color: var(--color); }       [child of outer2]
+	//
+	// Per CSS Custom Properties §2.2, custom properties are inherited by default.
+	// For outer2, unset on a custom property behaves as inherit, so --color should
+	// resolve to the parent's (outer1's) computed value, green.
+	// Then, inner's color: var(--color) should inherit green from outer2.
+
+	doc, _ := html.Parse(`
+		<style>
+			.outer1 { --color: green; }
+			.outer2 { --color: var(--foo, unset); }
+			.inner { color: var(--color); }
+		</style>
+		<div class="outer1">
+			<div class="outer2">
+				<div class="inner"></div>
+			</div>
+		</div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	var outer1Style, outer2Style, innerStyle *Style
+
+	// Find the three nodes and their computed styles
+	for node, style := range styles {
+		if node.Type != html.ElementNode || node.TagName != "div" {
+			continue
+		}
+		cls, _ := node.GetAttribute("class")
+		switch cls {
+		case "outer1":
+			outer1Style = style
+		case "outer2":
+			outer2Style = style
+		case "inner":
+			innerStyle = style
+		}
+	}
+
+	if outer1Style == nil || outer2Style == nil || innerStyle == nil {
+		t.Fatal("failed to find nodes outer1, outer2, or inner in parsed document")
+	}
+
+	// Verify outer2's computed --color is the inherited green (not the raw var token list).
+	// After WI-1, the var()-substituted unset is rewritten to inherit, which copies outer1's green.
+	if outer2Comp, ok := outer2Style.Get("--color"); !ok || outer2Comp != "green" {
+		t.Errorf("outer2 computed --color = %q, want %q (var(--foo, unset) → unset → inherit → green)", outer2Comp, "green")
+	}
+
+	// Verify inner's color is green (inherited from outer2's --color).
+	// If outer2's --color were still the raw var token list, inner would resolve
+	// var(--color) to var(--foo, unset) → unset → initial → black.
+	if innerColor, ok := innerStyle.Get("color"); !ok || innerColor != "green" {
+		t.Errorf("inner color = %q, want %q (inherited from outer2's computed --color)", innerColor, "green")
+	}
+}
