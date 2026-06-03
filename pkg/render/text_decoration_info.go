@@ -59,6 +59,15 @@ type textDecorationInfo struct {
 	// metric was not available — fall back to auto.
 	underlineThicknessFromFont float64
 
+	// underlinePositionFromFont is the font's post/MVAR underline-position
+	// metric in Y-up pixels (negative = below baseline, matching go-text /
+	// OpenType convention). Used when text-underline-position: from-font.
+	// Zero means the metric was not available — fall back to the alphabetic
+	// baseline (same as auto). go-text already applies MVAR per-instance
+	// deltas: face.LineMetric(goFont.UnderlinePosition) returns
+	// post.underlinePosition + mvar.getVar("undo", coords).
+	underlinePositionFromFont float64
+
 	// axis and underDir encode the writing-mode axis swap for vertical-rl/-lr.
 	// Horizontal LTR: axis=decorationAxisHorizontal, underDir=blockUnderDown.
 	// These are the default zero values — newTextDecorationInfo sets neither.
@@ -69,7 +78,7 @@ type textDecorationInfo struct {
 // newTextDecorationInfo constructs the geometry helper for a single text run.
 // underlineThicknessFromFont is the font's native underline-thickness metric
 // in pixels, or 0 if unavailable; on 0 the from-font path falls back to auto.
-func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, underlineThicknessFromFont float64) textDecorationInfo {
+func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, underlineThicknessFromFont, underlinePositionFromFont float64) textDecorationInfo {
 	return textDecorationInfo{
 		box:                        box,
 		width:                      width,
@@ -77,6 +86,7 @@ func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, un
 		ascent:                     ascent,
 		descent:                    math.Abs(descent),
 		underlineThicknessFromFont: underlineThicknessFromFont,
+		underlinePositionFromFont:  underlinePositionFromFont,
 		// axis=decorationAxisHorizontal, underDir=blockUnderDown are zero values.
 	}
 }
@@ -93,7 +103,7 @@ func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, un
 // rotating the canvas (ConcatCTM at text_fragment_painter.cc:1002-1009 @
 // SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14's equivalent is
 // carrying the axis flag on the struct and using perpendicular compute methods.
-func newVerticalTextDecorationInfo(box *layout.Box, length, fontSize, ascent, descent, underlineThicknessFromFont float64, dir blockUnderDir) textDecorationInfo {
+func newVerticalTextDecorationInfo(box *layout.Box, length, fontSize, ascent, descent, underlineThicknessFromFont, underlinePositionFromFont float64, dir blockUnderDir) textDecorationInfo {
 	return textDecorationInfo{
 		box:                        box,
 		width:                      length, // inline extent = physical height for vertical
@@ -101,6 +111,7 @@ func newVerticalTextDecorationInfo(box *layout.Box, length, fontSize, ascent, de
 		ascent:                     ascent,
 		descent:                    math.Abs(descent),
 		underlineThicknessFromFont: underlineThicknessFromFont,
+		underlinePositionFromFont:  underlinePositionFromFont,
 		axis:                       decorationAxisVertical,
 		underDir:                   dir,
 	}
@@ -148,39 +159,51 @@ func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float
 
 // baselineRelativeOffset returns the perpendicular distance from the box edge to
 // the underline zero-position for the given TextUnderlinePosition.
-// Under → ascent+descent (block-end edge); auto/from-font → ascent (alphabetic baseline).
-// Single source of truth consumed by computeUnderlineZeroPosition and computeUnderlinePerpX.
+//
+//   - Under → ascent+descent (block-end edge).
+//   - FromFont, metric available → ascent + (-underlinePositionFromFont).
+//     underlinePositionFromFont is Y-up negative (below baseline), so negating
+//     it gives a positive Y-down displacement from baseline. Mirrors Blink's
+//     kNearAlphabeticBaselineFromFont: FloatAscent() + *UnderlinePosition() @
+//     SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//   - FromFont, no metric; auto → ascent (alphabetic baseline).
+//
+// Single source of truth consumed by computeUnderlineZeroPosition, computeUnderlinePerpX,
+// and computeUnderlineZeroOffset.
 func (t textDecorationInfo) baselineRelativeOffset(pos css.TextUnderlinePosition) float64 {
-	if pos == css.TextUnderlinePositionUnder {
+	switch pos {
+	case css.TextUnderlinePositionUnder:
 		return t.ascent + t.descent
+	case css.TextUnderlinePositionFromFont:
+		if t.underlinePositionFromFont != 0 {
+			return t.ascent + (-t.underlinePositionFromFont) // Y-up neg → Y-down positive gap
+		}
+		return t.ascent // no metric: alphabetic baseline
+	default: // auto and unrecognised positions
+		return t.ascent
 	}
-	return t.ascent
 }
 
 // computeUnderlineZeroPosition returns the absolute Y coordinate of the underline
 // zero-position. Mirrors Blink's TextDecorationOffset::ComputeUnderlineOffset
 // (text_decoration_offset.cc @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
-// auto anchors at the alphabetic baseline (box.Y+ascent); under anchors at the
-// block-end edge (box.Y+ascent+descent). from-font falls back to auto until
-// FontMetrics plumbing lands.
+// auto anchors at the alphabetic baseline (box.Y+ascent); from-font anchors at
+// the font's post/MVAR underline position (box.Y+ascent+fontGap) when the metric
+// is available, falling back to alphabetic baseline; under anchors at the block-end
+// edge (box.Y+ascent+descent).
 func (t textDecorationInfo) computeUnderlineZeroPosition(pos css.TextUnderlinePosition) float64 {
 	return t.box.Y + t.baselineRelativeOffset(pos)
 }
 
 // computeUnderlineZeroOffset returns the underline zero-position offset in pixels,
 // relative to the baseline (ascent = 0). Used by render.go's pre-paint buffer
-// computation to size extensions. For auto/from-font, returns 0 (alphabetic
-// baseline). For under, returns ascent + descent (block-end edge offset from
-// baseline).
+// computation to size extensions. Delegates to baselineRelativeOffset and subtracts
+// ascent, preserving the single source of truth for position switching.
+//
+// Relationship: computeUnderlineZeroOffset(pos) == baselineRelativeOffset(pos) - ascent.
+// auto → 0; from-font with metric → font gap; under → descent.
 func (t textDecorationInfo) computeUnderlineZeroOffset(pos css.TextUnderlinePosition) float64 {
-	switch pos {
-	case css.TextUnderlinePositionUnder:
-		return t.ascent + t.descent
-	case css.TextUnderlinePositionAuto, css.TextUnderlinePositionFromFont:
-		return 0
-	default:
-		return 0
-	}
+	return t.baselineRelativeOffset(pos) - t.ascent
 }
 
 // computeUnderlineLineY returns the Y coordinate of the underline stroke.

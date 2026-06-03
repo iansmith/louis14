@@ -23,7 +23,7 @@ import (
 func TestUnderlineRectTop_GrowsDownFromLineY(t *testing.T) {
 	// Ahem-like metrics at font-size 20px: ascent=16, descent=4.
 	box := &layout.Box{Y: 0}
-	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0)
+	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0, 0)
 	td := css.AppliedTextDecoration{
 		Lines: css.TextDecorationLineUnderline,
 		Style: "solid",
@@ -39,8 +39,10 @@ func TestUnderlineRectTop_GrowsDownFromLineY(t *testing.T) {
 	// (which is Blink's `paint_underline_offset`); the rect extends DOWN
 	// by `thickness` to cover [rectTop, rectTop + thickness].
 	rectBottom := rectTop + thickness
-	if rectTop != box.Y+16+1+0 { // ascent + descent*0.25 (=1) + offset(=0)
-		t.Errorf("underline rect-top = %v; want %v", rectTop, box.Y+17.0)
+	// LOU-237: auto underline anchors at the alphabetic baseline (ascent) with no
+	// descent gap. box.Y + ascent + offset(=0) = 0 + 16 + 0 = 16.
+	if rectTop != box.Y+16 { // ascent + offset(=0)
+		t.Errorf("underline rect-top = %v; want %v", rectTop, box.Y+16.0)
 	}
 	if rectBottom != rectTop+80 {
 		t.Errorf("underline rect-bottom = %v; want %v", rectBottom, rectTop+80)
@@ -55,7 +57,7 @@ func TestOverlineRectTop_GrowsUpFromBoxTop(t *testing.T) {
 	// returns the TextTop position (box.Y); the rect TOP for the SOLID paint
 	// is therefore `box.Y - thickness`.
 	box := &layout.Box{Y: 60} // text fragment shifted by `top: 3em` on a 20px font
-	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0)
+	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0, 0)
 	td := css.AppliedTextDecoration{
 		Lines: css.TextDecorationLineOverline,
 		Style: "solid",
@@ -86,12 +88,12 @@ func TestUnderlineRectCoversBoxBelowAfterRelativeBottomShift(t *testing.T) {
 	//   #text  { position: relative; bottom: 3em; text-decoration: underline;
 	//            text-decoration-thickness: 4em; }
 	// The text fragment is shifted UP by 3em (=60px) from its natural top,
-	// so its box.Y = -60. With a 4em (=80px) thick underline, a centered
-	// stroke at lineY = box.Y + ascent + descent*0.25 = -43 would paint
-	// [-83, -3] — entirely above the visible #box (0..20). The Blink-faithful
-	// rect-top semantics paints [-43, +37], covering 0..20 as required.
+	// so its box.Y = -60. With a 4em (=80px) thick underline, the underline
+	// anchors at the alphabetic baseline: lineY = box.Y + ascent = -60 + 16 = -44.
+	// Rect-top semantics paint [-44, +36], covering 0..20 as required.
+	// (Pre-LOU-237: a spurious descent*0.25 gap placed lineY at -43, +37 — same pass.)
 	box := &layout.Box{Y: -60}
-	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0)
+	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0, 0)
 	td := css.AppliedTextDecoration{
 		Lines: css.TextDecorationLineUnderline,
 		Style: "solid",
@@ -120,7 +122,7 @@ func TestOverlineRectCoversBoxAboveAfterRelativeTopShift(t *testing.T) {
 	//   #box has visible region 0..20; #text shifted by `top: 3em` (+60).
 	// Overline grows UP from text-top to cover the box.
 	box := &layout.Box{Y: 60}
-	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0)
+	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0, 0)
 	td := css.AppliedTextDecoration{
 		Lines: css.TextDecorationLineOverline,
 		Style: "solid",
@@ -141,6 +143,44 @@ func TestOverlineRectCoversBoxAboveAfterRelativeTopShift(t *testing.T) {
 	if overlap != visibleBottom-visibleTop {
 		t.Errorf("overline rect [%v, %v] overlap = %v; want full coverage = %v",
 			rectTop, rectBottom, overlap, visibleBottom-visibleTop)
+	}
+}
+
+// TestBaselineRelativeOffset_FromFont verifies that when the font supplies a
+// post/MVAR underline-position metric and text-underline-position is from-font,
+// baselineRelativeOffset uses the font metric rather than falling back to the
+// alphabetic baseline. Mirrors Blink's kNearAlphabeticBaselineFromFont case in
+// TextDecorationOffset::ComputeUnderlineOffset @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Sign convention: underlinePositionFromFont is Y-up negative (below baseline),
+// so the downward Y-down gap = -underlinePositionFromFont (positive).
+func TestBaselineRelativeOffset_FromFont(t *testing.T) {
+	box := &layout.Box{Y: 0}
+	cases := []struct {
+		name       string
+		pos        css.TextUnderlinePosition
+		fontPos    float64 // Y-up: negative = below baseline
+		wantOffset float64 // distance from box edge (box.Y) to underline zero
+	}{
+		// from-font + metric present: gap = ascent + |fontPos|
+		{"from-font: metric present uses font gap", css.TextUnderlinePositionFromFont, -3.0, 16 + 3.0},
+		// from-font + metric absent (0): falls back to alphabetic baseline
+		{"from-font: zero metric falls back to baseline", css.TextUnderlinePositionFromFont, 0, 16},
+		// auto ignores a non-zero font metric (different input dimension from above)
+		{"auto: non-zero metric ignored, stays at baseline", css.TextUnderlinePositionAuto, -3.0, 16},
+		// under is unaffected by underlinePositionFromFont
+		{"under: always block-end regardless of metric", css.TextUnderlinePositionUnder, -3.0, 16 + 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			info := newTextDecorationInfo(box, 80, 20, 16, 4, 0, c.fontPos)
+			got := info.baselineRelativeOffset(c.pos)
+			if got != c.wantOffset {
+				t.Errorf("baselineRelativeOffset(%v, fontPos=%v) = %v; want %v",
+					c.pos, c.fontPos, got, c.wantOffset)
+			}
+		})
 	}
 }
 
