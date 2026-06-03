@@ -3229,7 +3229,7 @@ var cssLonghandProperties = []string{
 	"text-transform", "text-decoration-line", "text-decoration-style",
 	"text-decoration-color", "text-decoration-thickness",
 	"text-decoration-inset", "text-decoration-skip-spaces",
-	"text-underline-offset", "text-overflow",
+	"text-underline-offset", "text-underline-position", "text-overflow",
 	"text-shadow", "text-wrap", "text-emphasis-color",
 	"text-emphasis-style", "text-emphasis-position",
 	"letter-spacing", "word-spacing", "white-space",
@@ -6703,6 +6703,28 @@ func (s *Style) GetTextUnderlineOffset() float64 {
 		return px
 	}
 	return 0
+}
+
+// GetTextUnderlinePosition returns the text-underline-position keyword value.
+// Mirrors Blink's ComputedStyle::TextUnderlinePosition (computed_style.h:1319
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Returns Auto for unset,
+// unparseable, or the `auto` keyword; FromFont for `from-font`; Under for `under`.
+func (s *Style) GetTextUnderlinePosition() TextUnderlinePosition {
+	val, ok := s.Get("text-underline-position")
+	if !ok {
+		return TextUnderlinePositionAuto
+	}
+	v := strings.TrimSpace(val)
+	switch strings.ToLower(v) {
+	case "auto", "":
+		return TextUnderlinePositionAuto
+	case "from-font":
+		return TextUnderlinePositionFromFont
+	case "under":
+		return TextUnderlinePositionUnder
+	default:
+		return TextUnderlinePositionAuto
+	}
 }
 
 // Phase 20: Additional text properties
@@ -14134,6 +14156,18 @@ func (l TextDecorationLine) Has(bit TextDecorationLine) bool { return l&bit != 0
 // IsNone reports whether no lines are set.
 func (l TextDecorationLine) IsNone() bool { return l == TextDecorationLineNone }
 
+// TextUnderlinePosition enumerates the value-type of a text-underline-position.
+// Mirrors Blink's `ETextUnderlinePosition` enum consumed by
+// TextDecorationOffset::ComputeUnderlineOffset (text_decoration_offset.cc
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+type TextUnderlinePosition uint8
+
+const (
+	TextUnderlinePositionAuto     TextUnderlinePosition = 0 // auto (default), from-font (not yet plumbed)
+	TextUnderlinePositionFromFont TextUnderlinePosition = 1 // from-font (falls back to auto until FontMetrics plumbed)
+	TextUnderlinePositionUnder    TextUnderlinePosition = 2 // under = block-end
+)
+
 // TextDecorationThicknessKind enumerates the value-type of a
 // text-decoration-thickness. Mirrors the auto / from-font / <length-percentage>
 // branches in Blink's `TextDecorationThickness` value type.
@@ -14187,13 +14221,14 @@ type TextDecorationInset struct {
 // louis14-native field. HasColor=false means "currentcolor" — the resolver
 // freezes the resolved color at append-time so a descendant cannot change it.
 type AppliedTextDecoration struct {
-	Lines           TextDecorationLine
-	Style           string // solid | double | dotted | dashed | wavy
-	Color           Color  // valid only when HasColor
-	HasColor        bool   // false = currentcolor at the originating element
-	Thickness       TextDecorationThickness
-	UnderlineOffset float64 // resolved pixels (0 = auto/initial)
-	Inset           TextDecorationInset
+	Lines              TextDecorationLine
+	Style              string // solid | double | dotted | dashed | wavy
+	Color              Color  // valid only when HasColor
+	HasColor           bool   // false = currentcolor at the originating element
+	Thickness          TextDecorationThickness
+	UnderlineOffset    float64 // resolved pixels (0 = auto/initial)
+	UnderlinePosition  TextUnderlinePosition
+	Inset              TextDecorationInset
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
 	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
@@ -14477,11 +14512,12 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		return AppliedTextDecoration{}, false
 	}
 	td := AppliedTextDecoration{
-		Lines:           line,
-		Style:           s.GetTextDecorationStyle(),
-		Thickness:       s.GetTextDecorationThicknessResolved(),
-		UnderlineOffset: s.GetTextUnderlineOffset(),
-		Inset:           s.GetTextDecorationInset(),
+		Lines:             line,
+		Style:             s.GetTextDecorationStyle(),
+		Thickness:         s.GetTextDecorationThicknessResolved(),
+		UnderlineOffset:   s.GetTextUnderlineOffset(),
+		UnderlinePosition: s.GetTextUnderlinePosition(),
+		Inset:             s.GetTextDecorationInset(),
 		// Cascade-time defaults assume a single, unfragmented inline. Layout
 		// (LOU-149 Item 2) overwrites these per fragment when it knows better.
 		IsFirstFragment: true,
