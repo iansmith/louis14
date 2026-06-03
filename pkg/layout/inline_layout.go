@@ -76,6 +76,41 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 	return false
 }
 
+// isAtomicBaselineDisplay returns true iff the display type participates in baseline
+// alignment as an atomic inline. These are the displays that export a baseline (either
+// from contents or synthesized from the margin box) to the parent line's baseline
+// calculation. Mirrors Blink's set of atomic-inline displays that reach
+// UseLogicalBottomMarginEdgeForInlineBlockBaseline.
+func isAtomicBaselineDisplay(d css.DisplayType) bool {
+	switch d {
+	case css.DisplayInlineBlock, css.DisplayInlineFlex, css.DisplayFlex,
+		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid:
+		return true
+	}
+	return false
+}
+
+// useLogicalBottomMarginEdgeForInlineBlockBaseline returns true iff the element should
+// synthesize its inline-level baseline from the logical bottom margin edge (border-box
+// block-end in the parent's writing direction), rather than deriving it from content.
+// Per CSS Align baseline-export (https://drafts.csswg.org/css-align/#baseline-export):
+// - inline-block, inline-table, table, block: synthesize from margin box when scrollable.
+// - inline-flex, inline-grid, flex, grid: always derive from content baseline.
+// This mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline
+// (third_party/blink/renderer/core/layout/layout_box.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css.Style) bool {
+	if st == nil {
+		return false
+	}
+	switch d {
+	case css.DisplayInlineBlock, css.DisplayTable, css.DisplayInlineTable:
+		// These displays synthesize from margin box when they are scroll containers.
+		return st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible
+	}
+	// Flex, grid, and other displays derive from content baseline regardless of overflow.
+	return false
+}
+
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
@@ -2201,17 +2236,14 @@ func createLineBoxEx(
 						display = r.Item.Style.GetDisplay()
 					}
 					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-					isInlineBlockLike := r.Item.Style != nil &&
-						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-							display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-					isAtomicForBaseline := isInlineBlockLike || isReplaced
-					// For inline-flex, use first baseline (CSS Flexbox §4.2).
+					isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
+					// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
 					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 					// Replaced elements don't propagate baselines from line boxes.
 					// For orthogonal inline-blocks, synthesize baseline at the
 					// block-end edge in the outer writing mode (per Blink, matches
 					// CSS Writing Modes §4.3 "no baseline from orthogonal content").
+					// For scrollable inline-block/inline-table, synthesize from margin edge.
 					atomicBaseline := float64(0)
 					childIsOrthogonal := false
 					if r.Item.Style != nil {
@@ -2220,9 +2252,11 @@ func createLineBoxEx(
 					if !isReplaced {
 						if childIsOrthogonal {
 							atomicBaseline = blockSize
+						} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+							atomicBaseline = blockSize
 						} else {
 							atomicBaseline = r.LayoutResult.LastBaseline
-							if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+							if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 								atomicBaseline = r.LayoutResult.Baseline
 							}
 						}
@@ -2589,16 +2623,13 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					display = r.Item.Style.GetDisplay()
 				}
 				isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-				isInlineBlockLike := r.Item.Style != nil &&
-					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-						display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-				isAtomicForBaseline := isInlineBlockLike || isReplaced
-				// For inline-flex, use first baseline (CSS Flexbox §4.2).
+				isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
+				// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
 				// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 				// Replaced elements don't propagate baselines from line boxes.
 				// For orthogonal inline-blocks, synthesize baseline at block-end
 				// (matches Blink for orthogonal writing-mode roots).
+				// For scrollable inline-block/inline-table, synthesize from margin edge.
 				atomicBaseline := float64(0)
 				childIsOrthogonal := false
 				if r.Item.Style != nil {
@@ -2607,7 +2638,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				if !isReplaced {
 					if childIsOrthogonal {
 						atomicBaseline = blockSize
-					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex) && r.LayoutResult.Baseline > 0 {
+					} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+						atomicBaseline = blockSize
+					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
 					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
