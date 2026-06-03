@@ -42,9 +42,17 @@ type rubyCollectState struct {
 // text buffer length) at the moment a column is opened. Used to
 // rollback the column if it turns out to be almost-empty at `</ruby>`
 // time.
+//
+// isPrimaryBase distinguishes the primary base column (opened at `<ruby>`,
+// closed at `</ruby>`) from reopened trailing columns (opened after each
+// `</rt>` when more content follows). Only reopened trailing columns should
+// be stripped when almost-empty; the primary base column is preserved to
+// maintain inline-size for empty rubies (CSS Inline 3 invisible line boxes).
+// Mirrors Blink's distinction at `inline_items_builder.cc:1617-1628`.
 type rubyColumnCheckpoint struct {
-	itemsLen int
-	textLen  int
+	itemsLen      int
+	textLen       int
+	isPrimaryBase bool
 }
 
 // openRubyColumn emits the isolate bidi control + InlineItemOpenRubyColumn
@@ -61,8 +69,9 @@ func openRubyColumn(
 	text *strings.Builder,
 	rubyStyle *css.Style,
 	rubyNode *html.Node,
+	isPrimaryBase bool,
 ) rubyColumnCheckpoint {
-	cp := rubyColumnCheckpoint{itemsLen: len(data.Items), textLen: text.Len()}
+	cp := rubyColumnCheckpoint{itemsLen: len(data.Items), textLen: text.Len(), isPrimaryBase: isPrimaryBase}
 	// Per-column bidi isolate: LRI / RLI / FSI per the ruby's resolved
 	// direction (mirrors `inline_items_builder.cc:1556-1559,1583-1586`).
 	switch {
@@ -98,6 +107,11 @@ func openRubyColumn(
 // fresh-column reopen following the final `</rt>`, mirrors
 // `inline_items_builder.cc:1617-1628`).
 //
+// Only reopened trailing columns (isPrimaryBase=false) are subject to
+// stripping; the primary base column is preserved to maintain inline-size
+// for empty rubies (CSS Inline 3 invisible line boxes). Mirrors Blink's
+// distinction at `inline_items_builder.cc:1617-1628`.
+//
 // Returns true if the column was stripped (no Close item emitted).
 //
 // Note: strip rolls back the text buffer by allocating a copy of the
@@ -115,7 +129,15 @@ func closeOrStripRubyColumn(
 	rubyStyle *css.Style,
 	rubyNode *html.Node,
 ) bool {
-	if isAlmostEmptyRubyColumn(data, cp.itemsLen) {
+	// Strip almost-empty columns. For a ruby with `<rt>` content, only the
+	// reopened column after the final `</rt>` should be stripped. For a ruby
+	// without `<rt>` (base-only), an empty base is kept to preserve a minimal
+	// inline extent (invisible line box, CSS Inline 3).
+	// The isPrimaryBase flag distinguishes: primary (isPrimaryBase=true, opened
+	// at `<ruby>`) vs reopened (isPrimaryBase=false, opened after `</rt>`).
+	// Per Blink's distinction (inline_items_builder.cc:1617-1628), only reopened
+	// trailing columns are stripped.
+	if !cp.isPrimaryBase && isAlmostEmptyRubyColumn(data, cp.itemsLen) {
 		data.Items = data.Items[:cp.itemsLen]
 		buf := text.String()
 		text.Reset()
