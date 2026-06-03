@@ -369,6 +369,18 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Compute final block-size.
 	intrinsicBlockSize := totalRowSize
+
+	// CSS Contain 1 §4.2: size containment treats the container as if it had
+	// no in-flow children for sizing. With auto block-size the intrinsic value
+	// collapses to 0 — children still lay out (painted geometry stays correct
+	// under overflow:clip/scroll), but their extents do NOT bubble up to the
+	// container. Mirrors flex_layout.go:1574-1584 / multicol_layout.go:1025,
+	// both citing length_utils.cc::CalculateIntrinsicBlockSizeIgnoringChildren
+	// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if gla.style != nil && gla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
+		intrinsicBlockSize = 0
+	}
+
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
