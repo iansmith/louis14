@@ -6730,17 +6730,23 @@ func (s *Style) GetTextUnderlinePosition() TextUnderlinePosition {
 	if !ok {
 		return TextUnderlinePositionAuto
 	}
-	v := strings.TrimSpace(val)
-	switch strings.ToLower(v) {
-	case "auto", "":
-		return TextUnderlinePositionAuto
-	case "from-font":
-		return TextUnderlinePositionFromFont
-	case "under":
-		return TextUnderlinePositionUnder
-	default:
+	v := strings.ToLower(strings.TrimSpace(val))
+	if v == "" || v == "auto" {
 		return TextUnderlinePositionAuto
 	}
+	// CSS Text Decor 4 §3.4 permits multi-keyword values (e.g. "from-font under",
+	// "under left"). Tokenise so each keyword is matched independently; "under"
+	// takes priority (it overrides the position axis choice from "from-font").
+	pos := TextUnderlinePositionAuto
+	for _, tok := range strings.Fields(v) {
+		switch tok {
+		case "under":
+			return TextUnderlinePositionUnder
+		case "from-font":
+			pos = TextUnderlinePositionFromFont
+		}
+	}
+	return pos
 }
 
 // Phase 20: Additional text properties
