@@ -136,19 +136,8 @@ func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 		}
 	}
 
-	// rubySize = max(base.Width, annotations[i].Width...), with a special
-	// case for empty bases: reserve minimal inline-size (~1px) per CSS Inline 3
-	// "invisible line boxes". This allows empty bordered rubies to display
-	// borders properly (border-left + base + border-right = 3px) instead of
-	// collapsing to 2px. Note: we modify rubySize for column width but NOT
-	// baseLine.Width, since the base's block-size contribution should remain
-	// zero (invisible line box rule prevents the reserved inline extent from
-	// adding line height).
+	// rubySize = max(base.Width, annotations[i].Width...).
 	rubySize := baseLine.Width
-	if rubySize == 0 && len(annotationLines) == 0 {
-		// Empty base with no annotations: reserve minimum inline-size (1.0).
-		rubySize = 1.0
-	}
 	for _, a := range annotationLines {
 		if a.Width > rubySize {
 			rubySize = a.Width
