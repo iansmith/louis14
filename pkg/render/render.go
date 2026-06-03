@@ -1962,6 +1962,19 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// raw transform list.
 	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
 
+	// Parent-established perspective (CSS Transforms L2 §6): when the box's
+	// parent carries a `perspective` property, the child's transform composes
+	// with the parent's perspective matrix (about perspective-origin) in 4×4
+	// BEFORE projecting to 2D — so the child's out-of-plane Z (from
+	// rotateX/rotateY) is foreshortened. This is the property-sourced
+	// counterpart of the `perspective()` transform function and is what the
+	// transform3d-perspective-* reference files exercise.
+	if d, opx, opy, ok := parentPerspectiveContext(box); ok {
+		h := css.ComposePerspectiveChildProjection(selfTransforms, ox, oy, d, opx, opy)
+		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		return false
+	}
+
 	if ancestorTransforms := preserve3DAncestorTransforms(box); len(ancestorTransforms) > 0 {
 		// Move origin to transform-origin point.
 		r.dc.Translate(ox, oy)
@@ -2012,6 +2025,19 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// degrades gracefully for tests where the perspective component is
 	// small. Boxes with non-trivial perspective render as the affine
 	// portion of the projection rather than the full perspective image.
+	// When the composed projection of the z=0 plane carries a perspective
+	// component, apply the full 2D homography (with perspective divide) so
+	// perspective()/`perspective` foreshortening is exact. Perspective
+	// preserves straight lines, so a transformed rectangle remains a
+	// (non-affine) quad — correct for the box's border/background fill,
+	// which the renderer emits as a 4-corner path. Otherwise use the affine
+	// projection (the common, cheaper path).
+	if css.ProjectionHasPerspective(selfTransforms) {
+		h := css.ComposeProjective(selfTransforms)
+		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		r.dc.Translate(-ox, -oy)
+		return false
+	}
 	xx, yx, xy, yy, x0, y0 := css.ComposeAffineProjection(selfTransforms)
 	r.dc.MultiplyMatrix(xx, yx, xy, yy, x0, y0)
 
@@ -2072,6 +2098,36 @@ const singularProjectionEpsilon = 1e-12
 func isSingularProjection(xx, yx, xy, yy float64) bool {
 	det := xx*yy - xy*yx
 	return math.Abs(det) < singularProjectionEpsilon
+}
+
+// parentPerspectiveContext reports whether the box's parent establishes a
+// `perspective` property and, if so, returns the perspective distance plus the
+// screen-space perspective-origin (parent box position + resolved
+// perspective-origin offset). Used to apply parent-sourced perspective to a
+// child's transform in applyTransforms.
+func parentPerspectiveContext(box *layout.Box) (d, opx, opy float64, ok bool) {
+	if box == nil || box.Parent == nil || box.Parent.Style == nil {
+		return 0, 0, 0, false
+	}
+	p := box.Parent
+	pd, has := p.Style.GetPerspective()
+	if !has {
+		return 0, 0, 0, false
+	}
+	// Perspective applies only to the perspective element's DOM children
+	// (CSS Transforms L2 §6; csswg-drafts #918). The box tree reparents
+	// absolutely/fixed-positioned boxes under their containing block, which
+	// may be the perspective element even when the box is a DOM grandchild
+	// (e.g. an abspos descendant whose CB is the perspective element) — those
+	// must NOT receive the perspective; their out-of-plane Z is flattened by
+	// the intervening (non-preserve-3d) DOM parent instead. Verify true DOM
+	// parentage so only direct DOM children are foreshortened.
+	if box.Node == nil || p.Node == nil || box.Node.Parent != p.Node {
+		return 0, 0, 0, false
+	}
+	psx, psy, _, _ := pixelSnap(p.X, p.Y, p.Width, p.Height)
+	oox, ooy := p.Style.ResolvePerspectiveOriginPx(p.Width, p.Height)
+	return pd, psx + oox, psy + ooy, true
 }
 
 // wrapTransformsWithOriginZ returns `transforms` bracketed by

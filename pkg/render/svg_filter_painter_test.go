@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"louis14/pkg/graphics/filters"
 )
 
 // TestCompositeFilterOutputOntoTarget_ClipRespected demonstrates that
@@ -55,7 +57,7 @@ func TestCompositeFilterOutputOntoTarget_ClipRespected(t *testing.T) {
 	// overlaps both the clipped region (5..10, 5..10) and the
 	// outside-clip top-left quadrant (0..5, 0..10) + (0..10, 0..5).
 	clip := image.Rect(5, 5, 15, 15)
-	compositeFilterOutputOntoTarget(r, src, 0, 0, clip)
+	compositeFilterOutputOntoTarget(r, src, 0, 0, clip, filters.InterpolationSpaceSRGB)
 
 	// Inside-clip pixels must be red; outside-clip pixels must remain white.
 	for y := 0; y < H; y++ {

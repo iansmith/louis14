@@ -10391,6 +10391,128 @@ func ComposeAffineProjection(transforms []Transform) (xx, yx, xy, yy, x0, y0 flo
 	return m[0][0], m[1][0], m[0][1], m[1][1], m[0][3], m[1][3]
 }
 
+// ComposeProjective composes the transform list into a 4×4, then returns the
+// 2D homography (3×3, row-major) that maps a point on the element's z=0 plane
+// to screen space WITH the perspective divide retained:
+//
+//	screen_x = (h0*x + h1*y + h2) / (h6*x + h7*y + h8)
+//	screen_y = (h3*x + h4*y + h5) / (h6*x + h7*y + h8)
+//
+// This is ComposeAffineProjection's projective superset: it keeps the
+// perspective row [m30 m31 m33] that the affine projection discards, so
+// transforms containing perspective() / a `perspective` property render with
+// true foreshortening instead of an affine approximation. For a non-perspective
+// transform the bottom row is [0 0 1] and the result is the affine map.
+func ComposeProjective(transforms []Transform) [9]float64 {
+	m := identityMatrix4()
+	for _, t := range transforms {
+		m = m.multiply(transformToMatrix4(t))
+	}
+	return [9]float64{
+		m[0][0], m[0][1], m[0][3],
+		m[1][0], m[1][1], m[1][3],
+		m[3][0], m[3][1], m[3][3],
+	}
+}
+
+// ProjectionHasPerspective reports whether the composed projection of the
+// transform list carries a perspective component — i.e. the homography's
+// bottom row is not [0 0 1], so screen mapping needs a perspective divide
+// rather than a 2D affine map.
+func ProjectionHasPerspective(transforms []Transform) bool {
+	h := ComposeProjective(transforms)
+	return h[6] != 0 || h[7] != 0 || h[8] != 1
+}
+
+// GetPerspective returns the `perspective` property distance in px and whether
+// it is set (false for the default `none` or a non-positive value). The
+// perspective property establishes a 3D perspective for the element's
+// children — a child's transform composes with this perspective matrix
+// (about perspective-origin) before projecting to screen. CSS Transforms L2
+// §6 "Perspective".
+func (s *Style) GetPerspective() (float64, bool) {
+	val, ok := s.Get("perspective")
+	if !ok {
+		return 0, false
+	}
+	val = strings.TrimSpace(strings.ToLower(val))
+	if val == "" || val == "none" {
+		return 0, false
+	}
+	d, isPct, parsed := parseTransformValue(val)
+	if !parsed || isPct || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// ResolvePerspectiveOriginPx resolves `perspective-origin` to pixel offsets
+// within the element's box (default `50% 50%` = center). Mirrors
+// ResolveTransformOriginPx; perspective-origin uses the same <position> syntax
+// but has no z-component.
+func (s *Style) ResolvePerspectiveOriginPx(boxW, boxH float64) (float64, float64) {
+	val, ok := s.Get("perspective-origin")
+	if !ok {
+		return 0.5 * boxW, 0.5 * boxH
+	}
+	parts := splitShorthandParts(val)
+	fs := s.GetFontSize()
+	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
+	cap, lh, ic := s.CapHeight, s.LhSize, s.IcWidth
+	xPart, yPart := classifyOriginParts(parts)
+	x := 0.5 * boxW
+	y := 0.5 * boxH
+	if xPart != "" {
+		x = resolveOriginAxisKeywordOrLength(xPart, fs, vw, vh, ch, xh, cap, lh, ic, boxW)
+	}
+	if yPart != "" {
+		y = resolveOriginAxisKeywordOrLength(yPart, fs, vw, vh, ch, xh, cap, lh, ic, boxH)
+	}
+	return x, y
+}
+
+// translate4 returns a 4×4 translation matrix (x,y in the plane; z=0).
+func translate4(x, y float64) matrix4 {
+	m := identityMatrix4()
+	m[0][3] = x
+	m[1][3] = y
+	return m
+}
+
+// ComposePerspectiveChildProjection returns the 2D homography (3×3, row-major)
+// mapping a child element's z=0 plane (in screen coordinates) to screen, for a
+// child carrying transform list `child` about screen-space transform-origin
+// (ocx,ocy) whose parent establishes `perspective: d` about screen-space
+// perspective-origin (opx,opy). Per CSS Transforms L2 §6:
+//
+//	screen = T(op)·persp(d)·T(-op) · T(oc)·M_child·T(-oc) · (x,y,0,1)   (then ÷W)
+//
+// The full 4×4 composition is performed BEFORE projecting to the 2D homography,
+// so the child's out-of-plane Z (produced by rotateX/rotateY) is foreshortened
+// by the parent perspective — which a chain of two 2D homographies cannot do
+// (the first would flatten Z away). For d == 0 the perspective is skipped.
+func ComposePerspectiveChildProjection(child []Transform, ocx, ocy, d, opx, opy float64) [9]float64 {
+	M := identityMatrix4()
+	for _, t := range child {
+		M = M.multiply(transformToMatrix4(t))
+	}
+	// Child transform about its (screen-space) transform-origin.
+	childM := translate4(ocx, ocy).multiply(M).multiply(translate4(-ocx, -ocy))
+	// Parent perspective about its (screen-space) perspective-origin.
+	combined := childM
+	if d != 0 {
+		persp := identityMatrix4()
+		persp[3][2] = -1 / d
+		parentP := translate4(opx, opy).multiply(persp).multiply(translate4(-opx, -opy))
+		combined = parentP.multiply(childM)
+	}
+	return [9]float64{
+		combined[0][0], combined[0][1], combined[0][3],
+		combined[1][0], combined[1][1], combined[1][3],
+		combined[3][0], combined[3][1], combined[3][3],
+	}
+}
+
 // matrix4 is a 4×4 transform matrix stored in row-major order: m[row][col].
 // We use this only for back-face computation; the renderer keeps its 2D
 // matrices as DrawContext state.
