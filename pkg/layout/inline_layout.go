@@ -94,7 +94,7 @@ func isAtomicBaselineDisplay(d css.DisplayType) bool {
 // synthesize its inline-level baseline from the logical bottom margin edge (border-box
 // block-end in the parent's writing direction), rather than deriving it from content.
 // Per CSS Align baseline-export (https://drafts.csswg.org/css-align/#baseline-export):
-// - inline-block, inline-table, table, block: synthesize from margin box when scrollable.
+// - inline-block, inline-table, table: synthesize from margin box when scrollable.
 // - inline-flex, inline-grid, flex, grid: always derive from content baseline.
 // This mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline
 // (third_party/blink/renderer/core/layout/layout_box.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
