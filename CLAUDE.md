@@ -12,7 +12,7 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 ## 1. Pre-commit
 
-- **ALWAYS run `/simplify` on uncommitted changes before every commit.** No exceptions on size — a one-line change can introduce a duplicate constant, touch the wrong file, or violate a project rule, all of which `/simplify` catches cheaply. Apply real findings inline before committing.
+- **ALWAYS run `/simplify` on uncommitted changes before every commit.** No exceptions on size — a one-line change can introduce a duplicate constant, touch the wrong file, or violate a project rule, all of which `/simplify` catches cheaply. **Examine every finding. If a finding can be verified — i.e., you can confirm the issue actually exists in the code — fix it before committing.** Unverified or false-positive findings may be skipped with a brief note; verified findings are never optional.
 - Run the project's build + targeted tests (the package or area you touched) before commit. Run the full suite only when touching shared/cross-cutting code.
 - Commit, then push — only after the above are clean. **If the project has multiple remotes, push to all of them.**
 
@@ -145,6 +145,7 @@ ln -sfn /Users/iansmith/mazzy "$WORKTREE/../mazzy"
 
 - **`fonts/`** — only `Ahem.ttf` is committed; the 180-file Liberation/Atkinson set is gitignored, so a fresh worktree has almost no fonts and ~50% of writing-modes / 25 multicol / 6 flexbox tests fail with mis-rendered text. The Ahem collision on symlinking is harmless.
 - **`../mazzy`** — `go.mod` has `replace mazarin/textshape => ../mazzy/mazarin/textshape`. From `~/louis14/.claude/worktrees/agent-*/`, `../mazzy` resolves to `~/louis14/.claude/worktrees/mazzy`, which doesn't exist without the symlink; `go test` fails to build with module errors.
+- **Do NOT create a `go.work` pinning to `mazzy-perspective-dc`.** Live `~/mazzy` now has all fields needed by louis14 (`FontMetrics.UnderlinePosition`, `UnderlineThickness`, etc.). The frozen-mazzy `go.work` workaround used in earlier campaigns is obsolete — if a worktree has one, delete it. The `go.mod` replace directive to live `~/mazzy` is the only module override needed.
 
 Agents working in a worktree must also:
 
