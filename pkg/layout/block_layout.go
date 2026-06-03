@@ -1685,11 +1685,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	// Compute final block-size.
 	intrinsicBlockSize := blockCursor
-	// CSS Containment: size containment — element is sized as if empty.
-	// If block-size is auto (not explicit), intrinsic size is 0.
-	if bla.style != nil && bla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
-		intrinsicBlockSize = 0
-	}
+	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
+	// when no explicit block-size is set (see contain_utils.go).
+	intrinsicBlockSize = sizeContainedIntrinsicBlockSize(bla.style, hasExplicitBlock, intrinsicBlockSize)
 
 	// CSS Lists §3 / Blink PositionListMarkerWithoutLineBoxes: if a list item
 	// produced no line boxes / no child with a baseline, its still-pending
