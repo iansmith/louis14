@@ -5915,7 +5915,8 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// [0, taExt) — and HasDecoratingBox=true branches anchor
 				// at box.X + DecoratingBoxOffsetX, which Stays valid too.
 				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
-				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent)
+				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, false)
+				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, true)
 			} else if len(layer.AppliedTextDecorations) > 0 {
 				// Above-text underline path: paint each rect manually with the
 				// offset moving srcY UP (away from text), so after rotation
@@ -6070,6 +6071,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	var ellipsisPaintInfo *ellipsisPaint
 	text, ellipsisPaintInfo = r.applyTextOverflowEllipsis(layer, text, box, fontID)
 
+	// Draw underline and overline before text glyphs so text renders on top.
+	// Mirrors Blink TextPainter::PaintDecorationsExceptLineThrough called
+	// before the text in TextFragmentPainter::Paint @ 4883d11f.
+	r.drawTextDecoration(layer, text, box, fontID, ascent, false)
+	// Restore the text color after drawTextDecoration mutates the color state.
+	r.setColor(layer.TextColor)
+
 	// Draw text shadows (behind actual text).
 	if len(layer.TextShadows) > 0 {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
@@ -6135,8 +6143,9 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextStr(text, fontID, box.X, box.Y+ascent, layer.FontFeatures)
 	}
 
-	// Draw text decoration lines (underline, overline, line-through).
-	r.drawTextDecoration(layer, text, box, fontID, ascent)
+	// Draw text decoration lines: line-through (after text so it paints over glyphs).
+	// Underline and overline were drawn before text glyphs (see below).
+	r.drawTextDecoration(layer, text, box, fontID, ascent, true)
 
 	// Draw text emphasis marks (small marks above/below each character).
 	if layer.TextEmphasisMark != "" {
@@ -7201,7 +7210,9 @@ func trailingWhitespaceSuffix(text string) string {
 // accumulated vector (one per ancestor that established a decoration). When
 // the vector is empty, the legacy single-decoration fallback below paints —
 // used for anonymous boxes synthesized without a cascade pass.
-func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+//
+// onlyLineThrough controls the paint phase (see drawOneAppliedTextDecoration).
+func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, onlyLineThrough bool) {
 	// Fast path when there are no accumulated decorations and no legacy entry.
 	if len(layer.AppliedTextDecorations) == 0 &&
 		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
@@ -7284,7 +7295,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.FontFeatures, box.X, layer.LetterSpacing, layer.WordSpacing)
 		}
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs)
+			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs, onlyLineThrough)
 		}
 		return
 	}
@@ -7302,12 +7313,21 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	var isLineThrough bool
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
+		if onlyLineThrough {
+			return
+		}
 		centerY = box.Y + ascent + math.Abs(descent)*0.25 + layer.TextUnderlineOffset
 		rectTop = centerY // pre-port lineY value is already Blink's paint_underline_offset (rect TOP)
 	case css.TextDecorationOverline:
+		if onlyLineThrough {
+			return
+		}
 		centerY = box.Y
 		rectTop = centerY - thickness // overline rect grows UPWARD from TextTop
 	case css.TextDecorationLineThrough:
+		if !onlyLineThrough {
+			return
+		}
 		centerY = box.Y + ascent*0.65
 		rectTop = centerY // unused for line-through (stays stroke-centered)
 		isLineThrough = true
@@ -7350,7 +7370,11 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 //
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
-func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64, glyphs []glyphExtent) {
+// onlyLineThrough=false: draw underline+overline (called before text glyphs).
+// onlyLineThrough=true:  draw line-through only (called after text glyphs).
+// Mirrors Blink TextPainter::PaintDecorationsExceptLineThrough /
+// PaintDecorationLineThrough split in text_fragment_painter.cc @ 4883d11f.
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64, glyphs []glyphExtent, onlyLineThrough bool) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -7497,15 +7521,15 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		}
 	}
 
-	if td.Lines.Has(css.TextDecorationLineUnderline) {
+	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineUnderline) {
 		// computeUnderlineLineY returns Blink's `paint_underline_offset`
-		// (= rect TOP for solid). The same value is the stroke center for
-		// non-solid styles in louis14's pre-port renderer — keeping it for
-		// dashed/dotted/double/wavy preserves their pixel-exact baseline.
-		lineY := info.computeUnderlineLineY(td)
+		// (= rect TOP for solid). Round to integer pixels so the underline
+		// aligns with the rounded baseline used by drawTextStr (math.Round),
+		// preventing a sub-pixel gap that exposes the underline below the glyph.
+		lineY := math.Round(info.computeUnderlineLineY(td))
 		paintLine(lineY, lineY, true)
 	}
-	if td.Lines.Has(css.TextDecorationLineOverline) {
+	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineOverline) {
 		// computeOverlineLineY returns the TextTop position (box.Y), which
 		// is the stroke center for the non-solid path (matches the
 		// pre-port baseline). Blink's overline rect spans
@@ -7515,7 +7539,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		centerY := info.computeOverlineLineY()
 		paintLine(centerY-thickness, centerY, true)
 	}
-	if td.Lines.Has(css.TextDecorationLineLineThrough) {
+	if onlyLineThrough && td.Lines.Has(css.TextDecorationLineLineThrough) {
 		// Line-through stays stroke-centered for all styles. Blink centers
 		// at `2*ascent/3` (it adds the `-thickness/2` offset to keep the
 		// stroke around that center point). Switching to rect-top would
