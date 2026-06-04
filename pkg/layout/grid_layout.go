@@ -369,6 +369,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Compute final block-size.
 	intrinsicBlockSize := totalRowSize
+
+	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
+	// when no explicit block-size is set (see contain_utils.go).
+	intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
+
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize

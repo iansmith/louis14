@@ -1571,17 +1571,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// CSS Contain 1 §4.2: size containment treats the container as if it had
-	// no in-flow children for sizing purposes. With auto block-size the
-	// intrinsic value collapses to 0 — children still lay out (so their
-	// painted geometry is correct under overflow:visible / clip), but their
-	// extents do NOT bubble up to the container. Mirrors Blink's
-	// `length_utils.cc :: CalculateIntrinsicBlockSizeIgnoringChildren`
-	// short-circuit gated on `ShouldApplyBlockSizeContainment()` at SHA
-	// 4883d11fef.
-	if fla.style != nil && fla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
-		intrinsicBlockSize = 0
-	}
+	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
+	// when no explicit block-size is set (see contain_utils.go).
+	intrinsicBlockSize = sizeContainedIntrinsicBlockSize(fla.style, hasExplicitBlock, intrinsicBlockSize)
 
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
