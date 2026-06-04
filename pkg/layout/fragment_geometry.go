@@ -845,19 +845,12 @@ func CalculateInitialFragmentGeometry(
 		// height as border-box — the specified height already includes borders.
 		// Per Blink's TableLayoutAlgorithm, table height is resolved with
 		// kIncludingBorderPadding (border-box semantics).
-		display := css.DisplayBlock
-		if style != nil {
-			display = style.GetDisplay()
-		}
-		isTable := display == css.DisplayTable || display == css.DisplayInlineTable
-		if isTable && style.GetBoxSizing() != "border-box" {
-			// Table border-box quirk: treat height as border-box even when
-			// box-sizing is content-box. The explicitBlock from ResolveBlockSize
-			// is content-box, so use it directly as border-box (don't add BP).
-			borderBoxBlock = explicitBlock.Float64()
-		} else {
-			borderBoxBlock = explicitBlock.Float64() + geom.BlockBorderPadding()
-		}
+		// Blink's UA sheet applies `box-sizing: border-box` to <table> elements
+		// at the cascade level (element-name gated, not display-gated).
+		// louis14 mirrors this in cascade.go:454-460, so all real tables have
+		// border-box applied before author rules. For display:table divs or
+		// content-box tables, box-sizing determines the semantic.
+		borderBoxBlock = explicitBlock.Float64() + geom.BlockBorderPadding()
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
 		// that override the fixed constraint (e.g. max-height: min-content).
