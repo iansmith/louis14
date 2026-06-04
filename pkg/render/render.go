@@ -2068,20 +2068,20 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// which the renderer emits as a 4-corner path. Otherwise use the affine
 	// projection (the common, cheaper path).
 	//
-	// ComposeProjective is called once; the bottom row is checked inline so we
-	// avoid a second matrix composition via ProjectionHasPerspective.
+	// ComposeProjective is called once; affine coefficients are extracted from
+	// the same h matrix rather than calling ComposeAffineProjection again.
 	h := css.ComposeProjective(selfTransforms)
 	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
 		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
 		r.dc.Translate(-ox, -oy)
 		return false
 	}
-	xx, yx, xy, yy, x0, y0 := css.ComposeAffineProjection(selfTransforms)
-	r.dc.MultiplyMatrix(xx, yx, xy, yy, x0, y0)
+	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
+	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
 
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
-	return flattens && isSingularProjection(xx, yx, xy, yy)
+	return flattens && isSingularProjection(h[0], h[3], h[1], h[4])
 }
 
 // isLayerTransformSingular returns true if layer.HasTransform is set and the

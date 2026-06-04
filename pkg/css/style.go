@@ -10422,15 +10422,6 @@ func ComposeProjective(transforms []Transform) [9]float64 {
 	}
 }
 
-// ProjectionHasPerspective reports whether the composed projection of the
-// transform list carries a perspective component — i.e. the homography's
-// bottom row is not [0 0 1], so screen mapping needs a perspective divide
-// rather than a 2D affine map.
-func ProjectionHasPerspective(transforms []Transform) bool {
-	h := ComposeProjective(transforms)
-	return h[6] != 0 || h[7] != 0 || h[8] != 1
-}
-
 // GetPerspective returns the `perspective` property distance in px and whether
 // it is set (false for the default `none` or a non-positive value). The
 // perspective property establishes a 3D perspective for the element's
@@ -10467,8 +10458,8 @@ func (s *Style) ResolvePerspectiveOriginPx(boxW, boxH float64) (float64, float64
 	return s.resolveOriginPropertyPx("perspective-origin", boxW, boxH)
 }
 
-// translate4 returns a 4×4 translation matrix (x,y in the plane; z=0).
-func translate4(x, y float64) matrix4 {
+// translationMatrix4 returns a 4×4 translation matrix (x,y in the plane; z=0).
+func translationMatrix4(x, y float64) matrix4 {
 	m := identityMatrix4()
 	m[0][3] = x
 	m[1][3] = y
@@ -10493,7 +10484,7 @@ func ComposePerspectiveChildProjection(child []Transform, ocx, ocy, d, opx, opy 
 		M = M.multiply(transformToMatrix4(t))
 	}
 	// Child transform about its (screen-space) transform-origin.
-	childM := translate4(ocx, ocy).multiply(M).multiply(translate4(-ocx, -ocy))
+	childM := translationMatrix4(ocx, ocy).multiply(M).multiply(translationMatrix4(-ocx, -ocy))
 	// Parent perspective about its (screen-space) perspective-origin.
 	// d is always >= 1 when coming from GetPerspective (clamped); the d == 0
 	// guard is a defensive no-op for direct callers.
@@ -10501,7 +10492,7 @@ func ComposePerspectiveChildProjection(child []Transform, ocx, ocy, d, opx, opy 
 	if d != 0 {
 		persp := identityMatrix4()
 		persp[3][2] = -1 / d
-		parentP := translate4(opx, opy).multiply(persp).multiply(translate4(-opx, -opy))
+		parentP := translationMatrix4(opx, opy).multiply(persp).multiply(translationMatrix4(-opx, -opy))
 		combined = parentP.multiply(childM)
 	}
 	return [9]float64{
