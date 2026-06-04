@@ -1446,6 +1446,15 @@ func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 	})
 }
 
+// isNonVisibleInlineItem reports whether an item type represents a non-visible
+// inline boundary (structural tag, float, OOF, or control) that should be
+// skipped when scanning for text to strip leading or trailing collapsible whitespace.
+func isNonVisibleInlineItem(t InlineItemType) bool {
+	return t == InlineItemOpenTag || t == InlineItemCloseTag ||
+		t == InlineItemFloat || t == InlineItemOutOfFlow ||
+		t == InlineItemControl
+}
+
 // finishLine applies trailing whitespace trimming and sets final line properties.
 func (lb *LineBreaker) finishLine(line *LineInfo) {
 	// Determine measurement mode from the first text item's style (text-orientation
@@ -1492,8 +1501,7 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			}
 			break
 		}
-		if r.Item.Type == InlineItemOpenTag || r.Item.Type == InlineItemCloseTag ||
-			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
+		if isNonVisibleInlineItem(r.Item.Type) {
 			continue
 		}
 		break
@@ -1540,9 +1548,7 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			break
 		}
 		// Continue past items that don't produce visible inline content.
-		if r.Item.Type == InlineItemCloseTag || r.Item.Type == InlineItemOpenTag ||
-			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow ||
-			r.Item.Type == InlineItemControl {
+		if isNonVisibleInlineItem(r.Item.Type) {
 			continue
 		}
 		break // Atomic inline or other content — stop searching.
