@@ -2261,10 +2261,8 @@ func createLineBoxEx(
 						childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
 					}
 					if !isReplaced {
-						if childIsOrthogonal {
-							atomicBaseline = blockSize
-						} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-							atomicBaseline = blockSize
+						if childIsOrthogonal || useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+							atomicBaseline = blockSize + r.Margins.BlockEnd
 						} else {
 							atomicBaseline = r.LayoutResult.LastBaseline
 							if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
@@ -2279,10 +2277,9 @@ func createLineBoxEx(
 						} else if centralBaseline {
 							ibAscent = blockSize / 2
 						} else {
-							// CSS 2.1 §10.8.1: For replaced elements, baseline
-							// is at the bottom. For inline-blocks with no line
-							// boxes, baseline is the bottom margin edge.
-							ibAscent = blockSize
+							// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
+							// with no line boxes, baseline = bottom margin edge.
+							ibAscent = blockSize + r.Margins.BlockEnd
 						}
 						blockPos = maxAscent - ibAscent
 					} else if centralBaseline {
@@ -2663,10 +2660,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
 				}
 				if !isReplaced {
-					if childIsOrthogonal {
-						atomicBaseline = blockSize
-					} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-						atomicBaseline = blockSize
+					if childIsOrthogonal || useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+						atomicBaseline = blockSize + r.Margins.BlockEnd
 					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
 					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
@@ -2687,10 +2682,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 						// in vertical modes with central baseline: blockSize / 2.
 						ibAscent = blockSize / 2
 					} else {
-						// CSS 2.1 §10.8.1: For replaced elements, baseline is at
-						// the bottom. For inline-blocks with no line boxes, baseline
-						// is the bottom margin edge.
-						ibAscent = blockSize
+						// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
+						// with no line boxes, baseline = bottom margin edge.
+						ibAscent = blockSize + r.Margins.BlockEnd
 					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
