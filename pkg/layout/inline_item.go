@@ -358,7 +358,7 @@ func collectInlinesRecursive(
 				childRubyState.textNestingLevel = rubyState.textNestingLevel
 			}
 			childRubyState.currentColumnCheckpoint = openRubyColumn(
-				data, text, childStyle, child.DOMNode,
+				data, text, childStyle, child.DOMNode, true, /* isPrimaryBase */
 			)
 		case rubyState != nil && childStyle.IsInlineRubyText():
 			rubyState.textNestingLevel++
@@ -401,7 +401,7 @@ func collectInlinesRecursive(
 				rubyState.rubyStyle, rubyState.rubyNode,
 			)
 			rubyState.currentColumnCheckpoint = openRubyColumn(
-				data, text, rubyState.rubyStyle, rubyState.rubyNode,
+				data, text, rubyState.rubyStyle, rubyState.rubyNode, false, /* isPrimaryBase */
 			)
 		}
 
