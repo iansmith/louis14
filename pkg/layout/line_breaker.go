@@ -1541,7 +1541,8 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 		}
 		// Continue past items that don't produce visible inline content.
 		if r.Item.Type == InlineItemCloseTag || r.Item.Type == InlineItemOpenTag ||
-			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
+			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow ||
+			r.Item.Type == InlineItemControl {
 			continue
 		}
 		break // Atomic inline or other content — stop searching.
