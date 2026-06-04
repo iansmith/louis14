@@ -64,19 +64,20 @@ func ToHebrew(n int) string {
 	return string(hebrew[n-1])
 }
 
-// ToCJKDecimal converts a positive integer to CJK ideographic digits (〇=0, 一=1, 二=2, ..., 九=9).
-// This implements a basic numeric system; returns decimal as fallback for values >= 10.
+// ToCJKDecimal converts a positive integer to CJK decimal notation by substituting
+// each decimal digit with its CJK ideographic equivalent (〇=0, 一=1, ..., 九=9).
+// E.g., 10 → "一〇", 42 → "四二". Returns decimal as fallback for n <= 0.
 func ToCJKDecimal(n int) string {
 	if n <= 0 {
 		return fmt.Sprintf("%d", n)
 	}
-	if n >= 10 {
-		// For simplicity, values >= 10 fall back to decimal.
-		// Full positional CJK composition would require more complex rules.
-		return fmt.Sprintf("%d", n)
-	}
 	digits := []rune{'〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'}
-	return string(digits[n])
+	decimal := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	for _, ch := range decimal {
+		b.WriteRune(digits[ch-'0'])
+	}
+	return b.String()
 }
 
 // ToKoreanHangulFormal converts a positive integer to Korean Hangul formal digit letters.
