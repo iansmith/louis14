@@ -416,6 +416,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			hasOwnFloats = true
 		}
 		firstLineAscent = inlineAscent
+		// Shared guard: capture first baseline in layout order (mirrors Blink).
+		if !hasFirstChildBaseline && inlineAscent > 0 {
+			firstChildBaseline = inlineAscent
+			firstChildBlockOffset = 0
+			hasFirstChildBaseline = true
+		}
 		// Track the last line's baseline offset for inline-block alignment.
 		lastChildBaseline = lastBaselineOff
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
@@ -1259,6 +1265,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// first baseline as this container's first baseline.
 			// CSS Align §9.1: orthogonal children don't contribute baselines
 			// in the parent's writing mode, so skip them.
+			// Shared guard: capture first baseline in layout order (mirrors Blink).
 			if !isLegendOfFieldset && !isOrthogonal && !hasFirstChildBaseline && childResult.HasBaseline {
 				firstChildBaseline = childResult.Baseline
 				firstChildBlockOffset = actualChildBlockOff
