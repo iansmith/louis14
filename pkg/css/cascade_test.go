@@ -314,15 +314,16 @@ func TestComputeStyle_RubyUADisplays(t *testing.T) {
 		{ruby, DisplayRuby, "", ""},
 		{rt, DisplayRubyText, "50%", "start"},
 		{rp, DisplayNone, "", ""},
-		// rb / rbc / rtc must NOT receive a ruby-specific display.
-		// They have no tag-default inline entry either, so they fall
-		// through to GetDisplay's default of DisplayBlock.
-		{rb, DisplayBlock, "", ""},
-		{rbc, DisplayBlock, "", ""},
-		{rtc, DisplayBlock, "", ""},
+		// rb / rbc / rtc default to inline (CSS Display L3 initial value).
+		// When inside <ruby>, box-fixup rules in normalizeRubySubtrees apply,
+		// but those are layout-time, not UA stylesheet. Mirrors Blink html.css
+		// `rb,rbc,rtc{display:inline}` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		{rb, DisplayInline, "", ""},
+		{rbc, DisplayInline, "", ""},
+		{rtc, DisplayInline, "", ""},
 		// Standalone <rt> (parent is body, not ruby) gets no UA display
-		// (matches Blink: `ruby > rt` is parent-scoped); defaults to block.
-		{rtBare, DisplayBlock, "", ""},
+		// (matches Blink: `ruby > rt` is parent-scoped); defaults to inline.
+		{rtBare, DisplayInline, "", ""},
 	}
 
 	for _, c := range cases {
