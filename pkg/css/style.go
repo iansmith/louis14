@@ -11990,13 +11990,16 @@ const (
 	ListStyleTypeDecimal            ListStyleType = "decimal"
 	ListStyleTypeNone               ListStyleType = "none"
 	ListStyleTypeDecimalLeadingZero ListStyleType = "decimal-leading-zero"
+	ListStyleTypeCJKDecimal         ListStyleType = "cjk-decimal"
 	ListStyleTypeLowerAlpha         ListStyleType = "lower-alpha"
 	ListStyleTypeUpperAlpha         ListStyleType = "upper-alpha"
 	ListStyleTypeLowerLatin         ListStyleType = "lower-latin"
 	ListStyleTypeUpperLatin         ListStyleType = "upper-latin"
+	ListStyleTypeHebrew             ListStyleType = "hebrew"
 	ListStyleTypeLowerRoman         ListStyleType = "lower-roman"
 	ListStyleTypeUpperRoman         ListStyleType = "upper-roman"
 	ListStyleTypeLowerGreek         ListStyleType = "lower-greek"
+	ListStyleTypeKoreanHangulFormal ListStyleType = "korean-hangul-formal"
 	ListStyleTypeDisclosureOpen     ListStyleType = "disclosure-open"
 	ListStyleTypeDisclosureClosed   ListStyleType = "disclosure-closed"
 )
@@ -12027,6 +12030,12 @@ func (s *Style) GetListStyleType() ListStyleType {
 			return ListStyleTypeUpperRoman
 		case "lower-greek":
 			return ListStyleTypeLowerGreek
+		case "cjk-decimal":
+			return ListStyleTypeCJKDecimal
+		case "hebrew":
+			return ListStyleTypeHebrew
+		case "korean-hangul-formal":
+			return ListStyleTypeKoreanHangulFormal
 		case "disclosure-open":
 			return ListStyleTypeDisclosureOpen
 		case "disclosure-closed":

@@ -1915,6 +1915,12 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 		return css.ToRoman(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerGreek:
 		return css.ToGreek(value) + css.DefaultCounterStyleSuffix
+	case css.ListStyleTypeHebrew:
+		return css.ToHebrew(value) + css.DefaultCounterStyleSuffix
+	case css.ListStyleTypeCJKDecimal:
+		return css.ToCJKDecimal(value) + "、"
+	case css.ListStyleTypeKoreanHangulFormal:
+		return css.ToKoreanHangulFormal(value) + ", "
 	case css.ListStyleTypeDisclosureOpen:
 		return "▼ " // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:
@@ -1991,6 +1997,7 @@ func isBuiltinListStyleType(lst css.ListStyleType) bool {
 		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
 		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
 		css.ListStyleTypeLowerGreek,
+		css.ListStyleTypeCJKDecimal, css.ListStyleTypeHebrew, css.ListStyleTypeKoreanHangulFormal,
 		css.ListStyleTypeDisclosureOpen, css.ListStyleTypeDisclosureClosed:
 		return true
 	}
