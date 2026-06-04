@@ -1384,6 +1384,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		contentInlineSize += w
 	}
 	contentInlineSize += spacingForCols // include inline spacing in total
+
+	// Apply min-inline-size floor for auto-width tables.
+	// For explicit-width tables, CalculateInitialFragmentGeometry already
+	// enforced min/max on borderBoxInline. For auto-width tables the inline
+	// size was set to fill the container, min-width was trivially satisfied,
+	// and column sizing shrinks to max-content — so the floor must be
+	// re-applied post-column-sizing, mirroring the explicitTableBorderBoxBlock
+	// floor on the block axis above.
+	// Mirrors Blink TableLayoutAlgorithm where ComputeTableInlineSize accounts
+	// for min-inline-size when deriving the final table inline size from
+	// column widths @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if !hasExplicitTableWidth {
+		minInline := ResolveMinInlineSize(tla.style, wdm, tla.space, geom).Float64()
+		if minInline > 0 && contentInlineSize < minInline {
+			contentInlineSize = minInline
+		}
+	}
+
 	finalBlockSize := blockOffset
 
 	// CSS 2.1 §17.5.3 + CSS Tables 3 §11.5.3 "Computing the table height":
