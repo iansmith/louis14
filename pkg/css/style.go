@@ -3329,7 +3329,19 @@ func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
 func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
 	for prop, val := range s.Properties {
 		isCustom := strings.HasPrefix(prop, "--")
-		switch val {
+
+		// For custom properties, check if the value contains a var() that might
+		// substitute to a CSS-wide keyword. Per Blink's CustomProperty::ApplyValue,
+		// collapse var()-substituted CSS-wide keywords at the declaring element so
+		// the computed value (not the raw token list) is inherited.
+		resolvedVal := val
+		if isCustom && containsVarFunction(val) {
+			resolvedVal = s.resolveVarReferences(val)
+		}
+
+		// Only collapse when the entire substituted value is a lone CSS-wide
+		// keyword, not when it's part of a larger token list.
+		switch asciiToLower(strings.TrimSpace(resolvedVal)) {
 		case "initial":
 			if isCustom {
 				// CSS Custom Properties §3 (Initial Value): the initial value
