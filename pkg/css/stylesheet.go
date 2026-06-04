@@ -4360,11 +4360,18 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 		}
 		return MediaQueryTrue
 
-	// Legacy device dimension features — approximate as viewport
+	// Legacy device dimension features — approximate as viewport and compare.
+	// Mirrors Blink's MediaQueryEvaluator::EvalDeviceWidth / EvalDeviceHeight at
+	// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
+	// Rather than always matching, we strip the "device-" prefix and re-dispatch
+	// through the width/height comparison logic, which handles both range-operator
+	// syntax and legacy min/max prefixes, plus Unknown semantics for non-px units.
 	case "device-width", "device-height",
 		"min-device-width", "min-device-height",
 		"max-device-width", "max-device-height":
-		return MediaQueryTrue
+		viewportFeature := cond
+		viewportFeature.Feature = strings.Replace(feature, "device-", "", 1)
+		return evaluateMediaCondition(viewportFeature, viewportWidth, viewportHeight)
 
 	// color-gamut — Media Queries 4 §4.8. louis14 renders sRGB output, so
 	// `srgb` matches and the wider gamuts (`p3`, `rec2020`) do not. Returning

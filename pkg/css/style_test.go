@@ -523,8 +523,8 @@ func TestGetBorderImageOutset(t *testing.T) {
 			want: [4]float64{10, 10, 10, 10},
 		},
 		{
-			name: "single number multiplies border-width on each side",
-			raw:  "2",
+			name:         "single number multiplies border-width on each side",
+			raw:          "2",
 			borderWidths: [4]float64{5, 6, 7, 8},
 			want:         [4]float64{10, 12, 14, 16},
 		},
@@ -570,7 +570,7 @@ func TestGetTextDecorationSkipInk(t *testing.T) {
 		set  bool
 		want TextDecorationSkipInk
 	}{
-		{set: false, want: TextDecorationSkipInkAuto},        // unset → auto
+		{set: false, want: TextDecorationSkipInkAuto}, // unset → auto
 		{raw: "auto", set: true, want: TextDecorationSkipInkAuto},
 		{raw: "AUTO", set: true, want: TextDecorationSkipInkAuto},
 		{raw: "none", set: true, want: TextDecorationSkipInkNone},
@@ -613,13 +613,13 @@ func TestResolveTransformOriginPx_AxisClassification(t *testing.T) {
 		wantY float64
 	}{
 		// Single-keyword cases.
-		{"", 50, 100},      // default center center
-		{"top", 50, 0},     // y-locked → top, x defaults to center
+		{"", 50, 100},       // default center center
+		{"top", 50, 0},      // y-locked → top, x defaults to center
 		{"bottom", 50, 200}, // y-locked → bottom
-		{"left", 0, 100},   // x-locked → left
+		{"left", 0, 100},    // x-locked → left
 		{"right", 100, 100},
 		{"center", 50, 100},
-		{"25%", 25, 100},   // positional → x
+		{"25%", 25, 100}, // positional → x
 
 		// Two unambiguous keywords; order independent.
 		{"left top", 0, 0},
@@ -640,7 +640,7 @@ func TestResolveTransformOriginPx_AxisClassification(t *testing.T) {
 		// Keyword + length/percent (keyword locks its axis, length goes to other).
 		{"top 25%", 25, 0},
 		{"25% top", 25, 0},
-		{"left 25%", 0, 50},  // 25% of boxH=200=50
+		{"left 25%", 0, 50}, // 25% of boxH=200=50
 		{"25% left", 0, 50},
 
 		// All-positional (no axis keyword): source order x first, y second.
