@@ -2264,7 +2264,7 @@ func createLineBoxEx(
 						if childIsOrthogonal {
 							atomicBaseline = blockSize
 						} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-							atomicBaseline = blockSize
+							atomicBaseline = blockSize + r.Margins.BlockEnd
 						} else {
 							atomicBaseline = r.LayoutResult.LastBaseline
 							if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
@@ -2666,7 +2666,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					if childIsOrthogonal {
 						atomicBaseline = blockSize
 					} else if useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-						atomicBaseline = blockSize
+						atomicBaseline = blockSize + r.Margins.BlockEnd
 					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
 					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
