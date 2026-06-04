@@ -635,6 +635,16 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	display := style.GetDisplay()
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
 		result = measureFlexMinMax(node, ctx, space)
+	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
+		// Grid containers: use the same track-template + item contribution
+		// algorithm as ComputeMinMaxSizes. Without this dispatch,
+		// computeContentMinMaxSizes falls through to measureBlockMinMax, which
+		// uses a zero-available-block constraint space when queried at min-content
+		// width — that wrong space causes orthogonal children to be laid out in a
+		// single overflow column (50px) instead of their correct block-size (100px).
+		// Mirrors Blink's NGBlockNode::ComputeMinMaxSizes dispatch to
+		// GridLayoutAlgorithm::ComputeMinMaxSizes for display:grid elements.
+		result = measureGridMinMax(node, ctx, space)
 	} else if hasOnlyInlineChildren(node) {
 		result = measureInlineMinMax(node, ctx, space)
 	} else {
@@ -1508,54 +1518,82 @@ func measureOrthogonalChild(
 	ctx *LayoutContext,
 	space ConstraintSpace,
 ) (minContrib, maxContrib float64) {
-	// Check cache first.
-	if cached, isCycle := ctx.GetOrthogonalLayout(child); isCycle {
-		// Cycle detected: fall back to ICB cross-size.
+	// Cycle detection: if we're already computing this node, fall back to ICB.
+	if _, isCycle := ctx.GetOrthogonalLayout(child); isCycle {
 		fallback := orthogonalFallbackSize(childWDM, ctx)
 		childMargins := ResolveMargins(childStyle, parentWDM, 0)
 		contrib := fallback + childMargins.InlineSum()
 		return contrib, contrib
-	} else if cached != nil {
-		// Use cached result's block-size as the contribution.
-		childLogical := NewLogicalFragment(parentWDM, cached.Fragment)
-		childMargins := ResolveMargins(childStyle, parentWDM, 0)
-		contrib := childLogical.InlineSize() + childMargins.InlineSum()
-		return contrib, contrib
 	}
+	// Note: we do NOT use the cache here even if a previous result is present.
+	// The cache stores a single layout (typically at max-content inline), but
+	// measureOrthogonalChild needs TWO layouts (at min-content and max-content
+	// inline) to correctly return distinct min/max block-size contributions.
+	// Using a stale single-layout cached result would make minContrib==maxContrib,
+	// which collapses the min-content contribution to the max-content value.
 
 	// Mark as computing (cycle detection sentinel).
 	ctx.SetOrthogonalComputing(child)
 
-	// Build constraint space for the orthogonal child.
-	// The child's inline-size will use the orthogonal fallback (ICB cross-size)
-	// when the parent's block-size is indefinite.
 	// CSS Writing Modes §4.3: an orthogonal flow always establishes a new BFC,
 	// so isChildNewFC is true by default for orthogonal children. Also check
 	// the element's own properties (overflow, float, etc.) for completeness.
 	isChildNewFC := createsFormattingContext(childStyle) ||
 		parentWDM.WM != childWDM.WM
-	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
-		SetOrthogonalFallbackInlineSize(
-			orthogonalFallbackSize(childWDM, ctx)).
-		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-		Build()
+	// Compute the orthogonal child's min-content and max-content inline sizes
+	// (in the child's own writing mode). We then lay the child out at those
+	// sizes to get its min-content and max-content block-sizes, which become
+	// the parent's min-content and max-content inline contributions.
+	//
+	// Blink mirrors this in NGOrthogonalWritingModeRootInlineSize: the available
+	// inline-size for the child's layout is derived from the child's own
+	// min/max-content sizing, not from the parent's available inline (which is 0
+	// in a min-content context and would cause incorrect line-wrapping).
+	//
+	// Build a space for the child's intrinsic sizing: the child's available
+	// inline from the parent's available block (or ICB fallback), and Indefinite
+	// for the child's block (it self-sizes in that direction).
+	fallback := orthogonalFallbackSize(childWDM, ctx)
+	parentBlockAvail := space.AvailableSize.BlockSize.Float64()
+	childInlineForMM := parentBlockAvail
+	if parentBlockAvail == float64(Indefinite) || parentBlockAvail < 0 {
+		childInlineForMM = fallback
+	}
 
-	// Lay out the child to get its block-size.
-	childResult := layoutElement(ctx, child, childSpace)
+	// newChildSpace builds a constraint space for the child at a given
+	// available block-size (which, after axis-swap, becomes the child's inline).
+	// SetAvailableSize for orthogonal: swaps parent inline↔child block, parent block↔child inline.
+	// To produce child {InlineSize:childInline, BlockSize:Indefinite}:
+	// pass parent {InlineSize:Indefinite, BlockSize:childInline}.
+	newChildSpace := func(childInline float64) ConstraintSpace {
+		return NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
+			SetOrthogonalFallbackInlineSize(fallback).
+			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+			SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: childInline}).
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+			Build()
+	}
 
-	// Cache the result.
-	ctx.SetOrthogonalResult(child, childResult)
+	// First get the child's min/max-content inline sizes, then lay it out at
+	// each to get the corresponding block-sizes (= parent inline contributions).
+	childMM := ComputeMinMaxSizes(ctx, child, newChildSpace(childInlineForMM))
+	childResultMin := layoutElement(ctx, child, newChildSpace(childMM.MinContent))
+	childResultMax := layoutElement(ctx, child, newChildSpace(childMM.MaxContent))
 
-	// The child's physical size viewed in the parent's logical coordinates:
-	// InlineSize() gives the extent in the parent's inline direction,
-	// which is the child's block-size (since they're orthogonal).
-	childLogical := NewLogicalFragment(parentWDM, childResult.Fragment)
+	// Cache the max-content layout (most representative for subsequent layout).
+	ctx.SetOrthogonalResult(child, childResultMax)
+
+	// The parent's min-content inline contribution = child's block-size at child's
+	// min-content inline layout.
+	// The parent's max-content inline contribution = child's block-size at child's
+	// max-content inline layout.
+	// NewLogicalFragment(parentWDM, fragment).InlineSize() gives the child's
+	// physical width (= block-size in vrl) as the parent's inline contribution.
 	childMargins := ResolveMargins(childStyle, parentWDM, 0)
-	contrib := childLogical.InlineSize() + childMargins.InlineSum()
+	minContrib = NewLogicalFragment(parentWDM, childResultMin.Fragment).InlineSize() + childMargins.InlineSum()
+	maxContrib = NewLogicalFragment(parentWDM, childResultMax.Fragment).InlineSize() + childMargins.InlineSum()
 
-	return contrib, contrib
+	return minContrib, maxContrib
 }
 
 // nodeIsNoWrap reports whether an inline-formatting-context node's content
