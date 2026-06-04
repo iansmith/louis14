@@ -1017,37 +1017,71 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	cols, _ := style.GetGridTemplateColumnsWithNames()
 	_, colGap := style.GetGridGap()
 
-	// Implicit-track expansion for `grid-auto-flow: column` auto-placement.
-	// When the container has no explicit template-columns AND items are auto-
-	// placed via `grid-auto-flow: column`, each item creates one implicit
-	// column track using `grid-auto-columns`. Without this expansion, the
-	// max-content of a grid like `width: max-content; grid-auto-columns: 1fr;
-	// grid-auto-flow: column` collapses to 0 because no template tracks exist
-	// to absorb item contributions. Mirrors Blink's
-	// GridLayoutAlgorithm::ComputeMinMaxSizes which folds implicit tracks
-	// into the intrinsic size computation. @ SHA
+	// Implicit-track expansion for auto-placement.
+	// Mirrors Blink's GridLayoutAlgorithm::ComputeMinMaxSizes which folds
+	// implicit tracks into the intrinsic size computation. @ SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	autoFlow := style.GetGridAutoFlow()
 	autoCols := style.GetGridAutoColumns()
-	if len(cols) == 0 && autoFlow == "column" && autoCols != nil {
-		// Count auto-placed in-flow items along the column axis.
-		implicitCount := 0
-		for _, c := range node.Children() {
-			if c.IsText() {
-				continue
+
+	if len(cols) == 0 {
+		if autoFlow == "column" && autoCols != nil {
+			// Implicit-track expansion for `grid-auto-flow: column` auto-placement.
+			// When the container has no explicit template-columns AND items are auto-
+			// placed via `grid-auto-flow: column`, each item creates one implicit
+			// column track using `grid-auto-columns`. Without this expansion, the
+			// max-content of a grid like `width: max-content; grid-auto-columns: 1fr;
+			// grid-auto-flow: column` collapses to 0 because no template tracks exist
+			// to absorb item contributions.
+			implicitCount := 0
+			for _, c := range node.Children() {
+				if c.IsText() {
+					continue
+				}
+				cs := c.Style()
+				if cs == nil || cs.GetDisplay() == css.DisplayNone {
+					continue
+				}
+				pos := cs.GetPosition()
+				if pos == css.PositionAbsolute || pos == css.PositionFixed {
+					continue
+				}
+				implicitCount++
 			}
-			cs := c.Style()
-			if cs == nil || cs.GetDisplay() == css.DisplayNone {
-				continue
+			for j := 0; j < implicitCount; j++ {
+				cols = append(cols, *autoCols)
 			}
-			pos := cs.GetPosition()
-			if pos == css.PositionAbsolute || pos == css.PositionFixed {
-				continue
+		} else {
+			// Implicit-track expansion for row-flow (default) auto-placement.
+			// When the container has no explicit template-columns AND items are
+			// auto-placed via row-flow (default or `grid-auto-flow: row`), the grid
+			// synthesizes exactly ONE implicit column track per the auto-placed items'
+			// contributions. This is different from column-flow (which creates one
+			// track per item); row-flow reuses the same track for all items.
+			// Use grid-auto-columns if set, else a default auto() track.
+			hasItem := false
+			for _, c := range node.Children() {
+				if c.IsText() {
+					continue
+				}
+				cs := c.Style()
+				if cs == nil || cs.GetDisplay() == css.DisplayNone {
+					continue
+				}
+				pos := cs.GetPosition()
+				if pos == css.PositionAbsolute || pos == css.PositionFixed {
+					continue
+				}
+				hasItem = true
+				break
 			}
-			implicitCount++
-		}
-		for j := 0; j < implicitCount; j++ {
-			cols = append(cols, *autoCols)
+			if hasItem {
+				if autoCols != nil {
+					cols = append(cols, *autoCols)
+				} else {
+					cols = append(cols, css.GridTrack{Auto: true})
+				}
+			}
 		}
 	}
 
@@ -1078,19 +1112,38 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				continue
 			}
 			childWDM := NewWritingDirectionMode(cs)
-			childGeom := ComputeFragmentGeometry(cs, childWDM)
-			childBP := childGeom.InlineBorderPadding()
-			margins := ResolveMargins(cs, childWDM, 0)
-			childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
-				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
-				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-				Build()
-			mm := ComputeMinMaxSizes(ctx, c, childSpace)
+
+			var minContrib, maxContrib float64
+
+			// Route orthogonal items through measureOrthogonalChild, which lays out
+			// the item and uses its block-size (viewed in parent's logical coords) as
+			// the inline contribution. For parallel (non-orthogonal) items, use the
+			// cheap ComputeMinMaxSizes + border-padding + margins path.
+			// Mirrors Blink's GridTrackSizingAlgorithm::ContributionSizeForGridItem.
+			if wdm.IsOrthogonalTo(childWDM) {
+				// Orthogonal: block-size becomes inline contribution to parent.
+				// measureOrthogonalChild already includes margins in its return value.
+				minContrib, maxContrib = measureOrthogonalChild(c, cs, childWDM, wdm, ctx, space)
+			} else {
+				// Parallel: compute intrinsic sizes in the child's writing mode,
+				// then add border/padding and margins in the child's own writing mode.
+				childGeom := ComputeFragmentGeometry(cs, childWDM)
+				childBP := childGeom.InlineBorderPadding()
+				margins := ResolveMargins(cs, childWDM, 0)
+				childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
+					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+					SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+					SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
+					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+					Build()
+				mm := ComputeMinMaxSizes(ctx, c, childSpace)
+				minContrib = mm.MinContent + childBP + margins.InlineSum()
+				maxContrib = mm.MaxContent + childBP + margins.InlineSum()
+			}
+
 			itemSizes = append(itemSizes, itemContrib{
-				min: mm.MinContent + childBP + margins.InlineSum(),
-				max: mm.MaxContent + childBP + margins.InlineSum(),
+				min: minContrib,
+				max: maxContrib,
 			})
 		}
 	}
