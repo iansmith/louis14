@@ -167,9 +167,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS Tables §11.5 / §11.5.3 "Computing the table height":
 	// the table's used block-size is max(intrinsic content, explicit height,
-	// min-height) clamped by max-height. Tables treat width/height as
-	// border-box per the table border-box quirk (see fragment_geometry.go
-	// "isTable && box-sizing != border-box" branch).
+	// min-height) clamped by max-height. Tables get `box-sizing: border-box`
+	// from the UA cascade (element-name gated in cascade.go), so all resolved
+	// sizes are border-box inclusive of borders and padding.
 	//
 	// CalculateInitialFragmentGeometry only applies min/max-block-size when
 	// the resolved block-size is definite (fragment_geometry.go ~L879). For
@@ -186,15 +186,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	explicitTableBorderBoxBlock := geom.BorderBoxSize.BlockSize
 	minBlockContent := ResolveMinBlockSize(tla.style, wdm, tla.space, geom).Float64()
 	maxBlockContentLU, hasMaxBlock := ResolveMaxBlockSize(tla.style, wdm, tla.space, geom)
-	tableUsesBorderBoxQuirk := tla.style.GetBoxSizing() != "border-box"
 	contentToBorderBox := func(content float64) float64 {
-		if tableUsesBorderBoxQuirk {
-			// Table border-box quirk (see fragment_geometry.go ~L795):
-			// for content-box tables, declared height is treated as
-			// border-box. applyBoxSizingBlock didn't subtract BP, so the
-			// content value IS the border-box value here.
-			return content
-		}
 		return content + geom.BlockBorderPadding()
 	}
 	// CSS Sizing §1.2: apply max first, then min. min wins when min > max.
