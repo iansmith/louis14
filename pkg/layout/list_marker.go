@@ -138,7 +138,8 @@ func isStringListStyleType(lst css.ListStyleType) bool {
 		css.ListStyleTypeLowerAlpha, css.ListStyleTypeUpperAlpha,
 		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
 		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
-		css.ListStyleTypeLowerGreek:
+		css.ListStyleTypeLowerGreek,
+		css.ListStyleTypeHebrew, css.ListStyleTypeCJKDecimal, css.ListStyleTypeKoreanHangulFormal:
 		return false
 	}
 	return true

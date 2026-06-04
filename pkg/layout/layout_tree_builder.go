@@ -345,15 +345,21 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 				lin.MarkerContent = b.resolveContentText(cv, node, node)
 			}
 		}
-		// For list-style-type: <string> without ::marker rules, use the string
-		// as marker content. Applies to both inside and outside positions
-		// (CSS Lists 3 §3.2 list-style-type accepts <string>; Blink
-		// ListMarker::MarkerText returns the string for the StaticString
-		// category regardless of position).
+		// For list-style-type without ::marker rules, resolve marker content.
+		// Applies to both inside and outside positions (CSS Lists 3 §3.2).
+		// For builtin types, use resolveListStyleType to get the marker text
+		// (e.g., "1.", "א.", "一、", "일, ").
+		// For <string> types, use the string directly.
 		if lin.MarkerContent == "" {
 			lst := style.GetListStyleType()
-			if lst != "" && !isBuiltinListStyleType(lst) {
-				lin.MarkerContent = string(lst)
+			if lst != "" {
+				if isBuiltinListStyleType(lst) {
+					// Builtin type: resolve to marker text with suffix
+					lin.MarkerContent = b.resolveListStyleType(lst, node)
+				} else {
+					// Custom <string> type: use as-is
+					lin.MarkerContent = string(lst)
+				}
 			}
 		}
 	}
@@ -1838,6 +1844,12 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 		return css.ToRoman(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeLowerGreek:
 		return css.ToGreek(value) + css.DefaultCounterStyleSuffix
+	case css.ListStyleTypeHebrew:
+		return css.ToHebrew(value) + css.DefaultCounterStyleSuffix
+	case css.ListStyleTypeCJKDecimal:
+		return css.ToCJKDecimal(value) + "、"
+	case css.ListStyleTypeKoreanHangulFormal:
+		return css.ToKoreanHangulFormal(value) + ", "
 	case css.ListStyleTypeDisclosureOpen:
 		return "▼" // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:
@@ -1858,6 +1870,7 @@ func isBuiltinListStyleType(lst css.ListStyleType) bool {
 		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
 		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
 		css.ListStyleTypeLowerGreek,
+		css.ListStyleTypeCJKDecimal, css.ListStyleTypeHebrew, css.ListStyleTypeKoreanHangulFormal,
 		css.ListStyleTypeDisclosureOpen, css.ListStyleTypeDisclosureClosed:
 		return true
 	}
