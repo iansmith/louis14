@@ -180,6 +180,7 @@ func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 		RubyColumn:    column,
 		CanBreakAfter: true,
 	})
+	line.HasContent = true
 	line.RubyColumns = append(line.RubyColumns, column)
 	lb.position += rubySize
 	line.Width = lb.position

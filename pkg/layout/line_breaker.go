@@ -584,7 +584,6 @@ func (lb *LineBreaker) breakTextAtWord(
 		return true
 	}
 
-	// CSS Text §4.1 / CSS 2.1 §16.4: force-fit (overflow) only applies when
 	// CSS 2.1 §16.4: word-spacing adds extra space between words.
 	wordSpacing := 0.0
 	if measureStyle != nil {
@@ -1238,6 +1237,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		TextEnd:    breakOffset,
 		InlineSize: usedWidth,
 	})
+	line.HasContent = true
 	lb.position += usedWidth
 	line.Width = lb.position
 
@@ -1437,7 +1437,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	// In LineBreakerMinContent mode: break at every opportunity so each atom
 	// contributes independently to the min-content width.
 	// In LineBreakerMaxContent mode: never break (place everything on one line).
-	if totalInlineSize > remaining && len(line.Results) > 0 && lb.mode != LineBreakerMaxContent {
+	if totalInlineSize > remaining && line.HasContent && lb.mode != LineBreakerMaxContent {
 		// Doesn't fit and line has content — end the line.
 		return true
 	}

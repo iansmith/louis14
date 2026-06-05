@@ -334,9 +334,16 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			reLayoutInline := itemInline
 			isFixedInline := stretchInline
 			if !stretchInline && isAutoOrUnsetInline(item.style, wdm) {
-				// Reuse the ShrinkToFit inline size from the first-pass fragment.
-				reLayoutInline = ToLogicalSize(geomSizeToOld(item.result.Fragment.Size), wdm.WM).InlineSize
-				isFixedInline = true
+				ar := item.style.GetAspectRatio()
+				if !ar.IsSet {
+					// Reuse the ShrinkToFit inline size from the first-pass fragment.
+					// Aspect-ratio items are excluded: CalculateInitialFragmentGeometry
+					// derives their inline from the definite block via the reverse-computation
+					// path (fragment_geometry.go §5.1), which requires inlineSizeIsAuto=true.
+					// Setting IsFixedInlineSize=true here would short-circuit that path.
+					reLayoutInline = NewLogicalFragment(wdm, item.result.Fragment).InlineSize()
+					isFixedInline = true
+				}
 			}
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
