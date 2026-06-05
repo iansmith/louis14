@@ -193,13 +193,43 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		if hasExplicitBlock {
 			firstPassBlock = explicitBlockSize
 		}
+		// CSS Box Alignment §6.1 / CSS Grid §12.5: when justify-self is not
+		// "stretch" or "normal" and the item's inline-size is auto, the item
+		// must be sized to its max-content clamped to the track (ShrinkToFit),
+		// not stretched to the full track.  Only applies to auto-sized items:
+		// an explicit width (e.g. "width:50px") is resolved by
+		// CalculateInitialFragmentGeometry regardless and must not be replaced
+		// by max-content.
+		//
+		// Mirrors Blink's GridLayoutAlgorithm::ComputeItemSizeForTrackSizing @
+		// third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc
+		// (Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): non-stretch items
+		// with auto inline-size get kShrinkToFit sizing before CreateConstraintSpace.
+		//
+		// Without this, a grid item with justify-items:start and auto inline-size
+		// is given AvailableInlineSize=trackWidth with IsFixedInlineSize=false,
+		// causing CalculateInitialFragmentGeometry to fill the full track width.
+		// An item whose max-content is 1px narrower than the track then fails to
+		// wrap its inline children (bug: firefox-bug-1881495).
+		isFixedInline := stretchInline
+		if !stretchInline {
+			if isAutoOrUnsetInline(item.style, wdm) { // auto inline-size: apply ShrinkToFit
+				mmSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+					SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
+					Build()
+				mm := ComputeMinMaxSizes(gla.ctx, item.node, mmSpace)
+				itemInline = mm.ShrinkToFit(itemInline)
+				isFixedInline = true // item is definitively sized at ShrinkToFit
+			}
+		}
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
 			SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 			SetPercentageResolutionInlineSize(itemInline).
-			SetIsFixedInlineSize(stretchInline).
+			SetIsFixedInlineSize(isFixedInline).
 			Build()
 		itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace)
 		item.result = itemLayouts[i]
@@ -295,13 +325,33 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			if wdm.IsOrthogonalTo(childWDM2) && hasExplicitBlock && explicitBlockSize < availBlock {
 				reLayoutBlock = explicitBlockSize
 			}
+			// CSS Box Alignment §6.1 / CSS Grid §12.5: non-stretch items were
+			// ShrinkToFit-sized in the first pass. Preserve that inline size on
+			// the re-layout pass (which runs for block-stretch / percentage-height
+			// items). Without this guard the re-layout uses the full column width,
+			// undoing the ShrinkToFit and causing incorrect line wrapping on the
+			// second pass. Mirrors the first-pass ShrinkToFit block above.
+			reLayoutInline := itemInline
+			isFixedInline := stretchInline
+			if !stretchInline && isAutoOrUnsetInline(item.style, wdm) {
+				ar := item.style.GetAspectRatio()
+				if !ar.IsSet {
+					// Reuse the ShrinkToFit inline size from the first-pass fragment.
+					// Aspect-ratio items are excluded: CalculateInitialFragmentGeometry
+					// derives their inline from the definite block via the reverse-computation
+					// path (fragment_geometry.go §5.1), which requires inlineSizeIsAuto=true.
+					// Setting IsFixedInlineSize=true here would short-circuit that path.
+					reLayoutInline = NewLogicalFragment(wdm, item.result.Fragment).InlineSize()
+					isFixedInline = true
+				}
+			}
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
 				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: reLayoutBlock}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}).
-				SetPercentageResolutionInlineSize(itemInline).
-				SetIsFixedInlineSize(stretchInline).
+				SetAvailableSize(LogicalSize{InlineSize: reLayoutInline, BlockSize: reLayoutBlock}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: reLayoutInline, BlockSize: availBlock}).
+				SetPercentageResolutionInlineSize(reLayoutInline).
+				SetIsFixedInlineSize(isFixedInline).
 				SetIsFixedBlockSize(selfAlign == "stretch" || selfAlign == "normal").
 				Build()
 			itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace2)
