@@ -114,6 +114,12 @@ type LineInfo struct {
 	IsLastLine bool
 	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
 	HasForcedBreak bool
+	// HasContent is true when at least one visible item (text or atomic inline)
+	// has been committed to this line. Maintained incrementally by handleText,
+	// breakTextAtWord, and handleAtomicInline so breakTextAtWord can test for
+	// prior visible content in O(1) instead of scanning Results.
+	// Mirrors Blink's LineInfo::HasContent().
+	HasContent bool
 	// TextAlignLastJustify is true when text-align was overridden to "justify"
 	// by the text-align-last property. Unlike text-align: justify, which falls
 	// back to start on the last line, text-align-last: justify expands even the
@@ -264,6 +270,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.Width = 0
 	line.AvailableWidth = lb.availableWidth
 	line.HasForcedBreak = false
+	line.HasContent = false
 	line.IsLastLine = false
 	line.TextAlignLastJustify = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
@@ -460,6 +467,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 			TextEnd:    textEnd,
 			InlineSize: fullWidth,
 		})
+		line.HasContent = true
 		lb.position += fullWidth
 		line.Width = lb.position
 		lb.currentTextOffset = textEnd
@@ -498,6 +506,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 					TextEnd:    textEnd,
 					InlineSize: fullWidth,
 				})
+				line.HasContent = true
 				lb.position += fullWidth
 				line.Width = lb.position
 				lb.currentTextOffset = textEnd
@@ -575,6 +584,7 @@ func (lb *LineBreaker) breakTextAtWord(
 		return true
 	}
 
+	// CSS Text §4.1 / CSS 2.1 §16.4: force-fit (overflow) only applies when
 	// CSS 2.1 §16.4: word-spacing adds extra space between words.
 	wordSpacing := 0.0
 	if measureStyle != nil {
@@ -654,7 +664,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
 		}
 
-		if usedWidth+wordWidth > remaining && fitted > 0 {
+		if usedWidth+wordWidth > remaining && (fitted > 0 || line.HasContent) {
 			// CSS 2.1 §16.6.1: trailing collapsible whitespace hangs and does
 			// not contribute to the line's width. If stripping trailing spaces
 			// from this word makes it fit, include it — it would be the last
@@ -709,6 +719,7 @@ func (lb *LineBreaker) breakTextAtWord(
 		TextEnd:    breakOffset,
 		InlineSize: usedWidth,
 	})
+	line.HasContent = true
 	lb.position += usedWidth
 	line.Width = lb.position
 
@@ -1312,6 +1323,21 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	endEdge := borderInlineEnd + paddingInlineEnd + margins.InlineEnd
 	lb.position += endEdge
 
+	// Update line.Width to reflect the cursor position after the close tag.
+	// This ensures negative margin-end (e.g. margin-inline-end:-1px) on a
+	// wrapper span reduces the reported line width, so max-content sizing
+	// accounts for it correctly.  Without this, max-content stays at the
+	// position of the last placed content item and ignores the close-tag
+	// cursor adjustment — causing ShrinkToFit to overcount the item's
+	// inline-size by the absolute value of the negative margin.
+	//
+	// Only update when lb.position > 0: a negative close-tag margin that
+	// brings position below 0 (degenerate case) should not produce a
+	// negative line.Width.
+	if lb.position > 0 {
+		line.Width = lb.position
+	}
+
 	line.Results = append(line.Results, InlineItemResult{
 		Item:       item,
 		ItemIndex:  lb.currentItemIndex,
@@ -1428,6 +1454,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		LayoutResult: result,
 		Margins:      margins,
 	})
+	line.HasContent = true
 	lb.position += inlineSize
 
 	// Add inline-end margin.
