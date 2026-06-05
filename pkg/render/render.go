@@ -92,6 +92,12 @@ type Renderer struct {
 	// layer's own transform. Reset to nil after the layer's paint completes.
 	canvasBgPaintedLayer *PaintLayer
 
+	// nodeBoxIndex maps each html.Node to its primary layout box. Built once
+	// per Render call in paintBoxes. Used by parentPerspectiveContext to
+	// locate the perspective-establishing box for an abspos child whose
+	// layout parent (containing block) differs from its DOM parent.
+	nodeBoxIndex map[*html.Node]*layout.Box
+
 	// canvasBgPaintedDescendants tracks canvas-bg layers whose bg was
 	// painted out-of-transform by an ancestor's paintLayerCanvasBackground
 	// (typically body promoted to root's canvas, where root has the
@@ -302,9 +308,38 @@ func (r *Renderer) fillCanvasScoped() {
 	r.dc.Clear()
 }
 
+// buildNodeBoxIndex populates r.nodeBoxIndex with a node→first-box mapping
+// by walking every box tree in boxes. For nodes that map to multiple boxes
+// (e.g. inline split across lines), only the first box encountered is stored;
+// for perspective lookup this is sufficient since we only need the style and
+// position of the container.
+func (r *Renderer) buildNodeBoxIndex(boxes []*layout.Box) {
+	r.nodeBoxIndex = make(map[*html.Node]*layout.Box)
+	var walk func(*layout.Box)
+	walk = func(b *layout.Box) {
+		if b == nil {
+			return
+		}
+		if b.Node != nil {
+			if _, exists := r.nodeBoxIndex[b.Node]; !exists {
+				r.nodeBoxIndex[b.Node] = b
+			}
+		}
+		for _, child := range b.Children {
+			walk(child)
+		}
+	}
+	for _, b := range boxes {
+		walk(b)
+	}
+}
+
 // paintBoxes performs the per-box paint pass shared by [Render] and
 // [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
+	// Build the node→box index used by parentPerspectiveContext to resolve
+	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
+	r.buildNodeBoxIndex(boxes)
 	// Build the renderer-wide SVG resource registry by walking every
 	// box subtree for inline `<svg>` SVGRoots and merging their
 	// per-root registries. `url(#id)` references on any element on
@@ -1962,6 +1997,19 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// raw transform list.
 	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
 
+	// Parent-established perspective (CSS Transforms L2 §6): when the box's
+	// parent carries a `perspective` property, the child's transform composes
+	// with the parent's perspective matrix (about perspective-origin) in 4×4
+	// BEFORE projecting to 2D — so the child's out-of-plane Z (from
+	// rotateX/rotateY) is foreshortened. This is the property-sourced
+	// counterpart of the `perspective()` transform function and is what the
+	// transform3d-perspective-* reference files exercise.
+	if d, opx, opy, ok := r.parentPerspectiveContext(box); ok {
+		h := css.ComposePerspectiveChildProjection(selfTransforms, ox, oy, d, opx, opy)
+		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		return false
+	}
+
 	if ancestorTransforms := preserve3DAncestorTransforms(box); len(ancestorTransforms) > 0 {
 		// Move origin to transform-origin point.
 		r.dc.Translate(ox, oy)
@@ -2012,12 +2060,28 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// degrades gracefully for tests where the perspective component is
 	// small. Boxes with non-trivial perspective render as the affine
 	// portion of the projection rather than the full perspective image.
-	xx, yx, xy, yy, x0, y0 := css.ComposeAffineProjection(selfTransforms)
-	r.dc.MultiplyMatrix(xx, yx, xy, yy, x0, y0)
+	// When the composed projection of the z=0 plane carries a perspective
+	// component (homography bottom row ≠ [0 0 1]), apply the full 2D homography
+	// (with perspective divide) so perspective()/`perspective` foreshortening is
+	// exact. Perspective preserves straight lines, so a transformed rectangle
+	// remains a (non-affine) quad — correct for the box's border/background fill,
+	// which the renderer emits as a 4-corner path. Otherwise use the affine
+	// projection (the common, cheaper path).
+	//
+	// ComposeProjective is called once; affine coefficients are extracted from
+	// the same h matrix rather than calling ComposeAffineProjection again.
+	h := css.ComposeProjective(selfTransforms)
+	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
+		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		r.dc.Translate(-ox, -oy)
+		return false
+	}
+	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
+	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
 
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
-	return flattens && isSingularProjection(xx, yx, xy, yy)
+	return flattens && isSingularProjection(h[0], h[3], h[1], h[4])
 }
 
 // isLayerTransformSingular returns true if layer.HasTransform is set and the
@@ -2072,6 +2136,34 @@ const singularProjectionEpsilon = 1e-12
 func isSingularProjection(xx, yx, xy, yy float64) bool {
 	det := xx*yy - xy*yx
 	return math.Abs(det) < singularProjectionEpsilon
+}
+
+// parentPerspectiveContext reports whether the box's DOM parent establishes a
+// `perspective` property and, if so, returns the perspective distance plus the
+// screen-space perspective-origin (parent box position + resolved
+// perspective-origin offset). Used to apply parent-sourced perspective to a
+// child's transform in applyTransforms.
+//
+// Perspective applies only to the perspective element's direct DOM children
+// (CSS Transforms L2 §6; csswg-drafts #918). The box tree reparents
+// absolutely/fixed-positioned boxes under their containing block, so box.Parent
+// may not be the DOM parent. We use r.nodeBoxIndex (built once per render) to
+// look up the box for box.Node.Parent.
+func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float64, ok bool) {
+	if box == nil || box.Node == nil || box.Node.Parent == nil {
+		return 0, 0, 0, false
+	}
+	p := r.nodeBoxIndex[box.Node.Parent]
+	if p == nil || p.Style == nil {
+		return 0, 0, 0, false
+	}
+	pd, has := p.Style.GetPerspective()
+	if !has {
+		return 0, 0, 0, false
+	}
+	psx, psy, _, _ := pixelSnap(p.X, p.Y, p.Width, p.Height)
+	oox, ooy := p.Style.ResolvePerspectiveOriginPx(p.Width, p.Height)
+	return pd, psx + oox, psy + ooy, true
 }
 
 // wrapTransformsWithOriginZ returns `transforms` bracketed by

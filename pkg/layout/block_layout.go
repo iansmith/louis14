@@ -1842,12 +1842,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// block end — mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline.
 	// This lets an enclosing non-scrollable inline-block propagate the correct
 	// synthesized value via its own LastBaseline.
+	logMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64())
 	if bla.style != nil {
 		d := bla.style.GetDisplay()
 		isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
 			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
 		if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
-			builder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding())
+			builder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
 		} else if hasLastChildBaseline {
 			builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 				lastChildBlockOffset + lastChildBaseline)
@@ -1865,7 +1866,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
 	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64()), wdm)
+	physMargin := ToPhysicalEdges(logMargins, wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:    physMargin,
 		Border:    physBorder,
