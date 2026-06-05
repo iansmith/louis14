@@ -10437,13 +10437,12 @@ func (s *Style) GetPerspective() (float64, bool) {
 	if val == "" || val == "none" {
 		return 0, false
 	}
-	d, isPct, parsed := parseTransformValue(val)
-	if !parsed || isPct || d < 0 {
+	d, parsed := s.GetLengthForVal(val)
+	if !parsed || d <= 0 {
 		return 0, false
 	}
-	// CSS Transforms L2 §6 / csswg-drafts issue #413: perspective values
-	// below 1px (including 0) are clamped to 1px so the perspective matrix
-	// is still applied (d=0 ≡ perspective(1px), not "no perspective").
+	// CSS Transforms L2 §6: sub-1px perspective values are clamped to 1px
+	// so the perspective matrix is still applied.
 	if d < 1 {
 		d = 1
 	}
