@@ -181,13 +181,26 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// child of a grid with `width:100px` gets force-resized to the
 		// track width, breaking the grid-container-as-flex-item tests.
 		stretchInline := gla.shouldStretchInline(item.style, wdm)
-		childSpace := ConstraintSpace{
-			AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
-			PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
-			PercentageResolutionInlineSize: itemInline,
-			IsFixedInlineSize:              stretchInline,
-			WritingDirection:               wdm,
+		childWDM := NewWritingDirectionMode(item.style)
+		// Use NewConstraintSpaceBuilder so orthogonal items (e.g. writing-mode:
+		// vertical-rl inside a horizontal grid) get axis-swapped spaces.
+		// For orthogonal items: the grid's inline (column width) becomes the child's
+		// block; the grid's block (row height) becomes the child's inline.
+		// Pass explicitBlockSize as the available block so orthogonal children know
+		// the grid height when sizing their content (enabling correct line-wrapping).
+		// Mirrors Blink's GridLayoutAlgorithm::CreateConstraintSpaceForLayout.
+		firstPassBlock := float64(Indefinite)
+		if hasExplicitBlock {
+			firstPassBlock = explicitBlockSize
 		}
+		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
+			SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
+			SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
+			SetPercentageResolutionInlineSize(itemInline).
+			SetIsFixedInlineSize(stretchInline).
+			Build()
 		itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace)
 		item.result = itemLayouts[i]
 		item.margins = ResolveMargins(item.style, wdm, itemInline)
@@ -272,15 +285,26 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// Match the first-pass guard so an item with explicit width keeps
 			// its width on the re-layout pass too.
 			stretchInline := gla.shouldStretchInline(item.style, wdm)
-			childSpace := ConstraintSpace{
-				AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
-				PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
-				PercentageResolutionInlineSize: itemInline,
-				IsFixedInlineSize:              stretchInline,
-				IsFixedBlockSize:               selfAlign == "stretch" || selfAlign == "normal",
-				WritingDirection:               wdm,
+			childWDM2 := NewWritingDirectionMode(item.style)
+			// For orthogonal items, availBlock becomes the child's available InlineSize
+			// (after axis swap in NewConstraintSpaceBuilder). Use the grid container's
+			// explicit block-size when available so the child's inline is capped to the
+			// visible row height. Without this, an overflowing auto row (row > container)
+			// gives the child too much inline space, causing incorrect line-wrapping.
+			reLayoutBlock := availBlock
+			if wdm.IsOrthogonalTo(childWDM2) && hasExplicitBlock && explicitBlockSize < availBlock {
+				reLayoutBlock = explicitBlockSize
 			}
-			itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace)
+			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
+				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
+				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: reLayoutBlock}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}).
+				SetPercentageResolutionInlineSize(itemInline).
+				SetIsFixedInlineSize(stretchInline).
+				SetIsFixedBlockSize(selfAlign == "stretch" || selfAlign == "normal").
+				Build()
+			itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace2)
 			item.result = itemLayouts[i]
 		}
 	}
