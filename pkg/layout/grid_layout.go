@@ -195,6 +195,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
+			SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 			SetPercentageResolutionInlineSize(itemInline).
@@ -296,6 +297,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
+				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: reLayoutBlock}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}).
 				SetPercentageResolutionInlineSize(itemInline).
