@@ -7295,51 +7295,29 @@ func isDecorationSkippableSpace(ch rune) bool {
 // dependency and matches Blink's structure.
 func emphasisPunctuationException(r rune) bool {
 	switch r {
-	case 0x0023: // #, NUMBER SIGN
-		return true
-	case 0x0025: // %, PERCENT SIGN
-		return true
-	case 0x0026: // &, AMPERSAND
-		return true
-	case 0x0040: // @, COMMERCIAL AT
-		return true
-	case 0x00A7: // §, SECTION SIGN
-		return true
-	case 0x00B6: // ¶, PILCROW
-		return true
-	case 0x0609: // ‰, ARABIC-INDIC PER MILLE SIGN
-		return true
-	case 0x060A: // ‱, ARABIC-INDIC PER TEN THOUSAND SIGN
-		return true
-	case 0x066A: // ؊, ARABIC LETTER BEH WITH SMALL V BELOW
-		return true
-	case 0x2030: // ‰, PER MILLE SIGN
-		return true
-	case 0x2031: // ‱, PER TEN THOUSAND SIGN
-		return true
-	case 0x204A: // ⁊, TIRONIAN SIGN ET
-		return true
-	case 0x204B: // ⁋, REVERSED PILCROW
-		return true
-	case 0x2053: // ⁓, SWUNG DASH
-		return true
-	case 0x303D: // 〽, PART ALTERNATION MARK
-		return true
-	case 0xFE5F: // ﹟, SMALL NUMBER SIGN
-		return true
-	case 0xFE60: // ﹠, SMALL AMPERSAND
-		return true
-	case 0xFE6A: // ﹪, SMALL PERCENT SIGN
-		return true
-	case 0xFE6B: // ﹫, SMALL COMMERCIAL AT
-		return true
-	case 0xFF03: // ＃, FULLWIDTH NUMBER SIGN
-		return true
-	case 0xFF05: // ％, FULLWIDTH PERCENT SIGN
-		return true
-	case 0xFF06: // ＆, FULLWIDTH AMPERSAND
-		return true
-	case 0xFF20: // ＠, FULLWIDTH COMMERCIAL AT
+	case 0x0023, // #, NUMBER SIGN
+		0x0025, // %, PERCENT SIGN
+		0x0026, // &, AMPERSAND
+		0x0040, // @, COMMERCIAL AT
+		0x00A7, // §, SECTION SIGN
+		0x00B6, // ¶, PILCROW
+		0x0609, // ARABIC-INDIC PER MILLE SIGN
+		0x060A, // ARABIC-INDIC PER TEN THOUSAND SIGN
+		0x066A, // ARABIC PERCENT SIGN
+		0x2030, // ‰, PER MILLE SIGN
+		0x2031, // ‱, PER TEN THOUSAND SIGN
+		0x204A, // ⁊, TIRONIAN SIGN ET
+		0x204B, // ⁋, REVERSED PILCROW
+		0x2053, // ⁓, SWUNG DASH
+		0x303D, // 〽, PART ALTERNATION MARK
+		0xFE5F, // ﹟, SMALL NUMBER SIGN
+		0xFE60, // ﹠, SMALL AMPERSAND
+		0xFE6A, // ﹪, SMALL PERCENT SIGN
+		0xFE6B, // ﹫, SMALL COMMERCIAL AT
+		0xFF03, // ＃, FULLWIDTH NUMBER SIGN
+		0xFF05, // ％, FULLWIDTH PERCENT SIGN
+		0xFF06, // ＆, FULLWIDTH AMPERSAND
+		0xFF20: // ＠, FULLWIDTH COMMERCIAL AT
 		return true
 	}
 	return false
