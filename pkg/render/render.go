@@ -4023,7 +4023,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 		if idw <= 0 || idh <= 0 {
 			return
 		}
-		scaled := scaleImageNearest(srcImg, sw, sh, idw, idh)
+		scaled := scaleImage(srcImg, sw, sh, idw, idh, layer.ImageRendering)
 		r.dc.DrawImage(scaled, int(math.Round(dx)), int(math.Round(dy)))
 	}
 
@@ -4050,7 +4050,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeX0 := int(math.Round(dx))
 				edgeX1 := int(math.Round(dx + dw))
 				edgeY := int(math.Round(dy))
@@ -4090,7 +4090,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeY0 := int(math.Round(dy))
 				edgeY1 := int(math.Round(dy + dh))
 				edgeX := int(math.Round(dx))
@@ -4151,7 +4151,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					if tw <= 0 {
 						continue
 					}
-					tile := scaleImageNearest(srcImg, sw, sh, tw, tileH)
+					tile := scaleImage(srcImg, sw, sh, tw, tileH, layer.ImageRendering)
 					r.dc.DrawImage(tile, itx0, edgeY)
 				}
 			} else {
@@ -4175,7 +4175,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					if th <= 0 {
 						continue
 					}
-					tile := scaleImageNearest(srcImg, sw, sh, tileW, th)
+					tile := scaleImage(srcImg, sw, sh, tileW, th, layer.ImageRendering)
 					r.dc.DrawImage(tile, edgeX, ity0)
 				}
 			}
@@ -4187,7 +4187,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeX0 := int(math.Round(dx))
 				edgeY := int(math.Round(dy))
 				n := int(dw) / tileW
@@ -4211,7 +4211,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeY0 := int(math.Round(dy))
 				edgeX := int(math.Round(dx))
 				n := int(dh) / tileH
@@ -4288,7 +4288,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 			float64(middleW), float64(middleH),
 			dstLeft, dstTop,
 			float64(sliceLeft), float64(sliceTop),
-			hRepeat, vRepeat)
+			hRepeat, vRepeat, layer.ImageRendering)
 	}
 
 	return true
@@ -4306,12 +4306,14 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 // dx, dy, dw, dh: destination middle rectangle (pixels).
 // mW, mH: source middle dimensions (== srcImg.Bounds dims, passed for clarity).
 // dstTopOrLeft / sliceTopOrLeft: edge widths used to derive tile scale.
+// imageRendering: the image-rendering CSS value from the element's style.
 func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 	dx, dy, dw, dh float64,
 	mW, mH float64,
 	dstLeft, dstTop float64,
 	sliceLeft, sliceTop float64,
 	hRepeat, vRepeat string,
+	imageRendering string,
 ) {
 	if srcImg == nil || dw <= 0 || dh <= 0 || mW <= 0 || mH <= 0 {
 		return
@@ -4330,7 +4332,7 @@ func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 		if idw <= 0 || idh <= 0 {
 			return
 		}
-		scaled := scaleImageNearest(srcImg, sw, sh, idw, idh)
+		scaled := scaleImage(srcImg, sw, sh, idw, idh, imageRendering)
 		r.dc.DrawImage(scaled, int(math.Round(dx)), int(math.Round(dy)))
 		return
 	}
@@ -4377,7 +4379,7 @@ func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 	if itw <= 0 || ith <= 0 {
 		return
 	}
-	tile := scaleImageNearest(srcImg, sw, sh, itw, ith)
+	tile := scaleImage(srcImg, sw, sh, itw, ith, imageRendering)
 
 	// Per-axis tile positions.
 	xs := middleTilePositions(dx, dw, tileW, hRepeat)
