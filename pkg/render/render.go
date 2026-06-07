@@ -7502,6 +7502,67 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 // Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
+// computeDecorationExtent returns the logical (physical-axis) start and end of
+// the decoration line, with text-decoration-inset applied. It handles the
+// HasDecoratingBox × RTL × IsFirst/IsLastFragment matrix:
+//
+//   - HasDecoratingBox: the extent spans the layout-stamped decorating-box
+//     width; inset is applied only at the actual box edges (first/last
+//     fragment flags gate this so interior line-breaks don't gain a trim).
+//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth]
+//     and inset is applied unconditionally.
+//   - RTL reverses the physical meaning of InlineStart/InlineEnd: InlineStart
+//     trims the right edge; InlineEnd trims (or extends, when negative) the left.
+func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+	if td.HasDecoratingBox {
+		logicalStart = boxX + td.DecoratingBoxOffsetX
+		logicalEnd = logicalStart + td.DecoratingBoxWidth
+		if isRTL {
+			// In RTL flow, InlineStart is the physical right edge and InlineEnd
+			// is the physical left edge, so the trim/extend directions are flipped
+			// relative to the LTR case.
+			if td.IsFirstFragment {
+				logicalEnd -= td.Inset.InlineStart // trim right
+			}
+			if td.IsLastFragment {
+				logicalStart += td.Inset.InlineEnd // extend left
+			}
+		} else {
+			if td.IsFirstFragment {
+				logicalStart += td.Inset.InlineStart // trim left
+			}
+			if td.IsLastFragment {
+				logicalEnd -= td.Inset.InlineEnd // extend right
+			}
+		}
+	} else {
+		if isRTL {
+			// RTL: InlineStart trims the physical right; InlineEnd extends left.
+			logicalStart = boxX + td.Inset.InlineEnd // negative InlineEnd → extends left
+			logicalEnd = boxX + textWidth - td.Inset.InlineStart
+		} else {
+			logicalStart = boxX + td.Inset.InlineStart
+			logicalEnd = boxX + textWidth - td.Inset.InlineEnd
+		}
+	}
+	return
+}
+
+// applySkipSpacesTrim trims leading/trailing whitespace from the decoration
+// extent (text-decoration-skip-spaces). Applied after inset so a negative
+// inset (extension) does not extend through skipped whitespace.
+// For the HasDecoratingBox case, trimming only applies at the actual box
+// edge (first/last fragment) so interior line-break boundaries are untouched.
+func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBox, isFirst, isLast bool) (float64, float64) {
+	if skipStart > 0 && (!hasDecoratingBox || isFirst) {
+		start += skipStart
+	}
+	if skipEnd > 0 && (!hasDecoratingBox || isLast) {
+		end -= skipEnd
+	}
+	return start, end
+}
+
 // appliedDecorationIsRTL reports whether the decoration's inline axis runs
 // right-to-left. It prefers box.Style (normal horizontal path) and falls back
 // to td.SourceStyle for the sideways path where the synthetic virtualBox has
@@ -7532,54 +7593,12 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// SLICE of the logical decoration that falls within this fragment, with
 	// the inset trim applied only at the decorating box's actual logical
 	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
-	var logicalStart, logicalEnd float64
 	isRTL := appliedDecorationIsRTL(box, td)
-	if td.HasDecoratingBox {
-		logicalStart = box.X + td.DecoratingBoxOffsetX
-		logicalEnd = logicalStart + td.DecoratingBoxWidth
-		if isRTL {
-			// In RTL flow, InlineStart is the physical right edge and InlineEnd
-			// is the physical left edge, so the trim/extend directions are flipped
-			// relative to the LTR case.
-			if td.IsFirstFragment {
-				logicalEnd -= td.Inset.InlineStart // trim right
-			}
-			if td.IsLastFragment {
-				logicalStart += td.Inset.InlineEnd // extend left
-			}
-		} else {
-			if td.IsFirstFragment {
-				logicalStart += td.Inset.InlineStart // trim left
-			}
-			if td.IsLastFragment {
-				logicalEnd -= td.Inset.InlineEnd // extend right
-			}
-		}
-	} else {
-		if isRTL {
-			// RTL: InlineStart trims the physical right; InlineEnd extends left.
-			logicalStart = box.X + td.Inset.InlineEnd // negative InlineEnd → extends left
-			logicalEnd = box.X + textWidth - td.Inset.InlineStart
-		} else {
-			logicalStart = box.X + td.Inset.InlineStart
-			logicalEnd = box.X + textWidth - td.Inset.InlineEnd
-		}
-	}
-	// text-decoration-skip-spaces: trim leading/trailing whitespace widths
-	// from the decoration extent. Applied after inset so a negative inset
-	// (extension) does not extend through skipped whitespace. For the
-	// HasDecoratingBox case only the relevant edge is trimmed — interior
-	// fragments don't carry leading/trailing space at the boundary.
-	if skipStartWidth > 0 {
-		if !td.HasDecoratingBox || td.IsFirstFragment {
-			logicalStart += skipStartWidth
-		}
-	}
-	if skipEndWidth > 0 {
-		if !td.HasDecoratingBox || td.IsLastFragment {
-			logicalEnd -= skipEndWidth
-		}
-	}
+	logicalStart, logicalEnd := computeDecorationExtent(td, isRTL, box.X, textWidth)
+	logicalStart, logicalEnd = applySkipSpacesTrim(
+		logicalStart, logicalEnd, skipStartWidth, skipEndWidth,
+		td.HasDecoratingBox, td.IsFirstFragment, td.IsLastFragment,
+	)
 	if logicalEnd <= logicalStart {
 		return
 	}
