@@ -6046,34 +6046,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					xStart := float64(inlineStartExt)
 					xEnd := float64(inlineStartExt + ta)
 					sidewaysRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
-					if td.HasDecoratingBox {
-						if sidewaysRTL {
-							// In RTL flow the inline axis runs right-to-left, so
-							// InlineStart trims the physical END of the buffer
-							// range and InlineEnd extends the physical START.
-							if td.IsFirstFragment {
-								xEnd -= td.Inset.InlineStart
-							}
-							if td.IsLastFragment {
-								xStart += td.Inset.InlineEnd
-							}
-						} else {
-							if td.IsFirstFragment {
-								xStart += td.Inset.InlineStart
-							}
-							if td.IsLastFragment {
-								xEnd -= td.Inset.InlineEnd
-							}
-						}
-					} else {
-						if sidewaysRTL {
-							xStart += td.Inset.InlineEnd
-							xEnd -= td.Inset.InlineStart
-						} else {
-							xStart += td.Inset.InlineStart
-							xEnd -= td.Inset.InlineEnd
-						}
-					}
+					xStart, xEnd = applyDecorationInset(xStart, xEnd, td, sidewaysRTL)
 					if xEnd <= xStart {
 						continue
 					}
@@ -7502,50 +7475,59 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 // Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
-// computeDecorationExtent returns the logical (physical-axis) start and end of
-// the decoration line, with text-decoration-inset applied. It handles the
-// HasDecoratingBox × RTL × IsFirst/IsLastFragment matrix:
+// applyDecorationInset applies text-decoration-inset to an already-positioned
+// decoration extent [start, end], returning the adjusted [start, end].
 //
-//   - HasDecoratingBox: the extent spans the layout-stamped decorating-box
-//     width; inset is applied only at the actual box edges (first/last
-//     fragment flags gate this so interior line-breaks don't gain a trim).
-//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth]
-//     and inset is applied unconditionally.
-//   - RTL reverses the physical meaning of InlineStart/InlineEnd: InlineStart
-//     trims the right edge; InlineEnd trims (or extends, when negative) the left.
-func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+// It handles the HasDecoratingBox × RTL × IsFirst/IsLastFragment matrix:
+//   - HasDecoratingBox: inset is applied only at the actual box edges (first/
+//     last fragment flags) so interior line-break boundaries are untouched.
+//   - Bare path: inset is applied unconditionally to both edges.
+//   - RTL: InlineStart trims the physical END; InlineEnd trims (or extends,
+//     when negative) the physical START — opposite of the LTR convention.
+func applyDecorationInset(start, end float64, td css.AppliedTextDecoration, isRTL bool) (float64, float64) {
 	if td.HasDecoratingBox {
-		logicalStart = boxX + td.DecoratingBoxOffsetX
-		logicalEnd = logicalStart + td.DecoratingBoxWidth
 		if isRTL {
-			// In RTL flow, InlineStart is the physical right edge and InlineEnd
-			// is the physical left edge, so the trim/extend directions are flipped
-			// relative to the LTR case.
 			if td.IsFirstFragment {
-				logicalEnd -= td.Inset.InlineStart // trim right
+				end -= td.Inset.InlineStart // trim right
 			}
 			if td.IsLastFragment {
-				logicalStart += td.Inset.InlineEnd // extend left
+				start += td.Inset.InlineEnd // extend left
 			}
 		} else {
 			if td.IsFirstFragment {
-				logicalStart += td.Inset.InlineStart // trim left
+				start += td.Inset.InlineStart // trim left
 			}
 			if td.IsLastFragment {
-				logicalEnd -= td.Inset.InlineEnd // extend right
+				end -= td.Inset.InlineEnd // extend right
 			}
 		}
 	} else {
 		if isRTL {
-			// RTL: InlineStart trims the physical right; InlineEnd extends left.
-			logicalStart = boxX + td.Inset.InlineEnd // negative InlineEnd → extends left
-			logicalEnd = boxX + textWidth - td.Inset.InlineStart
+			start += td.Inset.InlineEnd // negative InlineEnd → extends left
+			end -= td.Inset.InlineStart
 		} else {
-			logicalStart = boxX + td.Inset.InlineStart
-			logicalEnd = boxX + textWidth - td.Inset.InlineEnd
+			start += td.Inset.InlineStart
+			end -= td.Inset.InlineEnd
 		}
 	}
-	return
+	return start, end
+}
+
+// computeDecorationExtent returns the logical (physical-axis) start and end of
+// the decoration line, with text-decoration-inset applied.
+//   - HasDecoratingBox: the extent spans the layout-stamped decorating-box width.
+//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth].
+//
+// Inset adjustment is delegated to applyDecorationInset.
+func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+	if td.HasDecoratingBox {
+		logicalStart = boxX + td.DecoratingBoxOffsetX
+		logicalEnd = logicalStart + td.DecoratingBoxWidth
+	} else {
+		logicalStart = boxX
+		logicalEnd = boxX + textWidth
+	}
+	return applyDecorationInset(logicalStart, logicalEnd, td, isRTL)
 }
 
 // applySkipSpacesTrim trims leading/trailing whitespace from the decoration
