@@ -7350,11 +7350,12 @@ func emphasisPunctuationException(r rune) bool {
 // canReceiveTextEmphasis reports whether a character may receive text-emphasis
 // marks. Mirrors Blink's Character::CanReceiveTextEmphasis @ character.cc
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, implementing CSS Text Decor L3/L4
-// emphasis skip rules: suppress marks over whitespace, control, format, and
-// punctuation — except the 23-codepoint symbol-like exception list.
+// emphasis skip rules: suppress marks over whitespace, control, format,
+// NotAssigned, and punctuation — except the 23-codepoint symbol-like exception list.
 func canReceiveTextEmphasis(r rune) bool {
-	// Skip whitespace, control, and format characters.
-	if unicode.IsSpace(r) || unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) {
+	// Skip whitespace (Zs), separators (Zl, Zp), control, format, and NotAssigned characters.
+	if unicode.IsSpace(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) ||
+		unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cn, r) {
 		return false
 	}
 	// Skip punctuation, unless it's a symbol-like exception.
