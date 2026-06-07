@@ -6931,37 +6931,11 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		}
 	}
 
-	// Find the truncation point: walk the run measuring in the inline
-	// font; stop just before the cumulative advance would exceed truncW.
-	// Track the position without trailing spacing. The spacing model matches Blink's:
-	// spacing between glyph N and N+1 is only counted when both glyphs are retained.
-	glyphEnd := 0.0 // Inline-end of the last retained glyph, without trailing spacing.
-	truncIdx := 0
-	var prevCh rune
-	for i, ch := range runes {
-		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
-		// Compute the inline-end if this glyph is accepted: glyphEnd + inter-glyph
-		// spacing from the previous glyph + this glyph's content.
-		nextGlyphEnd := glyphEnd + cw
-		// The spacing that precedes this glyph (from the previous glyph).
-		if i > 0 {
-			nextGlyphEnd += ls
-			if prevCh == ' ' {
-				nextGlyphEnd += ws
-			}
-		}
-		// Fit test: does this glyph (with its preceding spacing) fit within truncW?
-		if nextGlyphEnd > truncW {
-			truncIdx = len(string(runes[:i]))
-			break
-		}
-		// Accept this glyph: update the inline-end position.
-		glyphEnd = nextGlyphEnd
-		truncIdx = len(string(runes[:i+1]))
-		prevCh = ch
-	}
+	// Find the truncation point: walk the run accepting glyphs up to truncW,
+	// using Blink's spacing model (trailing spacing of last retained glyph excluded).
+	truncText, glyphEnd := acceptInlineGlyphs(r, layer, fontID, runes, truncW, ls, ws)
 
-	return text[:truncIdx], &ellipsisPaint{
+	return truncText, &ellipsisPaint{
 		str:            replacement,
 		x:              box.X + glyphEnd,
 		containerStyle: clipAncestor.Style,
@@ -7001,7 +6975,7 @@ func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []ru
 		idx = len(string(runes[:i+1]))
 		prevCh = ch
 	}
-	return string(runes)[:idx], glyphEnd // Return the inline-end of the last accepted glyph.
+	return string(runes)[:idx], glyphEnd
 }
 
 // clipReplacement returns the longest prefix of `replacement` whose
