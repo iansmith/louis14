@@ -14541,14 +14541,36 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 		return TextDecorationInset{}
 	}
 	fontSize, vw, vh, ch, xh, cap, lh, ic := s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth
+	// parseInset resolves one <length-percentage> component. Bare % and
+	// math functions whose % terms also resolve against font-size (per CSS Text
+	// Decor L4 §text-decoration-skip-inset-property); all other units route
+	// through parseLengthFullWithCh so ch/ex/cap etc. use measured font metrics.
+	parseInset := func(raw string) (float64, bool) {
+		v := strings.TrimSpace(raw)
+		if strings.HasSuffix(v, "%") {
+			if pct, ok := ParsePercentage(v); ok {
+				return pct / 100.0 * fontSize, true
+			}
+			return 0, false
+		}
+		if IsMathFunction(v) {
+			return EvalMathFunction(v, calcContext{
+				fontSize:      fontSize,
+				percentBase:   fontSize,
+				viewportWidth: vw, viewportHeight: vh,
+				chScale: ch, xHeight: xh, capHeight: cap, lhSize: lh, icWidth: ic,
+			})
+		}
+		return parseLengthFullWithCh(v, fontSize, vw, vh, ch, xh, cap, lh, ic)
+	}
 	switch len(parts) {
 	case 1:
-		if px, ok := parseLengthFullWithCh(parts[0], fontSize, vw, vh, ch, xh, cap, lh, ic); ok {
+		if px, ok := parseInset(parts[0]); ok {
 			return TextDecorationInset{InlineStart: px, InlineEnd: px}
 		}
 	case 2:
-		start, ok1 := parseLengthFullWithCh(parts[0], fontSize, vw, vh, ch, xh, cap, lh, ic)
-		end, ok2 := parseLengthFullWithCh(parts[1], fontSize, vw, vh, ch, xh, cap, lh, ic)
+		start, ok1 := parseInset(parts[0])
+		end, ok2 := parseInset(parts[1])
 		if ok1 && ok2 {
 			return TextDecorationInset{InlineStart: start, InlineEnd: end}
 		}

@@ -232,6 +232,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 	computeChWidths(computedStyles, ctx.FontConfig)
+	recomputeTextDecorationInsets(computedStyles)
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
