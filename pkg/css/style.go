@@ -14564,9 +14564,10 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 		}
 		if IsMathFunction(v) {
 			return EvalMathFunction(v, calcContext{
-				fontSize:      fontSize,
-				percentBase:   fontSize,
-				viewportWidth: vw, viewportHeight: vh,
+				fontSize:              fontSize,
+				percentBase:           fontSize,
+				percentResolvesToZero: fontSize == 0, // calc(N%) → 0 when font-size:0
+				viewportWidth:         vw, viewportHeight: vh,
 				chScale: ch, xHeight: xh, capHeight: cap, lhSize: lh, icWidth: ic,
 			})
 		}
