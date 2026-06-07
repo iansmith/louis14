@@ -5170,10 +5170,8 @@ func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float6
 	r.dc.LineTo(outerL, outerB)
 	r.dc.ClosePath()
 
-	// Build inner rectangle path (CCW, reverse for even-odd fill).
-	iW := innerR - innerL
-	iH := innerB - innerT
-	if iW > 0 && iH > 0 {
+	// Build inner rectangle path (CCW) for even-odd hole punch.
+	if innerR-innerL > 0 && innerB-innerT > 0 {
 		r.dc.MoveTo(innerL, innerT)
 		r.dc.LineTo(innerL, innerB)
 		r.dc.LineTo(innerR, innerB)
