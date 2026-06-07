@@ -1602,10 +1602,137 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	// it's safe.
 	lb.applyCrossSpanKerning(line, isVertical)
 
+	// LB14: Do not break after opening punctuation. If the last placed text
+	// item on this line consists entirely of Unicode opening punctuation (Ps
+	// category, e.g. "[", "(", "{"), retract it to the next line so the break
+	// falls BEFORE the bracket, not after it. Without this, a lone "[" text
+	// node that fits in the remaining space is stranded on line N even though
+	// its following content is on line N+1 — violating LBA Rule LB14.
+	lb.retractTrailingOpenPunct(line)
+
 	// Mark as last line if we've consumed all items.
 	if lb.currentItemIndex >= len(lb.itemsData.Items) {
 		line.IsLastLine = true
 	}
+}
+
+// retractTrailingOpenPunct implements Unicode LBA Rule LB14 ("do not break
+// after opening punctuation"). When the last word of the last text item on
+// the current line consists entirely of Unicode Ps (Open Punctuation)
+// characters (e.g. "[", "(", "{"), this method retracts that word to the
+// next line so the break falls BEFORE the bracket rather than after it.
+//
+// The common case is a text node like "! [" where "! " fills the remaining
+// space and "[" is the last word — "[" should begin the next line so the
+// following content (e.g. "Qrst") is not orphaned from its opening bracket.
+//
+// Blink handles this naturally via its single-pass per-character iterator
+// (BreakingContext in line/breaking_context_inline_headers.h) which applies
+// LB14 inline without look-ahead. Louis14's item-at-a-time loop needs this
+// explicit post-finalize correction.
+func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
+	// Only applies to content-mode breaking (not min/max-content sizing).
+	if lb.mode != LineBreakerContent {
+		return
+	}
+	// Only retract when the line ended because a following item didn't fit
+	// (i.e. there are still items left to process). Last line = no following
+	// content to violate LB14.
+	if lb.currentItemIndex >= len(lb.itemsData.Items) {
+		return
+	}
+	// Walk backwards through line.Results to find the last text item,
+	// skipping zero-width non-visible items (open/close tags, OOF, floats).
+	lastTextIdx := -1
+	for i := len(line.Results) - 1; i >= 0; i-- {
+		r := &line.Results[i]
+		if r.Item.Type == InlineItemText {
+			lastTextIdx = i
+			break
+		}
+		if !isNonVisibleInlineItem(r.Item.Type) {
+			return // Atomic inline — no OP tail to retract.
+		}
+	}
+	if lastTextIdx < 0 {
+		return
+	}
+	r := &line.Results[lastTextIdx]
+	content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+
+	// Find the last word in the item's content. splitIntoWords attaches
+	// trailing spaces to the preceding word, so the last word here has no
+	// trailing space if the item ends with non-space characters.
+	words := splitIntoWords(content)
+	if len(words) == 0 {
+		return
+	}
+	lastWord := words[len(words)-1]
+
+	// Only retract if the last word is entirely opening punctuation.
+	if !isAllOpenPunct(lastWord) {
+		return
+	}
+
+	// Retract the trailing OP word: trim the item's text range so it
+	// excludes the OP word, and set currentTextOffset so the next
+	// NextLine call re-processes from the OP word onwards.
+	// The OP word starts at offset (len(content) - len(lastWord)) into
+	// the item's text range.
+	opWordStart := r.TextStart + len(content) - len(lastWord)
+
+	// If the OP word IS the entire item (item consists only of OP chars),
+	// remove the item from line.Results entirely and restore currentItemIndex.
+	if opWordStart == r.TextStart {
+		lb.currentItemIndex = r.ItemIndex
+		lb.currentTextOffset = r.TextStart
+		line.Results = line.Results[:lastTextIdx]
+	} else {
+		// Trim the item: keep the content before the OP word.
+		trimmed := content[:len(content)-len(lastWord)]
+		// Re-measure the trimmed content.
+		measureStyle := lb.measuringStyle(r.Item.Style)
+		isVertical := lb.isVerticalMeasurement(r.Item.Style)
+		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+		fontPath := resolveFontPath(measureStyle, lb.fonts)
+		var newWidth float64
+		if isVertical {
+			mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
+			newWidth = mtLU.Float64()
+		} else {
+			mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
+			newWidth = mtLU.Float64()
+		}
+		r.TextEnd = opWordStart
+		r.InlineSize = newWidth
+		// Reset item cursor to r's item so the next NextLine call re-reads
+		// the OP word (from opWordStart) out of the same text item.
+		lb.currentItemIndex = r.ItemIndex
+		lb.currentTextOffset = opWordStart
+		// Trim line.Results: keep r (now trimmed) but remove anything after it.
+		line.Results = line.Results[:lastTextIdx+1]
+	}
+
+	// Recompute line.Width from the (possibly trimmed) results.
+	var w float64
+	for i := range line.Results {
+		w += line.Results[i].InlineSize
+	}
+	line.Width = w
+}
+
+// isAllOpenPunct reports whether every rune in s belongs to Unicode category
+// Ps (Open Punctuation, i.e. opening brackets). An empty string returns false.
+func isAllOpenPunct(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.Is(unicode.Ps, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // applyCrossSpanKerning re-measures runs of adjacent text items that share
