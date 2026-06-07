@@ -5036,9 +5036,9 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 // Mirrors Blink's OutlinePainter::ComputeOutlineRect adjustment at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
-// Painting strategy: rectangular (non-rounded) outlines are filled as 4
-// trapezoid sides — the same approach drawBorders uses — so adjacent sides
-// meet at mitered diagonals with no rounded-join artefacts.
+// Painting strategy: rectangular (non-rounded) outlines are filled as a
+// single even-odd ring (outer rect minus inner rect) via fillOutlineSides,
+// which avoids diagonal seam artifacts from per-side painting.
 func (r *Renderer) drawOutline(layer *PaintLayer) {
 	box := layer.Box
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
