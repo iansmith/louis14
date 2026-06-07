@@ -6329,8 +6329,8 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 		charStr := string(ch)
 		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 
-		// Skip whitespace characters — no emphasis marks on spaces.
-		if !unicode.IsSpace(ch) {
+		// Skip characters that cannot receive emphasis marks.
+		if canReceiveTextEmphasis(ch) {
 			markX := x + (charW-markW)/2
 			r.dc.DrawText(mark, emphFontID, markX, emphY+emphAscent)
 		}
@@ -6549,7 +6549,7 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		charStr := string(ch)
 		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 
-		if !unicode.IsSpace(ch) {
+		if canReceiveTextEmphasis(ch) {
 			// Annotation's inline origin (in off-screen horizontal frame),
 			// centered over the character — mirrors
 			// `pkg/layout/inline_layout_ruby.go:64-65 @ b555e690`
@@ -7286,6 +7286,82 @@ func isDecorationSkippableSpace(ch rune) bool {
 		return true
 	}
 	return false
+}
+
+// emphasisPunctuationException returns true if the rune is in the explicit
+// allow-list of "symbol-like" punctuation that may receive text-emphasis marks.
+// This list mirrors Blink's Character::CanReceiveTextEmphasis exception switch,
+// verified against Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// The 23 code points are: # % & @ § ¶ ‰ ‱ ⁊ ⁋ ⁓ 〽 and their fullwidth/small
+// variants (NFKD-equivalent sets); hardcoding avoids a runtime normalization
+// dependency and matches Blink's structure.
+func emphasisPunctuationException(r rune) bool {
+	switch r {
+	case 0x0023: // #, NUMBER SIGN
+		return true
+	case 0x0025: // %, PERCENT SIGN
+		return true
+	case 0x0026: // &, AMPERSAND
+		return true
+	case 0x0040: // @, COMMERCIAL AT
+		return true
+	case 0x00A7: // §, SECTION SIGN
+		return true
+	case 0x00B6: // ¶, PILCROW
+		return true
+	case 0x0609: // ‰, ARABIC-INDIC PER MILLE SIGN
+		return true
+	case 0x060A: // ‱, ARABIC-INDIC PER TEN THOUSAND SIGN
+		return true
+	case 0x066A: // ؊, ARABIC LETTER BEH WITH SMALL V BELOW
+		return true
+	case 0x2030: // ‰, PER MILLE SIGN
+		return true
+	case 0x2031: // ‱, PER TEN THOUSAND SIGN
+		return true
+	case 0x204A: // ⁊, TIRONIAN SIGN ET
+		return true
+	case 0x204B: // ⁋, REVERSED PILCROW
+		return true
+	case 0x2053: // ⁓, SWUNG DASH
+		return true
+	case 0x303D: // 〽, PART ALTERNATION MARK
+		return true
+	case 0xFE5F: // ﹟, SMALL NUMBER SIGN
+		return true
+	case 0xFE60: // ﹠, SMALL AMPERSAND
+		return true
+	case 0xFE6A: // ﹪, SMALL PERCENT SIGN
+		return true
+	case 0xFE6B: // ﹫, SMALL COMMERCIAL AT
+		return true
+	case 0xFF03: // ＃, FULLWIDTH NUMBER SIGN
+		return true
+	case 0xFF05: // ％, FULLWIDTH PERCENT SIGN
+		return true
+	case 0xFF06: // ＆, FULLWIDTH AMPERSAND
+		return true
+	case 0xFF20: // ＠, FULLWIDTH COMMERCIAL AT
+		return true
+	}
+	return false
+}
+
+// canReceiveTextEmphasis reports whether a character may receive text-emphasis
+// marks. Mirrors Blink's Character::CanReceiveTextEmphasis @ character.cc
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, implementing CSS Text Decor L3/L4
+// emphasis skip rules: suppress marks over whitespace, control, format, and
+// punctuation — except the 23-codepoint symbol-like exception list.
+func canReceiveTextEmphasis(r rune) bool {
+	// Skip whitespace, control, and format characters.
+	if unicode.IsSpace(r) || unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) {
+		return false
+	}
+	// Skip punctuation, unless it's a symbol-like exception.
+	if unicode.IsPunct(r) {
+		return emphasisPunctuationException(r)
+	}
+	return true
 }
 
 // leadingWhitespacePrefix returns the longest prefix of text consisting of
