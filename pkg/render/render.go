@@ -6933,60 +6933,75 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 
 	// Find the truncation point: walk the run measuring in the inline
 	// font; stop just before the cumulative advance would exceed truncW.
-	w := 0.0
+	// Track the position without trailing spacing. The spacing model matches Blink's:
+	// spacing between glyph N and N+1 is only counted when both glyphs are retained.
+	glyphEnd := 0.0 // Inline-end of the last retained glyph, without trailing spacing.
 	truncIdx := 0
-	truncAdvance := 0.0
+	var prevCh rune
 	for i, ch := range runes {
 		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
-		advance := cw
-		if i < len(runes)-1 {
-			advance += ls
+		// Compute the inline-end if this glyph is accepted: glyphEnd + inter-glyph
+		// spacing from the previous glyph + this glyph's content.
+		nextGlyphEnd := glyphEnd + cw
+		// The spacing that precedes this glyph (from the previous glyph).
+		if i > 0 {
+			nextGlyphEnd += ls
+			if prevCh == ' ' {
+				nextGlyphEnd += ws
+			}
 		}
-		if ch == ' ' {
-			advance += ws
-		}
-		if w+cw > truncW {
+		// Fit test: does this glyph (with its preceding spacing) fit within truncW?
+		if nextGlyphEnd > truncW {
 			truncIdx = len(string(runes[:i]))
 			break
 		}
-		w += advance
+		// Accept this glyph: update the inline-end position.
+		glyphEnd = nextGlyphEnd
 		truncIdx = len(string(runes[:i+1]))
-		truncAdvance = w
+		prevCh = ch
 	}
 
 	return text[:truncIdx], &ellipsisPaint{
 		str:            replacement,
-		x:              box.X + truncAdvance,
+		x:              box.X + glyphEnd,
 		containerStyle: clipAncestor.Style,
 	}
 }
 
 // acceptInlineGlyphs walks `runes` accepting cumulative inline glyphs
 // up to `limitW` in the inline font, returning the byte index just
-// past the accepted prefix and the cumulative advance.
+// past the accepted prefix and the cumulative advance (inline-end of
+// the last accepted glyph, without trailing spacing).
 //
 // Used by the CSS UI 4 §6.2 clipped-<string> path where the
 // replacement is wider than availW: as many text glyphs are accepted
 // as fit, then the replacement is clipped to fill the rest.
 func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []rune, limitW, ls, ws float64) (string, float64) {
-	w := 0.0
+	glyphEnd := 0.0 // Inline-end of the last accepted glyph, without trailing spacing.
 	idx := 0
+	var prevCh rune
 	for i, ch := range runes {
 		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
-		stepAdvance := cw
-		if i < len(runes)-1 {
-			stepAdvance += ls
+		// Compute the inline-end if this glyph is accepted: glyphEnd + inter-glyph
+		// spacing from the previous glyph + this glyph's content.
+		nextGlyphEnd := glyphEnd + cw
+		// The spacing that precedes this glyph (from the previous glyph).
+		if i > 0 {
+			nextGlyphEnd += ls
+			if prevCh == ' ' {
+				nextGlyphEnd += ws
+			}
 		}
-		if ch == ' ' {
-			stepAdvance += ws
-		}
-		if w+cw > limitW {
+		// Fit test: does this glyph (with its preceding spacing) fit within limitW?
+		if nextGlyphEnd > limitW {
 			break
 		}
-		w += stepAdvance
+		// Accept this glyph: update the inline-end position.
+		glyphEnd = nextGlyphEnd
 		idx = len(string(runes[:i+1]))
+		prevCh = ch
 	}
-	return string(runes)[:idx], w
+	return string(runes)[:idx], glyphEnd // Return the inline-end of the last accepted glyph.
 }
 
 // clipReplacement returns the longest prefix of `replacement` whose
