@@ -2963,6 +2963,17 @@ func expandShorthand(style *Style, property, value string) {
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates the longhand
 		// table via CSSPropertyIDIterator with these same exclusions.
 		expandAllShorthand(style, value)
+	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
+		// CSS Backgrounds 3 §5.1: the border-*-width longhands accept line-width
+		// keywords (thin/medium/thick) as well as lengths. Resolve the keyword to
+		// a pixel value at parse/cascade time, matching Blink's
+		// css_longhand::Border{Top,Right,Bottom,Left}Width::ParseSingleValue ->
+		// ConsumeBorderWidth behavior @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if px, ok := borderWidthKeyword(value); ok {
+			style.Set(property, px)
+		} else {
+			style.Set(property, value)
+		}
 	default:
 		// Regular property
 		style.Set(property, value)
