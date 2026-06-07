@@ -5142,10 +5142,11 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 	}
 }
 
-// fillOutlineSides paints a rectangular outline as 4 trapezoid sides with
-// mitered diagonal joins at the corners. Mirrors drawBorders' Fill-path
-// approach for solid borders — see drawBorders at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f Blink's BoxBorderPainter::PaintSide.
+// fillOutlineSides paints a rectangular outline as a single even-odd filled ring,
+// with the outer rectangle and inner hole (inset by width on all sides).
+// This mirrors the rounded-corner branch and eliminates the diagonal seams
+// that resulted from painting 4 separate trapezoid sides.
+// Blink analog: OutlinePainter::PaintOutline @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
 func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float64) {
 	outerL := outerX
 	outerT := outerY
@@ -5161,34 +5162,29 @@ func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float6
 	if innerT > innerB {
 		innerT, innerB = (outerT+outerB)/2, (outerT+outerB)/2
 	}
-	// Top
+
+	// Build outer rectangle path (CW).
 	r.dc.MoveTo(outerL, outerT)
 	r.dc.LineTo(outerR, outerT)
-	r.dc.LineTo(innerR, innerT)
-	r.dc.LineTo(innerL, innerT)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Right
-	r.dc.MoveTo(outerR, outerT)
 	r.dc.LineTo(outerR, outerB)
-	r.dc.LineTo(innerR, innerB)
-	r.dc.LineTo(innerR, innerT)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Bottom
-	r.dc.MoveTo(outerL, outerB)
-	r.dc.LineTo(innerL, innerB)
-	r.dc.LineTo(innerR, innerB)
-	r.dc.LineTo(outerR, outerB)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Left
-	r.dc.MoveTo(outerL, outerT)
-	r.dc.LineTo(innerL, innerT)
-	r.dc.LineTo(innerL, innerB)
 	r.dc.LineTo(outerL, outerB)
 	r.dc.ClosePath()
+
+	// Build inner rectangle path (CCW, reverse for even-odd fill).
+	iW := innerR - innerL
+	iH := innerB - innerT
+	if iW > 0 && iH > 0 {
+		r.dc.MoveTo(innerL, innerT)
+		r.dc.LineTo(innerL, innerB)
+		r.dc.LineTo(innerR, innerB)
+		r.dc.LineTo(innerR, innerT)
+		r.dc.ClosePath()
+	}
+
+	// Fill as a single even-odd ring.
+	r.dc.SetFillRule(textshape.FillRuleEvenOdd)
 	r.dc.Fill()
+	r.dc.SetFillRule(textshape.FillRuleWinding)
 }
 
 // drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.
