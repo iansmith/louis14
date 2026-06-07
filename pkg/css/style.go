@@ -14540,14 +14540,15 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 	if len(parts) == 1 && strings.EqualFold(parts[0], "auto") {
 		return TextDecorationInset{}
 	}
+	fontSize, vw, vh, ch, xh, cap, lh, ic := s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth
 	switch len(parts) {
 	case 1:
-		if px, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth); ok {
+		if px, ok := parseLengthFullWithCh(parts[0], fontSize, vw, vh, ch, xh, cap, lh, ic); ok {
 			return TextDecorationInset{InlineStart: px, InlineEnd: px}
 		}
 	case 2:
-		start, ok1 := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth)
-		end, ok2 := parseLengthFullWithCh(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth)
+		start, ok1 := parseLengthFullWithCh(parts[0], fontSize, vw, vh, ch, xh, cap, lh, ic)
+		end, ok2 := parseLengthFullWithCh(parts[1], fontSize, vw, vh, ch, xh, cap, lh, ic)
 		if ok1 && ok2 {
 			return TextDecorationInset{InlineStart: start, InlineEnd: end}
 		}

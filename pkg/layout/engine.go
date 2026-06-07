@@ -81,7 +81,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// During cascade (Phase 1), GetTextDecorationInset is called with ChWidth=0,
 	// causing ch units to resolve incorrectly. Now that computeChWidths has
 	// populated actual font metrics, re-resolve all AppliedTextDecoration insets.
-	recomputeTextDecorationInsetsWithChWidth(doc.Root, computedStyles)
+	recomputeTextDecorationInsets(computedStyles)
 
 	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
@@ -876,36 +876,22 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSi
 	}
 }
 
-// recomputeTextDecorationInsetsWithChWidth re-resolves text-decoration-inset
-// values for all elements after ChWidth has been populated by computeChWidths.
-// During cascade, GetTextDecorationInset is called with ChWidth=0, causing ch
-// units to resolve incorrectly (using the 0.5 fallback instead of the actual
-// font metric). This function updates the inset values to use the now-correct ChWidth.
-func recomputeTextDecorationInsetsWithChWidth(root *html.Node, styles map[*html.Node]*css.Style) {
-	if root == nil {
-		return
-	}
-	traverseAndRecomputeInsets(root, styles)
-}
-
-func traverseAndRecomputeInsets(node *html.Node, styles map[*html.Node]*css.Style) {
-	if node.Type == html.ElementNode {
-		if style, ok := styles[node]; ok && style != nil {
-			// Update the Inset field in AppliedTextDecorations. This element's own
-			// contribution is the last entry in the vector (if it has text-decoration-line set).
-			line := style.GetTextDecorationLine()
-			if !line.IsNone() && len(style.AppliedTextDecorations) > 0 {
-				// The element has its own text decoration contribution, which is the last entry.
-				// Re-resolve the inset using the now-correct ChWidth.
-				newInset := style.GetTextDecorationInset()
-				lastIdx := len(style.AppliedTextDecorations) - 1
-				style.AppliedTextDecorations[lastIdx].Inset = newInset
-			}
+// recomputeTextDecorationInsets re-resolves text-decoration-inset values for
+// all elements after ChWidth has been populated by computeChWidths. During
+// cascade, GetTextDecorationInset is called with ChWidth=0, causing ch units
+// to resolve incorrectly (using the 0.5 fallback instead of the actual font
+// metric). Mirrors the computeChWidths pattern: iterate the styles map directly
+// rather than walking the DOM.
+func recomputeTextDecorationInsets(styles map[*html.Node]*css.Style) {
+	for _, style := range styles {
+		if style == nil {
+			continue
 		}
-	}
-
-	// Recursively process children
-	for _, child := range node.Children {
-		traverseAndRecomputeInsets(child, styles)
+		// Update the Inset field in AppliedTextDecorations. This element's own
+		// contribution is the last entry in the vector (if it has text-decoration-line set).
+		if len(style.AppliedTextDecorations) > 0 && !style.GetTextDecorationLine().IsNone() {
+			lastIdx := len(style.AppliedTextDecorations) - 1
+			style.AppliedTextDecorations[lastIdx].Inset = style.GetTextDecorationInset()
+		}
 	}
 }
