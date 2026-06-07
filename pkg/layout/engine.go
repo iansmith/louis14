@@ -77,6 +77,12 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 	computeChWidths(computedStyles, fontConfig)
 
+	// Phase 1c: Re-resolve text-decoration-inset now that ChWidth is known.
+	// During cascade (Phase 1), GetTextDecorationInset is called with ChWidth=0,
+	// causing ch units to resolve incorrectly. Now that computeChWidths has
+	// populated actual font metrics, re-resolve all AppliedTextDecoration insets.
+	recomputeTextDecorationInsetsWithChWidth(doc.Root, computedStyles)
+
 	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
 		ViewportWidth:   le.viewport.width,
@@ -867,5 +873,39 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSi
 	default:
 		// ex-height (default)
 		return m.xHeight / fontSize
+	}
+}
+
+// recomputeTextDecorationInsetsWithChWidth re-resolves text-decoration-inset
+// values for all elements after ChWidth has been populated by computeChWidths.
+// During cascade, GetTextDecorationInset is called with ChWidth=0, causing ch
+// units to resolve incorrectly (using the 0.5 fallback instead of the actual
+// font metric). This function updates the inset values to use the now-correct ChWidth.
+func recomputeTextDecorationInsetsWithChWidth(root *html.Node, styles map[*html.Node]*css.Style) {
+	if root == nil {
+		return
+	}
+	traverseAndRecomputeInsets(root, styles)
+}
+
+func traverseAndRecomputeInsets(node *html.Node, styles map[*html.Node]*css.Style) {
+	if node.Type == html.ElementNode {
+		if style, ok := styles[node]; ok && style != nil {
+			// Update the Inset field in AppliedTextDecorations. This element's own
+			// contribution is the last entry in the vector (if it has text-decoration-line set).
+			line := style.GetTextDecorationLine()
+			if !line.IsNone() && len(style.AppliedTextDecorations) > 0 {
+				// The element has its own text decoration contribution, which is the last entry.
+				// Re-resolve the inset using the now-correct ChWidth.
+				newInset := style.GetTextDecorationInset()
+				lastIdx := len(style.AppliedTextDecorations) - 1
+				style.AppliedTextDecorations[lastIdx].Inset = newInset
+			}
+		}
+	}
+
+	// Recursively process children
+	for _, child := range node.Children {
+		traverseAndRecomputeInsets(child, styles)
 	}
 }

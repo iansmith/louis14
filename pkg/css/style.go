@@ -14540,15 +14540,14 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 	if len(parts) == 1 && strings.EqualFold(parts[0], "auto") {
 		return TextDecorationInset{}
 	}
-	fontSize := s.GetFontSize()
 	switch len(parts) {
 	case 1:
-		if px, ok := ParseLengthOrPercentageFontRelative(parts[0], fontSize); ok {
+		if px, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth); ok {
 			return TextDecorationInset{InlineStart: px, InlineEnd: px}
 		}
 	case 2:
-		start, ok1 := ParseLengthOrPercentageFontRelative(parts[0], fontSize)
-		end, ok2 := ParseLengthOrPercentageFontRelative(parts[1], fontSize)
+		start, ok1 := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth)
+		end, ok2 := parseLengthFullWithCh(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth)
 		if ok1 && ok2 {
 			return TextDecorationInset{InlineStart: start, InlineEnd: end}
 		}
