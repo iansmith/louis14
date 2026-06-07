@@ -7502,6 +7502,17 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 // Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
+// appliedDecorationIsRTL reports whether the decoration's inline axis runs
+// right-to-left. It prefers box.Style (normal horizontal path) and falls back
+// to td.SourceStyle for the sideways path where the synthetic virtualBox has
+// no Style attached.
+func appliedDecorationIsRTL(box *layout.Box, td css.AppliedTextDecoration) bool {
+	if box.Style != nil {
+		return box.Style.GetDirection() == css.DirectionRTL
+	}
+	return td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+}
+
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
 // onlyLineThrough=false: draw underline+overline (called before text glyphs).
@@ -7522,17 +7533,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// the inset trim applied only at the decorating box's actual logical
 	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
 	var logicalStart, logicalEnd float64
-	// Determine the inline text direction. Prefer box.Style (always the right
-	// choice for the normal horizontal path), fall back to SourceStyle for the
-	// sideways rotated-buffer path where the box is a synthetic virtualBox with
-	// no Style attached.
-	var inlineDir css.Direction
-	if box.Style != nil {
-		inlineDir = box.Style.GetDirection()
-	} else if td.SourceStyle != nil {
-		inlineDir = td.SourceStyle.GetDirection()
-	}
-	isRTL := inlineDir == css.DirectionRTL
+	isRTL := appliedDecorationIsRTL(box, td)
 	if td.HasDecoratingBox {
 		logicalStart = box.X + td.DecoratingBoxOffsetX
 		logicalEnd = logicalStart + td.DecoratingBoxWidth
