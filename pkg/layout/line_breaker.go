@@ -1684,6 +1684,20 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 	// If the OP word IS the entire item (item consists only of OP chars),
 	// remove the item from line.Results entirely and restore currentItemIndex.
 	if opWordStart == r.TextStart {
+		// Guard: if removing this item would leave the line completely empty,
+		// do not retract. An empty line with the cursor reset to the OP item
+		// would cause an infinite loop — the same OP item is placed again on
+		// the next call, nothing fits after it, and we retract again forever.
+		hasOtherContent := false
+		for i := 0; i < lastTextIdx; i++ {
+			if !isNonVisibleInlineItem(line.Results[i].Item.Type) {
+				hasOtherContent = true
+				break
+			}
+		}
+		if !hasOtherContent {
+			return // Don't retract; would make line empty → infinite loop.
+		}
 		lb.currentItemIndex = r.ItemIndex
 		lb.currentTextOffset = r.TextStart
 		line.Results = line.Results[:lastTextIdx]
