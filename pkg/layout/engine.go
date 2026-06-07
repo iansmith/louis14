@@ -883,16 +883,32 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSi
 // to resolve incorrectly (using the 0.5 fallback instead of the actual font
 // metric). Mirrors the computeChWidths pattern: iterate the styles map directly
 // rather than walking the DOM.
+//
+// Each AppliedTextDecoration entry carries a SourceStyle pointer (set in
+// computeOwnTextDecorationContribution) so we can re-resolve even on
+// descendant styles that only hold an inherited copy of the vector — without
+// needing to walk the DOM tree or track originating nodes separately.
 func recomputeTextDecorationInsets(styles map[*html.Node]*css.Style) {
+	// Cache resolved insets by SourceStyle pointer: many descendant styles may
+	// share the same originating SourceStyle (e.g. an ancestor <a> element), so
+	// computing GetTextDecorationInset() once per unique source avoids O(depth)
+	// redundant string parses.
+	seen := make(map[*css.Style]css.TextDecorationInset)
 	for _, style := range styles {
-		if style == nil {
+		if style == nil || len(style.AppliedTextDecorations) == 0 {
 			continue
 		}
-		// Update the Inset field in AppliedTextDecorations. This element's own
-		// contribution is the last entry in the vector (if it has text-decoration-line set).
-		if len(style.AppliedTextDecorations) > 0 && !style.GetTextDecorationLine().IsNone() {
-			lastIdx := len(style.AppliedTextDecorations) - 1
-			style.AppliedTextDecorations[lastIdx].Inset = style.GetTextDecorationInset()
+		for i := range style.AppliedTextDecorations {
+			src := style.AppliedTextDecorations[i].SourceStyle
+			if src == nil {
+				continue
+			}
+			inset, ok := seen[src]
+			if !ok {
+				inset = src.GetTextDecorationInset()
+				seen[src] = inset
+			}
+			style.AppliedTextDecorations[i].Inset = inset
 		}
 	}
 }

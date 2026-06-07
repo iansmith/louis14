@@ -14380,6 +14380,15 @@ type AppliedTextDecoration struct {
 	UnderlineOffset   float64 // resolved pixels (0 = auto/initial)
 	UnderlinePosition TextUnderlinePosition
 	Inset             TextDecorationInset
+	// SourceStyle points to the Style of the element that contributed this
+	// decoration entry. Used by recomputeTextDecorationInsets (engine.go) to
+	// re-resolve font-relative values (e.g. ch units in text-decoration-inset)
+	// after ChWidth is measured, for ALL copies of this entry — both on the
+	// originating element and on descendant styles that inherited the vector.
+	// The pointer is stable; computeChWidths writes into the same object.
+	// Shallow-copied when AppliedTextDecorations vectors are cloned, so every
+	// copy points back to the same measured source style.
+	SourceStyle *Style
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
 	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
@@ -14598,11 +14607,18 @@ type TextDecorationSkipSpaces struct {
 func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
 	val, ok := s.Get("text-decoration-skip-spaces")
 	if !ok {
-		// Default mirrors Blink/Firefox at SHA 4883d11f: leading/trailing
-		// spaces on a line do not get an underline. WPT test stylesheets
-		// for skip-spaces note explicitly: "Theoretically not needed, as
-		// that's the default behavior per L3".
-		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+		// CSS Text Decor 4 §text-decoration-skip-spaces initial value is
+		// "auto". Chrome interprets "auto" as no-skip (the UA may skip but
+		// is not required to). WPT text-decoration-skip-spaces-* tests
+		// explicitly set "start end" rather than relying on the default,
+		// per the stylesheet comment: "Theoretically not needed, as that's
+		// the default behavior per L3" — which reveals L3 vs L4 divergence.
+		// Defaulting to no-skip (empty struct) matches Chrome and lets
+		// text-decoration-inset references that use &nbsp; to extend
+		// underlines work correctly (if skip-end were true, the NBSP chars
+		// would be trimmed, making the reference underlines shorter than
+		// the test underlines).
+		return TextDecorationSkipSpaces{}
 	}
 	v := strings.TrimSpace(strings.ToLower(val))
 	switch v {
@@ -14696,6 +14712,10 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		IsFirstFragment: true,
 		IsLastFragment:  true,
 		IsClone:         s.GetBoxDecorationBreak() == BoxDecorationBreakClone,
+		// SourceStyle allows recomputeTextDecorationInsets (engine.go) to
+		// re-resolve font-relative values after ChWidth is measured, including
+		// in all descendant styles that inherited a copy of this entry.
+		SourceStyle: s,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c
