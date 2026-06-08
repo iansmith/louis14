@@ -14602,9 +14602,9 @@ type TextDecorationSkipSpaces struct {
 
 // GetTextDecorationSkipSpaces returns the resolved text-decoration-skip-spaces
 // value for this element. Per CSS Text Decor L4 the syntax is
-// `none | all | <[ start || end || space-all ]>`. Initial per L4 is `none`,
-// but louis14 (matching Blink's L3-compatible behavior) treats an unset value
-// as `start end` so existing WPT tests pass without explicit overrides.
+// `none | all | <[ start || end || space-all ]>`. Initial per CSS Text Decor 4
+// is "auto"; Chrome interprets "auto" as no-skip (the UA may skip but is not
+// required to), so the unset and explicit-auto cases both return no-skip.
 func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
 	val, ok := s.Get("text-decoration-skip-spaces")
 	if !ok {
@@ -14624,7 +14624,8 @@ func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
 	v := strings.TrimSpace(strings.ToLower(val))
 	switch v {
 	case "", "auto":
-		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+		// "auto" is the initial value; match the unset default (no-skip).
+		return TextDecorationSkipSpaces{}
 	case "none":
 		return TextDecorationSkipSpaces{}
 	case "all":
