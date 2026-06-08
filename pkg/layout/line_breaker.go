@@ -1617,14 +1617,15 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 }
 
 // retractTrailingOpenPunct implements Unicode LBA Rule LB14 ("do not break
-// after opening punctuation"). When the last word of the last text item on
-// the current line consists entirely of Unicode Ps (Open Punctuation)
-// characters (e.g. "[", "(", "{"), this method retracts that word to the
-// next line so the break falls BEFORE the bracket rather than after it.
+// after opening punctuation"). When the trailing runes of the last text item
+// on the current line are all Unicode Ps (Open Punctuation) characters
+// (e.g. "[", "(", "{"), this method retracts that suffix to the next line so
+// the break falls BEFORE the bracket rather than after it.
 //
 // The common case is a text node like "! [" where "! " fills the remaining
-// space and "[" is the last word — "[" should begin the next line so the
-// following content (e.g. "Qrst") is not orphaned from its opening bracket.
+// space and "[" is the last character — "[" should begin the next line so
+// the following content (e.g. "Qrst") is not orphaned from its opening
+// bracket.
 //
 // Blink handles this naturally via its single-pass per-character iterator
 // (BreakingContext in line/breaking_context_inline_headers.h) which applies
@@ -1660,29 +1661,25 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 	r := &line.Results[lastTextIdx]
 	content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 
-	// Find the last word in the item's content. splitIntoWords attaches
-	// trailing spaces to the preceding word, so the last word here has no
-	// trailing space if the item ends with non-space characters.
-	words := splitIntoWords(content)
-	if len(words) == 0 {
-		return
+	// Find the trailing open-punctuation suffix by walking backward over
+	// Unicode Ps runes. This handles both normal word-break mode (where an
+	// OP char is typically its own word) and word-break:break-all (where the
+	// OP char may be the last character of a multi-char item like "abc(").
+	opStart := len(content)
+	for opStart > 0 {
+		ch, size := utf8.DecodeLastRuneInString(content[:opStart])
+		if !unicode.Is(unicode.Ps, ch) {
+			break
+		}
+		opStart -= size
 	}
-	lastWord := words[len(words)-1]
-
-	// Only retract if the last word is entirely opening punctuation.
-	if !isAllOpenPunct(lastWord) {
-		return
+	if opStart == len(content) {
+		return // No trailing OP chars.
 	}
 
-	// Retract the trailing OP word: trim the item's text range so it
-	// excludes the OP word, and set currentTextOffset so the next
-	// NextLine call re-processes from the OP word onwards.
-	// The OP word starts at offset (len(content) - len(lastWord)) into
-	// the item's text range.
-	opWordStart := r.TextStart + len(content) - len(lastWord)
+	opWordStart := r.TextStart + opStart
 
-	// If the OP word IS the entire item (item consists only of OP chars),
-	// remove the item from line.Results entirely and restore currentItemIndex.
+	// If the entire item is open punctuation, remove it from line.Results.
 	if opWordStart == r.TextStart {
 		// Guard: if removing this item would leave the line completely empty,
 		// do not retract. An empty line with the cursor reset to the OP item
@@ -1702,28 +1699,29 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		lb.currentTextOffset = r.TextStart
 		line.Results = line.Results[:lastTextIdx]
 	} else {
-		// Trim the item: keep the content before the OP word.
-		trimmed := content[:len(content)-len(lastWord)]
-		// Re-measure the trimmed content.
+		// Trim the item: keep the content before the OP suffix.
+		// Use measureTextContent so that soft hyphens are stripped and
+		// CSS letter-spacing / word-spacing are included — matching the
+		// measurement handleText performed for the original item.
+		trimmed := content[:opStart]
 		measureStyle := lb.measuringStyle(r.Item.Style)
 		isVertical := lb.isVerticalMeasurement(r.Item.Style)
 		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 		fontPath := resolveFontPath(measureStyle, lb.fonts)
-		var newWidth float64
-		if isVertical {
-			mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
-			newWidth = mtLU.Float64()
-		} else {
-			mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
-			newWidth = mtLU.Float64()
+		letterSpacing, wordSpacing := 0.0, 0.0
+		if measureStyle != nil {
+			letterSpacing = measureStyle.GetLetterSpacing()
+			wordSpacing = measureStyle.GetWordSpacing()
 		}
+		newWidth := measureTextContent(trimmed, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 		r.TextEnd = opWordStart
 		r.InlineSize = newWidth
 		// Reset item cursor to r's item so the next NextLine call re-reads
-		// the OP word (from opWordStart) out of the same text item.
+		// the OP suffix (from opWordStart) out of the same text item.
 		lb.currentItemIndex = r.ItemIndex
 		lb.currentTextOffset = opWordStart
-		// Trim line.Results: keep r (now trimmed) but remove anything after it.
+		// Trim line.Results: keep r (now trimmed) but remove anything after it
+		// (non-visible items that will be re-emitted on the next line).
 		line.Results = line.Results[:lastTextIdx+1]
 	}
 
@@ -1733,20 +1731,6 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		w += line.Results[i].InlineSize
 	}
 	line.Width = w
-}
-
-// isAllOpenPunct reports whether every rune in s belongs to Unicode category
-// Ps (Open Punctuation, i.e. opening brackets). An empty string returns false.
-func isAllOpenPunct(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if !unicode.Is(unicode.Ps, r) {
-			return false
-		}
-	}
-	return true
 }
 
 // applyCrossSpanKerning re-measures runs of adjacent text items that share

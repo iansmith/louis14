@@ -7331,8 +7331,9 @@ func emphasisPunctuationException(r rune) bool {
 // emphasis skip rules: suppress marks over whitespace, control, format,
 // NotAssigned, and punctuation — except the 23-codepoint symbol-like exception list.
 func canReceiveTextEmphasis(r rune) bool {
-	// Skip whitespace (Zs), separators (Zl, Zp), control, format, and NotAssigned characters.
-	if unicode.IsSpace(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) ||
+	// Skip whitespace (covers Zs, Zl U+2028, Zp U+2029, and ASCII controls
+	// via Go's unicode.IsSpace), control (Cc), format (Cf), and unassigned (Cn).
+	if unicode.IsSpace(r) ||
 		unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cn, r) {
 		return false
 	}
