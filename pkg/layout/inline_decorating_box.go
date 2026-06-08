@@ -81,6 +81,7 @@ func computeDecoratingBoxMetadataPerLine(
 	type lineFrag struct {
 		item *InlineItem
 		x    float64
+		xEnd float64
 	}
 
 	// allDecorators owns every decorator created on this line (continuing
@@ -145,7 +146,7 @@ func computeDecoratingBoxMetadataPerLine(
 			xStart := trackX
 			xEnd := trackX + r.InlineSize
 			idx := len(lineFrags)
-			lineFrags = append(lineFrags, lineFrag{item: r.Item, x: xStart})
+			lineFrags = append(lineFrags, lineFrag{item: r.Item, x: xStart, xEnd: xEnd})
 
 			if xStart < lineContentMinX {
 				lineContentMinX = xStart
@@ -158,19 +159,6 @@ func computeDecoratingBoxMetadataPerLine(
 			}
 			lastLineTextIdx = idx
 
-			for _, d := range stack {
-				if xStart < d.originX {
-					d.originX = xStart
-				}
-				if xEnd > d.endX {
-					d.endX = xEnd
-				}
-				if !d.firstSeen {
-					d.firstIdx = idx
-					d.firstSeen = true
-				}
-				d.lastIdx = idx
-			}
 			trackX += r.InlineSize
 		case InlineItemAtomicInline:
 			// Atomic inlines (inline-block, replaced, etc.) are decoration
@@ -185,6 +173,39 @@ func computeDecoratingBoxMetadataPerLine(
 			trackX += r.Margins.InlineStart + r.InlineSize + r.Margins.InlineEnd
 		default:
 			trackX += r.InlineSize
+		}
+	}
+
+	// Update inline-decorator extents using HTML tree ancestry rather than the
+	// visual-order stack traversal above. For RTL text, ReorderLineVisual
+	// reverses line.Results so Text items may appear before or after their
+	// enclosing element's Open/CloseTags — the stack-based update would miss
+	// fragments inside a decorator whose OpenTag hasn't been processed yet or
+	// whose CloseTag was already processed. Walking item.Node.Parent is
+	// order-independent and always correct.
+	for fragIdx, lf := range lineFrags {
+		for _, d := range allDecorators {
+			found := false
+			for n := lf.item.Node; n != nil; n = n.Parent {
+				if n == d.node {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			if lf.x < d.originX {
+				d.originX = lf.x
+			}
+			if lf.xEnd > d.endX {
+				d.endX = lf.xEnd
+			}
+			if !d.firstSeen {
+				d.firstIdx = fragIdx
+				d.firstSeen = true
+			}
+			d.lastIdx = fragIdx
 		}
 	}
 
