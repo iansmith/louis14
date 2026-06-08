@@ -7608,23 +7608,17 @@ func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBo
 func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextDecoration, box *layout.Box) (xStart, xEnd float64, skip bool) {
 	xStart, xEnd = logicalStart, logicalEnd
 	if td.HasDecoratingBox {
-		isRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
-		// For LTR: left edge = inline-start (free only on first fragment).
-		// For RTL: left edge = inline-end (free only on last fragment).
-		leftFree := td.IsFirstFragment
-		if isRTL {
-			leftFree = td.IsLastFragment
+		// first/last track which fragment edge is free from clamping.
+		// RTL swaps inline-start (physical right) and inline-end (physical left),
+		// so the free-left and free-right fragment flags are exchanged.
+		first, last := td.IsFirstFragment, td.IsLastFragment
+		if td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL {
+			first, last = last, first
 		}
-		if !leftFree && box.X > xStart {
+		if !first && box.X > xStart {
 			xStart = math.Ceil(box.X)
 		}
-		// For LTR: right edge = inline-end (free only on last fragment).
-		// For RTL: right edge = inline-start (free only on first fragment).
-		rightFree := td.IsLastFragment
-		if isRTL {
-			rightFree = td.IsFirstFragment
-		}
-		if !rightFree && box.X+box.Width < xEnd {
+		if !last && box.X+box.Width < xEnd {
 			xEnd = box.X + box.Width
 		}
 		if xEnd <= xStart {
