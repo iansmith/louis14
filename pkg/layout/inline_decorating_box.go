@@ -81,6 +81,7 @@ func computeDecoratingBoxMetadataPerLine(
 	type lineFrag struct {
 		item *InlineItem
 		x    float64
+		xEnd float64
 	}
 
 	// allDecorators owns every decorator created on this line (continuing
@@ -145,7 +146,7 @@ func computeDecoratingBoxMetadataPerLine(
 			xStart := trackX
 			xEnd := trackX + r.InlineSize
 			idx := len(lineFrags)
-			lineFrags = append(lineFrags, lineFrag{item: r.Item, x: xStart})
+			lineFrags = append(lineFrags, lineFrag{item: r.Item, x: xStart, xEnd: xEnd})
 
 			if xStart < lineContentMinX {
 				lineContentMinX = xStart
@@ -158,19 +159,6 @@ func computeDecoratingBoxMetadataPerLine(
 			}
 			lastLineTextIdx = idx
 
-			for _, d := range stack {
-				if xStart < d.originX {
-					d.originX = xStart
-				}
-				if xEnd > d.endX {
-					d.endX = xEnd
-				}
-				if !d.firstSeen {
-					d.firstIdx = idx
-					d.firstSeen = true
-				}
-				d.lastIdx = idx
-			}
 			trackX += r.InlineSize
 		case InlineItemAtomicInline:
 			// Atomic inlines (inline-block, replaced, etc.) are decoration
@@ -191,6 +179,16 @@ func computeDecoratingBoxMetadataPerLine(
 	// Cache the innermost-first ancestor-decorator chain per text-source
 	// Node. Bidi-split fragments from the same text node share the same
 	// chain — avoid re-walking item.Node.Parent for every visual fragment.
+	//
+	// This walk also updates each inline decorator's originX/endX/firstIdx/lastIdx
+	// via the ancestor chain, replacing the former stack-based accumulation in the
+	// line.Results loop above. For RTL text, ReorderLineVisual reverses
+	// line.Results so Text items may appear before or after their enclosing
+	// element's Open/CloseTags — the stack-based update would miss fragments
+	// inside a decorator whose OpenTag hadn't been processed yet or whose
+	// CloseTag was already processed. The ancestry walk here is order-independent:
+	// whichever visual position the text occupies, its parent chain always
+	// correctly identifies its enclosing decorators.
 	contribCache := map[*html.Node][]*onLineDecorator{}
 
 	out := map[*InlineItem][]css.AppliedTextDecoration{}
@@ -215,6 +213,23 @@ func computeDecoratingBoxMetadataPerLine(
 				}
 			}
 			contribCache[item.Node] = inlineContribInnerFirst
+		}
+
+		// Update each ancestor inline decorator's extent with this fragment's
+		// x-range. Uses the cached parent-chain result so no second ancestry
+		// traversal is needed.
+		for _, d := range inlineContribInnerFirst {
+			if lf.x < d.originX {
+				d.originX = lf.x
+			}
+			if lf.xEnd > d.endX {
+				d.endX = lf.xEnd
+			}
+			if !d.firstSeen {
+				d.firstIdx = fragIdx
+				d.firstSeen = true
+			}
+			d.lastIdx = fragIdx
 		}
 
 		stamped := make([]css.AppliedTextDecoration, len(vec))

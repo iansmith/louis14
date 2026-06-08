@@ -5846,8 +5846,19 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// underToRight: true when the underline paints on the physical RIGHT
 		// side of the line column. See the block comment above for the rotation
 		// × position truth table.
+		//
+		// For RTL sideways text the underline flips to the opposite physical
+		// side from LTR: sideways-rl RTL → RIGHT (not LEFT), sideways-lr RTL →
+		// LEFT (not RIGHT). Mirrors Blink's WritingMode × direction × position
+		// truth table in text_decoration_info.cc:ComputeUnderlinePosition.
 		underToRight := sidewaysUnderlineGoesRight(layer)
 		rotCW := layer.IsSidewaysRL // vs CCW for sideways-lr
+		if len(layer.AppliedTextDecorations) > 0 {
+			if td0 := layer.AppliedTextDecorations[0]; td0.SourceStyle != nil &&
+				td0.SourceStyle.GetDirection() == css.DirectionRTL {
+				underToRight = !underToRight
+			}
+		}
 
 		// decorExt: rows BELOW text in buffer. topExt: rows ABOVE text.
 		// Exactly one side is non-zero (determined by underToRight × rotation).
@@ -5928,16 +5939,45 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					appliesAtStart = true
 					appliesAtEnd = true
 				}
-				if appliesAtStart && td.Inset.InlineStart < 0 {
-					ext := int(math.Ceil(-td.Inset.InlineStart))
-					if ext > inlineStartExt {
-						inlineStartExt = ext
+				// For RTL sideways text (both sideways-rl and sideways-lr)
+				// the logical InlineStart and InlineEnd map to the OPPOSITE
+				// physical sides compared to LTR, so the buffer-extension
+				// bucket assignments are swapped.
+				//
+				// sideways-rl RTL: InlineStart=physical BOTTOM=high buffer X,
+				//                  InlineEnd=physical TOP=low buffer X.
+				// sideways-lr RTL: InlineStart=physical TOP=high buffer X,
+				//                  InlineEnd=physical BOTTOM=low buffer X.
+				//
+				// In both cases a negative InlineEnd (extend past inline-end)
+				// extends toward low buffer X → inlineStartExt; LTR would
+				// extend inlineEndExt instead.
+				sidewaysRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+				if sidewaysRTL {
+					if appliesAtStart && td.Inset.InlineStart < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineStart))
+						if ext > inlineEndExt {
+							inlineEndExt = ext
+						}
 					}
-				}
-				if appliesAtEnd && td.Inset.InlineEnd < 0 {
-					ext := int(math.Ceil(-td.Inset.InlineEnd))
-					if ext > inlineEndExt {
-						inlineEndExt = ext
+					if appliesAtEnd && td.Inset.InlineEnd < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineEnd))
+						if ext > inlineStartExt {
+							inlineStartExt = ext
+						}
+					}
+				} else {
+					if appliesAtStart && td.Inset.InlineStart < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineStart))
+						if ext > inlineStartExt {
+							inlineStartExt = ext
+						}
+					}
+					if appliesAtEnd && td.Inset.InlineEnd < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineEnd))
+						if ext > inlineEndExt {
+							inlineEndExt = ext
+						}
 					}
 				}
 			}
@@ -6047,17 +6087,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
 					xStart := float64(inlineStartExt)
 					xEnd := float64(inlineStartExt + ta)
-					if td.HasDecoratingBox {
-						if td.IsFirstFragment {
-							xStart += td.Inset.InlineStart
-						}
-						if td.IsLastFragment {
-							xEnd -= td.Inset.InlineEnd
-						}
-					} else {
-						xStart += td.Inset.InlineStart
-						xEnd -= td.Inset.InlineEnd
-					}
+					// Apply RTL inset swap for all sideways RTL text.
+					// Both sideways-rl and sideways-lr RTL have InlineStart
+					// at high buffer X and InlineEnd at low buffer X,
+					// opposite to LTR — so the RTL applyDecorationInset
+					// swap is correct for both rotation directions.
+					sidewaysRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+					xStart, xEnd = applyDecorationInset(xStart, xEnd, td, sidewaysRTL)
 					if xEnd <= xStart {
 						continue
 					}
@@ -7530,6 +7566,146 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 // Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
+// applyDecorationInset applies text-decoration-inset to an already-positioned
+// decoration extent [start, end], returning the adjusted [start, end].
+//
+// It handles the HasDecoratingBox × RTL × IsFirst/IsLastFragment matrix:
+//   - HasDecoratingBox: inset is applied only at the actual box edges (first/
+//     last fragment flags) so interior line-break boundaries are untouched.
+//   - Bare path: inset is applied unconditionally to both edges.
+//   - RTL: InlineStart trims the physical END; InlineEnd trims (or extends,
+//     when negative) the physical START — opposite of the LTR convention.
+func applyDecorationInset(start, end float64, td css.AppliedTextDecoration, isRTL bool) (float64, float64) {
+	if td.HasDecoratingBox {
+		if isRTL {
+			if td.IsFirstFragment {
+				end -= td.Inset.InlineStart // trim right
+			}
+			if td.IsLastFragment {
+				start += td.Inset.InlineEnd // extend left
+			}
+		} else {
+			if td.IsFirstFragment {
+				start += td.Inset.InlineStart // trim left
+			}
+			if td.IsLastFragment {
+				end -= td.Inset.InlineEnd // extend right
+			}
+		}
+	} else {
+		if isRTL {
+			start += td.Inset.InlineEnd // negative InlineEnd → extends left
+			end -= td.Inset.InlineStart
+		} else {
+			start += td.Inset.InlineStart
+			end -= td.Inset.InlineEnd
+		}
+	}
+	return start, end
+}
+
+// computeDecorationExtent returns the logical (physical-axis) start and end of
+// the decoration line, with text-decoration-inset applied.
+//   - HasDecoratingBox: the extent spans the layout-stamped decorating-box width.
+//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth].
+//
+// Inset adjustment is delegated to applyDecorationInset.
+func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+	if td.HasDecoratingBox {
+		logicalStart = boxX + td.DecoratingBoxOffsetX
+		logicalEnd = logicalStart + td.DecoratingBoxWidth
+	} else {
+		logicalStart = boxX
+		logicalEnd = boxX + textWidth
+	}
+	return applyDecorationInset(logicalStart, logicalEnd, td, isRTL)
+}
+
+// applySkipSpacesTrim trims leading/trailing whitespace from the decoration
+// extent (text-decoration-skip-spaces). Applied after inset so a negative
+// inset (extension) does not extend through skipped whitespace.
+// For the HasDecoratingBox case, trimming only applies at the actual box
+// edge (first/last fragment) so interior line-break boundaries are untouched.
+func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBox, isFirst, isLast bool) (float64, float64) {
+	if skipStart > 0 && (!hasDecoratingBox || isFirst) {
+		start += skipStart
+	}
+	if skipEnd > 0 && (!hasDecoratingBox || isLast) {
+		end -= skipEnd
+	}
+	return start, end
+}
+
+// clampDecorationBounds clamps the painting extent to the fragment's physical
+// boundary for the HasDecoratingBox case. Interior edges are ceil'd to prevent
+// sub-pixel double-coverage at adjacent fragment joints.
+//
+// The inline-start edge (physical left for LTR, physical right for RTL) is NOT
+// clamped on the first fragment, and the inline-end edge (physical right for
+// LTR, physical left for RTL) is NOT clamped on the last fragment, because a
+// negative inset legitimately extends the decoration past those edges.
+//
+// RTL flips which physical edge is "inline-start" vs "inline-end":
+//
+//	LTR: inline-start = physical LEFT  (IsFirstFragment), inline-end = RIGHT (IsLastFragment)
+//	RTL: inline-start = physical RIGHT (IsFirstFragment), inline-end = LEFT  (IsLastFragment)
+//
+// Returns (xStart, xEnd, skip) where skip=true means the extent collapsed.
+func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextDecoration, box *layout.Box) (xStart, xEnd float64, skip bool) {
+	xStart, xEnd = logicalStart, logicalEnd
+	if td.HasDecoratingBox {
+		// first/last track which fragment edge is free from clamping.
+		// RTL swaps inline-start (physical right) and inline-end (physical left),
+		// so the free-left and free-right fragment flags are exchanged.
+		first, last := td.IsFirstFragment, td.IsLastFragment
+		if td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL {
+			first, last = last, first
+		}
+		if !first && box.X > xStart {
+			xStart = math.Ceil(box.X)
+		}
+		if !last && box.X+box.Width < xEnd {
+			xEnd = box.X + box.Width
+		}
+		if xEnd <= xStart {
+			return xStart, xEnd, true
+		}
+	}
+	return xStart, xEnd, false
+}
+
+// drawLineThroughStroke paints a line-through in the style given by styleVal
+// ("solid", "dashed", "dotted", "double", "wavy"). lineY is the stroke
+// center, thickness the stroke width. phaseFromLogicalStart keeps dashed/
+// dotted/wavy patterns phase-continuous across adjacent fragments.
+func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart float64, styleVal string) {
+	switch styleVal {
+	case "dashed":
+		r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
+	case "dotted":
+		r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
+	case "double":
+		r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
+	case "wavy":
+		r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
+	default: // "solid"
+		r.dc.MoveTo(xStart, lineY)
+		r.dc.LineTo(xEnd, lineY)
+		r.dc.Stroke()
+	}
+}
+
+// appliedDecorationIsRTL reports whether the decoration's inline axis runs
+// right-to-left. It prefers box.Style (normal horizontal path) and falls back
+// to td.SourceStyle for the sideways path where the synthetic virtualBox has
+// no Style attached.
+func appliedDecorationIsRTL(box *layout.Box, td css.AppliedTextDecoration) bool {
+	if box.Style != nil {
+		return box.Style.GetDirection() == css.DirectionRTL
+	}
+	return td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+}
+
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
 // onlyLineThrough=false: draw underline+overline (called before text glyphs).
@@ -7549,35 +7725,12 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// SLICE of the logical decoration that falls within this fragment, with
 	// the inset trim applied only at the decorating box's actual logical
 	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
-	var logicalStart, logicalEnd float64
-	if td.HasDecoratingBox {
-		logicalStart = box.X + td.DecoratingBoxOffsetX
-		logicalEnd = logicalStart + td.DecoratingBoxWidth
-		if td.IsFirstFragment {
-			logicalStart += td.Inset.InlineStart
-		}
-		if td.IsLastFragment {
-			logicalEnd -= td.Inset.InlineEnd
-		}
-	} else {
-		logicalStart = box.X + td.Inset.InlineStart
-		logicalEnd = box.X + textWidth - td.Inset.InlineEnd
-	}
-	// text-decoration-skip-spaces: trim leading/trailing whitespace widths
-	// from the decoration extent. Applied after inset so a negative inset
-	// (extension) does not extend through skipped whitespace. For the
-	// HasDecoratingBox case only the relevant edge is trimmed — interior
-	// fragments don't carry leading/trailing space at the boundary.
-	if skipStartWidth > 0 {
-		if !td.HasDecoratingBox || td.IsFirstFragment {
-			logicalStart += skipStartWidth
-		}
-	}
-	if skipEndWidth > 0 {
-		if !td.HasDecoratingBox || td.IsLastFragment {
-			logicalEnd -= skipEndWidth
-		}
-	}
+	isRTL := appliedDecorationIsRTL(box, td)
+	logicalStart, logicalEnd := computeDecorationExtent(td, isRTL, box.X, textWidth)
+	logicalStart, logicalEnd = applySkipSpacesTrim(
+		logicalStart, logicalEnd, skipStartWidth, skipEndWidth,
+		td.HasDecoratingBox, td.IsFirstFragment, td.IsLastFragment,
+	)
 	if logicalEnd <= logicalStart {
 		return
 	}
@@ -7600,18 +7753,9 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// box.Width ≤ xEnd_ceil), so no visual gap is introduced. Blink avoids
 	// this entirely by painting each decorating box's line in one rect rather
 	// than per fragment; ceil is the louis14-specific equivalent.
-	xStart := logicalStart
-	xEnd := logicalEnd
-	if td.HasDecoratingBox {
-		if !td.IsFirstFragment && box.X > xStart {
-			xStart = math.Ceil(box.X)
-		}
-		if !td.IsLastFragment && box.X+box.Width < xEnd {
-			xEnd = box.X + box.Width
-		}
-		if xEnd <= xStart {
-			return
-		}
+	xStart, xEnd, skip := clampDecorationBounds(logicalStart, logicalEnd, td, box)
+	if skip {
+		return
 	}
 
 	phaseFromLogicalStart := xStart - logicalStart
@@ -7708,20 +7852,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// regress text-decoration-thickness-linethrough-001 which uses
 		// 1.1em thickness on a 1em-tall box.
 		lineY := info.computeLineThroughLineY(thickness)
-		switch td.Style {
-		case "dashed":
-			r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
-		case "dotted":
-			r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
-		case "double":
-			r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
-		case "wavy":
-			r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
-		default: // "solid"
-			r.dc.MoveTo(xStart, lineY)
-			r.dc.LineTo(xEnd, lineY)
-			r.dc.Stroke()
-		}
+		r.drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart, td.Style)
 	}
 }
 
