@@ -25,6 +25,20 @@ type domContext struct {
 	// did not populate layout state (e.g. pure DOM-manipulation tests).
 	layoutStyles map[*html.Node]*css.Style
 	layoutBoxes  map[*html.Node]*layout.Box
+
+	// docEventListeners holds document.addEventListener callbacks keyed by
+	// event type. Louis14 is a static one-shot renderer, so only events the
+	// engine itself dispatches after script execution (currently WPT's
+	// "TestRendered" from /common/reftest-wait.js) ever fire. The raw value
+	// is retained so removeEventListener can match by JS identity.
+	docEventListeners map[string][]documentEventListener
+}
+
+// documentEventListener pairs the callable with the original JS value so
+// removeEventListener can compare listener identity per the DOM spec.
+type documentEventListener struct {
+	raw goja.Value
+	fn  goja.Callable
 }
 
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
@@ -110,6 +124,39 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 			Text: text,
 		}
 		return ctx.elementProxy(node)
+	})
+
+	// document.addEventListener / removeEventListener. Only events the
+	// engine dispatches after scripts run (WPT's "TestRendered") ever fire;
+	// other event types are stored but never invoked, which matches the
+	// one-shot rendering model (no user interaction, no async loads).
+	docObj.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			raw := call.Arguments[1]
+			if fn, ok := goja.AssertFunction(raw); ok {
+				typ := call.Arguments[0].String()
+				if ctx.docEventListeners == nil {
+					ctx.docEventListeners = make(map[string][]documentEventListener)
+				}
+				ctx.docEventListeners[typ] = append(ctx.docEventListeners[typ],
+					documentEventListener{raw: raw, fn: fn})
+			}
+		}
+		return goja.Undefined()
+	})
+	docObj.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 && ctx.docEventListeners != nil {
+			typ := call.Arguments[0].String()
+			raw := call.Arguments[1]
+			kept := ctx.docEventListeners[typ][:0]
+			for _, l := range ctx.docEventListeners[typ] {
+				if !l.raw.StrictEquals(raw) {
+					kept = append(kept, l)
+				}
+			}
+			ctx.docEventListeners[typ] = kept
+		}
+		return goja.Undefined()
 	})
 
 	// Phase 2: querySelector/querySelectorAll on document

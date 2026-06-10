@@ -1022,6 +1022,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// because louis14's collapse-through path drops the fragment
 			// entirely (the `if collapseThrough { ... continue }` branch
 			// below), which would hide the box from the paint walk.
+			// The same applies to a visible outline: a 0x0 box with
+			// `outline: solid green 50px` paints a 100x100 ring (Blink keeps
+			// empty rects for normal outlines — outline_painter.cc:960
+			// "Keep empty rect for normal outline").
 			// Mirrors Blink's effective behavior where the fragment is
 			// always emitted regardless of self-collapse — LayoutNG's
 			// `BlockLayoutAlgorithm::Layout` adds every child fragment via
@@ -1038,7 +1042,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
 				!isChildNewFC &&
-				!hasPaintIsolation(childStyle)
+				!hasPaintIsolation(childStyle) &&
+				(childStyle == nil || childStyle.GetOutlineWidth() == 0)
 
 			// Step 4: Position child in the inline direction.
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist.

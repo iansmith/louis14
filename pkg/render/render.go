@@ -2310,6 +2310,16 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
 	r.paintDescendantsPhase(layer, PhaseForeground)
 
+	// Step 5c: Descendant outlines (CSS 2.1 Appendix E step 10). Painted
+	// after all in-flow foreground content so an outline overlapping its
+	// element's text or background (e.g. negative outline-offset) draws on
+	// top; before the z-ordered child layers, mirroring Blink's
+	// PaintLayerPainter phase order (kDescendantOutlinesOnly before child
+	// layers @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Descendant
+	// outlines stay inside the overflow clip — a scroller clips its
+	// contents' outlines.
+	r.paintDescendantsPhase(layer, PhaseOutline)
+
 	// Step 6: z-index:auto positioned + z-index:0 SCs.
 	for _, child := range layer.AutoZero {
 		r.paintLayer(child)
@@ -2324,6 +2334,12 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Pop()
 	}
 
+	// Self outline paints OUTSIDE the element's own overflow clip — the
+	// clip applies to the box's contents, never to its own outline ring
+	// (Blink paints kSelfOutlineOnly without the contents clip) — but
+	// still inside clip-path / CSS clip, which do clip outlines.
+	r.paintSelfOutline(layer)
+
 	if clipPathActive {
 		r.dc.Pop()
 	}
@@ -2333,10 +2349,23 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 }
 
+// paintSelfOutline paints the layer's own outline. CSS 2.1 Appendix E
+// step 10: outlines paint after all in-flow content of the stacking
+// context, so an outline overlapping its own element's text or background
+// (e.g. with a negative outline-offset) draws on top. Mirrors Blink's
+// dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
+	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
+		r.drawOutline(layer)
+	}
+}
+
 // paintSelfDecorations paints a layer's own background, borders,
-// shadows, column rules, outline, and list marker — the subset of
+// shadows, column rules, and list marker — the subset of
 // painting that precedes descendant painting in CSS 2.1 Appendix E.
-// Called once per layer (not once per phase).
+// The outline is NOT painted here; it has its own post-content phase
+// (see paintSelfOutline). Called once per layer (not once per phase).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
@@ -2360,10 +2389,6 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 
 	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
 		r.drawColumnRules(layer)
-	}
-
-	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
-		r.drawOutline(layer)
 	}
 
 	// List markers are real laid-out ::marker boxes in the fragment tree
@@ -2492,6 +2517,8 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 			r.paintSelfDecorations(child)
 		}
 		r.paintSelfForeground(child)
+	case PhaseOutline:
+		r.paintSelfOutline(child)
 	case PhaseFloat:
 		// Skip self — floats paint their own bg during their paintLayer.
 	}
@@ -5038,9 +5065,9 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 // Mirrors Blink's OutlinePainter::ComputeOutlineRect adjustment at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
-// Painting strategy: rectangular (non-rounded) outlines are filled as 4
-// trapezoid sides — the same approach drawBorders uses — so adjacent sides
-// meet at mitered diagonals with no rounded-join artefacts.
+// Painting strategy: rectangular (non-rounded) outlines are filled as a
+// single even-odd ring (outer rect minus inner rect) via fillOutlineSides,
+// which avoids diagonal seam artifacts from per-side painting.
 
 // outlinePaintRect returns the pixel-snapped rect the outline ring is drawn
 // around. For multi-line inline elements, OutlineBox holds the union bounding
@@ -5122,34 +5149,37 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 			r.dc.Fill()
 			r.dc.SetFillRule(textshape.FillRuleWinding)
 		} else {
-			// Rectangular outline as 4 trapezoid sides (mitered corners).
+			// Rectangular outline as a single even-odd ring.
 			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
 		}
-	case "dashed":
-		// Center each dashed segment on the geometric centerline of the outline band.
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDashedLine(mx, my, mx+mw, my, width)       // top
-		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, width) // right
-		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, width) // bottom
-		r.drawDashedLine(mx, my, mx, my+mh, width)       // left
-	case "dotted":
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDottedLine(mx, my, mx+mw, my, width)
-		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, width)
-		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, width)
-		r.drawDottedLine(mx, my, mx, my+mh, width)
-	case "double":
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDoubleLine(mx, my, mx+mw, my, width)
-		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, width)
-		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, width)
-		r.drawDoubleLine(mx, my, mx, my+mh, width)
+	case "dashed", "dotted", "double":
+		// Paint non-solid outline styles with the same per-side geometry the
+		// border painter (drawBorders) uses: each side's run spans the full
+		// outer-rect edge, with its centerline half a band-width inside the
+		// outer edge. This is the louis14 analog of Blink painting
+		// single-rect non-auto outlines through the border painter
+		// (BoxBorderPainter::PaintSingleRectOutline, outline_painter.cc:1022
+		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); the WPT references
+		// for these styles are literal borders, so the dash/dot/double runs
+		// must rasterize identically to drawBorders' (same span ⇒ same
+		// pattern phase and corner coverage).
+		draw := r.drawDashedLine
+		switch style {
+		case "dotted":
+			draw = r.drawDottedLine
+		case "double":
+			draw = r.drawDoubleLine
+		}
+		outerR := outerX + outerW
+		outerB := outerY + outerH
+		midT := outerY + width/2
+		midB := outerB - width/2
+		midL := outerX + width/2
+		midR := outerR - width/2
+		draw(outerX, midT, outerR, midT, width) // top
+		draw(midR, outerY, midR, outerB, width) // right
+		draw(outerX, midB, outerR, midB, width) // bottom
+		draw(midL, outerY, midL, outerB, width) // left
 	default:
 		// Treat unknown / not-yet-implemented styles (groove/ridge/inset/outset)
 		// as solid for visibility — matches Blink's fallback behavior for
@@ -5158,10 +5188,11 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 	}
 }
 
-// fillOutlineSides paints a rectangular outline as 4 trapezoid sides with
-// mitered diagonal joins at the corners. Mirrors drawBorders' Fill-path
-// approach for solid borders — see drawBorders at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f Blink's BoxBorderPainter::PaintSide.
+// fillOutlineSides paints a rectangular outline as a single even-odd filled ring,
+// with the outer rectangle and inner hole (inset by width on all sides).
+// This mirrors the rounded-corner branch and eliminates the diagonal seams
+// that resulted from painting 4 separate trapezoid sides.
+// Blink analog: OutlinePainter::PaintOutline @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
 func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float64) {
 	outerL := outerX
 	outerT := outerY
@@ -5177,34 +5208,27 @@ func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float6
 	if innerT > innerB {
 		innerT, innerB = (outerT+outerB)/2, (outerT+outerB)/2
 	}
-	// Top
+
+	// Build outer rectangle path (CW).
 	r.dc.MoveTo(outerL, outerT)
 	r.dc.LineTo(outerR, outerT)
-	r.dc.LineTo(innerR, innerT)
-	r.dc.LineTo(innerL, innerT)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Right
-	r.dc.MoveTo(outerR, outerT)
 	r.dc.LineTo(outerR, outerB)
-	r.dc.LineTo(innerR, innerB)
-	r.dc.LineTo(innerR, innerT)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Bottom
-	r.dc.MoveTo(outerL, outerB)
-	r.dc.LineTo(innerL, innerB)
-	r.dc.LineTo(innerR, innerB)
-	r.dc.LineTo(outerR, outerB)
-	r.dc.ClosePath()
-	r.dc.Fill()
-	// Left
-	r.dc.MoveTo(outerL, outerT)
-	r.dc.LineTo(innerL, innerT)
-	r.dc.LineTo(innerL, innerB)
 	r.dc.LineTo(outerL, outerB)
 	r.dc.ClosePath()
+
+	// Build inner rectangle path (CCW) for even-odd hole punch.
+	if innerR-innerL > 0 && innerB-innerT > 0 {
+		r.dc.MoveTo(innerL, innerT)
+		r.dc.LineTo(innerL, innerB)
+		r.dc.LineTo(innerR, innerB)
+		r.dc.LineTo(innerR, innerT)
+		r.dc.ClosePath()
+	}
+
+	// Fill as a single even-odd ring.
+	r.dc.SetFillRule(textshape.FillRuleEvenOdd)
 	r.dc.Fill()
+	r.dc.SetFillRule(textshape.FillRuleWinding)
 }
 
 // drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.

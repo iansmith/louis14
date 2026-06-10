@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -1421,7 +1422,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// by ::marker pseudo-elements.
 			"tab-size", "overflow-wrap", "word-break", "hyphens",
 			"text-shadow", "text-emphasis", "text-emphasis-style",
-			"text-emphasis-color", "text-emphasis-position"}
+			"text-emphasis-color", "text-emphasis-position",
+			// CSS UI 4 §7.1: accent-color is inherited.
+			"accent-color"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -2029,6 +2032,9 @@ var inheritableProperties = map[string]bool{
 	"text-emphasis-position": true,
 	// CSS Color 4 §2.2: color-scheme is inherited.
 	"color-scheme": true,
+	// CSS UI 4 §7.1: accent-color is inherited.
+	// https://drafts.csswg.org/css-ui-4/#widget-accent
+	"accent-color": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
@@ -2598,12 +2604,95 @@ func resolveLogicalBoxProperties(style *Style) {
 	}
 }
 
+// varDeferredShorthands lists the shorthands expandShorthand leaves
+// unexpanded when their declared value contains var() — substitution can't
+// happen at parse time because custom properties resolve in the cascade.
+// Must stay in sync with the var() switch at the top of expandShorthand.
+var varDeferredShorthands = []string{
+	"margin", "padding", "border", "border-top", "border-right",
+	"border-bottom", "border-left", "border-width", "border-style",
+	"border-color", "font", "flex", "flex-flow", "list-style", "gap",
+}
+
+// reexpandVarShorthands substitutes var() in deferred shorthand values and
+// expands them into their longhands (CSS Variables 1 §3.2). Runs after
+// inheritance so the element's custom-property table is complete. On IACVT
+// (a var() reference that fails to resolve) the whole declaration is
+// invalid: drop the shorthand so the longhands keep their initial values.
+func reexpandVarShorthands(style *Style) {
+	for _, prop := range varDeferredShorthands {
+		raw, ok := style.Properties[prop]
+		if !ok || !containsVarFunction(raw) {
+			continue
+		}
+		resolved, ok := style.Get(prop) // Get substitutes var()/env()
+		delete(style.Properties, prop)
+		if !ok {
+			continue // IACVT — longhands fall back to their defaults
+		}
+		expandShorthand(style, prop, resolved)
+	}
+}
+
+// absolutizeOutlineOffset rewrites a font-relative (em) outline-offset to its
+// absolute px computed value against the element's own (final) font-size.
+// Only em needs this: it is the unit whose meaning changes between parent and
+// child, so leaving it specified would make `outline-offset: inherit`
+// re-resolve against the child's font-size (WPT css-ui/outline-010). The
+// conversion applies Blink's ConvertOutlineOffset rounding: magnitudes in
+// (0,1) round away from zero to ±1, larger magnitudes truncate toward zero
+// (style_builder_converter.cc:1998 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func absolutizeOutlineOffset(style *Style) {
+	val, ok := style.Get("outline-offset")
+	if !ok {
+		return
+	}
+	trimmed := strings.TrimSpace(val)
+	if !strings.HasSuffix(trimmed, "em") || strings.HasSuffix(trimmed, "rem") {
+		return
+	}
+	px, ok := ParseLengthWithFontSize(trimmed, style.GetFontSize())
+	if !ok {
+		return
+	}
+	abs := math.Abs(px)
+	switch {
+	case abs > 0 && abs < 1:
+		abs = 1
+	default:
+		abs = math.Floor(abs)
+	}
+	if px < 0 {
+		abs = -abs
+	}
+	style.Set("outline-offset", fmt.Sprintf("%gpx", abs))
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// CSS Variables 1 §3.2: a shorthand whose declared value contains
+		// var() is substituted at computed-value time and only then expanded
+		// into its longhands. expandShorthand deferred those (stored them
+		// unexpanded under the shorthand name); now that inheritance has
+		// populated this element's custom-property table, substitute and
+		// expand. Mirrors Blink's pending-substitution values
+		// (css_pending_substitution_value.h @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		reexpandVarShorthands(style)
+		// CSS UI 4 §4.3: outline-offset computes to an absolute length, so
+		// `outline-offset: inherit` must copy the parent's absolute offset
+		// rather than re-resolving a font-relative value against the child's
+		// own font-size. Absolutize em values now that this element's
+		// font-size is final (parents are processed before children, so an
+		// inheriting child copies the already-absolute px value). Mirrors
+		// Blink's StyleBuilderConverter::ConvertOutlineOffset
+		// (style_builder_converter.cc:1998 @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		absolutizeOutlineOffset(style)
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
@@ -2615,6 +2704,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		resolveLogicalBoxProperties(style)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
+		// A matching @container rule can re-introduce a var()-deferred
+		// shorthand or a font-relative outline-offset; re-run the
+		// computed-time normalizations (both are idempotent).
+		reexpandVarShorthands(style)
+		absolutizeOutlineOffset(style)
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors

@@ -3465,7 +3465,7 @@ func expandOutlineShorthand(style *Style, value string) {
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
-	style.Set("outline-color", "currentcolor")
+	style.Set("outline-color", "auto") // CSS UI 4 §4.4 initial value
 
 	// Tokenize while keeping balanced parens together so var() / calc() etc.
 	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
@@ -3842,12 +3842,19 @@ func (s *Style) GetOutlineStyle() string {
 	return "none"
 }
 
-// GetOutlineWidth returns the outline width in pixels.
+// GetOutlineWidth returns the used outline width in pixels.
 // Returns 0 when outline-style is "none" or outline-width is not set.
 func (s *Style) GetOutlineWidth() float64 {
 	outlineStyle := s.GetOutlineStyle()
 	if outlineStyle == "none" || outlineStyle == "" {
 		return 0
+	}
+	// CSS UI 4 §4.2: when outline-style is auto, the specified outline-width
+	// is ignored — the UA paints its focus-ring width. Mirrors Blink's
+	// FocusRingStrokeWidth constant kWidth=3.0f (outline_painter.cc:39 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if outlineStyle == "auto" {
+		return 3
 	}
 	if val, ok := s.Get("outline-width"); ok {
 		switch strings.ToLower(val) {
@@ -3859,24 +3866,49 @@ func (s *Style) GetOutlineWidth() float64 {
 			return 5
 		}
 		if px, ok2 := ParseLength(val); ok2 {
-			return px
+			return clampLineWidth(px)
 		}
 	}
 	return 3 // default medium = 3px
 }
 
+// clampLineWidth rounds a computed line width to its used integer value:
+// widths strictly between 0 and 1 round up to 1 so thin lines stay visible;
+// all other widths round down. Mirrors Blink's
+// StyleBuilderConverter::ClampLineWidth (style_builder_converter.cc:1959 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func clampLineWidth(w float64) float64 {
+	if w <= 0 {
+		return 0
+	}
+	if w < 1 {
+		return 1
+	}
+	return math.Floor(w)
+}
+
 // GetOutlineColor returns the outline color as RGBA components.
-// Defaults to currentColor (element's text color), falling back to black.
-// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
-// the UA has no specific focus-ring colour to apply (mirrors Blink's
-// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
-// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// Per CSS UI 4 §4.4 the initial value is `auto`: when painting the `auto`
+// (focus-ring) outline style it resolves to the element's accent-color if
+// one is set, otherwise — and for non-auto outline styles — to currentcolor
+// (the element's text color), falling back to black. The accent-color rule
+// has no clean Blink analog at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// (Blink routes focus-ring color through LayoutTheme::FocusRingColor,
+// layout_theme.cc:843); the contract here is CSS UI 4 §4.4 plus WPT
+// css-ui/outline-color-002..004.
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
-	colorStr := "currentcolor"
+	colorStr := "auto"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
 	}
 	if strings.EqualFold(colorStr, "auto") {
+		if s.GetOutlineStyle() == "auto" {
+			if ac, ok := s.Get("accent-color"); ok && !strings.EqualFold(strings.TrimSpace(ac), "auto") {
+				if c, ok2 := ParseColorWithCurrentColor(ac, s.GetColor()); ok2 {
+					return c.R, c.G, c.B, c.A
+				}
+			}
+		}
 		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {

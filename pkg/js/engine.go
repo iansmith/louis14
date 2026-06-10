@@ -184,6 +184,14 @@ func (e *Engine) Execute(doc *html.Document) error {
 		}
 	}
 
+	// WPT reftest-wait protocol (/common/reftest-wait.js): after the page
+	// has rendered, the harness dispatches "TestRendered" on the document;
+	// tests mutate styles in the handler and then clear the reftest-wait
+	// class. Louis14 renders once after Execute returns, so dispatching
+	// synchronously here is the faithful equivalent — the mutations land
+	// before the only screenshot.
+	fireTestRendered(ctx)
+
 	// Fire element-level onload callbacks (e.g. iframe.onload = fn).
 	// These were registered during script execution above. The iframe has
 	// already loaded (first layout pass fetched the content), so firing
@@ -198,6 +206,16 @@ func (e *Engine) Execute(doc *html.Document) error {
 	}
 
 	return nil
+}
+
+// fireTestRendered invokes document.addEventListener("TestRendered", ...)
+// callbacks registered during script execution. A failing listener is
+// skipped rather than aborting, matching the element-onload loop above —
+// one broken handler shouldn't stop the others.
+func fireTestRendered(ctx *domContext) {
+	for _, l := range ctx.docEventListeners["TestRendered"] {
+		_, _ = l.fn(goja.Undefined())
+	}
 }
 
 // findBodyNode walks the document tree to find the <body> element.
