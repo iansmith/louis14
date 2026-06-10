@@ -1178,14 +1178,40 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 // scope for counter lookups (so the marker reads its own scope, not the
 // real element's).
 func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node) string {
+	return b.resolveContentTextStyled(contentVals, node, markerNode, nil)
+}
+
+// resolveContentTextStyled is resolveContentText with the style whose
+// `quotes` property governs open-quote/close-quote values (CSS Lists 3
+// §marker-properties: quotes applies in ::marker; marker-quotes.html).
+// A nil style keeps the UA default quote pairs.
+func (b *LayoutTreeBuilder) resolveContentTextStyled(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node, style *css.Style) string {
 	var buf strings.Builder
 	if markerNode == nil {
 		markerNode = node
+	}
+	quotes := []string{"\"", "\"", "'", "'"}
+	if style != nil {
+		if q, ok := style.Get("quotes"); ok {
+			quotes = b.parseQuotes(q)
+		}
 	}
 	for _, cv := range contentVals {
 		switch cv.Type {
 		case "text":
 			buf.WriteString(cv.Value)
+		case "open-quote":
+			if idx := b.quoteDepth * 2; idx < len(quotes) {
+				buf.WriteString(quotes[idx])
+			}
+			b.quoteDepth++
+		case "close-quote":
+			if b.quoteDepth > 0 {
+				b.quoteDepth--
+			}
+			if idx := b.quoteDepth*2 + 1; idx < len(quotes) {
+				buf.WriteString(quotes[idx])
+			}
 		case "counter":
 			// Prefer the counter context when list-item has been explicitly
 			// established (e.g. counter-reset: reversed(list-item) or
@@ -1800,7 +1826,15 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 
 	// Now that the marker's counter scope is live, resolve content.
 	if len(markerContentValues) > 0 {
-		markerContent = b.resolveContentText(markerContentValues, node, markerNode)
+		// quotes is inherited; a ::marker rule's own quotes wins, else the
+		// list item's (which carries the inherited value).
+		quoteStyle := markerStyle
+		if _, ok := markerStyle.Get("quotes"); !ok {
+			if _, ok := style.Get("quotes"); ok {
+				quoteStyle = style
+			}
+		}
+		markerContent = b.resolveContentTextStyled(markerContentValues, node, markerNode, quoteStyle)
 	}
 
 	// Case 2b: If no ::marker content resolved, fall back to list-style-type.

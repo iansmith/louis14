@@ -1720,7 +1720,10 @@ func markerAllowedProperty(name string) bool {
 		"letter-spacing", "word-spacing", "line-height",
 		"text-shadow", "text-transform", "animation", "transition",
 		"hyphens", "overflow-wrap", "tab-size", "word-break",
-		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position":
+		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position",
+		// quotes was added to the marker-applicable set by the CSSWG
+		// (csswg-drafts#5265; WPT css-lists/marker-quotes.html).
+		"quotes":
 		// CSS Pseudo-4 §4.4: `display` is NOT marker-allowed — an author
 		// `::marker { display: ... }` rule must be rejected. The engine's own
 		// ::marker box display (inside = inline default, outside = inline-block)
@@ -3055,9 +3058,18 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		_, hasReversed := node.GetAttribute("reversed")
 		startVal, hasStart := node.GetAttribute("start")
 		if hasReversed {
-			// reversed(list-item) without explicit integer: let the CSS auto-initial
-			// algorithm compute the initial value from the scope.
-			style.Set("counter-reset", "reversed(list-item)")
+			if n, err := strconv.Atoi(startVal); hasStart && err == nil {
+				// reversed + start=N: the first item shows N counting
+				// down. Each reversed list item applies its implicit -1,
+				// so the scope resets to N+1 (HTML ordinal-value;
+				// li-value-reversed-017).
+				style.Set("counter-reset", "reversed(list-item) "+strconv.Itoa(n+1))
+			} else {
+				// reversed(list-item) without explicit integer: let the CSS
+				// auto-initial algorithm compute the initial value from the
+				// scope.
+				style.Set("counter-reset", "reversed(list-item)")
+			}
 		} else if hasStart {
 			if n, err := strconv.Atoi(startVal); err == nil {
 				// HTML's ordinal semantics: the FIRST item shows N. Each
