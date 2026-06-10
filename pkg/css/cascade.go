@@ -2602,6 +2602,36 @@ func resolveLogicalBoxProperties(style *Style) {
 	}
 }
 
+// varDeferredShorthands lists the shorthands expandShorthand leaves
+// unexpanded when their declared value contains var() — substitution can't
+// happen at parse time because custom properties resolve in the cascade.
+// Must stay in sync with the var() switch at the top of expandShorthand.
+var varDeferredShorthands = []string{
+	"margin", "padding", "border", "border-top", "border-right",
+	"border-bottom", "border-left", "border-width", "border-style",
+	"border-color", "font", "flex", "flex-flow", "list-style", "gap",
+}
+
+// reexpandVarShorthands substitutes var() in deferred shorthand values and
+// expands them into their longhands (CSS Variables 1 §3.2). Runs after
+// inheritance so the element's custom-property table is complete. On IACVT
+// (a var() reference that fails to resolve) the whole declaration is
+// invalid: drop the shorthand so the longhands keep their initial values.
+func reexpandVarShorthands(style *Style) {
+	for _, prop := range varDeferredShorthands {
+		raw, ok := style.Properties[prop]
+		if !ok || !containsVarFunction(raw) {
+			continue
+		}
+		resolved, ok := style.Get(prop) // Get substitutes var()/env()
+		delete(style.Properties, prop)
+		if !ok {
+			continue // IACVT — longhands fall back to their defaults
+		}
+		expandShorthand(style, prop, resolved)
+	}
+}
+
 // absolutizeOutlineOffset rewrites a font-relative (em) outline-offset to its
 // absolute px computed value against the element's own (final) font-size.
 // Only em needs this: it is the unit whose meaning changes between parent and
@@ -2642,6 +2672,15 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// CSS Variables 1 §3.2: a shorthand whose declared value contains
+		// var() is substituted at computed-value time and only then expanded
+		// into its longhands. expandShorthand deferred those (stored them
+		// unexpanded under the shorthand name); now that inheritance has
+		// populated this element's custom-property table, substitute and
+		// expand. Mirrors Blink's pending-substitution values
+		// (css_pending_substitution_value.h @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		reexpandVarShorthands(style)
 		// CSS UI 4 §4.3: outline-offset computes to an absolute length, so
 		// `outline-offset: inherit` must copy the parent's absolute offset
 		// rather than re-resolving a font-relative value against the child's
