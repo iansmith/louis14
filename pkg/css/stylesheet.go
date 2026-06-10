@@ -3339,6 +3339,7 @@ var supportedCSSProperties = map[string]struct{}{
 	// Effects
 	"box-shadow": {},
 	"outline":    {}, "outline-width": {}, "outline-style": {}, "outline-color": {}, "outline-offset": {},
+	"accent-color": {},
 	// Multicol — column-gap is listed under Flexbox above
 	"column-count": {}, "column-width": {}, "columns": {},
 	"column-rule":       {},

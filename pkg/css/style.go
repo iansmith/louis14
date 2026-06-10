@@ -3465,7 +3465,7 @@ func expandOutlineShorthand(style *Style, value string) {
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
-	style.Set("outline-color", "currentcolor")
+	style.Set("outline-color", "auto") // CSS UI 4 §4.4 initial value
 
 	// Tokenize while keeping balanced parens together so var() / calc() etc.
 	// survive as a single token. CSS Syntax §4.3.6 specifies that whitespace
@@ -3888,17 +3888,27 @@ func clampLineWidth(w float64) float64 {
 }
 
 // GetOutlineColor returns the outline color as RGBA components.
-// Defaults to currentColor (element's text color), falling back to black.
-// Per CSS UI 4 §4.4 "outline-color: auto" resolves to currentcolor when
-// the UA has no specific focus-ring colour to apply (mirrors Blink's
-// LayoutTheme::PlatformFocusRingColor → resolves to currentcolor by default
-// for non-focus paint at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// Per CSS UI 4 §4.4 the initial value is `auto`: when painting the `auto`
+// (focus-ring) outline style it resolves to the element's accent-color if
+// one is set, otherwise — and for non-auto outline styles — to currentcolor
+// (the element's text color), falling back to black. The accent-color rule
+// has no clean Blink analog at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// (Blink routes focus-ring color through LayoutTheme::FocusRingColor,
+// layout_theme.cc:843); the contract here is CSS UI 4 §4.4 plus WPT
+// css-ui/outline-color-002..004.
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
-	colorStr := "currentcolor"
+	colorStr := "auto"
 	if val, ok := s.Get("outline-color"); ok {
 		colorStr = val
 	}
 	if strings.EqualFold(colorStr, "auto") {
+		if s.GetOutlineStyle() == "auto" {
+			if ac, ok := s.Get("accent-color"); ok && !strings.EqualFold(strings.TrimSpace(ac), "auto") {
+				if c, ok2 := ParseColor(ac); ok2 {
+					return c.R, c.G, c.B, c.A
+				}
+			}
+		}
 		colorStr = "currentcolor"
 	}
 	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {

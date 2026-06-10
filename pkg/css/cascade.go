@@ -2030,6 +2030,9 @@ var inheritableProperties = map[string]bool{
 	"text-emphasis-position": true,
 	// CSS Color 4 §2.2: color-scheme is inherited.
 	"color-scheme": true,
+	// CSS UI 4 §7.1: accent-color is inherited.
+	// https://drafts.csswg.org/css-ui-4/#widget-accent
+	"accent-color": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
