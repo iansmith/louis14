@@ -1627,10 +1627,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 // the following content (e.g. "Qrst") is not orphaned from its opening
 // bracket.
 //
-// Blink handles this naturally via its single-pass per-character iterator
-// (BreakingContext in line/breaking_context_inline_headers.h) which applies
-// LB14 inline without look-ahead. Louis14's item-at-a-time loop needs this
-// explicit post-finalize correction.
+// Blink never produces this break in the first place: its LineBreaker
+// (core/layout/inline/line_breaker.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f)
+// only breaks at candidates reported by LazyLineBreakIterator, which delegates
+// UAX #14 — including LB14 — to ICU, so a position after opening punctuation
+// is never breakable. Louis14's word-oriented item-at-a-time loop has no such
+// oracle and needs this explicit post-finalize correction.
 func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 	// Only applies to content-mode breaking (not min/max-content sizing).
 	if lb.mode != LineBreakerContent {
