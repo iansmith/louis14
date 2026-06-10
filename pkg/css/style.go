@@ -1391,10 +1391,17 @@ func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 
 		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
 		// Mirrors padding's resolvePaddingEdge but without the negative-clamp,
 		// since margins are allowed to be negative.
+		// percentResolvesToZero: a zero containing width is a valid base — the
+		// percent term contributes 0 and the length term survives, matching
+		// Blink's MinimumValueForLength(margin, base) where calc never fails
+		// (core/layout/length_utils.cc ComputePhysicalMargins).
 		if IsCalcWithPercent(trimmed) {
-			if v, ok := EvalCalcWithPercent(
-				trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
-			); ok {
+			if v, ok := evalCalcFull(trimmed[5:len(trimmed)-1], calcContext{
+				fontSize:              s.GetFontSize(),
+				percentBase:           containingWidth,
+				percentResolvesToZero: true,
+				chScale:               0.5,
+			}); ok {
 				return v
 			}
 		}
@@ -1464,10 +1471,14 @@ func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64
 			}
 		}
 		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
+		// percentResolvesToZero: see resolveMarginEdge — a zero base is valid.
 		if IsCalcWithPercent(trimmed) {
-			if v, ok := EvalCalcWithPercent(
-				trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
-			); ok {
+			if v, ok := evalCalcFull(trimmed[5:len(trimmed)-1], calcContext{
+				fontSize:              s.GetFontSize(),
+				percentBase:           containingWidth,
+				percentResolvesToZero: true,
+				chScale:               0.5,
+			}); ok {
 				if v < 0 {
 					return 0
 				}

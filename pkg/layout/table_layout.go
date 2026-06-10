@@ -2164,6 +2164,19 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 						cellBP := cellGeom.InlineBorderPadding()
 						cellMin := mm.MinContent + cellBP
 						cellMax := mm.MaxContent + cellBP
+						// Anonymous cell wrappers: the wrapped child's inline
+						// margins are part of the cell's intrinsic contribution
+						// (the layout pass at Phase 2/3 offsets the child by
+						// them — see the isAnonymous blocks above). Percentages
+						// resolve against zero here per CSS Sizing 3
+						// §min-percentage-contribution. In Blink the anonymous
+						// cell is a real block container, so its
+						// ComputeMinMaxSizes includes child margins natively.
+						if cell.isAnonymous && cell.style != nil {
+							anonMargins := ResolveMargins(cell.style, childWDM, 0)
+							cellMin += anonMargins.InlineSum()
+							cellMax += anonMargins.InlineSum()
+						}
 						if cellMin > colMin[colIdx] {
 							colMin[colIdx] = cellMin
 						}
