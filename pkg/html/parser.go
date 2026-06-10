@@ -112,6 +112,10 @@ func (p *Parser) Parse() (*Document, error) {
 				p.autoCloseP()
 			}
 
+			// HTML5 implied end tags: <li> closes an open <li>;
+			// <dt>/<dd> close an open <dt>/<dd>.
+			p.autoCloseListItem(token.TagName)
+
 			// HTML5 table parsing: auto-close table structural elements.
 			// colgroup is implicitly closed by tbody/tfoot/thead/tr/td/th.
 			// tbody/thead/tfoot are implicitly closed by each other.
@@ -552,6 +556,37 @@ func (p *Parser) autoCloseP() {
 		}
 		// Don't close past block-level containers
 		if p.isBlockElement(p.stack[i].TagName) {
+			return
+		}
+	}
+}
+
+// autoCloseListItem implements the HTML5 "in body" implied end tags for
+// list items and definition list items (§13.2.6.4.7): a new <li> start tag
+// closes any open <li> up to the nearest list container (ol/ul/menu — the
+// "list item scope" boundary), and a new <dt>/<dd> closes any open <dt>/<dd>
+// up to the nearest <dl>. Without this, `<li>a<li>b` nests b inside a,
+// corrupting list-item counter scoping and box nesting.
+func (p *Parser) autoCloseListItem(tagName string) {
+	var closes func(string) bool
+	var boundary func(string) bool
+	switch tagName {
+	case "li":
+		closes = func(t string) bool { return t == "li" }
+		boundary = func(t string) bool { return t == "ol" || t == "ul" || t == "menu" }
+	case "dt", "dd":
+		closes = func(t string) bool { return t == "dt" || t == "dd" }
+		boundary = func(t string) bool { return t == "dl" }
+	default:
+		return
+	}
+	for i := len(p.stack) - 1; i >= 1; i-- {
+		t := p.stack[i].TagName
+		if closes(t) {
+			p.stack = p.stack[:i]
+			return
+		}
+		if boundary(t) {
 			return
 		}
 	}
