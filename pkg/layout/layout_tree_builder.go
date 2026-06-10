@@ -870,8 +870,7 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 
 	// Don't generate anonymous blocks inside inline containers or table internals.
 	// Only block containers do this.
-	parentDisplay := parentStyle.GetDisplay()
-	if !isBlockContainer(parentDisplay) {
+	if !isBlockContainerStyle(parentStyle) {
 		return children
 	}
 
@@ -2019,6 +2018,21 @@ func isBlockContainer(d css.DisplayType) bool {
 	return false
 }
 
+// isBlockContainerStyle is isBlockContainer with the raw display value in
+// hand: `inline flow-root list-item` folds into DisplayInlineListItem in
+// GetDisplay() but IS a block container (its children get anonymous-block
+// treatment), while a pure `inline list-item` is a true inline box and is
+// not. Mirrors Blink's kInlineFlowRootListItem vs kInlineListItem split.
+func isBlockContainerStyle(st *css.Style) bool {
+	if st == nil {
+		return false
+	}
+	if isBlockContainer(st.GetDisplay()) {
+		return true
+	}
+	return st.GetDisplay() == css.DisplayInlineListItem && !st.IsInlineBoxListItem()
+}
+
 // isWhitespaceOnly returns true if the run contains only whitespace text nodes
 // (and possibly floats/abs-pos). CSS 2.1 §9.2.2.1: whitespace-only anonymous
 // blocks between block-level boxes are not rendered.
@@ -2063,7 +2077,7 @@ func isInlineWithBlockChildren(node *LayoutInputNode) bool {
 func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 	children []*LayoutInputNode, parentStyle *css.Style,
 ) []*LayoutInputNode {
-	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+	if parentStyle == nil || !isBlockContainerStyle(parentStyle) {
 		return children
 	}
 	// Quick check: any inline-with-block present?
@@ -2209,7 +2223,7 @@ func (b *LayoutTreeBuilder) computeFirstLineStyle(lin *LayoutInputNode, node *ht
 	if node == nil || node.Type != html.ElementNode {
 		return
 	}
-	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+	if parentStyle == nil || !isBlockContainerStyle(parentStyle) {
 		return
 	}
 	if len(b.stylesheets) == 0 {
