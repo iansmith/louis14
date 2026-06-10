@@ -2573,12 +2573,18 @@ func expandShorthand(style *Style, property, value string) {
 			}
 		}
 	case "overflow":
-		// overflow shorthand: 1 or 2 values for overflow-x and overflow-y
+		// overflow shorthand: 1 or 2 values for overflow-x and overflow-y.
+		// The "overflow" remnant (consumed by GetOverflow as a fallback when
+		// the longhands are absent) MUST store the full declared value, not
+		// just the first part: rule.Declarations is a map, and the cascade
+		// re-expands its entries in random iteration order — a lossy remnant
+		// re-expanding after the longhands would clobber overflow-y
+		// (LOU-301). Storing the full value keeps re-expansion idempotent.
 		parts := strings.Fields(value)
 		if len(parts) == 2 {
 			style.Set("overflow-x", parts[0])
 			style.Set("overflow-y", parts[1])
-			style.Set("overflow", parts[0]) // fallback for GetOverflow()
+			style.Set("overflow", value)
 		} else {
 			style.Set("overflow", value)
 			style.Set("overflow-x", value)
@@ -6896,9 +6902,15 @@ const (
 	OverflowClip    OverflowType = "clip"
 )
 
-// GetOverflow returns the overflow value (default: visible)
+// GetOverflow returns the overflow value (default: visible). When the stored
+// shorthand carries two values ("clip visible"), the first (overflow-x) field
+// is used — callers wanting per-axis values use GetOverflowX/GetOverflowY,
+// which override this fallback with the expanded longhands.
 func (s *Style) GetOverflow() OverflowType {
 	if overflow, ok := s.Get("overflow"); ok {
+		if fields := strings.Fields(overflow); len(fields) > 1 {
+			overflow = fields[0]
+		}
 		switch overflow {
 		case "hidden":
 			return OverflowHidden
