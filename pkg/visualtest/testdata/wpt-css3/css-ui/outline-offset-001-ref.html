@@ -1,23 +1,25 @@
 <!DOCTYPE html>
 <title>CSS outline-offset reference</title>
 <style>
-  body { margin: 0; padding: 0; }
-  p { margin: 16px 0 0 0; }
+  /* Structure-preserving reference: the ring is a border on a wrapper whose
+     5px padding reproduces the 5px outline-offset gap. Wrapper border-box =
+     5 + 5 + 80 + 5 + 5 = 100px, the test ring's outer size. Margins are the
+     test's 30px minus the 10px ring+gap extent; p's margin-bottom is pinned
+     to 20px so the sibling collapse yields the same +20px ring top as the
+     test's max(16px, 30px) - 10px. */
+  p { margin-bottom: 20px; }
   .outer {
-    position: absolute;
-    left: 20px;
-    top: 55px;
-    width: 90px;
-    height: 90px;
+    margin: 20px;
     border: 5px solid blue;
+    padding: 5px;
+    width: 80px;
+    height: 80px;
   }
   .lime {
     width: 80px;
     height: 80px;
     background: lime;
-    margin: 30px;
   }
 </style>
 <p>Test passes if there is a green square with a blue outline separated by a gap.</p>
-<div class="outer"></div>
-<div class="lime"></div>
+<div class="outer"><div class="lime"></div></div>

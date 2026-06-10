@@ -1,24 +1,20 @@
 <!DOCTYPE html>
 <title>CSS outline reference</title>
 <style>
-  body { margin: 0; padding: 0; }
-  p { margin: 16px 0 0 0; }
-  .outer {
-    position: absolute;
-    left: 15px;
-    top: 50px;
-    width: 110px;
-    height: 110px;
-    background: blue;
-  }
-  .inner {
-    position: absolute;
-    left: 20px;
-    top: 55px;
+  /* Structure-preserving reference: the blue ring is a border on the same
+     box, with margins reduced by the outline width (20px - 5px) so the
+     border-box occupies exactly the pixels the test's outline ring covers.
+     p's default margin-bottom (16px) would win the sibling margin collapse
+     against 15px, so pin it to 15px; the test side collapses to
+     max(16px, 20px) = 20px, putting its ring top at the same +15px. */
+  p { margin-bottom: 15px; }
+  div {
     width: 100px;
     height: 100px;
     background: lime;
+    border: 5px solid blue;
+    margin: 15px;
   }
 </style>
 <p>Test passes if there is a green square with a blue outline.</p>
-<div class="outer"></div><div class="inner"></div>
+<div></div>
