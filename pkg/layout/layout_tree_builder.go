@@ -1726,14 +1726,16 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 
 	// Step 2: Compute the effective marker style if no ::marker rules.
 	if !hasMarkerStyle {
-		// No ::marker rules; create a default marker style inheriting from
-		// the list item, then stamp UA ::marker defaults on top. The clone
-		// carries all inherited properties (including text-transform, white-space,
-		// etc.) from the li; ApplyMarkerUADefaults overrides those with the UA
-		// ::marker values (text-transform:none, white-space:pre, tabular-nums,
-		// unicode-bidi:isolate) per CSS Pseudo-4 §3 + Blink html.css
+		// No ::marker rules; create a default marker style carrying ONLY
+		// inherited properties from the list item (Blink
+		// StyleResolver::CreateAnonymousStyleWithDisplay via
+		// ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 —
+		// a li's border/margin/padding must not leak onto its marker), then
+		// stamp UA ::marker defaults on top (text-transform:none,
+		// white-space:pre, tabular-nums, unicode-bidi:isolate) per CSS
+		// Pseudo-4 §3 + Blink html.css
 		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		markerStyle = style.Clone()
+		markerStyle = css.CreateAnonymousStyleWithDisplay(style, "inline")
 		css.ApplyMarkerUADefaults(markerStyle)
 	}
 
@@ -1758,6 +1760,16 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		Type:    html.ElementNode,
 		TagName: "::marker",
 		Parent:  node,
+	}
+	if hasContentProperty {
+		// Inside markers with an author `content` property glue to the
+		// item's following content — no soft wrap opportunity after them
+		// (the WPT contract: inline-list-marker-ref.html emulates the
+		// marker with `2&nbsp;B`). Default list-style-type markers keep a
+		// wrap opportunity after them (inline-list-ref.html emulates those
+		// with breakable inline-blocks). Consumed by the line breaker's
+		// rewindUnbreakableTail.
+		markerNode.Attributes = map[string]string{"data-explicit-content": "1"}
 	}
 
 	// Store the marker style in the styles map.
@@ -1847,13 +1859,20 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 		value = b.getListItemCounterValue(node)
 	}
 
+	// The predefined symbolic styles carry the CSS Counter Styles 3
+	// `suffix: " "` (one space), just like the numeric styles carry ". ".
+	// Blink renders marker text via
+	// CounterStyle::GenerateRepresentationWithPrefixAndSuffix
+	// (ListMarker::MarkerText kSymbol/kLanguage arms, list_marker.cc:180-212
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), so an inside disc marker
+	// is "• ", not "•".
 	switch lst {
 	case css.ListStyleTypeDisc:
-		return "•" // bullet
+		return "• " // bullet
 	case css.ListStyleTypeCircle:
-		return "◦" // white bullet
+		return "◦ " // white bullet
 	case css.ListStyleTypeSquare:
-		return "▪" // black small square
+		return "▪ " // black small square
 	case css.ListStyleTypeDecimal:
 		return strconv.Itoa(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDecimalLeadingZero:
@@ -1869,9 +1888,9 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	case css.ListStyleTypeLowerGreek:
 		return css.ToGreek(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDisclosureOpen:
-		return "▼" // ▼ down-pointing triangle (details expanded)
+		return "▼ " // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:
-		return "▶" // ▶ right-pointing triangle (details collapsed)
+		return "▶ " // ▶ right-pointing triangle (details collapsed)
 	default:
 		return ""
 	}

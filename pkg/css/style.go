@@ -7622,6 +7622,28 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
+// only inherited properties (including custom properties) are carried over
+// from the parent, and display is set explicitly. Mirrors Blink
+// StyleResolver::CreateAnonymousStyleWithDisplay, which the list-marker
+// machinery uses for the default ::marker style
+// (ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — non-inherited properties such
+// as borders, margins, and padding must NOT leak from the originating list
+// item onto the marker box.
+func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
+	s := NewStyle()
+	if parent != nil {
+		for prop, val := range parent.Properties {
+			if inheritableProperties[prop] || strings.HasPrefix(prop, "--") {
+				s.Properties[prop] = val
+			}
+		}
+	}
+	s.Set("display", display)
+	return s
+}
+
 // MarkerShouldBeInside reports whether this list item's ::marker box is
 // placed inside (as the first in-flow inline child) rather than through the
 // outside carry/claim protocol. Mirrors Blink's
