@@ -791,7 +791,13 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		childGeom := ComputeFragmentGeometry(childStyle, childWDM, space.PercentageResolutionInlineSize)
 
 		childBP := childGeom.InlineBorderPadding()
-		childMargins := ResolveMargins(childStyle, childWDM, space.PercentageResolutionInlineSize)
+		// Item margin percentages resolve against the flex container's inline
+		// size, which is indefinite while the container itself is being
+		// intrinsically sized — so they resolve against zero (CSS Sizing 3
+		// §min-percentage-contribution). Mirrors Blink's ComputePhysicalMargins
+		// clamp (length_utils.h ClampIndefiniteToZero) on the flex-basis space
+		// in FlexLayoutAlgorithm::ConstructAndAppendFlexItems.
+		childMargins := ResolveMargins(childStyle, childWDM, 0)
 
 		// Determine if this item will stretch in the cross axis.
 		willStretch := false
