@@ -1436,10 +1436,7 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 	// Outline: GetOutlineWidth returns 0 when outline-style is "none", so a
 	// positive width implies a non-none style. The span must emit a fragment
 	// so the renderer can build a PaintLayer and call drawOutline.
-	if style.GetOutlineWidth() > 0 {
-		return true
-	}
-	return false
+	return style.GetOutlineWidth() > 0
 }
 
 // lineIsSidewaysResolved reports whether every text/atomic run on the line has
