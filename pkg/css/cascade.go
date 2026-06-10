@@ -3059,8 +3059,13 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			// algorithm compute the initial value from the scope.
 			style.Set("counter-reset", "reversed(list-item)")
 		} else if hasStart {
-			if _, err := strconv.Atoi(startVal); err == nil {
-				style.Set("counter-reset", "list-item "+startVal)
+			if n, err := strconv.Atoi(startVal); err == nil {
+				// HTML's ordinal semantics: the FIRST item shows N. Each
+				// list item applies its implicit +1 increment, so the
+				// scope resets to N-1 (a plain <ol> resets to 0 and its
+				// first item shows 1). Mirrors Blink ListItemOrdinal's
+				// start handling @ 4883d11f.
+				style.Set("counter-reset", "list-item "+strconv.Itoa(n-1))
 			}
 		} else {
 			// Plain <ol> without reversed or start: UA default counter-reset: list-item 0.

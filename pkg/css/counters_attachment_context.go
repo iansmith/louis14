@@ -659,8 +659,17 @@ func (c *CountersAttachmentContext) parseCounterDirectives(node *html.Node, styl
 	if raw, ok := style.Get("counter-increment"); ok {
 		for _, p := range parseCounterPropertyList(raw, 1) {
 			a := track(p.name)
-			a.hasIncrement = true
-			a.incrementValue = p.value
+			// Repeated names within counter-increment SUM (Blink
+			// CounterDirectives::AddIncrementValue clamp-adds,
+			// counter_directives.h @ 4883d11fef: `counter-increment:
+			// c 1 c -1` nets 0). counter-reset and counter-set
+			// repeats stay last-wins.
+			if a.hasIncrement {
+				a.incrementValue = saturatingAddInt32(a.incrementValue, p.value)
+			} else {
+				a.hasIncrement = true
+				a.incrementValue = p.value
+			}
 		}
 	}
 	if raw, ok := style.Get("counter-set"); ok {

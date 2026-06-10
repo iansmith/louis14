@@ -286,11 +286,23 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		// The implicit decrement is applied via UpdateCounterValue so it mutates
 		// the same entry that EnterObject just created/updated.
 		disp := style.GetDisplay()
+		// An explicit counter-set on list-item (the UA mapping of the HTML
+		// li `value` attribute) replaces the implicit step entirely: per
+		// HTML's ordinal-value algorithm (Blink ListItemOrdinal::
+		// CalcValue @ 4883d11f), a valued item takes exactly that number.
+		// The implicit ±1 runs after EnterObject applied the set, so
+		// without this guard it would override the set value.
+		_, hasExplicitSet := counterSetValue(style, "list-item")
 		if (disp == css.DisplayListItem || disp == css.DisplayInlineListItem) &&
 			b.counterCtx.IsCounterReversed("list-item") {
 			_, hasExplicit := counterIncrementValue(style, "list-item")
 			isAutoReset := b.counterCtx.HasAutoReversedCounter(node, "list-item")
-			if !hasExplicit && !isAutoReset {
+			if !hasExplicit && !isAutoReset && !hasExplicitSet {
+				// Blink ProcessCounter always removes stale entries
+				// before mutating; the implicit path bypasses
+				// ProcessCounter (no explicit directive), so without
+				// this a sibling list's exited scope would be mutated.
+				b.counterCtx.RemoveStaleCounters(node, "list-item")
 				b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, -1)
 			}
 		}
@@ -303,7 +315,10 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		if (disp == css.DisplayListItem || disp == css.DisplayInlineListItem) &&
 			!b.counterCtx.IsCounterReversed("list-item") {
 			_, hasExplicit := counterIncrementValue(style, "list-item")
-			if !hasExplicit {
+			if !hasExplicit && !hasExplicitSet {
+				// Stale-removal before the implicit mutation; see the
+				// reversed block above.
+				b.counterCtx.RemoveStaleCounters(node, "list-item")
 				b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, 1)
 			}
 		}
