@@ -124,6 +124,94 @@ func TestFlexLayout_OuterMaxHeightStretchMakesItemCrossDefinite(t *testing.T) {
 	}
 }
 
+// TestFlexLayout_RowMinHeightExpandsLineForStretch covers the clamp-UP
+// direction of §9.4 step 8: a row flex container with min-height (no
+// explicit height) and short content must expand its single line to the
+// min-height, and a default align-items:stretch item must stretch to it.
+// A flex-start sibling keeps its content height, pinning that only the
+// line (not every item) grows.
+func TestFlexLayout_RowMinHeightExpandsLineForStretch(t *testing.T) {
+	stretchItem := makeNode("div")
+	startItem := makeNode("div")
+	flex := makeNode("div", stretchItem, startItem)
+
+	styles := map[*html.Node]*css.Style{
+		flex:        makeStyle("display", "flex", "width", "100px", "min-height", "100px"),
+		stretchItem: makeStyle("display", "block", "width", "50px", "height", "auto"),
+		startItem:   makeStyle("display", "block", "width", "50px", "height", "30px", "align-self", "flex-start"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(flex, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := layoutElement(ctx, layoutRoot, space)
+
+	if got := result.Fragment.Size.HeightF64(); got != 100 {
+		t.Errorf("flex container height: got %.1f, want 100 (min-height expands the line)", got)
+	}
+	stretchFrag := findFragmentByNode(result.Fragment, stretchItem)
+	if stretchFrag == nil {
+		t.Fatal("stretch item fragment not found")
+	}
+	if got := stretchFrag.Size.HeightF64(); got != 100 {
+		t.Errorf("stretch item height: got %.1f, want 100 (stretch to min-height-expanded line)", got)
+	}
+	startFrag := findFragmentByNode(result.Fragment, startItem)
+	if startFrag == nil {
+		t.Fatal("flex-start item fragment not found")
+	}
+	if got := startFrag.Size.HeightF64(); got != 30 {
+		t.Errorf("flex-start item height: got %.1f, want 30 (non-stretch item keeps content height)", got)
+	}
+}
+
+// TestFlexLayout_WrapLinesNotClampedByMaxHeight guards that the §9.4 step 8
+// clamp applies to single-line (nowrap) containers ONLY: in a wrapping
+// container, individual flex lines keep their content-derived cross sizes
+// even when the container's max-height clamps the container box itself.
+func TestFlexLayout_WrapLinesNotClampedByMaxHeight(t *testing.T) {
+	item1 := makeNode("div")
+	item2 := makeNode("div")
+	flex := makeNode("div", item1, item2)
+
+	styles := map[*html.Node]*css.Style{
+		flex:  makeStyle("display", "flex", "flex-wrap", "wrap", "width", "100px", "max-height", "50px"),
+		item1: makeStyle("display", "block", "width", "60px", "height", "60px"),
+		item2: makeStyle("display", "block", "width", "60px", "height", "60px"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(flex, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := layoutElement(ctx, layoutRoot, space)
+
+	// 60px items don't fit side-by-side in 100px → two lines of 60px each.
+	// The container box clamps to max-height:50px; the lines (and items)
+	// keep their 60px content sizes and overflow.
+	if got := result.Fragment.Size.HeightF64(); got != 50 {
+		t.Errorf("flex container height: got %.1f, want 50 (max-height clamps the box)", got)
+	}
+	for i, n := range []*html.Node{item1, item2} {
+		frag := findFragmentByNode(result.Fragment, n)
+		if frag == nil {
+			t.Fatalf("item%d fragment not found", i+1)
+		}
+		if got := frag.Size.HeightF64(); got != 60 {
+			t.Errorf("item%d height: got %.1f, want 60 (wrapped lines are not clamped)", i+1, got)
+		}
+	}
+}
+
 // TestFlexLayout_RowMaxHeightDoesNotShrinkSmallContent guards the other
 // direction: max-height must only CLAMP — a row flex container whose content
 // is shorter than max-height keeps its content height, and the line is not
