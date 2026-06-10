@@ -2173,9 +2173,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 						// cell is a real block container, so its
 						// ComputeMinMaxSizes includes child margins natively.
 						if cell.isAnonymous && cell.style != nil {
-							anonMargins := ResolveMargins(cell.style, childWDM, 0)
-							cellMin += anonMargins.InlineSum()
-							cellMax += anonMargins.InlineSum()
+							anonMarginSum := ResolveMargins(cell.style, childWDM, 0).InlineSum()
+							cellMin += anonMarginSum
+							cellMax += anonMarginSum
 						}
 						if cellMin > colMin[colIdx] {
 							colMin[colIdx] = cellMin
