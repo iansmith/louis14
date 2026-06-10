@@ -3447,11 +3447,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		// CSS cross-size (e.g., height: 100px). Per CSS 2.1 §10.5, percentage heights
 		// resolve against the containing block's content height, which is the item's
 		// explicit CSS height if set.
-		// Determine the percentage resolution block-size for descendants.
-		// Per CSS 2.1 §10.5, percentage heights resolve against the containing
-		// block's content height. For flex items, this is the item's own CSS height
-		// (if explicit), NOT the line's cross-size. The line cross-size controls
-		// available space but the item's explicit height controls percentage resolution.
+		// Determine the percentage-resolution block-size for descendants.
 		// Per CSS Flexbox §4.5, percentage cross-sizes on a flex item resolve
 		// against the container's content-box cross-size when definite. Use
 		// fla.containerCrossSize as the available + percentage-resolution
