@@ -952,15 +952,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// and gives items their final layout.
 	if isRow {
 		// cross = block
-		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
-		if containerCrossSize < minBlock {
-			containerCrossSize = minBlock
-		}
+		// CSS 2.1 §10.7: apply max first, then min, so min wins when min > max.
 		if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
 			maxBlock := maxBlockLU.Float64()
 			if containerCrossSize > maxBlock {
 				containerCrossSize = maxBlock
 			}
+		}
+		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
+		if containerCrossSize < minBlock {
+			containerCrossSize = minBlock
 		}
 	}
 	// else: cross = inline, already constrained via contentInlineSize.

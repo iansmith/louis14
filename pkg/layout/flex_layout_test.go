@@ -212,6 +212,41 @@ func TestFlexLayout_WrapLinesNotClampedByMaxHeight(t *testing.T) {
 	}
 }
 
+// TestFlexLayout_RowMinHeightWinsOverMaxHeight pins CSS 2.1 §10.7: when
+// min-height > max-height, max-height is clamped up to min-height (apply
+// max first, then min — min wins).  Matches the column main-axis clamp in
+// this file and Blink's ClampSizeToMinAndMax.
+func TestFlexLayout_RowMinHeightWinsOverMaxHeight(t *testing.T) {
+	stretchItem := makeNode("div")
+	flex := makeNode("div", stretchItem)
+
+	styles := map[*html.Node]*css.Style{
+		flex:        makeStyle("display", "flex", "width", "100px", "min-height", "100px", "max-height", "50px"),
+		stretchItem: makeStyle("display", "block", "width", "100px", "height", "auto"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(flex, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := layoutElement(ctx, layoutRoot, space)
+
+	if got := result.Fragment.Size.HeightF64(); got != 100 {
+		t.Errorf("flex container height: got %.1f, want 100 (min-height wins over smaller max-height)", got)
+	}
+	stretchFrag := findFragmentByNode(result.Fragment, stretchItem)
+	if stretchFrag == nil {
+		t.Fatal("stretch item fragment not found")
+	}
+	if got := stretchFrag.Size.HeightF64(); got != 100 {
+		t.Errorf("stretch item height: got %.1f, want 100 (line cross-size must clamp max-first-then-min, so min-height wins)", got)
+	}
+}
+
 // TestFlexLayout_RowMaxHeightDoesNotShrinkSmallContent guards the other
 // direction: max-height must only CLAMP — a row flex container whose content
 // is shorter than max-height keeps its content height, and the line is not
