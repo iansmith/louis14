@@ -1801,16 +1801,6 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		TagName: "::marker",
 		Parent:  node,
 	}
-	if hasContentProperty {
-		// Inside markers with an author `content` property glue to the
-		// item's following content — no soft wrap opportunity after them
-		// (the WPT contract: inline-list-marker-ref.html emulates the
-		// marker with `2&nbsp;B`). Default list-style-type markers keep a
-		// wrap opportunity after them (inline-list-ref.html emulates those
-		// with breakable inline-blocks). Consumed by the line breaker's
-		// rewindUnbreakableTail.
-		markerNode.Attributes = map[string]string{"data-explicit-content": "1"}
-	}
 
 	// Store the marker style in the styles map.
 	b.styles[markerNode] = markerStyle

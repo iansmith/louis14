@@ -194,6 +194,17 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
 		}
+	default:
+		// HTML living spec §15.3.1: elements the UA stylesheet does not
+		// address default to `display: inline` (the CSS initial value).
+		// louis14's GetDisplay() falls back to block, so unknown/custom
+		// elements (WPT refs use e.g. <x>, <ib> as styling hooks) must be
+		// stamped inline here or they wrongly become block boxes.
+		if !isKnownHTMLElement(node.TagName) {
+			if _, ok := style.Get("display"); !ok {
+				style.Set("display", "inline")
+			}
+		}
 	}
 
 	// Replaced inline elements: behave as inline-block for layout purposes
@@ -1971,6 +1982,44 @@ func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*
 	}
 	// For other values (concrete colors, keywords), leave them as-is.
 	// They are already in the style.Properties map from Set().
+}
+
+// isKnownHTMLElement reports whether the tag is a standard HTML element.
+// Elements outside this set (custom/unknown elements, including the synthetic
+// hooks WPT reference pages use) take the CSS initial `display: inline`
+// rather than louis14's block fallback. Synthetic "::marker"/"first-letter"
+// style nodes are handled by their own UA branches before this is consulted.
+var knownHTMLElements = map[string]bool{
+	"a": true, "abbr": true, "address": true, "area": true, "article": true,
+	"aside": true, "audio": true, "b": true, "base": true, "bdi": true,
+	"bdo": true, "blockquote": true, "body": true, "br": true, "button": true,
+	"canvas": true, "caption": true, "cite": true, "code": true, "col": true,
+	"colgroup": true, "data": true, "datalist": true, "dd": true, "del": true,
+	"details": true, "dfn": true, "dialog": true, "div": true, "dl": true,
+	"dt": true, "em": true, "embed": true, "fieldset": true, "figcaption": true,
+	"figure": true, "footer": true, "form": true, "h1": true, "h2": true,
+	"h3": true, "h4": true, "h5": true, "h6": true, "head": true,
+	"header": true, "hgroup": true, "hr": true, "html": true, "i": true,
+	"iframe": true, "img": true, "input": true, "ins": true, "kbd": true,
+	"label": true, "legend": true, "li": true, "link": true, "listing": true,
+	"main": true, "map": true, "mark": true, "menu": true, "meta": true,
+	"meter": true, "nav": true, "noscript": true, "object": true, "ol": true,
+	"optgroup": true, "option": true, "output": true, "p": true,
+	"picture": true, "pre": true, "progress": true, "q": true, "rp": true,
+	"rt": true, "ruby": true, "s": true, "samp": true, "script": true,
+	"section": true, "select": true, "slot": true, "small": true,
+	"source": true, "span": true, "strong": true, "style": true, "sub": true,
+	"summary": true, "sup": true, "table": true, "tbody": true, "td": true,
+	"template": true, "textarea": true, "tfoot": true, "th": true,
+	"thead": true, "time": true, "title": true, "tr": true, "track": true,
+	"tt": true, "u": true, "ul": true, "var": true, "video": true,
+	"wbr": true, "xmp": true,
+	// Legacy ruby containers louis14 still recognizes.
+	"rb": true, "rbc": true, "rtc": true,
+}
+
+func isKnownHTMLElement(tag string) bool {
+	return knownHTMLElements[tag]
 }
 
 // inheritableProperties lists CSS properties that inherit from parent to child by default

@@ -546,23 +546,18 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 }
 
 // isInsideMarkerItem reports whether an inline item belongs to an inside
-// ::marker box with an author `content` property — the synthetic "::marker"
-// element's open/close tags or its text child. Only explicit-content
-// markers glue to the following content; default list-style-type markers
-// keep a soft wrap opportunity after them (see the data-explicit-content
-// note in createMarkerPseudoElement).
+// ::marker box — the synthetic "::marker" element's open/close tags or its
+// text child. Inside markers glue to the item's following content: the
+// marker text is white-space:pre (UA ::marker default), so its preserved
+// trailing space is never a soft wrap opportunity.
 func isInsideMarkerItem(item *InlineItem) bool {
 	if item == nil || item.Node == nil {
 		return false
 	}
-	n := item.Node
-	if n.TagName != "::marker" {
-		if n.Parent == nil || n.Parent.TagName != "::marker" {
-			return false
-		}
-		n = n.Parent
+	if item.Node.TagName == "::marker" {
+		return true
 	}
-	return n.Attributes["data-explicit-content"] != ""
+	return item.Node.Parent != nil && item.Node.Parent.TagName == "::marker"
 }
 
 // rewindUnbreakableTail moves a trailing inside list-marker box from the
