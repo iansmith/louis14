@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -2598,12 +2599,56 @@ func resolveLogicalBoxProperties(style *Style) {
 	}
 }
 
+// absolutizeOutlineOffset rewrites a font-relative (em) outline-offset to its
+// absolute px computed value against the element's own (final) font-size.
+// Only em needs this: it is the unit whose meaning changes between parent and
+// child, so leaving it specified would make `outline-offset: inherit`
+// re-resolve against the child's font-size (WPT css-ui/outline-010). The
+// conversion applies Blink's ConvertOutlineOffset rounding: magnitudes in
+// (0,1) round away from zero to ±1, larger magnitudes truncate toward zero
+// (style_builder_converter.cc:1998 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func absolutizeOutlineOffset(style *Style) {
+	val, ok := style.Get("outline-offset")
+	if !ok {
+		return
+	}
+	trimmed := strings.TrimSpace(val)
+	if !strings.HasSuffix(trimmed, "em") || strings.HasSuffix(trimmed, "rem") {
+		return
+	}
+	px, ok := ParseLengthWithFontSize(trimmed, style.GetFontSize())
+	if !ok {
+		return
+	}
+	abs := math.Abs(px)
+	switch {
+	case abs > 0 && abs < 1:
+		abs = 1
+	default:
+		abs = math.Floor(abs)
+	}
+	if px < 0 {
+		abs = -abs
+	}
+	style.Set("outline-offset", fmt.Sprintf("%gpx", abs))
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// CSS UI 4 §4.3: outline-offset computes to an absolute length, so
+		// `outline-offset: inherit` must copy the parent's absolute offset
+		// rather than re-resolving a font-relative value against the child's
+		// own font-size. Absolutize em values now that this element's
+		// font-size is final (parents are processed before children, so an
+		// inheriting child copies the already-absolute px value). Mirrors
+		// Blink's StyleBuilderConverter::ConvertOutlineOffset
+		// (style_builder_converter.cc:1998 @
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		absolutizeOutlineOffset(style)
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
