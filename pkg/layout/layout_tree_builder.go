@@ -1061,6 +1061,28 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	b.counterCtx.EnterObject(pseudoNode, pseudoStyle)
 	defer b.counterCtx.LeaveObject(pseudoNode, pseudoStyle)
 
+	// A display:list-item pseudo-element is a real list item: it takes the
+	// implicit list-item counter increment and generates its own ::marker
+	// (CSS Lists 3 §declaring-a-list-item; WPT nested-marker.html). Its
+	// marker is a nested pseudo-element NOT addressable by author ::marker
+	// selectors, so marker creation skips author-rule matching.
+	var pseudoMarker *LayoutInputNode
+	if pseudoStyle != nil && pseudoStyle.IsListItemDisplay() {
+		_, hasExplicitInc := counterIncrementValue(pseudoStyle, "list-item")
+		_, hasExplicitSet := counterSetValue(pseudoStyle, "list-item")
+		if !hasExplicitInc && !hasExplicitSet {
+			b.counterCtx.RemoveStaleCounters(pseudoNode, "list-item")
+			if b.counterCtx.IsCounterReversed("list-item") {
+				if !b.counterCtx.HasAutoReversedCounter(pseudoNode, "list-item") {
+					b.counterCtx.UpdateCounterValue(pseudoNode, "list-item", css.CounterIncrementType, -1)
+				}
+			} else {
+				b.counterCtx.UpdateCounterValue(pseudoNode, "list-item", css.CounterIncrementType, 1)
+			}
+		}
+		pseudoMarker = b.createMarkerPseudoElement(pseudoNode, pseudoStyle)
+	}
+
 	// Build child nodes from content values.
 	// Collect quote strings from parent style.
 	quotes := []string{"\"", "\"", "'", "'"}
@@ -1165,6 +1187,15 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		DOMNode:  pseudoNode,
 		style:    pseudoStyle,
 		children: children,
+	}
+	// Attach the list-item pseudo's own ::marker: inside markers become the
+	// first in-flow child; outside markers ride the carry/claim protocol
+	// via lin.markerNode (same split as buildNode for real list items).
+	if pseudoMarker != nil {
+		lin.markerNode = pseudoMarker
+		if !pseudoMarker.MarkerIsOutside {
+			lin.children = append([]*LayoutInputNode{pseudoMarker}, lin.children...)
+		}
 	}
 	return lin
 }
@@ -1747,7 +1778,12 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	hasContentProperty := false
 	var markerContentValues []css.ContentValue
 
-	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+	// Markers of pseudo-element list items (::before/::after with
+	// display:list-item) are nested pseudo-elements and are NOT addressable
+	// by author ::marker selectors (css-pseudo-4; WPT nested-marker.html) —
+	// they take UA defaults only.
+	originIsPseudo := strings.HasPrefix(node.TagName, "::")
+	if !originIsPseudo && len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
 		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
 		markerStyle = css.ComputePseudoElementStyle(
 			node, "marker", b.stylesheets,
