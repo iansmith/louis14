@@ -34,7 +34,9 @@ func buildSingleListItem(t *testing.T, liDisplay string, extraLiProps ...string)
 	li.Children = []*html.Node{text}
 	ol.Children = []*html.Node{li}
 
-	liProps := append([]string{"display", liDisplay}, extraLiProps...)
+	// The UA stylesheet gives `ol li` list-style-type:decimal; tests build
+	// styles directly so declare it explicitly.
+	liProps := append([]string{"display", liDisplay, "list-style-type", "decimal"}, extraLiProps...)
 	styles := map[*html.Node]*css.Style{
 		ol: makeStyle("display", "block", "counter-reset", "list-item 0"),
 		li: makeStyle(liProps...),

@@ -361,13 +361,21 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// Build layout children, filtering out display:none and non-layout nodes.
 	var rawChildren []*LayoutInputNode
 
-	// CSS Pseudo-4 §4.2: Insert ::marker pseudo-element as first child
-	// of display:list-item elements when list-style-position is inside.
-	// The marker comes before ::before per CSS Pseudo-4 pseudo-element
-	// ordering (marker, before, children, after).
-	if style != nil && style.GetDisplay() == css.DisplayListItem {
+	// CSS Pseudo-4 §4.2: generate the ::marker pseudo-element for every
+	// list item. An inside marker is inserted as the first in-flow child
+	// (before ::before, per CSS Pseudo-4 ordering: marker, before,
+	// children, after). An outside marker is NOT an in-flow child — it is
+	// reachable only through lin.markerNode / ListMarkerBlockNodeIfListItem,
+	// and the block layout algorithm's UnpositionedListMarker carry/claim
+	// protocol owns its placement (Blink BlockNode::
+	// ListMarkerBlockNodeIfListItem feeding BlockLayoutAlgorithm,
+	// bla.cc:319-327 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if style != nil && style.IsListItemDisplay() {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
-			rawChildren = append(rawChildren, markerNode)
+			lin.markerNode = markerNode
+			if !markerNode.MarkerIsOutside {
+				rawChildren = append(rawChildren, markerNode)
+			}
 		}
 	}
 
@@ -1265,7 +1273,10 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 		if sibling == node {
 			break
 		}
-		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
+		// Every list-item display counts toward the ordinal — Blink's
+		// ListItemOrdinal walks IsListItem() siblings, which covers inline
+		// list items too (list_marker.cc:90-98 @ 4883d11f).
+		if s := b.styles[sibling]; s != nil && s.IsListItemDisplay() {
 			idx++
 		}
 	}
@@ -1678,13 +1689,16 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		return nil
 	}
 
-	// Guard: only for display:list-item with list-style-position: inside.
-	if style.GetDisplay() != css.DisplayListItem {
+	// Guard: every list-item display generates a ::marker box (Blink
+	// ComputedStyle::IsDisplayListItem feeds ListMarker creation for both
+	// LayoutListItem and LayoutInlineListItem, list_marker.cc:72-80 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Placement — inside as the
+	// first in-flow child vs outside via the carry/claim protocol — is
+	// decided by MarkerShouldBeInside.
+	if !style.IsListItemDisplay() {
 		return nil
 	}
-	if style.GetListStylePosition() != "inside" {
-		return nil
-	}
+	markerInside := style.MarkerShouldBeInside()
 
 	// Step 1: Resolve marker content.
 	var markerContent string
@@ -1721,7 +1735,21 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		markerStyle = style.Clone()
 		css.ApplyMarkerUADefaults(markerStyle)
+	}
+
+	// Marker display is adjusted by position, not authored: inside markers
+	// are inline; outside markers become a block container that must not
+	// break internally and honors trailing spaces. Mirrors Blink
+	// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:478-514 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if hasMarkerStyle {
+		markerStyle = markerStyle.Clone()
+	}
+	if markerInside {
 		markerStyle.Set("display", "inline")
+	} else {
+		markerStyle.Set("display", "inline-block")
+		markerStyle.Set("white-space", "pre")
 	}
 
 	// Step 3: Create a synthetic ::marker DOM node so we can use it as
@@ -1787,9 +1815,11 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	// this generated subtree per CSS Pseudo-4 §3.3 — the originating
 	// list-item's own marker is not part of first-letter consideration.
 	return &LayoutInputNode{
-		DOMNode:      markerNode,
-		style:        markerStyle,
-		isMarkerNode: true,
+		DOMNode:         markerNode,
+		style:           markerStyle,
+		isMarkerNode:    true,
+		MarkerIsOutside: !markerInside,
+		MarkerCategory:  GetListStyleCategory(style),
 		children: []*LayoutInputNode{{
 			DOMNode: textNode,
 			style:   markerStyle,

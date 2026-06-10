@@ -7622,6 +7622,46 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// MarkerShouldBeInside reports whether this list item's ::marker box is
+// placed inside (as the first in-flow inline child) rather than through the
+// outside carry/claim protocol. Mirrors Blink's
+// ComputedStyle::MarkerShouldBeInside (computed_style.cc:2817-2827 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): per css-lists
+// §list-style-position-outside, outside is equivalent to inside when the
+// list item is an inline box. Blink checks EDisplay::kInlineListItem only —
+// kInlineFlowRootListItem is a block container, not an inline box, and keeps
+// its marker outside. GetDisplay() folds `inline flow-root list-item` into
+// DisplayInlineListItem (the list-item check wins), so sniff the raw display
+// for the flow-root keyword the same way EstablishesNewFormattingContext
+// does.
+func (s *Style) MarkerShouldBeInside() bool {
+	return s.GetListStylePosition() == "inside" || s.IsInlineBoxListItem()
+}
+
+// IsInlineBoxListItem reports whether the element is a list item that is a
+// true inline box — `display: inline list-item` — as opposed to the
+// `inline flow-root list-item` variant, which is an atomic inline block
+// container. Mirrors Blink's EDisplay::kInlineListItem vs
+// kInlineFlowRootListItem split (LayoutInlineListItem derives from
+// LayoutInline, layout_inline_list_item.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). GetDisplay() folds both
+// variants into DisplayInlineListItem (the list-item check wins), so the
+// raw display value is sniffed for the flow-root keyword the same way
+// EstablishesNewFormattingContext does.
+func (s *Style) IsInlineBoxListItem() bool {
+	if s.GetDisplay() != DisplayInlineListItem {
+		return false
+	}
+	if raw, ok := s.Get("display"); ok {
+		for _, f := range strings.Fields(raw) {
+			if f == "flow-root" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // IsAtomicInlineDisplay reports whether the computed display generates
 // an atomic inline-level box (CSS Display 3 §2.2): a single,
 // indivisible inline-level box that establishes its own formatting
