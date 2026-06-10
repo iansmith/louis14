@@ -5125,31 +5125,34 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 			// Rectangular outline as a single even-odd ring.
 			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
 		}
-	case "dashed":
-		// Center each dashed segment on the geometric centerline of the outline band.
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDashedLine(mx, my, mx+mw, my, width)       // top
-		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, width) // right
-		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, width) // bottom
-		r.drawDashedLine(mx, my, mx, my+mh, width)       // left
-	case "dotted":
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDottedLine(mx, my, mx+mw, my, width)
-		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, width)
-		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, width)
-		r.drawDottedLine(mx, my, mx, my+mh, width)
-	case "double":
-		midOff := offset + width/2
-		mx, my := x-midOff, y-midOff
-		mw, mh := w+2*midOff, h+2*midOff
-		r.drawDoubleLine(mx, my, mx+mw, my, width)
-		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, width)
-		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, width)
-		r.drawDoubleLine(mx, my, mx, my+mh, width)
+	case "dashed", "dotted", "double":
+		// Paint non-solid outline styles with the same per-side geometry the
+		// border painter (drawBorders) uses: each side's run spans the full
+		// outer-rect edge, with its centerline half a band-width inside the
+		// outer edge. This is the louis14 analog of Blink painting
+		// single-rect non-auto outlines through the border painter
+		// (BoxBorderPainter::PaintSingleRectOutline, outline_painter.cc:1022
+		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); the WPT references
+		// for these styles are literal borders, so the dash/dot/double runs
+		// must rasterize identically to drawBorders' (same span ⇒ same
+		// pattern phase and corner coverage).
+		draw := r.drawDashedLine
+		switch style {
+		case "dotted":
+			draw = r.drawDottedLine
+		case "double":
+			draw = r.drawDoubleLine
+		}
+		outerR := outerX + outerW
+		outerB := outerY + outerH
+		midT := outerY + width/2
+		midB := outerB - width/2
+		midL := outerX + width/2
+		midR := outerR - width/2
+		draw(outerX, midT, outerR, midT, width) // top
+		draw(midR, outerY, midR, outerB, width) // right
+		draw(outerX, midB, outerR, midB, width) // bottom
+		draw(midL, outerY, midL, outerB, width) // left
 	default:
 		// Treat unknown / not-yet-implemented styles (groove/ridge/inset/outset)
 		// as solid for visibility — matches Blink's fallback behavior for
