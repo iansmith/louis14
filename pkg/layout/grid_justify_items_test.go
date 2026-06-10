@@ -90,7 +90,7 @@ func TestGridLayout_JustifyItemsStart_PlainText(t *testing.T) {
 // Item contains:
 //   - child1: inline-block 60×30px
 //   - wrapperSpan: display:inline, margin-right:-1px, line-height:0
-//     - child2: inline-block 30×30px
+//   - child2: inline-block 30×30px
 //
 // The wrapperSpan's margin-right:-1px makes the effective advance of the
 // (child1 + wrapperSpan{child2}) sequence = 60 + 30 - 1 = 89px.  line-height:0

@@ -77,6 +77,12 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 	computeChWidths(computedStyles, fontConfig)
 
+	// Phase 1c: Re-resolve text-decoration-inset now that ChWidth is known.
+	// During cascade (Phase 1), GetTextDecorationInset is called with ChWidth=0,
+	// causing ch units to resolve incorrectly. Now that computeChWidths has
+	// populated actual font metrics, re-resolve all AppliedTextDecoration insets.
+	recomputeTextDecorationInsets(computedStyles)
+
 	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
 		ViewportWidth:   le.viewport.width,
@@ -226,6 +232,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 	computeChWidths(computedStyles, ctx.FontConfig)
+	recomputeTextDecorationInsets(computedStyles)
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
@@ -867,5 +874,41 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSi
 	default:
 		// ex-height (default)
 		return m.xHeight / fontSize
+	}
+}
+
+// recomputeTextDecorationInsets re-resolves text-decoration-inset values for
+// all elements after ChWidth has been populated by computeChWidths. During
+// cascade, GetTextDecorationInset is called with ChWidth=0, causing ch units
+// to resolve incorrectly (using the 0.5 fallback instead of the actual font
+// metric). Mirrors the computeChWidths pattern: iterate the styles map directly
+// rather than walking the DOM.
+//
+// Each AppliedTextDecoration entry carries a SourceStyle pointer (set in
+// computeOwnTextDecorationContribution) so we can re-resolve even on
+// descendant styles that only hold an inherited copy of the vector — without
+// needing to walk the DOM tree or track originating nodes separately.
+func recomputeTextDecorationInsets(styles map[*html.Node]*css.Style) {
+	// Cache resolved insets by SourceStyle pointer: many descendant styles may
+	// share the same originating SourceStyle (e.g. an ancestor <a> element), so
+	// computing GetTextDecorationInset() once per unique source avoids O(depth)
+	// redundant string parses.
+	seen := make(map[*css.Style]css.TextDecorationInset)
+	for _, style := range styles {
+		if style == nil || len(style.AppliedTextDecorations) == 0 {
+			continue
+		}
+		for i := range style.AppliedTextDecorations {
+			src := style.AppliedTextDecorations[i].SourceStyle
+			if src == nil {
+				continue
+			}
+			inset, ok := seen[src]
+			if !ok {
+				inset = src.GetTextDecorationInset()
+				seen[src] = inset
+			}
+			style.AppliedTextDecorations[i].Inset = inset
+		}
 	}
 }
