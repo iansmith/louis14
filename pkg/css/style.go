@@ -1706,45 +1706,46 @@ func (r EllipticalRadii) Outset(top, right, bottom, left float64) EllipticalRadi
 	return out
 }
 
-// adjustRadiusForSpread implements the CSS Backgrounds spec §5.4 shadow shape
-// radius adjustment. When r >= spread, it's simply r + spread. When r < spread,
-// a cubic interpolation is used: r + spread × (1 + (r/spread − 1)³).
-// See https://www.w3.org/TR/css-backgrounds-3/#shadow-shape
-func adjustRadiusForSpread(r, spread float64) float64 {
-	if spread <= 0 || r <= 0 {
-		return r + spread
+// adjustedRadiusDimension expands one radius dimension by outset using
+// Blink's coverage-factor formula (AdjustedRadiusDimension,
+// platform/geometry/float_rounded_rect.cc @ 4883d11fef4a). coverage measures
+// how much of the box edge the corner curvature covers; at full coverage the
+// expansion is purely additive, at zero coverage it degenerates to the
+// retracted CSS Backgrounds 3 §5.4 cubic (CSSWG resolution:
+// https://github.com/w3c/csswg-drafts/issues/7103).
+func adjustedRadiusDimension(radius, outset, coverage float64) float64 {
+	if radius > outset || coverage > 1 {
+		return radius + outset
 	}
-	if r >= spread {
-		return r + spread
-	}
-	ratio := r / spread
-	f := 1.0 + (ratio-1.0)*(ratio-1.0)*(ratio-1.0)
-	return r + spread*f
+	ratio := radius / outset
+	omr := 1 - ratio
+	return radius + outset*(1-omr*omr*omr*(1-coverage*coverage*coverage))
 }
 
-// OutsetForBoxShadow expands radii outward using the CSS shadow shape formula.
-// Unlike Outset (which uses simple addition), this applies the spec's cubic
-// interpolation when a radius component is smaller than the spread.
-func (r EllipticalRadii) OutsetForBoxShadow(top, right, bottom, left float64) EllipticalRadii {
-	var out EllipticalRadii
-	for i := range r {
-		out[i] = r[i]
+// OutsetWithCornerCorrectionUsingCoverageFactor expands radii outward
+// (or shrinks, for negative outsets), mirroring Blink's
+// Radii::OutsetWithCornerCorrectionUsingCoverageFactor +
+// ComputeOutsetAdjustedBorderRadius (platform/geometry/float_rounded_rect.cc
+// @ 4883d11fef4a, runtime feature ShadowContourFollowsBorder, stable).
+// Per-side outsets map to corners like Outset/Inset; w and h are the
+// pre-outset box dimensions used for the coverage factor; each dimension
+// clamps at 0 independently (gfx::SizeF semantics).
+func (r EllipticalRadii) OutsetWithCornerCorrectionUsingCoverageFactor(top, right, bottom, left, w, h float64) EllipticalRadii {
+	out := r
+	if w <= 0 || h <= 0 {
+		return out
 	}
-	if !r[0].IsZero() {
-		out[0].Rx = adjustRadiusForSpread(r[0].Rx, left)
-		out[0].Ry = adjustRadiusForSpread(r[0].Ry, top)
-	}
-	if !r[1].IsZero() {
-		out[1].Rx = adjustRadiusForSpread(r[1].Rx, right)
-		out[1].Ry = adjustRadiusForSpread(r[1].Ry, top)
-	}
-	if !r[2].IsZero() {
-		out[2].Rx = adjustRadiusForSpread(r[2].Rx, right)
-		out[2].Ry = adjustRadiusForSpread(r[2].Ry, bottom)
-	}
-	if !r[3].IsZero() {
-		out[3].Rx = adjustRadiusForSpread(r[3].Rx, left)
-		out[3].Ry = adjustRadiusForSpread(r[3].Ry, bottom)
+	// Corner i takes (x-outset, y-outset) per the Outset/Inset mapping:
+	// TL (left, top), TR (right, top), BR (right, bottom), BL (left, bottom).
+	sides := [4][2]float64{{left, top}, {right, top}, {right, bottom}, {left, bottom}}
+	for i := range out {
+		ox, oy := sides[i][0], sides[i][1]
+		if out[i].IsZero() || (ox == 0 && oy == 0) {
+			continue
+		}
+		coverage := 2 * math.Min(out[i].Rx/w, out[i].Ry/h)
+		out[i].Rx = math.Max(adjustedRadiusDimension(out[i].Rx, ox, coverage), 0)
+		out[i].Ry = math.Max(adjustedRadiusDimension(out[i].Ry, oy, coverage), 0)
 	}
 	return out
 }
