@@ -944,6 +944,35 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		hasDefiniteCross = true
 	}
 
+	// Apply min/max cross constraints BEFORE the §9.8 re-layout and stretch
+	// passes, so items see the clamped (definite) line cross-size when
+	// resolving descendant percentages. Mirrors Blink: total_block_size_ is
+	// computed via ComputeBlockSizeForFragment (min/max applied) before
+	// GiveItemsFinalPositionAndSize sets the single line's cross size to it
+	// and gives items their final layout.
+	if isRow {
+		// cross = block
+		// CSS 2.1 §10.7: apply max first, then min, so min wins when min > max.
+		if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+			maxBlock := maxBlockLU.Float64()
+			if containerCrossSize > maxBlock {
+				containerCrossSize = maxBlock
+			}
+		}
+		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
+		if containerCrossSize < minBlock {
+			containerCrossSize = minBlock
+		}
+	}
+	// else: cross = inline, already constrained via contentInlineSize.
+
+	// §9.4 step 8: for single-line containers the flex line's cross-size is
+	// clamped to the container's min/max cross sizes — i.e. it always tracks
+	// the container's resolved cross-size.
+	if wrapMode == "nowrap" && len(lines) == 1 {
+		lines[0].crossSize = containerCrossSize
+	}
+
 	// §9.8 — Two-pass layout: now that line cross-sizes are known, re-layout
 	// ALL non-stretch items with the definite line cross-size. This matches
 	// Blink's GiveItemsFinalPositionAndSize which relayouts every item.
@@ -1000,32 +1029,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		if !isSingleLineDefinite && lineCrossMax > line.crossSize {
 			line.crossSize = lineCrossMax
 		}
-	}
-
-	// Apply min/max cross constraints.
-	if isRow {
-		// cross = block
-		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
-		if containerCrossSize < minBlock {
-			containerCrossSize = minBlock
-		}
-		if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
-			maxBlock := maxBlockLU.Float64()
-			if containerCrossSize > maxBlock {
-				containerCrossSize = maxBlock
-			}
-		}
-	} else {
-		// cross = inline (already constrained above via contentInlineSize)
-	}
-
-	// §9.4 step 8 (revisited): After min/max cross constraints, for single-line
-	// containers the line cross-size must equal the container cross-size.
-	// This handles both min-height (expanding the line) and max-height (clamping
-	// the line down). Per Blink and the spec, the single flex line's cross-size
-	// always tracks the container's resolved cross-size.
-	if wrapMode == "nowrap" && len(lines) == 1 {
-		lines[0].crossSize = containerCrossSize
 	}
 
 	// §9.6 — align-content: distribute lines within container cross-size.
@@ -3445,17 +3448,18 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		// CSS cross-size (e.g., height: 100px). Per CSS 2.1 §10.5, percentage heights
 		// resolve against the containing block's content height, which is the item's
 		// explicit CSS height if set.
-		// Determine the percentage resolution block-size for descendants.
-		// Per CSS 2.1 §10.5, percentage heights resolve against the containing
-		// block's content height. For flex items, this is the item's own CSS height
-		// (if explicit), NOT the line's cross-size. The line cross-size controls
-		// available space but the item's explicit height controls percentage resolution.
+		// Determine the percentage-resolution block-size for descendants.
 		// Per CSS Flexbox §4.5, percentage cross-sizes on a flex item resolve
 		// against the container's content-box cross-size when definite. Use
 		// fla.containerCrossSize as the available + percentage-resolution
 		// block-size for both the item's own % height resolution (itemSpace)
 		// and for the cs passed to the child's layout.
-		pctBlockSize := 0.0
+		// When no definite base exists, the percentage base stays Indefinite
+		// (NOT a definite 0) so percent (max-)heights are ignored in the
+		// measure pass, per Blink's BuildSpaceForLayout which only sets the
+		// percentage block-size from a known line_cross_size or a definite
+		// container cross-size.
+		pctBlockSize := float64(Indefinite)
 		itemSpaceBlock := float64(Indefinite)
 		if fla.hasDefiniteCross {
 			pctBlockSize = fla.containerCrossSize
