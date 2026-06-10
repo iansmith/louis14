@@ -159,6 +159,17 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 		return goja.Undefined()
 	})
 
+	// window.addEventListener / bare addEventListener (window IS the global
+	// object) share the document listener table — in the one-shot rendering
+	// model, window "load" and document listeners fire at the same point
+	// (after scripts, before the only screenshot).
+	if addFn := docObj.Get("addEventListener"); addFn != nil {
+		vm.Set("addEventListener", addFn)
+	}
+	if rmFn := docObj.Get("removeEventListener"); rmFn != nil {
+		vm.Set("removeEventListener", rmFn)
+	}
+
 	// Phase 2: querySelector/querySelectorAll on document
 	registerQuerySelectors(ctx, docObj, doc.Root)
 
@@ -1103,7 +1114,13 @@ func (s *styleAccessor) Get(key string) goja.Value {
 func (s *styleAccessor) Set(key string, val goja.Value) bool {
 	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
-	styles[cssProp] = val.String()
+	// CSSOM: assigning the empty string removes the declaration
+	// (CSSStyleDeclaration attribute setter; `el.style.counterSet = ""`).
+	if v := val.String(); strings.TrimSpace(v) == "" {
+		delete(styles, cssProp)
+	} else {
+		styles[cssProp] = v
+	}
 	s.setStyleAttr(serializeInlineStyle(styles))
 	return true
 }

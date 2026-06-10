@@ -1837,6 +1837,42 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		markerContent = b.resolveContentTextStyled(markerContentValues, node, markerNode, quoteStyle)
 	}
 
+	// Image marker: list-style-image takes precedence over list-style-type
+	// (including `none`). Blink ListMarker::UpdateMarkerContentIfNeeded
+	// builds a LayoutListMarkerImage child and sets marker_text_type_ =
+	// kNotText (list_marker.cc:277-310 @ 4883d11f); the marker text with
+	// prefix/suffix is a single space after the image (MarkerText
+	// GeneratesMarkerImage arm, :168-172). Reuses the synthetic-<img>
+	// pattern from createPseudoElement's content:url() case.
+	if markerContent == "" && !hasContentProperty && generatesMarkerImage(style) {
+		raw, _ := style.Get("list-style-image")
+		if src, ok := css.ParseURLValue(strings.TrimSpace(raw)); ok {
+			imgNode := &html.Node{
+				Type:       html.ElementNode,
+				TagName:    "img",
+				Attributes: map[string]string{"src": src},
+				Parent:     markerNode,
+			}
+			imgStyle := css.NewStyle()
+			imgStyle.Set("display", "inline")
+			imgStyle.ViewportWidth = b.viewportWidth
+			imgStyle.ViewportHeight = b.viewportHeight
+			b.styles[imgNode] = imgStyle
+			spaceNode := &html.Node{Type: html.TextNode, Text: " ", Parent: markerNode}
+			return &LayoutInputNode{
+				DOMNode:         markerNode,
+				style:           markerStyle,
+				isMarkerNode:    true,
+				MarkerIsOutside: !markerInside,
+				MarkerCategory:  CategoryNone,
+				children: []*LayoutInputNode{
+					{DOMNode: imgNode, style: imgStyle},
+					{DOMNode: spaceNode, style: markerStyle},
+				},
+			}
+		}
+	}
+
 	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
 	// Skip fallback when ::marker explicitly set the content property (e.g. content:none).
 	if markerContent == "" && !hasContentProperty {
