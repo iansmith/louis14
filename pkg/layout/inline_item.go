@@ -242,17 +242,22 @@ func collectInlinesRecursive(
 		}
 
 		// Block-level or atomic inline elements (inline-block, replaced,
-		// inline-table, inline list-item). `display: inline list-item` is an
-		// atomic inline that internally is a list-item block-flow (Blink
-		// LayoutInlineListItem). `inline-grid` (and `grid` when it appears as
-		// an inline-formatting-context child) is also atomic per CSS Display 3
+		// inline-table, inline flow-root list-item). A pure `display: inline
+		// list-item` is NOT atomic — Blink's LayoutInlineListItem derives
+		// from LayoutInline (layout_inline_list_item.h @ 4883d11f), a true
+		// inline box whose border and content fragment across lines; it
+		// takes the open/close-tag path below. Only the `inline flow-root
+		// list-item` variant is an atomic inline block container.
+		// `inline-grid` (and `grid` when it appears as an
+		// inline-formatting-context child) is also atomic per CSS Display 3
 		// §2.2 — its principal box is a grid container that participates in
 		// the line box as a single replaced-like inline.
 		if display == css.DisplayBlock || display == css.DisplayFlex ||
 			display == css.DisplayTable || display == css.DisplayGrid ||
 			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 			display == css.DisplayInlineGrid ||
-			display == css.DisplayInlineTable || display == css.DisplayInlineListItem {
+			display == css.DisplayInlineTable ||
+			(display == css.DisplayInlineListItem && !childStyle.IsInlineBoxListItem()) {
 			// Atomic inline — represented as U+FFFC.
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
