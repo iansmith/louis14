@@ -1563,6 +1563,18 @@ func createLineBoxEx(
 		}
 	}
 
+	// CSS Text Decor 3 §3.4: text-emphasis marks occupy block-axis space
+	// like ruby annotations — the line grows only by the amount the mark
+	// overflows the existing half-leading, the same rule as the ruby block
+	// above. Mirrors Blink `InlineBoxState::ComputeEmphasisMarkOutsets`
+	// (`core/layout/inline/inline_box_state.cc:216-229`) feeding
+	// `ComputeAnnotationOverflow` (`core/layout/inline/ruby_utils.cc:748-810`),
+	// both @ 028f13cd82591cc213686dbcd075eebe562e5615. Ascent side only,
+	// regardless of emphasis position — see emphasisMarkAscentFromLine.
+	if needed := emphasisMarkAscentFromLine(line, wdm, fonts, centralBaseline); needed > maxAscent {
+		maxAscent = needed
+	}
+
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 && parentStyle == nil {
 		// No style context at all — use UA-default font metrics so the line box

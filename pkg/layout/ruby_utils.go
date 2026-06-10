@@ -139,6 +139,85 @@ func annotationEmHeightFromSubLine(
 	return ascent, descent
 }
 
+// EmphasisMarkFontSize returns the font size for a text-emphasis mark glyph:
+// half the base font size, floored at 4px. Single source of the rule shared
+// by layout inflation (emphasisMarkAscentFromLine) and the render paint paths
+// (drawTextEmphasis, drawSidewaysEmphasisMarks) so paint never exceeds the
+// layout outset. Mirrors Blink's 50% emphasis mark size in
+// `core/paint/text_painter.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func EmphasisMarkFontSize(baseFontSize float64) float64 {
+	size := baseFontSize * 0.5
+	if size < 4 {
+		size = 4
+	}
+	return size
+}
+
+// emphasisMarkAscentFromLine returns the line-box ascent needed to contain
+// text-emphasis marks on the line's text items, or 0 when no item carries a
+// mark. Mirrors Blink's `InlineBoxState::ComputeEmphasisMarkOutsets` at
+// `core/layout/inline/inline_box_state.cc:216-229 @
+// 028f13cd82591cc213686dbcd075eebe562e5615`, whose outsets feed the same
+// annotation-overflow line shift as ruby annotations
+// (`ComputeAnnotationOverflow`, `core/layout/inline/ruby_utils.cc:748-810`).
+//
+// Per item, needed ascent = the item's natural font ascent (no line-height
+// leading, same basis as baseFontAscentFromSubLine) + the mark's em height.
+// The mark height uses the same typo metrics as annotationEmHeightFromSubLine
+// at half the base font size — the rt UA font-size is 50%, so the WPT
+// text-emphasis-line-height refs' ruby annotation rows produce the identical
+// number and the test/ref renders match exactly.
+//
+// The over/under side is intentionally NOT consulted: louis14 paints
+// emphasis-position:under with the over formula until ruby-position:under
+// lands (see the TODO(Phase11) block in render.go drawTextEmphasis), and the
+// ruby ascent inflation in createLineBoxEx is equally position-blind
+// (AnnotationMetrics returns descent 0). Both stubs must flip together in
+// Phase 11.
+func emphasisMarkAscentFromLine(
+	line *LineInfo,
+	wdm WritingDirectionMode,
+	fonts text.FontConfig,
+	centralBaseline bool,
+) float64 {
+	if line == nil {
+		return 0
+	}
+	isHorizontal := !wdm.IsVertical()
+	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	var needed float64
+	for _, r := range line.Results {
+		if r.Item == nil || r.Item.Type != InlineItemText {
+			continue
+		}
+		style := r.EffectiveStyle()
+		if style == nil || style.GetTextEmphasisMark(isHorizontal) == "" {
+			continue
+		}
+		// Same text-combine-upright carve-out as the sibling annotation
+		// helpers above: a combined unit contributes no block-axis ascent.
+		if wdm.IsVertical() && style.GetTextCombineUpright() {
+			continue
+		}
+		fontSize, _, _, _, _ := fontPropsFromStyle(style)
+		markFontSize := EmphasisMarkFontSize(fontSize)
+		var baseAsc, markHeight float64
+		if centralBaseline {
+			baseAsc = fontSize / 2
+			markHeight = markFontSize
+		} else {
+			fontPath := resolveFontPath(style, fonts)
+			baseAsc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
+			markHeight = text.FontTypoAscentFromFont(markFontSize, fontPath, fonts.Registry) +
+				text.FontTypoDescentFromFont(markFontSize, fontPath, fonts.Registry)
+		}
+		if n := baseAsc + markHeight; n > needed {
+			needed = n
+		}
+	}
+	return needed
+}
+
 // RubyBlockPositionCalculator stacks annotation sub-lines above/below
 // the base baseline of a ruby column on a line. Phase 2 supports the
 // single-level case only — at most one annotation per column, all
