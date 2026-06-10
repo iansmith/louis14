@@ -2963,6 +2963,17 @@ func expandShorthand(style *Style, property, value string) {
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates the longhand
 		// table via CSSPropertyIDIterator with these same exclusions.
 		expandAllShorthand(style, value)
+	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
+		// CSS Backgrounds 3 §5.1: the border-*-width longhands accept line-width
+		// keywords (thin/medium/thick) as well as lengths. Resolve the keyword to
+		// a pixel value at parse/cascade time, matching Blink's
+		// css_longhand::Border{Top,Right,Bottom,Left}Width::ParseSingleValue ->
+		// ConsumeBorderWidth behavior @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if px, ok := borderWidthKeyword(value); ok {
+			style.Set(property, px)
+		} else {
+			style.Set(property, value)
+		}
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -14380,6 +14391,15 @@ type AppliedTextDecoration struct {
 	UnderlineOffset   float64 // resolved pixels (0 = auto/initial)
 	UnderlinePosition TextUnderlinePosition
 	Inset             TextDecorationInset
+	// SourceStyle points to the Style of the element that contributed this
+	// decoration entry. Used by recomputeTextDecorationInsets (engine.go) to
+	// re-resolve font-relative values (e.g. ch units in text-decoration-inset)
+	// after ChWidth is measured, for ALL copies of this entry — both on the
+	// originating element and on descendant styles that inherited the vector.
+	// The pointer is stable; computeChWidths writes into the same object.
+	// Shallow-copied when AppliedTextDecorations vectors are cloned, so every
+	// copy points back to the same measured source style.
+	SourceStyle *Style
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
 	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
@@ -14540,15 +14560,38 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 	if len(parts) == 1 && strings.EqualFold(parts[0], "auto") {
 		return TextDecorationInset{}
 	}
-	fontSize := s.GetFontSize()
+	fontSize, vw, vh, ch, xh, cap, lh, ic := s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth
+	// parseInset resolves one <length-percentage> component. Bare % and
+	// math functions whose % terms also resolve against font-size (per CSS Text
+	// Decor L4 §text-decoration-skip-inset-property); all other units route
+	// through parseLengthFullWithCh so ch/ex/cap etc. use measured font metrics.
+	parseInset := func(raw string) (float64, bool) {
+		v := strings.TrimSpace(raw)
+		if strings.HasSuffix(v, "%") {
+			if pct, ok := ParsePercentage(v); ok {
+				return pct / 100.0 * fontSize, true
+			}
+			return 0, false
+		}
+		if IsMathFunction(v) {
+			return EvalMathFunction(v, calcContext{
+				fontSize:              fontSize,
+				percentBase:           fontSize,
+				percentResolvesToZero: fontSize == 0, // calc(N%) → 0 when font-size:0
+				viewportWidth:         vw, viewportHeight: vh,
+				chScale: ch, xHeight: xh, capHeight: cap, lhSize: lh, icWidth: ic,
+			})
+		}
+		return parseLengthFullWithCh(v, fontSize, vw, vh, ch, xh, cap, lh, ic)
+	}
 	switch len(parts) {
 	case 1:
-		if px, ok := ParseLengthOrPercentageFontRelative(parts[0], fontSize); ok {
+		if px, ok := parseInset(parts[0]); ok {
 			return TextDecorationInset{InlineStart: px, InlineEnd: px}
 		}
 	case 2:
-		start, ok1 := ParseLengthOrPercentageFontRelative(parts[0], fontSize)
-		end, ok2 := ParseLengthOrPercentageFontRelative(parts[1], fontSize)
+		start, ok1 := parseInset(parts[0])
+		end, ok2 := parseInset(parts[1])
 		if ok1 && ok2 {
 			return TextDecorationInset{InlineStart: start, InlineEnd: end}
 		}
@@ -14570,22 +14613,30 @@ type TextDecorationSkipSpaces struct {
 
 // GetTextDecorationSkipSpaces returns the resolved text-decoration-skip-spaces
 // value for this element. Per CSS Text Decor L4 the syntax is
-// `none | all | <[ start || end || space-all ]>`. Initial per L4 is `none`,
-// but louis14 (matching Blink's L3-compatible behavior) treats an unset value
-// as `start end` so existing WPT tests pass without explicit overrides.
+// `none | all | <[ start || end || space-all ]>`. Initial per CSS Text Decor 4
+// is "auto"; Chrome interprets "auto" as no-skip (the UA may skip but is not
+// required to), so the unset and explicit-auto cases both return no-skip.
 func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
 	val, ok := s.Get("text-decoration-skip-spaces")
 	if !ok {
-		// Default mirrors Blink/Firefox at SHA 4883d11f: leading/trailing
-		// spaces on a line do not get an underline. WPT test stylesheets
-		// for skip-spaces note explicitly: "Theoretically not needed, as
-		// that's the default behavior per L3".
-		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+		// CSS Text Decor 4 §text-decoration-skip-spaces initial value is
+		// "auto". Chrome interprets "auto" as no-skip (the UA may skip but
+		// is not required to). WPT text-decoration-skip-spaces-* tests
+		// explicitly set "start end" rather than relying on the default,
+		// per the stylesheet comment: "Theoretically not needed, as that's
+		// the default behavior per L3" — which reveals L3 vs L4 divergence.
+		// Defaulting to no-skip (empty struct) matches Chrome and lets
+		// text-decoration-inset references that use &nbsp; to extend
+		// underlines work correctly (if skip-end were true, the NBSP chars
+		// would be trimmed, making the reference underlines shorter than
+		// the test underlines).
+		return TextDecorationSkipSpaces{}
 	}
 	v := strings.TrimSpace(strings.ToLower(val))
 	switch v {
 	case "", "auto":
-		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+		// "auto" is the initial value; match the unset default (no-skip).
+		return TextDecorationSkipSpaces{}
 	case "none":
 		return TextDecorationSkipSpaces{}
 	case "all":
@@ -14674,6 +14725,10 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		IsFirstFragment: true,
 		IsLastFragment:  true,
 		IsClone:         s.GetBoxDecorationBreak() == BoxDecorationBreakClone,
+		// SourceStyle allows recomputeTextDecorationInsets (engine.go) to
+		// re-resolve font-relative values after ChWidth is measured, including
+		// in all descendant styles that inherited a copy of this entry.
+		SourceStyle: s,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c

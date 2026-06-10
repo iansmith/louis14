@@ -4023,7 +4023,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 		if idw <= 0 || idh <= 0 {
 			return
 		}
-		scaled := scaleImageNearest(srcImg, sw, sh, idw, idh)
+		scaled := scaleImage(srcImg, sw, sh, idw, idh, layer.ImageRendering)
 		r.dc.DrawImage(scaled, int(math.Round(dx)), int(math.Round(dy)))
 	}
 
@@ -4050,7 +4050,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeX0 := int(math.Round(dx))
 				edgeX1 := int(math.Round(dx + dw))
 				edgeY := int(math.Round(dy))
@@ -4090,7 +4090,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeY0 := int(math.Round(dy))
 				edgeY1 := int(math.Round(dy + dh))
 				edgeX := int(math.Round(dx))
@@ -4151,7 +4151,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					if tw <= 0 {
 						continue
 					}
-					tile := scaleImageNearest(srcImg, sw, sh, tw, tileH)
+					tile := scaleImage(srcImg, sw, sh, tw, tileH, layer.ImageRendering)
 					r.dc.DrawImage(tile, itx0, edgeY)
 				}
 			} else {
@@ -4175,7 +4175,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 					if th <= 0 {
 						continue
 					}
-					tile := scaleImageNearest(srcImg, sw, sh, tileW, th)
+					tile := scaleImage(srcImg, sw, sh, tileW, th, layer.ImageRendering)
 					r.dc.DrawImage(tile, edgeX, ity0)
 				}
 			}
@@ -4187,7 +4187,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeX0 := int(math.Round(dx))
 				edgeY := int(math.Round(dy))
 				n := int(dw) / tileW
@@ -4211,7 +4211,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 				if tileW <= 0 || tileH <= 0 {
 					return
 				}
-				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				tile := scaleImage(srcImg, sw, sh, tileW, tileH, layer.ImageRendering)
 				edgeY0 := int(math.Round(dy))
 				edgeX := int(math.Round(dx))
 				n := int(dh) / tileH
@@ -4288,7 +4288,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 			float64(middleW), float64(middleH),
 			dstLeft, dstTop,
 			float64(sliceLeft), float64(sliceTop),
-			hRepeat, vRepeat)
+			hRepeat, vRepeat, layer.ImageRendering)
 	}
 
 	return true
@@ -4306,12 +4306,14 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 // dx, dy, dw, dh: destination middle rectangle (pixels).
 // mW, mH: source middle dimensions (== srcImg.Bounds dims, passed for clarity).
 // dstTopOrLeft / sliceTopOrLeft: edge widths used to derive tile scale.
+// imageRendering: the image-rendering CSS value from the element's style.
 func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 	dx, dy, dw, dh float64,
 	mW, mH float64,
 	dstLeft, dstTop float64,
 	sliceLeft, sliceTop float64,
 	hRepeat, vRepeat string,
+	imageRendering string,
 ) {
 	if srcImg == nil || dw <= 0 || dh <= 0 || mW <= 0 || mH <= 0 {
 		return
@@ -4330,7 +4332,7 @@ func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 		if idw <= 0 || idh <= 0 {
 			return
 		}
-		scaled := scaleImageNearest(srcImg, sw, sh, idw, idh)
+		scaled := scaleImage(srcImg, sw, sh, idw, idh, imageRendering)
 		r.dc.DrawImage(scaled, int(math.Round(dx)), int(math.Round(dy)))
 		return
 	}
@@ -4377,7 +4379,7 @@ func (r *Renderer) drawBorderImageMiddle(srcImg image.Image,
 	if itw <= 0 || ith <= 0 {
 		return
 	}
-	tile := scaleImageNearest(srcImg, sw, sh, itw, ith)
+	tile := scaleImage(srcImg, sw, sh, itw, ith, imageRendering)
 
 	// Per-axis tile positions.
 	xs := middleTilePositions(dx, dw, tileW, hRepeat)
@@ -5039,9 +5041,23 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 // Painting strategy: rectangular (non-rounded) outlines are filled as a
 // single even-odd ring (outer rect minus inner rect) via fillOutlineSides,
 // which avoids diagonal seam artifacts from per-side painting.
-func (r *Renderer) drawOutline(layer *PaintLayer) {
+
+// outlinePaintRect returns the pixel-snapped rect the outline ring is drawn
+// around. For multi-line inline elements, OutlineBox holds the union bounding
+// box of all line fragments for the element; use it when set (w > 0) so the
+// ring encloses the full inline element, not just one line's box. Mirrors
+// Blink's OutlinePainter::PaintOutline collecting all line boxes for a
+// LayoutInline (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func outlinePaintRect(layer *PaintLayer) (x, y, w, h float64) {
+	if layer.OutlineBox[2] > 0 {
+		return pixelSnap(layer.OutlineBox[0], layer.OutlineBox[1], layer.OutlineBox[2], layer.OutlineBox[3])
+	}
 	box := layer.Box
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	return pixelSnap(box.X, box.Y, box.Width, box.Height)
+}
+
+func (r *Renderer) drawOutline(layer *PaintLayer) {
+	x, y, w, h := outlinePaintRect(layer)
 
 	width := layer.OutlineWidth
 	offset := layer.OutlineOffset
@@ -5106,7 +5122,7 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 			r.dc.Fill()
 			r.dc.SetFillRule(textshape.FillRuleWinding)
 		} else {
-			// Rectangular outline as 4 trapezoid sides (mitered corners).
+			// Rectangular outline as a single even-odd ring.
 			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
 		}
 	case "dashed":
@@ -5838,8 +5854,19 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// underToRight: true when the underline paints on the physical RIGHT
 		// side of the line column. See the block comment above for the rotation
 		// × position truth table.
+		//
+		// For RTL sideways text the underline flips to the opposite physical
+		// side from LTR: sideways-rl RTL → RIGHT (not LEFT), sideways-lr RTL →
+		// LEFT (not RIGHT). Mirrors Blink's WritingMode × direction × position
+		// truth table in text_decoration_info.cc:ComputeUnderlinePosition.
 		underToRight := sidewaysUnderlineGoesRight(layer)
 		rotCW := layer.IsSidewaysRL // vs CCW for sideways-lr
+		if len(layer.AppliedTextDecorations) > 0 {
+			if td0 := layer.AppliedTextDecorations[0]; td0.SourceStyle != nil &&
+				td0.SourceStyle.GetDirection() == css.DirectionRTL {
+				underToRight = !underToRight
+			}
+		}
 
 		// decorExt: rows BELOW text in buffer. topExt: rows ABOVE text.
 		// Exactly one side is non-zero (determined by underToRight × rotation).
@@ -5920,16 +5947,45 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					appliesAtStart = true
 					appliesAtEnd = true
 				}
-				if appliesAtStart && td.Inset.InlineStart < 0 {
-					ext := int(math.Ceil(-td.Inset.InlineStart))
-					if ext > inlineStartExt {
-						inlineStartExt = ext
+				// For RTL sideways text (both sideways-rl and sideways-lr)
+				// the logical InlineStart and InlineEnd map to the OPPOSITE
+				// physical sides compared to LTR, so the buffer-extension
+				// bucket assignments are swapped.
+				//
+				// sideways-rl RTL: InlineStart=physical BOTTOM=high buffer X,
+				//                  InlineEnd=physical TOP=low buffer X.
+				// sideways-lr RTL: InlineStart=physical TOP=high buffer X,
+				//                  InlineEnd=physical BOTTOM=low buffer X.
+				//
+				// In both cases a negative InlineEnd (extend past inline-end)
+				// extends toward low buffer X → inlineStartExt; LTR would
+				// extend inlineEndExt instead.
+				sidewaysRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+				if sidewaysRTL {
+					if appliesAtStart && td.Inset.InlineStart < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineStart))
+						if ext > inlineEndExt {
+							inlineEndExt = ext
+						}
 					}
-				}
-				if appliesAtEnd && td.Inset.InlineEnd < 0 {
-					ext := int(math.Ceil(-td.Inset.InlineEnd))
-					if ext > inlineEndExt {
-						inlineEndExt = ext
+					if appliesAtEnd && td.Inset.InlineEnd < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineEnd))
+						if ext > inlineStartExt {
+							inlineStartExt = ext
+						}
+					}
+				} else {
+					if appliesAtStart && td.Inset.InlineStart < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineStart))
+						if ext > inlineStartExt {
+							inlineStartExt = ext
+						}
+					}
+					if appliesAtEnd && td.Inset.InlineEnd < 0 {
+						ext := int(math.Ceil(-td.Inset.InlineEnd))
+						if ext > inlineEndExt {
+							inlineEndExt = ext
+						}
 					}
 				}
 			}
@@ -6039,17 +6095,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
 					xStart := float64(inlineStartExt)
 					xEnd := float64(inlineStartExt + ta)
-					if td.HasDecoratingBox {
-						if td.IsFirstFragment {
-							xStart += td.Inset.InlineStart
-						}
-						if td.IsLastFragment {
-							xEnd -= td.Inset.InlineEnd
-						}
-					} else {
-						xStart += td.Inset.InlineStart
-						xEnd -= td.Inset.InlineEnd
-					}
+					// Apply RTL inset swap for all sideways RTL text.
+					// Both sideways-rl and sideways-lr RTL have InlineStart
+					// at high buffer X and InlineEnd at low buffer X,
+					// opposite to LTR — so the RTL applyDecorationInset
+					// swap is correct for both rotation directions.
+					sidewaysRTL := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+					xStart, xEnd = applyDecorationInset(xStart, xEnd, td, sidewaysRTL)
 					if xEnd <= xStart {
 						continue
 					}
@@ -6321,8 +6373,8 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 		charStr := string(ch)
 		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 
-		// Skip whitespace characters — no emphasis marks on spaces.
-		if !unicode.IsSpace(ch) {
+		// Skip characters that cannot receive emphasis marks.
+		if canReceiveTextEmphasis(ch) {
 			markX := x + (charW-markW)/2
 			r.dc.DrawText(mark, emphFontID, markX, emphY+emphAscent)
 		}
@@ -6541,7 +6593,7 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		charStr := string(ch)
 		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 
-		if !unicode.IsSpace(ch) {
+		if canReceiveTextEmphasis(ch) {
 			// Annotation's inline origin (in off-screen horizontal frame),
 			// centered over the character — mirrors
 			// `pkg/layout/inline_layout_ruby.go:64-65 @ b555e690`
@@ -6925,62 +6977,51 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		}
 	}
 
-	// Find the truncation point: walk the run measuring in the inline
-	// font; stop just before the cumulative advance would exceed truncW.
-	w := 0.0
-	truncIdx := 0
-	truncAdvance := 0.0
-	for i, ch := range runes {
-		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
-		advance := cw
-		if i < len(runes)-1 {
-			advance += ls
-		}
-		if ch == ' ' {
-			advance += ws
-		}
-		if w+cw > truncW {
-			truncIdx = len(string(runes[:i]))
-			break
-		}
-		w += advance
-		truncIdx = len(string(runes[:i+1]))
-		truncAdvance = w
-	}
+	// Find the truncation point: walk the run accepting glyphs up to truncW,
+	// using Blink's spacing model (trailing spacing of last retained glyph excluded).
+	truncText, glyphEnd := acceptInlineGlyphs(r, layer, fontID, runes, truncW, ls, ws)
 
-	return text[:truncIdx], &ellipsisPaint{
+	return truncText, &ellipsisPaint{
 		str:            replacement,
-		x:              box.X + truncAdvance,
+		x:              box.X + glyphEnd,
 		containerStyle: clipAncestor.Style,
 	}
 }
 
 // acceptInlineGlyphs walks `runes` accepting cumulative inline glyphs
 // up to `limitW` in the inline font, returning the byte index just
-// past the accepted prefix and the cumulative advance.
+// past the accepted prefix and the cumulative advance (inline-end of
+// the last accepted glyph, without trailing spacing).
 //
 // Used by the CSS UI 4 §6.2 clipped-<string> path where the
 // replacement is wider than availW: as many text glyphs are accepted
 // as fit, then the replacement is clipped to fill the rest.
 func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []rune, limitW, ls, ws float64) (string, float64) {
-	w := 0.0
+	glyphEnd := 0.0 // Inline-end of the last accepted glyph, without trailing spacing.
 	idx := 0
+	var prevCh rune
 	for i, ch := range runes {
 		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
-		stepAdvance := cw
-		if i < len(runes)-1 {
-			stepAdvance += ls
+		// Compute the inline-end if this glyph is accepted: glyphEnd + inter-glyph
+		// spacing from the previous glyph + this glyph's content.
+		nextGlyphEnd := glyphEnd + cw
+		// The spacing that precedes this glyph (from the previous glyph).
+		if i > 0 {
+			nextGlyphEnd += ls
+			if prevCh == ' ' {
+				nextGlyphEnd += ws
+			}
 		}
-		if ch == ' ' {
-			stepAdvance += ws
-		}
-		if w+cw > limitW {
+		// Fit test: does this glyph (with its preceding spacing) fit within limitW?
+		if nextGlyphEnd > limitW {
 			break
 		}
-		w += stepAdvance
+		// Accept this glyph: update the inline-end position.
+		glyphEnd = nextGlyphEnd
 		idx = len(string(runes[:i+1]))
+		prevCh = ch
 	}
-	return string(runes)[:idx], w
+	return string(runes)[:idx], glyphEnd
 }
 
 // clipReplacement returns the longest prefix of `replacement` whose
@@ -7280,6 +7321,62 @@ func isDecorationSkippableSpace(ch rune) bool {
 	return false
 }
 
+// emphasisPunctuationException returns true if the rune is in the explicit
+// allow-list of "symbol-like" punctuation that may receive text-emphasis marks.
+// This list mirrors Blink's Character::CanReceiveTextEmphasis exception switch,
+// verified against Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// The 23 code points are: # % & @ § ¶ ‰ ‱ ⁊ ⁋ ⁓ 〽 and their fullwidth/small
+// variants (NFKD-equivalent sets); hardcoding avoids a runtime normalization
+// dependency and matches Blink's structure.
+func emphasisPunctuationException(r rune) bool {
+	switch r {
+	case 0x0023, // #, NUMBER SIGN
+		0x0025, // %, PERCENT SIGN
+		0x0026, // &, AMPERSAND
+		0x0040, // @, COMMERCIAL AT
+		0x00A7, // §, SECTION SIGN
+		0x00B6, // ¶, PILCROW
+		0x0609, // ARABIC-INDIC PER MILLE SIGN
+		0x060A, // ARABIC-INDIC PER TEN THOUSAND SIGN
+		0x066A, // ARABIC PERCENT SIGN
+		0x2030, // ‰, PER MILLE SIGN
+		0x2031, // ‱, PER TEN THOUSAND SIGN
+		0x204A, // ⁊, TIRONIAN SIGN ET
+		0x204B, // ⁋, REVERSED PILCROW
+		0x2053, // ⁓, SWUNG DASH
+		0x303D, // 〽, PART ALTERNATION MARK
+		0xFE5F, // ﹟, SMALL NUMBER SIGN
+		0xFE60, // ﹠, SMALL AMPERSAND
+		0xFE6A, // ﹪, SMALL PERCENT SIGN
+		0xFE6B, // ﹫, SMALL COMMERCIAL AT
+		0xFF03, // ＃, FULLWIDTH NUMBER SIGN
+		0xFF05, // ％, FULLWIDTH PERCENT SIGN
+		0xFF06, // ＆, FULLWIDTH AMPERSAND
+		0xFF20: // ＠, FULLWIDTH COMMERCIAL AT
+		return true
+	}
+	return false
+}
+
+// canReceiveTextEmphasis reports whether a character may receive text-emphasis
+// marks. Mirrors Blink's Character::CanReceiveTextEmphasis @ character.cc
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, implementing CSS Text Decor L3/L4
+// emphasis skip rules: suppress marks over whitespace, control, format,
+// NotAssigned, and punctuation — except the 23-codepoint symbol-like exception list.
+func canReceiveTextEmphasis(r rune) bool {
+	// Skip whitespace (covers Zs, Zl U+2028, Zp U+2029, and ASCII controls
+	// via Go's unicode.IsSpace), control (Cc), format (Cf), and unassigned (Cn).
+	if unicode.IsSpace(r) ||
+		unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cn, r) {
+		return false
+	}
+	// Skip punctuation, unless it's a symbol-like exception.
+	if unicode.IsPunct(r) {
+		return emphasisPunctuationException(r)
+	}
+	return true
+}
+
 // leadingWhitespacePrefix returns the longest prefix of text consisting of
 // runes that isDecorationSkippableSpace accepts.
 func leadingWhitespacePrefix(text string) string {
@@ -7478,6 +7575,146 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 // Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
 // @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
+// applyDecorationInset applies text-decoration-inset to an already-positioned
+// decoration extent [start, end], returning the adjusted [start, end].
+//
+// It handles the HasDecoratingBox × RTL × IsFirst/IsLastFragment matrix:
+//   - HasDecoratingBox: inset is applied only at the actual box edges (first/
+//     last fragment flags) so interior line-break boundaries are untouched.
+//   - Bare path: inset is applied unconditionally to both edges.
+//   - RTL: InlineStart trims the physical END; InlineEnd trims (or extends,
+//     when negative) the physical START — opposite of the LTR convention.
+func applyDecorationInset(start, end float64, td css.AppliedTextDecoration, isRTL bool) (float64, float64) {
+	if td.HasDecoratingBox {
+		if isRTL {
+			if td.IsFirstFragment {
+				end -= td.Inset.InlineStart // trim right
+			}
+			if td.IsLastFragment {
+				start += td.Inset.InlineEnd // extend left
+			}
+		} else {
+			if td.IsFirstFragment {
+				start += td.Inset.InlineStart // trim left
+			}
+			if td.IsLastFragment {
+				end -= td.Inset.InlineEnd // extend right
+			}
+		}
+	} else {
+		if isRTL {
+			start += td.Inset.InlineEnd // negative InlineEnd → extends left
+			end -= td.Inset.InlineStart
+		} else {
+			start += td.Inset.InlineStart
+			end -= td.Inset.InlineEnd
+		}
+	}
+	return start, end
+}
+
+// computeDecorationExtent returns the logical (physical-axis) start and end of
+// the decoration line, with text-decoration-inset applied.
+//   - HasDecoratingBox: the extent spans the layout-stamped decorating-box width.
+//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth].
+//
+// Inset adjustment is delegated to applyDecorationInset.
+func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+	if td.HasDecoratingBox {
+		logicalStart = boxX + td.DecoratingBoxOffsetX
+		logicalEnd = logicalStart + td.DecoratingBoxWidth
+	} else {
+		logicalStart = boxX
+		logicalEnd = boxX + textWidth
+	}
+	return applyDecorationInset(logicalStart, logicalEnd, td, isRTL)
+}
+
+// applySkipSpacesTrim trims leading/trailing whitespace from the decoration
+// extent (text-decoration-skip-spaces). Applied after inset so a negative
+// inset (extension) does not extend through skipped whitespace.
+// For the HasDecoratingBox case, trimming only applies at the actual box
+// edge (first/last fragment) so interior line-break boundaries are untouched.
+func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBox, isFirst, isLast bool) (float64, float64) {
+	if skipStart > 0 && (!hasDecoratingBox || isFirst) {
+		start += skipStart
+	}
+	if skipEnd > 0 && (!hasDecoratingBox || isLast) {
+		end -= skipEnd
+	}
+	return start, end
+}
+
+// clampDecorationBounds clamps the painting extent to the fragment's physical
+// boundary for the HasDecoratingBox case. Interior edges are ceil'd to prevent
+// sub-pixel double-coverage at adjacent fragment joints.
+//
+// The inline-start edge (physical left for LTR, physical right for RTL) is NOT
+// clamped on the first fragment, and the inline-end edge (physical right for
+// LTR, physical left for RTL) is NOT clamped on the last fragment, because a
+// negative inset legitimately extends the decoration past those edges.
+//
+// RTL flips which physical edge is "inline-start" vs "inline-end":
+//
+//	LTR: inline-start = physical LEFT  (IsFirstFragment), inline-end = RIGHT (IsLastFragment)
+//	RTL: inline-start = physical RIGHT (IsFirstFragment), inline-end = LEFT  (IsLastFragment)
+//
+// Returns (xStart, xEnd, skip) where skip=true means the extent collapsed.
+func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextDecoration, box *layout.Box) (xStart, xEnd float64, skip bool) {
+	xStart, xEnd = logicalStart, logicalEnd
+	if td.HasDecoratingBox {
+		// first/last track which fragment edge is free from clamping.
+		// RTL swaps inline-start (physical right) and inline-end (physical left),
+		// so the free-left and free-right fragment flags are exchanged.
+		first, last := td.IsFirstFragment, td.IsLastFragment
+		if td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL {
+			first, last = last, first
+		}
+		if !first && box.X > xStart {
+			xStart = math.Ceil(box.X)
+		}
+		if !last && box.X+box.Width < xEnd {
+			xEnd = box.X + box.Width
+		}
+		if xEnd <= xStart {
+			return xStart, xEnd, true
+		}
+	}
+	return xStart, xEnd, false
+}
+
+// drawLineThroughStroke paints a line-through in the style given by styleVal
+// ("solid", "dashed", "dotted", "double", "wavy"). lineY is the stroke
+// center, thickness the stroke width. phaseFromLogicalStart keeps dashed/
+// dotted/wavy patterns phase-continuous across adjacent fragments.
+func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart float64, styleVal string) {
+	switch styleVal {
+	case "dashed":
+		r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
+	case "dotted":
+		r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
+	case "double":
+		r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
+	case "wavy":
+		r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
+	default: // "solid"
+		r.dc.MoveTo(xStart, lineY)
+		r.dc.LineTo(xEnd, lineY)
+		r.dc.Stroke()
+	}
+}
+
+// appliedDecorationIsRTL reports whether the decoration's inline axis runs
+// right-to-left. It prefers box.Style (normal horizontal path) and falls back
+// to td.SourceStyle for the sideways path where the synthetic virtualBox has
+// no Style attached.
+func appliedDecorationIsRTL(box *layout.Box, td css.AppliedTextDecoration) bool {
+	if box.Style != nil {
+		return box.Style.GetDirection() == css.DirectionRTL
+	}
+	return td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+}
+
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
 // onlyLineThrough=false: draw underline+overline (called before text glyphs).
@@ -7497,35 +7734,12 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// SLICE of the logical decoration that falls within this fragment, with
 	// the inset trim applied only at the decorating box's actual logical
 	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
-	var logicalStart, logicalEnd float64
-	if td.HasDecoratingBox {
-		logicalStart = box.X + td.DecoratingBoxOffsetX
-		logicalEnd = logicalStart + td.DecoratingBoxWidth
-		if td.IsFirstFragment {
-			logicalStart += td.Inset.InlineStart
-		}
-		if td.IsLastFragment {
-			logicalEnd -= td.Inset.InlineEnd
-		}
-	} else {
-		logicalStart = box.X + td.Inset.InlineStart
-		logicalEnd = box.X + textWidth - td.Inset.InlineEnd
-	}
-	// text-decoration-skip-spaces: trim leading/trailing whitespace widths
-	// from the decoration extent. Applied after inset so a negative inset
-	// (extension) does not extend through skipped whitespace. For the
-	// HasDecoratingBox case only the relevant edge is trimmed — interior
-	// fragments don't carry leading/trailing space at the boundary.
-	if skipStartWidth > 0 {
-		if !td.HasDecoratingBox || td.IsFirstFragment {
-			logicalStart += skipStartWidth
-		}
-	}
-	if skipEndWidth > 0 {
-		if !td.HasDecoratingBox || td.IsLastFragment {
-			logicalEnd -= skipEndWidth
-		}
-	}
+	isRTL := appliedDecorationIsRTL(box, td)
+	logicalStart, logicalEnd := computeDecorationExtent(td, isRTL, box.X, textWidth)
+	logicalStart, logicalEnd = applySkipSpacesTrim(
+		logicalStart, logicalEnd, skipStartWidth, skipEndWidth,
+		td.HasDecoratingBox, td.IsFirstFragment, td.IsLastFragment,
+	)
 	if logicalEnd <= logicalStart {
 		return
 	}
@@ -7548,18 +7762,9 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// box.Width ≤ xEnd_ceil), so no visual gap is introduced. Blink avoids
 	// this entirely by painting each decorating box's line in one rect rather
 	// than per fragment; ceil is the louis14-specific equivalent.
-	xStart := logicalStart
-	xEnd := logicalEnd
-	if td.HasDecoratingBox {
-		if !td.IsFirstFragment && box.X > xStart {
-			xStart = math.Ceil(box.X)
-		}
-		if !td.IsLastFragment && box.X+box.Width < xEnd {
-			xEnd = box.X + box.Width
-		}
-		if xEnd <= xStart {
-			return
-		}
+	xStart, xEnd, skip := clampDecorationBounds(logicalStart, logicalEnd, td, box)
+	if skip {
+		return
 	}
 
 	phaseFromLogicalStart := xStart - logicalStart
@@ -7656,20 +7861,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// regress text-decoration-thickness-linethrough-001 which uses
 		// 1.1em thickness on a 1em-tall box.
 		lineY := info.computeLineThroughLineY(thickness)
-		switch td.Style {
-		case "dashed":
-			r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
-		case "dotted":
-			r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
-		case "double":
-			r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
-		case "wavy":
-			r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
-		default: // "solid"
-			r.dc.MoveTo(xStart, lineY)
-			r.dc.LineTo(xEnd, lineY)
-			r.dc.Stroke()
-		}
+		r.drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart, td.Style)
 	}
 }
 

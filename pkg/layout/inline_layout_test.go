@@ -558,3 +558,94 @@ func TestInlineLayout_OverflowWrapBreakWord(t *testing.T) {
 		}
 	}
 }
+
+// TestHasVisibleInlinePaint_Outline verifies that hasVisibleInlinePaint returns
+// true for an inline element whose only visible decoration is an outline.
+//
+// Root cause of LOU-298: outline is drawn by the renderer from the PaintLayer's
+// OutlineStyle/Width/Color fields, which are populated by newPaintLayer — but
+// the span fragment is never emitted from createLineBoxEx because
+// hasVisibleInlinePaint only checked background-color, background-image, and
+// border-width (missing outline). No fragment → no PaintLayer → no outline.
+//
+// Fix: hasVisibleInlinePaint must also return true when outline-style != "none"
+// and outline-width > 0.
+func TestHasVisibleInlinePaint_Outline(t *testing.T) {
+	// Style with only outline (no background, no border) — mirrors outline-004.html's
+	// `span { outline: solid green 10px }`.
+	outlineOnlyStyle := makeStyle(
+		"display", "inline",
+		"outline-style", "solid",
+		"outline-width", "10px",
+		"outline-color", "green",
+	)
+	if !hasVisibleInlinePaint(outlineOnlyStyle) {
+		t.Error("hasVisibleInlinePaint must return true for outline-only style; " +
+			"got false — no span fragment will be emitted for outline-only inline elements")
+	}
+
+	// No-outline style must still return false (regression guard).
+	noOutlineStyle := makeStyle("display", "inline")
+	if hasVisibleInlinePaint(noOutlineStyle) {
+		t.Error("hasVisibleInlinePaint must return false for a style with no visible paint properties")
+	}
+}
+
+// TestInlineLayout_OutlineOnlySpanProducesFragments verifies that a <span> with
+// only an outline (no background, no border) produces inline-span box fragments
+// in the line boxes it participates in.
+//
+// This is the direct regression test for LOU-298: the outline-004 WPT test has
+// <div><span>xx<br>xx</span></div> with the span carrying outline:solid green 10px.
+// The span wraps to two lines and must produce a box fragment per line so the
+// paint layer builder assigns an outline to each fragment, covering the full span
+// bounding box with two overlapping outline rings.
+//
+// The inlineLayoutForTest helper uses createLineBox (not createLineBoxEx) and
+// therefore does not propagate the residual-span stack between lines. We test
+// the first line only — it is sufficient to prove that hasVisibleInlinePaint
+// now returns true for outline-only spans and that emit() creates a fragment.
+func TestInlineLayout_OutlineOnlySpanProducesFragments(t *testing.T) {
+	// Build DOM: <div><span>xx</span></div>
+	// A single-line span with only outline (no background, no border).
+	textA := makeTextNode("xx")
+	span := makeNode("span", textA)
+	div := makeNode("div", span)
+
+	divStyle := makeStyle(
+		"display", "block",
+		"font-size", "40px",
+		"line-height", "40px",
+		"width", "100px",
+	)
+	spanStyle := makeStyle(
+		"display", "inline",
+		"outline-style", "solid",
+		"outline-width", "10px",
+		"outline-color", "green",
+	)
+	styles := map[*html.Node]*css.Style{
+		div:  divStyle,
+		span: spanStyle,
+	}
+
+	lineBoxes, _ := inlineLayoutForTest(div, styles, 100)
+	if len(lineBoxes) < 1 {
+		t.Fatalf("expected at least 1 line box, got 0")
+	}
+
+	// The line box must contain a box fragment for the span (the outline fragment).
+	// Without the fix, hasVisibleInlinePaint returns false for outline-only spans
+	// and no fragment is emitted — the outline paint layer is never built.
+	spanFragCount := 0
+	for _, child := range lineBoxes[0].Children {
+		f := child.Fragment
+		if f != nil && f.Type == FragmentBox && f.Node == span {
+			spanFragCount++
+		}
+	}
+	if spanFragCount == 0 {
+		t.Error("line 0: no span box fragment found — outline-only span must produce " +
+			"a box fragment so the paint layer builder can draw the outline")
+	}
+}
