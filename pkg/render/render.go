@@ -8256,6 +8256,21 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 	return false
 }
 
+// applySpreadToShadowShape expands (or shrinks, for negative spread) shadow
+// radii by the spread distance, mirroring Blink's ApplySpreadToShadowShape
+// (box_painter_base.cc:91 @ 4883d11fef4a): coverage-factor corner correction
+// against the pre-spread box (w, h), then radius constraining against the
+// spread-adjusted box (outW, outH). No-op when spread is zero, matching
+// Blink's early return.
+func applySpreadToShadowShape(radii css.EllipticalRadii, spread, w, h, outW, outH float64) css.EllipticalRadii {
+	if spread == 0 {
+		return radii
+	}
+	return radii.
+		OutsetWithCornerCorrectionUsingCoverageFactor(spread, spread, spread, spread, w, h).
+		ConstrainRadii(outW, outH)
+}
+
 // drawOutsetBoxShadows paints outset box shadows behind the element.
 // Shadows are painted in reverse declaration order (last = behind).
 func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
@@ -8278,18 +8293,8 @@ func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
 			continue
 		}
 
-		// Expand border radii by spread for the shadow shape, mirroring
-		// Blink's ApplySpreadToShadowShape (box_painter_base.cc:91
-		// @ 4883d11fef4a): coverage-factor corner correction, then
-		// constrain radii against the expanded shadow box. No-op when
-		// spread is zero, matching Blink's early return.
-		sp := shadow.Spread
-		shadowRadii := layer.BorderRadius
-		if sp != 0 {
-			shadowRadii = shadowRadii.
-				OutsetWithCornerCorrectionUsingCoverageFactor(sp, sp, sp, sp, w, h).
-				ConstrainRadii(sw, sh)
-		}
+		// Expand border radii by spread for the shadow shape.
+		shadowRadii := applySpreadToShadowShape(layer.BorderRadius, shadow.Spread, w, h, sw, sh)
 
 		// Use offscreen buffer to clip out the border box from the shadow.
 		// Per CSS spec: outset shadows are only visible outside the border edge.
@@ -8433,19 +8438,12 @@ func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
 		iw := pw - 2*shadow.Spread
 		ih := ph - 2*shadow.Spread
 
-		// Adjust inner radii by spread, mirroring Blink's
-		// ApplySpreadToShadowShape with negated spread
-		// (box_painter_base.cc:547 @ 4883d11fef4a): positive spread
-		// degenerates to a linear per-dimension shrink, negative spread
-		// grows radii via the coverage-factor correction; both then
-		// constrain against the shrunk/expanded hole rect.
-		sp := shadow.Spread
-		shadowInnerRadii := innerRadii
-		if sp != 0 {
-			shadowInnerRadii = shadowInnerRadii.
-				OutsetWithCornerCorrectionUsingCoverageFactor(-sp, -sp, -sp, -sp, pw, ph).
-				ConstrainRadii(iw, ih)
-		}
+		// Adjust inner radii by the negated spread (Blink passes
+		// -shadow.Spread() for inset shadows, box_painter_base.cc:547
+		// @ 4883d11fef4a): positive spread degenerates to a linear
+		// per-dimension shrink, negative spread grows radii via the
+		// coverage-factor correction.
+		shadowInnerRadii := applySpreadToShadowShape(innerRadii, -shadow.Spread, pw, ph, iw, ih)
 
 		r.setColor(shadow.Color)
 
