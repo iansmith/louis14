@@ -1408,7 +1408,15 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle, containerStyle *css.St
 }
 
 // hasVisibleInlinePaint returns true if an inline element's style has
-// visible paint properties: non-transparent background or visible border.
+// visible paint properties: non-transparent background, visible border,
+// or a non-none outline.
+//
+// Outline is included because CSS outline does not affect layout but IS painted
+// by the renderer from the PaintLayer built for the span's box fragment. Without
+// including outline here, a span with only `outline:` and no background/border
+// never emits a box fragment from createLineBoxEx — so no PaintLayer is built
+// and the outline is silently dropped. Mirrors Blink's decision to generate
+// inline box fragments for any element with visible paint (including outline).
 func hasVisibleInlinePaint(style *css.Style) bool {
 	if style == nil {
 		return false
@@ -1422,7 +1430,16 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 		return true
 	}
 	bw := style.GetBorderWidth()
-	return bw.Top > 0 || bw.Right > 0 || bw.Bottom > 0 || bw.Left > 0
+	if bw.Top > 0 || bw.Right > 0 || bw.Bottom > 0 || bw.Left > 0 {
+		return true
+	}
+	// Outline: GetOutlineWidth returns 0 when outline-style is "none", so a
+	// positive width implies a non-none style. The span must emit a fragment
+	// so the renderer can build a PaintLayer and call drawOutline.
+	if style.GetOutlineWidth() > 0 {
+		return true
+	}
+	return false
 }
 
 // lineIsSidewaysResolved reports whether every text/atomic run on the line has

@@ -5042,8 +5042,18 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 // trapezoid sides — the same approach drawBorders uses — so adjacent sides
 // meet at mitered diagonals with no rounded-join artefacts.
 func (r *Renderer) drawOutline(layer *PaintLayer) {
-	box := layer.Box
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	// For multi-line inline elements, OutlineBox holds the union bounding box
+	// of all line fragments for the element. Use it when set (w > 0) so the
+	// outline ring encloses the full inline element, not just one line's box.
+	// Mirrors Blink's OutlinePainter::PaintOutline collecting all line boxes
+	// for a LayoutInline (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	var x, y, w, h float64
+	if layer.OutlineBox[2] > 0 {
+		x, y, w, h = pixelSnap(layer.OutlineBox[0], layer.OutlineBox[1], layer.OutlineBox[2], layer.OutlineBox[3])
+	} else {
+		box := layer.Box
+		x, y, w, h = pixelSnap(box.X, box.Y, box.Width, box.Height)
+	}
 
 	width := layer.OutlineWidth
 	offset := layer.OutlineOffset

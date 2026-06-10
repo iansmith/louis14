@@ -151,6 +151,15 @@ type PaintLayer struct {
 	OutlineWidth  float64
 	OutlineColor  css.Color
 	OutlineOffset float64
+	// OutlineBox overrides the Box geometry used by drawOutline when non-zero.
+	// Set by buildPaintSubtree for the first fragment of a multi-line inline
+	// element: the union bounding box of all line fragments for the same
+	// html.Node, so the outline ring encloses the full inline element.
+	// Subsequent fragments of the same element have their outline suppressed
+	// (OutlineStyle set to "none") so only the first fragment draws the ring.
+	// Mirrors Blink's OutlinePainter collecting all line boxes for a
+	// LayoutInline before calling the outline painter.
+	OutlineBox [4]float64 // [x, y, w, h]; used only when OutlineBox[2] > 0
 
 	// Text:
 	TextColor  css.Color
@@ -453,6 +462,19 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	// its hosting subtree is back-facing. Mirrors Blink's PaintLayerPainter
 	// behaviour where the entire subtree paint is short-circuited.
 	propagateBackfaceHidden(rootLayer)
+	// Consolidate outline drawing for multi-line inline elements. A split
+	// inline span generates one PaintLayer per line fragment; each fragment
+	// independently calls drawOutline using only its own fragment box, leaving
+	// gaps in the outline ring between lines. This pass:
+	//   1. Finds groups of FlowChild PaintLayers that share the same html.Node
+	//      and have a visible outline.
+	//   2. Computes the union bounding box of all those fragments.
+	//   3. Sets OutlineBox on the first fragment (so drawOutline draws around
+	//      the full element) and suppresses outline on the rest.
+	// Mirrors Blink's OutlinePainter::PaintOutline, which iterates all line
+	// boxes for a LayoutInline before drawing the outline ring
+	// (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	consolidateInlineOutlines(rootLayer)
 	return rootLayer
 }
 
@@ -642,6 +664,107 @@ func propagateBackfaceHidden(root *PaintLayer) {
 		}
 	}
 	propagate(root)
+}
+
+// consolidateInlineOutlines resolves the outline-drawing geometry for split
+// inline elements. A non-atomic inline element (display:inline) that spans
+// multiple lines produces one PaintLayer per line fragment, each with its own
+// outline. Drawn independently, the outlines leave gaps between lines. This
+// pass unions the bounding boxes of all FlowChild layers that share the same
+// html.Node and have a visible outline, stores the union on the first
+// fragment's OutlineBox, and suppresses the outline on all other fragments.
+//
+// Only FlowChildren are inspected — z-ordered layers are self-painting contexts
+// that manage their own outlines and don't participate in the inline flow.
+//
+// Mirrors Blink's OutlinePainter::PaintOutline, which collects all line boxes
+// for a LayoutInline before drawing (outline_painter.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func consolidateInlineOutlines(root *PaintLayer) {
+	if root == nil {
+		return
+	}
+	var walk func(*PaintLayer)
+	walk = func(parent *PaintLayer) {
+		if parent == nil {
+			return
+		}
+
+		// Scan FlowChildren for groups of layers sharing the same html.Node
+		// with a visible outline on a pure-inline (display:inline) box.
+		// nodeOrder preserves insertion (DOM) order for deterministic union iteration.
+		nodeOrder := make([]*html.Node, 0)
+		byNode := make(map[*html.Node][]*PaintLayer)
+
+		for _, child := range parent.FlowChildren {
+			if child == nil || child.Box == nil || child.Box.Node == nil {
+				continue
+			}
+			if child.OutlineStyle == "none" || child.OutlineWidth <= 0 {
+				continue
+			}
+			if child.Box.Style == nil || child.Box.Style.GetDisplay() != css.DisplayInline {
+				continue
+			}
+			n := child.Box.Node
+			if _, seen := byNode[n]; !seen {
+				nodeOrder = append(nodeOrder, n)
+			}
+			byNode[n] = append(byNode[n], child)
+		}
+
+		// For each node with 2+ outline fragments, union the boxes and
+		// suppress outline on all but the first fragment.
+		for _, n := range nodeOrder {
+			layers := byNode[n]
+			if len(layers) < 2 {
+				continue
+			}
+			// Compute the union bounding box.
+			first := layers[0]
+			uX := first.Box.X
+			uY := first.Box.Y
+			uR := first.Box.X + first.Box.Width
+			uB := first.Box.Y + first.Box.Height
+			for _, l := range layers[1:] {
+				if l.Box.X < uX {
+					uX = l.Box.X
+				}
+				if l.Box.Y < uY {
+					uY = l.Box.Y
+				}
+				if r := l.Box.X + l.Box.Width; r > uR {
+					uR = r
+				}
+				if b := l.Box.Y + l.Box.Height; b > uB {
+					uB = b
+				}
+			}
+			first.OutlineBox = [4]float64{uX, uY, uR - uX, uB - uY}
+			// Suppress outline on all subsequent fragments.
+			for _, l := range layers[1:] {
+				l.OutlineStyle = "none"
+			}
+		}
+
+		// Recurse into all children.
+		for _, child := range parent.FlowChildren {
+			walk(child)
+		}
+		for _, child := range parent.FloatChildren {
+			walk(child)
+		}
+		for _, child := range parent.NegativeZ {
+			walk(child)
+		}
+		for _, child := range parent.AutoZero {
+			walk(child)
+		}
+		for _, child := range parent.PositiveZ {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 func newPaintLayer(box *layout.Box) *PaintLayer {
