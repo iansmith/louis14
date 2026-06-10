@@ -190,11 +190,7 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// class. Louis14 renders once after Execute returns, so dispatching
 	// synchronously here is the faithful equivalent — the mutations land
 	// before the only screenshot.
-	for _, fn := range ctx.docEventListeners["TestRendered"] {
-		if _, err := fn(goja.Undefined()); err != nil {
-			return fmt.Errorf("TestRendered listener: %w", err)
-		}
-	}
+	fireTestRendered(ctx)
 
 	// Fire element-level onload callbacks (e.g. iframe.onload = fn).
 	// These were registered during script execution above. The iframe has
@@ -210,6 +206,16 @@ func (e *Engine) Execute(doc *html.Document) error {
 	}
 
 	return nil
+}
+
+// fireTestRendered invokes document.addEventListener("TestRendered", ...)
+// callbacks registered during script execution. A failing listener is
+// skipped rather than aborting, matching the element-onload loop above —
+// one broken handler shouldn't stop the others.
+func fireTestRendered(ctx *domContext) {
+	for _, fn := range ctx.docEventListeners["TestRendered"] {
+		_, _ = fn(goja.Undefined())
+	}
 }
 
 // findBodyNode walks the document tree to find the <body> element.
