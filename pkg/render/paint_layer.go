@@ -22,8 +22,8 @@ import (
 type PaintPhase int
 
 const (
-	// PhaseBackground paints backgrounds, borders, outlines, and list
-	// markers of non-self-painting descendants (Appendix E step 3).
+	// PhaseBackground paints backgrounds, borders, and list markers of
+	// non-self-painting descendants (Appendix E step 3).
 	PhaseBackground PaintPhase = iota
 	// PhaseFloat recurses into non-self-painting descendants looking
 	// for floats, each of which is painted with its full phase loop
@@ -32,6 +32,13 @@ const (
 	// PhaseForeground paints text, images, and replaced content of
 	// non-self-painting descendants (Appendix E step 5).
 	PhaseForeground
+	// PhaseOutline paints outlines of non-self-painting descendants
+	// (Appendix E step 10): outlines paint after all in-flow content of
+	// the stacking context so they overlap text and backgrounds they
+	// cover (e.g. negative outline-offset). Mirrors Blink's
+	// PaintPhase::kSelfOutlineOnly / kDescendantOutlinesOnly
+	// (paint_phase.h @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	PhaseOutline
 )
 
 // PaintLayer represents a node in the pre-paint tree.

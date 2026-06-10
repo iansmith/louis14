@@ -2310,6 +2310,16 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
 	r.paintDescendantsPhase(layer, PhaseForeground)
 
+	// Step 5c: Outlines — self + non-SC descendants (CSS 2.1 Appendix E
+	// step 10). Painted after all in-flow foreground content so an outline
+	// overlapping its own element's text or background (e.g. negative
+	// outline-offset) draws on top; before the z-ordered child layers,
+	// mirroring Blink's PaintLayerPainter phase order (kSelfOutlineOnly /
+	// kDescendantOutlinesOnly before child layers @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	r.paintSelfOutline(layer)
+	r.paintDescendantsPhase(layer, PhaseOutline)
+
 	// Step 6: z-index:auto positioned + z-index:0 SCs.
 	for _, child := range layer.AutoZero {
 		r.paintLayer(child)
@@ -2333,10 +2343,23 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 }
 
+// paintSelfOutline paints the layer's own outline. CSS 2.1 Appendix E
+// step 10: outlines paint after all in-flow content of the stacking
+// context, so an outline overlapping its own element's text or background
+// (e.g. with a negative outline-offset) draws on top. Mirrors Blink's
+// dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
+	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
+		r.drawOutline(layer)
+	}
+}
+
 // paintSelfDecorations paints a layer's own background, borders,
-// shadows, column rules, outline, and list marker — the subset of
+// shadows, column rules, and list marker — the subset of
 // painting that precedes descendant painting in CSS 2.1 Appendix E.
-// Called once per layer (not once per phase).
+// The outline is NOT painted here; it has its own post-content phase
+// (see paintSelfOutline). Called once per layer (not once per phase).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
@@ -2360,10 +2383,6 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 
 	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
 		r.drawColumnRules(layer)
-	}
-
-	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
-		r.drawOutline(layer)
 	}
 
 	// List markers are real laid-out ::marker boxes in the fragment tree
@@ -2492,6 +2511,8 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 			r.paintSelfDecorations(child)
 		}
 		r.paintSelfForeground(child)
+	case PhaseOutline:
+		r.paintSelfOutline(child)
 	case PhaseFloat:
 		// Skip self — floats paint their own bg during their paintLayer.
 	}
