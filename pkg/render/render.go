@@ -6353,10 +6353,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 // size, centered horizontally over each glyph.
 func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
 	mark := layer.TextEmphasisMark
-	emphFontSize := layer.FontSize * 0.5
-	if emphFontSize < 4 {
-		emphFontSize = 4
-	}
+	emphFontSize := layout.EmphasisMarkFontSize(layer.FontSize)
 
 	// Open a font for the emphasis mark at half size.
 	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
@@ -6442,10 +6439,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 // (text-advance and line-height); used to compute the rotation mapping.
 func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, ta, lh int) {
 	mark := layer.TextEmphasisMark
-	emphFontSize := layer.FontSize * 0.5
-	if emphFontSize < 4 {
-		emphFontSize = 4
-	}
+	emphFontSize := layout.EmphasisMarkFontSize(layer.FontSize)
 	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
 		layer.FontFamily, layer.FontBold, layer.FontItalic,
 		layer.FontMono, layer.FontAhem,
@@ -6568,17 +6562,25 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		}
 		isVLR = wm == "vertical-lr"
 	}
+	// For vertical-lr, recover the vertical-rl-equivalent fragment X before
+	// either baseline branch. The WPT text-emphasis reftests share a single
+	// vertical-rl reference for both rl and lr variants, so the mark X must
+	// match the vertical-rl geometry. When the line box is symmetric
+	// (maxAscent == maxDescent, the pre-LOU-299 situation) the formula
+	// reduces to box.X and is a no-op; once emphasis marks inflate the
+	// line's ascent side (emphasisMarkAscentFromLine, LOU-299) the run sits
+	// asymmetrically within the line and vertical-lr's blockPos anchor
+	// diverges from vertical-rl's flipped anchor. (For the alphabetic
+	// branch the divergence pre-dates LOU-299 — see the rounding-asymmetry
+	// derivation below.)
+	baseX := box.X
+	if isVLR && box.Parent != nil {
+		baseX = 2*box.Parent.X + box.Parent.Width - box.X - float64(lh)
+	}
 	var screenX float64
 	if isCentralBaseline {
-		// annotationAscent = annotH for central baseline → X = box.X + lh.
-		//
-		// For vertical-lr + central baseline (text-orientation: mixed, the
-		// default), blockPos = halfLeading is an exact integer (because
-		// halfLeading = (lineHeight − fontSize) / 2 is integer when lineHeight
-		// and fontSize are both multiples of 1px). Both vertical-rl and
-		// vertical-lr therefore produce the same rounded physical X, so no
-		// VLR correction is needed here.
-		screenX = box.X + float64(lh)
+		// annotationAscent = annotH for central baseline → X = baseX + lh.
+		screenX = baseX + float64(lh)
 	} else {
 		// Alphabetic baseline (text-orientation: sideways, or sideways-rl/lr).
 		//
@@ -6598,16 +6600,12 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		// font metrics + half-leading), these round to different integers.
 		// The VLR baseline swap is correct for inline-block alignment
 		// (inline-block-alignment-007.xht) so we cannot change layout.
-		// Instead, compute the VRL-equivalent annotation X from the parent
-		// block container:
+		// Instead, the hoisted baseX above computes the VRL-equivalent
+		// annotation X from the parent block container:
 		//   X_rl_equiv = 2·parent.X + parent.Width − box.X − fontSize
 		// which inverts X_lr = parent.X + blockPos_lr to recover the rl formula
 		// X_rl = parent.X + (lineHeight − blockPos_rl − fontSize), using
 		// the fact that blockPos_lr = blockPos_rl (same halfLeading).
-		baseX := box.X
-		if isVLR && box.Parent != nil {
-			baseX = 2*box.Parent.X + box.Parent.Width - box.X - float64(lh)
-		}
 		screenX = baseX + emphAscent + emphDescent + float64(annotH)
 	}
 	screenXi := int(math.Round(screenX))
