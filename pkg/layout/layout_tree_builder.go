@@ -1846,7 +1846,16 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	// pattern from createPseudoElement's content:url() case.
 	if markerContent == "" && !hasContentProperty && generatesMarkerImage(style) {
 		raw, _ := style.Get("list-style-image")
-		if src, ok := css.ParseURLValue(strings.TrimSpace(raw)); ok {
+		src, ok := css.ParseURLValue(strings.TrimSpace(raw))
+		if !ok {
+			// Non-url() image values (gradients) are still images: the
+			// text fallback stays suppressed (Blink MarkerText returns
+			// kNotText for GeneratesMarkerImage). Painting generated
+			// images as markers is not implemented yet — the marker
+			// renders as the suffix space only (follow-up ticket).
+			return nil
+		}
+		{
 			imgNode := &html.Node{
 				Type:       html.ElementNode,
 				TagName:    "img",
