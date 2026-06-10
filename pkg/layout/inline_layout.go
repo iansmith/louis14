@@ -84,7 +84,12 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 func isAtomicBaselineDisplay(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayInlineBlock, css.DisplayInlineFlex, css.DisplayFlex,
-		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid:
+		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid,
+		// `inline flow-root list-item` is an atomic inline block container
+		// and baseline-aligns like inline-block (CSS 2.1 §10.8.1, last
+		// line box). Pure `inline list-item` never reaches the atomic
+		// path — it is a true inline box (Blink LayoutInlineListItem).
+		css.DisplayInlineListItem:
 		return true
 	}
 	return false
