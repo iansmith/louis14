@@ -95,21 +95,16 @@ type PaintLayer struct {
 
 	// Overflow-clip-margin geometry (CSS Overflow 3 §3.2).
 	//
-	// The clip path is built in two steps, mirroring Blink's
-	// `PhysicalBoxFragment::OverflowClipMarginOutsets` (Chromium @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) + the rounded clip
-	// computation in `BoxPainterBase`:
-	//
-	//   1. Choose the visual-box: border-box, padding-box, or
-	//      content-box. The visual-box's rounded radii are the
-	//      border-box radii **linearly shrunk** by the per-side
-	//      inset (`ClipMarginVisualBoxInset` — always ≥ 0, in CSS
-	//      px). For border-box the inset is zero on every side.
-	//
-	//   2. Outward-expand the visual-box rect by `ClipMarginLength`
-	//      on every side, and outward-expand the visual-box's
-	//      radii by `ClipMarginLength` using the CSS Backgrounds 3
-	//      §5.4 shadow-shape cubic formula.
+	// The clip rect is the chosen visual-box (border-box,
+	// padding-box, or content-box — `ClipMarginVisualBoxInset` is its
+	// per-side inset from the border edge, always ≥ 0, in CSS px)
+	// outward-expanded by `ClipMarginLength` on every side. The clip
+	// radii are computed lazily by overflowClipRadii, mirroring
+	// Blink's `AdjustRoundedClipForOverflowClipMargin`
+	// (core/paint/paint_property_tree_builder.cc:2869 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): padding-box radii
+	// expanded by the combined reference-box delta + margin using the
+	// same coverage-factor corner correction as box-shadow spread.
 	//
 	// Zero/false when overflow-clip-margin is not applied.
 	HasClipMargin            bool
@@ -965,9 +960,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// visualBoxInset records, per side, the linear shrink from the
 		// border-box to the chosen visual-box (always ≥ 0). The clip
 		// rect's geometry is `visual_box outset by marginLength on every
-		// side`. The corresponding border-radius is `border_box_radii
-		// .Inset(visualBoxInset) .OutsetForBoxShadow(marginLength,...)` —
-		// computed lazily by overflowClipRadii.
+		// side`. The corresponding border-radius is computed lazily by
+		// overflowClipRadii (coverage-factor corner correction shared
+		// with box-shadow spread).
 		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left]
 		switch {
 		case forceBorderBoxClip:
@@ -1034,11 +1029,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 		layer.ClipRect = [4]float64{padX, padY, clipW, clipH}
 		// Stash the visual-box selection and outward length so
-		// overflowClipRadii can chain Inset (linear shrink to the visual
-		// box's radii) with OutsetForBoxShadow (cubic outset by the
-		// margin length), matching Blink's
-		// `ContouredBorderGeometry::PixelSnappedContouredBorder` ⇒
-		// `OverflowClipMarginOutsets` flow.
+		// overflowClipRadii can rebuild the clip radii from the
+		// padding-box radii with one corner-corrected outset, matching
+		// Blink's `AdjustRoundedClipForOverflowClipMargin` flow.
 		layer.ClipMarginVisualBoxInset = visualBoxInset
 		layer.ClipMarginLength = marginLength
 		layer.HasClipMargin = applyMargin && (visualBoxInset[0] != 0 ||

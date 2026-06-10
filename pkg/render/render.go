@@ -2734,33 +2734,19 @@ func hasBorderRadius(layer *PaintLayer) bool {
 // overflow clip path for `layer`. CSS Overflow 4 §3.2 specifies that the
 // overflow clip edge "is shaped in the corners exactly the same way as an
 // outer box-shadow with a spread radius of the same cumulative offset
-// from the box's border edge", referring to the CSS Backgrounds 3 §5.4
-// shadow shape formula.
+// from the box's border edge" — so this must stay formula-identical to
+// the box-shadow spread path (WPT overflow-clip-margin-border-radius
+// asserts the parity directly).
 //
-// Blink's actual implementation (verified at Chromium @
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f via
-// `PhysicalBoxFragment::OverflowClipMarginOutsets` +
-// `BoxPainterBase` rounded-clip construction) builds the radii in two
-// steps:
-//
-//  1. **Inset** the border-box radii by the visual-box's per-side
-//     distance from the border-edge (linear shrink — same shrink
-//     used by `RoundedInnerRectForLineStyle` for inner border-radius).
-//     For border-box the inset is zero on every side; for padding-box
-//     the inset equals the border widths; for content-box it equals
-//     border + padding.
-//
-//  2. **Outset** those visual-box radii outward by `ClipMarginLength`
-//     using the CSS Backgrounds 3 §5.4 shadow-shape cubic formula
-//     (`OutsetForBoxShadow`). The length is a single non-negative
-//     scalar in the spec, applied equally on every side.
-//
-// Order matters: step 1 first reduces each radius to the visual-box's
-// radius (which can be zero when the inset >= radius), and step 2 then
-// applies the cubic correction `r + s·(1 + (r/s − 1)³)` for r < s.
-// This is what produces, e.g., 27.5 for a TR corner of 15 on a
-// `padding-box 20px` clip with a 5px border, instead of the naive
-// border-edge sum 15 + 15 = 30 the previous implementation produced.
+// Mirrors Blink's `AdjustRoundedClipForOverflowClipMargin`
+// (core/paint/paint_property_tree_builder.cc:2869 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): start from the inner
+// (padding-box) radii — border-box radii inset by the border widths —
+// then apply ONE corner-corrected outset combining the reference-box
+// delta (border widths for border-box, zero for padding-box, minus
+// padding for content-box) and the margin length, using the same
+// coverage-factor formula as box-shadow spread. The coverage edge is
+// the pre-outset padding-box size.
 //
 // When no clip-margin is active the border-box radii are returned
 // unchanged.
@@ -2768,19 +2754,20 @@ func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	if !layer.HasClipMargin {
 		return layer.BorderRadius
 	}
-	// Step 1: linear inset to the chosen visual-box's radii.
+	box := layer.Box
 	radii := layer.BorderRadius.Inset(
-		layer.ClipMarginVisualBoxInset[0],
-		layer.ClipMarginVisualBoxInset[1],
-		layer.ClipMarginVisualBoxInset[2],
-		layer.ClipMarginVisualBoxInset[3],
-	)
-	// Step 2: cubic outset by the margin length on every side.
-	if layer.ClipMarginLength == 0 {
-		return radii
-	}
+		box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left)
+	// Per-side outset from the padding edge to the clip edge:
+	// borderWidth − visualBoxInset + marginLength.
 	s := layer.ClipMarginLength
-	return radii.OutsetForBoxShadow(s, s, s, s)
+	top := box.Border.Top - layer.ClipMarginVisualBoxInset[0] + s
+	right := box.Border.Right - layer.ClipMarginVisualBoxInset[1] + s
+	bottom := box.Border.Bottom - layer.ClipMarginVisualBoxInset[2] + s
+	left := box.Border.Left - layer.ClipMarginVisualBoxInset[3] + s
+	pw := box.Width - box.Border.Left - box.Border.Right
+	ph := box.Height - box.Border.Top - box.Border.Bottom
+	return radii.OutsetWithCornerCorrectionUsingCoverageFactor(
+		top, right, bottom, left, pw, ph)
 }
 
 // buildRoundedRectPath traces a rounded rectangle path using CubicTo for
@@ -8269,6 +8256,21 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 	return false
 }
 
+// applySpreadToShadowShape expands (or shrinks, for negative spread) shadow
+// radii by the spread distance, mirroring Blink's ApplySpreadToShadowShape
+// (box_painter_base.cc:91 @ 4883d11fef4a): coverage-factor corner correction
+// against the pre-spread box (w, h), then radius constraining against the
+// spread-adjusted box (outW, outH). No-op when spread is zero, matching
+// Blink's early return.
+func applySpreadToShadowShape(radii css.EllipticalRadii, spread, w, h, outW, outH float64) css.EllipticalRadii {
+	if spread == 0 {
+		return radii
+	}
+	return radii.
+		OutsetWithCornerCorrectionUsingCoverageFactor(spread, spread, spread, spread, w, h).
+		ConstrainRadii(outW, outH)
+}
+
 // drawOutsetBoxShadows paints outset box shadows behind the element.
 // Shadows are painted in reverse declaration order (last = behind).
 func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
@@ -8291,10 +8293,8 @@ func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
 			continue
 		}
 
-		// Expand border radii by spread for the shadow shape using the CSS
-		// spec's cubic interpolation formula (§5.4 shadow shape).
-		sp := shadow.Spread
-		shadowRadii := layer.BorderRadius.OutsetForBoxShadow(sp, sp, sp, sp)
+		// Expand border radii by spread for the shadow shape.
+		shadowRadii := applySpreadToShadowShape(layer.BorderRadius, shadow.Spread, w, h, sw, sh)
 
 		// Use offscreen buffer to clip out the border box from the shadow.
 		// Per CSS spec: outset shadows are only visible outside the border edge.
@@ -8438,16 +8438,12 @@ func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
 		iw := pw - 2*shadow.Spread
 		ih := ph - 2*shadow.Spread
 
-		// Adjust inner radii by spread using the CSS spec formula.
-		// Positive spread shrinks radii (simple inset).
-		// Negative spread grows radii (use cubic interpolation formula).
-		sp := shadow.Spread
-		var shadowInnerRadii css.EllipticalRadii
-		if sp >= 0 {
-			shadowInnerRadii = innerRadii.Inset(sp, sp, sp, sp)
-		} else {
-			shadowInnerRadii = innerRadii.OutsetForBoxShadow(-sp, -sp, -sp, -sp)
-		}
+		// Adjust inner radii by the negated spread (Blink passes
+		// -shadow.Spread() for inset shadows, box_painter_base.cc:547
+		// @ 4883d11fef4a): positive spread degenerates to a linear
+		// per-dimension shrink, negative spread grows radii via the
+		// coverage-factor correction.
+		shadowInnerRadii := applySpreadToShadowShape(innerRadii, -shadow.Spread, pw, ph, iw, ih)
 
 		r.setColor(shadow.Color)
 
