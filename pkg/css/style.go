@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"louis14/pkg/html"
 )
@@ -6903,7 +6904,8 @@ const (
 // use GetOverflowX/GetOverflowY, which prefer the expanded longhands.
 func (s *Style) GetOverflow() OverflowType {
 	if overflow, ok := s.Get("overflow"); ok {
-		if idx := strings.IndexByte(overflow, ' '); idx >= 0 {
+		// Match the whitespace semantics of the strings.Fields expansion.
+		if idx := strings.IndexFunc(overflow, unicode.IsSpace); idx >= 0 {
 			overflow = overflow[:idx]
 		}
 		switch overflow {
