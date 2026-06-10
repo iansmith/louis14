@@ -482,7 +482,59 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	// boxes for a LayoutInline before drawing the outline ring
 	// (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	consolidateInlineOutlines(rootLayer)
+	// Focus-ring (outline-style: auto) outlines enclose the ink overflow of
+	// the element's in-flow content, not just its border box. Mirrors Blink
+	// adding block ink overflow to outline rects only for focus rings
+	// (OutlineType::kIncludeBlockInkOverflow, LayoutBox::AddOutlineRects @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); WPT
+	// css-ui/outline-with-padding-001 is the contract (a block whose inline
+	// child overflows the padding box gets the auto ring around the union).
+	expandAutoOutlinesToInkOverflow(rootLayer)
 	return rootLayer
+}
+
+// expandAutoOutlinesToInkOverflow widens OutlineBox on outline-style:auto
+// layers to the union of the element's box (or existing OutlineBox) and the
+// border boxes of all in-flow descendant fragments. Out-of-flow positioned
+// descendants are excluded — they are not part of the element's ink
+// overflow for focus-ring purposes.
+func expandAutoOutlinesToInkOverflow(l *PaintLayer) {
+	if l == nil {
+		return
+	}
+	if l.OutlineStyle == "auto" && l.OutlineWidth > 0 && l.Box != nil {
+		x0, y0 := l.Box.X, l.Box.Y
+		x1, y1 := x0+l.Box.Width, y0+l.Box.Height
+		if l.OutlineBox[2] > 0 {
+			x0, y0 = l.OutlineBox[0], l.OutlineBox[1]
+			x1, y1 = x0+l.OutlineBox[2], y0+l.OutlineBox[3]
+		}
+		var walk func(b *layout.Box)
+		walk = func(b *layout.Box) {
+			for _, c := range b.Children {
+				if c == nil {
+					continue
+				}
+				if c.Position == css.PositionAbsolute || c.Position == css.PositionFixed {
+					continue
+				}
+				if c.Width > 0 && c.Height > 0 {
+					x0 = min(x0, c.X)
+					y0 = min(y0, c.Y)
+					x1 = max(x1, c.X+c.Width)
+					y1 = max(y1, c.Y+c.Height)
+				}
+				walk(c)
+			}
+		}
+		walk(l.Box)
+		l.OutlineBox = [4]float64{x0, y0, x1 - x0, y1 - y0}
+	}
+	for _, list := range [][]*PaintLayer{l.NegativeZ, l.AutoZero, l.PositiveZ, l.FlowChildren, l.FloatChildren} {
+		for _, c := range list {
+			expandAutoOutlinesToInkOverflow(c)
+		}
+	}
 }
 
 // buildLayerIndex builds a map from html.Node to PaintLayer for lookup
