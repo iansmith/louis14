@@ -3842,12 +3842,19 @@ func (s *Style) GetOutlineStyle() string {
 	return "none"
 }
 
-// GetOutlineWidth returns the outline width in pixels.
+// GetOutlineWidth returns the used outline width in pixels.
 // Returns 0 when outline-style is "none" or outline-width is not set.
 func (s *Style) GetOutlineWidth() float64 {
 	outlineStyle := s.GetOutlineStyle()
 	if outlineStyle == "none" || outlineStyle == "" {
 		return 0
+	}
+	// CSS UI 4 §4.2: when outline-style is auto, the specified outline-width
+	// is ignored — the UA paints its focus-ring width. Mirrors Blink's
+	// FocusRingStrokeWidth constant kWidth=3.0f (outline_painter.cc:39 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if outlineStyle == "auto" {
+		return 3
 	}
 	if val, ok := s.Get("outline-width"); ok {
 		switch strings.ToLower(val) {
@@ -3859,10 +3866,25 @@ func (s *Style) GetOutlineWidth() float64 {
 			return 5
 		}
 		if px, ok2 := ParseLength(val); ok2 {
-			return px
+			return clampLineWidth(px)
 		}
 	}
 	return 3 // default medium = 3px
+}
+
+// clampLineWidth rounds a computed line width to its used integer value:
+// widths strictly between 0 and 1 round up to 1 so thin lines stay visible;
+// all other widths round down. Mirrors Blink's
+// StyleBuilderConverter::ClampLineWidth (style_builder_converter.cc:1959 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func clampLineWidth(w float64) float64 {
+	if w <= 0 {
+		return 0
+	}
+	if w < 1 {
+		return 1
+	}
+	return math.Floor(w)
 }
 
 // GetOutlineColor returns the outline color as RGBA components.
