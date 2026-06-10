@@ -213,8 +213,8 @@ func (e *Engine) Execute(doc *html.Document) error {
 // skipped rather than aborting, matching the element-onload loop above —
 // one broken handler shouldn't stop the others.
 func fireTestRendered(ctx *domContext) {
-	for _, fn := range ctx.docEventListeners["TestRendered"] {
-		_, _ = fn(goja.Undefined())
+	for _, l := range ctx.docEventListeners["TestRendered"] {
+		_, _ = l.fn(goja.Undefined())
 	}
 }
 

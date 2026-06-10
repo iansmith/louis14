@@ -1422,7 +1422,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// by ::marker pseudo-elements.
 			"tab-size", "overflow-wrap", "word-break", "hyphens",
 			"text-shadow", "text-emphasis", "text-emphasis-style",
-			"text-emphasis-color", "text-emphasis-position"}
+			"text-emphasis-color", "text-emphasis-position",
+			// CSS UI 4 §7.1: accent-color is inherited.
+			"accent-color"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -2702,6 +2704,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		resolveLogicalBoxProperties(style)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
+		// A matching @container rule can re-introduce a var()-deferred
+		// shorthand or a font-relative outline-offset; re-run the
+		// computed-time normalizations (both are idempotent).
+		reexpandVarShorthands(style)
+		absolutizeOutlineOffset(style)
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors

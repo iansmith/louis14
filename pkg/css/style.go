@@ -3904,7 +3904,7 @@ func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	if strings.EqualFold(colorStr, "auto") {
 		if s.GetOutlineStyle() == "auto" {
 			if ac, ok := s.Get("accent-color"); ok && !strings.EqualFold(strings.TrimSpace(ac), "auto") {
-				if c, ok2 := ParseColor(ac); ok2 {
+				if c, ok2 := ParseColorWithCurrentColor(ac, s.GetColor()); ok2 {
 					return c.R, c.G, c.B, c.A
 				}
 			}
