@@ -2310,14 +2310,14 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
 	r.paintDescendantsPhase(layer, PhaseForeground)
 
-	// Step 5c: Outlines — self + non-SC descendants (CSS 2.1 Appendix E
-	// step 10). Painted after all in-flow foreground content so an outline
-	// overlapping its own element's text or background (e.g. negative
-	// outline-offset) draws on top; before the z-ordered child layers,
-	// mirroring Blink's PaintLayerPainter phase order (kSelfOutlineOnly /
-	// kDescendantOutlinesOnly before child layers @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	r.paintSelfOutline(layer)
+	// Step 5c: Descendant outlines (CSS 2.1 Appendix E step 10). Painted
+	// after all in-flow foreground content so an outline overlapping its
+	// element's text or background (e.g. negative outline-offset) draws on
+	// top; before the z-ordered child layers, mirroring Blink's
+	// PaintLayerPainter phase order (kDescendantOutlinesOnly before child
+	// layers @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Descendant
+	// outlines stay inside the overflow clip — a scroller clips its
+	// contents' outlines.
 	r.paintDescendantsPhase(layer, PhaseOutline)
 
 	// Step 6: z-index:auto positioned + z-index:0 SCs.
@@ -2333,6 +2333,12 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	if clipping {
 		r.dc.Pop()
 	}
+
+	// Self outline paints OUTSIDE the element's own overflow clip — the
+	// clip applies to the box's contents, never to its own outline ring
+	// (Blink paints kSelfOutlineOnly without the contents clip) — but
+	// still inside clip-path / CSS clip, which do clip outlines.
+	r.paintSelfOutline(layer)
 
 	if clipPathActive {
 		r.dc.Pop()

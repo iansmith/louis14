@@ -25,6 +25,12 @@ type domContext struct {
 	// did not populate layout state (e.g. pure DOM-manipulation tests).
 	layoutStyles map[*html.Node]*css.Style
 	layoutBoxes  map[*html.Node]*layout.Box
+
+	// docEventListeners holds document.addEventListener callbacks keyed by
+	// event type. Louis14 is a static one-shot renderer, so only events the
+	// engine itself dispatches after script execution (currently WPT's
+	// "TestRendered" from /common/reftest-wait.js) ever fire.
+	docEventListeners map[string][]goja.Callable
 }
 
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
@@ -110,6 +116,26 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 			Text: text,
 		}
 		return ctx.elementProxy(node)
+	})
+
+	// document.addEventListener / removeEventListener. Only events the
+	// engine dispatches after scripts run (WPT's "TestRendered") ever fire;
+	// other event types are stored but never invoked, which matches the
+	// one-shot rendering model (no user interaction, no async loads).
+	docObj.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			if fn, ok := goja.AssertFunction(call.Arguments[1]); ok {
+				typ := call.Arguments[0].String()
+				if ctx.docEventListeners == nil {
+					ctx.docEventListeners = make(map[string][]goja.Callable)
+				}
+				ctx.docEventListeners[typ] = append(ctx.docEventListeners[typ], fn)
+			}
+		}
+		return goja.Undefined()
+	})
+	docObj.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		return goja.Undefined()
 	})
 
 	// Phase 2: querySelector/querySelectorAll on document
