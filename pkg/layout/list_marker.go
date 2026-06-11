@@ -280,6 +280,15 @@ func InlineMarginsForInside(markerStyle, itemStyle *css.Style, cat ListStyleCate
 // Blink reads font_metrics.Ascent() off the marker style for the non-
 // disclosure symbol case; that integer ascent (px) is passed in as ascent.
 func InlineMarginsForOutside(markerStyle, itemStyle *css.Style, cat ListStyleCategory, markerInlineSize layoutunit.LayoutUnit, ascent int) (start, end layoutunit.LayoutUnit) {
+	// Blink checks ContentBehavesAsNormal() FIRST (list_marker.cc:399-402 @
+	// 4883d11f): an author ::marker content value hangs by the marker's own
+	// inline-size regardless of the item's list-style category — including
+	// list-style-type:none and the symbol types.
+	if markerStyle != nil {
+		if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
+			return markerInlineSize.MulInt(-1), layoutunit.LayoutUnit{}
+		}
+	}
 	if itemStyle != nil && generatesMarkerImage(itemStyle) {
 		start = markerInlineSize.MulInt(-1).Sub(layoutunit.New(markerPaddingPx))
 		end = layoutunit.New(markerPaddingPx)

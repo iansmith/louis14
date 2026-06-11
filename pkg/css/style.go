@@ -11957,11 +11957,13 @@ func (s *Style) GetListStyleType() ListStyleType {
 		case "disclosure-closed":
 			return ListStyleTypeDisclosureClosed
 		default:
-			// Handle custom string values (quoted strings like "\2022")
-			// Strip quotes if present
+			// Handle custom string values (quoted strings like "\2022"):
+			// strip the quotes and decode CSS escape sequences so e.g.
+			// "2.\A0 \A0 " yields "2." + two NBSPs (css-pseudo
+			// marker-word-spacing-ref.html).
 			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') ||
 				(val[0] == '\'' && val[len(val)-1] == '\'')) {
-				return ListStyleType(val[1 : len(val)-1])
+				return ListStyleType(unescapeCSS(val[1 : len(val)-1]))
 			}
 			// Return as-is for other values
 			return ListStyleType(val)
