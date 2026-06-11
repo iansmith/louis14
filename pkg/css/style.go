@@ -114,19 +114,9 @@ func NewStyle() *Style {
 // Clone returns a deep copy of this Style with all properties copied.
 func (s *Style) Clone() *Style {
 	dst := &Style{
-		Properties:        make(map[string]string, len(s.Properties)),
-		ViewportWidth:     s.ViewportWidth,
-		ViewportHeight:    s.ViewportHeight,
-		ChWidth:           s.ChWidth,
-		UsedFontSize:      s.UsedFontSize,
-		UsedFontSizeSet:   s.UsedFontSizeSet,
-		XHeight:           s.XHeight,
-		CapHeight:         s.CapHeight,
-		LhSize:            s.LhSize,
-		IcWidth:           s.IcWidth,
-		BaseDir:           s.BaseDir,
-		FontFeatureValues: s.FontFeatureValues, // shared by reference; never mutated post-cascade
+		Properties: make(map[string]string, len(s.Properties)),
 	}
+	copyStyleResolutionContext(dst, s)
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
 	}
@@ -7622,6 +7612,110 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// ApplyMeasurableTextTransform applies the text-transform values whose
+// effect on glyph advances must be visible to measurement (uppercase /
+// lowercase). capitalize is paint-layer-only: its word-boundary logic lives
+// in the renderer and its width effect is accepted as approximation.
+func ApplyMeasurableTextTransform(s string, t TextTransform) string {
+	switch t {
+	case TextTransformUppercase:
+		return strings.ToUpper(s)
+	case TextTransformLowercase:
+		return strings.ToLower(s)
+	}
+	return s
+}
+
+// copyStyleResolutionContext copies the non-property resolution context —
+// viewport size, font metrics, base direction, font-feature rules — from src
+// to dst. Shared by Clone and CreateAnonymousStyleWithDisplay so the field
+// list cannot drift.
+func copyStyleResolutionContext(dst, src *Style) {
+	dst.ViewportWidth = src.ViewportWidth
+	dst.ViewportHeight = src.ViewportHeight
+	dst.ChWidth = src.ChWidth
+	dst.UsedFontSize = src.UsedFontSize
+	dst.UsedFontSizeSet = src.UsedFontSizeSet
+	dst.XHeight = src.XHeight
+	dst.CapHeight = src.CapHeight
+	dst.LhSize = src.LhSize
+	dst.IcWidth = src.IcWidth
+	dst.BaseDir = src.BaseDir
+	dst.FontFeatureValues = src.FontFeatureValues // shared by reference; never mutated post-cascade
+}
+
+// CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
+// only inherited properties (including custom properties) are carried over
+// from the parent, and display is set explicitly. Mirrors Blink
+// StyleResolver::CreateAnonymousStyleWithDisplay, which the list-marker
+// machinery uses for the default ::marker style
+// (ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — non-inherited properties such
+// as borders, margins, and padding must NOT leak from the originating list
+// item onto the marker box.
+func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
+	s := NewStyle()
+	if parent != nil {
+		// Non-property resolution context travels with the style; without
+		// it, inherited values on the anonymous box (e.g. viewport-unit
+		// font sizes) resolve against zeroes.
+		copyStyleResolutionContext(s, parent)
+		for prop, val := range parent.Properties {
+			if inheritableProperties[prop] || strings.HasPrefix(prop, "--") {
+				s.Properties[prop] = val
+			}
+		}
+	}
+	s.Set("display", display)
+	return s
+}
+
+// MarkerShouldBeInside reports whether this list item's ::marker box is
+// placed inside (as the first in-flow inline child) rather than through the
+// outside carry/claim protocol. Mirrors Blink's
+// ComputedStyle::MarkerShouldBeInside (computed_style.cc:2817-2827 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): per css-lists
+// §list-style-position-outside, outside is equivalent to inside when the
+// list item is an inline box. Blink checks EDisplay::kInlineListItem only —
+// kInlineFlowRootListItem is a block container, not an inline box, and keeps
+// its marker outside. GetDisplay() folds `inline flow-root list-item` into
+// DisplayInlineListItem (the list-item check wins), so sniff the raw display
+// for the flow-root keyword the same way EstablishesNewFormattingContext
+// does.
+func (s *Style) MarkerShouldBeInside() bool {
+	return s.GetListStylePosition() == "inside" || s.IsInlineBoxListItem()
+}
+
+// IsInlineBoxListItem reports whether the element is a list item that is a
+// true inline box — `display: inline list-item` — as opposed to the
+// `inline flow-root list-item` variant, which is an atomic inline block
+// container. Mirrors Blink's EDisplay::kInlineListItem vs
+// kInlineFlowRootListItem split (LayoutInlineListItem derives from
+// LayoutInline, layout_inline_list_item.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). GetDisplay() folds both
+// variants into DisplayInlineListItem (the list-item check wins), so the
+// raw display value is sniffed for the flow-root keyword the same way
+// EstablishesNewFormattingContext does.
+func (s *Style) IsInlineBoxListItem() bool {
+	return s.GetDisplay() == DisplayInlineListItem && !s.rawDisplayHasFlowRoot()
+}
+
+// rawDisplayHasFlowRoot reports whether the raw multi-keyword `display`
+// value contains the flow-root inner keyword. GetDisplay() folds variants
+// like `inline flow-root list-item` into a single DisplayType (the
+// list-item check wins), losing the flow-root bit, so callers that need it
+// sniff the raw property.
+func (s *Style) rawDisplayHasFlowRoot() bool {
+	if raw, ok := s.Get("display"); ok {
+		for _, f := range strings.Fields(raw) {
+			if f == "flow-root" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IsAtomicInlineDisplay reports whether the computed display generates
 // an atomic inline-level box (CSS Display 3 §2.2): a single,
 // indivisible inline-level box that establishes its own formatting
@@ -7670,14 +7764,7 @@ func (s *Style) EstablishesNewFormattingContext() bool {
 	// Inspect the raw display string for the `flow-root` inner keyword
 	// combined with other outers (notably `inline flow-root list-item`,
 	// which GetDisplay() folds into DisplayInlineListItem).
-	if raw, ok := s.Get("display"); ok {
-		for _, f := range strings.Fields(raw) {
-			if f == "flow-root" {
-				return true
-			}
-		}
-	}
-	return false
+	return s.rawDisplayHasFlowRoot()
 }
 
 // IsInlineRuby reports whether the element should be treated as an
@@ -11895,11 +11982,13 @@ func (s *Style) GetListStyleType() ListStyleType {
 		case "disclosure-closed":
 			return ListStyleTypeDisclosureClosed
 		default:
-			// Handle custom string values (quoted strings like "\2022")
-			// Strip quotes if present
+			// Handle custom string values (quoted strings like "\2022"):
+			// strip the quotes and decode CSS escape sequences so e.g.
+			// "2.\A0 \A0 " yields "2." + two NBSPs (css-pseudo
+			// marker-word-spacing-ref.html).
 			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') ||
 				(val[0] == '\'' && val[len(val)-1] == '\'')) {
-				return ListStyleType(val[1 : len(val)-1])
+				return ListStyleType(unescapeCSS(val[1 : len(val)-1]))
 			}
 			// Return as-is for other values
 			return ListStyleType(val)

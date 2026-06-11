@@ -23,6 +23,10 @@ type LayoutTreeBuilder struct {
 	viewportWidth  float64
 	viewportHeight float64
 
+	// counterStyleMap lazily indexes @counter-style rules by name for
+	// ::marker content resolution (counterStyleRules).
+	counterStyleMap map[string]css.CounterStyleRule
+
 	// fontConfig resolves font-family → font path for measuring the scaled
 	// initial-letter font (CSS Inline Layout 3 §7.5.1). Zero-value is safe:
 	// initial-letter sizing falls back to the cap-unit heuristic when no
@@ -286,26 +290,8 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		// The implicit decrement is applied via UpdateCounterValue so it mutates
 		// the same entry that EnterObject just created/updated.
 		disp := style.GetDisplay()
-		if (disp == css.DisplayListItem || disp == css.DisplayInlineListItem) &&
-			b.counterCtx.IsCounterReversed("list-item") {
-			_, hasExplicit := counterIncrementValue(style, "list-item")
-			isAutoReset := b.counterCtx.HasAutoReversedCounter(node, "list-item")
-			if !hasExplicit && !isAutoReset {
-				b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, -1)
-			}
-		}
-
-		// Non-reversed list-item implicit increment: HTML5 list items (li, dt, dd elements
-		// styled as display:list-item or display:inline-list-item) receive an implicit
-		// counter-increment: list-item 1 if they have no explicit counter-increment.
-		// This mirrors the reversed block above but applies +1 instead of -1 and only
-		// when the counter is NOT reversed.
-		if (disp == css.DisplayListItem || disp == css.DisplayInlineListItem) &&
-			!b.counterCtx.IsCounterReversed("list-item") {
-			_, hasExplicit := counterIncrementValue(style, "list-item")
-			if !hasExplicit {
-				b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, 1)
-			}
+		if disp == css.DisplayListItem || disp == css.DisplayInlineListItem {
+			b.applyImplicitListItemStep(node, style)
 		}
 
 		if style.ShouldApplyStyleContainment() {
@@ -318,56 +304,24 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		}
 	}
 
-	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,
-	// but only if there are actual ::marker rules matching.
-	if style != nil && style.GetDisplay() == css.DisplayListItem && len(b.stylesheets) > 0 {
-		if css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-			markerStyle := css.ComputePseudoElementStyle(
-				node, "marker", b.stylesheets,
-				b.viewportWidth, b.viewportHeight, style,
-			)
-			// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
-			if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
-				clone := markerStyle.Clone()
-				clone.Set("unicode-bidi", "isolate")
-				markerStyle = clone
-			}
-			lin.MarkerStyle = markerStyle
-			// Extract content from ::marker { content: } for layout-time use.
-			// This path is the "outside" marker — list-style-position
-			// defaults to outside and we cache content here for the
-			// paint-time renderer (Phase 6 will move outside markers to
-			// real boxes). Counter lookups use `node` as the origin
-			// because this path does NOT push a separate counter scope
-			// for ::marker; that scope only exists when we actually
-			// emit a marker box via createMarkerPseudoElement.
-			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
-				lin.MarkerContent = b.resolveContentText(cv, node, node)
-			}
-		}
-		// For list-style-type: <string> without ::marker rules, use the string
-		// as marker content. Applies to both inside and outside positions
-		// (CSS Lists 3 §3.2 list-style-type accepts <string>; Blink
-		// ListMarker::MarkerText returns the string for the StaticString
-		// category regardless of position).
-		if lin.MarkerContent == "" {
-			lst := style.GetListStyleType()
-			if lst != "" && !isBuiltinListStyleType(lst) {
-				lin.MarkerContent = string(lst)
-			}
-		}
-	}
-
 	// Build layout children, filtering out display:none and non-layout nodes.
 	var rawChildren []*LayoutInputNode
 
-	// CSS Pseudo-4 §4.2: Insert ::marker pseudo-element as first child
-	// of display:list-item elements when list-style-position is inside.
-	// The marker comes before ::before per CSS Pseudo-4 pseudo-element
-	// ordering (marker, before, children, after).
-	if style != nil && style.GetDisplay() == css.DisplayListItem {
+	// CSS Pseudo-4 §4.2: generate the ::marker pseudo-element for every
+	// list item. An inside marker is inserted as the first in-flow child
+	// (before ::before, per CSS Pseudo-4 ordering: marker, before,
+	// children, after). An outside marker is NOT an in-flow child — it is
+	// reachable only through lin.markerNode / ListMarkerBlockNodeIfListItem,
+	// and the block layout algorithm's UnpositionedListMarker carry/claim
+	// protocol owns its placement (Blink BlockNode::
+	// ListMarkerBlockNodeIfListItem feeding BlockLayoutAlgorithm,
+	// bla.cc:319-327 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if style != nil && style.IsListItemDisplay() {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
-			rawChildren = append(rawChildren, markerNode)
+			lin.markerNode = markerNode
+			if !markerNode.MarkerIsOutside {
+				rawChildren = append(rawChildren, markerNode)
+			}
 		}
 	}
 
@@ -847,8 +801,7 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 
 	// Don't generate anonymous blocks inside inline containers or table internals.
 	// Only block containers do this.
-	parentDisplay := parentStyle.GetDisplay()
-	if !isBlockContainer(parentDisplay) {
+	if !isBlockContainerStyle(parentStyle) {
 		return children
 	}
 
@@ -1039,14 +992,22 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	b.counterCtx.EnterObject(pseudoNode, pseudoStyle)
 	defer b.counterCtx.LeaveObject(pseudoNode, pseudoStyle)
 
-	// Build child nodes from content values.
-	// Collect quote strings from parent style.
-	quotes := []string{"\"", "\"", "'", "'"}
-	if parentStyle != nil {
-		if q, ok := parentStyle.Get("quotes"); ok {
-			quotes = b.parseQuotes(q)
-		}
+	// A display:list-item pseudo-element is a real list item: it takes the
+	// implicit list-item counter increment and generates its own ::marker
+	// (CSS Lists 3 §declaring-a-list-item; WPT nested-marker.html). Its
+	// marker is a nested pseudo-element NOT addressable by author ::marker
+	// selectors, so marker creation skips author-rule matching.
+	var pseudoMarker *LayoutInputNode
+	if pseudoStyle != nil && pseudoStyle.IsListItemDisplay() {
+		b.applyImplicitListItemStep(pseudoNode, pseudoStyle)
+		pseudoMarker = b.createMarkerPseudoElement(pseudoNode, pseudoStyle)
 	}
+
+	// Build child nodes from content values. The pseudo's own computed
+	// `quotes` wins (e.g. `::before { quotes: "«" "»" }`); when the pseudo
+	// computation carries none, the originating element's inherited value
+	// applies — same precedence as ::marker content resolution.
+	quotes := b.quotesFor(quoteSourceStyle(pseudoStyle, parentStyle))
 
 	// Build child nodes from content values.
 	// Adjacent text-producing values (text, counter, attr, quote) are merged
@@ -1074,24 +1035,7 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		case "url":
 			// Flush any accumulated text before the image.
 			flushText()
-			// Create a synthetic <img> element for url() content.
-			imgNode := &html.Node{
-				Type:    html.ElementNode,
-				TagName: "img",
-				Attributes: map[string]string{
-					"src": cv.Value,
-				},
-			}
-			imgNode.Parent = pseudoNode
-			imgStyle := css.NewStyle()
-			imgStyle.Set("display", "inline")
-			imgStyle.ViewportWidth = b.viewportWidth
-			imgStyle.ViewportHeight = b.viewportHeight
-			b.styles[imgNode] = imgStyle
-			children = append(children, &LayoutInputNode{
-				DOMNode: imgNode,
-				style:   imgStyle,
-			})
+			children = append(children, b.createSyntheticImage(cv.Value, pseudoNode))
 		case "counter":
 			// counter(name [, style]): innermost in-scope value.
 			// Phase 1 always renders as decimal; Phase 5 will route
@@ -1120,19 +1064,9 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 				pendingText.WriteString(cv.Fallback)
 			}
 		case "open-quote":
-			idx := b.quoteDepth * 2
-			if idx < len(quotes) {
-				pendingText.WriteString(quotes[idx])
-			}
-			b.quoteDepth++
+			pendingText.WriteString(b.emitOpenQuote(quotes))
 		case "close-quote":
-			if b.quoteDepth > 0 {
-				b.quoteDepth--
-			}
-			idx := b.quoteDepth*2 + 1
-			if idx < len(quotes) {
-				pendingText.WriteString(quotes[idx])
-			}
+			pendingText.WriteString(b.emitCloseQuote(quotes))
 		}
 	}
 	// Flush any remaining text.
@@ -1144,6 +1078,15 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		style:    pseudoStyle,
 		children: children,
 	}
+	// Attach the list-item pseudo's own ::marker: inside markers become the
+	// first in-flow child; outside markers ride the carry/claim protocol
+	// via lin.markerNode (same split as buildNode for real list items).
+	if pseudoMarker != nil {
+		lin.markerNode = pseudoMarker
+		if !pseudoMarker.MarkerIsOutside {
+			lin.children = append([]*LayoutInputNode{pseudoMarker}, lin.children...)
+		}
+	}
 	return lin
 }
 
@@ -1154,15 +1097,88 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 // real counter). `markerNode` is the pseudo-element node currently in
 // scope for counter lookups (so the marker reads its own scope, not the
 // real element's).
-func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node) string {
+// createSyntheticImage builds the synthetic inline <img> LayoutInputNode
+// used for generated image content: ::before/::after content:url() and
+// list-style-image markers.
+func (b *LayoutTreeBuilder) createSyntheticImage(src string, parent *html.Node) *LayoutInputNode {
+	imgNode := &html.Node{
+		Type:       html.ElementNode,
+		TagName:    "img",
+		Attributes: map[string]string{"src": src},
+		Parent:     parent,
+	}
+	imgStyle := css.NewStyle()
+	imgStyle.Set("display", "inline")
+	imgStyle.ViewportWidth = b.viewportWidth
+	imgStyle.ViewportHeight = b.viewportHeight
+	b.styles[imgNode] = imgStyle
+	return &LayoutInputNode{DOMNode: imgNode, style: imgStyle}
+}
+
+// quoteSourceStyle picks the style whose `quotes` value governs generated
+// content: the pseudo-element's (or marker's) own computed value wins; when
+// it carries none, the originating element's inherited value applies.
+func quoteSourceStyle(own, fallback *css.Style) *css.Style {
+	if own != nil {
+		if _, ok := own.Get("quotes"); ok {
+			return own
+		}
+	}
+	return fallback
+}
+
+// quotesFor returns the quote-pair strings governing open-quote/close-quote
+// for the given style (UA defaults when nil or unset).
+func (b *LayoutTreeBuilder) quotesFor(style *css.Style) []string {
+	if style != nil {
+		if q, ok := style.Get("quotes"); ok {
+			return b.parseQuotes(q)
+		}
+	}
+	return []string{"\"", "\"", "'", "'"}
+}
+
+// emitOpenQuote / emitCloseQuote step the builder's shared quote-nesting
+// depth and return the quote string to append (possibly empty when the
+// depth exceeds the available pairs). One state machine shared by
+// ::before/::after content and ::marker content resolution.
+func (b *LayoutTreeBuilder) emitOpenQuote(quotes []string) string {
+	idx := b.quoteDepth * 2
+	b.quoteDepth++
+	if idx < len(quotes) {
+		return quotes[idx]
+	}
+	return ""
+}
+
+func (b *LayoutTreeBuilder) emitCloseQuote(quotes []string) string {
+	if b.quoteDepth > 0 {
+		b.quoteDepth--
+	}
+	if idx := b.quoteDepth*2 + 1; idx < len(quotes) {
+		return quotes[idx]
+	}
+	return ""
+}
+
+// resolveContentText resolves content values to a plain string; style is the
+// one whose `quotes` property governs open-quote/close-quote values (CSS
+// Lists 3 §marker-properties: quotes applies in ::marker;
+// marker-quotes.html). A nil style keeps the UA default quote pairs.
+func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node, style *css.Style) string {
 	var buf strings.Builder
 	if markerNode == nil {
 		markerNode = node
 	}
+	quotes := b.quotesFor(style)
 	for _, cv := range contentVals {
 		switch cv.Type {
 		case "text":
 			buf.WriteString(cv.Value)
+		case "open-quote":
+			buf.WriteString(b.emitOpenQuote(quotes))
+		case "close-quote":
+			buf.WriteString(b.emitCloseQuote(quotes))
 		case "counter":
 			// Prefer the counter context when list-item has been explicitly
 			// established (e.g. counter-reset: reversed(list-item) or
@@ -1265,7 +1281,10 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 		if sibling == node {
 			break
 		}
-		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
+		// Every list-item display counts toward the ordinal — Blink's
+		// ListItemOrdinal walks IsListItem() siblings, which covers inline
+		// list items too (list_marker.cc:90-98 @ 4883d11f).
+		if s := b.styles[sibling]; s != nil && s.IsListItemDisplay() {
 			idx++
 		}
 	}
@@ -1678,13 +1697,16 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		return nil
 	}
 
-	// Guard: only for display:list-item with list-style-position: inside.
-	if style.GetDisplay() != css.DisplayListItem {
+	// Guard: every list-item display generates a ::marker box (Blink
+	// ComputedStyle::IsDisplayListItem feeds ListMarker creation for both
+	// LayoutListItem and LayoutInlineListItem, list_marker.cc:72-80 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Placement — inside as the
+	// first in-flow child vs outside via the carry/claim protocol — is
+	// decided by MarkerShouldBeInside.
+	if !style.IsListItemDisplay() {
 		return nil
 	}
-	if style.GetListStylePosition() != "inside" {
-		return nil
-	}
+	markerInside := style.MarkerShouldBeInside()
 
 	// Step 1: Resolve marker content.
 	var markerContent string
@@ -1693,7 +1715,12 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	hasContentProperty := false
 	var markerContentValues []css.ContentValue
 
-	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+	// Markers of pseudo-element list items (::before/::after with
+	// display:list-item) are nested pseudo-elements and are NOT addressable
+	// by author ::marker selectors (css-pseudo-4; WPT nested-marker.html) —
+	// they take UA defaults only.
+	originIsPseudo := strings.HasPrefix(node.TagName, "::")
+	if !originIsPseudo && len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
 		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
 		markerStyle = css.ComputePseudoElementStyle(
 			node, "marker", b.stylesheets,
@@ -1712,16 +1739,31 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 
 	// Step 2: Compute the effective marker style if no ::marker rules.
 	if !hasMarkerStyle {
-		// No ::marker rules; create a default marker style inheriting from
-		// the list item, then stamp UA ::marker defaults on top. The clone
-		// carries all inherited properties (including text-transform, white-space,
-		// etc.) from the li; ApplyMarkerUADefaults overrides those with the UA
-		// ::marker values (text-transform:none, white-space:pre, tabular-nums,
-		// unicode-bidi:isolate) per CSS Pseudo-4 §3 + Blink html.css
+		// No ::marker rules; create a default marker style carrying ONLY
+		// inherited properties from the list item (Blink
+		// StyleResolver::CreateAnonymousStyleWithDisplay via
+		// ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 —
+		// a li's border/margin/padding must not leak onto its marker), then
+		// stamp UA ::marker defaults on top (text-transform:none,
+		// white-space:pre, tabular-nums, unicode-bidi:isolate) per CSS
+		// Pseudo-4 §3 + Blink html.css
 		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		markerStyle = style.Clone()
+		markerStyle = css.CreateAnonymousStyleWithDisplay(style, "inline")
 		css.ApplyMarkerUADefaults(markerStyle)
+	}
+
+	// Marker display is adjusted by position, not authored: inside markers
+	// are inline; outside markers become a block container that must not
+	// break internally and honors trailing spaces. Mirrors Blink
+	// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:478-514 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). markerStyle is freshly
+	// built either way (ComputePseudoElementStyle or
+	// CreateAnonymousStyleWithDisplay), so mutating it here is safe.
+	if markerInside {
 		markerStyle.Set("display", "inline")
+	} else {
+		markerStyle.Set("display", "inline-block")
+		markerStyle.Set("white-space", "pre")
 	}
 
 	// Step 3: Create a synthetic ::marker DOM node so we can use it as
@@ -1745,7 +1787,39 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 
 	// Now that the marker's counter scope is live, resolve content.
 	if len(markerContentValues) > 0 {
-		markerContent = b.resolveContentText(markerContentValues, node, markerNode)
+		markerContent = b.resolveContentText(markerContentValues, node, markerNode, quoteSourceStyle(markerStyle, style))
+	}
+
+	// Image marker: list-style-image takes precedence over list-style-type
+	// (including `none`). Blink ListMarker::UpdateMarkerContentIfNeeded
+	// builds a LayoutListMarkerImage child and sets marker_text_type_ =
+	// kNotText (list_marker.cc:277-310 @ 4883d11f); the marker text with
+	// prefix/suffix is a single space after the image (MarkerText
+	// GeneratesMarkerImage arm, :168-172). Reuses the synthetic-<img>
+	// pattern from createPseudoElement's content:url() case.
+	if markerContent == "" && !hasContentProperty && generatesMarkerImage(style) {
+		raw, _ := style.Get("list-style-image")
+		src, ok := css.ParseURLValue(strings.TrimSpace(raw))
+		if !ok {
+			// Non-url() image values (gradients) are still images: the
+			// text fallback stays suppressed (Blink MarkerText returns
+			// kNotText for GeneratesMarkerImage). Painting generated
+			// images as markers is not implemented yet, so no marker box
+			// is produced at all (LOU-303).
+			return nil
+		}
+		spaceNode := &html.Node{Type: html.TextNode, Text: " ", Parent: markerNode}
+		return &LayoutInputNode{
+			DOMNode:         markerNode,
+			style:           markerStyle,
+			isMarkerNode:    true,
+			MarkerIsOutside: !markerInside,
+			MarkerCategory:  CategoryNone,
+			children: []*LayoutInputNode{
+				b.createSyntheticImage(src, markerNode),
+				{DOMNode: spaceNode, style: markerStyle},
+			},
+		}
 	}
 
 	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
@@ -1758,14 +1832,17 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		if lst != "" {
 			if isBuiltinListStyleType(lst) {
 				markerContent = b.resolveListStyleType(lst, node)
+			} else if cs, ok := b.counterStyleRules()[string(lst)]; ok {
+				// @counter-style reference: format the ordinal through the
+				// custom style (Blink CounterStyle::GenerateRepresentation
+				// WithPrefixAndSuffix).
+				markerContent = css.ApplyCounterStyle(b.listItemOrdinal(node), cs, b.counterStyleRules())
 			} else {
-				// Custom <string> value (e.g., list-style-type: "§").
-				s := string(lst)
-				// Strip surrounding quotes if present.
-				if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
-					s = s[1 : len(s)-1]
-				}
-				markerContent = s
+				// <string> value (e.g., list-style-type: "§"): the string
+				// IS the marker text, verbatim, no suffix (Blink
+				// kStaticString). GetListStyleType already stripped the
+				// quotes and decoded CSS escapes.
+				markerContent = string(lst)
 			}
 		}
 	}
@@ -1787,9 +1864,11 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	// this generated subtree per CSS Pseudo-4 §3.3 — the originating
 	// list-item's own marker is not part of first-letter consideration.
 	return &LayoutInputNode{
-		DOMNode:      markerNode,
-		style:        markerStyle,
-		isMarkerNode: true,
+		DOMNode:         markerNode,
+		style:           markerStyle,
+		isMarkerNode:    true,
+		MarkerIsOutside: !markerInside,
+		MarkerCategory:  GetListStyleCategory(style),
 		children: []*LayoutInputNode{{
 			DOMNode: textNode,
 			style:   markerStyle,
@@ -1805,25 +1884,22 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 		return ""
 	}
 
-	// Prefer counter context when list-item has been explicitly established
-	// (e.g. counter-reset: reversed(list-item) or counter-reset: list-item N).
-	// Fall back to DOM-sibling counting when list-item is not in the counter
-	// context, so that normal lists without explicit counter-reset still work.
-	var value int
-	if b.counterCtx.IsCounterInScope(node, "list-item") {
-		vals := b.counterCtx.GetCounterValues(node, "list-item", true)
-		value = vals[0]
-	} else {
-		value = b.getListItemCounterValue(node)
-	}
+	value := b.listItemOrdinal(node)
 
+	// The predefined symbolic styles carry the CSS Counter Styles 3
+	// `suffix: " "` (one space), just like the numeric styles carry ". ".
+	// Blink renders marker text via
+	// CounterStyle::GenerateRepresentationWithPrefixAndSuffix
+	// (ListMarker::MarkerText kSymbol/kLanguage arms, list_marker.cc:180-212
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), so an inside disc marker
+	// is "• ", not "•".
 	switch lst {
 	case css.ListStyleTypeDisc:
-		return "•" // bullet
+		return "• " // bullet
 	case css.ListStyleTypeCircle:
-		return "◦" // white bullet
+		return "◦ " // white bullet
 	case css.ListStyleTypeSquare:
-		return "▪" // black small square
+		return "▪ " // black small square
 	case css.ListStyleTypeDecimal:
 		return strconv.Itoa(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDecimalLeadingZero:
@@ -1839,12 +1915,68 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	case css.ListStyleTypeLowerGreek:
 		return css.ToGreek(value) + css.DefaultCounterStyleSuffix
 	case css.ListStyleTypeDisclosureOpen:
-		return "▼" // ▼ down-pointing triangle (details expanded)
+		return "▼ " // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:
-		return "▶" // ▶ right-pointing triangle (details collapsed)
+		return "▶ " // ▶ right-pointing triangle (details collapsed)
 	default:
 		return ""
 	}
+}
+
+// applyImplicitListItemStep applies the implicit list-item counter step for
+// a list item (real node or ::before/::after pseudo): +1, or -1 when the
+// innermost list-item counter is reversed (CSS Lists 3 §6.1). Suppressed
+// when the element has an explicit counter-increment or counter-set on
+// list-item — per HTML's ordinal-value algorithm (Blink
+// ListItemOrdinal::CalcValue @ 4883d11f) a valued item takes exactly that
+// number, and the implicit step runs after EnterObject applied the set, so
+// it would otherwise override it. Also suppressed for the auto-count form
+// of reversed(list-item), whose computed initial already encodes this
+// item's contribution. Stale counter entries are removed first, as Blink
+// ProcessCounter does — the implicit path bypasses ProcessCounter, so
+// without it a sibling list's exited scope would be mutated.
+func (b *LayoutTreeBuilder) applyImplicitListItemStep(node *html.Node, style *css.Style) {
+	if _, ok := counterIncrementValue(style, "list-item"); ok {
+		return
+	}
+	if _, ok := counterSetValue(style, "list-item"); ok {
+		return
+	}
+	step := 1
+	if b.counterCtx.IsCounterReversed("list-item") {
+		if b.counterCtx.HasAutoReversedCounter(node, "list-item") {
+			return
+		}
+		step = -1
+	}
+	b.counterCtx.RemoveStaleCounters(node, "list-item")
+	b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, step)
+}
+
+// listItemOrdinal returns the list-item counter value for a marker.
+// Prefers the counter context when list-item has been explicitly established
+// (e.g. counter-reset: reversed(list-item) or counter-reset: list-item N);
+// falls back to DOM-sibling counting otherwise, so normal lists without an
+// explicit counter-reset still work.
+func (b *LayoutTreeBuilder) listItemOrdinal(node *html.Node) int {
+	if b.counterCtx.IsCounterInScope(node, "list-item") {
+		return b.counterCtx.GetCounterValues(node, "list-item", true)[0]
+	}
+	return b.getListItemCounterValue(node)
+}
+
+// counterStyleRules lazily indexes the document's @counter-style rules by
+// name for ::marker content resolution.
+func (b *LayoutTreeBuilder) counterStyleRules() map[string]css.CounterStyleRule {
+	if b.counterStyleMap == nil {
+		b.counterStyleMap = make(map[string]css.CounterStyleRule)
+		for _, sheet := range b.stylesheets {
+			for _, cs := range sheet.CounterStyles {
+				b.counterStyleMap[cs.Name] = cs
+			}
+		}
+	}
+	return b.counterStyleMap
 }
 
 // isBuiltinListStyleType returns true for the predefined list-style-type values.
@@ -1874,6 +2006,19 @@ func isBlockContainer(d css.DisplayType) bool {
 		return true
 	}
 	return false
+}
+
+// isBlockContainerStyle is isBlockContainer with the raw display value in
+// hand: `inline flow-root list-item` folds into DisplayInlineListItem in
+// GetDisplay() but IS a block container (its children get anonymous-block
+// treatment), while a pure `inline list-item` is a true inline box and is
+// not. Mirrors Blink's kInlineFlowRootListItem vs kInlineListItem split.
+func isBlockContainerStyle(st *css.Style) bool {
+	if st == nil {
+		return false
+	}
+	d := st.GetDisplay()
+	return isBlockContainer(d) || (d == css.DisplayInlineListItem && !st.IsInlineBoxListItem())
 }
 
 // isWhitespaceOnly returns true if the run contains only whitespace text nodes
@@ -1920,7 +2065,7 @@ func isInlineWithBlockChildren(node *LayoutInputNode) bool {
 func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 	children []*LayoutInputNode, parentStyle *css.Style,
 ) []*LayoutInputNode {
-	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+	if parentStyle == nil || !isBlockContainerStyle(parentStyle) {
 		return children
 	}
 	// Quick check: any inline-with-block present?
@@ -2066,7 +2211,7 @@ func (b *LayoutTreeBuilder) computeFirstLineStyle(lin *LayoutInputNode, node *ht
 	if node == nil || node.Type != html.ElementNode {
 		return
 	}
-	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+	if parentStyle == nil || !isBlockContainerStyle(parentStyle) {
 		return
 	}
 	if len(b.stylesheets) == 0 {

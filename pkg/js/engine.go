@@ -190,6 +190,13 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// class. Louis14 renders once after Execute returns, so dispatching
 	// synchronously here is the faithful equivalent — the mutations land
 	// before the only screenshot.
+	//
+	// Window "load" fires first: all subresources are synchronously
+	// available in the one-shot model, so load listeners run right after
+	// script execution, before TestRendered (browser event order).
+	for _, l := range ctx.docEventListeners["load"] {
+		_, _ = l.fn(goja.Undefined())
+	}
 	fireTestRendered(ctx)
 
 	// Fire element-level onload callbacks (e.g. iframe.onload = fn).

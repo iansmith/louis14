@@ -194,6 +194,17 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
 		}
+	default:
+		// HTML living spec §15.3.1: elements the UA stylesheet does not
+		// address default to `display: inline` (the CSS initial value).
+		// louis14's GetDisplay() falls back to block, so unknown/custom
+		// elements (WPT refs use e.g. <x>, <ib> as styling hooks) must be
+		// stamped inline here or they wrongly become block boxes.
+		if !isKnownHTMLElement(node.TagName) {
+			if _, ok := style.Get("display"); !ok {
+				style.Set("display", "inline")
+			}
+		}
 	}
 
 	// Replaced inline elements: behave as inline-block for layout purposes
@@ -1720,7 +1731,10 @@ func markerAllowedProperty(name string) bool {
 		"letter-spacing", "word-spacing", "line-height",
 		"text-shadow", "text-transform", "animation", "transition",
 		"hyphens", "overflow-wrap", "tab-size", "word-break",
-		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position":
+		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position",
+		// quotes was added to the marker-applicable set by the CSSWG
+		// (csswg-drafts#5265; WPT css-lists/marker-quotes.html).
+		"quotes":
 		// CSS Pseudo-4 §4.4: `display` is NOT marker-allowed — an author
 		// `::marker { display: ... }` rule must be rejected. The engine's own
 		// ::marker box display (inside = inline default, outside = inline-block)
@@ -1739,6 +1753,14 @@ var markerUADefaults = [...][2]string{
 	{"text-transform", "none"},
 	{"white-space", "pre"},
 	{"font-variant-numeric", "tabular-nums"},
+	// Blink core/css/marker.css (@4883d11f): text-indent: 0 !important;
+	// text-align: start !important. The !important means even author
+	// ::marker rules cannot set them — neither is in
+	// markerAllowedProperty, so stamping the defaults here completes the
+	// contract (an inherited li text-indent must not shift the marker;
+	// WPT css-pseudo/marker-content-023).
+	{"text-indent", "0"},
+	{"text-align", "start"},
 }
 
 // applyMarkerCascade layers the UA ::marker defaults onto style, deferring
@@ -1968,6 +1990,52 @@ func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*
 	}
 	// For other values (concrete colors, keywords), leave them as-is.
 	// They are already in the style.Properties map from Set().
+}
+
+// isKnownHTMLElement reports whether the tag is a standard HTML element.
+// Elements outside this set (custom/unknown elements, including the synthetic
+// hooks WPT reference pages use) take the CSS initial `display: inline`
+// rather than louis14's block fallback. Synthetic "::marker"/"first-letter"
+// style nodes are handled by their own UA branches before this is consulted.
+var knownHTMLElements = map[string]bool{
+	"a": true, "abbr": true, "address": true, "area": true, "article": true,
+	"aside": true, "audio": true, "b": true, "base": true, "bdi": true,
+	"bdo": true, "blockquote": true, "body": true, "br": true, "button": true,
+	"canvas": true, "caption": true, "cite": true, "code": true, "col": true,
+	"colgroup": true, "data": true, "datalist": true, "dd": true, "del": true,
+	"details": true, "dfn": true, "dialog": true, "div": true, "dl": true,
+	"dt": true, "em": true, "embed": true, "fieldset": true, "figcaption": true,
+	"figure": true, "footer": true, "form": true, "h1": true, "h2": true,
+	"h3": true, "h4": true, "h5": true, "h6": true, "head": true,
+	"header": true, "hgroup": true, "hr": true, "html": true, "i": true,
+	"iframe": true, "img": true, "input": true, "ins": true, "kbd": true,
+	"label": true, "legend": true, "li": true, "link": true, "listing": true,
+	"main": true, "map": true, "mark": true, "menu": true, "meta": true,
+	"meter": true, "nav": true, "noscript": true, "object": true, "ol": true,
+	"optgroup": true, "option": true, "output": true, "p": true,
+	"picture": true, "pre": true, "progress": true, "q": true, "rp": true,
+	"rt": true, "ruby": true, "s": true, "samp": true, "script": true,
+	"section": true, "select": true, "slot": true, "small": true,
+	"source": true, "span": true, "strong": true, "style": true, "sub": true,
+	"summary": true, "sup": true, "table": true, "tbody": true, "td": true,
+	"template": true, "textarea": true, "tfoot": true, "th": true,
+	"thead": true, "time": true, "title": true, "tr": true, "track": true,
+	"tt": true, "u": true, "ul": true, "var": true, "video": true,
+	"wbr": true, "xmp": true,
+	// Legacy ruby containers louis14 still recognizes.
+	"rb": true, "rbc": true, "rtc": true,
+	// Obsolete-but-known HTML elements: these must NOT fall into the
+	// unknown-element inline default — e.g. <center> is block and <dir>
+	// gets list margins from the UA branch above.
+	"center": true, "dir": true, "font": true, "big": true,
+	"strike": true, "nobr": true, "acronym": true, "marquee": true,
+	"plaintext": true, "noembed": true, "noframes": true, "basefont": true,
+	"param": true, "frame": true, "frameset": true, "applet": true,
+	"keygen": true, "menuitem": true,
+}
+
+func isKnownHTMLElement(tag string) bool {
+	return knownHTMLElements[tag]
 }
 
 // inheritableProperties lists CSS properties that inherit from parent to child by default
@@ -3055,12 +3123,26 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		_, hasReversed := node.GetAttribute("reversed")
 		startVal, hasStart := node.GetAttribute("start")
 		if hasReversed {
-			// reversed(list-item) without explicit integer: let the CSS auto-initial
-			// algorithm compute the initial value from the scope.
-			style.Set("counter-reset", "reversed(list-item)")
+			if n, err := strconv.Atoi(startVal); hasStart && err == nil {
+				// reversed + start=N: the first item shows N counting
+				// down. Each reversed list item applies its implicit -1,
+				// so the scope resets to N+1 (HTML ordinal-value;
+				// li-value-reversed-017).
+				style.Set("counter-reset", "reversed(list-item) "+strconv.Itoa(n+1))
+			} else {
+				// reversed(list-item) without explicit integer: let the CSS
+				// auto-initial algorithm compute the initial value from the
+				// scope.
+				style.Set("counter-reset", "reversed(list-item)")
+			}
 		} else if hasStart {
-			if _, err := strconv.Atoi(startVal); err == nil {
-				style.Set("counter-reset", "list-item "+startVal)
+			if n, err := strconv.Atoi(startVal); err == nil {
+				// HTML's ordinal semantics: the FIRST item shows N. Each
+				// list item applies its implicit +1 increment, so the
+				// scope resets to N-1 (a plain <ol> resets to 0 and its
+				// first item shows 1). Mirrors Blink ListItemOrdinal's
+				// start handling @ 4883d11f.
+				style.Set("counter-reset", "list-item "+strconv.Itoa(n-1))
 			}
 		} else {
 			// Plain <ol> without reversed or start: UA default counter-reset: list-item 0.

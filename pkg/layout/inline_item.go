@@ -242,17 +242,22 @@ func collectInlinesRecursive(
 		}
 
 		// Block-level or atomic inline elements (inline-block, replaced,
-		// inline-table, inline list-item). `display: inline list-item` is an
-		// atomic inline that internally is a list-item block-flow (Blink
-		// LayoutInlineListItem). `inline-grid` (and `grid` when it appears as
-		// an inline-formatting-context child) is also atomic per CSS Display 3
+		// inline-table, inline flow-root list-item). A pure `display: inline
+		// list-item` is NOT atomic — Blink's LayoutInlineListItem derives
+		// from LayoutInline (layout_inline_list_item.h @ 4883d11f), a true
+		// inline box whose border and content fragment across lines; it
+		// takes the open/close-tag path below. Only the `inline flow-root
+		// list-item` variant is an atomic inline block container.
+		// `inline-grid` (and `grid` when it appears as an
+		// inline-formatting-context child) is also atomic per CSS Display 3
 		// §2.2 — its principal box is a grid container that participates in
 		// the line box as a single replaced-like inline.
 		if display == css.DisplayBlock || display == css.DisplayFlex ||
 			display == css.DisplayTable || display == css.DisplayGrid ||
 			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 			display == css.DisplayInlineGrid ||
-			display == css.DisplayInlineTable || display == css.DisplayInlineListItem {
+			display == css.DisplayInlineTable ||
+			(display == css.DisplayInlineListItem && !childStyle.IsInlineBoxListItem()) {
 			// Atomic inline — represented as U+FFFC.
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
@@ -435,6 +440,15 @@ func isAllVerticalScript(content string) bool {
 // rubyState is non-nil when this text node is inside a `<ruby>`;
 // preserved `\n` forced breaks are rewritten to spaces while inside a
 // `<rt>` (rubyForcedBreakSuppressed).
+// applyCollectionTextTransform applies measurable text-transform values at
+// collection time via the shared css.ApplyMeasurableTextTransform mapping.
+func applyCollectionTextTransform(content string, style *css.Style) string {
+	if style == nil {
+		return content
+	}
+	return css.ApplyMeasurableTextTransform(content, style.GetTextTransform())
+}
+
 func collectTextNode(
 	node *html.Node,
 	parentStyle *css.Style,
@@ -511,6 +525,15 @@ func collectTextNode(
 
 	startOffset := text.Len()
 
+	// CSS Text 3 §2.1: text-transform applies at item-collection time so
+	// MEASUREMENT sees the transformed text — Blink transforms in
+	// InlineItemsBuilder (core/layout/inline/inline_items_builder.cc
+	// TransformText path @ 4883d11f), not at paint. Applied after the final
+	// text source is chosen (node.Text vs node.RawText) so preserved-
+	// whitespace runs are transformed too. The paint-time
+	// applyTextTransform in pkg/render is idempotent for these values.
+	content = applyCollectionTextTransform(content, parentStyle)
+
 	if !collapseSpaces {
 		// Preserve whitespace as-is (white-space: pre / pre-wrap).
 		// Use RawText which preserves the original whitespace from the HTML
@@ -524,6 +547,7 @@ func collectTextNode(
 				preservedContent = strings.ReplaceAll(preservedContent, "\r", " ")
 			}
 		}
+		preservedContent = applyCollectionTextTransform(preservedContent, parentStyle)
 		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
 		// line breaks. Split on '\n' and emit InlineItemControl for each break,
 		// mirroring Blink's inline_items_builder.cc::AppendText and the

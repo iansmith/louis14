@@ -545,6 +545,63 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, wordBreak, overflowWrap, hyphens)
 }
 
+// isInsideMarkerItem reports whether an inline item belongs to an inside
+// ::marker box — the synthetic "::marker" element's open/close tags or its
+// text child. Inside markers glue to the item's following content: the
+// marker text is white-space:pre (UA ::marker default), so its preserved
+// trailing space is never a soft wrap opportunity.
+func isInsideMarkerItem(item *InlineItem) bool {
+	if item == nil || item.Node == nil {
+		return false
+	}
+	if item.Node.TagName == "::marker" {
+		return true
+	}
+	return item.Node.Parent != nil && item.Node.Parent.TagName == "::marker"
+}
+
+// rewindUnbreakableTail moves a trailing inside list-marker box from the
+// end of the current line to the next line.
+//
+// CSS Text 3 / Blink: there is no soft wrap opportunity between an inside
+// marker and the item's following content — the marker text has
+// white-space:pre (UA ::marker default), so its preserved trailing space is
+// not a break opportunity. Blink's LineBreaker encodes this as
+// can_break_after=false on the marker's results and rewinds to the last
+// breakable result on overflow (line_breaker.cc RewindOverflow @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14's greedy breaker has
+// no general rewind; this implements the marker-scoped case: when the item
+// after the marker cannot place anything on this line, the marker must wrap
+// with it.
+func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
+	// Only the marker box itself moves. Open/close tags before it stay on
+	// this line — they are trailable after the soft wrap point (Blink
+	// IsTrailableItemType, line_breaker.cc:222-231), which is why a wrapped
+	// list item paints its inline-start border at the end of the previous
+	// line and the marker starts the next line border-less (a non-first
+	// inline fragment).
+	i := len(line.Results)
+	for i > 0 && isInsideMarkerItem(line.Results[i-1].Item) {
+		i--
+	}
+	// Nothing marker-related at the tail, or the marker is the entire line
+	// (rewinding would loop forever — accept the overflow instead).
+	if i == 0 || i == len(line.Results) {
+		return
+	}
+	first := line.Results[i]
+	for _, r := range line.Results[i:] {
+		lb.position -= r.InlineSize
+	}
+	if lb.position < 0 {
+		lb.position = 0
+	}
+	line.Width = lb.position
+	lb.currentItemIndex = first.ItemIndex
+	lb.currentTextOffset = first.Item.StartOffset
+	line.Results = line.Results[:i]
+}
+
 // breakTextAtWord finds a break point within a text item.
 // Returns true if the line should end.
 func (lb *LineBreaker) breakTextAtWord(
@@ -581,6 +638,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	// This prevents a single-word text item from being force-added to an
 	// already-full line (the fitted>0 guard only applies to subsequent words).
 	if remaining <= 0 && len(line.Results) > 0 {
+		lb.rewindUnbreakableTail(line)
 		return true
 	}
 
@@ -703,6 +761,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			usedWidth = measureWord(words[0])
 		} else {
 			// End the line, retry this item on the next line.
+			lb.rewindUnbreakableTail(line)
 			return true
 		}
 	}
@@ -1438,7 +1497,10 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	// contributes independently to the min-content width.
 	// In LineBreakerMaxContent mode: never break (place everything on one line).
 	if totalInlineSize > remaining && line.HasContent && lb.mode != LineBreakerMaxContent {
-		// Doesn't fit and line has content — end the line.
+		// Doesn't fit and line has content — end the line. An inside
+		// marker trailing the line must wrap with the atomic (same
+		// no-break contract as the text path in breakTextAtWord).
+		lb.rewindUnbreakableTail(line)
 		return true
 	}
 

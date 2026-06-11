@@ -84,7 +84,12 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 func isAtomicBaselineDisplay(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayInlineBlock, css.DisplayInlineFlex, css.DisplayFlex,
-		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid:
+		css.DisplayTable, css.DisplayInlineTable, css.DisplayInlineGrid, css.DisplayGrid,
+		// `inline flow-root list-item` is an atomic inline block container
+		// and baseline-aligns like inline-block (CSS 2.1 §10.8.1, last
+		// line box). Pure `inline list-item` never reaches the atomic
+		// path — it is a true inline box (Blink LayoutInlineListItem).
+		css.DisplayInlineListItem:
 		return true
 	}
 	return false
@@ -103,7 +108,11 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 		return false
 	}
 	switch d {
-	case css.DisplayInlineBlock, css.DisplayTable, css.DisplayInlineTable:
+	case css.DisplayInlineBlock, css.DisplayTable, css.DisplayInlineTable,
+		// `inline flow-root list-item` is an inline-block container and
+		// follows the same rule (pure inline list items never reach the
+		// atomic baseline path).
+		css.DisplayInlineListItem:
 		// These displays synthesize from margin box when they are scroll containers.
 		return st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible
 	}
@@ -2128,7 +2137,7 @@ func createLineBoxEx(
 				// (display:inline), not a block container. Block containers handle their
 				// own position:relative offset in block layout — applying it here would
 				// double-offset the text.
-				if rStyle != nil && rStyle.GetDisplay() == css.DisplayInline {
+				if rStyle != nil && (rStyle.GetDisplay() == css.DisplayInline || rStyle.IsInlineBoxListItem()) {
 					pos := rStyle.GetPosition()
 					if pos == css.PositionRelative {
 						offset := rStyle.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
