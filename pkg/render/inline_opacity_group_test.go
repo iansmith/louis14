@@ -94,6 +94,153 @@ func TestPaintTree_MultiLineInlineOpacity_SingleGroup(t *testing.T) {
 	}
 }
 
+// Comprehensive group-membership contract with FRACTIONAL opacity (0.4), so
+// no skip-paint shortcut applies: one span carrying background + text + a
+// float child. Exactly one group layer exists, it carries the span's alpha,
+// and the span's bg fragments, text runs, and float are all Opacity-1
+// DESCENDANTS of it (float via the group's FloatChildren, pinning Appendix E
+// step-4-below-text order inside the group). No non-float div (the containing
+// block, sibling content) may be dimmed by the group.
+func TestPaintTree_InlineOpacityGroup_Membership(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div style="line-height: 0.5em; font-family: monospace"><span style="opacity: 0.4; background: blue; color: blue"><div style="width: 20px; height: 20px; float: left; background: red"></div>XXXXX<br/>XXXXX</span></div>
+<div style="width: 100px; height: 100px; background: green"></div>`)
+
+	var group *PaintLayer
+	groups := 0
+	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
+		if l.Opacity < 1.0 {
+			groups++
+			group = l
+		}
+	})
+	if groups != 1 {
+		t.Fatalf("expected exactly 1 opacity group layer, got %d", groups)
+	}
+	if group.Opacity != 0.4 {
+		t.Errorf("group opacity = %v, want 0.4", group.Opacity)
+	}
+
+	hasAncestor := func(ancestors []*PaintLayer, target *PaintLayer) bool {
+		for _, a := range ancestors {
+			if a == target {
+				return true
+			}
+		}
+		return false
+	}
+
+	var floatLayers, textLayers, bgLayers int
+	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
+		if l == group {
+			return
+		}
+		switch {
+		case l.Box != nil && isFloat(l.Box):
+			floatLayers++
+			if !hasAncestor(ancestors, group) {
+				t.Errorf("float layer is not a descendant of the opacity group")
+			}
+		case l.Box != nil && l.Box.Text == "XXXXX":
+			textLayers++
+			if !hasAncestor(ancestors, group) {
+				t.Errorf("text run layer is not a descendant of the opacity group")
+			}
+		case l.Box != nil && l.Box.Node != nil && l.Box.Node.TagName == "span" && l.Box.Text == "":
+			bgLayers++
+			if !hasAncestor(ancestors, group) {
+				t.Errorf("span background fragment layer is not a descendant of the opacity group")
+			}
+		case l.Box != nil && l.Box.Node != nil && l.Box.Node.TagName == "div":
+			if hasAncestor(ancestors, group) {
+				t.Errorf("non-span div layer is wrongly dimmed by the opacity group")
+			}
+		}
+	})
+	if floatLayers != 1 {
+		t.Errorf("expected 1 float layer, got %d", floatLayers)
+	}
+	if textLayers != 2 {
+		t.Errorf("expected 2 text run layers, got %d", textLayers)
+	}
+	inFloatList := false
+	for _, c := range group.FloatChildren {
+		if c.Box != nil && isFloat(c.Box) {
+			inFloatList = true
+		}
+	}
+	if !inFloatList {
+		t.Errorf("float must sit in the group's FloatChildren (Appendix E step 4, below the span's text)")
+	}
+}
+
+// Nested opacity inlines: the inner group must be a DESCENDANT of the outer
+// group so alphas multiply (0.5 * 0.25). Sibling groups hung flat off the
+// block would composite the inner content at 0.25 instead of 0.125.
+func TestPaintTree_NestedOpacityInlines_GroupsNest(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div><span style="opacity: 0.5">AA<span style="opacity: 0.25">BB</span>CC</span></div>`)
+
+	var outer, inner *PaintLayer
+	var innerAncestors []*PaintLayer
+	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
+		switch l.Opacity {
+		case 0.5:
+			outer = l
+		case 0.25:
+			inner = l
+			innerAncestors = append([]*PaintLayer{}, ancestors...)
+		}
+	})
+	if outer == nil || inner == nil {
+		t.Fatalf("expected one 0.5 group and one 0.25 group (outer=%v inner=%v)", outer != nil, inner != nil)
+	}
+	found := false
+	for _, a := range innerAncestors {
+		if a == outer {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("inner opacity group is not nested inside the outer group — alphas will not multiply")
+	}
+}
+
+// position:relative on the opacity span: emit() clones the span's style to
+// reset position for the bg fragment, so group identity must be keyed on the
+// NODE, not the style pointer. Still exactly one group containing bg + text.
+func TestPaintTree_RelativeOpacitySpan_SingleGroup(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div><span style="opacity: 0.4; position: relative; background: blue">XX</span></div>`)
+
+	groups := 0
+	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
+		if l.Opacity < 1.0 {
+			groups++
+		}
+	})
+	if groups != 1 {
+		t.Errorf("expected exactly 1 opacity group for a relative opacity span, got %d", groups)
+	}
+}
+
+// Two sibling opacity spans must produce two independent groups, not share a
+// singleton cache.
+func TestPaintTree_SiblingOpacitySpans_TwoGroups(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div><span style="opacity: 0.4">AA</span> <span style="opacity: 0.4">BB</span></div>`)
+
+	groups := 0
+	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
+		if l.Opacity < 1.0 {
+			groups++
+		}
+	})
+	if groups != 2 {
+		t.Errorf("expected 2 independent opacity groups for 2 sibling spans, got %d", groups)
+	}
+}
+
 // CSS 2.1 §10.6.1: the content area of a non-replaced inline is based on the
 // FONT (em box), not on line-height. Blink: InlineBoxState::ComputeTextMetrics
 // (inline_box_state.cc:105-132 @ 4883d11f) takes ascent/descent from
@@ -101,32 +248,42 @@ func TestPaintTree_MultiLineInlineOpacity_SingleGroup(t *testing.T) {
 // line-height:0 the span's background fragment must still be em-box tall,
 // vertically coincident with the text fragment's em box.
 func TestInlineBackgroundFragment_HeightFromFontMetrics(t *testing.T) {
-	_, root := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
-<div style="line-height: 0; font-family: monospace"><span style="background: blue; color: blue">XXXXX</span></div>`)
+	// Both regimes: line box smaller than the em box (0) and larger (2em).
+	// The background band must match the text em box in both — never the
+	// line box.
+	for _, lh := range []string{"0", "2em"} {
+		t.Run("line-height:"+lh, func(t *testing.T) {
+			_, root := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div style="line-height: `+lh+`; font-family: monospace"><span style="background: blue; color: blue">XXXXX</span></div>`)
 
-	var bgBox, textBox *layout.Box
-	var walk func(b *layout.Box)
-	walk = func(b *layout.Box) {
-		if b.Node != nil && b.Node.TagName == "span" && b.Style != nil {
-			if b.Text != "" {
-				textBox = b
-			} else {
-				bgBox = b
+			var bgBox, textBox *layout.Box
+			var walk func(b *layout.Box)
+			walk = func(b *layout.Box) {
+				if b.Node != nil && b.Node.TagName == "span" && b.Style != nil {
+					if b.Text != "" {
+						textBox = b
+					} else {
+						bgBox = b
+					}
+				}
+				for _, c := range b.Children {
+					walk(c)
+				}
 			}
-		}
-		for _, c := range b.Children {
-			walk(c)
-		}
-	}
-	walk(root)
+			walk(root)
 
-	if bgBox == nil || textBox == nil {
-		t.Fatalf("missing span boxes: bg=%v text=%v", bgBox != nil, textBox != nil)
-	}
-	if bgBox.Height != textBox.Height {
-		t.Errorf("span background height %v != text em-box height %v (must come from font metrics, not line-height)", bgBox.Height, textBox.Height)
-	}
-	if bgBox.Y != textBox.Y {
-		t.Errorf("span background top %v != text em-box top %v", bgBox.Y, textBox.Y)
+			if bgBox == nil || textBox == nil {
+				t.Fatalf("missing span boxes: bg=%v text=%v", bgBox != nil, textBox != nil)
+			}
+			if textBox.Height <= 0 {
+				t.Fatalf("text em-box height %v must be positive", textBox.Height)
+			}
+			if bgBox.Height != textBox.Height {
+				t.Errorf("span background height %v != text em-box height %v (must come from font metrics, not line-height)", bgBox.Height, textBox.Height)
+			}
+			if bgBox.Y != textBox.Y {
+				t.Errorf("span background top %v != text em-box top %v", bgBox.Y, textBox.Y)
+			}
+		})
 	}
 }
