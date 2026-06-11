@@ -923,6 +923,8 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 					ParagraphLevel:  item.ParagraphLevel,
 					IsFirstFragment: item.IsFirstFragment,
 					IsLastFragment:  item.IsLastFragment,
+
+					EnclosingPaintGroup: item.EnclosingPaintGroup,
 				})
 				currentLevel = lvl
 				runStart = r
@@ -939,6 +941,8 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 			ParagraphLevel:  item.ParagraphLevel,
 			IsFirstFragment: item.IsFirstFragment,
 			IsLastFragment:  item.IsLastFragment,
+
+			EnclosingPaintGroup: item.EnclosingPaintGroup,
 		})
 	}
 

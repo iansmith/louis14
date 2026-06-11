@@ -733,3 +733,29 @@ func TestWideKeywordFallback(t *testing.T) {
 		t.Errorf("inner color = %q, want %q (inherited from outer2's computed --color)", innerColor, "green")
 	}
 }
+
+// HTML §4.5.1 / Blink UA stylesheet (html.css:1683-1687 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): link color and underline apply
+// via `a:-webkit-any-link` — an <a> WITH an href. A bare <a> (no href) is
+// not a link and gets neither.
+func TestUAStyles_AnchorOnlyStyledWhenLink(t *testing.T) {
+	link := &html.Node{Type: html.ElementNode, TagName: "a", Attributes: map[string]string{"href": "https://example.com/"}}
+	linkStyle := NewStyle()
+	applyUserAgentStyles(link, linkStyle)
+	if v, ok := linkStyle.Get("text-decoration-line"); !ok || v != "underline" {
+		t.Errorf("a[href]: expected UA underline, got %q (ok=%v)", v, ok)
+	}
+	if _, ok := linkStyle.Get("color"); !ok {
+		t.Error("a[href]: expected UA link color")
+	}
+
+	plain := &html.Node{Type: html.ElementNode, TagName: "a"}
+	plainStyle := NewStyle()
+	applyUserAgentStyles(plain, plainStyle)
+	if v, ok := plainStyle.Get("text-decoration-line"); ok {
+		t.Errorf("bare <a> (no href): must not get UA underline, got %q", v)
+	}
+	if v, ok := plainStyle.Get("color"); ok {
+		t.Errorf("bare <a> (no href): must not get UA link color, got %q", v)
+	}
+}
