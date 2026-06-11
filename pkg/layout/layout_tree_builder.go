@@ -23,6 +23,10 @@ type LayoutTreeBuilder struct {
 	viewportWidth  float64
 	viewportHeight float64
 
+	// counterStyleMap lazily indexes @counter-style rules by name for
+	// ::marker content resolution (counterStyleRules).
+	counterStyleMap map[string]css.CounterStyleRule
+
 	// fontConfig resolves font-family → font path for measuring the scaled
 	// initial-letter font (CSS Inline Layout 3 §7.5.1). Zero-value is safe:
 	// initial-letter sizing falls back to the cap-unit heuristic when no
@@ -1917,10 +1921,17 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		if lst != "" {
 			if isBuiltinListStyleType(lst) {
 				markerContent = b.resolveListStyleType(lst, node)
+			} else if cs, ok := b.counterStyleRules()[string(lst)]; ok {
+				// @counter-style reference: format the ordinal through the
+				// custom style (Blink CounterStyle::GenerateRepresentation
+				// WithPrefixAndSuffix).
+				markerContent = css.ApplyCounterStyle(b.listItemOrdinal(node), cs, b.counterStyleRules())
 			} else {
-				// Custom <string> value (e.g., list-style-type: "§").
+				// <string> value (e.g., list-style-type: "§"): the string
+				// IS the marker text, verbatim, no suffix (Blink
+				// kStaticString). Quotes may or may not have survived
+				// parsing; strip a surrounding pair if present.
 				s := string(lst)
-				// Strip surrounding quotes if present.
 				if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
 					s = s[1 : len(s)-1]
 				}
@@ -1966,17 +1977,7 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 		return ""
 	}
 
-	// Prefer counter context when list-item has been explicitly established
-	// (e.g. counter-reset: reversed(list-item) or counter-reset: list-item N).
-	// Fall back to DOM-sibling counting when list-item is not in the counter
-	// context, so that normal lists without explicit counter-reset still work.
-	var value int
-	if b.counterCtx.IsCounterInScope(node, "list-item") {
-		vals := b.counterCtx.GetCounterValues(node, "list-item", true)
-		value = vals[0]
-	} else {
-		value = b.getListItemCounterValue(node)
-	}
+	value := b.listItemOrdinal(node)
 
 	// The predefined symbolic styles carry the CSS Counter Styles 3
 	// `suffix: " "` (one space), just like the numeric styles carry ". ".
@@ -2013,6 +2014,32 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	default:
 		return ""
 	}
+}
+
+// listItemOrdinal returns the list-item counter value for a marker.
+// Prefers the counter context when list-item has been explicitly established
+// (e.g. counter-reset: reversed(list-item) or counter-reset: list-item N);
+// falls back to DOM-sibling counting otherwise, so normal lists without an
+// explicit counter-reset still work.
+func (b *LayoutTreeBuilder) listItemOrdinal(node *html.Node) int {
+	if b.counterCtx.IsCounterInScope(node, "list-item") {
+		return b.counterCtx.GetCounterValues(node, "list-item", true)[0]
+	}
+	return b.getListItemCounterValue(node)
+}
+
+// counterStyleRules lazily indexes the document's @counter-style rules by
+// name for ::marker content resolution.
+func (b *LayoutTreeBuilder) counterStyleRules() map[string]css.CounterStyleRule {
+	if b.counterStyleMap == nil {
+		b.counterStyleMap = make(map[string]css.CounterStyleRule)
+		for _, sheet := range b.stylesheets {
+			for _, cs := range sheet.CounterStyles {
+				b.counterStyleMap[cs.Name] = cs
+			}
+		}
+	}
+	return b.counterStyleMap
 }
 
 // isBuiltinListStyleType returns true for the predefined list-style-type values.
