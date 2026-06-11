@@ -1753,6 +1753,14 @@ var markerUADefaults = [...][2]string{
 	{"text-transform", "none"},
 	{"white-space", "pre"},
 	{"font-variant-numeric", "tabular-nums"},
+	// Blink core/css/marker.css (@4883d11f): text-indent: 0 !important;
+	// text-align: start !important. The !important means even author
+	// ::marker rules cannot set them — neither is in
+	// markerAllowedProperty, so stamping the defaults here completes the
+	// contract (an inherited li text-indent must not shift the marker;
+	// WPT css-pseudo/marker-content-023).
+	{"text-indent", "0"},
+	{"text-align", "start"},
 }
 
 // applyMarkerCascade layers the UA ::marker defaults onto style, deferring
