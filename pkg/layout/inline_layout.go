@@ -1670,13 +1670,12 @@ func createLineBoxEx(
 	// it lands at the bottom of the line's paint stack. Per the spec, the
 	// generated ::first-line box "behaves similar to that of an inline-level
 	// element" (the assertion the first-line-line-height WPT reftests check by
-	// modelling ::first-line as a `<span>`): so its background covers the same
-	// box an inline span on this line would — the line's CONTENT inline extent
-	// (line.Width starting at the text-align offset), at the full line-box
-	// HEIGHT (lineHeight). This mirrors the inline span-background pre-pass
-	// below, which sizes each span fragment as `lineHeight` tall and
-	// content-wide (`fragEnd − fragStart`); the ::first-line band is the
-	// degenerate single-span case. Mirrors Blink's
+	// modelling ::first-line as a `<span>`): so its background covers the
+	// line's CONTENT inline extent (line.Width starting at the text-align
+	// offset), at the full line-box HEIGHT (lineHeight) — unlike the inline
+	// span-background pre-pass below, which sizes each span fragment to the
+	// span's em box (font-derived, see spanBlockSize), this line-level band
+	// spans the whole line box. Mirrors Blink's
 	// `LineBoxFragmentPainter::PaintBackgroundBorderShadow`
 	// (`core/paint/inline_box_fragment_painter.cc` @ 4883d11fef), whose
 	// `line_style_` is the ::first-line-aware style.

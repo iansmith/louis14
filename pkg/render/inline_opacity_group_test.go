@@ -74,6 +74,18 @@ func opacities(layers []*PaintLayer) []float64 {
 	return out
 }
 
+// countOpacityGroups counts the layers in the whole paint tree carrying a
+// group opacity (Opacity < 1) — one per opacity inline.
+func countOpacityGroups(root *PaintLayer) int {
+	groups := 0
+	forEachLayer(root, nil, func(l *PaintLayer, _ []*PaintLayer) {
+		if l.Opacity < 1.0 {
+			groups++
+		}
+	})
+	return groups
+}
+
 // CSS Color 3 §3.2: opacity is GROUP opacity over the element — all fragments
 // of a multi-line inline (per-line background fragments and text runs) must
 // composite as ONE group with a single alpha application. Blink: one PaintLayer
@@ -83,13 +95,7 @@ func TestPaintTree_MultiLineInlineOpacity_SingleGroup(t *testing.T) {
 	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
 <div style="line-height: 0.5em; font-family: monospace"><span style="opacity: 0.4; background: blue; color: blue">XXXXX<br/>XXXXX</span></div>`)
 
-	var groups int
-	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
-		if l.Opacity < 1.0 {
-			groups++
-		}
-	})
-	if groups != 1 {
+	if groups := countOpacityGroups(root); groups != 1 {
 		t.Errorf("expected exactly 1 opacity group layer for the span element, got %d", groups)
 	}
 }
@@ -213,13 +219,7 @@ func TestPaintTree_RelativeOpacitySpan_SingleGroup(t *testing.T) {
 	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
 <div><span style="opacity: 0.4; position: relative; background: blue">XX</span></div>`)
 
-	groups := 0
-	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
-		if l.Opacity < 1.0 {
-			groups++
-		}
-	})
-	if groups != 1 {
+	if groups := countOpacityGroups(root); groups != 1 {
 		t.Errorf("expected exactly 1 opacity group for a relative opacity span, got %d", groups)
 	}
 }
@@ -230,13 +230,7 @@ func TestPaintTree_SiblingOpacitySpans_TwoGroups(t *testing.T) {
 	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
 <div><span style="opacity: 0.4">AA</span> <span style="opacity: 0.4">BB</span></div>`)
 
-	groups := 0
-	forEachLayer(root, nil, func(l *PaintLayer, ancestors []*PaintLayer) {
-		if l.Opacity < 1.0 {
-			groups++
-		}
-	})
-	if groups != 2 {
+	if groups := countOpacityGroups(root); groups != 2 {
 		t.Errorf("expected 2 independent opacity groups for 2 sibling spans, got %d", groups)
 	}
 }
