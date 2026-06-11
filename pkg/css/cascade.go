@@ -806,16 +806,20 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// default differs from spec.
 	resolveCSSWideKeywords(finalStyle, revertSnap, layerSnap)
 
+	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin,
+	// vmax). Must precede ApplyAnimations: keyframe interpolation resolves
+	// viewport-relative length endpoints against this style (Blink's
+	// StyleResolverState::CssToLengthConversionData carries the viewport
+	// size throughout style resolution, animation sampling included).
+	finalStyle.ViewportWidth = viewportWidth
+	finalStyle.ViewportHeight = viewportHeight
+
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
 	// cascade origin sits below author !important (CSS Cascade §6.3), so
 	// ApplyAnimations skips any property in importantProps. animation-name and
 	// the other animation-* longhands have already been resolved (via rule
 	// declarations / inline style) into finalStyle by this point.
 	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
-
-	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin, vmax)
-	finalStyle.ViewportWidth = viewportWidth
-	finalStyle.ViewportHeight = viewportHeight
 
 	// CSS Values 5 §11.5: resolve typed attr() references in property values.
 	// attr() in non-content properties (e.g. background-color, width) must be
@@ -1664,6 +1668,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// is a real time value when the keyframe pass reads it.
 	resolvePseudoInheritKeyword(finalStyle, parentStyles)
 
+	// Store viewport dimensions before the animation pass — keyframe
+	// interpolation resolves viewport-relative length endpoints against this
+	// style (see ComputeStyle).
+	finalStyle.ViewportWidth = viewportWidth
+	finalStyle.ViewportHeight = viewportHeight
+
 	// CSS Animations §4: apply in-effect @keyframes values to the
 	// pseudo-element's computed style (same cascade position as for elements).
 	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
@@ -1701,10 +1711,6 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	if _, ok := finalStyle.Get("display"); !ok {
 		finalStyle.Set("display", "inline")
 	}
-
-	// Store viewport dimensions for viewport unit resolution
-	finalStyle.ViewportWidth = viewportWidth
-	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
 }

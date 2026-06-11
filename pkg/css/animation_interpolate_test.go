@@ -135,10 +135,16 @@ func TestKeyframeLength_MixedPxPercentEmitsCalc(t *testing.T) {
 
 func TestKeyframeLength_NilBaseViewportUnitStaysDiscrete(t *testing.T) {
 	// Without a base style there is no viewport to resolve vh against; the
-	// value falls back to the discrete from-endpoint (existing behavior).
-	got := sampleKeyframes(t, "height", "0px", "200vh", 0.5, nil)
-	if got != "0px" {
-		t.Errorf("height 0px->200vh @0.5 with nil base = %q, want \"0px\"", got)
+	// value falls back to discrete interpolation, which flips at the midpoint
+	// (Blink FlipPrimitiveInterpolation, primitive_interpolation.h:142
+	// @ 4883d11f: fraction < 0.5 -> start, else end).
+	gotLow := sampleKeyframes(t, "height", "0px", "200vh", 0.25, nil)
+	if gotLow != "0px" {
+		t.Errorf("height 0px->200vh @0.25 with nil base = %q, want \"0px\"", gotLow)
+	}
+	gotHigh := sampleKeyframes(t, "height", "0px", "200vh", 0.75, nil)
+	if gotHigh != "200vh" {
+		t.Errorf("height 0px->200vh @0.75 with nil base = %q, want \"200vh\"", gotHigh)
 	}
 }
 
