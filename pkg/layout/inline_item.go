@@ -441,19 +441,12 @@ func isAllVerticalScript(content string) bool {
 // preserved `\n` forced breaks are rewritten to spaces while inside a
 // `<rt>` (rubyForcedBreakSuppressed).
 // applyCollectionTextTransform applies measurable text-transform values at
-// collection time. capitalize is left to paint (word-boundary logic lives
-// there; its width effect is accepted as approximation).
+// collection time via the shared css.ApplyMeasurableTextTransform mapping.
 func applyCollectionTextTransform(content string, style *css.Style) string {
 	if style == nil {
 		return content
 	}
-	switch style.GetTextTransform() {
-	case css.TextTransformUppercase:
-		return strings.ToUpper(content)
-	case css.TextTransformLowercase:
-		return strings.ToLower(content)
-	}
-	return content
+	return css.ApplyMeasurableTextTransform(content, style.GetTextTransform())
 }
 
 func collectTextNode(

@@ -114,19 +114,9 @@ func NewStyle() *Style {
 // Clone returns a deep copy of this Style with all properties copied.
 func (s *Style) Clone() *Style {
 	dst := &Style{
-		Properties:        make(map[string]string, len(s.Properties)),
-		ViewportWidth:     s.ViewportWidth,
-		ViewportHeight:    s.ViewportHeight,
-		ChWidth:           s.ChWidth,
-		UsedFontSize:      s.UsedFontSize,
-		UsedFontSizeSet:   s.UsedFontSizeSet,
-		XHeight:           s.XHeight,
-		CapHeight:         s.CapHeight,
-		LhSize:            s.LhSize,
-		IcWidth:           s.IcWidth,
-		BaseDir:           s.BaseDir,
-		FontFeatureValues: s.FontFeatureValues, // shared by reference; never mutated post-cascade
+		Properties: make(map[string]string, len(s.Properties)),
 	}
+	copyStyleResolutionContext(dst, s)
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
 	}
@@ -7622,6 +7612,38 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// ApplyMeasurableTextTransform applies the text-transform values whose
+// effect on glyph advances must be visible to measurement (uppercase /
+// lowercase). capitalize is paint-layer-only: its word-boundary logic lives
+// in the renderer and its width effect is accepted as approximation.
+func ApplyMeasurableTextTransform(s string, t TextTransform) string {
+	switch t {
+	case TextTransformUppercase:
+		return strings.ToUpper(s)
+	case TextTransformLowercase:
+		return strings.ToLower(s)
+	}
+	return s
+}
+
+// copyStyleResolutionContext copies the non-property resolution context —
+// viewport size, font metrics, base direction, font-feature rules — from src
+// to dst. Shared by Clone and CreateAnonymousStyleWithDisplay so the field
+// list cannot drift.
+func copyStyleResolutionContext(dst, src *Style) {
+	dst.ViewportWidth = src.ViewportWidth
+	dst.ViewportHeight = src.ViewportHeight
+	dst.ChWidth = src.ChWidth
+	dst.UsedFontSize = src.UsedFontSize
+	dst.UsedFontSizeSet = src.UsedFontSizeSet
+	dst.XHeight = src.XHeight
+	dst.CapHeight = src.CapHeight
+	dst.LhSize = src.LhSize
+	dst.IcWidth = src.IcWidth
+	dst.BaseDir = src.BaseDir
+	dst.FontFeatureValues = src.FontFeatureValues // shared by reference; never mutated post-cascade
+}
+
 // CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
 // only inherited properties (including custom properties) are carried over
 // from the parent, and display is set explicitly. Mirrors Blink
@@ -7634,22 +7656,10 @@ func (s *Style) IsListItemDisplay() bool {
 func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
 	s := NewStyle()
 	if parent != nil {
-		// Non-property resolution context travels with the style (same
-		// fields Clone copies): viewport size, font metrics, base
-		// direction, font-feature rules. Without these, inherited values
-		// on the anonymous box (e.g. viewport-unit font sizes) resolve
-		// against zeroes.
-		s.ViewportWidth = parent.ViewportWidth
-		s.ViewportHeight = parent.ViewportHeight
-		s.ChWidth = parent.ChWidth
-		s.UsedFontSize = parent.UsedFontSize
-		s.UsedFontSizeSet = parent.UsedFontSizeSet
-		s.XHeight = parent.XHeight
-		s.CapHeight = parent.CapHeight
-		s.LhSize = parent.LhSize
-		s.IcWidth = parent.IcWidth
-		s.BaseDir = parent.BaseDir
-		s.FontFeatureValues = parent.FontFeatureValues
+		// Non-property resolution context travels with the style; without
+		// it, inherited values on the anonymous box (e.g. viewport-unit
+		// font sizes) resolve against zeroes.
+		copyStyleResolutionContext(s, parent)
 		for prop, val := range parent.Properties {
 			if inheritableProperties[prop] || strings.HasPrefix(prop, "--") {
 				s.Properties[prop] = val

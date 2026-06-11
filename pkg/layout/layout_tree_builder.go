@@ -1007,13 +1007,7 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// `quotes` wins (e.g. `::before { quotes: "«" "»" }`); when the pseudo
 	// computation carries none, the originating element's inherited value
 	// applies — same precedence as ::marker content resolution.
-	quoteSource := parentStyle
-	if pseudoStyle != nil {
-		if _, ok := pseudoStyle.Get("quotes"); ok {
-			quoteSource = pseudoStyle
-		}
-	}
-	quotes := b.quotesFor(quoteSource)
+	quotes := b.quotesFor(quoteSourceStyle(pseudoStyle, parentStyle))
 
 	// Build child nodes from content values.
 	// Adjacent text-producing values (text, counter, attr, quote) are merged
@@ -1119,6 +1113,18 @@ func (b *LayoutTreeBuilder) createSyntheticImage(src string, parent *html.Node) 
 	imgStyle.ViewportHeight = b.viewportHeight
 	b.styles[imgNode] = imgStyle
 	return &LayoutInputNode{DOMNode: imgNode, style: imgStyle}
+}
+
+// quoteSourceStyle picks the style whose `quotes` value governs generated
+// content: the pseudo-element's (or marker's) own computed value wins; when
+// it carries none, the originating element's inherited value applies.
+func quoteSourceStyle(own, fallback *css.Style) *css.Style {
+	if own != nil {
+		if _, ok := own.Get("quotes"); ok {
+			return own
+		}
+	}
+	return fallback
 }
 
 // quotesFor returns the quote-pair strings governing open-quote/close-quote
@@ -1781,15 +1787,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 
 	// Now that the marker's counter scope is live, resolve content.
 	if len(markerContentValues) > 0 {
-		// quotes is inherited; a ::marker rule's own quotes wins, else the
-		// list item's (which carries the inherited value).
-		quoteStyle := markerStyle
-		if _, ok := markerStyle.Get("quotes"); !ok {
-			if _, ok := style.Get("quotes"); ok {
-				quoteStyle = style
-			}
-		}
-		markerContent = b.resolveContentText(markerContentValues, node, markerNode, quoteStyle)
+		markerContent = b.resolveContentText(markerContentValues, node, markerNode, quoteSourceStyle(markerStyle, style))
 	}
 
 	// Image marker: list-style-image takes precedence over list-style-type
