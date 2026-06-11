@@ -64,14 +64,6 @@ type LayoutInputNode struct {
 	// by BuildPaintTree for DOM-ordered traversal.
 	Box *Box
 
-	// MarkerStyle is the computed ::marker pseudo-element style for list items.
-	// Set during layout tree building when display: list-item has matching ::marker rules.
-	MarkerStyle *css.Style
-
-	// MarkerContent is the resolved text content from ::marker { content: ... }.
-	// Set during layout tree building when counter() values can be resolved.
-	MarkerContent string
-
 	// markerNode is the ::marker pseudo-element LayoutInputNode for a
 	// list-item node. Set during layout tree building by
 	// createMarkerPseudoElement for BOTH inside and outside markers; mirrors

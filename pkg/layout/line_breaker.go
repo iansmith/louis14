@@ -1497,7 +1497,10 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	// contributes independently to the min-content width.
 	// In LineBreakerMaxContent mode: never break (place everything on one line).
 	if totalInlineSize > remaining && line.HasContent && lb.mode != LineBreakerMaxContent {
-		// Doesn't fit and line has content — end the line.
+		// Doesn't fit and line has content — end the line. An inside
+		// marker trailing the line must wrap with the atomic (same
+		// no-break contract as the text path in breakTextAtWord).
+		lb.rewindUnbreakableTail(line)
 		return true
 	}
 

@@ -2024,6 +2024,14 @@ var knownHTMLElements = map[string]bool{
 	"wbr": true, "xmp": true,
 	// Legacy ruby containers louis14 still recognizes.
 	"rb": true, "rbc": true, "rtc": true,
+	// Obsolete-but-known HTML elements: these must NOT fall into the
+	// unknown-element inline default — e.g. <center> is block and <dir>
+	// gets list margins from the UA branch above.
+	"center": true, "dir": true, "font": true, "big": true,
+	"strike": true, "nobr": true, "acronym": true, "marquee": true,
+	"plaintext": true, "noembed": true, "noframes": true, "basefont": true,
+	"param": true, "frame": true, "frameset": true, "applet": true,
+	"keygen": true, "menuitem": true,
 }
 
 func isKnownHTMLElement(tag string) bool {

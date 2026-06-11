@@ -7671,17 +7671,23 @@ func (s *Style) MarkerShouldBeInside() bool {
 // raw display value is sniffed for the flow-root keyword the same way
 // EstablishesNewFormattingContext does.
 func (s *Style) IsInlineBoxListItem() bool {
-	if s.GetDisplay() != DisplayInlineListItem {
-		return false
-	}
+	return s.GetDisplay() == DisplayInlineListItem && !s.rawDisplayHasFlowRoot()
+}
+
+// rawDisplayHasFlowRoot reports whether the raw multi-keyword `display`
+// value contains the flow-root inner keyword. GetDisplay() folds variants
+// like `inline flow-root list-item` into a single DisplayType (the
+// list-item check wins), losing the flow-root bit, so callers that need it
+// sniff the raw property.
+func (s *Style) rawDisplayHasFlowRoot() bool {
 	if raw, ok := s.Get("display"); ok {
 		for _, f := range strings.Fields(raw) {
 			if f == "flow-root" {
-				return false
+				return true
 			}
 		}
 	}
-	return true
+	return false
 }
 
 // IsAtomicInlineDisplay reports whether the computed display generates
@@ -7732,14 +7738,7 @@ func (s *Style) EstablishesNewFormattingContext() bool {
 	// Inspect the raw display string for the `flow-root` inner keyword
 	// combined with other outers (notably `inline flow-root list-item`,
 	// which GetDisplay() folds into DisplayInlineListItem).
-	if raw, ok := s.Get("display"); ok {
-		for _, f := range strings.Fields(raw) {
-			if f == "flow-root" {
-				return true
-			}
-		}
-	}
-	return false
+	return s.rawDisplayHasFlowRoot()
 }
 
 // IsInlineRuby reports whether the element should be treated as an
