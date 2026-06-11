@@ -474,6 +474,21 @@ func collectTextNode(
 		content = node.RawText
 	}
 
+	// CSS Text 3 §2.1: text-transform applies at item-collection time so
+	// MEASUREMENT sees the transformed text — Blink transforms in
+	// InlineItemsBuilder (core/layout/inline/inline_items_builder.cc
+	// TransformText path @ 4883d11f), not at paint. The paint-time
+	// applyTextTransform in pkg/render is idempotent for upper/lower/
+	// capitalize, so transforming here as well is safe.
+	if parentStyle != nil {
+		switch parentStyle.GetTextTransform() {
+		case css.TextTransformUppercase:
+			content = strings.ToUpper(content)
+		case css.TextTransformLowercase:
+			content = strings.ToLower(content)
+		}
+	}
+
 	// CSS Ruby — forced breaks inside `<rt>` (or any descendant) are
 	// rewritten to spaces at item-collection time so the existing
 	// whitespace-handling branches below never emit InlineItemControl
