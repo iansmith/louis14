@@ -337,9 +337,9 @@ func (k Keyframe) offsetOrSelf() float64 { return k.Offset }
 // endpoints interpolate.
 //
 // For value types where interpolation is not implemented, the endpoint is
-// returned discretely (t < 1 -> from, t >= 1 -> to) — this is correct for
-// every other in-scope test, which is either from==to (constant) or frozen
-// exactly on a keyframe offset.
+// returned discretely, flipping at the midpoint (t < 0.5 -> from, else to) —
+// this is correct for every other in-scope test, which is either from==to
+// (constant) or frozen exactly on a keyframe offset.
 func interpolateValue(prop, from, to string, t float64, base *Style) string {
 	if from == to {
 		return from
@@ -464,11 +464,7 @@ type lengthPair struct {
 // `<number>%` convert.
 func parseLengthPair(s string, base *Style) (lengthPair, bool) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "%") {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
-		if err != nil {
-			return lengthPair{}, false
-		}
+	if v, ok := ParsePercentage(s); ok {
 		return lengthPair{pct: v}, true
 	}
 	if v, ok := parsePxOrZero(s); ok {
@@ -580,7 +576,7 @@ func parseTransformListOrNone(val string) ([]Transform, bool) {
 // matrix decomposition (or reciprocals for perspective), which louis14 does
 // not implement.
 func canBlendTransforms(a, b Transform) bool {
-	if a.Type != b.Type || len(a.Values) != len(b.Values) {
+	if a.Type != b.Type || len(a.Values) != len(b.Values) || len(a.IsPercent) != len(b.IsPercent) {
 		return false
 	}
 	switch a.Type {
@@ -591,11 +587,11 @@ func canBlendTransforms(a, b Transform) bool {
 		return a.Values[0] == b.Values[0] && a.Values[1] == b.Values[1] && a.Values[2] == b.Values[2]
 	}
 	for i := range a.IsPercent {
-		if i < len(b.IsPercent) && a.IsPercent[i] != b.IsPercent[i] {
+		if a.IsPercent[i] != b.IsPercent[i] {
 			return false
 		}
 	}
-	return len(a.IsPercent) == len(b.IsPercent)
+	return true
 }
 
 // identityTransformLike returns the identity operation matching op's type,
@@ -604,21 +600,21 @@ func canBlendTransforms(a, b Transform) bool {
 // @ 4883d11f). Reports false for types with no component-wise identity here
 // (matrix / matrix3d / perspective — see canBlendTransforms).
 func identityTransformLike(op Transform) (Transform, bool) {
-	id := Transform{Type: op.Type}
+	id := Transform{
+		Type:      op.Type,
+		Values:    make([]float64, len(op.Values)),
+		IsPercent: append([]bool(nil), op.IsPercent...),
+	}
 	switch op.Type {
-	case "translate", "translate3d":
-		id.Values = make([]float64, len(op.Values))
-		id.IsPercent = append([]bool(nil), op.IsPercent...)
-	case "translateZ", "rotate", "rotateX", "rotateY", "skew":
-		id.Values = make([]float64, len(op.Values))
+	case "translate", "translate3d", "translateZ", "rotate", "rotateX", "rotateY", "skew":
+		// Zero values are the identity.
 	case "scale", "scaleZ", "scale3d":
-		id.Values = make([]float64, len(op.Values))
 		for i := range id.Values {
 			id.Values[i] = 1
 		}
 	case "rotate3d":
 		// Same axis, zero angle.
-		id.Values = []float64{op.Values[0], op.Values[1], op.Values[2], 0}
+		copy(id.Values, op.Values[:3])
 	default:
 		return Transform{}, false
 	}
@@ -627,10 +623,12 @@ func identityTransformLike(op Transform) (Transform, bool) {
 
 // blendTransform lerps two blendable transform operations component-wise.
 func blendTransform(a, b Transform, t float64) Transform {
+	// a.IsPercent is shared, not copied: the blended op is serialized and
+	// discarded without mutation.
 	out := Transform{
 		Type:      a.Type,
 		Values:    make([]float64, len(a.Values)),
-		IsPercent: append([]bool(nil), a.IsPercent...),
+		IsPercent: a.IsPercent,
 	}
 	for i := range a.Values {
 		out.Values[i] = a.Values[i] + (b.Values[i]-a.Values[i])*t
