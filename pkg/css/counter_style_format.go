@@ -12,10 +12,19 @@ import (
 // pkg/css so layout-time ::marker content resolution and the renderer share
 // one implementation.
 func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]CounterStyleRule) string {
+	return applyCounterStyleRec(value, cs, allStyles, nil)
+}
+
+// applyCounterStyleRec is ApplyCounterStyle with cycle protection: visited
+// tracks fallback names already entered, so `@counter-style a { fallback: b }
+// @counter-style b { fallback: a }` terminates at decimal instead of
+// recursing forever (Blink resolves fallback cycles to decimal,
+// counter_style.cc ResolveFallback @ 4883d11f).
+func applyCounterStyleRec(value int, cs CounterStyleRule, allStyles map[string]CounterStyleRule, visited map[string]bool) string {
 	switch cs.System {
 	case "cyclic":
 		if len(cs.Symbols) == 0 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		n := len(cs.Symbols)
 		idx := ((value-1)%n + n) % n
@@ -23,7 +32,7 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 
 	case "numeric":
 		if len(cs.Symbols) < 2 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		base := len(cs.Symbols)
 		if value == 0 {
@@ -46,11 +55,11 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 
 	case "alphabetic":
 		if len(cs.Symbols) < 2 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		if value <= 0 {
 			// Alphabetic system not defined for zero or negative values.
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		base := len(cs.Symbols)
 		result := ""
@@ -64,10 +73,10 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 
 	case "symbolic":
 		if len(cs.Symbols) == 0 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		if value <= 0 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		n := len(cs.Symbols)
 		idx := ((value-1)%n + n) % n
@@ -81,11 +90,17 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 			return cs.Prefix + cs.Symbols[value-1] + cs.Suffix
 		}
 		// Out of range: use fallback
-		return fallbackCounterStyle(value, cs.Fallback, allStyles)
+		return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 
 	case "additive":
 		if len(cs.AdditiveSymbols) == 0 {
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
+		}
+		// The additive algorithm is defined for non-negative values only
+		// (CSS Counter Styles 3 §3.1.7); out-of-range values use the
+		// fallback, like Blink's range check before generation.
+		if value < 0 {
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		// Sort additive symbols by value descending
 		sorted := make([]AdditiveSymbol, len(cs.AdditiveSymbols))
@@ -100,7 +115,7 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 					return cs.Prefix + as.Symbol + cs.Suffix
 				}
 			}
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		result := ""
 		remaining := value
@@ -115,21 +130,29 @@ func ApplyCounterStyle(value int, cs CounterStyleRule, allStyles map[string]Coun
 		}
 		if remaining > 0 {
 			// Could not represent — use fallback
-			return fallbackCounterStyle(value, cs.Fallback, allStyles)
+			return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 		}
 		return cs.Prefix + result + cs.Suffix
 
 	default:
 		// Unknown system — use fallback
-		return fallbackCounterStyle(value, cs.Fallback, allStyles)
+		return fallbackCounterStyleRec(value, cs.Fallback, allStyles, visited)
 	}
 }
 
 // fallbackCounterStyle applies the fallback counter style, defaulting to decimal.
 func fallbackCounterStyle(value int, fallback string, allStyles map[string]CounterStyleRule) string {
-	if fallback != "" && allStyles != nil {
+	return fallbackCounterStyleRec(value, fallback, allStyles, nil)
+}
+
+func fallbackCounterStyleRec(value int, fallback string, allStyles map[string]CounterStyleRule, visited map[string]bool) string {
+	if fallback != "" && allStyles != nil && !visited[fallback] {
 		if cs, ok := allStyles[fallback]; ok {
-			return ApplyCounterStyle(value, cs, allStyles)
+			if visited == nil {
+				visited = make(map[string]bool)
+			}
+			visited[fallback] = true
+			return applyCounterStyleRec(value, cs, allStyles, visited)
 		}
 		// Check if fallback is a built-in style
 		switch fallback {

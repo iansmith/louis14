@@ -440,6 +440,22 @@ func isAllVerticalScript(content string) bool {
 // rubyState is non-nil when this text node is inside a `<ruby>`;
 // preserved `\n` forced breaks are rewritten to spaces while inside a
 // `<rt>` (rubyForcedBreakSuppressed).
+// applyCollectionTextTransform applies measurable text-transform values at
+// collection time. capitalize is left to paint (word-boundary logic lives
+// there; its width effect is accepted as approximation).
+func applyCollectionTextTransform(content string, style *css.Style) string {
+	if style == nil {
+		return content
+	}
+	switch style.GetTextTransform() {
+	case css.TextTransformUppercase:
+		return strings.ToUpper(content)
+	case css.TextTransformLowercase:
+		return strings.ToLower(content)
+	}
+	return content
+}
+
 func collectTextNode(
 	node *html.Node,
 	parentStyle *css.Style,
@@ -472,21 +488,6 @@ func collectTextNode(
 	}
 	if whiteSpaceHint == "pre-line" && node.RawText != "" {
 		content = node.RawText
-	}
-
-	// CSS Text 3 §2.1: text-transform applies at item-collection time so
-	// MEASUREMENT sees the transformed text — Blink transforms in
-	// InlineItemsBuilder (core/layout/inline/inline_items_builder.cc
-	// TransformText path @ 4883d11f), not at paint. The paint-time
-	// applyTextTransform in pkg/render is idempotent for upper/lower/
-	// capitalize, so transforming here as well is safe.
-	if parentStyle != nil {
-		switch parentStyle.GetTextTransform() {
-		case css.TextTransformUppercase:
-			content = strings.ToUpper(content)
-		case css.TextTransformLowercase:
-			content = strings.ToLower(content)
-		}
 	}
 
 	// CSS Ruby — forced breaks inside `<rt>` (or any descendant) are
@@ -531,6 +532,15 @@ func collectTextNode(
 
 	startOffset := text.Len()
 
+	// CSS Text 3 §2.1: text-transform applies at item-collection time so
+	// MEASUREMENT sees the transformed text — Blink transforms in
+	// InlineItemsBuilder (core/layout/inline/inline_items_builder.cc
+	// TransformText path @ 4883d11f), not at paint. Applied after the final
+	// text source is chosen (node.Text vs node.RawText) so preserved-
+	// whitespace runs are transformed too. The paint-time
+	// applyTextTransform in pkg/render is idempotent for these values.
+	content = applyCollectionTextTransform(content, parentStyle)
+
 	if !collapseSpaces {
 		// Preserve whitespace as-is (white-space: pre / pre-wrap).
 		// Use RawText which preserves the original whitespace from the HTML
@@ -544,6 +554,7 @@ func collectTextNode(
 				preservedContent = strings.ReplaceAll(preservedContent, "\r", " ")
 			}
 		}
+		preservedContent = applyCollectionTextTransform(preservedContent, parentStyle)
 		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
 		// line breaks. Split on '\n' and emit InlineItemControl for each break,
 		// mirroring Blink's inline_items_builder.cc::AppendText and the

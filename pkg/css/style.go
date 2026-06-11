@@ -7634,6 +7634,22 @@ func (s *Style) IsListItemDisplay() bool {
 func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
 	s := NewStyle()
 	if parent != nil {
+		// Non-property resolution context travels with the style (same
+		// fields Clone copies): viewport size, font metrics, base
+		// direction, font-feature rules. Without these, inherited values
+		// on the anonymous box (e.g. viewport-unit font sizes) resolve
+		// against zeroes.
+		s.ViewportWidth = parent.ViewportWidth
+		s.ViewportHeight = parent.ViewportHeight
+		s.ChWidth = parent.ChWidth
+		s.UsedFontSize = parent.UsedFontSize
+		s.UsedFontSizeSet = parent.UsedFontSizeSet
+		s.XHeight = parent.XHeight
+		s.CapHeight = parent.CapHeight
+		s.LhSize = parent.LhSize
+		s.IcWidth = parent.IcWidth
+		s.BaseDir = parent.BaseDir
+		s.FontFeatureValues = parent.FontFeatureValues
 		for prop, val := range parent.Properties {
 			if inheritableProperties[prop] || strings.HasPrefix(prop, "--") {
 				s.Properties[prop] = val

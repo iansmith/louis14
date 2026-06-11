@@ -1003,8 +1003,17 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		pseudoMarker = b.createMarkerPseudoElement(pseudoNode, pseudoStyle)
 	}
 
-	// Build child nodes from content values.
-	quotes := b.quotesFor(parentStyle)
+	// Build child nodes from content values. The pseudo's own computed
+	// `quotes` wins (e.g. `::before { quotes: "«" "»" }`); when the pseudo
+	// computation carries none, the originating element's inherited value
+	// applies — same precedence as ::marker content resolution.
+	quoteSource := parentStyle
+	if pseudoStyle != nil {
+		if _, ok := pseudoStyle.Get("quotes"); ok {
+			quoteSource = pseudoStyle
+		}
+	}
+	quotes := b.quotesFor(quoteSource)
 
 	// Build child nodes from content values.
 	// Adjacent text-producing values (text, counter, attr, quote) are merged
