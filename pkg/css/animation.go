@@ -308,7 +308,7 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 				easing = LinearTimingFunction{}
 			}
 			eased := easing.Evaluate(localFraction, limitRight)
-			out[prop] = interpolateValue(prop, lo.value, hi.value, eased)
+			out[prop] = interpolateValue(prop, lo.value, hi.value, eased, base)
 			break
 		}
 	}
@@ -325,13 +325,22 @@ func (k Keyframe) offsetOrSelf() float64 { return k.Offset }
 //   - <filter-value-list> for the filter / backdrop-filter properties
 //     (css-filters-animation-* / css-backdrop-filters-animation-*):
 //     interpolated component-wise per CSS Filter Effects §interpolation,
-//     with a `none` endpoint promoted to the identity-filter list.
+//     with a `none` endpoint promoted to the identity-filter list;
+//   - <transform-list> for the transform property: blended per-operation
+//     per css-transforms §interpolation-of-transforms;
+//   - <length-percentage>: blended as a (pixels, percent) component pair,
+//     with viewport- and font-relative units resolved against base.
+//
+// base is the element's underlying computed style; it supplies the viewport
+// dimensions and font metrics for resolving relative length units. It may be
+// nil (the element.animate() path), in which case only px and percent
+// endpoints interpolate.
 //
 // For value types where interpolation is not implemented, the endpoint is
-// returned discretely (t < 1 -> from, t >= 1 -> to) — this is correct for
-// every other in-scope test, which is either from==to (constant) or frozen
-// exactly on a keyframe offset.
-func interpolateValue(prop, from, to string, t float64) string {
+// returned discretely, flipping at the midpoint (t < 0.5 -> from, else to) —
+// this is correct for every other in-scope test, which is either from==to
+// (constant) or frozen exactly on a keyframe offset.
+func interpolateValue(prop, from, to string, t float64, base *Style) string {
 	if from == to {
 		return from
 	}
@@ -351,6 +360,19 @@ func interpolateValue(prop, from, to string, t float64) string {
 			return interp
 		}
 	}
+	// Transform-list interpolation. Mirrors Blink
+	// CSSTransformInterpolationType::MaybeConvertValue
+	// (core/animation/css_transform_interpolation_type.cc:90) feeding
+	// TransformOperations::Blend
+	// (platform/transforms/transform_operations.cc:179) at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. On !ok (mismatched function
+	// lists), the discrete fallback below matches Blink's own
+	// matrix-interpolation failure path (progress < 0.5 ? from : to).
+	if prop == "transform" {
+		if interp, ok := interpolateTransformList(from, to, t); ok {
+			return interp
+		}
+	}
 	// Color interpolation (background-color, color, border colors, etc.).
 	if isColorProperty(prop) {
 		c1, ok1 := ParseColor(from)
@@ -359,12 +381,13 @@ func interpolateValue(prop, from, to string, t float64) string {
 			return lerpColor(c1, c2, t)
 		}
 	}
-	// <length> interpolation for px values (and unitless `0`).
-	// Mirrors Blink LengthInterpolationFunctions::MaybeConvertCSSValue at
-	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, narrowed to the px
-	// case the in-scope reftests exercise (revert-layer-010,
-	// revert-layer-011 substitute base px values into keyframes).
-	if v, ok := interpolatePxLength(from, to, t); ok {
+	// <length-percentage> interpolation as a (pixels, percent) pair.
+	// Mirrors Blink InterpolableLength::MaybeConvertCSSValue /
+	// Interpolate (core/animation/interpolable_length.cc:58, :651) at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: each endpoint converts
+	// to per-unit components blended component-wise, with viewport- and
+	// font-relative units resolved to pixels at conversion time.
+	if v, ok := interpolateLengthPair(from, to, t, base); ok {
 		return v
 	}
 	// <number> interpolation for unitless numeric properties (opacity,
@@ -375,8 +398,12 @@ func interpolateValue(prop, from, to string, t float64) string {
 	if v, ok := interpolateBareNumber(from, to, t); ok {
 		return v
 	}
-	// Discrete fallback for unsupported value types.
-	if t < 1 {
+	// Discrete fallback for unsupported value types: flip at the midpoint.
+	// Mirrors Blink FlipPrimitiveInterpolation
+	// (core/animation/primitive_interpolation.h:142 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): fraction < 0.5 -> start,
+	// else end.
+	if t < 0.5 {
 		return from
 	}
 	return to
@@ -419,17 +446,194 @@ func parseBareNumber(s string) (float64, bool) {
 	return v, true
 }
 
-// interpolatePxLength linearly interpolates between two CSS lengths whose
-// values are bare numbers or `<number>px`. Returns the result as a px string,
-// or false if either input is not a recognized px-or-zero length.
-func interpolatePxLength(from, to string, t float64) (string, bool) {
-	a, aok := parsePxOrZero(from)
-	b, bok := parsePxOrZero(to)
+// lengthPair is a <length-percentage> decomposed into a pixel component and a
+// percent component — the louis14 analog of Blink's CSSLengthArray inside
+// InterpolableLength (core/animation/interpolable_length.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), narrowed to the two component
+// kinds distinguishable at interpolation time: absolute pixels (every
+// resolvable unit collapses here, viewport/font-relative included) and
+// percentages (resolvable only at layout time, kept symbolic).
+type lengthPair struct {
+	px  float64
+	pct float64
+}
+
+// parseLengthPair converts a CSS <length-percentage> endpoint into a
+// lengthPair. base supplies viewport dimensions and font metrics for
+// relative units; with a nil base only `<number>px`, the unitless `0`, and
+// `<number>%` convert.
+func parseLengthPair(s string, base *Style) (lengthPair, bool) {
+	s = strings.TrimSpace(s)
+	if v, ok := ParsePercentage(s); ok {
+		return lengthPair{pct: v}, true
+	}
+	if v, ok := parsePxOrZero(s); ok {
+		return lengthPair{px: v}, true
+	}
+	if base != nil {
+		if v, ok := base.GetLengthForVal(s); ok {
+			return lengthPair{px: v}, true
+		}
+	}
+	return lengthPair{}, false
+}
+
+// interpolateLengthPair linearly interpolates between two CSS
+// <length-percentage> values component-wise, mirroring
+// InterpolableLength::Interpolate (core/animation/interpolable_length.cc:651
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Returns false if either input
+// is not a convertible length-percentage.
+func interpolateLengthPair(from, to string, t float64, base *Style) (string, bool) {
+	a, aok := parseLengthPair(from, base)
+	b, bok := parseLengthPair(to, base)
 	if !aok || !bok {
 		return "", false
 	}
-	v := a + (b-a)*t
-	return formatPx(v), true
+	r := lengthPair{
+		px:  a.px + (b.px-a.px)*t,
+		pct: a.pct + (b.pct-a.pct)*t,
+	}
+	switch {
+	case r.pct == 0:
+		return formatPx(r.px), true
+	case r.px == 0:
+		return formatNum(r.pct) + "%", true
+	default:
+		return "calc(" + formatPx(r.px) + " + " + formatNum(r.pct) + "%)", true
+	}
+}
+
+// interpolateTransformList blends two <transform-list> values per-operation,
+// mirroring TransformOperations::Blend + MatchingPrefixLength
+// (platform/transforms/transform_operations.cc:179, :124 @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): operation pairs that can blend
+// do so component-wise, and when one list is a matching prefix of the other
+// the shorter list pads with identity operations (css-transforms
+// §interpolation-of-transforms). A `none` endpoint is the empty list.
+//
+// Lists whose operations cannot be paired (different function types, mixed
+// px/percent translate components, or matrix/matrix3d/perspective, which
+// need the matrix decomposition louis14 does not implement) report !ok; the
+// caller's discrete fallback then matches Blink's matrix-interpolation
+// failure path.
+func interpolateTransformList(from, to string, t float64) (string, bool) {
+	fromOps, fok := parseTransformListOrNone(from)
+	toOps, tok := parseTransformListOrNone(to)
+	if !fok || !tok {
+		return "", false
+	}
+	n := len(fromOps)
+	if len(toOps) > n {
+		n = len(toOps)
+	}
+	result := make([]Transform, 0, n)
+	for i := 0; i < n; i++ {
+		var a, b Transform
+		ok := true
+		switch {
+		case i < len(fromOps) && i < len(toOps):
+			a, b = fromOps[i], toOps[i]
+			ok = canBlendTransforms(a, b)
+		case i < len(fromOps):
+			a = fromOps[i]
+			b, ok = identityTransformLike(a)
+		default:
+			b = toOps[i]
+			a, ok = identityTransformLike(b)
+		}
+		if !ok {
+			return "", false
+		}
+		result = append(result, blendTransform(a, b, t))
+	}
+	return serializeTransforms(result), true
+}
+
+// parseTransformListOrNone parses a transform value, treating `none` as the
+// empty operation list (per css-transforms, `none` blends as the matching
+// identity list). Reports false for unparseable values.
+func parseTransformListOrNone(val string) ([]Transform, bool) {
+	val = strings.TrimSpace(val)
+	if val == "none" {
+		return nil, true
+	}
+	ops := parseTransforms(val)
+	if len(ops) == 0 {
+		return nil, false
+	}
+	return ops, true
+}
+
+// canBlendTransforms reports whether two parsed transform operations can
+// blend component-wise — the louis14 analog of
+// TransformOperation::CanBlendWith consumed by MatchingPrefixLength
+// (transform_operations.cc:124 @ 4883d11f). Requirements: same function
+// type, same component count, and for translate components the same
+// px/percent kind per component (the Transform struct carries one scalar per
+// component, so a px<->percent pair would need Blink's pixels+percent Length
+// representation). rotate3d additionally requires an equal rotation axis.
+// matrix / matrix3d / perspective are excluded: Blink blends those through
+// matrix decomposition (or reciprocals for perspective), which louis14 does
+// not implement.
+func canBlendTransforms(a, b Transform) bool {
+	if a.Type != b.Type || len(a.Values) != len(b.Values) || len(a.IsPercent) != len(b.IsPercent) {
+		return false
+	}
+	switch a.Type {
+	case "matrix", "matrix3d", "perspective":
+		return false
+	case "rotate3d":
+		// Blendable only about a shared axis (x, y, z; Values[3] is the angle).
+		return a.Values[0] == b.Values[0] && a.Values[1] == b.Values[1] && a.Values[2] == b.Values[2]
+	}
+	for i := range a.IsPercent {
+		if a.IsPercent[i] != b.IsPercent[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// identityTransformLike returns the identity operation matching op's type,
+// used to pad the shorter of two matching transform lists
+// (MatchingPrefixLength's identity padding, transform_operations.cc:135-138
+// @ 4883d11f). Reports false for types with no component-wise identity here
+// (matrix / matrix3d / perspective — see canBlendTransforms).
+func identityTransformLike(op Transform) (Transform, bool) {
+	id := Transform{
+		Type:      op.Type,
+		Values:    make([]float64, len(op.Values)),
+		IsPercent: append([]bool(nil), op.IsPercent...),
+	}
+	switch op.Type {
+	case "translate", "translate3d", "translateZ", "rotate", "rotateX", "rotateY", "skew":
+		// Zero values are the identity.
+	case "scale", "scaleZ", "scale3d":
+		for i := range id.Values {
+			id.Values[i] = 1
+		}
+	case "rotate3d":
+		// Same axis, zero angle.
+		copy(id.Values, op.Values[:3])
+	default:
+		return Transform{}, false
+	}
+	return id, true
+}
+
+// blendTransform lerps two blendable transform operations component-wise.
+func blendTransform(a, b Transform, t float64) Transform {
+	// a.IsPercent is shared, not copied: the blended op is serialized and
+	// discarded without mutation.
+	out := Transform{
+		Type:      a.Type,
+		Values:    make([]float64, len(a.Values)),
+		IsPercent: a.IsPercent,
+	}
+	for i := range a.Values {
+		out.Values[i] = a.Values[i] + (b.Values[i]-a.Values[i])*t
+	}
+	return out
 }
 
 // parsePxOrZero parses a CSS length expressed in px (e.g. "150px") or the

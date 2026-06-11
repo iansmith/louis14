@@ -10138,6 +10138,56 @@ func parseTransformValue(val string) (float64, bool, bool) {
 	return 0, false, false
 }
 
+// serializeTransforms is the inverse of parseTransforms: it renders parsed
+// transform operations back to a CSS transform value that parseTransforms
+// round-trips (the animation path writes interpolated transform lists into
+// styles — including inline style on the element.animate() path — which are
+// re-parsed downstream). Each operation serializes in the canonical form its
+// parser produces: parseTransformFunction normalizes translateX/translateY
+// into "translate" and rotateZ into "rotate", so those types re-emit as the
+// normalized function. An empty list serializes as "none".
+func serializeTransforms(ops []Transform) string {
+	if len(ops) == 0 {
+		return "none"
+	}
+	lengthOrPct := func(op Transform, i int) string {
+		if i < len(op.IsPercent) && op.IsPercent[i] {
+			return formatNum(op.Values[i]) + "%"
+		}
+		return formatPx(op.Values[i])
+	}
+	deg := func(v float64) string { return formatNum(v) + "deg" }
+	nums := func(vs []float64) string {
+		parts := make([]string, len(vs))
+		for i, v := range vs {
+			parts[i] = formatNum(v)
+		}
+		return strings.Join(parts, ", ")
+	}
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		switch op.Type {
+		case "translate":
+			out = append(out, "translate("+lengthOrPct(op, 0)+", "+lengthOrPct(op, 1)+")")
+		case "translate3d":
+			out = append(out, "translate3d("+lengthOrPct(op, 0)+", "+lengthOrPct(op, 1)+", "+formatPx(op.Values[2])+")")
+		case "translateZ":
+			out = append(out, "translateZ("+formatPx(op.Values[0])+")")
+		case "rotate", "rotateX", "rotateY":
+			out = append(out, op.Type+"("+deg(op.Values[0])+")")
+		case "rotate3d":
+			out = append(out, "rotate3d("+nums(op.Values[:3])+", "+deg(op.Values[3])+")")
+		case "skew":
+			out = append(out, "skew("+deg(op.Values[0])+", "+deg(op.Values[1])+")")
+		case "scale", "scaleZ", "scale3d", "matrix", "matrix3d":
+			out = append(out, op.Type+"("+nums(op.Values)+")")
+		case "perspective":
+			out = append(out, "perspective("+formatPx(op.Values[0])+")")
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // parseAngle parses an angle value and returns degrees, or nil on failure.
 // Accepts the four CSS Values 3 §6.2 angle units: deg, grad, rad, turn
 // (case-insensitive). Delegates to parseAngleValue (gradient.go) so transform
