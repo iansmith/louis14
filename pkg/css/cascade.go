@@ -29,15 +29,19 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
-	// Default styles for <a> (anchor/link) elements
+	// Default styles for <a> (anchor/link) elements. Gated on href presence:
+	// the Blink UA rule is `a:-webkit-any-link` (html.css:1683-1687 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) and HTML §4.6.1 defines
+	// :any-link as an a/area element WITH an href attribute — a bare <a> is
+	// not a link and gets neither the color nor the underline.
 	if node.TagName == "a" {
-		style.Set("color", "#0645ad") // Standard link blue
-		// Expressed as the text-decoration-line longhand (not the legacy
-		// shorthand) so the AppliedTextDecoration model can append this
-		// element's own contribution without colliding with other longhands.
-		// Mirrors Blink UA stylesheet at
-		// third_party/blink/renderer/core/html/resources/html.css (SHA pinned).
-		style.Set("text-decoration-line", "underline")
+		if _, isLink := node.GetAttribute("href"); isLink {
+			style.Set("color", "#0645ad") // Standard link blue
+			// Expressed as the text-decoration-line longhand (not the legacy
+			// shorthand) so the AppliedTextDecoration model can append this
+			// element's own contribution without colliding with other longhands.
+			style.Set("text-decoration-line", "underline")
+		}
 	}
 
 	// UA default decorations for <u>, <ins>: underline. <s>, <strike>, <del>:

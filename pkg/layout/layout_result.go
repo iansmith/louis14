@@ -234,6 +234,15 @@ type PhysicalFragment struct {
 	// Used by fragmentToBox to connect LayoutInputNode ↔ Box for DOM-ordered paint.
 	LayoutNode *LayoutInputNode
 
+	// PaintGroup identifies the inline paint group this fragment must
+	// composite inside: the OpenTag InlineItem of the nearest enclosing
+	// opacity-group inline (or the fragment's OWN inline, for a group span's
+	// background fragments). Nil for fragments outside any group. Stamped by
+	// inline layout (where the open-span stack is live) and copied to
+	// Box.PaintGroup; pkg/render's buildPaintSubtree routes annotated boxes
+	// into one PaintLayer per group node. See InlineItem.EnclosingPaintGroup.
+	PaintGroup *InlineItem
+
 	// Type distinguishes box, line-box, and text fragments.
 	Type FragmentType
 

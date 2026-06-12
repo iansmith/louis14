@@ -17,6 +17,11 @@ type Box struct {
 	Width  float64
 	Height float64
 
+	// PaintGroup identifies the inline opacity group this box must composite
+	// inside (copied from PhysicalFragment.PaintGroup by fragmentToBox).
+	// Nil for boxes outside any group. See InlineItem.EnclosingPaintGroup.
+	PaintGroup *InlineItem
+
 	Margin    css.BoxEdge
 	Padding   css.BoxEdge
 	Border    css.BoxEdge

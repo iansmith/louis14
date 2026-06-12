@@ -449,7 +449,7 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 		return nil
 	}
 	rootLayer := newPaintLayer(root)
-	buildPaintSubtree(root, rootLayer, rootLayer, nil)
+	buildPaintSubtree(root, rootLayer, rootLayer, nil, map[*layout.InlineItem]*PaintLayer{})
 	// Re-home z-ordered layers to their nearest stacking-context-creating
 	// DOM ancestor. This corrects out-of-flow children hoisted past their
 	// DOM-ancestor SC by the layout containing-block rule. Mirrors Blink's
@@ -1883,12 +1883,99 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 //	the backdrop sampled by any backdrop-filter descendant
 //	within the subtree. Set by HasBackdropFilterDescendant
 //	when a descendant with backdrop-filter is encountered.
-func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer) {
+//
+// ensureInlinePaintGroup returns the single PaintLayer for an inline paint
+// group (an opacity inline — see layout.IsInlinePaintGroup), creating it on
+// first sighting. The layer's Box is synthesized (zero-rect, the inline's
+// style+node): geometry lives on the member fragments routed into
+// FlowChildren/FloatChildren; the layer exists to apply the element's alpha
+// ONCE around all of them. Keyed by the OpenTag InlineItem, not the style
+// pointer — inline layout clones styles (e.g. the position reset on
+// background fragments), but every fragment of one inline references the
+// same item. The group routes like today's per-fragment SC inline layers:
+// AutoZero of the nearest stacking context (CSS Color 3 §3.2 "treated as if
+// it created a new stacking context", painted as a positioned z-index:0
+// element at Appendix E step 6); a nested group nests in its outer group.
+func ensureInlinePaintGroup(item *layout.InlineItem, currentSC *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) *PaintLayer {
+	if g, ok := groups[item]; ok {
+		return g
+	}
+	g := newPaintLayer(&layout.Box{Node: item.Node, Style: item.Style})
+	groups[item] = g
+	if item.EnclosingPaintGroup != nil {
+		outer := ensureInlinePaintGroup(item.EnclosingPaintGroup, currentSC, groups)
+		outer.AutoZero = append(outer.AutoZero, g)
+	} else {
+		currentSC.AutoZero = append(currentSC.AutoZero, g)
+	}
+	return g
+}
+
+// noteCompositingDescendants records the compositing bookkeeping a child layer
+// imposes on its ancestors and returns the backdrop root in effect for the
+// child's own subtree. CSS Compositing 1 §8: a blended child makes its nearest
+// ancestor stacking context an isolated group. CSS Filter Effects 2 §3.5: a
+// backdrop-filter child samples back to its nearest Backdrop Root. Shared by
+// the inline-paint-group branch and the ordinary descendant walk so grouped
+// members get identical treatment.
+func noteCompositingDescendants(childLayer, enclosingSC, currentBackdropRoot *PaintLayer) *PaintLayer {
+	if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
+		enclosingSC.HasBlendingDescendant = true
+	}
+	if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
+		currentBackdropRoot.HasBackdropFilterDescendant = true
+	}
+	if childLayer.IsBackdropRoot {
+		return childLayer
+	}
+	return currentBackdropRoot
+}
+
+func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) {
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
 			// Unstyled box (line box, text run) — no PaintLayer.
 			// Recurse to find any styled descendants.
-			buildPaintSubtree(child, parentLayer, currentSC, currentBackdropRoot)
+			buildPaintSubtree(child, parentLayer, currentSC, currentBackdropRoot, groups)
+			continue
+		}
+		// CSS Color 3 §3.2: opacity on a non-atomic inline is GROUP opacity
+		// over the whole element. Inline layout stamps every fragment that
+		// must composite inside such a group (the group span's own per-line
+		// background fragments, text runs, atomic inlines, and floats) with
+		// Box.PaintGroup; all of them route into ONE lazily-created layer per
+		// group inline, which applies the alpha once. Mirrors Blink's
+		// LayoutObject::PaintingLayer (layout_object.cc:1218 @ 4883d11f)
+		// resolving every fragment and inline-contained float of the
+		// LayoutInline to the same self-painting PaintLayer.
+		if child.PaintGroup != nil {
+			groupLayer := ensureInlinePaintGroup(child.PaintGroup, currentSC, groups)
+			childLayer := newPaintLayer(child)
+			// The group applies the element's alpha once; the element's own
+			// fragments (which carry the same style) must not re-apply it.
+			ownFragment := child.Node != nil && child.Node == child.PaintGroup.Node
+			if ownFragment {
+				childLayer.Opacity = 1.0
+			}
+			// A member that is itself a genuine stacking context (e.g. an
+			// atomic inline with its own opacity/transform) collects its own
+			// descendants; the group's own fragments do not.
+			memberSC := groupLayer
+			if !ownFragment && child.CreatesStackingContext() {
+				memberSC = childLayer
+			}
+			// A grouped member that blends or samples a backdrop imposes the
+			// same isolation bookkeeping as any other descendant — its
+			// enclosing stacking context is the group layer.
+			childBackdropRoot := noteCompositingDescendants(childLayer, groupLayer, currentBackdropRoot)
+			if isFloat(child) {
+				// CSS 2.1 Appendix E step 4 inside the group: the float
+				// paints below the inline's background and text.
+				groupLayer.FloatChildren = append(groupLayer.FloatChildren, childLayer)
+			} else {
+				groupLayer.FlowChildren = append(groupLayer.FlowChildren, childLayer)
+			}
+			buildPaintSubtree(child, childLayer, memberSC, childBackdropRoot, groups)
 			continue
 		}
 		// Text fragments (LayoutNode==nil with Text set) carry their parent
@@ -1905,35 +1992,11 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
 
-		// CSS Compositing 1 §8: a blended element's parent group is treated as
-		// an isolated group. Mark the nearest ancestor stacking context so
-		// paintLayer can promote it to an offscreen isolation buffer; the
-		// blender then composites against the parent's painted content rather
-		// than the canvas underneath the SC.
-		if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
-			currentSC.HasBlendingDescendant = true
-		}
-
-		// CSS Filter Effects 2 §3.5: a backdrop-filter element samples its
-		// backdrop only back to the nearest Backdrop Root ancestor. Mark that
-		// ancestor so paintLayer can route it through an isolated buffer; the
-		// descendant's backdrop-filter then samples that buffer instead of
-		// the canvas content painted further up the ancestor chain.
-		//
-		// currentBackdropRoot may be nil for descendants of the implicit
-		// root backdrop-root — in that case the canvas IS the backdrop, and
-		// no extra isolation is needed (sampling r.target directly is
-		// already correct).
-		if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
-			currentBackdropRoot.HasBackdropFilterDescendant = true
-		}
-
-		// The child becomes the new currentBackdropRoot for its own subtree
-		// if it is itself a backdrop-root.
-		childBackdropRoot := currentBackdropRoot
-		if childLayer.IsBackdropRoot {
-			childBackdropRoot = childLayer
-		}
+		// Blend / backdrop-filter isolation bookkeeping (CSS Compositing 1 §8,
+		// CSS Filter Effects 2 §3.5). currentBackdropRoot may be nil for
+		// descendants of the implicit root backdrop-root — the canvas IS the
+		// backdrop there, so no extra isolation is needed.
+		childBackdropRoot := noteCompositingDescendants(childLayer, currentSC, currentBackdropRoot)
 
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest
@@ -1950,7 +2013,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 			continue
 		}
 
@@ -1971,31 +2034,31 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				// escape to the ancestor SC's AutoZero list or the clip is lost.
 				if isFloat(child) {
 					parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else if isContainedByAnyOverflow(box, currentSC.Box) {
 					// Contained by an overflow-clipping ancestor between this box
 					// and the SC boundary — stay in flow order so the clip applies.
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
 					// Inside a preserve-3d rendering context: children's visual
 					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
 					// applyTransforms' preserve-3d ancestor composition fires at
 					// PhaseForeground and the 3D z-order is respected.
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else {
 					currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				}
 			} else if isFloat(child) {
 				// CSS 2.1 Appendix E step 4: floats paint after non-float block
 				// backgrounds (step 3) so they appear above block backgrounds.
 				parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
 			} else {
 				parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
+				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
 			}
 			continue
 		}
@@ -2024,7 +2087,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 			}
 			// New stacking context — descendants collected by childLayer.
-			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 			continue
 		}
 
@@ -2032,7 +2095,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// contained children stay in DOM-order painting (FlowChildren).
 		if isContainedByOverflow(child, box) {
 			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
 			continue
 		}
 
@@ -2041,9 +2104,9 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		if hasOverflowClipping(child) {
 			// Overflow containment boundary — positioned descendants
 			// stay within this subtree.
-			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot)
+			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 		} else {
-			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot)
+			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
 		}
 	}
 }

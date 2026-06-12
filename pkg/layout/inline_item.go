@@ -87,6 +87,61 @@ type InlineItem struct {
 	// Both are true for regular (non-split) inlines.
 	IsFirstFragment bool
 	IsLastFragment  bool
+
+	// EnclosingPaintGroup points to the OpenTag item of the nearest enclosing
+	// non-atomic inline whose opacity requires group compositing (see
+	// IsInlinePaintGroup). Nil when no such ancestor exists. For the group
+	// inline's own Open/CloseTag items this is the next-OUTER group, so nested
+	// groups chain. The louis14 analog of Blink's
+	// LayoutObject::PaintingLayer (layout_object.cc:1218 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) walking the layout-tree parent
+	// chain to the nearest self-painting layer: louis14's flat per-line
+	// fragment lists lose that ancestry, so it is recorded here at
+	// item-collection time and stamped onto fragments
+	// (PhysicalFragment.PaintGroup).
+	EnclosingPaintGroup *InlineItem
+}
+
+// IsInlinePaintGroup reports whether an inline element with the given style
+// must composite its fragments as ONE group at paint time. True for
+// non-atomic inlines (display: inline | ruby | ruby-text, non-replaced — the
+// boxes Blink models as LayoutInline) with opacity < 1: CSS Color 3 §3.2
+// makes opacity GROUP opacity over the element, and a multi-line inline's
+// per-line fragments would otherwise each apply alpha independently.
+// Atomic inlines (IsTransformableBox true) produce a single box and take the
+// ordinary stacking-context path in buildPaintSubtree.
+func IsInlinePaintGroup(s *css.Style, node *html.Node) bool {
+	return s != nil && !IsTransformableBox(s, node) && s.GetOpacity() < 1
+}
+
+// annotatePaintGroups walks the flat item sequence once, maintaining the
+// open stack of paint-group inlines, and stamps EnclosingPaintGroup on every
+// item. CloseTag pops before stamping so a group's own Open/CloseTags point
+// to the next-outer group (groups nest exclusively).
+func annotatePaintGroups(data *InlineItemsData) {
+	var stack []*InlineItem
+	top := func() *InlineItem {
+		if n := len(stack); n > 0 {
+			return stack[n-1]
+		}
+		return nil
+	}
+	for _, item := range data.Items {
+		switch item.Type {
+		case InlineItemOpenTag:
+			item.EnclosingPaintGroup = top()
+			if IsInlinePaintGroup(item.Style, item.Node) {
+				stack = append(stack, item)
+			}
+		case InlineItemCloseTag:
+			if n := len(stack); n > 0 && stack[n-1].Node == item.Node {
+				stack = stack[:n-1]
+			}
+			item.EnclosingPaintGroup = top()
+		default:
+			item.EnclosingPaintGroup = top()
+		}
+	}
 }
 
 // InlineItemsData is the pre-layout representation of all inline content
@@ -122,6 +177,7 @@ func CollectInlines(node *LayoutInputNode) *InlineItemsData {
 	var b strings.Builder
 	collectInlinesRecursive(node, data, &b, true, nil)
 	data.TextContent = b.String()
+	annotatePaintGroups(data)
 	return data
 }
 

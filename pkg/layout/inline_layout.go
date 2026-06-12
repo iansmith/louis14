@@ -302,6 +302,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			Build()
 		childResult := layoutElement(bla.ctx, item.LayoutNode, childSpace)
 		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
+		// A float paints inside the opacity group of its nearest enclosing
+		// group inline (Blink: LayoutObject::PaintingLayer returns the
+		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
+		childResult.Fragment.PaintGroup = item.EnclosingPaintGroup
 		pendingFloats[item] = &pendingFloat{
 			item:         item,
 			margins:      childMargins,
@@ -1666,21 +1670,28 @@ func createLineBoxEx(
 	// it lands at the bottom of the line's paint stack. Per the spec, the
 	// generated ::first-line box "behaves similar to that of an inline-level
 	// element" (the assertion the first-line-line-height WPT reftests check by
-	// modelling ::first-line as a `<span>`): so its background covers the same
-	// box an inline span on this line would — the line's CONTENT inline extent
-	// (line.Width starting at the text-align offset), at the full line-box
-	// HEIGHT (lineHeight). This mirrors the inline span-background pre-pass
-	// below, which sizes each span fragment as `lineHeight` tall and
-	// content-wide (`fragEnd − fragStart`); the ::first-line band is the
-	// degenerate single-span case. Mirrors Blink's
+	// modelling ::first-line as a `<span>`): so its background covers the
+	// line's CONTENT inline extent (line.Width starting at the text-align
+	// offset) at the first-line font's em box (CSS 2.1 §10.6.1: inline content
+	// area is font-derived, not line-height), anchored at the baseline like the
+	// inline span-background pre-pass below — the genuine WPT references model
+	// ::first-line as an inline `<span>`, so this band must match that span's
+	// geometry exactly. Mirrors Blink's
 	// `LineBoxFragmentPainter::PaintBackgroundBorderShadow`
 	// (`core/paint/inline_box_fragment_painter.cc` @ 4883d11fef), whose
 	// `line_style_` is the ::first-line-aware style.
 	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
+		// Same band geometry as an inline span background (see the Step 3a
+		// pre-pass below): max(em box, line box), em box baseline-anchored.
+		flFontSize, flAscent := inlineAlignmentAscent(firstLineStyle, fonts, wdm, centralBaseline)
+		flBlockSize, flBlockOffset := lineHeight, 0.0
+		if flFontSize >= lineHeight {
+			flBlockSize, flBlockOffset = flFontSize, maxAscent-flAscent
+		}
 		bgFrag := &PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: line.Width,
-				BlockSize:  lineHeight,
+				BlockSize:  flBlockSize,
 			}, wdm.WM)),
 			Type:             FragmentBox,
 			Style:            firstLineStyle,
@@ -1688,7 +1699,7 @@ func createLineBoxEx(
 		}
 		lineBuilder.AddChild(bgFrag, LogicalOffset{
 			InlineOffset: alignOffset,
-			BlockOffset:  0,
+			BlockOffset:  flBlockOffset,
 		})
 	}
 
@@ -1781,7 +1792,25 @@ func createLineBoxEx(
 				spanInlineSize = 0
 			}
 			blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
-			spanBlockSize := blockOverhang + lineHeight + geom.Padding.BlockEnd + geom.Border.BlockEnd
+			// An inline background covers at least the font's em box (CSS 2.1
+			// §10.6.1: the content area is font-derived, not line-height) and
+			// grows to the line box when line-height exceeds it — max(em box,
+			// line box). When line-height is SMALLER than the font (e.g.
+			// line-height:0) the em box still paints: the t32-opacity-offscreen
+			// WPT tests need a full-em band even though the line box collapsed.
+			// When line-height is normal/larger, the band fills the line box,
+			// matching the block's own line height and how a ::first-line or
+			// sibling-span background covered it. The em box is baseline-
+			// anchored at maxAscent − spanAscent (Blink
+			// InlineBoxState::ComputeTextMetrics, inline_box_state.cc:105-132 @
+			// 4883d11fef); the line box is anchored at line top.
+			spanFontSize, spanAscent := inlineAlignmentAscent(span.style, fonts, wdm, centralBaseline)
+			spanEmBox := spanFontSize >= lineHeight
+			spanContentBlock := lineHeight
+			if spanEmBox {
+				spanContentBlock = spanFontSize
+			}
+			spanBlockSize := blockOverhang + spanContentBlock + geom.Padding.BlockEnd + geom.Border.BlockEnd
 			// Inline span background fragments must paint in flow order (behind
 			// text), not via the z-index paint step which would paint ON TOP of
 			// text. Reset the copy's position to static for paint purposes.
@@ -1805,6 +1834,17 @@ func createLineBoxEx(
 					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 				},
 			}
+			// The group span's own background fragments belong to the group
+			// they DEFINE; non-group spans composite inside their nearest
+			// enclosing group (nil outside any group). Keyed on the
+			// InlineItem so paint groups nest via EnclosingPaintGroup.
+			if span.item != nil {
+				if IsInlinePaintGroup(span.item.Style, span.node) {
+					bgFrag.PaintGroup = span.item
+				} else {
+					bgFrag.PaintGroup = span.item.EnclosingPaintGroup
+				}
+			}
 			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
 			// position:relative. Use the original (non-reset) style.
 			// Sticky is scroll-time, not layout-time — leave zero.
@@ -1812,11 +1852,22 @@ func createLineBoxEx(
 				offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 				bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
 			}
+			// Anchor the band's content top at maxAscent − spanAscent — the
+			// same place the text pass puts this span's text fragments
+			// (blockPos = maxAscent − ascent), so band and glyph em boxes
+			// coincide.
+			//
 			// CSS 2.1 §10.8.1: vertical-align: <length> on an inline element
 			// shifts the inline box (including its background) up by the
 			// offset, matching the shift applied to its text children. Use
 			// the cumulative offset so nested spans stack correctly.
+			//
+			// Anchor: an em box sits on the baseline (maxAscent − spanAscent);
+			// a line box fills the line from its top.
 			spanBlockOffset := -blockOverhang - span.cumulativeVAOffs
+			if spanEmBox {
+				spanBlockOffset += maxAscent - spanAscent
+			}
 			pendingBg = append(pendingBg, pendingBgFrag{
 				frag: bgFrag,
 				offset: LogicalOffset{
@@ -2029,24 +2080,16 @@ func createLineBoxEx(
 				content += "-"
 			}
 
-			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			var ascent float64
-			if centralBaseline {
-				// CSS Writing Modes 3 §4.3: in vertical modes with central
-				// baseline, use fontSize / 2.
-				ascent = fontSize / 2
-			} else {
-				fontPath := resolveFontPath(rStyle, fonts)
-				// CSS Fonts 4 §6.1-§6.3: ascent-override affects the strut (line-box
-				// height) but NOT the per-item placement within the line. The renderer
-				// draws the glyph at box.Y + nativeAscent; if we used the overridden
-				// ascent here, blockPos = maxAscent - overriddenAscent would shift the
-				// fragment up, making the glyph land at a different visual position
-				// than the reference. Pass nil so the native font ascent is used for
-				// positioning, matching Blink's text_fragment_painter.cc paint path
-				// which reads metrics.Ascent from the underlying font data directly.
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
-			}
+			// CSS Fonts 4 §6.1-§6.3: ascent-override affects the strut (line-box
+			// height) but NOT the per-item placement within the line. The renderer
+			// draws the glyph at box.Y + nativeAscent; if we used the overridden
+			// ascent here, blockPos = maxAscent - overriddenAscent would shift the
+			// fragment up, making the glyph land at a different visual position
+			// than the reference. inlineAlignmentAscent passes a nil registry so
+			// the native font ascent is used for positioning, matching Blink's
+			// text_fragment_painter.cc paint path which reads metrics.Ascent from
+			// the underlying font data directly.
+			fontSize, ascent := inlineAlignmentAscent(rStyle, fonts, wdm, centralBaseline)
 
 			// Default: baseline-align the text fragment so its baseline sits
 			// at the line's maxAscent.
@@ -2121,6 +2164,7 @@ func createLineBoxEx(
 					Node:             parentNode,
 					Style:            rStyle,
 					WritingDirection: wdm,
+					PaintGroup:       r.Item.EnclosingPaintGroup,
 				}
 				// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
 				// the painter draws a continuous line across bidi-split, line-
@@ -2352,6 +2396,9 @@ func createLineBoxEx(
 						r.LayoutResult.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
 					}
 				}
+				// Atomic inlines composite inside the opacity group of their
+				// nearest enclosing group inline, like text runs and floats.
+				r.LayoutResult.Fragment.PaintGroup = r.Item.EnclosingPaintGroup
 				lineBuilder.AddChild(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
@@ -2421,6 +2468,25 @@ func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string, reg *
 		return text.FontDescentFromFont(fontSize, fontPath, reg)
 	}
 	return text.FontAscentFromFont(fontSize, fontPath, reg)
+}
+
+// inlineAlignmentAscent returns the font size (the inline em-box block size)
+// and the baseline-alignment ascent for an inline style — the shared metric
+// source for text-fragment block positioning and inline background bands
+// (both anchor at line maxAscent − ascent). Passes a nil registry to
+// alignmentAscentFromFont so CSS Fonts 4 ascent-override affects only the
+// strut, not per-item placement (see the text-pass comment in
+// createLineBoxEx; mirrors Blink's text_fragment_painter.cc reading native
+// font metrics).
+func inlineAlignmentAscent(style *css.Style, fonts text.FontConfig, wdm WritingDirectionMode, centralBaseline bool) (fontSize, ascent float64) {
+	fontSize, _, _, _, _ = fontPropsFromStyle(style)
+	if centralBaseline {
+		// CSS Writing Modes 3 §4.3: in vertical modes with central
+		// baseline, use fontSize / 2.
+		return fontSize, fontSize / 2
+	}
+	swap := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	return fontSize, alignmentAscentFromFont(swap, fontSize, resolveFontPath(style, fonts), nil)
 }
 
 // alignmentDescentFromFont returns the distance from the alphabetic baseline
