@@ -2333,6 +2333,15 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Pop()
 	}
 
+	// Classic scrollbar widget (overflow controls). Painted after the
+	// box's content and child layers and OUTSIDE the overflow content
+	// clip — the gutter sits between the inner border edge and the
+	// padding edge, which the content clip excludes. Mirrors Blink's
+	// ScrollableAreaPainter::PaintOverflowControls running after the
+	// foreground phase (scrollable_area_painter.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	r.paintScrollbars(layer)
+
 	// Self outline paints OUTSIDE the element's own overflow clip — the
 	// clip applies to the box's contents, never to its own outline ring
 	// (Blink paints kSelfOutlineOnly without the contents clip) — but
@@ -2552,6 +2561,15 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 
 	if clipping {
 		r.dc.Pop()
+	}
+
+	// Classic scrollbar widget for a non-stacking-context scroll container.
+	// Painted in the foreground phase (on top of the box's content) and
+	// OUTSIDE the box's overflow clip, mirroring the self-painting-layer
+	// path in paintLayerContent. A box reaches exactly one of the two
+	// paths, so the scrollbar paints once.
+	if phase == PhaseForeground {
+		r.paintScrollbars(child)
 	}
 }
 
@@ -2977,6 +2995,115 @@ func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) 
 // corner inset matches the rectangular clip inset.
 func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	return backgroundClipRadiiForClip(layer, effectiveBackgroundClip(layer))
+}
+
+// bodyOverflowPropagatesToViewport reports whether a <body> element's overflow
+// propagates to the viewport (CSS Overflow §3.3). Propagation happens only when
+// the root <html> has visible overflow and establishes no paint/layout
+// containment; root containment (e.g. contain: paint) stops propagation, so the
+// body retains its own scrollbar. When the root itself has non-visible overflow,
+// the root — not the body — is the viewport-propagating element, and the body
+// keeps its own scrollbar.
+// paintScrollbars paints the classic scrollbar widget (track + thumb) into
+// the reserved gutter of a scroll container. Layout reserves the gutter as
+// box.Scrollbar insets (ComputeScrollbarLogicalEdges, CSS Overflow §3); the
+// vertical bar is on the physical right by default or the physical left for
+// vertical-rl / RTL (placeVerticalScrollbarOnLeft), the horizontal bar on the
+// physical bottom. The vertical bar spans the full padding-box height and owns
+// the corner; the horizontal bar fills the remaining width beside it.
+//
+// scrollbar-color maps the thumb and track colours (CSS Scrollbars 1); auto
+// uses the engine's default classic colours. The thumb is the leading half of
+// the track, matching the louis14 classic-scrollbar reference geometry.
+//
+// Blink analog: ScrollableAreaPainter::PaintScrollbar /
+// ScrollbarThemeAura::PaintThumb+PaintTrackBackground
+// (scrollable_area_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (r *Renderer) paintScrollbars(layer *PaintLayer) {
+	box := layer.Box
+	if box == nil || box.Style == nil {
+		return
+	}
+	sb := box.Scrollbar
+	if sb.Right <= 0 && sb.Left <= 0 && sb.Bottom <= 0 && sb.Top <= 0 {
+		return // no reserved classic-scrollbar gutter (the common case)
+	}
+	// Skip boxes that do not own their scrollbar widget:
+	//   - The root <html> and a viewport-defining <body> propagate their
+	//     overflow to the viewport (CSS Overflow §3.3); the viewport — not the
+	//     element box — owns that scrollbar, and louis14 does not paint
+	//     viewport scrollbars. IsViewportDefiningBody encodes the propagation
+	//     rule (root overflow visible + no containment + first body in DOM),
+	//     so a body kept non-propagating by root containment still paints its
+	//     own scrollbar (overflow-body-propagation-011).
+	//   - Replaced elements (img, iframe, video, canvas, …) get the UA
+	//     `overflow: clip` treatment and never generate scrollbars even with
+	//     overflow: scroll (CSS Overflow §3.7).
+	if box.Node != nil {
+		switch {
+		case box.Node.TagName == "html":
+			return
+		case IsViewportDefiningBody(box):
+			return
+		case html.IsReplacedElementTag(box.Node.TagName):
+			return
+		}
+	}
+
+	vWidth := sb.Right
+	vOnLeft := false
+	if sb.Left > 0 {
+		vWidth = sb.Left
+		vOnLeft = true
+	}
+	hHeight := sb.Bottom
+
+	// Resolve track/thumb colours. scrollbar-color: <thumb> <track>.
+	scv := box.Style.GetScrollbarColor()
+	trackColor := css.Color{R: 200, G: 200, B: 200, A: 1}
+	thumbColor := css.Color{R: 160, G: 160, B: 160, A: 1}
+	if !scv.IsAuto {
+		thumbColor = scv.Thumb
+		trackColor = scv.Track
+	}
+
+	// Padding-box geometry: the gutter sits between the inner border edge
+	// and the padding edge.
+	px := box.X + box.Border.Left
+	py := box.Y + box.Border.Top
+	pw := box.Width - box.Border.Left - box.Border.Right
+	ph := box.Height - box.Border.Top - box.Border.Bottom
+
+	fill := func(x, y, w, h float64, c css.Color) {
+		if w <= 0 || h <= 0 {
+			return
+		}
+		sx, sy, sw, sh := pixelSnap(x, y, w, h)
+		r.setColor(c)
+		r.dc.DrawRectangle(sx, sy, sw, sh)
+		r.dc.Fill()
+	}
+
+	// Vertical bar: full padding-box height, owns the corner.
+	if vWidth > 0 {
+		vx := px + pw - vWidth
+		if vOnLeft {
+			vx = px
+		}
+		fill(vx, py, vWidth, ph, trackColor)
+		fill(vx, py, vWidth, ph*0.5, thumbColor)
+	}
+	// Horizontal bar: remaining width beside the vertical bar.
+	if hHeight > 0 {
+		hx := px
+		if vOnLeft {
+			hx = px + vWidth
+		}
+		hw := pw - vWidth
+		hy := py + ph - hHeight
+		fill(hx, hy, hw, hHeight, trackColor)
+		fill(hx, hy, hw*0.5, hHeight, thumbColor)
+	}
 }
 
 // drawBackground paints the layer's background color and image layers (pre-computed).

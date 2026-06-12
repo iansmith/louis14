@@ -5,19 +5,20 @@
 body { margin: 0; padding: 0; }
 /*
   Reference for scrollbar-color: blue white on a 50x50px div with overflow:scroll.
-  The engine draws:
+  The classic-scrollbar gutter the engine reserves is 17px wide
+  (classicScrollbarWidth, pkg/layout/fragment_geometry.go). The engine draws:
     - background: yellow (50x50)
-    - vertical scrollbar track: white, x=38..50, y=0..50 (12x50)
-    - vertical scrollbar thumb: blue, x=38..50, y=0..25 (12x25)
-    - horizontal scrollbar track: white, x=0..38, y=38..50 (38x12)
-    - horizontal scrollbar thumb: blue, x=0..19, y=38..50 (19x12)
+    - vertical scrollbar track: white, x=33..50, y=0..50 (17x50; owns the corner)
+    - vertical scrollbar thumb: blue, x=33..50, y=0..25 (17x25; leading half)
+    - horizontal scrollbar track: white, x=0..33, y=33..50 (33x17)
+    - horizontal scrollbar thumb: blue, x=0..16.5, y=33..50 (16.5x17; leading half)
 */
 .box { position: relative; width: 50px; height: 50px; overflow: hidden; }
 .bg   { position: absolute; left: 0; top: 0; width: 50px; height: 50px; background: yellow; }
-.vttrack { position: absolute; right: 0; top: 0; width: 12px; height: 50px; background: white; }
-.vtthumb { position: absolute; right: 0; top: 0; width: 12px; height: 25px; background: blue; }
-.httrack { position: absolute; left: 0; bottom: 0; width: 38px; height: 12px; background: white; }
-.htthumb { position: absolute; left: 0; bottom: 0; width: 19px; height: 12px; background: blue; }
+.vttrack { position: absolute; right: 0; top: 0; width: 17px; height: 50px; background: white; }
+.vtthumb { position: absolute; right: 0; top: 0; width: 17px; height: 25px; background: blue; }
+.httrack { position: absolute; left: 0; bottom: 0; width: 33px; height: 17px; background: white; }
+.htthumb { position: absolute; left: 0; bottom: 0; width: 16.5px; height: 17px; background: blue; }
 </style>
 </head>
 <body>
