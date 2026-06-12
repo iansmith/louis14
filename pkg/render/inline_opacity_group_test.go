@@ -242,42 +242,80 @@ func TestPaintTree_SiblingOpacitySpans_TwoGroups(t *testing.T) {
 // line-height:0 the span's background fragment must still be em-box tall,
 // vertically coincident with the text fragment's em box.
 func TestInlineBackgroundFragment_HeightFromFontMetrics(t *testing.T) {
-	// Both regimes: line box smaller than the em box (0) and larger (2em).
-	// The background band must match the text em box in both — never the
-	// line box.
-	for _, lh := range []string{"0", "2em"} {
-		t.Run("line-height:"+lh, func(t *testing.T) {
-			_, root := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
-<div style="line-height: `+lh+`; font-family: monospace"><span style="background: blue; color: blue">XXXXX</span></div>`)
-
-			var bgBox, textBox *layout.Box
-			var walk func(b *layout.Box)
-			walk = func(b *layout.Box) {
-				if b.Node != nil && b.Node.TagName == "span" && b.Style != nil {
-					if b.Text != "" {
-						textBox = b
-					} else {
-						bgBox = b
-					}
-				}
-				for _, c := range b.Children {
-					walk(c)
+	// max(em box, line box). line-height:0 collapses the line box below the
+	// em box, so the band must be the em box, coincident with the text. A
+	// large line-height grows the band to the line box, still covering the
+	// text em box vertically.
+	collapsed := func(b *layout.Box) (bg, text *layout.Box) {
+		var walk func(b *layout.Box)
+		walk = func(b *layout.Box) {
+			if b.Node != nil && b.Node.TagName == "span" && b.Style != nil {
+				if b.Text != "" {
+					text = b
+				} else {
+					bg = b
 				}
 			}
-			walk(root)
+			for _, c := range b.Children {
+				walk(c)
+			}
+		}
+		walk(b)
+		return
+	}
 
-			if bgBox == nil || textBox == nil {
-				t.Fatalf("missing span boxes: bg=%v text=%v", bgBox != nil, textBox != nil)
-			}
-			if textBox.Height <= 0 {
-				t.Fatalf("text em-box height %v must be positive", textBox.Height)
-			}
-			if bgBox.Height != textBox.Height {
-				t.Errorf("span background height %v != text em-box height %v (must come from font metrics, not line-height)", bgBox.Height, textBox.Height)
-			}
-			if bgBox.Y != textBox.Y {
-				t.Errorf("span background top %v != text em-box top %v", bgBox.Y, textBox.Y)
-			}
-		})
+	t.Run("line-height:0 collapses to em box", func(t *testing.T) {
+		_, root := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div style="line-height: 0; font-family: monospace"><span style="background: blue; color: blue">XXXXX</span></div>`)
+		bgBox, textBox := collapsed(root)
+		if bgBox == nil || textBox == nil {
+			t.Fatalf("missing span boxes: bg=%v text=%v", bgBox != nil, textBox != nil)
+		}
+		if textBox.Height <= 0 {
+			t.Fatalf("text em-box height %v must be positive", textBox.Height)
+		}
+		if bgBox.Height != textBox.Height {
+			t.Errorf("with line-height:0 the band must be the em box %v, got %v", textBox.Height, bgBox.Height)
+		}
+		if bgBox.Y != textBox.Y {
+			t.Errorf("span background top %v != text em-box top %v", bgBox.Y, textBox.Y)
+		}
+	})
+
+	t.Run("large line-height grows to line box and covers the text", func(t *testing.T) {
+		_, root := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div style="line-height: 2em; font-family: monospace"><span style="background: blue; color: blue">XXXXX</span></div>`)
+		bgBox, textBox := collapsed(root)
+		if bgBox == nil || textBox == nil {
+			t.Fatalf("missing span boxes: bg=%v text=%v", bgBox != nil, textBox != nil)
+		}
+		if bgBox.Height <= textBox.Height {
+			t.Errorf("with line-height:2em the band must fill the line box (> em box %v), got %v", textBox.Height, bgBox.Height)
+		}
+		if bgBox.Y > textBox.Y || bgBox.Y+bgBox.Height < textBox.Y+textBox.Height {
+			t.Errorf("band [%v,%v] must cover the text em box [%v,%v]", bgBox.Y, bgBox.Y+bgBox.Height, textBox.Y, textBox.Y+textBox.Height)
+		}
+	})
+}
+
+// CSS Compositing 1 §8: a mix-blend-mode child inside an inline opacity group
+// must isolate against the GROUP (its nearest stacking context), not some
+// outer SC. Regression guard for the paint-group branch running the same
+// blend/backdrop bookkeeping as the ordinary descendant walk.
+func TestPaintTree_BlendInsideOpacityGroup_IsolatesGroup(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<div><span style="opacity: 0.5">A<span style="mix-blend-mode: multiply; display: inline-block; width: 10px; height: 10px; background: red"></span></span></div>`)
+
+	var group *PaintLayer
+	forEachLayer(root, nil, func(l *PaintLayer, _ []*PaintLayer) {
+		if l.Opacity == 0.5 {
+			group = l
+		}
+	})
+	if group == nil {
+		t.Fatal("no opacity group layer found")
+	}
+	if !group.HasBlendingDescendant {
+		t.Error("opacity group must be marked HasBlendingDescendant for its blended member (CSS Compositing §8)")
 	}
 }

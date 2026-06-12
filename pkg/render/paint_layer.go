@@ -1911,6 +1911,26 @@ func ensureInlinePaintGroup(item *layout.InlineItem, currentSC *PaintLayer, grou
 	return g
 }
 
+// noteCompositingDescendants records the compositing bookkeeping a child layer
+// imposes on its ancestors and returns the backdrop root in effect for the
+// child's own subtree. CSS Compositing 1 §8: a blended child makes its nearest
+// ancestor stacking context an isolated group. CSS Filter Effects 2 §3.5: a
+// backdrop-filter child samples back to its nearest Backdrop Root. Shared by
+// the inline-paint-group branch and the ordinary descendant walk so grouped
+// members get identical treatment.
+func noteCompositingDescendants(childLayer, enclosingSC, currentBackdropRoot *PaintLayer) *PaintLayer {
+	if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
+		enclosingSC.HasBlendingDescendant = true
+	}
+	if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
+		currentBackdropRoot.HasBackdropFilterDescendant = true
+	}
+	if childLayer.IsBackdropRoot {
+		return childLayer
+	}
+	return currentBackdropRoot
+}
+
 func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropRoot *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) {
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
@@ -1944,6 +1964,10 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			if !ownFragment && child.CreatesStackingContext() {
 				memberSC = childLayer
 			}
+			// A grouped member that blends or samples a backdrop imposes the
+			// same isolation bookkeeping as any other descendant — its
+			// enclosing stacking context is the group layer.
+			childBackdropRoot := noteCompositingDescendants(childLayer, groupLayer, currentBackdropRoot)
 			if isFloat(child) {
 				// CSS 2.1 Appendix E step 4 inside the group: the float
 				// paints below the inline's background and text.
@@ -1951,7 +1975,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			} else {
 				groupLayer.FlowChildren = append(groupLayer.FlowChildren, childLayer)
 			}
-			buildPaintSubtree(child, childLayer, memberSC, currentBackdropRoot, groups)
+			buildPaintSubtree(child, childLayer, memberSC, childBackdropRoot, groups)
 			continue
 		}
 		// Text fragments (LayoutNode==nil with Text set) carry their parent
@@ -1968,35 +1992,11 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
 
-		// CSS Compositing 1 §8: a blended element's parent group is treated as
-		// an isolated group. Mark the nearest ancestor stacking context so
-		// paintLayer can promote it to an offscreen isolation buffer; the
-		// blender then composites against the parent's painted content rather
-		// than the canvas underneath the SC.
-		if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
-			currentSC.HasBlendingDescendant = true
-		}
-
-		// CSS Filter Effects 2 §3.5: a backdrop-filter element samples its
-		// backdrop only back to the nearest Backdrop Root ancestor. Mark that
-		// ancestor so paintLayer can route it through an isolated buffer; the
-		// descendant's backdrop-filter then samples that buffer instead of
-		// the canvas content painted further up the ancestor chain.
-		//
-		// currentBackdropRoot may be nil for descendants of the implicit
-		// root backdrop-root — in that case the canvas IS the backdrop, and
-		// no extra isolation is needed (sampling r.target directly is
-		// already correct).
-		if childLayer.HasBackdropFilter && currentBackdropRoot != nil {
-			currentBackdropRoot.HasBackdropFilterDescendant = true
-		}
-
-		// The child becomes the new currentBackdropRoot for its own subtree
-		// if it is itself a backdrop-root.
-		childBackdropRoot := currentBackdropRoot
-		if childLayer.IsBackdropRoot {
-			childBackdropRoot = childLayer
-		}
+		// Blend / backdrop-filter isolation bookkeeping (CSS Compositing 1 §8,
+		// CSS Filter Effects 2 §3.5). currentBackdropRoot may be nil for
+		// descendants of the implicit root backdrop-root — the canvas IS the
+		// backdrop there, so no extra isolation is needed.
+		childBackdropRoot := noteCompositingDescendants(childLayer, currentSC, currentBackdropRoot)
 
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest

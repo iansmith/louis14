@@ -1672,18 +1672,26 @@ func createLineBoxEx(
 	// element" (the assertion the first-line-line-height WPT reftests check by
 	// modelling ::first-line as a `<span>`): so its background covers the
 	// line's CONTENT inline extent (line.Width starting at the text-align
-	// offset), at the full line-box HEIGHT (lineHeight) — unlike the inline
-	// span-background pre-pass below, which sizes each span fragment to the
-	// span's em box (font-derived, see spanBlockSize), this line-level band
-	// spans the whole line box. Mirrors Blink's
+	// offset) at the first-line font's em box (CSS 2.1 §10.6.1: inline content
+	// area is font-derived, not line-height), anchored at the baseline like the
+	// inline span-background pre-pass below — the genuine WPT references model
+	// ::first-line as an inline `<span>`, so this band must match that span's
+	// geometry exactly. Mirrors Blink's
 	// `LineBoxFragmentPainter::PaintBackgroundBorderShadow`
 	// (`core/paint/inline_box_fragment_painter.cc` @ 4883d11fef), whose
 	// `line_style_` is the ::first-line-aware style.
 	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
+		// Same band geometry as an inline span background (see the Step 3a
+		// pre-pass below): max(em box, line box), em box baseline-anchored.
+		flFontSize, flAscent := inlineAlignmentAscent(firstLineStyle, fonts, wdm, centralBaseline)
+		flBlockSize, flBlockOffset := lineHeight, 0.0
+		if flFontSize >= lineHeight {
+			flBlockSize, flBlockOffset = flFontSize, maxAscent-flAscent
+		}
 		bgFrag := &PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: line.Width,
-				BlockSize:  lineHeight,
+				BlockSize:  flBlockSize,
 			}, wdm.WM)),
 			Type:             FragmentBox,
 			Style:            firstLineStyle,
@@ -1691,7 +1699,7 @@ func createLineBoxEx(
 		}
 		lineBuilder.AddChild(bgFrag, LogicalOffset{
 			InlineOffset: alignOffset,
-			BlockOffset:  0,
+			BlockOffset:  flBlockOffset,
 		})
 	}
 
@@ -1784,16 +1792,25 @@ func createLineBoxEx(
 				spanInlineSize = 0
 			}
 			blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
-			// CSS 2.1 §10.6.1: the content area of a non-replaced inline
-			// comes from the FONT (the em box), not from line-height —
-			// line-height only sizes the line box. Mirrors Blink's
-			// InlineBoxState::ComputeTextMetrics (inline_box_state.cc:105-132
-			// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): metrics from the
-			// font, text_top = -ascent. The band is the span's em box,
-			// baseline-anchored at the line's maxAscent — exactly where this
-			// line's text fragments of the span sit.
+			// An inline background covers at least the font's em box (CSS 2.1
+			// §10.6.1: the content area is font-derived, not line-height) and
+			// grows to the line box when line-height exceeds it — max(em box,
+			// line box). When line-height is SMALLER than the font (e.g.
+			// line-height:0) the em box still paints: the t32-opacity-offscreen
+			// WPT tests need a full-em band even though the line box collapsed.
+			// When line-height is normal/larger, the band fills the line box,
+			// matching the block's own line height and how a ::first-line or
+			// sibling-span background covered it. The em box is baseline-
+			// anchored at maxAscent − spanAscent (Blink
+			// InlineBoxState::ComputeTextMetrics, inline_box_state.cc:105-132 @
+			// 4883d11fef); the line box is anchored at line top.
 			spanFontSize, spanAscent := inlineAlignmentAscent(span.style, fonts, wdm, centralBaseline)
-			spanBlockSize := blockOverhang + spanFontSize + geom.Padding.BlockEnd + geom.Border.BlockEnd
+			spanEmBox := spanFontSize >= lineHeight
+			spanContentBlock := lineHeight
+			if spanEmBox {
+				spanContentBlock = spanFontSize
+			}
+			spanBlockSize := blockOverhang + spanContentBlock + geom.Padding.BlockEnd + geom.Border.BlockEnd
 			// Inline span background fragments must paint in flow order (behind
 			// text), not via the z-index paint step which would paint ON TOP of
 			// text. Reset the copy's position to static for paint purposes.
@@ -1844,7 +1861,13 @@ func createLineBoxEx(
 			// shifts the inline box (including its background) up by the
 			// offset, matching the shift applied to its text children. Use
 			// the cumulative offset so nested spans stack correctly.
-			spanBlockOffset := (maxAscent - spanAscent) - blockOverhang - span.cumulativeVAOffs
+			//
+			// Anchor: an em box sits on the baseline (maxAscent − spanAscent);
+			// a line box fills the line from its top.
+			spanBlockOffset := -blockOverhang - span.cumulativeVAOffs
+			if spanEmBox {
+				spanBlockOffset += maxAscent - spanAscent
+			}
 			pendingBg = append(pendingBg, pendingBgFrag{
 				frag: bgFrag,
 				offset: LogicalOffset{
