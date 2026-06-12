@@ -2997,6 +2997,13 @@ func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	return backgroundClipRadiiForClip(layer, effectiveBackgroundClip(layer))
 }
 
+// bodyOverflowPropagatesToViewport reports whether a <body> element's overflow
+// propagates to the viewport (CSS Overflow §3.3). Propagation happens only when
+// the root <html> has visible overflow and establishes no paint/layout
+// containment; root containment (e.g. contain: paint) stops propagation, so the
+// body retains its own scrollbar. When the root itself has non-visible overflow,
+// the root — not the body — is the viewport-propagating element, and the body
+// keeps its own scrollbar.
 // paintScrollbars paints the classic scrollbar widget (track + thumb) into
 // the reserved gutter of a scroll container. Layout reserves the gutter as
 // box.Scrollbar insets (ComputeScrollbarLogicalEdges, CSS Overflow §3); the
@@ -3018,6 +3025,31 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 		return
 	}
 	sb := box.Scrollbar
+	if sb.Right <= 0 && sb.Left <= 0 && sb.Bottom <= 0 && sb.Top <= 0 {
+		return // no reserved classic-scrollbar gutter (the common case)
+	}
+	// Skip boxes that do not own their scrollbar widget:
+	//   - The root <html> and a viewport-defining <body> propagate their
+	//     overflow to the viewport (CSS Overflow §3.3); the viewport — not the
+	//     element box — owns that scrollbar, and louis14 does not paint
+	//     viewport scrollbars. IsViewportDefiningBody encodes the propagation
+	//     rule (root overflow visible + no containment + first body in DOM),
+	//     so a body kept non-propagating by root containment still paints its
+	//     own scrollbar (overflow-body-propagation-011).
+	//   - Replaced elements (img, iframe, video, canvas, …) get the UA
+	//     `overflow: clip` treatment and never generate scrollbars even with
+	//     overflow: scroll (CSS Overflow §3.7).
+	if box.Node != nil {
+		switch {
+		case box.Node.TagName == "html":
+			return
+		case IsViewportDefiningBody(box):
+			return
+		case html.IsReplacedElementTag(box.Node.TagName):
+			return
+		}
+	}
+
 	vWidth := sb.Right
 	vOnLeft := false
 	if sb.Left > 0 {
@@ -3025,9 +3057,6 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 		vOnLeft = true
 	}
 	hHeight := sb.Bottom
-	if vWidth <= 0 && hHeight <= 0 {
-		return // no reserved classic-scrollbar gutter
-	}
 
 	// Resolve track/thumb colours. scrollbar-color: <thumb> <track>.
 	scv := box.Style.GetScrollbarColor()
