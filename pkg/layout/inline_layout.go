@@ -1680,6 +1680,27 @@ func createLineBoxEx(
 	// `LineBoxFragmentPainter::PaintBackgroundBorderShadow`
 	// (`core/paint/inline_box_fragment_painter.cc` @ 4883d11fef), whose
 	// `line_style_` is the ::first-line-aware style.
+	// LOU-305: opacity on ::first-line is GROUP opacity over the whole first
+	// line (CSS Color 3 §3.2), exactly like element opacity. ::first-line has no
+	// DOM node, so mirror Blink's anonymous inline wrapper for ::first-line
+	// (LayoutBlockFlow::NeedsAnonymousInlineWrapper, computed_style.cc:369 @
+	// 4883d11f) with a synthetic node-less paint group: the band and every
+	// first-line text/atomic fragment route into it so the alpha is composited
+	// ONCE around them all, instead of each fragment double-blending its own
+	// copy. flPaintGroup nests an existing (real) enclosing group unchanged.
+	var flGroup *InlineItem
+	if firstLineStyle != nil && firstLineStyle.GetOpacity() < 1 {
+		flGroup = &InlineItem{Style: firstLineStyle}
+	}
+	// flPaintGroup prefers a real enclosing opacity group; first-line fragments
+	// with none fall back to the synthetic group (nil when no ::first-line
+	// opacity applies). The band always routes straight to flGroup.
+	flPaintGroup := func(enc *InlineItem) *InlineItem {
+		if enc != nil {
+			return enc
+		}
+		return flGroup
+	}
 	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
 		// Same band geometry as an inline span background (see the Step 3a
 		// pre-pass below): max(em box, line box), em box baseline-anchored.
@@ -1696,6 +1717,7 @@ func createLineBoxEx(
 			Type:             FragmentBox,
 			Style:            firstLineStyle,
 			WritingDirection: wdm,
+			PaintGroup:       flGroup,
 		}
 		lineBuilder.AddChild(bgFrag, LogicalOffset{
 			InlineOffset: alignOffset,
@@ -2164,7 +2186,7 @@ func createLineBoxEx(
 					Node:             parentNode,
 					Style:            rStyle,
 					WritingDirection: wdm,
-					PaintGroup:       r.Item.EnclosingPaintGroup,
+					PaintGroup:       flPaintGroup(r.Item.EnclosingPaintGroup),
 				}
 				// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
 				// the painter draws a continuous line across bidi-split, line-
@@ -2398,7 +2420,9 @@ func createLineBoxEx(
 				}
 				// Atomic inlines composite inside the opacity group of their
 				// nearest enclosing group inline, like text runs and floats.
-				r.LayoutResult.Fragment.PaintGroup = r.Item.EnclosingPaintGroup
+				// On a ::first-line with group opacity, the synthetic first-line
+				// group is that enclosing group (LOU-305).
+				r.LayoutResult.Fragment.PaintGroup = flPaintGroup(r.Item.EnclosingPaintGroup)
 				lineBuilder.AddChild(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
