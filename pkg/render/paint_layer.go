@@ -1953,7 +1953,12 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			childLayer := newPaintLayer(child)
 			// The group applies the element's alpha once; the element's own
 			// fragments (which carry the same style) must not re-apply it.
-			ownFragment := child.Node != nil && child.Node == child.PaintGroup.Node
+			// A synthetic ::first-line group (LOU-305) has no DOM node and owns
+			// the alpha of ALL its direct members — the band and the first-line
+			// text/atomic fragments each carry the merged ::first-line opacity,
+			// so every one must drop to 1.0 and let the group composite it once.
+			ownFragment := child.PaintGroup.Node == nil ||
+				(child.Node != nil && child.Node == child.PaintGroup.Node)
 			if ownFragment {
 				childLayer.Opacity = 1.0
 			}
