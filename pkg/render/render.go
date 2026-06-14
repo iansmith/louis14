@@ -2926,13 +2926,20 @@ func isScrollContainer(s *css.Style) bool {
 // local`, the clip is forced to padding-box regardless of the declared
 // background-clip (CSS Backgrounds 3 §3.5).
 func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
+	// Trust the pre-computed background-color clip (Style.GetBackgroundColorClip),
+	// which already selects the bottom-most CSS layer's clip with the proper
+	// layer-count cycling. The BackgroundLayers list must NOT be used to
+	// re-derive it: CullEmptyLayers drops empty trailing layers and always
+	// keeps the head, so its tail is the topmost surviving layer rather than
+	// the CSS bottom-most layer (e.g. `background-image: none, none` collapses
+	// to the head's clip). We still walk the list to find the bottom surviving
+	// layer purely for the local-attachment override below.
 	clip := layer.BackgroundClip
 	var bottom *css.FillLayer
 	if fl := layer.BackgroundLayers; fl != nil {
 		for cur := fl; cur != nil; cur = cur.Next {
 			if cur.Next == nil {
 				bottom = cur
-				clip = cur.Clip
 			}
 		}
 	}
