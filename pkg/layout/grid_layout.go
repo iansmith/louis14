@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 )
 
 // GridLayoutAlgorithm implements the CSS Grid Layout Module Level 1.
@@ -180,7 +181,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// item's inline-size is auto. Without this guard, a flex container
 		// child of a grid with `width:100px` gets force-resized to the
 		// track width, breaking the grid-container-as-flex-item tests.
-		stretchInline := gla.shouldStretchInline(item.style, wdm)
+		stretchInline := gla.shouldStretchInline(item, wdm)
 		childWDM := NewWritingDirectionMode(item.style)
 		// Use NewConstraintSpaceBuilder so orthogonal items (e.g. writing-mode:
 		// vertical-rl inside a horizontal grid) get axis-swapped spaces.
@@ -314,7 +315,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS Box Alignment 3 §6.1: stretch only applies to auto sizes.
 			// Match the first-pass guard so an item with explicit width keeps
 			// its width on the re-layout pass too.
-			stretchInline := gla.shouldStretchInline(item.style, wdm)
+			stretchInline := gla.shouldStretchInline(item, wdm)
 			childWDM2 := NewWritingDirectionMode(item.style)
 			// For orthogonal items, availBlock becomes the child's available InlineSize
 			// (after axis swap in NewConstraintSpaceBuilder). Use the grid container's
@@ -333,7 +334,16 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// second pass. Mirrors the first-pass ShrinkToFit block above.
 			reLayoutInline := itemInline
 			isFixedInline := stretchInline
-			if !stretchInline && isAutoOrUnsetInline(item.style, wdm) {
+			// Replaced items (img/canvas/…) are excluded: their first-pass
+			// fragment uses the natural inline-size, but on the re-layout pass a
+			// now-definite block-size (e.g. a fixed row track + percentage height)
+			// must transfer through the intrinsic aspect ratio to the inline-size
+			// via block_layout's ComputeReplacedSize. Reusing the first-pass
+			// natural width here (with IsFixedInlineSize=true) would defeat that —
+			// e.g. a 200×200 img with height:100% in a 100px grid area would stay
+			// 200px wide instead of becoming a 100px square (grid-in-table-cell-with-img).
+			if !stretchInline && isAutoOrUnsetInline(item.style, wdm) &&
+				!gla.replacedHasNaturalSize(item.node, wdm, true) {
 				ar := item.style.GetAspectRatio()
 				if !ar.IsSet {
 					// Reuse the ShrinkToFit inline size from the first-pass fragment.
@@ -1184,7 +1194,7 @@ func (gla *GridLayoutAlgorithm) getAlignSelf(itemStyle *css.Style) string {
 	if v, ok := gla.style.Get("align-items"); ok && v != "" {
 		return v
 	}
-	return "stretch"
+	return "normal"
 }
 
 // getJustifySelf returns the resolved justify-self for a grid item.
@@ -1195,7 +1205,7 @@ func (gla *GridLayoutAlgorithm) getJustifySelf(itemStyle *css.Style) string {
 	if v, ok := gla.style.Get("justify-items"); ok && v != "" {
 		return v
 	}
-	return "stretch"
+	return "normal"
 }
 
 // shouldStretchInline returns true when the grid item should be stretched
@@ -1206,12 +1216,24 @@ func (gla *GridLayoutAlgorithm) getJustifySelf(itemStyle *css.Style) string {
 // third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc
 // where the per-item constraint space only sets kFixedInlineSize under
 // the same conditions (justify-self stretch on an auto-sized item).
-func (gla *GridLayoutAlgorithm) shouldStretchInline(itemStyle *css.Style, wdm WritingDirectionMode) bool {
+func (gla *GridLayoutAlgorithm) shouldStretchInline(item *gridItem, wdm WritingDirectionMode) bool {
+	itemStyle := item.style
 	if itemStyle == nil {
 		return true
 	}
 	justify := gla.getJustifySelf(itemStyle)
 	if justify != "stretch" && justify != "normal" {
+		return false
+	}
+	// CSS Box Alignment 3 §6.1 / CSS Grid §6.6: under the default `normal`
+	// self-alignment a replaced grid item with a natural size in the inline
+	// axis resolves to fit-content (its natural size), not stretch — only an
+	// explicit `stretch` stretches a replaced item. Mirrors Blink's
+	// AxisEdgeFromItemPosition in
+	// third_party/blink/renderer/core/layout/grid/grid_item.cc
+	// (Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): for ItemPosition::kNormal,
+	// auto_behavior = is_replaced ? kFitContent : kStretchImplicit.
+	if justify == "normal" && gla.replacedHasNaturalSize(item.node, wdm, true) {
 		return false
 	}
 	inlineProp := "width"
@@ -1222,6 +1244,33 @@ func (gla *GridLayoutAlgorithm) shouldStretchInline(itemStyle *css.Style, wdm Wr
 		return false
 	}
 	return true
+}
+
+// replacedHasNaturalSize reports whether the grid item node is a replaced
+// element with a positive natural size in the requested axis (inlineAxis=true
+// for the grid's inline axis, false for the block axis). Used to suppress the
+// default `normal` stretch for replaced items per CSS Box Alignment §6.1.
+func (gla *GridLayoutAlgorithm) replacedHasNaturalSize(node *LayoutInputNode, wdm WritingDirectionMode, inlineAxis bool) bool {
+	if node == nil || node.DOMNode == nil || !IsReplacedElement(node.DOMNode) {
+		return false
+	}
+	// Form controls (the semi-replaced elements: input, textarea, select,
+	// button) are replaced for rendering but, unlike media/embedded content,
+	// behave as NON-replaced for box alignment: Blink's
+	// LayoutObject::IsReplaced() returns false for them, so their default
+	// `normal` self-alignment resolves to stretch (kStretchImplicit) and they
+	// fill the grid area — see WPT stretch-grid-item-{checkbox,radio}-input.
+	if html.IsSemiReplacedElementTag(node.DOMNode.TagName) {
+		return false
+	}
+	info := GetIntrinsicSizingInfo(gla.ctx, node)
+	// IntrinsicSizingInfo holds PHYSICAL dimensions. The inline axis maps to the
+	// physical width in horizontal writing modes and the physical height in
+	// vertical writing modes (and vice-versa for the block axis).
+	if inlineAxis == wdm.IsVertical() {
+		return info.IntrinsicHeight > 0
+	}
+	return info.IntrinsicWidth > 0
 }
 
 // alignOffset computes offset for alignment within available space.
