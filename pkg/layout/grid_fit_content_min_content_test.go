@@ -37,7 +37,12 @@ func TestGridFitContentMinContentFloor(t *testing.T) {
 		s := css.NewStyle()
 		s.Properties["max-width"] = "max-content"
 		s.Properties["box-sizing"] = "border-box"
-		s.Properties["padding"] = "10px 20px"
+		// Longhands (css.NewStyle does not expand the `padding` shorthand): 10px
+		// vertical, 20px horizontal => 40px inline border-padding per item.
+		s.Properties["padding-top"] = "10px"
+		s.Properties["padding-bottom"] = "10px"
+		s.Properties["padding-left"] = "20px"
+		s.Properties["padding-right"] = "20px"
 		return s
 	}
 	mkContent := func() *css.Style {
