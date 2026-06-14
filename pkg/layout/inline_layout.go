@@ -1687,7 +1687,7 @@ func createLineBoxEx(
 	// 4883d11f) with a synthetic node-less paint group: the band and every
 	// first-line text/atomic fragment route into it so the alpha is composited
 	// ONCE around them all, instead of each fragment double-blending its own
-	// copy. flPaintGroup nests an existing (real) enclosing group unchanged.
+	// copy.
 	var flGroup *InlineItem
 	if firstLineStyle != nil && firstLineStyle.GetOpacity() < 1 {
 		flGroup = &InlineItem{Style: firstLineStyle}
@@ -1695,6 +1695,14 @@ func createLineBoxEx(
 	// flPaintGroup prefers a real enclosing opacity group; first-line fragments
 	// with none fall back to the synthetic group (nil when no ::first-line
 	// opacity applies). The band always routes straight to flGroup.
+	//
+	// KNOWN LIMITATION (LOU-310): when enc != nil it is returned unchanged, so a
+	// first-line fragment already inside a real inline opacity group (e.g. a
+	// nested opacity span on the first line) routes to that group and ESCAPES
+	// flGroup — the ::first-line alpha is not applied to that subtree. A correct
+	// fix must nest enc inside flGroup per first line without polluting the
+	// shared (cross-line) enclosing group; deferred as a heavy lift. Not a
+	// regression: pre-LOU-305 that case double-blended too.
 	flPaintGroup := func(enc *InlineItem) *InlineItem {
 		if enc != nil {
 			return enc
