@@ -29,12 +29,15 @@ type rubyCollectState struct {
 	// columns at `</ruby>` (mirrors
 	// `inline_items_builder.cc:1617-1628`).
 	currentColumnCheckpoint rubyColumnCheckpoint
-	// textNestingLevel is the depth of `<rt>` descendants currently
-	// being walked. Bumped on `<rt>` enter, decremented on `<rt>`
-	// exit. When > 0, forced breaks (`<br>` items and `\n` control
-	// items emitted from preserved text) are rewritten to spaces
-	// (mirrors `kDisableForcedBreakInRubyColumn`,
-	// `inline_items_builder.cc:74,801,1068`).
+	// textNestingLevel is the forced-break suppression depth — Blink's
+	// `ruby_text_nesting_level_`. Bumped on entering a `<ruby>` column
+	// (`inline_items_builder.cc:1587-1588`) and on entering an `<rt>`
+	// annotation (`:1551-1552`), decremented on the matching exit; a
+	// standalone ruby-family base seeds it at 1. When > 0, forced breaks
+	// (`<br>` items and `\n` control items from preserved text) are
+	// suppressed (mirrors `kDisableForcedBreakInRubyColumn`,
+	// `inline_items_builder.cc:74,801,1068`): `<br>` is dropped, `\n`
+	// becomes a space.
 	textNestingLevel int
 }
 
@@ -194,12 +197,62 @@ func emitRubyAnnotationPlaceholder(
 	})
 }
 
-// rubyForcedBreakSuppressed reports whether forced-break items
-// (`<br>`, preserved `\n`) being emitted now should be rewritten to a
-// regular space. True when the current collection point is inside an
-// `<rt>` (or any descendant), mirroring Blink's
-// `kDisableForcedBreakInRubyColumn` gate at
-// `inline_items_builder.cc:74,801,1068`.
+// rubyForcedBreakSuppressed reports whether forced breaks (`<br>`,
+// preserved `\n`) being emitted now fall inside a ruby column and must be
+// suppressed. True when textNestingLevel > 0 — which holds inside the ruby
+// base (entered via `<ruby>`, mirrors `inline_items_builder.cc:1587-1588`),
+// inside an `<rt>` annotation (`:1551-1552`), and inside a standalone
+// ruby-family box that forms a base (louis14's box-fixup analog, see
+// collectInlinesRecursive). Mirrors Blink's `kDisableForcedBreakInRubyColumn`
+// gate at `inline_items_builder.cc:74,801,1068` @ 4883d11fef.
 func rubyForcedBreakSuppressed(state *rubyCollectState) bool {
 	return state != nil && state.textNestingLevel > 0
+}
+
+// isRubyFamilyTag reports whether tag is a ruby-internal element that
+// suppresses forced breaks within its base content. `<rp>` is excluded —
+// it is `display: none` per the UA stylesheet (cascade.go) and never
+// contributes layout.
+func isRubyFamilyTag(tag string) bool {
+	switch tag {
+	case "ruby", "rb", "rbc", "rt", "rtc":
+		return true
+	}
+	return false
+}
+
+// rubyStandaloneFormsBase reports whether a standalone ruby-family element
+// (one not wrapped in an enclosing `<ruby>`) holds enough content to form a
+// real ruby base. Forced breaks are suppressed only inside such a base; a
+// ruby box whose content is whitespace-only does NOT form a base, so a
+// forced break inside it is preserved. Mirrors the CSS Ruby 1 box-fixup
+// rule exercised by WPT ruby-line-break-suppression-004 ("whitespaces
+// wrapped but not contained in ruby boxes").
+//
+// `<br>` descendants do not count as base content (a box whose only content
+// is a forced break is not a base); replaced elements and non-whitespace
+// text do.
+func rubyStandaloneFormsBase(node *html.Node) bool {
+	for _, c := range node.Children {
+		switch c.Type {
+		case html.TextNode:
+			// c.Text is the canonical content field (collectTextNode keys off
+			// it); whitespace-collapsing never removes content runes, so a
+			// non-whitespace Text means real base content.
+			if strings.TrimSpace(c.Text) != "" {
+				return true
+			}
+		case html.ElementNode:
+			if c.TagName == "br" {
+				continue
+			}
+			if IsReplacedElement(c) {
+				return true
+			}
+			if rubyStandaloneFormsBase(c) {
+				return true
+			}
+		}
+	}
+	return false
 }
