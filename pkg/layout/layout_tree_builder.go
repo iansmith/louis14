@@ -2,6 +2,7 @@ package layout
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -2298,6 +2299,29 @@ func initialLetterBlockStartMargin(size, lineHeight, bigAscent, paraLineDescent 
 		return 0
 	}
 	return off
+}
+
+// initialLetterTextShift returns the block-start-adjust by which an
+// initial-letter float's surrounding paragraph text is shifted down (and the
+// letter itself raised to the visual top): lineHeight*(ceil(size) - sink) for
+// `raise`, otherwise 0. Only the `raise` keyword is modelled — bare-number / drop
+// and explicit-sink produce no shift (matching pre-LOU-289 behavior).
+//
+// Gating on Raise and using ceil(size) (not the raw float) is required: for a
+// bare fractional size like `2.5`, GetInitialLetter sets Sink = floor(size) = 2,
+// so a naive lineHeight*(size-sink) would shift a plain drop by half a line.
+// Blink ceils size to an integer and treats the bare-number sink as size (no
+// shift). Mirrors Blink ComputeInitialLetterBoxBlockOffset's block_start_adjust
+// (initial_letter_utils.cc:38-69 @ 4883d11fef).
+func initialLetterTextShift(il css.InitialLetterValue, lineHeight float64) float64 {
+	if !il.Raise {
+		return 0
+	}
+	shift := lineHeight * (math.Ceil(il.Size) - float64(il.Sink))
+	if shift < 0 {
+		return 0
+	}
+	return shift
 }
 
 // applyInitialLetter mutates the ::first-letter style `flStyle` into an

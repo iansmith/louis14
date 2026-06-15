@@ -269,10 +269,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		exclusionSpace = &ExclusionSpace{}
 	}
 	type pendingFloat struct {
-		item         *InlineItem
-		margins      LogicalEdges
-		childLogical LogicalFragment
-		fragment     *PhysicalFragment
+		item            *InlineItem
+		margins         LogicalEdges
+		childLogical    LogicalFragment
+		fragment        *PhysicalFragment
+		isInitialLetter bool
 	}
 	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
 	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
@@ -296,10 +297,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if childStyle == nil {
 			continue
 		}
-		if il := childStyle.GetInitialLetter(); il.Set {
-			if adj := paraLineHeight * (il.Size - float64(il.Sink)); adj > initialLetterAdjust {
-				initialLetterAdjust = adj
-			}
+		il := childStyle.GetInitialLetter()
+		if shift := initialLetterTextShift(il, paraLineHeight); shift > initialLetterAdjust {
+			initialLetterAdjust = shift
 		}
 		childWDM := NewWritingDirectionMode(childStyle)
 		childMargins := ResolveMargins(childStyle, wdm, contentInlineSize)
@@ -325,10 +325,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
 		childResult.Fragment.PaintGroup = item.EnclosingPaintGroup
 		pendingFloats[item] = &pendingFloat{
-			item:         item,
-			margins:      childMargins,
-			childLogical: childLogical,
-			fragment:     childResult.Fragment,
+			item:            item,
+			margins:         childMargins,
+			childLogical:    childLogical,
+			fragment:        childResult.Fragment,
+			isInitialLetter: il.Set,
 		}
 		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
 		// (or otherwise monolithic) within an IFC contribute their block-size
@@ -354,7 +355,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// The initial-letter float is exempt from the block-start shift: the
 		// surrounding text is pushed down by initialLetterAdjust (blockOffset
 		// starts there) but the letter stays at the unshifted visual top.
-		if initialLetterAdjust > 0 && childStyle.GetInitialLetter().Set {
+		// (No-op for a drop initial letter, where initialLetterAdjust is 0.)
+		if pf.isInitialLetter {
 			floatOriginBFC -= initialLetterAdjust
 		}
 		floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()

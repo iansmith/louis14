@@ -1,6 +1,35 @@
 package layout
 
-import "testing"
+import (
+	"louis14/pkg/css"
+	"testing"
+)
+
+// TestInitialLetterTextShift covers the block-start-adjust applied to the
+// surrounding paragraph text for an initial letter. Only `raise` shifts (by
+// ceil(size)-sink lines); drop / explicit-sink do not. The fractional-drop case
+// is a regression guard: GetInitialLetter sets Sink=floor(size), so a naive
+// size-sink would shift a plain fractional drop — it must not.
+func TestInitialLetterTextShift(t *testing.T) {
+	const lh = 24.0
+	cases := []struct {
+		name string
+		il   css.InitialLetterValue
+		want float64
+	}{
+		{"raise 3", css.InitialLetterValue{Size: 3, Sink: 1, Raise: true, Set: true}, 48},     // ceil(3)-1 = 2 lines
+		{"raise 2.5", css.InitialLetterValue{Size: 2.5, Sink: 1, Raise: true, Set: true}, 48}, // ceil(2.5)=3, 3-1 = 2 lines
+		{"drop 3", css.InitialLetterValue{Size: 3, Sink: 3, Set: true}, 0},                    // bare integer drop: no shift
+		{"drop 2.5 (regression)", css.InitialLetterValue{Size: 2.5, Sink: 2, Set: true}, 0},   // fractional drop: NO phantom shift
+		{"explicit sink 3 2", css.InitialLetterValue{Size: 3, Sink: 2, Set: true}, 0},         // not raise → not modelled, no shift
+		{"unset", css.InitialLetterValue{}, 0},
+	}
+	for _, c := range cases {
+		if got := initialLetterTextShift(c.il, lh); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
 
 // TestInitialLetterBlockStartMargin covers the drop block-start margin for an
 // initial-letter float: max(0, lineHeight*size - bigAscent - paraLineDescent).
