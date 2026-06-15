@@ -226,9 +226,15 @@ func TestWPTCSS3Reftests(t *testing.T) {
 	sort.Strings(testFiles)
 	t.Logf("Found %d WPT CSS3 reftest files", len(testFiles))
 
-	passed, failed := 0, 0
+	xfails, xfErr := loadExpectedFailures()
+	if xfErr != nil {
+		t.Fatalf("failed to load expected-failure manifest: %v", xfErr)
+	}
+
+	passed, failed, xfailed := 0, 0, 0
 	for _, testFile := range testFiles {
 		relPath, _ := filepath.Rel(testDir, testFile)
+		reason, isXfail := xfails[relPath]
 		t.Run(relPath, func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -236,15 +242,72 @@ func TestWPTCSS3Reftests(t *testing.T) {
 					failed++
 				}
 			}()
-			if runReftest(t, testFile) {
+			switch reportReftest(t, testFile, relPath, isXfail, reason) {
+			case reftestCountPass:
 				passed++
-			} else {
+			case reftestCountXfail:
+				xfailed++
+			default:
 				failed++
 			}
 		})
 	}
 
-	t.Logf("Summary: %d/%d passed, %d failed", passed, len(testFiles), failed)
+	t.Logf("Summary: %d/%d passed, %d failed, %d xfail (expected, see %s)", passed, len(testFiles), failed, xfailed, expectedFailuresPath)
+}
+
+// reftestCount categorizes a reported reftest outcome for the summary counters.
+type reftestCount int
+
+const (
+	reftestCountFail reftestCount = iota
+	reftestCountPass
+	reftestCountXfail
+)
+
+// reportReftest runs one reftest under the watchdog (the same execution path as
+// runReftest) and translates the outcome into t.* calls on the test's own
+// goroutine, applying the expected-failure policy: when isXfail, a FAIL is
+// downgraded to XFAIL (the suite stays green) and a PASS is escalated to an
+// error so the stale manifest entry gets removed. Factored out of the runner
+// loop so css2, css3, and any future runner apply the policy identically rather
+// than re-inlining the outcome switch. Must be called from the test's own
+// goroutine — it may t.Skip / t.Fatal.
+func reportReftest(t *testing.T, testPath, relPath string, isXfail bool, reason string) reftestCount {
+	t.Helper()
+	r, timedOut := watchdogResult(perReftestTimeout, func() reftestResult {
+		return runReftestInner(t, testPath)
+	})
+	switch {
+	case timedOut:
+		if isXfail {
+			t.Logf("XFAIL (timeout): %s — %s", relPath, reason)
+			return reftestCountXfail
+		}
+		t.Errorf("REFTEST TIMEOUT after %v (worker goroutine leaked; see goroutine dump on test binary exit for the hang signature)", perReftestTimeout)
+		return reftestCountFail
+	case r.outcome == reftestSkip:
+		t.Skip(r.msg)
+		return reftestCountPass // unreached: t.Skip calls runtime.Goexit
+	case r.outcome == reftestFatal:
+		t.Fatalf("%s", r.msg)
+		return reftestCountFail // unreached: t.Fatalf calls runtime.Goexit
+	case r.outcome == reftestPass:
+		if isXfail {
+			t.Errorf("UNEXPECTED PASS: %q is listed in %s but now passes — remove it from the manifest (recorded reason: %s)", relPath, expectedFailuresPath, reason)
+			return reftestCountFail
+		}
+		return reftestCountPass
+	default: // reftestFail
+		if isXfail {
+			t.Logf("XFAIL: %s — %s", relPath, reason)
+			return reftestCountXfail
+		}
+		if r.msg != "" {
+			t.Errorf("%s", r.msg)
+		}
+		return reftestCountFail
+	}
 }
 
 // runReftest renders a single test file and its reference, then compares.
