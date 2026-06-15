@@ -29,6 +29,15 @@ type rubyCollectState struct {
 	// columns at `</ruby>` (mirrors
 	// `inline_items_builder.cc:1617-1628`).
 	currentColumnCheckpoint rubyColumnCheckpoint
+	// hasColumn is true once this state has opened a real ruby column
+	// (the IsInlineRuby case calls openRubyColumn). It is false for the
+	// suppress-only sentinel created for a standalone ruby-family box,
+	// which tracks forced-break suppression but has no column. The
+	// annotation-column machinery (`<rt>` placeholder / column close+reopen)
+	// must run only when hasColumn is true — driving it from a sentinel
+	// would close a column that was never opened (zero checkpoint), which
+	// strips unrelated items.
+	hasColumn bool
 	// textNestingLevel is the forced-break suppression depth — Blink's
 	// `ruby_text_nesting_level_`. Bumped on entering a `<ruby>` column
 	// (`inline_items_builder.cc:1587-1588`) and on entering an `<rt>`

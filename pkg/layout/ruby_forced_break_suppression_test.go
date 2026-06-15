@@ -125,6 +125,39 @@ func TestRubyForcedBreak_WhitespaceOnlyRubyBoxNotSuppressed(t *testing.T) {
 	}
 }
 
+// Regression: a standalone ruby box (suppress-only sentinel, no real ruby
+// column) containing an element with explicit `display:ruby-text` must not
+// drive the annotation-column close/reopen machinery — doing so would close a
+// column that was never opened (zero checkpoint) and strip unrelated items.
+// The collection must keep the box's content intact.
+func TestRubyForcedBreak_SentinelWithExplicitRubyTextKeepsItems(t *testing.T) {
+	x := &html.Node{Type: html.TextNode, Text: "x"}
+	span := makeNode("span", x)
+	rb := makeNode("rb", span)
+	root := makeNode("div", rb)
+
+	styles := map[*html.Node]*css.Style{
+		root: makeStyle("display", "block"),
+		rb:   makeStyle("display", "inline"),
+		span: makeStyle("display", "ruby-text"),
+		x:    makeStyle("display", "inline"),
+	}
+
+	data := collectForNodes(t, root, styles)
+	if !strings.Contains(data.TextContent, "x") {
+		t.Errorf("standalone <rb> content was stripped: TextContent=%q, items=%d", data.TextContent, len(data.Items))
+	}
+	foundOpen := false
+	for _, it := range data.Items {
+		if it.Type == InlineItemOpenTag && it.Node == rb {
+			foundOpen = true
+		}
+	}
+	if !foundOpen {
+		t.Errorf("standalone <rb> OpenTag missing — items were truncated by a spurious column close")
+	}
+}
+
 // Preserved \n inside a ruby base (white-space:pre) is rewritten to a space,
 // not suppressed entirely — matches the -003 reference "a b".
 func TestRubyForcedBreak_PreservedNewlineInRubyBaseBecomesSpace(t *testing.T) {

@@ -378,7 +378,7 @@ func collectInlinesRecursive(
 		// annotation. Mirrors Blink
 		// `core/layout/inline/inline_items_builder.cc:1550-1595`
 		// (`IsInlineRubyText()` branch, @ 4883d11fef).
-		if rubyState != nil && childStyle.IsInlineRubyText() {
+		if rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText() {
 			emitRubyAnnotationPlaceholder(data, text, childStyle, child.DOMNode)
 		}
 
@@ -420,10 +420,11 @@ func collectInlinesRecursive(
 			// IsInlineRuby increments ruby_text_nesting_level_ under the
 			// kDisableForcedBreakInRubyColumn gate.
 			childRubyState.textNestingLevel++
+			childRubyState.hasColumn = true
 			childRubyState.currentColumnCheckpoint = openRubyColumn(
 				data, text, childStyle, child.DOMNode, true, /* isPrimaryBase */
 			)
-		case rubyState != nil && childStyle.IsInlineRubyText():
+		case rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText():
 			rubyState.textNestingLevel++
 			childRubyState = rubyState
 		default:
@@ -446,7 +447,7 @@ func collectInlinesRecursive(
 
 		collectInlinesRecursive(child, data, text, false, childRubyState)
 
-		if rubyState != nil && childStyle.IsInlineRubyText() {
+		if rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText() {
 			rubyState.textNestingLevel--
 		}
 
@@ -471,7 +472,7 @@ func collectInlinesRecursive(
 				childRubyState.currentColumnCheckpoint,
 				childStyle, child.DOMNode,
 			)
-		case rubyState != nil && childStyle.IsInlineRubyText():
+		case rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText():
 			closeOrStripRubyColumn(
 				data, text,
 				rubyState.currentColumnCheckpoint,
