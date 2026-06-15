@@ -1,2 +1,5 @@
 system = "linear"
 key    = "LOU"
+
+[autonomous]
+enabled = true
