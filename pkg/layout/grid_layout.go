@@ -906,6 +906,14 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 			continue
 		}
 		maxSize := 0.0
+		minContentSize := 0.0
+		// In the inline (column) pass, items are not yet laid out — column sizing
+		// precedes item layout, so item.result is nil. fit-content tracks need
+		// real min-content (base, never clamped) and max-content (growth limit,
+		// clamped to the argument) contributions, so measure them directly via
+		// ComputeMinMaxSizes. Mirrors Blink's ResolveIntrinsicTrackSizes
+		// (grid_track_sizing_algorithm.cc:911, SHA 4883d11fef).
+		measureContrib := isInline && t.IsFitContent
 		for _, item := range items {
 			var start, end int
 			if isInline {
@@ -918,26 +926,36 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 				if span <= 0 {
 					span = 1
 				}
-				var itemSize float64
-				if item.result != nil {
+				var itemMax, itemMin float64
+				if measureContrib {
+					itemMin, itemMax = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
+				} else if item.result != nil {
 					// Use the physical dimension that corresponds to the logical direction.
 					// For inline tracks: inline = Width in HTB, Height in VLR.
 					// For block tracks:  block  = Height in HTB, Width in VLR.
 					// Formula: useWidth when (isInline != wdm.IsVertical()).
 					if isInline != wdm.IsVertical() {
-						itemSize = item.result.Fragment.Size.WidthF64()
+						itemMax = item.result.Fragment.Size.WidthF64()
 					} else {
-						itemSize = item.result.Fragment.Size.HeightF64()
+						itemMax = item.result.Fragment.Size.HeightF64()
 					}
+					itemMin = itemMax
 				}
-				contribution := itemSize / float64(span)
-				if contribution > maxSize {
-					maxSize = contribution
+				if c := itemMax / float64(span); c > maxSize {
+					maxSize = c
+				}
+				if c := itemMin / float64(span); c > minContentSize {
+					minContentSize = c
 				}
 			}
 		}
-		if t.IsFitContent && maxSize > t.FitContentMax {
-			maxSize = t.FitContentMax
+		if t.IsFitContent {
+			if measureContrib {
+				maxSize = fitContentTrackSize(minContentSize, maxSize, t.FitContentMax)
+			} else if maxSize > t.FitContentMax {
+				// Row pass: existing fragment-based clamp to the argument.
+				maxSize = t.FitContentMax
+			}
 		}
 		if t.IsMinMax {
 			if maxSize < t.MinSize {

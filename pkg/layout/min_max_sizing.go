@@ -998,6 +998,58 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
 }
 
+// fitContentTrackSize returns a fit-content(arg) track's used size:
+// max(min-content, min(max-content, arg)). The min-content base is never
+// clamped by the argument; only the max-content growth limit is. A FitContentMax
+// of 0 means no argument was resolved, so the growth limit is left unclamped.
+// Mirrors Blink's GrowthPotentialForSet fit-content branch
+// (grid_track_sizing_algorithm.cc:503, SHA 4883d11fef): the max sizing function
+// is treated as max-content until it reaches the argument.
+func fitContentTrackSize(minContent, maxContent, arg float64) float64 {
+	growth := maxContent
+	if arg > 0 && growth > arg {
+		growth = arg
+	}
+	if minContent > growth {
+		return minContent
+	}
+	return growth
+}
+
+// gridItemInlineContribution returns a grid item's min-content and max-content
+// contributions to the container's inline (column) axis, including the item's
+// margin, border, and padding. Orthogonal items contribute their block-size
+// (viewed in the container's logical coords); parallel items contribute their
+// intrinsic inline sizes. Mirrors Blink's
+// GridTrackSizingAlgorithm::ContributionSizeForGridItem
+// (third_party/blink/renderer/core/layout/grid/grid_track_sizing_algorithm.cc,
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Shared by measureGridMinMax (container intrinsic sizing) and
+// GridLayoutAlgorithm.resolveTrackSizes (the inline track-sizing pass, where
+// items are not yet laid out so item.result is unavailable).
+func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib float64) {
+	childWDM := NewWritingDirectionMode(cs)
+	if containerWDM.IsOrthogonalTo(childWDM) {
+		// Orthogonal: block-size becomes inline contribution to parent.
+		// measureOrthogonalChild already includes margins in its return value.
+		return measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+	}
+	// Parallel: compute intrinsic sizes in the child's writing mode, then add
+	// border/padding and margins in the child's own writing mode.
+	childGeom := ComputeFragmentGeometry(cs, childWDM)
+	childBP := childGeom.InlineBorderPadding()
+	margins := ResolveMargins(cs, childWDM, 0)
+	childSpace := NewConstraintSpaceBuilder(containerWDM, childWDM, false).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+		Build()
+	mm := ComputeMinMaxSizes(ctx, node, childSpace)
+	return mm.MinContent + childBP + margins.InlineSum(), mm.MaxContent + childBP + margins.InlineSum()
+}
+
 // measureGridMinMax computes the min/max-content inline-size contributions
 // for a grid container. Mirrors Blink's
 // GridLayoutAlgorithm::ComputeMinMaxSizes
@@ -1127,36 +1179,7 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			if cs == nil || cs.GetDisplay() == css.DisplayNone {
 				continue
 			}
-			childWDM := NewWritingDirectionMode(cs)
-
-			var minContrib, maxContrib float64
-
-			// Route orthogonal items through measureOrthogonalChild, which lays out
-			// the item and uses its block-size (viewed in parent's logical coords) as
-			// the inline contribution. For parallel (non-orthogonal) items, use the
-			// cheap ComputeMinMaxSizes + border-padding + margins path.
-			// Mirrors Blink's GridTrackSizingAlgorithm::ContributionSizeForGridItem.
-			if wdm.IsOrthogonalTo(childWDM) {
-				// Orthogonal: block-size becomes inline contribution to parent.
-				// measureOrthogonalChild already includes margins in its return value.
-				minContrib, maxContrib = measureOrthogonalChild(c, cs, childWDM, wdm, ctx, space)
-			} else {
-				// Parallel: compute intrinsic sizes in the child's writing mode,
-				// then add border/padding and margins in the child's own writing mode.
-				childGeom := ComputeFragmentGeometry(cs, childWDM)
-				childBP := childGeom.InlineBorderPadding()
-				margins := ResolveMargins(cs, childWDM, 0)
-				childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
-					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
-					SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-					SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-					Build()
-				mm := ComputeMinMaxSizes(ctx, c, childSpace)
-				minContrib = mm.MinContent + childBP + margins.InlineSum()
-				maxContrib = mm.MaxContent + childBP + margins.InlineSum()
-			}
-
+			minContrib, maxContrib := gridItemInlineContribution(c, cs, wdm, ctx, space)
 			itemSizes = append(itemSizes, itemContrib{
 				min: minContrib,
 				max: maxContrib,
@@ -1205,13 +1228,9 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				maxSum += t.MinSize
 			}
 		case t.IsFitContent:
-			// fit-content(<size>): clamps to FitContentMax.
-			minSum += 0
-			if t.FitContentMax > 0 && maxAutoMax > t.FitContentMax {
-				maxSum += t.FitContentMax
-			} else {
-				maxSum += maxAutoMax
-			}
+			// fit-content(arg) used size = max(min-content, min(max-content, arg)).
+			minSum += maxAutoMin
+			maxSum += fitContentTrackSize(maxAutoMin, maxAutoMax, t.FitContentMax)
 		case t.MinContent:
 			minSum += maxAutoMin
 			maxSum += maxAutoMin
