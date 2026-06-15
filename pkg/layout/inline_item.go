@@ -255,20 +255,16 @@ func collectInlinesRecursive(
 		// <br> into an atomic inline-block. Mirror that here by classifying
 		// <br> as a control break before the float/atomic branches.
 		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
-			// CSS Ruby §"forced breaks": `<br>` inside a `<rt>` (or
-			// any descendant) is rewritten to a space. Mirrors Blink's
-			// `kDisableForcedBreakInRubyColumn` gate at
-			// `core/layout/inline/inline_items_builder.cc:74,801`.
+			// CSS Ruby box-fixup: a `<br>` inside a ruby base/annotation is
+			// removed entirely — no forced break and no space. WPT
+			// ruby-line-break-suppression-001 renders `<ruby>a<br>b</ruby>`
+			// as "ab", not "a b". A `<br>` contributes no character of its
+			// own, so suppression drops it; a preserved `\n` (which IS a
+			// character) is instead rewritten to a space in collectTextNode.
+			// (Blink emits a space here — inline_items_builder.cc:800-802 @
+			// 4883d11fef — but the WPT references match Gecko's drop-entirely
+			// behavior, which is what our 0%-diff contract requires.)
 			if rubyForcedBreakSuppressed(rubyState) {
-				segStart := text.Len()
-				text.WriteRune(' ')
-				data.Items = append(data.Items, &InlineItem{
-					Type:        InlineItemText,
-					StartOffset: segStart,
-					EndOffset:   text.Len(),
-					Node:        child.DOMNode,
-					Style:       childStyle,
-				})
 				continue
 			}
 			brOffset := text.Len()
@@ -382,7 +378,7 @@ func collectInlinesRecursive(
 		// annotation. Mirrors Blink
 		// `core/layout/inline/inline_items_builder.cc:1550-1595`
 		// (`IsInlineRubyText()` branch, @ 4883d11fef).
-		if rubyState != nil && childStyle.IsInlineRubyText() {
+		if rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText() {
 			emitRubyAnnotationPlaceholder(data, text, childStyle, child.DOMNode)
 		}
 
@@ -418,19 +414,40 @@ func collectInlinesRecursive(
 			if rubyState != nil {
 				childRubyState.textNestingLevel = rubyState.textNestingLevel
 			}
+			// Entering the ruby column itself suppresses forced breaks in
+			// its base content (not only inside `<rt>`). Mirrors Blink
+			// `inline_items_builder.cc:1587-1588` @ 4883d11fef, where
+			// IsInlineRuby increments ruby_text_nesting_level_ under the
+			// kDisableForcedBreakInRubyColumn gate.
+			childRubyState.textNestingLevel++
+			childRubyState.hasColumn = true
 			childRubyState.currentColumnCheckpoint = openRubyColumn(
 				data, text, childStyle, child.DOMNode, true, /* isPrimaryBase */
 			)
-		case rubyState != nil && childStyle.IsInlineRubyText():
+		case rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText():
 			rubyState.textNestingLevel++
 			childRubyState = rubyState
 		default:
 			childRubyState = rubyState
+			// Standalone ruby-family element (not wrapped in an enclosing
+			// `<ruby>`): cascade.go gives `<rb>`/`<rbc>`/`<rtc>` and orphan
+			// `<rt>` plain `display:inline`, but per CSS Ruby box-fixup they
+			// form anonymous ruby bases, so forced breaks inside their
+			// content are suppressed like inside a real ruby base. A
+			// whitespace-only ruby box does not form a base (WPT
+			// ruby-line-break-suppression-004), so gate on real content.
+			// No direct Blink analog: Blink relies on parser/box-fixup to
+			// assign ruby display types; louis14 detects these by tag here.
+			if rubyState == nil && child.DOMNode != nil &&
+				isRubyFamilyTag(child.DOMNode.TagName) &&
+				rubyStandaloneFormsBase(child.DOMNode) {
+				childRubyState = &rubyCollectState{textNestingLevel: 1}
+			}
 		}
 
 		collectInlinesRecursive(child, data, text, false, childRubyState)
 
-		if rubyState != nil && childStyle.IsInlineRubyText() {
+		if rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText() {
 			rubyState.textNestingLevel--
 		}
 
@@ -455,7 +472,7 @@ func collectInlinesRecursive(
 				childRubyState.currentColumnCheckpoint,
 				childStyle, child.DOMNode,
 			)
-		case rubyState != nil && childStyle.IsInlineRubyText():
+		case rubyState != nil && rubyState.hasColumn && childStyle.IsInlineRubyText():
 			closeOrStripRubyColumn(
 				data, text,
 				rubyState.currentColumnCheckpoint,
