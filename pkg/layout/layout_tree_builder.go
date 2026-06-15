@@ -2308,6 +2308,25 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 //
 // Reusing CapHeight (pkg/css/style.go) per the project rule: no hardcoded cap
 // ratio — the cap-unit 0.7em heuristic is used only when CapHeight is unmeasured.
+// initialLetterBlockStartMargin returns the drop block-start margin for an
+// initial-letter float (horizontal text): max(0, lineHeight*size - bigAscent -
+// paraLineDescent), where bigAscent is the scaled letter's ascent and
+// paraLineDescent is the paragraph font descent plus half-leading.
+//
+// This is the letter's absolute block position for BOTH drop and `raise`: for
+// raise the surrounding text is shifted DOWN and the letter placed UP by the same
+// block-start-adjust lineHeight*(size-sink) (handled in inline layout, LOU-289
+// part 3), and those two cancel so the letter's own margin is the unchanged drop
+// offset. Mirrors Blink ComputeInitialLetterBoxBlockOffset
+// (initial_letter_utils.cc:24-105 @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func initialLetterBlockStartMargin(size, lineHeight, bigAscent, paraLineDescent float64) float64 {
+	off := lineHeight*size - bigAscent - paraLineDescent
+	if off < 0 {
+		return 0
+	}
+	return off
+}
+
 func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) {
 	if flStyle == nil || parentStyle == nil {
 		return
@@ -2356,14 +2375,13 @@ func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) 
 	leading := lineHeight - (paraAscent + paraDescent)
 	paraLineDescent := paraDescent + leading/2
 
-	// Drop offset (horizontal text). The `raise` keyword (sink=1) instead
-	// pushes the surrounding text below the letter; that block-start-adjust
-	// path is not yet modelled here (documented in the ticket report) — for
-	// drop and explicit-sink the box is offset down by:
-	blockOffset := lineHeight*il.Size - bigAscent - paraLineDescent
-	if blockOffset < 0 {
-		blockOffset = 0
-	}
+	// Block-start margin (horizontal text) = the drop offset, the letter's
+	// absolute block position for both drop and `raise`. For raise, inline layout
+	// shifts the surrounding text down and the letter up by equal-and-opposite
+	// block-start-adjust (LOU-289 part 3, inline_layout.go), so the letter's own
+	// margin stays the drop offset. Mirrors Blink ComputeInitialLetterBoxBlockOffset
+	// (initial_letter_utils.cc:24-105 @ 4883d11fef).
+	blockOffset := initialLetterBlockStartMargin(il.Size, lineHeight, bigAscent, paraLineDescent)
 
 	// Realise the initial-letter box as an inline-start float. font-size and
 	// line-height are overridden (CSS Inline Layout 3 §7.5.1 — the author's

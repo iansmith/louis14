@@ -327,12 +327,42 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 	}
 
+	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
+	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
+	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
+	// stays at the block's visual top. Mirrors Blink
+	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
+	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
+	initialLetterAdjust := 0.0
+	paraLineHeight := 0.0
+	if bla.style != nil {
+		paraLineHeight = bla.style.GetLineHeight()
+	}
+	for _, item := range itemsData.Items {
+		if item.Type != InlineItemFloat || item.Style == nil {
+			continue
+		}
+		il := item.Style.GetInitialLetter()
+		if !il.Set {
+			continue
+		}
+		if adj := paraLineHeight * (il.Size - float64(il.Sink)); adj > initialLetterAdjust {
+			initialLetterAdjust = adj
+		}
+	}
+
 	// placeFloat positions a single pending float at the given BFC block
 	// origin (the top of the current line), updates the exclusion space, and
 	// adds the float fragment as a child of the containing block. Returns the
 	// new exclusion-space pointer.
 	placeFloat := func(pf *pendingFloat, floatOriginBFC float64, es *ExclusionSpace) *ExclusionSpace {
 		childStyle := pf.item.Style
+		// The initial-letter float is exempt from the block-start shift: the
+		// surrounding text is pushed down by initialLetterAdjust (blockOffset
+		// starts there) but the letter stays at the unshifted visual top.
+		if initialLetterAdjust > 0 && childStyle.GetInitialLetter().Set {
+			floatOriginBFC -= initialLetterAdjust
+		}
 		floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
 		floatBlockSize := pf.margins.BlockSum() + pf.childLogical.BlockSize()
 		floatSide := childStyle.GetFloat()
@@ -530,7 +560,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 
 	// Phase 3: Break into lines and create line box fragments.
-	blockOffset := 0.0
+	// blockOffset starts at initialLetterAdjust so the paragraph text is shifted
+	// down past a raised initial letter (LOU-289 part 3); 0 in the common case.
+	blockOffset := initialLetterAdjust
 	var line LineInfo
 	isFirstLine := true
 	firstLineAscent = -1.0 // -1 means not yet set
