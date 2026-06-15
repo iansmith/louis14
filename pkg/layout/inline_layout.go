@@ -269,11 +269,25 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		exclusionSpace = &ExclusionSpace{}
 	}
 	type pendingFloat struct {
-		item         *InlineItem
-		margins      LogicalEdges
-		childLogical LogicalFragment
-		fragment     *PhysicalFragment
+		item            *InlineItem
+		margins         LogicalEdges
+		childLogical    LogicalFragment
+		fragment        *PhysicalFragment
+		isInitialLetter bool
 	}
+	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
+	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
+	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
+	// stays at the block's visual top. Detected in the float pass below and
+	// consumed at blockOffset init and in placeFloat. Mirrors Blink
+	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
+	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
+	initialLetterAdjust := 0.0
+	paraLineHeight := 0.0
+	if bla.style != nil {
+		paraLineHeight = bla.style.GetLineHeight()
+	}
+
 	pendingFloats := map[*InlineItem]*pendingFloat{}
 	for _, item := range itemsData.Items {
 		if item.Type != InlineItemFloat || item.LayoutNode == nil {
@@ -282,6 +296,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		childStyle := item.Style
 		if childStyle == nil {
 			continue
+		}
+		il := childStyle.GetInitialLetter()
+		if shift := initialLetterTextShift(il, paraLineHeight); shift > initialLetterAdjust {
+			initialLetterAdjust = shift
 		}
 		childWDM := NewWritingDirectionMode(childStyle)
 		childMargins := ResolveMargins(childStyle, wdm, contentInlineSize)
@@ -307,10 +325,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
 		childResult.Fragment.PaintGroup = item.EnclosingPaintGroup
 		pendingFloats[item] = &pendingFloat{
-			item:         item,
-			margins:      childMargins,
-			childLogical: childLogical,
-			fragment:     childResult.Fragment,
+			item:            item,
+			margins:         childMargins,
+			childLogical:    childLogical,
+			fragment:        childResult.Fragment,
+			isInitialLetter: il.Set,
 		}
 		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
 		// (or otherwise monolithic) within an IFC contribute their block-size
@@ -333,6 +352,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// new exclusion-space pointer.
 	placeFloat := func(pf *pendingFloat, floatOriginBFC float64, es *ExclusionSpace) *ExclusionSpace {
 		childStyle := pf.item.Style
+		// The initial-letter float is exempt from the block-start shift: the
+		// surrounding text is pushed down by initialLetterAdjust (blockOffset
+		// starts there) but the letter stays at the unshifted visual top.
+		// (No-op for a drop initial letter, where initialLetterAdjust is 0.)
+		if pf.isInitialLetter {
+			floatOriginBFC -= initialLetterAdjust
+		}
 		floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
 		floatBlockSize := pf.margins.BlockSum() + pf.childLogical.BlockSize()
 		floatSide := childStyle.GetFloat()
@@ -530,7 +556,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 
 	// Phase 3: Break into lines and create line box fragments.
-	blockOffset := 0.0
+	// blockOffset starts at initialLetterAdjust so the paragraph text is shifted
+	// down past a raised initial letter (LOU-289 part 3); 0 in the common case.
+	blockOffset := initialLetterAdjust
 	var line LineInfo
 	isFirstLine := true
 	firstLineAscent = -1.0 // -1 means not yet set
