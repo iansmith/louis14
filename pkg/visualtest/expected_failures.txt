@@ -1,0 +1,56 @@
+# Expected-failure manifest for WPT reftests (pkg/visualtest)
+#
+# Tests listed here are reported as XFAIL (expected fail) instead of FAIL, and
+# the runner ALERTS (fails the suite) if any of them starts PASSING — so an
+# accidental fix or regression is noticed and the entry removed.
+#
+# Policy: louis14 is modeled on Blink (CLAUDE.md "Blink is canonical"). A test
+# belongs here ONLY when Blink itself FAILS it while Gecko passes — i.e. the
+# test encodes Gecko-specific behavior our reference engine does not implement,
+# so matching Blink means failing the WPT reference. Tests that Blink PASSES are
+# real louis14 bugs and must NOT be listed here (they stay red as roadmap).
+#
+# Provenance: classified against wpt.fyi aligned run, revision f01d00b696
+# (Chrome 149.0.7827.115 = Blink, Firefox 151.0.4 = Gecko, 2026-06-14).
+# Re-verify against a current wpt.fyi run before adding/removing entries.
+#
+# Format: <relpath-under-testdata-root>	<reason>.  Blank lines and #-comments ignored.
+#
+# --- css-ruby: Gecko-only ruby box-fixup / anonymous-ruby / annotation features
+#     that modern Blink does not implement (Blink fails, Gecko passes @ f01d00b696).
+#     See ticket-archive/LOU-221 and memory feedback_ruby_standalone_blink_divergence.
+
+css-ruby/empty-ruby-base-container.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/empty-ruby-text-container-float.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/improperly-contained-annotation-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/intra-base-white-space-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/nested-ruby-pairing-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/rb-display-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/rbc-rtc-basic-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/rt-display-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-align-space-around.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-annotation-pairing-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-autohide-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-base-container-abs.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-bidi-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-bidi-003.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-box-generation-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-box-generation-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-box-generation-003.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-box-generation-004.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-box-generation-005.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-float-handling-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-inlinize-blocks-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-inlinize-blocks-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-inlinize-blocks-004.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-inlinize-blocks-005.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-intra-level-whitespace-003.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-intrinsic-isize-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-intrinsic-isize-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-intrinsic-isize-003.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-justification-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-lang-specific-style-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-line-break-suppression-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-line-breaking-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-whitespace-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+css-ruby/ruby-whitespace-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
