@@ -274,6 +274,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		childLogical LogicalFragment
 		fragment     *PhysicalFragment
 	}
+	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
+	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
+	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
+	// stays at the block's visual top. Detected in the float pass below and
+	// consumed at blockOffset init and in placeFloat. Mirrors Blink
+	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
+	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
+	initialLetterAdjust := 0.0
+	paraLineHeight := 0.0
+	if bla.style != nil {
+		paraLineHeight = bla.style.GetLineHeight()
+	}
+
 	pendingFloats := map[*InlineItem]*pendingFloat{}
 	for _, item := range itemsData.Items {
 		if item.Type != InlineItemFloat || item.LayoutNode == nil {
@@ -282,6 +295,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		childStyle := item.Style
 		if childStyle == nil {
 			continue
+		}
+		if il := childStyle.GetInitialLetter(); il.Set {
+			if adj := paraLineHeight * (il.Size - float64(il.Sink)); adj > initialLetterAdjust {
+				initialLetterAdjust = adj
+			}
 		}
 		childWDM := NewWritingDirectionMode(childStyle)
 		childMargins := ResolveMargins(childStyle, wdm, contentInlineSize)
@@ -324,30 +342,6 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			childResult != nil &&
 			ShouldAvoidBreakInside(bla.space, childResult) {
 			builder.PropagateTallestUnbreakableBlockSize(childLogical.BlockSize() + childMargins.BlockSum())
-		}
-	}
-
-	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
-	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
-	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
-	// stays at the block's visual top. Mirrors Blink
-	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
-	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
-	initialLetterAdjust := 0.0
-	paraLineHeight := 0.0
-	if bla.style != nil {
-		paraLineHeight = bla.style.GetLineHeight()
-	}
-	for _, item := range itemsData.Items {
-		if item.Type != InlineItemFloat || item.Style == nil {
-			continue
-		}
-		il := item.Style.GetInitialLetter()
-		if !il.Set {
-			continue
-		}
-		if adj := paraLineHeight * (il.Size - float64(il.Sink)); adj > initialLetterAdjust {
-			initialLetterAdjust = adj
 		}
 	}
 
