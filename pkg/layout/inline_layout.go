@@ -2311,6 +2311,8 @@ func createLineBoxEx(
 					inlinePos,
 					maxAscent, // base baseline
 					annotationBlockTop,
+					lineHeight,
+					maxAscent,
 					itemsData.TextContent,
 					r.RubyColumn.RubyAlign,
 					wdm, fonts, centralBaseline, sidewaysVLR,

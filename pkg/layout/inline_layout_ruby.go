@@ -104,6 +104,8 @@ func emitRubyColumnFragments(
 	columnInlineOffset float64,
 	baseBlockBaseline float64,
 	annotationBlockTop float64,
+	lineHeight float64,
+	maxAscent float64,
 	textContent string,
 	rubyAlign css.RubyAlign,
 	wdm WritingDirectionMode,
@@ -126,6 +128,7 @@ func emitRubyColumnFragments(
 		)
 		emitSubLineTextFragments(
 			column.BaseLine, columnInlineOffset+baseOffset, baseBlockBaseline,
+			baseBlockBaseline-maxAscent, lineHeight,
 			textContent, baseExpansion, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
 		)
 	}
@@ -167,8 +170,11 @@ func emitRubyColumnFragments(
 		// the place emphasis-mark Y is computed relative to.
 		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
 		annoBaseline := annotationBlockTop + math.Round(annoEmAscent)
+		// Annotation inline boxes keep the em-box (baseline-anchored) model:
+		// pass a zero band so emitSubLineTextFragments takes the em-box branch.
 		emitSubLineTextFragments(
 			anno, annoInlineOffset, annoBaseline,
+			0, 0,
 			textContent, 0, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
 		)
 	}
@@ -260,6 +266,8 @@ func emitSubLineTextFragments(
 	subLine *LineInfo,
 	inlineOrigin float64,
 	blockBaseline float64,
+	boxBandTop float64,
+	boxBandHeight float64,
 	textContent string,
 	justifyExpansion float64,
 	wdm WritingDirectionMode,
@@ -269,6 +277,18 @@ func emitSubLineTextFragments(
 	lineBuilder *BoxFragmentBuilder,
 ) {
 	inlinePos := inlineOrigin
+	// Track open inline boxes (<rb>/<rbc>/<span>…) so we can emit a box
+	// fragment per box on its close tag. The box fragment gives the inline its
+	// line-relative rect, which ComputeInlineContainerGeometry needs to resolve
+	// an OOF descendant's containing block against (LOU-311/LOU-312). Mirrors
+	// Blink's inline box-fragment generation in the sub-line, previously the
+	// "TODO Phase 5" no-op.
+	type openSubLineBox struct {
+		node        *html.Node
+		style       *css.Style
+		startInline float64
+	}
+	var boxStack []openSubLineBox
 	for _, r := range subLine.Results {
 		switch r.Item.Type {
 		case InlineItemText:
@@ -389,11 +409,67 @@ func emitSubLineTextFragments(
 				BlockOffset:  blockPos,
 			})
 			inlinePos += r.InlineSize
-		case InlineItemOpenTag, InlineItemCloseTag,
-			InlineItemRubyLinePlaceholder, InlineItemCloseRubyColumn:
+		case InlineItemOpenTag:
+			// Start of an inline box inside the sub-line. Record the inline
+			// start so the matching close tag can emit a box fragment spanning
+			// the content between them.
+			boxStack = append(boxStack, openSubLineBox{
+				node: r.Item.Node, style: r.Item.Style, startInline: inlinePos,
+			})
+		case InlineItemCloseTag:
+			// Emit a box fragment for the inline box just closed. Its rect
+			// (start..current inline pos, 1em block) is what
+			// ComputeInlineContainerGeometry unions to resolve an OOF whose
+			// containing block is this inline (the rel <rb>/<rbc>).
+			if len(boxStack) == 0 {
+				break
+			}
+			ob := boxStack[len(boxStack)-1]
+			boxStack = boxStack[:len(boxStack)-1]
+			if ob.node == nil || ob.style == nil {
+				break
+			}
+			// Gate emission like the normal inline path (createLineBoxEx): only
+			// inlines that paint or establish a containing block need a box
+			// fragment. The CB case is what LOU-311/LOU-312 require (an OOF
+			// descendant resolves against this inline's rect).
+			// NOTE: BoxData is intentionally omitted — backgrounds/borders for
+			// these sub-line boxes are still not painted (the remaining half of
+			// the former "Phase 5: ruby-base inline backgrounds" TODO).
+			if !hasVisibleInlinePaint(ob.style) && !inlineEstablishesContainingBlock(ob.style) {
+				break
+			}
+			// Match the normal inline-box vertical model (createLineBoxEx
+			// spanContentBlock): a box whose font is shorter than the line fills
+			// the line band from its top (height = line height); a box at least
+			// as tall as the line is an em box anchored on the baseline. The
+			// resulting rect is what ComputeInlineContainerGeometry resolves an
+			// OOF descendant's containing block against (LOU-311/LOU-312).
+			boxFontSize, boxAscent := inlineAlignmentAscent(ob.style, fonts, wdm, centralBaseline)
+			var boxTop, boxBlockSize float64
+			if boxBandHeight > 0 && boxFontSize < boxBandHeight {
+				boxTop = boxBandTop
+				boxBlockSize = boxBandHeight
+			} else {
+				boxTop = blockBaseline - boxAscent
+				boxBlockSize = boxFontSize
+			}
+			boxFrag := &PhysicalFragment{
+				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+					InlineSize: inlinePos - ob.startInline,
+					BlockSize:  boxBlockSize,
+				}, wdm.WM)),
+				Type:             FragmentBox,
+				Node:             ob.node,
+				Style:            ob.style,
+				WritingDirection: wdm,
+			}
+			lineBuilder.AddChild(boxFrag, LogicalOffset{
+				InlineOffset: ob.startInline,
+				BlockOffset:  boxTop,
+			})
+		case InlineItemRubyLinePlaceholder, InlineItemCloseRubyColumn:
 			// Zero-width markers — no glyph contribution, no advance.
-			// TODO Phase 5: emit span backgrounds for OpenTag/CloseTag
-			// inside ruby bases (e.g. `<rb style="background: red">`).
 		default:
 			// Fallback for item types this sub-line emitter doesn't
 			// yet handle. The dominant case is a nested
