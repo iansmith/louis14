@@ -245,23 +245,46 @@ func countSubLineSpaces(line *LineInfo, textContent string) int {
 	return n
 }
 
-// emitSubLineTextFragments walks a sub-LineInfo's Results and emits
-// a PhysicalFragment for each text item at the appropriate offset
-// inside lineBuilder. inlineOrigin is where the sub-line's first text
-// item starts (in line-local coords); blockBaseline is the block-axis
-// position of the alphabetic baseline (so each fragment is placed at
-// blockBaseline - itemAscent). textContent is the shared outer
-// InlineItemsData.TextContent.
+// openSubLineBox tracks an inline box (<rb>/<rbc>/<span>…) opened inside a
+// ruby sub-line so its matching close tag can emit a box fragment spanning the
+// content between them.
+type openSubLineBox struct {
+	node        *html.Node
+	style       *css.Style
+	startInline float64
+}
+
+// subLineEmitter carries the shared context for rendering one ruby sub-line's
+// fragments. Held as a value struct (copying only the fields the per-item
+// helpers need) so those helpers stay small without threading a dozen
+// parameters — and without a closure capturing the enclosing scope.
+type subLineEmitter struct {
+	textContent      string
+	blockBaseline    float64
+	boxBandTop       float64
+	boxBandHeight    float64
+	justifyExpansion float64
+	wdm              WritingDirectionMode
+	fonts            text.FontConfig
+	centralBaseline  bool
+	sidewaysVLR      bool
+	lineBuilder      *BoxFragmentBuilder
+}
+
+// emitSubLineTextFragments walks a sub-LineInfo's Results and emits a
+// PhysicalFragment for each text run and inline box. inlineOrigin is where the
+// sub-line's first item starts (in line-local coords); blockBaseline is the
+// block-axis position of the alphabetic baseline. textContent is the shared
+// outer InlineItemsData.TextContent.
 //
-// justifyExpansion is the per-space-character inline expansion applied
-// for ruby-align: space-between and space-around distribution. Zero
-// means no expansion (start, center, or the wider side of the column).
+// justifyExpansion is the per-space-character inline expansion applied for
+// ruby-align: space-between / space-around. boxBandTop/boxBandHeight describe
+// the line band an inline box fills (zero band → em-box model).
 //
-// This is a slimmed-down version of the createLineBoxEx text path:
-// no vertical-align stack, no first-letter / first-line styling, no
-// decorating-box metadata propagation. Span backgrounds inside a
-// ruby base (OpenTag/CloseTag fragment generation) are not emitted
-// here either — TODO Phase 5: ruby-base inline backgrounds.
+// This is a slimmed-down version of the createLineBoxEx text path: no
+// vertical-align stack, no first-letter / first-line styling, no decorating-box
+// metadata. Inline box fragments carry geometry only — backgrounds/borders are
+// not painted here yet (the remaining half of the former Phase 5 TODO).
 func emitSubLineTextFragments(
 	subLine *LineInfo,
 	inlineOrigin float64,
@@ -276,221 +299,183 @@ func emitSubLineTextFragments(
 	sidewaysVLR bool,
 	lineBuilder *BoxFragmentBuilder,
 ) {
-	inlinePos := inlineOrigin
-	// Track open inline boxes (<rb>/<rbc>/<span>…) so we can emit a box
-	// fragment per box on its close tag. The box fragment gives the inline its
-	// line-relative rect, which ComputeInlineContainerGeometry needs to resolve
-	// an OOF descendant's containing block against (LOU-311/LOU-312). Mirrors
-	// Blink's inline box-fragment generation in the sub-line, previously the
-	// "TODO Phase 5" no-op.
-	type openSubLineBox struct {
-		node        *html.Node
-		style       *css.Style
-		startInline float64
+	e := subLineEmitter{
+		textContent:      textContent,
+		blockBaseline:    blockBaseline,
+		boxBandTop:       boxBandTop,
+		boxBandHeight:    boxBandHeight,
+		justifyExpansion: justifyExpansion,
+		wdm:              wdm,
+		fonts:            fonts,
+		centralBaseline:  centralBaseline,
+		sidewaysVLR:      sidewaysVLR,
+		lineBuilder:      lineBuilder,
 	}
+	inlinePos := inlineOrigin
 	var boxStack []openSubLineBox
 	for _, r := range subLine.Results {
 		switch r.Item.Type {
 		case InlineItemText:
-			// CSS Writing Modes 3 §9.1.1: text-combine-upright: all in a
-			// vertical writing mode renders the combined text as a 1em upright
-			// unit (tcy run). In our sub-line rendering pipeline this item
-			// occupies inline space (already counted in rubySize) but does not
-			// emit a fragment directly — it behaves like an orthogonal atomic
-			// inline whose LayoutResult is nil, which emitSubLineTextFragments
-			// treats as the default (advance-only) case. Full tcy rendering
-			// (horizontal glyph inside the vertical column) is a later phase.
-			if wdm.IsVertical() && r.Item.Style != nil && r.Item.Style.GetTextCombineUpright() {
-				inlinePos += r.InlineSize
-				continue
-			}
-			content := textContent[r.TextStart:r.TextEnd]
-			if len(content) == 0 {
-				inlinePos += r.InlineSize
-				continue
-			}
-			// CSS Text 3 §5.2: strip soft hyphens (U+00AD) — invisible
-			// when not used as a break point.
-			content = strings.ReplaceAll(content, "­", "")
-			if r.HasHyphen {
-				content += "-"
-			}
-
-			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-			var ascent float64
-			if centralBaseline {
-				ascent = fontSize / 2
-			} else {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
-				// CSS Fonts 4 §6.1: same as createLineBoxEx text path — use native
-				// ascent for per-item placement so the glyph lands at blockBaseline -
-				// nativeAscent, not blockBaseline - overriddenAscent. The override
-				// affects line-box sizing (strut), not glyph positioning within the box.
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
-			}
-			blockPos := blockBaseline - ascent
-
-			parentNode := r.Item.Node
-			if parentNode != nil && parentNode.Parent != nil {
-				parentNode = parentNode.Parent
-			}
-
-			// ruby-align: space-between/space-around — when justifyExpansion > 0,
-			// split text at space boundaries and emit one fragment per piece, with
-			// each space expanded by justifyExpansion. Mirrors the justify-expansion
-			// path in createLineBoxEx (inline_layout.go) applied to ruby sub-lines.
-			if justifyExpansion > 0 && strings.Contains(content, " ") {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
-				letterSpacing := r.Item.Style.GetLetterSpacing()
-				wordSpacing := r.Item.Style.GetWordSpacing()
-				spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
-				pieces := strings.Split(content, " ")
-				for i, piece := range pieces {
-					if i > 0 {
-						spFrag := &PhysicalFragment{
-							Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-								InlineSize: spaceWidth + justifyExpansion + wordSpacing,
-								BlockSize:  fontSize,
-							}, wdm.WM)),
-							Type:             FragmentText,
-							TextContent:      " ",
-							BidiLevel:        r.Item.BidiLevel,
-							Node:             parentNode,
-							Style:            r.Item.Style,
-							WritingDirection: wdm,
-						}
-						lineBuilder.AddChild(spFrag, LogicalOffset{
-							InlineOffset: inlinePos,
-							BlockOffset:  blockPos,
-						})
-						inlinePos += spaceWidth + justifyExpansion + wordSpacing
-					}
-					if len(piece) == 0 {
-						continue
-					}
-					pieceWidth := measureTextContent(piece, fontSize, resolveFontPath(r.Item.Style, fonts), letterSpacing, 0, false)
-					pieceFrag := &PhysicalFragment{
-						Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-							InlineSize: pieceWidth,
-							BlockSize:  fontSize,
-						}, wdm.WM)),
-						Type:             FragmentText,
-						TextContent:      piece,
-						BidiLevel:        r.Item.BidiLevel,
-						Node:             parentNode,
-						Style:            r.Item.Style,
-						WritingDirection: wdm,
-					}
-					lineBuilder.AddChild(pieceFrag, LogicalOffset{
-						InlineOffset: inlinePos,
-						BlockOffset:  blockPos,
-					})
-					inlinePos += pieceWidth
-				}
-				continue
-			}
-
-			textFrag := &PhysicalFragment{
-				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-					InlineSize: r.InlineSize,
-					BlockSize:  fontSize,
-				}, wdm.WM)),
-				Type:             FragmentText,
-				TextContent:      content,
-				BidiLevel:        r.Item.BidiLevel,
-				Node:             parentNode,
-				Style:            r.Item.Style,
-				WritingDirection: wdm,
-			}
-			// TODO Phase 5: position:relative offset propagation for
-			// sub-line text fragments (rare in ruby content).
-			lineBuilder.AddChild(textFrag, LogicalOffset{
-				InlineOffset: inlinePos,
-				BlockOffset:  blockPos,
-			})
-			inlinePos += r.InlineSize
+			inlinePos = e.emitTextItem(r, inlinePos)
 		case InlineItemOpenTag:
-			// Start of an inline box inside the sub-line. Record the inline
-			// start so the matching close tag can emit a box fragment spanning
-			// the content between them.
+			// Record the inline start; the close tag spans to the cursor.
 			boxStack = append(boxStack, openSubLineBox{
 				node: r.Item.Node, style: r.Item.Style, startInline: inlinePos,
 			})
 		case InlineItemCloseTag:
-			// Emit a box fragment for the inline box just closed. Its rect
-			// (start..current inline pos, 1em block) is what
-			// ComputeInlineContainerGeometry unions to resolve an OOF whose
-			// containing block is this inline (the rel <rb>/<rbc>).
-			if len(boxStack) == 0 {
-				break
-			}
-			ob := boxStack[len(boxStack)-1]
-			boxStack = boxStack[:len(boxStack)-1]
-			if ob.node == nil || ob.style == nil {
-				break
-			}
-			// Gate emission like the normal inline path (createLineBoxEx): only
-			// inlines that paint or establish a containing block need a box
-			// fragment. The CB case is what LOU-311/LOU-312 require (an OOF
-			// descendant resolves against this inline's rect).
-			// NOTE: BoxData is intentionally omitted — backgrounds/borders for
-			// these sub-line boxes are still not painted (the remaining half of
-			// the former "Phase 5: ruby-base inline backgrounds" TODO).
-			if !hasVisibleInlinePaint(ob.style) && !inlineEstablishesContainingBlock(ob.style) {
-				break
-			}
-			// Match the normal inline-box vertical model (createLineBoxEx
-			// spanContentBlock): a box whose font is shorter than the line fills
-			// the line band from its top (height = line height); a box at least
-			// as tall as the line is an em box anchored on the baseline. The
-			// resulting rect is what ComputeInlineContainerGeometry resolves an
-			// OOF descendant's containing block against (LOU-311/LOU-312).
-			boxFontSize, boxAscent := inlineAlignmentAscent(ob.style, fonts, wdm, centralBaseline)
-			var boxTop, boxBlockSize float64
-			if boxBandHeight > 0 && boxFontSize < boxBandHeight {
-				boxTop = boxBandTop
-				boxBlockSize = boxBandHeight
-			} else {
-				boxTop = blockBaseline - boxAscent
-				boxBlockSize = boxFontSize
-			}
-			boxFrag := &PhysicalFragment{
-				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-					InlineSize: inlinePos - ob.startInline,
-					BlockSize:  boxBlockSize,
-				}, wdm.WM)),
-				Type:             FragmentBox,
-				Node:             ob.node,
-				Style:            ob.style,
-				WritingDirection: wdm,
-			}
-			lineBuilder.AddChild(boxFrag, LogicalOffset{
-				InlineOffset: ob.startInline,
-				BlockOffset:  boxTop,
-			})
+			boxStack = e.emitInlineBox(boxStack, inlinePos)
 		case InlineItemRubyLinePlaceholder, InlineItemCloseRubyColumn:
 			// Zero-width markers — no glyph contribution, no advance.
 		default:
-			// Fallback for item types this sub-line emitter doesn't
-			// yet handle. The dominant case is a nested
-			// `InlineItemOpenRubyColumn` (a `<ruby>` inside another
-			// ruby's base or annotation sub-line) — full nested-ruby
-			// rendering is Phase 11 of `docs/plan-css-ruby.md`
-			// (multi-level RubyLevel/RubyLine stacking; Blink
-			// `ruby_utils.{h,cc}` + `ParseRubyInInlineItems`
-			// recursion `:170-173` @ 4883d11fef). Atomic inlines,
-			// floats, and OOFs inside ruby columns land in Phase 13.
-			//
-			// Until those phases land, the result-level metrics are
-			// already counted into the column's InlineSize by
-			// LineBreaker.handleRuby, so we MUST advance inlinePos by
-			// r.InlineSize to keep subsequent fragments at their
-			// correct positions on the sub-line. We just don't emit a
-			// fragment for the inner content — so the inner glyphs
-			// are silently dropped (the visual symptom Phase 11
-			// fixes; was LOU-156 item 2, split out to its own child
-			// ticket).
+			// Nested ruby columns / atomic inlines / floats / OOFs inside ruby
+			// columns aren't rendered here yet (plan-css-ruby Phase 11/13,
+			// Blink ruby_utils.{h,cc} @ 4883d11fef), but their inline size is
+			// already in the column width, so advance the cursor to keep later
+			// fragments correctly placed. Inner glyphs are silently dropped
+			// until those phases (was LOU-156 item 2).
 			inlinePos += r.InlineSize
 		}
 	}
+}
+
+// emitTextItem emits the fragment(s) for one InlineItemText result and returns
+// the advanced inline cursor.
+func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) float64 {
+	// CSS Writing Modes 3 §9.1.1: text-combine-upright: all in a vertical mode
+	// occupies inline space (already in the column width) but emits no fragment
+	// here — full tcy rendering is a later phase.
+	if e.wdm.IsVertical() && r.Item.Style != nil && r.Item.Style.GetTextCombineUpright() {
+		return inlinePos + r.InlineSize
+	}
+	content := e.textContent[r.TextStart:r.TextEnd]
+	if len(content) == 0 {
+		return inlinePos + r.InlineSize
+	}
+	// CSS Text 3 §5.2: strip soft hyphens (U+00AD) — invisible off-break.
+	content = strings.ReplaceAll(content, "­", "")
+	if r.HasHyphen {
+		content += "-"
+	}
+
+	fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+	var ascent float64
+	if e.centralBaseline {
+		ascent = fontSize / 2
+	} else {
+		// CSS Fonts 4 §6.1: native ascent for per-item placement (matches the
+		// createLineBoxEx text path); the strut override affects line sizing,
+		// not glyph position within the box.
+		ascent = alignmentAscentFromFont(e.sidewaysVLR, fontSize, resolveFontPath(r.Item.Style, e.fonts), nil)
+	}
+	blockPos := e.blockBaseline - ascent
+
+	parentNode := r.Item.Node
+	if parentNode != nil && parentNode.Parent != nil {
+		parentNode = parentNode.Parent
+	}
+
+	// ruby-align space-between/space-around: split at spaces, expand each.
+	if e.justifyExpansion > 0 && strings.Contains(content, " ") {
+		return e.emitJustifiedText(r, content, inlinePos, blockPos, fontSize, parentNode)
+	}
+
+	e.lineBuilder.AddChild(&PhysicalFragment{
+		Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+			InlineSize: r.InlineSize,
+			BlockSize:  fontSize,
+		}, e.wdm.WM)),
+		Type:             FragmentText,
+		TextContent:      content,
+		BidiLevel:        r.Item.BidiLevel,
+		Node:             parentNode,
+		Style:            r.Item.Style,
+		WritingDirection: e.wdm,
+	}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
+	// TODO Phase 5: position:relative offset propagation for sub-line text
+	// fragments (rare in ruby content).
+	return inlinePos + r.InlineSize
+}
+
+// emitJustifiedText emits one text run split at spaces, expanding each space by
+// justifyExpansion (ruby-align space-between/space-around). Mirrors the
+// justify-expansion path in createLineBoxEx applied to ruby sub-lines.
+func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, inlinePos, blockPos, fontSize float64, parentNode *html.Node) float64 {
+	fontPath := resolveFontPath(r.Item.Style, e.fonts)
+	letterSpacing := r.Item.Style.GetLetterSpacing()
+	wordSpacing := r.Item.Style.GetWordSpacing()
+	spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
+	for i, piece := range strings.Split(content, " ") {
+		if i > 0 {
+			e.lineBuilder.AddChild(&PhysicalFragment{
+				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+					InlineSize: spaceWidth + e.justifyExpansion + wordSpacing,
+					BlockSize:  fontSize,
+				}, e.wdm.WM)),
+				Type:             FragmentText,
+				TextContent:      " ",
+				BidiLevel:        r.Item.BidiLevel,
+				Node:             parentNode,
+				Style:            r.Item.Style,
+				WritingDirection: e.wdm,
+			}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
+			inlinePos += spaceWidth + e.justifyExpansion + wordSpacing
+		}
+		if len(piece) == 0 {
+			continue
+		}
+		pieceWidth := measureTextContent(piece, fontSize, fontPath, letterSpacing, 0, false)
+		e.lineBuilder.AddChild(&PhysicalFragment{
+			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+				InlineSize: pieceWidth,
+				BlockSize:  fontSize,
+			}, e.wdm.WM)),
+			Type:             FragmentText,
+			TextContent:      piece,
+			BidiLevel:        r.Item.BidiLevel,
+			Node:             parentNode,
+			Style:            r.Item.Style,
+			WritingDirection: e.wdm,
+		}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
+		inlinePos += pieceWidth
+	}
+	return inlinePos
+}
+
+// emitInlineBox pops the innermost open box and, if it paints or establishes a
+// containing block, emits its box fragment — the rect
+// ComputeInlineContainerGeometry resolves an OOF descendant against
+// (LOU-311/LOU-312). Returns the updated stack. BoxData is omitted: these
+// sub-line boxes carry geometry only, no painted background/border yet.
+func (e subLineEmitter) emitInlineBox(boxStack []openSubLineBox, inlinePos float64) []openSubLineBox {
+	if len(boxStack) == 0 {
+		return boxStack
+	}
+	ob := boxStack[len(boxStack)-1]
+	boxStack = boxStack[:len(boxStack)-1]
+	if ob.node == nil || ob.style == nil {
+		return boxStack
+	}
+	// Gate like the normal inline path (createLineBoxEx): only inlines that
+	// paint or establish a containing block need a fragment.
+	if !hasVisibleInlinePaint(ob.style) && !inlineEstablishesContainingBlock(ob.style) {
+		return boxStack
+	}
+	// Vertical model from createLineBoxEx (spanContentBlock): fill the line band
+	// when the font is shorter than the line, else an em box on the baseline.
+	boxFontSize, boxAscent := inlineAlignmentAscent(ob.style, e.fonts, e.wdm, e.centralBaseline)
+	boxTop, boxBlockSize := e.blockBaseline-boxAscent, boxFontSize
+	if e.boxBandHeight > 0 && boxFontSize < e.boxBandHeight {
+		boxTop, boxBlockSize = e.boxBandTop, e.boxBandHeight
+	}
+	e.lineBuilder.AddChild(&PhysicalFragment{
+		Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+			InlineSize: inlinePos - ob.startInline,
+			BlockSize:  boxBlockSize,
+		}, e.wdm.WM)),
+		Type:             FragmentBox,
+		Node:             ob.node,
+		Style:            ob.style,
+		WritingDirection: e.wdm,
+	}, LogicalOffset{InlineOffset: ob.startInline, BlockOffset: boxTop})
+	return boxStack
 }
