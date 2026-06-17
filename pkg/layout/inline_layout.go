@@ -175,6 +175,23 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	return hasContent
 }
 
+// inlineOOFCandidate builds an out-of-flow candidate for an inline-collected
+// OOF item at the given static offset within the containing block's content
+// box. The static edges are always start/start — Blink's InlineLayoutAlgorithm
+// records inline OOF static positions at the line-relative start corner.
+func inlineOOFCandidate(node *LayoutInputNode, inlineOffset, blockOffset float64, isFixed bool, inlineContainer *html.Node) OutOfFlowCandidate {
+	return OutOfFlowCandidate{
+		Node: node,
+		StaticPosition: LogicalStaticPosition{
+			Offset:     LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset},
+			InlineEdge: StaticEdgeStart,
+			BlockEdge:  StaticEdgeStart,
+		},
+		IsFixedPosition: isFixed,
+		InlineContainer: inlineContainer,
+	}
+}
+
 // layoutInlineChildren handles inline formatting context for a block container.
 // It collects inline content, breaks it into lines, and adds line box fragments
 // to the builder.
@@ -687,19 +704,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if lineHasOnlyOutOfFlow(&line, itemsData) {
 			for _, r := range line.Results {
 				if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
-					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-						Node: r.Item.LayoutNode,
-						StaticPosition: LogicalStaticPosition{
-							Offset: LogicalOffset{
-								InlineOffset: 0,
-								BlockOffset:  blockOffset,
-							},
-							InlineEdge: StaticEdgeStart,
-							BlockEdge:  StaticEdgeStart,
-						},
-						IsFixedPosition: r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
-						InlineContainer: positionedInlineMap[r.Item],
-					})
+					builder.AddOutOfFlowCandidate(inlineOOFCandidate(
+						r.Item.LayoutNode, 0, blockOffset,
+						r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
+						positionedInlineMap[r.Item],
+					))
 				} else if r.Item.Type == InlineItemFloat {
 					if pf, ok := pendingFloats[r.Item]; ok {
 						exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
@@ -901,40 +910,29 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 		hasInflowOnLine := false
 		for i, r := range line.Results {
+			// CSS Ruby: an OOF descendant of a ruby element is collected into the
+			// column's base/annotation sub-LineInfo, not the outer line.Results, so
+			// surface it here (with its inline CB from positionedInlineMap) before
+			// the column advances the inline cursor below — otherwise it is dropped.
+			if r.RubyColumn != nil {
+				surfaceRubyColumnOOFCandidates(r.RubyColumn, inlinePos, blockOffset, positionedInlineMap, builder)
+			}
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 				oofStyle := r.Item.Style
 				inlineLevel := oofStyle != nil && isInlineLevelDisplay(oofStyle.GetDisplay())
 				isFixed := oofStyle != nil && oofStyle.GetPosition() == css.PositionFixed
 				if inlineLevel {
-					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-						Node: r.Item.LayoutNode,
-						StaticPosition: LogicalStaticPosition{
-							Offset: LogicalOffset{
-								InlineOffset: inlinePos,
-								BlockOffset:  blockOffset,
-							},
-							InlineEdge: StaticEdgeStart,
-							BlockEdge:  StaticEdgeStart,
-						},
-						IsFixedPosition: isFixed,
-						InlineContainer: positionedInlineMap[r.Item],
-					})
+					builder.AddOutOfFlowCandidate(inlineOOFCandidate(
+						r.Item.LayoutNode, inlinePos, blockOffset, isFixed,
+						positionedInlineMap[r.Item],
+					))
 				} else if !hasInflowOnLine {
 					// No in-flow content precedes this block-level OOF on the line:
 					// its block-flow position starts at the current block cursor.
-					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-						Node: r.Item.LayoutNode,
-						StaticPosition: LogicalStaticPosition{
-							Offset: LogicalOffset{
-								InlineOffset: 0,
-								BlockOffset:  blockOffset,
-							},
-							InlineEdge: StaticEdgeStart,
-							BlockEdge:  StaticEdgeStart,
-						},
-						IsFixedPosition: isFixed,
-						InlineContainer: positionedInlineMap[r.Item],
-					})
+					builder.AddOutOfFlowCandidate(inlineOOFCandidate(
+						r.Item.LayoutNode, 0, blockOffset, isFixed,
+						positionedInlineMap[r.Item],
+					))
 				} else {
 					blockLevelOOFOnLine = append(blockLevelOOFOnLine, struct {
 						node            *LayoutInputNode
@@ -1176,19 +1174,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// been in flow it would have started a new block-flow line below the
 		// current line box.
 		for _, d := range blockLevelOOFOnLine {
-			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-				Node: d.node,
-				StaticPosition: LogicalStaticPosition{
-					Offset: LogicalOffset{
-						InlineOffset: 0,
-						BlockOffset:  blockOffset + lineHeight,
-					},
-					InlineEdge: StaticEdgeStart,
-					BlockEdge:  StaticEdgeStart,
-				},
-				IsFixedPosition: d.isFixed,
-				InlineContainer: d.inlineContainer,
-			})
+			builder.AddOutOfFlowCandidate(inlineOOFCandidate(
+				d.node, 0, blockOffset+lineHeight, d.isFixed, d.inlineContainer,
+			))
 		}
 
 		// Phase 20 P20.6: during the multicol initial column-balancing

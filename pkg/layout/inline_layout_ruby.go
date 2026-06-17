@@ -5,8 +5,73 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/text"
 )
+
+// surfaceRubyColumnOOFCandidates surfaces out-of-flow descendants buried in a
+// ruby column's base and annotation sub-lines as OOF candidates on the outer
+// line's builder. An OOF child of a ruby element (e.g. an abs-pos <span>
+// inside an <rb>) is collected into the column's sub-LineInfo by
+// CreateSubLineInfo, so it never appears in the outer line.Results and would
+// otherwise be dropped. The inline containing block comes from the
+// already-built positionedInlineMap (keyed by the shared *InlineItem
+// pointers), which maps the OOF to its nearest positioned inline ancestor
+// (the rel <rb>/<rbc>/<ruby>). Recurses into nested ruby columns.
+//
+// Mirrors Blink's InlineLayoutAlgorithm propagating positioned descendants
+// found inside ruby columns into the algorithm's OOF candidate list (ruby
+// vetted @ Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). The surfaced
+// candidate is later resolved by the normal ComputeInlineContainerGeometry
+// path; correct geometry for <rb>/<rbc> additionally needs their sub-line box
+// fragments (LOU-311).
+func surfaceRubyColumnOOFCandidates(
+	column *InlineItemResultRubyColumn,
+	inlineOrigin, blockOffset float64,
+	positionedInlineMap map[*InlineItem]*html.Node,
+	builder *BoxFragmentBuilder,
+) {
+	if column == nil {
+		return
+	}
+	surfaceSubLineOOFCandidates(column.BaseLine, inlineOrigin, blockOffset, positionedInlineMap, builder)
+	for _, anno := range column.AnnotationLines {
+		surfaceSubLineOOFCandidates(anno, inlineOrigin, blockOffset, positionedInlineMap, builder)
+	}
+}
+
+func surfaceSubLineOOFCandidates(
+	line *LineInfo,
+	inlineOrigin, blockOffset float64,
+	positionedInlineMap map[*InlineItem]*html.Node,
+	builder *BoxFragmentBuilder,
+) {
+	if line == nil {
+		return
+	}
+	for i := range line.Results {
+		r := &line.Results[i]
+		if r.Item == nil {
+			continue
+		}
+		if r.RubyColumn != nil {
+			surfaceRubyColumnOOFCandidates(r.RubyColumn, inlineOrigin, blockOffset, positionedInlineMap, builder)
+			continue
+		}
+		if r.Item.Type != InlineItemOutOfFlow || r.Item.LayoutNode == nil {
+			continue
+		}
+		// All sub-line OOFs are stamped at the column's inline start
+		// (inlineOrigin); we do not advance per item within the sub-line. The
+		// static position only matters for OOFs auto-positioned on the inline
+		// axis (no left/right) — the abs-in-ruby cases resolve via insets.
+		builder.AddOutOfFlowCandidate(inlineOOFCandidate(
+			r.Item.LayoutNode, inlineOrigin, blockOffset,
+			r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
+			positionedInlineMap[r.Item],
+		))
+	}
+}
 
 // emitRubyColumnFragments paints a single ruby column's base + annotation
 // sub-line glyphs into lineBuilder, positioned at the given inline /

@@ -103,6 +103,13 @@ func TestBlockLayout_AbsposInRelativeInline_SingleCandidate(t *testing.T) {
 //
 // RED EXPECTATION: count == 0 (dropped) on current code; the fix makes it 1.
 func TestBlockLayout_AbsposInRubyBase_Surfaced(t *testing.T) {
+	// rbc/rb use display:inline (not ruby-base-container/ruby-base): in a
+	// hand-built layout tree the ruby-internal display values are treated as
+	// atomic inlines and their subtree is never recursed into, so the abs OOF
+	// would not even be collected. display:inline takes the recursing open-tag
+	// path, placing the abs OOF inside the ruby column's base sub-line — which
+	// is the exact configuration that reproduces the drop. The rel ancestor is
+	// the position:relative <rb>.
 	leadX := makeTextNode("X")
 	innerX := makeTextNode("X")
 	absSpan := makeNode("span", innerX)
@@ -112,10 +119,15 @@ func TestBlockLayout_AbsposInRubyBase_Surfaced(t *testing.T) {
 	root := makeNode("div", leadX, ruby)
 
 	styles := map[*html.Node]*css.Style{
-		root:    makeStyle("display", "block", "width", "200px", "font-family", "Ahem", "font-size", "50px"),
+		// root is position:relative so it is the containing block that resolves
+		// the surfaced candidate: the rel <rb> has no box fragment yet (LOU-311),
+		// so the candidate demotes past it to the nearest positioned ancestor —
+		// here the root (the viewport/ICB in the WPT). Without a positioned root
+		// the demoted candidate would propagate out of this top-level layout.
+		root:    makeStyle("display", "block", "position", "relative", "width", "200px", "font-family", "Ahem", "font-size", "50px"),
 		ruby:    makeStyle("display", "ruby", "font-family", "Ahem", "font-size", "50px"),
-		rbc:     makeStyle("display", "ruby-base-container", "font-family", "Ahem", "font-size", "50px"),
-		rb:      makeStyle("display", "ruby-base", "position", "relative", "font-family", "Ahem", "font-size", "50px"),
+		rbc:     makeStyle("display", "inline", "font-family", "Ahem", "font-size", "50px"),
+		rb:      makeStyle("display", "inline", "position", "relative", "font-family", "Ahem", "font-size", "50px"),
 		absSpan: makeStyle("position", "absolute", "display", "block", "left", "0", "top", "-50px", "width", "50px", "height", "50px", "font-family", "Ahem", "font-size", "50px"),
 	}
 
