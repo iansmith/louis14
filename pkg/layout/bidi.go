@@ -77,99 +77,36 @@ func ResolveBidiLevelsSimple(itemsData *InlineItemsData, baseDir Direction) {
 	}
 }
 
-// ResolveBidiLevels computes per-rune resolved bidi levels using a pure-Go
-// implementation of UAX#9 (X1-X8, W1-W7, N1-N2, I1-I2). This replaces
-// the Go bidi package's level resolution which has issues with neutral
-// character resolution.
+// resolveBidiParagraphs computes per-rune resolved bidi levels using a pure-Go
+// implementation of UAX#9 (X1-X8, W1-W7, N1-N2, I1-I2, L1), replacing the Go
+// bidi package's level resolution which has issues with neutral resolution.
 //
-// After this call, itemsData.RuneLevels is populated with per-rune resolved
-// levels and each item's BidiLevel is set from the level at its start offset.
-func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
+// Per UAX#9 P1 the text is split into paragraphs at class-B separators (the \n
+// a <br> emits) and each paragraph is resolved INDEPENDENTLY. baseLevelFn picks
+// each paragraph's base embedding level from its content runes (the trailing
+// separator excluded): a constant for an explicit CSS `direction`, or a
+// first-strong P2/P3 detector for `unicode-bidi: plaintext`.
+//
+// This mirrors ICU ubidi_setPara, which Blink drives from
+// BidiParagraph::SetParagraph (platform/text/bidi_paragraph.cc): it splits at
+// paragraph separators internally and applies the chosen base level to every
+// paragraph. Resolving the whole text as one context instead would let a
+// neutral character at a paragraph boundary inherit strong-direction context
+// across the separator — the LOU-313 bug, where the leading object-replacement
+// neutral of a non-first RTL line resolved to an LTR embedding level.
+//
+// After this call, itemsData.RuneLevels holds per-rune resolved levels,
+// itemsData.ParagraphLevels holds per-rune base levels, and each item's
+// BidiLevel/ParagraphLevel is set from the level at its start offset.
+func resolveBidiParagraphs(itemsData *InlineItemsData, baseLevelFn func(content []rune) int) {
 	if len(itemsData.TextContent) == 0 {
 		return
-	}
-
-	baseLevel := 0
-	if baseDir == DirectionRTL {
-		baseLevel = 1
 	}
 
 	runes := []rune(itemsData.TextContent)
 	nRunes := len(runes)
 
-	// Step 1: Get bidi class for each rune.
-	classes := make([]xbidi.Class, nRunes)
-	for i, r := range runes {
-		props, _ := xbidi.LookupRune(r)
-		classes[i] = props.Class()
-	}
-
-	// Step 2: Compute explicit embedding levels and apply overrides (UAX#9 X1-X8).
-	// computeEmbeddingLevels also applies X6: when an override is active
-	// (LRO/RLO), character types are forced to L/R.
-	embLevels := computeEmbeddingLevels(runes, baseLevel, classes)
-
-	// Step 3: Resolve weak types (W1-W7) and neutral types (N1-N2) within
-	// each embedding level context, then apply implicit levels (I1-I2).
-	levels := resolveAllLevels(classes, embLevels, baseLevel)
-
-	// Step 4: Apply UAX#9 rule L1 — reset trailing whitespace and isolate
-	// formatting characters at the end of the paragraph to the paragraph
-	// embedding level. This prevents trailing spaces from participating in
-	// mid-level L2 reversals.
-	applyL1(levels, runes, baseLevel)
-
-	itemsData.RuneLevels = levels
-
-	// Set paragraph levels (uniform for non-plaintext mode).
-	itemsData.ParagraphLevels = make([]int, nRunes)
-	for i := range itemsData.ParagraphLevels {
-		itemsData.ParagraphLevels[i] = baseLevel
-	}
-
-	// Build byte→rune index map for assigning levels to items.
-	runeAtByte := make([]int, len(itemsData.TextContent)+1)
-	ri := 0
-	for bi := range itemsData.TextContent {
-		runeAtByte[bi] = ri
-		ri++
-	}
-	runeAtByte[len(itemsData.TextContent)] = ri
-
-	// Assign bidi levels to each InlineItem.
-	for _, item := range itemsData.Items {
-		item.ParagraphLevel = baseLevel
-		offset := item.StartOffset
-		if offset >= len(itemsData.TextContent) {
-			// Items past end of text get the paragraph embedding level,
-			// matching ICU's ubidi_getLevelAt() behavior.
-			item.BidiLevel = baseLevel
-			continue
-		}
-		runeIdx := runeAtByte[offset]
-		if runeIdx < nRunes {
-			item.BidiLevel = levels[runeIdx]
-		}
-	}
-}
-
-// ResolveBidiLevelsPlaintext resolves bidi levels for unicode-bidi: plaintext
-// mode. Per CSS Writing Modes §2.2, each bidi paragraph (separated by forced
-// breaks / paragraph separators) independently determines its base direction
-// using UAX#9 rules P2/P3 (first strong character heuristic).
-//
-// This mirrors Blink's NGBidiParagraph which calls ICU's ubidi_setPara with
-// UBIDI_DEFAULT_LTR per paragraph when in plaintext mode.
-func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
-	text := itemsData.TextContent
-	if len(text) == 0 {
-		return
-	}
-
-	runes := []rune(text)
-	nRunes := len(runes)
-
-	// Get bidi class for each rune.
+	// Bidi class for each rune.
 	allClasses := make([]xbidi.Class, nRunes)
 	for i, r := range runes {
 		props, _ := xbidi.LookupRune(r)
@@ -179,47 +116,39 @@ func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
 	allLevels := make([]int, nRunes)
 	paraLevels := make([]int, nRunes)
 
-	// Process each paragraph independently.
-	// Per UAX#9 P1, paragraph boundaries are at characters with bidi class B
-	// (paragraph separator, which includes \n from <br> elements).
-	// The separator is kept with the preceding paragraph.
+	// Process each paragraph independently (UAX#9 P1). Paragraph boundaries are
+	// at class-B characters; the separator is kept with the preceding paragraph.
 	paraStart := 0
 	for paraStart < nRunes {
-		// Find the end of this paragraph.
 		paraEnd := paraStart
 		for paraEnd < nRunes && allClasses[paraEnd] != xbidi.B {
 			paraEnd++
 		}
-		// Include the B character in this paragraph.
 		if paraEnd < nRunes {
-			paraEnd++
+			paraEnd++ // include the B character in this paragraph
 		}
 
-		// Determine base direction for this paragraph via P2/P3.
-		// Exclude the paragraph separator itself from direction detection.
+		// Base level for this paragraph, excluding the separator itself.
 		contentEnd := paraEnd
 		if contentEnd > paraStart && allClasses[contentEnd-1] == xbidi.B {
 			contentEnd--
 		}
-		baseLevel := 0
-		if contentEnd > paraStart && determineFSIDirection(runes[paraStart:contentEnd]) == 1 {
-			baseLevel = 1
-		}
+		baseLevel := baseLevelFn(runes[paraStart:contentEnd])
 
-		// Extract this paragraph's classes (copy — computeEmbeddingLevels mutates).
+		// Resolve this paragraph. computeEmbeddingLevels (X1-X8, X6 overrides)
+		// mutates classes, so copy first. Then resolve weak/neutral types
+		// (W1-W7, N1-N2) and implicit levels (I1-I2), then L1.
 		paraRunes := runes[paraStart:paraEnd]
 		paraClasses := make([]xbidi.Class, len(paraRunes))
 		copy(paraClasses, allClasses[paraStart:paraEnd])
 
-		// Compute embedding levels, resolve weak/neutral types, apply L1.
 		embLevels := computeEmbeddingLevels(paraRunes, baseLevel, paraClasses)
 		levels := resolveAllLevels(paraClasses, embLevels, baseLevel)
 		applyL1(levels, paraRunes, baseLevel)
 
-		// Store results.
-		for i := 0; i < paraEnd-paraStart; i++ {
-			allLevels[paraStart+i] = levels[i]
-			paraLevels[paraStart+i] = baseLevel
+		copy(allLevels[paraStart:paraEnd], levels)
+		for i := paraStart; i < paraEnd; i++ {
+			paraLevels[i] = baseLevel
 		}
 
 		paraStart = paraEnd
@@ -227,8 +156,16 @@ func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
 
 	itemsData.RuneLevels = allLevels
 	itemsData.ParagraphLevels = paraLevels
+	assignItemBidiLevels(itemsData, allLevels, paraLevels)
+}
 
-	// Build byte→rune index map.
+// assignItemBidiLevels stamps each InlineItem's BidiLevel and ParagraphLevel
+// from the resolved per-rune levels. Items past the end of TextContent take the
+// last paragraph's embedding level, matching ICU's ubidi_getLevelAt().
+func assignItemBidiLevels(itemsData *InlineItemsData, levels, paraLevels []int) {
+	text := itemsData.TextContent
+	nRunes := len(levels)
+
 	runeAtByte := make([]int, len(text)+1)
 	ri := 0
 	for bi := range text {
@@ -237,7 +174,6 @@ func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
 	}
 	runeAtByte[len(text)] = ri
 
-	// Assign levels to items.
 	for _, item := range itemsData.Items {
 		offset := item.StartOffset
 		if offset >= len(text) {
@@ -249,10 +185,41 @@ func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
 		}
 		runeIdx := runeAtByte[offset]
 		if runeIdx < nRunes {
-			item.BidiLevel = allLevels[runeIdx]
+			item.BidiLevel = levels[runeIdx]
 			item.ParagraphLevel = paraLevels[runeIdx]
 		}
 	}
+}
+
+// ResolveBidiLevels resolves bidi levels for an explicit base direction (CSS
+// `direction` / `dir`). Every paragraph uses the same base level — matching
+// ICU ubidi_setPara with an explicit UBIDI_LTR/UBIDI_RTL para level.
+//
+// After this call, itemsData.RuneLevels is populated with per-rune resolved
+// levels and each item's BidiLevel is set from the level at its start offset.
+func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
+	baseLevel := 0
+	if baseDir == DirectionRTL {
+		baseLevel = 1
+	}
+	resolveBidiParagraphs(itemsData, func([]rune) int { return baseLevel })
+}
+
+// ResolveBidiLevelsPlaintext resolves bidi levels for unicode-bidi: plaintext
+// mode. Per CSS Writing Modes §2.2, each bidi paragraph (separated by forced
+// breaks / paragraph separators) independently determines its base direction
+// using UAX#9 rules P2/P3 (first strong character heuristic).
+//
+// This mirrors Blink's BidiParagraph which calls ICU's ubidi_setPara with
+// UBIDI_DEFAULT_LTR per paragraph when in plaintext mode (InlineNode::
+// SegmentBidiRuns passes a null base direction).
+func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
+	resolveBidiParagraphs(itemsData, func(content []rune) int {
+		if len(content) > 0 && determineFSIDirection(content) == 1 {
+			return 1
+		}
+		return 0
+	})
 }
 
 // resolveAllLevels applies W1-W7, N1-N2, and I1-I2 to compute final per-rune
