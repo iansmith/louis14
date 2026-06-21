@@ -1767,6 +1767,20 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		markerStyle.Set("white-space", "pre")
 	}
 
+	// Letter-spacing / word-spacing must not affect a predefined SYMBOL marker
+	// (disc/circle/square/disclosure). Blink draws these as shapes, not text, so
+	// a text-spacing property cannot touch them — verified against the WPT
+	// css-pseudo/marker-letter-spacing refs, which render the disc plain (the
+	// `::marker { letter-spacing }` has no effect on it), while the numeric /
+	// string / content markers DO show spacing. louis14 renders the symbol as
+	// the bullet glyph text "• "; without this it would pick up a spurious
+	// letter-spacing unit on the suffix space. Real-text markers keep spacing.
+	if !hasContentProperty && !generatesMarkerImage(style) &&
+		isPredefinedSymbolListStyleType(style.GetListStyleType()) {
+		markerStyle.Set("letter-spacing", "normal")
+		markerStyle.Set("word-spacing", "normal")
+	}
+
 	// Step 3: Create a synthetic ::marker DOM node so we can use it as
 	// the origin for the counter scope.
 	markerNode := &html.Node{
