@@ -26,6 +26,9 @@ func TestToHebrew_AdditiveAlgorithm(t *testing.T) {
 		// hundreds + composed tens/ones; decimal fallback today.
 		{100, "ק"}, {200, "ר"}, {400, "ת"}, {500, "תק"}, {900, "תתק"},
 		{999, "תתקצט"},
+		// 15/16 special case composed AFTER a hundreds letter (adversary: the
+		// divine-name avoidance must still fire inside a larger numeral).
+		{215, "רטו"}, {416, "תטז"},
 		// thousands: geresh (U+05F3) between thousands and remainder.
 		{1000, "א׳"}, {1500, "א׳תק"},
 	}
@@ -49,6 +52,9 @@ func TestToKoreanHangulFormal_PlaceValue(t *testing.T) {
 		{1234, "일천이백삼십사"},
 		// 만 (10^4) group separator.
 		{10000, "일만"}, {12345, "일만이천삼백사십오"},
+		// internal / cross-group zeros (adversary: zero places must be skipped,
+		// not emitted as 영).
+		{1004, "일천사"}, {1020, "일천이십"}, {10001, "일만일"},
 	}
 	for _, c := range cases {
 		if got := ToKoreanHangulFormal(c.n); got != c.want {
