@@ -154,8 +154,9 @@ func koreanFourDigitGroup(g int) string {
 // ToKoreanHangulFormal renders a positive integer in the formal Sino-Korean
 // place-value system, mirroring Blink's CJKIdeoGraphicAlgorithm (formal branch).
 // The number is split into 4-digit groups joined by 만 (10^4) / 억 (10^8) /
-// 조 (10^12); so 10 → 일십, 100 → 일백, 1234 → 일천이백삼십사. Falls back to decimal
-// for n <= 0 and beyond the 조 range.
+// 조 (10^12), each group marker followed by a space (the final trailing one
+// trimmed): so 10 → 일십, 1234 → 일천이백삼십사, 12345 → 일만 이천삼백사십오. Falls back
+// to decimal for n <= 0 and beyond the 조 range.
 func ToKoreanHangulFormal(n int) string {
 	const maxN = 9999_9999_9999_9999 // 16 digits: up to the 조 (10^12) group
 	if n <= 0 || n > maxN {
@@ -169,8 +170,11 @@ func ToKoreanHangulFormal(n int) string {
 		}
 		b.WriteString(koreanFourDigitGroup(gv))
 		if koreanGroupMarks[gi] != 0 {
+			// Blink's CJKIdeoGraphicAlgorithm appends a space after each Korean
+			// group marker (만/억/조); the final trailing one is trimmed below.
 			b.WriteRune(koreanGroupMarks[gi])
+			b.WriteByte(' ')
 		}
 	}
-	return b.String()
+	return strings.TrimSuffix(b.String(), " ")
 }

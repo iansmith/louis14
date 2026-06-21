@@ -50,11 +50,13 @@ func TestToKoreanHangulFormal_PlaceValue(t *testing.T) {
 		{10, "일십"}, {11, "일십일"}, {20, "이십"}, {23, "이십삼"},
 		{100, "일백"}, {200, "이백"}, {1000, "일천"},
 		{1234, "일천이백삼십사"},
-		// 만 (10^4) group separator.
-		{10000, "일만"}, {12345, "일만이천삼백사십오"},
+		// 만 (10^4) group separator — Blink appends a space after a group marker
+		// (만/억/조) when a lower group follows; the final trailing space is
+		// trimmed (so 10000 stays "일만", but 12345 gets the space).
+		{10000, "일만"}, {12345, "일만 이천삼백사십오"},
 		// internal / cross-group zeros (adversary: zero places must be skipped,
 		// not emitted as 영).
-		{1004, "일천사"}, {1020, "일천이십"}, {10001, "일만일"},
+		{1004, "일천사"}, {1020, "일천이십"}, {10001, "일만 일"},
 	}
 	for _, c := range cases {
 		if got := ToKoreanHangulFormal(c.n); got != c.want {
