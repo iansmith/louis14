@@ -18,65 +18,6 @@ func textHasBidiControls(text string) bool {
 	return false
 }
 
-// ResolveBidiLevelsSimple assigns bidi levels using the Go bidi package's
-// run directions. This is the simple path for text without explicit bidi
-// control characters — it only distinguishes level 0 (LTR) and level 1 (RTL).
-func ResolveBidiLevelsSimple(itemsData *InlineItemsData, baseDir Direction) {
-	if len(itemsData.TextContent) == 0 {
-		return
-	}
-
-	defaultDir := xbidi.LeftToRight
-	if baseDir == DirectionRTL {
-		defaultDir = xbidi.RightToLeft
-	}
-
-	var para xbidi.Paragraph
-	if _, err := para.SetString(itemsData.TextContent, xbidi.DefaultDirection(defaultDir)); err != nil {
-		return
-	}
-	ordering, err := para.Order()
-	if err != nil {
-		return
-	}
-
-	textRunes := []rune(itemsData.TextContent)
-	levels := make([]int, len(textRunes))
-	for i := 0; i < ordering.NumRuns(); i++ {
-		run := ordering.Run(i)
-		start, end := run.Pos()
-		lvl := 0
-		if run.Direction() == xbidi.RightToLeft {
-			lvl = 1
-		}
-		for j := start; j <= end && j < len(levels); j++ {
-			levels[j] = lvl
-		}
-	}
-
-	runeAtByte := make([]int, len(itemsData.TextContent)+1)
-	ri := 0
-	for bi := range itemsData.TextContent {
-		runeAtByte[bi] = ri
-		ri++
-	}
-	runeAtByte[len(itemsData.TextContent)] = ri
-
-	for _, item := range itemsData.Items {
-		offset := item.StartOffset
-		if offset >= len(itemsData.TextContent) {
-			if len(levels) > 0 {
-				item.BidiLevel = levels[len(levels)-1]
-			}
-			continue
-		}
-		runeIdx := runeAtByte[offset]
-		if runeIdx < len(levels) {
-			item.BidiLevel = levels[runeIdx]
-		}
-	}
-}
-
 // resolveBidiParagraphs computes per-rune resolved bidi levels using a pure-Go
 // implementation of UAX#9 (X1-X8, W1-W7, N1-N2, I1-I2, L1), replacing the Go
 // bidi package's level resolution which has issues with neutral resolution.
