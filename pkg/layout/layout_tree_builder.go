@@ -1709,57 +1709,68 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	}
 	markerInside := style.MarkerShouldBeInside()
 
-	// Step 1: Resolve marker content.
-	var markerContent string
-	var markerStyle *css.Style
-	hasMarkerStyle := false
-	hasContentProperty := false
-	var markerContentValues []css.ContentValue
+	markerStyle, hasContentProperty, contentValues := b.resolveMarkerStyle(node, style, markerInside)
 
-	// Markers of pseudo-element list items (::before/::after with
-	// display:list-item) are nested pseudo-elements and are NOT addressable
-	// by author ::marker selectors (css-pseudo-4; WPT nested-marker.html) —
-	// they take UA defaults only.
-	originIsPseudo := strings.HasPrefix(node.TagName, "::")
-	if !originIsPseudo && len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
-		markerStyle = css.ComputePseudoElementStyle(
-			node, "marker", b.stylesheets,
-			b.viewportWidth, b.viewportHeight, style,
-		)
-		hasMarkerStyle = true
+	// Create a synthetic ::marker DOM node as the origin for the counter scope,
+	// then enter that scope before resolving content. Per CSS Pseudo-4
+	// pseudo-element ordering the ::marker comes before ::before / children /
+	// ::after; Blink runs EnterObject for the marker as part of that traversal.
+	// Paired with LeaveObject on return.
+	markerNode := &html.Node{
+		Type:    html.ElementNode,
+		TagName: "::marker",
+		Parent:  node,
+	}
+	b.styles[markerNode] = markerStyle
+	b.counterCtx.EnterObject(markerNode, markerStyle)
+	defer b.counterCtx.LeaveObject(markerNode, markerStyle)
 
-		// Capture the content values; the actual resolution happens
-		// after we've entered the marker's counter scope below so
-		// counter() reads use the right origin node.
-		if cv, ok := markerStyle.GetContentValues(); ok {
-			hasContentProperty = true
-			markerContentValues = cv
-		}
+	children, category, generate := b.buildMarkerChildren(node, style, markerStyle, markerNode, hasContentProperty, contentValues)
+	if !generate {
+		return nil
 	}
 
-	// Step 2: Compute the effective marker style if no ::marker rules.
-	if !hasMarkerStyle {
-		// No ::marker rules; create a default marker style carrying ONLY
-		// inherited properties from the list item (Blink
-		// StyleResolver::CreateAnonymousStyleWithDisplay via
-		// ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 —
-		// a li's border/margin/padding must not leak onto its marker), then
-		// stamp UA ::marker defaults on top (text-transform:none,
-		// white-space:pre, tabular-nums, unicode-bidi:isolate) per CSS
-		// Pseudo-4 §3 + Blink html.css
-		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	// isMarkerNode lets the ::first-letter walk (and other consumers) skip this
+	// generated subtree per CSS Pseudo-4 §3.3 — the originating list-item's own
+	// marker is not part of first-letter consideration.
+	return &LayoutInputNode{
+		DOMNode:         markerNode,
+		style:           markerStyle,
+		isMarkerNode:    true,
+		MarkerIsOutside: !markerInside,
+		MarkerCategory:  category,
+		children:        children,
+	}
+}
+
+// resolveMarkerStyle builds the ::marker box's computed style and returns it
+// with any author-set content (resolved later, inside the marker's counter
+// scope). With author ::marker rules it computes the pseudo style and captures
+// content values; otherwise it builds a default style carrying ONLY the list
+// item's inherited properties (a li's border/margin/padding must not leak onto
+// its marker — Blink ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:
+// 320-323 @ 4883d11f) plus the UA ::marker defaults (text-transform:none,
+// white-space:pre, tabular-nums, unicode-bidi:isolate). It then applies the
+// position-driven display adjustment (StyleAdjuster::AdjustStyleForMarker,
+// style_adjuster.cc:478-514) and neutralizes letter-/word-spacing on symbol
+// markers.
+//
+// Markers of pseudo-element list items (::before/::after with
+// display:list-item) are nested pseudo-elements and are NOT addressable by
+// author ::marker selectors (css-pseudo-4; WPT nested-marker.html) — UA only.
+func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style, markerInside bool) (markerStyle *css.Style, hasContentProperty bool, contentValues []css.ContentValue) {
+	originIsPseudo := strings.HasPrefix(node.TagName, "::")
+	if !originIsPseudo && len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+		markerStyle = css.ComputePseudoElementStyle(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight, style)
+		if cv, ok := markerStyle.GetContentValues(); ok {
+			hasContentProperty = true
+			contentValues = cv
+		}
+	} else {
 		markerStyle = css.CreateAnonymousStyleWithDisplay(style, "inline")
 		css.ApplyMarkerUADefaults(markerStyle)
 	}
 
-	// Marker display is adjusted by position, not authored: inside markers
-	// are inline; outside markers become a block container that must not
-	// break internally and honors trailing spaces. Mirrors Blink
-	// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:478-514 @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). markerStyle is freshly
-	// built either way (ComputePseudoElementStyle or
-	// CreateAnonymousStyleWithDisplay), so mutating it here is safe.
 	if markerInside {
 		markerStyle.Set("display", "inline")
 	} else {
@@ -1770,125 +1781,75 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	// Letter-spacing / word-spacing must not affect a predefined SYMBOL marker
 	// (disc/circle/square/disclosure). Blink draws these as shapes, not text, so
 	// a text-spacing property cannot touch them — verified against the WPT
-	// css-pseudo/marker-letter-spacing refs, which render the disc plain (the
-	// `::marker { letter-spacing }` has no effect on it), while the numeric /
-	// string / content markers DO show spacing. louis14 renders the symbol as
-	// the bullet glyph text "• "; without this it would pick up a spurious
-	// letter-spacing unit on the suffix space. Real-text markers keep spacing.
+	// css-pseudo/marker-letter-spacing refs, which render the disc plain while
+	// the numeric/string/content markers DO show spacing. louis14 renders the
+	// symbol as the bullet glyph text "• "; without this it would pick up a
+	// spurious letter-spacing unit on the suffix space.
 	if !hasContentProperty && !generatesMarkerImage(style) &&
 		isPredefinedSymbolListStyleType(style.GetListStyleType()) {
 		markerStyle.Set("letter-spacing", "normal")
 		markerStyle.Set("word-spacing", "normal")
 	}
+	return markerStyle, hasContentProperty, contentValues
+}
 
-	// Step 3: Create a synthetic ::marker DOM node so we can use it as
-	// the origin for the counter scope.
-	markerNode := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "::marker",
-		Parent:  node,
-	}
-
-	// Store the marker style in the styles map.
-	b.styles[markerNode] = markerStyle
-
-	// Enter the marker's counter scope before resolving its content.
-	// Per CSS Pseudo-4 pseudo-element ordering the ::marker comes
-	// before ::before, before children, before ::after — and Blink
-	// runs EnterObject for the marker as part of that traversal. We
-	// pair this with LeaveObject before returning.
-	b.counterCtx.EnterObject(markerNode, markerStyle)
-	defer b.counterCtx.LeaveObject(markerNode, markerStyle)
-
-	// Now that the marker's counter scope is live, resolve content.
-	if len(markerContentValues) > 0 {
-		markerContent = b.resolveContentText(markerContentValues, node, markerNode, quoteSourceStyle(markerStyle, style))
+// buildMarkerChildren resolves the marker's content into the marker box's
+// children and category. generate is false when no marker box should be
+// produced (list-style-type:none, content:none, or an unpaintable image).
+// Must be called within the marker's counter scope so counter() reads resolve
+// against the marker origin. Mirrors Blink ListMarker::MarkerText /
+// UpdateMarkerContentIfNeeded (list_marker.cc @ 4883d11f).
+func (b *LayoutTreeBuilder) buildMarkerChildren(node *html.Node, style, markerStyle *css.Style, markerNode *html.Node, hasContentProperty bool, contentValues []css.ContentValue) (children []*LayoutInputNode, category ListStyleCategory, generate bool) {
+	var markerContent string
+	if len(contentValues) > 0 {
+		markerContent = b.resolveContentText(contentValues, node, markerNode, quoteSourceStyle(markerStyle, style))
 	}
 
 	// Image marker: list-style-image takes precedence over list-style-type
-	// (including `none`). Blink ListMarker::UpdateMarkerContentIfNeeded
-	// builds a LayoutListMarkerImage child and sets marker_text_type_ =
-	// kNotText (list_marker.cc:277-310 @ 4883d11f); the marker text with
-	// prefix/suffix is a single space after the image (MarkerText
-	// GeneratesMarkerImage arm, :168-172). Reuses the synthetic-<img>
-	// pattern from createPseudoElement's content:url() case.
+	// (including `none`). Blink builds a LayoutListMarkerImage child + a single
+	// trailing space (list_marker.cc:277-310 / :168-172 @ 4883d11f). Non-url()
+	// image values (gradients) suppress the marker entirely (LOU-303).
 	if markerContent == "" && !hasContentProperty && generatesMarkerImage(style) {
 		raw, _ := style.Get("list-style-image")
-		src, ok := css.ParseURLValue(strings.TrimSpace(raw))
-		if !ok {
-			// Non-url() image values (gradients) are still images: the
-			// text fallback stays suppressed (Blink MarkerText returns
-			// kNotText for GeneratesMarkerImage). Painting generated
-			// images as markers is not implemented yet, so no marker box
-			// is produced at all (LOU-303).
-			return nil
+		src, urlOK := css.ParseURLValue(strings.TrimSpace(raw))
+		if !urlOK {
+			return nil, CategoryNone, false
 		}
 		spaceNode := &html.Node{Type: html.TextNode, Text: " ", Parent: markerNode}
-		return &LayoutInputNode{
-			DOMNode:         markerNode,
-			style:           markerStyle,
-			isMarkerNode:    true,
-			MarkerIsOutside: !markerInside,
-			MarkerCategory:  CategoryNone,
-			children: []*LayoutInputNode{
-				b.createSyntheticImage(src, markerNode),
-				{DOMNode: spaceNode, style: markerStyle},
-			},
-		}
+		return []*LayoutInputNode{
+			b.createSyntheticImage(src, markerNode),
+			{DOMNode: spaceNode, style: markerStyle},
+		}, CategoryNone, true
 	}
 
-	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
-	// Skip fallback when ::marker explicitly set the content property (e.g. content:none).
+	// Fall back to list-style-type when no ::marker content resolved (skip when
+	// ::marker explicitly set the content property, e.g. content:none).
 	if markerContent == "" && !hasContentProperty {
 		lst := style.GetListStyleType()
 		if lst == css.ListStyleTypeNone {
-			return nil
+			return nil, CategoryNone, false
 		}
 		if lst != "" {
 			if isBuiltinListStyleType(lst) {
 				markerContent = b.resolveListStyleType(lst, node)
 			} else if cs, ok := b.counterStyleRules()[string(lst)]; ok {
-				// @counter-style reference: format the ordinal through the
-				// custom style (Blink CounterStyle::GenerateRepresentation
-				// WithPrefixAndSuffix).
+				// @counter-style reference: format the ordinal via the custom
+				// style (Blink CounterStyle::GenerateRepresentationWithPrefixAndSuffix).
 				markerContent = css.ApplyCounterStyle(b.listItemOrdinal(node), cs, b.counterStyleRules())
 			} else {
-				// <string> value (e.g., list-style-type: "§"): the string
-				// IS the marker text, verbatim, no suffix (Blink
-				// kStaticString). GetListStyleType already stripped the
-				// quotes and decoded CSS escapes.
+				// <string> value (e.g. list-style-type: "§"): the string IS the
+				// marker text, verbatim, no suffix (Blink kStaticString).
 				markerContent = string(lst)
 			}
 		}
 	}
 
-	// If no content was resolved, no marker to generate.
 	if markerContent == "" {
-		return nil
+		return nil, CategoryNone, false
 	}
 
-	// Step 4: Create a text node child with the resolved marker content.
-	textNode := &html.Node{
-		Type:   html.TextNode,
-		Text:   markerContent,
-		Parent: markerNode,
-	}
-
-	// Step 5: Return the LayoutInputNode with the marker and its text child.
-	// isMarkerNode lets the ::first-letter walk (and other consumers) skip
-	// this generated subtree per CSS Pseudo-4 §3.3 — the originating
-	// list-item's own marker is not part of first-letter consideration.
-	return &LayoutInputNode{
-		DOMNode:         markerNode,
-		style:           markerStyle,
-		isMarkerNode:    true,
-		MarkerIsOutside: !markerInside,
-		MarkerCategory:  GetListStyleCategory(style),
-		children: []*LayoutInputNode{{
-			DOMNode: textNode,
-			style:   markerStyle,
-		}},
-	}
+	textNode := &html.Node{Type: html.TextNode, Text: markerContent, Parent: markerNode}
+	return []*LayoutInputNode{{DOMNode: textNode, style: markerStyle}}, GetListStyleCategory(style), true
 }
 
 // resolveListStyleType converts a built-in list-style-type value to its
