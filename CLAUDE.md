@@ -136,7 +136,9 @@ Line numbers alone become noise within ~6 months. SHA-pinned citations make stal
 
 ## Worktree setup
 
-Worktree agents need two symlinks before any non-targeted test sweep, or they hit catastrophic false regressions:
+`~/louis14` owns `master` directly — a single working tree (HEAD on `master`). Ship tickets **serially** from here via the `/slopstop-*` pipeline; branch with `git switch -c <type>/LOU-N origin/master`. (The former `~/louis14-campaign` orchestration tree + per-ticket lane worktrees were removed 2026-06-21 — see the `swarm-approach-abandoned` memory; don't resurrect that approach without first solving its integration problems.)
+
+If you DO spin up a worktree (e.g. an `isolation: "worktree"` agent, or `/code-review ultra`), it needs two symlinks before any non-targeted test sweep, or it hits catastrophic false regressions:
 
 ```
 ln -s /Users/iansmith/louis14/fonts/* $WORKTREE/fonts/
@@ -146,9 +148,4 @@ ln -sfn /Users/iansmith/mazzy "$WORKTREE/../mazzy"
 - **`fonts/`** — only `Ahem.ttf` is committed; the 180-file Liberation/Atkinson set is gitignored, so a fresh worktree has almost no fonts and ~50% of writing-modes / 25 multicol / 6 flexbox tests fail with mis-rendered text. The Ahem collision on symlinking is harmless.
 - **`../mazzy`** — `go.mod` has `replace mazarin/textshape => ../mazzy/mazarin/textshape`. From `~/louis14/.claude/worktrees/agent-*/`, `../mazzy` resolves to `~/louis14/.claude/worktrees/mazzy`, which doesn't exist without the symlink; `go test` fails to build with module errors.
 
-Agents working in a worktree must also:
-
-- **HARD RULE — never write to the orchestrator tree.** Every absolute path passed to Edit / Write / NotebookEdit / `>`-redirect / `sed -i` / `mv` / `cp` / `gofmt -w` / `go build -o` MUST start with `/Users/iansmith/louis14/.claude/worktrees/agent-<HASH>/`, never `/Users/iansmith/louis14/<anything>`. The two paths look almost identical but are completely separate trees; an Edit at the bare orchestrator path is a silent no-op for the agent's branch (branch will have zero commits) but contaminates the orchestrator's `git status` and may leak into another agent's commit. **This violation has happened twice — campaign-3 (15 min lost) and campaign-4 C45 (entire 95-line implementation discarded).** The strengthened HARD RULE block at the top of `docs/campaign2/C00-rules.md` AGENT RULES is the canonical statement; every launch prompt MUST paste that block verbatim.
-- Receive the worktree root explicitly in the launch brief (a `WORKTREE_ROOT=<exact-path>` line).
-- Run the mandatory startup check (verify `pwd` resolves to a `.claude/worktrees/agent-*` path) and the mandatory pre-commit check (`git -C /Users/iansmith/louis14 status --porcelain` must come back unchanged from agent-start state) per the AGENT RULES block.
-- DONE block MUST include the agent's `WORKTREE_ROOT=` value and `git log --oneline -5` output so the orchestrator can verify the work actually committed on the agent's branch.
+- A worktree agent must write **only** under its own worktree root, never the main `~/louis14` tree — every absolute path in Edit / Write / `>`-redirect / `sed -i` / `mv` / `cp` / `gofmt -w` / `go build -o` must start with the worktree path. An Edit at the bare main-tree path is a silent no-op for the agent's branch (zero commits) and contaminates the main tree's `git status`. Pass the worktree root explicitly in the launch brief and have the agent verify `pwd` before writing.
