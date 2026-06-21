@@ -53,15 +53,25 @@ func ToGreek(n int) string {
 	return string(greek[n-1])
 }
 
-// ToHebrew converts a positive integer to Hebrew letter notation (א=1, ב=2, ...).
-// This is the bounded form; returns decimal as fallback for values outside [1, 22].
-// Full Hebrew additive numeral composition is not implemented.
-func ToHebrew(n int) string {
-	hebrew := []rune{'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ', 'ק', 'ר', 'ש', 'ת'}
-	if n <= 0 || n > len(hebrew) {
+// toBoundedRuneStyle maps a 1-based ordinal to a per-style symbol table,
+// returning the symbol at position n or a decimal fallback when n is outside
+// [1, len(symbols)]. This is the bounded form shared by the symbolic styles
+// below; full additive / place-value composition for larger ordinals is tracked
+// in LOU-314.
+func toBoundedRuneStyle(n int, symbols []rune) string {
+	if n <= 0 || n > len(symbols) {
 		return fmt.Sprintf("%d", n)
 	}
-	return string(hebrew[n-1])
+	return string(symbols[n-1])
+}
+
+// ToHebrew converts a positive integer to Hebrew letter notation (א=1, ב=2, ...).
+// Bounded form: only [1, 22]; n >= 23 falls back to decimal, which is NOT
+// spec-correct — real `hebrew` is an additive system to 999. Full algorithm
+// tracked in LOU-314.
+func ToHebrew(n int) string {
+	hebrew := []rune{'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ', 'ק', 'ר', 'ש', 'ת'}
+	return toBoundedRuneStyle(n, hebrew)
 }
 
 // ToCJKDecimal converts a positive integer to CJK decimal notation by substituting
@@ -81,11 +91,10 @@ func ToCJKDecimal(n int) string {
 }
 
 // ToKoreanHangulFormal converts a positive integer to Korean Hangul formal digit letters.
-// This is the bounded form; returns decimal as fallback for values outside [1, 9].
+// Bounded form: only [1, 9]; n >= 10 falls back to decimal, which is NOT
+// spec-correct — real `korean-hangul-formal` composes place values (십/백/천/만).
+// Full algorithm tracked in LOU-314.
 func ToKoreanHangulFormal(n int) string {
 	korean := []rune{'일', '이', '삼', '사', '오', '육', '칠', '팔', '구'}
-	if n <= 0 || n > len(korean) {
-		return fmt.Sprintf("%d", n)
-	}
-	return string(korean[n-1])
+	return toBoundedRuneStyle(n, korean)
 }
