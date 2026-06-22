@@ -3111,6 +3111,17 @@ var nonDefaultInitialValues = map[string]string{
 	// explicit initial here prevents ApplyInheritedProperties from re-filling
 	// the slot with the parent's scheme after `color-scheme: initial`.
 	"color-scheme": "normal",
+	// CSS Text 4 §7.1: initial value of `text-align` is `start`. `text-align`
+	// IS inherited (cascade.go inheritableProperties), so without an explicit
+	// initial here ApplyInheritedProperties re-fills a deleted slot with the
+	// parent's alignment — making `text-align: initial` wrongly inherit instead
+	// of reset. Required by css-pseudo/marker-content marker-text-align-001,
+	// where `li > div { text-align: initial }` must compute `start` even under
+	// an `end`-aligned `li`. (NOTE: the same latent delete-then-inherit bug
+	// affects EVERY inherited longhand absent from this map under `initial` —
+	// text-indent, letter-/word-spacing, text-transform, white-space, etc.
+	// Tracked separately; entries are added here as each is exercised.)
+	"text-align": "start",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,
