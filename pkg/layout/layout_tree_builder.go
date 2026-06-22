@@ -1091,13 +1091,6 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	return lin
 }
 
-// resolveContentText resolves CSS content values (text, counter, counters)
-// to a plain string. Used for ::marker content resolution during layout
-// tree building. `node` is the marker-bearing element (used to look up
-// the list-item DOM-sibling fallback until Phase 3 makes list-item a
-// real counter). `markerNode` is the pseudo-element node currently in
-// scope for counter lookups (so the marker reads its own scope, not the
-// real element's).
 // createSyntheticImage builds the synthetic inline <img> LayoutInputNode
 // used for generated image content: ::before/::after content:url() and
 // list-style-image markers.
@@ -1162,24 +1155,49 @@ func (b *LayoutTreeBuilder) emitCloseQuote(quotes []string) string {
 	return ""
 }
 
-// resolveContentText resolves content values to a plain string; style is the
-// one whose `quotes` property governs open-quote/close-quote values (CSS
-// Lists 3 §marker-properties: quotes applies in ::marker;
-// marker-quotes.html). A nil style keeps the UA default quote pairs.
-func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node, style *css.Style) string {
-	var buf strings.Builder
+// buildMarkerContentChildren turns an author ::marker `content` value list into
+// the marker box's child nodes: adjacent text-producing values (text, counters,
+// quotes) merge into one text node, and a url() image flushes the pending text
+// and appends a synthetic inline image — the same construction
+// createPseudoElement uses for ::before/::after content. An empty result means
+// no renderable content (content:none/normal), which the caller treats as a
+// suppressed marker. Blink ListMarker::UpdateMarkerContentIfNeeded builds the
+// same mixed text+image subtree for custom marker content.
+//
+// markerStyle styles the generated text node and (via its `quotes`) governs
+// open-quote/close-quote (CSS Lists 3 §marker-properties; marker-quotes.html).
+// node is the marker-bearing element (list-item DOM-sibling fallback for
+// counter(list-item)); markerNode is the pseudo node in counter scope.
+func (b *LayoutTreeBuilder) buildMarkerContentChildren(contentVals []css.ContentValue, node, markerNode *html.Node, markerStyle, itemStyle *css.Style) []*LayoutInputNode {
 	if markerNode == nil {
 		markerNode = node
 	}
-	quotes := b.quotesFor(style)
+	quotes := b.quotesFor(quoteSourceStyle(markerStyle, itemStyle))
+
+	var children []*LayoutInputNode
+	var pending strings.Builder
+	flush := func() {
+		if pending.Len() > 0 {
+			textNode := &html.Node{Type: html.TextNode, Text: pending.String(), Parent: markerNode}
+			children = append(children, &LayoutInputNode{DOMNode: textNode, style: markerStyle})
+			pending.Reset()
+		}
+	}
+
 	for _, cv := range contentVals {
 		switch cv.Type {
 		case "text":
-			buf.WriteString(cv.Value)
+			pending.WriteString(cv.Value)
+		case "url":
+			// Image content (e.g. content: url(...)) replaces the marker with a
+			// replaced inline image — no trailing space (unlike a list-style-image
+			// marker). Mirrors createPseudoElement's url() arm.
+			flush()
+			children = append(children, b.createSyntheticImage(cv.Value, markerNode))
 		case "open-quote":
-			buf.WriteString(b.emitOpenQuote(quotes))
+			pending.WriteString(b.emitOpenQuote(quotes))
 		case "close-quote":
-			buf.WriteString(b.emitCloseQuote(quotes))
+			pending.WriteString(b.emitCloseQuote(quotes))
 		case "counter":
 			// Prefer the counter context when list-item has been explicitly
 			// established (e.g. counter-reset: reversed(list-item) or
@@ -1193,7 +1211,7 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, n
 			} else {
 				vals = b.counterCtx.GetCounterValues(markerNode, cv.Value, true)
 			}
-			buf.WriteString(formatCounterValues(vals, "", cv.Style))
+			pending.WriteString(formatCounterValues(vals, "", cv.Style))
 		case "counters":
 			var vals []int
 			if cv.Value == "list-item" && !b.counterCtx.IsCounterInScope(markerNode, "list-item") {
@@ -1201,10 +1219,11 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, n
 			} else {
 				vals = b.counterCtx.GetCounterValues(markerNode, cv.Value, false)
 			}
-			buf.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
+			pending.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		}
 	}
-	return buf.String()
+	flush()
+	return children
 }
 
 // formatCounterValues renders a slice of counter values (outermost-first
@@ -1762,8 +1781,19 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 	originIsPseudo := strings.HasPrefix(node.TagName, "::")
 	if !originIsPseudo && len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
 		markerStyle = css.ComputePseudoElementStyle(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight, style)
-		if cv, ok := markerStyle.GetContentValues(); ok {
+		// "Author declared content" (any value, incl. none/normal) must be
+		// tracked separately from "content has renderable values". `content`
+		// is non-inherited and never stamped by the ::marker UA defaults, so a
+		// present key means the author wrote it. With content:none Blink hides
+		// the marker entirely (ContentBehavesAsNormal()==false → no marker box,
+		// list_marker.cc UpdateMarkerContentIfNeeded), so the list-style-type /
+		// -image fallback in buildMarkerChildren must be suppressed — keying
+		// only off renderable values (GetContentValues) would wrongly render
+		// the bullet (WPT marker-content-019).
+		if _, declared := markerStyle.Get("content"); declared {
 			hasContentProperty = true
+		}
+		if cv, ok := markerStyle.GetContentValues(); ok {
 			contentValues = cv
 		}
 	} else {
@@ -1800,16 +1830,26 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 // against the marker origin. Mirrors Blink ListMarker::MarkerText /
 // UpdateMarkerContentIfNeeded (list_marker.cc @ 4883d11f).
 func (b *LayoutTreeBuilder) buildMarkerChildren(node *html.Node, style, markerStyle *css.Style, markerNode *html.Node, hasContentProperty bool, contentValues []css.ContentValue) (children []*LayoutInputNode, category ListStyleCategory, generate bool) {
-	var markerContent string
-	if len(contentValues) > 0 {
-		markerContent = b.resolveContentText(contentValues, node, markerNode, quoteSourceStyle(markerStyle, style))
+	// Author ::marker `content` (CSS Lists 3 §content-property) replaces the
+	// generated marker entirely — strings, images, counters and quotes in
+	// document order — taking precedence over BOTH list-style-type and
+	// list-style-image. content:none/normal leaves no renderable values, so the
+	// marker box is suppressed and the list-style fallbacks below are skipped.
+	// Mirrors Blink ListMarker::UpdateMarkerContentIfNeeded (custom content
+	// overrides the list-style marker; list_marker.cc @ 4883d11f).
+	if hasContentProperty {
+		children = b.buildMarkerContentChildren(contentValues, node, markerNode, markerStyle, style)
+		if len(children) == 0 {
+			return nil, CategoryNone, false
+		}
+		return children, GetListStyleCategory(style), true
 	}
 
 	// Image marker: list-style-image takes precedence over list-style-type
 	// (including `none`). Blink builds a LayoutListMarkerImage child + a single
 	// trailing space (list_marker.cc:277-310 / :168-172 @ 4883d11f). Non-url()
 	// image values (gradients) suppress the marker entirely (LOU-303).
-	if markerContent == "" && !hasContentProperty && generatesMarkerImage(style) {
+	if generatesMarkerImage(style) {
 		raw, _ := style.Get("list-style-image")
 		src, urlOK := css.ParseURLValue(strings.TrimSpace(raw))
 		if !urlOK {
@@ -1822,25 +1862,23 @@ func (b *LayoutTreeBuilder) buildMarkerChildren(node *html.Node, style, markerSt
 		}, CategoryNone, true
 	}
 
-	// Fall back to list-style-type when no ::marker content resolved (skip when
-	// ::marker explicitly set the content property, e.g. content:none).
-	if markerContent == "" && !hasContentProperty {
-		lst := style.GetListStyleType()
-		if lst == css.ListStyleTypeNone {
-			return nil, CategoryNone, false
-		}
-		if lst != "" {
-			if isBuiltinListStyleType(lst) {
-				markerContent = b.resolveListStyleType(lst, node)
-			} else if cs, ok := b.counterStyleRules()[string(lst)]; ok {
-				// @counter-style reference: format the ordinal via the custom
-				// style (Blink CounterStyle::GenerateRepresentationWithPrefixAndSuffix).
-				markerContent = css.ApplyCounterStyle(b.listItemOrdinal(node), cs, b.counterStyleRules())
-			} else {
-				// <string> value (e.g. list-style-type: "§"): the string IS the
-				// marker text, verbatim, no suffix (Blink kStaticString).
-				markerContent = string(lst)
-			}
+	// Fall back to list-style-type (no author ::marker content was declared).
+	var markerContent string
+	lst := style.GetListStyleType()
+	if lst == css.ListStyleTypeNone {
+		return nil, CategoryNone, false
+	}
+	if lst != "" {
+		if isBuiltinListStyleType(lst) {
+			markerContent = b.resolveListStyleType(lst, node)
+		} else if cs, ok := b.counterStyleRules()[string(lst)]; ok {
+			// @counter-style reference: format the ordinal via the custom
+			// style (Blink CounterStyle::GenerateRepresentationWithPrefixAndSuffix).
+			markerContent = css.ApplyCounterStyle(b.listItemOrdinal(node), cs, b.counterStyleRules())
+		} else {
+			// <string> value (e.g. list-style-type: "§"): the string IS the
+			// marker text, verbatim, no suffix (Blink kStaticString).
+			markerContent = string(lst)
 		}
 	}
 
