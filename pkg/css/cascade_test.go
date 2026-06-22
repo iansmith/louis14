@@ -308,6 +308,39 @@ func TestInitialKeyword_TextAlignResetsNotInherits(t *testing.T) {
 	}
 }
 
+// TestInherit_TextShadowInherits is the Phase-0 red test for LOU-315 cluster 4a.
+// CSS Text Decor 4: `text-shadow` is an inherited property. A child with no
+// text-shadow of its own must inherit the parent's. Regression:
+// css-pseudo/marker-text-shadow — the `inherit` column and the reference both
+// rely on text-shadow inheriting to descendant text. Before the fix, text-shadow
+// was absent from inheritableProperties so it never inherited.
+func TestInherit_TextShadowInherits(t *testing.T) {
+	doc, err := html.Parse(`
+		<style>
+			.parent { text-shadow: green 1px 2px 3px; }
+		</style>
+		<div class="parent"><span class="child"></span></div>
+	`)
+	if err != nil {
+		t.Fatalf("failed to parse test HTML: %v", err)
+	}
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	foundChild := false
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			foundChild = true
+			if val, ok := style.Get("text-shadow"); !ok || val == "" {
+				t.Errorf("expected child to inherit text-shadow from parent, got '%s' (ok=%v)", val, ok)
+			}
+		}
+	}
+	if !foundChild {
+		t.Fatal("test fixture missing .child node — assertion never ran")
+	}
+}
+
 // TestComputeStyle_RubyUADisplays verifies the Phase 1 ruby UA stylesheet
 // mirrors Blink html.css exactly (vetted at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):

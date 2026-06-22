@@ -2108,6 +2108,14 @@ var inheritableProperties = map[string]bool{
 	"text-emphasis-color":    true,
 	"text-emphasis-style":    true,
 	"text-emphasis-position": true,
+	// CSS Text Decor 4 §3.3: text-shadow is inherited (css_properties.json5
+	// `inherited: true`, Blink SHA ad05980221f2bdd2d290749001c50805c7ee15d1).
+	// Required by css-pseudo/marker-text-shadow, whose `inherit` column and
+	// reference both rely on text-shadow reaching descendant text. (Distinct
+	// from the ::marker pseudo-inherit list at the top of
+	// ComputePseudoElementStyle, which only covers the synthetic marker box;
+	// regular descendants need the general inheritance pass.)
+	"text-shadow": true,
 	// CSS Color 4 §2.2: color-scheme is inherited.
 	"color-scheme": true,
 	// CSS UI 4 §7.1: accent-color is inherited.
