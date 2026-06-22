@@ -272,6 +272,34 @@ func TestInheritKeyword_InlineStyle(t *testing.T) {
 	}
 }
 
+// TestInitialKeyword_TextAlignResetsNotInherits is the Phase-0 red test for
+// LOU-315 cluster 5. CSS Cascade §7.3: `text-align: initial` resolves to the
+// property's INITIAL value (`start`), NOT the inherited parent value. text-align
+// is an inherited property, so without an explicit nonDefaultInitialValues entry
+// the `initial`-induced deletion in resolveCSSWideKeywords is clobbered by the
+// later ApplyInheritedProperties pass re-filling the slot from the parent.
+// Regression: marker-text-align-001, where `li > div { text-align: initial }`
+// must compute `start` even under an `end`-aligned `li`.
+func TestInitialKeyword_TextAlignResetsNotInherits(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.parent { text-align: end; }
+			.child { text-align: initial; }
+		</style>
+		<div class="parent"><div class="child"></div></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			if val, ok := style.Get("text-align"); !ok || val != "start" {
+				t.Errorf("expected text-align='start' (initial value, not inherited 'end'), got '%s' (ok=%v)", val, ok)
+			}
+		}
+	}
+}
+
 // TestComputeStyle_RubyUADisplays verifies the Phase 1 ruby UA stylesheet
 // mirrors Blink html.css exactly (vetted at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
