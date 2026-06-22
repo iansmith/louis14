@@ -281,22 +281,30 @@ func TestInheritKeyword_InlineStyle(t *testing.T) {
 // Regression: marker-text-align-001, where `li > div { text-align: initial }`
 // must compute `start` even under an `end`-aligned `li`.
 func TestInitialKeyword_TextAlignResetsNotInherits(t *testing.T) {
-	doc, _ := html.Parse(`
+	doc, err := html.Parse(`
 		<style>
 			.parent { text-align: end; }
 			.child { text-align: initial; }
 		</style>
 		<div class="parent"><div class="child"></div></div>
 	`)
+	if err != nil {
+		t.Fatalf("failed to parse test HTML: %v", err)
+	}
 
 	styles := ApplyStylesToDocument(doc, 800, 600)
 
+	foundChild := false
 	for node, style := range styles {
 		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			foundChild = true
 			if val, ok := style.Get("text-align"); !ok || val != "start" {
 				t.Errorf("expected text-align='start' (initial value, not inherited 'end'), got '%s' (ok=%v)", val, ok)
 			}
 		}
+	}
+	if !foundChild {
+		t.Fatal("test fixture missing .child node — assertion never ran")
 	}
 }
 
