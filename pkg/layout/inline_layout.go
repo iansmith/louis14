@@ -2913,26 +2913,26 @@ func countJustifyOpportunities(line *LineInfo, itemsData *InlineItemsData) int {
 func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm WritingDirectionMode) float64 {
 	slack := availableInline - line.Width
 
-	// Center alignment returns slack/2 even when negative (content overflows),
-	// matching Blink's behavior. This ensures text is centered symmetrically
-	// regardless of whether it fits in the container.
+	// The offset is the inline-start position where the (already visually
+	// ordered) line content begins; it then extends toward the inline end.
+	// Alignments that anchor content against the inline END — physical-right
+	// in LTR: text-align:right, LTR end, RTL start, plus center — must return
+	// `slack` (or slack/2) EVEN WHEN NEGATIVE, so content wider than the line
+	// box hangs off the start side rather than clamping to the start edge. This
+	// is what makes a `direction:rtl; width:0` inline-block (the WPT marker-
+	// content outside-marker idiom) hang its overflowing content to the left,
+	// matching Blink. Physical-left/start alignments keep content at offset 0 —
+	// overflow simply extends toward the end (no negative offset needed).
 	switch line.TextAlign {
 	case "center", "-webkit-center":
 		return slack / 2
-	}
-
-	if slack <= 0 {
-		return 0
-	}
-
-	switch line.TextAlign {
 	case "right":
-		return slack
+		return slack // physical right
 	case "end":
-		if wdm.IsRTL() {
-			return 0 // RTL end = physical left
+		if !wdm.IsRTL() {
+			return slack // LTR end = physical right
 		}
-		return slack // LTR end = physical right
+		return 0 // RTL end = physical left
 	case "start":
 		if wdm.IsRTL() {
 			return slack // RTL start = physical right
@@ -2941,16 +2941,11 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 	case "justify":
 		// text-align: justify falls back to start on the last line.
 		// text-align-last: justify expands the last line (CSS Text 3 §9.7).
-		if (line.IsLastLine || line.HasForcedBreak) && !line.TextAlignLastJustify {
-			// Last line (from text-align: justify) falls back to start.
-			if wdm.IsRTL() {
-				return slack // RTL start = physical right
-			}
-			return 0 // LTR start = physical left
+		// Inter-word widening (justifyExpansion) handles non-last lines, so
+		// their start offset is 0; only the RTL last-line fallback anchors right.
+		if (line.IsLastLine || line.HasForcedBreak) && !line.TextAlignLastJustify && wdm.IsRTL() {
+			return slack // RTL start = physical right
 		}
-		// Distribute inter-word spacing (justifyExpansion) handles the actual
-		// gap widening; the line's start offset is 0 (expansion happens
-		// per-fragment in createLineBoxEx, not via a shift here).
 		return 0
 	default: // "left", ""
 		return 0
