@@ -131,6 +131,59 @@ func TestInsideMarkerForBlockListItemInsidePosition(t *testing.T) {
 	}
 }
 
+// TestMarkerInheritsAppliedTextDecorationsByPosition is the Phase-0 red test for
+// LOU-315 cluster 4b. CSS Text Decor 3 §2.1 (decorating-box / propagation):
+// an INSIDE ::marker is a non-atomic inline that accumulates the originating
+// list item's text-decoration, so the marker text is underlined; an OUTSIDE
+// marker is inline-block (atomic) and must NOT inherit it
+// (StopPropagateTextDecorations). Regression:
+// css-pseudo/marker-text-decoration-skip-ink (all four <ol>s rendered the marker
+// with no underline because the marker style never carried the ol's decoration).
+// Blink: AppliedTextDecorations accumulation in computed_style.cc, gated by
+// StyleAdjuster::AdjustStyleForMarker making outside markers inline-block
+// (@ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func TestMarkerInheritsAppliedTextDecorationsByPosition(t *testing.T) {
+	build := func(position string) *LayoutInputNode {
+		ol := &html.Node{Type: html.ElementNode, TagName: "ol"}
+		li := &html.Node{Type: html.ElementNode, TagName: "li", Parent: ol}
+		text := &html.Node{Type: html.TextNode, Text: "x", Parent: li}
+		li.Children = []*html.Node{text}
+		ol.Children = []*html.Node{li}
+		liStyle := makeStyle("display", "list-item", "list-style-type", "decimal", "list-style-position", position)
+		// Simulate the cascade having accumulated the ol's `text-decoration:
+		// underline` onto the li — the test harness builds styles directly and
+		// bypasses ResolveAppliedTextDecorations, which the real cascade runs.
+		liStyle.AppliedTextDecorations = []css.AppliedTextDecoration{{Lines: css.TextDecorationLineUnderline}}
+		styles := map[*html.Node]*css.Style{
+			ol: makeStyle("display", "block", "counter-reset", "list-item 0"),
+			li: liStyle,
+		}
+		root := buildTestTree(ol, styles)
+		if root == nil || len(root.Children()) == 0 {
+			t.Fatalf("no layout tree built for position=%q", position)
+		}
+		return root.Children()[0]
+	}
+
+	// Inside: marker is the first in-flow child and MUST carry the decoration.
+	insideKids := build("inside").Children()
+	if len(insideKids) == 0 || !insideKids[0].IsMarkerNode() {
+		t.Fatalf("inside marker is not the first in-flow child")
+	}
+	if got := len(insideKids[0].Style().AppliedTextDecorations); got == 0 {
+		t.Errorf("inside ::marker did not inherit the list item's text-decoration (AppliedTextDecorations empty)")
+	}
+
+	// Outside: marker is inline-block (atomic) and must NOT carry the decoration.
+	outsideMarker := build("outside").MarkerNode()
+	if outsideMarker == nil {
+		t.Fatalf("outside list-item has no markerNode")
+	}
+	if got := len(outsideMarker.Style().AppliedTextDecorations); got != 0 {
+		t.Errorf("outside ::marker must not inherit text-decoration (atomic inline-block), got %d entries", got)
+	}
+}
+
 // markerText returns the concatenated text content of a marker node's
 // children.
 func markerText(marker *LayoutInputNode) string {

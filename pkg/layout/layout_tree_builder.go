@@ -1803,6 +1803,16 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 
 	if markerInside {
 		markerStyle.Set("display", "inline")
+		// CSS Text Decor 3 §2.1: an inside ::marker is a non-atomic inline that
+		// accumulates the originating list item's text-decoration (so the marker
+		// text is underlined/etc.). The marker style is built post-cascade and
+		// never runs ResolveAppliedTextDecorations, so carry the originating
+		// element's accumulated vector across explicitly — mirroring Blink, where
+		// an inside marker inherits the decoration but an OUTSIDE marker
+		// (inline-block, atomic) is stopped by StopPropagateTextDecorations
+		// (style_adjuster.cc AdjustStyleForMarker @ 4883d11f). WPT
+		// css-pseudo/marker-text-decoration-skip-ink.
+		markerStyle.InheritAppliedTextDecorationsFrom(style)
 	} else {
 		markerStyle.Set("display", "inline-block")
 		markerStyle.Set("white-space", "pre")
