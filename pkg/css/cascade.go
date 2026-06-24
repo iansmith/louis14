@@ -2130,10 +2130,7 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	if node.Parent == nil {
 		return
 	}
-	parentStyle, ok := styles[node.Parent]
-	if !ok {
-		return
-	}
+	parentStyle := styles[node.Parent]
 
 	// Resolve font-size em, lh, and percentage values using parent's metrics.
 	// Parent has already been processed (top-down cascade), so its font-size
@@ -2143,6 +2140,16 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	// the computed metrics of the parent element". Mirrors Blink's cascade
 	// behavior in css_to_length_conversion_data.cc at SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// This runs BEFORE the "no parent style → nothing to inherit" early-return
+	// below: the ROOT element's parent is the non-element document, which has no
+	// style entry in the normal (parser-wrapped) case, yet the root must still
+	// resolve a % / em font-size against the INITIAL 16px (Blink: documentElement
+	// resolves font-relative values against InitialStyleForElement, not a
+	// document-node style — verified @ Chromium main
+	// 9ef004e13d28eed9671f6275685da42b8b08a610). parentFS defaults to 16px when
+	// there is no parent style, so the root resolves correctly. (lh needs the
+	// parent's line-height metrics, so it stays gated on a present parent.)
 	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
 		trimmed := strings.TrimSpace(fsVal)
 		parentFS := 16.0
@@ -2150,22 +2157,27 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 			parentFS = parentStyle.GetFontSize()
 		}
 		if strings.HasSuffix(trimmed, "%") {
-			if pct, ok := ParsePercentage(trimmed); ok {
+			if pct, okPct := ParsePercentage(trimmed); okPct {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
 			}
 		} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
-			if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
+			if resolved, okEm := ParseLengthWithFontSize(fsVal, parentFS); okEm {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
 			}
-		} else if strings.HasSuffix(trimmed, "lh") {
+		} else if strings.HasSuffix(trimmed, "lh") && parentStyle != nil {
 			// lh in font-size resolves against the parent's computed line-height.
-			if parentStyle != nil {
-				if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
-					parentLh := parentStyle.GetLineHeight()
-					style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
-				}
+			if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
+				parentLh := parentStyle.GetLineHeight()
+				style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
 			}
 		}
+	}
+
+	// No parent style → nothing more to inherit. The root <html> case (parent is
+	// the non-element document) reaches here after resolving its own font-relative
+	// font-size above; its remaining values come from ComputeStyle's defaults.
+	if parentStyle == nil {
+		return
 	}
 
 	// CSS Custom Properties (--*) inherit by default (CSS Custom Properties §2.2).

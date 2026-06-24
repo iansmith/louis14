@@ -167,6 +167,34 @@ func TestApplyStylesToDocument(t *testing.T) {
 	}
 }
 
+// TestRootPercentageFontSizeResolvesAgainstInitial guards the doc.Root-style
+// gate: the root <html> element's parent is the non-element document, which has
+// no style entry in the normal (parser-wrapped) case, but the root still
+// resolves a % / em font-size against the INITIAL 16px (Blink: documentElement
+// resolves font-relative values against InitialStyleForElement, not a
+// document-node style). Without this, `html { font-size: 150% }` is left as the
+// raw "150%" and GetFontSize() falls back to 16px.
+func TestRootPercentageFontSizeResolvesAgainstInitial(t *testing.T) {
+	doc, err := html.Parse(`<style>html { font-size: 150%; }</style><body></body>`)
+	if err != nil {
+		t.Fatalf("failed to parse test HTML: %v", err)
+	}
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	foundHTML := false
+	for node, style := range styles {
+		if node.Type == html.ElementNode && node.TagName == "html" {
+			foundHTML = true
+			if got := style.GetFontSize(); got != 24 {
+				t.Errorf("expected root font-size 24px (150%% of initial 16px), got %v", got)
+			}
+		}
+	}
+	if !foundHTML {
+		t.Fatal("test fixture missing <html> element — assertion never ran")
+	}
+}
+
 func TestInheritKeyword_FloatInherit(t *testing.T) {
 	doc, _ := html.Parse(`
 		<style>
