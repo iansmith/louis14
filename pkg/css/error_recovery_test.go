@@ -157,7 +157,10 @@ func TestErrorRecovery_InvalidDeclarations(t *testing.T) {
 }
 
 // TestErrorRecovery_UnclosedBlocks verifies that unclosed blocks are handled
-// gracefully — trailing content without a closing brace is discarded.
+// gracefully. Per CSS Syntax Level 3 §5.4.3 (consume a simple block), hitting
+// <EOF> inside a `{`-block is a parse error that RETURNS the block (it is
+// implicitly closed at EOF) — so a trailing unclosed rule with a valid
+// declaration is recovered, not discarded. This matches Blink and every browser.
 func TestErrorRecovery_UnclosedBlocks(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -165,9 +168,12 @@ func TestErrorRecovery_UnclosedBlocks(t *testing.T) {
 		expectedRules int
 	}{
 		{
+			// `h1 { font-size: 20px` is implicitly closed at EOF and recovered as
+			// `h1 { font-size: 20px }` (the final declaration needs no trailing
+			// semicolon) — 2 rules total (CSS Syntax §5.4.3).
 			name:          "unclosed block at end",
 			css:           `p { color: red; } h1 { font-size: 20px`,
-			expectedRules: 1,
+			expectedRules: 2,
 		},
 		{
 			name:          "all blocks properly closed",

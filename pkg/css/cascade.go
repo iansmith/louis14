@@ -2815,37 +2815,46 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	// element (the first element child of doc.Root) and store it as styles[doc.Root].
 	// This allows ApplyInheritedProperties to correctly propagate font-size, font-family,
 	// etc. to all children of doc.Root, so em units resolve against the correct font-size.
+	//
+	// Only the fragment case: when the parser DID create a real <html> element it is
+	// the :root and inheritance propagates from it normally — synthesizing a doc.Root
+	// style there is unnecessary and would wrongly add a styles[document] entry for the
+	// non-element document root (regression guard: TestApplyStylesToDocument).
 	if node.TagName == "document" && styles[node] == nil {
-		syntheticRootStyle := NewStyle()
-		syntheticRootStyle.ViewportWidth = viewportWidth
-		syntheticRootStyle.ViewportHeight = viewportHeight
+		var firstElem *html.Node
 		for _, child := range node.Children {
 			if child.Type == html.ElementNode {
-				// First element child matches :root — compute its style to capture
-				// :root rules, then extract inheritable properties for doc.Root.
-				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight, ctx)
-				for prop := range inheritableProperties {
-					// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
-					// Don't propagate from :root to synthetic doc root — otherwise every
-					// descendant inherits it and the parentIsVertical guard blocks transforms.
-					if prop == "writing-mode" {
-						continue
-					}
-					if val, ok := rootChildStyle.Get(prop); ok {
-						syntheticRootStyle.Set(prop, val)
-					}
-				}
-				// Also propagate CSS custom properties (--*) which inherit by default
-				for prop, val := range rootChildStyle.Properties {
-					if strings.HasPrefix(prop, "--") {
-						syntheticRootStyle.Set(prop, val)
-					}
-				}
+				firstElem = child
 				break
 			}
 		}
-		if len(syntheticRootStyle.Properties) > 0 {
-			styles[node] = syntheticRootStyle
+		if firstElem != nil && firstElem.TagName != "html" {
+			syntheticRootStyle := NewStyle()
+			syntheticRootStyle.ViewportWidth = viewportWidth
+			syntheticRootStyle.ViewportHeight = viewportHeight
+			// First element child matches :root — compute its style to capture
+			// :root rules, then extract inheritable properties for doc.Root.
+			rootChildStyle := ComputeStyle(firstElem, stylesheets, viewportWidth, viewportHeight, ctx)
+			for prop := range inheritableProperties {
+				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
+				// Don't propagate from :root to synthetic doc root — otherwise every
+				// descendant inherits it and the parentIsVertical guard blocks transforms.
+				if prop == "writing-mode" {
+					continue
+				}
+				if val, ok := rootChildStyle.Get(prop); ok {
+					syntheticRootStyle.Set(prop, val)
+				}
+			}
+			// Also propagate CSS custom properties (--*) which inherit by default
+			for prop, val := range rootChildStyle.Properties {
+				if strings.HasPrefix(prop, "--") {
+					syntheticRootStyle.Set(prop, val)
+				}
+			}
+			if len(syntheticRootStyle.Properties) > 0 {
+				styles[node] = syntheticRootStyle
+			}
 		}
 	}
 
