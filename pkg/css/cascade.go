@@ -2820,6 +2820,15 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	// the :root and inheritance propagates from it normally — synthesizing a doc.Root
 	// style there is unnecessary and would wrongly add a styles[document] entry for the
 	// non-element document root (regression guard: TestApplyStylesToDocument).
+	//
+	// Blink stores a ComputedStyle on Element only — a non-element Document never gets
+	// one (Node::GetComputedStyle guards IsElementNode, node.cc:3771; the document's
+	// sole style is the viewport style on the LayoutView object, document.cc:3233, not
+	// the Document node), and style recalc roots at documentElement/<html>. This
+	// synthetic doc.Root style is a louis14-only accommodation for the no-<html>
+	// fragment parse, which has no Blink analog (Blink always synthesizes <html>;
+	// fragments target a DocumentFragment). Verified @ Chromium main
+	// 9ef004e13d28eed9671f6275685da42b8b08a610.
 	if node.TagName == "document" && styles[node] == nil {
 		var firstElem *html.Node
 		for _, child := range node.Children {
