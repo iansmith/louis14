@@ -99,12 +99,16 @@ func (e *feLighting) computeNormal(alphaAt func(x, y int) float64, x, y, w, h in
 	sumX := -a00 + a20 - 2*a01 + 2*a21 - a02 + a22
 	sumY := -a00 - 2*a10 - a20 + a02 + 2*a12 + a22
 
+	// Per SVG Filter Effects 1 §kernelUnitLength: "A negative or zero value
+	// is an error." Blink/Gecko fall back to the default of 1 for both, so a
+	// non-positive value here must clamp to 1 (a negative denominator would
+	// otherwise flip the surface normal).
 	kULx := e.KernelUnitLengthX
-	if kULx == 0 {
+	if kULx <= 0 {
 		kULx = 1
 	}
 	kULy := e.KernelUnitLengthY
-	if kULy == 0 {
+	if kULy <= 0 {
 		kULy = 1
 	}
 
