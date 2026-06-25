@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"louis14/pkg/graphics/filters"
+	"louis14/pkg/layout/svg"
 )
 
 // TestCompositeFilterOutputOntoTarget_ClipRespected demonstrates that
@@ -74,6 +75,59 @@ func TestCompositeFilterOutputOntoTarget_ClipRespected(t *testing.T) {
 			if got != want {
 				t.Errorf("pixel (%d,%d): want %v, got %v (inClip=%v inSrcArea=%v)",
 					x, y, want, got, inClip, inSrcArea)
+			}
+		}
+	}
+}
+
+// TestApplyClipCoverageToFilterOutput asserts the kDstIn alpha-coverage
+// step that applyClipMaskToFilterOutput relies on for SVG
+// `filter` + `clip-path` / `mask` interaction (svg-filter-vs-clip-path,
+// svg-filter-vs-mask). Per CSS Masking 1 §3.7 the FILTERED result is
+// clipped: a clip-path becomes a binary 0/255 alpha coverage applied to
+// the (region-sized) filtered buffer, so the blur halo that extends past
+// the clip geometry is erased before compositing.
+//
+// Setup: a 10x10 filtered buffer of opaque red (modelling the post-blur
+// output that has spread to fill the region). A coverage buffer with a
+// 6x6 opaque square in the top-left and transparent elsewhere models a
+// clip-path covering only part of the region. After applySVGMaskToBuffer
+// with SVGMaskTypeAlpha (clip coverage), pixels inside the square keep
+// full alpha; pixels outside are zeroed.
+func TestApplyClipCoverageToFilterOutput(t *testing.T) {
+	const W, H = 10, 10
+	const clipW, clipH = 6, 6
+
+	out := image.NewRGBA(image.Rect(0, 0, W, H))
+	red := color.RGBA{255, 0, 0, 255}
+	for y := 0; y < H; y++ {
+		for x := 0; x < W; x++ {
+			out.SetRGBA(x, y, red)
+		}
+	}
+
+	// Clip coverage: opaque white inside the clipW x clipH square,
+	// transparent outside. applySVGMaskToBuffer reads the alpha channel
+	// for SVGMaskTypeAlpha.
+	cov := image.NewRGBA(image.Rect(0, 0, W, H))
+	for y := 0; y < clipH; y++ {
+		for x := 0; x < clipW; x++ {
+			cov.SetRGBA(x, y, color.RGBA{255, 255, 255, 255})
+		}
+	}
+
+	applySVGMaskToBuffer(out, cov, svg.SVGMaskTypeAlpha)
+
+	for y := 0; y < H; y++ {
+		for x := 0; x < W; x++ {
+			got := out.RGBAAt(x, y)
+			inClip := x < clipW && y < clipH
+			if inClip {
+				if got != red {
+					t.Errorf("inside-clip pixel (%d,%d): want %v, got %v", x, y, red, got)
+				}
+			} else if got.A != 0 {
+				t.Errorf("outside-clip pixel (%d,%d): want alpha 0, got %v", x, y, got)
 			}
 		}
 	}
