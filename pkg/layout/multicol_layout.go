@@ -93,6 +93,26 @@ type MulticolLayoutAlgorithm struct {
 	// container_builder_.PropagateTallestUnbreakableBlockSize call at
 	// column_layout_algorithm.cc:1706-1712. v2 Path X port.
 	lastMeasuredTallestUnbreakable float64
+
+	// LOU-325: spanner detection captured during the most recent
+	// resolveColumnAutoBlockSize measure pass. When a definite-height container
+	// is fragmented by a column-span, the measure pass lays the resumed
+	// container out at indefinite column height, so its content reaches the
+	// spanner and BlockLayoutAlgorithm's early-return surfaces the
+	// ColumnSpannerPath plus a budget-clamped resume break token
+	// (block_layout.go:624-724). The subsequent render pass uses a *bounded*
+	// per-column height: when the container's remaining budget is smaller than
+	// the next block's content (004b's 150px budget vs block2's 200px), that
+	// block fills the render columns and produces an ordinary continuation
+	// token, so the render never reaches the spanner. layoutLine then falls
+	// back to this captured detection result so the spanner (and the trailing
+	// segments) are still placed. Mirrors Blink, where the spanner is found in
+	// the flow thread's stitched space (column_layout_algorithm.cc
+	// ResolveColumnAutoBlockSizeInternal hitting GetColumnSpannerPath), not the
+	// per-column space. Cleared at the top of every resolveColumnAutoBlockSize
+	// call; consumed once by the immediately-following render in layoutLine.
+	lastMeasuredSpannerPath  *ColumnSpannerPath
+	lastMeasuredSpannerToken *BlockBreakToken
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -1778,6 +1798,24 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		}
 		return rowAdvance, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
 	}
+	// LOU-325: the render did not reach a spanner, but the measure pass did —
+	// an oversized block (004b's block2: 200px content vs the container's 150px
+	// remaining budget) filled the bounded render columns and produced a plain
+	// continuation token, so the render columns never advanced to the spanner.
+	// Fall back to the captured detection result: surface the spanner and its
+	// budget-clamped resume token so the trailing segments (here: the second
+	// spanner + a zero-budget final segment) are still placed. Guarded on a
+	// continuation token (finalColBreakToken != nil) — when the render fully
+	// consumed the content (token nil), the captured spanner is stale (already
+	// represented by the render's own detection) and must not be re-emitted.
+	if mla.lastMeasuredSpannerPath != nil && finalColBreakToken != nil {
+		capturedPath := mla.lastMeasuredSpannerPath
+		capturedToken := mla.lastMeasuredSpannerToken
+		mla.lastMeasuredSpannerPath = nil
+		mla.lastMeasuredSpannerToken = nil
+		return maxColHeight, columnsPlaced, capturedPath, capturedToken
+	}
+
 	// Return any remaining column break token so the caller can include it
 	// in the outer break result and resume column rows in the next outer column.
 	return maxColHeight, columnsPlaced, nil, finalColBreakToken
@@ -1952,6 +1990,11 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	// geometry function and would suppress the override).
 	// FragmentainerBlockSize stays Indefinite so no actual fragmentation occurs
 	// during measurement — we only want content heights, not column splits.
+	// LOU-325: reset the captured spanner detection. Set below if a measure-pass
+	// iteration reaches a column-span; consumed by the render in layoutLine.
+	mla.lastMeasuredSpannerPath = nil
+	mla.lastMeasuredSpannerToken = nil
+
 	hasExplicitContainerHeight := containerPercentResolutionBlockSize >= 0
 
 	// buildSpace constructs a ConstraintSpace for one measure-pass iteration.
@@ -2041,6 +2084,14 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 
 		if result.ColumnSpannerPath != nil {
+			// LOU-325: capture the spanner path and the budget-clamped resume
+			// break token the early-return built (block_layout.go:624-724). The
+			// render pass may not reach this spanner when an oversized block
+			// fills the bounded render columns (004b); layoutLine falls back to
+			// this capture so the spanner and trailing segments are placed.
+			mla.lastMeasuredSpannerPath = result.ColumnSpannerPath
+			mla.lastMeasuredSpannerToken = result.BreakToken
+
 			// Spanner detected during measure pass. Mirrors Blink
 			// cla.cc:1697 — break out and let the main layout pass place
 			// the spanner. The Blink recursion case (cla.cc:1690-1696,

@@ -153,3 +153,100 @@ func TestSpanBlockSize_LOU320_DefiniteHeightContainerSplitBySpanners(t *testing.
 			"(container 450px distributed across spanner splits: 100+50+100+50+25)", got, want)
 	}
 }
+
+// LOU-325: a MIDDLE segment whose block content OVERFLOWS the container's
+// remaining budget must still surface the trailing spanner and zero-budget
+// final segment.
+//
+// Mirrors css-multicol/multicol-span-all-children-height-004b. Same shape as
+// 004a but the container is height:350px, so the budget is exhausted by the
+// second segment:
+//
+//	segment 1 (block1 200px): budget 350, block1 fits → 2×100px column row → 100px
+//	spanner1 50px                                                          → at y=100
+//	segment 2 (block2 200px): only 150px of budget LEFT (350−200). block2
+//	                          OVERFLOWS it; the 150px balances to a 75px column
+//	                          row (block2 clipped). consumed accumulates the
+//	                          CLAMPED 150 (→ 350 total), not block2's raw 200.
+//	spanner2 50px                                                          → at y=225
+//	segment 3 (block3 200px): 0px budget LEFT (350−350) → 0px column row
+//
+//	total = 100 + 50 + 75 + 50 + 0 = 275px
+//
+// Bug (pre-fix): block2 (200px) fills the bounded render columns (2×75=150px)
+// and produces a plain continuation token, so the render never reaches
+// spanner2 — the multicol dropped spanner2 AND segment 3 entirely, collapsing
+// the total to 225px. The measure pass DOES reach the spanner at indefinite
+// column height; layoutLine now falls back to that captured detection result.
+func TestSpanBlockSize_LOU325_MiddleSegmentOverflowsBudget(t *testing.T) {
+	block1 := makeNode("div")
+	spanner1 := makeNode("div")
+	block2 := makeNode("div")
+	spanner2 := makeNode("div")
+	block3 := makeNode("div")
+	container := makeNode("div", block1, spanner1, block2, spanner2, block3)
+	mc := makeNode("div", container)
+
+	blockStyle := func() *css.Style {
+		return makeStyle("display", "block", "width", "100px", "height", "200px")
+	}
+	spanStyle := func() *css.Style {
+		return makeStyle("display", "block", "height", "50px", "column-span", "all")
+	}
+
+	styles := map[*html.Node]*css.Style{
+		mc: makeStyle(
+			"display", "block",
+			"column-count", "2",
+			"column-gap", "0",
+		),
+		container: makeStyle("display", "block", "height", "350px"),
+		block1:    blockStyle(),
+		block2:    blockStyle(),
+		block3:    blockStyle(),
+		spanner1:  spanStyle(),
+		spanner2:  spanStyle(),
+	}
+
+	ctx := testContext()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	mcNode := buildTestTree(mc, styles)
+
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		Build()
+
+	result := NewMulticolLayoutAlgorithm(ctx, mcNode, space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+
+	var spannerTops []float64
+	for i, ch := range result.Fragment.Children {
+		t.Logf("child[%d] boxType=%v offset.top=%v size=%vx%v",
+			i, ch.Fragment.BoxType, ch.Offset.Top.Float64(),
+			ch.Fragment.Size.WidthF64(), ch.Fragment.Size.HeightF64())
+		if ch.Fragment.BoxType != BoxTypeColumn {
+			spannerTops = append(spannerTops, ch.Offset.Top.Float64())
+		}
+	}
+
+	// Both spanners must be present — the pre-fix bug dropped spanner2.
+	if len(spannerTops) != 2 {
+		t.Fatalf("expected 2 spanner fragments, got %d (spanner2 dropped when block2 overflowed the budget)", len(spannerTops))
+	}
+	if spannerTops[0] != 100 {
+		t.Errorf("spanner1 at y=%v, want y=100 (after segment 1: block1 balanced to a 100px column row)", spannerTops[0])
+	}
+	if spannerTops[1] != 225 {
+		t.Errorf("spanner2 at y=%v, want y=225 (100 + 50 + 75: segment 2 clamped to the 150px remaining budget → 75px column row)", spannerTops[1])
+	}
+
+	got := result.Fragment.Size.HeightF64()
+	const want = 275.0
+	if got != want {
+		t.Errorf("multicol block-size = %v, want %v "+
+			"(container 350px: 100+50+75+50+0; block2 overflows the 150px segment-2 budget, segment 3 gets a 0px budget)", got, want)
+	}
+}
