@@ -146,11 +146,23 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	graph.SetSourceImage(srcBuf)
 	out := graph.Apply()
+	// The composite must convert from the LAST effect's operating space,
+	// not the filter's nominal color-interpolation-filters space: a
+	// primitive may produce output in a different space than the filter
+	// default (most notably feFlood, which Blink exempts from
+	// color-interpolation and keeps in sRGB — fe_flood.cc @ Chromium
+	// main). Mirrors Filter.ApplyToSRGB, which converts from
+	// LastEffect.OperatingSpace(); the chain path (paintWithFilterChain)
+	// already does this.
+	outSpace := space
+	if graph.LastEffect != nil {
+		outSpace = graph.LastEffect.OperatingSpace()
+	}
 	// Viewport clip is applied inside the composite helper: the composite
 	// path bypasses the DC's clip stack, and SVG 2 §3.5 requires the
 	// default 10% filter-region expansion to stay inside the host SVG
 	// element.
-	sp.compositeFilterResultOntoTarget(srcBuf, out, region, space)
+	sp.compositeFilterResultOntoTarget(srcBuf, out, region, outSpace)
 }
 
 // compositeFilterOutputOntoTarget composites `buf` onto the
@@ -314,7 +326,11 @@ func (sp *svgShapePainter) compositeFilterResultOntoTarget(srcBuf, out *image.RG
 	)
 	buf := out
 	if buf == nil {
+		// Apply returned nil (degenerate filter): composite the raw source
+		// buffer, which is always sRGB device content regardless of the
+		// filter's interpolation space.
 		buf = srcBuf
+		space = filters.InterpolationSpaceSRGB
 	}
 	compositeFilterOutputOntoTarget(sp.ctx.Renderer, buf, region.Min.X, region.Min.Y, viewportClip, space)
 }
