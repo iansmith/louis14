@@ -17,12 +17,14 @@ type Parser struct {
 	cssFetcher       CSSFetcher // Optional fetcher for external stylesheets
 	fragmentMode     bool       // When true, <script>/<style> become DOM nodes
 	commentSeenInPre bool       // True when a comment has been seen inside a <pre> element
+	isXML            bool       // True for XML/XHTML documents (governs <style> content rules)
 }
 
 func NewParser(html string) *Parser {
 	return &Parser{
 		tokenizer: NewTokenizer(html),
 		doc:       NewDocument(),
+		isXML:     looksLikeXML(html),
 	}
 }
 
@@ -45,7 +47,19 @@ func (p *Parser) Parse() (*Document, error) {
 			// extract raw content. In fragment mode, treat them as DOM nodes.
 			if !p.fragmentMode {
 				if token.TagName == "style" {
-					content := stripCDATA(p.tokenizer.ReadRawUntil("style"))
+					content := p.tokenizer.ReadRawUntil("style")
+					if p.isXML {
+						// In XML/XHTML, <style> content is element text, so the
+						// XML processor strips whole comments — delimiters AND
+						// the prose inside them — before the CSS parser ever
+						// sees it. (In HTML, <style> is rawtext and only the
+						// CDO/CDC `<!--`/`-->` delimiters are stripped by the
+						// CSS tokenizer, leaving any prose between them.) Mirror
+						// the XML processor so a `<!-- note -->` between two
+						// rules can't contaminate the following selector.
+						content = stripXMLComments(content)
+					}
+					content = stripCDATA(content)
 					if strings.TrimSpace(content) != "" {
 						// Inline <style> block — BaseDir derives from doc.BaseDir
 						// at CSS parse time, so leave Href empty. @import (if
@@ -717,6 +731,46 @@ func parseViewportWidth(content string) int {
 		}
 	}
 	return 0
+}
+
+// looksLikeXML reports whether the document is XML/XHTML, mirroring Blink's
+// choice of XMLDocumentParser (for `application/xhtml+xml`) over
+// HTMLDocumentParser. louis14's parse entry points receive only the byte
+// stream, not a MIME type, so we key off the definitive in-band XML signal:
+// an `<?xml …?>` prolog, which is only legal at the very start of an XML
+// document (XML 1.0 §2.8) and never appears in an HTML document. HTML
+// documents containing a `<?xml>`-looking processing instruction are a parse
+// error and are not affected here because the prolog must be the first thing
+// in the stream.
+func looksLikeXML(s string) bool {
+	s = strings.TrimPrefix(s, "\xef\xbb\xbf") // strip UTF-8 BOM (HTML5 §8.2.2.4)
+	return strings.HasPrefix(s, "<?xml")
+}
+
+// stripXMLComments removes whole XML comments (`<!-- … -->`, delimiters and the
+// content between them) from XML/XHTML <style> element text. An unterminated
+// comment consumes to end-of-string, matching the XML well-formedness rule
+// that an open comment must be closed (XML 1.0 §2.5).
+func stripXMLComments(s string) string {
+	const open, closeTag = "<!--", "-->"
+	if !strings.Contains(s, open) {
+		return s // common case: no comments, avoid the Builder allocation
+	}
+	var b strings.Builder
+	for {
+		before, rest, found := strings.Cut(s, open)
+		b.WriteString(before)
+		if !found {
+			break
+		}
+		_, after, closed := strings.Cut(rest, closeTag)
+		if !closed {
+			// Unterminated comment: drop the remainder.
+			break
+		}
+		s = after
+	}
+	return b.String()
 }
 
 // stripCDATA removes XHTML CDATA markers from style content.

@@ -290,3 +290,87 @@ func TestFlowRoot_AvoidsAdjacentFloat(t *testing.T) {
 		}
 	})
 }
+
+// TestNewFC_TooWideForFloatDropsBelowAndResetsInline verifies that a new-FC
+// box (here display:flex) that is too wide to fit beside an intruding float
+// is pushed BELOW the float AND reset to the float-free inline position
+// (InlineOffset == 0), not left shifted by the float's inline size.
+//
+// This is the LOU-326 bug: a 480px flex container can't fit beside a 150px
+// left float in a 600px container, so it must drop below the float. Blink's
+// BlockLayoutAlgorithm::LayoutNewFormattingContext iterates layout
+// opportunities; once pushed past the float's block range it lands in the
+// full-width opportunity whose rect.LineStartOffset() == origin line offset,
+// so child_bfc_offset.line_offset is 0 (X=0), not the float-shifted position.
+//
+// Mirrors WPT css-flexbox/flexbox_fbfc.html (#float{width:25%;float:left} +
+// #flex{width:80%;display:flex} in a 600px body): "Yellow box should be below
+// the blue box" with the flex border box at X=0.
+//
+// Blink analog: BlockLayoutAlgorithm::LayoutNewFormattingContext opportunity
+// loop — line_left_offset = opportunity.rect.LineStartOffset(), and the
+// below-float opportunity has no line-left floats.
+// third_party/blink/renderer/core/layout/block_layout_algorithm.cc:2082-2225 @
+// d694f1edc784ebb2ce84dedde5ae3905d50c14f2
+func TestNewFC_TooWideForFloatDropsBelowAndResetsInline(t *testing.T) {
+	// outer (display:block, 600px wide) contains:
+	//   floatDiv (float:left, 150px x 20px)
+	//   flex     (display:flex, 480px wide)
+	//
+	// 480 (flex) > 600 - 150 (space beside float) = 450, so the flex box
+	// must drop below the float. After dropping, it must reset to X=0.
+	floatDiv := &html.Node{Type: html.ElementNode, TagName: "div"}
+	flex := &html.Node{Type: html.ElementNode, TagName: "div"}
+	outer := &html.Node{
+		Type:     html.ElementNode,
+		TagName:  "div",
+		Children: []*html.Node{floatDiv, flex},
+	}
+	floatDiv.Parent = outer
+	flex.Parent = outer
+
+	styles := map[*html.Node]*css.Style{
+		outer:    makeStyle("display", "block", "width", "600px"),
+		floatDiv: makeStyle("float", "left", "width", "150px", "height", "20px"),
+		flex:     makeStyle("display", "flex", "width", "480px", "height", "30px"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(outer, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 600, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 600, BlockSize: Indefinite}).
+		Build()
+
+	outerResult := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+	if outerResult == nil || outerResult.Fragment == nil {
+		t.Fatal("outer layout returned nil")
+	}
+
+	// Find the flex fragment: it's the 480px-wide child.
+	var flexLeft, flexTop float64
+	found := false
+	for _, ch := range outerResult.Fragment.Children {
+		if ch.Fragment == nil {
+			continue
+		}
+		if ch.Fragment.Size.WidthF64() == 480 {
+			flexLeft = ch.Offset.LeftF64()
+			flexTop = ch.Offset.TopF64()
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("did not find the 480px-wide flex fragment among outer's children")
+	}
+
+	// Must be pushed below the 20px-tall float.
+	if flexTop < 20 {
+		t.Errorf("flex block offset = %v; want >= 20 (must drop below the 20px float per CSS 2.1 §9.5)", flexTop)
+	}
+	// Must reset to the float-free inline position once below the float.
+	if flexLeft != 0 {
+		t.Errorf("flex inline offset = %v; want 0 (once below the float, no float intrudes so the new-FC box returns to the line-left edge)", flexLeft)
+	}
+}
