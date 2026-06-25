@@ -1360,12 +1360,72 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 	box := layer.Box
 
-	// Reference box: the element's border box in absolute device pixels.
-	rbx := int(math.Floor(box.X))
-	rby := int(math.Floor(box.Y))
-	rbw := int(math.Ceil(box.X+box.Width)) - rbx
-	rbh := int(math.Ceil(box.Y+box.Height)) - rby
-	referenceBox := image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+	// Device transform carried by the DC at this paint scope. Two matrices
+	// matter:
+	//
+	//   - dm: the ANCESTOR device matrix already on the DC (e.g. a
+	//     `transform: scale(10)` on the parent). This is the matrix the
+	//     source-render child DC must be seeded with, because
+	//     paintLayerContentWithEffects re-applies the layer's OWN transform.
+	//   - dmFull: ancestor ∘ own — the matrix the element's content actually
+	//     lands at in device pixels. The filter region and the composite
+	//     origin are computed from dmFull so a `transform` on the filtered
+	//     element itself (and the filter result's final position) is honored.
+	//
+	// Blink rasterizes a filter's SourceGraphic at the device-pixel scale
+	// (the "filter scale" = transform scale × device pixel ratio) so the
+	// input — and therefore the crisp box edges — are sampled at the
+	// resolution they are finally displayed at, not rasterized small and
+	// bilinearly upscaled. When both matrices are identity (the common
+	// no-transform case) this collapses to the original behaviour.
+	dm := deviceMatrixFromDC(r.dc)
+	dmFull := dm
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+		dmFull = deviceMatrixFromDC(r.dc)
+		r.dc.Pop()
+	}
+	// The device-space path rasterizes the filter SourceGraphic at the
+	// device-pixel scale (so a scaled box has crisp edges instead of being
+	// rasterized small and bilinearly upscaled) and positions the result at
+	// its transformed device rect. It engages only for an axis-aligned
+	// (no rotation/skew) scale/translate, and only when:
+	//
+	//   - the ANCESTOR carries a scale (dm has scale), e.g.
+	//     `transform: scale(10)` on the parent of a filtered element — the
+	//     filter-scale-001 / filter-scaling-001 case; or
+	//   - the element's OWN transform is a pure translate (no scale), e.g.
+	//     `transform: translate(10px,10px)` on the filtered box — the
+	//     svg-filter-{filter,primitive}-units-user-space container-3 case.
+	//
+	// A self-SCALED filtered element (own transform has a scale component but
+	// no ancestor scale) deliberately keeps the legacy untransformed path:
+	// louis14 also re-applies the ancestor filter to a transformed/composited
+	// child layer, and engaging the device path there double-renders the
+	// scaled region over the parent's region. Rotation/skew and projective 3D
+	// transforms (deviceMatrixFromDC drops the perspective component) keep the
+	// legacy path too — the 3D-transform filter tests rely on it.
+	ancestorHasScale := !nearlyOne(dm.XX) || !nearlyOne(dm.YY)
+	ownHasScale := !nearlyOne(dmFull.XX) || !nearlyOne(dmFull.YY)
+	deviceScaled := isAxisAlignedScaleTranslate(dmFull) &&
+		!isIdentityMatrix(dmFull) &&
+		(ancestorHasScale || !ownHasScale)
+
+	var referenceBox image.Rectangle
+	if deviceScaled {
+		// Reference box: the border box mapped into device pixels via the
+		// full device matrix, corners rounded to align with the pixel-snapped
+		// content rasterization.
+		referenceBox = mapBoxToDeviceRect(dmFull, box.X, box.Y, box.Width, box.Height)
+	} else {
+		// Original untransformed path: border box at the layout position.
+		rbx := int(math.Floor(box.X))
+		rby := int(math.Floor(box.Y))
+		rbw := int(math.Ceil(box.X+box.Width)) - rbx
+		rbh := int(math.Ceil(box.Y+box.Height)) - rby
+		referenceBox = image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+	}
 
 	// SourceGraphic extent: the element subtree's paint bounds, which can
 	// extend beyond the border box (positioned/overflowing descendants).
@@ -1373,8 +1433,13 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// overflow; for drop-shadow especially the shadow is cast from the whole
 	// painted shape, so the source buffer must cover it. drop-shadow-clipped
 	// proves this: a descendant offset out of the border box still casts a
-	// shadow.
-	sourceExtent := referenceBox.Union(subtreeBorderBoxBounds(box))
+	// shadow. In the device-scaled path it is mapped through the full device
+	// matrix so it lives in the same device-pixel space as referenceBox.
+	subtreeBounds := subtreeBorderBoxBounds(box)
+	if deviceScaled {
+		subtreeBounds = mapRectToDeviceRect(dmFull, subtreeBounds)
+	}
+	sourceExtent := referenceBox.Union(subtreeBounds)
 
 	// Build the filter graph. The builder computes the filter region by
 	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
@@ -1447,7 +1512,18 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		childDC := origDC.NewChildContext(buf)
 		r.dc = childDC
 		r.target = buf
+		// Offset paint by -region.Min so it lands at the right buffer pixel.
 		r.dc.Translate(float64(-bx), float64(-by))
+		if deviceScaled {
+			// Seed the child DC with the ANCESTOR device matrix.
+			// paintLayerContentWithEffects then composes the layer's OWN
+			// transform on top, so the effective content matrix is
+			// translate(-region.Min) ∘ dmFull — exactly the device space the
+			// region was computed in. The box therefore rasterizes at device
+			// scale (e.g. 150×150 under scale(10)) with crisp vector edges,
+			// instead of at layout scale (15×15) then bilinearly upscaled.
+			r.dc.MultiplyMatrix(dm.XX, dm.YX, dm.XY, dm.YY, dm.X0, dm.Y0)
+		}
 		r.paintLayerContentWithEffects(layer)
 		r.dc = origDC
 		r.target = origTarget
@@ -1465,7 +1541,149 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		r.paintLayerContentWithEffects(layer)
 		return
 	}
-	r.dc.DrawImage(out, bx, by)
+	if deviceScaled {
+		// The output is already in device pixels at region.Min — composite it
+		// 1:1, bypassing the DC's transform stack (which still carries the
+		// ancestor scale already baked into the device-space rasterization).
+		r.blitImageToTarget(out, bx, by)
+	} else {
+		// Identity device matrix: composite through the DC so the active clip
+		// stack (overflow:scroll/hidden, will-change layers) is honored.
+		r.dc.DrawImage(out, bx, by)
+	}
+}
+
+// deviceMatrixFromDC reconstructs the DrawContext's current affine matrix by
+// probing the transforms of three points. The DrawContext interface exposes
+// TransformPoint but not the raw matrix, so we recover it: with M(p) =
+// (XX·x + XY·y + X0, YX·x + YY·y + Y0), M(0,0) gives (X0,Y0) and the unit-axis
+// images give the columns.
+func deviceMatrixFromDC(dc textshape.DrawContext) textshape.Matrix {
+	ox, oy := dc.TransformPoint(0, 0)
+	xx, yx := dc.TransformPoint(1, 0)
+	xy, yy := dc.TransformPoint(0, 1)
+	return textshape.Matrix{
+		XX: xx - ox, YX: yx - oy,
+		XY: xy - ox, YY: yy - oy,
+		X0: ox, Y0: oy,
+	}
+}
+
+// isIdentityMatrix reports whether m is the identity affine within a small
+// epsilon (the matrix is reconstructed from TransformPoint probes, so it
+// carries float rounding noise).
+func isIdentityMatrix(m textshape.Matrix) bool {
+	const eps = 1e-6
+	return nearlyOne(m.XX) && nearlyOne(m.YY) &&
+		math.Abs(m.XY) < eps && math.Abs(m.YX) < eps &&
+		math.Abs(m.X0) < eps && math.Abs(m.Y0) < eps
+}
+
+// nearlyOne reports whether v is within a small epsilon of 1 (used to detect
+// the no-scale case in a reconstructed device matrix).
+func nearlyOne(v float64) bool { return math.Abs(v-1) < 1e-6 }
+
+// isAxisAlignedScaleTranslate reports whether m is a pure scale + translate
+// with no rotation or skew (off-diagonal terms ~0). The device-scaled filter
+// path only handles this case exactly; rotation/skew and projective 3D
+// transforms fall back to the untransformed path.
+func isAxisAlignedScaleTranslate(m textshape.Matrix) bool {
+	const eps = 1e-6
+	return math.Abs(m.XY) < eps && math.Abs(m.YX) < eps
+}
+
+// mapBoxToDeviceRect maps a CSS box (layout-space x/y/w/h) through the device
+// matrix and returns the integer reference rect in device pixels. The corners
+// are ROUNDED (not floor/ceil) so the reference box aligns with where the box
+// content is actually rasterized — the box painter pixel-snaps its border box
+// via pixelSnap (math.Round), and the filter SourceGraphic / feFlood
+// userSpaceOrigin anchor must match that snapped origin to avoid a 1px seam.
+// For a pure scale/translate this is exact; for a rotation it is the
+// axis-aligned bounding box (Blink's filter region is likewise axis-aligned).
+func mapBoxToDeviceRect(m textshape.Matrix, x, y, w, h float64) image.Rectangle {
+	x0, y0 := m.TransformPoint(x, y)
+	x1, y1 := m.TransformPoint(x+w, y+h)
+	x2, y2 := m.TransformPoint(x, y+h)
+	x3, y3 := m.TransformPoint(x+w, y)
+	minX := math.Min(math.Min(x0, x1), math.Min(x2, x3))
+	minY := math.Min(math.Min(y0, y1), math.Min(y2, y3))
+	maxX := math.Max(math.Max(x0, x1), math.Max(x2, x3))
+	maxY := math.Max(math.Max(y0, y1), math.Max(y2, y3))
+	return image.Rect(
+		int(math.Round(minX)), int(math.Round(minY)),
+		int(math.Round(maxX)), int(math.Round(maxY)),
+	)
+}
+
+// mapRectToDeviceRect maps an already-device-pixel integer rect (computed
+// in untransformed layout space) through the device matrix into device pixels.
+func mapRectToDeviceRect(m textshape.Matrix, r image.Rectangle) image.Rectangle {
+	if r.Empty() {
+		return r
+	}
+	return mapCornersToDeviceRect(m, float64(r.Min.X), float64(r.Min.Y), float64(r.Max.X), float64(r.Max.Y))
+}
+
+// mapCornersToDeviceRect transforms the four corners of (x0,y0)-(x1,y1) and
+// returns the axis-aligned integer bounding rect (floor min, ceil max).
+func mapCornersToDeviceRect(m textshape.Matrix, x0, y0, x1, y1 float64) image.Rectangle {
+	cx := [4]float64{x0, x1, x0, x1}
+	cy := [4]float64{y0, y0, y1, y1}
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for i := 0; i < 4; i++ {
+		px, py := m.TransformPoint(cx[i], cy[i])
+		minX, maxX = math.Min(minX, px), math.Max(maxX, px)
+		minY, maxY = math.Min(minY, py), math.Max(maxY, py)
+	}
+	return image.Rect(
+		int(math.Floor(minX)), int(math.Floor(minY)),
+		int(math.Ceil(maxX)), int(math.Ceil(maxY)),
+	)
+}
+
+// blitImageToTarget composites a straight-alpha RGBA image onto the renderer's
+// target at absolute device pixel (dx, dy) using Porter-Duff source-over,
+// bypassing the DC transform/clip stack. Used to composite a filter output
+// that is already positioned and scaled in device pixels.
+func (r *Renderer) blitImageToTarget(im *image.RGBA, dx, dy int) {
+	if r == nil || r.target == nil || im == nil {
+		return
+	}
+	tb := r.target.Bounds()
+	sb := im.Bounds()
+	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
+		ty := sy - sb.Min.Y + dy
+		if ty < tb.Min.Y || ty >= tb.Max.Y {
+			continue
+		}
+		// Hoist the row-base pixel offsets and advance by 4 (RGBA stride) per
+		// column, avoiding a PixOffset multiply on every pixel.
+		si := im.PixOffset(sb.Min.X, sy)
+		for sx := sb.Min.X; sx < sb.Max.X; sx, si = sx+1, si+4 {
+			tx := sx - sb.Min.X + dx
+			if tx < tb.Min.X || tx >= tb.Max.X {
+				continue
+			}
+			sa := im.Pix[si+3]
+			if sa == 0 {
+				continue
+			}
+			ti := r.target.PixOffset(tx, ty)
+			if sa == 255 {
+				r.target.Pix[ti+0] = im.Pix[si+0]
+				r.target.Pix[ti+1] = im.Pix[si+1]
+				r.target.Pix[ti+2] = im.Pix[si+2]
+				r.target.Pix[ti+3] = 255
+				continue
+			}
+			inv := uint32(255 - sa)
+			r.target.Pix[ti+0] = uint8(uint32(im.Pix[si+0]) + uint32(r.target.Pix[ti+0])*inv/255)
+			r.target.Pix[ti+1] = uint8(uint32(im.Pix[si+1]) + uint32(r.target.Pix[ti+1])*inv/255)
+			r.target.Pix[ti+2] = uint8(uint32(im.Pix[si+2]) + uint32(r.target.Pix[ti+2])*inv/255)
+			r.target.Pix[ti+3] = uint8(uint32(sa) + uint32(r.target.Pix[ti+3])*inv/255)
+		}
+	}
 }
 
 // subtreeBorderBoxBounds returns the union of the border boxes of box and all
