@@ -54,3 +54,13 @@ css-ruby/ruby-line-break-suppression-002.html	Blink fails, Gecko passes @ f01d00
 css-ruby/ruby-line-breaking-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
 css-ruby/ruby-whitespace-001.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
 css-ruby/ruby-whitespace-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-only ruby behavior)
+
+# --- css-flexbox: idealized-spec reftests that NO browser (incl. Blink) passes.
+#     The -ref encodes CSS Flexbox §9.9.1 intrinsic-contribution behavior that no
+#     engine matches. Verified by rendering the test in headless Chrome 149 (CDP,
+#     WPT Ahem font): Chrome fails 15/48 sub-cases; louis14 matches Chrome's flex
+#     intrinsic sizing. Edge=F @ wpt.fyi. (Distinct from the css-ruby "Gecko
+#     passes" entries — here no browser passes.) See LOU-328. Separate real
+#     Ahem glyph-width gap tracked in LOU-329 (does not make these pass).
+css-flexbox/flex-container-min-content-001.html	Blink-faithful failure: idealized ref no browser matches; Chrome 149 (CDP) fails 15/48 sub-cases; louis14==Chrome; Edge=F @ wpt.fyi (LOU-328)
+css-flexbox/flex-container-max-content-001.html	Blink-faithful failure: idealized ref no browser matches; Chrome 149 (CDP) fails; louis14==Chrome; Edge=F @ wpt.fyi (LOU-328)
