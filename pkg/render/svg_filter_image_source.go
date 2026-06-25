@@ -62,7 +62,43 @@ func (p *svgFilterPrimitiveAdapter) ResolveImageSource(filterRegion, subregion i
 	}
 
 	src := p.resolveImageHref(href, target)
+	// A sourced image is sRGB device content; the filter graph treats
+	// FEImage output as being in the filter's interpolation space. When
+	// that space is linearRGB (the SVG default), convert the source so
+	// its bytes truly are linear-light — otherwise the composite's
+	// linear→sRGB step double-darkens the image. Mirrors Blink's
+	// FilterEffect::TransformResultIfNeeded on the FEImage result
+	// (svg_fe_image.cc + filter_effect.cc).
+	if src != nil && p.space == filters.InterpolationSpaceLinearRGB {
+		convertImageSRGBToLinear(src)
+	}
 	return src, target, parNone
+}
+
+// convertImageSRGBToLinear converts a premultiplied sRGB RGBA buffer to
+// premultiplied linearRGB in place. Un-premultiplies, applies the sRGB→
+// linear transfer to the colour channels (alpha is space-independent),
+// and re-premultiplies — the same algorithm filters.convertImageSpace
+// runs on graph edges, replicated here because that helper is package-
+// private to pkg/graphics/filters. The transfer functions are the
+// shared svgSRGBToLinear / linearToSRGBf (defined in
+// svg_filter_painter.go) so there is one definition per direction.
+func convertImageSRGBToLinear(img *image.RGBA) {
+	pix := img.Pix
+	for i := 0; i+3 < len(pix); i += 4 {
+		a := pix[i+3]
+		if a == 0 {
+			continue
+		}
+		af := float64(a) / 255
+		inv := 1 / af
+		r := svgSRGBToLinear(float64(pix[i+0]) / 255 * inv)
+		g := svgSRGBToLinear(float64(pix[i+1]) / 255 * inv)
+		b := svgSRGBToLinear(float64(pix[i+2]) / 255 * inv)
+		pix[i+0] = clampU8Filter(r * af * 255)
+		pix[i+1] = clampU8Filter(g * af * 255)
+		pix[i+2] = clampU8Filter(b * af * 255)
+	}
 }
 
 // readImageHref reads the `href` attribute (preferring the plain form
