@@ -7768,8 +7768,13 @@ func (s *Style) IsAtomicInlineDisplay() bool {
 func (s *Style) EstablishesNewFormattingContext() bool {
 	switch s.GetDisplay() {
 	case DisplayFlowRoot, DisplayInlineBlock, DisplayTableCell,
-		DisplayTableCaption, DisplayFlex, DisplayInlineFlex,
+		DisplayTableCaption, DisplayTable, DisplayInlineTable,
+		DisplayFlex, DisplayInlineFlex,
 		DisplayGrid, DisplayInlineGrid:
+		// A table (and inline-table) wrapper box is always a BFC root per
+		// CSS 2.1 §9.4.1 / §9.5, so it avoids floats and clamps negative
+		// margins beside a float — Blink LayoutBox::CreatesNewFormattingContext
+		// returns true for IsTable() (LOU-327).
 		return true
 	}
 	// Inspect the raw display string for the `flow-root` inner keyword

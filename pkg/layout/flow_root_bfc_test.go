@@ -374,3 +374,123 @@ func TestNewFC_TooWideForFloatDropsBelowAndResetsInline(t *testing.T) {
 		t.Errorf("flex inline offset = %v; want 0 (once below the float, no float intrudes so the new-FC box returns to the line-left edge)", flexLeft)
 	}
 }
+
+// TestNewFC_NegativeMarginBesideFloatClampsToFloatEdge verifies that a new-FC
+// box (display:flex) with a NEGATIVE inline margin, placed beside a left float
+// it fits next to, is positioned flush against the float's inline-end edge —
+// the negative margin is CLAMPED and does not pull the border box left across
+// the float's margin box.
+//
+// This is the LOU-327 bug (distinct from LOU-326, which is the doesn't-fit /
+// drop-below case): a 200px flex container with margin-left:-200px beside a
+// 200px left float in a 600px container renders at X=0 in louis14
+// (margin -200 + floatStartOff +200 cancel) but must render at X=200.
+//
+// Ground truth: Chrome renders both css-flexbox/flexbox_flex-formatting-interop
+// .html (#flex) and its display:table reference (#nbfc) with the box at x=200,
+// flush against the float — the margin-left:-200px is clamped away.
+//
+// Blink analog: BlockLayoutAlgorithm::LayoutNewFormattingContext — when a float
+// reduces the line-left opportunity, the line-left offset is
+//
+//	line_left = max(opportunity.LineStartOffset(),
+//	                origin.line_offset + line_left_margin.ClampNegativeToZero())
+//
+// so a negative inline margin cannot move the BFC border box into the float's
+// margin box. With floatStartOff > 0 this is max(floatStartOff, margin).
+// third_party/blink/renderer/core/layout/block_layout_algorithm.cc:2107-2124 @
+// d694f1edc784ebb2ce84dedde5ae3905d50c14f2
+func TestNewFC_NegativeMarginBesideFloatClampsToFloatEdge(t *testing.T) {
+	// outer (display:block, 600px wide) contains:
+	//   floatDiv (float:left, 200px x 20px)
+	//   flex     (display:flex, 200px wide, 30px tall, margin-left:-200px)
+	//
+	// 200 (flex) <= 600 - 200 (space beside float) = 400, so the flex box
+	// FITS beside the float and must NOT drop below it. The negative margin is
+	// clamped, so the flex box sits at X=200 (the float's inline-end edge),
+	// not X=0 (margin+floatStartOff cancel) and not X=-200 (raw margin).
+	floatDiv := &html.Node{Type: html.ElementNode, TagName: "div"}
+	flex := &html.Node{Type: html.ElementNode, TagName: "div"}
+	outer := &html.Node{
+		Type:     html.ElementNode,
+		TagName:  "div",
+		Children: []*html.Node{floatDiv, flex},
+	}
+	floatDiv.Parent = outer
+	flex.Parent = outer
+
+	styles := map[*html.Node]*css.Style{
+		outer:    makeStyle("display", "block", "width", "600px"),
+		floatDiv: makeStyle("float", "left", "width", "200px", "height", "20px"),
+		flex:     makeStyle("display", "flex", "width", "200px", "height", "30px", "margin-left", "-200px"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(outer, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 600, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 600, BlockSize: Indefinite}).
+		Build()
+
+	outerResult := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+	if outerResult == nil || outerResult.Fragment == nil {
+		t.Fatal("outer layout returned nil")
+	}
+
+	// Find the flex fragment: it's the 30px-tall child (the float is 20px tall;
+	// both are 200px wide, so disambiguate by height).
+	var flexLeft, flexTop float64
+	found := false
+	for _, ch := range outerResult.Fragment.Children {
+		if ch.Fragment == nil {
+			continue
+		}
+		if ch.Fragment.Size.HeightF64() == 30 {
+			flexLeft = ch.Offset.LeftF64()
+			flexTop = ch.Offset.TopF64()
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("did not find the 30px-tall flex fragment among outer's children")
+	}
+
+	// Must stay beside the float (it fits in 400px of space), not drop below.
+	if flexTop != 0 {
+		t.Errorf("flex block offset = %v; want 0 (200px box fits beside the float in 600px, must not drop below)", flexTop)
+	}
+	// The negative margin must be clamped: box sits at the float's edge (200),
+	// not pulled left to 0 (margin+floatStartOff cancel) or -200 (raw margin).
+	if flexLeft != 200 {
+		t.Errorf("flex inline offset = %v; want 200 (negative margin-left clamped per Blink; box flush against the 200px float, not cancelled to 0)", flexLeft)
+	}
+}
+
+// TestTable_CreatesNewFormattingContext verifies that a table (and
+// inline-table) box establishes a new formatting context, so it avoids floats
+// and clamps a negative margin beside a float exactly like a flex / flow-root
+// box.
+//
+// This is the second half of LOU-327: the WPT reference
+// css-flexbox/flexbox_flex-formatting-interop-ref.html uses a display:table
+// box (#nbfc) with margin-left:-200px as the "equivalent new-FC box". Chrome
+// renders it at X=200 (beside the float). louis14 rendered it at X=-200 because
+// createsFormattingContext did not treat display:table as a new FC, so the
+// table was positioned with its raw negative margin and did not avoid the
+// float.
+//
+// Blink analog: LayoutBox::CreatesNewFormattingContext() returns true for
+// IsTable(); a table is always a BFC root per CSS 2.1 §9.4.1 / §9.5.
+// third_party/blink/renderer/core/layout/layout_box.cc — CreatesNewFormattingContext
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+func TestTable_CreatesNewFormattingContext(t *testing.T) {
+	for _, disp := range []string{"table", "inline-table"} {
+		st := css.NewStyle()
+		st.Properties["display"] = disp
+		if !createsFormattingContext(st) {
+			t.Errorf("createsFormattingContext(display:%s) = false; want true "+
+				"(a table establishes a BFC per CSS 2.1 §9.5, so it avoids floats and clamps negative margins)", disp)
+		}
+	}
+}
