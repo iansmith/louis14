@@ -105,11 +105,16 @@ func TestSpanBlockSize_LOU320_DefiniteHeightContainerSplitBySpanners(t *testing.
 		t.Errorf("spanner2 at y=%v, want y=250 (after segments 1+2 and spanner1: 100+50+100)", spannerTops[1])
 	}
 
+	// Total height (verified against multicol-span-all-children-height-004a-ref.html):
+	// segment 1 (block1 200px) → 100px column row; spanner1 50px;
+	// segment 2 (block2 200px) → 100px column row; spanner2 50px;
+	// segment 3 has only 50px of the container's 450px budget left (450-200-200),
+	// which the 2-column balance splits to a 25px column row (block3 overflows).
+	// 100 + 50 + 100 + 50 + 25 = 325.
 	got := result.Fragment.Size.HeightF64()
-	const want = 350.0
+	const want = 325.0
 	if got != want {
 		t.Errorf("multicol block-size = %v, want %v "+
-			"(container 450px must distribute 200+200+50 across the spanner splits: "+
-			"segments of 100px+100px+50px column rows plus two 50px spanners)", got, want)
+			"(container 450px distributed across spanner splits: 100+50+100+50+25)", got, want)
 	}
 }
