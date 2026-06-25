@@ -185,8 +185,19 @@ type SVGFilterBuilder struct {
 // space. The caller's SourceGraphic is built here so its image can be
 // supplied later via Filter.SetSourceImage.
 func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
-	src := NewSourceGraphic(space)
-	srcAlpha := NewSourceAlpha(src, space)
+	// SourceGraphic / SourceAlpha always operate in sRGB: they expose the
+	// element's rendered DEVICE content, which is sRGB regardless of the
+	// filter's color-interpolation-filters value. The graph then converts
+	// sRGB->linearRGB at the edge into the first linearRGB primitive (see
+	// Filter.evaluate). Mirrors Blink's SourceGraphic constructor, which
+	// calls SetOperatingInterpolationSpace(kInterpolationSpaceSRGB)
+	// unconditionally, and SourceAlpha, which inherits its source's space
+	// (source_graphic.cc / source_alpha.cc @ Chromium main). Passing the
+	// filter's `space` here instead would skip the input conversion while
+	// the compositor still converts the output back, brightening colors
+	// (green 128 -> ~188).
+	src := NewSourceGraphic(InterpolationSpaceSRGB)
+	srcAlpha := NewSourceAlpha(src, InterpolationSpaceSRGB)
 	b := &SVGFilterBuilder{
 		source:       src,
 		sourceAlpha:  srcAlpha,
