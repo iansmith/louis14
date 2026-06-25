@@ -120,6 +120,37 @@ func TestResourceBoundingBox_UserSpaceOnUseMissingXYBackwardsCompat(t *testing.T
 	}
 }
 
+// TestResourceBoundingBox_CalcWidth_ObjectBoundingBox is the
+// filter-region-calc-001 falsification test: `width="calc(25% + 0.25px)"`
+// with filterUnits=objectBoundingBox over a 200x100 target must produce a
+// 100px-wide region (x=0, height=1 → full 100px tall, width = (0.25 +
+// 0.25) * 200 = 100). Per the SVG2 coords objectBoundingBox model the
+// resource's lengths are resolved in the unit-square [0,1]² space — both
+// the percent term (25% → 0.25) and the px term (0.25px → 0.25 of the
+// unit square) are fractions of the bbox, summed, then scaled by the
+// bbox dimension. Mirrors Blink's SVGLength value resolution where a
+// CSSMathFunctionValue's percent and length terms are evaluated against
+// the objectBoundingBox 1x1 viewport.
+func TestResourceBoundingBox_CalcWidth_ObjectBoundingBox(t *testing.T) {
+	f := &SVGResourceFilter{
+		FilterUnits: SVGUnitObjectBoundingBox,
+		X:           parseGradientLengthWithFontSize("0", 16),
+		Y:           parseGradientLengthWithFontSize("0", 16),
+		Width:       parseGradientLengthWithFontSize("calc(25% + 0.25px)", 16),
+		Height:      parseGradientLengthWithFontSize("1", 16),
+	}
+	target := geometry.NewRectF(0, 0, 200, 100)
+	userOrigin := geometry.PointF{X: 0, Y: 0}
+	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(target.Size))
+	const eps = 1e-6
+	if absDiff(got.X(), 0) > eps ||
+		absDiff(got.Y(), 0) > eps ||
+		absDiff(got.Width(), 100) > eps ||
+		absDiff(got.Height(), 100) > eps {
+		t.Errorf("ResourceBoundingBox = %v, want (0, 0, 100, 100)", got)
+	}
+}
+
 func absDiff(a, b float64) float64 {
 	d := a - b
 	if d < 0 {

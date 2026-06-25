@@ -110,6 +110,18 @@ type SVGFilterElement interface {
 	// FilterRegion returns the resolved filter region in absolute
 	// device pixels (the rect every fe* primitive's output covers).
 	FilterRegion() image.Rectangle
+	// SubregionViewport returns the device-pixel rect whose width/height
+	// are the percentage basis for filter primitive subregion
+	// (x/y/width/height) attributes in primitiveUnits=userSpaceOnUse.
+	// Per SVG Filter Effects 1 §7.11 these percentages resolve against
+	// the nearest viewport (Blink's SVGViewportResolver), NOT the filter
+	// region — which differs from the viewport when the region carries
+	// the default 10% expansion. For a CSS `filter: url(...)` on an HTML
+	// box the viewport is the element's border (reference) box; for an
+	// SVG-element filter it is the host SVG viewport. Adapters that don't
+	// distinguish the two may return FilterRegion() (the historical
+	// behaviour, exact whenever region == viewport).
+	SubregionViewport() image.Rectangle
 	// ReferenceBox returns the referencing element's reference box in
 	// absolute device pixels. For objectBoundingBox primitive units
 	// the builder maps primitive subregion coords through this.
@@ -679,13 +691,15 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	// by UserSpaceOrigin.
 	region := elt.FilterRegion()
 	userOrigin := elt.UserSpaceOrigin()
-	regionW := float64(region.Dx())
-	regionH := float64(region.Dy())
-	// Per SVG Filter Effects 1 §3.2: percentages on filter primitive
-	// subregion attrs resolve against the filter region dimensions
-	// (width for x/width attrs, height for y/height attrs). Mirrors
-	// Blink's SVGFilterPrimitiveStandardAttributes which constructs an
-	// SVGLengthContext sized to the filter region.
+	// Per SVG Filter Effects 1 §7.11: percentages on filter primitive
+	// subregion attrs in userSpaceOnUse resolve against the nearest
+	// VIEWPORT (width for x/width, height for y/height), NOT the filter
+	// region — the two differ when the region carries the default 10%
+	// expansion. Mirrors Blink's SVGFilterPrimitiveStandardAttributes,
+	// which resolves the subregion through an SVGViewportResolver.
+	viewport := elt.SubregionViewport()
+	vpW := float64(viewport.Dx())
+	vpH := float64(viewport.Dy())
 	resolvePctLen := func(s string, base float64) float64 {
 		v, isPct := parseLength(s, 0)
 		if isPct {
@@ -693,24 +707,27 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 		}
 		return v
 	}
+	// Missing x/y/width/height default to the full filter region (region
+	// origin + region extent), per spec. Present attrs resolve against
+	// the viewport and anchor at the user-space origin.
 	var x, y float64
 	if hasX {
-		x = float64(userOrigin.X) + resolvePctLen(xStr, regionW)
+		x = float64(userOrigin.X) + resolvePctLen(xStr, vpW)
 	} else {
 		x = float64(region.Min.X)
 	}
 	if hasY {
-		y = float64(userOrigin.Y) + resolvePctLen(yStr, regionH)
+		y = float64(userOrigin.Y) + resolvePctLen(yStr, vpH)
 	} else {
 		y = float64(region.Min.Y)
 	}
-	w := regionW
-	h := regionH
+	w := float64(region.Dx())
+	h := float64(region.Dy())
 	if hasW {
-		w = resolvePctLen(wStr, regionW)
+		w = resolvePctLen(wStr, vpW)
 	}
 	if hasH {
-		h = resolvePctLen(hStr, regionH)
+		h = resolvePctLen(hStr, vpH)
 	}
 	return image.Rect(
 		int(math.Floor(x)),

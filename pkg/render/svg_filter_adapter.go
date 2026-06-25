@@ -24,6 +24,15 @@ type svgFilterElementAdapter struct {
 	filter       *svg.SVGResourceFilter
 	filterRegion image.Rectangle
 	referenceBox image.Rectangle
+	// subregionViewport is the device-pixel rect whose width/height are
+	// the percentage basis for filter primitive subregion attrs in
+	// primitiveUnits=userSpaceOnUse (per SVG Filter Effects 1 §7.11,
+	// these resolve against the nearest viewport, NOT the filter region).
+	// When zero it falls back to filterRegion via SubregionViewport(),
+	// preserving the historical behaviour for callers that haven't set
+	// it. The CSS `filter: url(...)` HTML-box path sets it to the
+	// element's reference (border) box.
+	subregionViewport image.Rectangle
 	// userSpaceOrigin is the SVG element's user-space (0, 0) point
 	// mapped to absolute device pixels. The userSpaceOnUse subregion
 	// anchor for filter primitives uses this — NOT filterRegion.Min,
@@ -68,6 +77,17 @@ func (a *svgFilterElementAdapter) FilterRegion() image.Rectangle { return a.filt
 
 // ReferenceBox implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) ReferenceBox() image.Rectangle { return a.referenceBox }
+
+// SubregionViewport implements filters.SVGFilterElement. Returns the
+// explicit subregion viewport when set, otherwise falls back to the
+// filter region (the historical basis, exact whenever region == viewport,
+// which holds for the SVG-element filter paths).
+func (a *svgFilterElementAdapter) SubregionViewport() image.Rectangle {
+	if a.subregionViewport.Empty() {
+		return a.filterRegion
+	}
+	return a.subregionViewport
+}
 
 // UserSpaceOrigin implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) UserSpaceOrigin() image.Point { return a.userSpaceOrigin }

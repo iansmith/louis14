@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"math"
 	"strings"
 
 	"louis14/pkg/css"
@@ -188,12 +189,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 	// userSpaceOnUse x/y values.
 	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
 	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
-	region := image.Rect(
-		int(regionF.X()),
-		int(regionF.Y()),
-		int(regionF.X()+regionF.Width()),
-		int(regionF.Y()+regionF.Height()),
-	)
+	region := snapRectFToDevice(regionF)
 
 	// userSpaceOrigin for the CSS `filter: url(...)` path is the
 	// reference box origin: this path has no SVG transform stack
@@ -202,9 +198,13 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 	// filter reference operates on the element's reference box, so
 	// its "user-space origin" equivalent is the reference box origin.
 	adapter := &svgFilterElementAdapter{
-		filter:             filter,
-		filterRegion:       region,
-		referenceBox:       b.ReferenceBox,
+		filter:       filter,
+		filterRegion: region,
+		referenceBox: b.ReferenceBox,
+		// CSS `filter: url(...)` on an HTML box: the primitive subregion
+		// percentage viewport is the element's border (reference) box —
+		// NOT the filter region, which can carry the default 10% expansion.
+		subregionViewport:  b.ReferenceBox,
 		userSpaceOrigin:    b.ReferenceBox.Min,
 		space:              space,
 		resolveStyle:       b.ResolveStyle,
@@ -273,19 +273,15 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	)
 	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
 	regionF := resource.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
-	region := image.Rect(
-		int(regionF.X()),
-		int(regionF.Y()),
-		int(regionF.X()+regionF.Width()),
-		int(regionF.Y()+regionF.Height()),
-	)
+	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{
-		filter:          resource,
-		filterRegion:    region,
-		referenceBox:    b.ReferenceBox,
-		userSpaceOrigin: b.ReferenceBox.Min,
-		space:           space,
+		filter:            resource,
+		filterRegion:      region,
+		referenceBox:      b.ReferenceBox,
+		subregionViewport: b.ReferenceBox,
+		userSpaceOrigin:   b.ReferenceBox.Min,
+		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.
 		resolveStyle:       nil,
@@ -462,4 +458,29 @@ func sepiaMatrix(a float64) []float64 {
 		r2[0], r2[1], r2[2], 0, 0,
 		0, 0, 0, 1, 0,
 	}
+}
+
+// snapRectFToDevice converts a float user-space filter-region rect into an
+// integer device-pixel rect. Edges are first nudged to the nearest integer
+// when within a small epsilon (objectBoundingBox math introduces float noise:
+// e.g. an exact -10% of a 100px box computes to 7.9999999998, not 8.0), then
+// floor/ceil out so the integer region fully covers the float region. Without
+// the epsilon snap, int()/floor() of 7.9999999998 truncates to 7 — a 1px
+// offset on the filter region top, visible as a 1px seam on the filter output.
+func snapRectFToDevice(r geometry.RectF) image.Rectangle {
+	const eps = 1e-6
+	snap := func(v float64) float64 {
+		if n := math.Round(v); math.Abs(v-n) < eps {
+			return n
+		}
+		return v
+	}
+	x0 := snap(r.X())
+	y0 := snap(r.Y())
+	x1 := snap(r.X() + r.Width())
+	y1 := snap(r.Y() + r.Height())
+	return image.Rect(
+		int(math.Floor(x0)), int(math.Floor(y0)),
+		int(math.Ceil(x1)), int(math.Ceil(y1)),
+	)
 }

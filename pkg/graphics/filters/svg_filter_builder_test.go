@@ -12,11 +12,18 @@ import (
 type mockSVGFilterElement struct {
 	region           image.Rectangle
 	refBox           image.Rectangle
+	subregionVp      image.Rectangle
 	userSpaceOrigin  image.Point
 	primUnitsObjBBox bool
 }
 
-func (m *mockSVGFilterElement) FilterRegion() image.Rectangle          { return m.region }
+func (m *mockSVGFilterElement) FilterRegion() image.Rectangle { return m.region }
+func (m *mockSVGFilterElement) SubregionViewport() image.Rectangle {
+	if m.subregionVp.Empty() {
+		return m.region
+	}
+	return m.subregionVp
+}
 func (m *mockSVGFilterElement) ReferenceBox() image.Rectangle          { return m.refBox }
 func (m *mockSVGFilterElement) PrimitiveUnitsObjectBoundingBox() bool  { return m.primUnitsObjBBox }
 func (m *mockSVGFilterElement) UserSpaceOrigin() image.Point           { return m.userSpaceOrigin }
@@ -113,27 +120,32 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 }
 
 // TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth covers the
-// `<feDropShadow width="100%">` failure shape. Per SVG Filter Effects 1
-// §3.2, percentages on filter primitive subregion attrs resolve against
-// the filter region dimensions (Blink mirrors this via an
-// SVGLengthContext sized to the filter region). Before the fix,
-// parseLength returned 1.0 for "100%" and the resolver ignored its
-// pct-suffix signal — collapsing the primitive to a 1-pixel wide rect.
+// `<feFlood width="100%">` shape where the filter region carries the
+// default 10% expansion (region 120×120) but the subregion viewport is
+// the reference box (100×100). Per SVG Filter Effects 1 §7.11 a percent
+// subregion length in userSpaceOnUse resolves against the nearest
+// VIEWPORT, not the filter region — verified against Blink's
+// LayoutSVGResourceContainer::ResolveRectangle, whose userSpaceOnUse
+// branch resolves against a viewport size, and against the WPT reftest
+// svg-filter-primitive-units-user-space (HTML box: green flood is exactly
+// 100×100 = the border box, not 120×120 = the expanded region).
 func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-10, -10, 110, 110),
 		refBox:          image.Rect(0, 0, 100, 100),
+		subregionVp:     image.Rect(0, 0, 100, 100),
 		userSpaceOrigin: image.Point{X: 0, Y: 0},
 	}
 	prim := &mockSVGFilterPrimitive{
-		tag:   "fedropshadow",
+		tag:   "feflood",
 		attrs: map[string]string{"width": "100%"},
 	}
 	got := resolvePrimitiveSubregion(elt, prim)
-	// width="100%" → 100% × region.Dx() (120) = 120.
-	// x is unspecified → x defaults to region.Min.X = -10.
+	// width="100%" → 100% × viewport.Dx() (100) = 100.
+	// x is unspecified → x defaults to region.Min.X = -10, so the rect
+	// spans -10..90.
 	// y/height are unspecified → default to full region (-10..110).
-	want := image.Rect(-10, -10, 110, 110)
+	want := image.Rect(-10, -10, 90, 110)
 	if got != want {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
 	}
