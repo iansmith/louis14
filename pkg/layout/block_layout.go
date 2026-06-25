@@ -1029,7 +1029,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  childBlockOffset,
 				}
 				if isChildNewFC {
-					childOffset.InlineOffset += floatStartOff
+					// Same line-left clamp as the main in-flow path (LOU-327):
+					// a negative inline margin cannot pull the new-FC border box
+					// into a line-left float's margin area.
+					childOffset.InlineOffset = newFCInlineOffsetBesideFloats(childMargins.InlineStart, floatStartOff)
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
@@ -1157,7 +1160,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// propagation even when the element collapses through.
 			childInlineOffset := childMargins.InlineStart
 			if isChildNewFC {
-				childInlineOffset += floatStartOff
+				// CSS 2.1 §9.5 / Blink LayoutNewFormattingContext: a new-FC box's
+				// inline margins are measured from the content box and cannot pull
+				// its border box into a line-left float's margin area. A negative
+				// margin is clamped; floatStartOff is not simply added (LOU-327).
+				childInlineOffset = newFCInlineOffsetBesideFloats(childMargins.InlineStart, floatStartOff)
 			}
 
 			if collapseThrough {
@@ -2908,6 +2915,32 @@ func reQueryFloatsAfterDrop(exclusionSpace *ExclusionSpace, dropBlockBfc, blockE
 	return floatStartOff, floatEndOff, childInlineForSpace
 }
 
+// newFCInlineOffsetBesideFloats returns the line-left inline offset (relative to
+// the container content box) for a new-formatting-context child placed beside
+// line-left floats. floatStartOff is the inline-start opportunity shift imposed
+// by those floats (0 when none intrude on the line-left side).
+//
+// Mirrors Blink BlockLayoutAlgorithm::LayoutNewFormattingContext: when a float
+// reduces the line-left opportunity, the child's inline margins are measured
+// from the content box and cannot pull the BFC border box into the float's
+// margin area:
+//
+//	line_left = max(opportunity.LineStartOffset(),
+//	                origin.line_offset + line_left_margin.ClampNegativeToZero())
+//
+// With floatStartOff > 0 (content edge == 0) this is max(floatStartOff, margin):
+// a negative inline margin is clamped (it cannot escape left across the float)
+// and a positive margin only advances the box past the float once it exceeds
+// the float clearance. With no line-left float (floatStartOff == 0) the raw
+// margin is used, so a negative margin pulls the box left as usual (LOU-327).
+// block_layout_algorithm.cc:2107-2124 @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
+func newFCInlineOffsetBesideFloats(marginInlineStart, floatStartOff float64) float64 {
+	if floatStartOff <= 0 || marginInlineStart > floatStartOff {
+		return marginInlineStart
+	}
+	return floatStartOff
+}
+
 // emptyResult returns a zero-sized layout result.
 func emptyResult(wdm WritingDirectionMode) *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
@@ -2926,8 +2959,8 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 
 	// EstablishesNewFormattingContext handles flow-root (including variants
 	// like `display: flow-root list-item` which GetDisplay() folds to
-	// DisplayListItem, losing the flow-root bit), inline-block, table-cell,
-	// table-caption, flex/grid.
+	// DisplayListItem, losing the flow-root bit), inline-block, table /
+	// inline-table, table-cell, table-caption, flex/grid.
 	if style.EstablishesNewFormattingContext() {
 		return true
 	}
