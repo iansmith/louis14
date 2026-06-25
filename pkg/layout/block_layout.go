@@ -802,7 +802,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// orthogonal children (their inline axis is perpendicular to the
 			// parent's float axis). Skip the pre-layout check for orthogonal
 			// children; the post-layout check handles them correctly.
-			origPreLayoutFloatStartOff, origPreLayoutFloatEndOff := floatStartOff, floatEndOff
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
@@ -832,15 +831,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
 							hasClearance = true
-							// Preserve the original float offsets from pre-reposition
-							// position. After vertical repositioning, the element should
-							// stay at the original float-blocked inline position.
-							floatStartOff = origPreLayoutFloatStartOff
-							floatEndOff = origPreLayoutFloatEndOff
-						}
-						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
-						if childInlineForSpace < 0 {
-							childInlineForSpace = 0
+							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
+								exclusionSpace, bfcBlockOrigin+blockCursor, 0,
+								childAvailableInline, childMargins.InlineSum())
 						}
 					}
 				}
@@ -967,16 +960,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
 							hasClearance = true
-							// Preserve the original float offsets from the pre-reposition
-							// query position. After vertical repositioning, the element
-							// should stay at the original float-blocked inline position,
-							// not move to the cleared position.
-							floatStartOff = origFloatStartOff
-							floatEndOff = origFloatEndOff
-							childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
-							if childInlineForSpace < 0 {
-								childInlineForSpace = 0
-							}
+							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
+								exclusionSpace, bfcBlockOrigin+blockCursor, bfcBlockExtent,
+								childAvailableInline, childMargins.InlineSum())
 							// Re-layout with the new available size.
 							csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 								SetOrthogonalFallbackInlineSize(
@@ -2897,6 +2883,29 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		// For now, treat unknown display types as block.
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
 	}
+}
+
+// reQueryFloatsAfterDrop re-queries the float offsets for a new-FC child that
+// was just pushed below an intruding float (to dropBlockBfc, the box's new
+// BFC-relative block-start), and returns those offsets plus the resulting
+// available inline-size (margins and float offsets removed, clamped to >= 0).
+//
+// blockExtent is 0 for the pre-layout estimate (the box height isn't known yet)
+// and the laid-out margin-box extent for the post-layout check.
+//
+// Blink's LayoutNewFormattingContext takes the child's inline offset from the
+// chosen opportunity's own LineStartOffset, so a box pushed fully below the
+// float lands in the full-width opportunity (offsets 0) rather than staying at
+// the float-blocked inline position; a float that still overlaps the new block
+// range keeps its (possibly smaller) offset.
+// block_layout_algorithm.cc:2082-2108 @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
+func reQueryFloatsAfterDrop(exclusionSpace *ExclusionSpace, dropBlockBfc, blockExtent, childAvailableInline, childMarginInlineSum float64) (floatStartOff, floatEndOff, childInlineForSpace float64) {
+	floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(dropBlockBfc, blockExtent, childAvailableInline)
+	childInlineForSpace = childAvailableInline - childMarginInlineSum - floatStartOff - floatEndOff
+	if childInlineForSpace < 0 {
+		childInlineForSpace = 0
+	}
+	return floatStartOff, floatEndOff, childInlineForSpace
 }
 
 // emptyResult returns a zero-sized layout result.
