@@ -2130,10 +2130,7 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	if node.Parent == nil {
 		return
 	}
-	parentStyle, ok := styles[node.Parent]
-	if !ok {
-		return
-	}
+	parentStyle := styles[node.Parent]
 
 	// Resolve font-size em, lh, and percentage values using parent's metrics.
 	// Parent has already been processed (top-down cascade), so its font-size
@@ -2143,6 +2140,16 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	// the computed metrics of the parent element". Mirrors Blink's cascade
 	// behavior in css_to_length_conversion_data.cc at SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// This runs BEFORE the "no parent style → nothing to inherit" early-return
+	// below: the ROOT element's parent is the non-element document, which has no
+	// style entry in the normal (parser-wrapped) case, yet the root must still
+	// resolve a % / em font-size against the INITIAL 16px (Blink: documentElement
+	// resolves font-relative values against InitialStyleForElement, not a
+	// document-node style — verified @ Chromium main
+	// 9ef004e13d28eed9671f6275685da42b8b08a610). parentFS defaults to 16px when
+	// there is no parent style, so the root resolves correctly. (lh needs the
+	// parent's line-height metrics, so it stays gated on a present parent.)
 	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
 		trimmed := strings.TrimSpace(fsVal)
 		parentFS := 16.0
@@ -2150,22 +2157,27 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 			parentFS = parentStyle.GetFontSize()
 		}
 		if strings.HasSuffix(trimmed, "%") {
-			if pct, ok := ParsePercentage(trimmed); ok {
+			if pct, okPct := ParsePercentage(trimmed); okPct {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
 			}
 		} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
-			if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
+			if resolved, okEm := ParseLengthWithFontSize(fsVal, parentFS); okEm {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
 			}
-		} else if strings.HasSuffix(trimmed, "lh") {
+		} else if strings.HasSuffix(trimmed, "lh") && parentStyle != nil {
 			// lh in font-size resolves against the parent's computed line-height.
-			if parentStyle != nil {
-				if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
-					parentLh := parentStyle.GetLineHeight()
-					style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
-				}
+			if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
+				parentLh := parentStyle.GetLineHeight()
+				style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
 			}
 		}
+	}
+
+	// No parent style → nothing more to inherit. The root <html> case (parent is
+	// the non-element document) reaches here after resolving its own font-relative
+	// font-size above; its remaining values come from ComputeStyle's defaults.
+	if parentStyle == nil {
+		return
 	}
 
 	// CSS Custom Properties (--*) inherit by default (CSS Custom Properties §2.2).
@@ -2815,37 +2827,55 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	// element (the first element child of doc.Root) and store it as styles[doc.Root].
 	// This allows ApplyInheritedProperties to correctly propagate font-size, font-family,
 	// etc. to all children of doc.Root, so em units resolve against the correct font-size.
+	//
+	// Only the fragment case: when the parser DID create a real <html> element it is
+	// the :root and inheritance propagates from it normally — synthesizing a doc.Root
+	// style there is unnecessary and would wrongly add a styles[document] entry for the
+	// non-element document root (regression guard: TestApplyStylesToDocument).
+	//
+	// Blink stores a ComputedStyle on Element only — a non-element Document never gets
+	// one (Node::GetComputedStyle guards IsElementNode, node.cc:3771; the document's
+	// sole style is the viewport style on the LayoutView object, document.cc:3233, not
+	// the Document node), and style recalc roots at documentElement/<html>. This
+	// synthetic doc.Root style is a louis14-only accommodation for the no-<html>
+	// fragment parse, which has no Blink analog (Blink always synthesizes <html>;
+	// fragments target a DocumentFragment). Verified @ Chromium main
+	// 9ef004e13d28eed9671f6275685da42b8b08a610.
 	if node.TagName == "document" && styles[node] == nil {
-		syntheticRootStyle := NewStyle()
-		syntheticRootStyle.ViewportWidth = viewportWidth
-		syntheticRootStyle.ViewportHeight = viewportHeight
+		var firstElem *html.Node
 		for _, child := range node.Children {
 			if child.Type == html.ElementNode {
-				// First element child matches :root — compute its style to capture
-				// :root rules, then extract inheritable properties for doc.Root.
-				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight, ctx)
-				for prop := range inheritableProperties {
-					// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
-					// Don't propagate from :root to synthetic doc root — otherwise every
-					// descendant inherits it and the parentIsVertical guard blocks transforms.
-					if prop == "writing-mode" {
-						continue
-					}
-					if val, ok := rootChildStyle.Get(prop); ok {
-						syntheticRootStyle.Set(prop, val)
-					}
-				}
-				// Also propagate CSS custom properties (--*) which inherit by default
-				for prop, val := range rootChildStyle.Properties {
-					if strings.HasPrefix(prop, "--") {
-						syntheticRootStyle.Set(prop, val)
-					}
-				}
+				firstElem = child
 				break
 			}
 		}
-		if len(syntheticRootStyle.Properties) > 0 {
-			styles[node] = syntheticRootStyle
+		if firstElem != nil && firstElem.TagName != "html" {
+			syntheticRootStyle := NewStyle()
+			syntheticRootStyle.ViewportWidth = viewportWidth
+			syntheticRootStyle.ViewportHeight = viewportHeight
+			// First element child matches :root — compute its style to capture
+			// :root rules, then extract inheritable properties for doc.Root.
+			rootChildStyle := ComputeStyle(firstElem, stylesheets, viewportWidth, viewportHeight, ctx)
+			for prop := range inheritableProperties {
+				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
+				// Don't propagate from :root to synthetic doc root — otherwise every
+				// descendant inherits it and the parentIsVertical guard blocks transforms.
+				if prop == "writing-mode" {
+					continue
+				}
+				if val, ok := rootChildStyle.Get(prop); ok {
+					syntheticRootStyle.Set(prop, val)
+				}
+			}
+			// Also propagate CSS custom properties (--*) which inherit by default
+			for prop, val := range rootChildStyle.Properties {
+				if strings.HasPrefix(prop, "--") {
+					syntheticRootStyle.Set(prop, val)
+				}
+			}
+			if len(syntheticRootStyle.Properties) > 0 {
+				styles[node] = syntheticRootStyle
+			}
 		}
 	}
 

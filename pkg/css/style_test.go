@@ -215,19 +215,25 @@ func TestParseInlineStyle_PaddingShorthand(t *testing.T) {
 func TestParseInlineStyle_BorderShorthand(t *testing.T) {
 	style := ParseInlineStyle("border: 2px solid black", nil)
 
+	// The `border` shorthand fully expands to the per-side longhands
+	// (border-{top,right,bottom,left}-{width,style,color}); border-style and
+	// border-color are themselves shorthands and are NOT stored as such, so the
+	// computed values live on the longhands. Read them the same way GetBorderWidth
+	// does, rather than looking up the intermediate shorthand names.
 	borderWidth := style.GetBorderWidth()
 	if borderWidth.Top != 2 || borderWidth.Right != 2 {
 		t.Errorf("expected border width to be 2, got %+v", borderWidth)
 	}
 
-	borderStyle, ok := style.Get("border-style")
-	if !ok || borderStyle != "solid" {
-		t.Errorf("expected border-style 'solid', got '%s'", borderStyle)
+	borderStyle := style.GetBorderStyle()
+	if borderStyle.Top != BorderStyleSolid || borderStyle.Right != BorderStyleSolid {
+		t.Errorf("expected border style 'solid' on all sides, got %+v", borderStyle)
 	}
 
-	borderColor, ok := style.Get("border-color")
-	if !ok || borderColor != "black" {
-		t.Errorf("expected border-color 'black', got '%s'", borderColor)
+	for _, side := range []string{"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"} {
+		if c, ok := style.Get(side); !ok || c != "black" {
+			t.Errorf("expected %s 'black', got '%s' (ok=%v)", side, c, ok)
+		}
 	}
 }
 
