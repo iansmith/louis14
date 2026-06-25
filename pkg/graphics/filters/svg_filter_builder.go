@@ -185,8 +185,19 @@ type SVGFilterBuilder struct {
 // space. The caller's SourceGraphic is built here so its image can be
 // supplied later via Filter.SetSourceImage.
 func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
-	src := NewSourceGraphic(space)
-	srcAlpha := NewSourceAlpha(src, space)
+	// SourceGraphic / SourceAlpha always operate in sRGB: they expose the
+	// element's rendered DEVICE content, which is sRGB regardless of the
+	// filter's color-interpolation-filters value. The graph then converts
+	// sRGB->linearRGB at the edge into the first linearRGB primitive (see
+	// Filter.evaluate). Mirrors Blink's SourceGraphic constructor, which
+	// calls SetOperatingInterpolationSpace(kInterpolationSpaceSRGB)
+	// unconditionally, and SourceAlpha, which inherits its source's space
+	// (source_graphic.cc / source_alpha.cc @ Chromium main). Passing the
+	// filter's `space` here instead would skip the input conversion while
+	// the compositor still converts the output back, brightening colors
+	// (green 128 -> ~188).
+	src := NewSourceGraphic(InterpolationSpaceSRGB)
+	srcAlpha := NewSourceAlpha(src, InterpolationSpaceSRGB)
 	b := &SVGFilterBuilder{
 		source:       src,
 		sourceAlpha:  srcAlpha,
@@ -384,7 +395,17 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	switch prim.TagName() {
 	case "feflood":
 		r, g, bb, a := prim.FloodColor()
-		fe := NewFEFlood(b.space, r, g, bb, a)
+		// feFlood is exempt from color-interpolation-filters: its flood
+		// colour is emitted directly in the current (sRGB) colour space
+		// regardless of the filter's operating space. Mirrors Blink, where
+		// FEFlood overrides SetOperatingInterpolationSpace as a no-op so the
+		// flood is never adapted to linearRGB (fe_flood.cc @ Chromium main).
+		// Constructing it in sRGB makes the graph treat its output as sRGB:
+		// when feFlood is the last effect the compositor leaves it alone (so
+		// flood-color="green" round-trips to #008000, not #00BB00); when it
+		// feeds a linearRGB primitive the graph converts sRGB->linearRGB at
+		// that edge.
+		fe := NewFEFlood(InterpolationSpaceSRGB, r, g, bb, a)
 		sub := resolvePrimitiveSubregion(elt, prim)
 		if sub.Empty() {
 			// No explicit primitive subregion: feFlood covers the full
