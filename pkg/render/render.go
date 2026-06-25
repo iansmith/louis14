@@ -703,12 +703,7 @@ func (r *Renderer) fillCanvasWithBackground(box *layout.Box) {
 	if !ok || bgColor.A == 0 {
 		return
 	}
-	r.dc.SetColor(color.RGBA{
-		R: bgColor.R,
-		G: bgColor.G,
-		B: bgColor.B,
-		A: uint8(bgColor.A * 255),
-	})
+	r.dc.SetColor(premultipliedRGBA(bgColor))
 	r.fillCanvasScoped()
 }
 
@@ -5455,14 +5450,32 @@ func (r *Renderer) drawSolidLine(x1, y1, x2, y2, width float64) {
 	r.dc.Fill()
 }
 
+// premultipliedRGBA converts a straight-alpha css.Color to an alpha-
+// premultiplied color.RGBA.
+//
+// mazarin's DrawContext rasterizer composites fill colours through Go's
+// color.RGBA, whose RGBA() contract is alpha-PREMULTIPLIED: it scales the
+// stored channels to 16-bit WITHOUT re-applying alpha, and the source-over
+// blend (textshape draw_impl.go fillWithPattern) computes src + dst*(1-a)
+// directly. Handing it a straight-alpha colour (full R,G,B with A<255)
+// therefore omits the src*a term and overflows uint8 when src+dst*(1-a) > 255
+// — e.g. a translucent background painted over already-opaque content (the
+// inverted backdrop of a backdrop-filter element) wraps to garbage. Storing
+// the premultiplied value makes the rasterizer's arithmetic the correct
+// Porter-Duff over. Opaque colours (A==255) are unchanged since c*255/255==c.
+func premultipliedRGBA(c css.Color) color.RGBA {
+	a := uint8(c.A * 255)
+	return color.RGBA{
+		R: uint8(uint32(c.R) * uint32(a) / 255),
+		G: uint8(uint32(c.G) * uint32(a) / 255),
+		B: uint8(uint32(c.B) * uint32(a) / 255),
+		A: a,
+	}
+}
+
 // setColor sets the draw context color from a css.Color.
 func (r *Renderer) setColor(c css.Color) {
-	r.dc.SetColor(color.RGBA{
-		R: c.R,
-		G: c.G,
-		B: c.B,
-		A: uint8(c.A * 255),
-	})
+	r.dc.SetColor(premultipliedRGBA(c))
 }
 
 // applyTextTransform applies CSS text-transform to a string.
@@ -6012,12 +6025,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// its left remain available for negative-inset overflow.
 		src := image.NewRGBA(image.Rect(0, 0, taExt, lhExt))
 		childDC := r.dc.NewChildContext(src)
-		childDC.SetColor(color.RGBA{
-			R: layer.TextColor.R,
-			G: layer.TextColor.G,
-			B: layer.TextColor.B,
-			A: uint8(layer.TextColor.A * 255),
-		})
+		childDC.SetColor(premultipliedRGBA(layer.TextColor))
 
 		// Phase 1 (underline/overline) must paint BEFORE text glyphs so glyphs
 		// render on top. Mirrors Blink's PaintDecorationsExceptLineThrough called
@@ -6042,12 +6050,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			// decoration color. Restore the text color so the glyph draw below
 			// uses the correct color. Mirrors the r.setColor(layer.TextColor)
 			// call in the non-rotation drawText path.
-			childDC.SetColor(color.RGBA{
-				R: layer.TextColor.R,
-				G: layer.TextColor.G,
-				B: layer.TextColor.B,
-				A: uint8(layer.TextColor.A * 255),
-			})
+			childDC.SetColor(premultipliedRGBA(layer.TextColor))
 		}
 
 		if len(layer.FontFeatures) > 0 {
@@ -6117,12 +6120,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 					if xEnd <= xStart {
 						continue
 					}
-					childDC.SetColor(color.RGBA{
-						R: td.Color.R,
-						G: td.Color.G,
-						B: td.Color.B,
-						A: uint8(td.Color.A * 255),
-					})
+					childDC.SetColor(premultipliedRGBA(td.Color))
 					childDC.DrawRectangle(xStart, rectTopSrcY, xEnd-xStart, th)
 					childDC.Fill()
 				}
@@ -6484,7 +6482,7 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	markSrc := image.NewRGBA(image.Rect(0, 0, annotW, annotH))
 	markDC := r.dc.NewChildContext(markSrc)
 	emphColor := layer.TextEmphasisColor
-	markDC.SetColor(color.RGBA{R: emphColor.R, G: emphColor.G, B: emphColor.B, A: uint8(emphColor.A * 255)})
+	markDC.SetColor(premultipliedRGBA(emphColor))
 	markDC.DrawText(mark, emphFontID, 0, emphAscent)
 
 	markRot := image.NewRGBA(image.Rect(0, 0, annotH, annotW))
@@ -7287,12 +7285,7 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 	// Render text into offscreen buffer.
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	childDC := r.dc.NewChildContext(buf)
-	childDC.SetColor(color.RGBA{
-		R: shadow.Color.R,
-		G: shadow.Color.G,
-		B: shadow.Color.B,
-		A: uint8(shadow.Color.A * 255),
-	})
+	childDC.SetColor(premultipliedRGBA(shadow.Color))
 	if len(layer.FontFeatures) > 0 {
 		childDC.DrawTextWithFeatures(text, fontID, extend, extend+ascent, layer.FontFeatures)
 	} else {
@@ -8323,12 +8316,7 @@ func (r *Renderer) drawOutsetShadowBuffer(
 	buf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
 
 	childDC := r.dc.NewChildContext(buf)
-	childDC.SetColor(color.RGBA{
-		R: shadow.Color.R,
-		G: shadow.Color.G,
-		B: shadow.Color.B,
-		A: uint8(shadow.Color.A * 255),
-	})
+	childDC.SetColor(premultipliedRGBA(shadow.Color))
 
 	lsx, lsy := sx-minX, sy-minY
 	lbx, lby := bx-minX, by-minY
@@ -8472,13 +8460,9 @@ func (r *Renderer) drawInsetShadowBuffer(
 
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 
-	// Fill the entire buffer with shadow color.
-	sc := color.RGBA{
-		R: shadow.Color.R,
-		G: shadow.Color.G,
-		B: shadow.Color.B,
-		A: uint8(shadow.Color.A * 255),
-	}
+	// Fill the entire buffer with shadow color (premultiplied so the
+	// later DrawImage composite matches Go's premultiplied color.RGBA).
+	sc := premultipliedRGBA(shadow.Color)
 	for y := 0; y < bh; y++ {
 		for x := 0; x < bw; x++ {
 			off := y*buf.Stride + x*4
