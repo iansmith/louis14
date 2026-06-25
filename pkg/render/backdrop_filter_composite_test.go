@@ -58,3 +58,37 @@ func approxColor(a, b color.RGBA, tol int) bool {
 	}
 	return d(a.R, b.R) <= tol && d(a.G, b.G) <= tol && d(a.B, b.B) <= tol && d(a.A, b.A) <= tol
 }
+
+// TestBackdropFilterRootElementIsNoOp asserts that backdrop-filter on the
+// document element (<html>) is ignored: there is no backdrop behind the root,
+// so per CSS Filter Effects 2 the root element forms the implicit backdrop
+// root and backdrop-filter has no effect on it. Blink excludes the document
+// element from backdrop-filter painting (FilterPainter / the LayoutView never
+// has a backdrop-root effect node behind it; ComputedStyle::IsBackdropRoot
+// notes the root is handled separately) @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// A descendant element with backdrop-filter must still be marked.
+func TestBackdropFilterRootElementIsNoOp(t *testing.T) {
+	root, _ := layoutAndBuildPaintTree(t, `<!DOCTYPE html>
+<html style="background: green; backdrop-filter: invert(1)">
+<body><div style="backdrop-filter: invert(1); width:50px; height:50px">x</div></body>
+</html>`)
+
+	var rootHasBF, sawDescendantBF bool
+	forEachLayer(root, nil, func(layer *PaintLayer, _ []*PaintLayer) {
+		if layer.Box == nil || layer.Box.Node == nil {
+			return
+		}
+		if layer.Box.Node.TagName == "html" {
+			rootHasBF = layer.HasBackdropFilter
+		} else if layer.HasBackdropFilter {
+			sawDescendantBF = true
+		}
+	})
+
+	if rootHasBF {
+		t.Errorf("root <html> element must not have HasBackdropFilter (backdrop-filter on the root element is a no-op)")
+	}
+	if !sawDescendantBF {
+		t.Errorf("descendant div with backdrop-filter must still be marked HasBackdropFilter")
+	}
+}

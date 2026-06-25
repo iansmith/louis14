@@ -1584,8 +1584,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// CSS Backdrop Filters.
+	//
+	// backdrop-filter on the document element (<html>) is a no-op: the root
+	// element forms the implicit backdrop root and there is no backdrop
+	// content behind it to filter (CSS Filter Effects 2 §3 — the root's
+	// backdrop is the canvas itself, which the filter does not apply to).
+	// Mirrors Blink, which excludes the LayoutView/document element from
+	// backdrop-filter painting (ComputedStyle::IsBackdropRoot handles the
+	// root separately) @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	bdFilters := s.GetBackdropFilter()
-	if len(bdFilters) > 0 {
+	if len(bdFilters) > 0 && !(box.Node != nil && box.Node.TagName == "html") {
 		layer.BackdropFilters = bdFilters
 		layer.HasBackdropFilter = true
 	}
