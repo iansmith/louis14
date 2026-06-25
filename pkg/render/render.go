@@ -345,6 +345,15 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// the page can then resolve against this single registry. See
 	// svgResources comment on the Renderer type.
 	r.svgResources = collectSVGResources(boxes)
+	// `url(#id)` references resolve in the DOCUMENT tree scope, not the
+	// local `<svg>`: a `<rect>` in one inline SVG can reference a
+	// `<filter>` (or gradient/clip/mask) declared in a different inline
+	// SVG on the same page. The SVG paint context uses each SVGRoot's
+	// own per-root registry (svg_root_painter.go), so redistribute the
+	// merged document-scope registry back into every SVGRoot's registry.
+	// Mirrors Blink's SVGTreeScopeResources being a per-Document (tree
+	// scope) namespace, not per outermost-svg.
+	redistributeSVGResources(boxes, r.svgResources)
 	// Phase 6: detect reference cycles. Cycle-flagged resources
 	// (a self-referential `<mask>`, two masks pointing at each other,
 	// etc.) are treated as `none` at paint time so the painters don't
@@ -750,6 +759,40 @@ func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
 		mergeSVGResourcesFromBox(b, merged)
 	}
 	return merged
+}
+
+// redistributeSVGResources copies the merged document-scope registry
+// back into every inline `<svg>` SVGRoot's per-root registry. Because
+// mergeSVGRegistries uses the first-wins RegisterXxx methods, ids a root
+// already owns are preserved; ids from other roots are added. This makes
+// cross-SVG `url(#id)` references (e.g. a `<rect>` in one svg referencing
+// a `<filter>` in another) resolve via the SVG paint context's local
+// `root.Resources` lookup. Mirrors Blink's per-Document tree-scope
+// resource namespace.
+func redistributeSVGResources(boxes []*layout.Box, merged *svg.SVGResourceRegistry) {
+	if merged == nil {
+		return
+	}
+	for _, b := range boxes {
+		redistributeSVGResourcesToBox(b, merged)
+	}
+}
+
+// redistributeSVGResourcesToBox is the recursive worker for
+// redistributeSVGResources: pre-order walk that back-merges the merged
+// document-scope registry into each SVGRoot's per-root registry.
+func redistributeSVGResourcesToBox(box *layout.Box, merged *svg.SVGResourceRegistry) {
+	if box == nil {
+		return
+	}
+	if box.LayoutNode != nil {
+		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
+			mergeSVGRegistries(root.Resources, merged)
+		}
+	}
+	for _, child := range box.Children {
+		redistributeSVGResourcesToBox(child, merged)
+	}
 }
 
 // mergeSVGResourcesFromBox is the recursive worker for
