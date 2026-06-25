@@ -761,3 +761,31 @@ func TestMatchesIsLikeFullComplex(t *testing.T) {
 		t.Error("#b must NOT match :is(#d + div, #d ~ #h)")
 	}
 }
+
+// TestNthChildOfTagnameList verifies :nth-child(An+B of S) where S is a
+// multi-branch type-selector list. Mirrors the nth-child-of-tagname WPT
+// reftest: only elements matching S contribute to the index count, and the
+// candidate is tested at its position within that filtered list. Mirrors
+// Blink SelectorChecker::CheckPseudoNthChild's pre-filter-then-index order
+// @ 4883d11fef4a.
+func TestNthChildOfTagnameList(t *testing.T) {
+	// <body><webkit/><p/><p/><p/><fast/><p/><p/><webkit/><p/><webkit/><p/></body>
+	body := &html.Node{Type: html.ElementNode, TagName: "body"}
+	tags := []string{"webkit", "p", "p", "p", "fast", "p", "p", "webkit", "p", "webkit", "p"}
+	kids := make([]*html.Node, len(tags))
+	for i, tag := range tags {
+		kids[i] = &html.Node{Type: html.ElementNode, TagName: tag, Parent: body}
+	}
+	body.Children = kids
+
+	sel := ParseSelector(":nth-child(odd of webkit, fast)")
+	// Filtered list (matching webkit|fast) in tree order: webkit(#0), fast(#4),
+	// webkit(#7), webkit(#9) → positions 1,2,3,4. Odd positions: #0 and #7.
+	want := map[int]bool{0: true, 7: true}
+	for i, k := range kids {
+		got := MatchesSelector(k, sel)
+		if got != want[i] {
+			t.Errorf("child %d <%s>: matches=%v, want %v", i, k.TagName, got, want[i])
+		}
+	}
+}
