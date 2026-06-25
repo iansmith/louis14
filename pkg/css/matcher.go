@@ -10,8 +10,30 @@ import (
 
 // Phase 3: Selector matching
 
+// matchContext carries the per-match flags that change how certain
+// pseudo-classes evaluate, mirroring Blink's
+// SelectorChecker::SelectorCheckingContext (core/css/selector_checker.h @
+// 4883d11fef4a). louis14 only needs the :has() scope flag today: per CSS
+// Selectors 4 §6.6.1.1, inside :has() the :link / :visited pseudo-classes
+// behave differently from general matching (history-leak privacy carve-out).
+type matchContext struct {
+	// insideHas is true while evaluating the argument selector of a :has()
+	// pseudo-class. Inside :has(), :link matches ANY hyperlink and :visited
+	// matches NONE; outside, they are mutually exclusive on the link's
+	// visitedness. Mirrors Blink SelectorChecker::CheckPseudoHas's forced
+	// "matches all links / never visited" behavior under the has-context.
+	insideHas bool
+}
+
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
 func MatchesSelector(node *html.Node, selector Selector) bool {
+	return matchesSelectorCtx(node, selector, matchContext{})
+}
+
+// matchesSelectorCtx is MatchesSelector with an explicit match context, used
+// by functional pseudo-classes (:is/:where/:not/:nth-child(of)/:has) that must
+// propagate (or change) the context when re-entering the matcher.
+func matchesSelectorCtx(node *html.Node, selector Selector, ctx matchContext) bool {
 	if node.Type != html.ElementNode {
 		return false
 	}
@@ -22,14 +44,14 @@ func MatchesSelector(node *html.Node, selector Selector) bool {
 	}
 
 	// Start matching from the rightmost part (the target element)
-	return matchesCompoundSelector(node, selector, len(selector.Parts)-1)
+	return matchesCompoundSelector(node, selector, len(selector.Parts)-1, ctx)
 }
 
 // matchesCompoundSelector checks if the node matches the selector at the given part index
 // and all ancestor requirements
-func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int) bool {
+func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int, ctx matchContext) bool {
 	// Match the current part against the node
-	if !matchesSelectorPart(node, selector.Parts[partIndex]) {
+	if !matchesSelectorPart(node, selector.Parts[partIndex], ctx) {
 		return false
 	}
 
@@ -45,12 +67,12 @@ func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int) 
 	switch combinator {
 	case DescendantCombinator:
 		// Match any ancestor
-		return matchesAncestor(node, selector, prevPartIndex)
+		return matchesAncestor(node, selector, prevPartIndex, ctx)
 
 	case ChildCombinator:
 		// Match direct parent only (skip synthetic document node)
 		if node.Parent != nil && node.Parent.TagName != "document" {
-			return matchesCompoundSelector(node.Parent, selector, prevPartIndex)
+			return matchesCompoundSelector(node.Parent, selector, prevPartIndex, ctx)
 		}
 		return false
 
@@ -58,20 +80,20 @@ func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int) 
 		// Match immediate previous sibling
 		prevSibling := getPreviousSibling(node)
 		if prevSibling != nil {
-			return matchesCompoundSelector(prevSibling, selector, prevPartIndex)
+			return matchesCompoundSelector(prevSibling, selector, prevPartIndex, ctx)
 		}
 		return false
 
 	case GeneralSiblingCombinator:
 		// Match any previous sibling
-		return matchesPreviousSibling(node, selector, prevPartIndex)
+		return matchesPreviousSibling(node, selector, prevPartIndex, ctx)
 	}
 
 	return false
 }
 
 // matchesSelectorPart checks if a node matches a single selector part
-func matchesSelectorPart(node *html.Node, part SelectorPart) bool {
+func matchesSelectorPart(node *html.Node, part SelectorPart, ctx matchContext) bool {
 	// Match element
 	if part.Element != "" && part.Element != "*" {
 		if node.TagName != part.Element {
@@ -116,7 +138,7 @@ func matchesSelectorPart(node *html.Node, part SelectorPart) bool {
 
 	// Pseudo-classes
 	for _, pc := range part.PseudoClasses {
-		if !matchesPseudoClass(node, pc) {
+		if !matchesPseudoClass(node, pc, ctx) {
 			return false
 		}
 	}
@@ -167,10 +189,10 @@ func matchesAttributeSelector(node *html.Node, attr AttributeSelector) bool {
 }
 
 // matchesAncestor checks if any ancestor matches the selector part
-func matchesAncestor(node *html.Node, selector Selector, partIndex int) bool {
+func matchesAncestor(node *html.Node, selector Selector, partIndex int, ctx matchContext) bool {
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		if ancestor.Type == html.ElementNode && ancestor.TagName != "document" {
-			if matchesCompoundSelector(ancestor, selector, partIndex) {
+			if matchesCompoundSelector(ancestor, selector, partIndex, ctx) {
 				return true
 			}
 		}
@@ -179,9 +201,9 @@ func matchesAncestor(node *html.Node, selector Selector, partIndex int) bool {
 }
 
 // matchesPreviousSibling checks if any previous sibling matches the selector part
-func matchesPreviousSibling(node *html.Node, selector Selector, partIndex int) bool {
+func matchesPreviousSibling(node *html.Node, selector Selector, partIndex int, ctx matchContext) bool {
 	for sibling := getPreviousSibling(node); sibling != nil; sibling = getPreviousSibling(sibling) {
-		if matchesCompoundSelector(sibling, selector, partIndex) {
+		if matchesCompoundSelector(sibling, selector, partIndex, ctx) {
 			return true
 		}
 	}
@@ -214,7 +236,7 @@ func getPreviousSibling(node *html.Node) *html.Node {
 }
 
 // matchesPseudoClass checks if a node matches a given pseudo-class.
-func matchesPseudoClass(node *html.Node, pc string) bool {
+func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 	switch {
 	case pc == "first-child":
 		return isNthChild(node, 1)
@@ -238,7 +260,7 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		arg := pc[len("nth-child(") : len(pc)-1] // strip "nth-child(" and ")"
 		anb, ofSel, hasOf := splitNthChildArg(arg)
 		if hasOf {
-			return matchesNthChildOf(node, anb, ofSel, false)
+			return matchesNthChildOf(node, anb, ofSel, false, ctx)
 		}
 		return matchesNthChild(node, anb)
 	case strings.HasPrefix(pc, "not("):
@@ -252,7 +274,7 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 				continue
 			}
 			innerSel := ParseSelector(sel)
-			if len(innerSel.Parts) > 0 && matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
+			if len(innerSel.Parts) > 0 && matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1], ctx) {
 				return false // Element matches one of the :not() selectors → fail
 			}
 		}
@@ -275,15 +297,15 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		// matches :visited; this is exact, not a heuristic. A fragment href
 		// ("#name") resolves to current-URL-plus-fragment — a distinct URL
 		// that a reftest run did not navigate to — so it stays unvisited.
-		switch node.TagName {
-		case "a", "area", "link":
-			href, ok := node.GetAttribute("href")
-			if !ok {
-				return false
-			}
-			return strings.TrimSpace(href) == ""
+		//
+		// Privacy carve-out (CSS Selectors 4 §6.6.1.1): inside :has(),
+		// :visited must NEVER match, to deny a history side channel. Mirrors
+		// Blink SelectorChecker's has-context, which forces the visited bit
+		// off when checking the :has() argument (@ 4883d11fef4a).
+		if ctx.insideHas {
+			return false
 		}
-		return false
+		return isVisitedLink(node)
 	case pc == "focus-visible":
 		// :focus-visible matches when the UA decides the focus indicator
 		// should be drawn. In a static reftest engine driven only by JS
@@ -343,16 +365,10 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		// :local-link matches anchors linking to current page — can't determine in static render
 		return false
 	case pc == "any-link", pc == "-webkit-any-link":
-		// :any-link matches <a>, <area>, <link> elements that have an href attribute
-		if node.Type != html.ElementNode {
-			return false
-		}
-		tag := node.TagName
-		if tag != "a" && tag != "area" && tag != "link" {
-			return false
-		}
-		_, hasHref := node.GetAttribute("href")
-		return hasHref
+		// :any-link matches <a>, <area>, <link> elements that have an href
+		// attribute — the union of :link and :visited, with no visitedness or
+		// privacy distinction.
+		return isHyperlink(node)
 	case pc == "scope":
 		// :scope matches the element serving as the scope reference.
 		// In a static document context, approximate as :root (first element child of document).
@@ -368,23 +384,24 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 	case pc == "link":
 		// Per CSS Selectors 4 §6.6.1, `:link` matches a non-visited hyperlink
 		// and `:visited` matches a visited one — they are mutually exclusive
-		// in general matching, but §6.6.1.1 carves out a privacy exception
-		// for `:has()`: inside `:has()`, `:link` must match ANY hyperlink and
-		// `:visited` must never match (to avoid history-leak side channels).
-		//
-		// louis14 treats `<a href="">` as the only :visited link (its href
-		// resolves to the current document URL, unconditionally in history).
-		// We can't distinguish "is inside :has()" cheaply at this layer, so
-		// we ALSO treat the visited link as matching :link — which is the
-		// spec-mandated behavior inside `:has()` and the simplest
-		// pre-:has()-aware approximation for general matching (it preserves
-		// existing test passes that rely on `:link` matching any hyperlink).
-		switch node.TagName {
-		case "a", "area", "link":
-			_, hasHref := node.GetAttribute("href")
-			return hasHref
+		// in general matching, keyed on the link's visitedness. §6.6.1.1
+		// carves out a privacy exception for `:has()`: inside `:has()`,
+		// `:link` must match ANY hyperlink and `:visited` must never match
+		// (to avoid history-leak side channels). Mirrors Blink
+		// SelectorChecker's has-context forcing :link to match all links
+		// (@ 4883d11fef4a).
+		href, isLink := hyperlinkHref(node)
+		if !isLink {
+			return false
 		}
-		return false
+		if ctx.insideHas {
+			// Inside :has(), :link matches any hyperlink regardless of
+			// visitedness.
+			return true
+		}
+		// General matching: :link is the negation of :visited over links —
+		// matches an UNvisited hyperlink (one whose href is not empty).
+		return strings.TrimSpace(href) != ""
 	case strings.HasPrefix(pc, "is("):
 		// :is() matches if ANY selector in the comma-separated list matches.
 		// Per CSS Selectors 4 §3.7, pseudo-elements are not allowed inside
@@ -395,12 +412,12 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		// containing a pseudo-element (matches Blink behavior for tests like
 		// `:is(*, ::before) *`).
 		arg := pc[len("is(") : len(pc)-1]
-		return matchesIsLike(node, arg)
+		return matchesIsLike(node, arg, ctx)
 	case strings.HasPrefix(pc, "where("):
 		// :where() is identical to :is() but with zero specificity. Same
 		// contextual-invalidation rule applies for pseudo-element arguments.
 		arg := pc[len("where(") : len(pc)-1]
-		return matchesIsLike(node, arg)
+		return matchesIsLike(node, arg, ctx)
 	case strings.HasPrefix(pc, "has("):
 		arg := pc[len("has(") : len(pc)-1]
 		// Per CSS Selectors 4 §17.1.4 and CSSWG resolution
@@ -414,7 +431,7 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		if containsHas(arg) {
 			return false
 		}
-		return matchesHas(node, strings.TrimSpace(arg))
+		return matchesHas(node, strings.TrimSpace(arg), ctx)
 	case pc == "first-of-type":
 		return nthOfTypeIndex(node) == 1
 	case pc == "last-of-type":
@@ -432,7 +449,7 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		arg := pc[len("nth-last-child(") : len(pc)-1]
 		anb, ofSel, hasOf := splitNthChildArg(arg)
 		if hasOf {
-			return matchesNthChildOf(node, anb, ofSel, true)
+			return matchesNthChildOf(node, anb, ofSel, true, ctx)
 		}
 		posFromEnd := totalElementChildren(node) - nthChildIndex(node) + 1
 		return matchesAnPlusB(posFromEnd, anb)
@@ -466,6 +483,40 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 	default:
 		return false
 	}
+}
+
+// hyperlinkHref reports whether node is an HTML hyperlink — an <a>, <area>, or
+// <link> element carrying an `href` attribute — and, if so, returns its href
+// value. The single source of truth for "what is a link"; isHyperlink and
+// isVisitedLink (and the :link arm) all build on it so the TagName switch and
+// attribute lookup happen exactly once per query. Mirrors Blink's
+// Element::IsLink (core/dom/element.cc @ 4883d11fef4a).
+func hyperlinkHref(node *html.Node) (href string, isLink bool) {
+	switch node.TagName {
+	case "a", "area", "link":
+		return node.GetAttribute("href")
+	}
+	return "", false
+}
+
+// isHyperlink reports whether node is an <a>/<area>/<link> with an href —
+// the set matched by :any-link and the domain over which :link / :visited
+// partition.
+func isHyperlink(node *html.Node) bool {
+	_, isLink := hyperlinkHref(node)
+	return isLink
+}
+
+// isVisitedLink reports whether node is a hyperlink louis14 treats as visited.
+// A static renderer has no general browsing-history model, so an arbitrary
+// link is unvisited. The one exact case: a hyperlink with an *empty* href
+// resolves to the current document's own URL, which is unconditionally in
+// history while that document is being rendered — so `<a href="">` is visited.
+// A fragment href ("#name") resolves to a distinct URL the reftest run never
+// navigated to, so it stays unvisited.
+func isVisitedLink(node *html.Node) bool {
+	href, isLink := hyperlinkHref(node)
+	return isLink && strings.TrimSpace(href) == ""
 }
 
 // elementDirectionality returns the element's directionality per the HTML
@@ -742,7 +793,7 @@ func isNthOfRightBoundary(ch byte) bool {
 // any branch containing one is treated as a parse error (the branch never
 // matches) — Blink's CSSSelectorParser rejects them at parse time, which
 // has the same effect.
-func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool) bool {
+func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx matchContext) bool {
 	branches := splitSelectorGroup(ofSel)
 	parsedBranches := make([]Selector, 0, len(branches))
 	for _, b := range branches {
@@ -761,7 +812,7 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool) bool {
 		return false
 	}
 	// Candidate must itself match S.
-	if !matchesAnyBranch(node, parsedBranches) {
+	if !matchesAnyBranch(node, parsedBranches, ctx) {
 		return false
 	}
 	if node.Parent == nil {
@@ -774,7 +825,7 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool) bool {
 		if c.Type != html.ElementNode {
 			continue
 		}
-		if !matchesAnyBranch(c, parsedBranches) {
+		if !matchesAnyBranch(c, parsedBranches, ctx) {
 			continue
 		}
 		count++
@@ -795,9 +846,9 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool) bool {
 // matchesAnyBranch reports whether node matches any of the parsed complex
 // selectors. Each branch is matched as a full complex selector (combinators
 // resolved by walking ancestors/siblings), not just the rightmost compound.
-func matchesAnyBranch(node *html.Node, branches []Selector) bool {
+func matchesAnyBranch(node *html.Node, branches []Selector, ctx matchContext) bool {
 	for i := range branches {
-		if MatchesSelector(node, branches[i]) {
+		if matchesSelectorCtx(node, branches[i], ctx) {
 			return true
 		}
 	}
@@ -971,7 +1022,7 @@ func parseInt(s string) (int, bool) {
 // or legacy :before/:after/:first-letter/:first-line), the whole :is()/:where()
 // fails to match elements. This matches Blink behavior on the WPT
 // contextually-invalid-selectors-* tests.
-func matchesIsLike(node *html.Node, arg string) bool {
+func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	selectors := splitSelectorGroup(strings.TrimSpace(arg))
 	if containsPseudoElementArg(selectors) {
 		return false
@@ -981,13 +1032,16 @@ func matchesIsLike(node *html.Node, arg string) bool {
 		if len(innerSel.Parts) == 0 {
 			continue
 		}
-		// MatchesSelector walks the full compound + combinator chain. The
+		// matchesSelectorCtx walks the full compound + combinator chain. The
 		// previous implementation matched only the rightmost compound, which
 		// caused `:is(#d + div, #d ~ #h)` to match every `div` instead of
 		// only the one adjacent to `#d`. Mirrors Blink's
 		// SelectorChecker::MatchSelector recursion @ 4883d11fef4a — :is()
 		// dispatches each branch through the regular complex-selector path.
-		if MatchesSelector(node, innerSel) {
+		// The match context (e.g. inside-:has) propagates into each branch so
+		// :is(:link)/:is(:visited) follow the same privacy rules as a bare
+		// :link/:visited in that position.
+		if matchesSelectorCtx(node, innerSel, ctx) {
 			return true
 		}
 	}
@@ -1051,8 +1105,13 @@ func containsHas(s string) bool {
 	return false
 }
 
-// matchesHas implements the :has() pseudo-class
-func matchesHas(node *html.Node, selectorStr string) bool {
+// matchesHas implements the :has() pseudo-class. The argument selector is
+// evaluated under a has-context (insideHas=true): per CSS Selectors 4
+// §6.6.1.1, :link there matches any hyperlink and :visited never matches, to
+// deny a browsing-history side channel. Mirrors Blink
+// SelectorChecker::CheckPseudoHas @ 4883d11fef4a.
+func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
+	ctx.insideHas = true
 	selectors := splitSelectorGroup(strings.TrimSpace(selectorStr))
 	for _, sel := range selectors {
 		sel = strings.TrimSpace(sel)
@@ -1066,7 +1125,7 @@ func matchesHas(node *html.Node, selectorStr string) bool {
 			if len(parsed.Parts) > 0 {
 				for _, child := range node.Children {
 					if child.Type == html.ElementNode {
-						if matchesSelectorPart(child, parsed.Parts[len(parsed.Parts)-1]) {
+						if matchesSelectorPart(child, parsed.Parts[len(parsed.Parts)-1], ctx) {
 							return true
 						}
 					}
@@ -1078,7 +1137,7 @@ func matchesHas(node *html.Node, selectorStr string) bool {
 			parsed := ParseSelector(innerSel)
 			if len(parsed.Parts) > 0 {
 				next := getNextElementSibling(node)
-				if next != nil && matchesSelectorPart(next, parsed.Parts[len(parsed.Parts)-1]) {
+				if next != nil && matchesSelectorPart(next, parsed.Parts[len(parsed.Parts)-1], ctx) {
 					return true
 				}
 			}
@@ -1088,7 +1147,7 @@ func matchesHas(node *html.Node, selectorStr string) bool {
 			parsed := ParseSelector(innerSel)
 			if len(parsed.Parts) > 0 {
 				for _, sib := range getSubsequentSiblings(node) {
-					if matchesSelectorPart(sib, parsed.Parts[len(parsed.Parts)-1]) {
+					if matchesSelectorPart(sib, parsed.Parts[len(parsed.Parts)-1], ctx) {
 						return true
 					}
 				}
@@ -1097,7 +1156,7 @@ func matchesHas(node *html.Node, selectorStr string) bool {
 			// Default: descendant combinator
 			parsed := ParseSelector(sel)
 			if len(parsed.Parts) > 0 {
-				if hasMatchingDescendant(node, parsed.Parts[len(parsed.Parts)-1]) {
+				if hasMatchingDescendant(node, parsed.Parts[len(parsed.Parts)-1], ctx) {
 					return true
 				}
 			}
@@ -1139,13 +1198,13 @@ func getSubsequentSiblings(node *html.Node) []*html.Node {
 	return result
 }
 
-func hasMatchingDescendant(node *html.Node, part SelectorPart) bool {
+func hasMatchingDescendant(node *html.Node, part SelectorPart, ctx matchContext) bool {
 	for _, child := range node.Children {
 		if child.Type == html.ElementNode {
-			if matchesSelectorPart(child, part) {
+			if matchesSelectorPart(child, part, ctx) {
 				return true
 			}
-			if hasMatchingDescendant(child, part) {
+			if hasMatchingDescendant(child, part, ctx) {
 				return true
 			}
 		}

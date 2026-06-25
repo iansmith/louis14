@@ -409,14 +409,14 @@ func TestDirPseudoClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := matchesPseudoClass(tc.node, "dir(ltr)"); got != tc.ltrMatch {
+			if got := matchesPseudoClass(tc.node, "dir(ltr)", matchContext{}); got != tc.ltrMatch {
 				t.Errorf(":dir(ltr) match = %v, want %v", got, tc.ltrMatch)
 			}
-			if got := matchesPseudoClass(tc.node, "dir(rtl)"); got != tc.rtlMatch {
+			if got := matchesPseudoClass(tc.node, "dir(rtl)", matchContext{}); got != tc.rtlMatch {
 				t.Errorf(":dir(rtl) match = %v, want %v", got, tc.rtlMatch)
 			}
 			// Unknown argument never matches.
-			if matchesPseudoClass(tc.node, "dir(foopy)") {
+			if matchesPseudoClass(tc.node, "dir(foopy)", matchContext{}) {
 				t.Errorf(":dir(foopy) should never match")
 			}
 		})
@@ -503,25 +503,25 @@ func TestMatchesIsWithPseudoElement(t *testing.T) {
 	node := &html.Node{Type: html.ElementNode, TagName: "div"}
 
 	// Sanity: :is() with only normal selectors still matches.
-	if !matchesPseudoClass(node, "is(div, span)") {
+	if !matchesPseudoClass(node, "is(div, span)", matchContext{}) {
 		t.Error(":is(div, span) should match <div>")
 	}
-	if !matchesPseudoClass(node, "where(div, span)") {
+	if !matchesPseudoClass(node, "where(div, span)", matchContext{}) {
 		t.Error(":where(div, span) should match <div>")
 	}
 
 	// Pseudo-element inside :is() makes the whole :is() contextually invalid
 	// for element matching, even if another branch (the * universal) would
 	// otherwise match.
-	if matchesPseudoClass(node, "is(*, ::before)") {
+	if matchesPseudoClass(node, "is(*, ::before)", matchContext{}) {
 		t.Error(":is(*, ::before) must not match a real element (contextually invalid)")
 	}
-	if matchesPseudoClass(node, "where(*, ::before)") {
+	if matchesPseudoClass(node, "where(*, ::before)", matchContext{}) {
 		t.Error(":where(*, ::before) must not match a real element (contextually invalid)")
 	}
 
 	// Legacy single-colon pseudo-element forms also trigger invalidation.
-	if matchesPseudoClass(node, "is(div, :before)") {
+	if matchesPseudoClass(node, "is(div, :before)", matchContext{}) {
 		t.Error(":is(div, :before) must not match (legacy pseudo-element form)")
 	}
 
@@ -529,7 +529,7 @@ func TestMatchesIsWithPseudoElement(t *testing.T) {
 	// is NOT a top-level pseudo-element of the :is() argument, so the :is()
 	// is still valid. This keeps the paren-aware scanner consistent with the
 	// selector parser's findTopLevelPseudoElement.
-	if !matchesPseudoClass(node, "is(:not(span))") {
+	if !matchesPseudoClass(node, "is(:not(span))", matchContext{}) {
 		t.Error(":is(:not(span)) should match <div> (no top-level pseudo-element)")
 	}
 }
@@ -570,10 +570,10 @@ func TestFormStatePseudos(t *testing.T) {
 	}
 	for _, tc := range requiredCases {
 		t.Run("required/"+tc.name, func(t *testing.T) {
-			if matchesPseudoClass(tc.node, "required") != tc.required {
+			if matchesPseudoClass(tc.node, "required", matchContext{}) != tc.required {
 				t.Errorf(":required expected %v", tc.required)
 			}
-			if matchesPseudoClass(tc.node, "optional") != tc.optional {
+			if matchesPseudoClass(tc.node, "optional", matchContext{}) != tc.optional {
 				t.Errorf(":optional expected %v", tc.optional)
 			}
 		})
@@ -598,10 +598,10 @@ func TestFormStatePseudos(t *testing.T) {
 	}
 	for _, tc := range rwCases {
 		t.Run("read-write/"+tc.name, func(t *testing.T) {
-			if got := matchesPseudoClass(tc.node, "read-write"); got != tc.readWrite {
+			if got := matchesPseudoClass(tc.node, "read-write", matchContext{}); got != tc.readWrite {
 				t.Errorf(":read-write expected %v got %v", tc.readWrite, got)
 			}
-			if got := matchesPseudoClass(tc.node, "read-only"); got == tc.readWrite {
+			if got := matchesPseudoClass(tc.node, "read-only", matchContext{}); got == tc.readWrite {
 				t.Errorf(":read-only must be the negation of :read-write (case %q)", tc.name)
 			}
 		})
@@ -622,7 +622,7 @@ func TestFormStatePseudos(t *testing.T) {
 	}
 	for _, tc := range psCases {
 		t.Run("placeholder-shown/"+tc.name, func(t *testing.T) {
-			if got := matchesPseudoClass(tc.node, "placeholder-shown"); got != tc.want {
+			if got := matchesPseudoClass(tc.node, "placeholder-shown", matchContext{}); got != tc.want {
 				t.Errorf(":placeholder-shown expected %v got %v", tc.want, got)
 			}
 		})
@@ -688,6 +688,59 @@ func TestParseAnPlusBValid(t *testing.T) {
 // `:is(#d + div, #d ~ #h)` matched every `div` instead of only the one
 // adjacent to `#d`. Mirrors Blink's SelectorChecker dispatch through
 // MatchSelector for each :is() branch.
+// TestLinkVisitedMutualExclusion verifies CSS Selectors 4 §6.6.1: in general
+// matching, :link matches only an UNVISITED hyperlink and :visited matches
+// only a VISITED one (they are mutually exclusive). louis14 treats <a href="">
+// as the sole visited link (its href resolves to the current document URL).
+// Mirrors Blink SelectorChecker::CheckPseudoClass's LINK/VISITED arms gated by
+// MatchesLink/MatchesVisited @ 4883d11fef4a.
+func TestLinkVisitedMutualExclusion(t *testing.T) {
+	visited := &html.Node{Type: html.ElementNode, TagName: "a", Attributes: map[string]string{"href": ""}}
+	unvisited := &html.Node{Type: html.ElementNode, TagName: "a", Attributes: map[string]string{"href": "unvisited"}}
+
+	linkSel := ParseSelector("a:link")
+	visitedSel := ParseSelector("a:visited")
+
+	if MatchesSelector(visited, linkSel) {
+		t.Error(`a:link must NOT match a visited link (href="")`)
+	}
+	if !MatchesSelector(unvisited, linkSel) {
+		t.Error(`a:link must match an unvisited link (href="unvisited")`)
+	}
+	if !MatchesSelector(visited, visitedSel) {
+		t.Error(`a:visited must match a visited link (href="")`)
+	}
+	if MatchesSelector(unvisited, visitedSel) {
+		t.Error(`a:visited must NOT match an unvisited link`)
+	}
+}
+
+// TestLinkVisitedInsideHas verifies the CSS Selectors 4 §6.6.1.1 privacy
+// carve-out: inside :has(), :link matches ANY hyperlink and :visited matches
+// NONE (to avoid a history side channel). Mirrors Blink's
+// SelectorChecker::CheckPseudoHas history-leak guard @ 4883d11fef4a.
+func TestLinkVisitedInsideHas(t *testing.T) {
+	// <div id=parent1><a href=""></a></div>  (contains a visited link)
+	parent1 := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "parent1"}}
+	vlink := &html.Node{Type: html.ElementNode, TagName: "a", Attributes: map[string]string{"href": ""}, Parent: parent1}
+	parent1.Children = []*html.Node{vlink}
+
+	// <div id=parent2><a href="unvisited"></a></div>  (only an unvisited link)
+	parent2 := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"id": "parent2"}}
+	ulink := &html.Node{Type: html.ElementNode, TagName: "a", Attributes: map[string]string{"href": "unvisited"}, Parent: parent2}
+	parent2.Children = []*html.Node{ulink}
+
+	hasLink := ParseSelector("#parent1:has(:link)")
+	if !MatchesSelector(parent1, hasLink) {
+		t.Error(":has(:link) must match a parent containing a visited link (inside :has, :link matches any link)")
+	}
+
+	hasVisited := ParseSelector("#parent2:has(:visited)")
+	if MatchesSelector(parent2, hasVisited) {
+		t.Error(":has(:visited) must NOT match (inside :has, :visited never matches — privacy)")
+	}
+}
+
 func TestMatchesIsLikeFullComplex(t *testing.T) {
 	// Build: <main><div id=a></div><div id=b></div><div id=d></div><div id=e></div></main>
 	main := &html.Node{Type: html.ElementNode, TagName: "main"}
@@ -698,13 +751,13 @@ func TestMatchesIsLikeFullComplex(t *testing.T) {
 	main.Children = []*html.Node{a, b, d, e}
 
 	// :is(#d + div, #d ~ #h) — only #e is "div adjacent to #d"; #h doesn't exist.
-	if !matchesIsLike(e, "#d + div, #d ~ #h") {
+	if !matchesIsLike(e, "#d + div, #d ~ #h", matchContext{}) {
 		t.Error("#e should match :is(#d + div, ...) as the adjacent sibling of #d")
 	}
-	if matchesIsLike(a, "#d + div, #d ~ #h") {
+	if matchesIsLike(a, "#d + div, #d ~ #h", matchContext{}) {
 		t.Error("#a must NOT match :is(#d + div, #d ~ #h) — only the rightmost compound was checked under the old impl")
 	}
-	if matchesIsLike(b, "#d + div, #d ~ #h") {
+	if matchesIsLike(b, "#d + div, #d ~ #h", matchContext{}) {
 		t.Error("#b must NOT match :is(#d + div, #d ~ #h)")
 	}
 }
