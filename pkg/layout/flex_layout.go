@@ -2155,6 +2155,52 @@ func (fla *FlexLayoutAlgorithm) resolveItemMargins(
 	return ResolveMargins(style, wdm, containingInlineSize)
 }
 
+// crossConstraintSpace builds the constraint space used to resolve an item's
+// cross-axis CSS sizes (and their percentages) during flex-basis / max-content
+// main-size computation. When the main axis is the item's inline axis the cross
+// axis is its block axis, so a definite container cross-size becomes the
+// percentage-resolution AND available block-size (CSS Flexbox §9.8); otherwise
+// the block axis stays Indefinite (the -1 sentinel) so a percentage cross-size
+// like `height: 100%` resolves to auto rather than to the float64 zero value.
+func (fla *FlexLayoutAlgorithm) crossConstraintSpace(
+	parentWDM, childWDM WritingDirectionMode,
+	contentInlineSize, containerCrossSize float64,
+	mainIsItemInline, hasDefiniteCross bool,
+) ConstraintSpace {
+	crossBlock := float64(Indefinite)
+	if mainIsItemInline && hasDefiniteCross {
+		crossBlock = containerCrossSize
+	}
+	return NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossBlock}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossBlock}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
+		Build()
+}
+
+// itemEffectiveAspectRatio returns the item's logical aspect ratio (inline /
+// block) from its CSS `aspect-ratio` property, or, when that is unset and the
+// item is a replaced element, from its intrinsic dimensions. The returned
+// ratio is already adjusted for the item's writing mode. IsSet is false when
+// the item has no usable ratio in either source. This is the single predicate
+// the §9.2 transferred-size fallback keys on, so its callers stay in agreement
+// about which items participate in aspect-ratio main-size transfer.
+func (fla *FlexLayoutAlgorithm) itemEffectiveAspectRatio(
+	child *LayoutInputNode, style *css.Style, childWDM WritingDirectionMode,
+) css.AspectRatio {
+	ar := style.GetAspectRatio()
+	if !ar.IsSet && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
+		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
+			if childWDM.IsVertical() {
+				ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.AspectRatio}
+			}
+		}
+	}
+	return ar
+}
+
 // resolveFlexBasis computes the flex-basis content size for an item.
 func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 	child *LayoutInputNode,
@@ -2192,6 +2238,23 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			if !isRow && hasDefiniteMain {
 				pctBlockSize = containerMainSize
 				availBlockSize = containerMainSize
+			} else if fla.itemEffectiveAspectRatio(child, style, childWDM).IsSet {
+				// Aspect-ratio item, indefinite container main: keep the percentage
+				// base Indefinite (the -1 sentinel), NOT a definite 0.
+				// IsBlockSizeIndefinite() checks PercentageResolutionSize.BlockSize < 0,
+				// so a definite 0 would make a main-axis percentage like `height: 100%`
+				// resolve to 0 (ok=true) and short-circuit the §9.2 transferred-size
+				// fallback below, collapsing the item to 0 in the main axis. Per CSS
+				// Flexbox §9.2 / Blink's resolve_main_length() ("we weren't able to
+				// resolve the length … fallback to the max-content size";
+				// flex_layout_algorithm.cc @ Chromium main
+				// 3da458a33174a6422f35b4e603f4090f028670ae), an unresolvable percentage
+				// main-size must fall through to the content/transferred size — the
+				// item's definite cross-size carried through its ratio. Gating on the
+				// same effective-aspect-ratio predicate the §9.2 fallback keys on keeps
+				// ratio-free items (e.g. plain column `height:100%` divs) on the legacy
+				// 0 base, where the percentage correctly resolves to 0.
+				pctBlockSize = float64(Indefinite)
 			}
 			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: availBlockSize}).
@@ -2216,16 +2279,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			// dimensions should be used when no explicit cross-size forces a
 			// different proportion. Stretch prediction gives wrong results when the
 			// stretch cross-size differs from the intrinsic cross-size.
-			ar := style.GetAspectRatio()
-			if !ar.IsSet && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-				info := GetIntrinsicSizingInfo(fla.ctx, child)
-				if info.HasAspectRatio && info.AspectRatio > 0 {
-					ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
-					if childWDM.IsVertical() {
-						ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.AspectRatio}
-					}
-				}
-			}
+			ar := fla.itemEffectiveAspectRatio(child, style, childWDM)
 			isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 			if ar.IsSet {
 				var itemCrossContent float64
@@ -2235,22 +2289,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				// resolves against the container's content cross-size. Without
 				// this basis, `height: 50%` would resolve to 0, suppressing the
 				// aspect-ratio transfer that derives the main-size.
-				crossPctBlock := float64(Indefinite)
-				crossAvailBlock := float64(Indefinite)
-				if mainIsItemInline && hasDefiniteCross {
-					crossPctBlock = containerCrossSize
-					crossAvailBlock = containerCrossSize
-				}
-				// IsBlockSizeIndefinite() checks BlockSize < 0. Use the
-				// Indefinite sentinel (-1) explicitly when there is no
-				// definite basis, so a percentage like `height: 100%`
-				// does NOT resolve to 0 (the float64 zero value).
-				crossPctResSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: crossPctBlock}
-				crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossAvailBlock}).
-					SetPercentageResolutionSize(crossPctResSize).
-					SetPercentageResolutionInlineSize(contentInlineSize).
-					Build()
+				crossItemSpace := fla.crossConstraintSpace(parentWDM, childWDM,
+					contentInlineSize, containerCrossSize, mainIsItemInline, hasDefiniteCross)
 				if mainIsItemInline {
 					// Cross = block axis. Check for explicit CSS block-size.
 					if explicitCross, ok := ResolveBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
@@ -2763,11 +2803,14 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		}
 
 		// Apply ONLY cross-axis min/max constraints, re-deriving via aspect ratio.
-		crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-			SetPercentageResolutionInlineSize(contentInlineSize).
-			Build()
+		// A definite container cross-size becomes the percentage-resolution block
+		// base so a percentage cross constraint (e.g. max-height:100%) resolves to
+		// it rather than to 0 — the block-axis max then transfers through the
+		// aspect ratio to bound the main (inline) size, per Blink's
+		// ComputeTransferredMinMaxBlockSizes (flex_layout_algorithm.cc @ Chromium
+		// main 3da458a33174a6422f35b4e603f4090f028670ae). See crossConstraintSpace.
+		crossItemSpace := fla.crossConstraintSpace(parentWDM, childWDM,
+			contentInlineSize, containerCrossSize, mainIsItemInline, hasDefiniteCross)
 		if mainIsItemInline {
 			// Main=inline, cross=block. Apply block min/max only.
 			minBlock := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()

@@ -1,10 +1,49 @@
 package layout
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"testing"
 )
+
+// fakeImagePNG encodes an opaque-green PNG of the given pixel dimensions.
+// Used to give an <img> flex item a deterministic intrinsic size + aspect
+// ratio in layout-level tests without touching the filesystem.
+func fakeImagePNG(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{0, 128, 0, 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}
+
+// imgContextWithIntrinsic returns a LayoutContext whose ImageFetcher serves a
+// PNG of the given natural dimensions for any URI, so GetIntrinsicSizingInfo
+// reports the intended aspect ratio.
+func imgContextWithIntrinsic(natW, natH int) *LayoutContext {
+	data := fakeImagePNG(natW, natH)
+	return &LayoutContext{
+		ViewportWidth:  800,
+		ViewportHeight: 600,
+		ImageFetcher:   func(string) ([]byte, error) { return data, nil },
+	}
+}
+
+// makeImgNode builds an <img> element node with a non-data src so the
+// LayoutContext's ImageFetcher supplies its intrinsic dimensions.
+func makeImgNode(src string) *html.Node {
+	n := makeNode("img")
+	n.Attributes = map[string]string{"src": src}
+	return n
+}
 
 // findFragmentByNode walks the fragment tree and returns the first fragment
 // whose layout node wraps the given DOM node, along with its size.
@@ -280,5 +319,97 @@ func TestFlexLayout_RowMaxHeightDoesNotShrinkSmallContent(t *testing.T) {
 	}
 	if got := itemFrag.Size.HeightF64(); got != 30 {
 		t.Errorf("item height: got %.1f, want 30", got)
+	}
+}
+
+// TestFlexLayout_ColumnImgPercentMainSizeTransfersThroughAspectRatio mirrors
+// WPT css-flexbox/flex-aspect-ratio-img-column-004: a column flex container
+// with no definite main size (only min-height) holds a replaced <img>
+// (intrinsic 300×150, ratio 2:1) sized width:100% height:100%. The img's
+// percentage main-size (height:100%) is unresolvable because the container's
+// main size is indefinite, so per CSS Flexbox §9.2 / Blink's
+// resolve_main_length() it must FALL BACK to the content (transferred) size:
+// the definite cross-size (width:100% = 100px) carried through the aspect
+// ratio yields a main (block) size of 50px.
+//
+// Blink: flex_layout_algorithm.cc ConstructAndAppendFlexItems →
+// resolve_main_length() ("we weren't able to resolve the length … fallback to
+// the max-content size") @ Chromium main 3da458a33174a6422f35b4e603f4090f028670ae.
+//
+// Buggy behavior: resolveFlexBasis passes a DEFINITE zero as the percentage
+// resolution block-size, so height:100% resolves to 0 (ok=true) and short-
+// circuits before the aspect-ratio fallback — the img collapses to 100×0.
+func TestFlexLayout_ColumnImgPercentMainSizeTransfersThroughAspectRatio(t *testing.T) {
+	img := makeImgNode("col004.png")
+	flex := makeNode("div", img)
+
+	styles := map[*html.Node]*css.Style{
+		flex: makeStyle("display", "flex", "width", "100px", "min-height", "500px", "flex-direction", "column"),
+		img:  makeStyle("max-width", "100%", "height", "100%", "width", "100%"),
+	}
+
+	ctx := imgContextWithIntrinsic(300, 150)
+	layoutRoot := buildTestTree(flex, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := layoutElement(ctx, layoutRoot, space)
+	imgFrag := findFragmentByNode(result.Fragment, img)
+	if imgFrag == nil {
+		t.Fatal("img fragment not found")
+	}
+	if got := imgFrag.Size.WidthF64(); got != 100 {
+		t.Errorf("img width: got %.1f, want 100 (width:100%%)", got)
+	}
+	if got := imgFrag.Size.HeightF64(); got != 50 {
+		t.Errorf("img height: got %.1f, want 50 (100px width transferred through 2:1 aspect ratio)", got)
+	}
+}
+
+// TestFlexLayout_RowImgMaxHeightTransfersThroughAspectRatio mirrors WPT
+// css-flexbox/flex-aspect-ratio-img-row-016: a row flex container 100×100
+// holds a replaced <img> (intrinsic 1000×1000, ratio 1:1) with min-width:0
+// and max-height:100%. The max-height resolves against the container's
+// definite cross-size (100px) and transfers through the aspect ratio to clamp
+// the main (inline) size to 100px — so the img is 100×100, not its 1000px
+// max-content width.
+//
+// Blink: flex_layout_algorithm.cc ComputeTransferredMinMaxBlockSizes carries
+// the block-axis max constraint through LogicalAspectRatio() into the inline
+// (main) size @ Chromium main 3da458a33174a6422f35b4e603f4090f028670ae.
+//
+// Buggy behavior: itemMaxContentMainSize builds its cross constraint space
+// without a percentage-resolution block-size, so max-height:100% resolves to
+// 0, clamping the block size to 0 and collapsing the img to 0×0.
+func TestFlexLayout_RowImgMaxHeightTransfersThroughAspectRatio(t *testing.T) {
+	img := makeImgNode("row016.png")
+	flex := makeNode("div", img)
+
+	styles := map[*html.Node]*css.Style{
+		flex: makeStyle("display", "flex", "width", "100px", "height", "100px", "align-items", "start"),
+		img:  makeStyle("min-width", "0px", "max-height", "100%"),
+	}
+
+	ctx := imgContextWithIntrinsic(1000, 1000)
+	layoutRoot := buildTestTree(flex, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := layoutElement(ctx, layoutRoot, space)
+	imgFrag := findFragmentByNode(result.Fragment, img)
+	if imgFrag == nil {
+		t.Fatal("img fragment not found")
+	}
+	if got := imgFrag.Size.HeightF64(); got != 100 {
+		t.Errorf("img height: got %.1f, want 100 (max-height:100%% of 100px container)", got)
+	}
+	if got := imgFrag.Size.WidthF64(); got != 100 {
+		t.Errorf("img width: got %.1f, want 100 (100px height transferred through 1:1 aspect ratio)", got)
 	}
 }
