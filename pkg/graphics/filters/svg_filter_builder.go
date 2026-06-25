@@ -467,11 +467,12 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 			}
 			ins = append(ins, b.resolveInputAttr(child, "in"))
 		}
-		if len(ins) == 0 {
-			// Spec: empty feMerge produces nothing (just the source).
-			// Defensive: return the chain default to avoid a nil.
-			return b.lastEffect
-		}
+		// Spec (SVG Filter Effects 1 §feMerge): an feMerge with no
+		// feMergeNode children produces a transparent black image — NOT a
+		// pass-through of the chain default. NewFEMerge over an empty input
+		// list does exactly that (its ApplyEffect composites nothing onto a
+		// zeroed buffer). Mirrors Blink SVGFEMergeElement::Build, which
+		// constructs an FEMerge with zero inputs.
 		return NewFEMerge(ins, b.space)
 	case "fecomponenttransfer":
 		in := b.resolveInputAttr(prim, "in")
@@ -551,6 +552,36 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		}
 		return NewFEConvolveMatrix(in, b.space, order, kernelMatrix, divisor, bias,
 			targetX, targetY, edgeMode, kULx, kULy, preserveAlpha)
+	case "femorphology":
+		// Per SVG Filter Effects 1 §feMorphology. Erodes (min) or dilates
+		// (max) the input over a (2*rx+1)x(2*ry+1) window. `radius` is one
+		// or two numbers (rx [ry]); operator defaults to "erode". Mirrors
+		// Blink svg_fe_morphology_element.cc and FEMorphology.
+		in := b.resolveInputAttr(prim, "in")
+		op := MorphologyErode
+		if parseStringAttr(prim, "operator", "erode") == "dilate" {
+			op = MorphologyDilate
+		}
+		// `radius` is one or two numbers (rx [ry]); default 0 (disabled).
+		// A single value applies to both axes. Mirrors
+		// SVGFEMorphologyElement::radiusX/radiusY (default 0, 0).
+		rx, ry := 0.0, 0.0
+		if s, ok := prim.Attribute("radius"); ok {
+			parts := splitSVGList(s)
+			if len(parts) >= 1 {
+				rx, _ = strconv.ParseFloat(parts[0], 64)
+				ry = rx
+			}
+			if len(parts) >= 2 {
+				ry, _ = strconv.ParseFloat(parts[1], 64)
+			}
+		}
+		return NewFEMorphology(in, b.space, op, int(rx), int(ry))
+	case "feturbulence":
+		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
+		// image. `in` is ignored (this is a generator). Mirrors Blink
+		// svg_fe_turbulence_element.cc and FETurbulence.
+		return newFETurbulenceFromPrimitive(b.space, prim)
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
 	// returns nullptr for unknown / unsupported primitives, which

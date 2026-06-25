@@ -86,3 +86,34 @@ func TestFELighting_ComputeNormalEdgeReplication(t *testing.T) {
 			nx, ny, nz, wantNx, wantNy, wantNz)
 	}
 }
+
+// TestFELighting_NegativeKernelUnitLength verifies that a negative or zero
+// kernelUnitLength defaults to 1, per SVG Filter Effects 1: "A negative or
+// zero value is an error (see Error processing). A value of zero disables the
+// effect of the given filter primitive" — Blink/Gecko treat both as the
+// default 1. With kernelUnitLength="0 -1" the normal must equal the result
+// computed with kernelUnitLength 1,1 (not a flipped/garbage normal from the
+// negative denominator).
+func TestFELighting_NegativeKernelUnitLength(t *testing.T) {
+	const w, h = 4, 4
+	// A non-uniform alpha field so the kernelUnitLength denominator matters.
+	alpha := make([]float64, w*h)
+	for i := range alpha {
+		alpha[i] = float64(i) / float64(w*h)
+	}
+	alphaAt := func(x, y int) float64 { return alpha[y*w+x] }
+
+	neg := &feLighting{SurfaceScale: 1, KernelUnitLengthX: 0, KernelUnitLengthY: -1}
+	def := &feLighting{SurfaceScale: 1, KernelUnitLengthX: 1, KernelUnitLengthY: 1}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			nx, ny, nz := neg.computeNormal(alphaAt, x, y, w, h)
+			dx, dy, dz := def.computeNormal(alphaAt, x, y, w, h)
+			if !approxEq(nx, dx) || !approxEq(ny, dy) || !approxEq(nz, dz) {
+				t.Fatalf("computeNormal(%d,%d) with kUL=(0,-1) = (%g,%g,%g); want default-1 result (%g,%g,%g)",
+					x, y, nx, ny, nz, dx, dy, dz)
+			}
+		}
+	}
+}
