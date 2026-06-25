@@ -67,6 +67,37 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 	return explicitBlockSize // 0 if auto and not an anonymous passthrough
 }
 
+// clampToRemainingBlockBudget clamps value to the declared block-size budget
+// (explicitBlockSize) still unconsumed after the prior fragments accounted for
+// in consumed. A definite-height block fragmented across column-span splits
+// distributes its CSS height across the inter-spanner segments, so each segment
+// may hold no more than the budget that remains. When a positive budget is
+// exhausted or over-consumed (remaining <= 0) the result is 0 — a resumed
+// fragment must not regain full size after the budget is spent; when value
+// already fits, value is returned unchanged. A non-positive declared budget
+// (explicitBlockSize <= 0, e.g. a height:0 box whose content overflows) is not
+// a height to distribute at all, so value is returned untouched — the resumed
+// fragment shows its overflowing content (spanner-in-child-after-parallel-flow-004).
+func clampToRemainingBlockBudget(value, explicitBlockSize, consumed float64) float64 {
+	// A non-positive declared budget is not a height to distribute: the box was
+	// declared height:0 (or smaller, after border/padding clamping) and any
+	// content shows as overflow, so the resumed fragment keeps its intrinsic
+	// value untouched. Only a genuine positive budget gets distributed/exhausted.
+	if explicitBlockSize <= 0 {
+		return value
+	}
+	remaining := explicitBlockSize - consumed
+	if remaining <= 0 {
+		// Budget exhausted or over-consumed: a resumed fragment must not regain
+		// full size after a positive budget has been spent.
+		return 0
+	}
+	if remaining < value {
+		return remaining
+	}
+	return value
+}
+
 // Layout performs block layout and returns the result.
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
@@ -597,12 +628,41 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				!bla.space.ColumnSpannerDescendantsBlocked &&
 				!shouldPreventColumnSpannerDescendants(bla.node) {
 
+				// LOU-320: pre-spanner content extent for THIS segment, clamped to
+				// the remaining declared budget when this is a resumed fragment of a
+				// definite-height block distributing its height across spanner splits.
+				// A middle segment (e.g. 004b's block2: 200px content, but only
+				// 350-200=150px of the container budget remains) must occupy only its
+				// remaining budget so the trailing segments get their correct share and
+				// consumed accumulates the clamped amount, not the raw content height.
+				//
+				// Scoped to a genuine CSS height (!IsBlockSizeOverride): when this
+				// block is the multicol's anonymous column-content holder, the
+				// explicit block-size is the column-height the multicol imposes via
+				// IsBlockSizeOverride (createConstraintSpaceForColumn), not a CSS
+				// height to distribute across splits — multicol handles per-row
+				// distribution, so this clamp must not fire (TestColumnHeight_PhaseB).
+				preSpannerExtent := blockCursor
+				if hasExplicitBlock && !bla.space.IsBlockSizeOverride &&
+					bla.space.BlockFragmentationType == FragmentColumn {
+					// Clamp the FIRST inter-spanner segment too (not only resumed
+					// ones): a first block exceeding the definite height must record
+					// a clamped ConsumedBlockSize, else later fragments resume from a
+					// negative remaining budget. consumed is 0 on the first segment.
+					consumed := 0.0
+					if incomingBreakToken != nil {
+						consumed = incomingBreakToken.ConsumedBlockSize.Float64()
+					}
+					preSpannerExtent = clampToRemainingBlockBudget(
+						preSpannerExtent, explicitBlockSize, consumed)
+				}
+
 				// Break token resumes AFTER the spanner on the next LayoutLine call.
 				var spannerBreakToken *BlockBreakToken
 				if childIdx+1 < len(children) {
 					spannerBreakToken = &BlockBreakToken{
 						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
+						ConsumedBlockSize: layoutunit.FromFloat64Round(preSpannerExtent),
 						ChildBreakTokens: []*BlockBreakToken{{
 							Node:          children[childIdx+1],
 							IsBreakBefore: true,
@@ -614,18 +674,38 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 				}
 				// Build the partial fragment for content laid out before the spanner.
-				intrinsicBlock := blockCursor
+				intrinsicBlock := preSpannerExtent
 				builder.SetIntrinsicBlockSize(intrinsicBlock)
 				builder.SetNode(bla.node.DOMNode)
 				builder.SetStyle(bla.style)
 				builder.SetLayoutNode(bla.node)
-				if !hasExplicitBlock {
+				// LOU-320: size the pre-spanner partial fragment to the content
+				// actually placed before the spanner, NOT the full CSS height. A
+				// definite-height block split by a column-span distributes its
+				// height across the inter-spanner fragments; using geom.BorderBoxSize
+				// here painted the full declared height (e.g. a 450px container's
+				// box) into every column that the pre-spanner content spanned,
+				// overflowing the column row.
+				//
+				// Scoped to a genuine CSS height (!IsBlockSizeOverride). When the
+				// block IS the multicol's anonymous column-content holder, its
+				// "explicit" block-size is the column-height imposed by multicol via
+				// IsBlockSizeOverride+IsFixedBlockSize (createConstraintSpaceForColumn,
+				// multicol_layout.go:2200-2207). That override block-size is the
+				// column ROW height, not a CSS height to distribute across spanner
+				// splits — the pre-spanner fragment must report the full row extent
+				// (geom.BorderBoxSize) so multicol snaps the spanner past the whole
+				// row (column-height/column-wrap path, TestColumnHeight_PhaseB). The
+				// 004a/005 container, by contrast, carries a real CSS height:450px
+				// laid out as an ordinary child (IsBlockSizeOverride=false), so it
+				// takes the intrinsic-content branch and distributes its height.
+				if hasExplicitBlock && bla.space.IsBlockSizeOverride {
+					builder.SetSize(geom.BorderBoxSize)
+				} else {
 					builder.SetSize(LogicalSize{
 						InlineSize: geom.BorderBoxSize.InlineSize,
 						BlockSize:  intrinsicBlock + geom.BlockBorderPadding(),
 					})
-				} else {
-					builder.SetSize(geom.BorderBoxSize)
 				}
 				builder.SetBoxData(&PhysicalBoxData{
 					Border:    ToPhysicalEdges(geom.Border, wdm),
@@ -944,6 +1024,41 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						IsBreakBefore: true,
 					}
 				}
+				// LOU-320: place this child's PRE-spanner fragment before
+				// extracting the nested spanner. The child (e.g. a fixed-height
+				// container) holds the column content up to the spanner; this is
+				// the partial fragment `childResult.Fragment` produced when the
+				// child's own layout stopped at the spanner. Without placing it,
+				// a spanner nested inside this child leaves the pre-spanner column
+				// row empty and reports intrinsicBlock=0, collapsing the row (the
+				// container's blocks vanish). Direct-child spanners don't need this
+				// because their pre-spanner siblings were placed in earlier loop
+				// iterations. Mirrors Blink keeping pre-spanner content in-flow:
+				// block_layout_algorithm.cc:820-827 (SetShouldForceSameFragmentation
+				// Flow) + AddChild before SetColumnSpannerPath (:1028-1032), Chromium
+				// main @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
+				childBlockOffset := blockCursor + prevMarginStrut.Resolve()
+				childOffset := LogicalOffset{
+					InlineOffset: childMargins.InlineStart,
+					BlockOffset:  childBlockOffset,
+				}
+				if isChildNewFC {
+					childOffset.InlineOffset += floatStartOff
+				}
+				builder.AddChild(childResult.Fragment, childOffset)
+				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
+				// Advance by the child's PRE-spanner content extent
+				// (IntrinsicBlockSize), not its fragment border-box size: a
+				// definite-height child split by a spanner reports its full CSS
+				// height as the fragment size but only placed `IntrinsicBlockSize`
+				// of content before the spanner. Using the full size would make
+				// the pre-spanner column row the whole container height.
+				preSpannerExtent := childResult.IntrinsicBlockSize
+				if preSpannerExtent <= 0 {
+					preSpannerExtent = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+				}
+				blockCursor = childBlockOffset + preSpannerExtent
+
 				var outToken *BlockBreakToken
 				if resumeToken != nil {
 					outToken = &BlockBreakToken{
@@ -1736,12 +1851,28 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// The CSS height belonged to the first fragment; this resumed fragment shows
 			// whatever content was placed (its children, which may overflow the CSS height).
 			finalBlockSize = intrinsicBlockSize
+			// LOU-320: a definite-height block fragmented across column-span splits
+			// distributes its CSS height across the inter-spanner segments — the
+			// total over all fragments equals the declared height. When declared
+			// budget remains (explicitBlockSize - consumed >= 0) but is smaller than
+			// this segment's content, clamp to the remaining budget so the content
+			// overflows the box rather than the box growing past its share (a fully
+			// exhausted budget, remaining == 0, yields a zero-height trailing box —
+			// e.g. 004b's block3 after a 350px container is spent).
+			//
+			// Gated to FragmentColumn: only multicol column fragmentation distributes
+			// a definite block-size this way. In other fragmentation contexts (outer
+			// page/region resume of overflowing spanner content) the resumed fragment
+			// legitimately shows its actual content, so leave finalBlockSize =
+			// intrinsicBlockSize — keeping this change provably multicol-scoped.
+			if bla.space.BlockFragmentationType == FragmentColumn {
+				finalBlockSize = clampToRemainingBlockBudget(
+					finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
+			}
 		} else if incomingBreakToken != nil && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
 			// Resumed leaf block: show remaining declared height (CSS height - consumed).
-			remaining := explicitBlockSize - incomingBreakToken.ConsumedBlockSize.Float64()
-			if remaining >= 0 && remaining < finalBlockSize {
-				finalBlockSize = remaining
-			}
+			finalBlockSize = clampToRemainingBlockBudget(
+				finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
 		}
 	}
 
