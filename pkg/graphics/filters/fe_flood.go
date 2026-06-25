@@ -41,7 +41,20 @@ func (e *FEFlood) MapRect(r image.Rectangle) image.Rectangle {
 // ApplyEffect fills the region (or the subregion) with the flood colour.
 func (e *FEFlood) ApplyEffect(_ []*image.RGBA, region image.Rectangle) *image.RGBA {
 	out := newRGBA(region)
-	px := premultiply(float64(e.R)/255, float64(e.G)/255, float64(e.B)/255, e.A)
+	// flood-color is specified in sRGB. The flood must enter the graph in
+	// this effect's operating (interpolation) space, so convert sRGB → the
+	// operating space before storing. Mirrors Blink FEFlood::CreateImageFilter,
+	// which adapts the flood color to the operating interpolation space
+	// (AdaptColorToOperatingInterpolationSpace). Without this, a linearRGB
+	// filter stores raw sRGB bytes that the final linearRGB→sRGB conversion
+	// over-brightens (e.g. green 128 → 188).
+	r, g, b := float64(e.R)/255, float64(e.G)/255, float64(e.B)/255
+	if e.space == InterpolationSpaceLinearRGB {
+		r = srgbToLinear(r)
+		g = srgbToLinear(g)
+		b = srgbToLinear(b)
+	}
+	px := premultiply(r, g, b, e.A)
 	fill := region
 	if !e.Subregion.Empty() {
 		fill = region.Intersect(e.Subregion)

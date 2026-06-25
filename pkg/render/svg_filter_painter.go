@@ -146,11 +146,23 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	graph.SetSourceImage(srcBuf)
 	out := graph.Apply()
+	// The composite must convert from the LAST effect's operating space,
+	// not the filter's nominal color-interpolation-filters space: a
+	// primitive may produce output in a different space than the filter
+	// default (most notably feFlood, which Blink exempts from
+	// color-interpolation and keeps in sRGB — fe_flood.cc @ Chromium
+	// main). Mirrors Filter.ApplyToSRGB, which converts from
+	// LastEffect.OperatingSpace(); the chain path (paintWithFilterChain)
+	// already does this.
+	outSpace := space
+	if graph.LastEffect != nil {
+		outSpace = graph.LastEffect.OperatingSpace()
+	}
 	// Viewport clip is applied inside the composite helper: the composite
 	// path bypasses the DC's clip stack, and SVG 2 §3.5 requires the
 	// default 10% filter-region expansion to stay inside the host SVG
 	// element.
-	sp.compositeFilterResultOntoTarget(srcBuf, out, region, space)
+	sp.compositeFilterResultOntoTarget(srcBuf, out, region, outSpace)
 }
 
 // compositeFilterOutputOntoTarget composites `buf` onto the
@@ -246,12 +258,29 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 					r.target.Pix[ti+3] = uint8(oA*255 + 0.5)
 				}
 			} else {
-				// sRGB source: Porter-Duff Over directly on premultiplied sRGB values.
+				// sRGB source: un-premultiply the source RGB and composite it
+				// with the louis14 "straight-alpha-into-premultiplied-container"
+				// convention (out = srcStraightRGB + dst*(1-srcA)), the same
+				// convention mazarin's gg-style setColor uses for a plain
+				// rgba(r,g,b,a) fill. This is what makes a semi-transparent
+				// feFlood pixel-match the equivalent fill-opacity rect (e.g.
+				// green flood-opacity=0.75 over white -> (64,192,64), not the
+				// premultiplied-Over (64,160,64)). At sa==255 it reduces to a
+				// straight source copy, matching the opaque fast path above.
+				srcAf := float64(sa) / 255
+				inv1 := 1 - srcAf
+				// comp folds one channel: straight source (un-premultiplied)
+				// plus the destination attenuated by (1-srcA).
+				comp := func(srcPremul, dst uint8) uint8 {
+					srcStraight := float64(srcPremul) / 255 / srcAf
+					v := (srcStraight + float64(dst)/255*inv1) * 255
+					return uint8(math.Min(255, math.Max(0, v)) + 0.5)
+				}
 				inv := uint32(255 - sa)
-				r.target.Pix[ti+0] = uint8((uint32(buf.Pix[si+0])*255 + uint32(r.target.Pix[ti+0])*inv + 127) / 255)
-				r.target.Pix[ti+1] = uint8((uint32(buf.Pix[si+1])*255 + uint32(r.target.Pix[ti+1])*inv + 127) / 255)
-				r.target.Pix[ti+2] = uint8((uint32(buf.Pix[si+2])*255 + uint32(r.target.Pix[ti+2])*inv + 127) / 255)
-				r.target.Pix[ti+3] = uint8((uint32(buf.Pix[si+3])*255 + uint32(r.target.Pix[ti+3])*inv + 127) / 255)
+				r.target.Pix[ti+0] = comp(buf.Pix[si+0], r.target.Pix[ti+0])
+				r.target.Pix[ti+1] = comp(buf.Pix[si+1], r.target.Pix[ti+1])
+				r.target.Pix[ti+2] = comp(buf.Pix[si+2], r.target.Pix[ti+2])
+				r.target.Pix[ti+3] = uint8((uint32(sa)*255 + uint32(r.target.Pix[ti+3])*inv + 127) / 255)
 			}
 		}
 	}
@@ -314,7 +343,11 @@ func (sp *svgShapePainter) compositeFilterResultOntoTarget(srcBuf, out *image.RG
 	)
 	buf := out
 	if buf == nil {
+		// Apply returned nil (degenerate filter): composite the raw source
+		// buffer, which is always sRGB device content regardless of the
+		// filter's interpolation space.
 		buf = srcBuf
+		space = filters.InterpolationSpaceSRGB
 	}
 	compositeFilterOutputOntoTarget(sp.ctx.Renderer, buf, region.Min.X, region.Min.Y, viewportClip, space)
 }
