@@ -326,6 +326,123 @@ type SVGGradientLength struct {
 	// HasValue reports whether the attribute was present on the
 	// element. False values use the spec default at paint time.
 	HasValue bool
+	// AbsPx carries the additive absolute (px / user-unit) term of a
+	// `calc(P% + Lpx)` expression. For a plain length or plain percent
+	// this is 0 and the value lives in `Value`. For a calc mixing a
+	// percent and a length, `Value` holds the percent fraction
+	// (IsPercent=true) and `AbsPx` holds the length term in user units.
+	// Mirrors how Blink's CSSMathExpressionNode keeps the percent and
+	// length parts of a calc separate so each resolves against its own
+	// basis (percent → axis basis, length → user units).
+	AbsPx float64
+}
+
+// parseSVGCalc parses a `calc(...)` expression for an SVG geometry
+// length attribute (filter region x/y/width/height, gradient/pattern
+// coords). It supports a sum/difference of one percent term and one
+// length term — the shape WPT's filter-region-calc tests exercise (e.g.
+// `calc(25% + 0.25px)`). Returns (length, true) on a recognized calc, or
+// (_, false) when the input is not a calc expression so the caller falls
+// through to the plain length/percent path.
+//
+// Resolution model mirrors Blink's CSSMathExpressionNode: the percent
+// and length terms are kept separate (Value holds the percent fraction,
+// AbsPx holds the length term in user units) so each resolves against
+// its own basis at ResolveAgainst time. Per the SVG2 coords
+// objectBoundingBox model both terms become fractions of the unit
+// square there; in userSpaceOnUse the percent resolves against the
+// viewport and the length stays in user units.
+//
+// Font-relative terms (em/ex) inside the calc are converted using the
+// supplied fontSize, matching the bare-length path in
+// parseGradientLengthWithFontSize.
+func parseSVGCalc(value string, fontSize float64) (SVGGradientLength, bool) {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if !strings.HasPrefix(lower, "calc(") || !strings.HasSuffix(lower, ")") {
+		return SVGGradientLength{}, false
+	}
+	inner := strings.TrimSpace(value[len("calc(") : len(value)-1])
+	if inner == "" {
+		return SVGGradientLength{}, false
+	}
+
+	// CSS calc() requires whitespace around the binary +/- operators
+	// (CSS Values 4 §10.1), so we tokenize on whitespace and read the
+	// stream as: term (op term)*. We only support a flat sum/difference
+	// of percent and length terms — the shape the filter-region calc
+	// tests exercise; `*`, `/`, nested parens, and bare unspaced signs
+	// bail so the caller's plain-length path can attempt a best effort.
+	tokens := strings.Fields(inner)
+	if len(tokens) == 0 || len(tokens)%2 == 0 {
+		// Even count means a dangling operator or empty term.
+		return SVGGradientLength{}, false
+	}
+	r := SVGGradientLength{Raw: value, HasValue: true}
+	sign := 1.0
+	for idx, tok := range tokens {
+		if idx%2 == 1 {
+			switch tok {
+			case "+":
+				sign = 1.0
+			case "-":
+				sign = -1.0
+			default:
+				return SVGGradientLength{}, false
+			}
+			continue
+		}
+		percent, abs, isPercent, ok := parseSVGCalcTerm(tok, fontSize)
+		if !ok {
+			return SVGGradientLength{}, false
+		}
+		if isPercent {
+			r.Value += sign * percent
+			r.IsPercent = true
+		} else {
+			r.AbsPx += sign * abs
+		}
+	}
+	return r, true
+}
+
+// parseSVGCalcTerm parses a single calc term into either a percent
+// fraction or an absolute length (in user units). `isPercent` reports
+// which form the term produced: a `%` term sets isPercent and fills
+// `percent`; every other unit fills `abs`.
+func parseSVGCalcTerm(term string, fontSize float64) (percent, abs float64, isPercent, ok bool) {
+	if strings.HasSuffix(term, "%") {
+		num := strings.TrimSpace(strings.TrimSuffix(term, "%"))
+		v, err := strconv.ParseFloat(num, 64)
+		if err != nil {
+			return 0, 0, false, false
+		}
+		return v / 100.0, 0, true, true
+	}
+	if numStr, unit, fontRel := parseFontRelativeUnit(term); fontRel {
+		v, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, 0, false, false
+		}
+		switch unit {
+		case "em":
+			return 0, v * fontSize, false, true
+		case "ex":
+			return 0, v * fontSize * 0.5, false, true
+		}
+	}
+	num, unit := splitNumberAndUnit(term)
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, 0, false, false
+	}
+	switch strings.ToLower(unit) {
+	case "", "px":
+		return 0, v, false, true
+	default:
+		// Unknown unit inside calc — reject so the caller's plain
+		// length path can attempt a best-effort parse.
+		return 0, 0, false, false
+	}
 }
 
 // parseGradientLength parses a single gradient/pattern coordinate
@@ -335,6 +452,9 @@ func parseGradientLength(value string) SVGGradientLength {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return SVGGradientLength{}
+	}
+	if calc, ok := parseSVGCalc(value, 16); ok {
+		return calc
 	}
 	r := SVGGradientLength{Raw: value, HasValue: true}
 	if strings.HasSuffix(value, "%") {
@@ -392,6 +512,9 @@ func parseGradientLengthWithFontSize(value string, fontSize float64) SVGGradient
 	if value == "" {
 		return SVGGradientLength{}
 	}
+	if calc, ok := parseSVGCalc(value, fontSize); ok {
+		return calc
+	}
 	r := SVGGradientLength{Raw: value, HasValue: true}
 	if strings.HasSuffix(value, "%") {
 		num := strings.TrimSpace(strings.TrimSuffix(value, "%"))
@@ -442,15 +565,20 @@ func (l SVGGradientLength) ResolveAgainst(mode SVGUnitType, axis SVGLengthMode, 
 	case SVGUnitObjectBoundingBox:
 		// In objectBoundingBox mode the fraction is the value (a
 		// percent and a fraction are the same thing — SVG 2 §11.6.1).
-		return l.Value
+		// A calc()'s absolute term (AbsPx) is, per the SVG2 coords
+		// objectBoundingBox model (the unit square [0,1]² mapped onto
+		// the bbox), also a fraction of the bbox dimension — so it adds
+		// directly to the fraction here.
+		return l.Value + l.AbsPx
 	case SVGUnitUserSpaceOnUse:
 		if l.IsPercent {
 			// Percent resolves against the current viewport's extent
-			// for the chosen axis.
+			// for the chosen axis; the calc absolute term stays in user
+			// units and adds on top.
 			basis := percentageBasisForAxis(ctx, axis)
-			return l.Value * basis
+			return l.Value*basis + l.AbsPx
 		}
-		return l.Value
+		return l.Value + l.AbsPx
 	}
 	return defaultValue
 }
