@@ -7,6 +7,40 @@ import (
 	"louis14/pkg/html"
 )
 
+// LOU-320: contract of the pure budget-distribution helper. A definite-height
+// block fragmented across column-span splits hands each segment no more than the
+// budget still unconsumed by prior fragments.
+//
+//   - value fits within remaining budget → value unchanged.
+//   - first (unconsumed) segment over the declared height → clamp to the height.
+//   - positive budget exhausted or over-consumed (remaining <= 0) → 0, so a
+//     resumed fragment can never regain full size after the budget is spent.
+//   - a non-positive budget (height:0 box with overflow) is not a height to
+//     distribute → value untouched, so overflowing content still renders
+//     (regression guard for spanner-in-child-after-parallel-flow-004).
+func TestClampToRemainingBlockBudget_LOU320(t *testing.T) {
+	tests := []struct {
+		name                               string
+		value, explicitBlockSize, consumed float64
+		want                               float64
+	}{
+		{"fits within remaining budget", 50, 450, 400, 50},
+		{"over-budget first segment clamps", 200, 100, 0, 100},
+		{"exhausted budget yields zero", 200, 350, 350, 0},
+		{"over-consumed budget yields zero", 200, 300, 400, 0},
+		{"zero-height box keeps overflow content", 90, 0, 90, 90},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clampToRemainingBlockBudget(tc.value, tc.explicitBlockSize, tc.consumed)
+			if got != tc.want {
+				t.Errorf("clampToRemainingBlockBudget(%v, %v, %v) = %v, want %v",
+					tc.value, tc.explicitBlockSize, tc.consumed, got, tc.want)
+			}
+		})
+	}
+}
+
 // LOU-320: block-size distribution of a definite-height block split by
 // column-span:all descendants.
 //
@@ -26,9 +60,10 @@ import (
 //	segment 2 (block2 200px): container fragment 200px → balanced 2×100px → col-set 100px tall
 //	spanner2 50px                                                          → at y=250
 //	segment 3 (block3 200px): only 50px of container budget LEFT
-//	                          (450 − 200 − 200) → col-set 50px tall, block3 clipped to 50px
+//	                          (450 − 200 − 200), which the 2-column balance
+//	                          splits to a 25px col-set row (block3 overflows)
 //
-//	total multicol block-size = 100 + 50 + 100 + 50 + 50 = 350px
+//	total multicol block-size = 100 + 50 + 100 + 50 + 25 = 325px
 //
 // Bug: louis14 gives the resumed third container fragment its intrinsic content
 // size (200px) instead of the remaining declared budget (50px), so segment 3

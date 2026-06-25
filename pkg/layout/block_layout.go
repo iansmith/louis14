@@ -71,13 +71,28 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 // (explicitBlockSize) still unconsumed after the prior fragments accounted for
 // in consumed. A definite-height block fragmented across column-span splits
 // distributes its CSS height across the inter-spanner segments, so each segment
-// may hold no more than the budget that remains. When the budget is exhausted
-// (remaining == 0) the result is 0; when value already fits, value is returned
-// unchanged; a negative remaining (consumed already overran the budget) leaves
-// value untouched.
+// may hold no more than the budget that remains. When a positive budget is
+// exhausted or over-consumed (remaining <= 0) the result is 0 — a resumed
+// fragment must not regain full size after the budget is spent; when value
+// already fits, value is returned unchanged. A non-positive declared budget
+// (explicitBlockSize <= 0, e.g. a height:0 box whose content overflows) is not
+// a height to distribute at all, so value is returned untouched — the resumed
+// fragment shows its overflowing content (spanner-in-child-after-parallel-flow-004).
 func clampToRemainingBlockBudget(value, explicitBlockSize, consumed float64) float64 {
+	// A non-positive declared budget is not a height to distribute: the box was
+	// declared height:0 (or smaller, after border/padding clamping) and any
+	// content shows as overflow, so the resumed fragment keeps its intrinsic
+	// value untouched. Only a genuine positive budget gets distributed/exhausted.
+	if explicitBlockSize <= 0 {
+		return value
+	}
 	remaining := explicitBlockSize - consumed
-	if remaining >= 0 && remaining < value {
+	if remaining <= 0 {
+		// Budget exhausted or over-consumed: a resumed fragment must not regain
+		// full size after a positive budget has been spent.
+		return 0
+	}
+	if remaining < value {
 		return remaining
 	}
 	return value
@@ -628,10 +643,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// height to distribute across splits — multicol handles per-row
 				// distribution, so this clamp must not fire (TestColumnHeight_PhaseB).
 				preSpannerExtent := blockCursor
-				if hasExplicitBlock && !bla.space.IsBlockSizeOverride && incomingBreakToken != nil &&
+				if hasExplicitBlock && !bla.space.IsBlockSizeOverride &&
 					bla.space.BlockFragmentationType == FragmentColumn {
+					// Clamp the FIRST inter-spanner segment too (not only resumed
+					// ones): a first block exceeding the definite height must record
+					// a clamped ConsumedBlockSize, else later fragments resume from a
+					// negative remaining budget. consumed is 0 on the first segment.
+					consumed := 0.0
+					if incomingBreakToken != nil {
+						consumed = incomingBreakToken.ConsumedBlockSize.Float64()
+					}
 					preSpannerExtent = clampToRemainingBlockBudget(
-						preSpannerExtent, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
+						preSpannerExtent, explicitBlockSize, consumed)
 				}
 
 				// Break token resumes AFTER the spanner on the next LayoutLine call.
