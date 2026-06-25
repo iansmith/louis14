@@ -112,6 +112,7 @@ func (a *svgFilterElementAdapter) Primitives() []filters.SVGFilterPrimitive {
 		out = append(out, &svgFilterPrimitiveAdapter{
 			elt:                p,
 			resolveStyle:       a.resolveStyle,
+			space:              a.space,
 			resources:          a.resources,
 			imageFetcher:       a.imageFetcher,
 			externalSVGFetcher: a.externalSVGFetcher,
@@ -126,6 +127,16 @@ func (a *svgFilterElementAdapter) Primitives() []filters.SVGFilterPrimitive {
 type svgFilterPrimitiveAdapter struct {
 	elt          svg.ElementAdapter
 	resolveStyle func(svg.ElementAdapter) *css.Style
+
+	// space is the filter's interpolation space (the parent
+	// `<filter>`'s color-interpolation-filters, linearRGB by default).
+	// Propagated from the svgFilterElementAdapter so `<feImage>` can
+	// convert its sourced sRGB image INTO the operating space — Blink's
+	// FilterEffect framework runs the same conversion on the FEImage
+	// result (TransformResultIfNeeded, svg_fe_image.cc). Without it the
+	// raw sRGB source bytes are mislabelled as linearRGB and the final
+	// composite double-applies a linear→sRGB transfer.
+	space filters.InterpolationSpace
 
 	// resources / imageFetcher / externalSVGFetcher are propagated
 	// from the parent svgFilterElementAdapter so the feImage adapter
@@ -164,6 +175,7 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 		out = append(out, &svgFilterPrimitiveAdapter{
 			elt:                c,
 			resolveStyle:       p.resolveStyle,
+			space:              p.space,
 			resources:          p.resources,
 			imageFetcher:       p.imageFetcher,
 			externalSVGFetcher: p.externalSVGFetcher,

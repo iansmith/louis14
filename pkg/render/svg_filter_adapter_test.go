@@ -1,8 +1,10 @@
 package render
 
 import (
+	"image"
 	"testing"
 
+	"louis14/pkg/graphics/filters"
 	"louis14/pkg/layout/svg"
 )
 
@@ -389,6 +391,71 @@ func TestSvgFilterPrimitiveAdapter_DropShadowCurrentColorTaints(t *testing.T) {
 			got := adapter.TaintsOrigin()
 			if got != tc.wantTaints {
 				t.Errorf("TaintsOrigin() = %v; want %v", got, tc.wantTaints)
+			}
+		})
+	}
+}
+
+// TestResolveImageSource_ConvertsToOperatingSpace asserts that a
+// `<feImage>` resolves its source image INTO the filter's interpolation
+// space. SVG filters default to linearRGB
+// (color-interpolation-filters:linearRGB), and a sourced image is sRGB
+// device content — Blink's FilterEffect framework converts the FEImage
+// result into the operating space (TransformResultIfNeeded on the
+// sourced image, svg_fe_image.cc). Without that conversion the raw sRGB
+// bytes are mislabelled linearRGB and the final composite double-applies
+// a linear→sRGB transfer, darkening every mid-tone (the systematic shift
+// seen in effect-reference-feimage-001: a whole-image colour error).
+//
+// Setup: a data:image/svg+xml source whose only child is a mid-grey rect
+// (sRGB rgb(128,128,128)). Resolved into a linearRGB filter, the output
+// pixel must be the linear-light encoding of sRGB 128 (≈ 55), NOT 128.
+// A pure-channel colour (0 or 255) would be invariant under the transfer
+// and could not distinguish "converted" from "not converted", so the
+// test deliberately uses a mid-tone.
+func TestResolveImageSource_ConvertsToOperatingSpace(t *testing.T) {
+	const href = "data:image/svg+xml," +
+		"<svg xmlns='http://www.w3.org/2000/svg'>" +
+		"<rect width='10' height='10' fill='rgb(128,128,128)'/></svg>"
+	elt := &fakeFilterPrimAdapter{
+		tag:   "feimage",
+		attrs: map[string]string{"href": href},
+	}
+	target := image.Rect(0, 0, 10, 10)
+
+	cases := []struct {
+		name      string
+		space     filters.InterpolationSpace
+		wantByte  uint8
+		tolerance int
+	}{
+		{
+			name:      "linearRGB filter converts sRGB source to linear",
+			space:     filters.InterpolationSpaceLinearRGB,
+			wantByte:  55, // linearToByte(srgbToLinear(128/255)) ≈ 55
+			tolerance: 2,
+		},
+		{
+			name:      "sRGB filter leaves the source untouched",
+			space:     filters.InterpolationSpaceSRGB,
+			wantByte:  128,
+			tolerance: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &svgFilterPrimitiveAdapter{elt: elt, space: tc.space}
+			src, _, _ := adapter.ResolveImageSource(target, target)
+			if src == nil {
+				t.Fatalf("ResolveImageSource returned nil source image")
+			}
+			got := src.Pix[0] // R channel of pixel (0,0); rect is opaque so premul==straight
+			diff := int(got) - int(tc.wantByte)
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > tc.tolerance {
+				t.Errorf("source R = %d; want %d (±%d)", got, tc.wantByte, tc.tolerance)
 			}
 		})
 	}
