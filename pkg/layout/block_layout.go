@@ -498,6 +498,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						builder.ShiftLineBoxChildrenBlockOffset(contentPush)
 						blockCursor += contentPush
 						firstLineAscent += contentPush
+						// If the IFC fragmented (an inline-only list item overflowing
+						// a fragmentainer), the break token captured its consumed
+						// height / shortage BEFORE this push. Advance both so the
+						// continuation resumes from the post-push height; otherwise a
+						// fragmented item with a tall outside marker resumes too high
+						// and misplaces later fragments. The early-return below reads
+						// InlineShortage when >0, else ConsumedBlockSize, so both must
+						// move with the content.
+						if inlineBreakToken != nil {
+							inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(
+								layoutunit.FromFloat64Round(contentPush))
+							if inlineBreakToken.InlineShortage > 0 {
+								inlineBreakToken.InlineShortage += contentPush
+							}
+						}
 						if hasLastChildBaseline {
 							lastChildBlockOffset += contentPush
 						}
