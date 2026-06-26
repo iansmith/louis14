@@ -2121,6 +2121,16 @@ var inheritableProperties = map[string]bool{
 	// CSS UI 4 §7.1: accent-color is inherited.
 	// https://drafts.csswg.org/css-ui-4/#widget-accent
 	"accent-color": true,
+	// Filter Effects Module Level 1 §6.4: color-interpolation-filters is
+	// inherited (property table "Inherited: yes"; initial value linearRGB).
+	// An ancestor <svg color-interpolation-filters="sRGB"> must reach a
+	// descendant <filter>, whose computed value the filter builders read to
+	// choose the operating color space (filter_effect_builder.go,
+	// svg_filter_painter.go, svg_filter_container_painter.go). The same §6.4
+	// presentation attribute is mapped onto the originating element in
+	// svgPresentationAttrs below; inheritance is what propagates it downward.
+	// https://drafts.fxtf.org/filter-effects-1/#propdef-color-interpolation-filters
+	"color-interpolation-filters": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
@@ -3337,6 +3347,47 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 			}
 		}
 	}
+
+	// SVG geometry presentation attributes. width/height on an <svg> map to
+	// the CSS width/height used values (Blink
+	// SVGSVGElement::CollectStyleForPresentationAttribute) so the replaced-box
+	// sizing in ComputeReplacedSize sees them as explicit CSS lengths. This is
+	// what makes height="0" produce a 0-height box: routing it through the
+	// intrinsic path instead would be lost, because IntrinsicSizingInfo uses 0
+	// to mean "unknown" and falls back to the CSS 2.1 §10.3.2 300x150 default.
+	// Unlike the paint attributes above these are meaningful ONLY on <svg> —
+	// width/height on <img>/<td>/<div> carry legacy HTML semantics that are not
+	// CSS lengths — so gate on the tag.
+	if node.TagName == "svg" {
+		for _, attr := range [...]string{"width", "height"} {
+			val, ok := node.GetAttribute(attr)
+			if !ok {
+				continue
+			}
+			cssLen, ok := svgLengthAttrToCSS(val)
+			if !ok {
+				continue
+			}
+			if _, exists := style.Get(attr); !exists {
+				style.Set(attr, cssLen)
+			}
+		}
+	}
+}
+
+// svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
+// to a CSS length string. A bare number is an SVG user unit, equivalent to CSS
+// px (so "0" -> "0px", "120" -> "120px"). Negative or non-numeric values are
+// rejected (a negative width/height is an SVG error → the box falls back to its
+// default sizing). This intentionally mirrors the bare-number scope of
+// getInlineSVGIntrinsicInfo; unit-bearing values (e.g. "50%") stay on the
+// existing intrinsic path unchanged.
+func svgLengthAttrToCSS(val string) (string, bool) {
+	s := strings.TrimSpace(val)
+	if n, err := strconv.ParseFloat(s, 64); err == nil && n >= 0 {
+		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
+	}
+	return "", false
 }
 
 // fontSizeFromHTMLSize converts HTML <font size="N"> to CSS font-size.
