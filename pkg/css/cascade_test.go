@@ -369,6 +369,121 @@ func TestInherit_TextShadowInherits(t *testing.T) {
 	}
 }
 
+// TestInherit_ColorInterpolationFiltersInherits guards LOU-332.
+// color-interpolation-filters is an inherited SVG presentation attribute
+// (Filter Effects Module Level 1 §6.4 property table "Inherited: yes"; initial
+// value linearRGB). An ancestor <svg color-interpolation-filters="sRGB"> must
+// propagate the value to a descendant <filter>, which the filter builders read
+// (filter_effect_builder.go, svg_filter_painter.go, svg_filter_container_painter.go)
+// to pick the operating color space. Without inheritance the filter wrongly
+// defaults to linearRGB and over-brightens output (green 128 -> 188).
+func TestInherit_ColorInterpolationFiltersInherits(t *testing.T) {
+	doc, err := html.Parse(`
+		<svg color-interpolation-filters="sRGB">
+			<filter id="f1"></filter>
+		</svg>
+	`)
+	if err != nil {
+		t.Fatalf("failed to parse test HTML: %v", err)
+	}
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	foundFilter := false
+	for node, style := range styles {
+		if node.TagName == "filter" {
+			foundFilter = true
+			if val, ok := style.Get("color-interpolation-filters"); !ok || val != "sRGB" {
+				t.Errorf("expected <filter> to inherit color-interpolation-filters=sRGB from <svg>, got '%s' (ok=%v)", val, ok)
+			}
+		}
+	}
+	if !foundFilter {
+		t.Fatal("test fixture missing <filter> node — assertion never ran")
+	}
+}
+
+// TestSVGWidthHeightAttrsMapToCSS guards the second half of LOU-332. The
+// width/height presentation attributes on an <svg> map to the CSS width/height
+// used values (Blink SVGSVGElement::CollectStyleForPresentationAttribute). SVG
+// user units are CSS px, so height="0" -> "0px" — a 0-height replaced box, not
+// the 300x150 default that an unrepresentable "intrinsic 0" falls back to. The
+// mapping is gated to <svg>: width/height on <div>/<td>/<img> keep their legacy
+// HTML semantics and must NOT be turned into CSS lengths by this path.
+func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
+	doc, err := html.Parse(`
+		<svg width="120" height="0"></svg>
+		<div height="0" width="55"></div>
+	`)
+	if err != nil {
+		t.Fatalf("failed to parse test HTML: %v", err)
+	}
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	var svgStyle, divStyle *Style
+	for node, style := range styles {
+		switch node.TagName {
+		case "svg":
+			svgStyle = style
+		case "div":
+			divStyle = style
+		}
+	}
+
+	if svgStyle == nil {
+		t.Fatal("test fixture missing <svg> node — assertion never ran")
+	}
+	if v, ok := svgStyle.Get("height"); !ok || v != "0px" {
+		t.Errorf(`<svg height="0">: got height=%q (ok=%v), want "0px"`, v, ok)
+	}
+	if v, ok := svgStyle.Get("width"); !ok || v != "120px" {
+		t.Errorf(`<svg width="120">: got width=%q (ok=%v), want "120px"`, v, ok)
+	}
+
+	if divStyle == nil {
+		t.Fatal("test fixture missing <div> node — assertion never ran")
+	}
+	if v, ok := divStyle.Get("height"); ok {
+		t.Errorf(`<div height="0"> must NOT get a CSS height from the svg mapping, got %q`, v)
+	}
+	if v, ok := divStyle.Get("width"); ok {
+		t.Errorf(`<div width="55"> must NOT get a CSS width from the svg mapping, got %q`, v)
+	}
+}
+
+// TestSVGLengthAttrToCSS covers the bare-number conversion and the rejection of
+// values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
+// "Infinity", so without the math.IsInf guard width="Infinity" would become the
+// bogus CSS length "+Infpx" (CodeRabbit, PR #142); NaN and negatives are rejected
+// by the n >= 0 test, and unit/percent values are left for the intrinsic path.
+func TestSVGLengthAttrToCSS(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"0", "0px", true},
+		{"120", "120px", true},
+		{"  55  ", "55px", true},
+		{"-5", "", false},
+		{"Infinity", "", false},
+		{"+Inf", "", false},
+		{"-Inf", "", false},
+		{"NaN", "", false},
+		{"1e400", "", false}, // overflows to +Inf via ErrRange
+		{"abc", "", false},
+		{"50%", "", false},
+		{"100px", "", false},
+	}
+	for _, c := range cases {
+		got, ok := svgLengthAttrToCSS(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("svgLengthAttrToCSS(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 // TestComputeStyle_RubyUADisplays verifies the Phase 1 ruby UA stylesheet
 // mirrors Blink html.css exactly (vetted at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
