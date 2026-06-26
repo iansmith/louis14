@@ -452,6 +452,38 @@ func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
 	}
 }
 
+// TestSVGLengthAttrToCSS covers the bare-number conversion and the rejection of
+// values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
+// "Infinity", so without the math.IsInf guard width="Infinity" would become the
+// bogus CSS length "+Infpx" (CodeRabbit, PR #142); NaN and negatives are rejected
+// by the n >= 0 test, and unit/percent values are left for the intrinsic path.
+func TestSVGLengthAttrToCSS(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"0", "0px", true},
+		{"120", "120px", true},
+		{"  55  ", "55px", true},
+		{"-5", "", false},
+		{"Infinity", "", false},
+		{"+Inf", "", false},
+		{"-Inf", "", false},
+		{"NaN", "", false},
+		{"1e400", "", false}, // overflows to +Inf via ErrRange
+		{"abc", "", false},
+		{"50%", "", false},
+		{"100px", "", false},
+	}
+	for _, c := range cases {
+		got, ok := svgLengthAttrToCSS(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("svgLengthAttrToCSS(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 // TestComputeStyle_RubyUADisplays verifies the Phase 1 ruby UA stylesheet
 // mirrors Blink html.css exactly (vetted at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):

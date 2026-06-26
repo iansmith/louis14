@@ -3377,14 +3377,16 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 
 // svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
 // to a CSS length string. A bare number is an SVG user unit, equivalent to CSS
-// px (so "0" -> "0px", "120" -> "120px"). Negative or non-numeric values are
-// rejected (a negative width/height is an SVG error → the box falls back to its
-// default sizing). This intentionally mirrors the bare-number scope of
-// getInlineSVGIntrinsicInfo; unit-bearing values (e.g. "50%") stay on the
-// existing intrinsic path unchanged.
+// px (so "0" -> "0px", "120" -> "120px"). Negative, non-finite, or non-numeric
+// values are rejected (a negative or infinite width/height is an SVG error → the
+// box falls back to its default sizing). strconv.ParseFloat accepts "Inf"/
+// "Infinity", so an explicit math.IsInf guard is needed to keep "Infinity" from
+// becoming "+Infpx" (NaN is already excluded by the n >= 0 test). This
+// intentionally mirrors the bare-number scope of getInlineSVGIntrinsicInfo;
+// unit-bearing values (e.g. "50%") stay on the existing intrinsic path unchanged.
 func svgLengthAttrToCSS(val string) (string, bool) {
 	s := strings.TrimSpace(val)
-	if n, err := strconv.ParseFloat(s, 64); err == nil && n >= 0 {
+	if n, err := strconv.ParseFloat(s, 64); err == nil && n >= 0 && !math.IsInf(n, 0) {
 		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
 	}
 	return "", false
