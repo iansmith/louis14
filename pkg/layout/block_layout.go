@@ -226,24 +226,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// for auto/unset, which is when we should use the intrinsic inline-size.
 			_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
 			if !explicitInlineOK && !bla.space.IsFixedInlineSize {
-				// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
+				// CSS 2.1 §10.3.2 / CSS Sizing 4 §6.3: a replaced element with auto
+				// inline-size uses its intrinsic width as the USED width (computed by
+				// ComputeReplacedSize, which already applies §10.4 min/max and any
+				// aspect-ratio block->inline transfer). It OVERFLOWS its container rather
+				// than clamping to fit, so the geometry pass's available-fill value must
+				// be overridden whenever there is a real (positive) fill: a positive-but-
+				// too-small fill must not win, or an over-wide replaced element in a narrow
+				// (e.g. width:0) inline-block shrinks to a sliver instead of overflowing
+				// (LOU-337 / css-pseudo marker-content-012's `::before{display:inline-block;
+				// width:0;content:url(32px)}` reference).
+				//
+				// The fill is left untouched ONLY when it collapsed to 0 because the
+				// containing block's inline size is indefinite (a max-content/min-content
+				// measurement pass) and no block constraint transfers: forcing the intrinsic
+				// there would make an auto-sized replaced element wrongly contribute its
+				// natural width to its container's intrinsic size (css-sizing
+				// svg-intrinsic-size-005: `<div width:max-content><svg width:100%>` stays 0,
+				// not 300). Mirrors Blink LayoutReplaced::ComputeReplacedLogicalWidth (SHA
+				// 4883d11fef).
 				inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
 				if inlineSize > 0 {
-					// CSS Sizing 4 §6.3 / CSS 2.1 §10.3.2: when block-size is fixed
-					// by the parent (e.g., flex aspect-ratio stretch) and the element
-					// has an aspect ratio, inline-size is transferred from the cross
-					// axis via the ratio. In that case ComputeReplacedSize's value may
-					// exceed the shrink-to-fit intrinsic contentInlineSize — use it.
 					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
-					// CSS Sizing 4 §3.4: when the element has an aspect ratio and a
-					// min/max block-size set, those constraints transfer through the
-					// ratio to constrain inline-size. ComputeReplacedSize accounts for
-					// this; honor its inline-size even when it exceeds the shrink-to-
-					// fit contentInlineSize (e.g., min-height: 100px on a 1×1 image
-					// transfers via the 1:1 ratio to force inline-size = 100px).
 					blockConstraintTransfers := replacedBlockConstraintTransfersToInline(
 						bla.ctx, bla.node, bla.style, wdm, bla.space, geom)
-					if inlineSize < contentInlineSize || blockFixed || blockConstraintTransfers {
+					if contentInlineSize > 0 || blockFixed || blockConstraintTransfers {
 						contentInlineSize = inlineSize
 					}
 				}
@@ -470,8 +477,46 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			marker := builder.GetUnpositionedListMarker()
 			if marker.IsValid() {
 				if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
-					marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, builder)
+					// AddToBox returns the amount the content must be pushed DOWN
+					// when the marker's ascent is TALLER than the first line's
+					// (Blink's content-adjust: an image marker, e.g.
+					// list-style-image / ::marker content:url(), is taller than a
+					// text line). The block-CONTENT path applies this via
+					// positionOrPropagateListMarker; the INLINE-content path must
+					// do the equivalent — there is no single content child, so
+					// shift every line box down, grow the content block size, and
+					// carry the push into the propagated first/last baselines so
+					// the list item's own baseline stays aligned with the marker.
+					// LOU-337 / css-pseudo marker-content-012: without this the
+					// text baseline sat ~4px too high from the outside-image row
+					// down. Mirrors BlockLayoutAlgorithm::
+					// PositionOrPropagateListMarker (block_layout_algorithm.cc /
+					// unpositioned_list_marker.cc:81-123 @ 4883d11f).
+					contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, builder)
 					builder.ClearUnpositionedListMarker()
+					if contentPush > 0 {
+						builder.ShiftLineBoxChildrenBlockOffset(contentPush)
+						blockCursor += contentPush
+						firstLineAscent += contentPush
+						// If the IFC fragmented (an inline-only list item overflowing
+						// a fragmentainer), the break token captured its consumed
+						// height / shortage BEFORE this push. Advance both so the
+						// continuation resumes from the post-push height; otherwise a
+						// fragmented item with a tall outside marker resumes too high
+						// and misplaces later fragments. The early-return below reads
+						// InlineShortage when >0, else ConsumedBlockSize, so both must
+						// move with the content.
+						if inlineBreakToken != nil {
+							inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(
+								layoutunit.FromFloat64Round(contentPush))
+							if inlineBreakToken.InlineShortage > 0 {
+								inlineBreakToken.InlineShortage += contentPush
+							}
+						}
+						if hasLastChildBaseline {
+							lastChildBlockOffset += contentPush
+						}
+					}
 				}
 			}
 		}

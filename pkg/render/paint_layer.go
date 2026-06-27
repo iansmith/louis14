@@ -1877,7 +1877,39 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 		// Use this order directly — do NOT re-sort to DOM order.
 		return box.Children
 	}
-	return domOrderedChildren(box)
+	return moveOutsideMarkerToFront(domOrderedChildren(box))
+}
+
+// moveOutsideMarkerToFront reorders a list item's children so an OUTSIDE
+// ::marker box paints FIRST (under the item's content). CSS Lists: an outside
+// marker is generated content at the start of the list item — like ::before, it
+// paints before (under) the principal content. louis14's layout appends the
+// marker fragment LAST (UnpositionedListMarker.AddToBox adds it after the
+// content's line boxes), so in raw child order it would paint OVER the content.
+// That is invisible for an ordinary text bullet sitting in the gutter, but a
+// wide image marker (list-style-image / ::marker content:url()) overflows into
+// the content box and abuts the text; painted last it occludes the glyph's
+// antialiased edge where they meet (LOU-337 / css-pseudo marker-content-012:
+// the "item" glyph against the 32px green marker). The reference models the
+// same marker as an inline-block ::before, which paints before the text — this
+// reordering reproduces that. Returns the slice unchanged when there is no
+// outside marker child (the common case) or it is already first.
+func moveOutsideMarkerToFront(children []*layout.Box) []*layout.Box {
+	markerIdx := -1
+	for i, c := range children {
+		if c.LayoutNode != nil && c.LayoutNode.IsMarkerNode() && c.LayoutNode.MarkerIsOutside {
+			markerIdx = i
+			break
+		}
+	}
+	if markerIdx <= 0 {
+		return children
+	}
+	reordered := make([]*layout.Box, 0, len(children))
+	reordered = append(reordered, children[markerIdx])
+	reordered = append(reordered, children[:markerIdx]...)
+	reordered = append(reordered, children[markerIdx+1:]...)
+	return reordered
 }
 
 // buildPaintSubtree walks the Box tree, creating PaintLayers and assigning

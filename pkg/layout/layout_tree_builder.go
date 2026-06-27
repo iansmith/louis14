@@ -1105,6 +1105,19 @@ func (b *LayoutTreeBuilder) createSyntheticImage(src string, parent *html.Node) 
 	imgStyle.Set("display", "inline")
 	imgStyle.ViewportWidth = b.viewportWidth
 	imgStyle.ViewportHeight = b.viewportHeight
+	// CSS Cascade §6: a generated <img> for content:url() / list-style-image is a
+	// child of its originating pseudo (or ::marker), so it must carry that
+	// parent's INHERITED property values (direction, color, font, etc.). Real DOM
+	// children get these from the cascade's ApplyInheritedProperties pass, but
+	// this synthetic node is built post-cascade and never goes through it — it
+	// started from a fresh css.NewStyle() with only initial values, dropping
+	// everything the originating element established. Copy the parent's inherited
+	// values explicitly; the non-inherited slots set above (display:inline) are
+	// untouched, since ApplyInheritedFrom only fills inherited properties.
+	// (Found while fixing LOU-337's content:url() marker image.)
+	if parentStyle := b.styles[parent]; parentStyle != nil {
+		css.ApplyInheritedFrom(imgStyle, parentStyle)
+	}
 	b.styles[imgNode] = imgStyle
 	return &LayoutInputNode{DOMNode: imgNode, style: imgStyle}
 }
