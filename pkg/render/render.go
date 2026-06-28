@@ -8656,8 +8656,14 @@ func (r *Renderer) clearHoleFromBuffer(buf *image.RGBA, x, y, w, h float64, radi
 	}
 	holeDC.Fill()
 
-	for py := 0; py < bh; py++ {
-		for px := 0; px < bw; px++ {
+	// The mask is non-zero only within the hole's bounding box, so clamp the
+	// scan to it: the buffer is deliberately expanded by the blur radius on all
+	// sides, and this helper runs twice per outset shadow (pre- and post-blur),
+	// so walking the transparent margin each time is pure waste.
+	x0, y0 := max(0, int(math.Floor(x))), max(0, int(math.Floor(y)))
+	x1, y1 := min(bw, int(math.Ceil(x+w))), min(bh, int(math.Ceil(y+h)))
+	for py := y0; py < y1; py++ {
+		for px := x0; px < x1; px++ {
 			moff := py*holeMask.Stride + px*4
 			a := holeMask.Pix[moff+3]
 			if a == 0 {
