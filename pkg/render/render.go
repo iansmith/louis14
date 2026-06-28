@@ -8610,33 +8610,7 @@ func (r *Renderer) drawOutsetShadowBuffer(
 		childDC.DrawRectangle(lsx, lsy, sw, sh)
 		childDC.Fill()
 
-		holeMask := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
-		holeDC := r.dc.NewChildContext(holeMask)
-		holeDC.SetColor(color.White)
-		holeDC.DrawRectangle(lbx, lby, bw, bh)
-		holeDC.Fill()
-
-		for py := 0; py < bufH; py++ {
-			for px := 0; px < bufW; px++ {
-				moff := py*holeMask.Stride + px*4
-				a := holeMask.Pix[moff+3]
-				if a > 0 {
-					off := py*buf.Stride + px*4
-					if a == 255 {
-						buf.Pix[off+0] = 0
-						buf.Pix[off+1] = 0
-						buf.Pix[off+2] = 0
-						buf.Pix[off+3] = 0
-					} else {
-						keep := 255 - uint16(a)
-						buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * keep / 255)
-						buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * keep / 255)
-						buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * keep / 255)
-						buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * keep / 255)
-					}
-				}
-			}
-		}
+		r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
 	}
 
 	// Apply box blur if needed.
@@ -8644,9 +8618,72 @@ func (r *Renderer) drawOutsetShadowBuffer(
 		boxBlur(buf, int(math.Round(sigma)))
 		boxBlur(buf, int(math.Round(sigma)))
 		boxBlur(buf, int(math.Round(sigma)))
+
+		// Re-clip the border box out of the *blurred* buffer. The blur spreads
+		// shadow back across the cleared boundary into the border box by a few
+		// pixels; without this an outset shadow paints inside the border box,
+		// visible whenever the element background is transparent (e.g. a
+		// backdrop-filter element). Mirrors Blink's
+		// GraphicsContext::ClipOut(border_box) in
+		// BoxPainterBase::PaintNormalBoxShadow (CSS Backgrounds 3 §7.1).
+		r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
 	}
 
 	r.dc.DrawImage(buf, int(math.Round(minX)), int(math.Round(minY)))
+}
+
+// clearHoleFromBuffer clears (toward transparent) the pixels of buf that fall
+// inside the given rectangle, optionally with rounded corners. It rasterizes
+// the shape to an alpha mask using the draw context's rasterizer — so rounded
+// corners match other path rendering exactly — then multiplies each covered
+// buffer pixel toward zero by the mask's inverse coverage. Shared by the outset
+// shadow's hole clear, its post-blur re-clip, and the inset shadow's inner-hole
+// clear. Coordinates are buffer-local.
+func (r *Renderer) clearHoleFromBuffer(buf *image.RGBA, x, y, w, h float64, radii css.EllipticalRadii) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	bounds := buf.Bounds()
+	bw, bh := bounds.Dx(), bounds.Dy()
+
+	holeMask := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	holeDC := r.dc.NewChildContext(holeMask)
+	holeDC.SetColor(color.White)
+	if !radii.IsZero() {
+		buildRoundedRectPathOnDC(holeDC, x, y, w, h, radii)
+	} else {
+		holeDC.DrawRectangle(x, y, w, h)
+	}
+	holeDC.Fill()
+
+	// The mask is non-zero only within the hole's bounding box, so clamp the
+	// scan to it: the buffer is deliberately expanded by the blur radius on all
+	// sides, and this helper runs twice per outset shadow (pre- and post-blur),
+	// so walking the transparent margin each time is pure waste.
+	x0, y0 := max(0, int(math.Floor(x))), max(0, int(math.Floor(y)))
+	x1, y1 := min(bw, int(math.Ceil(x+w))), min(bh, int(math.Ceil(y+h)))
+	for py := y0; py < y1; py++ {
+		for px := x0; px < x1; px++ {
+			moff := py*holeMask.Stride + px*4
+			a := holeMask.Pix[moff+3]
+			if a == 0 {
+				continue
+			}
+			off := py*buf.Stride + px*4
+			if a == 255 {
+				buf.Pix[off+0] = 0
+				buf.Pix[off+1] = 0
+				buf.Pix[off+2] = 0
+				buf.Pix[off+3] = 0
+			} else {
+				keep := 255 - uint16(a)
+				buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * keep / 255)
+				buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * keep / 255)
+				buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * keep / 255)
+				buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * keep / 255)
+			}
+		}
+	}
 }
 
 // drawInsetBoxShadows paints inset box shadows inside the element,
@@ -8734,49 +8771,10 @@ func (r *Renderer) drawInsetShadowBuffer(
 		}
 	}
 
-	// Clear the inner hole (set to transparent) by drawing the inner shape
-	// as a mask and clearing pixels inside it. Uses the draw context's
-	// rasterizer for rounded corners to match other path rendering exactly.
-	if iw > 0 && ih > 0 {
-		lix := ix - bx
-		liy := iy - by
-
-		// Rasterize the inner shape to a mask buffer.
-		holeMask := image.NewRGBA(image.Rect(0, 0, bw, bh))
-		childDC := r.dc.NewChildContext(holeMask)
-		childDC.SetColor(color.White)
-		if !innerRadii.IsZero() {
-			buildRoundedRectPathOnDC(childDC, lix, liy, iw, ih, innerRadii)
-			childDC.Fill()
-		} else {
-			childDC.DrawRectangle(lix, liy, iw, ih)
-			childDC.Fill()
-		}
-
-		// Clear pixels where the hole mask is opaque.
-		for y := 0; y < bh; y++ {
-			for x := 0; x < bw; x++ {
-				moff := y*holeMask.Stride + x*4
-				a := holeMask.Pix[moff+3] // alpha channel
-				if a > 0 {
-					off := y*buf.Stride + x*4
-					if a == 255 {
-						buf.Pix[off+0] = 0
-						buf.Pix[off+1] = 0
-						buf.Pix[off+2] = 0
-						buf.Pix[off+3] = 0
-					} else {
-						// Partial coverage: blend.
-						keep := 255 - uint16(a)
-						buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * keep / 255)
-						buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * keep / 255)
-						buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * keep / 255)
-						buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * keep / 255)
-					}
-				}
-			}
-		}
-	}
+	// Clear the inner hole (set to transparent). The inner edge is then blurred
+	// below, which is correct for inset shadows: their inner boundary is soft,
+	// so — unlike the outset case — no post-blur re-clip is applied here.
+	r.clearHoleFromBuffer(buf, ix-bx, iy-by, iw, ih, innerRadii)
 
 	// Apply box blur if needed.
 	if shadow.Blur > 0 {
