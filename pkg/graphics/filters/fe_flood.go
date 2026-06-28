@@ -16,13 +16,16 @@ type FEFlood struct {
 }
 
 // NewFEFlood creates a flood effect with the given non-premultiplied colour.
-// In practice `space` is always InterpolationSpaceSRGB: feFlood is exempt from
-// color-interpolation-filters and emits its colour raw in sRGB (Blink treats
-// SetOperatingInterpolationSpace as a no-op for feFlood), so ApplyEffect stores
-// the colour unconverted.
-func NewFEFlood(space InterpolationSpace, r, g, b uint8, a float64) *FEFlood {
+// The space argument is accepted for symmetry with the other effect
+// constructors but ignored: feFlood is exempt from color-interpolation-filters
+// and always operates in sRGB (Blink treats SetOperatingInterpolationSpace as a
+// no-op for feFlood), emitting its colour raw. The effect is therefore always
+// constructed in InterpolationSpaceSRGB so its stored space matches the sRGB
+// pixels ApplyEffect writes — the graph converts sRGB→linearRGB at the edge
+// when a linearRGB primitive consumes the flood.
+func NewFEFlood(_ InterpolationSpace, r, g, b uint8, a float64) *FEFlood {
 	return &FEFlood{
-		baseEffect: baseEffect{space: space},
+		baseEffect: baseEffect{space: InterpolationSpaceSRGB},
 		R:          r, G: g, B: b, A: a,
 	}
 }
