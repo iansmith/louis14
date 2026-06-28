@@ -16,6 +16,10 @@ type FEFlood struct {
 }
 
 // NewFEFlood creates a flood effect with the given non-premultiplied colour.
+// In practice `space` is always InterpolationSpaceSRGB: feFlood is exempt from
+// color-interpolation-filters and emits its colour raw in sRGB (Blink treats
+// SetOperatingInterpolationSpace as a no-op for feFlood), so ApplyEffect stores
+// the colour unconverted.
 func NewFEFlood(space InterpolationSpace, r, g, b uint8, a float64) *FEFlood {
 	return &FEFlood{
 		baseEffect: baseEffect{space: space},
@@ -41,19 +45,15 @@ func (e *FEFlood) MapRect(r image.Rectangle) image.Rectangle {
 // ApplyEffect fills the region (or the subregion) with the flood colour.
 func (e *FEFlood) ApplyEffect(_ []*image.RGBA, region image.Rectangle) *image.RGBA {
 	out := newRGBA(region)
-	// flood-color is specified in sRGB. The flood must enter the graph in
-	// this effect's operating (interpolation) space, so convert sRGB → the
-	// operating space before storing. Mirrors Blink FEFlood::CreateImageFilter,
-	// which adapts the flood color to the operating interpolation space
-	// (AdaptColorToOperatingInterpolationSpace). Without this, a linearRGB
-	// filter stores raw sRGB bytes that the final linearRGB→sRGB conversion
-	// over-brightens (e.g. green 128 → 188).
+	// feFlood is exempt from color-interpolation-filters: the flood colour is
+	// emitted directly in sRGB regardless of the filter's operating space, so it
+	// is stored raw with no sRGB→operating-space conversion. FEFlood always
+	// operates in sRGB — the sole production constructor passes
+	// InterpolationSpaceSRGB (see svg_filter_builder.buildOnePrimitive), and the
+	// space is never mutated afterwards. Mirrors Blink, where FEFlood overrides
+	// SetOperatingInterpolationSpace as a no-op so the flood is never adapted to
+	// linearRGB (fe_flood.cc).
 	r, g, b := float64(e.R)/255, float64(e.G)/255, float64(e.B)/255
-	if e.space == InterpolationSpaceLinearRGB {
-		r = srgbToLinear(r)
-		g = srgbToLinear(g)
-		b = srgbToLinear(b)
-	}
 	px := premultiply(r, g, b, e.A)
 	fill := region
 	if !e.Subregion.Empty() {
