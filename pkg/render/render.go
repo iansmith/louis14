@@ -7787,8 +7787,13 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		if onlyLineThrough {
 			return
 		}
-		centerY = box.Y + ascent + math.Abs(descent)*0.25 + layer.TextUnderlineOffset
-		rectTop = centerY // pre-port lineY value is already Blink's paint_underline_offset (rect TOP)
+		// text-underline-offset:0 / position:auto sits at the alphabetic baseline
+		// (box.Y+ascent), no descent gap — matching computeUnderlineZeroPosition
+		// and the spec (CSS Text Decor 4 §line-offset-zero). The pre-port
+		// descent*0.25 term here was a stale relic; it leaked the underline below
+		// the glyph and broke text-underline-offset-zero-position.html (LOU-333).
+		centerY = box.Y + ascent + layer.TextUnderlineOffset
+		rectTop = centerY // already Blink's paint_underline_offset (rect TOP)
 	case css.TextDecorationOverline:
 		if onlyLineThrough {
 			return
