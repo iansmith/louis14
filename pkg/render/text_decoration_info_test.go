@@ -39,8 +39,14 @@ func TestUnderlineRectTop_GrowsDownFromLineY(t *testing.T) {
 	// (which is Blink's `paint_underline_offset`); the rect extends DOWN
 	// by `thickness` to cover [rectTop, rectTop + thickness].
 	rectBottom := rectTop + thickness
-	if rectTop != box.Y+16+1+0 { // ascent + descent*0.25 (=1) + offset(=0)
-		t.Errorf("underline rect-top = %v; want %v", rectTop, box.Y+17.0)
+	// text-underline-offset:0 with text-underline-position:auto sits exactly at
+	// the alphabetic baseline (box.Y+ascent), with NO descent gap — per CSS Text
+	// Decor 4 §line-offset-zero and the Blink-passing WPT reftest
+	// text-underline-offset-zero-position.html (which fails if the underline is
+	// pushed even descent*0.25 below the baseline, leaking red past the glyph).
+	// See LOU-333: the earlier ascent+descent*0.25 expectation was wrong.
+	if rectTop != box.Y+16 { // ascent + offset(=0)
+		t.Errorf("underline rect-top = %v; want %v", rectTop, box.Y+16.0)
 	}
 	if rectBottom != rectTop+80 {
 		t.Errorf("underline rect-bottom = %v; want %v", rectBottom, rectTop+80)
@@ -87,9 +93,9 @@ func TestUnderlineRectCoversBoxBelowAfterRelativeBottomShift(t *testing.T) {
 	//            text-decoration-thickness: 4em; }
 	// The text fragment is shifted UP by 3em (=60px) from its natural top,
 	// so its box.Y = -60. With a 4em (=80px) thick underline, a centered
-	// stroke at lineY = box.Y + ascent + descent*0.25 = -43 would paint
-	// [-83, -3] — entirely above the visible #box (0..20). The Blink-faithful
-	// rect-top semantics paints [-43, +37], covering 0..20 as required.
+	// stroke at lineY = box.Y + ascent = -44 would paint
+	// [-84, -4] — entirely above the visible #box (0..20). The Blink-faithful
+	// rect-top semantics paints [-44, +36], covering 0..20 as required.
 	box := &layout.Box{Y: -60}
 	info := newTextDecorationInfo(box, 80, 20, 16, 4, 0)
 	td := css.AppliedTextDecoration{
