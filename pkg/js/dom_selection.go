@@ -30,8 +30,9 @@ type rangeAccessor struct {
 
 // newRangeProxy creates a Range JS proxy and registers it in
 // ctx.ranges so addRange can later resolve the proxy back to its
-// *html.Range.
-func newRangeProxy(ctx *domContext) goja.Value {
+// *html.Range. Shared by document.createRange and the `new Range()`
+// constructor.
+func newRangeProxy(ctx *domContext) *goja.Object {
 	r := &html.Range{}
 	proxy := ctx.vm.NewDynamicObject(&rangeAccessor{ctx: ctx, r: r})
 	ctx.ranges = append(ctx.ranges, rangeEntry{proxy: proxy, r: r})
@@ -216,14 +217,10 @@ func registerSelectionAPI(ctx *domContext, docObj *goja.Object, bodyNode *html.N
 
 	// `new Range()` — Range is a constructible IDL interface
 	// (https://dom.spec.whatwg.org/#dom-range-range). goja invokes a plain
-	// Go func via `new` as a ConstructorCall when set as a constructor;
-	// the simplest portable form is a regular function returning the new
-	// object, which goja accepts for `new Range()` in non-strict callers.
+	// Go func via `new` as a ConstructorCall when set as a constructor; the
+	// new object is the same proxy createRange builds, so reuse newRangeProxy.
 	vm.Set("Range", func(call goja.ConstructorCall) *goja.Object {
-		r := &html.Range{}
-		obj := vm.NewDynamicObject(&rangeAccessor{ctx: ctx, r: r})
-		ctx.ranges = append(ctx.ranges, rangeEntry{proxy: obj, r: r})
-		return obj
+		return newRangeProxy(ctx)
 	})
 
 	getSelectionFn := func(call goja.FunctionCall) goja.Value {

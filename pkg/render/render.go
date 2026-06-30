@@ -6093,7 +6093,6 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	return layer.IsSidewaysLR
 }
 
-// drawText paints text content using pre-computed font/color properties.
 // drawText paints a text fragment, splitting it into pre-selection /
 // selected / post-selection segments when the LOU-344 selection context
 // (Renderer.SetSelectionContext) has an active Range overlapping this
@@ -7279,6 +7278,19 @@ func (r *Renderer) tabStopIntervalPx(layer *PaintLayer, fontID int32) float64 {
 	return tabStopPx
 }
 
+// tabAdvance returns the width a tab character occupies: the distance from
+// posFromLineStart forward to the next tab stop, or a full tabStopPx when
+// already exactly on one. Shared by drawTextWithTabs and
+// measureSegmentVisualWidthWithTabs so the painted glyph advance and the
+// ::selection highlight-rect width stay identical (CLAUDE.md §4 dedup).
+func tabAdvance(posFromLineStart, tabStopPx float64) float64 {
+	rem := math.Mod(posFromLineStart, tabStopPx)
+	if rem < 1e-9 {
+		return tabStopPx
+	}
+	return tabStopPx - rem
+}
+
 // lineStartX finds the line start (containing block's content-area left
 // edge) for box: the nearest ancestor with a Style, per CSS Text 3 §4.2's
 // "tab stops are measured from the line's start" rule. Factored out of
@@ -7324,13 +7336,7 @@ func (r *Renderer) measureSegmentVisualWidthWithTabs(segBox *layout.Box, fontID 
 			posFromLineStart += segW
 		}
 		if i < len(segments)-1 {
-			rem := math.Mod(posFromLineStart, tabStopPx)
-			var tabW float64
-			if rem < 1e-9 {
-				tabW = tabStopPx
-			} else {
-				tabW = tabStopPx - rem
-			}
+			tabW := tabAdvance(posFromLineStart, tabStopPx)
 			total += tabW
 			posFromLineStart += tabW
 		}
@@ -7376,13 +7382,7 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 		}
 		// After each segment except the last, advance to next tab stop.
 		if i < len(segments)-1 {
-			rem := math.Mod(posFromLineStart, tabStopPx)
-			var tabW float64
-			if rem < 1e-9 {
-				tabW = tabStopPx
-			} else {
-				tabW = tabStopPx - rem
-			}
+			tabW := tabAdvance(posFromLineStart, tabStopPx)
 			x += tabW
 			posFromLineStart += tabW
 		}

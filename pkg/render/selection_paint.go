@@ -104,26 +104,16 @@ func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fr
 	if !hasEnd {
 		nodeSelEnd = len(node.Text)
 	}
-	if nodeSelStart < 0 {
-		nodeSelStart = 0
-	}
-	if nodeSelEnd > len(node.Text) {
-		nodeSelEnd = len(node.Text)
-	}
+	nodeSelStart = max(nodeSelStart, 0)
+	nodeSelEnd = min(nodeSelEnd, len(node.Text))
 	if nodeSelStart >= nodeSelEnd {
 		return 0, 0, false
 	}
 
 	// Intersect [nodeSelStart, nodeSelEnd) with this fragment's own
 	// [fragStart, fragEnd) node-local span, then shift to fragment-local.
-	overlapStart := nodeSelStart
-	if fragStart > overlapStart {
-		overlapStart = fragStart
-	}
-	overlapEnd := nodeSelEnd
-	if fragEnd < overlapEnd {
-		overlapEnd = fragEnd
-	}
+	overlapStart := max(nodeSelStart, fragStart)
+	overlapEnd := min(nodeSelEnd, fragEnd)
 	if overlapStart >= overlapEnd {
 		return 0, 0, false
 	}
@@ -226,12 +216,10 @@ func (r *Renderer) resolveSelectionPseudoStyle(originating *html.Node) *css.Styl
 // r.selectionTextConsumed to track how much of each text node's content
 // has already been claimed by earlier fragments painted this Render call.
 //
-// fragmentLen runes... actually bytes: box.Text length in bytes (Go string
-// indexing) — fragStart/fragEnd are node-local BYTE offsets into
-// node.Text, not the UTF-16 code-unit offsets html.Range's
-// StartOffset/EndOffset use (see html.UTF16OffsetToByteOffset's doc
-// comment for where that conversion happens before a Range offset
-// reaches this byte space).
+// Offsets are node-local BYTE offsets into node.Text (Go string indexing),
+// NOT the UTF-16 code-unit offsets html.Range's StartOffset/EndOffset use
+// (see html.UTF16OffsetToByteOffset's doc comment for where that
+// conversion happens before a Range offset reaches this byte space).
 func (r *Renderer) findOriginatingTextNode(parent *html.Node, fragmentText string) (*html.Node, int, int) {
 	if parent == nil {
 		return nil, 0, 0
