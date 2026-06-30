@@ -21,6 +21,12 @@ type Engine struct {
 	// getComputedStyle. Set via SetLayoutSnapshot before Execute.
 	layoutStyles map[*html.Node]*css.Style
 	layoutBoxes  map[*html.Node]*layout.Box
+
+	// doc is the document most recently passed to Execute, retained so
+	// CurrentSelection() can read doc.Selection after scripts finish
+	// running (e.g. from a test, without the caller needing to thread the
+	// *html.Document back through separately).
+	doc *html.Document
 }
 
 // New creates a new JS engine with a fresh goja runtime.
@@ -131,6 +137,20 @@ func (e *Engine) RegisterOnloadCallback(node *html.Node, fn goja.Callable) {
 	e.onloadCallbacks[node] = fn
 }
 
+// CurrentSelection returns the document's current DOM Selection/Range
+// (set via document.createRange()/selectNodeContents()/getSelection().
+// addRange() during script execution), or nil if nothing is selected or
+// Execute hasn't run yet. Thin accessor over html.Document.Selection — see
+// that field's doc comment for why the state itself lives on *html.Document
+// rather than on Engine (pkg/render needs to read it at paint time without
+// importing pkg/js).
+func (e *Engine) CurrentSelection() *html.Range {
+	if e.doc == nil {
+		return nil
+	}
+	return e.doc.Selection
+}
+
 // SetLayoutSnapshot stores the computed-style map and node→box index from the
 // most recent layout pass so that getComputedStyle can return real values.
 // Callers should invoke this after layout completes but before Execute.
@@ -147,6 +167,7 @@ func (e *Engine) SetLayoutSnapshot(styles map[*html.Node]*css.Style, boxes map[*
 // Then <body onload="..."> attribute is fired, and finally any
 // element-level onload callbacks (e.g. iframe.onload) are fired.
 func (e *Engine) Execute(doc *html.Document) error {
+	e.doc = doc
 	// Register document global pointing at this document's DOM
 	ctx := registerDocument(e.vm, doc)
 	// Give the DOM context a reference to the engine so element proxies

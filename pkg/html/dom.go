@@ -111,6 +111,32 @@ type Document struct {
 	// type here to avoid forward references that would constrain field
 	// ordering.
 	CSSResourceFetcher func(uri string) (string, error)
+
+	// Selection is the document's current DOM Selection/Range, or nil if
+	// nothing is selected. Mirrors Blink's FrameSelection (owned by
+	// LocalFrame; reached via Document::GetFrame()->Selection() —
+	// third_party/blink/renderer/core/editing/frame_selection.h @ blob
+	// 5011f9bab79cae12d0d7757103eac204e4aaf1b2), simplified to a single
+	// Range since louis14 (like the DOM Selection API surface used by the
+	// LOU-344 target tests) only ever needs one active range — no
+	// multi-range selection support. Lives on *Document (alongside
+	// FocusedElement) rather than on the JS engine so pkg/render's paint
+	// pass can read it without importing pkg/js. Maintained by the
+	// document.createRange/getSelection/addRange/removeAllRanges bindings
+	// in pkg/js/dom_selection.go.
+	Selection *Range
+}
+
+// Range is a simplified DOM Range: a pair of boundary points
+// (startContainer, startOffset) / (endContainer, endOffset). Mirrors
+// Blink's Range boundary-point model (core/dom/range.h) — for an element
+// container, offset is a child index; for a text container, offset is a
+// UTF-16 character offset, per DOM §5.4 "boundary points".
+type Range struct {
+	StartContainer *Node
+	StartOffset    int
+	EndContainer   *Node
+	EndOffset      int
 }
 
 func NewDocument() *Document {
