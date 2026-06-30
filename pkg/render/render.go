@@ -6142,6 +6142,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// 011/-012's whole point: the spacing itself must be
 				// highlighted, per CSS Pseudo-4 §highlight-bounds).
 				segWidth := r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
+				// selectionBackgroundRectY: use the originating element's own
+				// inline background-fragment box (Y, Height) when one exists,
+				// not box's own (always em-box-sized) Y/Height — see that
+				// function's doc comment for why these can differ
+				// (selection-contenteditable-011.html's red sliver, LOU-344).
+				rectY, rectHeight := selectionBackgroundRectY(box)
 				// Pixel-snap exactly like drawBackground's element-background
 				// rect (pixelSnap, used throughout render.go for backgrounds/
 				// borders) so the selection highlight rect lands on the same
@@ -6150,7 +6156,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// rect and the WPT reference's actual `background-color`
 				// <div> box left a 1px red fringe on two edges
 				// (active-selection-012).
-				sx, sy, sw, sh := pixelSnap(segBox.X, box.Y, segWidth, box.Height)
+				sx, sy, sw, sh := pixelSnap(segBox.X, rectY, segWidth, rectHeight)
 				r.dc.DrawRectangle(sx, sy, sw, sh)
 				r.dc.Fill()
 			}

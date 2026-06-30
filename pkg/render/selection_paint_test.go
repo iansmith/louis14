@@ -10,6 +10,7 @@ package render
 
 import (
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 	"testing"
 )
 
@@ -159,5 +160,61 @@ func TestSelectionOverlapForTextNode_NestedAncestorContainer(t *testing.T) {
 	}
 	if start != 0 || end != len(spanText.Text) {
 		t.Errorf("got [%d,%d), want [0,%d) (span text fully selected)", start, end, len(spanText.Text))
+	}
+}
+
+// TestSelectionBackgroundRectY_UsesSiblingBackgroundFragment reproduces
+// selection-contenteditable-011.html's ~3px red sliver: a
+// `display: inline` div with `background-color: red` (own background) and
+// `font-size: 300%` (so line-height: normal's 1.2x default exceeds the
+// font's em box). pkg/layout/inline_layout.go emits that own background
+// as a SEPARATE sibling PhysicalFragment from the text fragment, sized
+// max(em box, line box) and anchored at the line-box top — taller than,
+// and starting higher than, the text fragment's own (always em-box-sized)
+// box. Using the text fragment's own (Y, Height) for the ::selection
+// background rect left a gap at the top where the originating red
+// background showed through. selectionBackgroundRectY must return the
+// SIBLING background fragment's (Y, Height), not the text box's own.
+func TestSelectionBackgroundRectY_UsesSiblingBackgroundFragment(t *testing.T) {
+	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
+	parent := &layout.Box{Node: nil} // anonymous block, like the real tree
+
+	bgBox := &layout.Box{Node: divNode, Parent: parent, Y: 8.00, Height: 50.83} // line-box-anchored
+	textBox := &layout.Box{Node: divNode, Parent: parent, Y: 11.92, Height: 48.00, Text: "Selected Text"}
+	parent.Children = []*layout.Box{bgBox, textBox}
+
+	y, height := selectionBackgroundRectY(textBox)
+	if y != bgBox.Y || height != bgBox.Height {
+		t.Errorf("selectionBackgroundRectY = (%v, %v), want the sibling background fragment's (%v, %v) — using the text box's own (%v, %v) leaves the top sliver of the originating background exposed",
+			y, height, bgBox.Y, bgBox.Height, textBox.Y, textBox.Height)
+	}
+}
+
+// TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox covers
+// the common case (no inline background-fragment sibling exists, e.g. the
+// originating element has no background-color of its own — most LOU-344
+// target tests): selectionBackgroundRectY must fall back to the text
+// box's own (Y, Height) rather than panicking or returning zero.
+func TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox(t *testing.T) {
+	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
+	parent := &layout.Box{Node: nil}
+	textBox := &layout.Box{Node: divNode, Parent: parent, Y: 11.92, Height: 48.00, Text: "Selected Text"}
+	parent.Children = []*layout.Box{textBox}
+
+	y, height := selectionBackgroundRectY(textBox)
+	if y != textBox.Y || height != textBox.Height {
+		t.Errorf("selectionBackgroundRectY = (%v, %v), want the text box's own (%v, %v) when no background-fragment sibling exists",
+			y, height, textBox.Y, textBox.Height)
+	}
+}
+
+// TestSelectionBackgroundRectY_NilBox guards the nil-safety the rest of
+// computeSelectionSegments relies on (it's only ever called with a
+// non-nil box in practice, but defends against the zero value the same
+// way selectionOverlapForTextNode's nil-Range case does).
+func TestSelectionBackgroundRectY_NilBox(t *testing.T) {
+	y, height := selectionBackgroundRectY(nil)
+	if y != 0 || height != 0 {
+		t.Errorf("selectionBackgroundRectY(nil) = (%v, %v), want (0, 0)", y, height)
 	}
 }

@@ -29,6 +29,45 @@ import (
 	"louis14/pkg/layout"
 )
 
+// selectionBackgroundRectY returns the (Y, Height) the ::selection
+// background rect should use for a text fragment box: the originating
+// element's own inline background-fragment box when one exists as a
+// sibling of textBox, falling back to textBox's own (Y, Height)
+// otherwise.
+//
+// pkg/layout/inline_layout.go emits an inline element's own background as
+// a SEPARATE sibling PhysicalFragment from its text fragments (see that
+// file's "An inline background covers at least the font's em box... and
+// grows to the line box when line-height exceeds it — max(em box, line
+// box)" comment), sharing textBox.Parent but carrying no .Text. A text
+// fragment's own box.Height is ALWAYS just the font's em box (fontSize,
+// per emitTextFragment), never the line box — so when line-height >
+// font-size (line-height: normal's 1.2x default, the common case), the
+// background fragment is taller than the text fragment and anchored
+// higher (line-box top vs. the text's baseline-anchored em box). Using
+// the text fragment's own (Y, Height) for the selection rect then leaves
+// a gap at the top where the originating element's own background
+// (e.g. `background-color: red`) shows through above the selection
+// highlight (selection-contenteditable-011.html's ~3px red sliver,
+// LOU-344). Reusing the SAME background-fragment box the originating
+// element's own background already painted with (rather than
+// re-deriving the max(em box, line box) sizing independently at paint
+// time, which would duplicate pkg/layout's logic and risk drifting out
+// of sync with it) keeps the two rects pixel-identical by construction.
+func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
+	if textBox == nil {
+		return 0, 0
+	}
+	if textBox.Parent != nil && textBox.Node != nil {
+		for _, sibling := range textBox.Parent.Children {
+			if sibling != textBox && sibling.Node == textBox.Node && sibling.Text == "" {
+				return sibling.Y, sibling.Height
+			}
+		}
+	}
+	return textBox.Y, textBox.Height
+}
+
 // selectionOverlapForTextNode returns the [start,end) sub-range of a text
 // fragment — expressed in FRAGMENT-LOCAL offsets (i.e. already shifted so
 // 0 means the start of THIS fragment's own text, not the node's) — that
