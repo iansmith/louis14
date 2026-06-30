@@ -3,6 +3,8 @@ package js
 import (
 	"strings"
 
+	"louis14/pkg/html"
+
 	"github.com/dop251/goja"
 )
 
@@ -128,25 +130,33 @@ func (ctx *domContext) setLocationHref(newHref string) {
 	ctx.locationFragment = ""
 }
 
-// notifyFragmentChanged invokes ctx.engine.OnFragmentDirective with the
-// directive portion of the current fragment (everything after the `:~:`
-// marker, e.g. "text=match%20me") when the fragment contains one. A
-// fragment with no `:~:` marker (a plain element-id anchor, or no fragment
-// at all) does not trigger matching, matching WHATWG's Text Fragments
-// integration which only invokes the fragment-directive processing steps
-// when a directive delimiter is present
+// notifyFragmentChanged parses and resolves a `:~:` Text Fragment directive
+// (LOU-349) out of the current fragment, when one is present, updating
+// ctx.doc.TargetTextRanges with the resulting matches (see
+// html.FindTextFragmentMatches). A fragment with no `:~:` marker (a plain
+// element-id anchor, or no fragment at all) does not trigger matching —
+// mirrors WHATWG's Text Fragments integration, which only invokes the
+// fragment-directive processing steps when a directive delimiter is
+// present
 // (https://wicg.github.io/scroll-to-text-fragment/#parsing-the-fragment-directive).
+// Also invokes ctx.engine.OnFragmentDirective (when set) so callers/tests
+// can observe the raw directive string independent of the match resolution
+// itself.
 func (ctx *domContext) notifyFragmentChanged() {
-	if ctx.engine == nil || ctx.engine.OnFragmentDirective == nil {
-		return
-	}
 	const marker = ":~:"
 	idx := strings.Index(ctx.locationFragment, marker)
 	if idx < 0 {
 		return
 	}
 	directive := ctx.locationFragment[idx+len(marker):]
-	ctx.engine.OnFragmentDirective(directive)
+	if ctx.engine != nil && ctx.engine.OnFragmentDirective != nil {
+		ctx.engine.OnFragmentDirective(directive)
+	}
+	if ctx.doc == nil || ctx.doc.Root == nil {
+		return
+	}
+	selectors := html.ParseTextFragmentDirectives(directive)
+	ctx.doc.TargetTextRanges = html.FindTextFragmentMatches(ctx.doc.Root, selectors)
 }
 
 // registerLocationAPI wires window.location and document.location (the

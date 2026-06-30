@@ -77,6 +77,33 @@ func TestLocationHashAssignmentTriggersFragmentDirectiveHook(t *testing.T) {
 	}
 }
 
+// TestLocationHashAssignmentResolvesTargetTextRanges is the Checkpoint 3
+// end-to-end verification for target-text-001.html's exact shape: setting
+// window.location.hash to a `:~:text=` directive must populate
+// doc.TargetTextRanges with a Range covering the matched text node.
+func TestLocationHashAssignmentResolvesTargetTextRanges(t *testing.T) {
+	doc := parseHTML(t, `<p class="ahem">match me</p>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		window.location.hash = "#:~:text=match%20me";
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.TargetTextRanges) != 1 {
+		t.Fatalf("doc.TargetTextRanges has %d entries, want 1", len(doc.TargetTextRanges))
+	}
+	p := getElementsByTagName(doc.Root, "p")[0]
+	textNode := p.Children[0]
+	rng := doc.TargetTextRanges[0]
+	if rng.StartContainer != textNode || rng.StartOffset != 0 {
+		t.Errorf("start = (%v, %d), want (text node, 0)", rng.StartContainer, rng.StartOffset)
+	}
+	if rng.EndContainer != textNode || rng.EndOffset != len("match me") {
+		t.Errorf("end = (%v, %d), want (text node, %d)", rng.EndContainer, rng.EndOffset, len("match me"))
+	}
+}
+
 // TestLocationHashAssignmentWithoutDirectiveDoesNotFireHook asserts a plain
 // (non-`:~:`) hash assignment does NOT invoke the fragment-directive hook —
 // only a `:~:` marker present in the new fragment should trigger matching.

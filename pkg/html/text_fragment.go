@@ -85,3 +85,148 @@ func ParseTextFragmentDirectives(directive string) []TextFragmentSelector {
 	}
 	return selectors
 }
+
+// textRun is one DOM text node's contribution to the flattened document-text
+// search space FindTextFragmentMatches builds: the node itself plus the
+// [docStart, docEnd) byte range it occupies in the concatenated search
+// string built by collectTextRuns.
+type textRun struct {
+	node             *Node
+	docStart, docEnd int
+}
+
+// collectTextRuns walks root in pre-order (document order) collecting every
+// descendant TextNode as a textRun, alongside the single concatenated
+// search string those runs cover. Mirrors Blink's TextIterator walking the
+// DOM in document order to build the search corpus for FindBuffer (see
+// text_fragment.go's file doc comment) — louis14 has no existing DOM-order
+// text walker (confirmed: pkg/html, pkg/css, pkg/render, pkg/layout have no
+// :contains()/TextContent-across-subtree helper), so this is new rather
+// than reused.
+//
+// A single space is inserted between adjacent text runs that belong to
+// DIFFERENT parent elements (i.e. at an element boundary) when neither run
+// already starts/ends with whitespace — this mirrors block/inline
+// formatting context text generally being separated by at least the
+// element structure, and avoids accidentally gluing "ma" + "tch" into
+// "match" across an unrelated element boundary. None of the 14 LOU-349
+// target tests actually need this disambiguation (their cross-element
+// split points place the boundary mid-word with no separating whitespace
+// expected, e.g. "ma<span>tch </span>me" must search as "match me" with NO
+// inserted space), so no separator is inserted — text runs are
+// concatenated VERBATIM. This matches Blink's own behavior of searching
+// the rendered text content directly (TextIterator's default behavior
+// without ContentVisibility/display:none gaps).
+func collectTextRuns(root *Node) (runs []textRun, corpus string) {
+	var sb strings.Builder
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.Type == TextNode {
+			start := sb.Len()
+			sb.WriteString(n.Text)
+			runs = append(runs, textRun{node: n, docStart: start, docEnd: sb.Len()})
+			return
+		}
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	walk(root)
+	return runs, sb.String()
+}
+
+// findCaseInsensitive returns the byte index of the first occurrence of
+// substr in corpus starting at-or-after fromByte, comparing
+// case-insensitively, or -1 if not found. Mirrors Blink's
+// FindOptions().SetCaseInsensitive(true), confirmed against live Blink
+// source (text_fragment_finder.cc — see text_fragment.go's file doc
+// comment for the verification trail). Whitespace is NOT collapsed/
+// normalized before comparison — the documented fallback for the
+// (unverified this session) whitespace-handling question, sufficient for
+// every LOU-349 target test's single-space-separated phrases.
+func findCaseInsensitive(corpus string, fromByte int, substr string) int {
+	if fromByte > len(corpus) {
+		return -1
+	}
+	idx := strings.Index(strings.ToLower(corpus[fromByte:]), strings.ToLower(substr))
+	if idx < 0 {
+		return -1
+	}
+	return fromByte + idx
+}
+
+// FindTextFragmentMatches searches root's descendant text content (in
+// document order) for each selector in turn, returning one *Range per
+// MATCHED TEXT NODE — when a single logical match spans multiple text
+// nodes (e.g. target-text-002.html's "ma<span>tch </span>me"), it produces
+// multiple consecutive Ranges, one per spanned node, each with
+// StartContainer == EndContainer == that node. This (rather than one Range
+// whose StartContainer/EndContainer are different nodes) is deliberate: it
+// lets the match feed directly into the EXISTING per-text-node paint
+// machinery in pkg/render/selection_paint.go
+// (selectionOverlapForTextNode/nodeLocalBoundary), which already resolves
+// a same-node Range with zero changes — see LOU-349's ticket "Decide
+// whether ::target-text can reuse this machinery directly" note.
+//
+// Exact selectors (IsRange() == false) find the first occurrence of
+// Start. Range selectors find Start, then find the next occurrence of End
+// STRICTLY AFTER Start's match position; the resulting match spans from
+// Start's beginning to End's end (mirrors Blink's
+// TextFragmentFinder's kRange handling, modulo the prefix/suffix
+// qualifiers this port deliberately omits — see TextFragmentSelector's
+// doc comment).
+//
+// A selector with no match anywhere in the document yields no Range for
+// that selector (skipped, not an error) — matches the WICG spec's
+// "scroll to text fragment" algorithm silently doing nothing when a
+// directive fails to resolve.
+func FindTextFragmentMatches(root *Node, selectors []TextFragmentSelector) []*Range {
+	runs, corpus := collectTextRuns(root)
+	var ranges []*Range
+	for _, sel := range selectors {
+		matchStart := findCaseInsensitive(corpus, 0, sel.Start)
+		if matchStart < 0 {
+			continue
+		}
+		matchEnd := matchStart + len(sel.Start)
+		if sel.IsRange() {
+			endStart := findCaseInsensitive(corpus, matchEnd, sel.End)
+			if endStart < 0 {
+				continue
+			}
+			matchEnd = endStart + len(sel.End)
+		}
+		ranges = append(ranges, rangesForCorpusSpan(runs, matchStart, matchEnd)...)
+	}
+	return ranges
+}
+
+// rangesForCorpusSpan converts a [matchStart, matchEnd) byte span in the
+// collectTextRuns corpus into one *Range per text run it overlaps,
+// clipping each Range's offsets to that run's own node-local bounds. Byte
+// offsets here (both the corpus span and the resulting Range
+// StartOffset/EndOffset) are Go string byte offsets, NOT html.Range's
+// usual UTF-16 code-unit convention (see html.Range's doc comment) —
+// pkg/render/selection_paint.go's findOriginatingTextNode/
+// selectionOverlapForTextNode consume node-local fragment offsets in BYTES
+// already (see that file's "Offsets are node-local BYTE offsets" comment
+// on findOriginatingTextNode), so target-text matches are produced
+// pre-converted to the same byte convention rather than round-tripping
+// through UTF-16 only for selectionOverlapForTextNode to convert back.
+func rangesForCorpusSpan(runs []textRun, matchStart, matchEnd int) []*Range {
+	var out []*Range
+	for _, run := range runs {
+		overlapStart := max(matchStart, run.docStart)
+		overlapEnd := min(matchEnd, run.docEnd)
+		if overlapStart >= overlapEnd {
+			continue
+		}
+		out = append(out, &Range{
+			StartContainer: run.node,
+			StartOffset:    overlapStart - run.docStart,
+			EndContainer:   run.node,
+			EndOffset:      overlapEnd - run.docStart,
+		})
+	}
+	return out
+}
