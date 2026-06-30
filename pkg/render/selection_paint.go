@@ -93,8 +93,17 @@ func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fr
 	// the common case in every LOU-344 target test is "select all of the
 	// element's children" via selectNodeContents, so the text node is
 	// either fully in or fully out for an element-container boundary.
-	nodeSelStart, hasStart := nodeLocalBoundary(rng.StartContainer, rng.StartOffset, node, true)
-	nodeSelEnd, hasEnd := nodeLocalBoundary(rng.EndContainer, rng.EndOffset, node, false)
+	nodeSelStart, hasStart, startExcluded := nodeLocalBoundary(rng.StartContainer, rng.StartOffset, node, true)
+	nodeSelEnd, hasEnd, endExcluded := nodeLocalBoundary(rng.EndContainer, rng.EndOffset, node, false)
+	if startExcluded || endExcluded {
+		// One side IS related to node's ancestry chain but explicitly
+		// excludes it (e.g. a collapsed (div,0)-(div,0) range, where the
+		// end boundary's child-index check places node's subtree entirely
+		// AFTER the boundary) — this is a hard "not selected" verdict for
+		// node, not "this boundary doesn't constrain node" (which would
+		// fall through to the permissive 0/len(node.Text) default below).
+		return 0, 0, false
+	}
 	if !hasStart && !hasEnd {
 		return 0, 0, false
 	}
@@ -122,9 +131,19 @@ func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fr
 
 // nodeLocalBoundary resolves a single DOM Range boundary point (container,
 // offset) against a specific text node, returning the node-local character
-// offset that boundary implies for that node, or ok=false if the boundary
-// doesn't constrain this node's selected range at all (e.g. the boundary's
-// container is an unrelated subtree).
+// offset that boundary implies for that node. The two bools distinguish
+// three outcomes the caller (selectionOverlapForTextNode) must NOT
+// conflate:
+//   - ok=true:                the boundary constrains node to the returned offset.
+//   - ok=false, excluded=false: the boundary is UNRELATED to node (its
+//     container isn't node or an ancestor of node) — doesn't constrain
+//     node's selected range at all; the caller may default-fill this side.
+//   - ok=false, excluded=true:  the boundary IS related to node's ancestry
+//     but explicitly places node's subtree entirely outside the selected
+//     range (e.g. a collapsed (div,0)-(div,0) range, where node's subtree
+//     starts at-or-after the end boundary) — node is NOT selected, full
+//     stop; default-filling this side as if unconstrained would wrongly
+//     select all of node.
 //
 // isStart selects which extreme to assume when container is an ancestor
 // ELEMENT of node (at any depth, not just the direct parent — e.g.
@@ -136,16 +155,16 @@ func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fr
 // applies the same child-index containment check against THAT ancestor's
 // position among container's children — node is included (fully, from 0 /
 // to its full length) exactly when that ancestor subtree is.
-func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStart bool) (int, bool) {
+func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStart bool) (off int, ok bool, excluded bool) {
 	if container == nil {
-		return 0, false
+		return 0, false, false
 	}
 	if container == node {
 		// offset is a UTF-16 code-unit offset (html.Range's doc comment);
 		// node.Text is a Go UTF-8 string, so it must be converted before
 		// use as a byte index — see html.UTF16OffsetToByteOffset's doc
 		// comment.
-		return html.UTF16OffsetToByteOffset(node.Text, offset), true
+		return html.UTF16OffsetToByteOffset(node.Text, offset), true, false
 	}
 	// Walk up from node looking for the ancestor-or-self whose parent is
 	// container — that ancestor is the whole subtree the child-index
@@ -155,7 +174,7 @@ func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStar
 		ancestor = ancestor.Parent
 	}
 	if ancestor == nil {
-		return 0, false // container is not an ancestor of node at all
+		return 0, false, false // container is not an ancestor of node at all
 	}
 	idx := -1
 	for i, c := range container.Children {
@@ -165,18 +184,18 @@ func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStar
 		}
 	}
 	if idx < 0 {
-		return 0, false
+		return 0, false, false
 	}
 	if isStart {
 		if offset <= idx {
-			return 0, true // node's containing subtree starts at-or-after the start boundary: fully included from 0
+			return 0, true, false // node's containing subtree starts at-or-after the start boundary: fully included from 0
 		}
-		return 0, false // start boundary is past this subtree: node not included
+		return 0, false, true // start boundary is past this subtree: node excluded
 	}
 	if offset > idx {
-		return len(node.Text), true // node's containing subtree ends at-or-before the end boundary: fully included to the end
+		return len(node.Text), true, false // node's containing subtree ends at-or-before the end boundary: fully included to the end
 	}
-	return 0, false // end boundary is at-or-before this subtree: not included
+	return 0, false, true // end boundary is at-or-before this subtree: node excluded
 }
 
 // resolveSelectionPseudoStyle returns the computed ::selection style for
@@ -185,9 +204,16 @@ func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStar
 // Render call in r.selectionStyleCache since multiple fragments commonly
 // share one originating element (line-wrapped runs of the same <p>).
 func (r *Renderer) resolveSelectionPseudoStyle(originating *html.Node) *css.Style {
-	if originating == nil || len(r.selectionStylesheets) == 0 {
+	if originating == nil {
 		return nil
 	}
+	// Deliberately NOT gated on len(r.selectionStylesheets) == 0: a page
+	// with no stylesheets at all (or none containing an ::selection rule)
+	// must still resolve the UA default highlight colors when a Selection
+	// is active — ComputePseudoElementStyle's applySelectionCascade
+	// applies those UA defaults itself when authorSet is empty, so an
+	// empty stylesheet list is a valid, expected input here, not a
+	// reason to skip resolution entirely.
 	if r.selectionStyleCache == nil {
 		r.selectionStyleCache = make(map[*html.Node]*css.Style)
 	}
@@ -195,16 +221,24 @@ func (r *Renderer) resolveSelectionPseudoStyle(originating *html.Node) *css.Styl
 		return cached
 	}
 	// originating.Style isn't tracked on *html.Node directly (style lives
-	// on layout.Box/css cascade results, not the DOM tree) — but
-	// ComputePseudoElementStyle only needs the parent style for
-	// INHERITANCE (font-size, etc.), which the originating element's own
-	// already-resolved Box carries. We don't have a node→Box index handy
-	// here without another lookup, so pass no parentStyles: ::selection's
-	// own UA-default-or-author color/background-color (the properties
-	// this paint phase reads) never depend on inherited font metrics, and
-	// selectionAllowedProperty already restricts the rule to a property
-	// set that doesn't need font-relative resolution for color values.
-	style := css.ComputePseudoElementStyle(originating, "selection", r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH)
+	// on layout.Box/css cascade results, not the DOM tree) — look it up
+	// via r.nodeBoxIndex (populated once per Render call, see render.go)
+	// and pass it as ComputePseudoElementStyle's parentStyles so custom
+	// properties (--x) on the originating element are visible to var()
+	// references in the ::selection rule (CSS Custom Properties §3 —
+	// pseudo-elements inherit custom properties from their originating
+	// element). Without this, `main::selection { background-color:
+	// var(--x, red) }` with `main { --x: green }` silently fell back to
+	// the var() fallback value instead of resolving --x (highlight-
+	// styling-002.html). A missing originating box (nil parentStyles) is
+	// still a valid input — ComputePseudoElementStyle's parent-inheritance
+	// block is a no-op then, same as before this fix for any node not yet
+	// in the index.
+	var parentStyles []*css.Style
+	if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
+		parentStyles = []*css.Style{box.Style}
+	}
+	style := css.ComputePseudoElementStyle(originating, "selection", r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH, parentStyles...)
 	r.selectionStyleCache[originating] = style
 	return style
 }

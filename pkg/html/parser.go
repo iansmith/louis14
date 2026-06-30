@@ -109,13 +109,18 @@ func (p *Parser) Parse() (*Document, error) {
 						// html/script_runner.cc). Mirror that precedence:
 						// src wins over inline content when both are
 						// present (malformed markup, but match Blink).
-						if src, ok := token.Attributes["src"]; ok && strings.TrimSpace(src) != "" && p.scriptFetcher != nil {
-							if fetched, err := p.scriptFetcher(strings.TrimSpace(src)); err == nil {
-								if strings.TrimSpace(fetched) != "" {
+						if src, ok := token.Attributes["src"]; ok && strings.TrimSpace(src) != "" {
+							// src wins over inline content even when the
+							// fetch fails (scriptFetcher nil, or the fetch
+							// itself errors) — matching the comment above:
+							// Blink never falls back to inline text for an
+							// external script that 404s/fails to load.
+							if p.scriptFetcher != nil {
+								if fetched, err := p.scriptFetcher(strings.TrimSpace(src)); err == nil && strings.TrimSpace(fetched) != "" {
 									p.doc.Scripts = append(p.doc.Scripts, fetched)
 								}
-								continue
 							}
+							continue
 						}
 						if strings.TrimSpace(content) != "" {
 							p.doc.Scripts = append(p.doc.Scripts, content)

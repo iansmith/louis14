@@ -1,6 +1,8 @@
 package js
 
 import (
+	"unicode/utf16"
+
 	"louis14/pkg/html"
 
 	"github.com/dop251/goja"
@@ -88,7 +90,19 @@ func (ra *rangeAccessor) Get(key string) goja.Value {
 			ra.r.StartContainer = node
 			ra.r.StartOffset = 0
 			ra.r.EndContainer = node
-			ra.r.EndOffset = len(node.Children)
+			if node.Type == html.TextNode {
+				// A text/CDATA node has no children — DOM spec offsets into
+				// it are UTF-16 code-unit length, not child count (Range#
+				// selectNodeContents step 4: "If refNode is a CharacterData
+				// node, set end to the length of refNode's data").
+				endOffset := 0
+				for _, r := range node.Text {
+					endOffset += utf16.RuneLen(r)
+				}
+				ra.r.EndOffset = endOffset
+			} else {
+				ra.r.EndOffset = len(node.Children)
+			}
 			return goja.Undefined()
 		})
 	case "setStart":
@@ -176,7 +190,11 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 		})
 	case "getRangeAt":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			if sa.ctx.doc.Selection == nil {
+			// rangeCount is always 0 or 1 (single-Range model, see this
+			// type's doc comment), so only index 0 is ever valid.
+			if len(call.Arguments) == 0 ||
+				int(call.Arguments[0].ToInteger()) != 0 ||
+				sa.ctx.doc.Selection == nil {
 				panic(vm.NewTypeError("Failed to execute 'getRangeAt' on 'Selection': index is not in range"))
 			}
 			return vm.NewDynamicObject(&rangeAccessor{ctx: sa.ctx, r: sa.ctx.doc.Selection})

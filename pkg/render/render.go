@@ -6115,10 +6115,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	}
 
 	fontID := r.fontIDForLayer(layer)
+	if fontID < 0 {
+		// Mirrors drawTextSegment's own openFont-failure guard (further
+		// below in this file) — without it, the measurement calls below
+		// run with an invalid font ID before that guard would ever fire.
+		return
+	}
 	for _, seg := range segs {
 		segBox := *box
 		segBox.Text = box.Text[seg.start:seg.end]
-		segBox.X = box.X + r.measureSegmentAdvance(box.Text[:seg.start], fontID, layer)
+		prefix := box.Text[:seg.start]
+		var prefixAdvance float64
+		if strings.Contains(prefix, "\t") {
+			prefixAdvance = r.measureSegmentAdvanceWithTabs(prefix, box, fontID, layer)
+		} else {
+			prefixAdvance = r.measureSegmentAdvance(prefix, fontID, layer)
+		}
+		segBox.X = box.X + prefixAdvance
 
 		segLayer := *layer
 		segLayer.Box = &segBox
@@ -6168,8 +6181,17 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				r.dc.DrawRectangle(sx, sy, sw, sh)
 				r.dc.Fill()
 			}
-			if seg.textColor != nil {
-				r.setLayerColorOverride(&segLayer, *seg.textColor, seg.decorationColor)
+			if seg.textColor != nil || seg.decorationColor != nil {
+				// ::selection { text-decoration-color: ... } alone (no
+				// `color`) must still recolor the decoration — fall back
+				// to the segment's own current TextColor so
+				// setLayerColorOverride applies decorationColor without
+				// also overriding the (unauthored) text color.
+				textColor := segLayer.TextColor
+				if seg.textColor != nil {
+					textColor = *seg.textColor
+				}
+				r.setLayerColorOverride(&segLayer, textColor, seg.decorationColor)
 			}
 			if seg.hasOwnDecoration {
 				applySelectionOwnDecoration(&segLayer, seg.decorationLine)
@@ -7321,11 +7343,36 @@ func lineStartX(box *layout.Box) float64 {
 // "next character" to leave a gap before when this is the last/only
 // segment, which is the only shape LOU-344's target tests exercise).
 func (r *Renderer) measureSegmentVisualWidthWithTabs(segBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	return r.measureTabAwareAdvance(segBox.Text, segBox, fontID, layer)
+}
+
+// measureSegmentAdvanceWithTabs is measureSegmentVisualWidthWithTabs'
+// counterpart for prefix positioning: measures the tab-aware advance of
+// text (typically box.Text[:n], everything BEFORE a later segment) so a
+// segment positioned after a tab lands at the tab-stop-expanded X, not the
+// tab's raw (much narrower) glyph advance — drawText's prefix-positioning
+// call previously used the plain (non-tab-aware) measureSegmentAdvance
+// unconditionally, which mispositioned any segment following a tab even
+// though the SELECTED segment's own width was already tab-stop-correct
+// (CodeRabbit review, LOU-344 PR #148).
+func (r *Renderer) measureSegmentAdvanceWithTabs(text string, refBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	return r.measureTabAwareAdvance(text, refBox, fontID, layer)
+}
+
+// measureTabAwareAdvance is the shared implementation behind
+// measureSegmentVisualWidthWithTabs (text == refBox.Text, the selected
+// segment's own already-sliced box, refBox.X is where THAT segment starts)
+// and measureSegmentAdvanceWithTabs (text is a PREFIX of the original,
+// un-sliced box.Text, so refBox must be the ORIGINAL box — refBox.X is
+// where the prefix starts, i.e. the line's text-run start). Either way
+// refBox.X anchors the tab-stop phase calculation relative to the line
+// start; only Parent/X are read, never refBox.Text itself.
+func (r *Renderer) measureTabAwareAdvance(text string, refBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
 	tabStopPx := r.tabStopIntervalPx(layer, fontID)
-	startX := lineStartX(segBox)
-	posFromLineStart := segBox.X - startX
+	startX := lineStartX(refBox)
+	posFromLineStart := refBox.X - startX
 	total := 0.0
-	segments := strings.Split(segBox.Text, "\t")
+	segments := strings.Split(text, "\t")
 	for i, seg := range segments {
 		if seg != "" {
 			segW := r.measureTextStr(seg, fontID, layer.FontFeatures)

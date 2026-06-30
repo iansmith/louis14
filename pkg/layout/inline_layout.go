@@ -137,10 +137,21 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 			// block-children path where it produced no fragment at all —
 			// not just a sizing quirk, a missing box).
 			text := child.TextContent()
-			if childStyle := child.Style(); childStyle != nil && whiteSpacePreservesWhitespace(childStyle.GetWhiteSpace()) {
+			ws := css.WhiteSpaceNormal
+			if childStyle := child.Style(); childStyle != nil {
+				ws = childStyle.GetWhiteSpace()
+			}
+			if whiteSpacePreservesWhitespace(ws) {
 				if text != "" {
 					hasContent = true
 				}
+			} else if whiteSpacePreservesBreaks(ws) && strings.Contains(text, "\n") {
+				// pre-line preserves line BREAKS (but collapses other
+				// whitespace) — a text node consisting solely of "\n"
+				// still produces a real forced line break and must count
+				// as content, even though whiteSpacePreservesWhitespace
+				// is false for pre-line.
+				hasContent = true
 			} else if strings.IndexFunc(text, func(r rune) bool {
 				return !isCSSCollapsibleRune(r)
 			}) >= 0 {

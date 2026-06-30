@@ -1597,6 +1597,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			}
 			if isSelection {
 				selectionAuthorProps[property] = true
+				recordSelectionShorthandLonghands(selectionAuthorProps, property)
 			}
 		}
 	}
@@ -1667,6 +1668,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 				if isSelection {
 					selectionAuthorProps[property] = true
+					recordSelectionShorthandLonghands(selectionAuthorProps, property)
 				}
 			}
 		}
@@ -1917,6 +1919,19 @@ var (
 // color (active-selection-051 through -054's "invalid declaration block"
 // cases, where authorSet has neither key — full UA pair default applies).
 func applySelectionCascade(style *Style, authorSet map[string]bool) {
+	// ComputePseudoElementStyle's inheritance pass (before this function
+	// runs) copies the originating element's inheritable `color` into
+	// `style` as a starting point. ::selection's color/background-color
+	// never fall back to that inherited value (see doc comment above) —
+	// clear whichever side of the pair the author didn't set BEFORE the
+	// pair logic below runs, or the inherited value leaks through instead
+	// of resetting to the UA default / initial value.
+	if !authorSet["color"] {
+		delete(style.Properties, "color")
+	}
+	if !authorSet["background-color"] {
+		delete(style.Properties, "background-color")
+	}
 	hasAuthorHighlightColors := authorSet["color"] || authorSet["background-color"]
 	if !hasAuthorHighlightColors {
 		// Neither set: full UA pair default.
@@ -1943,6 +1958,23 @@ func applySelectionCascade(style *Style, authorSet map[string]bool) {
 		// initial color (CanvasText) being visually indistinguishable from
 		// the originating element's own usual black/inherited text color
 		// in every LOU-344 target test that hits this branch.
+	}
+}
+
+// recordSelectionShorthandLonghands maps a ::selection-authored shorthand
+// property name onto the longhand keys applySelectionCascade's paired
+// color/background-color logic actually consults. selectionAllowedProperty
+// allows "background" through the filter (its longhands are individually
+// allowed, see that function's doc comment), and applyDeclarationWithVisited
+// Filter correctly expands it onto the style object — but the author-set
+// BOOKKEEPING map (selectionAuthorProps) is keyed by the declaration's own
+// (un-expanded) property name, so without this mapping
+// `::selection { background: transparent }` is applied to the style but
+// still looks unauthored to applySelectionCascade, which then clobbers it
+// with the UA pair default.
+func recordSelectionShorthandLonghands(authorSet map[string]bool, property string) {
+	if property == "background" {
+		authorSet["background-color"] = true
 	}
 }
 
