@@ -105,6 +105,44 @@ type Renderer struct {
 	// in-transform repaint on the body layer during the standard paint
 	// walk. Cleared when the owning paintLayer call finishes.
 	canvasBgPaintedDescendants map[*PaintLayer]struct{}
+
+	// LOU-344: ::selection highlight painting. selectionRange carries the
+	// document's current DOM Selection/Range (html.Document.Selection,
+	// populated by pkg/js's Selection/Range API bindings);
+	// selectionStylesheets + selectionViewportW/H are what
+	// css.ComputePseudoElementStyle(node, "selection", ...) needs to
+	// resolve a ::selection rule at paint time. Mirrors how pkg/layout's
+	// LayoutTreeBuilder already holds b.stylesheets to resolve
+	// ::marker/::first-letter/::first-line — pkg/render previously had NO
+	// stylesheet/document access at all (it only consumed the pre-built
+	// Box tree), so this is new plumbing rather than reuse of an existing
+	// field. Set via SetSelectionContext; nil when the caller doesn't
+	// supply a selection, in which case selection painting is skipped
+	// entirely (same fail-open shape as r.imageFetcher == nil).
+	selectionRange       *html.Range
+	selectionStylesheets []*css.Stylesheet
+	selectionViewportW   float64
+	selectionViewportH   float64
+
+	// selectionStyleCache memoizes ComputePseudoElementStyle(node,
+	// "selection", ...) per originating element for the duration of one
+	// Render call — multiple text fragments commonly share the same
+	// originating element (e.g. several line-wrapped runs of one <p>).
+	selectionStyleCache map[*html.Node]*css.Style
+
+	// selectionTextConsumed tracks, per DOM text node, how many UTF-16
+	// code units of that node's text content have already been painted by
+	// prior text fragments in this Render call. A single DOM text node can
+	// produce multiple Box/PhysicalFragment text runs (line wraps, bidi
+	// splits, justify-expansion splits — see inline_layout.go's
+	// emitTextFragment) but pkg/render only sees the flattened Box tree
+	// (Box.Node is the PARENT ELEMENT for text fragments, not the text
+	// node itself — see fragmentToBox/emitTextFragment), so this is how
+	// drawText recovers "which node-local character range does THIS
+	// fragment cover" without new plumbing through pkg/layout: walk
+	// box.Node's children in order, and for each text-node child consume
+	// len(fragment text) code units starting at the running counter.
+	selectionTextConsumed map[*html.Node]int
 }
 
 // newProvider returns the shared GlyphProvider used by both layout-time
@@ -176,6 +214,20 @@ func (r *Renderer) SetFonts(fonts text.FontConfig) {
 // SetImageFetcher sets the image fetcher for loading network images during painting.
 func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 	r.imageFetcher = fetcher
+}
+
+// SetSelectionContext supplies what drawText needs to paint the ::selection
+// highlight (LOU-344): the document's current Selection/Range (nil if
+// nothing is selected — selection painting is then skipped entirely) and
+// the stylesheets + viewport dimensions needed to resolve a ::selection
+// rule via css.ComputePseudoElementStyle, mirroring how pkg/layout's
+// LayoutTreeBuilder resolves ::marker/::first-letter against the same
+// b.stylesheets/b.viewportWidth/b.viewportHeight triple.
+func (r *Renderer) SetSelectionContext(selection *html.Range, stylesheets []*css.Stylesheet, viewportWidth, viewportHeight float64) {
+	r.selectionRange = selection
+	r.selectionStylesheets = stylesheets
+	r.selectionViewportW = viewportWidth
+	r.selectionViewportH = viewportHeight
 }
 
 // SetExternalSVGFetcher installs a closure that resolves
@@ -336,6 +388,16 @@ func (r *Renderer) buildNodeBoxIndex(boxes []*layout.Box) {
 // paintBoxes performs the per-box paint pass shared by [Render] and
 // [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
+	// LOU-344: reset the per-render ::selection bookkeeping. Both maps are
+	// populated lazily by drawText, so a fresh nil map here is enough —
+	// avoids stale per-node consumed-offset counts or cached pseudo-styles
+	// leaking from a prior Render call on the same *Renderer (the test
+	// harness's two-pass JS-mutation re-layout in RenderHTMLToFileWithBase
+	// constructs a fresh Renderer per pass, so this mainly guards reuse by
+	// other callers, e.g. mancini's WebInteractor).
+	r.selectionStyleCache = nil
+	r.selectionTextConsumed = nil
+
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
 	r.buildNodeBoxIndex(boxes)
@@ -6032,7 +6094,109 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 }
 
 // drawText paints text content using pre-computed font/color properties.
+// drawText paints a text fragment, splitting it into pre-selection /
+// selected / post-selection segments when the LOU-344 selection context
+// (Renderer.SetSelectionContext) has an active Range overlapping this
+// fragment's originating text node. Each segment recurses into
+// drawTextSegment with its own (possibly color-overridden) shallow-copied
+// Box+PaintLayer — see selection_paint.go's computeSelectionSegments for
+// the split computation and pkg/render/selection_paint.go's file doc
+// comment for why this happens at paint time rather than via pkg/layout
+// plumbing.
 func (r *Renderer) drawText(layer *PaintLayer) {
+	box := layer.Box
+	if box == nil {
+		return
+	}
+
+	segs := r.computeSelectionSegments(box, box.Text)
+	if len(segs) == 1 && !segs[0].selected {
+		r.drawTextSegment(layer)
+		return
+	}
+
+	for _, seg := range segs {
+		segBox := *box
+		segBox.Text = box.Text[seg.start:seg.end]
+		segBox.X = box.X + r.measureTextStr(box.Text[:seg.start], r.fontIDForLayer(layer), layer.FontFeatures)
+
+		segLayer := *layer
+		segLayer.Box = &segBox
+		if seg.selected {
+			// Background rect behind the selected glyphs, painted BEFORE
+			// the recursive drawTextSegment call so glyphs/decorations
+			// land on top — same paint order as a normal element
+			// background-then-foreground (drawBackground runs in
+			// PhaseBackground, text in PhaseForeground).
+			if seg.backgroundColor != nil && seg.backgroundColor.A > 0 {
+				r.setColor(*seg.backgroundColor)
+				segWidth := r.measureTextStr(segBox.Text, r.fontIDForLayer(layer), layer.FontFeatures)
+				r.dc.DrawRectangle(segBox.X, box.Y, segWidth, box.Height)
+				r.dc.Fill()
+			}
+			if seg.textColor != nil {
+				r.setLayerColorOverride(&segLayer, *seg.textColor, seg.decorationColor)
+			}
+		}
+		r.drawTextSegment(&segLayer)
+	}
+}
+
+// fontIDForLayer opens (or reuses, via the font cache) the font this
+// layer's text would be drawn with. Factored out of drawTextSegment so
+// drawText's segment-splitting path can measure segment widths with the
+// exact same font selection logic before delegating the actual glyph
+// paint — avoids re-deriving the font path/ID twice with any risk of
+// drift between the two call sites.
+func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	return r.openFont(fontPath, layer.FontSize)
+}
+
+// setLayerColorOverride applies a ::selection color override to a segment
+// layer: TextColor always overrides to textColor; TextDecorationColor
+// overrides to decorationColor (falling back to textColor, i.e.
+// currentColor semantics, when decorationColor is nil); and any
+// AppliedTextDecorations entries without an explicit author color
+// (HasColor == false, meaning currentColor at the originating element)
+// are recolored too — otherwise an underline/line-through inherited from
+// an ancestor would keep painting in the ORIGINATING currentColor even
+// across the selected segment, contradicting
+// selection-originating-decoration-color.html /
+// selection-originating-underline-order.html's explicit assertion that
+// only the selected portion's decoration recolors.
+func (r *Renderer) setLayerColorOverride(layer *PaintLayer, textColor css.Color, decorationColor *css.Color) {
+	layer.TextColor = textColor
+	if decorationColor != nil {
+		layer.TextDecorationColor = *decorationColor
+	} else {
+		layer.TextDecorationColor = textColor
+	}
+	if len(layer.AppliedTextDecorations) > 0 {
+		decorations := make([]css.AppliedTextDecoration, len(layer.AppliedTextDecorations))
+		copy(decorations, layer.AppliedTextDecorations)
+		for i := range decorations {
+			if !decorations[i].HasColor {
+				decorations[i].Color = layer.TextDecorationColor
+				decorations[i].HasColor = true
+			}
+		}
+		layer.AppliedTextDecorations = decorations
+	}
+}
+
+// drawTextSegment is drawText's original single-color paint body —
+// renamed so drawText (above) can wrap it with ::selection segment
+// splitting without duplicating the ~550 lines of sideways/vertical/
+// decoration/shadow/small-caps/tab/letter-spacing dispatch logic below.
+// Every pre-LOU-344 call path is unchanged; the only difference is the
+// caller now always goes through drawText's segment loop (a no-split
+// fragment is just a single unselected segment, byte-identical to the
+// original whole-fragment paint).
+func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 	box := layer.Box
 
 	// Apply CSS text-transform.

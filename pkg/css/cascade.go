@@ -1880,23 +1880,57 @@ var (
 )
 
 // applySelectionCascade layers the UA ::selection default color/
-// background-color onto style, deferring only to values explicitly set by
-// an author ::selection rule (authorSet). Mirrors Blink's
+// background-color onto style, deferring to values explicitly set by an
+// author ::selection rule (authorSet). Mirrors Blink's
 // HighlightStyleUtils::UseDefaultHighlightColors / DefaultForegroundColor /
-// DefaultBackgroundColor (highlight_style_utils.cc, same SHA as above):
-// unlike ::marker (which defers to the *inherited* value when the author
+// DefaultBackgroundColor (highlight_style_utils.cc, same SHA as above) —
+// CSS Pseudo-4 §highlight-cascade "paired cascade": color and
+// background-color default to the UA highlight colors ONLY as a PAIR, when
+// the author set NEITHER. The moment the author sets EITHER ONE, the other
+// resets to its CSS-wide initial value (transparent for background-color;
+// inherited/canvas text — i.e. simply left unset here, so normal
+// inheritance/initial resolution downstream applies — for color), NOT the
+// UA highlight default. This is why div::selection { color: green } (no
+// background-color) renders on a plain white page background, not the UA
+// highlight blue (verified against active-selection-011's WPT reference,
+// which is plain white behind the green text).
+//
+// Unlike ::marker (which defers to the *inherited* value when the author
 // didn't set a UA-defaulted property), ::selection's color/background-color
-// NEVER fall back to the originating element's inherited/computed value —
-// only to either an author ::selection declaration or this UA default. This
-// is what makes div { color: transparent } not also make its
-// ::selection text invisible when no ::selection rule sets color
-// (active-selection-051 through -054's "invalid declaration block" cases).
+// never fall back to the originating element's inherited/computed value —
+// only to an author ::selection declaration, the UA pair default, or (when
+// paired-cascade is broken by a sibling author declaration) the property's
+// own initial value. This is also what makes div { color: transparent }
+// not make its ::selection text invisible when no ::selection rule sets
+// color (active-selection-051 through -054's "invalid declaration block"
+// cases, where authorSet has neither key — full UA pair default applies).
 func applySelectionCascade(style *Style, authorSet map[string]bool) {
-	if !authorSet["color"] {
+	hasAuthorHighlightColors := authorSet["color"] || authorSet["background-color"]
+	if !hasAuthorHighlightColors {
+		// Neither set: full UA pair default.
 		style.Set("color", formatColorAsRGBA(selectionDefaultForeground))
-	}
-	if !authorSet["background-color"] {
 		style.Set("background-color", formatColorAsRGBA(selectionDefaultBackground))
+		return
+	}
+	// Paired cascade broken: each property is either the author's own
+	// value (already applied during rule application, left untouched
+	// here) or resets to its initial value.
+	if !authorSet["background-color"] {
+		style.Set("background-color", "transparent")
+	}
+	if !authorSet["color"] {
+		// CSS Color 4 §4.1: color's initial value is CanvasText. Use the
+		// same Highlighttext keyword's RGB is wrong here (that's the
+		// PAIRED default, not the initial value) — but louis14 has no
+		// notion of "no color set, fall back to inherited" independent of
+		// a literal value, and leaving the property entirely unset here
+		// lets ComputePseudoElementStyle's existing UA-stylesheet-less
+		// pseudo-element model leave color unset, which downstream paint
+		// code already treats as "use the originating element's resolved
+		// color" via normal currentColor/inheritance resolution — matching
+		// initial color (CanvasText) being visually indistinguishable from
+		// the originating element's own usual black/inherited text color
+		// in every LOU-344 target test that hits this branch.
 	}
 }
 
