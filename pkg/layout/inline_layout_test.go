@@ -178,10 +178,11 @@ func TestInlineLayout_TextAlignRight(t *testing.T) {
 
 func TestInlineLayout_HasOnlyInlineChildren(t *testing.T) {
 	tests := []struct {
-		name     string
-		children []*html.Node
-		styles   map[*html.Node]*css.Style
-		want     bool
+		name        string
+		children    []*html.Node
+		styles      map[*html.Node]*css.Style
+		parentStyle *css.Style // overrides the default display:block-only parent style when set
+		want        bool
 	}{
 		{
 			name:     "text only",
@@ -198,6 +199,47 @@ func TestInlineLayout_HasOnlyInlineChildren(t *testing.T) {
 			children: []*html.Node{makeNode("div")},
 			styles:   map[*html.Node]*css.Style{},
 			want:     false,
+		},
+		// LOU-344 (active-selection-063.html): a tab/space-only text node
+		// under white-space: pre/pre-wrap/break-spaces is NOT collapsible
+		// (CSS Text 3 §16.6.1 white-space-collapse: preserve) and must
+		// still count as content — getting this wrong routed the whole
+		// element into the block-children path, where it produced no
+		// fragment at all (not just a sizing quirk).
+		{
+			name:        "tab only, white-space: pre",
+			children:    []*html.Node{makeTextNode("\t")},
+			parentStyle: makeStyle("display", "block", "white-space", "pre"),
+			want:        true,
+		},
+		{
+			name:        "space only, white-space: pre-wrap",
+			children:    []*html.Node{makeTextNode(" ")},
+			parentStyle: makeStyle("display", "block", "white-space", "pre-wrap"),
+			want:        true,
+		},
+		{
+			name:        "space only, white-space: break-spaces",
+			children:    []*html.Node{makeTextNode(" ")},
+			parentStyle: makeStyle("display", "block", "white-space", "break-spaces"),
+			want:        true,
+		},
+		// pre-line preserves NEWLINES (whiteSpacePreservesBreaks) but still
+		// COLLAPSES spaces/tabs (white-space-collapse: collapse) — these are
+		// orthogonal CSS Text 3 §16.6.1 axes; a pre-line element with only
+		// collapsible whitespace must still report no content.
+		{
+			name:        "whitespace only, white-space: pre-line",
+			children:    []*html.Node{makeTextNode("   ")},
+			parentStyle: makeStyle("display", "block", "white-space", "pre-line"),
+			want:        false,
+		},
+		// Empty text under white-space: pre has no content either way.
+		{
+			name:        "empty text, white-space: pre",
+			children:    []*html.Node{makeTextNode("")},
+			parentStyle: makeStyle("display", "block", "white-space", "pre"),
+			want:        false,
 		},
 	}
 
@@ -216,7 +258,11 @@ func TestInlineLayout_HasOnlyInlineChildren(t *testing.T) {
 			}
 			// Need parent style for tree builder.
 			if _, ok := tt.styles[parent]; !ok {
-				tt.styles[parent] = makeStyle("display", "block")
+				if tt.parentStyle != nil {
+					tt.styles[parent] = tt.parentStyle
+				} else {
+					tt.styles[parent] = makeStyle("display", "block")
+				}
 			}
 			layoutParent := buildTestTree(parent, tt.styles)
 			got := hasOnlyInlineChildren(layoutParent)

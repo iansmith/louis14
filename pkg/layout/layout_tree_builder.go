@@ -2477,6 +2477,28 @@ func whiteSpacePreservesBreaks(ws css.WhiteSpace) bool {
 	return false
 }
 
+// whiteSpacePreservesWhitespace reports whether the given white-space
+// value preserves space/tab characters as real content rather than
+// collapsing runs of them away. Mirrors CSS Text 3 §16.6.1's
+// `white-space-collapse` mapping (Blink's ComputedStyle::
+// CollapseWhiteSpace, which is false — i.e. preserves — for `pre`,
+// `pre-wrap`, and `break-spaces`; true — i.e. collapses — for `normal`,
+// `nowrap`, and `pre-line`, even though `pre-line` ALSO preserves
+// newlines per whiteSpacePreservesBreaks above — `white-space-collapse`
+// and `text-wrap-mode`/break-preservation are orthogonal axes the legacy
+// `white-space` shorthand packs together). Unlike whiteSpacePreservesBreaks,
+// `pre-line` returns false here: a `pre-line` div containing only spaces
+// still collapses to no visible content (LOU-344's active-selection-063.html
+// distinguishes this — only `pre`/`pre-wrap`/`break-spaces` content
+// consisting solely of tabs/spaces must still count as "has content").
+func whiteSpacePreservesWhitespace(ws css.WhiteSpace) bool {
+	switch ws {
+	case css.WhiteSpacePre, css.WhiteSpacePreWrap, css.WhiteSpaceBreakSpaces:
+		return true
+	}
+	return false
+}
+
 // isFirstLetterPunctuation reports whether r is a punctuation character that
 // should be included in the ::first-letter pseudo-element per CSS Pseudo-4 §3.2.
 // Mirrors Blink's IsPunctuationForFirstLetter (Po/Ps/Pe/Pi/Pf only — Pd and Pc

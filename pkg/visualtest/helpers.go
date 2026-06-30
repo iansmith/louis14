@@ -53,7 +53,13 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 			}
 			return string(data), nil
 		}
-		doc, err = html.ParseWithFetcher(htmlContent, cssFetcher)
+		// Scripts share the same basePath/wptRoot resolution rules as CSS
+		// (relative to the test's own dir, absolute relative to the WPT
+		// root), so reuse cssFetcher's closure for <script src="...">
+		// content rather than duplicating the same os.ReadFile/filepath.Join
+		// logic a third time (see createFileImageFetcher /
+		// createFileDocumentFetcher below for the other two).
+		doc, err = html.ParseWithScriptFetcher(htmlContent, cssFetcher, html.ScriptFetcher(cssFetcher))
 	} else {
 		doc, err = html.Parse(htmlContent)
 	}
@@ -103,8 +109,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	}
 
 	// Collect @counter-style rules from document stylesheets.
+	parsedStylesheets := css.ParseDocumentStylesheets(doc)
 	var counterStyles []css.CounterStyleRule
-	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
+	for _, stylesheet := range parsedStylesheets {
 		counterStyles = append(counterStyles, stylesheet.CounterStyles...)
 	}
 
@@ -120,6 +127,11 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	if len(counterStyles) > 0 {
 		renderer.SetCounterStyles(counterStyles)
 	}
+	// LOU-344: ::selection highlight painting. doc.Selection is populated
+	// by the JS execution above (document.createRange/getSelection/
+	// addRange); nil when the test's script never touched it, in which
+	// case drawText's selection check no-ops immediately.
+	renderer.SetSelectionContext(doc.Selection, parsedStylesheets, float64(width), float64(height))
 	renderer.Render(boxes)
 
 	// Ensure output directory exists

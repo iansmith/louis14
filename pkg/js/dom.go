@@ -32,6 +32,20 @@ type domContext struct {
 	// "TestRendered" from /common/reftest-wait.js) ever fire. The raw value
 	// is retained so removeEventListener can match by JS identity.
 	docEventListeners map[string][]documentEventListener
+
+	// ranges maps each JS Range proxy (from document.createRange() or `new
+	// Range()`) back to its Go-side *html.Range, the same
+	// proxy-identity-to-Go-state pattern the node cache above uses (and
+	// removeEventListener's raw.StrictEquals matching). Looked up by
+	// Selection#addRange so it can read the boundary points
+	// selectNodeContents/setStart/setEnd already wrote.
+	ranges []rangeEntry
+}
+
+// rangeEntry pairs a Range JS proxy with its backing *html.Range.
+type rangeEntry struct {
+	proxy goja.Value
+	r     *html.Range
 }
 
 // documentEventListener pairs the callable with the original JS value so
@@ -175,6 +189,11 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 
 	// Phase 4: document.body, document.head, document.documentElement
 	registerDocumentProperties(ctx, docObj, doc)
+
+	// document.createRange / new Range() / getSelection() / activeElement
+	// (LOU-344). bodyNode is recomputed via findBodyNode since
+	// registerDocumentProperties doesn't expose its own lookup result.
+	registerSelectionAPI(ctx, docObj, findBodyNode(doc.Root))
 
 	vm.Set("document", docObj)
 

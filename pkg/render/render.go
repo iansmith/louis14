@@ -105,6 +105,44 @@ type Renderer struct {
 	// in-transform repaint on the body layer during the standard paint
 	// walk. Cleared when the owning paintLayer call finishes.
 	canvasBgPaintedDescendants map[*PaintLayer]struct{}
+
+	// LOU-344: ::selection highlight painting. selectionRange carries the
+	// document's current DOM Selection/Range (html.Document.Selection,
+	// populated by pkg/js's Selection/Range API bindings);
+	// selectionStylesheets + selectionViewportW/H are what
+	// css.ComputePseudoElementStyle(node, "selection", ...) needs to
+	// resolve a ::selection rule at paint time. Mirrors how pkg/layout's
+	// LayoutTreeBuilder already holds b.stylesheets to resolve
+	// ::marker/::first-letter/::first-line — pkg/render previously had NO
+	// stylesheet/document access at all (it only consumed the pre-built
+	// Box tree), so this is new plumbing rather than reuse of an existing
+	// field. Set via SetSelectionContext; nil when the caller doesn't
+	// supply a selection, in which case selection painting is skipped
+	// entirely (same fail-open shape as r.imageFetcher == nil).
+	selectionRange       *html.Range
+	selectionStylesheets []*css.Stylesheet
+	selectionViewportW   float64
+	selectionViewportH   float64
+
+	// selectionStyleCache memoizes ComputePseudoElementStyle(node,
+	// "selection", ...) per originating element for the duration of one
+	// Render call — multiple text fragments commonly share the same
+	// originating element (e.g. several line-wrapped runs of one <p>).
+	selectionStyleCache map[*html.Node]*css.Style
+
+	// selectionTextConsumed tracks, per DOM text node, how many UTF-16
+	// code units of that node's text content have already been painted by
+	// prior text fragments in this Render call. A single DOM text node can
+	// produce multiple Box/PhysicalFragment text runs (line wraps, bidi
+	// splits, justify-expansion splits — see inline_layout.go's
+	// emitTextFragment) but pkg/render only sees the flattened Box tree
+	// (Box.Node is the PARENT ELEMENT for text fragments, not the text
+	// node itself — see fragmentToBox/emitTextFragment), so this is how
+	// drawText recovers "which node-local character range does THIS
+	// fragment cover" without new plumbing through pkg/layout: walk
+	// box.Node's children in order, and for each text-node child consume
+	// len(fragment text) code units starting at the running counter.
+	selectionTextConsumed map[*html.Node]int
 }
 
 // newProvider returns the shared GlyphProvider used by both layout-time
@@ -176,6 +214,20 @@ func (r *Renderer) SetFonts(fonts text.FontConfig) {
 // SetImageFetcher sets the image fetcher for loading network images during painting.
 func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 	r.imageFetcher = fetcher
+}
+
+// SetSelectionContext supplies what drawText needs to paint the ::selection
+// highlight (LOU-344): the document's current Selection/Range (nil if
+// nothing is selected — selection painting is then skipped entirely) and
+// the stylesheets + viewport dimensions needed to resolve a ::selection
+// rule via css.ComputePseudoElementStyle, mirroring how pkg/layout's
+// LayoutTreeBuilder resolves ::marker/::first-letter against the same
+// b.stylesheets/b.viewportWidth/b.viewportHeight triple.
+func (r *Renderer) SetSelectionContext(selection *html.Range, stylesheets []*css.Stylesheet, viewportWidth, viewportHeight float64) {
+	r.selectionRange = selection
+	r.selectionStylesheets = stylesheets
+	r.selectionViewportW = viewportWidth
+	r.selectionViewportH = viewportHeight
 }
 
 // SetExternalSVGFetcher installs a closure that resolves
@@ -336,6 +388,16 @@ func (r *Renderer) buildNodeBoxIndex(boxes []*layout.Box) {
 // paintBoxes performs the per-box paint pass shared by [Render] and
 // [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
+	// LOU-344: reset the per-render ::selection bookkeeping. Both maps are
+	// populated lazily by drawText, so a fresh nil map here is enough —
+	// avoids stale per-node consumed-offset counts or cached pseudo-styles
+	// leaking from a prior Render call on the same *Renderer (the test
+	// harness's two-pass JS-mutation re-layout in RenderHTMLToFileWithBase
+	// constructs a fresh Renderer per pass, so this mainly guards reuse by
+	// other callers, e.g. mancini's WebInteractor).
+	r.selectionStyleCache = nil
+	r.selectionTextConsumed = nil
+
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
 	r.buildNodeBoxIndex(boxes)
@@ -6031,8 +6093,273 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	return layer.IsSidewaysLR
 }
 
-// drawText paints text content using pre-computed font/color properties.
+// drawText paints a text fragment, splitting it into pre-selection /
+// selected / post-selection segments when the LOU-344 selection context
+// (Renderer.SetSelectionContext) has an active Range overlapping this
+// fragment's originating text node. Each segment recurses into
+// drawTextSegment with its own (possibly color-overridden) shallow-copied
+// Box+PaintLayer — see selection_paint.go's computeSelectionSegments for
+// the split computation and pkg/render/selection_paint.go's file doc
+// comment for why this happens at paint time rather than via pkg/layout
+// plumbing.
 func (r *Renderer) drawText(layer *PaintLayer) {
+	box := layer.Box
+	if box == nil {
+		return
+	}
+
+	segs := r.computeSelectionSegments(box, box.Text)
+	if len(segs) == 1 && !segs[0].selected {
+		r.drawTextSegment(layer)
+		return
+	}
+
+	fontID := r.fontIDForLayer(layer)
+	if fontID < 0 {
+		// Mirrors drawTextSegment's own openFont-failure guard (further
+		// below in this file) — without it, the measurement calls below
+		// run with an invalid font ID before that guard would ever fire.
+		return
+	}
+	for _, seg := range segs {
+		segBox := *box
+		segBox.Text = box.Text[seg.start:seg.end]
+		prefix := box.Text[:seg.start]
+		var prefixAdvance float64
+		if strings.Contains(prefix, "\t") {
+			prefixAdvance = r.measureSegmentAdvanceWithTabs(prefix, box, fontID, layer)
+		} else {
+			prefixAdvance = r.measureSegmentAdvance(prefix, fontID, layer)
+		}
+		segBox.X = box.X + prefixAdvance
+
+		segLayer := *layer
+		segLayer.Box = &segBox
+		if seg.selected {
+			// Background rect behind the selected glyphs, painted BEFORE
+			// the recursive drawTextSegment call so glyphs/decorations
+			// land on top — same paint order as a normal element
+			// background-then-foreground (drawBackground runs in
+			// PhaseBackground, text in PhaseForeground).
+			if seg.backgroundColor != nil && seg.backgroundColor.A > 0 {
+				r.setColor(*seg.backgroundColor)
+				// measureSegmentAdvance (not the plain measureTextStr)
+				// mirrors drawTextSegment's own per-character advance
+				// loop under letter-spacing/word-spacing — plain string
+				// measurement ignores the extra per-character gap
+				// drawTextSegment's letter-spacing path inserts, which
+				// under-measured the highlight rect down to isolated
+				// per-glyph boxes instead of one continuous band spanning
+				// the intercharacter spacing too (selection-intercharacter-
+				// 011/-012's whole point: the spacing itself must be
+				// highlighted, per CSS Pseudo-4 §highlight-bounds).
+				// CSS Text 3 §4.2: a tab character's highlighted width is its
+				// EXPANDED tab-stop span, not its raw glyph advance — see
+				// measureSegmentVisualWidthWithTabs's doc comment
+				// (active-selection-063.html).
+				var segWidth float64
+				if strings.Contains(segBox.Text, "\t") {
+					segWidth = r.measureSegmentVisualWidthWithTabs(&segBox, fontID, layer)
+				} else {
+					segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
+				}
+				// selectionBackgroundRectY: use the originating element's own
+				// inline background-fragment box (Y, Height) when one exists,
+				// not box's own (always em-box-sized) Y/Height — see that
+				// function's doc comment for why these can differ
+				// (selection-contenteditable-011.html's red sliver, LOU-344).
+				rectY, rectHeight := selectionBackgroundRectY(box)
+				// Pixel-snap exactly like drawBackground's element-background
+				// rect (pixelSnap, used throughout render.go for backgrounds/
+				// borders) so the selection highlight rect lands on the same
+				// pixel grid as an equivalent real background-color box —
+				// without this, sub-pixel rounding differences between this
+				// rect and the WPT reference's actual `background-color`
+				// <div> box left a 1px red fringe on two edges
+				// (active-selection-012).
+				sx, sy, sw, sh := pixelSnap(segBox.X, rectY, segWidth, rectHeight)
+				r.dc.DrawRectangle(sx, sy, sw, sh)
+				r.dc.Fill()
+			}
+			if seg.textColor != nil || seg.decorationColor != nil {
+				// ::selection { text-decoration-color: ... } alone (no
+				// `color`) must still recolor the decoration — fall back
+				// to the segment's own current TextColor so
+				// setLayerColorOverride applies decorationColor without
+				// also overriding the (unauthored) text color.
+				textColor := segLayer.TextColor
+				if seg.textColor != nil {
+					textColor = *seg.textColor
+				}
+				r.setLayerColorOverride(&segLayer, textColor, seg.decorationColor)
+			}
+			if seg.hasOwnDecoration {
+				applySelectionOwnDecoration(&segLayer, seg.decorationLine)
+				// The newly-introduced decoration must paint in
+				// ::selection's own color (set above when textColor !=
+				// nil; when ::selection set decoration but not color,
+				// TextDecorationColor already defaults to currentColor
+				// via paint_layer.go's normal resolution, which is
+				// correct since GetTextDecorationColor's own currentColor
+				// fallback resolves against the (possibly UA-default)
+				// ::selection color computed by ComputePseudoElementStyle
+				// — see resolveSelectionPseudoStyle).
+			}
+		}
+		r.drawTextSegment(&segLayer)
+	}
+}
+
+// fontIDForLayer opens (or reuses, via the font cache) the font this
+// layer's text would be drawn with. Factored out of drawTextSegment so
+// drawText's segment-splitting path can measure segment widths with the
+// exact same font selection logic before delegating the actual glyph
+// paint — avoids re-deriving the font path/ID twice with any risk of
+// drift between the two call sites.
+func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	return r.openFont(fontPath, layer.FontSize)
+}
+
+// measureSegmentAdvance measures the inline-axis advance of text exactly
+// as drawTextSegment's own letter-spacing/word-spacing branch (further
+// below in this file) would draw it — i.e. INCLUDING the per-character
+// layer.LetterSpacing gap after every character (and layer.WordSpacing
+// after every space). Plain measureTextStr only measures glyph advances,
+// which under letter-spacing under-counts the true on-screen width drawn
+// by the character-by-character loop; drawText's segment-splitting (used
+// to position later segments and to size the ::selection background rect)
+// needs the same total advance the draw loop actually produces, or the
+// background rect and the next segment's X both land short — see
+// selection-intercharacter-011/-012's comment at this function's call
+// site. Falls back to plain measureTextStr when letter-spacing and
+// word-spacing are both zero (the overwhelmingly common case), since the
+// per-character loop and the whole-string measurement agree exactly there
+// — using the cheaper path keeps every non-letter-spacing target test's
+// hot path unaffected by this addition.
+func (r *Renderer) measureSegmentAdvance(text string, fontID int32, layer *PaintLayer) float64 {
+	return r.measureSegmentAdvanceTrailing(text, fontID, layer, true)
+}
+
+// measureSegmentVisualWidth is measureSegmentAdvance without the FINAL
+// character's trailing letter-spacing/word-spacing gap — the highlight
+// rect for a selected segment must not bleed into the gap between it and
+// the next (unselected) character, even though that same gap WOULD be
+// included when this segment is merely a prefix used to position a LATER
+// segment's X (see measureSegmentAdvance's doc comment). Confirmed against
+// selection-intercharacter-011's WPT reference: the yellow ::selection
+// background ends exactly at the last selected glyph's trailing edge, not
+// one letter-spacing gap past it.
+func (r *Renderer) measureSegmentVisualWidth(text string, fontID int32, layer *PaintLayer) float64 {
+	return r.measureSegmentAdvanceTrailing(text, fontID, layer, false)
+}
+
+// measureSegmentAdvanceTrailing is the shared implementation behind
+// measureSegmentAdvance (includeTrailing=true) and
+// measureSegmentVisualWidth (includeTrailing=false, drops the final
+// character's own trailing spacing contribution). Plain measureTextStr
+// only measures glyph advances, which under letter-spacing under-counts
+// the true on-screen width drawn by drawTextSegment's character-by-
+// character loop; falls back to it directly when letter-spacing and
+// word-spacing are both zero (the overwhelmingly common case, where the
+// per-character loop and the whole-string measurement agree exactly) to
+// keep every non-letter-spacing target test's hot path unaffected.
+func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, layer *PaintLayer, includeTrailing bool) float64 {
+	if text == "" {
+		return 0
+	}
+	if layer.LetterSpacing == 0 && layer.WordSpacing == 0 {
+		return r.measureTextStr(text, fontID, layer.FontFeatures)
+	}
+	if layer.LetterSpacing != 0 {
+		runes := []rune(text)
+		var total float64
+		for i, ch := range runes {
+			total += r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+			if includeTrailing || i < len(runes)-1 {
+				total += layer.LetterSpacing
+				if ch == ' ' {
+					total += layer.WordSpacing
+				}
+			}
+		}
+		return total
+	}
+	// Word-spacing only: mirrors the word-by-word branch.
+	words := strings.Split(text, " ")
+	spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
+	var total float64
+	for i, word := range words {
+		if word != "" {
+			total += r.measureTextStr(word, fontID, layer.FontFeatures)
+		}
+		if i < len(words)-1 {
+			total += spaceW + layer.WordSpacing
+		}
+	}
+	return total
+}
+
+// setLayerColorOverride applies a ::selection color override to a segment
+// layer: TextColor always overrides to textColor; TextDecorationColor
+// overrides to decorationColor (falling back to textColor, i.e.
+// currentColor semantics, when decorationColor is nil); and EVERY
+// AppliedTextDecorations entry is recolored to that resolved decoration
+// color — not just entries with HasColor == false (currentColor at the
+// originating element). Per CSS Pseudo-4 §highlight-painting: "The
+// element's own text decorations... are thus drawn in the pseudo-element's
+// own color when that is not currentColor, regardless of their ORIGINAL
+// COLOR OR FILL SPECIFICATIONS" (selection-originating-decoration-color.html
+// quotes this verbatim — its <main> has an EXPLICIT
+// `text-decoration: 0.125em black solid line-through` (HasColor == true,
+// not currentColor), and the test still asserts the selected portion's
+// strikethrough recolors to ::selection's green). decorationColor here is
+// always a concrete resolved RGB by the time this function runs (never
+// literally "currentColor"), so the spec's "when that is not currentColor"
+// carve-out is already satisfied — always recoloring is correct.
+func (r *Renderer) setLayerColorOverride(layer *PaintLayer, textColor css.Color, decorationColor *css.Color) {
+	layer.TextColor = textColor
+	if decorationColor != nil {
+		layer.TextDecorationColor = *decorationColor
+	} else {
+		layer.TextDecorationColor = textColor
+	}
+	if len(layer.AppliedTextDecorations) > 0 {
+		decorations := make([]css.AppliedTextDecoration, len(layer.AppliedTextDecorations))
+		copy(decorations, layer.AppliedTextDecorations)
+		for i := range decorations {
+			decorations[i].Color = layer.TextDecorationColor
+			decorations[i].HasColor = true
+		}
+		layer.AppliedTextDecorations = decorations
+	}
+}
+
+// applySelectionOwnDecoration sets layer.TextDecoration to ::selection's
+// own text-decoration-line (active-selection-014.html: `div::selection {
+// text-decoration: underline }` on a div with no decoration of its own).
+// Only takes effect via the legacy single-decoration field — the
+// AppliedTextDecorations vector is reserved for decorations the
+// ORIGINATING element's cascade produced (recolored, not introduced, by
+// setLayerColorOverride above); a ::selection-introduced decoration has no
+// originating-element source to carry decorating-box continuity metadata
+// for, so the simpler legacy field is the correct mechanism here.
+func applySelectionOwnDecoration(layer *PaintLayer, line css.TextDecoration) {
+	layer.TextDecoration = line
+}
+
+// drawTextSegment is drawText's original single-color paint body —
+// renamed so drawText (above) can wrap it with ::selection segment
+// splitting without duplicating the ~550 lines of sideways/vertical/
+// decoration/shadow/small-caps/tab/letter-spacing dispatch logic below.
+// Every pre-LOU-344 call path is unchanged; the only difference is the
+// caller now always goes through drawText's segment loop (a no-split
+// fragment is just a single unselected segment, byte-identical to the
+// original whole-fragment paint).
+func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 	box := layer.Box
 
 	// Apply CSS text-transform.
@@ -6949,12 +7276,13 @@ func (r *Renderer) drawTextSmallCaps(layer *PaintLayer, text string, box *layout
 	}
 }
 
-// drawTextWithTabs renders text containing tab characters. Tab characters
-// advance to the next tab stop without drawing a glyph. Tab stops are at
-// multiples of (tab-size × space-width) or (tab-size in px) from the line
-// start (containing block's content edge).
-func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
-	// Compute tab stop interval in pixels.
+// tabStopIntervalPx computes the tab stop interval in pixels for layer:
+// tab-size as an explicit length uses that length directly; tab-size as a
+// bare number is that many space-character widths (CSS Text 3 §4.2).
+// Factored out of drawTextWithTabs so measureSegmentVisualWidthWithTabs
+// (the ::selection highlight-rect sizing path) computes the SAME interval
+// rather than re-deriving it and risking drift (CLAUDE.md §4 dedup).
+func (r *Renderer) tabStopIntervalPx(layer *PaintLayer, fontID int32) float64 {
 	tabSizeVal := layer.TabSize
 	var tabStopPx float64
 	if layer.TabSizeIsLength {
@@ -6969,19 +7297,109 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 	if tabStopPx <= 0 {
 		tabStopPx = layer.FontSize * 8
 	}
+	return tabStopPx
+}
 
-	// Find the line start (containing block's content-area left edge).
-	// Walk up from the text box to find the nearest block container.
-	lineStartX := box.X
+// tabAdvance returns the width a tab character occupies: the distance from
+// posFromLineStart forward to the next tab stop, or a full tabStopPx when
+// already exactly on one. Shared by drawTextWithTabs and
+// measureSegmentVisualWidthWithTabs so the painted glyph advance and the
+// ::selection highlight-rect width stay identical (CLAUDE.md §4 dedup).
+func tabAdvance(posFromLineStart, tabStopPx float64) float64 {
+	rem := math.Mod(posFromLineStart, tabStopPx)
+	if rem < 1e-9 {
+		return tabStopPx
+	}
+	return tabStopPx - rem
+}
+
+// lineStartX finds the line start (containing block's content-area left
+// edge) for box: the nearest ancestor with a Style, per CSS Text 3 §4.2's
+// "tab stops are measured from the line's start" rule. Factored out of
+// drawTextWithTabs for the same dedup reason as tabStopIntervalPx.
+func lineStartX(box *layout.Box) float64 {
+	lineStart := box.X
 	for p := box.Parent; p != nil; p = p.Parent {
 		if p.Style != nil {
-			lineStartX = p.X + p.Padding.Left + p.Border.Left
-			break
+			return p.X + p.Padding.Left + p.Border.Left
 		}
 	}
+	return lineStart
+}
+
+// measureSegmentVisualWidthWithTabs is measureSegmentVisualWidth's tab-
+// aware counterpart: text containing a tab character expands each tab to
+// its tab stop (CSS Text 3 §4.2), exactly mirroring drawTextWithTabs'
+// advance math, so the ::selection highlight rect covers the SAME width
+// the glyphs (or, for a bare tab, the expanded blank run) actually occupy
+// — plain measureSegmentVisualWidth measures "\t" as an ordinary glyph
+// advance (a few px), which left the highlight rect far narrower than the
+// real tab-stop-wide gap (active-selection-063.html: a lone tab's
+// highlight covered ~1 character cell instead of the full 4-character
+// tab-size span). segBox supplies X/Parent for the line-start-relative
+// tab-stop phase calculation; only the FINAL trailing tab-stop expansion
+// after the last non-tab segment is included (matching
+// measureSegmentVisualWidth's no-trailing-gap contract — there is no
+// "next character" to leave a gap before when this is the last/only
+// segment, which is the only shape LOU-344's target tests exercise).
+func (r *Renderer) measureSegmentVisualWidthWithTabs(segBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	return r.measureTabAwareAdvance(segBox.Text, segBox, fontID, layer)
+}
+
+// measureSegmentAdvanceWithTabs is measureSegmentVisualWidthWithTabs'
+// counterpart for prefix positioning: measures the tab-aware advance of
+// text (typically box.Text[:n], everything BEFORE a later segment) so a
+// segment positioned after a tab lands at the tab-stop-expanded X, not the
+// tab's raw (much narrower) glyph advance — drawText's prefix-positioning
+// call previously used the plain (non-tab-aware) measureSegmentAdvance
+// unconditionally, which mispositioned any segment following a tab even
+// though the SELECTED segment's own width was already tab-stop-correct
+// (CodeRabbit review, LOU-344 PR #148).
+func (r *Renderer) measureSegmentAdvanceWithTabs(text string, refBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	return r.measureTabAwareAdvance(text, refBox, fontID, layer)
+}
+
+// measureTabAwareAdvance is the shared implementation behind
+// measureSegmentVisualWidthWithTabs (text == refBox.Text, the selected
+// segment's own already-sliced box, refBox.X is where THAT segment starts)
+// and measureSegmentAdvanceWithTabs (text is a PREFIX of the original,
+// un-sliced box.Text, so refBox must be the ORIGINAL box — refBox.X is
+// where the prefix starts, i.e. the line's text-run start). Either way
+// refBox.X anchors the tab-stop phase calculation relative to the line
+// start; only Parent/X are read, never refBox.Text itself.
+func (r *Renderer) measureTabAwareAdvance(text string, refBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	tabStopPx := r.tabStopIntervalPx(layer, fontID)
+	startX := lineStartX(refBox)
+	posFromLineStart := refBox.X - startX
+	total := 0.0
+	segments := strings.Split(text, "\t")
+	for i, seg := range segments {
+		if seg != "" {
+			segW := r.measureTextStr(seg, fontID, layer.FontFeatures)
+			if layer.WordSpacing != 0 {
+				segW += layer.WordSpacing * float64(strings.Count(seg, " "))
+			}
+			total += segW
+			posFromLineStart += segW
+		}
+		if i < len(segments)-1 {
+			tabW := tabAdvance(posFromLineStart, tabStopPx)
+			total += tabW
+			posFromLineStart += tabW
+		}
+	}
+	return total
+}
+
+// drawTextWithTabs renders text containing tab characters. Tab characters
+// advance to the next tab stop without drawing a glyph. Tab stops are at
+// multiples of (tab-size × space-width) or (tab-size in px) from the line
+// start (containing block's content edge).
+func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	tabStopPx := r.tabStopIntervalPx(layer, fontID)
 
 	// Position within the line, measured from line start.
-	posFromLineStart := box.X - lineStartX
+	posFromLineStart := box.X - lineStartX(box)
 	x := box.X
 	baselineY := box.Y + ascent
 
@@ -7011,13 +7429,7 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 		}
 		// After each segment except the last, advance to next tab stop.
 		if i < len(segments)-1 {
-			rem := math.Mod(posFromLineStart, tabStopPx)
-			var tabW float64
-			if rem < 1e-9 {
-				tabW = tabStopPx
-			} else {
-				tabW = tabStopPx - rem
-			}
+			tabW := tabAdvance(posFromLineStart, tabStopPx)
 			x += tabW
 			posFromLineStart += tabW
 		}
@@ -7792,7 +8204,16 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// and the spec (CSS Text Decor 4 §line-offset-zero). The pre-port
 		// descent*0.25 term here was a stale relic; it leaked the underline below
 		// the glyph and broke text-underline-offset-zero-position.html (LOU-333).
-		centerY = box.Y + ascent + layer.TextUnderlineOffset
+		//
+		// Rounded to the integer pixel grid like drawOneAppliedTextDecoration's
+		// lineY (its "aligns with the rounded baseline" comment): an
+		// unrounded fractional ascent (e.g. font-size: 300%) lands the
+		// 1px-thick rect straddling a pixel boundary, which the
+		// antialiased rasterizer spreads across two rows instead of one —
+		// a 1px-too-tall underline vs. the WPT reference
+		// (active-selection-014.html, LOU-344: ::selection's own
+		// text-decoration takes this legacy path).
+		centerY = math.Round(box.Y + ascent + layer.TextUnderlineOffset)
 		rectTop = centerY // already Blink's paint_underline_offset (rect TOP)
 	case css.TextDecorationOverline:
 		if onlyLineThrough {

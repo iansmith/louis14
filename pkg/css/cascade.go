@@ -1522,13 +1522,24 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// left alone — the restriction is on what a ::marker rule can specify).
 	isMarker := pseudoElement == "marker"
 
-	// For ::marker: track which properties were explicitly set by author rules
-	// (as opposed to inherited from the originating element). This lets
-	// applyMarkerCascade correctly defer only to author-set values — not to
-	// inherited values that happen to share the same property name.
+	// CSS Pseudo-4 §highlight-styling: a ::selection rule only accepts the
+	// highlight-allowed property subset (selectionAllowedProperty, verified
+	// against Blink's valid_for_highlight flags — see
+	// selection_properties_test.go's file doc comment for the SHA).
+	isSelection := pseudoElement == "selection"
+
+	// For ::marker / ::selection: track which properties were explicitly set
+	// by author rules (as opposed to inherited from the originating
+	// element). This lets applyMarkerCascade / applySelectionCascade
+	// correctly defer only to author-set values — not to inherited values
+	// that happen to share the same property name.
 	var markerAuthorProps map[string]bool
 	if isMarker {
 		markerAuthorProps = make(map[string]bool)
+	}
+	var selectionAuthorProps map[string]bool
+	if isSelection {
+		selectionAuthorProps = make(map[string]bool)
 	}
 
 	// Capture the pre-author baseline for `revert` resolution (mirrors
@@ -1562,7 +1573,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) {
+			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) {
 				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 			}
 		}
@@ -1577,9 +1588,16 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if isMarker && !markerAllowedProperty(property) {
 				continue
 			}
+			if isSelection && !selectionAllowedProperty(property) {
+				continue
+			}
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			if isMarker {
 				markerAuthorProps[property] = true
+			}
+			if isSelection {
+				selectionAuthorProps[property] = true
+				recordSelectionShorthandLonghands(selectionAuthorProps, property)
 			}
 		}
 	}
@@ -1626,7 +1644,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if rule.Important["all"] {
 			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				if !(isMarker && !markerAllowedProperty("all")) {
+				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) {
 					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 					importantProps["all"] = true
 				}
@@ -1640,10 +1658,17 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if isMarker && !markerAllowedProperty(property) {
 					continue
 				}
+				if isSelection && !selectionAllowedProperty(property) {
+					continue
+				}
 				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
 				if isMarker {
 					markerAuthorProps[property] = true
+				}
+				if isSelection {
+					selectionAuthorProps[property] = true
+					recordSelectionShorthandLonghands(selectionAuthorProps, property)
 				}
 			}
 		}
@@ -1658,6 +1683,16 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// and must not block the UA defaults.
 	if isMarker {
 		applyMarkerCascade(finalStyle, markerAuthorProps)
+	}
+
+	// CSS Pseudo-4 §highlight-styling: ::selection's color/background-color
+	// cascade against the UA's own highlight default, NOT the originating
+	// element's computed/inherited color (see selectionAuthorProps doc
+	// comment and applySelectionCascade below for the Blink mechanism this
+	// mirrors — HighlightStyleUtils::UseDefaultHighlightColors /
+	// DefaultForegroundColor / DefaultBackgroundColor).
+	if isSelection {
+		applySelectionCascade(finalStyle, selectionAuthorProps)
 	}
 
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
@@ -1796,6 +1831,150 @@ func applyMarkerCascade(style *Style, authorSet map[string]bool) {
 func ApplyMarkerUADefaults(style *Style) {
 	for _, kv := range markerUADefaults {
 		style.Set(kv[0], kv[1])
+	}
+}
+
+// selectionAllowedProperty reports whether a property may be specified on a
+// ::selection (or other highlight) pseudo-element rule. Mirrors Blink's
+// `valid_for_highlight: true` flag in css_properties.json5 — verified fresh
+// (2026-06-30) against the chromium/chromium GitHub mirror at commit
+// 15bace522cdc76c59f8dec8cea1aeb6fe25a8e36 (css_properties.json5 blob
+// 8525eaca74436165e8403db0557ba6d8a2ec35f). See selection_properties_test.go's
+// file doc comment for the full verification trail and the properties that
+// were in LOU-344's conservative fallback list but are NOT actually
+// highlight-valid in current Blink (caret-color, fill-opacity,
+// stroke-opacity, -webkit-text-stroke-color/-width).
+//
+// Custom properties (--*) are always allowed (they inherit; var() must
+// resolve), matching markerAllowedProperty's same carve-out.
+func selectionAllowedProperty(name string) bool {
+	if strings.HasPrefix(name, "--") {
+		return true
+	}
+	switch name {
+	case "color", "background-color",
+		"fill", "stroke", "stroke-width",
+		"text-decoration-color", "text-decoration-line",
+		"text-decoration-skip-ink", "text-decoration-skip-spaces",
+		"text-decoration-style", "text-decoration-thickness",
+		"text-underline-offset", "text-shadow", "text-emphasis-color",
+		// "text-decoration" / "background" are shorthands whose longhands
+		// are all individually allowed above (text-decoration-line/-color/
+		// -style/-thickness; background-color). The cascade applies
+		// shorthand EXPANSION inside applyDeclarationWithVisitedFilter,
+		// which runs AFTER this allowed-property filter (the filter checks
+		// the declaration's own property name before expansion), so each
+		// shorthand name itself must be allowed too or the declaration is
+		// dropped outright despite every longhand it expands to being
+		// individually valid_for_highlight in Blink — active-selection-
+		// 014.html's `text-decoration: underline` and selection-
+		// originating-decoration-color.html's `background: transparent`.
+		"text-decoration", "background":
+		return true
+	}
+	return false
+}
+
+// selectionDefaultForeground / selectionDefaultBackground are the UA
+// highlight default colors ::selection cascades against when the author
+// doesn't set color/background-color with a valid value. Reuses the
+// existing CSS Color 4 §9 `Highlight`/`HighlightText` system-color RGBs
+// already defined in style.go's systemColors map (sourced from
+// WebThemeEngineDefault::GetSystemColor, Chromium @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) rather than duplicating the
+// constant — these are exactly the keywords Blink's own
+// HighlightStyleUtils::ForcedForegroundColor/ForcedBackgroundColor resolve
+// `kPseudoIdSelection` to (CSSValueID::kHighlighttext / kHighlight; see
+// third_party/blink/renderer/core/highlight/highlight_style_utils.cc @
+// chromium/chromium GitHub mirror commit
+// 15bace522cdc76c59f8dec8cea1aeb6fe25a8e36).
+var (
+	selectionDefaultForeground = systemColors["highlighttext"]
+	selectionDefaultBackground = systemColors["highlight"]
+)
+
+// applySelectionCascade layers the UA ::selection default color/
+// background-color onto style, deferring to values explicitly set by an
+// author ::selection rule (authorSet). Mirrors Blink's
+// HighlightStyleUtils::UseDefaultHighlightColors / DefaultForegroundColor /
+// DefaultBackgroundColor (highlight_style_utils.cc, same SHA as above) —
+// CSS Pseudo-4 §highlight-cascade "paired cascade": color and
+// background-color default to the UA highlight colors ONLY as a PAIR, when
+// the author set NEITHER. The moment the author sets EITHER ONE, the other
+// resets to its CSS-wide initial value (transparent for background-color;
+// inherited/canvas text — i.e. simply left unset here, so normal
+// inheritance/initial resolution downstream applies — for color), NOT the
+// UA highlight default. This is why div::selection { color: green } (no
+// background-color) renders on a plain white page background, not the UA
+// highlight blue (verified against active-selection-011's WPT reference,
+// which is plain white behind the green text).
+//
+// Unlike ::marker (which defers to the *inherited* value when the author
+// didn't set a UA-defaulted property), ::selection's color/background-color
+// never fall back to the originating element's inherited/computed value —
+// only to an author ::selection declaration, the UA pair default, or (when
+// paired-cascade is broken by a sibling author declaration) the property's
+// own initial value. This is also what makes div { color: transparent }
+// not make its ::selection text invisible when no ::selection rule sets
+// color (active-selection-051 through -054's "invalid declaration block"
+// cases, where authorSet has neither key — full UA pair default applies).
+func applySelectionCascade(style *Style, authorSet map[string]bool) {
+	// ComputePseudoElementStyle's inheritance pass (before this function
+	// runs) copies the originating element's inheritable `color` into
+	// `style` as a starting point. ::selection's color/background-color
+	// never fall back to that inherited value (see doc comment above) —
+	// clear whichever side of the pair the author didn't set BEFORE the
+	// pair logic below runs, or the inherited value leaks through instead
+	// of resetting to the UA default / initial value.
+	if !authorSet["color"] {
+		delete(style.Properties, "color")
+	}
+	if !authorSet["background-color"] {
+		delete(style.Properties, "background-color")
+	}
+	hasAuthorHighlightColors := authorSet["color"] || authorSet["background-color"]
+	if !hasAuthorHighlightColors {
+		// Neither set: full UA pair default.
+		style.Set("color", formatColorAsRGBA(selectionDefaultForeground))
+		style.Set("background-color", formatColorAsRGBA(selectionDefaultBackground))
+		return
+	}
+	// Paired cascade broken: each property is either the author's own
+	// value (already applied during rule application, left untouched
+	// here) or resets to its initial value.
+	if !authorSet["background-color"] {
+		style.Set("background-color", "transparent")
+	}
+	if !authorSet["color"] {
+		// CSS Color 4 §4.1: color's initial value is CanvasText. Use the
+		// same Highlighttext keyword's RGB is wrong here (that's the
+		// PAIRED default, not the initial value) — but louis14 has no
+		// notion of "no color set, fall back to inherited" independent of
+		// a literal value, and leaving the property entirely unset here
+		// lets ComputePseudoElementStyle's existing UA-stylesheet-less
+		// pseudo-element model leave color unset, which downstream paint
+		// code already treats as "use the originating element's resolved
+		// color" via normal currentColor/inheritance resolution — matching
+		// initial color (CanvasText) being visually indistinguishable from
+		// the originating element's own usual black/inherited text color
+		// in every LOU-344 target test that hits this branch.
+	}
+}
+
+// recordSelectionShorthandLonghands maps a ::selection-authored shorthand
+// property name onto the longhand keys applySelectionCascade's paired
+// color/background-color logic actually consults. selectionAllowedProperty
+// allows "background" through the filter (its longhands are individually
+// allowed, see that function's doc comment), and applyDeclarationWithVisited
+// Filter correctly expands it onto the style object — but the author-set
+// BOOKKEEPING map (selectionAuthorProps) is keyed by the declaration's own
+// (un-expanded) property name, so without this mapping
+// `::selection { background: transparent }` is applied to the style but
+// still looks unauthored to applySelectionCascade, which then clobbers it
+// with the UA pair default.
+func recordSelectionShorthandLonghands(authorSet map[string]bool, property string) {
+	if property == "background" {
+		authorSet["background-color"] = true
 	}
 }
 

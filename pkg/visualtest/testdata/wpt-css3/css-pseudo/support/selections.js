@@ -1,0 +1,35 @@
+function selectRangeWith(fun) {
+    const selection = getSelection();
+    selection.removeAllRanges();
+    const range = document.createRange();
+    fun(range);
+    selection.addRange(range);
+}
+function selectNodeContents(node) {
+    const previousActive = document.activeElement;
+    selectRangeWith(range => range.selectNodeContents(node));
+    if (document.activeElement != previousActive) {
+        document.activeElement.blur();
+    }
+}
+function trySpellcheck(...nodes) {
+    const interval = setInterval(() => {
+        if (nodes.length > 0) {
+            const node = nodes.shift();
+            node.focus();
+            node.blur();
+        } else {
+            clearInterval(interval);
+        }
+    }, 250);
+}
+function createRangeForTextOnly(element, start, end) {
+    const textNode = element.firstChild;
+    if (element.childNodes.length != 1 || textNode.nodeName != '#text') {
+        throw new Error('element must contain a single #text node only');
+    }
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, end);
+    return range;
+}

@@ -1,0 +1,398 @@
+package render
+
+// selection_paint.go implements ::selection highlight painting (LOU-344).
+// Conceptually mirrors Blink's HighlightPainter / SelectionPaintState
+// (third_party/blink/renderer/core/paint/highlight_painter.h @ blob
+// 96737c206898cbd27aed2cbeb07c455a3fa3d2dd), simplified to a single
+// highlight type (no multi-layer PaintCase dispatch — see LOU-344's
+// "Theory of root cause" for why that scope cut is deliberate).
+//
+// Architecture note: pkg/render previously had NO access to the DOM
+// Selection or to stylesheets (it only consumed the pre-built Box tree —
+// see Renderer.SetSelectionContext's doc comment). Rather than threading
+// selection state through pkg/layout's fragment-emission machinery
+// (inline_layout.go's emitTextFragment, deep inside per-line text
+// shaping), this resolves the selected sub-range of each text fragment
+// AT PAINT TIME using only data already on Box/PaintLayer: box.Node (the
+// fragment's originating ELEMENT — see fragmentToBox/emitTextFragment,
+// which set frag.Node to the parent element, not the DOM text node) and
+// box.Text (the fragment's own rendered string). selectionTextConsumed
+// recovers the node-local offset a fragment covers by tracking, per DOM
+// text node, how many code units have already been consumed by earlier
+// fragments painted in this Render call — DOM text nodes are walked by
+// drawText in paint order, which is document order for the common case
+// (no bidi reordering across fragment boundaries within one node).
+
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+	"louis14/pkg/layout"
+)
+
+// selectionBackgroundRectY returns the (Y, Height) the ::selection
+// background rect should use for a text fragment box: the originating
+// element's own inline background-fragment box when one exists as a
+// sibling of textBox, falling back to textBox's own (Y, Height)
+// otherwise.
+//
+// pkg/layout/inline_layout.go emits an inline element's own background as
+// a SEPARATE sibling PhysicalFragment from its text fragments (see that
+// file's "An inline background covers at least the font's em box... and
+// grows to the line box when line-height exceeds it — max(em box, line
+// box)" comment), sharing textBox.Parent but carrying no .Text. A text
+// fragment's own box.Height is ALWAYS just the font's em box (fontSize,
+// per emitTextFragment), never the line box — so when line-height >
+// font-size (line-height: normal's 1.2x default, the common case), the
+// background fragment is taller than the text fragment and anchored
+// higher (line-box top vs. the text's baseline-anchored em box). Using
+// the text fragment's own (Y, Height) for the selection rect then leaves
+// a gap at the top where the originating element's own background
+// (e.g. `background-color: red`) shows through above the selection
+// highlight (selection-contenteditable-011.html's ~3px red sliver,
+// LOU-344). Reusing the SAME background-fragment box the originating
+// element's own background already painted with (rather than
+// re-deriving the max(em box, line box) sizing independently at paint
+// time, which would duplicate pkg/layout's logic and risk drifting out
+// of sync with it) keeps the two rects pixel-identical by construction.
+func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
+	if textBox == nil {
+		return 0, 0
+	}
+	if textBox.Parent != nil && textBox.Node != nil {
+		for _, sibling := range textBox.Parent.Children {
+			if sibling != textBox && sibling.Node == textBox.Node && sibling.Text == "" {
+				return sibling.Y, sibling.Height
+			}
+		}
+	}
+	return textBox.Y, textBox.Height
+}
+
+// selectionOverlapForTextNode returns the [start,end) sub-range of a text
+// fragment — expressed in FRAGMENT-LOCAL offsets (i.e. already shifted so
+// 0 means the start of THIS fragment's own text, not the node's) — that
+// falls inside rng, given the fragment covers node-local offsets
+// [fragStart, fragEnd) of node's text content. ok is false when rng is nil
+// or doesn't touch this node at all, or the computed range is empty.
+//
+// Mirrors the DOM Range "partially contained node" containment check
+// (https://dom.spec.whatwg.org/#concept-range-partially-contained), with
+// node-local offsets just used directly since both StartContainer and
+// EndContainer here are always the same text node (the simplified single-
+// Range model this engine supports — see html.Range's doc comment).
+func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fragEnd int) (start, end int, ok bool) {
+	if rng == nil || node == nil {
+		return 0, 0, false
+	}
+
+	// nodeSelStart/nodeSelEnd: the selected range expressed in node-local
+	// offsets, clamped to [0, len(node.Text)]. A boundary container that
+	// is an ancestor ELEMENT (e.g. selectNodeContents(div) where div has
+	// one text-node child) selects the text node fully when the text
+	// node's index-among-siblings falls within [StartOffset, EndOffset) —
+	// the common case in every LOU-344 target test is "select all of the
+	// element's children" via selectNodeContents, so the text node is
+	// either fully in or fully out for an element-container boundary.
+	nodeSelStart, hasStart, startExcluded := nodeLocalBoundary(rng.StartContainer, rng.StartOffset, node, true)
+	nodeSelEnd, hasEnd, endExcluded := nodeLocalBoundary(rng.EndContainer, rng.EndOffset, node, false)
+	if startExcluded || endExcluded {
+		// One side IS related to node's ancestry chain but explicitly
+		// excludes it (e.g. a collapsed (div,0)-(div,0) range, where the
+		// end boundary's child-index check places node's subtree entirely
+		// AFTER the boundary) — this is a hard "not selected" verdict for
+		// node, not "this boundary doesn't constrain node" (which would
+		// fall through to the permissive 0/len(node.Text) default below).
+		return 0, 0, false
+	}
+	if !hasStart && !hasEnd {
+		return 0, 0, false
+	}
+	if !hasStart {
+		nodeSelStart = 0
+	}
+	if !hasEnd {
+		nodeSelEnd = len(node.Text)
+	}
+	nodeSelStart = max(nodeSelStart, 0)
+	nodeSelEnd = min(nodeSelEnd, len(node.Text))
+	if nodeSelStart >= nodeSelEnd {
+		return 0, 0, false
+	}
+
+	// Intersect [nodeSelStart, nodeSelEnd) with this fragment's own
+	// [fragStart, fragEnd) node-local span, then shift to fragment-local.
+	overlapStart := max(nodeSelStart, fragStart)
+	overlapEnd := min(nodeSelEnd, fragEnd)
+	if overlapStart >= overlapEnd {
+		return 0, 0, false
+	}
+	return overlapStart - fragStart, overlapEnd - fragStart, true
+}
+
+// nodeLocalBoundary resolves a single DOM Range boundary point (container,
+// offset) against a specific text node, returning the node-local character
+// offset that boundary implies for that node. The two bools distinguish
+// three outcomes the caller (selectionOverlapForTextNode) must NOT
+// conflate:
+//   - ok=true:                the boundary constrains node to the returned offset.
+//   - ok=false, excluded=false: the boundary is UNRELATED to node (its
+//     container isn't node or an ancestor of node) — doesn't constrain
+//     node's selected range at all; the caller may default-fill this side.
+//   - ok=false, excluded=true:  the boundary IS related to node's ancestry
+//     but explicitly places node's subtree entirely outside the selected
+//     range (e.g. a collapsed (div,0)-(div,0) range, where node's subtree
+//     starts at-or-after the end boundary) — node is NOT selected, full
+//     stop; default-filling this side as if unconstrained would wrongly
+//     select all of node.
+//
+// isStart selects which extreme to assume when container is an ancestor
+// ELEMENT of node (at any depth, not just the direct parent — e.g.
+// selectNodeContents(div) where node is several levels deep inside a
+// nested <span>, active-selection-018.html) rather than node itself: per
+// DOM Range semantics, a child-index offset into an element container
+// selects whole child subtrees [offset_start, offset_end). Walks UP from
+// node to find the ancestor-or-self whose direct parent is container, then
+// applies the same child-index containment check against THAT ancestor's
+// position among container's children — node is included (fully, from 0 /
+// to its full length) exactly when that ancestor subtree is.
+func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStart bool) (off int, ok bool, excluded bool) {
+	if container == nil {
+		return 0, false, false
+	}
+	if container == node {
+		// offset is a UTF-16 code-unit offset (html.Range's doc comment);
+		// node.Text is a Go UTF-8 string, so it must be converted before
+		// use as a byte index — see html.UTF16OffsetToByteOffset's doc
+		// comment.
+		return html.UTF16OffsetToByteOffset(node.Text, offset), true, false
+	}
+	// Walk up from node looking for the ancestor-or-self whose parent is
+	// container — that ancestor is the whole subtree the child-index
+	// offset selects or excludes.
+	ancestor := node
+	for ancestor != nil && ancestor.Parent != container {
+		ancestor = ancestor.Parent
+	}
+	if ancestor == nil {
+		return 0, false, false // container is not an ancestor of node at all
+	}
+	idx := -1
+	for i, c := range container.Children {
+		if c == ancestor {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, false, false
+	}
+	if isStart {
+		if offset <= idx {
+			return 0, true, false // node's containing subtree starts at-or-after the start boundary: fully included from 0
+		}
+		return 0, false, true // start boundary is past this subtree: node excluded
+	}
+	if offset > idx {
+		return len(node.Text), true, false // node's containing subtree ends at-or-before the end boundary: fully included to the end
+	}
+	return 0, false, true // end boundary is at-or-before this subtree: node excluded
+}
+
+// resolveSelectionPseudoStyle returns the computed ::selection style for
+// originating (the originating element of a text fragment), or nil if no
+// selection context is configured or originating is nil. Memoized per
+// Render call in r.selectionStyleCache since multiple fragments commonly
+// share one originating element (line-wrapped runs of the same <p>).
+func (r *Renderer) resolveSelectionPseudoStyle(originating *html.Node) *css.Style {
+	if originating == nil {
+		return nil
+	}
+	// Deliberately NOT gated on len(r.selectionStylesheets) == 0: a page
+	// with no stylesheets at all (or none containing an ::selection rule)
+	// must still resolve the UA default highlight colors when a Selection
+	// is active — ComputePseudoElementStyle's applySelectionCascade
+	// applies those UA defaults itself when authorSet is empty, so an
+	// empty stylesheet list is a valid, expected input here, not a
+	// reason to skip resolution entirely.
+	if r.selectionStyleCache == nil {
+		r.selectionStyleCache = make(map[*html.Node]*css.Style)
+	}
+	if cached, ok := r.selectionStyleCache[originating]; ok {
+		return cached
+	}
+	// originating.Style isn't tracked on *html.Node directly (style lives
+	// on layout.Box/css cascade results, not the DOM tree) — look it up
+	// via r.nodeBoxIndex (populated once per Render call, see render.go)
+	// and pass it as ComputePseudoElementStyle's parentStyles so custom
+	// properties (--x) on the originating element are visible to var()
+	// references in the ::selection rule (CSS Custom Properties §3 —
+	// pseudo-elements inherit custom properties from their originating
+	// element). Without this, `main::selection { background-color:
+	// var(--x, red) }` with `main { --x: green }` silently fell back to
+	// the var() fallback value instead of resolving --x (highlight-
+	// styling-002.html). A missing originating box (nil parentStyles) is
+	// still a valid input — ComputePseudoElementStyle's parent-inheritance
+	// block is a no-op then, same as before this fix for any node not yet
+	// in the index.
+	var parentStyles []*css.Style
+	if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
+		parentStyles = []*css.Style{box.Style}
+	}
+	style := css.ComputePseudoElementStyle(originating, "selection", r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH, parentStyles...)
+	r.selectionStyleCache[originating] = style
+	return style
+}
+
+// findOriginatingTextNode finds the DOM text-node child of parent whose
+// content, when fragments are consumed in document order, covers the
+// given fragment text — returning the text node plus the node-local
+// [fragStart, fragEnd) range this fragment's box.Text occupies. Uses
+// r.selectionTextConsumed to track how much of each text node's content
+// has already been claimed by earlier fragments painted this Render call.
+//
+// Offsets are node-local BYTE offsets into node.Text (Go string indexing),
+// NOT the UTF-16 code-unit offsets html.Range's StartOffset/EndOffset use
+// (see html.UTF16OffsetToByteOffset's doc comment for where that
+// conversion happens before a Range offset reaches this byte space).
+func (r *Renderer) findOriginatingTextNode(parent *html.Node, fragmentText string) (*html.Node, int, int) {
+	if parent == nil {
+		return nil, 0, 0
+	}
+	if r.selectionTextConsumed == nil {
+		r.selectionTextConsumed = make(map[*html.Node]int)
+	}
+	fragLen := len(fragmentText)
+	for _, child := range parent.Children {
+		if child.Type != html.TextNode {
+			continue
+		}
+		consumed := r.selectionTextConsumed[child]
+		remaining := len(child.Text) - consumed
+		if remaining <= 0 {
+			continue
+		}
+		if fragLen <= remaining {
+			fragStart := consumed
+			fragEnd := consumed + fragLen
+			r.selectionTextConsumed[child] = fragEnd
+			return child, fragStart, fragEnd
+		}
+	}
+	// No exact-fit text-node child found (text-transform changed the
+	// length, or the fragment spans a generated/pseudo text node not
+	// present in the DOM, e.g. ::before content, or a non-text-only
+	// child mix this lookup doesn't model). Selection painting is
+	// skipped for this fragment — drawText's caller falls back to the
+	// single-color path, which is correct-but-unhighlighted rather than
+	// wrong.
+	return nil, 0, 0
+}
+
+// selectionSegment describes one paint segment of a split text run: a
+// [start,end) byte range of the original fragment text, plus the resolved
+// color overrides to use for that segment (nil overrides mean "use the
+// layer's existing values unchanged" — the pre-/post-selection segments).
+type selectionSegment struct {
+	start, end      int
+	selected        bool
+	backgroundColor *css.Color // nil = no background rect painted
+	textColor       *css.Color // nil = use layer.TextColor
+	decorationColor *css.Color // nil = use layer.TextDecorationColor
+
+	// hasOwnDecoration + decorationLine: ::selection's OWN
+	// text-decoration (e.g. active-selection-014.html's
+	// `div::selection { text-decoration: underline }`, where the
+	// ORIGINATING div has no decoration at all — the underline exists
+	// purely because ::selection introduces it). Mirrors the legacy
+	// single-decoration layer.TextDecoration field's type/semantics
+	// (paint_layer.go's s.GetTextDecoration()). hasOwnDecoration is
+	// false when ::selection declared no text-decoration-line of its
+	// own, in which case the segment keeps the originating layer's
+	// existing TextDecoration/AppliedTextDecorations untouched.
+	hasOwnDecoration bool
+	decorationLine   css.TextDecoration
+}
+
+// computeSelectionSegments splits a text fragment into 1-3 segments
+// (pre-selection / selected / post-selection) based on the configured
+// selection range and the fragment's originating text node. Returns a
+// single unselected segment spanning the whole text when there's no
+// selection context, no DOM Selection, or no overlap — the common
+// fast-path callers should check via len(segs) == 1 && !segs[0].selected
+// to skip the splitting machinery entirely.
+func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []selectionSegment {
+	whole := []selectionSegment{{start: 0, end: len(text)}}
+	if r.selectionRange == nil || box == nil || box.Node == nil || text == "" {
+		return whole
+	}
+	textNode, fragStart, fragEnd := r.findOriginatingTextNode(box.Node, text)
+	if textNode == nil {
+		return whole
+	}
+	selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, textNode, fragStart, fragEnd)
+	if !ok {
+		return whole
+	}
+
+	pseudoStyle := r.resolveSelectionPseudoStyle(box.Node)
+	var bgColor, fgColor, decColor *css.Color
+	var ownDecoration css.TextDecoration
+	var hasOwnDecoration bool
+	if pseudoStyle != nil {
+		if bg, ok := pseudoStyle.Get("background-color"); ok {
+			if c, ok := css.ParseColorWithCurrentColor(bg, pseudoStyle.GetColor()); ok {
+				bgColor = &c
+			}
+		}
+		if cv, ok := pseudoStyle.Get("color"); ok {
+			if c, ok := css.ParseColor(cv); ok {
+				fgColor = &c
+			}
+		}
+		if dc, hasDC := pseudoStyle.GetTextDecorationColor(); hasDC {
+			decColor = &dc
+		} else {
+			decColor = fgColor
+		}
+		// CSS Pseudo-4 §highlight-painting: ::selection's own
+		// text-decoration introduces a NEW decoration on the selected
+		// segment even when the originating element has none
+		// (active-selection-014.html). Use GetTextDecorationLine (reads
+		// the "text-decoration-line" longhand, which the cascade DOES
+		// populate via shorthand expansion) rather than the legacy
+		// GetTextDecoration (reads the bare "text-decoration" shorthand
+		// key directly, which applyDeclarationWithVisitedFilter expands
+		// away rather than storing verbatim — confirmed empirically: a
+		// `text-decoration: underline` rule leaves
+		// style.Get("text-decoration-line") == "underline" but
+		// style.Get("text-decoration") == ("", false)). Mapped down to
+		// the legacy single-value TextDecoration enum since that's
+		// layer.TextDecoration's field type and every LOU-344 target test
+		// using this path sets exactly one line value.
+		if line := pseudoStyle.GetTextDecorationLine(); !line.IsNone() {
+			switch {
+			case line.Has(css.TextDecorationLineUnderline):
+				ownDecoration = css.TextDecorationUnderline
+			case line.Has(css.TextDecorationLineOverline):
+				ownDecoration = css.TextDecorationOverline
+			case line.Has(css.TextDecorationLineLineThrough):
+				ownDecoration = css.TextDecorationLineThrough
+			}
+			hasOwnDecoration = ownDecoration != ""
+		}
+	}
+
+	var segs []selectionSegment
+	if selStart > 0 {
+		segs = append(segs, selectionSegment{start: 0, end: selStart})
+	}
+	segs = append(segs, selectionSegment{
+		start: selStart, end: selEnd, selected: true,
+		backgroundColor: bgColor, textColor: fgColor, decorationColor: decColor,
+		hasOwnDecoration: hasOwnDecoration, decorationLine: ownDecoration,
+	})
+	if selEnd < len(text) {
+		segs = append(segs, selectionSegment{start: selEnd, end: len(text)})
+	}
+	return segs
+}

@@ -10,14 +10,24 @@ import (
 // Used to support network-based stylesheet loading.
 type CSSFetcher func(uri string) (string, error)
 
+// ScriptFetcher is a function that fetches JavaScript source from a URI,
+// used to support `<script src="...">` external scripts. Same shape as
+// CSSFetcher since both resolve a same-origin-relative URI to file/network
+// content; kept as a distinct named type (rather than reusing CSSFetcher)
+// because the two resources are conceptually different fetch lists in
+// Blink (ResourceFetcher::FetchCSSStyleSheet vs FetchScript /
+// third_party/blink/renderer/core/loader/resource/script_resource.h).
+type ScriptFetcher func(uri string) (string, error)
+
 type Parser struct {
 	tokenizer        *Tokenizer
 	doc              *Document
-	stack            []*Node    // Phase 2: Stack for tracking nested elements
-	cssFetcher       CSSFetcher // Optional fetcher for external stylesheets
-	fragmentMode     bool       // When true, <script>/<style> become DOM nodes
-	commentSeenInPre bool       // True when a comment has been seen inside a <pre> element
-	isXML            bool       // True for XML/XHTML documents (governs <style> content rules)
+	stack            []*Node       // Phase 2: Stack for tracking nested elements
+	cssFetcher       CSSFetcher    // Optional fetcher for external stylesheets
+	scriptFetcher    ScriptFetcher // Optional fetcher for external <script src> content
+	fragmentMode     bool          // When true, <script>/<style> become DOM nodes
+	commentSeenInPre bool          // True when a comment has been seen inside a <pre> element
+	isXML            bool          // True for XML/XHTML documents (governs <style> content rules)
 }
 
 func NewParser(html string) *Parser {
@@ -92,6 +102,26 @@ func (p *Parser) Parse() (*Document, error) {
 						typ == "application/javascript" || typ == "application/ecmascript" ||
 						typ == "text/ecmascript" || typ == "module"
 					if isExecutableJS {
+						// HTML5 §4.12.1: a `src` attribute makes this an
+						// external script — Blink's HTMLScriptElement
+						// fetches and runs the external resource INSTEAD OF
+						// any inline text (third_party/blink/renderer/core/
+						// html/script_runner.cc). Mirror that precedence:
+						// src wins over inline content when both are
+						// present (malformed markup, but match Blink).
+						if src, ok := token.Attributes["src"]; ok && strings.TrimSpace(src) != "" {
+							// src wins over inline content even when the
+							// fetch fails (scriptFetcher nil, or the fetch
+							// itself errors) — matching the comment above:
+							// Blink never falls back to inline text for an
+							// external script that 404s/fails to load.
+							if p.scriptFetcher != nil {
+								if fetched, err := p.scriptFetcher(strings.TrimSpace(src)); err == nil && strings.TrimSpace(fetched) != "" {
+									p.doc.Scripts = append(p.doc.Scripts, fetched)
+								}
+							}
+							continue
+						}
 						if strings.TrimSpace(content) != "" {
 							p.doc.Scripts = append(p.doc.Scripts, content)
 						}
@@ -662,8 +692,18 @@ func Parse(html string) (*Document, error) {
 // stamped onto the resulting Document.CSSResourceFetcher so the pkg/css layer
 // can resolve @import targets at CSS-parse time.
 func ParseWithFetcher(htmlContent string, cssFetcher CSSFetcher) (*Document, error) {
+	return ParseWithScriptFetcher(htmlContent, cssFetcher, nil)
+}
+
+// ParseWithScriptFetcher is ParseWithFetcher plus a fetcher for external
+// `<script src="...">` content. scriptFetcher may be nil, in which case
+// external scripts are silently skipped (same as before this function
+// existed) — mirrors Blink's ScriptLoader, which no-ops a script load that
+// the ResourceFetcher cannot resolve rather than failing the parse.
+func ParseWithScriptFetcher(htmlContent string, cssFetcher CSSFetcher, scriptFetcher ScriptFetcher) (*Document, error) {
 	parser := NewParser(htmlContent)
 	parser.cssFetcher = cssFetcher
+	parser.scriptFetcher = scriptFetcher
 	doc, err := parser.Parse()
 	if doc != nil {
 		doc.CSSResourceFetcher = cssFetcher
