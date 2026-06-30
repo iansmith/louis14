@@ -6141,7 +6141,16 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// the intercharacter spacing too (selection-intercharacter-
 				// 011/-012's whole point: the spacing itself must be
 				// highlighted, per CSS Pseudo-4 §highlight-bounds).
-				segWidth := r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
+				// CSS Text 3 §4.2: a tab character's highlighted width is its
+				// EXPANDED tab-stop span, not its raw glyph advance — see
+				// measureSegmentVisualWidthWithTabs's doc comment
+				// (active-selection-063.html).
+				var segWidth float64
+				if strings.Contains(segBox.Text, "\t") {
+					segWidth = r.measureSegmentVisualWidthWithTabs(&segBox, fontID, layer)
+				} else {
+					segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
+				}
 				// selectionBackgroundRectY: use the originating element's own
 				// inline background-fragment box (Y, Height) when one exists,
 				// not box's own (always em-box-sized) Y/Height — see that
@@ -7246,12 +7255,13 @@ func (r *Renderer) drawTextSmallCaps(layer *PaintLayer, text string, box *layout
 	}
 }
 
-// drawTextWithTabs renders text containing tab characters. Tab characters
-// advance to the next tab stop without drawing a glyph. Tab stops are at
-// multiples of (tab-size × space-width) or (tab-size in px) from the line
-// start (containing block's content edge).
-func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
-	// Compute tab stop interval in pixels.
+// tabStopIntervalPx computes the tab stop interval in pixels for layer:
+// tab-size as an explicit length uses that length directly; tab-size as a
+// bare number is that many space-character widths (CSS Text 3 §4.2).
+// Factored out of drawTextWithTabs so measureSegmentVisualWidthWithTabs
+// (the ::selection highlight-rect sizing path) computes the SAME interval
+// rather than re-deriving it and risking drift (CLAUDE.md §4 dedup).
+func (r *Renderer) tabStopIntervalPx(layer *PaintLayer, fontID int32) float64 {
 	tabSizeVal := layer.TabSize
 	var tabStopPx float64
 	if layer.TabSizeIsLength {
@@ -7266,19 +7276,77 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 	if tabStopPx <= 0 {
 		tabStopPx = layer.FontSize * 8
 	}
+	return tabStopPx
+}
 
-	// Find the line start (containing block's content-area left edge).
-	// Walk up from the text box to find the nearest block container.
-	lineStartX := box.X
+// lineStartX finds the line start (containing block's content-area left
+// edge) for box: the nearest ancestor with a Style, per CSS Text 3 §4.2's
+// "tab stops are measured from the line's start" rule. Factored out of
+// drawTextWithTabs for the same dedup reason as tabStopIntervalPx.
+func lineStartX(box *layout.Box) float64 {
+	lineStart := box.X
 	for p := box.Parent; p != nil; p = p.Parent {
 		if p.Style != nil {
-			lineStartX = p.X + p.Padding.Left + p.Border.Left
-			break
+			return p.X + p.Padding.Left + p.Border.Left
 		}
 	}
+	return lineStart
+}
+
+// measureSegmentVisualWidthWithTabs is measureSegmentVisualWidth's tab-
+// aware counterpart: text containing a tab character expands each tab to
+// its tab stop (CSS Text 3 §4.2), exactly mirroring drawTextWithTabs'
+// advance math, so the ::selection highlight rect covers the SAME width
+// the glyphs (or, for a bare tab, the expanded blank run) actually occupy
+// — plain measureSegmentVisualWidth measures "\t" as an ordinary glyph
+// advance (a few px), which left the highlight rect far narrower than the
+// real tab-stop-wide gap (active-selection-063.html: a lone tab's
+// highlight covered ~1 character cell instead of the full 4-character
+// tab-size span). segBox supplies X/Parent for the line-start-relative
+// tab-stop phase calculation; only the FINAL trailing tab-stop expansion
+// after the last non-tab segment is included (matching
+// measureSegmentVisualWidth's no-trailing-gap contract — there is no
+// "next character" to leave a gap before when this is the last/only
+// segment, which is the only shape LOU-344's target tests exercise).
+func (r *Renderer) measureSegmentVisualWidthWithTabs(segBox *layout.Box, fontID int32, layer *PaintLayer) float64 {
+	tabStopPx := r.tabStopIntervalPx(layer, fontID)
+	startX := lineStartX(segBox)
+	posFromLineStart := segBox.X - startX
+	total := 0.0
+	segments := strings.Split(segBox.Text, "\t")
+	for i, seg := range segments {
+		if seg != "" {
+			segW := r.measureTextStr(seg, fontID, layer.FontFeatures)
+			if layer.WordSpacing != 0 {
+				segW += layer.WordSpacing * float64(strings.Count(seg, " "))
+			}
+			total += segW
+			posFromLineStart += segW
+		}
+		if i < len(segments)-1 {
+			rem := math.Mod(posFromLineStart, tabStopPx)
+			var tabW float64
+			if rem < 1e-9 {
+				tabW = tabStopPx
+			} else {
+				tabW = tabStopPx - rem
+			}
+			total += tabW
+			posFromLineStart += tabW
+		}
+	}
+	return total
+}
+
+// drawTextWithTabs renders text containing tab characters. Tab characters
+// advance to the next tab stop without drawing a glyph. Tab stops are at
+// multiples of (tab-size × space-width) or (tab-size in px) from the line
+// start (containing block's content edge).
+func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	tabStopPx := r.tabStopIntervalPx(layer, fontID)
 
 	// Position within the line, measured from line start.
-	posFromLineStart := box.X - lineStartX
+	posFromLineStart := box.X - lineStartX(box)
 	x := box.X
 	baselineY := box.Y + ascent
 

@@ -126,7 +126,22 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		if child.IsText() {
 			// Use CSS-aware trimming: U+00A0 (non-breaking space) is not
 			// collapsible and counts as visible content (CSS 2.1 §16.6.1).
-			if strings.IndexFunc(child.TextContent(), func(r rune) bool {
+			// Under white-space: pre/pre-wrap/break-spaces, space/tab
+			// characters are NEVER collapsed (CSS Text 3 §16.6.1
+			// white-space-collapse: preserve) — a text node consisting
+			// SOLELY of tabs/spaces still counts as content there, even
+			// though the same text would collapse away under `normal`
+			// (LOU-344's active-selection-063.html: a `white-space: pre`
+			// div containing only `\t` characters was wrongly classified
+			// as having no inline content, routing it into the
+			// block-children path where it produced no fragment at all —
+			// not just a sizing quirk, a missing box).
+			text := child.TextContent()
+			if childStyle := child.Style(); childStyle != nil && whiteSpacePreservesWhitespace(childStyle.GetWhiteSpace()) {
+				if text != "" {
+					hasContent = true
+				}
+			} else if strings.IndexFunc(text, func(r rune) bool {
 				return !isCSSCollapsibleRune(r)
 			}) >= 0 {
 				hasContent = true

@@ -9,6 +9,7 @@ package render
 // in pkg/html/dom.go).
 
 import (
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
 	"testing"
@@ -216,5 +217,57 @@ func TestSelectionBackgroundRectY_NilBox(t *testing.T) {
 	y, height := selectionBackgroundRectY(nil)
 	if y != 0 || height != 0 {
 		t.Errorf("selectionBackgroundRectY(nil) = (%v, %v), want (0, 0)", y, height)
+	}
+}
+
+// TestLineStartX_FindsNearestAncestorWithStyle mirrors
+// drawTextWithTabs's line-start lookup (CSS Text 3 §4.2: tab stops are
+// measured from the line's start, i.e. the containing block's content
+// edge): lineStartX walks up from a text fragment box to the nearest
+// ancestor carrying a Style and returns its content-box left edge
+// (X + Padding.Left + Border.Left). measureSegmentVisualWidthWithTabs
+// (LOU-344's active-selection-063.html fix) relies on this returning the
+// SAME line start drawTextWithTabs would use, or the ::selection
+// highlight rect's tab-stop phase would disagree with where the glyphs
+// actually land.
+func TestLineStartX_FindsNearestAncestorWithStyle(t *testing.T) {
+	lineBox := &layout.Box{X: 8, Style: css.NewStyle()}
+	anonBlock := &layout.Box{X: 0, Parent: lineBox} // no Style — must be skipped
+	textBox := &layout.Box{X: 33, Parent: anonBlock}
+
+	got := lineStartX(textBox)
+	if got != 8 {
+		t.Errorf("lineStartX = %v, want 8 (the nearest ancestor WITH a Style, skipping the anonymous no-Style box)", got)
+	}
+}
+
+// TestLineStartX_PaddingAndBorderOffsetContentEdge covers the
+// Padding.Left/Border.Left contribution: the line start is the CONTENT
+// edge, not the border edge.
+func TestLineStartX_PaddingAndBorderOffsetContentEdge(t *testing.T) {
+	lineBox := &layout.Box{
+		X:       8,
+		Style:   css.NewStyle(),
+		Padding: css.BoxEdge{Left: 5},
+		Border:  css.BoxEdge{Left: 2},
+	}
+	textBox := &layout.Box{X: 15, Parent: lineBox}
+
+	got := lineStartX(textBox)
+	want := 8.0 + 5.0 + 2.0
+	if got != want {
+		t.Errorf("lineStartX = %v, want %v (X + Padding.Left + Border.Left)", got, want)
+	}
+}
+
+// TestLineStartX_NoStyledAncestorFallsBackToOwnX covers the case
+// drawTextWithTabs's original loop also handled: no ancestor with a
+// Style at all (lineStart initialized to box.X, loop never finds a
+// match) — falls back to the box's own X rather than 0.
+func TestLineStartX_NoStyledAncestorFallsBackToOwnX(t *testing.T) {
+	textBox := &layout.Box{X: 42}
+	got := lineStartX(textBox)
+	if got != 42 {
+		t.Errorf("lineStartX = %v, want 42 (own X when no styled ancestor exists)", got)
 	}
 }
