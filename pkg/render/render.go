@@ -6131,11 +6131,32 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			if seg.backgroundColor != nil && seg.backgroundColor.A > 0 {
 				r.setColor(*seg.backgroundColor)
 				segWidth := r.measureTextStr(segBox.Text, r.fontIDForLayer(layer), layer.FontFeatures)
-				r.dc.DrawRectangle(segBox.X, box.Y, segWidth, box.Height)
+				// Pixel-snap exactly like drawBackground's element-background
+				// rect (pixelSnap, used throughout render.go for backgrounds/
+				// borders) so the selection highlight rect lands on the same
+				// pixel grid as an equivalent real background-color box —
+				// without this, sub-pixel rounding differences between this
+				// rect and the WPT reference's actual `background-color`
+				// <div> box left a 1px red fringe on two edges
+				// (active-selection-012).
+				sx, sy, sw, sh := pixelSnap(segBox.X, box.Y, segWidth, box.Height)
+				r.dc.DrawRectangle(sx, sy, sw, sh)
 				r.dc.Fill()
 			}
 			if seg.textColor != nil {
 				r.setLayerColorOverride(&segLayer, *seg.textColor, seg.decorationColor)
+			}
+			if seg.hasOwnDecoration {
+				applySelectionOwnDecoration(&segLayer, seg.decorationLine)
+				// The newly-introduced decoration must paint in
+				// ::selection's own color (set above when textColor !=
+				// nil; when ::selection set decoration but not color,
+				// TextDecorationColor already defaults to currentColor
+				// via paint_layer.go's normal resolution, which is
+				// correct since GetTextDecorationColor's own currentColor
+				// fallback resolves against the (possibly UA-default)
+				// ::selection color computed by ComputePseudoElementStyle
+				// — see resolveSelectionPseudoStyle).
 			}
 		}
 		r.drawTextSegment(&segLayer)
@@ -6186,6 +6207,19 @@ func (r *Renderer) setLayerColorOverride(layer *PaintLayer, textColor css.Color,
 		}
 		layer.AppliedTextDecorations = decorations
 	}
+}
+
+// applySelectionOwnDecoration sets layer.TextDecoration to ::selection's
+// own text-decoration-line (active-selection-014.html: `div::selection {
+// text-decoration: underline }` on a div with no decoration of its own).
+// Only takes effect via the legacy single-decoration field — the
+// AppliedTextDecorations vector is reserved for decorations the
+// ORIGINATING element's cascade produced (recolored, not introduced, by
+// setLayerColorOverride above); a ::selection-introduced decoration has no
+// originating-element source to carry decorating-box continuity metadata
+// for, so the simpler legacy field is the correct mechanism here.
+func applySelectionOwnDecoration(layer *PaintLayer, line css.TextDecoration) {
+	layer.TextDecoration = line
 }
 
 // drawTextSegment is drawText's original single-color paint body —

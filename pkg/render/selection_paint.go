@@ -227,6 +227,19 @@ type selectionSegment struct {
 	backgroundColor *css.Color // nil = no background rect painted
 	textColor       *css.Color // nil = use layer.TextColor
 	decorationColor *css.Color // nil = use layer.TextDecorationColor
+
+	// hasOwnDecoration + decorationLine: ::selection's OWN
+	// text-decoration (e.g. active-selection-014.html's
+	// `div::selection { text-decoration: underline }`, where the
+	// ORIGINATING div has no decoration at all — the underline exists
+	// purely because ::selection introduces it). Mirrors the legacy
+	// single-decoration layer.TextDecoration field's type/semantics
+	// (paint_layer.go's s.GetTextDecoration()). hasOwnDecoration is
+	// false when ::selection declared no text-decoration-line of its
+	// own, in which case the segment keeps the originating layer's
+	// existing TextDecoration/AppliedTextDecorations untouched.
+	hasOwnDecoration bool
+	decorationLine   css.TextDecoration
 }
 
 // computeSelectionSegments splits a text fragment into 1-3 segments
@@ -252,6 +265,8 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 
 	pseudoStyle := r.resolveSelectionPseudoStyle(box.Node)
 	var bgColor, fgColor, decColor *css.Color
+	var ownDecoration css.TextDecoration
+	var hasOwnDecoration bool
 	if pseudoStyle != nil {
 		if bg, ok := pseudoStyle.Get("background-color"); ok {
 			if c, ok := css.ParseColorWithCurrentColor(bg, pseudoStyle.GetColor()); ok {
@@ -268,6 +283,32 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 		} else {
 			decColor = fgColor
 		}
+		// CSS Pseudo-4 §highlight-painting: ::selection's own
+		// text-decoration introduces a NEW decoration on the selected
+		// segment even when the originating element has none
+		// (active-selection-014.html). Use GetTextDecorationLine (reads
+		// the "text-decoration-line" longhand, which the cascade DOES
+		// populate via shorthand expansion) rather than the legacy
+		// GetTextDecoration (reads the bare "text-decoration" shorthand
+		// key directly, which applyDeclarationWithVisitedFilter expands
+		// away rather than storing verbatim — confirmed empirically: a
+		// `text-decoration: underline` rule leaves
+		// style.Get("text-decoration-line") == "underline" but
+		// style.Get("text-decoration") == ("", false)). Mapped down to
+		// the legacy single-value TextDecoration enum since that's
+		// layer.TextDecoration's field type and every LOU-344 target test
+		// using this path sets exactly one line value.
+		if line := pseudoStyle.GetTextDecorationLine(); !line.IsNone() {
+			switch {
+			case line.Has(css.TextDecorationLineUnderline):
+				ownDecoration = css.TextDecorationUnderline
+			case line.Has(css.TextDecorationLineOverline):
+				ownDecoration = css.TextDecorationOverline
+			case line.Has(css.TextDecorationLineLineThrough):
+				ownDecoration = css.TextDecorationLineThrough
+			}
+			hasOwnDecoration = ownDecoration != ""
+		}
 	}
 
 	var segs []selectionSegment
@@ -277,6 +318,7 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 	segs = append(segs, selectionSegment{
 		start: selStart, end: selEnd, selected: true,
 		backgroundColor: bgColor, textColor: fgColor, decorationColor: decColor,
+		hasOwnDecoration: hasOwnDecoration, decorationLine: ownDecoration,
 	})
 	if selEnd < len(text) {
 		segs = append(segs, selectionSegment{start: selEnd, end: len(text)})
