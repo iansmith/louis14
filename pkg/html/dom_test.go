@@ -293,3 +293,51 @@ func TestInheritedLanguage(t *testing.T) {
 		t.Errorf("empty lang attr: got %q, want %q", got, "")
 	}
 }
+
+// TestUTF16OffsetToByteOffset covers the UTF-16-code-unit-to-UTF-8-byte
+// conversion that Range.StartOffset/EndOffset (UTF-16, per this file's
+// Range doc comment) need before indexing a Go (UTF-8) Node.Text string.
+// LOU-344's selection-background-painting-order.html regression: a Range
+// offset used directly as a byte index slices mid-rune for any character
+// outside ASCII whose UTF-8 encoding is longer than 1 byte (e.g. ∫
+// U+222B: 1 UTF-16 unit, 3 UTF-8 bytes).
+func TestUTF16OffsetToByteOffset(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		utf16Offset int
+		want        int
+	}{
+		{"zero offset", "hello", 0, 0},
+		{"negative offset clamps to zero", "hello", -1, 0},
+		{"ascii offset equals byte offset", "hello", 3, 3},
+		{"ascii offset at end", "hello", 5, 5},
+		// "ii∫∫∫": each ∫ (U+222B) is 1 UTF-16 unit but 3 UTF-8 bytes.
+		// UTF-16 offset 3 = "ii∫" (3 code units), which is byte offset 5
+		// (1+1+3), not byte offset 3 (which would land inside ∫'s
+		// encoding) — this is the exact LOU-344 regression case.
+		{"BMP multi-byte rune (integral sign)", "ii∫∫∫", 3, len("ii∫")},
+		{"BMP multi-byte rune, offset 2", "ii∫∫∫", 2, len("ii")},
+		{"BMP multi-byte rune, offset 5 (all selected)", "ii∫∫∫", 5, len("ii∫∫∫")},
+		// "a🙂b": 🙂 (U+1F642) is outside the BMP, so it costs a UTF-16
+		// surrogate pair (2 code units) but is 4 UTF-8 bytes.
+		{"surrogate-pair rune before", "a🙂b", 1, len("a")},
+		{"surrogate-pair rune spans 2 units", "a🙂b", 3, len("a🙂")},
+		// Offset 2 falls strictly inside 🙂's surrogate pair (which spans
+		// UTF-16 units [1,3)) — not a valid DOM boundary point in
+		// practice, but defended against rather than panicking: rather
+		// than slice the rune's own UTF-8 encoding in half, this rounds
+		// up to the rune's end (byte offset of "🙂"'s last byte + 1).
+		{"surrogate-pair rune, offset mid-pair rounds to rune end", "a🙂b", 2, len("a🙂")},
+		{"offset beyond string clamps to full byte length", "hello", 100, len("hello")},
+		{"empty string", "", 0, 0},
+		{"empty string, positive offset clamps to zero", "", 5, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UTF16OffsetToByteOffset(tt.text, tt.utf16Offset); got != tt.want {
+				t.Errorf("UTF16OffsetToByteOffset(%q, %d) = %d, want %d", tt.text, tt.utf16Offset, got, tt.want)
+			}
+		})
+	}
+}

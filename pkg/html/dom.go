@@ -3,6 +3,7 @@ package html
 import (
 	"sort"
 	"strings"
+	"unicode/utf16"
 )
 
 type Node struct {
@@ -137,6 +138,46 @@ type Range struct {
 	StartOffset    int
 	EndContainer   *Node
 	EndOffset      int
+}
+
+// UTF16OffsetToByteOffset converts a Range UTF-16 code-unit offset (this
+// type's StartOffset/EndOffset, per DOM §5.4 above) into the equivalent
+// UTF-8 byte offset into text — text is always a Go string (UTF-8), e.g.
+// a Node.Text, while a Range offset into a text container counts UTF-16
+// code units. They only coincide for all-ASCII/BMP-single-unit text,
+// where every rune is both 1 UTF-16 unit and (for ASCII) 1 byte; outside
+// that (e.g. ∫ U+222B, a single UTF-16 unit but 3 UTF-8 bytes), using the
+// raw offset as a byte index slices mid-rune and corrupts the string.
+// Lives next to Range (rather than in a caller package, e.g. pkg/render)
+// so every consumer of a Range text-container offset converts through
+// the same function instead of re-deriving the UTF-16/UTF-8 distinction
+// per call site. utf16Offset is clamped to text's UTF-16 length so an
+// out-of-range Range offset (disallowed on a live Range by the DOM spec,
+// but defended against here) degrades to "select to end" rather than
+// panicking or returning an invalid index.
+//
+// No Blink analog cited: Blink's core/editing/position.h works in UTF-16
+// natively throughout (WTF::String is UTF-16), so this conversion has no
+// equivalent step there — it exists purely because louis14's Node.Text is
+// a Go (UTF-8) string while the DOM Range contract above is UTF-16.
+func UTF16OffsetToByteOffset(text string, utf16Offset int) int {
+	if utf16Offset <= 0 {
+		return 0
+	}
+	units := 0
+	for byteIdx, r := range text {
+		if units >= utf16Offset {
+			return byteIdx
+		}
+		// utf16.RuneLen returns 2 for runes needing a surrogate pair
+		// (outside the Basic Multilingual Plane), 1 for every BMP rune
+		// (all of ASCII and ∫ U+222B included), -1 only for values that
+		// cannot be UTF-16 encoded at all (unpaired surrogates) — which
+		// cannot occur here since r came from ranging over a valid Go
+		// string, so the -1 case is unreachable and not special-cased.
+		units += utf16.RuneLen(r)
+	}
+	return len(text)
 }
 
 func NewDocument() *Document {

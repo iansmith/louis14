@@ -51,6 +51,39 @@ func TestSelectionOverlapForTextNode_PartialRange(t *testing.T) {
 	}
 }
 
+// TestSelectionOverlapForTextNode_UTF16OffsetNonASCII reproduces
+// selection-background-painting-order.html's setStart(node,0)/setEnd(node,3)
+// on the text node "ii∫∫∫" (∫ = U+222B, 1 UTF-16 code unit but 3 UTF-8
+// bytes). Per DOM §5.4, Range offsets into a text node are UTF-16 code-unit
+// offsets (html.Range's doc comment) — offset 3 means "ii∫" (3 JS
+// characters), NOT byte 3, which lands mid-way through the first ∫'s UTF-8
+// encoding ("ii\xe2") and previously corrupted both the selected and
+// unselected text fed to the shaper (observed as notdef/tofu glyph boxes
+// for the unselected remainder). selectionOverlapForTextNode must return
+// byte offsets that fall on rune boundaries.
+func TestSelectionOverlapForTextNode_UTF16OffsetNonASCII(t *testing.T) {
+	tn := textNode("ii∫∫∫")
+	rng := &html.Range{StartContainer: tn, StartOffset: 0, EndContainer: tn, EndOffset: 3}
+
+	start, end, ok := selectionOverlapForTextNode(rng, tn, 0, len(tn.Text))
+	if !ok {
+		t.Fatal("expected overlap")
+	}
+	wantEnd := len("ii∫") // byte length of the 3-UTF-16-unit prefix "ii∫"
+	if start != 0 || end != wantEnd {
+		t.Errorf("got [%d,%d), want [0,%d) (= byte length of \"ii∫\")", start, end, wantEnd)
+	}
+	// The split must land on UTF-8 rune boundaries, not mid-encoding.
+	selected := tn.Text[start:end]
+	unselected := tn.Text[end:]
+	if selected != "ii∫" {
+		t.Errorf("selected segment = %q, want %q", selected, "ii∫")
+	}
+	if unselected != "∫∫" {
+		t.Errorf("unselected segment = %q, want %q", unselected, "∫∫")
+	}
+}
+
 func TestSelectionOverlapForTextNode_FragmentSubrange(t *testing.T) {
 	// A single DOM text node line-wrapped into two fragments: fragment A
 	// covers node-local [0,5), fragment B covers [5,11). Selection covers

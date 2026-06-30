@@ -112,7 +112,11 @@ func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStar
 		return 0, false
 	}
 	if container == node {
-		return offset, true
+		// offset is a UTF-16 code-unit offset (html.Range's doc comment);
+		// node.Text is a Go UTF-8 string, so it must be converted before
+		// use as a byte index — see html.UTF16OffsetToByteOffset's doc
+		// comment.
+		return html.UTF16OffsetToByteOffset(node.Text, offset), true
 	}
 	// Walk up from node looking for the ancestor-or-self whose parent is
 	// container — that ancestor is the whole subtree the child-index
@@ -184,9 +188,11 @@ func (r *Renderer) resolveSelectionPseudoStyle(originating *html.Node) *css.Styl
 // has already been claimed by earlier fragments painted this Render call.
 //
 // fragmentLen runes... actually bytes: box.Text length in bytes (Go string
-// indexing), matching html.Range's StartOffset/EndOffset byte-offset
-// convention (mirrors the rest of this engine's UTF-8 byte-offset
-// handling — see html.Range's doc comment).
+// indexing) — fragStart/fragEnd are node-local BYTE offsets into
+// node.Text, not the UTF-16 code-unit offsets html.Range's
+// StartOffset/EndOffset use (see html.UTF16OffsetToByteOffset's doc
+// comment for where that conversion happens before a Range offset
+// reaches this byte space).
 func (r *Renderer) findOriginatingTextNode(parent *html.Node, fragmentText string) (*html.Node, int, int) {
 	if parent == nil {
 		return nil, 0, 0
