@@ -6270,15 +6270,20 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 // setLayerColorOverride applies a ::selection color override to a segment
 // layer: TextColor always overrides to textColor; TextDecorationColor
 // overrides to decorationColor (falling back to textColor, i.e.
-// currentColor semantics, when decorationColor is nil); and any
-// AppliedTextDecorations entries without an explicit author color
-// (HasColor == false, meaning currentColor at the originating element)
-// are recolored too — otherwise an underline/line-through inherited from
-// an ancestor would keep painting in the ORIGINATING currentColor even
-// across the selected segment, contradicting
-// selection-originating-decoration-color.html /
-// selection-originating-underline-order.html's explicit assertion that
-// only the selected portion's decoration recolors.
+// currentColor semantics, when decorationColor is nil); and EVERY
+// AppliedTextDecorations entry is recolored to that resolved decoration
+// color — not just entries with HasColor == false (currentColor at the
+// originating element). Per CSS Pseudo-4 §highlight-painting: "The
+// element's own text decorations... are thus drawn in the pseudo-element's
+// own color when that is not currentColor, regardless of their ORIGINAL
+// COLOR OR FILL SPECIFICATIONS" (selection-originating-decoration-color.html
+// quotes this verbatim — its <main> has an EXPLICIT
+// `text-decoration: 0.125em black solid line-through` (HasColor == true,
+// not currentColor), and the test still asserts the selected portion's
+// strikethrough recolors to ::selection's green). decorationColor here is
+// always a concrete resolved RGB by the time this function runs (never
+// literally "currentColor"), so the spec's "when that is not currentColor"
+// carve-out is already satisfied — always recoloring is correct.
 func (r *Renderer) setLayerColorOverride(layer *PaintLayer, textColor css.Color, decorationColor *css.Color) {
 	layer.TextColor = textColor
 	if decorationColor != nil {
@@ -6290,10 +6295,8 @@ func (r *Renderer) setLayerColorOverride(layer *PaintLayer, textColor css.Color,
 		decorations := make([]css.AppliedTextDecoration, len(layer.AppliedTextDecorations))
 		copy(decorations, layer.AppliedTextDecorations)
 		for i := range decorations {
-			if !decorations[i].HasColor {
-				decorations[i].Color = layer.TextDecorationColor
-				decorations[i].HasColor = true
-			}
+			decorations[i].Color = layer.TextDecorationColor
+			decorations[i].HasColor = true
 		}
 		layer.AppliedTextDecorations = decorations
 	}

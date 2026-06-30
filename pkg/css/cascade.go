@@ -1856,17 +1856,18 @@ func selectionAllowedProperty(name string) bool {
 		"text-decoration-skip-ink", "text-decoration-skip-spaces",
 		"text-decoration-style", "text-decoration-thickness",
 		"text-underline-offset", "text-shadow", "text-emphasis-color",
-		// "text-decoration" is the shorthand for text-decoration-line/
-		// -color/-style/-thickness — all individually allowed above. The
-		// cascade applies shorthand EXPANSION inside
-		// applyDeclarationWithVisitedFilter, which runs AFTER this
-		// allowed-property filter (the filter checks the declaration's
-		// own property name before expansion), so the shorthand name
-		// itself must be allowed too or a `::selection { text-decoration:
-		// underline }` declaration (active-selection-014.html) is
+		// "text-decoration" / "background" are shorthands whose longhands
+		// are all individually allowed above (text-decoration-line/-color/
+		// -style/-thickness; background-color). The cascade applies
+		// shorthand EXPANSION inside applyDeclarationWithVisitedFilter,
+		// which runs AFTER this allowed-property filter (the filter checks
+		// the declaration's own property name before expansion), so each
+		// shorthand name itself must be allowed too or the declaration is
 		// dropped outright despite every longhand it expands to being
-		// individually valid_for_highlight in Blink.
-		"text-decoration":
+		// individually valid_for_highlight in Blink — active-selection-
+		// 014.html's `text-decoration: underline` and selection-
+		// originating-decoration-color.html's `background: transparent`.
+		"text-decoration", "background":
 		return true
 	}
 	return false
