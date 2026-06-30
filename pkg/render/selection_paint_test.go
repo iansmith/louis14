@@ -98,3 +98,33 @@ func TestSelectionOverlapForTextNode_NilRange(t *testing.T) {
 		t.Error("expected no overlap for a nil range")
 	}
 }
+
+// TestSelectionOverlapForTextNode_NestedAncestorContainer mirrors
+// active-selection-018.html: selectNodeContents(div#parent) where
+// div#parent contains "Selected Text " (a direct text-node child) followed
+// by <span>FAIL</span> (a TWO-levels-deep text node — div > span > #text).
+// The selection boundary container is the GRANDPARENT of the span's text
+// node, not its direct parent — nodeLocalBoundary must walk up the
+// ancestor chain to find that the <span> subtree itself is included.
+func TestSelectionOverlapForTextNode_NestedAncestorContainer(t *testing.T) {
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	leadingText := textNode("Selected Text ")
+	leadingText.Parent = div
+	span := &html.Node{Type: html.ElementNode, TagName: "span"}
+	span.Parent = div
+	spanText := textNode("FAIL")
+	spanText.Parent = span
+	span.Children = []*html.Node{spanText}
+	div.Children = []*html.Node{leadingText, span}
+
+	// selectNodeContents(div): start=(div,0), end=(div,2) (2 children).
+	rng := &html.Range{StartContainer: div, StartOffset: 0, EndContainer: div, EndOffset: 2}
+
+	start, end, ok := selectionOverlapForTextNode(rng, spanText, 0, len(spanText.Text))
+	if !ok {
+		t.Fatal("expected the nested span's text node to be included in selectNodeContents(div#parent)")
+	}
+	if start != 0 || end != len(spanText.Text) {
+		t.Errorf("got [%d,%d), want [0,%d) (span text fully selected)", start, end, len(spanText.Text))
+	}
+}

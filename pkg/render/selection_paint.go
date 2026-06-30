@@ -98,15 +98,15 @@ func selectionOverlapForTextNode(rng *html.Range, node *html.Node, fragStart, fr
 // container is an unrelated subtree).
 //
 // isStart selects which extreme to assume when container is an ancestor
-// ELEMENT of node rather than node itself: per DOM Range semantics, a
-// child-index offset into an element container selects whole child
-// subtrees [offset_start, offset_end) — since this engine doesn't track
-// each text node's sibling index against the container relationship in
-// general, the supported case is the common one every LOU-344 test uses:
-// container IS node itself (a setStart/setEnd(textNode, charOffset) call),
-// OR container is node's direct parent (selectNodeContents semantics,
-// where node is treated as fully selected — isStart picks offset 0 / the
-// full length appropriately).
+// ELEMENT of node (at any depth, not just the direct parent — e.g.
+// selectNodeContents(div) where node is several levels deep inside a
+// nested <span>, active-selection-018.html) rather than node itself: per
+// DOM Range semantics, a child-index offset into an element container
+// selects whole child subtrees [offset_start, offset_end). Walks UP from
+// node to find the ancestor-or-self whose direct parent is container, then
+// applies the same child-index containment check against THAT ancestor's
+// position among container's children — node is included (fully, from 0 /
+// to its full length) exactly when that ancestor subtree is.
 func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStart bool) (int, bool) {
 	if container == nil {
 		return 0, false
@@ -114,32 +114,36 @@ func nodeLocalBoundary(container *html.Node, offset int, node *html.Node, isStar
 	if container == node {
 		return offset, true
 	}
-	if container == node.Parent {
-		// Element-container boundary (selectNodeContents / setStart(div,0)
-		// style). Determine node's index among its parent's children to
-		// decide whether the boundary's child-index offset includes node.
-		idx := -1
-		for i, c := range container.Children {
-			if c == node {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return 0, false
-		}
-		if isStart {
-			if offset <= idx {
-				return 0, true // node starts at-or-after the start boundary: fully included from 0
-			}
-			return 0, false // start boundary is past this node: node not included
-		}
-		if offset > idx {
-			return len(node.Text), true // node ends at-or-before the end boundary: fully included to the end
-		}
-		return 0, false // end boundary is at-or-before this node: not included
+	// Walk up from node looking for the ancestor-or-self whose parent is
+	// container — that ancestor is the whole subtree the child-index
+	// offset selects or excludes.
+	ancestor := node
+	for ancestor != nil && ancestor.Parent != container {
+		ancestor = ancestor.Parent
 	}
-	return 0, false
+	if ancestor == nil {
+		return 0, false // container is not an ancestor of node at all
+	}
+	idx := -1
+	for i, c := range container.Children {
+		if c == ancestor {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, false
+	}
+	if isStart {
+		if offset <= idx {
+			return 0, true // node's containing subtree starts at-or-after the start boundary: fully included from 0
+		}
+		return 0, false // start boundary is past this subtree: node not included
+	}
+	if offset > idx {
+		return len(node.Text), true // node's containing subtree ends at-or-before the end boundary: fully included to the end
+	}
+	return 0, false // end boundary is at-or-before this subtree: not included
 }
 
 // resolveSelectionPseudoStyle returns the computed ::selection style for
