@@ -8083,7 +8083,16 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// and the spec (CSS Text Decor 4 §line-offset-zero). The pre-port
 		// descent*0.25 term here was a stale relic; it leaked the underline below
 		// the glyph and broke text-underline-offset-zero-position.html (LOU-333).
-		centerY = box.Y + ascent + layer.TextUnderlineOffset
+		//
+		// Rounded to the integer pixel grid like drawOneAppliedTextDecoration's
+		// lineY (its "aligns with the rounded baseline" comment): an
+		// unrounded fractional ascent (e.g. font-size: 300%) lands the
+		// 1px-thick rect straddling a pixel boundary, which the
+		// antialiased rasterizer spreads across two rows instead of one —
+		// a 1px-too-tall underline vs. the WPT reference
+		// (active-selection-014.html, LOU-344: ::selection's own
+		// text-decoration takes this legacy path).
+		centerY = math.Round(box.Y + ascent + layer.TextUnderlineOffset)
 		rectTop = centerY // already Blink's paint_underline_offset (rect TOP)
 	case css.TextDecorationOverline:
 		if onlyLineThrough {
