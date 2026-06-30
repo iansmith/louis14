@@ -6115,10 +6115,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		return
 	}
 
+	fontID := r.fontIDForLayer(layer)
 	for _, seg := range segs {
 		segBox := *box
 		segBox.Text = box.Text[seg.start:seg.end]
-		segBox.X = box.X + r.measureTextStr(box.Text[:seg.start], r.fontIDForLayer(layer), layer.FontFeatures)
+		segBox.X = box.X + r.measureSegmentAdvance(box.Text[:seg.start], fontID, layer)
 
 		segLayer := *layer
 		segLayer.Box = &segBox
@@ -6130,7 +6131,17 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			// PhaseBackground, text in PhaseForeground).
 			if seg.backgroundColor != nil && seg.backgroundColor.A > 0 {
 				r.setColor(*seg.backgroundColor)
-				segWidth := r.measureTextStr(segBox.Text, r.fontIDForLayer(layer), layer.FontFeatures)
+				// measureSegmentAdvance (not the plain measureTextStr)
+				// mirrors drawTextSegment's own per-character advance
+				// loop under letter-spacing/word-spacing — plain string
+				// measurement ignores the extra per-character gap
+				// drawTextSegment's letter-spacing path inserts, which
+				// under-measured the highlight rect down to isolated
+				// per-glyph boxes instead of one continuous band spanning
+				// the intercharacter spacing too (selection-intercharacter-
+				// 011/-012's whole point: the spacing itself must be
+				// highlighted, per CSS Pseudo-4 §highlight-bounds).
+				segWidth := r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
 				// Pixel-snap exactly like drawBackground's element-background
 				// rect (pixelSnap, used throughout render.go for backgrounds/
 				// borders) so the selection highlight rect lands on the same
@@ -6175,6 +6186,85 @@ func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
 		layer.FontMono, layer.FontAhem,
 		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
 	return r.openFont(fontPath, layer.FontSize)
+}
+
+// measureSegmentAdvance measures the inline-axis advance of text exactly
+// as drawTextSegment's own letter-spacing/word-spacing branch (further
+// below in this file) would draw it — i.e. INCLUDING the per-character
+// layer.LetterSpacing gap after every character (and layer.WordSpacing
+// after every space). Plain measureTextStr only measures glyph advances,
+// which under letter-spacing under-counts the true on-screen width drawn
+// by the character-by-character loop; drawText's segment-splitting (used
+// to position later segments and to size the ::selection background rect)
+// needs the same total advance the draw loop actually produces, or the
+// background rect and the next segment's X both land short — see
+// selection-intercharacter-011/-012's comment at this function's call
+// site. Falls back to plain measureTextStr when letter-spacing and
+// word-spacing are both zero (the overwhelmingly common case), since the
+// per-character loop and the whole-string measurement agree exactly there
+// — using the cheaper path keeps every non-letter-spacing target test's
+// hot path unaffected by this addition.
+func (r *Renderer) measureSegmentAdvance(text string, fontID int32, layer *PaintLayer) float64 {
+	return r.measureSegmentAdvanceTrailing(text, fontID, layer, true)
+}
+
+// measureSegmentVisualWidth is measureSegmentAdvance without the FINAL
+// character's trailing letter-spacing/word-spacing gap — the highlight
+// rect for a selected segment must not bleed into the gap between it and
+// the next (unselected) character, even though that same gap WOULD be
+// included when this segment is merely a prefix used to position a LATER
+// segment's X (see measureSegmentAdvance's doc comment). Confirmed against
+// selection-intercharacter-011's WPT reference: the yellow ::selection
+// background ends exactly at the last selected glyph's trailing edge, not
+// one letter-spacing gap past it.
+func (r *Renderer) measureSegmentVisualWidth(text string, fontID int32, layer *PaintLayer) float64 {
+	return r.measureSegmentAdvanceTrailing(text, fontID, layer, false)
+}
+
+// measureSegmentAdvanceTrailing is the shared implementation behind
+// measureSegmentAdvance (includeTrailing=true) and
+// measureSegmentVisualWidth (includeTrailing=false, drops the final
+// character's own trailing spacing contribution). Plain measureTextStr
+// only measures glyph advances, which under letter-spacing under-counts
+// the true on-screen width drawn by drawTextSegment's character-by-
+// character loop; falls back to it directly when letter-spacing and
+// word-spacing are both zero (the overwhelmingly common case, where the
+// per-character loop and the whole-string measurement agree exactly) to
+// keep every non-letter-spacing target test's hot path unaffected.
+func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, layer *PaintLayer, includeTrailing bool) float64 {
+	if text == "" {
+		return 0
+	}
+	if layer.LetterSpacing == 0 && layer.WordSpacing == 0 {
+		return r.measureTextStr(text, fontID, layer.FontFeatures)
+	}
+	if layer.LetterSpacing != 0 {
+		runes := []rune(text)
+		var total float64
+		for i, ch := range runes {
+			total += r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+			if includeTrailing || i < len(runes)-1 {
+				total += layer.LetterSpacing
+				if ch == ' ' {
+					total += layer.WordSpacing
+				}
+			}
+		}
+		return total
+	}
+	// Word-spacing only: mirrors the word-by-word branch.
+	words := strings.Split(text, " ")
+	spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
+	var total float64
+	for i, word := range words {
+		if word != "" {
+			total += r.measureTextStr(word, fontID, layer.FontFeatures)
+		}
+		if i < len(words)-1 {
+			total += spaceW + layer.WordSpacing
+		}
+	}
+	return total
 }
 
 // setLayerColorOverride applies a ::selection color override to a segment
