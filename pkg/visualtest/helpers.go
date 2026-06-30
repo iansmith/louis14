@@ -53,7 +53,13 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 			}
 			return string(data), nil
 		}
-		doc, err = html.ParseWithFetcher(htmlContent, cssFetcher)
+		// Scripts share the same basePath/wptRoot resolution rules as CSS
+		// (relative to the test's own dir, absolute relative to the WPT
+		// root), so reuse cssFetcher's closure for <script src="...">
+		// content rather than duplicating the same os.ReadFile/filepath.Join
+		// logic a third time (see createFileImageFetcher /
+		// createFileDocumentFetcher below for the other two).
+		doc, err = html.ParseWithScriptFetcher(htmlContent, cssFetcher, html.ScriptFetcher(cssFetcher))
 	} else {
 		doc, err = html.Parse(htmlContent)
 	}
