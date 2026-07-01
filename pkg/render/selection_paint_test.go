@@ -619,6 +619,57 @@ func TestHighlightLayerStackColors_MergesShadowsAcrossLayers(t *testing.T) {
 	}
 }
 
+// TestHighlightLayerStackColors_CustomHighlightBackgroundOnlyDefersForeground
+// covers a CodeRabbit finding on LOU-352's PR (#159): a chain-root
+// ::highlight() rule authoring ONLY background-color must leave the
+// highlight's foreground DEFERRED (hc.foreground == nil, drawText's "use
+// the fragment's own per-fragment TextColor" signal — see
+// highlightLayerStackColors' doc comment for why nil is load-bearing for
+// per-fragment color variation like ::first-letter). Before the fix, the
+// authored background set HasAuthorHighlightColors, which skipped the
+// custom-highlight non-author-color cleanup in computePseudoElementStyle,
+// so the originating element's copied `color` leaked onto the pseudo style
+// and hc.foreground came back as a concrete (flattened) color. Blink model:
+// an unauthored highlight `color` is currentColor (ColorIsCurrentColor
+// defaults true, computed_style_extra_fields.json5:912-918 @ 72259ecf) and
+// MaybeResolveColor then defers it to the previous overlay layer
+// (highlight_style_utils.cc:300-315) — deferral is per-property, NOT
+// disabled by an authored background-color.
+func TestHighlightLayerStackColors_CustomHighlightBackgroundOnlyDefersForeground(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		div { color: blue; }
+		div::highlight(foo) { background-color: yellow; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	tn := textNode("hello")
+	div.Children = []*html.Node{tn}
+	tn.Parent = div
+
+	divStyle := css.ComputeStyle(div, stylesheets, 800, 600, nil)
+	box := &layout.Box{Node: div, Style: divStyle}
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{div: box},
+	}
+
+	hc := r.highlightLayerStackColors(div, []highlightLayerName{{kind: "custom", name: "foo"}})
+	yellow := css.Color{R: 255, G: 255, B: 0, A: 1}
+	if hc.background == nil || *hc.background != yellow {
+		t.Fatalf("hc.background = %+v, want authored yellow", hc.background)
+	}
+	if hc.foreground != nil {
+		t.Errorf("hc.foreground = %+v, want nil (defer to the fragment's own color) — the originating element's non-author color must not leak onto a background-only ::highlight() style", *hc.foreground)
+	}
+}
+
 // TestComputeSelectionSegments_PartialNonCoextensiveOverlap closes LOU-353:
 // ::selection and ::target-text PARTIALLY overlapping on the same text node
 // (not the coextensive case LOU-349's target-text-004/-005.html exercise).

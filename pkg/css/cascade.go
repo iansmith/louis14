@@ -1814,7 +1814,20 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// resolveHighlightColors). Without this, LOU-352's chain cloning would
 	// propagate the chain ROOT's originating color to every descendant,
 	// visibly replacing per-element deferred colors.
-	if isCustomHighlight && !finalStyle.HasAuthorHighlightColors {
+	//
+	// Gated per-PROPERTY, not on HasAuthorHighlightColors (CodeRabbit,
+	// LOU-352 PR #159): a rule authoring ONLY background-color sets the
+	// flag, but its `color` is still non-author and must still be dropped —
+	// in Blink an unauthored highlight `color` is currentColor
+	// (ColorIsCurrentColor defaults true,
+	// computed_style_extra_fields.json5:912-918 @ 72259ecf) and
+	// MaybeResolveColor defers it to the previous overlay layer
+	// (highlight_style_utils.cc:300-315) regardless of an authored
+	// background. When inheritedAuthorColors is set, any `color` present
+	// came from the highlight-parent clone (a real chain value; a bg-only
+	// parent carries no color at all after its own compute ran this same
+	// cleanup) and is kept.
+	if isCustomHighlight && !inheritedAuthorColors && !highlightAuthorProps["color"] {
 		delete(finalStyle.Properties, "color")
 	}
 
