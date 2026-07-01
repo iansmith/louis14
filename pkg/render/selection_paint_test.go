@@ -455,6 +455,60 @@ func TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginat
 	}
 }
 
+// TestHighlightLayerStackColors_MergesShadowsAcrossLayers closes LOU-355:
+// when TWO layers in the stack each declare their OWN text-shadow (here, a
+// custom ::highlight(foo) below ::selection — mirrors highlight-painting-
+// shadows-horizontal.html's 3-way originating/target-text/selection
+// overlap, minus the originating shadow which render.go's drawText merges
+// in separately via its own append), highlightLayerStackColors must
+// COMPOSITE both layers' shadows, not let the topmost layer's own
+// text-shadow declaration silently replace the layer(s) below's already-
+// resolved shadows. Per CSS Text Decor 4's "first-specified shadow is on
+// top" rule (already applied by render.go's own originating-shadow merge),
+// the topmost active layer's shadow must end up FIRST (on top) in the
+// merged list, with the lower layer's shadow(s) following.
+func TestHighlightLayerStackColors_MergesShadowsAcrossLayers(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		div::highlight(foo) { text-shadow: 1px 1px blue; }
+		div::selection { text-shadow: 2px 2px green; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	tn := textNode("hello")
+	div.Children = []*html.Node{tn}
+	tn.Parent = div
+
+	divStyle := css.ComputeStyle(div, stylesheets, 800, 600, nil)
+	box := &layout.Box{Node: div, Style: divStyle}
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{div: box},
+	}
+
+	hc := r.highlightLayerStackColors(div, []highlightLayerName{
+		{kind: "custom", name: "foo"},
+		{kind: "selection"},
+	})
+	if !hc.hasOwnTextShadow || len(hc.textShadows) != 2 {
+		t.Fatalf("hc.textShadows = %+v, want exactly 2 shadows (both layers'), not the topmost layer overwriting the one below", hc.textShadows)
+	}
+	blue := css.Color{R: 0, G: 0, B: 255, A: 1}
+	green := css.Color{R: 0, G: 128, B: 0, A: 1}
+	if hc.textShadows[0].Color != green {
+		t.Errorf("hc.textShadows[0] (topmost, painted last/on top) = %+v, want selection's green", hc.textShadows[0])
+	}
+	if hc.textShadows[1].Color != blue {
+		t.Errorf("hc.textShadows[1] (layer below) = %+v, want ::highlight(foo)'s blue", hc.textShadows[1])
+	}
+}
+
 // TestComputeSelectionSegments_PartialNonCoextensiveOverlap closes LOU-353:
 // ::selection and ::target-text PARTIALLY overlapping on the same text node
 // (not the coextensive case LOU-349's target-text-004/-005.html exercise).
