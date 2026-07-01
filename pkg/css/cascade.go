@@ -1445,7 +1445,13 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			"text-shadow", "text-emphasis", "text-emphasis-style",
 			"text-emphasis-color", "text-emphasis-position",
 			// CSS UI 4 §7.1: accent-color is inherited.
-			"accent-color"}
+			"accent-color",
+			// CSS Color Adjustment 1 §2.1: color-scheme is inherited. A
+			// highlight pseudo-element's light-dark() resolution (see the
+			// resolveLightDarkValues call below) needs the originating
+			// element's own used color-scheme, not the UA initial
+			// "normal" — LOU-356.
+			"color-scheme"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -1832,6 +1838,20 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	if _, ok := finalStyle.Get("display"); !ok {
 		finalStyle.Set("display", "inline")
 	}
+
+	// CSS Color 5 §4.2: light-dark() resolves against the pseudo-element's
+	// own used color-scheme (now inherited above). ComputePseudoElementStyle
+	// doesn't go through applyStylesToNode, so resolveInheritValues's
+	// light-dark() pass never runs for pseudo-elements otherwise. The
+	// originating element's own already-computed style (parentStyles[0])
+	// stands in for the cross-node parent color (LOU-356:
+	// highlight-styling-004.html, `::selection { color: light-dark(green,
+	// blue) }`).
+	var parentColorStyle *Style
+	if len(parentStyles) > 0 {
+		parentColorStyle = parentStyles[0]
+	}
+	resolveLightDarkValues(finalStyle, parentColorStyle)
 
 	return finalStyle
 }
@@ -2238,6 +2258,40 @@ func formatColorAsRGBA(c Color) string {
 	return fmt.Sprintf("rgba(%d, %d, %d, %g)", c.R, c.G, c.B, c.A)
 }
 
+// resolveLightDarkValues resolves any light-dark() property values on style
+// against its own used color-scheme, mutating style in place. A currentColor
+// operand on the `color` property itself refers to the *inherited* color
+// (parentColorStyle's), since style.GetColor() would still return the
+// unresolved light-dark(...) string; on every other property it refers to
+// style's own now-computed color. parentColorStyle may be nil, in which case
+// a currentColor operand on `color` is left unresolved.
+//
+// Shared by resolveInheritValues (normal cascade, parent from the node tree)
+// and ComputePseudoElementStyle (highlight pseudo-elements, parent is the
+// originating element's own style).
+func resolveLightDarkValues(style *Style, parentColorStyle *Style) {
+	for property := range style.Properties {
+		value, ok := style.Get(property)
+		if !ok || !strings.Contains(strings.ToLower(value), "light-dark(") {
+			continue
+		}
+		operand, ok := resolveLightDark(value, style.UsedColorSchemeDark())
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
+			if property == "color" {
+				if parentColorStyle != nil {
+					operand = formatColorAsRGBA(parentColorStyle.GetColor())
+				}
+			} else if _, hasColor := style.Get("color"); hasColor {
+				operand = formatColorAsRGBA(style.GetColor())
+			}
+		}
+		style.Set(property, operand)
+	}
+}
+
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	// First pass: resolve the "color" property's inherit and currentColor keywords
@@ -2250,33 +2304,11 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 	// Second pass: resolve light-dark() in all properties using the element's own
 	// color-scheme. Light-dark values become concrete before inheritance, and
 	// currentColor operands resolve to the element's own (now-computed) color.
-	for property := range style.Properties {
-		if value, ok := style.Get(property); ok && strings.Contains(strings.ToLower(value), "light-dark(") {
-			if operand, ok := resolveLightDark(value, style.UsedColorSchemeDark()); ok {
-				// If the operand is "currentColor", resolve it to the appropriate color.
-				// For the "color" property itself, currentColor refers to the inherited
-				// (parent's) color — calling style.GetColor() would return the still-
-				// unresolved light-dark(...) string. For all other properties, currentColor
-				// refers to the element's own (now-computed) color.
-				if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
-					if property == "color" {
-						// color: light-dark(currentColor, ...) — resolve against parent's color.
-						if node.Parent != nil {
-							if parentStyle, ok := styles[node.Parent]; ok {
-								parentCC := parentStyle.GetColor()
-								operand = formatColorAsRGBA(parentCC)
-							}
-						}
-					} else if _, ok := style.Get("color"); ok {
-						// Other properties: currentColor refers to element's own color.
-						cc := style.GetColor()
-						operand = formatColorAsRGBA(cc)
-					}
-				}
-				style.Set(property, operand)
-			}
-		}
+	var parentColorStyle *Style
+	if node.Parent != nil {
+		parentColorStyle = styles[node.Parent]
 	}
+	resolveLightDarkValues(style, parentColorStyle)
 
 	// Third pass: resolve inherit keyword in all other properties.
 	for property := range style.Properties {

@@ -124,3 +124,40 @@ func TestSelectionPseudoStyle_DoesNotInheritOriginatingColor(t *testing.T) {
 		t.Errorf("::selection color = %q; should not inherit originating element's color, want a UA default", color)
 	}
 }
+
+// TestSelectionPseudoStyle_ResolvesLightDark closes LOU-356
+// (highlight-styling-004.html): `light-dark()` must be resolved for
+// highlight-pseudo properties using the ORIGINATING element's own used
+// color-scheme, mirroring the normal cascade's resolveInheritValues (which
+// ComputePseudoElementStyle does not go through — it has its own separate
+// inheritance pass). Before this fix, `color-scheme` was not in
+// ComputePseudoElementStyle's inheritable-properties list at all, so
+// UsedColorSchemeDark() always read false regardless of the originating
+// element's own color-scheme, and no code path called resolveLightDark for
+// pseudo-element styles — a `color: light-dark(a, b)` value stayed the
+// literal unresolved string.
+func TestSelectionPseudoStyle_ResolvesLightDark(t *testing.T) {
+	stylesheet, err := ParseStylesheet(`
+		p::selection { color: light-dark(green, blue); }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*Stylesheet{stylesheet}
+
+	lightNode := &html.Node{Type: html.ElementNode, TagName: "p"}
+	lightNode.Attributes = map[string]string{"style": "color-scheme: light"}
+	lightOriginating := ComputeStyle(lightNode, stylesheets, 800, 600, nil)
+	lightSel := ComputePseudoElementStyle(lightNode, "selection", stylesheets, 800, 600, lightOriginating)
+	if color, ok := lightSel.Get("color"); !ok || color != "green" {
+		t.Errorf("::selection color under color-scheme:light = %q, %v; want \"green\", true", color, ok)
+	}
+
+	darkNode := &html.Node{Type: html.ElementNode, TagName: "p"}
+	darkNode.Attributes = map[string]string{"style": "color-scheme: dark"}
+	darkOriginating := ComputeStyle(darkNode, stylesheets, 800, 600, nil)
+	darkSel := ComputePseudoElementStyle(darkNode, "selection", stylesheets, 800, 600, darkOriginating)
+	if color, ok := darkSel.Get("color"); !ok || color != "blue" {
+		t.Errorf("::selection color under color-scheme:dark = %q, %v; want \"blue\", true", color, ok)
+	}
+}
