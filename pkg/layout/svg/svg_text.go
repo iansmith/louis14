@@ -50,8 +50,29 @@ type SVGText struct {
 // resolving x/y against the supplied SVGLengthContext. Mirrors
 // SVGShape's NewSVGShape construction pattern: read geometry
 // attributes, resolve lengths, done — no painting here.
+//
+// Returns nil when elt has any SVG-element children (e.g. `<tspan>`)
+// — squarely the "no `<tspan>` support" scope cut this type's doc
+// comment describes. The caller (BuildSVGTree/buildSVGTreeWithResources)
+// falls back to the pre-existing SVGContainer path for a nil return,
+// exactly as it already does for any other unrecognized-shape tag.
+// Without this guard, a `<text>` with BOTH a `<tspan>` child AND its
+// own trailing direct text (e.g. `<text><tspan>A</tspan> B</text>`)
+// would silently drop the `<tspan>`'s content and render only " B" —
+// a worse, silently-wrong partial render, not merely an unsupported
+// no-op. Falling back to SVGContainer instead reproduces this ticket's
+// pre-existing (contentless, but at least not WRONG) behavior for
+// exactly the same "nothing renders" outcome text-decoration-
+// propagation-display-contents.html's reference already relies on
+// (both test and reference used to render blank there; a naive fix
+// made the test side render partial garbage instead, a regression
+// caught by this ticket's own no-regression sweep, not by a target
+// test).
 func NewSVGText(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGText {
 	if elt == nil {
+		return nil
+	}
+	if len(elt.SVGChildren()) > 0 {
 		return nil
 	}
 	return &SVGText{

@@ -279,11 +279,20 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		}
 		return shape
 	case "text":
-		svgText := NewSVGText(elt, lengthCtx)
-		if svgText != nil && styleResolver != nil {
-			svgText.Style = styleResolver(elt)
+		// NewSVGText returns nil for a <text> with SVG-element children
+		// (e.g. <tspan> — out of this ticket's scope); fall through to
+		// the generic SVGContainer path below instead of returning nil
+		// directly, so such a <text> keeps its pre-existing (contentless
+		// but not silently-partial) rendering. See NewSVGText's doc
+		// comment for why this matters.
+		if svgText := NewSVGText(elt, lengthCtx); svgText != nil {
+			if styleResolver != nil {
+				svgText.Style = styleResolver(elt)
+			}
+			if !svgTextHasUnsupportedFilter(svgText.Style) {
+				return svgText
+			}
 		}
-		return svgText
 	case "svg":
 		vc := NewSVGViewportContainer(elt, lengthCtx)
 		if vc == nil {
@@ -313,6 +322,32 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		}
 	}
 	return container
+}
+
+// svgTextHasUnsupportedFilter reports whether style carries a `filter`
+// property SVGText's painter (pkg/render/svg_text_painter.go) cannot
+// apply — this ticket's scope adds fill/stroke/text-shadow painting
+// for `<text>` only; SVG filter dispatch on text (the filter-effect
+// graph, offscreen rasterization, `<feFlood>` etc.) is not implemented
+// there. `<text>` falling back to the generic SVGContainer path
+// instead of becoming an SVGText preserves the pre-existing (and
+// still-correct) container-level filter dispatch
+// (trySVGContainerFilterDispatch in pkg/render/svg_container_painter.go),
+// which runs even for an empty/childless container — exactly what a
+// filtered `<text>` degrades to under SVGContainer, and exactly the
+// case svg-visibility-hidden-element-with-filter-003.html exercises
+// (a `<text visibility="hidden" filter="url(#floodFilter)">` whose
+// expected output is the filter's OWN flood color, regardless of the
+// text's own visibility or content).
+//
+// Reuses Style.GetFilter() (pkg/css/style.go) rather than re-parsing
+// the raw property string — GetFilter's parseFilterList already
+// handles both `url(#id)` single-references and CSS filter-function
+// chains (blur(), drop-shadow(), etc.), and already treats "none"/
+// unset as "no filter" (nil slice), the exact same semantics this
+// check needs.
+func svgTextHasUnsupportedFilter(style *css.Style) bool {
+	return style != nil && len(style.GetFilter()) > 0
 }
 
 // BuildSVGTree dispatches an ElementAdapter to the right SVGNode
@@ -349,12 +384,20 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 		// `<tspan>` support — see SVGText's doc comment), so it skips
 		// the recursive SVG-element child walk exactly like the shape
 		// tags above. Its own text-node content is read via
-		// ElementAdapter.TextContent(), not SVGChildren().
-		svgText := NewSVGText(elt, lengthCtx)
-		if svgText != nil && styleResolver != nil {
-			svgText.Style = styleResolver(elt)
+		// ElementAdapter.TextContent(), not SVGChildren(). NewSVGText
+		// returns nil when elt has SVG-element children (e.g. a real
+		// `<tspan>`); fall through to the generic SVGContainer path
+		// below instead of returning nil directly, so such a <text>
+		// keeps its pre-existing (contentless but not silently-partial)
+		// rendering — see NewSVGText's doc comment.
+		if svgText := NewSVGText(elt, lengthCtx); svgText != nil {
+			if styleResolver != nil {
+				svgText.Style = styleResolver(elt)
+			}
+			if !svgTextHasUnsupportedFilter(svgText.Style) {
+				return svgText
+			}
 		}
-		return svgText
 	case "svg":
 		// Nested <svg>: establishes a new viewport + viewBox + length
 		// context for its descendants. Mirrors Blink's

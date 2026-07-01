@@ -3,6 +3,7 @@ package svg
 import (
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 )
 
@@ -82,5 +83,67 @@ func TestBuildSVGRoot_Text_ViaResourceAwareDispatch(t *testing.T) {
 	if svgText.X != 20 || svgText.Y != 20 || svgText.Text != "Text to select" {
 		t.Errorf("got X=%v Y=%v Text=%q, want X=20 Y=20 Text=%q",
 			svgText.X, svgText.Y, svgText.Text, "Text to select")
+	}
+}
+
+// TestBuildSVGTree_TextWithTspanChild_FallsBackToContainer reproduces
+// the text-decoration-propagation-display-contents.html regression
+// found during this ticket's no-regression sweep: a `<text>` with a
+// real SVG-element child (e.g. `<tspan>`) must NOT become an SVGText —
+// SVGText.Text only sees direct text-node children (TextContent()'s
+// documented scope), so a `<text><tspan>A</tspan> B</text>` would
+// silently drop "A" and render only " B", a worse, silently-wrong
+// partial render than the pre-ticket behavior (nothing rendered at
+// all). Falling back to the generic SVGContainer path reproduces that
+// pre-ticket "nothing renders" outcome, which is what several existing
+// WPT references (that also use `<tspan>` and coincidentally render
+// nothing) depend on for a byte-identical comparison.
+func TestBuildSVGTree_TextWithTspanChild_FallsBackToContainer(t *testing.T) {
+	tspan := &fakeAdapter{tag: "tspan", text: "A"}
+	text := &fakeAdapter{tag: "text", children: []*fakeAdapter{tspan}, text: " B"}
+	lengthCtx := NewSVGLengthContext(geometry.SizeF{Width: 100, Height: 60})
+	node := BuildSVGTree(text, lengthCtx, nil)
+
+	if _, ok := node.(*SVGText); ok {
+		t.Fatalf("BuildSVGTree(<text><tspan>) type = *SVGText, want *SVGContainer (fallback)")
+	}
+	container, ok := node.(*SVGContainer)
+	if !ok {
+		t.Fatalf("BuildSVGTree(<text><tspan>) type = %T, want *SVGContainer", node)
+	}
+	if container.TagName != "text" {
+		t.Errorf("container.TagName = %q, want %q", container.TagName, "text")
+	}
+}
+
+// TestBuildSVGTree_TextWithFilter_FallsBackToContainer reproduces the
+// svg-visibility-hidden-element-with-filter-003.html regression: a
+// `<text filter="url(#id)">` must fall back to SVGContainer too,
+// because svgTextPainter (pkg/render/svg_text_painter.go) has no SVG
+// filter-graph dispatch — only SVGContainer's paint path
+// (trySVGContainerFilterDispatch) applies `<filter>` presentation
+// properties, and it does so even for a childless/empty container
+// (e.g. a `<feFlood>`-only filter that produces its own output
+// regardless of source content), which is exactly what this WPT test
+// exercises: a hidden `<text>` whose filter output must still render.
+func TestBuildSVGTree_TextWithFilter_FallsBackToContainer(t *testing.T) {
+	text := &fakeAdapter{
+		tag:   "text",
+		attrs: map[string]string{"filter": "url(#myfilter)"},
+		text:  "SVGText",
+	}
+	lengthCtx := NewSVGLengthContext(geometry.SizeF{Width: 100, Height: 60})
+	styleResolver := func(elt ElementAdapter) *css.Style {
+		s := css.NewStyle()
+		s.Set("filter", "url(#myfilter)")
+		return s
+	}
+	node := BuildSVGTree(text, lengthCtx, styleResolver)
+
+	if _, ok := node.(*SVGText); ok {
+		t.Fatalf("BuildSVGTree(<text filter=...>) type = *SVGText, want *SVGContainer (fallback)")
+	}
+	if _, ok := node.(*SVGContainer); !ok {
+		t.Fatalf("BuildSVGTree(<text filter=...>) type = %T, want *SVGContainer", node)
 	}
 }
