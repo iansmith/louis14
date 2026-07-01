@@ -162,26 +162,25 @@ func TestInlineLayout_UnspacedSpans_NormalWrap_Overflows(t *testing.T) {
 	}
 }
 
-// TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary is the
-// Checkpoint-3 breakTextAtCharacter check. Unlike breakTextAtWord,
-// word-break:break-all / overflow-wrap:anywhere makes EVERY character
-// position a valid break opportunity per CSS Text 3 §4.1 — including an
-// item/element boundary, since that's just another character position.
-// breakTextAtCharacter's existing per-item independence is therefore
-// correct here (no startsAfterBreakOpportunity gating needed): breaking at
-// <span>p</span>|<span>ppp</span> is legitimate under break-all, unlike
-// the plain-word case in breakTextAtWord. This test confirms the run still
-// glues into full, uninterrupted text across the fragmented line boxes
-// (no dropped/duplicated characters at the item boundary) rather than
-// asserting "must not break" — the correctness bar is different for this
-// mode.
-func TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary(t *testing.T) {
+// TestInlineLayout_UnspacedSpans_BreakAnywhere_Wraps: under
+// overflow-wrap:anywhere EVERY character position is a valid break
+// opportunity per CSS Text 3 §4.1 — including inside a word glued across
+// item boundaries — so the 400px run in a 300px container must wrap (the
+// continuation force-include must NOT apply; breakTextAtWord dispatches
+// glued anywhere/break-word overflow to breakTextAtCharacter, mirroring
+// Blink's kBreakCharacter break type on its one global iterator). Also
+// asserts no dropped/duplicated characters across the item-boundary
+// fragmentation. overflow-wrap is set on the spans directly: the makeStyle
+// harness builds standalone styles with no inheritance pass, and
+// handleText reads the property from the text item's own style.
+func TestInlineLayout_UnspacedSpans_BreakAnywhere_Wraps(t *testing.T) {
 	span1 := makeNode("span", makeTextNode("p"))
 	span2 := makeNode("span", makeTextNode("ppp"))
 	span3 := makeNode("span", makeTextNode("p"))
 	parent := makeNode("div", span1, span2, span3)
 
-	spanStyle := makeStyle("display", "inline", "font-family", "Ahem", "font-size", "80px")
+	spanStyle := makeStyle("display", "inline", "font-family", "Ahem", "font-size", "80px",
+		"overflow-wrap", "anywhere")
 	styles := map[*html.Node]*css.Style{
 		parent: makeStyle("display", "block", "font-family", "Ahem", "font-size", "80px",
 			"width", "300px", "overflow-wrap", "anywhere"),
@@ -192,8 +191,11 @@ func TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary(t *testin
 
 	lineBoxes, _ := inlineLayoutForTest(parent, styles, 300)
 
-	if len(lineBoxes) == 0 {
-		t.Fatal("expected at least 1 line")
+	// 400px of Ahem glyphs in a 300px container under break-anywhere must
+	// actually wrap — a single overflowing line would mean the anywhere
+	// break opportunities (including the item boundary) were not taken.
+	if len(lineBoxes) < 2 {
+		t.Fatalf("expected the 400px run to wrap under overflow-wrap:anywhere, got %d line(s)", len(lineBoxes))
 	}
 	for i, lb := range lineBoxes {
 		if lb.Size.WidthF64() > 300.0+0.01 {
@@ -211,5 +213,20 @@ func TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary(t *testin
 	}
 	if allText != "ppppp" {
 		t.Errorf("concatenated text across all lines: got %q, want %q (no dropped/duplicated characters at item boundaries)", allText, "ppppp")
+	}
+}
+
+// TestLineBreaker_StartsAfterBreakOpportunity_AtomicInline confirms text
+// following an atomic inline is NOT treated as a continuation: atomic
+// inlines contribute U+FFFC to TextContent, and UAX#14 gives replaced
+// content (class CB) break opportunities on both sides by default — so
+// only text-to-text adjacency glues.
+func TestLineBreaker_StartsAfterBreakOpportunity_AtomicInline(t *testing.T) {
+	itemsData := &InlineItemsData{TextContent: "\uFFFCppp"}
+	lb := &LineBreaker{itemsData: itemsData}
+
+	afterAtomic := len("\uFFFC")
+	if got := lb.startsAfterBreakOpportunity(afterAtomic); got != true {
+		t.Errorf("text after U+FFFC (atomic inline), offset=%d: got %v, want true (UAX#14 class CB allows a break after replaced content)", afterAtomic, got)
 	}
 }
