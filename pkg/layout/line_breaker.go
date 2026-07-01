@@ -259,11 +259,12 @@ func NewLineBreaker(
 	}
 }
 
-// startsAfterBreakOpportunity reports whether there is NO valid line-break
+// startsAfterBreakOpportunity reports whether there IS a valid line-break
 // opportunity immediately before the given byte offset into the shared
-// InlineItemsData.TextContent — i.e. the character at textStart-1 is
-// non-whitespace, so any InlineItem starting at textStart is a continuation
-// of a word begun by an earlier item, not a fresh word.
+// InlineItemsData.TextContent (or the offset is the start of the run) —
+// i.e. the character at textStart-1 is whitespace, so an InlineItem starting
+// at textStart begins a fresh word. The caller negates this to detect a
+// continuation: a word glued across an item boundary with no break between.
 //
 // This is the piece Blink gets "for free" from running one global
 // break_iterator_ over one global text_content_ (LineBreaker ctor,
