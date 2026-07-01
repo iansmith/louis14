@@ -2263,33 +2263,49 @@ func formatColorAsRGBA(c Color) string {
 // operand on the `color` property itself refers to the *inherited* color
 // (parentColorStyle's), since style.GetColor() would still return the
 // unresolved light-dark(...) string; on every other property it refers to
-// style's own now-computed color. parentColorStyle may be nil, in which case
-// a currentColor operand on `color` is left unresolved.
+// style's own now-computed color — which requires `color` to already be
+// concrete by the time any other property resolves its own currentColor
+// operand. `color` is therefore resolved in its own pass BEFORE the general
+// loop below, which otherwise iterates style.Properties (a Go map, undefined
+// order): without this, `background-color: light-dark(currentColor, white)`
+// could read `color`'s still-unresolved "light-dark(...)" string on a run
+// where map iteration happens to visit background-color first (CodeRabbit,
+// LOU-356 PR #153).
 //
 // Shared by resolveInheritValues (normal cascade, parent from the node tree)
 // and ComputePseudoElementStyle (highlight pseudo-elements, parent is the
 // originating element's own style).
 func resolveLightDarkValues(style *Style, parentColorStyle *Style) {
+	resolveLightDarkProperty(style, "color", parentColorStyle)
 	for property := range style.Properties {
-		value, ok := style.Get(property)
-		if !ok || !strings.Contains(strings.ToLower(value), "light-dark(") {
-			continue
+		if property != "color" {
+			resolveLightDarkProperty(style, property, parentColorStyle)
 		}
-		operand, ok := resolveLightDark(value, style.UsedColorSchemeDark())
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
-			if property == "color" {
-				if parentColorStyle != nil {
-					operand = formatColorAsRGBA(parentColorStyle.GetColor())
-				}
-			} else if _, hasColor := style.Get("color"); hasColor {
-				operand = formatColorAsRGBA(style.GetColor())
-			}
-		}
-		style.Set(property, operand)
 	}
+}
+
+// resolveLightDarkProperty resolves a single property's light-dark() value,
+// if present, per resolveLightDarkValues' doc comment. A no-op if property
+// is unset or its value isn't a light-dark() form.
+func resolveLightDarkProperty(style *Style, property string, parentColorStyle *Style) {
+	value, ok := style.Get(property)
+	if !ok || !strings.Contains(strings.ToLower(value), "light-dark(") {
+		return
+	}
+	operand, ok := resolveLightDark(value, style.UsedColorSchemeDark())
+	if !ok {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(operand), "currentcolor") {
+		if property == "color" {
+			if parentColorStyle != nil {
+				operand = formatColorAsRGBA(parentColorStyle.GetColor())
+			}
+		} else if _, hasColor := style.Get("color"); hasColor {
+			operand = formatColorAsRGBA(style.GetColor())
+		}
+	}
+	style.Set(property, operand)
 }
 
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
