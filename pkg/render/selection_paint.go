@@ -762,8 +762,28 @@ func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []hig
 				fg = resolved.foreground
 			}
 			if fg == nil {
-				black := css.Color{R: 0, G: 0, B: 0, A: 1.0}
-				fg = &black
+				// No layer in the stack (nor any layer below it) has a
+				// resolved foreground — unlike hc.foreground/resolved.foreground
+				// above (which stay nil on purpose to defer to the fragment's
+				// own per-fragment TextColor at paint time, see this
+				// function's doc comment), a text-shadow color is resolved
+				// and baked into hc.textShadows HERE, not deferred, so it
+				// cannot fall back to "nil = defer". Use the originating
+				// element's own resolved color instead: Blink's highlight-
+				// overlay-stack always has a concrete color at layer 0 (the
+				// originating element), so this is the correct fallback
+				// value, not an arbitrary black default (CodeRabbit,
+				// LOU-354 PR #150 — a bottom-most highlight layer with
+				// `text-shadow: currentColor` and no explicit `color`
+				// anywhere in the stack previously baked in synthetic
+				// black instead).
+				if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
+					c := box.Style.GetColor()
+					fg = &c
+				} else {
+					black := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+					fg = &black
+				}
 			}
 			hc.textShadows = style.GetTextShadowWithCurrentColor(*fg)
 		}

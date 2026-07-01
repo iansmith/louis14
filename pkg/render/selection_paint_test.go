@@ -398,3 +398,59 @@ func TestTargetTextOverlapsForTextNode_NoRanges(t *testing.T) {
 		t.Errorf("got %d spans for empty ranges, want 0", len(spans))
 	}
 }
+
+// TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginatingColor
+// covers a CodeRabbit-flagged gap (LOU-354 PR #150), reproducing
+// highlight-painting-currentcolor-004.html's exact ::selection rule
+// (`color: currentColor; text-shadow: 0 2em red, 0 4em currentColor`) but
+// applied to a segment with NO custom highlight below it (that test's
+// space character hits this same code path, but a space has no visible
+// glyph, so a wrong color there is invisible in pixels — see that test's
+// -004a sibling and this function's own doc comment for the "currentColor
+// falls through to the layer below" mechanism this exercises).
+//
+// `color: currentColor` is explicit author input here (authorSet["color"]
+// = true), so applyHighlightPairedColorCascade does NOT force the UA
+// default pair over it (see that function's doc comment) — the literal
+// "currentColor" string survives onto pseudoStyle, ParseColor can't parse
+// the keyword, and resolveHighlightColors' hc.foreground genuinely stays
+// nil. With nothing below ::selection in the stack (resolved.foreground
+// nil too, the zero-value base), highlightLayerStackColors' text-shadow
+// `fg == nil` fallback must NOT hardcode black — it must use the
+// originating element's own resolved color (Blink's layer 0 in the
+// highlight-overlay-stack always has a concrete color).
+func TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginatingColor(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		div { color: blue; }
+		div::selection { color: currentColor; text-shadow: 0 2em currentColor; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	tn := textNode("hello")
+	div.Children = []*html.Node{tn}
+	tn.Parent = div
+
+	divStyle := css.ComputeStyle(div, stylesheets, 800, 600, nil)
+	box := &layout.Box{Node: div, Style: divStyle}
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{div: box},
+	}
+
+	hc := r.highlightLayerStackColors(div, []highlightLayerName{{kind: "selection"}})
+	if !hc.hasOwnTextShadow || len(hc.textShadows) != 1 {
+		t.Fatalf("hc.textShadows = %+v, want exactly 1 shadow", hc.textShadows)
+	}
+	gotColor := hc.textShadows[0].Color
+	wantColor := divStyle.GetColor() // originating div's own resolved `color: blue`
+	if gotColor != wantColor {
+		t.Errorf("bottom-layer text-shadow currentColor resolved to %+v, want the originating element's own color %+v (not hardcoded black)", gotColor, wantColor)
+	}
+}

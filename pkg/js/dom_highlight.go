@@ -75,7 +75,10 @@ func registerHighlightAPI(ctx *domContext) {
 			panic(vm.NewTypeError("Failed to execute 'set' on 'HighlightRegistry': 2 arguments required"))
 		}
 		name := call.Arguments[0].String()
-		ranges := ctx.resolveHighlight(call.Arguments[1])
+		ranges, ok := ctx.resolveHighlight(call.Arguments[1])
+		if !ok {
+			panic(vm.NewTypeError("Failed to execute 'set' on 'HighlightRegistry': parameter 2 is not of type 'Highlight'"))
+		}
 
 		if ctx.doc.CustomHighlights == nil {
 			ctx.doc.CustomHighlights = make(map[string][]*html.Range)
@@ -94,15 +97,20 @@ func registerHighlightAPI(ctx *domContext) {
 
 // resolveHighlight looks up the []*html.Range backing a Highlight JS object,
 // the same SameAs-identity lookup resolveRange (dom_selection.go) uses for
-// Range proxies.
-func (ctx *domContext) resolveHighlight(val goja.Value) []*html.Range {
+// Range proxies. The second return distinguishes "val IS a real Highlight,
+// with zero ranges" (ok=true, nil slice) from "val is not a Highlight at
+// all" (ok=false) — CSS.highlights.set's caller must reject the latter
+// (WebIDL requires a TypeError for a non-Highlight second argument) rather
+// than silently registering an empty highlight, which a bare nil return
+// couldn't distinguish (CodeRabbit, LOU-354 PR #150).
+func (ctx *domContext) resolveHighlight(val goja.Value) (ranges []*html.Range, ok bool) {
 	if val == nil || goja.IsNull(val) || goja.IsUndefined(val) {
-		return nil
+		return nil, false
 	}
 	for _, entry := range ctx.highlights {
 		if entry.obj.SameAs(val) {
-			return entry.ranges
+			return entry.ranges, true
 		}
 	}
-	return nil
+	return nil, false
 }

@@ -128,6 +128,35 @@ func TestHighlightPriorityDefaultsToZero(t *testing.T) {
 	}
 }
 
+// TestCSSHighlightsSetRejectsNonHighlightValue mirrors a CodeRabbit finding
+// on LOU-354 PR #150: CSS.highlights.set("name", value) previously treated
+// "value is a real Highlight with zero ranges" and "value is not a
+// Highlight at all" identically (both fell through resolveHighlight's nil
+// return), silently registering an empty highlight for garbage input
+// instead of throwing — WebIDL requires a TypeError
+// (https://webidl.spec.whatwg.org/#es-interface, "Perform interface object
+// argument conversion") when a non-Highlight is passed where the spec's
+// `set(CSSOMString name, Highlight highlight)` expects a Highlight.
+func TestCSSHighlightsSetRejectsNonHighlightValue(t *testing.T) {
+	doc := parseHTML(t, `<div id="target">text</div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var threw = false;
+		try {
+			CSS.highlights.set("bogus", "not a highlight");
+		} catch (e) {
+			threw = true;
+		}
+		if (!threw) throw new Error("CSS.highlights.set with a non-Highlight value did not throw");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.CustomHighlights["bogus"]; ok {
+		t.Error(`doc.CustomHighlights["bogus"] was registered despite the invalid .set() call throwing`)
+	}
+}
+
 // TestExecCommandSelectAllSelectsWholeDocument covers
 // document.execCommand("selectAll") (selection-over-highlight-001.html and
 // highlight-painting-005-crash.html): must select all of the document
