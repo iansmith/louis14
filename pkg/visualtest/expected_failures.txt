@@ -71,3 +71,19 @@ css-flexbox/flex-container-max-content-001.html	Blink-faithful failure: idealize
 #     unless fill is literally currentcolor). Verified via wpt.fyi search API,
 #     2026-07-01. See LOU-345.
 css-pseudo/svg-text-selection-002.html	Blink-faithful failure: ::selection color doesn't override SVG text fill; Chrome 151.0.7922.4 and Edge 151.0.4119.1 both FAIL, only Firefox 154.0a1 passes @ wpt.fyi (LOU-345)
+
+# --- css-pseudo: tentative restricted-::marker tests removed from upstream WPT.
+#     marker-content-007/-009/-011.tentative encode Gecko's pref-gated
+#     "restricted ::marker content" model (layout.css.marker.restricted).
+#     Chrome FAILED all three on the last wpt.fyi master runs that carried
+#     them (Chrome 148.0.7741.0, run 5113433111658496, 2026-03-19); Firefox's
+#     default config failed them too — the behavior only existed behind the
+#     Gecko pref, and upstream DELETED the tests together with their -ref.html
+#     files when the pref was removed (wpt commit a4be91f2f7, 2026-03-26,
+#     "Remove layout.css.marker.restricted pref"). Matching Blink means
+#     failing them; they no longer exist upstream to ever pass. Candidates for
+#     corpus deletion on the next WPT sync. See LOU-358 (triage table in the
+#     ticket's final report).
+css-pseudo/marker-content-007.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
+css-pseudo/marker-content-009.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
+css-pseudo/marker-content-011.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
