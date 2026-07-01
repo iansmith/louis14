@@ -288,3 +288,25 @@ func TestFirstLetterSplitPreservedTextSlicesRawText(t *testing.T) {
 		t.Errorf("rest RawText = %q; want %q", got, "ello\nWorld")
 	}
 }
+
+// TestQuotesForDefaultBasicPair: when `quotes` is unset, the default quote
+// pair is Blink's BasicQuotesData — curly quotes U+201C/U+201D/U+2018/U+2019
+// (core/layout/layout_quote.cc:89-93, resolution order custom → locale →
+// basic at :143-155, @ Chromium 906a32d8634edf17db094507908f439bd9b52de5) —
+// not ASCII straight quotes. WPT: first-letter-with-quote.html expects the
+// generated open quote to be U+201C.
+//
+// RED before fix: quotesFor falls back to `" " ' '`.
+func TestQuotesForDefaultBasicPair(t *testing.T) {
+	b := &LayoutTreeBuilder{}
+	want := []string{"“", "”", "‘", "’"}
+	got := b.quotesFor(nil)
+	if len(got) != len(want) {
+		t.Fatalf("quotesFor(nil) = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("quotesFor(nil)[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

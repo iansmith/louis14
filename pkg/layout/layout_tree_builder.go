@@ -1135,14 +1135,18 @@ func quoteSourceStyle(own, fallback *css.Style) *css.Style {
 }
 
 // quotesFor returns the quote-pair strings governing open-quote/close-quote
-// for the given style (UA defaults when nil or unset).
+// for the given style. When `quotes` is unset the default is Blink's
+// BasicQuotesData — curly U+201C/U+201D/U+2018/U+2019 (layout_quote.cc:89-93
+// @ Chromium 906a32d8634edf17db094507908f439bd9b52de5; the resolution order
+// there is author `quotes` → locale table → basic pair, and louis14 models
+// the locale step as the basic pair, which is exact for English).
 func (b *LayoutTreeBuilder) quotesFor(style *css.Style) []string {
 	if style != nil {
 		if q, ok := style.Get("quotes"); ok {
 			return b.parseQuotes(q)
 		}
 	}
-	return []string{"\"", "\"", "'", "'"}
+	return []string{"\u201C", "\u201D", "\u2018", "\u2019"}
 }
 
 // emitOpenQuote / emitCloseQuote step the builder's shared quote-nesting

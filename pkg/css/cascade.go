@@ -1492,6 +1492,21 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 	}
 
+	// HTML UA stylesheet pseudo-element defaults: <q> generates its
+	// quotation marks as ::before/::after open-quote/close-quote content
+	// (Blink core/html/resources/html.css:115-121 @ Chromium
+	// 906a32d8634edf17db094507908f439bd9b52de5). Set at UA-origin position —
+	// before author rules are applied — so any author `content` declaration
+	// on q::before/q::after overrides it in normal cascade order.
+	if node.TagName == "q" {
+		switch pseudoElement {
+		case "before":
+			finalStyle.Set("content", "open-quote")
+		case "after":
+			finalStyle.Set("content", "close-quote")
+		}
+	}
+
 	// Collect all matching rules for this pseudo-element
 	allRules := make([]Rule, 0)
 
