@@ -212,6 +212,66 @@ func TestMarkerWhiteSpaceByPosition(t *testing.T) {
 	}
 }
 
+// TestFloatedListItemPseudoKeepsMarker is the red test for LOU-358 category B.
+// A ::before/::after pseudo with `display: list-item; float: left` must KEEP
+// its list-item display when the float blockifies it: Blink blockifies floats
+// through EquivalentBlockDisplay (style_adjuster.cc:1172-1178 @
+// 43cee02dc59fdad798675a735737510ecf0c9064), and EquivalentBlockDisplay
+// returns kListItem unchanged (:258-262 @ 43cee02d). The pseudo therefore
+// still generates its own ::marker and takes the implicit list-item counter
+// increment (WPT css-pseudo/marker-font-variant-numeric-default/-normal, the
+// .before/.after columns).
+func TestFloatedListItemPseudoKeepsMarker(t *testing.T) {
+	sheet, err := css.ParseStylesheet(`li::before { content: "\200B"; display: list-item; float: left; }`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+
+	ol := &html.Node{Type: html.ElementNode, TagName: "ol"}
+	li1 := &html.Node{Type: html.ElementNode, TagName: "li", Parent: ol}
+	li2 := &html.Node{Type: html.ElementNode, TagName: "li", Parent: ol}
+	ol.Children = []*html.Node{li1, li2}
+
+	// Mirrors the WPT tests: the li itself is display:block (so it does NOT
+	// increment list-item); only its floated ::before does.
+	liStyle := func() *css.Style {
+		return makeStyle("display", "block", "list-style-type", "decimal", "list-style-position", "inside")
+	}
+	styles := map[*html.Node]*css.Style{
+		ol:  makeStyle("display", "block", "counter-reset", "list-item 0"),
+		li1: liStyle(),
+		li2: liStyle(),
+	}
+
+	builder := &LayoutTreeBuilder{styles: styles, stylesheets: []*css.Stylesheet{sheet}}
+	root := builder.BuildLayoutTree(ol)
+	if root == nil || len(root.Children()) != 2 {
+		t.Fatalf("layout tree does not have the two list items")
+	}
+
+	wantOrdinal := []string{"1", "2"}
+	for i, li := range root.Children() {
+		kids := li.Children()
+		if len(kids) == 0 {
+			t.Fatalf("li%d has no children (no ::before generated)", i+1)
+		}
+		pseudo := kids[0]
+		if pseudo.DOMNode == nil || pseudo.DOMNode.TagName != "::before" {
+			t.Fatalf("li%d first child is %q, want the ::before pseudo", i+1, pseudo.DOMNode.TagName)
+		}
+		if !pseudo.Style().IsListItemDisplay() {
+			t.Errorf("li%d ::before display = %q; float blockification must preserve list-item", i+1, pseudo.Style().GetDisplay())
+		}
+		pk := pseudo.Children()
+		if len(pk) == 0 || !pk[0].IsMarkerNode() {
+			t.Fatalf("li%d ::before has no inside ::marker as its first child", i+1)
+		}
+		if got := markerText(pk[0]); !strings.HasPrefix(got, wantOrdinal[i]) {
+			t.Errorf("li%d ::before marker text = %q, want ordinal starting with %q", i+1, got, wantOrdinal[i])
+		}
+	}
+}
+
 // markerText returns the concatenated text content of a marker node's
 // children.
 func markerText(marker *LayoutInputNode) string {

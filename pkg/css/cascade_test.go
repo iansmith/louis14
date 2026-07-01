@@ -610,6 +610,40 @@ func TestEquivalentInlineDisplay(t *testing.T) {
 	}
 }
 
+// TestEquivalentBlockDisplay covers the blockification mapping. Mirrors Blink
+// `core/css/resolver/style_adjuster.cc:248-301` `EquivalentBlockDisplay`
+// @ 43cee02dc59fdad798675a735737510ecf0c9064: block-level displays (including
+// kListItem, :258-262) are returned unchanged, and kInlineListItem maps to
+// kListItem (:277-278) — list-item-ness survives blockification, so a floated
+// `display: list-item` pseudo keeps generating its ::marker (LOU-358).
+func TestEquivalentBlockDisplay(t *testing.T) {
+	cases := []struct {
+		in, want DisplayType
+	}{
+		{DisplayInline, DisplayBlock},
+		{DisplayInlineBlock, DisplayBlock},
+		{DisplayFlowRoot, DisplayBlock},
+		{DisplayInlineFlex, DisplayFlex},
+		{DisplayInlineGrid, DisplayGrid},
+		{DisplayInlineTable, DisplayTable},
+		{DisplayRuby, DisplayBlockRuby},
+		{DisplayRubyText, DisplayBlock},
+		{DisplayInlineListItem, DisplayListItem},
+		// Already block-level — identity.
+		{DisplayBlock, DisplayBlock},
+		{DisplayTable, DisplayTable},
+		{DisplayFlex, DisplayFlex},
+		{DisplayGrid, DisplayGrid},
+		{DisplayListItem, DisplayListItem},
+		{DisplayBlockRuby, DisplayBlockRuby},
+	}
+	for _, c := range cases {
+		if got := EquivalentBlockDisplay(c.in); got != c.want {
+			t.Errorf("EquivalentBlockDisplay(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // CSS Cascade 5 §6.2 + §6.1.3: each anonymous @layer block is its own
 // distinct layer, and revert-layer rolls back to the value the property
 // held at the start of the current layer.

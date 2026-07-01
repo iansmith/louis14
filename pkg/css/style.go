@@ -7608,10 +7608,11 @@ func EquivalentInlineDisplay(d DisplayType) DisplayType {
 // EquivalentBlockDisplay returns the block-level display value that an
 // inline-level display maps to when its formatting context demands a
 // block child. Mirrors Blink's
-// `core/css/resolver/style_adjuster.cc:247-301` `EquivalentBlockDisplay`.
-//
-// Currently only the ruby cases are used by louis14 Phase 1: `kRuby`
-// becomes `kBlockRuby`, `kRubyText` becomes `kBlock`.
+// `core/css/resolver/style_adjuster.cc:248-301` `EquivalentBlockDisplay`
+// @ 43cee02dc59fdad798675a735737510ecf0c9064. Block-level displays —
+// including kListItem (:258-262) — are returned unchanged, so
+// list-item-ness survives blockification (a floated `display: list-item`
+// pseudo still generates its ::marker, LOU-358).
 func EquivalentBlockDisplay(d DisplayType) DisplayType {
 	switch d {
 	case DisplayInlineBlock, DisplayInline, DisplayFlowRoot:
@@ -7626,6 +7627,9 @@ func EquivalentBlockDisplay(d DisplayType) DisplayType {
 		return DisplayBlockRuby
 	case DisplayRubyText:
 		return DisplayBlock
+	case DisplayInlineListItem:
+		// style_adjuster.cc:277-278 @ 43cee02d: kInlineListItem → kListItem.
+		return DisplayListItem
 	}
 	return d
 }

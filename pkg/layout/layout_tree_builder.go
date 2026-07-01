@@ -965,13 +965,18 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// can compare ancestry correctly via Parent links). The pseudoNode
 	// is allocated below — defer the call until after pseudoNode exists.
 
-	// CSS 2.1 §9.7: Blockify floated pseudo-elements.
-	// When float is set, display is forced to block.
+	// CSS 2.1 §9.7 / CSS Display 3 §2.7: blockify floated pseudo-elements.
+	// Blink: "floating elements need block-like outside display" →
+	// EquivalentBlockDisplay (style_adjuster.cc:1172-1178 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064), which preserves
+	// list-item-ness — a floated `display: list-item` ::before/::after still
+	// generates its own ::marker below (WPT css-pseudo/
+	// marker-font-variant-numeric-default/-normal).
 	display := pseudoStyle.GetDisplay()
 	if pseudoStyle.GetFloat() != css.FloatNone {
-		if display != css.DisplayBlock && display != css.DisplayTable {
-			pseudoStyle.Set("display", "block")
-			display = css.DisplayBlock
+		if bd := css.EquivalentBlockDisplay(display); bd != display {
+			pseudoStyle.Set("display", string(bd))
+			display = bd
 		}
 	}
 
