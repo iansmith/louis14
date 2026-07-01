@@ -33,46 +33,68 @@ import (
 )
 
 // selectionBackgroundRectY returns the (Y, Height) the ::selection
-// background rect should use for a text fragment box: the originating
-// element's own inline background-fragment box when one exists as a
-// sibling of textBox, falling back to textBox's own (Y, Height)
-// otherwise.
+// background rect should use for a text fragment box under a HORIZONTAL
+// writing mode. Thin wrapper over selectionBackgroundRectCrossAxis (see
+// that function's doc comment for the shared fallback logic and rationale)
+// — kept as its own entry point since it predates LOU-347's vertical-mode
+// generalization and is covered by its own direct tests.
+func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
+	return selectionBackgroundRectCrossAxis(textBox, false)
+}
+
+// selectionBackgroundRectCrossAxis returns the (origin, extent) the
+// ::selection background rect should use along the CROSS axis: the axis a
+// highlighted segment's rect does NOT grow along as more characters are
+// selected — physical Y/Height for horizontal text, physical X/Width for
+// vertical text (pkg/layout/writing_mode_converter.go's ToPhysicalSize
+// swaps logical inline-size into physical Height for every vertical writing
+// mode, so the cross axis swaps to X/Width there — see drawText's LOU-347
+// vertical dispatch). vertical selects which physical axis pair to read;
+// selectionBackgroundRectY (the original LOU-344 shape) is the
+// vertical=false case.
+//
+// The origin/extent selection logic (prefer the originating element's own
+// inline background-fragment sibling; else a line-height:normal block
+// ancestor; else textBox's own box) is IDENTICAL between the two axes —
+// only which struct fields are read differs:
 //
 // pkg/layout/inline_layout.go emits an inline element's own background as
 // a SEPARATE sibling PhysicalFragment from its text fragments (see that
 // file's "An inline background covers at least the font's em box... and
 // grows to the line box when line-height exceeds it — max(em box, line
 // box)" comment), sharing textBox.Parent but carrying no .Text. A text
-// fragment's own box.Height is ALWAYS just the font's em box (fontSize,
-// per emitTextFragment), never the line box — so when line-height >
-// font-size (line-height: normal's 1.2x default, the common case), the
-// background fragment is taller than the text fragment and anchored
-// higher (line-box top vs. the text's baseline-anchored em box). Using
-// the text fragment's own (Y, Height) for the selection rect then leaves
-// a gap at the top where the originating element's own background
-// (e.g. `background-color: red`) shows through above the selection
-// highlight (selection-contenteditable-011.html's ~3px red sliver,
-// LOU-344). Reusing the SAME background-fragment box the originating
-// element's own background already painted with (rather than
-// re-deriving the max(em box, line box) sizing independently at paint
-// time, which would duplicate pkg/layout's logic and risk drifting out
-// of sync with it) keeps the two rects pixel-identical by construction.
+// fragment's own cross-axis extent is ALWAYS just the font's em box
+// (fontSize, per emitTextFragment), never the line box — so when
+// line-height > font-size (line-height: normal's 1.2x default, the common
+// case), the background fragment is larger than the text fragment and
+// anchored earlier (line-box start vs. the text's baseline-anchored em
+// box). Using the text fragment's own cross-axis origin/extent for the
+// selection rect then leaves a gap at the line-box start where the
+// originating element's own background (e.g. `background-color: red`)
+// shows through above the selection highlight
+// (selection-contenteditable-011.html's ~3px red sliver, LOU-344). Reusing
+// the SAME background-fragment box the originating element's own
+// background already painted with (rather than re-deriving the max(em box,
+// line box) sizing independently at paint time, which would duplicate
+// pkg/layout's logic and risk drifting out of sync with it) keeps the two
+// rects pixel-identical by construction.
 //
 // Falling back further to a BLOCK-level ancestor box sharing textBox.Node
 // (rather than textBox's own em-box) fixes selection-over-highlight-001
 // .html's 1px top sliver (a plain block <div>, `line-height: normal`, no
 // own background-color — the highlight background is the ONLY thing
-// painted for that Y range, so it must cover the full UA-computed line-box
-// leading, not just the em-box). But applying it UNCONDITIONALLY
-// over-extends the highlighted background 2-3px above the text when the
-// author sets an EXPLICIT numeric line-height (e.g. `line-height: 1` via
-// support/highlights.css's .highlight_reftest, used by
-// active-selection-014/025/027.html): geometry dump confirmed pkg/layout's
-// block box is taller than its own text's em-box even under `line-height:
-// 1` (active-selection-014.html's 300%-sized div: block box H=50.83 vs
-// text em-box H=48) — a pre-existing pkg/layout line-height/block-height
-// computation gap, unrelated to highlight painting, that the block-ancestor
-// fallback would otherwise propagate into the highlight rect.
+// painted for that cross-axis range, so it must cover the full
+// UA-computed line-box leading, not just the em-box). But applying it
+// UNCONDITIONALLY over-extends the highlighted background 2-3px past the
+// text when the author sets an EXPLICIT numeric line-height (e.g.
+// `line-height: 1` via support/highlights.css's .highlight_reftest, used
+// by active-selection-014/025/027.html): geometry dump confirmed
+// pkg/layout's block box is larger than its own text's em-box even under
+// `line-height: 1` (active-selection-014.html's 300%-sized div: block box
+// H=50.83 vs text em-box H=48) — a pre-existing pkg/layout
+// line-height/block-height computation gap, unrelated to highlight
+// painting, that the block-ancestor fallback would otherwise propagate
+// into the highlight rect.
 //
 // KNOWN LIMITATION, not a permanent design: gating on IsLineHeightNormal()
 // (only extend to the block ancestor when line-height is the UA default,
@@ -84,22 +106,34 @@ import (
 // with its own text's em-box + leading. When that pkg/layout fix lands,
 // this gate should be removed and the block-ancestor fallback applied
 // unconditionally, same as the sibling-background-fragment case above it.
-func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
+func selectionBackgroundRectCrossAxis(textBox *layout.Box, vertical bool) (origin, extent float64) {
 	if textBox == nil {
 		return 0, 0
 	}
 	if textBox.Parent != nil && textBox.Node != nil {
 		for _, sibling := range textBox.Parent.Children {
 			if sibling != textBox && sibling.Node == textBox.Node && sibling.Text == "" {
-				return sibling.Y, sibling.Height
+				return crossAxisOriginExtent(sibling, vertical)
 			}
 		}
 		if ancestor := textBox.Parent.Parent; ancestor != nil && ancestor.Node == textBox.Node && ancestor.Text == "" &&
 			textBox.Style != nil && textBox.Style.IsLineHeightNormal() {
-			return ancestor.Y, ancestor.Height
+			return crossAxisOriginExtent(ancestor, vertical)
 		}
 	}
-	return textBox.Y, textBox.Height
+	return crossAxisOriginExtent(textBox, vertical)
+}
+
+// crossAxisOriginExtent reads a box's cross-axis (origin, extent) pair:
+// (X, Width) under a vertical writing mode, (Y, Height) otherwise. A plain
+// top-level function rather than a closure over `vertical` so
+// selectionBackgroundRectCrossAxis's 3 call sites don't allocate a closure
+// per invocation in this per-highlighted-segment paint-time path.
+func crossAxisOriginExtent(b *layout.Box, vertical bool) (float64, float64) {
+	if vertical {
+		return b.X, b.Width
+	}
+	return b.Y, b.Height
 }
 
 // selectionOverlapForTextNode returns the [start,end) sub-range of a text

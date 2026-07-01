@@ -6216,7 +6216,21 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		} else {
 			prefixAdvance = r.measureSegmentAdvance(prefix, fontID, layer)
 		}
-		segBox.X = box.X + prefixAdvance
+		// The prefix advance offsets this segment along the ADVANCE axis:
+		// physical X for horizontal text, physical Y for vertical text
+		// (drawTextSegment's own IsVerticalText branch advances box.Y by
+		// layer.FontSize per character, render.go:6918-6932; its sideways
+		// branches likewise treat box.Y as the advance origin — see
+		// CHECKPOINT_STATUS.md/LOU-347's Blink-divergence note for why
+		// drawTextSegment, not Blink's HighlightPainter, is this fix's
+		// reference pattern). box.Height (not box.Width) carries the
+		// advance-axis extent under any vertical writing mode, per
+		// pkg/layout/writing_mode_converter.go's ToPhysicalSize.
+		if layer.IsVerticalText {
+			segBox.Y = box.Y + prefixAdvance
+		} else {
+			segBox.X = box.X + prefixAdvance
+		}
 
 		segLayer := *layer
 		segLayer.Box = &segBox
@@ -6248,12 +6262,17 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				} else {
 					segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
 				}
-				// selectionBackgroundRectY: use the originating element's own
-				// inline background-fragment box (Y, Height) when one exists,
-				// not box's own (always em-box-sized) Y/Height — see that
+				// selectionBackgroundRectCrossAxis: use the originating
+				// element's own inline background-fragment box's CROSS-axis
+				// origin/extent when one exists, not box's own (always
+				// em-box-sized) cross-axis origin/extent — see that
 				// function's doc comment for why these can differ
 				// (selection-contenteditable-011.html's red sliver, LOU-344).
-				rectY, rectHeight := selectionBackgroundRectY(box)
+				// Cross axis = Y/Height for horizontal text, X/Width for
+				// vertical text (box.Width, not box.Height, carries the
+				// cross/block-progression extent under any vertical writing
+				// mode — see this loop's segBox.Y/segBox.X dispatch above).
+				crossOrigin, crossExtent := selectionBackgroundRectCrossAxis(box, layer.IsVerticalText)
 				// Pixel-snap exactly like drawBackground's element-background
 				// rect (pixelSnap, used throughout render.go for backgrounds/
 				// borders) so the selection highlight rect lands on the same
@@ -6262,7 +6281,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// rect and the WPT reference's actual `background-color`
 				// <div> box left a 1px red fringe on two edges
 				// (active-selection-012).
-				sx, sy, sw, sh := pixelSnap(segBox.X, rectY, segWidth, rectHeight)
+				//
+				// Under a vertical writing mode the segment's measured
+				// advance-axis extent (segWidth, despite the horizontal-
+				// sounding name — it's the selected span's length along
+				// whichever axis is "inline" here) becomes the rect's
+				// HEIGHT, and the cross-axis extent becomes its WIDTH,
+				// mirroring drawTextSegment's own physical-axis swap for
+				// vertical text (box.Width=lineHeight/cross,
+				// box.Height=textAdvance/inline — see the sideways branch's
+				// "physical box already has Width=lineHeight,
+				// Height=textAdvance" comment a few hundred lines below).
+				var sx, sy, sw, sh float64
+				if layer.IsVerticalText {
+					sx, sy, sw, sh = pixelSnap(crossOrigin, segBox.Y, crossExtent, segWidth)
+				} else {
+					sx, sy, sw, sh = pixelSnap(segBox.X, crossOrigin, segWidth, crossExtent)
+				}
 				r.dc.DrawRectangle(sx, sy, sw, sh)
 				r.dc.Fill()
 			}
@@ -6394,6 +6429,22 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 	if text == "" {
 		return 0
 	}
+	// Upright vertical text (IsVerticalText, NOT the sideways-collapsed
+	// case — see drawTextSegment's IsVerticalText branch, render.go:
+	// ~6953-6967) advances each character by layer.FontSize along the
+	// advance axis, NOT by its horizontal glyph width — the per-character
+	// draw loop only uses measureTextStr(charStr) to CENTER the glyph
+	// within the cross-axis box.Width, never as an advance. WordSpacing has
+	// no effect in that loop (no space-character special case), matching
+	// the dispatch below. Sideways text (IsSidewaysRL/IsSidewaysLR, which
+	// also sets IsVerticalText per engine.go:373-391) is excluded: it
+	// renders the run as ordinary horizontal glyphs into an off-screen
+	// buffer before rotating the whole buffer, so measureTextStr's glyph
+	// width IS the correct per-character advance there, same as horizontal
+	// text.
+	if layer.IsVerticalText && !layer.IsSidewaysRL && !layer.IsSidewaysLR {
+		return r.measureUprightVerticalSegmentAdvance(text, layer, includeTrailing)
+	}
 	if layer.LetterSpacing == 0 && layer.WordSpacing == 0 {
 		return r.measureTextStr(text, fontID, layer.FontFeatures)
 	}
@@ -6424,6 +6475,44 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 		}
 	}
 	return total
+}
+
+// measureUprightVerticalSegmentAdvance measures the advance-axis extent of
+// text exactly as drawTextSegment's upright-vertical per-character loop
+// (render.go's IsVerticalText branch) advances y: layer.FontSize per rune,
+// plus layer.LetterSpacing per rune when set (that loop has no
+// WordSpacing effect at all — see measureSegmentAdvanceTrailing's dispatch
+// comment for why sideways text does not take this path). includeTrailing
+// mirrors measureSegmentAdvance vs. measureSegmentVisualWidth's existing
+// contract: true keeps the final rune's own trailing LetterSpacing gap
+// (positioning a LATER segment), false drops it (sizing the highlighted
+// rect itself, which must not bleed into the gap before the next,
+// unselected rune).
+func (r *Renderer) measureUprightVerticalSegmentAdvance(text string, layer *PaintLayer, includeTrailing bool) float64 {
+	n := utf8.RuneCountInString(text)
+	if n == 0 {
+		return 0
+	}
+	total := float64(n) * uprightVerticalRuneAdvance(layer)
+	if !includeTrailing {
+		total -= uprightVerticalRuneAdvance(layer) - layer.FontSize
+	}
+	return total
+}
+
+// uprightVerticalRuneAdvance is the physical Y distance drawTextSegment's
+// own IsVerticalText per-character paint loop (render.go, a few hundred
+// lines below) advances for each rune: layer.FontSize, plus
+// layer.LetterSpacing when set (that loop has no WordSpacing effect at
+// all). Shared by the paint loop and measureUprightVerticalSegmentAdvance
+// so the highlight rect's measured extent can never drift from what the
+// glyphs actually draw at — the exact failure mode LOU-347 exists to fix,
+// now guarded against for the vertical-advance formula itself.
+func uprightVerticalRuneAdvance(layer *PaintLayer) float64 {
+	if layer.LetterSpacing != 0 {
+		return layer.FontSize + layer.LetterSpacing
+	}
+	return layer.FontSize
 }
 
 // setLayerColorOverride applies a ::selection color override to a segment
@@ -6925,10 +7014,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 				xOffset = 0
 			}
 			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.FontFeatures)
-			y += layer.FontSize
-			if layer.LetterSpacing != 0 {
-				y += layer.LetterSpacing
-			}
+			y += uprightVerticalRuneAdvance(layer)
 		}
 		// Paint text decorations for upright vertical text (Strategy B).
 		// Mirrors Blink's writing-mode dispatch at
