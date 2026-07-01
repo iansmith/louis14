@@ -199,9 +199,6 @@ func findCaseInsensitive(corpus string, fromByte int, substr string) int {
 	lowerCorpus := strings.ToLower(corpus)
 	lowerSubstr := strings.ToLower(substr)
 	for searchFrom := fromByte; searchFrom <= len(lowerCorpus); {
-		if searchFrom < 0 || searchFrom > len(lowerCorpus) {
-			return -1
-		}
 		idx := strings.Index(lowerCorpus[searchFrom:], lowerSubstr)
 		if idx < 0 {
 			return -1
