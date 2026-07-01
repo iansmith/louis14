@@ -1892,6 +1892,25 @@ func markerAllowedProperty(name string) bool {
 	return false
 }
 
+// ApplyMarkerAnimatedStyle applies property values sampled from a Web
+// Animation targeting a ::marker pseudo-element (Element.animate with
+// {pseudoElement: '::marker'}, stored on html.Node.MarkerAnimatedStyle) onto
+// the marker's computed style, rejecting properties that are not valid on
+// ::marker. This is the louis14 analog of Blink adding
+// CSSProperty::kValidForMarker to the cascade filter when applying animation
+// interpolations to a kPseudoIdMarker style (StyleResolver::ApplyAnimatedStyle,
+// style_resolver.cc:2626-2636 @ 43cee02dc59fdad798675a735737510ecf0c9064):
+// animations sit above author-normal declarations in the cascade, so the
+// values are stamped over whatever the UA/author marker cascade produced.
+// WPT css-pseudo/marker-animate-002.html (color applies, opacity must not).
+func ApplyMarkerAnimatedStyle(markerStyle *Style, decls map[string]string) {
+	for prop, v := range decls {
+		if markerAllowedProperty(prop) {
+			markerStyle.Set(prop, v)
+		}
+	}
+}
+
 // markerUADefaults lists the UA-stylesheet ::marker property defaults.
 // Mirrors Blink's core/css/marker.css rule verified at SHA
 // 43cee02dc59fdad798675a735737510ecf0c9064. marker.css does NOT set

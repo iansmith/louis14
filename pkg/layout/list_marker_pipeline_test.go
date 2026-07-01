@@ -272,6 +272,43 @@ func TestFloatedListItemPseudoKeepsMarker(t *testing.T) {
 	}
 }
 
+// TestMarkerAnimatedStyleFiltered is the red test for LOU-358 category C's
+// style-resolution half: values sampled from a Web Animation targeting
+// ::marker (node.MarkerAnimatedStyle) must be applied to the marker style
+// through the ::marker allowed-property filter — color applies, opacity is
+// rejected. Mirrors Blink StyleResolver::ApplyAnimatedStyle adding
+// CSSProperty::kValidForMarker to the cascade filter for kPseudoIdMarker
+// styles (style_resolver.cc:2626-2636 @ 43cee02dc59fdad798675a735737510ecf0c9064;
+// opacity is not valid_for_marker in css_properties.json5, color is).
+// WPT css-pseudo/marker-animate-002.html.
+func TestMarkerAnimatedStyleFiltered(t *testing.T) {
+	ol := &html.Node{Type: html.ElementNode, TagName: "ul"}
+	li := &html.Node{Type: html.ElementNode, TagName: "li", Parent: ol}
+	text := &html.Node{Type: html.TextNode, Text: "Item", Parent: li}
+	li.Children = []*html.Node{text}
+	ol.Children = []*html.Node{li}
+	li.MarkerAnimatedStyle = map[string]string{"color": "green", "opacity": "0.1"}
+
+	styles := map[*html.Node]*css.Style{
+		ol: makeStyle("display", "block", "counter-reset", "list-item 0"),
+		li: makeStyle("display", "list-item", "list-style-type", "disc"),
+	}
+	root := buildTestTree(ol, styles)
+	if root == nil || len(root.Children()) == 0 {
+		t.Fatalf("no layout tree built")
+	}
+	marker := root.Children()[0].MarkerNode()
+	if marker == nil {
+		t.Fatalf("list item has no markerNode")
+	}
+	if v, _ := marker.Style().Get("color"); v != "green" {
+		t.Errorf("marker color = %q, want %q (marker-valid animated property must apply)", v, "green")
+	}
+	if v, ok := marker.Style().Get("opacity"); ok && v == "0.1" {
+		t.Errorf("marker opacity = %q; opacity is not ::marker-valid and must be rejected", v)
+	}
+}
+
 // markerText returns the concatenated text content of a marker node's
 // children.
 func markerText(marker *LayoutInputNode) string {

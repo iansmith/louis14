@@ -33,6 +33,20 @@ type Node struct {
 	// the new focused element and walking up from the old one to clear. Lets
 	// :focus-within evaluate O(1) during selector matching.
 	HasFocusWithin bool
+
+	// MarkerAnimatedStyle holds property values a Web Animation targeting
+	// this element's ::marker pseudo-element (Element.animate with
+	// {pseudoElement: '::marker'}) has sampled at the current time. Written
+	// by the JS animate() binding in pkg/js/dom.go; consumed by the layout
+	// tree builder's marker style resolution, which applies the values
+	// through the ::marker allowed-property filter — the louis14 analog of
+	// Blink adding CSSProperty::kValidForMarker to the cascade filter when
+	// applying animation interpolations to a kPseudoIdMarker style
+	// (StyleResolver::ApplyAnimatedStyle, style_resolver.cc:2626-2636 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064). Values are stored
+	// UNFILTERED (Blink filters at style application, not at animation
+	// creation); nil when no marker animation is active.
+	MarkerAnimatedStyle map[string]string
 }
 
 type NodeType int

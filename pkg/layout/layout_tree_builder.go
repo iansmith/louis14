@@ -1820,6 +1820,17 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		css.ApplyMarkerUADefaults(markerStyle)
 	}
 
+	// Web Animations targeting the ::marker apply above the UA/author marker
+	// cascade, filtered to ::marker-valid properties — Blink adds
+	// CSSProperty::kValidForMarker to the cascade filter when applying
+	// interpolations to a kPseudoIdMarker style (StyleResolver::
+	// ApplyAnimatedStyle, style_resolver.cc:2626-2636 @ 43cee02d). The
+	// position-driven adjustments below still run after, matching Blink's
+	// resolver→StyleAdjuster order.
+	if len(node.MarkerAnimatedStyle) > 0 {
+		css.ApplyMarkerAnimatedStyle(markerStyle, node.MarkerAnimatedStyle)
+	}
+
 	if markerInside {
 		markerStyle.Set("display", "inline")
 		// CSS Text Decor 3 §2.1: an inside ::marker is a non-atomic inline that

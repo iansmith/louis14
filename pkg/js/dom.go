@@ -859,11 +859,15 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		// offset and write them directly into the element's inline style attribute,
 		// so the second layout pass in helpers.go picks up the mutation.
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			// Parse keyframes argument: an array of {property: value} objects.
-			// Each object maps CSS property names (camelCase or kebab-case) to
-			// the value at that keyframe. Offset may be omitted; when omitted,
-			// keyframes are distributed evenly across [0,1].
+			// Parse keyframes argument. Two forms per Web Animations §5.2
+			// (Blink EffectInput::ParseKeyframesArgument):
+			//   array form — [{property: value, ...}, ...], one object per
+			//   keyframe, offsets distributed evenly when omitted;
+			//   property-indexed form — {property: value-or-array, ...}, each
+			//   property carrying its own value list with per-property even
+			//   offset distribution.
 			var kfDecls []map[string]string
+			var propIndexed map[string][]string
 			if len(call.Arguments) > 0 {
 				arr := call.Arguments[0].ToObject(vm)
 				lenVal := arr.Get("length")
@@ -881,11 +885,40 @@ func (e *elementAccessor) Get(key string) goja.Value {
 						}
 						kfDecls = append(kfDecls, decl)
 					}
+				} else if arr != nil {
+					// Property-indexed keyframes: {opacity: [0.1, 0.9],
+					// color: 'green', ...}. Each member value is a single
+					// value or a list of values for that property.
+					propIndexed = make(map[string][]string)
+					for _, k := range arr.Keys() {
+						if k == "offset" || k == "easing" || k == "composite" {
+							continue
+						}
+						v := arr.Get(k)
+						if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+							continue
+						}
+						var vals []string
+						vObj := v.ToObject(vm)
+						if vLen := vObj.Get("length"); vLen != nil && !goja.IsUndefined(vLen) {
+							vn := int(vLen.ToInteger())
+							for i := 0; i < vn; i++ {
+								vals = append(vals, vObj.Get(strconv.Itoa(i)).String())
+							}
+						} else {
+							vals = []string{v.String()}
+						}
+						if len(vals) > 0 {
+							propIndexed[camelToKebab(k)] = vals
+						}
+					}
 				}
 			}
 
-			// Parse options: number → duration in ms; object → {duration}.
+			// Parse options: number → duration in ms; object → {duration,
+			// pseudoElement}.
 			var durationMs float64 = 0
+			pseudoElement := ""
 			if len(call.Arguments) > 1 {
 				opt := call.Arguments[1]
 				if opt.ExportType().Kind().String() == "float64" || !goja.IsUndefined(opt) {
@@ -894,6 +927,9 @@ func (e *elementAccessor) Get(key string) goja.Value {
 							durationMs = d.ToFloat()
 						} else {
 							durationMs = opt.ToFloat()
+						}
+						if p := obj.Get("pseudoElement"); p != nil && !goja.IsUndefined(p) && !goja.IsNull(p) {
+							pseudoElement = p.String()
 						}
 					}
 				}
@@ -936,15 +972,42 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			}
 
 			kfRules := makeRules(kfDecls)
+			// Property-indexed form: each property distributes its own value
+			// list evenly across [0,1]; a single value is a to-frame
+			// (offset 1, from synthesized by BuildKeyframeEffect).
+			for prop, vals := range propIndexed {
+				for i, v := range vals {
+					offset := 1.0
+					if len(vals) > 1 {
+						offset = float64(i) / float64(len(vals)-1)
+					}
+					pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
+					kfRules = append(kfRules, css.KeyframeRule{
+						Stop:         pct,
+						Declarations: map[string]string{prop: v},
+					})
+				}
+			}
 			effect := css.BuildKeyframeEffect(kfRules, nil)
 
 			// Return an Animation object backed by animationAccessor.
 			anim := &animationAccessor{
-				vm:          vm,
-				node:        node,
-				effect:      effect,
-				durationMs:  durationMs,
-				currentTime: -1, // not yet set
+				vm:            vm,
+				node:          node,
+				effect:        effect,
+				durationMs:    durationMs,
+				pseudoElement: pseudoElement,
+				currentTime:   -1, // not yet set
+			}
+			// A new animation starts playing immediately; the static harness
+			// renders at t≈0, so sample the effect there. Scoped to
+			// pseudo-element animations: they have no inline-style channel, so
+			// without this initial sample tests that never assign currentTime
+			// (e.g. css-pseudo/marker-animate-002.html, duration: Infinity)
+			// would see no effect at all. Element-level animations keep the
+			// existing contract (applied only on explicit currentTime writes).
+			if pseudoElement != "" {
+				anim.applyAtTime(0)
 			}
 			return vm.NewDynamicObject(anim)
 		})
@@ -1297,11 +1360,18 @@ func newElementArray(vm *goja.Runtime, nodes []*html.Node) goja.Value {
 // third_party/blink/renderer/core/animation/keyframe_effect.cc)
 // at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 type animationAccessor struct {
-	vm          *goja.Runtime
-	node        *html.Node
-	effect      *css.KeyframeEffect
-	durationMs  float64 // from the options argument to animate()
-	currentTime float64 // milliseconds; -1 = not yet set
+	vm         *goja.Runtime
+	node       *html.Node
+	effect     *css.KeyframeEffect
+	durationMs float64 // from the options argument to animate()
+	// pseudoElement is the options.pseudoElement target ("" = the element
+	// itself). "::marker" routes sampled values to node.MarkerAnimatedStyle,
+	// where the layout tree builder applies them through the ::marker
+	// validity filter (Blink StyleResolver::ApplyAnimatedStyle +
+	// kValidForMarker, style_resolver.cc:2626-2636 @ 43cee02d). Other pseudo
+	// targets are not yet supported and sample to nothing.
+	pseudoElement string
+	currentTime   float64 // milliseconds; -1 = not yet set
 }
 
 func (a *animationAccessor) Get(key string) goja.Value {
@@ -1383,13 +1453,30 @@ func (a *animationAccessor) applyAtTime(ms float64) {
 	if len(values) == 0 {
 		return
 	}
-	// Merge into the element's inline style.
-	if a.node.Attributes == nil {
-		a.node.Attributes = make(map[string]string)
+	switch a.pseudoElement {
+	case "":
+		// Merge into the element's inline style.
+		if a.node.Attributes == nil {
+			a.node.Attributes = make(map[string]string)
+		}
+		inline := parseInlineStyle(a.node.Attributes["style"])
+		for prop, v := range values {
+			inline[prop] = v
+		}
+		a.node.Attributes["style"] = serializeInlineStyle(inline)
+	case "::marker":
+		// Store UNFILTERED — Blink filters to marker-valid properties at
+		// style application, not at animation creation (see the
+		// animationAccessor doc comment). The layout tree builder applies
+		// these via css.ApplyMarkerAnimatedStyle on the next layout pass.
+		if a.node.MarkerAnimatedStyle == nil {
+			a.node.MarkerAnimatedStyle = make(map[string]string, len(values))
+		}
+		for prop, v := range values {
+			a.node.MarkerAnimatedStyle[prop] = v
+		}
+	default:
+		// Other pseudo-element targets (::before, ::after, highlight
+		// pseudos) are not yet plumbed into style resolution.
 	}
-	inline := parseInlineStyle(a.node.Attributes["style"])
-	for prop, v := range values {
-		inline[prop] = v
-	}
-	a.node.Attributes["style"] = serializeInlineStyle(inline)
 }
