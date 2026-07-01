@@ -86,3 +86,63 @@ func TestMergeFirstLineStyleExceptSkipsSpecified(t *testing.T) {
 		t.Fatalf("non-skipped color must take ::first-line red; got %q", got)
 	}
 }
+
+// TestApplyFirstLineStylesDeclaredValueEqualsInherited is the LOU-359 red
+// test for WPT first-line-change-inline-color.html: #block { color: green },
+// #block::first-line { color: blue }, and a span that DECLARES color: green.
+// The declared green is textually identical to the inherited green, so the
+// LOU-179 value-comparison heuristic classifies it as inherited and lets
+// ::first-line blue clobber it. With Style.CascadedProps the declaration is
+// visible and must win. Mirrors Blink LayoutObject::
+// FirstLineStyleWithoutFallback re-resolving the inline with
+// kPseudoIdFirstLineInherited (layout_object.cc:4386-4404 @ Chromium
+// 906a32d8634edf17db094507908f439bd9b52de5).
+func TestApplyFirstLineStylesDeclaredValueEqualsInherited(t *testing.T) {
+	container := styleWith(map[string]string{"color": "green"})
+	firstLine := styleWith(map[string]string{"color": "blue"})
+	spanStyle := styleWith(map[string]string{"color": "green"})
+	spanStyle.CascadedProps = map[string]bool{"color": true}
+
+	line := &LineInfo{Results: []InlineItemResult{
+		{Item: &InlineItem{Type: InlineItemText, Style: container}},
+		{Item: &InlineItem{Type: InlineItemOpenTag, Style: spanStyle}},
+		{Item: &InlineItem{Type: InlineItemText, Style: spanStyle}},
+		{Item: &InlineItem{Type: InlineItemCloseTag, Style: spanStyle}},
+	}}
+	applyFirstLineStyles(line, firstLine, container, nil, text.FontConfig{})
+
+	if got := line.Results[0].EffectiveStyle().Properties["color"]; got != "blue" {
+		t.Errorf("container-level text: color = %q, want blue (::first-line applies to inherited color)", got)
+	}
+	if got := line.Results[2].EffectiveStyle().Properties["color"]; got != "green" {
+		t.Errorf("span text: color = %q, want green (declared green must not be clobbered even though it equals the inherited value)", got)
+	}
+}
+
+// TestApplyFirstLineStylesNestedInlineInheritsBlockedValue is the LOU-359 red
+// test for WPT first-line-change-inline-color-nested.html: the declaring span
+// wraps ANOTHER span that declares nothing. The inner span must inherit the
+// outer span's green — the property is blocked for the whole nested subtree —
+// not take the ::first-line blue. Blink gets this by re-resolving each inline
+// against its PARENT's first-line style (layout_object.cc:4396-4404 @
+// 906a32d8: parent_first_line_style chains through the inline ancestors).
+func TestApplyFirstLineStylesNestedInlineInheritsBlockedValue(t *testing.T) {
+	container := styleWith(map[string]string{"color": "green"})
+	firstLine := styleWith(map[string]string{"color": "blue"})
+	outer := styleWith(map[string]string{"color": "green"})
+	outer.CascadedProps = map[string]bool{"color": true}
+	inner := styleWith(map[string]string{"color": "green"}) // inherited green, declares nothing
+
+	line := &LineInfo{Results: []InlineItemResult{
+		{Item: &InlineItem{Type: InlineItemOpenTag, Style: outer}},
+		{Item: &InlineItem{Type: InlineItemOpenTag, Style: inner}},
+		{Item: &InlineItem{Type: InlineItemText, Style: inner}},
+		{Item: &InlineItem{Type: InlineItemCloseTag, Style: inner}},
+		{Item: &InlineItem{Type: InlineItemCloseTag, Style: outer}},
+	}}
+	applyFirstLineStyles(line, firstLine, container, nil, text.FontConfig{})
+
+	if got := line.Results[2].EffectiveStyle().Properties["color"]; got != "green" {
+		t.Errorf("nested span text: color = %q, want green (blocked by the declaring ancestor inline)", got)
+	}
+}

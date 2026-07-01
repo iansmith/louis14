@@ -840,7 +840,29 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// at paint time. Shared by reference; never mutated post-cascade.
 	finalStyle.FontFeatureValues = collectFontFeatureValues(stylesheets)
 
+	// Snapshot the element's own cascaded longhands (Style.CascadedProps).
+	// At this point Properties holds ONLY values the element's own cascade
+	// set — inheritance runs later (resolveInheritValues /
+	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
+	// declared set. Literal `inherit` values re-inherit and are excluded.
+	recordCascadedProps(finalStyle)
+
 	return finalStyle
+}
+
+// recordCascadedProps snapshots the longhand names the element's own cascade
+// set into style.CascadedProps (see that field's doc comment for consumer
+// semantics and the Blink citation). Must run BEFORE parent values are copied
+// into Properties by inheritance.
+func recordCascadedProps(style *Style) {
+	props := make(map[string]bool, len(style.Properties))
+	for prop, val := range style.Properties {
+		if strings.TrimSpace(val) == "inherit" {
+			continue
+		}
+		props[prop] = true
+	}
+	style.CascadedProps = props
 }
 
 // collectFontFeatureValues flattens all @font-feature-values rules across
