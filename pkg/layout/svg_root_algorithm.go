@@ -183,3 +183,32 @@ func (a svgElementAdapter) TextContent() string {
 	}
 	return b.String()
 }
+
+// SVGElementDOMNode returns the *html.Node backing elt (the ELEMENT
+// node itself, e.g. the `<text>` element — not a text-node child) when
+// elt is the real DOM-backed svg.ElementAdapter (svgElementAdapter), or
+// nil for any other implementation (e.g. the external-SVG-document
+// adapter, or a test fake). Exported so pkg/render's SVG text painter
+// (LOU-345) can find an SVGText's originating element for ::selection
+// resolution (ComputePseudoElementStyle matches against the element,
+// same as drawText's box.Node).
+//
+// DELIBERATE TRADEOFF (flagged per this ticket's plan rather than
+// decided silently): this is a type-assertion against the unexported
+// svgElementAdapter, not a new svg.ElementAdapter interface method —
+// the ticket's pre-approval covers exactly ONE new interface method,
+// already spent on TextContent() (svg_root.go). A cleaner alternative
+// would add a second method (e.g. `DOMNode() *html.Node`, nil-returning
+// on externalSVGElement/test fakes) so a FUTURE third ElementAdapter
+// implementer fails to compile here instead of silently degrading to
+// nil — but that would be a second interface addition beyond what's
+// pre-approved. Revisit as a real interface method if a third
+// DOM-backed adapter is ever added (today only svgElementAdapter wraps
+// a real *html.Node; externalSVGElement's tree has no DOM node at all,
+// so its nil return is correct, not degraded, either way).
+func SVGElementDOMNode(elt svg.ElementAdapter) *html.Node {
+	if adapter, ok := elt.(svgElementAdapter); ok {
+		return adapter.node
+	}
+	return nil
+}
