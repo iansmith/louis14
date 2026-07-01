@@ -27,6 +27,18 @@ type Engine struct {
 	// running (e.g. from a test, without the caller needing to thread the
 	// *html.Document back through separately).
 	doc *html.Document
+
+	// OnFragmentDirective is invoked synchronously by window.location's
+	// hash/href setters (pkg/js/dom_location.go, LOU-349) whenever the
+	// newly-assigned fragment contains a `:~:` Text Fragment directive
+	// marker. The callback receives everything after the marker (e.g.
+	// "text=match%20me" for "#:~:text=match%20me"). nil (the zero value) is
+	// a valid "no listener configured" state — callers that don't need
+	// ::target-text matching (e.g. existing ::selection-only tests) simply
+	// never set this and the hash/href setters become plain field writes.
+	// Set directly by the caller before Execute, mirroring
+	// SetLayoutSnapshot's "configure before Execute" shape.
+	OnFragmentDirective func(directive string)
 }
 
 // New creates a new JS engine with a fresh goja runtime.

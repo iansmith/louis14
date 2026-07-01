@@ -271,3 +271,76 @@ func TestLineStartX_NoStyledAncestorFallsBackToOwnX(t *testing.T) {
 		t.Errorf("lineStartX = %v, want 42 (own X when no styled ancestor exists)", got)
 	}
 }
+
+// TestTargetTextOverlapsForTextNode_SingleRange mirrors
+// TestSelectionOverlapForTextNode_FullySelected's shape for the LOU-349
+// multi-range entry point: one Range, fully covering the fragment, should
+// produce exactly one [start,end) span.
+func TestTargetTextOverlapsForTextNode_SingleRange(t *testing.T) {
+	tn := textNode("match me")
+	ranges := []*html.Range{
+		{StartContainer: tn, StartOffset: 0, EndContainer: tn, EndOffset: len(tn.Text)},
+	}
+	spans := targetTextOverlapsForTextNode(ranges, tn, 0, len(tn.Text))
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1: %+v", len(spans), spans)
+	}
+	if spans[0].start != 0 || spans[0].end != len(tn.Text) {
+		t.Errorf("span = [%d,%d), want [0,%d)", spans[0].start, spans[0].end, len(tn.Text))
+	}
+}
+
+// TestTargetTextOverlapsForTextNode_NonOverlapping covers
+// target-text-003.html's shape: two independent directives matching
+// disjoint sub-ranges of the SAME text node must produce two separate,
+// non-contiguous spans (not merged into one).
+func TestTargetTextOverlapsForTextNode_NonOverlapping(t *testing.T) {
+	tn := textNode("match me and you") // len 16
+	ranges := []*html.Range{
+		{StartContainer: tn, StartOffset: 0, EndContainer: tn, EndOffset: 5},  // "match"
+		{StartContainer: tn, StartOffset: 9, EndContainer: tn, EndOffset: 16}, // "and you"
+	}
+	spans := targetTextOverlapsForTextNode(ranges, tn, 0, len(tn.Text))
+	if len(spans) != 2 {
+		t.Fatalf("got %d spans, want 2: %+v", len(spans), spans)
+	}
+	if spans[0].start != 0 || spans[0].end != 5 {
+		t.Errorf("span 0 = [%d,%d), want [0,5)", spans[0].start, spans[0].end)
+	}
+	if spans[1].start != 9 || spans[1].end != 16 {
+		t.Errorf("span 1 = [%d,%d), want [9,16)", spans[1].start, spans[1].end)
+	}
+}
+
+// TestTargetTextOverlapsForTextNode_OverlappingMerged mirrors
+// target-text-009.html's shape: "match me and me" with selectors "match me"
+// ([0,8)) and "me and me" ([6,16)) overlapping at [6,8) — must merge into
+// ONE continuous [0,16) span so the highlight paints as a single
+// uninterrupted band (the WPT reference renders the whole phrase as one
+// color block, not two abutting/overlapping rects).
+func TestTargetTextOverlapsForTextNode_OverlappingMerged(t *testing.T) {
+	tn := textNode("match me and me") // len 15
+	ranges := []*html.Range{
+		{StartContainer: tn, StartOffset: 0, EndContainer: tn, EndOffset: 8},  // "match me"
+		{StartContainer: tn, StartOffset: 6, EndContainer: tn, EndOffset: 15}, // "me and me"
+	}
+	spans := targetTextOverlapsForTextNode(ranges, tn, 0, len(tn.Text))
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (merged): %+v", len(spans), spans)
+	}
+	if spans[0].start != 0 || spans[0].end != 15 {
+		t.Errorf("merged span = [%d,%d), want [0,15)", spans[0].start, spans[0].end)
+	}
+}
+
+// TestTargetTextOverlapsForTextNode_NoRanges covers the "no target-text
+// context configured" fast path: nil/empty ranges slice yields no spans.
+func TestTargetTextOverlapsForTextNode_NoRanges(t *testing.T) {
+	tn := textNode("hello")
+	if spans := targetTextOverlapsForTextNode(nil, tn, 0, len(tn.Text)); len(spans) != 0 {
+		t.Errorf("got %d spans for nil ranges, want 0", len(spans))
+	}
+	if spans := targetTextOverlapsForTextNode([]*html.Range{}, tn, 0, len(tn.Text)); len(spans) != 0 {
+		t.Errorf("got %d spans for empty ranges, want 0", len(spans))
+	}
+}

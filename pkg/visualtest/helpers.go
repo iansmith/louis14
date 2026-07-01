@@ -132,6 +132,15 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// addRange); nil when the test's script never touched it, in which
 	// case drawText's selection check no-ops immediately.
 	renderer.SetSelectionContext(doc.Selection, parsedStylesheets, float64(width), float64(height))
+	// LOU-349: ::target-text highlight painting. doc.TargetTextRanges is
+	// populated by the JS execution above (window.location.hash/href
+	// assigning a `:~:text=` directive, see pkg/js/dom_location.go); nil
+	// when the test's script never touched it, in which case drawText's
+	// target-text check no-ops immediately (same fail-open shape as
+	// Selection above). Stylesheets/viewport are NOT passed again here —
+	// see SetTargetTextRanges's doc comment for why it reuses the triple
+	// SetSelectionContext just set.
+	renderer.SetTargetTextRanges(doc.TargetTextRanges)
 	renderer.Render(boxes)
 
 	// Ensure output directory exists

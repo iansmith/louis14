@@ -116,10 +116,12 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("_margin-block-end", "1em")
 	}
 
-	// Non-rendered elements should be hidden by default
-	// Author CSS can override this (e.g., Acid2 sets display:block on head)
-	switch node.TagName {
-	case "head", "style", "script", "meta", "title", "link", "base":
+	// Non-rendered elements should be hidden by default. Author CSS can
+	// override this (e.g., Acid2 sets display:block on head). Tag set is
+	// html.NonRenderedTextContainerTag's single source of truth (also used
+	// by pkg/html's :~:text= search-corpus exclusion) rather than a
+	// separate hard-coded switch here.
+	if html.NonRenderedTextContainerTag(node.TagName) {
 		style.Set("display", "none")
 	}
 
@@ -1528,11 +1530,19 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// selection_properties_test.go's file doc comment for the SHA).
 	isSelection := pseudoElement == "selection"
 
-	// For ::marker / ::selection: track which properties were explicitly set
-	// by author rules (as opposed to inherited from the originating
-	// element). This lets applyMarkerCascade / applySelectionCascade
-	// correctly defer only to author-set values — not to inherited values
-	// that happen to share the same property name.
+	// CSS Pseudo-4 §highlight-styling / LOU-349: ::target-text is a sibling
+	// highlight pseudo-element to ::selection, governed by the same
+	// valid_for_highlight property set (targetTextAllowedProperty —
+	// see target_text_properties_test.go's file doc comment for why this
+	// reuses selectionAllowedProperty rather than duplicating the list).
+	isTargetText := pseudoElement == "target-text"
+
+	// For ::marker / ::selection / ::target-text: track which properties
+	// were explicitly set by author rules (as opposed to inherited from the
+	// originating element). This lets applyMarkerCascade /
+	// applySelectionCascade / applyTargetTextCascade correctly defer only
+	// to author-set values — not to inherited values that happen to share
+	// the same property name.
 	var markerAuthorProps map[string]bool
 	if isMarker {
 		markerAuthorProps = make(map[string]bool)
@@ -1540,6 +1550,10 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	var selectionAuthorProps map[string]bool
 	if isSelection {
 		selectionAuthorProps = make(map[string]bool)
+	}
+	var targetTextAuthorProps map[string]bool
+	if isTargetText {
+		targetTextAuthorProps = make(map[string]bool)
 	}
 
 	// Capture the pre-author baseline for `revert` resolution (mirrors
@@ -1573,8 +1587,22 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) {
+			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
 				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+				// `all` resets EVERY property (including color/background-
+				// color) to its all-declared value, so it counts as
+				// authoring the highlight color pair too — otherwise
+				// applySelectionCascade/applyHighlightPairedColorCascade
+				// sees neither side as author-set and reapplies the UA
+				// pair default over whatever `all` just set.
+				if isSelection {
+					selectionAuthorProps["color"] = true
+					selectionAuthorProps["background-color"] = true
+				}
+				if isTargetText {
+					targetTextAuthorProps["color"] = true
+					targetTextAuthorProps["background-color"] = true
+				}
 			}
 		}
 		for property, value := range rule.Declarations {
@@ -1591,13 +1619,20 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if isSelection && !selectionAllowedProperty(property) {
 				continue
 			}
+			if isTargetText && !targetTextAllowedProperty(property) {
+				continue
+			}
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			if isMarker {
 				markerAuthorProps[property] = true
 			}
 			if isSelection {
 				selectionAuthorProps[property] = true
-				recordSelectionShorthandLonghands(selectionAuthorProps, property)
+				recordHighlightShorthandLonghands(selectionAuthorProps, property)
+			}
+			if isTargetText {
+				targetTextAuthorProps[property] = true
+				recordHighlightShorthandLonghands(targetTextAuthorProps, property)
 			}
 		}
 	}
@@ -1644,9 +1679,19 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if rule.Important["all"] {
 			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) {
+				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
 					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 					importantProps["all"] = true
+					// See the normal-priority `all` handling above for why
+					// this must also mark the highlight color pair authored.
+					if isSelection {
+						selectionAuthorProps["color"] = true
+						selectionAuthorProps["background-color"] = true
+					}
+					if isTargetText {
+						targetTextAuthorProps["color"] = true
+						targetTextAuthorProps["background-color"] = true
+					}
 				}
 			}
 		}
@@ -1661,6 +1706,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if isSelection && !selectionAllowedProperty(property) {
 					continue
 				}
+				if isTargetText && !targetTextAllowedProperty(property) {
+					continue
+				}
 				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
 				if isMarker {
@@ -1668,7 +1716,11 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 				if isSelection {
 					selectionAuthorProps[property] = true
-					recordSelectionShorthandLonghands(selectionAuthorProps, property)
+					recordHighlightShorthandLonghands(selectionAuthorProps, property)
+				}
+				if isTargetText {
+					targetTextAuthorProps[property] = true
+					recordHighlightShorthandLonghands(targetTextAuthorProps, property)
 				}
 			}
 		}
@@ -1693,6 +1745,16 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// DefaultForegroundColor / DefaultBackgroundColor).
 	if isSelection {
 		applySelectionCascade(finalStyle, selectionAuthorProps)
+	}
+
+	// CSS Pseudo-4 §highlight-styling / LOU-349: ::target-text's color/
+	// background-color cascade against ITS OWN UA highlight default (the
+	// verified-distinct light-purple 0xFFE9D2FD, NOT ::selection's
+	// Highlight/HighlightText system colors — see
+	// targetTextDefaultBackground's doc comment), following the same
+	// paired-cascade shape applySelectionCascade implements.
+	if isTargetText {
+		applyTargetTextCascade(finalStyle, targetTextAuthorProps)
 	}
 
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
@@ -1919,13 +1981,30 @@ var (
 // color (active-selection-051 through -054's "invalid declaration block"
 // cases, where authorSet has neither key — full UA pair default applies).
 func applySelectionCascade(style *Style, authorSet map[string]bool) {
-	// ComputePseudoElementStyle's inheritance pass (before this function
-	// runs) copies the originating element's inheritable `color` into
-	// `style` as a starting point. ::selection's color/background-color
-	// never fall back to that inherited value (see doc comment above) —
-	// clear whichever side of the pair the author didn't set BEFORE the
-	// pair logic below runs, or the inherited value leaks through instead
-	// of resetting to the UA default / initial value.
+	applyHighlightPairedColorCascade(style, authorSet, selectionDefaultForeground, selectionDefaultBackground)
+}
+
+// applyHighlightPairedColorCascade implements the CSS Pseudo-4
+// §highlight-cascade "paired cascade" shared by every highlight
+// pseudo-element this engine resolves (::selection, ::target-text — see
+// applySelectionCascade/applyTargetTextCascade, its two callers): color and
+// background-color default to the UA pair (fgDefault, bgDefault) ONLY when
+// the author set NEITHER. The moment the author sets EITHER ONE, the other
+// resets to its CSS-wide initial value (transparent for background-color;
+// left unset for color — see the comment on the final branch below for
+// why), NOT the UA pair default. Factored out of applySelectionCascade when
+// LOU-349 added applyTargetTextCascade with an IDENTICAL shape differing
+// only in which default-color pair is used (CLAUDE.md §4: 2+
+// near-identical paths are dedupe-in-scope).
+//
+// ComputePseudoElementStyle's inheritance pass (before this function runs)
+// copies the originating element's inheritable `color` into `style` as a
+// starting point. A highlight pseudo's color/background-color never fall
+// back to that inherited value — clear whichever side of the pair the
+// author didn't set BEFORE the pair logic below runs, or the inherited
+// value leaks through instead of resetting to the UA default / initial
+// value.
+func applyHighlightPairedColorCascade(style *Style, authorSet map[string]bool, fgDefault, bgDefault Color) {
 	if !authorSet["color"] {
 		delete(style.Properties, "color")
 	}
@@ -1935,8 +2014,8 @@ func applySelectionCascade(style *Style, authorSet map[string]bool) {
 	hasAuthorHighlightColors := authorSet["color"] || authorSet["background-color"]
 	if !hasAuthorHighlightColors {
 		// Neither set: full UA pair default.
-		style.Set("color", formatColorAsRGBA(selectionDefaultForeground))
-		style.Set("background-color", formatColorAsRGBA(selectionDefaultBackground))
+		style.Set("color", formatColorAsRGBA(fgDefault))
+		style.Set("background-color", formatColorAsRGBA(bgDefault))
 		return
 	}
 	// Paired cascade broken: each property is either the author's own
@@ -1946,9 +2025,9 @@ func applySelectionCascade(style *Style, authorSet map[string]bool) {
 		style.Set("background-color", "transparent")
 	}
 	if !authorSet["color"] {
-		// CSS Color 4 §4.1: color's initial value is CanvasText. Use the
-		// same Highlighttext keyword's RGB is wrong here (that's the
-		// PAIRED default, not the initial value) — but louis14 has no
+		// CSS Color 4 §4.1: color's initial value is CanvasText. Using the
+		// PAIRED default's foreground here would be wrong (that's the
+		// paired default, not the initial value) — but louis14 has no
 		// notion of "no color set, fall back to inherited" independent of
 		// a literal value, and leaving the property entirely unset here
 		// lets ComputePseudoElementStyle's existing UA-stylesheet-less
@@ -1957,25 +2036,88 @@ func applySelectionCascade(style *Style, authorSet map[string]bool) {
 		// color" via normal currentColor/inheritance resolution — matching
 		// initial color (CanvasText) being visually indistinguishable from
 		// the originating element's own usual black/inherited text color
-		// in every LOU-344 target test that hits this branch.
+		// in every LOU-344/LOU-349 target test that hits this branch.
 	}
 }
 
-// recordSelectionShorthandLonghands maps a ::selection-authored shorthand
-// property name onto the longhand keys applySelectionCascade's paired
-// color/background-color logic actually consults. selectionAllowedProperty
-// allows "background" through the filter (its longhands are individually
-// allowed, see that function's doc comment), and applyDeclarationWithVisited
-// Filter correctly expands it onto the style object — but the author-set
-// BOOKKEEPING map (selectionAuthorProps) is keyed by the declaration's own
-// (un-expanded) property name, so without this mapping
-// `::selection { background: transparent }` is applied to the style but
-// still looks unauthored to applySelectionCascade, which then clobbers it
-// with the UA pair default.
-func recordSelectionShorthandLonghands(authorSet map[string]bool, property string) {
+// recordHighlightShorthandLonghands maps a highlight-pseudo-authored (
+// ::selection or ::target-text, LOU-349) shorthand property name onto the
+// longhand keys applySelectionCascade/applyTargetTextCascade's paired
+// color/background-color logic actually consults. selectionAllowedProperty/
+// targetTextAllowedProperty allow "background" through the filter (its
+// longhands are individually allowed, see that function's doc comment), and
+// applyDeclarationWithVisitedFilter correctly expands it onto the style
+// object — but the author-set BOOKKEEPING map (selectionAuthorProps /
+// targetTextAuthorProps) is keyed by the declaration's own (un-expanded)
+// property name, so without this mapping `::selection { background:
+// transparent }` (or the ::target-text equivalent,
+// target-text-text-decoration-001.html's `background: transparent`) is
+// applied to the style but still looks unauthored to the paired-cascade
+// function, which then clobbers it with the UA pair default.
+func recordHighlightShorthandLonghands(authorSet map[string]bool, property string) {
 	if property == "background" {
 		authorSet["background-color"] = true
 	}
+}
+
+// targetTextAllowedProperty reports whether a property may be specified on
+// a ::target-text rule (LOU-349). Delegates to selectionAllowedProperty
+// rather than duplicating its switch: selectionAllowedProperty's own doc
+// comment already documents that Blink's `valid_for_highlight` flag is a
+// single, pseudo-element-agnostic flag in css_properties.json5 — it gates
+// EVERY highlight pseudo (::selection, ::target-text, ::spelling-error,
+// ::grammar-error, ::highlight()) identically, with no per-pseudo
+// variation. Re-verified for this ticket (2026-06-30): no evidence found of
+// a ::target-text-specific allowed-property carve-out anywhere in Blink's
+// highlight styling code.
+func targetTextAllowedProperty(name string) bool {
+	return selectionAllowedProperty(name)
+}
+
+// targetTextDefaultForeground / targetTextDefaultBackground are the UA
+// highlight default colors ::target-text cascades against when the author
+// doesn't set color/background-color with a valid value — DELIBERATELY
+// DISTINCT from selectionDefaultForeground/selectionDefaultBackground.
+// Verified fresh (2026-06-30) against live Blink `main` branch source
+// (exact commit SHA not pinned this session — googlesource log endpoints
+// and the GitHub mirror both became unreachable mid-session after the
+// initial successful content fetches; re-verify and backfill the SHA next
+// time this block is touched, per CLAUDE.md's "vet citations older than ~3
+// months" guidance):
+//
+//   - Background: HighlightStyleUtils::DefaultBackgroundColor's
+//     kPseudoIdTargetText case returns
+//     Color::FromRGBA32(shared_highlighting::kFragmentTextBackgroundColorARGB),
+//     defined in components/shared_highlighting/core/common/
+//     fragment_directives_constants.cc as `0xFFE9D2FD` ("Light purple") —
+//     a hardcoded constant, NOT ::selection's Highlight system color.
+//   - Foreground: HighlightStyleUtils::DefaultForegroundColor's
+//     kPseudoIdTargetText case delegates to
+//     LayoutTheme::GetTheme().PlatformTextSearchColor(false /* active
+//     match */, ...) — a platform find-in-page search-result text color,
+//     not a single cross-platform constant and not HighlightText. Ported
+//     here as plain black, matching PlatformTextSearchColor's typical
+//     resolved value and (more importantly) NOT exercised by any of
+//     LOU-349's 14 target tests — every one sets an explicit author
+//     ::target-text color, so this default is unobserved by the DoD gate;
+//     verified for correctness/future-proofing per the ticket's explicit
+//     "don't assume you can reuse selection's colors verbatim" instruction,
+//     not because any test pixel depends on the exact shade.
+var (
+	targetTextDefaultForeground = Color{R: 0, G: 0, B: 0, A: 1.0}
+	targetTextDefaultBackground = Color{R: 0xE9, G: 0xD2, B: 0xFD, A: 1.0}
+)
+
+// applyTargetTextCascade layers the UA ::target-text default color/
+// background-color onto style, deferring to values explicitly set by an
+// author ::target-text rule (authorSet). Same paired-cascade shape as
+// applySelectionCascade — both delegate to applyHighlightPairedColorCascade,
+// differing only in which UA default-color pair is passed (see that
+// function's doc comment for the shared rationale, and
+// targetTextDefaultForeground/targetTextDefaultBackground's doc comment for
+// why ::target-text's pair is verified-distinct from ::selection's).
+func applyTargetTextCascade(style *Style, authorSet map[string]bool) {
+	applyHighlightPairedColorCascade(style, authorSet, targetTextDefaultForeground, targetTextDefaultBackground)
 }
 
 // HasFirstLetterRules returns true if any stylesheet rules with ::first-letter

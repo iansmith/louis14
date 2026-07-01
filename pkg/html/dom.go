@@ -126,6 +126,24 @@ type Document struct {
 	// document.createRange/getSelection/addRange/removeAllRanges bindings
 	// in pkg/js/dom_selection.go.
 	Selection *Range
+
+	// TargetTextRanges holds the document's current ::target-text highlight
+	// matches (LOU-349), or nil if window.location's hash/href has never
+	// been assigned a `:~:text=` Text Fragment directive. Unlike Selection
+	// above, this is a SLICE rather than a single *Range: a single
+	// `:~:text=...&text=...` fragment can carry multiple independent
+	// directives (target-text-003.html), and even one directive's match can
+	// span several text nodes when it crosses an element boundary
+	// (target-text-002.html's "ma<span>tch </span>me" — see
+	// FindTextFragmentMatches's doc comment in text_fragment.go for why
+	// that case already produces multiple Ranges). No Blink analog cited
+	// for the field itself (Blink tracks text-fragment matches as
+	// DocumentMarkers of type kTextFragment on TextFragmentAnchor, a
+	// different storage model than louis14's flat Box/PaintLayer paint
+	// pass) — populated by window.location's hash/href setters via
+	// Engine.OnFragmentDirective (pkg/js/dom_location.go), consumed by
+	// pkg/render's paint pass the same way Selection is.
+	TargetTextRanges []*Range
 }
 
 // Range is a simplified DOM Range: a pair of boundary points

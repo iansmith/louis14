@@ -130,6 +130,32 @@ type Renderer struct {
 	// originating element (e.g. several line-wrapped runs of one <p>).
 	selectionStyleCache map[*html.Node]*css.Style
 
+	// LOU-349: ::target-text highlight painting. targetTextRanges carries
+	// the document's current Text Fragment matches
+	// (html.Document.TargetTextRanges, populated by window.location's
+	// hash/href setters — see pkg/js/dom_location.go). Unlike
+	// selectionRange above this is a SLICE: one logical `:~:text=` match
+	// can already expand to multiple *html.Range (one per spanned text
+	// node, see html.FindTextFragmentMatches's doc comment), and a fragment
+	// can carry multiple independent `&text=` directives
+	// (target-text-003.html). Set via SetTargetTextRanges; nil when the
+	// caller doesn't supply any matches, in which case target-text painting
+	// is skipped entirely (same fail-open shape as selectionRange == nil).
+	// Reuses selectionStylesheets/selectionViewportW/H rather than adding
+	// parallel fields — both are just "the document's stylesheets/viewport
+	// dimensions", not selection-specific, and every caller that sets one
+	// sets the other from the same document in the same call (see
+	// SetTargetTextRanges's doc comment).
+	targetTextRanges []*html.Range
+
+	// targetTextStyleCache mirrors selectionStyleCache, but for
+	// ComputePseudoElementStyle(node, "target-text", ...). Kept as a
+	// separate map (not reused) since a single originating element can
+	// have BOTH a ::selection and a ::target-text rule simultaneously (not
+	// exercised by any of the 14 LOU-349 target tests, but the two pseudo
+	// styles are independent values and must not collide on one cache key).
+	targetTextStyleCache map[*html.Node]*css.Style
+
 	// selectionTextConsumed tracks, per DOM text node, how many UTF-16
 	// code units of that node's text content have already been painted by
 	// prior text fragments in this Render call. A single DOM text node can
@@ -228,6 +254,20 @@ func (r *Renderer) SetSelectionContext(selection *html.Range, stylesheets []*css
 	r.selectionStylesheets = stylesheets
 	r.selectionViewportW = viewportWidth
 	r.selectionViewportH = viewportHeight
+}
+
+// SetTargetTextRanges supplies what drawText needs to paint the
+// ::target-text highlight (LOU-349): the document's current Text Fragment
+// matches (nil/empty if none — target-text painting is then skipped
+// entirely). Stylesheets/viewport dimensions are NOT separate parameters
+// here — callers are expected to have already called SetSelectionContext
+// (or to call it alongside this, even with a nil selection) on the same
+// Renderer for the same document/Render call, since both pseudo-elements
+// resolve against the identical stylesheet set and viewport; duplicating
+// those two parameters on this method would invite them drifting out of
+// sync with selectionStylesheets/selectionViewportW/H for no benefit.
+func (r *Renderer) SetTargetTextRanges(ranges []*html.Range) {
+	r.targetTextRanges = ranges
 }
 
 // SetExternalSVGFetcher installs a closure that resolves
@@ -397,6 +437,14 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// other callers, e.g. mancini's WebInteractor).
 	r.selectionStyleCache = nil
 	r.selectionTextConsumed = nil
+	// LOU-349: same reset for ::target-text's parallel per-render
+	// bookkeeping. targetTextStyleCache is its own map (see that field's
+	// doc comment), but findOriginatingTextNode's consumed-offset tracking
+	// (selectionTextConsumed) is intentionally SHARED with ::selection —
+	// both pseudo-elements resolve the same fragment's originating text
+	// node via the same per-box call in drawText, so a second independent
+	// counter would double-consume and desync node-local offsets.
+	r.targetTextStyleCache = nil
 
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
@@ -6204,6 +6252,44 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// fallback resolves against the (possibly UA-default)
 				// ::selection color computed by ComputePseudoElementStyle
 				// — see resolveSelectionPseudoStyle).
+			}
+			if seg.hasOwnTextShadow {
+				// LOU-349: a highlight pseudo-element's OWN text-shadow
+				// (target-text-shadow-horizontal/-vertical.html) PAINTS
+				// ALONGSIDE the originating element's own shadows, rather
+				// than replacing them — confirmed against
+				// target-text-shadow-horizontal-ref.html, whose reference
+				// <span> declares text-shadow as a TWO-shadow comma-list
+				// where the second shadow is byte-identical to the
+				// originating <p>'s own text-shadow value, and the test's
+				// own meta[name=assert] states "::target-text with a
+				// shadow is painted, INCLUDING originating element
+				// shadows". Put the highlight's own shadow(s) at the FRONT
+				// of the merged slice (drawTextShadows iterates len()-1
+				// down to 0, so index 0 paints LAST/on-top) so it ends up
+				// topmost, matching CSS's "first-specified shadow is on
+				// top" layering rule (https://drafts.csswg.org/css-text-decor-4/#text-shadow-property)
+				// applied to the reference's declared order (highlight
+				// shadow first in the comma-list, origin shadow second —
+				// i.e. highlight on top). Verified empirically: swapping
+				// this order does NOT change target-text-shadow-horizontal's
+				// reftest result (its fuzzy tolerance masks the visual
+				// difference), so this comment — not a reftest — is the
+				// source of truth for why this order was chosen; don't
+				// "fix" it based on a plausible-sounding but unverified
+				// re-read (a CodeRabbit review on this PR proposed exactly
+				// that swap; verified against the CSS spec and rejected).
+				// seg.textShadows may be nil/empty
+				// (`text-shadow: none` on the highlight) — appending
+				// nothing to segLayer.TextShadows in that case correctly
+				// leaves only the originating shadows, which IS the
+				// "highlight explicitly clears its own shadow but doesn't
+				// suppress the origin's" interpretation consistent with
+				// this additive model (no LOU-349 target test exercises
+				// `text-shadow: none` on a highlight pseudo, so this
+				// specific sub-case is inferred from the additive model
+				// rather than directly verified).
+				segLayer.TextShadows = append(append([]css.TextShadow{}, seg.textShadows...), segLayer.TextShadows...)
 			}
 		}
 		r.drawTextSegment(&segLayer)

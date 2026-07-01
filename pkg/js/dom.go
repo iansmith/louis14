@@ -40,6 +40,14 @@ type domContext struct {
 	// Selection#addRange so it can read the boundary points
 	// selectNodeContents/setStart/setEnd already wrote.
 	ranges []rangeEntry
+
+	// locationFragment / locationHrefValue back window.location's `hash` /
+	// `href` (LOU-349, dom_location.go). locationFragment never includes
+	// the leading '#'; locationHrefValue is the raw string last assigned to
+	// .href (or "" if only .hash was ever touched — see locationHref's doc
+	// comment).
+	locationFragment  string
+	locationHrefValue string
 }
 
 // rangeEntry pairs a Range JS proxy with its backing *html.Range.
@@ -194,6 +202,9 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	// (LOU-344). bodyNode is recomputed via findBodyNode since
 	// registerDocumentProperties doesn't expose its own lookup result.
 	registerSelectionAPI(ctx, docObj, findBodyNode(doc.Root))
+
+	// window.location / document.location (LOU-349).
+	registerLocationAPI(ctx, docObj)
 
 	vm.Set("document", docObj)
 
