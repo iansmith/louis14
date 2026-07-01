@@ -184,6 +184,34 @@ func TestMarkerInheritsAppliedTextDecorationsByPosition(t *testing.T) {
 	}
 }
 
+// TestMarkerWhiteSpaceByPosition is the red test for LOU-358 category A1.
+// Blink core/css/marker.css @ 43cee02dc59fdad798675a735737510ecf0c9064 does
+// NOT set white-space on ::marker; only StyleAdjuster::AdjustStyleForMarker's
+// outside branch stamps white-space:pre ("Do not break inside the marker, and
+// honor the trailing spaces", style_adjuster.cc:502-507 @ 43cee02d). An INSIDE
+// marker keeps the inherited value, so its trailing suffix space is
+// end-of-line-collapsible and is not underlined past the marker text
+// (WPT css-pseudo/marker-text-decoration-skip-ink).
+func TestMarkerWhiteSpaceByPosition(t *testing.T) {
+	inside := buildSingleListItem(t, "list-item", "list-style-position", "inside", "white-space", "normal")
+	kids := inside.Children()
+	if len(kids) == 0 || !kids[0].IsMarkerNode() {
+		t.Fatalf("inside marker is not the first in-flow child")
+	}
+	if v, _ := kids[0].Style().Get("white-space"); v == "pre" {
+		t.Errorf("inside ::marker white-space = %q, want the inherited value (no UA pre stamp)", v)
+	}
+
+	outside := buildSingleListItem(t, "list-item", "white-space", "normal")
+	marker := outside.MarkerNode()
+	if marker == nil {
+		t.Fatalf("outside list-item has no markerNode")
+	}
+	if v, _ := marker.Style().Get("white-space"); v != "pre" {
+		t.Errorf("outside ::marker white-space = %q, want %q (AdjustStyleForMarker outside branch)", v, "pre")
+	}
+}
+
 // markerText returns the concatenated text content of a marker node's
 // children.
 func markerText(marker *LayoutInputNode) string {

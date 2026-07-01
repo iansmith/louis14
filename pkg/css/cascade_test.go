@@ -871,11 +871,22 @@ func TestApplyMarkerUADefaults_NoAuthorRules(t *testing.T) {
 	if v, ok := markerStyle.Get("text-transform"); !ok || v != "none" {
 		t.Errorf("marker text-transform = %q, want %q (UA default must override inherited value)", v, "none")
 	}
-	if v, ok := markerStyle.Get("white-space"); !ok || v != "pre" {
-		t.Errorf("marker white-space = %q, want %q (UA default must be set)", v, "pre")
+	// Blink core/css/marker.css @ 43cee02dc59fdad798675a735737510ecf0c9064 does
+	// NOT set white-space on ::marker — only OUTSIDE markers get white-space:pre,
+	// stamped by StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:502-507
+	// @ 43cee02d; louis14: resolveMarkerStyle's !markerInside branch). The UA
+	// defaults must leave the inherited value alone so an inside marker's
+	// trailing suffix space is end-of-line-collapsible (WPT css-pseudo/
+	// marker-text-decoration-skip-ink).
+	if v, ok := markerStyle.Get("white-space"); ok && v == "pre" {
+		t.Errorf("marker white-space = %q; the UA ::marker defaults must not stamp white-space", v)
 	}
 	if v, ok := markerStyle.Get("font-variant-numeric"); !ok || v != "tabular-nums" {
 		t.Errorf("marker font-variant-numeric = %q, want %q (UA default must be set)", v, "tabular-nums")
+	}
+	// marker.css @ 43cee02d: text-align-last: auto !important.
+	if v, ok := markerStyle.Get("text-align-last"); !ok || v != "auto" {
+		t.Errorf("marker text-align-last = %q, want %q (UA default must be set)", v, "auto")
 	}
 }
 

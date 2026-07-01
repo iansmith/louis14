@@ -1782,10 +1782,11 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 // item's inherited properties (a li's border/margin/padding must not leak onto
 // its marker — Blink ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:
 // 320-323 @ 4883d11f) plus the UA ::marker defaults (text-transform:none,
-// white-space:pre, tabular-nums, unicode-bidi:isolate). It then applies the
-// position-driven display adjustment (StyleAdjuster::AdjustStyleForMarker,
-// style_adjuster.cc:478-514) and neutralizes letter-/word-spacing on symbol
-// markers.
+// tabular-nums, unicode-bidi:isolate; see markerUADefaults). It then applies
+// the position-driven display adjustment — outside markers become inline-block
+// with white-space:pre (StyleAdjuster::AdjustStyleForMarker,
+// style_adjuster.cc:479-515 @ 43cee02dc59fdad798675a735737510ecf0c9064) — and
+// neutralizes letter-/word-spacing on symbol markers.
 //
 // Markers of pseudo-element list items (::before/::after with
 // display:list-item) are nested pseudo-elements and are NOT addressable by
@@ -1828,6 +1829,11 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		markerStyle.InheritAppliedTextDecorationsFrom(style)
 	} else {
 		markerStyle.Set("display", "inline-block")
+		// "Do not break inside the marker, and honor the trailing spaces" —
+		// the outside branch of AdjustStyleForMarker (style_adjuster.cc:502-507
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064). This is the ONLY source
+		// of white-space:pre on markers; marker.css sets none, so inside
+		// markers keep the inherited value.
 		markerStyle.Set("white-space", "pre")
 	}
 

@@ -1893,21 +1893,26 @@ func markerAllowedProperty(name string) bool {
 }
 
 // markerUADefaults lists the UA-stylesheet ::marker property defaults.
-// Mirrors Blink's html.css ::marker rule verified at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// Mirrors Blink's core/css/marker.css rule verified at SHA
+// 43cee02dc59fdad798675a735737510ecf0c9064. marker.css does NOT set
+// white-space: only OUTSIDE markers get white-space:pre, stamped by
+// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:502-507 @43cee02d;
+// louis14: resolveMarkerStyle's !markerInside branch), so an inside marker's
+// trailing suffix space stays end-of-line-collapsible (WPT css-pseudo/
+// marker-text-decoration-skip-ink).
 var markerUADefaults = [...][2]string{
 	{"unicode-bidi", "isolate"},
 	{"text-transform", "none"},
-	{"white-space", "pre"},
 	{"font-variant-numeric", "tabular-nums"},
-	// Blink core/css/marker.css (@4883d11f): text-indent: 0 !important;
-	// text-align: start !important. The !important means even author
-	// ::marker rules cannot set them — neither is in
-	// markerAllowedProperty, so stamping the defaults here completes the
+	// Blink core/css/marker.css (@43cee02d): text-indent: 0 !important;
+	// text-align: start !important; text-align-last: auto !important. The
+	// !important means even author ::marker rules cannot set them — none is
+	// in markerAllowedProperty, so stamping the defaults here completes the
 	// contract (an inherited li text-indent must not shift the marker;
 	// WPT css-pseudo/marker-content-023).
 	{"text-indent", "0"},
 	{"text-align", "start"},
+	{"text-align-last", "auto"},
 }
 
 // applyMarkerCascade layers the UA ::marker defaults onto style, deferring
