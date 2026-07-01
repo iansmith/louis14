@@ -195,3 +195,90 @@ func TestFindTextFragmentMatches_NoMatch(t *testing.T) {
 		t.Errorf("got %d matches, want 0", len(matches))
 	}
 }
+
+// TestFindTextFragmentMatches_SkipsNonRenderedSubtrees is a regression test
+// for target-text-003.html: the document's <title> there is "CSS
+// Pseudo-Elements Test: ::target-text color rendering - two matches",
+// which contains "match" as a substring of "matches" — collectTextRuns
+// must NOT walk into <title> (or <style>/<script>/<head>/<meta>/<link>/
+// <base>) when building the search corpus, or a selector like
+// `text=match` finds the WRONG occurrence inside non-rendered head content
+// instead of the actual visible <p> text. Mirrors Blink's TextIterator,
+// which by default only visits nodes with an associated LayoutObject —
+// elements with UA `display:none` (head/style/script/title/meta/link/base,
+// the same set pkg/css/cascade.go's ComputeStyle non-rendered-elements
+// switch already hides) never get one, so TextIterator skips their
+// subtrees entirely. pkg/html cannot import pkg/css's tag list directly
+// (would create an import cycle, since pkg/css already imports pkg/html),
+// hence this is a small independent copy of the same tag set, not the
+// shared canonical list — see nonRenderedTextContainerTag's doc comment.
+func TestFindTextFragmentMatches_SkipsNonRenderedSubtrees(t *testing.T) {
+	root := &Node{Type: ElementNode, TagName: "document"}
+	head := &Node{Type: ElementNode, TagName: "head", Parent: root}
+	title := &Node{Type: ElementNode, TagName: "title", Parent: head}
+	title.Children = []*Node{{Type: TextNode, Text: "two matches", Parent: title}}
+	head.Children = []*Node{title}
+	body := &Node{Type: ElementNode, TagName: "body", Parent: root}
+	p := buildPara("match me")
+	p.Parent = body
+	body.Children = []*Node{p}
+	root.Children = []*Node{head, body}
+
+	matches := FindTextFragmentMatches(root, []TextFragmentSelector{{Start: "match"}})
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].StartContainer != p.Children[0] {
+		t.Errorf("match resolved to node %v, want the <p> text node (not <title>'s)", matches[0].StartContainer)
+	}
+	if matches[0].StartOffset != 0 || matches[0].EndOffset != len("match") {
+		t.Errorf("match offsets = [%d,%d), want [0,%d) into the <p> text", matches[0].StartOffset, matches[0].EndOffset, len("match"))
+	}
+}
+
+// TestFindTextFragmentMatches_WordBoundaryRequired is a regression test for
+// target-text-003.html's exact bug: the document's own visible text "PASS
+// if there are two segments..." contains "me" as a SUBSTRING of "segments"
+// (seg-ME-nts) — a directive `text=me` must skip that mid-word occurrence
+// and match the real, word-bounded "me" later in the document. Verified
+// against live Blink source (text_fragment_finder.cc, see
+// findCaseInsensitive's doc comment): every FindMatchInRange call passes
+// word_start_bounded=true, and word_end_bounded is unconditionally true
+// for every LOU-349 target test (none use the suffix qualifier).
+func TestFindTextFragmentMatches_WordBoundaryRequired(t *testing.T) {
+	p1 := buildPara("there are two segments below")
+	p2 := buildPara("match me")
+	root := &Node{Type: ElementNode, TagName: "body"}
+	p1.Parent, p2.Parent = root, root
+	root.Children = []*Node{p1, p2}
+
+	matches := FindTextFragmentMatches(root, []TextFragmentSelector{{Start: "me"}})
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].StartContainer != p2.Children[0] {
+		t.Errorf("match resolved to %v, want p2's text node (the real word-bounded \"me\")", matches[0].StartContainer)
+	}
+	wantStart := len("match ")
+	if matches[0].StartOffset != wantStart || matches[0].EndOffset != wantStart+len("me") {
+		t.Errorf("match offsets = [%d,%d), want [%d,%d)", matches[0].StartOffset, matches[0].EndOffset, wantStart, wantStart+len("me"))
+	}
+}
+
+// TestFindTextFragmentMatches_WordBoundaryAllowsPunctuationAdjacency
+// confirms the word-boundary check doesn't over-reject: a match immediately
+// followed/preceded by punctuation (not a word character) is still a valid
+// word-bounded match — only LETTER/DIGIT/UNDERSCORE on both sides of a
+// boundary disqualifies it.
+func TestFindTextFragmentMatches_WordBoundaryAllowsPunctuationAdjacency(t *testing.T) {
+	p := buildPara("Hello, match me!")
+	matches := FindTextFragmentMatches(p, []TextFragmentSelector{{Start: "match me"}})
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	want := "match me"
+	idx := len("Hello, ")
+	if matches[0].StartOffset != idx || matches[0].EndOffset != idx+len(want) {
+		t.Errorf("match offsets = [%d,%d), want [%d,%d)", matches[0].StartOffset, matches[0].EndOffset, idx, idx+len(want))
+	}
+}

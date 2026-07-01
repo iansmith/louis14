@@ -3,6 +3,8 @@ package html
 import (
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // text_fragment.go parses URL Text Fragment directives (the `:~:text=...`
@@ -127,6 +129,9 @@ func collectTextRuns(root *Node) (runs []textRun, corpus string) {
 			runs = append(runs, textRun{node: n, docStart: start, docEnd: sb.Len()})
 			return
 		}
+		if n.Type == ElementNode && nonRenderedTextContainerTag(n.TagName) {
+			return
+		}
 		for _, child := range n.Children {
 			walk(child)
 		}
@@ -135,24 +140,104 @@ func collectTextRuns(root *Node) (runs []textRun, corpus string) {
 	return runs, sb.String()
 }
 
-// findCaseInsensitive returns the byte index of the first occurrence of
-// substr in corpus starting at-or-after fromByte, comparing
+// nonRenderedTextContainerTag reports whether tag names an element whose
+// ENTIRE subtree must be excluded from FindTextFragmentMatches's search
+// corpus — mirrors Blink's TextIterator, which by default only visits
+// nodes that have an associated LayoutObject; head/style/script/title/
+// meta/link/base never get one (UA `display: none`), so their text
+// content (e.g. a <title>'s words, or raw CSS/JS source inside <style>/
+// <script>) is never "page text" a `:~:text=` directive could be
+// referring to. Regression-tested by
+// TestFindTextFragmentMatches_SkipsNonRenderedSubtrees:
+// target-text-003.html's own <title> contains "matches", which
+// substring-contains the directive's search term "match" — without this
+// filter, the match resolves to the invisible <title> text instead of the
+// visible <p>, producing zero highlighted ranges in the rendered page.
+//
+// This is a SMALL INDEPENDENT COPY of pkg/css/cascade.go's ComputeStyle
+// non-rendered-elements switch (same tag set: head, style, script, meta,
+// title, link, base) rather than a shared/reused list — pkg/html cannot
+// import pkg/css (pkg/css already imports pkg/html, so the reverse import
+// would cycle). If this tag set needs to change, update both switches.
+func nonRenderedTextContainerTag(tag string) bool {
+	switch tag {
+	case "head", "style", "script", "meta", "title", "link", "base":
+		return true
+	}
+	return false
+}
+
+// findCaseInsensitive returns the byte index of the first WORD-BOUNDED
+// occurrence of substr in corpus starting at-or-after fromByte, comparing
 // case-insensitively, or -1 if not found. Mirrors Blink's
-// FindOptions().SetCaseInsensitive(true), confirmed against live Blink
-// source (text_fragment_finder.cc — see text_fragment.go's file doc
-// comment for the verification trail). Whitespace is NOT collapsed/
-// normalized before comparison — the documented fallback for the
-// (unverified this session) whitespace-handling question, sufficient for
-// every LOU-349 target test's single-space-separated phrases.
+// FindOptions().SetCaseInsensitive(true) (confirmed against live Blink
+// source, text_fragment_finder.cc — see text_fragment.go's file doc
+// comment for the verification trail) PLUS the word-boundary requirement
+// also confirmed in that file: every FindMatchInRange call in
+// TextFragmentFinder::FindTextStart passes word_start_bounded=true, and
+// word_end_bounded computes to `!selector_.End().empty() ||
+// selector_.Suffix().empty()` — which is unconditionally true for every
+// LOU-349 target test (none use the suffix qualifier this port omits, see
+// TextFragmentSelector's doc comment), so both boundaries are always
+// required here. Without this, target-text-003.html's `text=me` directive
+// matched the "me" inside "seg-me-nts" (a substring of the page's own
+// "...two segments..." sentence) before ever reaching the real "me" in
+// "match me" — isWordBoundary's doc comment has the regression-test
+// citation.
+//
+// A match candidate that fails the word-boundary check is rejected and the
+// search resumes from candidate+1 (NOT candidate+len(substr) — an
+// overlapping word-bounded occurrence starting one byte later must still
+// be reachable, though no LOU-349 target test currently exercises that
+// edge case).
+//
+// Whitespace is NOT collapsed/normalized before comparison — the
+// documented fallback for the (unverified this session) whitespace-
+// handling question, sufficient for every LOU-349 target test's
+// single-space-separated phrases.
 func findCaseInsensitive(corpus string, fromByte int, substr string) int {
-	if fromByte > len(corpus) {
-		return -1
+	lowerCorpus := strings.ToLower(corpus)
+	lowerSubstr := strings.ToLower(substr)
+	for searchFrom := fromByte; searchFrom <= len(lowerCorpus); {
+		if searchFrom < 0 || searchFrom > len(lowerCorpus) {
+			return -1
+		}
+		idx := strings.Index(lowerCorpus[searchFrom:], lowerSubstr)
+		if idx < 0 {
+			return -1
+		}
+		candidate := searchFrom + idx
+		if isWordBoundary(corpus, candidate) && isWordBoundary(corpus, candidate+len(substr)) {
+			return candidate
+		}
+		searchFrom = candidate + 1
 	}
-	idx := strings.Index(strings.ToLower(corpus[fromByte:]), strings.ToLower(substr))
-	if idx < 0 {
-		return -1
+	return -1
+}
+
+// isWordBoundary reports whether byte offset pos in s is a word boundary:
+// the start/end of the string, or a position where the runes immediately
+// before and after are not BOTH "word" runes (letters, digits, or
+// underscore — mirrors Blink's WTF::IsWordBoundary helper's general
+// shape, gated on the verified word_start_bounded/word_end_bounded=true
+// requirement documented on findCaseInsensitive above; full Unicode
+// word-segmentation (UAX #29) is not replicated, but every LOU-349 target
+// test's match boundaries fall on plain ASCII space/punctuation, where
+// this simpler letter/digit/underscore check agrees with UAX #29).
+// Regression-tested by TestFindTextFragmentMatches_WordBoundaryRequired
+// (target-text-003.html's exact bug: a directive matching mid-word inside
+// an unrelated sentence must NOT count as a match).
+func isWordBoundary(s string, pos int) bool {
+	if pos <= 0 || pos >= len(s) {
+		return true
 	}
-	return fromByte + idx
+	before, _ := utf8.DecodeLastRuneInString(s[:pos])
+	after, _ := utf8.DecodeRuneInString(s[pos:])
+	return !(isWordRune(before) && isWordRune(after))
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 // FindTextFragmentMatches searches root's descendant text content (in
