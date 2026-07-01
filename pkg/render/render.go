@@ -180,6 +180,19 @@ type Renderer struct {
 	// exactly one fixed pseudo-element name).
 	customHighlightStyleCaches map[string]map[*html.Node]*css.Style
 
+	// highlightChainStyleCaches memoizes selection_paint.go's
+	// resolveHighlightChainStyle per pseudo-element name ("selection",
+	// "target-text", "highlight(<name>)") and per originating element —
+	// the louis14 stand-in for Blink's per-element StyleHighlightData
+	// storage (LOU-352, CSS Pseudo-4 §highlight-cascade; see
+	// resolveHighlightChainStyle's doc comment). Values may be nil: an
+	// explicit nil entry means "no rule for this highlight matches the
+	// node or any ancestor", distinct from a missing entry (not yet
+	// resolved). Kept separate from the final-style caches above because a
+	// node's chain style is shared by pointer down the subtree, while the
+	// final style may be a per-node UA-default bake.
+	highlightChainStyleCaches map[string]map[*html.Node]*css.Style
+
 	// selectionTextConsumed tracks, per DOM text node, how many UTF-16
 	// code units of that node's text content have already been painted by
 	// prior text fragments in this Render call. A single DOM text node can
@@ -482,6 +495,9 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	r.targetTextStyleCache = nil
 	// LOU-354: same reset for ::highlight(name)'s per-render style cache.
 	r.customHighlightStyleCaches = nil
+	// LOU-352: same reset for the highlight-cascade chain caches (see that
+	// field's doc comment).
+	r.highlightChainStyleCaches = nil
 
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
