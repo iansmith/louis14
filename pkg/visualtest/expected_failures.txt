@@ -64,3 +64,11 @@ css-ruby/ruby-whitespace-002.html	Blink fails, Gecko passes @ f01d00b696 (Gecko-
 #     Ahem glyph-width gap tracked in LOU-329 (does not make these pass).
 css-flexbox/flex-container-min-content-001.html	Blink-faithful failure: idealized ref no browser matches; Chrome 149 (CDP) fails 15/48 sub-cases; louis14==Chrome; Edge=F @ wpt.fyi (LOU-328)
 css-flexbox/flex-container-max-content-001.html	Blink-faithful failure: idealized ref no browser matches; Chrome 149 (CDP) fails; louis14==Chrome; Edge=F @ wpt.fyi (LOU-328)
+
+# --- css-pseudo: ::selection color doesn't override SVG <text fill> resolution.
+#     Chrome 151.0.7922.4 and Edge 151.0.4119.1 both FAIL this test; only
+#     Firefox 154.0a1 passes. louis14 matches Blink (fill stays at its
+#     explicit value; ::selection's color does not feed SVG fill resolution
+#     unless fill is literally currentcolor). Verified via wpt.fyi search API,
+#     2026-07-01. See LOU-345.
+css-pseudo/svg-text-selection-002.html	Blink-faithful failure: ::selection color doesn't override SVG text fill; Chrome 151.0.7922.4 and Edge 151.0.4119.1 both FAIL, only Firefox 154.0a1 passes @ wpt.fyi (LOU-345)

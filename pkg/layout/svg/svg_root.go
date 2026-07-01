@@ -279,20 +279,13 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		}
 		return shape
 	case "text":
-		// NewSVGText returns nil for a <text> with SVG-element children
-		// (e.g. <tspan> — out of this ticket's scope); fall through to
-		// the generic SVGContainer path below instead of returning nil
-		// directly, so such a <text> keeps its pre-existing (contentless
-		// but not silently-partial) rendering. See NewSVGText's doc
-		// comment for why this matters.
-		if svgText := NewSVGText(elt, lengthCtx); svgText != nil {
-			if styleResolver != nil {
-				svgText.Style = styleResolver(elt)
-			}
-			if !svgTextHasUnsupportedFilter(svgText.Style) {
-				return svgText
-			}
+		if svgText := tryBuildSVGText(elt, lengthCtx, styleResolver); svgText != nil {
+			return svgText
 		}
+		// A nil return means <text> is out of SVGText's scope (SVG-element
+		// children like <tspan>, or an unsupported filter) — fall through
+		// to the generic SVGContainer path below so it keeps its
+		// pre-existing rendering. See tryBuildSVGText.
 	case "svg":
 		vc := NewSVGViewportContainer(elt, lengthCtx)
 		if vc == nil {
@@ -322,6 +315,34 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		}
 	}
 	return container
+}
+
+// tryBuildSVGText constructs an SVGText for a `<text>` element, or
+// returns nil when `<text>` is out of SVGText's scope — in which case
+// the caller falls through to the generic SVGContainer path so the
+// element keeps its pre-existing (contentless, but not silently-partial)
+// rendering. Shared by both BuildSVGTree and buildSVGTreeWithResources
+// so the two `case "text":` dispatch arms stay in lockstep.
+//
+// nil is returned when NewSVGText declines the element (it has
+// SVG-element children like `<tspan>`, out of scope — see NewSVGText's
+// doc comment) or when the resolved style carries a filter SVGText's
+// painter can't apply (see svgTextHasUnsupportedFilter). Falling back
+// rather than returning nil directly preserves SVGContainer's
+// container-level filter dispatch, which the pre-existing behavior and
+// several WPT references depend on.
+func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver func(ElementAdapter) *css.Style) *SVGText {
+	svgText := NewSVGText(elt, lengthCtx)
+	if svgText == nil {
+		return nil
+	}
+	if styleResolver != nil {
+		svgText.Style = styleResolver(elt)
+	}
+	if svgTextHasUnsupportedFilter(svgText.Style) {
+		return nil
+	}
+	return svgText
 }
 
 // svgTextHasUnsupportedFilter reports whether style carries a `filter`
@@ -380,23 +401,15 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 		}
 		return shape
 	case "text":
-		// `<text>` is also a leaf for this ticket's scope (no
-		// `<tspan>` support — see SVGText's doc comment), so it skips
-		// the recursive SVG-element child walk exactly like the shape
-		// tags above. Its own text-node content is read via
-		// ElementAdapter.TextContent(), not SVGChildren(). NewSVGText
-		// returns nil when elt has SVG-element children (e.g. a real
-		// `<tspan>`); fall through to the generic SVGContainer path
-		// below instead of returning nil directly, so such a <text>
-		// keeps its pre-existing (contentless but not silently-partial)
-		// rendering — see NewSVGText's doc comment.
-		if svgText := NewSVGText(elt, lengthCtx); svgText != nil {
-			if styleResolver != nil {
-				svgText.Style = styleResolver(elt)
-			}
-			if !svgTextHasUnsupportedFilter(svgText.Style) {
-				return svgText
-			}
+		// `<text>` is a leaf for this ticket's scope (no `<tspan>`
+		// support — see SVGText's doc comment), so it skips the
+		// recursive SVG-element child walk exactly like the shape tags
+		// above; its own text-node content is read via
+		// ElementAdapter.TextContent(), not SVGChildren(). A nil return
+		// falls through to the generic SVGContainer path below — see
+		// tryBuildSVGText.
+		if svgText := tryBuildSVGText(elt, lengthCtx, styleResolver); svgText != nil {
+			return svgText
 		}
 	case "svg":
 		// Nested <svg>: establishes a new viewport + viewBox + length
