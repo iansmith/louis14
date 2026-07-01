@@ -229,6 +229,9 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	// window.CSS.highlights / new Highlight() (LOU-354).
 	registerHighlightAPI(ctx)
 
+	// document.styleSheets CSSOM rule mutation (LOU-351).
+	registerStyleSheetsAPI(ctx, docObj)
+
 	vm.Set("document", docObj)
 
 	// HTML5 named access: elements with an id attribute are exposed as
