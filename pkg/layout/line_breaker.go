@@ -301,12 +301,13 @@ func isBreakOpportunityRune(r rune) bool {
 	return isCSSCollapsibleSpace(r) || r == '\uFFFC' || r == '\u200B'
 }
 
-// canStartLine reports whether a line may begin with r \u2014 the UAX#14
+// canStartLine reports whether a line may begin with r — the UAX#14
 // non-starter prohibition subset used by character-granularity breaking.
 // word-break:break-all maps to Blink's LineBreakType::kBreakAll, which
 // permits breaks between most characters but still honors the prohibition
-// on breaking BEFORE close/final punctuation and infix separators (classes
-// CL/CP/IS/EX \u2014 "2." never splits), while line-break:anywhere /
+// on breaking BEFORE close/final punctuation, infix separators, and
+// postfix numeric symbols (classes CL/CP/IS/EX/PO — "2." never splits;
+// '%' is PO), while line-break:anywhere /
 // overflow-wrap:anywhere map to kBreakCharacter, which ignores it
 // (LineBreaker::SetCurrentStyleForce, line_breaker.cc:4559-4573 @
 // 43cee02dc59fdad798675a735737510ecf0c9064). Closing/final punctuation is
