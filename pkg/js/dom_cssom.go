@@ -31,7 +31,7 @@ import (
 //     SetNeedsActiveStyleUpdate invalidation chain
 //     (core/css/style_rule_css_style_declaration.cc:50-68).
 //
-// Scope cut (see docs/plan-lou-351.md): no insertRule/deleteRule/replace/
+// Scope cut (see LOU-351): no insertRule/deleteRule/replace/
 // selectorText/cssText/media/ownerRule and no constructed stylesheets — the
 // 3 target tests only index the lists and assign one camelCase property.
 // The lists are static snapshots built at registration time; louis14's
