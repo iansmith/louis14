@@ -1159,6 +1159,60 @@ type styleAccessor struct {
 }
 
 func (s *styleAccessor) Get(key string) goja.Value {
+	// CSSOM §6.7.3 CSSStyleDeclaration methods (LOU-352: highlight-styling-
+	// 005.html mutates a root custom property via style.setProperty, which
+	// previously fell through to the attribute lookup below and returned a
+	// string — a TypeError at the call site, silently killing the script).
+	// Mirrors Blink's AbstractPropertySetCSSStyleDeclaration::setProperty/
+	// removeProperty/getPropertyValue (core/css/abstract_property_set_css_
+	// style_declaration.cc:76,135,159 @ Chromium main
+	// 72259ecfb56eacf259e21783dd2b31608ac951a3). The property argument is
+	// used VERBATIM (no camelToKebab): CSSOM method arguments are already
+	// CSS-cased, and custom properties (--*) are case-sensitive.
+	switch key {
+	case "setProperty":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) < 2 {
+				return goja.Undefined()
+			}
+			prop := call.Arguments[0].String()
+			val := call.Arguments[1].String()
+			styles := parseInlineStyle(s.getStyleAttr())
+			// CSSOM §6.7.3 step 4: an empty value means removeProperty.
+			if strings.TrimSpace(val) == "" {
+				delete(styles, prop)
+			} else {
+				styles[prop] = val
+			}
+			s.setStyleAttr(serializeInlineStyle(styles))
+			return goja.Undefined()
+		})
+	case "removeProperty":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return s.vm.ToValue("")
+			}
+			prop := call.Arguments[0].String()
+			styles := parseInlineStyle(s.getStyleAttr())
+			old := styles[prop]
+			delete(styles, prop)
+			s.setStyleAttr(serializeInlineStyle(styles))
+			return s.vm.ToValue(old)
+		})
+	case "getPropertyValue":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return s.vm.ToValue("")
+			}
+			styles := parseInlineStyle(s.getStyleAttr())
+			return s.vm.ToValue(styles[call.Arguments[0].String()])
+		})
+	case "getPropertyPriority":
+		// Inline-style !important tracking isn't modeled; always "".
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return s.vm.ToValue("")
+		})
+	}
 	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
 	if val, ok := styles[cssProp]; ok {
