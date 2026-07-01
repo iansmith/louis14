@@ -27,9 +27,30 @@ type svgTextPainter struct {
 	text *svg.SVGText
 }
 
+// resolvedSVGTextSegment is one paint segment after its position and
+// paint (fill/stroke/shadows) have been resolved — the unit paint()
+// batches into its two passes below.
+type resolvedSVGTextSegment struct {
+	text                   string
+	x                      float64
+	fillPaint, strokePaint css.SVGPaint
+	strokeWidth            float64
+	shadows                []css.TextShadow
+}
+
 // paint executes the shadow -> fill -> stroke sequence for the text
 // element's glyphs, splitting the text into ::selection / unselected
 // paint segments exactly like drawText does for ordinary CSS text.
+//
+// Segments are resolved up front, then painted in two passes — ALL
+// segments' shadows, then ALL segments' glyphs — rather than
+// interleaved per-segment (shadow, glyphs, shadow, glyphs, ...).
+// Interleaving lets a later segment's shadow (typically offset and/or
+// blurred, so its paint extends beyond that segment's own x-range)
+// paint over an earlier segment's already-drawn glyphs — the same
+// whole-shadows-before-any-glyphs ordering ordinary CSS text painting
+// (drawText) already uses for its own multi-segment case, restored
+// here so a partial ::selection on SVG text gets the same guarantee.
 func (tp *svgTextPainter) paint() {
 	if tp.text == nil || tp.text.Text == "" {
 		return
@@ -52,37 +73,48 @@ func (tp *svgTextPainter) paint() {
 	ascent := float64(metrics.Ascent) / 64.0
 	descent := float64(metrics.Descent) / 64.0
 
-	// originating is the <text> ELEMENT node (what a ::selection rule
-	// matches against / what ComputePseudoElementStyle expects);
-	// textNode is its own direct text-node CHILD (what
-	// selectionOverlapForTextNode's node-local byte-offset math
-	// expects) — same two-node split drawText's computeSelectionSegments
-	// uses (box.Node vs. findOriginatingTextNode's result), just reached
-	// directly here since SVG text painting never builds a layout.Box.
+	// originating is the <text> ELEMENT node — what a ::selection rule
+	// matches against / what ComputePseudoElementStyle expects.
+	// svgTextSelectionSegments walks its direct text-node children
+	// itself (selectionOverlapForTextNode's byte-offset math is
+	// node-local, so each child is tested individually — see its own
+	// doc comment) — same role drawText's computeSelectionSegments
+	// plays for ordinary CSS text, just reached directly here since SVG
+	// text painting never builds a layout.Box.
 	originating := layout.SVGElementDOMNode(tp.text.Element)
-	textNode := svgFirstTextNodeChild(originating)
-	segs := svgTextSelectionSegments(r, textNode, tp.text.Text)
+	segs := svgTextSelectionSegments(r, originating, tp.text.Text)
 
+	resolved := make([]resolvedSVGTextSegment, 0, len(segs))
 	x := tp.text.X
 	for _, seg := range segs {
 		segText := tp.text.Text[seg.start:seg.end]
 		if segText == "" {
 			continue
 		}
-		segWidth := r.measureTextStr(segText, fontID, layer.FontFeatures)
-
 		fillPaint, strokePaint, strokeWidth, shadows := resolveSVGTextSegmentPaint(r, originating, style, seg.selected)
+		resolved = append(resolved, resolvedSVGTextSegment{
+			text:        segText,
+			x:           x,
+			fillPaint:   fillPaint,
+			strokePaint: strokePaint,
+			strokeWidth: strokeWidth,
+			shadows:     shadows,
+		})
+		x += r.measureTextStr(segText, fontID, layer.FontFeatures)
+	}
 
-		if len(shadows) > 0 {
-			shadowLayer := *layer
-			shadowLayer.TextShadows = shadows
-			segBox := layout.Box{Text: segText, X: x, Y: tp.text.Y - ascent}
-			r.drawTextShadows(&shadowLayer, segText, &segBox, fontID, ascent)
+	for _, rs := range resolved {
+		if len(rs.shadows) == 0 {
+			continue
 		}
+		shadowLayer := *layer
+		shadowLayer.TextShadows = rs.shadows
+		segBox := layout.Box{Text: rs.text, X: rs.x, Y: tp.text.Y - ascent}
+		r.drawTextShadows(&shadowLayer, rs.text, &segBox, fontID, ascent)
+	}
 
-		tp.paintSegmentGlyphs(fontID, layer, segText, x, ascent, descent, fillPaint, strokePaint, strokeWidth)
-
-		x += segWidth
+	for _, rs := range resolved {
+		tp.paintSegmentGlyphs(fontID, layer, rs.text, rs.x, ascent, descent, rs.fillPaint, rs.strokePaint, rs.strokeWidth)
 	}
 }
 
@@ -96,7 +128,12 @@ func (tp *svgTextPainter) paint() {
 // glyph, confirmed via font dump, is a single axis-aligned rectangular
 // contour spanning the full em advance box with zero side-bearing),
 // the only font any of this ticket's 5 target reftests stroke SVG text
-// with. A real per-glyph outline stroke (correct for arbitrary fonts)
+// with. Gated behind layer.FontAhem: for any other font the glyph
+// contour isn't a full-advance-box rectangle, so this ring would draw a
+// wrong, glyph-unrelated box rather than an approximation of the real
+// outline — skipping it (fill-only, no stroke) is a strictly smaller
+// error than drawing a shape that doesn't correspond to the glyph at
+// all. A real per-glyph outline stroke (correct for arbitrary fonts)
 // needs a mazzy glyph-path API this ticket doesn't add — out of scope
 // per the ticket plan's "no per-character positioning" cut, and mazzy
 // is a read-only sibling project for this ticket.
@@ -110,7 +147,7 @@ func (tp *svgTextPainter) paintSegmentGlyphs(fontID int32, layer *PaintLayer, se
 		r.drawTextStr(segText, fontID, x, baselineY, layer.FontFeatures)
 	}
 
-	if strokePaint.Kind == css.SVGPaintNone || strokeWidth <= 0 {
+	if strokePaint.Kind == css.SVGPaintNone || strokeWidth <= 0 || !layer.FontAhem {
 		return
 	}
 	setDCColor(dc, strokePaint.Color)
@@ -239,51 +276,80 @@ type svgTextSegment struct {
 	selected   bool
 }
 
-// svgFirstTextNodeChild returns elt's first direct html.TextNode
-// child, or nil if elt is nil or has none. SVGText.Text (via
-// ElementAdapter.TextContent()) concatenates ALL direct text-node
-// children, but this ticket's 5 targets — and SVGText's own scope cut,
-// see its doc comment — only ever have exactly one, so the first
-// suffices as the node selectionOverlapForTextNode's byte-offset math
-// runs against.
-func svgFirstTextNodeChild(elt *html.Node) *html.Node {
+// svgAllTextNodeChildren returns elt's direct html.TextNode children,
+// in DOM order — the SAME order ElementAdapter.TextContent()
+// concatenates them in, so the Nth node here corresponds exactly to
+// the Nth run of bytes in that concatenation. A `<text>` split by a
+// comment/entity (e.g. `<text>a<!--c-->b</text>`) has TWO text-node
+// children producing SVGText.Text == "ab"; selection must be tested
+// against EACH node individually (selectionOverlapForTextNode's
+// byte-offset math is node-local), not just the first, or a selection
+// starting inside the second node would be silently missed (LOU-345
+// PR #156, CodeRabbit).
+func svgAllTextNodeChildren(elt *html.Node) []*html.Node {
 	if elt == nil {
 		return nil
 	}
+	var out []*html.Node
 	for _, c := range elt.Children {
 		if c != nil && c.Type == html.TextNode {
-			return c
+			out = append(out, c)
 		}
 	}
-	return nil
+	return out
 }
 
-// svgTextSelectionSegments splits text into selected/unselected byte
-// ranges using the SAME selectionOverlapForTextNode overlap-detection
-// helper drawText's computeSelectionSegments (selection_paint.go)
-// uses for ordinary CSS text — but reached directly via textNode
-// rather than through findOriginatingTextNode's Box-based lookup,
-// because SVG text painting is a structurally separate walk
-// (paintSVGNode) that never builds a layout.Box for `<text>` at all.
+// svgTextSelectionSegments splits text (SVGText.Text, the concatenation
+// of every direct text-node child of originating) into selected/
+// unselected byte ranges using the SAME selectionOverlapForTextNode
+// overlap-detection helper drawText's computeSelectionSegments
+// (selection_paint.go) uses for ordinary CSS text — but reached
+// directly via originating's own text-node children rather than
+// through findOriginatingTextNode's Box-based lookup, because SVG text
+// painting is a structurally separate walk (paintSVGNode) that never
+// builds a layout.Box for `<text>` at all.
+//
+// Each text-node child is tested independently (its own node-local
+// [0, len(node.Text)) span) and the result mapped into text's GLOBAL
+// byte offsets by tracking how many bytes of text the preceding
+// children already accounted for — text is the concatenation in the
+// same order svgAllTextNodeChildren returns, so this offset bookkeeping
+// stays in lockstep with TextContent()'s own concatenation.
+//
 // Returns a single whole-text unselected segment when there's no
-// active selection Range, textNode is nil, or the Range doesn't
-// overlap this text node.
-func svgTextSelectionSegments(r *Renderer, textNode *html.Node, text string) []svgTextSegment {
+// active selection Range, originating is nil, or the Range doesn't
+// overlap any child node.
+func svgTextSelectionSegments(r *Renderer, originating *html.Node, text string) []svgTextSegment {
 	whole := []svgTextSegment{{start: 0, end: len(text)}}
-	if r.selectionRange == nil || textNode == nil {
+	if r.selectionRange == nil || originating == nil {
 		return whole
 	}
-	selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, textNode, 0, len(text))
-	if !ok {
+	var selectedSpans []svgTextSegment
+	globalOffset := 0
+	for _, node := range svgAllTextNodeChildren(originating) {
+		nodeLen := len(node.Text)
+		if selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, node, 0, nodeLen); ok {
+			selectedSpans = append(selectedSpans, svgTextSegment{
+				start: globalOffset + selStart,
+				end:   globalOffset + selEnd,
+			})
+		}
+		globalOffset += nodeLen
+	}
+	if len(selectedSpans) == 0 {
 		return whole
 	}
 	var segs []svgTextSegment
-	if selStart > 0 {
-		segs = append(segs, svgTextSegment{start: 0, end: selStart})
+	cursor := 0
+	for _, span := range selectedSpans {
+		if span.start > cursor {
+			segs = append(segs, svgTextSegment{start: cursor, end: span.start})
+		}
+		segs = append(segs, svgTextSegment{start: span.start, end: span.end, selected: true})
+		cursor = span.end
 	}
-	segs = append(segs, svgTextSegment{start: selStart, end: selEnd, selected: true})
-	if selEnd < len(text) {
-		segs = append(segs, svgTextSegment{start: selEnd, end: len(text)})
+	if cursor < len(text) {
+		segs = append(segs, svgTextSegment{start: cursor, end: len(text)})
 	}
 	return segs
 }

@@ -96,10 +96,12 @@ func (t *SVGText) ObjectBoundingBox() geometry.RectF {
 	return geometry.RectF{}
 }
 
-// LocalTransform returns identity. `<text>` doesn't carry its own SVG
-// `transform` in the 5 target reftests; a future phase can add
-// transform-attribute parsing the same way SVGContainer does if a
-// broader-corpus test needs it.
+// LocalTransform returns identity. tryBuildSVGText (svg_root.go) rejects
+// any `<text>` carrying its own `transform` attribute back to the
+// SVGContainer fallback path, so an SVGText instance never actually
+// needs to represent one; a future phase can add transform-attribute
+// parsing the same way SVGContainer does if a broader-corpus test
+// needs it.
 func (t *SVGText) LocalTransform() geometry.AffineTransform {
 	return geometry.Identity()
 }

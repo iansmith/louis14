@@ -326,14 +326,20 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 //
 // nil is returned when NewSVGText declines the element (it has
 // SVG-element children like `<tspan>`, out of scope — see NewSVGText's
-// doc comment) or when the resolved style carries a filter SVGText's
-// painter can't apply (see svgTextHasUnsupportedFilter). Falling back
-// rather than returning nil directly preserves SVGContainer's
-// container-level filter dispatch, which the pre-existing behavior and
-// several WPT references depend on.
+// doc comment), when it carries its own `transform` attribute (SVGText's
+// LocalTransform is hardcoded identity — see SVGText's doc comment — so
+// honoring a real transform would require silently ignoring it), or when
+// the resolved style carries a filter SVGText's painter can't apply (see
+// svgTextHasUnsupportedFilter). Falling back rather than returning nil
+// directly preserves SVGContainer's container-level transform/filter
+// dispatch, which the pre-existing behavior and several WPT references
+// depend on.
 func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver func(ElementAdapter) *css.Style) *SVGText {
 	svgText := NewSVGText(elt, lengthCtx)
 	if svgText == nil {
+		return nil
+	}
+	if _, ok := elt.Attribute("transform"); ok {
 		return nil
 	}
 	if styleResolver != nil {
