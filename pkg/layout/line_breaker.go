@@ -657,11 +657,24 @@ func (lb *LineBreaker) breakTextAtWord(
 	fitted := 0
 	usedWidth := 0.0
 
+	// isContinuation is true when this item's first word continues a word
+	// that started in a PRIOR item, i.e. there is NO break opportunity at
+	// textStart (CSS Text/UAX#14): the character immediately before it in
+	// the shared TextContent is non-whitespace. Item/element boundaries
+	// (e.g. adjacent unspaced <span>s) are invisible to break-opportunity
+	// detection — mirroring Blink's break_iterator_ over one global
+	// text_content_ rather than per-item independence (LOU-346).
+	isContinuation := len(line.Results) > 0 && !lb.startsAfterBreakOpportunity(textStart)
+
 	// If remaining space is effectively zero and the line already has content,
 	// don't even try to fit the first word — end the line immediately.
 	// This prevents a single-word text item from being force-added to an
 	// already-full line (the fitted>0 guard only applies to subsequent words).
-	if remaining <= 0 && len(line.Results) > 0 {
+	// Exception: if this item's first word continues a word already begun on
+	// this line, there is no break opportunity here at all — the word must
+	// stay on the line regardless of overflow (CSS Text 3 §4.1 unbreakable
+	// word), so fall through to the word loop instead of ending the line.
+	if remaining <= 0 && len(line.Results) > 0 && !isContinuation {
 		lb.rewindUnbreakableTail(line)
 		return true
 	}
@@ -743,6 +756,22 @@ func (lb *LineBreaker) breakTextAtWord(
 		if fitted == 0 && len(line.Results) == 0 && usedWidth+wordWidth > remaining &&
 			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
 			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+		}
+
+		// i==0 continuation case: this item's first word has no break
+		// opportunity before it (isContinuation), so it cannot end the line
+		// here even if it overflows — it must glue onto the word already on
+		// the line, the same way an unbreakable first word on an empty line
+		// is force-included below (CSS Text 3 §4.1). This composes across an
+		// arbitrary run of adjacent unspaced items: each subsequent item's
+		// isContinuation is independently re-derived from its own textStart.
+		if i == 0 && isContinuation && usedWidth+wordWidth > remaining {
+			usedWidth += wordWidth
+			fitted++
+			if lb.mode == LineBreakerMinContent {
+				break
+			}
+			continue
 		}
 
 		if usedWidth+wordWidth > remaining && (fitted > 0 || line.HasContent) {
