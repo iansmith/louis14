@@ -71,3 +71,13 @@ css-flexbox/flex-container-max-content-001.html	Blink-faithful failure: idealize
 #     unless fill is literally currentcolor). Verified via wpt.fyi search API,
 #     2026-07-01. See LOU-345.
 css-pseudo/svg-text-selection-002.html	Blink-faithful failure: ::selection color doesn't override SVG text fill; Chrome 151.0.7922.4 and Edge 151.0.4119.1 both FAIL, only Firefox 154.0a1 passes @ wpt.fyi (LOU-345)
+
+# --- css-pseudo: ::first-letter punctuation/digraph text selection cases
+#     Chrome 152.0.7923.0 (wpt.fyi master run 6255051919327232) and Edge
+#     151.0.4119.1 (master label run) both FAIL these two tests; Firefox
+#     154.0a1 (run 5087173069242368) passes. louis14 matches Blink's
+#     FirstLetterPseudoElement text-selection rules (FirstLetterLength
+#     punctuation handling / no digraph-aware first-letter). Verified via
+#     wpt.fyi search API with pinned master run IDs, 2026-07-01. See LOU-359.
+css-pseudo/first-letter-digraph.html	Blink-faithful failure: digraph-aware ::first-letter is Gecko-only; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
+css-pseudo/first-letter-punctuation-and-space.html	Blink-faithful failure: ::first-letter punctuation-and-space selection; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
