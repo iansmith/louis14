@@ -530,3 +530,52 @@ func TestComputeSelectionSegments_PartialNonCoextensiveOverlap(t *testing.T) {
 		t.Errorf("[10,15) (selection-only) background = %+v, want selection's cyan", selectionOnly.backgroundColor)
 	}
 }
+
+// TestMaxTextShadowExtent covers LOU-348's drawText segment-clip padding:
+// maxTextShadowExtent must return the largest offset+blur reach on either
+// axis so a segment's paint clip never cuts off a text-shadow (CSS Text
+// Decor 4 §text-shadow-property offsets are unbounded relative to the
+// glyph box — highlight-painting-currentcolor-004's `text-shadow: 0 2em
+// red, 0 4em currentColor` and target-text-shadow-horizontal's `0.25em
+// 0.25em` diagonal offset are both real target tests that regressed to
+// FAIL during LOU-348 development before this padding was added).
+func TestMaxTextShadowExtent(t *testing.T) {
+	tests := []struct {
+		name    string
+		shadows []css.TextShadow
+		want    float64
+	}{
+		{name: "nil", shadows: nil, want: 0},
+		{name: "empty", shadows: []css.TextShadow{}, want: 0},
+		{
+			name:    "single shadow, offset only",
+			shadows: []css.TextShadow{{OffsetX: 3, OffsetY: 4}},
+			want:    4,
+		},
+		{
+			name:    "negative offsets use magnitude",
+			shadows: []css.TextShadow{{OffsetX: -10, OffsetY: -2}},
+			want:    10,
+		},
+		{
+			name:    "blur adds to the offset reach",
+			shadows: []css.TextShadow{{OffsetX: 5, OffsetY: 0, Blur: 3}},
+			want:    8,
+		},
+		{
+			name: "largest of multiple shadows wins",
+			shadows: []css.TextShadow{
+				{OffsetX: 1, OffsetY: 1},
+				{OffsetX: 0, OffsetY: 64, Blur: 3}, // e.g. `0 4em` at 16px font
+			},
+			want: 67,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := maxTextShadowExtent(tt.shadows); got != tt.want {
+				t.Errorf("maxTextShadowExtent(%+v) = %v, want %v", tt.shadows, got, tt.want)
+			}
+		})
+	}
+}
