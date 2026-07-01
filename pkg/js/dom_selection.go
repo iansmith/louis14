@@ -39,6 +39,9 @@ func newRangeProxy(ctx *domContext) *goja.Object {
 	r := &html.Range{}
 	proxy := ctx.vm.NewDynamicObject(&rangeAccessor{ctx: ctx, r: r})
 	ctx.ranges = append(ctx.ranges, rangeEntry{proxy: proxy, r: r})
+	// Register for live-range boundary adjustment on node removal
+	// (Document.LiveRanges — the Blink Document::AttachRange analog).
+	ctx.doc.LiveRanges = append(ctx.doc.LiveRanges, r)
 	return proxy
 }
 
@@ -132,6 +135,82 @@ func (ra *rangeAccessor) Get(key string) goja.Value {
 			ra.r.EndOffset = int(call.Arguments[1].ToInteger())
 			return goja.Undefined()
 		})
+	case "surroundContents":
+		// Range#surroundContents(newParent) — WHATWG DOM §4.10; mirrors
+		// Blink Range::surroundContents (core/dom/range.cc @ Chromium
+		// 906a32d8634edf17db094507908f439bd9b52de5): extract the range's
+		// contents, empty newParent, insert newParent at the range start,
+		// re-append the extracted contents into it, then select newParent.
+		//
+		// louis14 supports the whole-child-containment shape (both boundary
+		// points in the SAME element container) — the form the DOM spec's
+		// step-1 partial-containment check leaves for element content and
+		// the one first-letter-of-html-root-refcrash.html exercises.
+		// Partial text-node boundaries are not modeled (no extractContents
+		// text splitting yet); those return undefined un-mutated.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				panic(vm.NewTypeError("Failed to execute 'surroundContents' on 'Range': 1 argument required"))
+			}
+			newParent := ra.ctx.unwrapNode(call.Arguments[0])
+			if newParent == nil {
+				panic(vm.NewTypeError("Failed to execute 'surroundContents' on 'Range': parameter 1 is not a Node"))
+			}
+			r := ra.r
+			container := r.StartContainer
+			if container == nil || container != r.EndContainer || container.Type == html.TextNode {
+				return goja.Undefined() // unsupported boundary shape
+			}
+			s, e := r.StartOffset, r.EndOffset
+			if s < 0 {
+				s = 0
+			}
+			if e > len(container.Children) {
+				e = len(container.Children)
+			}
+			if s > e {
+				return goja.Undefined()
+			}
+
+			// Step "extract": detach the contained children (newParent may
+			// itself live inside this subtree — the refcrash flow wraps the
+			// head into a style element the head contains).
+			extracted := append([]*html.Node(nil), container.Children[s:e]...)
+			container.Children = append(container.Children[:s:s], container.Children[e:]...)
+			for _, c := range extracted {
+				c.Parent = nil
+			}
+
+			// Step "empty newParent", then detach it from wherever it lives.
+			newParent.Children = nil
+			if newParent.Parent != nil {
+				newParent.Parent.RemoveChild(newParent)
+			}
+
+			// Step "insert newParent" at the (collapsed) range start.
+			if s > len(container.Children) {
+				s = len(container.Children)
+			}
+			rest := append([]*html.Node{newParent}, container.Children[s:]...)
+			container.Children = append(container.Children[:s:s], rest...)
+			newParent.Parent = container
+
+			// Step "append the fragment into newParent".
+			for _, c := range extracted {
+				if c == newParent {
+					continue
+				}
+				c.Parent = newParent
+				newParent.Children = append(newParent.Children, c)
+			}
+
+			// Step "select newParent".
+			r.StartContainer = container
+			r.StartOffset = s
+			r.EndContainer = container
+			r.EndOffset = s + 1
+			return goja.Undefined()
+		})
 	}
 	return goja.Undefined()
 }
@@ -141,7 +220,8 @@ func (ra *rangeAccessor) Set(key string, val goja.Value) bool { return false }
 func (ra *rangeAccessor) Has(key string) bool {
 	switch key {
 	case "startContainer", "startOffset", "endContainer", "endOffset",
-		"collapsed", "selectNodeContents", "setStart", "setEnd":
+		"collapsed", "selectNodeContents", "setStart", "setEnd",
+		"surroundContents":
 		return true
 	}
 	return false
@@ -151,7 +231,7 @@ func (ra *rangeAccessor) Delete(key string) bool { return false }
 
 func (ra *rangeAccessor) Keys() []string {
 	return []string{"startContainer", "startOffset", "endContainer", "endOffset",
-		"collapsed", "selectNodeContents", "setStart", "setEnd"}
+		"collapsed", "selectNodeContents", "setStart", "setEnd", "surroundContents"}
 }
 
 // selectionAccessor implements goja.DynamicObject for window.getSelection().
@@ -200,6 +280,29 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 			}
 			return vm.NewDynamicObject(&rangeAccessor{ctx: sa.ctx, r: sa.ctx.doc.Selection})
 		})
+	case "selectAllChildren":
+		// Selection#selectAllChildren(node) — Selection API §5.5; mirrors
+		// Blink DOMSelection::selectAllChildren
+		// (core/editing/dom_selection.cc @ Chromium
+		// 906a32d8634edf17db094507908f439bd9b52de5): the selection becomes
+		// a range from (node, 0) to (node, number of children). Replaces
+		// the single active Range like addRange does.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				panic(vm.NewTypeError("Failed to execute 'selectAllChildren' on 'Selection': 1 argument required"))
+			}
+			node := sa.ctx.unwrapNode(call.Arguments[0])
+			if node == nil {
+				panic(vm.NewTypeError("Failed to execute 'selectAllChildren' on 'Selection': parameter 1 is not a Node"))
+			}
+			sa.ctx.doc.Selection = &html.Range{
+				StartContainer: node,
+				StartOffset:    0,
+				EndContainer:   node,
+				EndOffset:      len(node.Children),
+			}
+			return goja.Undefined()
+		})
 	}
 	return goja.Undefined()
 }
@@ -208,7 +311,8 @@ func (sa *selectionAccessor) Set(key string, val goja.Value) bool { return false
 
 func (sa *selectionAccessor) Has(key string) bool {
 	switch key {
-	case "rangeCount", "addRange", "removeAllRanges", "getRangeAt":
+	case "rangeCount", "addRange", "removeAllRanges", "getRangeAt",
+		"selectAllChildren":
 		return true
 	}
 	return false
@@ -217,7 +321,7 @@ func (sa *selectionAccessor) Has(key string) bool {
 func (sa *selectionAccessor) Delete(key string) bool { return false }
 
 func (sa *selectionAccessor) Keys() []string {
-	return []string{"rangeCount", "addRange", "removeAllRanges", "getRangeAt"}
+	return []string{"rangeCount", "addRange", "removeAllRanges", "getRangeAt", "selectAllChildren"}
 }
 
 // registerSelectionAPI wires document.createRange, the Range constructor
