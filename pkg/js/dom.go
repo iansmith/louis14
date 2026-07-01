@@ -859,60 +859,10 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		// offset and write them directly into the element's inline style attribute,
 		// so the second layout pass in helpers.go picks up the mutation.
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			// Parse keyframes argument. Two forms per Web Animations §5.2
-			// (Blink EffectInput::ParseKeyframesArgument):
-			//   array form — [{property: value, ...}, ...], one object per
-			//   keyframe, offsets distributed evenly when omitted;
-			//   property-indexed form — {property: value-or-array, ...}, each
-			//   property carrying its own value list with per-property even
-			//   offset distribution.
 			var kfDecls []map[string]string
 			var propIndexed map[string][]string
 			if len(call.Arguments) > 0 {
-				arr := call.Arguments[0].ToObject(vm)
-				lenVal := arr.Get("length")
-				if lenVal != nil && !goja.IsUndefined(lenVal) {
-					n := int(lenVal.ToInteger())
-					for i := 0; i < n; i++ {
-						item := arr.Get(strconv.Itoa(i))
-						if item == nil || goja.IsUndefined(item) || goja.IsNull(item) {
-							continue
-						}
-						itemObj := item.ToObject(vm)
-						decl := make(map[string]string)
-						for _, k := range itemObj.Keys() {
-							decl[k] = itemObj.Get(k).String()
-						}
-						kfDecls = append(kfDecls, decl)
-					}
-				} else if arr != nil {
-					// Property-indexed keyframes: {opacity: [0.1, 0.9],
-					// color: 'green', ...}. Each member value is a single
-					// value or a list of values for that property.
-					propIndexed = make(map[string][]string)
-					for _, k := range arr.Keys() {
-						if k == "offset" || k == "easing" || k == "composite" {
-							continue
-						}
-						v := arr.Get(k)
-						if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
-							continue
-						}
-						var vals []string
-						vObj := v.ToObject(vm)
-						if vLen := vObj.Get("length"); vLen != nil && !goja.IsUndefined(vLen) {
-							vn := int(vLen.ToInteger())
-							for i := 0; i < vn; i++ {
-								vals = append(vals, vObj.Get(strconv.Itoa(i)).String())
-							}
-						} else {
-							vals = []string{v.String()}
-						}
-						if len(vals) > 0 {
-							propIndexed[camelToKebab(k)] = vals
-						}
-					}
-				}
+				kfDecls, propIndexed = parseKeyframesArgument(vm, call.Arguments[0])
 			}
 
 			// Parse options: number → duration in ms; object → {duration,
@@ -971,23 +921,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 				return rules
 			}
 
-			kfRules := makeRules(kfDecls)
-			// Property-indexed form: each property distributes its own value
-			// list evenly across [0,1]; a single value is a to-frame
-			// (offset 1, from synthesized by BuildKeyframeEffect).
-			for prop, vals := range propIndexed {
-				for i, v := range vals {
-					offset := 1.0
-					if len(vals) > 1 {
-						offset = float64(i) / float64(len(vals)-1)
-					}
-					pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
-					kfRules = append(kfRules, css.KeyframeRule{
-						Stop:         pct,
-						Declarations: map[string]string{prop: v},
-					})
-				}
-			}
+			kfRules := append(makeRules(kfDecls), propertyIndexedKeyframeRules(propIndexed)...)
 			effect := css.BuildKeyframeEffect(kfRules, nil)
 
 			// Return an Animation object backed by animationAccessor.
@@ -1344,6 +1278,109 @@ func newElementArray(vm *goja.Runtime, nodes []*html.Node) goja.Value {
 	return ctx.elementArray(nodes)
 }
 
+// mergeInlineStyle merges property values into an element's inline style
+// attribute (the element-level animation channel — see animationAccessor).
+func mergeInlineStyle(node *html.Node, values map[string]string) {
+	if node.Attributes == nil {
+		node.Attributes = make(map[string]string)
+	}
+	inline := parseInlineStyle(node.Attributes["style"])
+	for prop, v := range values {
+		inline[prop] = v
+	}
+	node.Attributes["style"] = serializeInlineStyle(inline)
+}
+
+// parseKeyframesArgument parses Element.animate()'s keyframes argument. Two
+// forms per Web Animations §5.2 (Blink EffectInput::ParseKeyframesArgument):
+//
+//	array form — [{property: value, ...}, ...], one object per keyframe,
+//	offsets distributed evenly when omitted (returned as decls);
+//	property-indexed form — {property: value-or-array, ...}, each property
+//	carrying its own value list (returned as propIndexed, keyed by
+//	kebab-case property name).
+func parseKeyframesArgument(vm *goja.Runtime, arg goja.Value) (decls []map[string]string, propIndexed map[string][]string) {
+	arr := arg.ToObject(vm)
+	if arr == nil {
+		return nil, nil
+	}
+	if lenVal := arr.Get("length"); lenVal != nil && !goja.IsUndefined(lenVal) {
+		return parseArrayKeyframes(vm, arr, int(lenVal.ToInteger())), nil
+	}
+	return nil, parsePropertyIndexedKeyframes(vm, arr)
+}
+
+// parseArrayKeyframes parses the array keyframe form: one {property: value}
+// object per keyframe.
+func parseArrayKeyframes(vm *goja.Runtime, arr *goja.Object, n int) []map[string]string {
+	var decls []map[string]string
+	for i := 0; i < n; i++ {
+		item := arr.Get(strconv.Itoa(i))
+		if item == nil || goja.IsUndefined(item) || goja.IsNull(item) {
+			continue
+		}
+		itemObj := item.ToObject(vm)
+		decl := make(map[string]string)
+		for _, k := range itemObj.Keys() {
+			decl[k] = itemObj.Get(k).String()
+		}
+		decls = append(decls, decl)
+	}
+	return decls
+}
+
+// parsePropertyIndexedKeyframes parses the property-indexed keyframe form:
+// {opacity: [0.1, 0.9], color: 'green', ...}. Each member value is a single
+// value or a list of values for that property; keys are returned kebab-cased.
+func parsePropertyIndexedKeyframes(vm *goja.Runtime, arr *goja.Object) map[string][]string {
+	propIndexed := make(map[string][]string)
+	for _, k := range arr.Keys() {
+		if k == "offset" || k == "easing" || k == "composite" {
+			continue
+		}
+		v := arr.Get(k)
+		if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+			continue
+		}
+		var vals []string
+		vObj := v.ToObject(vm)
+		if vLen := vObj.Get("length"); vLen != nil && !goja.IsUndefined(vLen) {
+			vn := int(vLen.ToInteger())
+			for i := 0; i < vn; i++ {
+				vals = append(vals, vObj.Get(strconv.Itoa(i)).String())
+			}
+		} else {
+			vals = []string{v.String()}
+		}
+		if len(vals) > 0 {
+			propIndexed[camelToKebab(k)] = vals
+		}
+	}
+	return propIndexed
+}
+
+// propertyIndexedKeyframeRules converts the property-indexed keyframe form
+// into KeyframeRule stops: each property distributes its own value list
+// evenly across [0,1]; a single value is a to-frame (offset 1, the from
+// keyframe is synthesized by BuildKeyframeEffect).
+func propertyIndexedKeyframeRules(propIndexed map[string][]string) []css.KeyframeRule {
+	var rules []css.KeyframeRule
+	for prop, vals := range propIndexed {
+		for i, v := range vals {
+			offset := 1.0
+			if len(vals) > 1 {
+				offset = float64(i) / float64(len(vals)-1)
+			}
+			pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
+			rules = append(rules, css.KeyframeRule{
+				Stop:         pct,
+				Declarations: map[string]string{prop: v},
+			})
+		}
+	}
+	return rules
+}
+
 // animationAccessor implements goja.DynamicObject for Animation objects
 // returned by Element.animate().
 //
@@ -1455,15 +1492,7 @@ func (a *animationAccessor) applyAtTime(ms float64) {
 	}
 	switch a.pseudoElement {
 	case "":
-		// Merge into the element's inline style.
-		if a.node.Attributes == nil {
-			a.node.Attributes = make(map[string]string)
-		}
-		inline := parseInlineStyle(a.node.Attributes["style"])
-		for prop, v := range values {
-			inline[prop] = v
-		}
-		a.node.Attributes["style"] = serializeInlineStyle(inline)
+		mergeInlineStyle(a.node, values)
 	case "::marker":
 		// Store UNFILTERED — Blink filters to marker-valid properties at
 		// style application, not at animation creation (see the
