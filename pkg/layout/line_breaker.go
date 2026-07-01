@@ -259,6 +259,79 @@ func NewLineBreaker(
 	}
 }
 
+// startsAfterBreakOpportunity reports whether there IS a valid line-break
+// opportunity immediately before the given byte offset into the shared
+// InlineItemsData.TextContent (or the offset is the start of the run) —
+// i.e. the character at textStart-1 is whitespace, so an InlineItem starting
+// at textStart begins a fresh word. The caller negates this to detect a
+// continuation: a word glued across an item boundary with no break between.
+//
+// This is the piece Blink gets "for free" from running one global
+// break_iterator_ over one global text_content_ (LineBreaker ctor,
+// core/layout/inline/line_breaker.cc ~line 487-497; ComputeCanBreakAfter
+// ~line 269-274, both @ b5c08e57c55fe62f7403812c91f4467a19c4f205): a break
+// query is answered purely from the character at a global text offset, with
+// no regard to which InlineItem/DOM element produced it. louis14 measures
+// each item's local text slice independently in handleText/breakTextAtWord,
+// so this query must be made explicit: item/element boundaries (including
+// zero-width OpenTag/CloseTag items, which consume no TextContent bytes)
+// have zero bearing on whether a break exists at textStart.
+//
+// U+FFFC — the object-replacement character atomic inlines contribute to
+// TextContent (inline_item.go:315) — also counts as a break opportunity:
+// UAX#14 gives replaced content (class CB) break opportunities on both
+// sides by default, so text following an <img> starts a fresh word; only
+// text-to-text adjacency glues.
+func (lb *LineBreaker) startsAfterBreakOpportunity(textStart int) bool {
+	if textStart <= 0 {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:textStart])
+	return isBreakOpportunityRune(r)
+}
+
+// isBreakOpportunityRune reports whether r itself marks a line-break
+// opportunity boundary in TextContent: collapsible whitespace, U+FFFC
+// (replaced content, UAX#14 class CB — see startsAfterBreakOpportunity's
+// doc comment), or U+200B (ZERO WIDTH SPACE, UAX#14 class ZW — an
+// invisible explicit break opportunity, absent from Go's unicode.IsSpace
+// and therefore from isCSSCollapsibleSpace). NBSP stays excluded (class
+// GL glue) via isCSSCollapsibleSpace's own carve-out.
+func isBreakOpportunityRune(r rune) bool {
+	return isCSSCollapsibleSpace(r) || r == '\uFFFC' || r == '\u200B'
+}
+
+// gluedRunStartsLine reports whether the unbreakable run containing
+// textStart began at (or before) the line's own first non-marker text
+// content — i.e. the glued word IS the line, with no earlier break
+// opportunity to fall back to. Only then may an overflowing continuation
+// be force-included in place (CSS Text 3 §4.1's overflowing unbreakable
+// word); a glued word starting mid-line must instead end the line at an
+// earlier opportunity (see breakTextAtWord's continuation comment).
+//
+// Marker items are skipped when locating the line's first content: an
+// inside ::marker prefix ("1. ") is trailable furniture before the text
+// (mirroring Blink's IsTrailableItemType treatment in
+// rewindUnbreakableTail), and its trailing space is a break opportunity,
+// so a glued run right after a marker still starts the line for this
+// purpose.
+func (lb *LineBreaker) gluedRunStartsLine(line *LineInfo, textStart int) bool {
+	head := textStart
+	for head > 0 {
+		r, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:head])
+		if isBreakOpportunityRune(r) {
+			break
+		}
+		head -= size
+	}
+	for _, res := range line.Results {
+		if res.TextEnd > res.TextStart && !isInsideMarkerItem(res.Item) {
+			return head <= res.TextStart
+		}
+	}
+	return true
+}
+
 // NextLine produces the next line of content. Returns false when all
 // content has been consumed.
 func (lb *LineBreaker) NextLine(line *LineInfo) bool {
@@ -633,11 +706,39 @@ func (lb *LineBreaker) breakTextAtWord(
 	fitted := 0
 	usedWidth := 0.0
 
+	// isContinuation is true when this item's first word continues a word
+	// that started in a PRIOR item, i.e. there is NO break opportunity at
+	// textStart (CSS Text/UAX#14): the character immediately before it in
+	// the shared TextContent is non-whitespace. Item/element boundaries
+	// (e.g. adjacent unspaced <span>s) are invisible to break-opportunity
+	// detection — mirroring Blink's break_iterator_ over one global
+	// text_content_ rather than per-item independence (LOU-346).
+	//
+	// A continuation is force-included on overflow ONLY when the glued word
+	// starts the line's own content (gluedRunStartsLine) — the unbreakable
+	// word IS the line, so it overflows in place per CSS Text 3 §4.1,
+	// exactly like the single-item unbreakable-first-word case below. When
+	// the glued word starts MID-line (earlier break opportunities exist on
+	// the line), the spec-correct move is rewinding the word's already-
+	// placed head to the next line as a unit; louis14 has no cross-item
+	// break-opportunity rewind yet (rewindUnbreakableTail is marker-only),
+	// so this falls through to the pre-existing end-line-at-item-boundary
+	// behavior — wrong per spec, but identical to master and exercised by
+	// zero corpus tests (verified: forcing inclusion here instead regressed
+	// css-text-decor/text-emphasis-punctuation-1.html from 0-diff to 1.7%).
+	// The rewind gap is tracked as its own spin-out.
+	isContinuation := len(line.Results) > 0 && !lb.startsAfterBreakOpportunity(textStart)
+	glueForcible := isContinuation && lb.gluedRunStartsLine(line, textStart)
+
 	// If remaining space is effectively zero and the line already has content,
 	// don't even try to fit the first word — end the line immediately.
 	// This prevents a single-word text item from being force-added to an
 	// already-full line (the fitted>0 guard only applies to subsequent words).
-	if remaining <= 0 && len(line.Results) > 0 {
+	// Exception: if this item's first word continues the word the line
+	// STARTED with, there is no break opportunity anywhere on the line — the
+	// word must stay regardless of overflow (CSS Text 3 §4.1), so fall
+	// through to the word loop instead of ending the line.
+	if remaining <= 0 && len(line.Results) > 0 && !glueForcible {
 		lb.rewindUnbreakableTail(line)
 		return true
 	}
@@ -719,6 +820,33 @@ func (lb *LineBreaker) breakTextAtWord(
 		if fitted == 0 && len(line.Results) == 0 && usedWidth+wordWidth > remaining &&
 			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
 			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+		}
+
+		// i==0 continuation case: this item's first word has no break
+		// opportunity before it (isContinuation), so it cannot end the line
+		// here even if it overflows — it must glue onto the word already on
+		// the line, the same way an unbreakable first word on an empty line
+		// is force-included below (CSS Text 3 §4.1). This composes across an
+		// arbitrary run of adjacent unspaced items: each subsequent item's
+		// isContinuation is independently re-derived from its own textStart.
+		if i == 0 && glueForcible && usedWidth+wordWidth > remaining {
+			// Under overflow-wrap:anywhere/break-word the glued word has
+			// legal break opportunities INSIDE it, so force-including the
+			// whole overflow is wrong — fill the remaining space at
+			// character granularity instead, mirroring how Blink's
+			// kBreakCharacter break type makes the same global iterator
+			// yield per-character opportunities. (word-break:break-all and
+			// min-content-mode anywhere never reach this loop — handleText
+			// dispatches them to breakTextAtCharacter earlier.)
+			if overflowWrap == "anywhere" || overflowWrap == "break-word" {
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+			}
+			usedWidth += wordWidth
+			fitted++
+			if lb.mode == LineBreakerMinContent {
+				break
+			}
+			continue
 		}
 
 		if usedWidth+wordWidth > remaining && (fitted > 0 || line.HasContent) {
