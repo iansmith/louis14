@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"math"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	if (disp == css.DisplayTable || disp == css.DisplayInlineTable) &&
 		style.GetTableLayout() == css.TableLayoutFixed &&
 		hasPercentLogicalWidth(style, wdm) {
-		minResult := measureBlockMinMax(node, ctx, space)
+		minResult := measureBlockMinMax(node, ctx, space, false)
 		result := MinMaxSizes{
 			MinContent: minResult.MinContent,
 			MaxContent: kTableMaxInlineSize,
@@ -168,22 +169,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	}
 
 	// Compute intrinsic sizes based on children (content-box).
-	var result MinMaxSizes
-
-	display := style.GetDisplay()
-	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
-		// Flex containers: use flex-specific min/max computation.
-		result = measureFlexMinMax(node, ctx, space)
-	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
-		// Grid containers: track-template sum plus item contributions.
-		result = measureGridMinMax(node, ctx, space)
-	} else if hasOnlyInlineChildren(node) {
-		// Inline formatting context: measure via line breaker.
-		result = measureInlineMinMax(node, ctx, space)
-	} else {
-		// Block formatting context: take max of children's sizes.
-		result = measureBlockMinMax(node, ctx, space)
-	}
+	result := measureNodeContentMinMax(node, ctx, style, wdm, space)
 
 	// CSS Sizing 4: aspect-ratio on non-replaced elements.
 	// When an element has a preferred aspect ratio and definite block-size
@@ -412,17 +398,154 @@ func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, res
 
 // measureNodeContentMinMax measures the content-based min/max intrinsic sizes
 // of a node (ignoring its own declared inline-size, min-width, and max-width).
-// Used to evaluate fit-content() constraints which need the children's sizes.
+// Single dispatch point for the per-display-type measurement, shared by
+// ComputeMinMaxSizes, computeContentMinMaxSizes, and the fit-content()
+// evaluation. Mirrors Blink's BlockNode::ComputeMinMaxSizes dispatch to the
+// display type's layout algorithm (flex, grid, multicol, block/inline).
 func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) MinMaxSizes {
 	display := style.GetDisplay()
+	// Multicol containers exist only on block-container displays — mirror
+	// layoutElement's dispatch (block_layout.go), which routes to
+	// MulticolLayoutAlgorithm only from its block-display cases (flex/grid/
+	// table displays with column-* properties are NOT multicol containers).
+	switch display {
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
+		css.DisplayInlineBlock, css.DisplayInlineListItem:
+		if isMulticolContainer(style) {
+			return measureMulticolMinMax(node, ctx, space)
+		}
+	}
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		// Flex containers: use flex-specific min/max computation.
 		return measureFlexMinMax(node, ctx, space)
 	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
+		// Grid containers: track-template sum plus item contributions.
+		// Without this dispatch, a grid would fall through to
+		// measureBlockMinMax, which uses a zero-available-block constraint
+		// space when queried at min-content width — that wrong space causes
+		// orthogonal children to be laid out in a single overflow column
+		// (50px) instead of their correct block-size (100px).
 		return measureGridMinMax(node, ctx, space)
 	} else if hasOnlyInlineChildren(node) {
+		// Inline formatting context: measure via line breaker.
 		return measureInlineMinMax(node, ctx, space)
 	}
-	return measureBlockMinMax(node, ctx, space)
+	// Block formatting context: take max of children's sizes.
+	return measureBlockMinMax(node, ctx, space, false)
+}
+
+// measureMulticolMinMax computes the intrinsic min/max inline sizes of a
+// multi-column container (content-box; callers add border+padding). Mirrors
+// ColumnLayoutAlgorithm::ComputeMinMaxSizes (column_layout_algorithm.cc:433-498
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//
+//  1. min/max of one column's content, spanners skipped (cla.cc:443-449);
+//  2. column-width non-auto: min may SHRINK to column-width, max is raised
+//     to it (cla.cc:458-471, per the 2016 css-sizing-3 WD #multicol-intrinsic
+//     rules — the only spec text, still followed by every engine);
+//  3. multiply to container values with inter-column gaps (cla.cc:473-488):
+//     min ×= count + gaps only when column-width is auto; max always;
+//  4. encompass column-span:all descendants (cla.cc:490-494).
+//
+// The SPECIFIED column-count is used (auto counts as 1), not the used count
+// resolved against available inline size (cla.cc:475-476).
+func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	style := node.Style()
+
+	// 1. Column content min/max, excluding spanners.
+	var result MinMaxSizes
+	if hasOnlyInlineChildren(node) {
+		result = measureInlineMinMax(node, ctx, space)
+	} else {
+		result = measureBlockMinMax(node, ctx, space, true)
+	}
+
+	// 2. column-width min/max rules (cla.cc:458-471).
+	colWidth := style.GetColumnWidth() // 0 means auto
+	hasAutoColumnWidth := colWidth == 0
+	if !hasAutoColumnWidth {
+		result.MinContent = math.Min(result.MinContent, colWidth)
+		result.MaxContent = math.Max(result.MaxContent, colWidth)
+		result.MaxContent = math.Max(result.MaxContent, result.MinContent)
+	}
+
+	// 3. Convert column values to container values (cla.cc:473-488).
+	count := style.GetColumnCount() // 0 means auto
+	if count < 1 {
+		count = 1
+	}
+	// cla.cc:477 ResolveColumnGapForMulticol(Style(), LayoutUnit()):
+	// percentage gaps resolve against a zero base during intrinsic sizing.
+	gap := style.GetColumnGapMulticolWithBase(0)
+	if v, ok := style.Get("column-gap"); ok && strings.HasSuffix(strings.TrimSpace(v), "%") {
+		gap = 0
+	}
+	gapExtra := gap * float64(count-1)
+	// column-count (and therefore column-gap) is ignored for min-content when
+	// column-width is specified (cla.cc:480-486).
+	if hasAutoColumnWidth {
+		result.MinContent = result.MinContent*float64(count) + gapExtra
+	}
+	result.MaxContent = result.MaxContent*float64(count) + gapExtra
+
+	// 4. Spanners aren't part of the count multiplication above; encompass
+	// their contributions now (cla.cc:490-494). Inline-size containment
+	// (which suppresses this in Blink, cla.cc:493) is handled by the
+	// containment early-returns in this file's callers.
+	spanners := measureSpannersMinMax(node, ctx, space)
+	result.MinContent = math.Max(result.MinContent, spanners.MinContent)
+	result.MaxContent = math.Max(result.MaxContent, spanners.MaxContent)
+	return result
+}
+
+// measureSpannersMinMax recursively walks a multicol container's descendants
+// and returns the largest column-span:all contribution (margin-box min/max).
+// Mirrors ColumnLayoutAlgorithm::ComputeSpannersMinMaxSizes
+// (column_layout_algorithm.cc:523-549 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// children establishing a new formatting context are skipped — spanners must
+// participate in the multicol's own formatting context, so a column-span:all
+// inside e.g. a flow-root is regular column content — and non-spanner block
+// children are searched recursively.
+func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	var result MinMaxSizes
+	for _, child := range searchParent.Children() {
+		if child.IsText() {
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+		var childResult MinMaxSizes
+		if childStyle.GetColumnSpan() == "all" && isSelfValidColumnSpanner(childStyle) {
+			// The spanner's contribution is its margin-box min/max — the
+			// ComputeMinAndMaxContentContribution call at cla.cc:543-546,
+			// with a new-FC space (spanners establish formatting contexts).
+			childWDM := NewWritingDirectionMode(childStyle)
+			childSpace := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, true).
+				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+				Build()
+			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			extra := childGeom.InlineBorderPadding() +
+				ResolveMargins(childStyle, childWDM, 0).InlineSum()
+			childResult = MinMaxSizes{
+				MinContent: childMM.MinContent + extra,
+				MaxContent: childMM.MaxContent + extra,
+			}
+		} else {
+			if createsFormattingContext(childStyle, child) {
+				continue
+			}
+			childResult = measureSpannersMinMax(child, ctx, space)
+		}
+		result.MinContent = math.Max(result.MinContent, childResult.MinContent)
+		result.MaxContent = math.Max(result.MaxContent, childResult.MaxContent)
+	}
+	return result
 }
 
 // applyFitContentMinMaxWithContentSizes applies fit-content(<L>) constraints on
@@ -631,25 +754,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
 
-	var result MinMaxSizes
-	display := style.GetDisplay()
-	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
-		result = measureFlexMinMax(node, ctx, space)
-	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
-		// Grid containers: use the same track-template + item contribution
-		// algorithm as ComputeMinMaxSizes. Without this dispatch,
-		// computeContentMinMaxSizes falls through to measureBlockMinMax, which
-		// uses a zero-available-block constraint space when queried at min-content
-		// width — that wrong space causes orthogonal children to be laid out in a
-		// single overflow column (50px) instead of their correct block-size (100px).
-		// Mirrors Blink's NGBlockNode::ComputeMinMaxSizes dispatch to
-		// GridLayoutAlgorithm::ComputeMinMaxSizes for display:grid elements.
-		result = measureGridMinMax(node, ctx, space)
-	} else if hasOnlyInlineChildren(node) {
-		result = measureInlineMinMax(node, ctx, space)
-	} else {
-		result = measureBlockMinMax(node, ctx, space)
-	}
+	result := measureNodeContentMinMax(node, ctx, style, wdm, space)
 
 	// Apply min/max inline-size constraints (but NOT explicit inline-size).
 	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
@@ -1338,7 +1443,18 @@ func hasPercentLogicalWidth(style *css.Style, wdm WritingDirectionMode) bool {
 // contribute their SUMMED inline sizes to max-content (since at max-content
 // width, all floats fit beside each other). Min-content = max single float
 // inline size (floats can always stack when width is insufficient).
-func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+//
+// skipColumnSpanners excludes valid column-span:all children from the
+// measurement — set when measuring a multicol container's column content,
+// whose spanners are encompassed separately (measureMulticolMinMax). Mirrors
+// BlockLayoutAlgorithm::ComputeMinMaxSizes skipping `child.IsColumnSpanAll()
+// && GetConstraintSpace().IsInColumnBfc()` (block_layout_algorithm.cc:418-419
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink threads the flag through
+// the constraint space so it also reaches non-new-FC descendants; louis14's
+// ConstraintSpace has no such flag yet, so only the multicol's direct
+// children are skipped here (a spanner nested in a non-FC wrapper still
+// leaks into the wrapper's contribution).
+func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, skipColumnSpanners bool) MinMaxSizes {
 	var result MinMaxSizes
 
 	parentWDM := space.WritingDirection
@@ -1402,6 +1518,13 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		// which skips out-of-flow children.
 		childPos := childStyle.GetPosition()
 		if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+			continue
+		}
+
+		// Valid column-span:all children of a multicol container are not
+		// column content (block_layout_algorithm.cc:418-419, see doc comment).
+		if skipColumnSpanners && childStyle.GetColumnSpan() == "all" &&
+			isSelfValidColumnSpanner(childStyle) {
 			continue
 		}
 
