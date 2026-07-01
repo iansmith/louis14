@@ -230,3 +230,24 @@ func TestLineBreaker_StartsAfterBreakOpportunity_AtomicInline(t *testing.T) {
 		t.Errorf("text after U+FFFC (atomic inline), offset=%d: got %v, want true (UAX#14 class CB allows a break after replaced content)", afterAtomic, got)
 	}
 }
+
+// TestLineBreaker_StartsAfterBreakOpportunity_ZeroWidthSpace confirms text
+// following U+200B is NOT treated as a continuation: ZERO WIDTH SPACE is
+// UAX#14 class ZW — an invisible explicit break opportunity — but it is
+// absent from Go's unicode.IsSpace and therefore from
+// isCSSCollapsibleSpace, so it needs its own case in
+// isBreakOpportunityRune. NBSP is the control: class GL glue, never a
+// break opportunity.
+func TestLineBreaker_StartsAfterBreakOpportunity_ZeroWidthSpace(t *testing.T) {
+	itemsData := &InlineItemsData{TextContent: "foo\u200Bbar\u00A0baz"}
+	lb := &LineBreaker{itemsData: itemsData}
+
+	afterZWSP := len("foo\u200B")
+	if got := lb.startsAfterBreakOpportunity(afterZWSP); got != true {
+		t.Errorf("text after U+200B, offset=%d: got %v, want true (UAX#14 class ZW is a break opportunity)", afterZWSP, got)
+	}
+	afterNBSP := len("foo\u200Bbar\u00A0")
+	if got := lb.startsAfterBreakOpportunity(afterNBSP); got != false {
+		t.Errorf("text after U+00A0 (NBSP), offset=%d: got %v, want false (class GL glue — no break opportunity)", afterNBSP, got)
+	}
+}

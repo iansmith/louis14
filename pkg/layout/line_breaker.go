@@ -287,14 +287,25 @@ func (lb *LineBreaker) startsAfterBreakOpportunity(textStart int) bool {
 		return true
 	}
 	r, _ := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:textStart])
-	return isCSSCollapsibleSpace(r) || r == '\uFFFC'
+	return isBreakOpportunityRune(r)
+}
+
+// isBreakOpportunityRune reports whether r itself marks a line-break
+// opportunity boundary in TextContent: collapsible whitespace, U+FFFC
+// (replaced content, UAX#14 class CB — see startsAfterBreakOpportunity's
+// doc comment), or U+200B (ZERO WIDTH SPACE, UAX#14 class ZW — an
+// invisible explicit break opportunity, absent from Go's unicode.IsSpace
+// and therefore from isCSSCollapsibleSpace). NBSP stays excluded (class
+// GL glue) via isCSSCollapsibleSpace's own carve-out.
+func isBreakOpportunityRune(r rune) bool {
+	return isCSSCollapsibleSpace(r) || r == '\uFFFC' || r == '\u200B'
 }
 
 // gluedRunStartsLine reports whether the unbreakable run containing
 // textStart began at (or before) the line's own first non-marker text
-// content \u2014 i.e. the glued word IS the line, with no earlier break
+// content — i.e. the glued word IS the line, with no earlier break
 // opportunity to fall back to. Only then may an overflowing continuation
-// be force-included in place (CSS Text 3 \u00A74.1's overflowing unbreakable
+// be force-included in place (CSS Text 3 §4.1's overflowing unbreakable
 // word); a glued word starting mid-line must instead end the line at an
 // earlier opportunity (see breakTextAtWord's continuation comment).
 //
@@ -308,7 +319,7 @@ func (lb *LineBreaker) gluedRunStartsLine(line *LineInfo, textStart int) bool {
 	head := textStart
 	for head > 0 {
 		r, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:head])
-		if isCSSCollapsibleSpace(r) || r == '\uFFFC' {
+		if isBreakOpportunityRune(r) {
 			break
 		}
 		head -= size
