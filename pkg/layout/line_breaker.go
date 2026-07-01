@@ -301,6 +301,25 @@ func isBreakOpportunityRune(r rune) bool {
 	return isCSSCollapsibleSpace(r) || r == '\uFFFC' || r == '\u200B'
 }
 
+// canStartLine reports whether a line may begin with r \u2014 the UAX#14
+// non-starter prohibition subset used by character-granularity breaking.
+// word-break:break-all maps to Blink's LineBreakType::kBreakAll, which
+// permits breaks between most characters but still honors the prohibition
+// on breaking BEFORE close/final punctuation and infix separators (classes
+// CL/CP/IS/EX \u2014 "2." never splits), while line-break:anywhere /
+// overflow-wrap:anywhere map to kBreakCharacter, which ignores it
+// (LineBreaker::SetCurrentStyleForce, line_breaker.cc:4559-4573 @
+// 43cee02dc59fdad798675a735737510ecf0c9064). Closing/final punctuation is
+// detected via unicode.Pe/Pf, matching retractTrailingOpenPunct's
+// unicode.Ps handling of the opposite edge.
+func canStartLine(r rune) bool {
+	switch r {
+	case '.', ',', ':', ';', '!', '?', '%':
+		return false
+	}
+	return !unicode.In(r, unicode.Pe, unicode.Pf)
+}
+
 // gluedRunStartsLine reports whether the unbreakable run containing
 // textStart began at (or before) the line's own first non-marker text
 // content — i.e. the glued word IS the line, with no earlier break
@@ -588,30 +607,49 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		}
 	}
 
-	// Read word-break and overflow-wrap properties.
+	// Read the text-wrapping properties. Precedence mirrors Blink
+	// LineBreaker::SetCurrentStyleForce (line_breaker.cc:4547-4620 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064): line-break:anywhere selects
+	// LineBreakType::kBreakCharacter outright (every character is a break
+	// opportunity, UAX#14 prohibitions ignored); otherwise word-break picks
+	// the break type (break-all → kBreakAll, prohibitions retained) and
+	// overflow-wrap:anywhere/break-word arms character breaking on overflow.
 	wordBreak := "normal"
 	overflowWrap := "normal"
 	hyphens := "manual"
+	lineBreak := "auto"
 	if item.Style != nil {
 		wordBreak = item.Style.GetWordBreak()
 		overflowWrap = item.Style.GetOverflowWrap()
 		hyphens = item.Style.GetHyphens()
+		lineBreak = item.Style.GetLineBreak()
 	}
 
 	// Doesn't fit — find a break point.
 	if lb.mode == LineBreakerMinContent {
-		// overflow-wrap:anywhere affects min-content sizing: treat every
-		// character as a potential break point (CSS Text 3 §4.1).
-		if overflowWrap == "anywhere" || wordBreak == "break-all" {
-			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0)
+		// line-break:anywhere / overflow-wrap:anywhere affect min-content
+		// sizing: treat every character as a potential break point (CSS Text
+		// 3 §4.1, §5.5); break-all does too but keeps non-starters glued.
+		if lineBreak == "anywhere" || overflowWrap == "anywhere" {
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0, false)
+		}
+		if wordBreak == "break-all" {
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0, true)
 		}
 		// Break at every word boundary.
 		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0, wordBreak, overflowWrap, hyphens)
 	}
 
-	// word-break:break-all — break between any two characters.
+	// line-break:anywhere — break between any two characters, ignoring
+	// UAX#14 prohibitions (kBreakCharacter).
+	if lineBreak == "anywhere" {
+		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
+	}
+
+	// word-break:break-all — break between any two characters except before
+	// a non-starter (kBreakAll).
 	if wordBreak == "break-all" {
-		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, true)
 	}
 
 	// Normal mode: find where to break.
@@ -620,9 +658,9 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 // isInsideMarkerItem reports whether an inline item belongs to an inside
 // ::marker box — the synthetic "::marker" element's open/close tags or its
-// text child. Inside markers glue to the item's following content: the
-// marker text is white-space:pre (UA ::marker default), so its preserved
-// trailing space is never a soft wrap opportunity.
+// text child. Inside markers glue to the item's following content: there is
+// no soft wrap opportunity between a marker and the list item's first
+// content (Blink sets can_break_after=false on the marker's results).
 func isInsideMarkerItem(item *InlineItem) bool {
 	if item == nil || item.Node == nil {
 		return false
@@ -637,9 +675,7 @@ func isInsideMarkerItem(item *InlineItem) bool {
 // end of the current line to the next line.
 //
 // CSS Text 3 / Blink: there is no soft wrap opportunity between an inside
-// marker and the item's following content — the marker text has
-// white-space:pre (UA ::marker default), so its preserved trailing space is
-// not a break opportunity. Blink's LineBreaker encodes this as
+// marker and the item's following content. Blink's LineBreaker encodes this as
 // can_break_after=false on the marker's results and rewinds to the last
 // breakable result on overflow (line_breaker.cc RewindOverflow @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14's greedy breaker has
@@ -734,11 +770,15 @@ func (lb *LineBreaker) breakTextAtWord(
 	// don't even try to fit the first word — end the line immediately.
 	// This prevents a single-word text item from being force-added to an
 	// already-full line (the fitted>0 guard only applies to subsequent words).
+	// Keyed off placed CONTENT, not the results vector — a zero-width open
+	// tag (e.g. the inside ::marker box's) must not end the line before the
+	// line's first real content is even attempted, mirroring how Blink's one
+	// global break_iterator_ is blind to item boundaries (LOU-358).
 	// Exception: if this item's first word continues the word the line
 	// STARTED with, there is no break opportunity anywhere on the line — the
 	// word must stay regardless of overflow (CSS Text 3 §4.1), so fall
 	// through to the word loop instead of ending the line.
-	if remaining <= 0 && len(line.Results) > 0 && !glueForcible {
+	if remaining <= 0 && line.HasContent && !glueForcible {
 		lb.rewindUnbreakableTail(line)
 		return true
 	}
@@ -815,11 +855,16 @@ func (lb *LineBreaker) breakTextAtWord(
 			break
 		}
 
-		// If this is the first word on an empty line and it overflows,
-		// and overflow-wrap:break-word is set, break it at character boundaries.
-		if fitted == 0 && len(line.Results) == 0 && usedWidth+wordWidth > remaining &&
+		// If this is the first word of the line's CONTENT and it overflows,
+		// and overflow-wrap:break-word/anywhere is set, break it at character
+		// boundaries (kBreakCharacter on overflow — break_anywhere_if_overflow_,
+		// line_breaker.cc:4601-4616 @ 43cee02d). Keyed off !line.HasContent,
+		// not the results vector: a preceding zero-width open tag (the inside
+		// ::marker box's, or any wrapper span's) must not suppress the break
+		// (LOU-358).
+		if fitted == 0 && !line.HasContent && usedWidth+wordWidth > remaining &&
 			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
-			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
 		}
 
 		// i==0 continuation case: this item's first word has no break
@@ -839,7 +884,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			// min-content-mode anywhere never reach this loop — handleText
 			// dispatches them to breakTextAtCharacter earlier.)
 			if overflowWrap == "anywhere" || overflowWrap == "break-word" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
 			}
 			usedWidth += wordWidth
 			fitted++
@@ -1028,7 +1073,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 		// with soft hyphens stripped, or overflow-wrap.
 		if len(line.Results) == 0 {
 			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
 			}
 			// Force content onto the line — use the first break point.
 			if len(breaks) > 0 {
@@ -1334,6 +1379,10 @@ func findAutoHyphenPoints(word string) []int {
 // breakTextAtCharacter breaks text at character boundaries.
 // Used for word-break:break-all and overflow-wrap:break-word/anywhere.
 // Returns true if the line should end.
+// prohibitNonStarterBreak selects the break type: true = Blink's
+// LineBreakType::kBreakAll (word-break:break-all — no break before a UAX#14
+// non-starter, see canStartLine), false = kBreakCharacter (line-break:anywhere
+// / overflow-wrap:anywhere|break-word overflow — break between any pair).
 func (lb *LineBreaker) breakTextAtCharacter(
 	item *InlineItem,
 	content string,
@@ -1342,6 +1391,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	fontPath string,
 	line *LineInfo,
 	remaining float64,
+	prohibitNonStarterBreak bool,
 ) bool {
 	if len(content) == 0 {
 		return false
@@ -1382,7 +1432,11 @@ func (lb *LineBreaker) breakTextAtCharacter(
 			charWidth += letterSpacing
 		}
 
-		if usedWidth+charWidth > remaining && fitted > 0 {
+		// A non-starter glues to the character before it under kBreakAll:
+		// overflow or not, the line cannot end before it ("2." stays whole,
+		// overflowing per CSS Text 3 §4.1).
+		if usedWidth+charWidth > remaining && fitted > 0 &&
+			!(prohibitNonStarterBreak && !canStartLine(r)) {
 			break
 		}
 
@@ -1390,9 +1444,15 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		fitted++
 		byteOffset = i + utf8.RuneLen(r)
 
-		// In min-content mode, break after every character.
+		// In min-content mode, break after every character — except before a
+		// non-starter under kBreakAll, which extends the unbreakable unit.
 		if lb.mode == LineBreakerMinContent && fitted > 0 {
-			break
+			if !prohibitNonStarterBreak || byteOffset >= len(content) {
+				break
+			}
+			if next, _ := utf8.DecodeRuneInString(content[byteOffset:]); canStartLine(next) {
+				break
+			}
 		}
 	}
 
