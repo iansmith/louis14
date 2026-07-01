@@ -268,6 +268,7 @@ type fakeAdapter struct {
 	tag      string
 	attrs    map[string]string
 	children []*fakeAdapter
+	text     string
 }
 
 func (f *fakeAdapter) TagName() string { return f.tag }
@@ -285,3 +286,4 @@ func (f *fakeAdapter) SVGChildren() []ElementAdapter {
 	}
 	return out
 }
+func (f *fakeAdapter) TextContent() string { return f.text }

@@ -25,6 +25,7 @@ func (f *fakeFilterPrimAdapter) Attribute(name string) (string, bool) {
 	return v, ok
 }
 func (f *fakeFilterPrimAdapter) SVGChildren() []svg.ElementAdapter { return nil }
+func (f *fakeFilterPrimAdapter) TextContent() string               { return "" }
 
 // TestSvgFilterPrimitiveAdapter_FloodCurrentColorTaints asserts the
 // origin-tainting source recognition for the bucket-J -002 cluster:

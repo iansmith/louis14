@@ -29,6 +29,16 @@ type ElementAdapter interface {
 	// SVGChildren returns the element's children as ElementAdapters in
 	// DOM order, skipping text nodes and other non-element content.
 	SVGChildren() []ElementAdapter
+
+	// TextContent returns the element's own direct text-node children,
+	// concatenated in DOM order. Mirrors the DOM textContent notion
+	// restricted to direct children (not deep descendants) — sufficient
+	// for `<text>` per this package's scope (no `<tspan>`/nested-element
+	// support yet; see SVGText's doc comment). SVGChildren() filters out
+	// text nodes entirely (they have no SVG-element meaning for the
+	// generic tree walk), so `<text>` needs this separate accessor to
+	// see its own text content.
+	TextContent() string
 }
 
 // SVGRoot is the root of an inline <svg>'s SVG layout subtree. It owns
@@ -268,6 +278,12 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 			shape.Style = styleResolver(elt)
 		}
 		return shape
+	case "text":
+		svgText := NewSVGText(elt, lengthCtx)
+		if svgText != nil && styleResolver != nil {
+			svgText.Style = styleResolver(elt)
+		}
+		return svgText
 	case "svg":
 		vc := NewSVGViewportContainer(elt, lengthCtx)
 		if vc == nil {
@@ -302,10 +318,11 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 // BuildSVGTree dispatches an ElementAdapter to the right SVGNode
 // constructor based on its tag name. Phase 2 recognizes the seven
 // shape tags (<rect>, <circle>, <ellipse>, <line>, <polyline>,
-// <polygon>, <path>) and routes them to SVGShape. All other tags fall
-// through to SVGContainer, the recursive structural shell from
-// Phase 1 — Phase 3 promotes <g> to SVGTransformableContainer and
-// nested <svg> to SVGViewportContainer; Phase 6 routes
+// <polygon>, <path>) and routes them to SVGShape. LOU-345 adds
+// <text>, routed to SVGText. All other tags fall through to
+// SVGContainer, the recursive structural shell from Phase 1 — Phase 3
+// promotes <g> to SVGTransformableContainer and nested <svg> to
+// SVGViewportContainer; Phase 6 routes
 // <mask>/<clipPath>/<filter>/<linearGradient>/<radialGradient>/<pattern>
 // to resource containers.
 //
@@ -327,6 +344,17 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 			shape.Style = styleResolver(elt)
 		}
 		return shape
+	case "text":
+		// `<text>` is also a leaf for this ticket's scope (no
+		// `<tspan>` support — see SVGText's doc comment), so it skips
+		// the recursive SVG-element child walk exactly like the shape
+		// tags above. Its own text-node content is read via
+		// ElementAdapter.TextContent(), not SVGChildren().
+		svgText := NewSVGText(elt, lengthCtx)
+		if svgText != nil && styleResolver != nil {
+			svgText.Style = styleResolver(elt)
+		}
+		return svgText
 	case "svg":
 		// Nested <svg>: establishes a new viewport + viewBox + length
 		// context for its descendants. Mirrors Blink's

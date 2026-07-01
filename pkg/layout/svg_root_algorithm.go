@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"strings"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
@@ -159,4 +161,25 @@ func (a svgElementAdapter) SVGChildren() []svg.ElementAdapter {
 		out = append(out, svgElementAdapter{node: c})
 	}
 	return out
+}
+
+// TextContent implements svg.ElementAdapter. Concatenates this
+// element's own direct TextNode children (e.g. `<text>Text to
+// select</text>`'s single text-node child) — SVGChildren above
+// filters text nodes out entirely, so `<text>` needs this separate
+// accessor to see them. Deep-descendant text (e.g. a nested `<tspan>`)
+// is intentionally NOT walked: `<tspan>` is out of this ticket's scope
+// (LOU-345), and none of the 5 target reftests nest anything inside
+// `<text>`.
+func (a svgElementAdapter) TextContent() string {
+	if a.node == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range a.node.Children {
+		if c != nil && c.Type == html.TextNode {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
