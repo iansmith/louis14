@@ -454,3 +454,79 @@ func TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginat
 		t.Errorf("bottom-layer text-shadow currentColor resolved to %+v, want the originating element's own color %+v (not hardcoded black)", gotColor, wantColor)
 	}
 }
+
+// TestComputeSelectionSegments_PartialNonCoextensiveOverlap closes LOU-353:
+// ::selection and ::target-text PARTIALLY overlapping on the same text node
+// (not the coextensive case LOU-349's target-text-004/-005.html exercise).
+// Before LOU-354's general highlightSegmentsFromLayers rewrite,
+// computeSelectionSegments short-circuited on the first ::selection overlap
+// and ignored ::target-text entirely, so the target-text-only portion
+// outside the selection got no highlight treatment at all (CodeRabbit,
+// LOU-349 PR #149, tagged "Heavy lift" — confirmed real but explicitly out
+// of that ticket's scope).
+//
+// LOU-354's N-layer boundary-point sub-segmentation subsumed this: each
+// sub-segment independently resolves its own active layer stack, so a
+// target-text range extending beyond (or only partially inside) the
+// selection now gets correctly layered without any LOU-353-specific code —
+// this test exists to lock that behavior in as a permanent regression
+// guard, not to introduce a new fix.
+//
+// ranges: target-text covers [0,10) ("match text"), selection covers
+// [5,15) (" text here") — [0,5) is target-text-only, [5,10) is the overlap
+// (selection sits above target-text in the highlight-overlay-stack and
+// wins outright since it sets its own concrete, non-transparent
+// background-color), [10,15) is selection-only.
+func TestComputeSelectionSegments_PartialNonCoextensiveOverlap(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		p::selection { background-color: cyan; }
+		p::target-text { background-color: yellow; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	p := &html.Node{Type: html.ElementNode, TagName: "p"}
+	tn := textNode("match text here") // len 15: "match"[0:5] " text"[5:10] " here"[10:15]
+	p.Children = []*html.Node{tn}
+	tn.Parent = p
+
+	box := &layout.Box{Node: p, Text: tn.Text}
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{p: box},
+		selectionRange:       &html.Range{StartContainer: tn, StartOffset: 5, EndContainer: tn, EndOffset: 15},
+		targetTextRanges:     []*html.Range{{StartContainer: tn, StartOffset: 0, EndContainer: tn, EndOffset: 10}},
+	}
+
+	segs := r.computeSelectionSegments(box, tn.Text)
+
+	find := func(start, end int) *selectionSegment {
+		for i := range segs {
+			if segs[i].start == start && segs[i].end == end {
+				return &segs[i]
+			}
+		}
+		t.Fatalf("no segment [%d,%d) in %+v", start, end, segs)
+		return nil
+	}
+	yellow := css.Color{R: 255, G: 255, B: 0, A: 1}
+	cyan := css.Color{R: 0, G: 255, B: 255, A: 1}
+
+	targetTextOnly := find(0, 5)
+	if targetTextOnly.backgroundColor == nil || *targetTextOnly.backgroundColor != yellow {
+		t.Errorf("[0,5) (target-text-only) background = %+v, want target-text's yellow", targetTextOnly.backgroundColor)
+	}
+	overlap := find(5, 10)
+	if overlap.backgroundColor == nil || *overlap.backgroundColor != cyan {
+		t.Errorf("[5,10) (overlap) background = %+v, want selection's cyan (selection sits above target-text)", overlap.backgroundColor)
+	}
+	selectionOnly := find(10, 15)
+	if selectionOnly.backgroundColor == nil || *selectionOnly.backgroundColor != cyan {
+		t.Errorf("[10,15) (selection-only) background = %+v, want selection's cyan", selectionOnly.backgroundColor)
+	}
+}
