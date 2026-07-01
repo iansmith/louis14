@@ -144,6 +144,31 @@ type Document struct {
 	// Engine.OnFragmentDirective (pkg/js/dom_location.go), consumed by
 	// pkg/render's paint pass the same way Selection is.
 	TargetTextRanges []*Range
+
+	// CustomHighlights holds the document's registered CSS Custom Highlight
+	// API highlights (LOU-354): name -> the Ranges most recently passed to
+	// `CSS.highlights.set(name, new Highlight(...))`. Mirrors Blink's
+	// HighlightRegistry (third_party/blink/renderer/core/highlight/
+	// highlight_registry.h @ blob a859ec40274d3281ad59e450a2fcb776d0b54e3e),
+	// simplified from its full Map-like interface (setForBinding/
+	// clearForBinding/deleteForBinding/size/iteration) to just the
+	// registration state every LOU-354 target test actually needs — each
+	// target only ever calls .set() once per name (confirmed via grep; no
+	// .delete()/.clear()/.has()/iteration). Populated by
+	// pkg/js/dom_highlight.go's CSS.highlights.set binding; consumed by
+	// pkg/render's paint pass the same way TargetTextRanges is.
+	CustomHighlights map[string][]*Range
+
+	// CustomHighlightOrder records highlight names in FIRST-registration
+	// order (append-on-first-.set() only — a later .set() for an existing
+	// name replaces CustomHighlights[name] without moving its position
+	// here). Mirrors Blink's HighlightRegistryMap being an ordered map
+	// (LinkedHashSet-backed) — the CSS Custom Highlight API's highlight
+	// overlay stack (CSS Pseudo-4 §highlight-overlay-stack) paints
+	// registered highlights bottom-to-top in this same registration order
+	// when no explicit `priority` differentiates them (no LOU-354 target
+	// test sets .priority).
+	CustomHighlightOrder []string
 }
 
 // Range is a simplified DOM Range: a pair of boundary points

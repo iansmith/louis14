@@ -41,6 +41,13 @@ type domContext struct {
 	// selectNodeContents/setStart/setEnd already wrote.
 	ranges []rangeEntry
 
+	// highlights maps each `new Highlight(...)` JS object (LOU-354,
+	// dom_highlight.go) back to its Go-side []*html.Range + priority, the
+	// same proxy-identity-to-Go-state pattern ranges above uses for Range
+	// proxies. Looked up by CSS.highlights.set so it can read the ranges
+	// the Highlight constructor recorded.
+	highlights []highlightEntry
+
 	// locationFragment / locationHrefValue back window.location's `hash` /
 	// `href` (LOU-349, dom_location.go). locationFragment never includes
 	// the leading '#'; locationHrefValue is the raw string last assigned to
@@ -54,6 +61,17 @@ type domContext struct {
 type rangeEntry struct {
 	proxy goja.Value
 	r     *html.Range
+}
+
+// highlightEntry pairs a `new Highlight(...)` JS object with its backing
+// []*html.Range and priority (LOU-354). priority is stored but never
+// consulted by the paint side — no LOU-354 target test sets it (see
+// dom_highlight.go's file doc comment) — kept for future-proofing per the
+// ticket's checkpoint 1 spec.
+type highlightEntry struct {
+	obj      goja.Value
+	ranges   []*html.Range
+	priority int
 }
 
 // documentEventListener pairs the callable with the original JS value so
@@ -198,13 +216,18 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	// Phase 4: document.body, document.head, document.documentElement
 	registerDocumentProperties(ctx, docObj, doc)
 
-	// document.createRange / new Range() / getSelection() / activeElement
-	// (LOU-344). bodyNode is recomputed via findBodyNode since
-	// registerDocumentProperties doesn't expose its own lookup result.
-	registerSelectionAPI(ctx, docObj, findBodyNode(doc.Root))
+	// document.createRange / new Range() / getSelection() / activeElement /
+	// execCommand("selectAll") (LOU-344, LOU-354). bodyNode is recomputed
+	// via findBodyNode since registerDocumentProperties doesn't expose its
+	// own lookup result.
+	bodyNode := findBodyNode(doc.Root)
+	registerSelectionAPI(ctx, docObj, bodyNode)
 
 	// window.location / document.location (LOU-349).
 	registerLocationAPI(ctx, docObj)
+
+	// window.CSS.highlights / new Highlight() (LOU-354).
+	registerHighlightAPI(ctx)
 
 	vm.Set("document", docObj)
 

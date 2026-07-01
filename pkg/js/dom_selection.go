@@ -1,6 +1,7 @@
 package js
 
 import (
+	"strings"
 	"unicode/utf16"
 
 	"louis14/pkg/html"
@@ -221,11 +222,12 @@ func (sa *selectionAccessor) Keys() []string {
 
 // registerSelectionAPI wires document.createRange, the Range constructor
 // (`new Range()`, used by selection-text-decoration-currentcolor.html),
-// window.getSelection/getSelection, and the document.activeElement getter
-// onto the runtime. Called from registerDocument alongside the other
-// document.* bindings. bodyNode is the document's <body> element (or nil),
-// reusing findBodyNode's lookup (engine.go) rather than re-walking the tree
-// a second time the way registerDocumentProperties does internally.
+// window.getSelection/getSelection, the document.activeElement getter, and
+// document.execCommand("selectAll") (LOU-354) onto the runtime. Called from
+// registerDocument alongside the other document.* bindings. bodyNode is the
+// document's <body> element (or nil), reusing findBodyNode's lookup
+// (engine.go) rather than re-walking the tree a second time the way
+// registerDocumentProperties does internally.
 func registerSelectionAPI(ctx *domContext, docObj *goja.Object, bodyNode *html.Node) {
 	vm := ctx.vm
 
@@ -263,4 +265,31 @@ func registerSelectionAPI(ctx *domContext, docObj *goja.Object, bodyNode *html.N
 		return goja.Null()
 	})
 	_ = docObj.DefineAccessorProperty("activeElement", activeElementGetter, nil, goja.FLAG_TRUE, goja.FLAG_TRUE)
+
+	// document.execCommand("selectAll") (selection-over-highlight-001.html,
+	// highlight-painting-005-crash.html — LOU-354): mirrors Blink's
+	// SelectAll editing command (core/editing/commands/
+	// select_all_command.cc), simplified to louis14's single-Range
+	// Selection model (see html.Document.Selection's doc comment) — selects
+	// the whole <body>'s contents, equivalent to
+	// selectNodeContents(document.body). Other command names are silently
+	// no-ops (no LOU-354 target test uses any other execCommand). Lives
+	// here rather than in dom_highlight.go despite being a LOU-354 target
+	// test dependency: it mutates ctx.doc.Selection, the same field every
+	// other binding in this file owns, not any highlight-registry state.
+	docObj.Set("execCommand", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 || !strings.EqualFold(call.Arguments[0].String(), "selectall") {
+			return vm.ToValue(false)
+		}
+		if bodyNode == nil {
+			return vm.ToValue(false)
+		}
+		ctx.doc.Selection = &html.Range{
+			StartContainer: bodyNode,
+			StartOffset:    0,
+			EndContainer:   bodyNode,
+			EndOffset:      len(bodyNode.Children),
+		}
+		return vm.ToValue(true)
+	})
 }
