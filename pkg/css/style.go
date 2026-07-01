@@ -6703,9 +6703,26 @@ type TextShadow struct {
 	Color   Color
 }
 
-// GetTextShadow parses the text-shadow property and returns a slice of shadows.
-// Syntax: [<color>? <offset-x> <offset-y> <blur>? <color>?], ...
+// GetTextShadow parses the text-shadow property and returns a slice of
+// shadows. Syntax: [<color>? <offset-x> <offset-y> <blur>? <color>?], ...
+// A `currentcolor` shadow color resolves against this style's OWN `color`
+// (s.GetColor()) — the normal same-element currentColor resolution CSS
+// Color 4 §4.4 describes for any property. Callers that need `currentcolor`
+// resolved against a DIFFERENT color (e.g. one already resolved through an
+// inheritance/fallthrough chain this style's own `color` doesn't capture)
+// should call GetTextShadowWithCurrentColor directly instead.
 func (s *Style) GetTextShadow() []TextShadow {
+	return s.GetTextShadowWithCurrentColor(s.GetColor())
+}
+
+// GetTextShadowWithCurrentColor parses the text-shadow property like
+// GetTextShadow, but resolves a `currentcolor` shadow color against the
+// EXPLICITLY supplied currentColor rather than this style's own `color`.
+// Without this, a `text-shadow` layer using the literal "currentcolor"
+// keyword would go through ParseColor (via the bare GetTextShadow path),
+// which can't parse the keyword and silently defaults the shadow color to
+// black instead of resolving it.
+func (s *Style) GetTextShadowWithCurrentColor(currentColor Color) []TextShadow {
 	val, ok := s.Get("text-shadow")
 	if !ok || val == "none" || val == "" {
 		return nil
@@ -6716,7 +6733,7 @@ func (s *Style) GetTextShadow() []TextShadow {
 		if layer == "" {
 			continue
 		}
-		shadow := parseTextShadowLayer(layer, s.GetFontSize())
+		shadow := parseTextShadowLayer(layer, s.GetFontSize(), currentColor)
 		if shadow != nil {
 			shadows = append(shadows, *shadow)
 		}
@@ -6725,7 +6742,7 @@ func (s *Style) GetTextShadow() []TextShadow {
 }
 
 // parseTextShadowLayer parses one text-shadow layer: [color?] <x> <y> [blur?] [color?]
-func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
+func parseTextShadowLayer(s string, fontSize float64, currentColor Color) *TextShadow {
 	fields := strings.Fields(s)
 	var lengths []float64
 	var shadowColor *Color
@@ -6744,7 +6761,7 @@ func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
 				continue
 			}
 			candidate := strings.Join(fields[i:i+n], " ")
-			if c, ok := ParseColor(candidate); ok {
+			if c, ok := ParseColorWithCurrentColor(candidate, currentColor); ok {
 				shadowColor = &c
 				i += n
 				parsed = true

@@ -57,6 +57,33 @@ import (
 // re-deriving the max(em box, line box) sizing independently at paint
 // time, which would duplicate pkg/layout's logic and risk drifting out
 // of sync with it) keeps the two rects pixel-identical by construction.
+//
+// Falling back further to a BLOCK-level ancestor box sharing textBox.Node
+// (rather than textBox's own em-box) fixes selection-over-highlight-001
+// .html's 1px top sliver (a plain block <div>, `line-height: normal`, no
+// own background-color — the highlight background is the ONLY thing
+// painted for that Y range, so it must cover the full UA-computed line-box
+// leading, not just the em-box). But applying it UNCONDITIONALLY
+// over-extends the highlighted background 2-3px above the text when the
+// author sets an EXPLICIT numeric line-height (e.g. `line-height: 1` via
+// support/highlights.css's .highlight_reftest, used by
+// active-selection-014/025/027.html): geometry dump confirmed pkg/layout's
+// block box is taller than its own text's em-box even under `line-height:
+// 1` (active-selection-014.html's 300%-sized div: block box H=50.83 vs
+// text em-box H=48) — a pre-existing pkg/layout line-height/block-height
+// computation gap, unrelated to highlight painting, that the block-ancestor
+// fallback would otherwise propagate into the highlight rect.
+//
+// KNOWN LIMITATION, not a permanent design: gating on IsLineHeightNormal()
+// (only extend to the block ancestor when line-height is the UA default,
+// not an author override) is a paint-layer workaround for a layout-layer
+// bug, not a real semantic distinction Blink makes — it happens to
+// separate the two known cases correctly today, but will silently become
+// an unnecessary (and possibly wrong) restriction the day pkg/layout's
+// block-height-under-explicit-line-height computation is fixed to agree
+// with its own text's em-box + leading. When that pkg/layout fix lands,
+// this gate should be removed and the block-ancestor fallback applied
+// unconditionally, same as the sibling-background-fragment case above it.
 func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
 	if textBox == nil {
 		return 0, 0
@@ -66,6 +93,10 @@ func selectionBackgroundRectY(textBox *layout.Box) (y, height float64) {
 			if sibling != textBox && sibling.Node == textBox.Node && sibling.Text == "" {
 				return sibling.Y, sibling.Height
 			}
+		}
+		if ancestor := textBox.Parent.Parent; ancestor != nil && ancestor.Node == textBox.Node && ancestor.Text == "" &&
+			textBox.Style != nil && textBox.Style.IsLineHeightNormal() {
+			return ancestor.Y, ancestor.Height
 		}
 	}
 	return textBox.Y, textBox.Height
@@ -286,8 +317,29 @@ func (r *Renderer) resolveTargetTextPseudoStyle(originating *html.Node) *css.Sty
 	return r.resolveHighlightPseudoStyle(originating, "target-text", r.targetTextStyleCache)
 }
 
+// resolveCustomHighlightPseudoStyle returns the computed ::highlight(name)
+// style for originating, or nil if originating is nil (LOU-354). Mirrors
+// resolveSelectionPseudoStyle/resolveTargetTextPseudoStyle, but memoized in
+// a per-NAME cache (r.customHighlightStyleCaches[name]) rather than one
+// shared map — see that field's doc comment in render.go for why one
+// originating element can need independent styles for multiple
+// simultaneously-registered highlight names (highlight-painting-
+// currentcolor-001.html's ::highlight(a) and ::highlight(b)).
+func (r *Renderer) resolveCustomHighlightPseudoStyle(originating *html.Node, name string) *css.Style {
+	if r.customHighlightStyleCaches == nil {
+		r.customHighlightStyleCaches = make(map[string]map[*html.Node]*css.Style)
+	}
+	cache, ok := r.customHighlightStyleCaches[name]
+	if !ok {
+		cache = make(map[*html.Node]*css.Style)
+		r.customHighlightStyleCaches[name] = cache
+	}
+	return r.resolveHighlightPseudoStyle(originating, "highlight("+name+")", cache)
+}
+
 // resolveHighlightPseudoStyle is the shared implementation behind
-// resolveSelectionPseudoStyle/resolveTargetTextPseudoStyle, parameterized
+// resolveSelectionPseudoStyle/resolveTargetTextPseudoStyle/
+// resolveCustomHighlightPseudoStyle, parameterized
 // by pseudo-element name and which per-Render-call cache to memoize into —
 // factored out when LOU-349 added the ::target-text variant with an
 // otherwise byte-identical body (CLAUDE.md §4: 2+ near-identical paths are
@@ -446,7 +498,22 @@ func resolveHighlightColors(pseudoStyle *css.Style) highlightColors {
 		return highlightColors{}
 	}
 	var hc highlightColors
-	if bg, ok := pseudoStyle.Get("background-color"); ok {
+	// A literal `background-color: currentColor` is NOT resolved here
+	// against this layer's own color (unlike every other currentColor use
+	// in this function, which IS same-element/same-property resolution) —
+	// per CSS Pseudo-4's highlight-overlay-stack, `background-color:
+	// currentColor` on a highlight pseudo-element instead falls through to
+	// the layer immediately BELOW's already-resolved background-color, the
+	// same property one layer down (confirmed against highlight-painting-
+	// currentcolor-002/002a/002b.html's WPT references: `::selection {
+	// background-color: currentColor }` paints the custom highlight's OWN
+	// background-color — blue — not ::selection's own resolved `color`,
+	// even when `color` is itself an explicit non-currentColor value like
+	// green in 002b). Leaving hc.background nil here lets
+	// highlightLayerStackColors' existing "background unset → copy the
+	// layer below's background" fallthrough handle it uniformly with a
+	// genuinely-unset background-color.
+	if bg, ok := pseudoStyle.Get("background-color"); ok && !strings.EqualFold(bg, "currentColor") {
 		if c, ok := css.ParseColorWithCurrentColor(bg, pseudoStyle.GetColor()); ok {
 			hc.background = &c
 		}
@@ -494,36 +561,55 @@ func resolveHighlightColors(pseudoStyle *css.Style) highlightColors {
 	// return), NOT off len(textShadows) > 0 — an explicit `text-shadow:
 	// none` is present-but-empty and must still override (clear) the
 	// originating layer's shadows, not be mistaken for "highlight didn't
-	// touch text-shadow at all".
+	// touch text-shadow at all". The actual shadow LIST is deliberately
+	// NOT parsed here — hc.textShadows is left nil; the sole caller
+	// (highlightLayerStackColors) parses it exactly once, with the
+	// correctly-resolved currentColor for this layer, avoiding a
+	// wasted/incorrect first parse against pseudoStyle.GetColor() here
+	// that would immediately be discarded once a real foreground resolves
+	// (LOU-354: an earlier version of this function called GetTextShadow()
+	// eagerly and the caller re-parsed it anyway in the common case).
 	if _, ok := pseudoStyle.Get("text-shadow"); ok {
 		hc.hasOwnTextShadow = true
-		hc.textShadows = pseudoStyle.GetTextShadow()
 	}
 	return hc
 }
 
-// computeSelectionSegments splits a text fragment into 1-3 segments
-// (pre-highlight / highlighted / post-highlight) based on the configured
-// ::selection range OR ::target-text match ranges (LOU-349) — whichever is
-// active for this fragment's originating text node — and resolves the
-// applicable highlight pseudo-element's colors. Returns a single
-// unhighlighted segment spanning the whole text when neither context is
-// configured or neither overlaps this fragment; the common fast-path
-// callers should check via len(segs) == 1 && !segs[0].selected to skip the
-// splitting machinery entirely.
-//
-// ::selection is checked first and, if it overlaps, wins outright — none
-// of LOU-349's 14 target tests combine ::selection and ::target-text on
-// the same page (confirmed via grep), so simultaneous multi-highlight-type
-// layering (Blink's full HighlightPainter PaintCase dispatch / highlight
-// "layer" stacking) is explicitly out of scope; this ordering is a
-// reasonable, simple tie-break rather than a deliberate priority model.
+// highlightLayerName identifies one layer of the CSS Pseudo-4
+// §highlight-overlay-stack, bottom-to-top: a named ::highlight(name)
+// (LOU-354) below ::target-text below ::selection. Distinct from a plain
+// string so highlightLayerStack's construction can't be confused with a
+// custom-highlight NAME that happens to be spelled "target-text" or
+// "selection" (::highlight(name)'s name is an author-chosen identifier,
+// theoretically any string).
+type highlightLayerName struct {
+	kind string // "custom", "target-text", or "selection"
+	name string // the custom-highlight registry name; "" for target-text/selection
+}
+
+// highlightLayer pairs one active layer's resolved highlightColors with the
+// span it's active over (fragment-local, per targetTextOverlapsForTextNode/
+// selectionOverlapForTextNode).
+type highlightLayer struct {
+	id    highlightLayerName
+	spans []highlightSpan
+}
+
+// computeSelectionSegments splits a text fragment into paint segments based
+// on the CSS Pseudo-4 §highlight-overlay-stack: the originating element at
+// the bottom, then registered ::highlight(name) custom highlights (LOU-354,
+// in r.customHighlightOrder), then ::target-text (LOU-349), then ::selection
+// (LOU-344) on top. Returns a single unhighlighted segment spanning the
+// whole text when no layer is configured or none overlaps this fragment;
+// the common fast-path callers should check via
+// len(segs) == 1 && !segs[0].selected to skip the splitting machinery
+// entirely.
 func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []selectionSegment {
 	whole := []selectionSegment{{start: 0, end: len(text)}}
 	if box == nil || box.Node == nil || text == "" {
 		return whole
 	}
-	if r.selectionRange == nil && len(r.targetTextRanges) == 0 {
+	if r.selectionRange == nil && len(r.targetTextRanges) == 0 && len(r.customHighlights) == 0 {
 		return whole
 	}
 	textNode, fragStart, fragEnd := r.findOriginatingTextNode(box.Node, text)
@@ -531,56 +617,175 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 		return whole
 	}
 
+	var layers []highlightLayer
+	for _, name := range r.customHighlightOrder {
+		spans := targetTextOverlapsForTextNode(r.customHighlights[name], textNode, fragStart, fragEnd)
+		if len(spans) == 0 {
+			continue
+		}
+		layers = append(layers, highlightLayer{id: highlightLayerName{kind: "custom", name: name}, spans: spans})
+	}
+	if spans := targetTextOverlapsForTextNode(r.targetTextRanges, textNode, fragStart, fragEnd); len(spans) > 0 {
+		layers = append(layers, highlightLayer{id: highlightLayerName{kind: "target-text"}, spans: spans})
+	}
 	if r.selectionRange != nil {
 		if selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, textNode, fragStart, fragEnd); ok {
-			selectionStyle := r.resolveSelectionPseudoStyle(box.Node)
-			hc := resolveHighlightColors(selectionStyle)
-			// target-text-004.html / target-text-005.html: ::selection over
-			// the SAME text a ::target-text rule also covers (here, both
-			// span the whole "match me" via selectNodeContents). Per CSS
-			// Pseudo-4 §highlight-overlay-stack, ::selection sits ABOVE
-			// ::target-text in the highlight layer stack, so a property
-			// ::selection leaves at its CSS-wide initial value — `color:
-			// currentColor` (target-text-004) or `background-color:
-			// transparent` (target-text-005) — must resolve by looking
-			// THROUGH to the layer below (::target-text), not straight to
-			// the originating element. Confirmed against both tests' WPT
-			// references: 004 wants ::target-text's lime color to show
-			// through selection's currentColor; 005 wants ::target-text's
-			// green background to show through selection's transparent
-			// background. Full multi-layer overlay painting (Blink's
-			// HighlightPainter PaintCase dispatch) is out of scope (LOU-349's
-			// ticket: none of the 14 targets need genuinely SIMULTANEOUS
-			// layering — only this "see-through" carve-out for the two
-			// properties whose initial/keyword value is itself
-			// transparent/inherit-like) — decoration/shadow are NOT given
-			// the same treatment since no test exercises a see-through case
-			// for either.
-			if (hc.foreground == nil && selectionStyle != nil && isCurrentColorKeyword(selectionStyle)) ||
-				(hc.background != nil && hc.background.A == 0) {
-				if ttSpans := targetTextOverlapsForTextNode(r.targetTextRanges, textNode, fragStart, fragEnd); len(ttSpans) > 0 {
-					ttHC := resolveHighlightColors(r.resolveTargetTextPseudoStyle(box.Node))
-					if hc.foreground == nil && ttHC.foreground != nil {
-						hc.foreground = ttHC.foreground
-						if hc.decoration == nil {
-							hc.decoration = ttHC.foreground
-						}
-					}
-					if hc.background != nil && hc.background.A == 0 && ttHC.background != nil {
-						hc.background = ttHC.background
-					}
-				}
-			}
-			return highlightSegmentsFromSpans(text, []highlightSpan{{start: selStart, end: selEnd}}, hc)
+			layers = append(layers, highlightLayer{id: highlightLayerName{kind: "selection"}, spans: []highlightSpan{{start: selStart, end: selEnd}}})
 		}
 	}
-
-	if spans := targetTextOverlapsForTextNode(r.targetTextRanges, textNode, fragStart, fragEnd); len(spans) > 0 {
-		hc := resolveHighlightColors(r.resolveTargetTextPseudoStyle(box.Node))
-		return highlightSegmentsFromSpans(text, spans, hc)
+	if len(layers) == 0 {
+		return whole
 	}
 
-	return whole
+	return r.highlightSegmentsFromLayers(box.Node, text, layers)
+}
+
+// highlightSegmentsFromLayers splits text at every layer's span boundary
+// and, for each resulting sub-segment, resolves the bottom-to-top active
+// layer stack's colors (highlightLayerStackColors) — the general form of
+// LOU-349's old 2-layer "selection sees through to target-text" carve-out,
+// extended to however many layers (custom highlights + target-text +
+// selection) are simultaneously active over that sub-segment.
+func (r *Renderer) highlightSegmentsFromLayers(originating *html.Node, text string, layers []highlightLayer) []selectionSegment {
+	boundarySet := map[int]bool{0: true, len(text): true}
+	for _, layer := range layers {
+		for _, span := range layer.spans {
+			boundarySet[span.start] = true
+			boundarySet[span.end] = true
+		}
+	}
+	boundaries := make([]int, 0, len(boundarySet))
+	for b := range boundarySet {
+		boundaries = append(boundaries, b)
+	}
+	sort.Ints(boundaries)
+
+	var segs []selectionSegment
+	for i := 0; i+1 < len(boundaries); i++ {
+		start, end := boundaries[i], boundaries[i+1]
+		mid := start // any point strictly inside [start,end) identifies which spans cover it; start works since spans are half-open
+		var active []highlightLayerName
+		for _, layer := range layers {
+			for _, span := range layer.spans {
+				if mid >= span.start && mid < span.end {
+					active = append(active, layer.id)
+					break
+				}
+			}
+		}
+		if len(active) == 0 {
+			segs = append(segs, selectionSegment{start: start, end: end})
+			continue
+		}
+		hc := r.highlightLayerStackColors(originating, active)
+		segs = append(segs, selectionSegment{
+			start: start, end: end, selected: true,
+			backgroundColor: hc.background, textColor: hc.foreground, decorationColor: hc.decoration,
+			hasOwnDecoration: hc.hasOwnDecorationLine, decorationLine: hc.decorationLine,
+			hasOwnTextShadow: hc.hasOwnTextShadow, textShadows: hc.textShadows,
+		})
+	}
+	return segs
+}
+
+// highlightLayerStackColors resolves the paint colors for a sub-segment
+// given its bottom-to-top active layer stack (CSS Pseudo-4
+// §highlight-overlay-stack), mirroring Blink's HighlightPainter::
+// ResolveColorsFromPreviousLayer (third_party/blink/renderer/core/paint/
+// highlight_painter.h @ blob 96737c206898cbd27aed2cbeb07c455a3fa3d2dd):
+// paint the stack from the originating element upward, and for any layer
+// whose color/background-color is unset or currentColor/transparent, copy
+// the layer immediately below's ALREADY-resolved value — not the
+// originating element's value directly. Generalizes LOU-349's old
+// 2-layer-only carve-out (selection sees through to target-text) to
+// however many layers (custom highlights + target-text + selection,
+// LOU-354) are active.
+//
+// The base of the stack (the originating element, "below" the bottom-most
+// highlight layer) is intentionally represented as the ZERO highlightColors
+// value — nil foreground/decoration/background, NOT the originating
+// element's own resolved color. A nil field is drawText's existing "use
+// this segment's per-FRAGMENT layer.TextColor/TextDecorationColor
+// unchanged" signal (render.go: `if seg.textColor != nil ...`), which
+// already correctly varies per fragment (e.g. active-selection-025.html's
+// ::first-letter fragment vs. the rest of the text, two different
+// layer.TextColor values from the SAME originating <div> node). Resolving
+// a single originating.Style.GetColor() here instead would collapse that
+// per-fragment variation to one flat value — confirmed via regression: an
+// earlier version of this function did exactly that and broke
+// active-selection-025/027.html (::selection with no author `color`,
+// deferring through an unset/broken paired-cascade to the per-fragment
+// originating color, not one node-wide color).
+func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []highlightLayerName) highlightColors {
+	var resolved highlightColors // zero value: the originating element, nil-signaling "defer to the fragment's own layer colors"
+
+	for _, id := range stack {
+		style := r.resolveLayerPseudoStyle(originating, id)
+		hc := resolveHighlightColors(style)
+		isCurrentColor := style != nil && isCurrentColorKeyword(style)
+		if hc.foreground == nil || isCurrentColor {
+			hc.foreground = resolved.foreground
+		}
+		if hc.decoration == nil {
+			if hc.foreground != nil {
+				hc.decoration = hc.foreground
+			} else {
+				hc.decoration = resolved.decoration
+			}
+		}
+		if hc.background == nil || hc.background.A == 0 {
+			hc.background = resolved.background
+		}
+		if !hc.hasOwnDecorationLine {
+			hc.hasOwnDecorationLine = resolved.hasOwnDecorationLine
+			hc.decorationLine = resolved.decorationLine
+		}
+		if !hc.hasOwnTextShadow {
+			hc.hasOwnTextShadow = resolved.hasOwnTextShadow
+			hc.textShadows = resolved.textShadows
+		} else if style != nil {
+			// A layer's OWN text-shadow may itself use currentColor
+			// (highlight-painting-currentcolor-004/-004a.html:
+			// `p::selection { text-shadow: 0 2em red, 0 4em currentColor }`),
+			// which must resolve against THIS layer's own now-resolved
+			// foreground (same-element currentColor resolution, CSS Color 4
+			// §4.4) — not the layer below's, and not pseudoStyle's own
+			// unresolved GetColor() (which defaults an unresolvable
+			// "currentcolor" chain to black). Parsed exactly ONCE here
+			// (resolveHighlightColors deliberately leaves hc.textShadows
+			// unparsed for this reason — see that function's doc comment)
+			// with whichever currentColor this layer ultimately resolved
+			// to: its own hc.foreground when set, else the layer-below's
+			// (falling through the same way foreground/decoration do).
+			fg := hc.foreground
+			if fg == nil {
+				fg = resolved.foreground
+			}
+			if fg == nil {
+				black := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+				fg = &black
+			}
+			hc.textShadows = style.GetTextShadowWithCurrentColor(*fg)
+		}
+		resolved = hc
+	}
+	return resolved
+}
+
+// resolveLayerPseudoStyle resolves one highlightLayerName's
+// ComputePseudoElementStyle, dispatching to the right per-kind cache
+// (resolveSelectionPseudoStyle / resolveTargetTextPseudoStyle /
+// resolveCustomHighlightPseudoStyle).
+func (r *Renderer) resolveLayerPseudoStyle(originating *html.Node, id highlightLayerName) *css.Style {
+	switch id.kind {
+	case "selection":
+		return r.resolveSelectionPseudoStyle(originating)
+	case "target-text":
+		return r.resolveTargetTextPseudoStyle(originating)
+	case "custom":
+		return r.resolveCustomHighlightPseudoStyle(originating, id.name)
+	}
+	return nil
 }
 
 // isCurrentColorKeyword reports whether style's "color" property is
@@ -595,33 +800,4 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 func isCurrentColorKeyword(style *css.Style) bool {
 	cv, ok := style.Get("color")
 	return ok && strings.EqualFold(cv, "currentColor")
-}
-
-// highlightSegmentsFromSpans converts a sorted, non-overlapping list of
-// highlight spans (already fragment-local — see targetTextOverlapsForTextNode/
-// selectionOverlapForTextNode) into the full selectionSegment sequence
-// drawText consumes: unhighlighted gaps before/between/after each span,
-// interleaved with one "selected" segment per span, all carrying the SAME
-// resolved colors (a single highlight pseudo-element style applies
-// uniformly across every span for one fragment — e.g. target-text-009.html's
-// two overlapping/merged spans share one p::target-text rule).
-func highlightSegmentsFromSpans(text string, spans []highlightSpan, hc highlightColors) []selectionSegment {
-	var segs []selectionSegment
-	cursor := 0
-	for _, span := range spans {
-		if span.start > cursor {
-			segs = append(segs, selectionSegment{start: cursor, end: span.start})
-		}
-		segs = append(segs, selectionSegment{
-			start: span.start, end: span.end, selected: true,
-			backgroundColor: hc.background, textColor: hc.foreground, decorationColor: hc.decoration,
-			hasOwnDecoration: hc.hasOwnDecorationLine, decorationLine: hc.decorationLine,
-			hasOwnTextShadow: hc.hasOwnTextShadow, textShadows: hc.textShadows,
-		})
-		cursor = span.end
-	}
-	if cursor < len(text) {
-		segs = append(segs, selectionSegment{start: cursor, end: len(text)})
-	}
-	return segs
 }

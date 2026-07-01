@@ -156,6 +156,30 @@ type Renderer struct {
 	// styles are independent values and must not collide on one cache key).
 	targetTextStyleCache map[*html.Node]*css.Style
 
+	// LOU-354: ::highlight(name) highlight painting (CSS Custom Highlight
+	// API). customHighlights carries the document's registered highlights
+	// (html.Document.CustomHighlights, populated by CSS.highlights.set —
+	// see pkg/js/dom_highlight.go), keyed by name; customHighlightOrder is
+	// the same names in first-registration order (html.Document.
+	// CustomHighlightOrder), used as the bottom-to-top paint order within
+	// the custom-highlight portion of the overlay stack (CSS Pseudo-4
+	// §highlight-overlay-stack) when no test spreads priority values. Set
+	// via SetCustomHighlights; nil/empty when the caller supplies none, in
+	// which case custom-highlight painting is skipped entirely (same
+	// fail-open shape as targetTextRanges == nil).
+	customHighlights     map[string][]*html.Range
+	customHighlightOrder []string
+
+	// customHighlightStyleCaches mirrors targetTextStyleCache, but one
+	// per-name map rather than one map total — each ::highlight(name) rule
+	// is an INDEPENDENT resolved style (highlight-painting-currentcolor-
+	// 001.html's ::highlight(a) and ::highlight(b) have different color/
+	// background-color), so a single shared cache keyed only by originating
+	// element would collide across names the way selectionStyleCache/
+	// targetTextStyleCache never need to worry about (those each cover
+	// exactly one fixed pseudo-element name).
+	customHighlightStyleCaches map[string]map[*html.Node]*css.Style
+
 	// selectionTextConsumed tracks, per DOM text node, how many UTF-16
 	// code units of that node's text content have already been painted by
 	// prior text fragments in this Render call. A single DOM text node can
@@ -268,6 +292,17 @@ func (r *Renderer) SetSelectionContext(selection *html.Range, stylesheets []*css
 // sync with selectionStylesheets/selectionViewportW/H for no benefit.
 func (r *Renderer) SetTargetTextRanges(ranges []*html.Range) {
 	r.targetTextRanges = ranges
+}
+
+// SetCustomHighlights supplies what drawText needs to paint ::highlight
+// (name) highlights (LOU-354, CSS Custom Highlight API): the document's
+// registered highlights (nil/empty if none — custom-highlight painting is
+// then skipped entirely) plus their first-registration order. Stylesheets/
+// viewport dimensions are NOT separate parameters here, for the same reason
+// SetTargetTextRanges doesn't take them — see that method's doc comment.
+func (r *Renderer) SetCustomHighlights(highlights map[string][]*html.Range, order []string) {
+	r.customHighlights = highlights
+	r.customHighlightOrder = order
 }
 
 // SetExternalSVGFetcher installs a closure that resolves
@@ -445,6 +480,8 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// node via the same per-box call in drawText, so a second independent
 	// counter would double-consume and desync node-local offsets.
 	r.targetTextStyleCache = nil
+	// LOU-354: same reset for ::highlight(name)'s per-render style cache.
+	r.customHighlightStyleCaches = nil
 
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
