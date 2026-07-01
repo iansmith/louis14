@@ -336,8 +336,29 @@ func resolveSVGTextSegmentPaint(r *Renderer, originating *html.Node, style *css.
 		strokeWidth = pseudoStyle.GetStrokeWidth()
 	}
 	if _, ok := pseudoStyle.Get("text-shadow"); ok {
+		// A highlight pseudo's OWN text-shadow paints ALONGSIDE the
+		// originating element's shadows, not instead of them — same
+		// additive model render.go's drawText applies for ordinary CSS
+		// text (seg.hasOwnTextShadow branch). But the STACKING ORDER
+		// here is the OPPOSITE of that LOU-349 ::target-text case:
+		// svg-text-selection-shadow.html's own assert states "::selection
+		// with shadow paints BEHIND originating shadow" (not on top of
+		// it), confirmed against its reference's declared order
+		// (`text-shadow: 5px 5px 0px green, 3px 3px 0px blue` — the
+		// ORIGINATING green shadow listed FIRST). Per CSS Text Decor 4's
+		// "first-specified shadow is on top" rule, and drawTextShadows'
+		// iteration (index 0 painted LAST = topmost), the originating
+		// shadows must occupy the FRONT of the merged slice here —
+		// ::selection's own shadow(s) are appended AFTER, painting
+		// UNDER the originating ones. (LOU-349's ::target-text case
+		// puts the highlight's shadow in front instead, because that
+		// test's own reference/assert specify the highlight ON TOP —
+		// the two pseudo-elements are NOT assumed to share one
+		// universal ordering; each is verified against its own target
+		// test's reference.)
 		fg := pseudoStyle.GetColor()
-		shadows = pseudoStyle.GetTextShadowWithCurrentColor(fg)
+		ownShadows := pseudoStyle.GetTextShadowWithCurrentColor(fg)
+		shadows = append(append([]css.TextShadow{}, shadows...), ownShadows...)
 	}
 	return fillPaint, strokePaint, strokeWidth, shadows
 }
