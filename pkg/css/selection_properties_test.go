@@ -19,6 +19,7 @@ package css
 // Blink, so they are excluded here.
 
 import (
+	"fmt"
 	"louis14/pkg/html"
 	"testing"
 )
@@ -122,5 +123,76 @@ func TestSelectionPseudoStyle_DoesNotInheritOriginatingColor(t *testing.T) {
 
 	if color, ok := selStyle.Get("color"); ok && color == "transparent" {
 		t.Errorf("::selection color = %q; should not inherit originating element's color, want a UA default", color)
+	}
+}
+
+// TestSelectionPseudoStyle_ResolvesLightDark closes LOU-356
+// (highlight-styling-004.html): `light-dark()` must be resolved for
+// highlight-pseudo properties using the ORIGINATING element's own used
+// color-scheme, mirroring the normal cascade's resolveInheritValues (which
+// ComputePseudoElementStyle does not go through — it has its own separate
+// inheritance pass). Before this fix, `color-scheme` was not in
+// ComputePseudoElementStyle's inheritable-properties list at all, so
+// UsedColorSchemeDark() always read false regardless of the originating
+// element's own color-scheme, and no code path called resolveLightDark for
+// pseudo-element styles — a `color: light-dark(a, b)` value stayed the
+// literal unresolved string.
+func TestSelectionPseudoStyle_ResolvesLightDark(t *testing.T) {
+	stylesheet, err := ParseStylesheet(`
+		p::selection { color: light-dark(green, blue); }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*Stylesheet{stylesheet}
+
+	lightNode := &html.Node{Type: html.ElementNode, TagName: "p"}
+	lightNode.Attributes = map[string]string{"style": "color-scheme: light"}
+	lightOriginating := ComputeStyle(lightNode, stylesheets, 800, 600, nil)
+	lightSel := ComputePseudoElementStyle(lightNode, "selection", stylesheets, 800, 600, lightOriginating)
+	if color, ok := lightSel.Get("color"); !ok || color != "green" {
+		t.Errorf("::selection color under color-scheme:light = %q, %v; want \"green\", true", color, ok)
+	}
+
+	darkNode := &html.Node{Type: html.ElementNode, TagName: "p"}
+	darkNode.Attributes = map[string]string{"style": "color-scheme: dark"}
+	darkOriginating := ComputeStyle(darkNode, stylesheets, 800, 600, nil)
+	darkSel := ComputePseudoElementStyle(darkNode, "selection", stylesheets, 800, 600, darkOriginating)
+	if color, ok := darkSel.Get("color"); !ok || color != "blue" {
+		t.Errorf("::selection color under color-scheme:dark = %q, %v; want \"blue\", true", color, ok)
+	}
+}
+
+// TestResolveLightDarkValues_ColorResolvedBeforeDependents mirrors a
+// CodeRabbit finding on LOU-356 PR #153: resolveLightDarkValues used to
+// iterate style.Properties (a Go map, undefined order) in a single pass, so
+// a property whose light-dark()-selected operand is itself `currentColor`
+// (e.g. `background-color: light-dark(white, currentColor)`) could read
+// `color`'s STILL-unresolved "light-dark(...)" string when map iteration
+// happened to visit it before `color`. Fixed by resolving `color` in its own
+// pass first. Runs the resolution repeatedly (map iteration order varies
+// per Go runtime execution) rather than trusting a single pass to catch a
+// map-order-dependent regression.
+func TestResolveLightDarkValues_ColorResolvedBeforeDependents(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		style := NewStyle()
+		style.Set("color-scheme", "dark")
+		style.Set("color", "light-dark(green, blue)")
+		style.Set("background-color", "light-dark(white, currentColor)")
+		// Filler properties widen the map so iteration order actually varies
+		// across runs instead of Go's small-map fast path masking it.
+		for j := 0; j < 10; j++ {
+			style.Set(fmt.Sprintf("--filler-%d", j), "1")
+		}
+
+		resolveLightDarkValues(style, nil)
+
+		if color, ok := style.Get("color"); !ok || color != "blue" {
+			t.Fatalf("run %d: color = %q, %v; want \"blue\", true", i, color, ok)
+		}
+		wantBG := formatColorAsRGBA(Color{R: 0, G: 0, B: 255, A: 1})
+		if bg, ok := style.Get("background-color"); !ok || bg != wantBG {
+			t.Fatalf("run %d: background-color = %q, %v; want %q (color's resolved blue, not a stale/black currentColor fallback)", i, bg, ok, wantBG)
+		}
 	}
 }
