@@ -6365,119 +6365,127 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			}
 		}
 		// Clip this segment's glyph/decoration paint to its own ADVANCE-axis
-		// span only (segBox.X/segWidth for horizontal text, segBox.Y/segWidth
-		// for vertical — see the layer.IsVerticalText dispatch below). Mirrors Blink's
-		// HighlightPainter::ClipToPartRect (third_party/blink/renderer/
-		// core/paint/highlight_painter.cc @ Chromium main, 2026-06-30):
-		// each highlight "part" (a character range with one resolved paint
-		// style, from HighlightOverlay::ComputeParts) is painted from the
-		// SAME shaped line run but clipped to its own part rect before its
-		// text is drawn — without that clip, a glyph whose rasterized ink
-		// overhangs past its own part's advance box (e.g. an italic
-		// integral's hooked terminal) bleeds into the ADJACENT part's
-		// paint, which here painted a different color moments later and
-		// silently overwrote pixels the earlier part's color (here,
-		// ::selection's `color: transparent`) should have left alone.
-		// Confirmed via glyph-run dump: selection-background-painting-
-		// order.html's unselected "∫∫" run positions its first glyph at a
-		// NEGATIVE relative X (HarfBuzz left-side-bearing overhang for this
-		// italic glyph), landing squarely inside the PRECEDING selected
-		// "ii∫" segment's highlight rect and painting solid opaque orange
-		// there instead of leaving the transparent segment's (correctly
-		// invisible) pixels alone (LOU-348).
-		//
-		// The CROSS axis is deliberately left unclipped (padded far past
-		// crossOrigin/crossExtent) rather than clipping tightly to it: Blink's
-		// own clip derives its cross-axis bound from the fragment's
-		// InkOverflowRect (actual rasterized ink bounds, which for an
-		// italic ascender/descender legitimately exceeds the CSS em-box),
-		// not from the em-box/line-box geometry selectionBackgroundRectCrossAxis
-		// computes for sizing the highlight FILL rect. This engine has no
-		// per-fragment ink-overflow tracking to mirror that exactly;
-		// reusing the tight em-box rect here clipped off genuine ascender
-		// antialiasing at the very top of this test's italic glyphs
-		// (confirmed empirically: y=74-76 antialiasing pixels disappeared
-		// when the cross axis was clipped to crossOrigin/crossExtent). Since
-		// the bug being fixed is purely an ADVANCE-axis bleed between
-		// segments, padding the cross axis by a full font-size in each
-		// direction comfortably covers any realistic glyph overshoot
-		// without the precision a real ink-overflow rect would give.
-		//
-		// text-shadow (CSS Text Decor 4 §text-shadow-property) has no bound
-		// relative to the glyph box on EITHER axis — an author can offset a
-		// shadow arbitrarily far in any direction (highlight-painting-
-		// currentcolor-004's `0 4em` vertical offset, target-text-shadow-
-		// horizontal's `0.25em 0.25em` diagonal offset are both real target
-		// tests). segShadowPad is this segment's own required margin so its
-		// shadows are never clipped, REGARDLESS of whether this segment
-		// sits at the fragment's outer edge or between two other segments —
-		// a shadow is its own explicit paint geometry the author specified,
-		// not glyph ink that might bleed into a neighbor, so unlike the
-		// glyph-overhang case below it always gets full room on every side.
-		// Confirmed empirically: without this, highlight-painting-
-		// currentcolor-004/-004a/-004b and target-text-shadow-horizontal
-		// regressed from PASS to FAIL (their shadows landed outside a
-		// smaller, outer-edge-only pad and were clipped away).
-		segShadowPad := maxTextShadowExtent(segLayer.TextShadows)
-		pad := max(layer.FontSize, segShadowPad)
-		// The ADVANCE axis is ALSO padded outward at the fragment's own
-		// outer edges (the first segment's leading edge, the last
-		// segment's trailing edge) even with no text-shadow — Blink's
-		// ClipToPartRect does the same ("expanded slightly at the far left
-		// or right end of a fragment"), since a glyph's natural overhang at
-		// the very start/end of the WHOLE fragment has no adjacent segment
-		// to bleed into, so there is nothing to protect against by clipping
-		// it. Confirmed empirically: without this widening, the unselected
-		// "∫∫" run's own trailing glyph's top-hook overhang (past segWidth's
-		// right edge, the last segment here) was clipped away. INTERIOR
-		// boundaries stay tight at segShadowPad (0 when this segment has no
-		// shadow) — that boundary is exactly where this bug's cross-segment
-		// glyph-ink bleed happens and must stay clipped absent a shadow's
-		// own wider requirement.
-		advStart, advEnd := segShadowPad, segShadowPad
-		if i == 0 {
-			advStart = pad * 4
-		}
-		if i == len(segs)-1 {
-			advEnd = pad * 4
-		}
-		// The advance-axis origin/extent below is segBox.X/segWidth — the
-		// SAME raw (non-pixel-snapped) values drawTextStr positions this
-		// segment's glyphs from (drawTextStr's own doc comment: "X is
-		// passed through fractionally so the rasterizer's subpixel pen
-		// carry... produces consistent glyph positioning") — NOT sx/sw
-		// (pixelSnap'd for the highlight FILL rect above). Using the
-		// pixel-snapped sx/sw here misaligned the clip boundary from the
-		// glyph rasterizer's own sub-pixel grid by a fraction of a pixel,
-		// clipping one extra antialiased fringe pixel at every INTERIOR
-		// segment boundary vs. an unclipped reference (highlight-painting-
-		// currentcolor-003a's 13-pixel regression, confirmed empirically:
-		// switching this from sx/sw to segBox.X/segWidth took it to 0
-		// diff pixels with no change to the main LOU-348 target's result).
-		var clipX, clipY, clipW, clipH float64
-		if layer.IsVerticalText {
-			clipX, clipY, clipW, clipH = crossOrigin-pad, segBox.Y-advStart, crossExtent+2*pad, segWidth+advStart+advEnd
-		} else {
-			clipX, clipY, clipW, clipH = segBox.X-advStart, crossOrigin-pad, segWidth+advStart+advEnd, crossExtent+2*pad
-		}
-		// mazzy's DrawContextImpl.Clip fast-paths an axis-aligned rectangle
-		// via int(rect[...]) (draw_impl.go), which TRUNCATES toward zero
-		// rather than rounding — a fractional-pixel clip max (e.g. 45.8125)
-		// silently became 45, excluding a pixel this clip was meant to
-		// include (highlight-painting-currentcolor-003a's last remaining
-		// diff pixel: the trailing edge of an interior segment's own
-		// underline landed at x=45.81, truncated to clipRect.Max.X=45,
-		// dropping pixel 45 itself). Rounding the min corner down and the
-		// max corner up guarantees the integer clip rect always CONTAINS
-		// the intended fractional span, never truncates into it.
-		clipMinX, clipMinY := math.Floor(clipX), math.Floor(clipY)
-		clipMaxX, clipMaxY := math.Ceil(clipX+clipW), math.Ceil(clipY+clipH)
+		// span (LOU-348) — see segmentClipRect's doc comment for the full
+		// Blink-mirroring rationale.
+		clipMinX, clipMinY, clipMaxX, clipMaxY := segmentClipRect(
+			segBox, segWidth, crossOrigin, crossExtent, segLayer.TextShadows,
+			layer.IsVerticalText, layer.FontSize, i == 0, i == len(segs)-1)
 		r.dc.Push()
 		r.dc.DrawRectangle(clipMinX, clipMinY, clipMaxX-clipMinX, clipMaxY-clipMinY)
 		r.dc.Clip()
 		r.drawTextSegment(&segLayer)
 		r.dc.Pop()
 	}
+}
+
+// segmentClipRect computes the integer-pixel clip bounds (minX, minY, maxX,
+// maxY) for one drawText segment's glyph/decoration paint (LOU-348),
+// mirroring Blink's HighlightPainter::ClipToPartRect
+// (third_party/blink/renderer/core/paint/highlight_painter.cc @ Chromium
+// main, 2026-06-30): each highlight "part" (a character range with one
+// resolved paint style, from HighlightOverlay::ComputeParts) is painted
+// from the SAME shaped line run but clipped to its own part rect before its
+// text is drawn — without that clip, a glyph whose rasterized ink overhangs
+// past its own part's advance box (e.g. an italic integral's hooked
+// terminal) bleeds into the ADJACENT part's paint, which here painted a
+// different color moments later and silently overwrote pixels the earlier
+// part's color (here, ::selection's `color: transparent`) should have left
+// alone. Confirmed via glyph-run dump: selection-background-painting-
+// order.html's unselected "∫∫" run positions its first glyph at a NEGATIVE
+// relative X (HarfBuzz left-side-bearing overhang for this italic glyph),
+// landing squarely inside the PRECEDING selected "ii∫" segment's highlight
+// rect and painting solid opaque orange there instead of leaving the
+// transparent segment's (correctly invisible) pixels alone.
+//
+// segBox/segWidth are this segment's own advance-axis box/measured extent;
+// crossOrigin/crossExtent are the cross-axis origin/extent
+// (selectionBackgroundRectCrossAxis's result, shared with the highlight
+// fill rect); shadows is the segment's own resolved text-shadow list (nil
+// if none); isFirst/isLast mark the first/last segment of the fragment.
+//
+// The CROSS axis is deliberately left unclipped (padded a full fontSize
+// past crossOrigin/crossExtent) rather than clipping tightly to it: Blink's
+// own clip derives its cross-axis bound from the fragment's InkOverflowRect
+// (actual rasterized ink bounds, which for an italic ascender/descender
+// legitimately exceeds the CSS em-box), not from the em-box/line-box
+// geometry selectionBackgroundRectCrossAxis computes for sizing the
+// highlight FILL rect. This engine has no per-fragment ink-overflow
+// tracking to mirror that exactly; reusing the tight em-box rect here
+// clipped off genuine ascender antialiasing at the very top of this test's
+// italic glyphs (confirmed empirically: y=74-76 antialiasing pixels
+// disappeared when the cross axis was clipped to crossOrigin/crossExtent).
+// Since the bug being fixed is purely an ADVANCE-axis bleed between
+// segments, padding the cross axis by a full font-size in each direction
+// comfortably covers any realistic glyph overshoot without the precision a
+// real ink-overflow rect would give.
+//
+// text-shadow (CSS Text Decor 4 §text-shadow-property) has no bound
+// relative to the glyph box on EITHER axis — an author can offset a shadow
+// arbitrarily far in any direction (highlight-painting-currentcolor-004's
+// `0 4em` vertical offset, target-text-shadow-horizontal's `0.25em 0.25em`
+// diagonal offset are both real target tests). shadowPad is this segment's
+// own required margin so its shadows are never clipped, REGARDLESS of
+// whether this segment sits at the fragment's outer edge or between two
+// other segments — a shadow is its own explicit paint geometry the author
+// specified, not glyph ink that might bleed into a neighbor, so unlike the
+// glyph-overhang case below it always gets full room on every side.
+// Confirmed empirically: without this, highlight-painting-currentcolor-
+// 004/-004a/-004b and target-text-shadow-horizontal regressed from PASS to
+// FAIL (their shadows landed outside a smaller, outer-edge-only pad and
+// were clipped away).
+//
+// The ADVANCE axis is ALSO padded outward at the fragment's own outer
+// edges (isFirst's leading edge, isLast's trailing edge) even with no
+// text-shadow — Blink's ClipToPartRect does the same ("expanded slightly
+// at the far left or right end of a fragment"), since a glyph's natural
+// overhang at the very start/end of the WHOLE fragment has no adjacent
+// segment to bleed into, so there is nothing to protect against by
+// clipping it. Confirmed empirically: without this widening, the
+// unselected "∫∫" run's own trailing glyph's top-hook overhang (past
+// segWidth's right edge, the last segment) was clipped away. INTERIOR
+// boundaries stay tight at shadowPad (0 when this segment has no shadow) —
+// that boundary is exactly where this bug's cross-segment glyph-ink bleed
+// happens and must stay clipped absent a shadow's own wider requirement.
+//
+// The advance-axis origin/extent used below is segBox.X/segWidth — the
+// SAME raw (non-pixel-snapped) values drawTextStr positions this segment's
+// glyphs from (drawTextStr's own doc comment: "X is passed through
+// fractionally so the rasterizer's subpixel pen carry... produces
+// consistent glyph positioning") — NOT a pixelSnap'd rect (as used for the
+// highlight FILL rect). Using a pixel-snapped rect here misaligned the clip
+// boundary from the glyph rasterizer's own sub-pixel grid by a fraction of
+// a pixel, clipping one extra antialiased fringe pixel at every INTERIOR
+// segment boundary vs. an unclipped reference (highlight-painting-
+// currentcolor-003a's 13-pixel regression, confirmed empirically:
+// switching this from a pixel-snapped rect to segBox.X/segWidth took it to
+// 0 diff pixels with no change to the main LOU-348 target's result).
+//
+// Finally, mazzy's DrawContextImpl.Clip fast-paths an axis-aligned
+// rectangle via int(rect[...]), which TRUNCATES toward zero rather than
+// rounding — a fractional-pixel clip max (e.g. 45.8125) silently became
+// 45, excluding a pixel this clip was meant to include (highlight-
+// painting-currentcolor-003a's last remaining diff pixel: the trailing
+// edge of an interior segment's own underline landed at x=45.81, truncated
+// to clipRect.Max.X=45, dropping pixel 45 itself). Rounding the min corner
+// down and the max corner up guarantees the integer clip rect always
+// CONTAINS the intended fractional span, never truncates into it.
+func segmentClipRect(segBox layout.Box, segWidth, crossOrigin, crossExtent float64, shadows []css.TextShadow, isVerticalText bool, fontSize float64, isFirst, isLast bool) (minX, minY, maxX, maxY float64) {
+	shadowPad := maxTextShadowExtent(shadows)
+	pad := max(fontSize, shadowPad)
+	advStart, advEnd := shadowPad, shadowPad
+	if isFirst {
+		advStart = pad * 4
+	}
+	if isLast {
+		advEnd = pad * 4
+	}
+	var clipX, clipY, clipW, clipH float64
+	if isVerticalText {
+		clipX, clipY, clipW, clipH = crossOrigin-pad, segBox.Y-advStart, crossExtent+2*pad, segWidth+advStart+advEnd
+	} else {
+		clipX, clipY, clipW, clipH = segBox.X-advStart, crossOrigin-pad, segWidth+advStart+advEnd, crossExtent+2*pad
+	}
+	return math.Floor(clipX), math.Floor(clipY), math.Ceil(clipX + clipW), math.Ceil(clipY + clipH)
 }
 
 // maxTextShadowExtent returns the largest absolute reach (offset magnitude
