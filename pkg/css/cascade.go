@@ -1537,6 +1537,20 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// reuses selectionAllowedProperty rather than duplicating the list).
 	isTargetText := pseudoElement == "target-text"
 
+	// CSS Pseudo-4 §highlight-styling / LOU-354: ::highlight(name) (CSS
+	// Custom Highlight API) is a third sibling highlight pseudo-element,
+	// governed by the same valid_for_highlight property set
+	// (highlightAllowedProperty — see custom_highlight_properties_test.go's
+	// file doc comment). Unlike ::selection/::target-text, ::highlight()
+	// has NO UA-forced color pair (Blink's HighlightStyleUtils::
+	// DefaultForegroundColor returns nullopt and DefaultBackgroundColor
+	// returns kTransparent unconditionally for kPseudoIdHighlight, not a
+	// paired default) — so there is no applyCustomHighlightCascade
+	// counterpart to applySelectionCascade/applyTargetTextCascade below,
+	// and no author-props tracking map is needed (that bookkeeping exists
+	// solely to feed the paired-default forcing pass).
+	isCustomHighlight := strings.HasPrefix(pseudoElement, "highlight(")
+
 	// For ::marker / ::selection / ::target-text: track which properties
 	// were explicitly set by author rules (as opposed to inherited from the
 	// originating element). This lets applyMarkerCascade /
@@ -1587,7 +1601,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
+			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
 				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 				// `all` resets EVERY property (including color/background-
 				// color) to its all-declared value, so it counts as
@@ -1620,6 +1634,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				continue
 			}
 			if isTargetText && !targetTextAllowedProperty(property) {
+				continue
+			}
+			if isCustomHighlight && !highlightAllowedProperty(property) {
 				continue
 			}
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
@@ -1679,7 +1696,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if rule.Important["all"] {
 			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
+				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
 					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 					importantProps["all"] = true
 					// See the normal-priority `all` handling above for why
@@ -1707,6 +1724,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					continue
 				}
 				if isTargetText && !targetTextAllowedProperty(property) {
+					continue
+				}
+				if isCustomHighlight && !highlightAllowedProperty(property) {
 					continue
 				}
 				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
@@ -2071,6 +2091,16 @@ func recordHighlightShorthandLonghands(authorSet map[string]bool, property strin
 // a ::target-text-specific allowed-property carve-out anywhere in Blink's
 // highlight styling code.
 func targetTextAllowedProperty(name string) bool {
+	return selectionAllowedProperty(name)
+}
+
+// highlightAllowedProperty reports whether a property may be specified on a
+// ::highlight(name) rule (LOU-354, CSS Custom Highlight API). Delegates to
+// selectionAllowedProperty for the same reason targetTextAllowedProperty
+// does (see that function's doc comment) — Blink's `valid_for_highlight`
+// flag gates ::highlight() identically to ::selection/::target-text, with
+// no per-pseudo variation.
+func highlightAllowedProperty(name string) bool {
 	return selectionAllowedProperty(name)
 }
 

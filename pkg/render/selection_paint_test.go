@@ -209,6 +209,60 @@ func TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox(t *testin
 	}
 }
 
+// TestSelectionBackgroundRectY_LineHeightNormalFallsBackToBlockAncestor
+// mirrors LOU-354's selection-over-highlight-001.html: a block-level
+// originating <div> with `line-height: normal` (the UA default — style is
+// either unset or literally "normal") and no own background-color, so
+// layout emits no inline background-fragment sibling. The box tree shape
+// is div(line-box height) -> anonymous line box(same height) -> text(em
+// box, shorter and lower) — reproduced here with the div's own box as
+// textBox.Parent.Parent, sharing textBox.Node. Before this fix,
+// selectionBackgroundRectY fell all the way through to the text's own
+// shorter/lower em box, leaving a 1px sliver at the top of the highlight
+// overlay uncovered (confirmed against the WPT reference, whose real
+// `background-color: lightblue` <div> covers the full line-box height).
+func TestSelectionBackgroundRectY_LineHeightNormalFallsBackToBlockAncestor(t *testing.T) {
+	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
+	blockBox := &layout.Box{Node: divNode, Y: 8.000, Height: 16.938}
+	anonLineBox := &layout.Box{Node: nil, Parent: blockBox, Y: 8.000, Height: 16.938}
+	textStyle := css.NewStyle() // line-height unset == "normal" per IsLineHeightNormal's doc comment
+	textBox := &layout.Box{Node: divNode, Parent: anonLineBox, Y: 9.469, Height: 16.000, Text: "Selected Text", Style: textStyle}
+	blockBox.Children = []*layout.Box{anonLineBox}
+	anonLineBox.Children = []*layout.Box{textBox}
+
+	y, height := selectionBackgroundRectY(textBox)
+	if y != blockBox.Y || height != blockBox.Height {
+		t.Errorf("selectionBackgroundRectY = (%v, %v), want the block ancestor box's (%v, %v) under line-height:normal — using the text box's own (%v, %v) leaves a top sliver uncovered",
+			y, height, blockBox.Y, blockBox.Height, textBox.Y, textBox.Height)
+	}
+}
+
+// TestSelectionBackgroundRectY_ExplicitLineHeightDoesNotUseBlockAncestor
+// guards the regression the block-ancestor fallback above must NOT
+// reintroduce: active-selection-014/025/027.html's `line-height: 1` case,
+// where pkg/layout's block box is taller than its own text's em-box for
+// unrelated reasons (a pre-existing line-height/block-height computation
+// gap — see selectionBackgroundRectY's doc comment) — falling back to that
+// taller block box over-extends the highlighted background above the text.
+// With an explicit (non-"normal") line-height, selectionBackgroundRectY
+// must keep using the text box's own (Y, Height), not the block ancestor.
+func TestSelectionBackgroundRectY_ExplicitLineHeightDoesNotUseBlockAncestor(t *testing.T) {
+	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
+	blockBox := &layout.Box{Node: divNode, Y: 48.938, Height: 50.828}
+	anonLineBox := &layout.Box{Node: nil, Parent: blockBox, Y: 48.938, Height: 50.828}
+	textStyle := css.NewStyle()
+	textStyle.Set("line-height", "1")
+	textBox := &layout.Box{Node: divNode, Parent: anonLineBox, Y: 52.859, Height: 48.000, Text: "Selected Text", Style: textStyle}
+	blockBox.Children = []*layout.Box{anonLineBox}
+	anonLineBox.Children = []*layout.Box{textBox}
+
+	y, height := selectionBackgroundRectY(textBox)
+	if y != textBox.Y || height != textBox.Height {
+		t.Errorf("selectionBackgroundRectY = (%v, %v), want the text box's own (%v, %v) under an explicit line-height — using the block ancestor's (%v, %v) over-extends the highlight",
+			y, height, textBox.Y, textBox.Height, blockBox.Y, blockBox.Height)
+	}
+}
+
 // TestSelectionBackgroundRectY_NilBox guards the nil-safety the rest of
 // computeSelectionSegments relies on (it's only ever called with a
 // non-nil box in practice, but defends against the zero value the same
@@ -342,5 +396,61 @@ func TestTargetTextOverlapsForTextNode_NoRanges(t *testing.T) {
 	}
 	if spans := targetTextOverlapsForTextNode([]*html.Range{}, tn, 0, len(tn.Text)); len(spans) != 0 {
 		t.Errorf("got %d spans for empty ranges, want 0", len(spans))
+	}
+}
+
+// TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginatingColor
+// covers a CodeRabbit-flagged gap (LOU-354 PR #150), reproducing
+// highlight-painting-currentcolor-004.html's exact ::selection rule
+// (`color: currentColor; text-shadow: 0 2em red, 0 4em currentColor`) but
+// applied to a segment with NO custom highlight below it (that test's
+// space character hits this same code path, but a space has no visible
+// glyph, so a wrong color there is invisible in pixels — see that test's
+// -004a sibling and this function's own doc comment for the "currentColor
+// falls through to the layer below" mechanism this exercises).
+//
+// `color: currentColor` is explicit author input here (authorSet["color"]
+// = true), so applyHighlightPairedColorCascade does NOT force the UA
+// default pair over it (see that function's doc comment) — the literal
+// "currentColor" string survives onto pseudoStyle, ParseColor can't parse
+// the keyword, and resolveHighlightColors' hc.foreground genuinely stays
+// nil. With nothing below ::selection in the stack (resolved.foreground
+// nil too, the zero-value base), highlightLayerStackColors' text-shadow
+// `fg == nil` fallback must NOT hardcode black — it must use the
+// originating element's own resolved color (Blink's layer 0 in the
+// highlight-overlay-stack always has a concrete color).
+func TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginatingColor(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		div { color: blue; }
+		div::selection { color: currentColor; text-shadow: 0 2em currentColor; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	tn := textNode("hello")
+	div.Children = []*html.Node{tn}
+	tn.Parent = div
+
+	divStyle := css.ComputeStyle(div, stylesheets, 800, 600, nil)
+	box := &layout.Box{Node: div, Style: divStyle}
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{div: box},
+	}
+
+	hc := r.highlightLayerStackColors(div, []highlightLayerName{{kind: "selection"}})
+	if !hc.hasOwnTextShadow || len(hc.textShadows) != 1 {
+		t.Fatalf("hc.textShadows = %+v, want exactly 1 shadow", hc.textShadows)
+	}
+	gotColor := hc.textShadows[0].Color
+	wantColor := divStyle.GetColor() // originating div's own resolved `color: blue`
+	if gotColor != wantColor {
+		t.Errorf("bottom-layer text-shadow currentColor resolved to %+v, want the originating element's own color %+v (not hardcoded black)", gotColor, wantColor)
 	}
 }

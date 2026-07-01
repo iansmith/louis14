@@ -141,6 +141,13 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// see SetTargetTextRanges's doc comment for why it reuses the triple
 	// SetSelectionContext just set.
 	renderer.SetTargetTextRanges(doc.TargetTextRanges)
+	// LOU-354: ::highlight(name) highlight painting. doc.CustomHighlights/
+	// CustomHighlightOrder are populated by the JS execution above
+	// (CSS.highlights.set, see pkg/js/dom_highlight.go); nil/empty when the
+	// test's script never touched CSS.highlights, in which case drawText's
+	// custom-highlight check no-ops immediately (same fail-open shape as
+	// TargetTextRanges above).
+	renderer.SetCustomHighlights(doc.CustomHighlights, doc.CustomHighlightOrder)
 	renderer.Render(boxes)
 
 	// Ensure output directory exists
