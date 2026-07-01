@@ -114,3 +114,102 @@ func TestLineBreaker_StartsAfterBreakOpportunity_ControlSpace(t *testing.T) {
 		t.Errorf("\"ppp\" item after real space, StartOffset=%d: got %v, want true (break opportunity exists)", textStarts[2], got)
 	}
 }
+
+// TestInlineLayout_UnspacedSpans_NormalWrap_Overflows is the Checkpoint-3
+// normal-mode (non-min-content) regression case: a fixed-width container
+// just narrower than an unspaced multi-span run's full width. Per CSS
+// Text/UAX#14 there is no break opportunity between <span>p</span>,
+// <span>ppp</span>, <span>p</span> (no whitespace anywhere in the run), so
+// the whole "ppppp" run must overflow the container as ONE line rather
+// than wrap at a span boundary. LOU-346's breakTextAtWord fix (Checkpoint
+// 2) applies in both LineBreakerContent and LineBreakerMinContent modes
+// (same code path, line_breaker.go's overflow-detection branch runs in
+// both) — this test confirms normal-mode wrapping specifically, not just
+// min-content sizing.
+func TestInlineLayout_UnspacedSpans_NormalWrap_Overflows(t *testing.T) {
+	// <div><span>p</span><span>ppp</span><span>p</span></div>, Ahem 80px:
+	// "ppppp" = 5 * 80px = 400px. Container width 300px — narrower than the
+	// full run but wider than any single span alone, so a per-item-
+	// independent breaker would (bug) wrap at a span boundary; the correct
+	// behavior is one 400px-wide overflowing line.
+	span1 := makeNode("span", makeTextNode("p"))
+	span2 := makeNode("span", makeTextNode("ppp"))
+	span3 := makeNode("span", makeTextNode("p"))
+	parent := makeNode("div", span1, span2, span3)
+
+	spanStyle := makeStyle("display", "inline", "font-family", "Ahem", "font-size", "80px")
+	styles := map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "font-family", "Ahem", "font-size", "80px", "width", "300px"),
+		span1:  spanStyle,
+		span2:  spanStyle,
+		span3:  spanStyle,
+	}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 300)
+
+	if len(lineBoxes) != 1 {
+		t.Fatalf("expected the unbreakable \"ppppp\" run to stay on ONE overflowing line, got %d lines", len(lineBoxes))
+	}
+
+	var allText string
+	for _, child := range lineBoxes[0].Children {
+		if child.Fragment.Type == FragmentText {
+			allText += child.Fragment.TextContent
+		}
+	}
+	if allText != "ppppp" {
+		t.Errorf("line 0 text: got %q, want %q (all 5 characters on the single overflowing line)", allText, "ppppp")
+	}
+}
+
+// TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary is the
+// Checkpoint-3 breakTextAtCharacter check. Unlike breakTextAtWord,
+// word-break:break-all / overflow-wrap:anywhere makes EVERY character
+// position a valid break opportunity per CSS Text 3 §4.1 — including an
+// item/element boundary, since that's just another character position.
+// breakTextAtCharacter's existing per-item independence is therefore
+// correct here (no startsAfterBreakOpportunity gating needed): breaking at
+// <span>p</span>|<span>ppp</span> is legitimate under break-all, unlike
+// the plain-word case in breakTextAtWord. This test confirms the run still
+// glues into full, uninterrupted text across the fragmented line boxes
+// (no dropped/duplicated characters at the item boundary) rather than
+// asserting "must not break" — the correctness bar is different for this
+// mode.
+func TestInlineLayout_UnspacedSpans_BreakAnywhere_BreaksAtItemBoundary(t *testing.T) {
+	span1 := makeNode("span", makeTextNode("p"))
+	span2 := makeNode("span", makeTextNode("ppp"))
+	span3 := makeNode("span", makeTextNode("p"))
+	parent := makeNode("div", span1, span2, span3)
+
+	spanStyle := makeStyle("display", "inline", "font-family", "Ahem", "font-size", "80px")
+	styles := map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "font-family", "Ahem", "font-size", "80px",
+			"width", "300px", "overflow-wrap", "anywhere"),
+		span1: spanStyle,
+		span2: spanStyle,
+		span3: spanStyle,
+	}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 300)
+
+	if len(lineBoxes) == 0 {
+		t.Fatal("expected at least 1 line")
+	}
+	for i, lb := range lineBoxes {
+		if lb.Size.WidthF64() > 300.0+0.01 {
+			t.Errorf("line %d width %.1f exceeds available width 300px", i, lb.Size.WidthF64())
+		}
+	}
+
+	var allText string
+	for _, lb := range lineBoxes {
+		for _, child := range lb.Children {
+			if child.Fragment.Type == FragmentText {
+				allText += child.Fragment.TextContent
+			}
+		}
+	}
+	if allText != "ppppp" {
+		t.Errorf("concatenated text across all lines: got %q, want %q (no dropped/duplicated characters at item boundaries)", allText, "ppppp")
+	}
+}
