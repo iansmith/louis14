@@ -309,6 +309,66 @@ func TestMarkerAnimatedStyleFiltered(t *testing.T) {
 	}
 }
 
+// TestInsideMarkerTextBreaksPerOverflowWrapAnywhere is the RED marker-context
+// reproduction for WPT css-pseudo/marker-overflow-wrap (and the same shape as
+// marker-line-break): an INSIDE marker's text must soft-wrap per the inherited
+// overflow-wrap:anywhere when the list item is too narrow — list-style-type
+// "ab" at inline-size 0 renders "a" / "b" on two lines.
+//
+// The plain-span equivalent (TestInlineLayout_OverflowWrapAnywhereAfterOpenTag)
+// already passes; what fails is the marker shape: breakTextAtWord's
+// remaining<=0 short-circuit keys off len(line.Results)>0, which the ::marker
+// box's zero-width open tag satisfies, ending the line before the char-break
+// dispatch is ever consulted (the dispatch itself also keys off
+// len(line.Results)==0 instead of !line.HasContent). Blink keys both off
+// placed content, and overflow-wrap:anywhere re-breaks the overflowing line
+// with LineBreakType::kBreakCharacter (LineBreaker::SetCurrentStyleForce,
+// line_breaker.cc:4601-4616, RewindOverflow :4241-4341 @
+// 43cee02dc59fdad798675a735737510ecf0c9064).
+//
+// BLOCKED-ON-COORDINATOR (LOU-358): the fix lives in pkg/layout/
+// line_breaker.go, which is owned by in-flight LOU-346. Red until the gated
+// change lands.
+func TestInsideMarkerTextBreaksPerOverflowWrapAnywhere(t *testing.T) {
+	ol := &html.Node{Type: html.ElementNode, TagName: "ol"}
+	li := &html.Node{Type: html.ElementNode, TagName: "li", Parent: ol}
+	ol.Children = []*html.Node{li}
+
+	styles := map[*html.Node]*css.Style{
+		ol: makeStyle("display", "block", "counter-reset", "list-item 0"),
+		li: makeStyle(
+			"display", "list-item",
+			"list-style-position", "inside",
+			"list-style-type", `"ab"`,
+			"overflow-wrap", "anywhere",
+			"width", "0px",
+		),
+	}
+
+	layoutRoot := buildTestTree(ol, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: 300}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: 300}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), layoutRoot, space).Layout()
+
+	liFrag := findFragmentByNode(result.Fragment, li)
+	if liFrag == nil {
+		t.Fatal("list item fragment not found")
+	}
+	lines := 0
+	for i := range liFrag.Children {
+		if f := liFrag.Children[i].Fragment; f != nil && f.Type == FragmentLineBox {
+			lines++
+		}
+	}
+	if lines < 2 {
+		t.Errorf("inside marker text %q at inline-size 0 with overflow-wrap:anywhere must break onto %d+ lines, got %d", "ab", 2, lines)
+	}
+}
+
 // markerText returns the concatenated text content of a marker node's
 // children.
 func markerText(marker *LayoutInputNode) string {

@@ -95,6 +95,137 @@ func TestInlineLayout_SimpleText(t *testing.T) {
 	}
 }
 
+// collectLineText concatenates the text content of a line-box fragment tree.
+// Shared by the LOU-358 line-breaking tests below.
+func collectLineText(f *PhysicalFragment) string {
+	if f == nil {
+		return ""
+	}
+	if f.Type == FragmentText {
+		return f.TextContent
+	}
+	var s string
+	for _, child := range f.Children {
+		s += collectLineText(child.Fragment)
+	}
+	return s
+}
+
+// TestInlineLayout_OverflowWrapAnywhereAfterOpenTag is the RED reproduction
+// for WPT css-pseudo/marker-overflow-wrap: a single overflowing "word" that is
+// the first CONTENT on the line must still break per overflow-wrap:anywhere
+// even when an inline open tag (the inside ::marker box's open tag, or any
+// wrapper <span>) precedes it in line.Results. The char-break dispatch must
+// key off !line.HasContent (placed content), not len(line.Results)==0.
+//
+// Models <div style="width:0"><span style="overflow-wrap:anywhere">2.</span></div>.
+// Blink analog: overflow-wrap:anywhere sets break_anywhere_if_overflow_, and
+// on overflow the line re-breaks with LineBreakType::kBreakCharacter
+// (LineBreaker::SetCurrentStyleForce, line_breaker.cc:4601-4616, and
+// RewindOverflow/HandleOverflow :4241-4341 @
+// 43cee02dc59fdad798675a735737510ecf0c9064).
+//
+// BLOCKED-ON-COORDINATOR (LOU-358): the fix lives in pkg/layout/
+// line_breaker.go, which is owned by in-flight LOU-346. Red until the gated
+// change lands.
+func TestInlineLayout_OverflowWrapAnywhereAfterOpenTag(t *testing.T) {
+	textNode := makeTextNode("2.")
+	span := makeNode("span", textNode)
+	parent := makeNode("div", span)
+
+	parentStyle := makeStyle("display", "block", "font-size", "20px")
+	spanStyle := makeStyle("display", "inline", "font-size", "20px", "overflow-wrap", "anywhere",
+		"unicode-bidi", "isolate")
+	styles := map[*html.Node]*css.Style{parent: parentStyle, span: spanStyle}
+
+	// width:0 forces every character to overflow.
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 0)
+
+	if len(lineBoxes) < 2 {
+		t.Fatalf("expected the overflowing word to break char-by-char into >=2 lines, got %d", len(lineBoxes))
+	}
+}
+
+// TestInlineLayout_LineBreakAnywhereBreaksNonStarter is the RED reproduction
+// for WPT css-pseudo/marker-line-break: line-break:anywhere permits a break
+// between ANY two characters, including before a UAX#14 non-starter — "2."
+// at width:0 must split into "2" / ".". Contrast word-break:break-all below,
+// which keeps "2." together.
+//
+// Blink analog: LineBreak::kAnywhere → LineBreakType::kBreakCharacter
+// (LineBreaker::SetCurrentStyleForce, line_breaker.cc:4559-4563 @
+// 43cee02dc59fdad798675a735737510ecf0c9064).
+//
+// BLOCKED-ON-COORDINATOR (LOU-358): fix gated on pkg/layout/line_breaker.go
+// (owned by in-flight LOU-346). Red until the gated change lands.
+func TestInlineLayout_LineBreakAnywhereBreaksNonStarter(t *testing.T) {
+	textNode := makeTextNode("2.")
+	span := makeNode("span", textNode)
+	parent := makeNode("div", span)
+
+	parentStyle := makeStyle("display", "block", "font-size", "20px")
+	spanStyle := makeStyle("display", "inline", "font-size", "20px", "line-break", "anywhere")
+	styles := map[*html.Node]*css.Style{parent: parentStyle, span: spanStyle}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 0)
+
+	var lines []string
+	for _, lb := range lineBoxes {
+		if txt := collectLineText(lb); txt != "" {
+			lines = append(lines, txt)
+		}
+	}
+	if len(lines) != 2 || lines[0] != "2" || lines[1] != "." {
+		t.Errorf("line-break:anywhere must split %q into %q/%q; per-line text = %v", "2.", "2", ".", lines)
+	}
+}
+
+// TestInlineLayout_WordBreakBreakAllKeepsNonStarter is the RED reproduction
+// for WPT css-pseudo/marker-word-break: with word-break:break-all, a digit
+// followed by a full stop ("2.") must NOT break between them, because '.'
+// (UAX#14 class IS) cannot begin a line. break-all permits breaks between
+// most characters but does not override the prohibition on breaking before a
+// non-starter — unlike line-break:anywhere / overflow-wrap:anywhere above.
+//
+// Models <div style="width:0"><span style="word-break:break-all">2.</span></div>.
+// Blink analog: EWordBreak::kBreakAll → LineBreakType::kBreakAll — UAX#14
+// prohibitions retained (LineBreaker::SetCurrentStyleForce,
+// line_breaker.cc:4571-4573 @ 43cee02dc59fdad798675a735737510ecf0c9064).
+//
+// BLOCKED-ON-COORDINATOR (LOU-358): fix gated on pkg/layout/line_breaker.go
+// (owned by in-flight LOU-346). Red until the gated change lands.
+func TestInlineLayout_WordBreakBreakAllKeepsNonStarter(t *testing.T) {
+	textNode := makeTextNode("2.")
+	span := makeNode("span", textNode)
+	parent := makeNode("div", span)
+
+	parentStyle := makeStyle("display", "block", "font-size", "20px")
+	spanStyle := makeStyle("display", "inline", "font-size", "20px", "word-break", "break-all")
+	styles := map[*html.Node]*css.Style{parent: parentStyle, span: spanStyle}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 0)
+
+	// "2." must NOT break apart: the full stop is glued to the digit. (width:0
+	// can yield a degenerate empty leading line, so scan every line rather
+	// than asserting on line 0.)
+	if len(lineBoxes) == 0 {
+		t.Fatal("expected at least 1 line box")
+	}
+	foundIntact := false
+	for _, lb := range lineBoxes {
+		if collectLineText(lb) == "2." {
+			foundIntact = true
+		}
+	}
+	if !foundIntact {
+		var got []string
+		for _, lb := range lineBoxes {
+			got = append(got, collectLineText(lb))
+		}
+		t.Errorf("word-break:break-all must keep %q together on one line (no break before '.'); per-line text = %v", "2.", got)
+	}
+}
+
 func TestInlineLayout_AutoHeight(t *testing.T) {
 	textNode := makeTextNode("Hello world")
 	parent := makeNode("div", textNode)

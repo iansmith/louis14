@@ -1437,11 +1437,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// inline/block axes and glyph orientation match the originating
 			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
 			"writing-mode", "direction", "text-orientation",
-			// CSS Text 3 §3.2, §9.1, §9.3: tab-size, overflow-wrap, word-break,
-			// hyphens are inherited. CSS Text Decor 4 §4: text-emphasis and its
-			// longhands are inherited. CSS Pseudo-4 §4.4: text-shadow is inherited
-			// by ::marker pseudo-elements.
-			"tab-size", "overflow-wrap", "word-break", "hyphens",
+			// CSS Text 3 §3.2, §5.5, §9.1, §9.3: tab-size, overflow-wrap,
+			// word-break, hyphens and line-break are inherited. CSS Text Decor
+			// 4 §4: text-emphasis and its longhands are inherited. CSS
+			// Pseudo-4 §4.4: text-shadow is inherited by ::marker
+			// pseudo-elements.
+			"tab-size", "overflow-wrap", "word-break", "hyphens", "line-break",
 			"text-shadow", "text-emphasis", "text-emphasis-style",
 			"text-emphasis-color", "text-emphasis-position",
 			// CSS UI 4 §7.1: accent-color is inherited.
@@ -1879,6 +1880,11 @@ func markerAllowedProperty(name string) bool {
 		"text-shadow", "text-transform", "animation", "transition",
 		"hyphens", "overflow-wrap", "tab-size", "word-break",
 		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position",
+		// line-break, text-decoration-skip-ink and text-decoration-skip-spaces
+		// carry valid_for_marker: true in Blink css_properties.json5
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064 (LOU-358;
+		// WPT marker-line-break.html / marker-text-decoration-skip-ink.html).
+		"line-break", "text-decoration-skip-ink", "text-decoration-skip-spaces",
 		// quotes was added to the marker-applicable set by the CSSWG
 		// (csswg-drafts#5265; WPT css-lists/marker-quotes.html).
 		"quotes":

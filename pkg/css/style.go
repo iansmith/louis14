@@ -13335,6 +13335,23 @@ func (s *Style) GetHyphens() string {
 	return "manual"
 }
 
+// GetLineBreak returns the line-break property value (CSS Text 3 §5.5).
+// Values: "auto", "loose", "normal", "strict", "anywhere"; default "auto".
+// "anywhere" maps to character-level breaking that ignores UAX#14
+// prohibitions — Blink LineBreaker::SetCurrentStyleForce turns
+// LineBreak::kAnywhere into LineBreakType::kBreakCharacter
+// (line_breaker.cc:4559-4563 @ 43cee02dc59fdad798675a735737510ecf0c9064).
+func (s *Style) GetLineBreak() string {
+	if val, ok := s.Get("line-break"); ok {
+		val = strings.TrimSpace(strings.ToLower(val))
+		switch val {
+		case "auto", "loose", "normal", "strict", "anywhere":
+			return val
+		}
+	}
+	return "auto"
+}
+
 // GetTextEmphasisStyle returns the text-emphasis-style value.
 func (s *Style) GetTextEmphasisStyle() string {
 	v, _ := s.Get("text-emphasis-style")
