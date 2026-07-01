@@ -259,6 +259,30 @@ func NewLineBreaker(
 	}
 }
 
+// startsAfterBreakOpportunity reports whether there is NO valid line-break
+// opportunity immediately before the given byte offset into the shared
+// InlineItemsData.TextContent — i.e. the character at textStart-1 is
+// non-whitespace, so any InlineItem starting at textStart is a continuation
+// of a word begun by an earlier item, not a fresh word.
+//
+// This is the piece Blink gets "for free" from running one global
+// break_iterator_ over one global text_content_ (LineBreaker ctor,
+// core/layout/inline/line_breaker.cc ~line 487-497; ComputeCanBreakAfter
+// ~line 269-274, both @ b5c08e57c55fe62f7403812c91f4467a19c4f205): a break
+// query is answered purely from the character at a global text offset, with
+// no regard to which InlineItem/DOM element produced it. louis14 measures
+// each item's local text slice independently in handleText/breakTextAtWord,
+// so this query must be made explicit: item/element boundaries (including
+// zero-width OpenTag/CloseTag items, which consume no TextContent bytes)
+// have zero bearing on whether a break exists at textStart.
+func (lb *LineBreaker) startsAfterBreakOpportunity(textStart int) bool {
+	if textStart <= 0 {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:textStart])
+	return isCSSCollapsibleSpace(r)
+}
+
 // NextLine produces the next line of content. Returns false when all
 // content has been consumed.
 func (lb *LineBreaker) NextLine(line *LineInfo) bool {
