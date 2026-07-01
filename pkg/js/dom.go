@@ -898,12 +898,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 				}
 				rules := make([]css.KeyframeRule, n)
 				for i, d := range decls {
-					var offset float64
-					if n == 1 {
-						offset = 1
-					} else {
-						offset = float64(i) / float64(n-1)
-					}
+					offset := evenKeyframeOffset(i, n)
 					// Explicit "offset" key overrides the implicit even distribution.
 					if ov, ok := d["offset"]; ok {
 						if f, err := strconv.ParseFloat(strings.TrimSpace(ov), 64); err == nil {
@@ -918,8 +913,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 						prop := camelToKebab(k)
 						declarations[prop] = v
 					}
-					pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
-					rules[i] = css.KeyframeRule{Stop: pct, Declarations: declarations}
+					rules[i] = css.KeyframeRule{Stop: keyframeStop(offset), Declarations: declarations}
 				}
 				return rules
 			}
@@ -1362,6 +1356,23 @@ func parsePropertyIndexedKeyframes(vm *goja.Runtime, arr *goja.Object) map[strin
 	return propIndexed
 }
 
+// evenKeyframeOffset returns the offset for index i of n keyframes distributed
+// evenly across [0,1]. A lone keyframe (n<=1) sits at offset 1 — a to-frame,
+// with the from-frame synthesized by css.BuildKeyframeEffect.
+func evenKeyframeOffset(i, n int) float64 {
+	if n <= 1 {
+		return 1
+	}
+	return float64(i) / float64(n-1)
+}
+
+// keyframeStop encodes a [0,1] offset as a css.KeyframeRule.Stop selector
+// ("N%") — the string form that css.BuildKeyframeEffect's parseKeyframeOffset
+// round-trips back to a float.
+func keyframeStop(offset float64) string {
+	return strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
+}
+
 // propertyIndexedKeyframeRules converts the property-indexed keyframe form
 // into KeyframeRule stops: each property distributes its own value list
 // evenly across [0,1]; a single value is a to-frame (offset 1, the from
@@ -1370,13 +1381,8 @@ func propertyIndexedKeyframeRules(propIndexed map[string][]string) []css.Keyfram
 	var rules []css.KeyframeRule
 	for prop, vals := range propIndexed {
 		for i, v := range vals {
-			offset := 1.0
-			if len(vals) > 1 {
-				offset = float64(i) / float64(len(vals)-1)
-			}
-			pct := strconv.FormatFloat(offset*100, 'f', -1, 64) + "%"
 			rules = append(rules, css.KeyframeRule{
-				Stop:         pct,
+				Stop:         keyframeStop(evenKeyframeOffset(i, len(vals))),
 				Declarations: map[string]string{prop: v},
 			})
 		}
