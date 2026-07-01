@@ -819,7 +819,22 @@ func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []hig
 					fg = &black
 				}
 			}
-			hc.textShadows = style.GetTextShadowWithCurrentColor(*fg)
+			// Prepend this layer's OWN shadows onto resolved.textShadows
+			// (the layer(s) below's already-resolved shadows) rather than
+			// replacing them outright — per CSS Text Decor 4's
+			// "first-specified shadow is on top" rule (the same rule
+			// render.go's drawText already applies when merging in the
+			// ORIGINATING element's own shadow), this layer's shadow is the
+			// topmost/most-recently-resolved so it goes FIRST. Previously
+			// this assignment discarded resolved.textShadows outright,
+			// silently dropping a lower highlight layer's own shadow
+			// whenever a HIGHER layer (e.g. ::selection) also declared one
+			// — highlight-painting-shadows-horizontal/-vertical.html's
+			// 3-way originating+target-text+selection overlap needs all
+			// three composited, not just the topmost (LOU-355; confirmed
+			// during LOU-347's investigation).
+			ownShadows := style.GetTextShadowWithCurrentColor(*fg)
+			hc.textShadows = append(append([]css.TextShadow{}, ownShadows...), resolved.textShadows...)
 		}
 		resolved = hc
 	}
