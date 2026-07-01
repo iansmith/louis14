@@ -399,6 +399,116 @@ func TestTargetTextOverlapsForTextNode_NoRanges(t *testing.T) {
 	}
 }
 
+// mustParseColor parses a CSS color literal from a resolved pseudo style
+// property, failing the test on a missing/unparseable value.
+func mustParseColor(t *testing.T, style *css.Style, property string) css.Color {
+	t.Helper()
+	if style == nil {
+		t.Fatalf("pseudo style is nil")
+	}
+	val, ok := style.Get(property)
+	if !ok {
+		t.Fatalf("pseudo style has no %q", property)
+	}
+	c, ok := css.ParseColor(val)
+	if !ok {
+		t.Fatalf("pseudo style %q = %q, not a parseable color", property, val)
+	}
+	return c
+}
+
+// TestResolveTargetTextPseudoStyle_InheritsThroughHighlightCascade reproduces
+// LOU-352 / target-text-009.html: a tag-qualified `p::target-text` rule with
+// the matched text inside a nested <span>. Per CSS Pseudo-4's highlight
+// cascade, highlight pseudo styles inherit through the element tree — the
+// span's ::target-text style is the parent <p>'s ::target-text style, NOT a
+// fresh UA-default (purple/black) pair. Mirrors Blink's inherited
+// ComputedStyle::HighlightData (computed_style_extra_fields.json5:540-548,
+// `inherited: true`) + Element::RecalcHighlightStyles' highlight_parent
+// chain (core/dom/element.cc:7091-7195), both verified @ Chromium main
+// 72259ecfb56eacf259e21783dd2b31608ac951a3.
+func TestResolveTargetTextPseudoStyle_InheritsThroughHighlightCascade(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		p::target-text { color: darkgrey; background-color: orange; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	p := &html.Node{Type: html.ElementNode, TagName: "p"}
+	span := &html.Node{Type: html.ElementNode, TagName: "span"}
+	tn := textNode("match me and me")
+	p.Children = []*html.Node{span}
+	span.Parent = p
+	span.Children = []*html.Node{tn}
+	tn.Parent = span
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{},
+	}
+
+	style := r.resolveTargetTextPseudoStyle(span)
+	darkgrey := css.Color{R: 169, G: 169, B: 169, A: 1}
+	orange := css.Color{R: 255, G: 165, B: 0, A: 1}
+	if got := mustParseColor(t, style, "background-color"); got != orange {
+		t.Errorf("span ::target-text background-color = %+v, want p's inherited orange %+v (not the UA default pair)", got, orange)
+	}
+	if got := mustParseColor(t, style, "color"); got != darkgrey {
+		t.Errorf("span ::target-text color = %+v, want p's inherited darkgrey %+v (not the UA default pair)", got, darkgrey)
+	}
+}
+
+// TestResolveTargetTextPseudoStyle_ChildRulesLayerOverInheritedParent covers
+// the second half of Blink's highlight-cascade model: when rules DO match
+// the nested element directly, its highlight style is computed with the
+// parent element's same-highlight style as the inheritance base for ALL
+// properties (StyleResolver::InitStyle's CreateNewClonedStyle(*parent_style),
+// core/css/resolver/style_resolver.cc:1521-1546 @
+// 72259ecfb56eacf259e21783dd2b31608ac951a3: "the spec requires that we
+// default all properties (whether or not defined as inherited) to parent
+// values") — so a span authoring only `color` keeps the parent's authored
+// background-color rather than resetting it to the paired-cascade initial
+// (transparent) or the UA default.
+func TestResolveTargetTextPseudoStyle_ChildRulesLayerOverInheritedParent(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		p::target-text { background-color: orange; }
+		span::target-text { color: blue; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	p := &html.Node{Type: html.ElementNode, TagName: "p"}
+	span := &html.Node{Type: html.ElementNode, TagName: "span"}
+	tn := textNode("match me")
+	p.Children = []*html.Node{span}
+	span.Parent = p
+	span.Children = []*html.Node{tn}
+	tn.Parent = span
+
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{},
+	}
+
+	style := r.resolveTargetTextPseudoStyle(span)
+	blue := css.Color{R: 0, G: 0, B: 255, A: 1}
+	orange := css.Color{R: 255, G: 165, B: 0, A: 1}
+	if got := mustParseColor(t, style, "color"); got != blue {
+		t.Errorf("span ::target-text color = %+v, want its own authored blue %+v", got, blue)
+	}
+	if got := mustParseColor(t, style, "background-color"); got != orange {
+		t.Errorf("span ::target-text background-color = %+v, want p's inherited orange %+v (highlight cascade inherits ALL properties, not paired-initial transparent)", got, orange)
+	}
+}
+
 // TestHighlightLayerStackColors_BottomLayerTextShadowCurrentColorUsesOriginatingColor
 // covers a CodeRabbit-flagged gap (LOU-354 PR #150), reproducing
 // highlight-painting-currentcolor-004.html's exact ::selection rule
