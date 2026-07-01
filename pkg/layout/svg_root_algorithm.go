@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"strings"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
@@ -159,4 +161,54 @@ func (a svgElementAdapter) SVGChildren() []svg.ElementAdapter {
 		out = append(out, svgElementAdapter{node: c})
 	}
 	return out
+}
+
+// TextContent implements svg.ElementAdapter. Concatenates this
+// element's own direct TextNode children (e.g. `<text>Text to
+// select</text>`'s single text-node child) — SVGChildren above
+// filters text nodes out entirely, so `<text>` needs this separate
+// accessor to see them. Deep-descendant text (e.g. a nested `<tspan>`)
+// is intentionally NOT walked: `<tspan>` is out of this ticket's scope
+// (LOU-345), and none of the 5 target reftests nest anything inside
+// `<text>`.
+func (a svgElementAdapter) TextContent() string {
+	if a.node == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range a.node.Children {
+		if c != nil && c.Type == html.TextNode {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
+}
+
+// SVGElementDOMNode returns the *html.Node backing elt (the ELEMENT
+// node itself, e.g. the `<text>` element — not a text-node child) when
+// elt is the real DOM-backed svg.ElementAdapter (svgElementAdapter), or
+// nil for any other implementation (e.g. the external-SVG-document
+// adapter, or a test fake). Exported so pkg/render's SVG text painter
+// (LOU-345) can find an SVGText's originating element for ::selection
+// resolution (ComputePseudoElementStyle matches against the element,
+// same as drawText's box.Node).
+//
+// DELIBERATE TRADEOFF (flagged per this ticket's plan rather than
+// decided silently): this is a type-assertion against the unexported
+// svgElementAdapter, not a new svg.ElementAdapter interface method —
+// the ticket's pre-approval covers exactly ONE new interface method,
+// already spent on TextContent() (svg_root.go). A cleaner alternative
+// would add a second method (e.g. `DOMNode() *html.Node`, nil-returning
+// on externalSVGElement/test fakes) so a FUTURE third ElementAdapter
+// implementer fails to compile here instead of silently degrading to
+// nil — but that would be a second interface addition beyond what's
+// pre-approved. Revisit as a real interface method if a third
+// DOM-backed adapter is ever added (today only svgElementAdapter wraps
+// a real *html.Node; externalSVGElement's tree has no DOM node at all,
+// so its nil return is correct, not degraded, either way).
+func SVGElementDOMNode(elt svg.ElementAdapter) *html.Node {
+	if adapter, ok := elt.(svgElementAdapter); ok {
+		return adapter.node
+	}
+	return nil
 }

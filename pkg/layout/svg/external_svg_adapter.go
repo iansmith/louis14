@@ -19,6 +19,7 @@ type externalSVGElement struct {
 	tag      string
 	attrs    map[string]string
 	children []*externalSVGElement
+	text     string
 }
 
 // TagName implements ElementAdapter. Returns the lowercased tag name —
@@ -45,6 +46,13 @@ func (e *externalSVGElement) SVGChildren() []ElementAdapter {
 	}
 	return out
 }
+
+// TextContent implements ElementAdapter. External SVG documents (fetched
+// for `filter: url(doc.svg#id)`) never reach a `<text>` element through
+// this package's dispatch — filter primitives don't have text content —
+// so this is a plain accessor for interface completeness, not a load-
+// bearing path.
+func (e *externalSVGElement) TextContent() string { return e.text }
 
 // ParseExternalSVG parses an SVG document's bytes into a tree of
 // ElementAdapters. The returned element is the root `<svg>` (or

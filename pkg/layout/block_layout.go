@@ -388,9 +388,36 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var lastChildBlockOffset float64 // Block offset of the last in-flow block child.
 	hasLastChildBaseline := false
 
+	// An outermost inline <svg>'s DOM children (<rect>, <g>, <text>, ...)
+	// are NOT ordinary CSS content — they belong exclusively to the SVG
+	// layout tree SVGRootAlgorithm builds via svg.BuildSVGRoot (see
+	// svg_root_algorithm.go), painted by the separate SVG paint walk
+	// (pkg/render/svg_root_painter.go). SVGRootAlgorithm.Layout() calls
+	// this BlockLayoutAlgorithm ONLY for the <svg> element's own OUTER
+	// replaced-box sizing (byte-identical to pre-SVG-support behavior);
+	// it must not also walk <svg>'s DOM children as HTML block/inline
+	// content, or an element with visible content (e.g. <text>) gets a
+	// second, unwanted "shadow" CSS box painted via the ordinary
+	// drawText path — invisible for shapes like <rect> (no text content)
+	// but very visible once <text> support landed (LOU-345): the text
+	// rendered twice, once correctly via svgTextPainter (fill=lightgreen)
+	// and once as plain black CSS text via this exact fallthrough.
+	// Mirrors how tryLayoutNestedDocument below intercepts iframe/object
+	// before the generic children-layout branches — <svg> needs the same
+	// kind of interception since it establishes its own foreign content
+	// model, not an HTML one. Blink's LayoutSVGRoot never generates
+	// LayoutObjects for descendants via the HTML block/inline layout
+	// path at all (core/layout/svg/layout_svg_root.h @ blob
+	// f53f8184c42dcf29c57c84f832fd84773d38b9cf) — this mirrors that by
+	// simply adding no children to the fragment, leaving the outer
+	// sizing computed above untouched.
+	isInlineSVGRoot := bla.node.DOMNode != nil && bla.node.DOMNode.TagName == "svg" && IsInlineSVG(bla.node)
+
 	// Iframe/object with a document source: lay out the nested document
 	// instead of this element's DOM children.
-	if nested := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nested != nil {
+	if isInlineSVGRoot {
+		// No children added — see doc comment above.
+	} else if nested := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nested != nil {
 		// For vertical-rl/sideways-rl nested roots, the root is anchored to the
 		// right edge of the iframe viewport. Apply the X offset as an inline offset.
 		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
