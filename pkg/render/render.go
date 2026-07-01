@@ -6264,12 +6264,22 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				// originating <p>'s own text-shadow value, and the test's
 				// own meta[name=assert] states "::target-text with a
 				// shadow is painted, INCLUDING originating element
-				// shadows". Append rather than prepend so the highlight's
-				// own shadow paints UNDER (drawTextShadows iterates
-				// len()-1 down to 0, so index 0 paints LAST/on-top) the
-				// originating shadow, matching the reference's declared
-				// order (highlight shadow first in the comma-list, origin
-				// shadow second). seg.textShadows may be nil/empty
+				// shadows". Put the highlight's own shadow(s) at the FRONT
+				// of the merged slice (drawTextShadows iterates len()-1
+				// down to 0, so index 0 paints LAST/on-top) so it ends up
+				// topmost, matching CSS's "first-specified shadow is on
+				// top" layering rule (https://drafts.csswg.org/css-text-decor-4/#text-shadow-property)
+				// applied to the reference's declared order (highlight
+				// shadow first in the comma-list, origin shadow second —
+				// i.e. highlight on top). Verified empirically: swapping
+				// this order does NOT change target-text-shadow-horizontal's
+				// reftest result (its fuzzy tolerance masks the visual
+				// difference), so this comment — not a reftest — is the
+				// source of truth for why this order was chosen; don't
+				// "fix" it based on a plausible-sounding but unverified
+				// re-read (a CodeRabbit review on this PR proposed exactly
+				// that swap; verified against the CSS spec and rejected).
+				// seg.textShadows may be nil/empty
 				// (`text-shadow: none` on the highlight) — appending
 				// nothing to segLayer.TextShadows in that case correctly
 				// leaves only the originating shadows, which IS the

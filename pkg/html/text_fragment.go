@@ -51,7 +51,8 @@ func (s TextFragmentSelector) IsRange() bool {
 // per this file's doc comment):
 //   - The first directive is `text=...` immediately after the `:~:` marker;
 //     subsequent directives are separated by literal `&text=`.
-//   - Each directive's value is percent-decoded (net/url.QueryUnescape)
+//   - Each directive's value is percent-decoded (net/url.PathUnescape — NOT
+//     QueryUnescape, which would wrongly turn a literal "+" into a space)
 //     before further parsing — e.g. "%20" -> " ".
 //   - A decoded value containing an unescaped "," splits into Start/End
 //     (the Range form); otherwise the whole decoded value is Start (Exact).
@@ -75,13 +76,26 @@ func ParseTextFragmentDirectives(directive string) []TextFragmentSelector {
 		if !ok {
 			continue
 		}
-		decoded, err := url.QueryUnescape(value)
+		// PathUnescape, not QueryUnescape: QueryUnescape treats a literal
+		// "+" as an encoded space (application/x-www-form-urlencoded
+		// convention), which is wrong here — a fragment directive is a URL
+		// PATH-relative percent-encoding, where "+" is literal (e.g.
+		// "text=C%2B%2B" and "text=C++" must both search for "C++", not
+		// "C  ").
+		decoded, err := url.PathUnescape(value)
 		if err != nil {
 			continue
 		}
 		if start, end, isRange := strings.Cut(decoded, ","); isRange {
+			// A malformed range with an empty start or end (`text=match,`
+			// or `text=,me`) is invalid syntax, not a degenerate
+			// exact/unbounded selector — WICG spec step 3.2 drops invalid
+			// directives rather than resolving them to unrelated text.
+			if start == "" || end == "" {
+				continue
+			}
 			selectors = append(selectors, TextFragmentSelector{Start: start, End: end})
-		} else {
+		} else if decoded != "" {
 			selectors = append(selectors, TextFragmentSelector{Start: decoded})
 		}
 	}
@@ -129,7 +143,7 @@ func collectTextRuns(root *Node) (runs []textRun, corpus string) {
 			runs = append(runs, textRun{node: n, docStart: start, docEnd: sb.Len()})
 			return
 		}
-		if n.Type == ElementNode && nonRenderedTextContainerTag(n.TagName) {
+		if n.Type == ElementNode && NonRenderedTextContainerTag(n.TagName) {
 			return
 		}
 		for _, child := range n.Children {
@@ -140,7 +154,7 @@ func collectTextRuns(root *Node) (runs []textRun, corpus string) {
 	return runs, sb.String()
 }
 
-// nonRenderedTextContainerTag reports whether tag names an element whose
+// NonRenderedTextContainerTag reports whether tag names an element whose
 // ENTIRE subtree must be excluded from FindTextFragmentMatches's search
 // corpus — mirrors Blink's TextIterator, which by default only visits
 // nodes that have an associated LayoutObject; head/style/script/title/
@@ -154,12 +168,13 @@ func collectTextRuns(root *Node) (runs []textRun, corpus string) {
 // filter, the match resolves to the invisible <title> text instead of the
 // visible <p>, producing zero highlighted ranges in the rendered page.
 //
-// This is a SMALL INDEPENDENT COPY of pkg/css/cascade.go's ComputeStyle
-// non-rendered-elements switch (same tag set: head, style, script, meta,
-// title, link, base) rather than a shared/reused list — pkg/html cannot
-// import pkg/css (pkg/css already imports pkg/html, so the reverse import
-// would cycle). If this tag set needs to change, update both switches.
-func nonRenderedTextContainerTag(tag string) bool {
+// Exported as the single source of truth for this tag set — pkg/css's
+// ComputeStyle calls this instead of maintaining its own parallel switch to
+// apply the same `display: none` UA default (CLAUDE.md §5: one definition
+// per value). Exported the pkg/html→pkg/css direction rather than the
+// reverse because pkg/css already imports pkg/html; importing pkg/css from
+// pkg/html would cycle.
+func NonRenderedTextContainerTag(tag string) bool {
 	switch tag {
 	case "head", "style", "script", "meta", "title", "link", "base":
 		return true

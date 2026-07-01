@@ -19,15 +19,18 @@ import (
 //
 // Scope cut: only fragment-only assignment
 // (`location.hash = "#:~:text=..."` / `location.href = "#:~:text=..."`)
-// needs to work — confirmed via grep that none of the 14 LOU-349 target
-// tests assign a full absolute URL. General URL parsing/resolution
-// (origin, pathname, search, etc.) is therefore out of scope; href getter
-// returns whatever was last set (defaulting to "" — about:blank-shaped
-// documents have no real URL in this static-render engine), and href
-// setter only special-cases a leading '#' (fragment-only navigation per
-// WHATWG HTML's "navigate to a fragment" algorithm
-// https://html.spec.whatwg.org/#scroll-to-the-fragment); any other value is
-// stored verbatim into href without further parsing.
+// needs to work for the 14 LOU-349 target tests — confirmed via grep that
+// none assign a full absolute URL. General URL parsing/resolution (origin,
+// pathname, search, etc.) is therefore out of scope; href getter returns
+// whatever was last set (defaulting to "" — about:blank-shaped documents
+// have no real URL in this static-render engine). The href setter special-
+// cases a leading '#' (fragment-only navigation per WHATWG HTML's
+// "navigate to a fragment" algorithm
+// https://html.spec.whatwg.org/#scroll-to-the-fragment) and additionally
+// extracts an EMBEDDED fragment from a longer value (e.g.
+// "/x#:~:text=match") so a directive isn't silently dropped just because
+// it wasn't assigned fragment-only — the rest of the string before '#' is
+// stored verbatim without further URL parsing/resolution.
 //
 // Setting EITHER .hash or .href synchronously invokes
 // Engine.OnFragmentDirective (when the new fragment contains a `:~:`
@@ -118,31 +121,46 @@ func (ctx *domContext) setLocationHash(newHash string) {
 // setLocationHref implements the `href` setter for the fragment-only case
 // this engine supports (see file doc comment): a value starting with '#' is
 // treated as fragment-only navigation, delegating to setLocationHash so
-// both setters share one fragment-directive trigger path. Any other value
-// is stored verbatim (no parsing) and does not by itself carry a `:~:`
-// directive, so it does not trigger matching.
+// both setters share one fragment-directive trigger path. A value that
+// carries an EMBEDDED fragment further in (e.g. "/x#:~:text=match" — a full
+// path/URL, not fragment-only) still needs that fragment extracted and
+// matching triggered; general URL parsing/resolution beyond splitting off
+// the fragment is still out of scope (see file doc comment). A value with
+// no '#' at all clears any previous fragment/directive state.
 func (ctx *domContext) setLocationHref(newHref string) {
 	if strings.HasPrefix(newHref, "#") {
 		ctx.setLocationHash(newHref)
 		return
 	}
+	if idx := strings.IndexByte(newHref, '#'); idx >= 0 {
+		ctx.locationHrefValue = newHref
+		ctx.locationFragment = newHref[idx+1:]
+		ctx.notifyFragmentChanged()
+		return
+	}
 	ctx.locationHrefValue = newHref
 	ctx.locationFragment = ""
+	ctx.notifyFragmentChanged()
 }
 
 // notifyFragmentChanged parses and resolves a `:~:` Text Fragment directive
 // (LOU-349) out of the current fragment, when one is present, updating
 // ctx.doc.TargetTextRanges with the resulting matches (see
 // html.FindTextFragmentMatches). A fragment with no `:~:` marker (a plain
-// element-id anchor, or no fragment at all) does not trigger matching —
-// mirrors WHATWG's Text Fragments integration, which only invokes the
-// fragment-directive processing steps when a directive delimiter is
-// present
-// (https://wicg.github.io/scroll-to-text-fragment/#parsing-the-fragment-directive).
+// element-id anchor, or no fragment at all) clears any PREVIOUSLY resolved
+// target-text ranges without re-matching — mirrors WHATWG's Text Fragments
+// integration, which only invokes the fragment-directive processing steps
+// when a directive delimiter is present
+// (https://wicg.github.io/scroll-to-text-fragment/#parsing-the-fragment-directive),
+// but navigating AWAY from a directive (to a plain anchor, or clearing the
+// fragment) must not leave stale highlights painted from the old directive.
 // Also invokes ctx.engine.OnFragmentDirective (when set) so callers/tests
 // can observe the raw directive string independent of the match resolution
 // itself.
 func (ctx *domContext) notifyFragmentChanged() {
+	if ctx.doc != nil {
+		ctx.doc.TargetTextRanges = nil
+	}
 	const marker = ":~:"
 	idx := strings.Index(ctx.locationFragment, marker)
 	if idx < 0 {

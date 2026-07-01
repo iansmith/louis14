@@ -116,10 +116,12 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("_margin-block-end", "1em")
 	}
 
-	// Non-rendered elements should be hidden by default
-	// Author CSS can override this (e.g., Acid2 sets display:block on head)
-	switch node.TagName {
-	case "head", "style", "script", "meta", "title", "link", "base":
+	// Non-rendered elements should be hidden by default. Author CSS can
+	// override this (e.g., Acid2 sets display:block on head). Tag set is
+	// html.NonRenderedTextContainerTag's single source of truth (also used
+	// by pkg/html's :~:text= search-corpus exclusion) rather than a
+	// separate hard-coded switch here.
+	if html.NonRenderedTextContainerTag(node.TagName) {
 		style.Set("display", "none")
 	}
 
@@ -1587,6 +1589,20 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		if allVal, hasAll := rule.Declarations["all"]; hasAll {
 			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
 				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+				// `all` resets EVERY property (including color/background-
+				// color) to its all-declared value, so it counts as
+				// authoring the highlight color pair too — otherwise
+				// applySelectionCascade/applyHighlightPairedColorCascade
+				// sees neither side as author-set and reapplies the UA
+				// pair default over whatever `all` just set.
+				if isSelection {
+					selectionAuthorProps["color"] = true
+					selectionAuthorProps["background-color"] = true
+				}
+				if isTargetText {
+					targetTextAuthorProps["color"] = true
+					targetTextAuthorProps["background-color"] = true
+				}
 			}
 		}
 		for property, value := range rule.Declarations {
@@ -1666,6 +1682,16 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) {
 					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
 					importantProps["all"] = true
+					// See the normal-priority `all` handling above for why
+					// this must also mark the highlight color pair authored.
+					if isSelection {
+						selectionAuthorProps["color"] = true
+						selectionAuthorProps["background-color"] = true
+					}
+					if isTargetText {
+						targetTextAuthorProps["color"] = true
+						targetTextAuthorProps["background-color"] = true
+					}
 				}
 			}
 		}

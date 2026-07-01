@@ -206,12 +206,9 @@ func TestFindTextFragmentMatches_NoMatch(t *testing.T) {
 // instead of the actual visible <p> text. Mirrors Blink's TextIterator,
 // which by default only visits nodes with an associated LayoutObject —
 // elements with UA `display:none` (head/style/script/title/meta/link/base,
-// the same set pkg/css/cascade.go's ComputeStyle non-rendered-elements
-// switch already hides) never get one, so TextIterator skips their
-// subtrees entirely. pkg/html cannot import pkg/css's tag list directly
-// (would create an import cycle, since pkg/css already imports pkg/html),
-// hence this is a small independent copy of the same tag set, not the
-// shared canonical list — see nonRenderedTextContainerTag's doc comment.
+// per NonRenderedTextContainerTag, the single source of truth also used by
+// pkg/css/cascade.go's ComputeStyle) never get one, so TextIterator skips
+// their subtrees entirely.
 func TestFindTextFragmentMatches_SkipsNonRenderedSubtrees(t *testing.T) {
 	root := &Node{Type: ElementNode, TagName: "document"}
 	head := &Node{Type: ElementNode, TagName: "head", Parent: root}
