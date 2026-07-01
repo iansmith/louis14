@@ -126,6 +126,23 @@ type Style struct {
 	// Shared by reference across all Style values in a document — never
 	// mutated post-cascade, so the slice can be safely reused.
 	FontFeatureValues []FontFeatureValuesRule
+
+	// HasAuthorHighlightColors is set on HIGHLIGHT pseudo-element styles
+	// (::selection / ::target-text / ::highlight(name)) when an author rule
+	// anywhere in the style's highlight inheritance chain set `color` or
+	// `background-color` — CSS Pseudo-4 §highlight-cascade's "paired
+	// defaults" gate: the UA default highlight color pair applies only when
+	// NO author highlight color exists in the chain. Mirrors Blink's
+	// monotonic ComputedStyle flag of the same name
+	// (computed_style_extra_fields.json5:903-911 and
+	// HighlightStyleUtils::UseDefaultHighlightColors,
+	// core/highlight/highlight_style_utils.cc:241-250, both @ Chromium main
+	// 72259ecfb56eacf259e21783dd2b31608ac951a3) — monotonic because a child
+	// highlight style starts as a clone of the parent highlight style
+	// (highlight inheritance, see ComputeHighlightPseudoElementStyle), so an
+	// ancestor's author colors keep suppressing the UA pair for the whole
+	// subtree. Meaningless (always false) on non-highlight styles.
+	HasAuthorHighlightColors bool
 }
 
 func NewStyle() *Style {
@@ -7692,6 +7709,7 @@ func copyStyleResolutionContext(dst, src *Style) {
 	dst.IcWidth = src.IcWidth
 	dst.BaseDir = src.BaseDir
 	dst.FontFeatureValues = src.FontFeatureValues // shared by reference; never mutated post-cascade
+	dst.HasAuthorHighlightColors = src.HasAuthorHighlightColors
 }
 
 // CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
