@@ -117,7 +117,7 @@ func TestTargetTextPseudoStyle_TransparentOriginatingColorNotInherited(t *testin
 
 	style := ComputePseudoElementStyle(node, "target-text", stylesheets, 800, 600, originatingStyle)
 
-	if color, ok := style.Get("color"); !ok || color == "transparent" {
+	if color, ok := style.Get("color"); !ok || color != "black" {
 		t.Errorf("::target-text color = %q, %v; want \"black\" (not inherited transparent)", color, ok)
 	}
 }
