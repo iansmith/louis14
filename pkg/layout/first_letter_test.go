@@ -1,6 +1,11 @@
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // TestFirstLetterLength verifies the byte-length extraction of the leading
 // typographic letter unit per CSS Pseudo-4 §3.2 and the cross-text-node
@@ -200,5 +205,86 @@ func TestFirstLetterLength(t *testing.T) {
 				t.Errorf("state = %v; want %v", gotState, tc.wantState)
 			}
 		})
+	}
+}
+
+// firstLetterSplitFixture builds a block container with one text child and
+// runs applyFirstLetterSplit over it with a matching div::first-letter rule.
+// normalized/raw become the text node's parser fields (html.Node.Text /
+// html.Node.RawText — the tokenizer stores the collapsed form in Text and the
+// original source in RawText).
+func firstLetterSplitFixture(t *testing.T, normalized, raw string, containerProps ...string) []*LayoutInputNode {
+	t.Helper()
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	txt := &html.Node{Type: html.TextNode, Text: normalized, RawText: raw, Parent: div}
+	div.Children = []*html.Node{txt}
+
+	divStyle := makeStyle(containerProps...)
+	sheet, err := css.ParseStylesheet("div::first-letter { color: green }", nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	b := &LayoutTreeBuilder{
+		styles:         map[*html.Node]*css.Style{div: divStyle},
+		stylesheets:    []*css.Stylesheet{sheet},
+		viewportWidth:  800,
+		viewportHeight: 600,
+	}
+	children := []*LayoutInputNode{{DOMNode: txt, style: divStyle}}
+	return b.applyFirstLetterSplit(children, div, divStyle)
+}
+
+// TestFirstLetterSplitPreservedLeadingNewline: with white-space: pre, the
+// ::first-letter scan must inspect the ORIGINAL text (html.Node.RawText — the
+// louis14 analog of Blink LayoutText::OriginalText) so a leading newline
+// terminates first-letter discovery. Mirrors Blink
+// FirstLetterPseudoElement::FirstLetterTextLayoutObject @ Chromium
+// 906a32d8634edf17db094507908f439bd9b52de5
+// (first_letter_pseudo_element.cc:270-273: OriginalText + per-text-node
+// ShouldPreserveBreaks). WPT: first-letter-with-preceding-new-line.html.
+//
+// RED before fix: the walker scans the parser-normalized html.Node.Text
+// (" The second line. ...") where the newline is already collapsed, so the
+// wrap is wrongly applied to the 'T'.
+func TestFirstLetterSplitPreservedLeadingNewline(t *testing.T) {
+	out := firstLetterSplitFixture(t,
+		" The second line. The third line. ",
+		"\n  The second line.\n  The third line.\n  ",
+		"display", "block", "white-space", "pre")
+	if len(out) != 1 || !out[0].IsText() {
+		t.Fatalf("expected the single text child to be left unwrapped (leading newline in pre terminates ::first-letter); got %d children", len(out))
+	}
+	if got := out[0].DOMNode.RawText; got != "\n  The second line.\n  The third line.\n  " {
+		t.Errorf("text child RawText mangled: %q", got)
+	}
+}
+
+// TestFirstLetterSplitPreservedTextSlicesRawText: when a wrap IS applied in a
+// preserved-white-space context, the split must slice the original text and
+// keep RawText on the synthesized prefix/rest nodes so downstream `pre`
+// processing (inline_item.go's RawText substitution) still sees the newlines
+// and leading indentation. Same Blink mirror as above.
+//
+// RED before fix: the split slices the collapsed Text and drops RawText, so
+// the pre block loses all its line breaks.
+func TestFirstLetterSplitPreservedTextSlicesRawText(t *testing.T) {
+	out := firstLetterSplitFixture(t,
+		" Hello World", "  Hello\nWorld",
+		"display", "block", "white-space", "pre")
+	// Expected: [prefix "  ", ::first-letter span "H", rest "ello\nWorld"]
+	if len(out) != 3 {
+		t.Fatalf("expected 3 children (prefix, letter span, rest); got %d", len(out))
+	}
+	if got := out[0].DOMNode.RawText; got != "  " {
+		t.Errorf("prefix RawText = %q; want %q (pre indentation must survive)", got, "  ")
+	}
+	if !out[1].IsElement() || len(out[1].children) != 1 {
+		t.Fatalf("expected out[1] to be the ::first-letter span")
+	}
+	if got := out[1].children[0].TextContent(); got != "H" {
+		t.Errorf("letter = %q; want %q", got, "H")
+	}
+	if got := out[2].DOMNode.RawText; got != "ello\nWorld" {
+		t.Errorf("rest RawText = %q; want %q", got, "ello\nWorld")
 	}
 }
