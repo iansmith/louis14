@@ -878,9 +878,35 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			return result
 		}
 
-		// Outer fragmentation: no room for any of this spanner — break
-		// before this spanner.
-		if hasOuterFrag && blockCursor >= outerAvailable {
+		// Blink cla.cc:1339-1347 (@ a9f50e522efa): resolve the spanner's
+		// margins against the multicol's content-box inline size and collapse
+		// its block-start margin into the running strut BEFORE computing the
+		// spanner's block offset. A resumed spanner has already consumed its
+		// block-start margin, except when resuming from a forced break-before
+		// (AdjustMarginsForFragmentation, fragmentation_utils.h:279-289).
+		spannerStyle := spanner.Style()
+		var spannerMargins LogicalEdges
+		if spannerStyle != nil {
+			spannerMargins = ResolveMargins(spannerStyle, wdm, contentInlineSize)
+		}
+		if hasSpannerResume &&
+			(!entry.BreakToken.IsBreakBefore || !entry.BreakToken.IsForcedBreak) {
+			spannerMargins.BlockStart = 0
+		}
+		marginStrut.Append(spannerMargins.BlockStart)
+		// Blink cla.cc:1354-1356: block_offset = intrinsic_block_size_ +
+		// margin_strut->Sum(). This collapsed strut (a preceding spanner's
+		// block-end margin plus this spanner's block-start margin) feeds the
+		// outer-fragmentation break decision and the spanner's fragmentainer
+		// offset (cla.cc:1402-1403: FragmentainerOffsetForChildren() +
+		// block_offset) as well as final placement, so it must be resolved
+		// before the break-before / fragOff sites below — not left as a bare
+		// blockCursor that under-counts by the pending margin.
+		pendingMargin := marginStrut.Resolve()
+
+		// Outer fragmentation: no room for any of this spanner (including its
+		// collapsed block-start margin) — break before this spanner.
+		if hasOuterFrag && blockCursor+pendingMargin >= outerAvailable {
 			walker.Next()
 			outBuilder.AddBreakBeforeChild(spanner, false)
 			flushWalker()
@@ -915,7 +941,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Fab A clip body at :899-936 is also redundant and goes in 6.6.B.
 		var fullResult *LayoutResult
 		if hasOuterFrag || hasSpannerResume {
-			fragOff := mla.space.FragmentainerOffset + blockCursor
+			fragOff := mla.space.FragmentainerOffset + blockCursor + pendingMargin
 			fullResult = mla.layoutSpannerInFrag(spanner, contentInlineSize, wdm,
 				mla.space.FragmentainerBlockSize, fragOff, entry.BreakToken)
 		} else {
@@ -929,31 +955,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// continuation): push it straight to outBuilder so the next
 			// outer fragmentainer resumes the spanner. Mirrors Blink's
 			// container_builder_.AddBreakToken(child_token).
-			if hasOuterFrag && fullResult.BreakToken != nil && blockCursor+spanHeight <= outerAvailable {
+			if hasOuterFrag && fullResult.BreakToken != nil && blockCursor+pendingMargin+spanHeight <= outerAvailable {
 				pendingContentOverflow = true
 				outBuilder.AddBreakToken(fullResult.BreakToken)
 			}
 		}
 		if spanFrag != nil {
-			// Blink cla.cc:1339-1343: resolve the spanner's margins against
-			// the multicol's content-box inline size. A resumed spanner has
-			// already consumed its block-start margin, except when resuming
-			// from a forced break-before (AdjustMarginsForFragmentation,
-			// fragmentation_utils.h:279-289 @ a9f50e522efa).
-			spannerStyle := spanner.Style()
-			var spannerMargins LogicalEdges
-			if spannerStyle != nil {
-				spannerMargins = ResolveMargins(spannerStyle, wdm, contentInlineSize)
-			}
-			if hasSpannerResume &&
-				(!entry.BreakToken.IsBreakBefore || !entry.BreakToken.IsForcedBreak) {
-				spannerMargins.BlockStart = 0
-			}
-			// Blink cla.cc:1345-1347: collapse the spanner's block-start
-			// margin with the block-end margin of an immediately preceding
-			// spanner.
-			marginStrut.Append(spannerMargins.BlockStart)
-			pendingMargin := marginStrut.Resolve()
 			// Blink cla.cc:1364-1374 (pre-commit row snap). Snap blockCursor
 			// to the next row-stride boundary only when the spanner (with its
 			// pending collapsed margin) doesn't fit in the remaining space of

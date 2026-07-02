@@ -12,14 +12,28 @@ import (
 // returns the layout result.
 func layoutMulticolForTest(t *testing.T, mc *html.Node, styles map[*html.Node]*css.Style) *LayoutResult {
 	t.Helper()
+	return layoutMulticolInFragmentainer(t, mc, styles, Indefinite, 0)
+}
+
+// layoutMulticolInFragmentainer runs MulticolLayoutAlgorithm on a multicol at a
+// 400px-wide auto-height available size, optionally nested inside an OUTER
+// fragmentation context of block-size fragBlockSize starting at fragOffset. A
+// fragBlockSize of Indefinite leaves outer fragmentation off (hasOuterFrag
+// false), matching a top-level auto-height multicol.
+func layoutMulticolInFragmentainer(t *testing.T, mc *html.Node, styles map[*html.Node]*css.Style, fragBlockSize, fragOffset float64) *LayoutResult {
+	t.Helper()
 	ctx := testContext()
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	mcNode := buildTestTree(mc, styles)
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+	b := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
-		Build()
-	result := NewMulticolLayoutAlgorithm(ctx, mcNode, space).Layout()
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite})
+	if fragBlockSize != Indefinite {
+		b = b.SetHasBlockFragmentation(true).
+			SetFragmentainerBlockSize(fragBlockSize).
+			SetFragmentainerOffset(fragOffset)
+	}
+	result := NewMulticolLayoutAlgorithm(ctx, mcNode, b.Build()).Layout()
 	if result == nil || result.Fragment == nil {
 		t.Fatal("layout returned nil")
 	}
@@ -301,5 +315,48 @@ func TestMulticolRelativeOffset_LOU363(t *testing.T) {
 				t.Errorf("RelativeOffset.Top = %v, want %v", got, tc.wantTop)
 			}
 		})
+	}
+}
+
+// LOU-363 (Claude-fallback-review finding): under OUTER fragmentation the
+// break-before / fragmentainer-offset sites must include the collapsed margin
+// strut, not bare blockCursor.
+//
+// Blink LayoutSpanner (cla.cc:1347-1356, 1402-1406 @ a9f50e522efa) appends the
+// spanner's block-start margin to the strut, then computes
+// block_offset = intrinsic_block_size_ + margin_strut->Sum() and uses THAT for
+// both the fragmentation break decision (fragmentainer_block_offset =
+// FragmentainerOffsetForChildren() + block_offset) and placement. A preceding
+// spanner's block-end margin lives in the strut (not baked into blockCursor),
+// so a bare-blockCursor check under-counts by the collapsed margin.
+//
+// Scenario: nested multicol; spanner A (h=10, margin-bottom=100) immediately
+// followed by spanner B (h=10) with the outer fragmentainer only 100px tall.
+// B's start offset is 10 + 100 = 110 > 100, so it must break BEFORE B and
+// resume it in the next outer fragment. Bug: multicol_layout.go:883 tested bare
+// blockCursor (10 < 100), so B was placed at y=110, overflowing the outer
+// column, and no outer break token was emitted.
+func TestSpannerMarginStrut_OuterFragmentationIncludesPendingMargin_LOU363(t *testing.T) {
+	spanner1 := makeNode("div")
+	spanner2 := makeNode("div")
+	mc := makeNode("div", spanner1, spanner2)
+
+	styles := map[*html.Node]*css.Style{
+		mc:       makeStyle("display", "block", "column-count", "2", "column-gap", "0", "width", "400px"),
+		spanner1: makeStyle("display", "block", "column-span", "all", "height", "10px", "margin-bottom", "100px"),
+		spanner2: makeStyle("display", "block", "column-span", "all", "height", "10px"),
+	}
+
+	// Outer fragmentainer 100px tall, starting at its origin.
+	result := layoutMulticolInFragmentainer(t, mc, styles, 100, 0)
+	spanners := spannerChildren(result)
+	if got := len(spanners); got != 1 {
+		t.Fatalf("expected 1 spanner in the first outer fragment (spanner B must break before to the next outer fragment); got %d", got)
+	}
+	if got := spanners[0].Offset.Top.Float64(); got != 0 {
+		t.Errorf("spanner1 at y=%v, want y=0", got)
+	}
+	if result.BreakToken == nil {
+		t.Error("expected an outer break token deferring spanner B to the next outer fragment (spanner A's 100px block-end margin pushes B's start past the 100px outer boundary)")
 	}
 }
