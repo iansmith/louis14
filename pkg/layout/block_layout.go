@@ -1680,7 +1680,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							spaceLeft = 0
 						}
 						desiredBlockSize := explicitBlockSize
-						if incomingBreakToken != nil {
+						// LOU-370: subtract consumed size only under break-INSIDE.
+						// Blink guards this same subtraction in FinishFragmentation
+						// with `!previous_break_token->IsBreakBefore()`
+						// (fragmentation_utils.cc @ a9f50e522efa). A break-before
+						// token has nothing consumed, so this is a no-op today, but
+						// the gate keeps the audit complete and Blink-faithful.
+						if incomingBreakToken.IsBreakInside() {
 							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
 							if desiredBlockSize < 0 {
 								desiredBlockSize = 0
@@ -1895,7 +1901,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							spaceLeft = 0
 						}
 						desiredBlockSize := explicitBlockSize
-						if incomingBreakToken != nil {
+						// LOU-370: subtract consumed size only under break-INSIDE
+						// (see the identical gate above / Blink
+						// FinishFragmentation @ a9f50e522efa). No-op for
+						// break-before, kept for audit completeness.
+						if incomingBreakToken.IsBreakInside() {
 							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
 							if desiredBlockSize < 0 {
 								desiredBlockSize = 0
