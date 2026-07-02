@@ -54,22 +54,32 @@ func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) b
 // CalculateUnbreakableBlockSize returns the block-size that this layout
 // result contributes as an unbreakable floor for column-balancing.
 //
-// Mirrors Blink's CalculateUnbreakableBlockSize (fragmentation_utils.cc):
-//   - If the child has already-propagated unbreakable contribution from
-//     its own descendants, return that directly (the deeper floor was
-//     measured at the child's coordinate space and doesn't need
-//     re-offsetting at the parent level).
-//   - Otherwise, the child's contribution is its fragment's block-size
-//     plus its position within the fragmentainer. The column box must
-//     extend to cover both the offset and the child, so the floor is
-//     `fragmentainerOffset + childBlockSize`.
+// Mirrors Blink's CalculateUnbreakableBlockSize
+// (fragmentation_utils.cc:979-993 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//   - The contribution is the child's full border-box block-size, per
+//     Blink's BlockSizeForFragmentation free function (:1545-1583): the
+//     result's explicit BlockSizeForFragmentation when set, else the
+//     fragment's own size. There is deliberately NO short-circuit on the
+//     child result's accumulated TallestUnbreakableBlockSize — that
+//     carrier flows up separately (block_layout.go, Blink
+//     box_fragment_builder.cc:566-569) and
+//     PropagateTallestUnbreakableBlockSize keeps the max. (LOU-365: the
+//     previous short-circuit made a break-inside:avoid box with padding
+//     report only its accumulated descendant/edge floors instead of its
+//     full size — multicol-overflow-clip-auto-sized.)
+//   - The fragmentainer offset is added ONLY when negative ("whatever is
+//     before the block-start of the fragmentainer isn't considered to
+//     intersect with the fragmentainer, so subtract it"). A POSITIVE
+//     offset must not be added: a break before the child can always
+//     place it at the top of a fresh column, so the column only needs
+//     to be as tall as the child itself.
 //
 // v2 B2.5 extension: when the fragment is monolithic AND its declared
 // block-size is shorter than the natural content height (IntrinsicBlockSize
-// > fragment block-size), use `fragmentainerOffset + IntrinsicBlockSize`
-// instead. Captures the spanner-with-content-overflow case where the
-// spanner's box stays at declared height but its content paints past it;
-// the column needs to grow to accommodate the visible content area.
+// > fragment block-size), use the IntrinsicBlockSize instead. Captures the
+// spanner-with-content-overflow case where the spanner's box stays at
+// declared height but its content paints past it; the column needs to grow
+// to accommodate the visible content area.
 //
 // Used at the BreakBeforeChildIfNeeded propagation site
 // (fragmentation_utils.cc:1105-1113).
@@ -78,21 +88,23 @@ func CalculateUnbreakableBlockSize(
 	layoutResult *LayoutResult,
 	fragmentainerBlockOffset float64,
 ) float64 {
-	if layoutResult == nil {
-		return 0
-	}
-	if layoutResult.TallestUnbreakableBlockSize > 0 {
-		return layoutResult.TallestUnbreakableBlockSize
-	}
-	if layoutResult.Fragment == nil {
+	if layoutResult == nil || layoutResult.Fragment == nil {
 		return 0
 	}
 	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
+	// Blink BlockSizeForFragmentation prefers the result's explicit
+	// fragmentation size when one was computed (fragmentation_utils.cc:1548).
+	if layoutResult.BlockSizeForFragmentation > blockSize {
+		blockSize = layoutResult.BlockSizeForFragmentation
+	}
 	// v2 B2.5: monolithic + intrinsic > fragment block-size → use intrinsic.
 	if layoutResult.Fragment.IsMonolithic && layoutResult.IntrinsicBlockSize > blockSize {
 		blockSize = layoutResult.IntrinsicBlockSize
 	}
-	return fragmentainerBlockOffset + blockSize
+	if fragmentainerBlockOffset < 0 {
+		blockSize += fragmentainerBlockOffset
+	}
+	return blockSize
 }
 
 // CalculateBreakBetweenValue returns the effective break-between value for the
@@ -301,6 +313,7 @@ func BreakBeforeChildIfNeeded(
 	// (fragmentation_utils.cc:1105-1113).
 	if space.IsInitialColumnBalancingPass && ShouldAvoidBreakInside(space, layoutResult) {
 		blockSize := CalculateUnbreakableBlockSize(space, layoutResult, fragmentainerBlockOffset)
+		println("DBG BBCIN floor:", int(blockSize*100)) // XXX LOU-365 debug
 		builder.PropagateTallestUnbreakableBlockSize(blockSize)
 	}
 
@@ -345,20 +358,20 @@ func BreakBeforeChildIfNeeded(
 		}
 	}
 
-	// break-inside:avoid-column on the child: if the child overflows the
+	// break-inside avoidance on the child: if the child overflows the
 	// fragmentainer AND we have container separation (so a break before it is
 	// a real boundary), break before to push the whole child to the next
-	// column instead of splitting it. Mirrors Blink's MovePastBreakpoint,
-	// scoped narrowly to the avoid-column case so we don't take over normal
-	// overflow handling (which block_layout.go's existing overflow handler
-	// owns — taking it over regressed spanner-fragmentation-006/008).
+	// column instead of splitting it. Fires for break-inside:avoid-column
+	// style values AND for monolithic fragments — ShouldAvoidBreakInside
+	// covers both, mirroring Blink's fragmentation_utils.cc:188-196 (a
+	// monolithic fragment always avoids inside-breaks) @ a9f50e522efa.
+	// Mirrors Blink's MovePastBreakpoint, scoped narrowly to the
+	// avoid-inside case so we don't take over normal overflow handling
+	// (which block_layout.go's existing overflow handler owns — taking it
+	// over regressed spanner-fragmentation-006/008).
 	if hasContainerSeparation && fragmentainerBlockSize != Indefinite &&
 		layoutResult != nil && layoutResult.Fragment != nil {
-		childBreakInside := "auto"
-		if s := layoutResult.Fragment.Style; s != nil {
-			childBreakInside = s.GetBreakInside()
-		}
-		if IsAvoidBreakValue(space, childBreakInside) {
+		if ShouldAvoidBreakInside(space, layoutResult) {
 			fragment := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment)
 			blockSize := fragment.BlockSize()
 			spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
