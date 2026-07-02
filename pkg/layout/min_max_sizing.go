@@ -547,25 +547,11 @@ func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, sp
 			// ComputeMinAndMaxContentContribution call at cla.cc:543-546,
 			// with a new-FC space (spanners establish formatting contexts).
 			childWDM := NewWritingDirectionMode(childStyle)
-			csBuilder := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, true).
-				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
-				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-			if nodeBlockSize != Indefinite {
-				// Definite multicol block-size: let the spanner's percentage
-				// block-size (and aspect-ratio transfer) resolve against it,
-				// mirroring measureBlockMinMax's parallel-child space.
-				csBuilder.SetPercentageResolutionSize(LogicalSize{
-					InlineSize: space.PercentageResolutionInlineSize,
-					BlockSize:  nodeBlockSize,
-				})
-				csBuilder.SetAvailableSize(LogicalSize{
-					InlineSize: space.AvailableSize.InlineSize.Float64(),
-					BlockSize:  nodeBlockSize,
-				})
-			}
-			childSpace := csBuilder.Build()
+			// Spanners establish an independent formatting context, so use a
+			// new-FC space. The multicol's definite block-size (nodeBlockSize)
+			// lets the spanner's percentage block-size and aspect-ratio
+			// transfer resolve against it (cla.cc:544).
+			childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, true)
 			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			extra := childGeom.InlineBorderPadding() +
@@ -1501,6 +1487,35 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 	return Indefinite
 }
 
+// buildParallelChildMinMaxSpace builds the constraint space for a parallel
+// (non-orthogonal) child during intrinsic min/max measurement. When the node
+// has a definite content block-size, it is threaded as both the available and
+// percentage-resolution block-size so percentage-height descendants (and
+// aspect-ratio transfer) resolve against it. isNewFC marks children that
+// establish an independent formatting context (e.g. column-span:all spanners).
+// Shared by measureBlockMinMax and the multicol spanner walk.
+func buildParallelChildMinMaxSpace(space ConstraintSpace, childWDM WritingDirectionMode, ctx *LayoutContext, nodeBlockSize float64, isNewFC bool) ConstraintSpace {
+	csBuilder := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, isNewFC).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+	if nodeBlockSize != Indefinite {
+		// Definite block-size: set both the percentage-resolution and available
+		// block-size so IsBlockSizeIndefinite() is false and percentage heights
+		// resolve against it.
+		csBuilder.SetPercentageResolutionSize(LogicalSize{
+			InlineSize: space.PercentageResolutionInlineSize,
+			BlockSize:  nodeBlockSize,
+		})
+		csBuilder.SetAvailableSize(LogicalSize{
+			InlineSize: space.AvailableSize.InlineSize.Float64(),
+			BlockSize:  nodeBlockSize,
+		})
+	}
+	return csBuilder.Build()
+}
+
 // Floats are handled specially: multiple same-side floats placed side-by-side
 // contribute their SUMMED inline sizes to max-content (since at max-content
 // width, all floats fit beside each other). Min-content = max single float
@@ -1571,25 +1586,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			// Pass the node's definite block-size so children can resolve
 			// percentage heights against it (e.g., img { height: 100% }
 			// inside a div with height: 100px).
-			csBuilder := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetOrthogonalFallbackInlineSize(
-					orthogonalFallbackSize(childWDM, ctx)).
-				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-			if nodeBlockSize != Indefinite {
-				csBuilder.SetPercentageResolutionSize(LogicalSize{
-					InlineSize: space.PercentageResolutionInlineSize,
-					BlockSize:  nodeBlockSize,
-				})
-				// Set available block-size to make IsBlockSizeIndefinite() return false
-				// so percentage heights resolve.
-				csBuilder.SetAvailableSize(LogicalSize{
-					InlineSize: space.AvailableSize.InlineSize.Float64(),
-					BlockSize:  nodeBlockSize,
-				})
-			}
-			childSpace := csBuilder.Build()
+			childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
 
 			// Propagate the column-BFC bit so spanners nested in non-FC
 			// wrappers are excluded at every depth, mirroring Blink's
