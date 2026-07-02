@@ -253,3 +253,53 @@ func TestSpannerInlineMargins_LOU363(t *testing.T) {
 		})
 	}
 }
+
+// LOU-363 defect 4: position:relative on a multicol container must produce a
+// RelativeOffset on its fragment, applied at paint time by engine.go's box
+// conversion (engine.go:439-441).
+//
+// no direct Blink analog inside column_layout_algorithm.cc — Blink applies
+// relative offsets generically when the parent adds the child
+// (relative_utils.cc ComputeRelativeOffset). Louis14's established local
+// pattern is the per-algorithm tail: block_layout.go:2469-2489 (BLA),
+// grid_layout.go (grid), flex_layout.go (flex). MulticolLayoutAlgorithm has
+// no such tail, so `position:relative` offsets are silently dropped
+// (multicol-rule-004 paints at the static position).
+func TestMulticolRelativeOffset_LOU363(t *testing.T) {
+	tests := []struct {
+		name              string
+		props             []string
+		wantLeft, wantTop float64
+	}{
+		{
+			name:     "left/top",
+			props:    []string{"position", "relative", "left", "30px", "top", "40px"},
+			wantLeft: 30, wantTop: 40,
+		},
+		{
+			// Mirrors multicol-rule-004.xht (right:80px; bottom:100px).
+			name:     "right/bottom",
+			props:    []string{"position", "relative", "right", "80px", "bottom", "100px"},
+			wantLeft: -80, wantTop: -100,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			block1 := makeNode("div")
+			mc := makeNode("div", block1)
+			mcProps := append([]string{"display", "block", "column-count", "2",
+				"column-gap", "0", "width", "400px"}, tc.props...)
+			styles := map[*html.Node]*css.Style{
+				mc:     makeStyle(mcProps...),
+				block1: makeStyle("display", "block", "height", "100px"),
+			}
+			result := layoutMulticolForTest(t, mc, styles)
+			if got := result.Fragment.RelativeOffset.LeftF64(); got != tc.wantLeft {
+				t.Errorf("RelativeOffset.Left = %v, want %v", got, tc.wantLeft)
+			}
+			if got := result.Fragment.RelativeOffset.TopF64(); got != tc.wantTop {
+				t.Errorf("RelativeOffset.Top = %v, want %v", got, tc.wantTop)
+			}
+		})
+	}
+}

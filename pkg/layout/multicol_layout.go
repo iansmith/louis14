@@ -1359,6 +1359,35 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			result.TallestUnbreakableBlockSize,
 			mla.lastMeasuredTallestUnbreakable)
 	}
+
+	// CSS 2.1 §9.4.3: position:relative offset, stored on the fragment for
+	// paint-time application (engine.go box conversion). No Blink analog
+	// inside column_layout_algorithm.cc — Blink applies relative offsets
+	// generically in the parent (relative_utils.cc ComputeRelativeOffset);
+	// louis14's established pattern is this per-algorithm tail, copied from
+	// block_layout.go:2469-2489 (see there for the PercentageResolutionSize
+	// rationale).
+	//
+	// Known coverage limit: only the main (non-fragmented) return path gets
+	// the offset. Fragments returned via buildOuterBreakResult (multicol
+	// nested in an outer fragmentation context) skip it — the same gap the
+	// BLA pattern has for its own break-result returns.
+	if mla.style != nil && mla.style.GetPosition() == css.PositionRelative {
+		cbInline := mla.space.PercentageResolutionSize.InlineSize.Float64()
+		if cbInline == Indefinite {
+			cbInline = 0
+		}
+		cbBlock := mla.space.PercentageResolutionSize.BlockSize.Float64()
+		if cbBlock == Indefinite {
+			cbBlock = 0
+		}
+		physCB := ToPhysicalSize(LogicalSize{
+			InlineSize: cbInline,
+			BlockSize:  cbBlock,
+		}, wdm.WM)
+		offset := mla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
+		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+	}
 	return result
 }
 
