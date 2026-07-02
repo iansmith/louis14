@@ -256,3 +256,46 @@ func (n *LayoutInputNode) ListMarkerOccupiesWholeLine() bool {
 	}
 	return n.style.GetListStylePosition() == "inside"
 }
+
+// hasUnsplittableScrollingOverflow reports whether this node is a scroll
+// container — overflow scroll/auto/hidden on either axis (clip and visible
+// are NOT scroll containers). Any scrollable container is treated as
+// monolithic: fragmenting scrollbars is only workable in non-interactive
+// media, and louis14 renders screen media only, so Blink's Printing()
+// escape hatch is omitted.
+//
+// Mirrors LayoutBox::HasUnsplittableScrollingOverflow
+// (layout_box.cc:3639-3649 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) hasUnsplittableScrollingOverflow() bool {
+	isScrollable := func(o css.OverflowType) bool {
+		return o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowHidden
+	}
+	return isScrollable(n.style.GetOverflowX()) || isScrollable(n.style.GetOverflowY())
+}
+
+// IsMonolithic reports whether this node must never be fragmented across
+// column/page boundaries. A monolithic child is laid out without
+// fragmentainer constraints and moved past break points as a unit; if it is
+// too tall to fit anywhere it overflows the fragmentainer (multicol) rather
+// than being sliced.
+//
+// Mirrors LayoutBox::IsMonolithic (layout_box.cc:3651-3666 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The isWritingModeRoot argument
+// stands in for Blink's `Parent() && IsWritingModeRoot()` clause:
+// LayoutInputNode has no parent pointer (two-tier collapse, see the type
+// doc), so the caller supplies the parent-vs-child writing-mode comparison.
+//
+// Clauses louis14 cannot express yet are omitted (same Blink cite):
+// IsInline (callers gate inline children separately, as Blink does at
+// fragmentation_utils.cc:336-339), IsSemiReplaced, IsOverscrollContainer,
+// fixed-positioned while printing, IsFrameSet, line-clamp, and
+// scroll-marker-group.
+func (n *LayoutInputNode) IsMonolithic(isWritingModeRoot bool) bool {
+	if isWritingModeRoot {
+		return true
+	}
+	if n.style == nil {
+		return false
+	}
+	return n.hasUnsplittableScrollingOverflow() || n.style.ShouldApplySizeContainment()
+}

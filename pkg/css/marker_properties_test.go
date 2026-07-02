@@ -45,6 +45,12 @@ func TestMarkerAllowedProperty_MissingProperties(t *testing.T) {
 		{"marker-text-emphasis.html/position", "text-emphasis-position", true},
 		// text-shadow is already in the switch — verify it stays allowed
 		{"marker-text-shadow.html", "text-shadow", true},
+		// LOU-358: line-break, text-decoration-skip-ink and
+		// text-decoration-skip-spaces all carry valid_for_marker: true in
+		// css_properties.json5 @ 43cee02dc59fdad798675a735737510ecf0c9064.
+		{"marker-line-break.html", "line-break", true},
+		{"marker-text-decoration-skip-ink.html", "text-decoration-skip-ink", true},
+		{"marker-text-decoration-skip-ink.html/skip-spaces", "text-decoration-skip-spaces", true},
 	}
 
 	for _, tc := range cases {
@@ -81,6 +87,7 @@ func TestMarkerInheritedProperties_InheritFromParent(t *testing.T) {
 	parentStyle.Set("text-emphasis-style", "circle")
 	parentStyle.Set("text-emphasis-color", "green")
 	parentStyle.Set("text-emphasis-position", "under right")
+	parentStyle.Set("line-break", "anywhere")
 
 	markerStyle := ComputePseudoElementStyle(liNode, "marker", nil, 800, 600, parentStyle)
 
@@ -98,6 +105,8 @@ func TestMarkerInheritedProperties_InheritFromParent(t *testing.T) {
 		{"marker-text-emphasis.html/inherit/style", "text-emphasis-style", "circle"},
 		{"marker-text-emphasis.html/inherit/color", "text-emphasis-color", "green"},
 		{"marker-text-emphasis.html/inherit/position", "text-emphasis-position", "under right"},
+		// LOU-358: CSS Text 3 §5.5 line-break is inherited.
+		{"marker-line-break.html/inherit", "line-break", "anywhere"},
 	}
 
 	for _, tc := range cases {
@@ -112,5 +121,28 @@ func TestMarkerInheritedProperties_InheritFromParent(t *testing.T) {
 				t.Errorf("marker style %q = %q, want %q", tc.prop, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGetLineBreak covers the line-break getter added for LOU-358 (mirrors
+// GetHyphens): CSS Text 3 §5.5 values auto | loose | normal | strict |
+// anywhere, defaulting to auto. Consumed by the line breaker's char-break
+// dispatch (Blink LineBreaker::SetCurrentStyleForce maps LineBreak::kAnywhere
+// to LineBreakType::kBreakCharacter, line_breaker.cc:4559-4563 @
+// 43cee02dc59fdad798675a735737510ecf0c9064).
+func TestGetLineBreak(t *testing.T) {
+	s := NewStyle()
+	if got := s.GetLineBreak(); got != "auto" {
+		t.Errorf("GetLineBreak() default = %q, want %q", got, "auto")
+	}
+	for _, v := range []string{"auto", "loose", "normal", "strict", "anywhere"} {
+		s.Set("line-break", v)
+		if got := s.GetLineBreak(); got != v {
+			t.Errorf("GetLineBreak() with %q = %q, want %q", v, got, v)
+		}
+	}
+	s.Set("line-break", "bogus")
+	if got := s.GetLineBreak(); got != "auto" {
+		t.Errorf("GetLineBreak() with invalid value = %q, want %q", got, "auto")
 	}
 }

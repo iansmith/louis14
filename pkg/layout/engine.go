@@ -19,6 +19,20 @@ type LayoutEngine struct {
 
 	lastStyles    map[*html.Node]*css.Style
 	lastNodeBoxes map[*html.Node]*Box
+
+	// prevStyles holds the computed styles of the PREVIOUS layout pass
+	// (before script-driven DOM mutation) — the "before-change styles" CSS
+	// Transitions compare against. Set by the render pipelines on the
+	// second (post-script) pass via SetPreviousStyles; nil on a first
+	// pass, in which case no transitions start. See
+	// css.ApplyTransitionsFirstFrame for the Blink citations.
+	prevStyles map[*html.Node]*css.Style
+}
+
+// SetPreviousStyles supplies the previous pass's computed styles so the
+// next Layout call can start CSS transitions (first-frame semantics).
+func (le *LayoutEngine) SetPreviousStyles(styles map[*html.Node]*css.Style) {
+	le.prevStyles = styles
 }
 
 type viewport struct {
@@ -69,6 +83,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 1: Compute styles.
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	// CSS Transitions (first-frame): when this is a post-script re-layout,
+	// compare against the previous pass's styles and override transitioned
+	// properties with their value at local time 0. Runs AFTER logical-
+	// property resolution — prevStyles came from a pass that already
+	// resolved logical keys to physical, so both maps must be physical-
+	// keyed for the per-property diff (and resolution must not clobber a
+	// transitioned value) — and before ch-width metrics so downstream
+	// phases see the transitioned values.
+	if le.prevStyles != nil {
+		css.ApplyTransitionsFirstFrame(doc.Root, computedStyles, le.prevStyles)
+	}
 
 	// Phase 1b: Compute ch widths from actual font metrics.
 	fontConfig := le.fontConfig

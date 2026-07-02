@@ -379,13 +379,20 @@ func (r *Renderer) resolveCustomHighlightPseudoStyle(originating *html.Node, nam
 // otherwise byte-identical body (CLAUDE.md §4: 2+ near-identical paths are
 // dedupe-in-scope).
 //
-// Deliberately NOT gated on len(r.selectionStylesheets) == 0: a page with
-// no stylesheets at all (or none containing a rule for this pseudo) must
+// LOU-352: resolution follows CSS Pseudo-4's highlight cascade — the chain
+// walk in resolveHighlightChainStyle, mirroring Blink's per-element
+// StyleHighlightData tree. When NO rule for this highlight matches
+// originating or any of its ancestors, the chain style is nil (Blink:
+// HighlightStyleUtils::HighlightPseudoStyle returns nullptr and paint falls
+// back to DefaultHighlightColor — highlight_style_utils.cc:295-298 @
+// Chromium main 72259ecfb56eacf259e21783dd2b31608ac951a3); louis14 instead
+// bakes those UA defaults into a per-node resolved style here, via the
+// plain ComputePseudoElementStyle fallback (its applySelectionCascade/
+// applyTargetTextCascade stamp the UA pair when authorSet is empty), which
+// is also why this is deliberately NOT gated on
+// len(r.selectionStylesheets) == 0: a page with no stylesheets at all must
 // still resolve the UA default highlight colors when this highlight is
-// active — ComputePseudoElementStyle's applySelectionCascade/
-// applyTargetTextCascade apply those UA defaults itself when authorSet is
-// empty, so an empty stylesheet list is a valid, expected input here, not a
-// reason to skip resolution entirely.
+// active.
 func (r *Renderer) resolveHighlightPseudoStyle(originating *html.Node, pseudoElement string, cache map[*html.Node]*css.Style) *css.Style {
 	if originating == nil {
 		return nil
@@ -393,27 +400,80 @@ func (r *Renderer) resolveHighlightPseudoStyle(originating *html.Node, pseudoEle
 	if cached, ok := cache[originating]; ok {
 		return cached
 	}
-	// originating.Style isn't tracked on *html.Node directly (style lives
-	// on layout.Box/css cascade results, not the DOM tree) — look it up
-	// via r.nodeBoxIndex (populated once per Render call, see render.go)
-	// and pass it as ComputePseudoElementStyle's parentStyles so custom
-	// properties (--x) on the originating element are visible to var()
-	// references in the highlight pseudo's rule (CSS Custom Properties §3
-	// — pseudo-elements inherit custom properties from their originating
-	// element). Without this, `main::selection { background-color:
-	// var(--x, red) }` with `main { --x: green }` silently fell back to
-	// the var() fallback value instead of resolving --x (highlight-
-	// styling-002.html). A missing originating box (nil parentStyles) is
-	// still a valid input — ComputePseudoElementStyle's parent-inheritance
-	// block is a no-op then, same as before this fix for any node not yet
-	// in the index.
-	var parentStyles []*css.Style
-	if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
-		parentStyles = []*css.Style{box.Style}
+	style := r.resolveHighlightChainStyle(originating, pseudoElement)
+	if style == nil {
+		style = css.ComputePseudoElementStyle(originating, pseudoElement, r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH, r.originatingParentStyles(originating)...)
 	}
-	style := css.ComputePseudoElementStyle(originating, pseudoElement, r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH, parentStyles...)
 	cache[originating] = style
 	return style
+}
+
+// resolveHighlightChainStyle resolves one node's position in the highlight
+// inheritance chain for pseudoElement (CSS Pseudo-4 §highlight-cascade),
+// memoized per pseudo-element name in r.highlightChainStyleCaches. Mirrors
+// Blink's Element::RecalcHighlightStyles (core/dom/element.cc:7091-7195 @
+// 72259ecf) walking the inherited ComputedStyle::HighlightData tree
+// (computed_style_extra_fields.json5:540-548, `inherited: true`):
+//
+//   - a node NO rule for this highlight matches simply shares its parent
+//     element's chain style (possibly nil) — Blink's inherited HighlightData
+//     with no per-element recalc;
+//   - a node with matching rules computes its own style with the parent's
+//     chain style as the inheritance base for ALL properties
+//     (ComputeHighlightPseudoElementStyle — Blink's
+//     StyleForHighlightPseudoElement with highlight_parent =
+//     parent_highlights->TargetText() etc., element.cc:7150-7157).
+//
+// The rule-match gate (css.HasPseudoElementRules) is the analog of the
+// ComputedStyle::HasPseudoElementStyle(pseudo) bit
+// ElementRuleCollector::DidMatchRule sets (element_rule_collector.cc:1376),
+// which gates Blink's per-highlight recalc the same way.
+//
+// nil means no rule for this highlight matches originating OR any ancestor
+// — the caller (resolveHighlightPseudoStyle) then bakes the UA-default
+// fallback per node.
+func (r *Renderer) resolveHighlightChainStyle(originating *html.Node, pseudoElement string) *css.Style {
+	if originating == nil || originating.Type != html.ElementNode {
+		return nil
+	}
+	if r.highlightChainStyleCaches == nil {
+		r.highlightChainStyleCaches = make(map[string]map[*html.Node]*css.Style)
+	}
+	chainCache, ok := r.highlightChainStyleCaches[pseudoElement]
+	if !ok {
+		chainCache = make(map[*html.Node]*css.Style)
+		r.highlightChainStyleCaches[pseudoElement] = chainCache
+	}
+	if cached, ok := chainCache[originating]; ok {
+		return cached
+	}
+	highlightParent := r.resolveHighlightChainStyle(originating.Parent, pseudoElement)
+	style := highlightParent
+	if css.HasPseudoElementRules(originating, pseudoElement, r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH) {
+		style = css.ComputeHighlightPseudoElementStyle(originating, pseudoElement, r.selectionStylesheets, r.selectionViewportW, r.selectionViewportH, highlightParent, r.originatingParentStyles(originating)...)
+	}
+	chainCache[originating] = style
+	return style
+}
+
+// originatingParentStyles looks up the originating element's own computed
+// style for use as ComputePseudoElementStyle's parentStyles. Style isn't
+// tracked on *html.Node directly (it lives on layout.Box/css cascade
+// results, not the DOM tree) — it comes from r.nodeBoxIndex (populated once
+// per Render call, see render.go). Passing it makes custom properties (--x)
+// on the originating element visible to var() references in the highlight
+// pseudo's rule (CSS Custom Properties §3 — pseudo-elements inherit custom
+// properties from their originating element). Without this, `main::selection
+// { background-color: var(--x, red) }` with `main { --x: green }` silently
+// fell back to the var() fallback value instead of resolving --x
+// (highlight-styling-002.html). A missing originating box (nil return) is
+// still a valid input — ComputePseudoElementStyle's parent-inheritance
+// block is a no-op then, same as for any node not in the index.
+func (r *Renderer) originatingParentStyles(originating *html.Node) []*css.Style {
+	if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
+		return []*css.Style{box.Style}
+	}
+	return nil
 }
 
 // findOriginatingTextNode finds the DOM text-node child of parent whose
