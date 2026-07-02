@@ -400,3 +400,65 @@ func TestMonolithicFloat_BalancingFloorIncludesMargins(t *testing.T) {
 		t.Errorf("TallestUnbreakableBlockSize = %v, want 100 (float margin box)", got)
 	}
 }
+
+// TestParallelFlow_CompletedParentCarriesChildContinuation: a fixed-size
+// child whose own content overflows into later fragmentainers (a parallel
+// flow: the child box is at block-end, its content continues) must have its
+// continuation carried on the parent's outgoing break token even when the
+// parent itself completes comfortably inside the fragmentainer. The walk
+// used to drop such tokens: only the fragmentainer-boundary branches
+// carried child break tokens, so a parent ending at blockCursor < fragEnd
+// lost the parallel flow entirely (fixed-size-child-with-overflow: green
+// content rendered in column 1 only). Mirrors Blink's FinishFragmentation,
+// which builds the outgoing token from ALL of the builder's child break
+// tokens (fragmentation_utils.cc:677-815 @ a9f50e522efa) — a completed
+// parent with an unfinished child emits a token with the child continuation
+// rather than none.
+//
+// Geometry: wrapper (auto) > mid (height:50) > inner (height:400);
+// fragmentainer 100. Mid finishes at 50 (at block-end) with inner having
+// consumed 100; the wrapper must break with mid's token chained.
+func TestParallelFlow_CompletedParentCarriesChildContinuation(t *testing.T) {
+	inner := makeNode("div")
+	mid := makeNode("div", inner)
+	parent := makeNode("div", mid)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "width", "100px"),
+		mid:    makeStyle("display", "block", "height", "50px"),
+		inner:  makeStyle("display", "block", "height", "400px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(100).
+		SetFragmentainerOffset(0).
+		SetBlockFragmentationType(FragmentColumn).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	if result == nil {
+		t.Fatal("layout returned nil")
+	}
+	if result.BreakToken == nil {
+		t.Fatal("expected a break token carrying the parallel-flow continuation")
+	}
+	if !result.BreakToken.HasSeenAllChildren {
+		t.Error("HasSeenAllChildren must be true (the walk completed)")
+	}
+	if got := len(result.BreakToken.ChildBreakTokens); got != 1 {
+		t.Fatalf("child break tokens = %d, want 1 (mid's continuation)", got)
+	}
+	midToken := result.BreakToken.ChildBreakTokens[0]
+	if !midToken.IsAtBlockEnd {
+		t.Error("mid's token must be at-block-end (its box is done; content continues)")
+	}
+	if got := len(midToken.ChildBreakTokens); got != 1 {
+		t.Fatalf("mid child tokens = %d, want 1 (inner's continuation)", got)
+	}
+	if got := midToken.ChildBreakTokens[0].ConsumedBlockSize.Float64(); got != 100 {
+		t.Errorf("inner consumed = %v, want 100 (one fragmentainer's worth)", got)
+	}
+}

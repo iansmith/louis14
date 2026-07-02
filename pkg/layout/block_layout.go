@@ -357,6 +357,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		pendingDropAtBlockOffsetEnabled  bool
 		pendingIntrinsicAtBreak          float64
 		pendingHaveIntrinsicAtBreak      bool
+		// pendingParallelFlowChildTokens collects break tokens of children
+		// that finished their own box (at-block-end / parallel flow) while
+		// their CONTENT continues in later fragmentainers, when the walk
+		// itself never hit a fragmentainer boundary. Promoted into the
+		// unified outgoing-token reader after Gates A/B so the parent's
+		// natural-path margin handling is preserved (the parent's own flow
+		// IS complete). LOU-365; mirrors Blink FinishFragmentation building
+		// the outgoing token from all child break tokens
+		// (fragmentation_utils.cc:677-815 @ a9f50e522efa).
+		pendingParallelFlowChildTokens []*BlockBreakToken
 		// inlineFullyPlaced is set to true when this block has only inline
 		// children AND the IFC completed without overflow (no inline break
 		// token emitted). Used when the block self-fragments via didBreakSelf
@@ -1558,8 +1568,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// progress slices keep their dedicated branch below.
 				childBrokeShortOfBoundary := childHasBreak && blockCursor < fragEnd &&
 					childBlockSize > 0 &&
-					!childResult.BreakToken.IsAtBlockEnd &&
-					!childResult.BreakToken.IsInParallelFlow
+					!IsParallelFlowContinuation(childResult.BreakToken)
 				if fragSize != Indefinite && (blockCursor > fragEnd ||
 					(blockCursor == fragEnd && childHasBreak) ||
 					childBrokeShortOfBoundary) {
@@ -1872,6 +1881,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						pendingHasSeenAllChildren = true
 					}
 					break
+				}
+
+				// LOU-365: no boundary branch fired — the child was accepted
+				// and the walk continues. If the child nevertheless carries a
+				// parallel-flow continuation (its box is at block-end but its
+				// content goes on), collect the token; dropping it here loses
+				// the continuation entirely (fixed-size-child-with-overflow:
+				// content rendered in column 1 only). Promoted into the
+				// outgoing token after the walk.
+				if fragSize != Indefinite && IsParallelFlowContinuation(childResult.BreakToken) {
+					pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, childResult.BreakToken)
 				}
 			}
 		}
@@ -2415,6 +2435,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// LOU-365: promote collected parallel-flow continuations into the
+	// unified reader. Placed AFTER Gates A/B on purpose: the parent's own
+	// flow completed normally, so trailing-margin propagation and float
+	// clearance must behave as on the natural path; only the outgoing
+	// break token differs (it carries the children's continuations).
+	// When a boundary branch also fired, merge — the parallel tokens
+	// belong to earlier children, so they go first (DOM order).
+	if len(pendingParallelFlowChildTokens) > 0 {
+		pendingChildBreakTokens = append(pendingParallelFlowChildTokens, pendingChildBreakTokens...)
+		if !pendingShouldBreakInside {
+			pendingShouldBreakInside = true
+			pendingHasSeenAllChildren = true
+			pendingIsAtBlockEnd = true
+		}
+	}
+
 	// Option-b step 6.4.c: apply DropChildren for the broken path,
 	// just before Build(). Recorded by the frag-overflow record-phase
 	// (pendingDropAtBlockOffsetEnabled gated on `fragSize > 0`).
@@ -2501,22 +2537,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			result.DidBreakSelf = true
 			// LOU-365: surface the self-break shortage (Blink
 			// FinishFragmentation → PropagateSpaceShortage,
-			// fragmentation_utils.cc:798-800 @ a9f50e522efa). Min-merge
-			// below keeps the smallest positive shortage, matching
-			// BoxFragmentBuilder::PropagateSpaceShortage semantics.
-			if selfBreakShortage > 0 &&
-				(result.MinSpaceShortage == 0 || selfBreakShortage < result.MinSpaceShortage) {
-				result.MinSpaceShortage = selfBreakShortage
-			}
+			// fragmentation_utils.cc:798-800 @ a9f50e522efa).
+			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, selfBreakShortage)
 		}
 		if pendingShouldBreakInside {
 			if pendingBreakAppeal < BreakAppealPerfect {
 				result.BreakAppeal = pendingBreakAppeal
 			}
-			if pendingMinSpaceShortage > 0 &&
-				(result.MinSpaceShortage == 0 || pendingMinSpaceShortage < result.MinSpaceShortage) {
-				result.MinSpaceShortage = pendingMinSpaceShortage
-			}
+			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, pendingMinSpaceShortage)
 			if pendingHasForcedBreak {
 				result.HasForcedBreak = true
 			}

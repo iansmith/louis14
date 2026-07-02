@@ -107,6 +107,30 @@ func CalculateUnbreakableBlockSize(
 	return blockSize
 }
 
+// IsParallelFlowContinuation reports whether an outgoing child break token
+// represents a parallel flow: the child's own box is at block-end (or
+// explicitly tagged in-parallel-flow) while content inside it resumes in
+// later fragmentainers. Such a token does NOT mean the fragmentainer is
+// full — mirrors the `!break_token->IsAtBlockEnd()` escape in Blink's
+// MovePastBreakpoint (fragmentation_utils.cc:1178-1186 @ a9f50e522efa).
+func IsParallelFlowContinuation(tok *BlockBreakToken) bool {
+	return tok != nil && (tok.IsAtBlockEnd || tok.IsInParallelFlow)
+}
+
+// MinPositiveSpaceShortage merges two space-shortage reports, keeping the
+// smallest positive value (zero means "no shortage reported"). Mirrors
+// BoxFragmentBuilder::PropagateSpaceShortage's min-merge semantics
+// (box_fragment_builder.h @ a9f50e522efa).
+func MinPositiveSpaceShortage(a, b float64) float64 {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
 // CalculateBreakBetweenValue returns the effective break-between value for the
 // boundary BEFORE this child, joining the parent's previous-break-after (set
 // when the previous in-flow child was added) with the child's break-before.
