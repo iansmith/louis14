@@ -148,6 +148,18 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.Style == nil {
 		return false
 	}
+	// Text-run boxes (LayoutNode == nil with Text set — the discriminator
+	// pkg/render's paint-tree builder uses for text fragments) borrow their
+	// element's Style, so every style-driven branch below would misfire on
+	// them: the element's box applies opacity/filter/transform ONCE and a
+	// text-run stacking context would compound the effect (opacity 0.5
+	// painted at 0.25 — WPT first-letter-opacity-float-001.html). Blink:
+	// PaintLayers exist only on LayoutBoxModelObject (core/paint/
+	// paint_layer.h @ 906a32d8634edf17db094507908f439bd9b52de5); LayoutText
+	// never owns one and never establishes a stacking context.
+	if b.LayoutNode == nil && b.Text != "" {
+		return false
+	}
 	// Positioned + explicit z-index.
 	if b.Position != css.PositionStatic && b.Style.HasExplicitZIndex() {
 		return true

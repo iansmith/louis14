@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -554,11 +555,12 @@ func (e *elementAccessor) Get(key string) goja.Value {
 				return goja.Undefined()
 			}
 			second := string(runes[offset:])
-			e.node.Text = string(runes[:offset])
+			setTextData(e.node, string(runes[:offset]))
 			newNode := &html.Node{
-				Type:   html.TextNode,
-				Text:   second,
-				Parent: e.node.Parent,
+				Type:    html.TextNode,
+				Text:    second,
+				RawText: second,
+				Parent:  e.node.Parent,
 			}
 			// Insert newNode immediately after e.node in parent's children.
 			if parent := e.node.Parent; parent != nil {
@@ -585,8 +587,38 @@ func (e *elementAccessor) Get(key string) goja.Value {
 				return goja.Undefined()
 			}
 			if len(call.Arguments) > 0 {
-				e.node.Text += call.Arguments[0].String()
+				setTextData(e.node, e.node.Text+call.Arguments[0].String())
 			}
+			return goja.Undefined()
+		})
+	case "insertData":
+		// CharacterData.insertData(offset, data): inserts data at the given
+		// UTF-16 code-unit offset (WHATWG DOM §4.10 "replace data" with
+		// count 0; Blink CharacterData::insertData,
+		// core/dom/character_data.cc @ Chromium
+		// 906a32d8634edf17db094507908f439bd9b52de5). WPT
+		// first-letter-punctuation-dynamic.html prepends the letter the
+		// ::first-letter must move to.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if e.node.Type != html.TextNode || len(call.Arguments) < 2 {
+				return goja.Undefined()
+			}
+			// WHATWG DOM "replace data" step 2: offset greater than the
+			// node's length (in UTF-16 code units) throws IndexSizeError —
+			// this accessor's convention is a no-op return. Validate BEFORE
+			// converting: UTF16OffsetToByteOffset clamps, which would turn
+			// an invalid offset into a real prepend/append mutation.
+			offset := int(call.Arguments[0].ToInteger())
+			textLen := 0
+			for _, r := range e.node.Text {
+				textLen += utf16.RuneLen(r)
+			}
+			if offset < 0 || offset > textLen {
+				return goja.Undefined()
+			}
+			byteOff := html.UTF16OffsetToByteOffset(e.node.Text, offset)
+			data := call.Arguments[1].String()
+			setTextData(e.node, e.node.Text[:byteOff]+data+e.node.Text[byteOff:])
 			return goja.Undefined()
 		})
 	case "getAttribute":
@@ -998,7 +1030,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		return true
 	case "nodeValue", "data":
 		if e.node.Type == html.TextNode {
-			e.node.Text = val.String()
+			setTextData(e.node, val.String())
 		}
 		return true
 	case "src":
@@ -1069,7 +1101,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerText", "innerHTML", "outerHTML", "src", "dir", "type", "value", "splitText", "data", "appendData",
+		"textContent", "innerText", "innerHTML", "outerHTML", "src", "dir", "type", "value", "splitText", "data", "appendData", "insertData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -1099,7 +1131,7 @@ func (e *elementAccessor) Keys() []string {
 		"tagName", "nodeName", "nodeType", "nodeValue", "data", "id", "className",
 		"textContent", "innerText", "innerHTML", "outerHTML",
 		"src", "dir", "type", "value",
-		"splitText", "appendData",
+		"splitText", "appendData", "insertData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -1119,6 +1151,19 @@ func (e *elementAccessor) Keys() []string {
 }
 
 // getTextContent returns the concatenated text content of a node and its descendants.
+// setTextData sets a CharacterData (text) node's data, keeping RawText
+// coherent: after a script mutation the DOM data IS the original text —
+// Blink has no separate parser-raw copy (CharacterData holds one data
+// string, core/dom/character_data.h @ Chromium
+// 906a32d8634edf17db094507908f439bd9b52de5). louis14's RawText exists only
+// to recover parser-collapsed whitespace for unmutated nodes; a stale value
+// here would make preserved-white-space consumers (inline_item.go, the
+// ::first-letter scanner) render pre-mutation text.
+func setTextData(n *html.Node, s string) {
+	n.Text = s
+	n.RawText = s
+}
+
 func getTextContent(node *html.Node) string {
 	if node.Type == html.TextNode {
 		return node.Text
@@ -1150,6 +1195,60 @@ type styleAccessor struct {
 }
 
 func (s *styleAccessor) Get(key string) goja.Value {
+	// CSSOM §6.7.3 CSSStyleDeclaration methods (LOU-352: highlight-styling-
+	// 005.html mutates a root custom property via style.setProperty, which
+	// previously fell through to the attribute lookup below and returned a
+	// string — a TypeError at the call site, silently killing the script).
+	// Mirrors Blink's AbstractPropertySetCSSStyleDeclaration::setProperty/
+	// removeProperty/getPropertyValue (core/css/abstract_property_set_css_
+	// style_declaration.cc:76,135,159 @ Chromium main
+	// 72259ecfb56eacf259e21783dd2b31608ac951a3). The property argument is
+	// used VERBATIM (no camelToKebab): CSSOM method arguments are already
+	// CSS-cased, and custom properties (--*) are case-sensitive.
+	switch key {
+	case "setProperty":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) < 2 {
+				return goja.Undefined()
+			}
+			prop := call.Arguments[0].String()
+			val := call.Arguments[1].String()
+			styles := parseInlineStyle(s.getStyleAttr())
+			// CSSOM §6.7.3 step 4: an empty value means removeProperty.
+			if strings.TrimSpace(val) == "" {
+				delete(styles, prop)
+			} else {
+				styles[prop] = val
+			}
+			s.setStyleAttr(serializeInlineStyle(styles))
+			return goja.Undefined()
+		})
+	case "removeProperty":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return s.vm.ToValue("")
+			}
+			prop := call.Arguments[0].String()
+			styles := parseInlineStyle(s.getStyleAttr())
+			old := styles[prop]
+			delete(styles, prop)
+			s.setStyleAttr(serializeInlineStyle(styles))
+			return s.vm.ToValue(old)
+		})
+	case "getPropertyValue":
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return s.vm.ToValue("")
+			}
+			styles := parseInlineStyle(s.getStyleAttr())
+			return s.vm.ToValue(styles[call.Arguments[0].String()])
+		})
+	case "getPropertyPriority":
+		// Inline-style !important tracking isn't modeled; always "".
+		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return s.vm.ToValue("")
+		})
+	}
 	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
 	if val, ok := styles[cssProp]; ok {
