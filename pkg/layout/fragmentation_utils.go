@@ -118,10 +118,15 @@ func IsParallelFlowContinuation(tok *BlockBreakToken) bool {
 }
 
 // MinPositiveSpaceShortage merges two space-shortage reports, keeping the
-// smallest positive value (zero means "no shortage reported"). Mirrors
+// smallest positive value. Non-positive inputs mean "no shortage reported"
+// and the result is clamped to zero so a negative operand never leaks
+// through (CodeRabbit 3514362242). Mirrors
 // BoxFragmentBuilder::PropagateSpaceShortage's min-merge semantics
 // (box_fragment_builder.h @ a9f50e522efa).
 func MinPositiveSpaceShortage(a, b float64) float64 {
+	if a <= 0 && b <= 0 {
+		return 0
+	}
 	if a <= 0 {
 		return b
 	}

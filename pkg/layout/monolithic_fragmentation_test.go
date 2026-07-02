@@ -526,3 +526,191 @@ func TestMonolithic_LeafNeverGetsResumeToken(t *testing.T) {
 		}
 	}
 }
+
+// --- CodeRabbit review findings on PR #163 (LOU-365) ---
+
+// TestMinPositiveSpaceShortage_Table: contract of the min-merge helper —
+// non-positive means "no shortage" and the result is never negative
+// (CodeRabbit 3514362242: MinPositiveSpaceShortage(0, -1) returned -1).
+func TestMinPositiveSpaceShortage_Table(t *testing.T) {
+	cases := []struct{ a, b, want float64 }{
+		{0, 0, 0},
+		{0, -1, 0},
+		{-2, -1, 0},
+		{0, 5, 5},
+		{5, 0, 5},
+		{-1, 5, 5},
+		{5, -1, 5},
+		{3, 7, 3},
+		{7, 3, 3},
+	}
+	for _, tc := range cases {
+		if got := MinPositiveSpaceShortage(tc.a, tc.b); got != tc.want {
+			t.Errorf("MinPositiveSpaceShortage(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// TestMonolithic_ParallelWritingModeFlipTagged: a PARALLEL writing-mode
+// flip (vertical-rl parent, vertical-lr child — same axes, different mode)
+// is a writing-mode root in Blink (LayoutBox::IsWritingModeRoot compares
+// modes, not axes) and therefore monolithic (layout_box.cc:3651-3666 @
+// a9f50e522efa). The space gate already compares full writing modes, but
+// the child-side builder tagging only saw IsOrthogonalWritingModeRoot, so
+// the fragment stayed untagged — no balancing floor, no
+// ShouldAvoidBreakInside (CodeRabbit 3514362226). The parent-side
+// supplement must tag the returned fragment.
+func TestMonolithic_ParallelWritingModeFlipTagged(t *testing.T) {
+	child := makeNode("div")
+	parent := makeNode("div", child)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "writing-mode", "vertical-rl",
+			"width", "100px", "height", "100px"),
+		child: makeStyle("display", "block", "writing-mode", "vertical-lr",
+			"width", "80px", "height", "80px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeVerticalRL, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 100}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: 100}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(50).
+		SetFragmentainerOffset(0).
+		SetBlockFragmentationType(FragmentColumn).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+	childFrag := findScrollFragment(result.Fragment)
+	if childFrag == nil {
+		t.Fatal("writing-mode-flip child fragment not placed")
+	}
+	if !childFrag.IsMonolithic {
+		t.Error("parallel writing-mode flip child fragment must be tagged IsMonolithic")
+	}
+}
+
+// TestFloatFragmentainerOffset_UsesFinalPosition: the fragmentainer offset
+// handed to a non-monolithic float must reflect the float's FINAL block
+// position — clear / exclusion repositioning can move it well past the
+// tentative cursor position, and a stale offset lets fragmentation
+// contexts inside the float see too much remaining space (CodeRabbit
+// 3514362236). Mirrors Blink's PositionFloat, which lays out the float
+// with a constraint space built at its resolved BFC offset when
+// fragmentation is involved.
+//
+// Geometry: float A (left, 60 tall), float B (clear:left, explicit 80) in
+// a 100px fragmentainer. B's final position is y=60, leaving 40 — its
+// fragment must be truncated at 40 (Blink's first fragment), not laid out
+// as if the whole 100px were still available.
+func TestFloatFragmentainerOffset_UsesFinalPosition(t *testing.T) {
+	fa := makeNode("div")
+	fb := makeNode("div")
+	parent := makeNode("div", fa, fb)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "width", "100px"),
+		fa: makeStyle("display", "block", "float", "left",
+			"width", "100px", "height", "60px"),
+		fb: makeStyle("display", "block", "float", "left", "clear", "left",
+			"width", "100px", "height", "80px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(100).
+		SetFragmentainerOffset(0).
+		SetBlockFragmentationType(FragmentColumn).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+	if got := len(result.Fragment.Children); got != 2 {
+		t.Fatalf("placed fragments = %d, want 2 (both floats)", got)
+	}
+	fbFrag := result.Fragment.Children[1].Fragment
+	if got := fbFrag.Size.HeightF64(); got != 40 {
+		t.Errorf("cleared float fragment height = %v, want 40 (truncated at the fragmentainer from its FINAL y=60 position)", got)
+	}
+}
+
+// TestResume_ConsumesAllChildBreakTokens: when the outgoing break token
+// carries multiple child continuations (parallel flows), the RESUME must
+// consume every one of them and must not re-lay completed untokened
+// siblings. Mirrors Blink's BlockChildIterator: resumption walks ALL child
+// break tokens in order, then proceeds to the sibling after the last
+// tokened child only when !HasSeenAllChildren (block_child_iterator.cc
+// :80-95 @ a9f50e522efa). The old resume path read only
+// ChildBreakTokens[0] and re-laid every later sibling from scratch
+// (CodeRabbit 3514362231).
+//
+// Geometry: A (h30, inner 400), B (h30, inner 400), C (h20) in a 100px
+// fragmentainer. Fragment 1 sees all children and carries TWO at-end
+// parallel tokens (A, B). The continuation must contain exactly A's and
+// B's resumed slices — C must not reappear — and must carry both tokens
+// forward (each inner still has 200px left after the second fragment).
+func TestResume_ConsumesAllChildBreakTokens(t *testing.T) {
+	innerA := makeNode("div")
+	a := makeNode("div", innerA)
+	innerB := makeNode("div")
+	b := makeNode("div", innerB)
+	c := makeNode("div")
+	parent := makeNode("div", a, b, c)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "width", "100px"),
+		a:      makeStyle("display", "block", "height", "30px"),
+		innerA: makeStyle("display", "block", "height", "400px"),
+		b:      makeStyle("display", "block", "height", "30px"),
+		innerB: makeStyle("display", "block", "height", "400px"),
+		c:      makeStyle("display", "block", "height", "20px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	mkSpace := func(tok *BlockBreakToken) ConstraintSpace {
+		bld := NewConstraintSpaceBuilder(wdm, wdm, true).
+			SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+			SetHasBlockFragmentation(true).
+			SetFragmentainerBlockSize(100).
+			SetFragmentainerOffset(0).
+			SetBlockFragmentationType(FragmentColumn)
+		if tok != nil {
+			bld = bld.SetBreakToken(tok)
+		}
+		return bld.Build()
+	}
+
+	first := NewBlockLayoutAlgorithm(testContext(), node, mkSpace(nil)).Layout()
+	if first == nil || first.BreakToken == nil {
+		t.Fatal("first fragment must carry a break token")
+	}
+	if got := len(first.BreakToken.ChildBreakTokens); got != 2 {
+		t.Fatalf("first fragment child tokens = %d, want 2 (A and B parallel flows)", got)
+	}
+	if !first.BreakToken.HasSeenAllChildren {
+		t.Fatal("first fragment must have seen all children")
+	}
+
+	second := NewBlockLayoutAlgorithm(testContext(), node, mkSpace(first.BreakToken)).Layout()
+	if second == nil || second.Fragment == nil {
+		t.Fatal("second fragment layout returned nil")
+	}
+	// Exactly A's and B's continuations — C completed in fragment 1 and
+	// must not be re-laid.
+	if got := len(second.Fragment.Children); got != 2 {
+		t.Fatalf("second fragment children = %d, want 2 (A and B continuations only)", got)
+	}
+	if second.BreakToken == nil {
+		t.Fatal("second fragment must still carry a break token (200px left in each inner)")
+	}
+	if got := len(second.BreakToken.ChildBreakTokens); got != 2 {
+		t.Errorf("second fragment child tokens = %d, want 2 (both continuations carried)", got)
+	}
+}
