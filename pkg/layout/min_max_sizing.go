@@ -1479,10 +1479,15 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 		}
 		return content
 	}
-	if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+	if pctBlock := space.PercentageResolutionSize.BlockSize.Float64(); pctBlock >= 0 {
 		// Parent provided a definite block percentage resolution size
 		// (e.g., from a flex item's explicit cross-size). Propagate it.
-		return space.PercentageResolutionSize.BlockSize.Float64()
+		// Zero is DEFINITE per the ConstraintSpace convention — the builder
+		// defaults this field to Indefinite (-1) and IsBlockSizeIndefinite()
+		// tests < 0 (constraint_space.go) — so a 0 here was explicitly
+		// provided and percentage heights must resolve to 0 against it,
+		// not fall back to intrinsic sizing.
+		return pctBlock
 	}
 	return Indefinite
 }
