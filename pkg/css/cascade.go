@@ -840,7 +840,29 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// at paint time. Shared by reference; never mutated post-cascade.
 	finalStyle.FontFeatureValues = collectFontFeatureValues(stylesheets)
 
+	// Snapshot the element's own cascaded longhands (Style.CascadedProps).
+	// At this point Properties holds ONLY values the element's own cascade
+	// set — inheritance runs later (resolveInheritValues /
+	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
+	// declared set. Literal `inherit` values re-inherit and are excluded.
+	recordCascadedProps(finalStyle)
+
 	return finalStyle
+}
+
+// recordCascadedProps snapshots the longhand names the element's own cascade
+// set into style.CascadedProps (see that field's doc comment for consumer
+// semantics and the Blink citation). Must run BEFORE parent values are copied
+// into Properties by inheritance.
+func recordCascadedProps(style *Style) {
+	props := make(map[string]bool, len(style.Properties))
+	for prop, val := range style.Properties {
+		if strings.TrimSpace(val) == "inherit" {
+			continue
+		}
+		props[prop] = true
+	}
+	style.CascadedProps = props
 }
 
 // collectFontFeatureValues flattens all @font-feature-values rules across
@@ -1418,10 +1440,34 @@ func resolvePseudoInheritKeyword(finalStyle *Style, parentStyles []*Style) {
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
 // Phase 22: Added viewport dimensions for media query evaluation
 func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, parentStyles ...*Style) *Style {
+	return computePseudoElementStyle(node, pseudoElement, stylesheets, viewportWidth, viewportHeight, nil, parentStyles...)
+}
+
+// ComputeHighlightPseudoElementStyle computes a HIGHLIGHT pseudo-element
+// style (::selection / ::target-text / ::highlight(name)) under CSS
+// Pseudo-4's highlight cascade (LOU-352): highlightParent is the SAME
+// highlight's resolved style on the originating element's parent element,
+// and every property not set by this element's own matching rules defaults
+// to highlightParent's value — whether or not the property is normally
+// inherited. Mirrors Blink's Element::StyleForHighlightPseudoElement
+// (core/dom/element.cc:11294-11303) feeding StyleRequest.parent_override
+// into StyleResolver::InitStyle's highlight branch ("the spec requires that
+// we default all properties (whether or not defined as inherited) to parent
+// values", core/css/resolver/style_resolver.cc:1521-1546), both @ Chromium
+// main 72259ecfb56eacf259e21783dd2b31608ac951a3. A nil highlightParent is
+// the root of the highlight inheritance chain (no ancestor has a resolved
+// style for this highlight) and behaves exactly like
+// ComputePseudoElementStyle.
+func ComputeHighlightPseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, highlightParent *Style, parentStyles ...*Style) *Style {
+	return computePseudoElementStyle(node, pseudoElement, stylesheets, viewportWidth, viewportHeight, highlightParent, parentStyles...)
+}
+
+func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, highlightParent *Style, parentStyles ...*Style) *Style {
 	finalStyle := NewStyle()
 
-	// Inherit inheritable properties from parent element
-	if len(parentStyles) > 0 && parentStyles[0] != nil {
+	if highlightParent != nil {
+		seedHighlightInheritance(finalStyle, highlightParent, parentStyles)
+	} else if len(parentStyles) > 0 && parentStyles[0] != nil {
 		parent := parentStyles[0]
 		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
 			"color", "line-height", "text-align", "white-space", "visibility",
@@ -1437,11 +1483,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// inline/block axes and glyph orientation match the originating
 			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
 			"writing-mode", "direction", "text-orientation",
-			// CSS Text 3 §3.2, §9.1, §9.3: tab-size, overflow-wrap, word-break,
-			// hyphens are inherited. CSS Text Decor 4 §4: text-emphasis and its
-			// longhands are inherited. CSS Pseudo-4 §4.4: text-shadow is inherited
-			// by ::marker pseudo-elements.
-			"tab-size", "overflow-wrap", "word-break", "hyphens",
+			// CSS Text 3 §3.2, §5.5, §9.1, §9.3: tab-size, overflow-wrap,
+			// word-break, hyphens and line-break are inherited. CSS Text Decor
+			// 4 §4: text-emphasis and its longhands are inherited. CSS
+			// Pseudo-4 §4.4: text-shadow is inherited by ::marker
+			// pseudo-elements.
+			"tab-size", "overflow-wrap", "word-break", "hyphens", "line-break",
 			"text-shadow", "text-emphasis", "text-emphasis-style",
 			"text-emphasis-color", "text-emphasis-position",
 			// CSS UI 4 §7.1: accent-color is inherited.
@@ -1467,6 +1514,21 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					finalStyle.Set(prop, val)
 				}
 			}
+		}
+	}
+
+	// HTML UA stylesheet pseudo-element defaults: <q> generates its
+	// quotation marks as ::before/::after open-quote/close-quote content
+	// (Blink core/html/resources/html.css:115-121 @ Chromium
+	// 906a32d8634edf17db094507908f439bd9b52de5). Set at UA-origin position —
+	// before author rules are applied — so any author `content` declaration
+	// on q::before/q::after overrides it in normal cascade order.
+	if node.TagName == "q" {
+		switch pseudoElement {
+		case "before":
+			finalStyle.Set("content", "open-quote")
+		case "after":
+			finalStyle.Set("content", "close-quote")
 		}
 	}
 
@@ -1552,28 +1614,28 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// DefaultForegroundColor returns nullopt and DefaultBackgroundColor
 	// returns kTransparent unconditionally for kPseudoIdHighlight, not a
 	// paired default) — so there is no applyCustomHighlightCascade
-	// counterpart to applySelectionCascade/applyTargetTextCascade below,
-	// and no author-props tracking map is needed (that bookkeeping exists
-	// solely to feed the paired-default forcing pass).
+	// counterpart to applySelectionCascade/applyTargetTextCascade below.
 	isCustomHighlight := strings.HasPrefix(pseudoElement, "highlight(")
+	isHighlight := isSelection || isTargetText || isCustomHighlight
 
-	// For ::marker / ::selection / ::target-text: track which properties
-	// were explicitly set by author rules (as opposed to inherited from the
+	// For ::marker and the highlight pseudos: track which properties were
+	// explicitly set by author rules (as opposed to inherited from the
 	// originating element). This lets applyMarkerCascade /
 	// applySelectionCascade / applyTargetTextCascade correctly defer only
 	// to author-set values — not to inherited values that happen to share
-	// the same property name.
+	// the same property name. One shared map serves all three highlight
+	// kinds (LOU-352 dedupe of the formerly parallel selectionAuthorProps/
+	// targetTextAuthorProps): exactly one pseudoElement is being resolved
+	// per call, and ::highlight() now needs the same color-pair bookkeeping
+	// to populate Style.HasAuthorHighlightColors (Blink's flag is likewise
+	// a single pseudo-agnostic ComputedStyle field).
 	var markerAuthorProps map[string]bool
 	if isMarker {
 		markerAuthorProps = make(map[string]bool)
 	}
-	var selectionAuthorProps map[string]bool
-	if isSelection {
-		selectionAuthorProps = make(map[string]bool)
-	}
-	var targetTextAuthorProps map[string]bool
-	if isTargetText {
-		targetTextAuthorProps = make(map[string]bool)
+	var highlightAuthorProps map[string]bool
+	if isHighlight {
+		highlightAuthorProps = make(map[string]bool)
 	}
 
 	// Capture the pre-author baseline for `revert` resolution (mirrors
@@ -1615,13 +1677,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				// applySelectionCascade/applyHighlightPairedColorCascade
 				// sees neither side as author-set and reapplies the UA
 				// pair default over whatever `all` just set.
-				if isSelection {
-					selectionAuthorProps["color"] = true
-					selectionAuthorProps["background-color"] = true
-				}
-				if isTargetText {
-					targetTextAuthorProps["color"] = true
-					targetTextAuthorProps["background-color"] = true
+				if isHighlight {
+					highlightAuthorProps["color"] = true
+					highlightAuthorProps["background-color"] = true
 				}
 			}
 		}
@@ -1649,13 +1707,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if isMarker {
 				markerAuthorProps[property] = true
 			}
-			if isSelection {
-				selectionAuthorProps[property] = true
-				recordHighlightShorthandLonghands(selectionAuthorProps, property)
-			}
-			if isTargetText {
-				targetTextAuthorProps[property] = true
-				recordHighlightShorthandLonghands(targetTextAuthorProps, property)
+			if isHighlight {
+				highlightAuthorProps[property] = true
+				recordHighlightShorthandLonghands(highlightAuthorProps, property)
 			}
 		}
 	}
@@ -1707,13 +1761,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					importantProps["all"] = true
 					// See the normal-priority `all` handling above for why
 					// this must also mark the highlight color pair authored.
-					if isSelection {
-						selectionAuthorProps["color"] = true
-						selectionAuthorProps["background-color"] = true
-					}
-					if isTargetText {
-						targetTextAuthorProps["color"] = true
-						targetTextAuthorProps["background-color"] = true
+					if isHighlight {
+						highlightAuthorProps["color"] = true
+						highlightAuthorProps["background-color"] = true
 					}
 				}
 			}
@@ -1740,13 +1790,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if isMarker {
 					markerAuthorProps[property] = true
 				}
-				if isSelection {
-					selectionAuthorProps[property] = true
-					recordHighlightShorthandLonghands(selectionAuthorProps, property)
-				}
-				if isTargetText {
-					targetTextAuthorProps[property] = true
-					recordHighlightShorthandLonghands(targetTextAuthorProps, property)
+				if isHighlight {
+					highlightAuthorProps[property] = true
+					recordHighlightShorthandLonghands(highlightAuthorProps, property)
 				}
 			}
 		}
@@ -1763,14 +1809,26 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		applyMarkerCascade(finalStyle, markerAuthorProps)
 	}
 
+	// CSS Pseudo-4 §highlight-cascade / LOU-352: author highlight colors
+	// anywhere in the highlight inheritance chain — this element's own rules
+	// OR the (cloned-from) parent highlight style — suppress the UA default
+	// pair for the whole subtree. Mirrors Blink's monotonic
+	// HasAuthorHighlightColors flag surviving InitStyle's clone of the
+	// highlight parent (see the field's doc comment in style.go).
+	inheritedAuthorColors := highlightParent != nil && highlightParent.HasAuthorHighlightColors
+	if isHighlight {
+		finalStyle.HasAuthorHighlightColors = inheritedAuthorColors ||
+			highlightAuthorProps["color"] || highlightAuthorProps["background-color"]
+	}
+
 	// CSS Pseudo-4 §highlight-styling: ::selection's color/background-color
 	// cascade against the UA's own highlight default, NOT the originating
-	// element's computed/inherited color (see selectionAuthorProps doc
+	// element's computed/inherited color (see highlightAuthorProps doc
 	// comment and applySelectionCascade below for the Blink mechanism this
 	// mirrors — HighlightStyleUtils::UseDefaultHighlightColors /
 	// DefaultForegroundColor / DefaultBackgroundColor).
 	if isSelection {
-		applySelectionCascade(finalStyle, selectionAuthorProps)
+		applySelectionCascade(finalStyle, highlightAuthorProps, inheritedAuthorColors)
 	}
 
 	// CSS Pseudo-4 §highlight-styling / LOU-349: ::target-text's color/
@@ -1780,7 +1838,35 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// targetTextDefaultBackground's doc comment), following the same
 	// paired-cascade shape applySelectionCascade implements.
 	if isTargetText {
-		applyTargetTextCascade(finalStyle, targetTextAuthorProps)
+		applyTargetTextCascade(finalStyle, highlightAuthorProps, inheritedAuthorColors)
+	}
+
+	// ::highlight(name) has no UA color pair to force (see the
+	// isCustomHighlight declaration above), but a NON-author `color` must
+	// still not survive on the pseudo style: with no highlight parent it is
+	// the originating element's inherited color leaking in (Blink highlight
+	// styles never inherit from the originating element —
+	// style_resolver_state.cc:163-169 @ 72259ecf — an unset highlight color
+	// defers to the previous overlay layer at paint time, which is what a
+	// missing `color` already signals to pkg/render's
+	// resolveHighlightColors). Without this, LOU-352's chain cloning would
+	// propagate the chain ROOT's originating color to every descendant,
+	// visibly replacing per-element deferred colors.
+	//
+	// Gated per-PROPERTY, not on HasAuthorHighlightColors (CodeRabbit,
+	// LOU-352 PR #159): a rule authoring ONLY background-color sets the
+	// flag, but its `color` is still non-author and must still be dropped —
+	// in Blink an unauthored highlight `color` is currentColor
+	// (ColorIsCurrentColor defaults true,
+	// computed_style_extra_fields.json5:912-918 @ 72259ecf) and
+	// MaybeResolveColor defers it to the previous overlay layer
+	// (highlight_style_utils.cc:300-315) regardless of an authored
+	// background. When inheritedAuthorColors is set, any `color` present
+	// came from the highlight-parent clone (a real chain value; a bg-only
+	// parent carries no color at all after its own compute ran this same
+	// cleanup) and is kept.
+	if isCustomHighlight && !inheritedAuthorColors && !highlightAuthorProps["color"] {
+		delete(finalStyle.Properties, "color")
 	}
 
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
@@ -1790,10 +1876,18 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	resolveCSSWideKeywords(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
 
 	// CSS Cascade §7.3: the `inherit` keyword resolves to the parent's computed
-	// value. For pseudo-elements the "parent" is the originating element. This
-	// must run before ApplyAnimations so that e.g. `animation-delay: inherit`
-	// is a real time value when the keyframe pass reads it.
-	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+	// value. For pseudo-elements the "parent" is the originating element —
+	// EXCEPT under the highlight cascade (LOU-352), where the inheritance
+	// parent is the parent element's same-highlight style
+	// (StyleRequest.parent_override, style_request.h:81-90 @ 72259ecf; CSS
+	// Pseudo-4 §highlight-cascade). This must run before ApplyAnimations so
+	// that e.g. `animation-delay: inherit` is a real time value when the
+	// keyframe pass reads it.
+	inheritParents := parentStyles
+	if highlightParent != nil {
+		inheritParents = []*Style{highlightParent}
+	}
+	resolvePseudoInheritKeyword(finalStyle, inheritParents)
 
 	// Store viewport dimensions before the animation pass — keyframe
 	// interpolation resolves viewport-relative length endpoints against this
@@ -1807,8 +1901,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// An animated declaration may itself be the `inherit` keyword (e.g.
 	// @keyframes kf { from,to { font-size: inherit } }) — resolve again so the
-	// animation's `inherit` is computed against the originating element.
-	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+	// animation's `inherit` is computed against the same inheritance parent
+	// as above.
+	resolvePseudoInheritKeyword(finalStyle, inheritParents)
 
 	// CSS 2.1 §15.7: resolve a font-relative font-size (em / %) on the
 	// pseudo-element against the originating element's computed font-size. For
@@ -1856,6 +1951,53 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	return finalStyle
 }
 
+// seedHighlightInheritance initialises a highlight pseudo-element style
+// under CSS Pseudo-4's highlight cascade (LOU-352). The style STARTS as a
+// clone of the parent element's same-highlight style — ALL properties,
+// inherited-or-not, default to the parent highlight's values (Blink
+// InitStyle's CreateNewClonedStyle(*parent_style), "the spec requires that
+// we default all properties (whether or not defined as inherited) to parent
+// values", style_resolver.cc:1527-1539 @ Chromium main 72259ecf).
+// color/background-color are excluded when the parent chain carries NO
+// author highlight colors: in that case the parent's stored pair is
+// louis14's baked stand-in for the UA default pair
+// (applyHighlightPairedColorCascade — Blink never bakes; its unauthored
+// highlight colors stay unset until paint-time DefaultHighlightColor), and
+// copying it here would make the UA pair masquerade as inherited author
+// values.
+//
+// The originating-element-derived subset is then re-copied over the clone —
+// Blink's CopyHighlightPropertiesFrom(*originating_element_style)
+// (style_resolver.cc:1539-1540), whose field set is marked
+// highlight_style_comes_from_originating_element in
+// computed_style_extra_fields.json5 @ 72259ecf: the font (:390-399), custom
+// properties (InheritedVariables/NonInheritedVariables, :526-537/:696-705)
+// and color-scheme (DarkColorScheme, :981-988). Everything else (color,
+// text-shadow, text-decoration-*, ...) stays with the highlight-parent
+// clone.
+func seedHighlightInheritance(finalStyle, highlightParent *Style, parentStyles []*Style) {
+	for prop, val := range highlightParent.Properties {
+		if (prop == "color" || prop == "background-color") && !highlightParent.HasAuthorHighlightColors {
+			continue
+		}
+		finalStyle.Set(prop, val)
+	}
+	if len(parentStyles) == 0 || parentStyles[0] == nil {
+		return
+	}
+	parent := parentStyles[0]
+	for _, prop := range []string{"font-size", "font-family", "font-weight", "font-style", "color-scheme"} {
+		if val, ok := parent.Get(prop); ok {
+			finalStyle.Set(prop, val)
+		}
+	}
+	for prop, val := range parent.Properties {
+		if strings.HasPrefix(prop, "--") {
+			finalStyle.Set(prop, val)
+		}
+	}
+}
+
 // markerAllowedProperty reports whether a property may be specified on a
 // ::marker pseudo-element. CSS Pseudo-4 §4.4: the ::marker rule only accepts
 // color, direction, the font-* longhands/shorthand, content,
@@ -1879,6 +2021,11 @@ func markerAllowedProperty(name string) bool {
 		"text-shadow", "text-transform", "animation", "transition",
 		"hyphens", "overflow-wrap", "tab-size", "word-break",
 		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position",
+		// line-break, text-decoration-skip-ink and text-decoration-skip-spaces
+		// carry valid_for_marker: true in Blink css_properties.json5
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064 (LOU-358;
+		// WPT marker-line-break.html / marker-text-decoration-skip-ink.html).
+		"line-break", "text-decoration-skip-ink", "text-decoration-skip-spaces",
 		// quotes was added to the marker-applicable set by the CSSWG
 		// (csswg-drafts#5265; WPT css-lists/marker-quotes.html).
 		"quotes":
@@ -1892,22 +2039,46 @@ func markerAllowedProperty(name string) bool {
 	return false
 }
 
+// ApplyMarkerAnimatedStyle applies property values sampled from a Web
+// Animation targeting a ::marker pseudo-element (Element.animate with
+// {pseudoElement: '::marker'}, stored on html.Node.MarkerAnimatedStyle) onto
+// the marker's computed style, rejecting properties that are not valid on
+// ::marker. This is the louis14 analog of Blink adding
+// CSSProperty::kValidForMarker to the cascade filter when applying animation
+// interpolations to a kPseudoIdMarker style (StyleResolver::ApplyAnimatedStyle,
+// style_resolver.cc:2626-2636 @ 43cee02dc59fdad798675a735737510ecf0c9064):
+// animations sit above author-normal declarations in the cascade, so the
+// values are stamped over whatever the UA/author marker cascade produced.
+// WPT css-pseudo/marker-animate-002.html (color applies, opacity must not).
+func ApplyMarkerAnimatedStyle(markerStyle *Style, decls map[string]string) {
+	for prop, v := range decls {
+		if markerAllowedProperty(prop) {
+			markerStyle.Set(prop, v)
+		}
+	}
+}
+
 // markerUADefaults lists the UA-stylesheet ::marker property defaults.
-// Mirrors Blink's html.css ::marker rule verified at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// Mirrors Blink's core/css/marker.css rule verified at SHA
+// 43cee02dc59fdad798675a735737510ecf0c9064. marker.css does NOT set
+// white-space: only OUTSIDE markers get white-space:pre, stamped by
+// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:502-507 @43cee02d;
+// louis14: resolveMarkerStyle's !markerInside branch), so an inside marker's
+// trailing suffix space stays end-of-line-collapsible (WPT css-pseudo/
+// marker-text-decoration-skip-ink).
 var markerUADefaults = [...][2]string{
 	{"unicode-bidi", "isolate"},
 	{"text-transform", "none"},
-	{"white-space", "pre"},
 	{"font-variant-numeric", "tabular-nums"},
-	// Blink core/css/marker.css (@4883d11f): text-indent: 0 !important;
-	// text-align: start !important. The !important means even author
-	// ::marker rules cannot set them — neither is in
-	// markerAllowedProperty, so stamping the defaults here completes the
+	// Blink core/css/marker.css (@43cee02d): text-indent: 0 !important;
+	// text-align: start !important; text-align-last: auto !important. The
+	// !important means even author ::marker rules cannot set them — none is
+	// in markerAllowedProperty, so stamping the defaults here completes the
 	// contract (an inherited li text-indent must not shift the marker;
 	// WPT css-pseudo/marker-content-023).
 	{"text-indent", "0"},
 	{"text-align", "start"},
+	{"text-align-last", "auto"},
 }
 
 // applyMarkerCascade layers the UA ::marker defaults onto style, deferring
@@ -2020,8 +2191,8 @@ var (
 // not make its ::selection text invisible when no ::selection rule sets
 // color (active-selection-051 through -054's "invalid declaration block"
 // cases, where authorSet has neither key — full UA pair default applies).
-func applySelectionCascade(style *Style, authorSet map[string]bool) {
-	applyHighlightPairedColorCascade(style, authorSet, selectionDefaultForeground, selectionDefaultBackground)
+func applySelectionCascade(style *Style, authorSet map[string]bool, inheritedAuthorColors bool) {
+	applyHighlightPairedColorCascade(style, authorSet, inheritedAuthorColors, selectionDefaultForeground, selectionDefaultBackground)
 }
 
 // applyHighlightPairedColorCascade implements the CSS Pseudo-4
@@ -2037,14 +2208,28 @@ func applySelectionCascade(style *Style, authorSet map[string]bool) {
 // only in which default-color pair is used (CLAUDE.md §4: 2+
 // near-identical paths are dedupe-in-scope).
 //
-// ComputePseudoElementStyle's inheritance pass (before this function runs)
+// computePseudoElementStyle's inheritance pass (before this function runs)
 // copies the originating element's inheritable `color` into `style` as a
 // starting point. A highlight pseudo's color/background-color never fall
 // back to that inherited value — clear whichever side of the pair the
 // author didn't set BEFORE the pair logic below runs, or the inherited
 // value leaks through instead of resetting to the UA default / initial
 // value.
-func applyHighlightPairedColorCascade(style *Style, authorSet map[string]bool, fgDefault, bgDefault Color) {
+//
+// inheritedAuthorColors (LOU-352) short-circuits everything: when the
+// highlight-parent chain this style was cloned from already carries author
+// highlight colors, the color/background-color present on `style` are REAL
+// inherited highlight-cascade values (the clone excludes the parent's pair
+// when they were UA-baked — see computePseudoElementStyle's seed block) and
+// any side this element's own rules didn't author simply keeps the
+// inherited value: no deletion, no UA pair, no paired-initial reset.
+// Mirrors Blink resolving each unauthored highlight color from the cascaded
+// (cloned) pseudo style once UseDefaultHighlightColors is false
+// (highlight_style_utils.cc:295-308 @ 72259ecf).
+func applyHighlightPairedColorCascade(style *Style, authorSet map[string]bool, inheritedAuthorColors bool, fgDefault, bgDefault Color) {
+	if inheritedAuthorColors {
+		return
+	}
 	if !authorSet["color"] {
 		delete(style.Properties, "color")
 	}
@@ -2080,15 +2265,15 @@ func applyHighlightPairedColorCascade(style *Style, authorSet map[string]bool, f
 	}
 }
 
-// recordHighlightShorthandLonghands maps a highlight-pseudo-authored (
-// ::selection or ::target-text, LOU-349) shorthand property name onto the
-// longhand keys applySelectionCascade/applyTargetTextCascade's paired
+// recordHighlightShorthandLonghands maps a highlight-pseudo-authored
+// (LOU-349) shorthand property name onto the longhand keys
+// applySelectionCascade/applyTargetTextCascade's paired
 // color/background-color logic actually consults. selectionAllowedProperty/
 // targetTextAllowedProperty allow "background" through the filter (its
 // longhands are individually allowed, see that function's doc comment), and
 // applyDeclarationWithVisitedFilter correctly expands it onto the style
-// object — but the author-set BOOKKEEPING map (selectionAuthorProps /
-// targetTextAuthorProps) is keyed by the declaration's own (un-expanded)
+// object — but the author-set BOOKKEEPING map (highlightAuthorProps) is
+// keyed by the declaration's own (un-expanded)
 // property name, so without this mapping `::selection { background:
 // transparent }` (or the ::target-text equivalent,
 // target-text-text-decoration-001.html's `background: transparent`) is
@@ -2166,8 +2351,8 @@ var (
 // function's doc comment for the shared rationale, and
 // targetTextDefaultForeground/targetTextDefaultBackground's doc comment for
 // why ::target-text's pair is verified-distinct from ::selection's).
-func applyTargetTextCascade(style *Style, authorSet map[string]bool) {
-	applyHighlightPairedColorCascade(style, authorSet, targetTextDefaultForeground, targetTextDefaultBackground)
+func applyTargetTextCascade(style *Style, authorSet map[string]bool, inheritedAuthorColors bool) {
+	applyHighlightPairedColorCascade(style, authorSet, inheritedAuthorColors, targetTextDefaultForeground, targetTextDefaultBackground)
 }
 
 // HasFirstLetterRules returns true if any stylesheet rules with ::first-letter

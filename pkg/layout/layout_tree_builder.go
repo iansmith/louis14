@@ -965,13 +965,18 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// can compare ancestry correctly via Parent links). The pseudoNode
 	// is allocated below — defer the call until after pseudoNode exists.
 
-	// CSS 2.1 §9.7: Blockify floated pseudo-elements.
-	// When float is set, display is forced to block.
+	// CSS 2.1 §9.7 / CSS Display 3 §2.7: blockify floated pseudo-elements.
+	// Blink: "floating elements need block-like outside display" →
+	// EquivalentBlockDisplay (style_adjuster.cc:1172-1178 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064), which preserves
+	// list-item-ness — a floated `display: list-item` ::before/::after still
+	// generates its own ::marker below (WPT css-pseudo/
+	// marker-font-variant-numeric-default/-normal).
 	display := pseudoStyle.GetDisplay()
 	if pseudoStyle.GetFloat() != css.FloatNone {
-		if display != css.DisplayBlock && display != css.DisplayTable {
-			pseudoStyle.Set("display", "block")
-			display = css.DisplayBlock
+		if bd := css.EquivalentBlockDisplay(display); bd != display {
+			pseudoStyle.Set("display", string(bd))
+			display = bd
 		}
 	}
 
@@ -1135,14 +1140,18 @@ func quoteSourceStyle(own, fallback *css.Style) *css.Style {
 }
 
 // quotesFor returns the quote-pair strings governing open-quote/close-quote
-// for the given style (UA defaults when nil or unset).
+// for the given style. When `quotes` is unset the default is Blink's
+// BasicQuotesData — curly U+201C/U+201D/U+2018/U+2019 (layout_quote.cc:89-93
+// @ Chromium 906a32d8634edf17db094507908f439bd9b52de5; the resolution order
+// there is author `quotes` → locale table → basic pair, and louis14 models
+// the locale step as the basic pair, which is exact for English).
 func (b *LayoutTreeBuilder) quotesFor(style *css.Style) []string {
 	if style != nil {
 		if q, ok := style.Get("quotes"); ok {
 			return b.parseQuotes(q)
 		}
 	}
-	return []string{"\"", "\"", "'", "'"}
+	return []string{"\u201C", "\u201D", "\u2018", "\u2019"}
 }
 
 // emitOpenQuote / emitCloseQuote step the builder's shared quote-nesting
@@ -1782,10 +1791,11 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 // item's inherited properties (a li's border/margin/padding must not leak onto
 // its marker — Blink ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:
 // 320-323 @ 4883d11f) plus the UA ::marker defaults (text-transform:none,
-// white-space:pre, tabular-nums, unicode-bidi:isolate). It then applies the
-// position-driven display adjustment (StyleAdjuster::AdjustStyleForMarker,
-// style_adjuster.cc:478-514) and neutralizes letter-/word-spacing on symbol
-// markers.
+// tabular-nums, unicode-bidi:isolate; see markerUADefaults). It then applies
+// the position-driven display adjustment — outside markers become inline-block
+// with white-space:pre (StyleAdjuster::AdjustStyleForMarker,
+// style_adjuster.cc:479-515 @ 43cee02dc59fdad798675a735737510ecf0c9064) — and
+// neutralizes letter-/word-spacing on symbol markers.
 //
 // Markers of pseudo-element list items (::before/::after with
 // display:list-item) are nested pseudo-elements and are NOT addressable by
@@ -1814,6 +1824,17 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		css.ApplyMarkerUADefaults(markerStyle)
 	}
 
+	// Web Animations targeting the ::marker apply above the UA/author marker
+	// cascade, filtered to ::marker-valid properties — Blink adds
+	// CSSProperty::kValidForMarker to the cascade filter when applying
+	// interpolations to a kPseudoIdMarker style (StyleResolver::
+	// ApplyAnimatedStyle, style_resolver.cc:2626-2636 @ 43cee02d). The
+	// position-driven adjustments below still run after, matching Blink's
+	// resolver→StyleAdjuster order.
+	if len(node.MarkerAnimatedStyle) > 0 {
+		css.ApplyMarkerAnimatedStyle(markerStyle, node.MarkerAnimatedStyle)
+	}
+
 	if markerInside {
 		markerStyle.Set("display", "inline")
 		// CSS Text Decor 3 §2.1: an inside ::marker is a non-atomic inline that
@@ -1828,6 +1849,11 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		markerStyle.InheritAppliedTextDecorationsFrom(style)
 	} else {
 		markerStyle.Set("display", "inline-block")
+		// "Do not break inside the marker, and honor the trailing spaces" —
+		// the outside branch of AdjustStyleForMarker (style_adjuster.cc:502-507
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064). This is the ONLY source
+		// of white-space:pre on markers; marker.css sets none, so inside
+		// markers keep the inherited value.
 		markerStyle.Set("white-space", "pre")
 	}
 
@@ -2310,19 +2336,14 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 		return children
 	}
 
-	// preserveBreaks mirrors Blink's ShouldPreserveBreaks: white-space
-	// values that preserve newlines (pre / pre-wrap / pre-line / break-spaces)
-	// cause a leading LF to terminate first-letter discovery rather than be
-	// treated as skippable leading space.
-	preserveBreaks := whiteSpacePreservesBreaks(parentStyle.GetWhiteSpace())
-
 	// Find and split the first non-whitespace character in the inline content.
 	// We only look at direct text children or text inside inline children.
 	// Pass node and parentStyle so walkFirstLetter can compute the correct
 	// pseudo-element style based on the actual containing element's style,
 	// not just the originating block's style (mirrors Blink's
-	// FirstLetterPseudoElement::StyleForFirstLetter).
-	return b.splitFirstLetter(children, node, parentStyle, preserveBreaks)
+	// FirstLetterPseudoElement::StyleForFirstLetter). Break preservation is
+	// decided per text node inside the walk (see firstLetterScanSource).
+	return b.splitFirstLetter(children, node, parentStyle)
 }
 
 // initialLetterBlockStartMargin returns the drop block-start margin for an
@@ -2713,6 +2734,10 @@ type firstLetterPunctHost struct {
 	owner     []*LayoutInputNode
 	index     int
 	ancestors []firstLetterAncestor
+	// fromRaw records whether `text` was taken from the DOM node's RawText
+	// (preserved-white-space context) — the wrap must then re-stamp RawText
+	// slices on the split nodes (see firstLetterScanSource).
+	fromRaw bool
 }
 
 // firstLetterAncestor records one rung in the descend chain from the
@@ -2754,12 +2779,39 @@ type firstLetterAncestor struct {
 //
 // Returns the (possibly modified) `children` slice for the originating block.
 func (b *LayoutTreeBuilder) splitFirstLetter(
-	children []*LayoutInputNode, originatingBlockNode *html.Node, parentStyle *css.Style, preserveBreaks bool,
+	children []*LayoutInputNode, originatingBlockNode *html.Node, parentStyle *css.Style,
 ) []*LayoutInputNode {
 	state := firstLetterPunctNotSeen
 	var pendingHost *firstLetterPunctHost
-	newChildren, _, _ := b.walkFirstLetter(children, originatingBlockNode, originatingBlockNode, parentStyle, preserveBreaks, state, &pendingHost, nil)
+	newChildren, _, _ := b.walkFirstLetter(children, originatingBlockNode, originatingBlockNode, parentStyle, state, &pendingHost, nil)
 	return newChildren
+}
+
+// firstLetterScanSource returns the text the ::first-letter scan must inspect
+// for this text child, whether line breaks are preserved for it, and whether
+// the returned string came from the DOM node's RawText.
+//
+// Mirrors Blink FirstLetterPseudoElement::FirstLetterTextLayoutObject
+// (first_letter_pseudo_element.cc:270-273 @ Chromium
+// 906a32d8634edf17db094507908f439bd9b52de5), which scans
+// layout_text->OriginalText() with preserve_breaks derived from the TEXT's
+// own style — not the originating block's. louis14's parser collapses
+// whitespace into html.Node.Text and keeps the original in RawText; for
+// break-preserving white-space the inline pipeline consumes RawText
+// (inline_item.go), so the scan must inspect that same string or a leading
+// newline is invisible to firstLetterLength. For collapsing white-space the
+// pipeline consumes the collapsed Text, so the scan does too — the wrap's
+// slice offsets always index the string the pipeline will actually lay out.
+func firstLetterScanSource(child *LayoutInputNode, style *css.Style) (text string, preserveBreaks, fromRaw bool) {
+	text = child.TextContent()
+	if style == nil {
+		return text, false, false
+	}
+	preserveBreaks = whiteSpacePreservesBreaks(style.GetWhiteSpace())
+	if preserveBreaks && child.DOMNode != nil && child.DOMNode.RawText != "" {
+		return child.DOMNode.RawText, true, true
+	}
+	return text, preserveBreaks, false
 }
 
 // walkFirstLetter implements the recursive tree walk. Returns the
@@ -2788,7 +2840,7 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 // originatingBlockNode is the block element on which ::first-letter was declared.
 func (b *LayoutTreeBuilder) walkFirstLetter(
 	children []*LayoutInputNode, originatingBlockNode *html.Node, parentNode *html.Node, parentStyle *css.Style,
-	preserveBreaks bool, state firstLetterPunctuationState,
+	state firstLetterPunctuationState,
 	pendingHost **firstLetterPunctHost, ancestors []firstLetterAncestor,
 ) (newChildren []*LayoutInputNode, applied bool, newState firstLetterPunctuationState) {
 	for i, child := range children {
@@ -2824,7 +2876,17 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 		}
 
 		if child.IsText() {
-			text := child.TextContent()
+			// The ::first-letter pseudo-element inherits from the element
+			// that contains the text, not from the originating block.
+			// Use the text node's computed style as the inheritance parent.
+			// The same style drives the scan source and break preservation
+			// (Blink derives preserve_breaks from the text's own style —
+			// first_letter_pseudo_element.cc:272 @ 906a32d8).
+			textStyle := child.Style()
+			if textStyle == nil {
+				textStyle = parentStyle
+			}
+			text, preserveBreaks, fromRaw := firstLetterScanSource(child, textStyle)
 			idx, letterLen, ns := firstLetterLength(text, state, preserveBreaks)
 			state = ns
 			if letterLen == 0 {
@@ -2834,13 +2896,6 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 					return children, true, state
 				}
 				continue
-			}
-			// The ::first-letter pseudo-element inherits from the element
-			// that contains the text, not from the originating block.
-			// Use the text node's computed style as the inheritance parent.
-			textStyle := child.Style()
-			if textStyle == nil {
-				textStyle = parentStyle
 			}
 			if state == firstLetterPunctSeen {
 				// Only leading punctuation found here; remember as the
@@ -2859,6 +2914,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 						owner:       children,
 						index:       i,
 						ancestors:   ancs,
+						fromRaw:     fromRaw,
 					}
 				}
 				continue
@@ -2868,7 +2924,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 			// host in an earlier text node, wrap there instead so the
 			// pseudo styles only the leading punctuation.
 			if host := *pendingHost; host != nil {
-				newOwner := b.wrapFirstLetterInChildren(host.owner, host.index, host.child, host.text, host.skipped, host.length, host.parentNode, host.parentStyle, originatingBlockNode)
+				newOwner := b.wrapFirstLetterInChildren(host.owner, host.index, host.child, host.text, host.skipped, host.length, host.parentNode, host.parentStyle, originatingBlockNode, host.fromRaw)
 				// Propagate the rewritten owner up through the descend
 				// chain so each ancestor's .children pointer matches.
 				for _, a := range host.ancestors {
@@ -2877,7 +2933,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 				_ = newOwner
 				return children, true, firstLetterPunctDisallow
 			}
-			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, textStyle, originatingBlockNode)
+			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, textStyle, originatingBlockNode, fromRaw)
 			return result, true, firstLetterPunctDisallow
 		}
 
@@ -2888,7 +2944,7 @@ func (b *LayoutTreeBuilder) walkFirstLetter(
 		if child.IsElement() || child.IsAnonymous() {
 			descAnc := append(ancestors[:len(ancestors):len(ancestors)], firstLetterAncestor{parent: child})
 			childStyle := child.Style()
-			grandchildren, didApply, ns := b.walkFirstLetter(child.children, originatingBlockNode, b.firstLetterHostNode(child, parentNode), childStyle, preserveBreaks, state, pendingHost, descAnc)
+			grandchildren, didApply, ns := b.walkFirstLetter(child.children, originatingBlockNode, b.firstLetterHostNode(child, parentNode), childStyle, state, pendingHost, descAnc)
 			state = ns
 			if didApply {
 				child.children = grandchildren
@@ -2918,10 +2974,17 @@ func (b *LayoutTreeBuilder) firstLetterHostNode(child *LayoutInputNode, fallback
 // originatingBlockNode is the element on which ::first-letter was declared.
 // The ::first-letter pseudo inherits from parentStyle (the containing element),
 // not from the originating block's style (mirrors Blink).
+//
+// fromRaw is true when `text` (and thus idx/letterLen) index the DOM node's
+// RawText (preserved-white-space context — see firstLetterScanSource); the
+// synthesized prefix/letter/rest nodes then carry RawText slices so the
+// inline pipeline's RawText substitution still sees the preserved newlines
+// and indentation.
 func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
 	children []*LayoutInputNode, i int, child *LayoutInputNode,
 	text string, idx, letterLen int,
 	parentNode *html.Node, parentStyle *css.Style, originatingBlockNode *html.Node,
+	fromRaw bool,
 ) []*LayoutInputNode {
 	// Compute the ::first-letter pseudo-element style using the containing
 	// element's style (parentStyle), not the originating block's style.
@@ -2943,8 +3006,15 @@ func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
 	letter := text[idx:letterEnd]
 	rest := text[letterEnd:]
 
-	letterDOMNode := &html.Node{Type: html.TextNode, Text: letter}
-	letterDOMNode.Parent = parentNode
+	newTextDOMNode := func(s string) *html.Node {
+		n := &html.Node{Type: html.TextNode, Text: s, Parent: parentNode}
+		if fromRaw {
+			n.RawText = s
+		}
+		return n
+	}
+
+	letterDOMNode := newTextDOMNode(letter)
 	flSpanDOM := &html.Node{Type: html.ElementNode, TagName: "::first-letter"}
 	flSpanDOM.Parent = parentNode
 	b.styles[flSpanDOM] = flStyle
@@ -2962,10 +3032,8 @@ func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
 	result = append(result, children[:i]...)
 
 	if idx > 0 {
-		wsDOMNode := &html.Node{Type: html.TextNode, Text: text[:idx]}
-		wsDOMNode.Parent = parentNode
 		result = append(result, &LayoutInputNode{
-			DOMNode: wsDOMNode,
+			DOMNode: newTextDOMNode(text[:idx]),
 			style:   child.style,
 		})
 	}
@@ -2973,10 +3041,8 @@ func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
 	result = append(result, flSpan)
 
 	if rest != "" {
-		restDOMNode := &html.Node{Type: html.TextNode, Text: rest}
-		restDOMNode.Parent = parentNode
 		result = append(result, &LayoutInputNode{
-			DOMNode: restDOMNode,
+			DOMNode: newTextDOMNode(rest),
 			style:   child.style,
 		})
 	}

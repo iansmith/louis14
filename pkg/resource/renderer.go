@@ -310,8 +310,10 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 			log.Printf("js: %v", err)
 		}
 
-		// Second pass: re-layout and re-render with JS modifications
+		// Second pass: re-layout and re-render with JS modifications.
+		// CSS Transitions compare against the first pass's computed styles.
 		layoutEngine2 := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+		layoutEngine2.SetPreviousStyles(layoutEngine.ComputedStyles())
 		if imageFetcher != nil {
 			layoutEngine2.SetImageFetcher(imageFetcher)
 		}

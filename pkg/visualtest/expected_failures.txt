@@ -71,3 +71,42 @@ css-flexbox/flex-container-max-content-001.html	Blink-faithful failure: idealize
 #     unless fill is literally currentcolor). Verified via wpt.fyi search API,
 #     2026-07-01. See LOU-345.
 css-pseudo/svg-text-selection-002.html	Blink-faithful failure: ::selection color doesn't override SVG text fill; Chrome 151.0.7922.4 and Edge 151.0.4119.1 both FAIL, only Firefox 154.0a1 passes @ wpt.fyi (LOU-345)
+
+# --- css-pseudo: tentative restricted-::marker tests removed from upstream WPT.
+#     marker-content-007/-009/-011.tentative encode Gecko's pref-gated
+#     "restricted ::marker content" model (layout.css.marker.restricted).
+#     Chrome FAILED all three on the last wpt.fyi master runs that carried
+#     them (Chrome 148.0.7741.0, run 5113433111658496, 2026-03-19); Firefox's
+#     default config failed them too — the behavior only existed behind the
+#     Gecko pref, and upstream DELETED the tests together with their -ref.html
+#     files when the pref was removed (wpt commit a4be91f2f7, 2026-03-26,
+#     "Remove layout.css.marker.restricted pref"). Matching Blink means
+#     failing them; they no longer exist upstream to ever pass. Candidates for
+#     corpus deletion on the next WPT sync. See LOU-358 (triage table in the
+#     ticket's final report).
+css-pseudo/marker-content-007.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
+css-pseudo/marker-content-009.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
+css-pseudo/marker-content-011.tentative.html	Blink-faithful failure: Chrome 148 FAILED @ wpt.fyi run 5113433111658496; test deleted upstream 2026-03-26 (wpt a4be91f2f7) with the layout.css.marker.restricted pref (LOU-358)
+
+# --- css-pseudo: ::first-letter punctuation/digraph text selection cases
+#     Chrome 152.0.7923.0 (wpt.fyi master run 6255051919327232) and Edge
+#     151.0.4119.1 (master label run) both FAIL these two tests; Firefox
+#     154.0a1 (run 5087173069242368) passes. louis14 matches Blink's
+#     FirstLetterPseudoElement text-selection rules (FirstLetterLength
+#     punctuation handling / no digraph-aware first-letter). Verified via
+#     wpt.fyi search API with pinned master run IDs, 2026-07-01. See LOU-359.
+css-pseudo/first-letter-digraph.html	Blink-faithful failure: digraph-aware ::first-letter is Gecko-only; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
+css-pseudo/first-letter-punctuation-and-space.html	Blink-faithful failure: ::first-letter punctuation-and-space selection; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
+
+# --- css-multicol: max-content sizing with non-auto column-width.
+#     multicol-width-005 case 1 encodes the Mozilla interpretation ("'column-
+#     count:auto' is considered one column", so width:max-content = column-width
+#     80px even though content is 100px wide). Blink's rule
+#     (ColumnLayoutAlgorithm::ComputeMinMaxSizes, column_layout_algorithm.cc:
+#     458-471 @ a9f50e522efa) computes max = max(content_max, column_width) =
+#     100px. louis14 ports Blink's rule (LOU-364); cases 2-6 render correctly,
+#     case 1 diverges by design. Chrome 150.0.7871.46 stable FAILS (wpt.fyi run
+#     5133332257177600, rev 58970eced7, 2026-07-01); Firefox 152.0.4 stable
+#     PASSES (rev 62ffcb685d, 2026-07-02). Verified via wpt.fyi search API with
+#     pinned run IDs. See LOU-364 final report.
+css-multicol/multicol-width-005.html	Blink-faithful failure: max-content with column-width, Blink max=max(content,column-width)=100 vs Mozilla ref 80; Chrome 150 F @ wpt.fyi run 5133332257177600, Firefox 152.0.4 P (LOU-364)
