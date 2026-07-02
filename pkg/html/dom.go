@@ -281,6 +281,11 @@ func (d *Document) NotifyNodeDetached(removed *Node) {
 		adjustRangeForRemoval(d.Selection, removed, parent, idx)
 	}
 	for _, r := range d.LiveRanges {
+		if r == d.Selection {
+			// Selection#addRange stores the same *Range pointer a
+			// createRange proxy registered here — adjust it exactly once.
+			continue
+		}
 		adjustRangeForRemoval(r, removed, parent, idx)
 	}
 }

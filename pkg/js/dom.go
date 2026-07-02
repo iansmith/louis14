@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -602,7 +603,20 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			if e.node.Type != html.TextNode || len(call.Arguments) < 2 {
 				return goja.Undefined()
 			}
-			byteOff := html.UTF16OffsetToByteOffset(e.node.Text, int(call.Arguments[0].ToInteger()))
+			// WHATWG DOM "replace data" step 2: offset greater than the
+			// node's length (in UTF-16 code units) throws IndexSizeError —
+			// this accessor's convention is a no-op return. Validate BEFORE
+			// converting: UTF16OffsetToByteOffset clamps, which would turn
+			// an invalid offset into a real prepend/append mutation.
+			offset := int(call.Arguments[0].ToInteger())
+			textLen := 0
+			for _, r := range e.node.Text {
+				textLen += utf16.RuneLen(r)
+			}
+			if offset < 0 || offset > textLen {
+				return goja.Undefined()
+			}
+			byteOff := html.UTF16OffsetToByteOffset(e.node.Text, offset)
 			data := call.Arguments[1].String()
 			setTextData(e.node, e.node.Text[:byteOff]+data+e.node.Text[byteOff:])
 			return goja.Undefined()

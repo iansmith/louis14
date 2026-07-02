@@ -82,15 +82,18 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 	// Phase 1: Compute styles.
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
+	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 	// CSS Transitions (first-frame): when this is a post-script re-layout,
 	// compare against the previous pass's styles and override transitioned
-	// properties with their value at local time 0. Runs before logical-
-	// property resolution and ch-width metrics so downstream phases see the
-	// transitioned values.
+	// properties with their value at local time 0. Runs AFTER logical-
+	// property resolution — prevStyles came from a pass that already
+	// resolved logical keys to physical, so both maps must be physical-
+	// keyed for the per-property diff (and resolution must not clobber a
+	// transitioned value) — and before ch-width metrics so downstream
+	// phases see the transitioned values.
 	if le.prevStyles != nil {
 		css.ApplyTransitionsFirstFrame(doc.Root, computedStyles, le.prevStyles)
 	}
-	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 
 	// Phase 1b: Compute ch widths from actual font metrics.
 	fontConfig := le.fontConfig

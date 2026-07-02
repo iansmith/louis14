@@ -161,14 +161,13 @@ func (ra *rangeAccessor) Get(key string) goja.Value {
 			if container == nil || container != r.EndContainer || container.Type == html.TextNode {
 				return goja.Undefined() // unsupported boundary shape
 			}
+			// Out-of-range boundary offsets are rejected un-mutated (the
+			// DOM spec throws IndexSizeError; this accessor's convention
+			// for unsupported/invalid input is a no-op) — clamping would
+			// silently operate on a DIFFERENT range and mutate the tree.
 			s, e := r.StartOffset, r.EndOffset
-			if s < 0 {
-				s = 0
-			}
-			if e > len(container.Children) {
-				e = len(container.Children)
-			}
-			if s > e {
+			if s < 0 || e < 0 || s > len(container.Children) ||
+				e > len(container.Children) || s > e {
 				return goja.Undefined()
 			}
 
@@ -181,7 +180,11 @@ func (ra *rangeAccessor) Get(key string) goja.Value {
 				c.Parent = nil
 			}
 
-			// Step "empty newParent", then detach it from wherever it lives.
+			// Step "empty newParent" (DOM "replace all": removed children
+			// become parentless), then detach it from wherever it lives.
+			for _, c := range newParent.Children {
+				c.Parent = nil
+			}
 			newParent.Children = nil
 			if newParent.Parent != nil {
 				newParent.Parent.RemoveChild(newParent)

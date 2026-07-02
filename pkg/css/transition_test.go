@@ -103,6 +103,33 @@ func TestApplyTransitionsFirstFrame(t *testing.T) {
 		}
 	})
 
+	t.Run("nil-CascadedProps node neither blocks nor truncates propagation", func(t *testing.T) {
+		// CodeRabbit PR#160 finding 1: Style.CascadedProps == nil means the
+		// declaration record was not captured (style built outside
+		// ComputeStyle, e.g. the synthetic root style); the transition
+		// propagation walk must treat it as "declares nothing" — override
+		// its inherited value AND keep recursing into its subtree.
+		parent := &html.Node{Type: html.ElementNode, TagName: "div"}
+		mid := &html.Node{Type: html.ElementNode, TagName: "span", Parent: parent}
+		leaf := &html.Node{Type: html.ElementNode, TagName: "b", Parent: mid}
+		parent.Children = []*html.Node{mid}
+		mid.Children = []*html.Node{leaf}
+		parentNew := mk(map[string]string{"color": "black",
+			"transition": "color 1000s steps(2, start)"})
+		midNew := mk(map[string]string{"color": "black"}) // nil CascadedProps
+		leafNew := mk(map[string]string{"color": "black"})
+		leafNew.CascadedProps = map[string]bool{}
+		styles := map[*html.Node]*Style{parent: parentNew, mid: midNew, leaf: leafNew}
+		prev := map[*html.Node]*Style{parent: mk(map[string]string{"color": "lime"})}
+		ApplyTransitionsFirstFrame(parent, styles, prev)
+		if got := midNew.Properties["color"]; got != "rgb(0, 128, 0)" {
+			t.Errorf("nil-CascadedProps mid color = %q, want propagated %q", got, "rgb(0, 128, 0)")
+		}
+		if got := leafNew.Properties["color"]; got != "rgb(0, 128, 0)" {
+			t.Errorf("leaf below nil-CascadedProps mid: color = %q, want propagated %q", got, "rgb(0, 128, 0)")
+		}
+	})
+
 	t.Run("inherited transitioned value propagates to inheriting children", func(t *testing.T) {
 		parent := &html.Node{Type: html.ElementNode, TagName: "div"}
 		child := &html.Node{Type: html.ElementNode, TagName: "span", Parent: parent}

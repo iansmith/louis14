@@ -34,11 +34,15 @@ import (
 // time. The timing inputs come from the AFTER-change style, like Blink's
 // `transition_data` read from the new style.
 //
-// Divergence note: Blink expands a shorthand named in transition-property
-// into its longhands (shorthandForProperty in
+// Divergence note: Blink resolves a name in transition-property to physical
+// longhands (shorthandForProperty + CSSProperty::ToPhysical in
 // CalculateTransitionUpdateForStandardProperty). louis14 matches the name
-// against the computed Properties map directly, so only longhand names (and
-// `all`) take effect — sufficient for the WPT css-pseudo transition tests.
+// against the computed Properties map directly, so only PHYSICAL longhand
+// names (and `all`) take effect — shorthand and logical (`margin-inline-*`)
+// names are not expanded/mapped. The engine calls this pass after
+// ResolveLogicalPropertiesInTree, so both style maps are physical-keyed and
+// `all` covers logical declarations via their resolved physical keys.
+// Sufficient for the WPT css-pseudo transition tests.
 
 // resolvedTransition is one entry of the after-change style's transition
 // list: a property name (longhand or "all") plus its timing.
@@ -274,7 +278,11 @@ func propagateInheritedTransitionValue(n *html.Node, prop, newVal, val string, s
 		return
 	}
 	if s := styles[n]; s != nil {
-		if s.CascadedProps == nil || s.CascadedProps[prop] {
+		// nil CascadedProps means the declaration record was not captured
+		// (style built outside ComputeStyle, e.g. the synthetic root style)
+		// — treated here as "declares nothing", so it neither keeps the
+		// after-change value nor truncates the walk below it.
+		if s.CascadedProps != nil && s.CascadedProps[prop] {
 			return
 		}
 		if strings.TrimSpace(s.Properties[prop]) != newVal {
