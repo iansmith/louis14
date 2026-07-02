@@ -965,13 +965,18 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// can compare ancestry correctly via Parent links). The pseudoNode
 	// is allocated below — defer the call until after pseudoNode exists.
 
-	// CSS 2.1 §9.7: Blockify floated pseudo-elements.
-	// When float is set, display is forced to block.
+	// CSS 2.1 §9.7 / CSS Display 3 §2.7: blockify floated pseudo-elements.
+	// Blink: "floating elements need block-like outside display" →
+	// EquivalentBlockDisplay (style_adjuster.cc:1172-1178 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064), which preserves
+	// list-item-ness — a floated `display: list-item` ::before/::after still
+	// generates its own ::marker below (WPT css-pseudo/
+	// marker-font-variant-numeric-default/-normal).
 	display := pseudoStyle.GetDisplay()
 	if pseudoStyle.GetFloat() != css.FloatNone {
-		if display != css.DisplayBlock && display != css.DisplayTable {
-			pseudoStyle.Set("display", "block")
-			display = css.DisplayBlock
+		if bd := css.EquivalentBlockDisplay(display); bd != display {
+			pseudoStyle.Set("display", string(bd))
+			display = bd
 		}
 	}
 
@@ -1786,10 +1791,11 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 // item's inherited properties (a li's border/margin/padding must not leak onto
 // its marker — Blink ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:
 // 320-323 @ 4883d11f) plus the UA ::marker defaults (text-transform:none,
-// white-space:pre, tabular-nums, unicode-bidi:isolate). It then applies the
-// position-driven display adjustment (StyleAdjuster::AdjustStyleForMarker,
-// style_adjuster.cc:478-514) and neutralizes letter-/word-spacing on symbol
-// markers.
+// tabular-nums, unicode-bidi:isolate; see markerUADefaults). It then applies
+// the position-driven display adjustment — outside markers become inline-block
+// with white-space:pre (StyleAdjuster::AdjustStyleForMarker,
+// style_adjuster.cc:479-515 @ 43cee02dc59fdad798675a735737510ecf0c9064) — and
+// neutralizes letter-/word-spacing on symbol markers.
 //
 // Markers of pseudo-element list items (::before/::after with
 // display:list-item) are nested pseudo-elements and are NOT addressable by
@@ -1818,6 +1824,17 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		css.ApplyMarkerUADefaults(markerStyle)
 	}
 
+	// Web Animations targeting the ::marker apply above the UA/author marker
+	// cascade, filtered to ::marker-valid properties — Blink adds
+	// CSSProperty::kValidForMarker to the cascade filter when applying
+	// interpolations to a kPseudoIdMarker style (StyleResolver::
+	// ApplyAnimatedStyle, style_resolver.cc:2626-2636 @ 43cee02d). The
+	// position-driven adjustments below still run after, matching Blink's
+	// resolver→StyleAdjuster order.
+	if len(node.MarkerAnimatedStyle) > 0 {
+		css.ApplyMarkerAnimatedStyle(markerStyle, node.MarkerAnimatedStyle)
+	}
+
 	if markerInside {
 		markerStyle.Set("display", "inline")
 		// CSS Text Decor 3 §2.1: an inside ::marker is a non-atomic inline that
@@ -1832,6 +1849,11 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		markerStyle.InheritAppliedTextDecorationsFrom(style)
 	} else {
 		markerStyle.Set("display", "inline-block")
+		// "Do not break inside the marker, and honor the trailing spaces" —
+		// the outside branch of AdjustStyleForMarker (style_adjuster.cc:502-507
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064). This is the ONLY source
+		// of white-space:pre on markers; marker.css sets none, so inside
+		// markers keep the inherited value.
 		markerStyle.Set("white-space", "pre")
 	}
 

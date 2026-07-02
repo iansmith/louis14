@@ -1483,11 +1483,12 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			// inline/block axes and glyph orientation match the originating
 			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
 			"writing-mode", "direction", "text-orientation",
-			// CSS Text 3 §3.2, §9.1, §9.3: tab-size, overflow-wrap, word-break,
-			// hyphens are inherited. CSS Text Decor 4 §4: text-emphasis and its
-			// longhands are inherited. CSS Pseudo-4 §4.4: text-shadow is inherited
-			// by ::marker pseudo-elements.
-			"tab-size", "overflow-wrap", "word-break", "hyphens",
+			// CSS Text 3 §3.2, §5.5, §9.1, §9.3: tab-size, overflow-wrap,
+			// word-break, hyphens and line-break are inherited. CSS Text Decor
+			// 4 §4: text-emphasis and its longhands are inherited. CSS
+			// Pseudo-4 §4.4: text-shadow is inherited by ::marker
+			// pseudo-elements.
+			"tab-size", "overflow-wrap", "word-break", "hyphens", "line-break",
 			"text-shadow", "text-emphasis", "text-emphasis-style",
 			"text-emphasis-color", "text-emphasis-position",
 			// CSS UI 4 §7.1: accent-color is inherited.
@@ -2020,6 +2021,11 @@ func markerAllowedProperty(name string) bool {
 		"text-shadow", "text-transform", "animation", "transition",
 		"hyphens", "overflow-wrap", "tab-size", "word-break",
 		"text-emphasis", "text-emphasis-style", "text-emphasis-color", "text-emphasis-position",
+		// line-break, text-decoration-skip-ink and text-decoration-skip-spaces
+		// carry valid_for_marker: true in Blink css_properties.json5
+		// @ 43cee02dc59fdad798675a735737510ecf0c9064 (LOU-358;
+		// WPT marker-line-break.html / marker-text-decoration-skip-ink.html).
+		"line-break", "text-decoration-skip-ink", "text-decoration-skip-spaces",
 		// quotes was added to the marker-applicable set by the CSSWG
 		// (csswg-drafts#5265; WPT css-lists/marker-quotes.html).
 		"quotes":
@@ -2033,22 +2039,46 @@ func markerAllowedProperty(name string) bool {
 	return false
 }
 
+// ApplyMarkerAnimatedStyle applies property values sampled from a Web
+// Animation targeting a ::marker pseudo-element (Element.animate with
+// {pseudoElement: '::marker'}, stored on html.Node.MarkerAnimatedStyle) onto
+// the marker's computed style, rejecting properties that are not valid on
+// ::marker. This is the louis14 analog of Blink adding
+// CSSProperty::kValidForMarker to the cascade filter when applying animation
+// interpolations to a kPseudoIdMarker style (StyleResolver::ApplyAnimatedStyle,
+// style_resolver.cc:2626-2636 @ 43cee02dc59fdad798675a735737510ecf0c9064):
+// animations sit above author-normal declarations in the cascade, so the
+// values are stamped over whatever the UA/author marker cascade produced.
+// WPT css-pseudo/marker-animate-002.html (color applies, opacity must not).
+func ApplyMarkerAnimatedStyle(markerStyle *Style, decls map[string]string) {
+	for prop, v := range decls {
+		if markerAllowedProperty(prop) {
+			markerStyle.Set(prop, v)
+		}
+	}
+}
+
 // markerUADefaults lists the UA-stylesheet ::marker property defaults.
-// Mirrors Blink's html.css ::marker rule verified at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// Mirrors Blink's core/css/marker.css rule verified at SHA
+// 43cee02dc59fdad798675a735737510ecf0c9064. marker.css does NOT set
+// white-space: only OUTSIDE markers get white-space:pre, stamped by
+// StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:502-507 @43cee02d;
+// louis14: resolveMarkerStyle's !markerInside branch), so an inside marker's
+// trailing suffix space stays end-of-line-collapsible (WPT css-pseudo/
+// marker-text-decoration-skip-ink).
 var markerUADefaults = [...][2]string{
 	{"unicode-bidi", "isolate"},
 	{"text-transform", "none"},
-	{"white-space", "pre"},
 	{"font-variant-numeric", "tabular-nums"},
-	// Blink core/css/marker.css (@4883d11f): text-indent: 0 !important;
-	// text-align: start !important. The !important means even author
-	// ::marker rules cannot set them — neither is in
-	// markerAllowedProperty, so stamping the defaults here completes the
+	// Blink core/css/marker.css (@43cee02d): text-indent: 0 !important;
+	// text-align: start !important; text-align-last: auto !important. The
+	// !important means even author ::marker rules cannot set them — none is
+	// in markerAllowedProperty, so stamping the defaults here completes the
 	// contract (an inherited li text-indent must not shift the marker;
 	// WPT css-pseudo/marker-content-023).
 	{"text-indent", "0"},
 	{"text-align", "start"},
+	{"text-align-last", "auto"},
 }
 
 // applyMarkerCascade layers the UA ::marker defaults onto style, deferring
