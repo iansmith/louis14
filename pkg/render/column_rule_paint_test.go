@@ -14,6 +14,7 @@ import (
 	"image/color"
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
@@ -137,4 +138,98 @@ func TestColumnRule_VerticalLR_PhysicalHorizontalSegments(t *testing.T) {
 	assertColor(80, 200, orange, "row-2 rule segment (stretched to content block end)")
 	assertColor(50, 200, white, "spanner band must not carry a rule")
 	assertColor(200, 100, white, "no HTB-mapped vertical rule at logical inline offset")
+}
+
+// TestColumnRule_FractionalWidth_ClampedLikeBorderWidth: column-rule-width
+// computed values snap like border-width — 0 < w < 1 rounds up to 1, w >= 1
+// floors to an integer. Mirrors Blink StyleBuilderConverter::ClampLineWidth
+// (style_builder_converter.cc:1964-1971 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// which column-rule-width reaches through ConvertBorderWidth (:2600-2601).
+// Each multicol is 100px wide with 2 columns and a 10px gap, so the rule is
+// centered at x=50; the painted pixel width must equal the clamped value.
+// (WPT: subpixel-column-rule-width.tentative.html.)
+func TestColumnRule_FractionalWidth_ClampedLikeBorderWidth(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="width:100px; height:50px; columns:2; column-gap:10px; column-rule:0.5px solid blue; column-fill:auto;">
+  <div style="height:200px"></div>
+</div>
+<div style="width:100px; height:50px; columns:2; column-gap:10px; column-rule:1.3px solid blue; column-fill:auto;">
+  <div style="height:200px"></div>
+</div>
+<div style="width:100px; height:50px; columns:2; column-gap:10px; column-rule:3.9px solid blue; column-fill:auto;">
+  <div style="height:200px"></div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 300, 200)
+
+	for _, tc := range []struct {
+		name      string
+		y         int
+		wantWidth int
+	}{
+		{"0.5px rounds up to 1", 25, 1},
+		{"1.3px floors to 1", 75, 1},
+		{"3.9px floors to 3", 125, 3},
+	} {
+		blue := 0
+		for x := 40; x < 60; x++ {
+			r, g, b := rgbAt(img, x, tc.y)
+			if r == 0 && g == 0 && b == 255 {
+				blue++
+			}
+		}
+		if blue != tc.wantWidth {
+			t.Errorf("%s: got %d blue pixels at y=%d, want %d", tc.name, blue, tc.y, tc.wantWidth)
+		}
+	}
+}
+
+// TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule: louis14's multicol
+// layout can emit an empty trailing column fragment in a pre-spanner row
+// without recording a cross gap for it (multicol_layout.go; observed in
+// multicol-span-all-006/007/008, where a phantom 6px column appears next to
+// the summary row). Blink's layout never produces such fragments, so its
+// painter has no analog of this situation (no Blink analog: guard against a
+// louis14 layout artifact). GapGeometry.CrossGaps is layout's authoritative
+// record of inter-column gaps: a column pair with no recorded cross gap gets
+// no rule segment; with a recorded gap, the segment paints.
+func TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule(t *testing.T) {
+	paint := func(gg *layout.GapGeometry) *image.RGBA {
+		target := image.NewRGBA(image.Rect(0, 0, 100, 50))
+		r := NewRendererForImage(target)
+		box := &layout.Box{
+			Style: css.NewStyle(),
+			X:     0, Y: 0, Width: 100, Height: 30,
+			Children: []*layout.Box{
+				{IsColumnBox: true, X: 0, Y: 0, Width: 40, Height: 30},
+				{IsColumnBox: true, X: 60, Y: 0, Width: 40, Height: 30},
+			},
+			GapGeometry: gg,
+		}
+		layer := &PaintLayer{
+			Box:             box,
+			ColumnRuleWidth: 10,
+			ColumnRuleStyle: "solid",
+			ColumnRuleColor: css.Color{R: 0, G: 0, B: 255, A: 1},
+			GapGeometry:     gg,
+		}
+		r.drawColumnRules(layer)
+		return target
+	}
+
+	// No recorded cross gaps: the second column box is a layout artifact.
+	img := paint(&layout.GapGeometry{ContainerType: layout.GapContainerMulticol, MainDirection: layout.GapForRows})
+	if c := img.RGBAAt(50, 15); c.A != 0 {
+		t.Errorf("empty CrossGaps: rule painted at (50,15) = %v, want nothing", c)
+	}
+
+	// One recorded cross gap: the same geometry paints its rule segment.
+	img = paint(&layout.GapGeometry{
+		ContainerType: layout.GapContainerMulticol,
+		MainDirection: layout.GapForRows,
+		CrossGaps:     []layout.CrossGap{{GapInlineOffset: 50}},
+	})
+	if c := img.RGBAAt(50, 15); c.R != 0 || c.G != 0 || c.B != 255 {
+		t.Errorf("recorded CrossGap: pixel (50,15) = %v, want blue rule", c)
+	}
 }

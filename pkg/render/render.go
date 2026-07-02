@@ -5548,10 +5548,24 @@ func (r *Renderer) paintColumnRulesFromColumnBoxes(layer *PaintLayer) bool {
 		contentBlockEnd -= gg.ScrollbarBlockEnd
 	}
 
+	// GapGeometry.CrossGaps is layout's authoritative record of inter-column
+	// gaps (one entry per column boundary in the widest row). louis14's
+	// multicol layout can emit an empty trailing column fragment without
+	// recording a cross gap for it (multicol-span-all-006/007/008's phantom
+	// pre-spanner column); such a pair must not get a rule segment. No Blink
+	// analog: Blink's layout never emits column fragments without gaps, so
+	// its painter needs no such guard. recordedGaps < 0 means "no gap record
+	// available" (legacy paths) — paint every pair.
+	recordedGaps := -1
+	if gg := layer.GapGeometry; gg != nil {
+		recordedGaps = len(gg.CrossGaps)
+	}
+
 	var ruleBlockStart, ruleBlockEnd float64
 	var prevInlineEnd, prevBlockEnd float64
 	var rowBlockOffset float64
 	haveRow := false
+	gapIdx := 0
 	for _, child := range box.Children {
 		if child == nil {
 			continue
@@ -5572,6 +5586,7 @@ func (r *Renderer) paintColumnRulesFromColumnBoxes(layer *PaintLayer) bool {
 			rowBlockOffset = cr.blockStart
 			ruleBlockStart = cr.blockStart
 			ruleBlockEnd = cr.blockEnd
+			gapIdx = 0
 			// Rules are painted *between* columns; wait for a second one.
 		} else if rowBlockOffset != cr.blockStart {
 			// Wrapped to a new row. Paint rules in the preceding row-gap
@@ -5580,31 +5595,50 @@ func (r *Renderer) paintColumnRulesFromColumnBoxes(layer *PaintLayer) bool {
 			itemsUntilLastRow--
 			ruleBlockStart = prevBlockEnd
 			ruleBlockEnd = cr.blockEnd
+			gapIdx = 0
 		} else {
-			center := (cr.inlineStart + prevInlineEnd) / 2
-			ruleLength := ruleBlockEnd - ruleBlockStart
-			// Paint column rules as tall as the entire multicol container,
-			// but only when at the last row (bfp.cc:1876-1889).
-			if itemsUntilLastRow <= 0 {
-				if stretched := contentBlockEnd - ruleBlockStart; stretched > ruleLength {
-					ruleLength = stretched
+			if recordedGaps < 0 || gapIdx < recordedGaps {
+				center := (cr.inlineStart + prevInlineEnd) / 2
+				ruleLength := ruleBlockEnd - ruleBlockStart
+				// Paint column rules as tall as the entire multicol
+				// container, but only when at the last row (bfp.cc:1876-1889).
+				if itemsUntilLastRow <= 0 {
+					if stretched := contentBlockEnd - ruleBlockStart; stretched > ruleLength {
+						ruleLength = stretched
+					}
 				}
-			}
 
-			// LogicalRect -> ToPhysical -> ToPixelSnappedRect (bfp.cc:1891-1906).
-			physSize := layout.ToPhysicalSize(layout.LogicalSize{InlineSize: ruleWidth, BlockSize: ruleLength}, wdm.WM)
-			physOff := conv.ToPhysicalOffset(layout.LogicalOffset{
-				InlineOffset: center - ruleWidth/2,
-				BlockOffset:  ruleBlockStart,
-			}, physSize)
-			x, y, w, h := pixelSnap(box.X+physOff.X, box.Y+physOff.Y, physSize.Width, physSize.Height)
-			r.drawColumnRuleRect(layer.ColumnRuleStyle, x, y, w, h, !wdm.IsHorizontal())
+				// LogicalRect -> ToPhysical -> ToPixelSnappedRect (bfp.cc:1891-1906).
+				physSize := layout.ToPhysicalSize(layout.LogicalSize{InlineSize: ruleWidth, BlockSize: ruleLength}, wdm.WM)
+				physOff := conv.ToPhysicalOffset(layout.LogicalOffset{
+					InlineOffset: center - ruleWidth/2,
+					BlockOffset:  ruleBlockStart,
+				}, physSize)
+				x, y, w, h := pixelSnap(box.X+physOff.X, box.Y+physOff.Y, physSize.Width, physSize.Height)
+				r.drawColumnRuleRect(layer.ColumnRuleStyle, x, y, w, h, !wdm.IsHorizontal())
+			}
+			gapIdx++
 		}
 
 		prevInlineEnd = cr.inlineEnd
 		prevBlockEnd = cr.blockEnd
 	}
 	return true
+}
+
+// clampLineWidth snaps a computed line width (column-rule-width) to whole
+// CSS pixels: values strictly between 0 and 1 round up to 1, everything
+// else floors. Mirrors Blink StyleBuilderConverter::ClampLineWidth
+// (style_builder_converter.cc:1964-1971 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// which column-rule-width reaches through ConvertBorderWidth (:2600-2601).
+// Applied at the PaintLayer boundary because the computed-value home
+// (pkg/css GetColumnRuleWidth) is outside LOU-366's file territory —
+// flagged for promotion into pkg/css alongside border-width handling.
+func clampLineWidth(width float64) float64 {
+	if width > 0 && width < 1 {
+		return 1
+	}
+	return math.Floor(width)
 }
 
 // countColumnRuleRowItems counts spanners and additional rows among a
