@@ -359,3 +359,44 @@ func TestAvoidInside_ChildInternalShortagePropagates(t *testing.T) {
 		t.Errorf("MinSpaceShortage = %v, want > 0 (avoid child's internal line shortage)", got)
 	}
 }
+
+// TestMonolithicFloat_BalancingFloorIncludesMargins: an unbreakable
+// (contain:size, hence monolithic) block-level float floors the balanced
+// column block-size at its MARGIN box — float margins do not break or
+// truncate. Blink's BlockSizeForFragmentation adds a float's block margins
+// (fragmentation_utils.cc:1545-1583, "Margins on floats do not break or
+// truncate", @ a9f50e522efa); the floor propagates via
+// BreakBeforeChildIfNeeded (:1105-1113), which louis14's block-path floats
+// bypass (layoutFloat), so layoutFloat must propagate it directly.
+// Driver: multicol-fill-balance-037 (float h20 + margin 40px 0 → the
+// 2-column balance must not split the 100px margin box in half).
+func TestMonolithicFloat_BalancingFloorIncludesMargins(t *testing.T) {
+	float := makeNode("div")
+	parent := makeNode("div", float)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "width", "100px"),
+		float: makeStyle("display", "block", "float", "left", "width", "100%",
+			"contain", "size", "height", "20px",
+			"margin-top", "40px", "margin-bottom", "40px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(Indefinite).
+		SetFragmentainerOffset(0).
+		SetBlockFragmentationType(FragmentColumn).
+		SetIsInitialColumnBalancingPass(true).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	if result == nil {
+		t.Fatal("layout returned nil")
+	}
+	// 100 = 40 margin-top + 20 border box + 40 margin-bottom.
+	if got := result.TallestUnbreakableBlockSize; got != 100 {
+		t.Errorf("TallestUnbreakableBlockSize = %v, want 100 (float margin box)", got)
+	}
+}

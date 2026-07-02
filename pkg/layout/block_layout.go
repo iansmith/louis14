@@ -2869,6 +2869,25 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	floatInlineSize := childMargins.InlineSum() + childLogical.InlineSize()
 	floatBlockSize := childMargins.BlockSum() + childLogical.BlockSize()
 
+	// LOU-365: during the initial column-balancing pass, an unbreakable
+	// float floors the column block-size at its MARGIN box — float
+	// margins do not break or truncate (Blink BlockSizeForFragmentation,
+	// fragmentation_utils.cc:1545-1583 @ a9f50e522efa: "Margins on floats
+	// do not break or truncate" → block_size += margins.BlockSum()). In
+	// Blink the floor flows through BreakBeforeChildIfNeeded
+	// (:1105-1113); louis14's block-path floats bypass that walk, so
+	// propagate here. The carrier propagation mirrors the in-flow child
+	// site (Blink box_fragment_builder.cc:579-582).
+	// Driver: multicol-fill-balance-037.
+	if bla.space.IsInitialColumnBalancingPass {
+		if ShouldAvoidBreakInside(bla.space, childResult) {
+			unbreakable := CalculateUnbreakableBlockSize(bla.space, childResult, 0) +
+				childMargins.BlockSum()
+			builder.PropagateTallestUnbreakableBlockSize(unbreakable)
+		}
+		builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+	}
+
 	// Resolve the collapsed margin at the current position.
 	// Float positioning uses BFC-relative coordinates since the exclusion space
 	// stores floats in BFC coordinates.
