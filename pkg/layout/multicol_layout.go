@@ -648,12 +648,26 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// line_offset only after the first row in a run. Reset to true when a new
 	// column-run starts after a spanner placement.
 	isFirstRow := true
+
+	// marginStrut collapses adjacent spanner block margins and lets a
+	// spanner's trailing margin collapse through an empty column line.
+	// Mirrors the MarginStrut threaded through Blink's LayoutChildren walk
+	// (cla.cc:551-708 @ a9f50e522efa). Column content itself never
+	// contributes (columns establish a BFC root, cla.cc:554-558 comment).
+	var marginStrut MarginStrut
 	for !walker.IsFinished() {
 		entry := walker.Current()
 
 		if entry.DescendantNode == nil {
 			// === Column-content branch (Blink cla.cc:614-654). ===
 			nextColToken := entry.BreakToken
+
+			// Blink cla.cc:716-724: the line offset includes any trailing
+			// margin from a preceding spanner. The strut is NOT reset yet —
+			// if the line turns out to be empty, the margin collapses
+			// through it (and as far as the spec is concerned, the line
+			// won't even exist).
+			lineOffset := blockCursor + marginStrut.Resolve()
 
 			// Blink cla.cc:795-797 row-advance guard. Fires whenever
 			// !isFirstRow OR we find ourselves past the start of the current
@@ -663,15 +677,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			needsRowAdvance := !isFirstRow
 			if !needsRowAdvance && mla.shouldWrapColumns() && mla.hasRowHeight() &&
 				mla.rowHeight() > 0 &&
-				mla.remainingRowHeightAtOffset(blockCursor) <= 0 {
+				mla.remainingRowHeightAtOffset(lineOffset) <= 0 {
 				needsRowAdvance = true
 			}
 			if needsRowAdvance {
 				if mla.hasRowHeight() {
-					blockCursor += mla.offsetToNextRow(blockCursor)
+					lineOffset += mla.offsetToNextRow(lineOffset)
 				}
 				if hasOuterFrag && mla.hasRowHeight() &&
-					mla.rowHeight() > outerAvailable-blockCursor {
+					mla.rowHeight() > outerAvailable-lineOffset {
 					// No room for another row in the outer fragmentainer —
 					// stop now and let the outer context resume any remaining
 					// content in the next outer column.
@@ -687,15 +701,23 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
-			rowStart := blockCursor
-			rowBlockAdvance, columnsPlaced, spannerPath, remainingToken := mla.layoutLine(
+			rowStart := lineOffset
+			rowBlockAdvance, columnsPlaced, spannerPath, remainingToken, lineIsEmpty := mla.layoutLine(
 				contentNode, wdm, usedColWidth, numCols, gap,
 				balanceColumns, hasExplicitBlock, explicitBlockSize,
 				effectiveMaxBlockSize,
-				blockCursor, nextColToken, builder,
+				lineOffset, nextColToken, builder,
 				Indefinite, EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, false),
 			)
-			blockCursor += rowBlockAdvance
+			// Blink cla.cc:1233-1251: only a non-empty line updates the
+			// layout position (which already incorporates the strut) and
+			// resets the strut. An empty line — e.g. the spanner-detection
+			// line between two adjacent spanners — leaves both untouched so
+			// the pending margin collapses through.
+			if !lineIsEmpty {
+				blockCursor = lineOffset + rowBlockAdvance
+				marginStrut = MarginStrut{}
+			}
 			totalColumnsRendered += columnsPlaced
 
 			// column-fill:auto + spanner: once any row encountered a spanner,
@@ -913,27 +935,47 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 		if spanFrag != nil {
-			// Blink cla.cc:1427-1459 (pre-commit row snap). Snap blockCursor
-			// to the next row-stride boundary only when the spanner doesn't fit
-			// in the remaining space of the current row.
+			// Blink cla.cc:1339-1343: resolve the spanner's margins against
+			// the multicol's content-box inline size. A resumed spanner has
+			// already consumed its block-start margin, except when resuming
+			// from a forced break-before (AdjustMarginsForFragmentation,
+			// fragmentation_utils.h:279-289 @ a9f50e522efa).
+			spannerStyle := spanner.Style()
+			var spannerMargins LogicalEdges
+			if spannerStyle != nil {
+				spannerMargins = ResolveMargins(spannerStyle, wdm, contentInlineSize)
+			}
+			if hasSpannerResume &&
+				(!entry.BreakToken.IsBreakBefore || !entry.BreakToken.IsForcedBreak) {
+				spannerMargins.BlockStart = 0
+			}
+			// Blink cla.cc:1345-1347: collapse the spanner's block-start
+			// margin with the block-end margin of an immediately preceding
+			// spanner.
+			marginStrut.Append(spannerMargins.BlockStart)
+			pendingMargin := marginStrut.Resolve()
+			// Blink cla.cc:1364-1374 (pre-commit row snap). Snap blockCursor
+			// to the next row-stride boundary only when the spanner (with its
+			// pending collapsed margin) doesn't fit in the remaining space of
+			// the current row.
 			if mla.shouldWrapColumns() && mla.hasRowHeight() && mla.rowHeight() > 0 &&
-				mla.offsetInCurrentRow(blockCursor) > 0 {
+				mla.offsetInCurrentRow(blockCursor+pendingMargin) > 0 {
 				remainingRow := mla.remainingRowHeightAtOffset(blockCursor)
-				if spanHeight > remainingRow {
+				if pendingMargin+spanHeight > remainingRow {
 					blockCursor += mla.offsetToNextRow(blockCursor)
 				}
 			}
-			// Apply spanner margin-block-start. Skip when resuming a
-			// spanner — margins were consumed in the original outer column.
-			if !hasSpannerResume && spanner.Style() != nil {
-				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
-				blockCursor += spannerMargins.BlockStart
-			}
+			// Blink cla.cc:1354-1356: the spanner's block offset includes the
+			// collapsed strut. cla.cc:1439-1441: the start-spanner gap
+			// boundary is the end of the preceding content — margins live
+			// inside the gap.
+			spannerBlockOffset := blockCursor + pendingMargin
 			mla.addMainGap(blockCursor, SpannerGapStart)
 			mla.addNumberOfColumnsForCurrentRow(-1)
 			spannerOffset := LogicalOffset{
-				InlineOffset: 0,
-				BlockOffset:  blockCursor,
+				InlineOffset: resolveSpannerInlineMargins(spannerStyle, wdm, contentInlineSize,
+					NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins),
+				BlockOffset: spannerBlockOffset,
 			}
 			builder.AddChild(spanFrag, spannerOffset)
 			// LOU-111 step 4: propagate the spanner's BSFF into this
@@ -947,17 +989,20 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// slice height.
 			if spanResult != nil {
 				builder.PropagateChildBlockSizeForFragmentation(spanResult, spannerOffset)
-				mla.propagateBaselineFromChild(spanResult, builder, blockCursor)
+				mla.propagateBaselineFromChild(spanResult, builder, spannerBlockOffset)
 			}
-			if spanFrag != nil && spanResult != nil {
-				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, blockCursor)
+			if spanResult != nil {
+				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, spannerBlockOffset)
 			}
-			blockCursor += spanHeight
-			if !hasSpannerResume && spanner.Style() != nil {
-				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
-				blockCursor += spannerMargins.BlockEnd
-			}
-			mla.addMainGap(blockCursor, SpannerGapEnd)
+			// Blink cla.cc:1436-1443: advance past the spanner box; reset the
+			// strut and seed it with the block-end margin, which collapses
+			// with a following spanner or positions the next column line —
+			// and is dropped when this fragmentainer breaks inside the
+			// spanner (the broke path never flushes the strut).
+			blockCursor = spannerBlockOffset + spanHeight
+			marginStrut = MarginStrut{}
+			marginStrut.Append(spannerMargins.BlockEnd)
+			mla.addMainGap(blockCursor+marginStrut.Resolve(), SpannerGapEnd)
 		}
 
 		// Advance the walker past this spanner entry. After Next(), the
@@ -1005,6 +1050,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if pendingContentOverflow {
 		flushWalker()
 		return buildOuterBreakResult()
+	}
+
+	// Blink cla.cc:687-705: all children seen — the leftover strut (e.g. a
+	// trailing spanner's block-end margin) contributes to the intrinsic
+	// block-size. Break paths (walker unfinished) drop the strut instead.
+	if walker.IsFinished() {
+		blockCursor += marginStrut.Resolve()
 	}
 
 	// Phase 12f (Blink cla.cc:342): intrinsic block-size top-off. When column-
@@ -1313,8 +1365,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 // layoutLine implements the outer stretch / inner per-column loop for one
 // "column row" — all columns between two spanners (or the full content if no
 // spanners). Returns the block-size consumed by this row, the spanner path
-// (if a column-span:all element was encountered), and the break token for
-// resuming after the spanner.
+// (if a column-span:all element was encountered), the break token for
+// resuming after the spanner, and whether the line is empty (Blink's
+// is_empty, cla.cc:1218-1231 @ a9f50e522efa) — an empty line must not reset
+// the caller's spanner margin strut nor advance the layout position, so a
+// preceding spanner's trailing margin can collapse through it.
 //
 // Mirrors Blink's ColumnLayoutAlgorithm::LayoutLine() (cla.cc:858).
 func (mla *MulticolLayoutAlgorithm) layoutLine(
@@ -1332,7 +1387,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	builder *BoxFragmentBuilder,
 	minimumColumnBlockSize float64,
 	multicolBlockBorderPadding float64,
-) (rowBlockAdvance float64, columnsPlaced int, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken) {
+) (rowBlockAdvance float64, columnsPlaced int, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken, lineIsEmpty bool) {
 
 	// Outer remaining space: cap column height so columns don't exceed what
 	// fits in the current outer fragmentainer. Mirrors Blink's
@@ -1649,6 +1704,25 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		}
 	}
 
+	// Blink cla.cc:1218-1231: a line is "empty" when its single column box has
+	// no extent and no children — e.g. the spanner-detection line between two
+	// adjacent spanners — OR when its only content is the empty continuation
+	// of a resumed block whose next child is the spanner (Blink's
+	// is_empty_spanner_parent, bla.cc:1050-1055, propagated up via
+	// box_fragment_builder.cc:596-605 @ a9f50e522efa; louis14 has no builder
+	// flag, so the equivalent is derived from the spanner path + incoming
+	// token below). colBlockSize == Indefinite corresponds to Blink's
+	// content-based zero estimate for a contentless column-fill:auto line
+	// (Blink resolves the auto block-size to 0 via ResolveColumnAutoBlockSize
+	// before the check).
+	isEmptySpannerParent := lastInnerResult != nil &&
+		lastInnerResult.ColumnSpannerPath != nil &&
+		len(finalColumns) == 1 && finalColumns[0].intrinsicBlock == 0 &&
+		spannerParentIsResuming(lastInnerResult.ColumnSpannerPath, nextColToken)
+	lineIsEmpty = (colBlockSize == 0 || colBlockSize == Indefinite) &&
+		len(finalColumns) == 1 &&
+		(len(finalColumns[0].fragment.Children) == 0 || isEmptySpannerParent)
+
 	// Commit final columns to the parent builder.
 	// columnsPlaced reports how many columns actually received content so the
 	// column-rule painter (CSS Multicol L1 §5: rules only between columns that
@@ -1796,7 +1870,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		if !anyIntrinsic {
 			rowAdvance = 0
 		}
-		return rowAdvance, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
+		return rowAdvance, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken, lineIsEmpty
 	}
 	// LOU-325: the render did not reach a spanner, but the measure pass did —
 	// an oversized block (004b's block2: 200px content vs the container's 150px
@@ -1813,12 +1887,43 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		capturedToken := mla.lastMeasuredSpannerToken
 		mla.lastMeasuredSpannerPath = nil
 		mla.lastMeasuredSpannerToken = nil
-		return maxColHeight, columnsPlaced, capturedPath, capturedToken
+		return maxColHeight, columnsPlaced, capturedPath, capturedToken, lineIsEmpty
 	}
 
 	// Return any remaining column break token so the caller can include it
 	// in the outer break result and resume column rows in the next outer column.
-	return maxColHeight, columnsPlaced, nil, finalColBreakToken
+	return maxColHeight, columnsPlaced, nil, finalColBreakToken, lineIsEmpty
+}
+
+// resolveSpannerInlineMargins returns the spanner's inline-start offset
+// within the multicol's content box, resolving `auto` inline margins against
+// the free space between the spanner's margin box and the multicol content
+// box. Mirrors ResolveInlineAutoMargins (length_utils.cc:1551-1570 @
+// a9f50e522efa) and the offset computation at cla.cc:1424-1426. The returned
+// offset is content-box relative (border/scrollbar/padding is added at box
+// conversion), so only the resolved inline-start margin contributes.
+func resolveSpannerInlineMargins(
+	spannerStyle *css.Style,
+	wdm WritingDirectionMode,
+	availableInline float64,
+	spannerInline float64,
+	margins LogicalEdges,
+) float64 {
+	if spannerStyle == nil {
+		return 0
+	}
+	autoStart, autoEnd, _, _ := PhysicalAutoMarginsToLogical(spannerStyle.GetMargin(), wdm)
+	availableSpace := availableInline - spannerInline - margins.InlineStart - margins.InlineEnd
+	if availableSpace < 0 {
+		availableSpace = 0
+	}
+	switch {
+	case autoStart && autoEnd:
+		margins.InlineStart = availableSpace / 2
+	case autoStart:
+		margins.InlineStart = availableSpace
+	}
+	return margins.InlineStart
 }
 
 // layoutSpanner lays out a column-span:all element at the full multicol
@@ -2336,6 +2441,40 @@ func spannerLeafNode(path *ColumnSpannerPath) *LayoutInputNode {
 		return path.Box
 	}
 	return spannerLeafNode(path.Child)
+}
+
+// spannerParentIsResuming reports whether the innermost block directly
+// containing the detected spanner is RESUMING (a break-inside continuation)
+// rather than starting fresh in this column line. It matches the spanner
+// path's intermediate containers against the incoming column break token
+// chain: every container on the path must appear with a break-inside token
+// (IsBreakBefore false).
+//
+// This is the multicol-level equivalent of Blink's is_empty_spanner_parent
+// input `is_resuming_` (bla.cc:1050-1055 @ a9f50e522efa) — a FRESH parent
+// wrapping a spanner starts a box in this line, so a preceding spanner's
+// trailing margin must NOT collapse through it (WPT
+// multicol-span-all-margin-nested-001), while a resumed parent's empty
+// continuation lets the margin collapse (multicol-span-all-margin-003).
+func spannerParentIsResuming(path *ColumnSpannerPath, incoming *BlockBreakToken) bool {
+	if incoming == nil || incoming.IsBreakBefore {
+		return false
+	}
+	token := incoming
+	for p := path; p != nil && p.Child != nil; p = p.Child {
+		var next *BlockBreakToken
+		for _, ct := range token.ChildBreakTokens {
+			if ct.Node == p.Box {
+				next = ct
+				break
+			}
+		}
+		if next == nil || next.IsBreakBefore {
+			return false
+		}
+		token = next
+	}
+	return true
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
