@@ -227,3 +227,34 @@ func TestCreatesStackingContext_TransformMatrix(t *testing.T) {
 		})
 	}
 }
+
+// === LOU-359 Category D — text-run boxes never create stacking contexts ===
+
+// TestCreatesStackingContext_TextRun_NoSC: a text-run box (LayoutNode == nil
+// with Text set) borrows its ELEMENT's Style — including opacity/filter — but
+// must never create a stacking context of its own: the element's box applies
+// those effects once, and a second application on the text run compounds them
+// (opacity 0.5 painted at 0.25 — WPT first-letter-opacity-float-001.html,
+// where the float's text run nested a second alpha group inside the float's).
+//
+// Blink alignment @ 906a32d8634edf17db094507908f439bd9b52de5: PaintLayers —
+// the carriers of opacity/filter/transform effects — exist only on
+// LayoutBoxModelObject (core/paint/paint_layer.h); LayoutText is not a box
+// model object and can never own one. There is no Blink analog of a "text
+// box that creates a stacking context"; the concept is a louis14 modeling
+// artifact.
+//
+// RED before fix: the opacity<1 branch in CreatesStackingContext fires on
+// the borrowed style.
+func TestCreatesStackingContext_TextRun_NoSC(t *testing.T) {
+	style := makeStyle("display", "block", "opacity", "0.5")
+	b := makeBox(style, makeNode("div"))
+	b.Text = "P" // text-run box: LayoutNode nil + Text set
+	if b.CreatesStackingContext() {
+		t.Fatal("text-run box with borrowed opacity style must not create a stacking context")
+	}
+	// The element's own box (no Text) still creates the SC.
+	if !makeBox(style, makeNode("div")).CreatesStackingContext() {
+		t.Fatal("element box with opacity<1 must create a stacking context")
+	}
+}

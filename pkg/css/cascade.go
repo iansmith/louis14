@@ -840,7 +840,29 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// at paint time. Shared by reference; never mutated post-cascade.
 	finalStyle.FontFeatureValues = collectFontFeatureValues(stylesheets)
 
+	// Snapshot the element's own cascaded longhands (Style.CascadedProps).
+	// At this point Properties holds ONLY values the element's own cascade
+	// set — inheritance runs later (resolveInheritValues /
+	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
+	// declared set. Literal `inherit` values re-inherit and are excluded.
+	recordCascadedProps(finalStyle)
+
 	return finalStyle
+}
+
+// recordCascadedProps snapshots the longhand names the element's own cascade
+// set into style.CascadedProps (see that field's doc comment for consumer
+// semantics and the Blink citation). Must run BEFORE parent values are copied
+// into Properties by inheritance.
+func recordCascadedProps(style *Style) {
+	props := make(map[string]bool, len(style.Properties))
+	for prop, val := range style.Properties {
+		if strings.TrimSpace(val) == "inherit" {
+			continue
+		}
+		props[prop] = true
+	}
+	style.CascadedProps = props
 }
 
 // collectFontFeatureValues flattens all @font-feature-values rules across
@@ -1491,6 +1513,21 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					finalStyle.Set(prop, val)
 				}
 			}
+		}
+	}
+
+	// HTML UA stylesheet pseudo-element defaults: <q> generates its
+	// quotation marks as ::before/::after open-quote/close-quote content
+	// (Blink core/html/resources/html.css:115-121 @ Chromium
+	// 906a32d8634edf17db094507908f439bd9b52de5). Set at UA-origin position —
+	// before author rules are applied — so any author `content` declaration
+	// on q::before/q::after overrides it in normal cascade order.
+	if node.TagName == "q" {
+		switch pseudoElement {
+		case "before":
+			finalStyle.Set("content", "open-quote")
+		case "after":
+			finalStyle.Set("content", "close-quote")
 		}
 	}
 

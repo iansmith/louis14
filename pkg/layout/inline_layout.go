@@ -1347,14 +1347,52 @@ func mergeFirstLineStyleExcept(base, firstLine *css.Style, skip map[string]bool,
 	return merged
 }
 
-// firstLineDirectlySpecified returns the set of ::first-line-allowed properties
-// that the originating element (with computed style `elem`) set directly,
-// detected as a value that differs from the value the element inherits from its
-// nearest ancestor element (`parent`). Only properties the ::first-line style
-// would actually override are reported, so the caller's skip set stays minimal.
-// These are the properties whose ::first-line value must NOT clobber the
-// element's own — the louis14 analog of a descendant declaration outranking the
-// inherited ::first-line value (see mergeFirstLineStyleExcept).
+// firstLineDeclaredProps returns the ::first-line-allowed properties the
+// element declares itself and that the ::first-line style would otherwise
+// override. Primary source is Style.CascadedProps — the cascade's record of
+// the element's own declarations — which distinguishes a declared value from
+// an inherited one even when the two are textually identical
+// (first-line-change-inline-color.html: span declares the same green it
+// would inherit). Mirrors Blink re-resolving each first-line inline with
+// kPseudoIdFirstLineInherited so its own matched declarations re-apply over
+// the inherited ::first-line values (LayoutObject::
+// FirstLineStyleWithoutFallback, layout_object.cc:4386-4404 @ Chromium
+// 906a32d8634edf17db094507908f439bd9b52de5).
+//
+// Styles built outside the element cascade (anonymous boxes, pseudo-element
+// styles, hand-assembled styles) have nil CascadedProps; for those the
+// LOU-179 value-comparison fallback below (firstLineDirectlySpecified)
+// still applies.
+func firstLineDeclaredProps(elem, parent, firstLine *css.Style) map[string]bool {
+	if elem == nil || firstLine == nil {
+		return nil
+	}
+	if elem.CascadedProps == nil {
+		return firstLineDirectlySpecified(elem, parent, firstLine)
+	}
+	var declared map[string]bool
+	for _, prop := range firstLineAllowedProperties {
+		flVal, ok := firstLine.Properties[prop]
+		if !ok || flVal == "" {
+			continue // ::first-line does not override this property
+		}
+		if !elem.CascadedProps[prop] {
+			continue
+		}
+		if declared == nil {
+			declared = make(map[string]bool)
+		}
+		declared[prop] = true
+	}
+	return declared
+}
+
+// firstLineDirectlySpecified is the value-comparison fallback used when
+// Style.CascadedProps is unavailable (see firstLineDeclaredProps): a property
+// counts as directly specified when the element's computed value differs from
+// the value it inherits from its nearest ancestor element (`parent`). Only
+// properties the ::first-line style would actually override are reported, so
+// the caller's skip set stays minimal.
 func firstLineDirectlySpecified(elem, parent, firstLine *css.Style) map[string]bool {
 	if elem == nil || parent == nil || firstLine == nil {
 		return nil
@@ -1399,65 +1437,86 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle, containerStyle *css.St
 	// Item.Style).
 	//
 	// CSS Pseudo-4 §3.2.1: the ::first-line box behaves like an inline-level
-	// element, so its inherited properties reach descendants only via
-	// inheritance — an element on the first line that specifies a property
-	// directly keeps its own value. We detect a direct specification by
-	// comparing each element's computed value against the value it inherits
-	// from its nearest ancestor element. The enclosing-element style stack is
-	// seeded from openInlineStack (inline elements still open from prior lines)
-	// over the container style, then tracks open/close tags as we walk the
-	// line. Mirrors Blink resolving a per-descendant first-line ComputedStyle
-	// (StyleResolver::StyleForFirstLineStyle @ 4883d11fef).
-	stack := make([]*css.Style, 0, len(openInlineStack)+4)
-	stack = append(stack, containerStyle)
+	// element, so its properties reach descendants only via INHERITANCE.
+	// Blink models this by re-resolving every inline on the first line with
+	// its parent's first-line style as the inheritance parent
+	// (StyleRequest(kPseudoIdFirstLineInherited, parent_first_line_style),
+	// LayoutObject::FirstLineStyleWithoutFallback, layout_object.cc:4386-4404
+	// @ Chromium 906a32d8634edf17db094507908f439bd9b52de5). Two consequences
+	// the frame stack below mirrors:
+	//
+	//   - an element's own cascaded declaration outranks the inherited
+	//     ::first-line value (firstLineDeclaredProps / Style.CascadedProps);
+	//   - once an element declares a property, its whole inline subtree
+	//     inherits THAT value, not the ::first-line value — the property is
+	//     "blocked" for every nested descendant
+	//     (first-line-change-inline-color-nested.html).
+	//
+	// Each frame carries the blocked set accumulated from the container down
+	// to that element; an item's skip set is its element's blocked set. The
+	// stack is seeded from openInlineStack (inline elements still open from
+	// prior content) over the container style, then tracks open/close tags.
+	type frame struct {
+		style   *css.Style
+		blocked map[string]bool
+		// merged memoizes mergeFirstLineStyleExcept per base style at this
+		// frame: items of one element commonly repeat (open/text/close), and
+		// the merge clones + re-resolves font metrics on each call.
+		merged map[*css.Style]*css.Style
+	}
+	pushFrame := func(stack []frame, style *css.Style) []frame {
+		top := stack[len(stack)-1]
+		blocked := top.blocked
+		if declared := firstLineDeclaredProps(style, top.style, firstLineStyle); len(declared) > 0 {
+			// Copy-on-extend: frames share the parent's blocked map unless
+			// this element adds to it (the map doubles as a merge-cache key).
+			blocked = make(map[string]bool, len(top.blocked)+len(declared))
+			for p := range top.blocked {
+				blocked[p] = true
+			}
+			for p := range declared {
+				blocked[p] = true
+			}
+		}
+		return append(stack, frame{style: style, blocked: blocked})
+	}
+	stack := make([]frame, 1, len(openInlineStack)+4)
+	stack[0] = frame{style: containerStyle}
 	for _, open := range openInlineStack {
 		if open != nil && open.Style != nil {
-			stack = append(stack, open.Style)
+			stack = pushFrame(stack, open.Style)
 		}
 	}
-	enclosing := func() *css.Style { return stack[len(stack)-1] }
 
-	// Items on the first line commonly share a (base style, enclosing style)
-	// pair; the merge clones + re-resolves font metrics on each call, so
-	// memoize by that pair to collapse O(items) merges to O(distinct pairs).
-	type mergeKey struct{ base, parent *css.Style }
-	mergeCache := make(map[mergeKey]*css.Style)
 	for i := range line.Results {
 		r := &line.Results[i]
 		if r.Item == nil || r.Item.Style == nil {
 			continue
 		}
+		// An open tag pushes its frame FIRST so the element's own item (and
+		// its text/close items) all see the same blocked set — the element's
+		// own declarations keep their base values through the skip.
+		if r.Item.Type == InlineItemOpenTag {
+			stack = pushFrame(stack, r.Item.Style)
+		}
 		// Only apply to text items and open/close tags (inline spans).
 		switch r.Item.Type {
 		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
-			// The element this item belongs to inherits from `parent`: for an
-			// open tag, the currently-enclosing element; for text/close tags,
-			// the element below the one being closed (text shares its element's
-			// style, so comparing against that same element would never detect
-			// a direct specification — compare against the grandparent instead).
-			parent := enclosing()
-			if r.Item.Type != InlineItemOpenTag && len(stack) >= 2 {
-				parent = stack[len(stack)-2]
-			}
-			key := mergeKey{r.Item.Style, parent}
-			merged, ok := mergeCache[key]
+			top := &stack[len(stack)-1]
+			merged, ok := top.merged[r.Item.Style]
 			if !ok {
-				skip := firstLineDirectlySpecified(r.Item.Style, parent, firstLineStyle)
-				merged = mergeFirstLineStyleExcept(r.Item.Style, firstLineStyle, skip, fonts)
-				mergeCache[key] = merged
+				merged = mergeFirstLineStyleExcept(r.Item.Style, firstLineStyle, top.blocked, fonts)
+				if top.merged == nil {
+					top.merged = make(map[*css.Style]*css.Style, 1)
+				}
+				top.merged[r.Item.Style] = merged
 			}
 			if merged != r.Item.Style {
 				r.Style = merged
 			}
 		}
-		// Maintain the enclosing-element stack after deciding this item.
-		switch r.Item.Type {
-		case InlineItemOpenTag:
-			stack = append(stack, r.Item.Style)
-		case InlineItemCloseTag:
-			if len(stack) > 1 {
-				stack = stack[:len(stack)-1]
-			}
+		if r.Item.Type == InlineItemCloseTag && len(stack) > 1 {
+			stack = stack[:len(stack)-1]
 		}
 	}
 }

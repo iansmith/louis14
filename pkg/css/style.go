@@ -94,6 +94,33 @@ type Style struct {
 	// ResolveAppliedTextDecorations.
 	AppliedTextDecorations []AppliedTextDecoration
 
+	// CascadedProps records the longhand property names that received a
+	// cascaded value on THIS element's own cascade (UA defaults,
+	// presentational attributes, author rules, inline style) — as opposed to
+	// values that arrive via inheritance (ApplyInheritedProperties) after
+	// ComputeStyle returns. A declaration whose cascaded value is the literal
+	// `inherit` keyword is excluded: it re-inherits and must not count as
+	// "specified on the element". Nil for styles built outside the cascade
+	// (anonymous boxes, pseudo-element styles, hand-assembled test styles) —
+	// nil means "not recorded", and each consumer picks the conservative
+	// fallback for its own semantics: transition inheritance propagation
+	// treats nil as declares-nothing (propagateInheritedTransitionValue),
+	// while ::first-line application falls back to the LOU-179
+	// value-comparison heuristic (firstLineDeclaredProps) because
+	// pseudo-element styles DO declare properties that must keep outranking
+	// ::first-line (e.g. a ::first-letter color, CSS Pseudo-4 §7.3.3).
+	//
+	// Consumed by pkg/layout's ::first-line application: Blink re-resolves
+	// each first-line inline with the parent's first-line style as the
+	// inheritance parent (StyleRequest(kPseudoIdFirstLineInherited, …),
+	// LayoutObject::FirstLineStyleWithoutFallback, layout_object.cc:4386-4404
+	// @ Chromium 906a32d8634edf17db094507908f439bd9b52de5), so an element's
+	// own matched declarations outrank inherited ::first-line values; this
+	// set is the minimal louis14 analog of that re-application.
+	//
+	// Shared by reference across Clone(); never mutated post-cascade.
+	CascadedProps map[string]bool
+
 	// FontFeatureValues is the document-wide @font-feature-values rule list,
 	// snapshot at cascade time. CSS Fonts 4 §11.4: named alternates in
 	// `font-variant-alternates: stylistic(name) | styleset(name) | …` resolve
@@ -141,6 +168,7 @@ func (s *Style) Clone() *Style {
 		dst.AppliedTextDecorations = make([]AppliedTextDecoration, len(s.AppliedTextDecorations))
 		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
+	dst.CascadedProps = s.CascadedProps // shared by reference; never mutated post-cascade
 	return dst
 }
 
