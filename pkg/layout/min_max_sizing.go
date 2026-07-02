@@ -12,6 +12,19 @@ import (
 //
 // Mirrors Blink's ComputeMinMaxSizes (layout_box.h).
 func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) MinMaxSizes {
+	return computeMinMaxSizesImpl(ctx, node, space, false)
+}
+
+// computeMinMaxSizesImpl is ComputeMinMaxSizes plus the column-BFC bit.
+// isInColumnBfc means this node's content lives in a multicol container's
+// column formatting context, so valid column-span:all children are NOT column
+// content and must be excluded from the measurement. Blink threads this bit as
+// ConstraintSpace::IsInColumnBfc() — set by CreateConstraintSpaceForMinMax
+// (column_layout_algorithm.cc:1896-1904 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// and inherited by non-new-FC descendant spaces. Louis14's ConstraintSpace has
+// no such field (out of scope for LOU-364), so the bit is threaded as a
+// parameter within this file, with the same propagation rules.
+func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, isInColumnBfc bool) MinMaxSizes {
 	style := node.Style()
 	if style == nil {
 		return MinMaxSizes{}
@@ -88,7 +101,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
 			// Measure content min/max to evaluate fit-content() constraints.
-			contentMM := measureNodeContentMinMax(node, ctx, style, wdm, space)
+			contentMM := measureNodeContentMinMax(node, ctx, style, wdm, space, isInColumnBfc)
 			// Apply fit-content() constraints using content-based sizes, then
 			// standard min/max-width constraints.
 			applyFitContentMinMaxWithContentSizes(style, wdm, &result, contentMM)
@@ -169,7 +182,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	}
 
 	// Compute intrinsic sizes based on children (content-box).
-	result := measureNodeContentMinMax(node, ctx, style, wdm, space)
+	result := measureNodeContentMinMax(node, ctx, style, wdm, space, isInColumnBfc)
 
 	// CSS Sizing 4: aspect-ratio on non-replaced elements.
 	// When an element has a preferred aspect ratio and definite block-size
@@ -399,10 +412,11 @@ func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, res
 // measureNodeContentMinMax measures the content-based min/max intrinsic sizes
 // of a node (ignoring its own declared inline-size, min-width, and max-width).
 // Single dispatch point for the per-display-type measurement, shared by
-// ComputeMinMaxSizes, computeContentMinMaxSizes, and the fit-content()
+// computeMinMaxSizesImpl, computeContentMinMaxSizes, and the fit-content()
 // evaluation. Mirrors Blink's BlockNode::ComputeMinMaxSizes dispatch to the
 // display type's layout algorithm (flex, grid, multicol, block/inline).
-func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) MinMaxSizes {
+// isInColumnBfc: see computeMinMaxSizesImpl.
+func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, isInColumnBfc bool) MinMaxSizes {
 	display := style.GetDisplay()
 	// Multicol containers exist only on block-container displays — mirror
 	// layoutElement's dispatch (block_layout.go), which routes to
@@ -431,7 +445,7 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 		return measureInlineMinMax(node, ctx, space)
 	}
 	// Block formatting context: take max of children's sizes.
-	return measureBlockMinMax(node, ctx, space, false)
+	return measureBlockMinMax(node, ctx, space, isInColumnBfc)
 }
 
 // measureMulticolMinMax computes the intrinsic min/max inline sizes of a
@@ -491,8 +505,11 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 	// 4. Spanners aren't part of the count multiplication above; encompass
 	// their contributions now (cla.cc:490-494). Inline-size containment
 	// (which suppresses this in Blink, cla.cc:493) is handled by the
-	// containment early-returns in this file's callers.
-	spanners := measureSpannersMinMax(node, ctx, space)
+	// containment early-returns in this file's callers. The multicol's own
+	// resolved block-size rides along so spanner percentage block-sizes can
+	// resolve (Blink: SetAvailableBlockSize(ChildAvailableSize().block_size),
+	// cla.cc:544).
+	spanners := measureSpannersMinMax(node, ctx, space, resolveNodeBlockSizeForPercent(node, space))
 	result.MinContent = math.Max(result.MinContent, spanners.MinContent)
 	result.MaxContent = math.Max(result.MaxContent, spanners.MaxContent)
 	return result
@@ -505,8 +522,16 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 // children establishing a new formatting context are skipped — spanners must
 // participate in the multicol's own formatting context, so a column-span:all
 // inside e.g. a flow-root is regular column content — and non-spanner block
-// children are searched recursively.
-func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+// children are searched recursively. The recursion gate is
+// shouldPreventColumnSpannerDescendants (a superset of Blink's literal
+// CreatesNewFormattingContext check): Blink's walk additionally relies on
+// IsColumnSpanAll()'s tree validity, which the extra conditions (nested
+// spanner, table internals, transforms) reproduce here.
+//
+// nodeBlockSize is the multicol's resolved content block-size (or Indefinite)
+// for spanner percentage block-size resolution — Blink's
+// SetAvailableBlockSize(ChildAvailableSize().block_size) at cla.cc:544.
+func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, nodeBlockSize float64) MinMaxSizes {
 	var result MinMaxSizes
 	for _, child := range searchParent.Children() {
 		if child.IsText() {
@@ -522,12 +547,25 @@ func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, sp
 			// ComputeMinAndMaxContentContribution call at cla.cc:543-546,
 			// with a new-FC space (spanners establish formatting contexts).
 			childWDM := NewWritingDirectionMode(childStyle)
-			childSpace := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, true).
+			csBuilder := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, true).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-				Build()
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+			if nodeBlockSize != Indefinite {
+				// Definite multicol block-size: let the spanner's percentage
+				// block-size (and aspect-ratio transfer) resolve against it,
+				// mirroring measureBlockMinMax's parallel-child space.
+				csBuilder.SetPercentageResolutionSize(LogicalSize{
+					InlineSize: space.PercentageResolutionInlineSize,
+					BlockSize:  nodeBlockSize,
+				})
+				csBuilder.SetAvailableSize(LogicalSize{
+					InlineSize: space.AvailableSize.InlineSize.Float64(),
+					BlockSize:  nodeBlockSize,
+				})
+			}
+			childSpace := csBuilder.Build()
 			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			extra := childGeom.InlineBorderPadding() +
@@ -537,10 +575,10 @@ func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, sp
 				MaxContent: childMM.MaxContent + extra,
 			}
 		} else {
-			if createsFormattingContext(childStyle, child) {
+			if shouldPreventColumnSpannerDescendants(child) {
 				continue
 			}
-			childResult = measureSpannersMinMax(child, ctx, space)
+			childResult = measureSpannersMinMax(child, ctx, space, nodeBlockSize)
 		}
 		result.MinContent = math.Max(result.MinContent, childResult.MinContent)
 		result.MaxContent = math.Max(result.MaxContent, childResult.MaxContent)
@@ -607,29 +645,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	fonts := ctx.FontConfig
 	wdm := space.WritingDirection
 
-	// Resolve the node's own definite block-size for percentage resolution.
-	// This allows children with percentage heights (e.g., img { height: 100% })
-	// to resolve against the containing block's height.
-	//
-	// Pass the percentage resolution inline-size so percent padding (CSS 2.1
-	// §8.4) is subtracted correctly when box-sizing:border-box; see the
-	// matching comment in measureBlockMinMax for the rationale.
-	blockForPct := Indefinite
-	if nodeStyle := node.Style(); nodeStyle != nil {
-		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
-		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
-			blockForPct = bs.Float64()
-		} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
-			space.AvailableSize.BlockSize.Float64() >= 0 {
-			content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
-			if content < 0 {
-				content = 0
-			}
-			blockForPct = content
-		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-			blockForPct = space.PercentageResolutionSize.BlockSize.Float64()
-		}
-	}
+	blockForPct := resolveNodeBlockSizeForPercent(node, space)
 
 	// CSS 2.1 §16.6 / CSS Text 4 §3.4: when the inline container suppresses
 	// soft wrapping (`white-space: nowrap | pre`, `text-wrap: nowrap`), the
@@ -754,7 +770,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
 
-	result := measureNodeContentMinMax(node, ctx, style, wdm, space)
+	result := measureNodeContentMinMax(node, ctx, style, wdm, space, false)
 
 	// Apply min/max inline-size constraints (but NOT explicit inline-size).
 	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
@@ -1439,61 +1455,73 @@ func hasPercentLogicalWidth(style *css.Style, wdm WritingDirectionMode) bool {
 	return false
 }
 
+// resolveNodeBlockSizeForPercent resolves a node's own definite content
+// block-size for descendant percentage resolution during intrinsic sizing,
+// or Indefinite when none. This allows children with percentage heights
+// (e.g., img { height: 100% }) to resolve against the containing block's
+// height. Shared by measureInlineMinMax, measureBlockMinMax, and the multicol
+// spanner walk.
+//
+// The percentage resolution inline-size is passed to ComputeFragmentGeometry
+// so percent padding (which resolves against the containing block's
+// inline-size per CSS 2.1 §8.4) is subtracted from the node's resolved
+// block-size when box-sizing:border-box. Without this, padding:100% on a
+// border-box element under intrinsic sizing leaks into the resolved content
+// block-size, miscomputing descendants' percentage heights.
+func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace) float64 {
+	nodeStyle := node.Style()
+	if nodeStyle == nil {
+		return Indefinite
+	}
+	wdm := space.WritingDirection
+	nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
+	if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
+		return bs.Float64()
+	}
+	if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
+		space.AvailableSize.BlockSize.Float64() >= 0 {
+		// Parent algorithm (OOF, flex) fixed the block-size via IsFixedBlockSize.
+		// The fixed available block-size IS the node's used block-size and
+		// supersedes the containing block's PercentageResolutionSize.BlockSize
+		// for descendant percentage resolution. Without this, an abspos with
+		// top/bottom-derived block-size would propagate the CB's height
+		// (CSS 2.1 §10.5 says percentages resolve against the abspos's own
+		// height once it is definite).
+		content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
+		if content < 0 {
+			content = 0
+		}
+		return content
+	}
+	if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+		// Parent provided a definite block percentage resolution size
+		// (e.g., from a flex item's explicit cross-size). Propagate it.
+		return space.PercentageResolutionSize.BlockSize.Float64()
+	}
+	return Indefinite
+}
+
 // Floats are handled specially: multiple same-side floats placed side-by-side
 // contribute their SUMMED inline sizes to max-content (since at max-content
 // width, all floats fit beside each other). Min-content = max single float
 // inline size (floats can always stack when width is insufficient).
 //
-// skipColumnSpanners excludes valid column-span:all children from the
+// isInColumnBfc excludes valid column-span:all children from the
 // measurement — set when measuring a multicol container's column content,
 // whose spanners are encompassed separately (measureMulticolMinMax). Mirrors
 // BlockLayoutAlgorithm::ComputeMinMaxSizes skipping `child.IsColumnSpanAll()
 // && GetConstraintSpace().IsInColumnBfc()` (block_layout_algorithm.cc:418-419
-// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink threads the flag through
-// the constraint space so it also reaches non-new-FC descendants; louis14's
-// ConstraintSpace has no such flag yet, so only the multicol's direct
-// children are skipped here (a spanner nested in a non-FC wrapper still
-// leaks into the wrapper's contribution).
-func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, skipColumnSpanners bool) MinMaxSizes {
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The bit propagates to child
+// contribution measurements unless the child prevents spanner descendants
+// (new FC, nested spanner, table internals, transforms — the same ancestry
+// gate layout-time spanner detection uses), matching Blink's constraint-space
+// inheritance + IsColumnSpanAll tree validity.
+func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, isInColumnBfc bool) MinMaxSizes {
 	var result MinMaxSizes
 
 	parentWDM := space.WritingDirection
 
-	// Resolve the node's own definite block-size (CSS height for HTB).
-	// This is used as the percentage resolution block-size for children,
-	// so that percentage-height descendants can resolve (e.g., img { height: 100% }
-	// inside a div with explicit height).
-	nodeBlockSize := Indefinite
-	if nodeStyle := node.Style(); nodeStyle != nil {
-		// Pass the percentage resolution inline-size so that percent padding
-		// (which resolves against the containing block's inline-size per CSS
-		// 2.1 §8.4) is subtracted from the node's resolved block-size when
-		// box-sizing:border-box. Without this, padding:100% on a
-		// border-box element under intrinsic sizing leaks into the resolved
-		// content block-size, miscomputing descendants' percentage heights.
-		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM, space.PercentageResolutionInlineSize)
-		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
-			nodeBlockSize = bs.Float64()
-		} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
-			space.AvailableSize.BlockSize.Float64() >= 0 {
-			// Parent algorithm (OOF, flex) fixed the block-size via IsFixedBlockSize.
-			// The fixed available block-size IS the node's used block-size and
-			// supersedes the containing block's PercentageResolutionSize.BlockSize
-			// for descendant percentage resolution. Without this, an abspos with
-			// top/bottom-derived block-size would propagate the CB's height
-			// (CSS 2.1 §10.5 says percentages resolve against the abspos's own
-			// height once it is definite).
-			content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
-			if content < 0 {
-				content = 0
-			}
-			nodeBlockSize = content
-		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-			// Parent provided a definite block percentage resolution size
-			// (e.g., from a flex item's explicit cross-size). Propagate it.
-			nodeBlockSize = space.PercentageResolutionSize.BlockSize.Float64()
-		}
-	}
+	nodeBlockSize := resolveNodeBlockSizeForPercent(node, space)
 
 	// Accumulate float inline sizes by side for max-content computation.
 	// Mirrors Blink's NGBlockLayoutAlgorithm::ComputeMinMaxSizes: at max-content
@@ -1523,7 +1551,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 		// Valid column-span:all children of a multicol container are not
 		// column content (block_layout_algorithm.cc:418-419, see doc comment).
-		if skipColumnSpanners && childStyle.GetColumnSpan() == "all" &&
+		if isInColumnBfc && childStyle.GetColumnSpan() == "all" &&
 			isSelfValidColumnSpanner(childStyle) {
 			continue
 		}
@@ -1563,7 +1591,14 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			}
 			childSpace := csBuilder.Build()
 
-			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+			// Propagate the column-BFC bit so spanners nested in non-FC
+			// wrappers are excluded at every depth, mirroring Blink's
+			// constraint-space inheritance of is_in_column_bfc. The bit dies
+			// where the child could not host a valid spanner descendant
+			// (shouldPreventColumnSpannerDescendants: new FC, spanner itself,
+			// table internals, transforms — layout_box.cc:3003 analogue).
+			childInColumnBfc := isInColumnBfc && !shouldPreventColumnSpannerDescendants(child)
+			childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)
 
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			childBP := childGeom.InlineBorderPadding()

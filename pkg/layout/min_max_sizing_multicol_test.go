@@ -158,6 +158,82 @@ func TestMulticolMinMax_SpannerInsideNewFCIsColumnContent(t *testing.T) {
 	}
 }
 
+// The spanner skip must propagate through non-FC wrapper blocks, mirroring
+// Blink's is_in_column_bfc constraint-space bit which is inherited by
+// non-new-FC descendants (block_layout_algorithm.cc:418-419 skips
+// `child.IsColumnSpanAll() && GetConstraintSpace().IsInColumnBfc()` at every
+// depth). Shape of WPT intrinsic-size-003: columns:3 with a spanner nested in
+// plain wrapper divs — the spanner's 100px content must not be multiplied by
+// the column count (expected fit-content = 100, not 300).
+func TestMulticolMinMax_NestedSpannerSkipPropagatesThroughWrappers(t *testing.T) {
+	inner := makeNode("div")
+	spanner := makeNode("div", inner)
+	wrapper2 := makeNode("div", spanner)
+	wrapper1 := makeNode("div", wrapper2)
+	container := makeNode("div", wrapper1)
+	styles := map[*html.Node]*css.Style{
+		container: makeStyle("display", "block", "column-count", "3", "column-gap", "0"),
+		wrapper1:  makeStyle("display", "block"),
+		wrapper2:  makeStyle("display", "block"),
+		spanner:   makeStyle("display", "block", "column-span", "all"),
+		inner:     makeStyle("display", "block", "width", "100px"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(container, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+	mm := ComputeMinMaxSizes(ctx, layoutRoot, space)
+
+	// Column content (wrappers minus the nested spanner) = 0 ×3 = 0;
+	// encompass nested spanner 100 → 100. Without skip propagation the
+	// wrapper contributes 100 → ×3 = 300.
+	if mm.MinContent != 100 {
+		t.Errorf("MinContent: got %.2f, want 100 (nested spanner excluded from multiplication)", mm.MinContent)
+	}
+	if mm.MaxContent != 100 {
+		t.Errorf("MaxContent: got %.2f, want 100 (nested spanner excluded from multiplication)", mm.MaxContent)
+	}
+}
+
+// A spanner's percentage block-size must resolve against the multicol's
+// block-size during the spanner min/max walk, so aspect-ratio can transfer it
+// to the inline axis. Mirrors cla.cc:544 SetAvailableBlockSize(
+// ChildAvailableSize().block_size). Shape of WPT intrinsic-size-005
+// (columns:4; spanner height:100%; aspect-ratio:1/1 in a 100px-tall multicol
+// → contribution 100).
+func TestMulticolMinMax_SpannerPercentHeightAspectRatio(t *testing.T) {
+	spanner := makeNode("div")
+	container := makeNode("div", spanner)
+	styles := map[*html.Node]*css.Style{
+		container: makeStyle("display", "block", "column-count", "4", "column-gap", "0",
+			"height", "100px"),
+		spanner: makeStyle("display", "block", "column-span", "all",
+			"height", "100%", "aspect-ratio", "1/1"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(container, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+	mm := ComputeMinMaxSizes(ctx, layoutRoot, space)
+
+	// Column content = 0 ×4 = 0; spanner: height 100% → 100 → 1:1 ratio →
+	// 100 inline contribution.
+	if mm.MinContent != 100 {
+		t.Errorf("MinContent: got %.2f, want 100 (spanner percent height × aspect-ratio)", mm.MinContent)
+	}
+	if mm.MaxContent != 100 {
+		t.Errorf("MaxContent: got %.2f, want 100 (spanner percent height × aspect-ratio)", mm.MaxContent)
+	}
+}
+
 // Percentage column-gap resolves against a zero base during intrinsic sizing
 // (cla.cc:477 ResolveColumnGapForMulticol(Style(), LayoutUnit()) → 0).
 func TestMulticolMinMax_PercentGapResolvesToZero(t *testing.T) {
