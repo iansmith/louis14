@@ -1438,10 +1438,14 @@ func parsePropertyIndexedKeyframes(vm *goja.Runtime, arr *goja.Object) map[strin
 		if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 			continue
 		}
+		// Only genuine arrays are value LISTS. A bare length check would
+		// also match string objects (goja strings expose length), splitting
+		// a scalar like {color: 'green'} into per-character keyframes; per
+		// Web Animations §5.2 a DOMString is a single-value list (Blink
+		// EffectInput::ParseKeyframesArgument's object branch).
 		var vals []string
-		vObj := v.ToObject(vm)
-		if vLen := vObj.Get("length"); vLen != nil && !goja.IsUndefined(vLen) {
-			vn := int(vLen.ToInteger())
+		if vObj := v.ToObject(vm); vObj != nil && vObj.ClassName() == "Array" {
+			vn := int(vObj.Get("length").ToInteger())
 			for i := 0; i < vn; i++ {
 				vals = append(vals, vObj.Get(strconv.Itoa(i)).String())
 			}

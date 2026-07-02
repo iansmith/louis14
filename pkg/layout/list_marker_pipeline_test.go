@@ -256,8 +256,12 @@ func TestFloatedListItemPseudoKeepsMarker(t *testing.T) {
 			t.Fatalf("li%d has no children (no ::before generated)", i+1)
 		}
 		pseudo := kids[0]
-		if pseudo.DOMNode == nil || pseudo.DOMNode.TagName != "::before" {
-			t.Fatalf("li%d first child is %q, want the ::before pseudo", i+1, pseudo.DOMNode.TagName)
+		gotTag := "<nil>"
+		if pseudo.DOMNode != nil {
+			gotTag = pseudo.DOMNode.TagName
+		}
+		if gotTag != "::before" {
+			t.Fatalf("li%d first child is %q, want the ::before pseudo", i+1, gotTag)
 		}
 		if !pseudo.Style().IsListItemDisplay() {
 			t.Errorf("li%d ::before display = %q; float blockification must preserve list-item", i+1, pseudo.Style().GetDisplay())

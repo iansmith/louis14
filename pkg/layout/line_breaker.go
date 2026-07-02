@@ -1411,9 +1411,13 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	fitted := 0
 	usedWidth := 0.0
 
-	// If remaining space is effectively zero and the line already has content,
-	// end the line immediately.
-	if remaining <= 0 && len(line.Results) > 0 {
+	// If remaining space is effectively zero and the line already has placed
+	// CONTENT, end the line immediately. Keyed off line.HasContent — matching
+	// breakTextAtWord's guards — so a zero-width marker/span open tag in
+	// line.Results does not end the line before its first real content
+	// (in-tree callers never reach here with remaining<=0 and an open tag,
+	// but the keying must not drift from the placed-content model).
+	if remaining <= 0 && line.HasContent {
 		return true
 	}
 
@@ -1458,8 +1462,9 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	}
 
 	if fitted == 0 {
-		if len(line.Results) == 0 {
-			// Force at least one character on an empty line.
+		if !line.HasContent {
+			// Force at least one character on a line with no placed content
+			// (zero-width open tags don't count — same keying as above).
 			r, size := utf8.DecodeRuneInString(content)
 			charStr := string(r)
 			if isVertical {

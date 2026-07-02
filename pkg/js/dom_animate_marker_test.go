@@ -69,6 +69,36 @@ func TestAnimatePseudoElementMarker(t *testing.T) {
 	}
 }
 
+// TestAnimatePropertyIndexedScalarString covers the scalar-value form of
+// property-indexed keyframes: {color: 'green'} is ONE value (a to-frame), not
+// an iterable. A goja string object exposes a length property, so a bare
+// length check mistakes it for an array and splits it into per-character
+// keyframes ("g","r","e","e","n") — CodeRabbit finding on PR #161. Web
+// Animations §5.2 (Blink EffectInput::ParseKeyframesArgument's object branch)
+// treats a DOMString as a single-value list.
+func TestAnimatePropertyIndexedScalarString(t *testing.T) {
+	doc := parseHTML(t, `<ul><li>Item</li></ul>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		document.querySelector('li').animate({
+			color: 'green'
+		}, {
+			pseudoElement: '::marker',
+			duration: Infinity
+		});
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	li := findElement(doc.Root, "li")
+	if li == nil {
+		t.Fatalf("li not found")
+	}
+	if got := li.MarkerAnimatedStyle["color"]; got != "green" {
+		t.Errorf("MarkerAnimatedStyle[color] = %q, want %q (scalar string must not be split per character)", got, "green")
+	}
+}
+
 // TestAnimateElementWithoutCurrentTimeStaysInert pins the existing
 // element-level contract: an animate() call WITHOUT pseudoElement and without
 // a currentTime assignment does not touch the element (the static harness
