@@ -97,3 +97,16 @@ css-pseudo/marker-content-011.tentative.html	Blink-faithful failure: Chrome 148 
 #     wpt.fyi search API with pinned master run IDs, 2026-07-01. See LOU-359.
 css-pseudo/first-letter-digraph.html	Blink-faithful failure: digraph-aware ::first-letter is Gecko-only; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
 css-pseudo/first-letter-punctuation-and-space.html	Blink-faithful failure: ::first-letter punctuation-and-space selection; Chrome 152.0.7923.0 (run 6255051919327232) and Edge 151.0.4119.1 both FAIL @ wpt.fyi (LOU-359)
+
+# --- css-multicol: max-content sizing with non-auto column-width.
+#     multicol-width-005 case 1 encodes the Mozilla interpretation ("'column-
+#     count:auto' is considered one column", so width:max-content = column-width
+#     80px even though content is 100px wide). Blink's rule
+#     (ColumnLayoutAlgorithm::ComputeMinMaxSizes, column_layout_algorithm.cc:
+#     458-471 @ a9f50e522efa) computes max = max(content_max, column_width) =
+#     100px. louis14 ports Blink's rule (LOU-364); cases 2-6 render correctly,
+#     case 1 diverges by design. Chrome 150.0.7871.46 stable FAILS (wpt.fyi run
+#     5133332257177600, rev 58970eced7, 2026-07-01); Firefox 152.0.4 stable
+#     PASSES (rev 62ffcb685d, 2026-07-02). Verified via wpt.fyi search API with
+#     pinned run IDs. See LOU-364 final report.
+css-multicol/multicol-width-005.html	Blink-faithful failure: max-content with column-width, Blink max=max(content,column-width)=100 vs Mozilla ref 80; Chrome 150 F @ wpt.fyi run 5133332257177600, Firefox 152.0.4 P (LOU-364)
