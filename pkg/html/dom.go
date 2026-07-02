@@ -33,6 +33,20 @@ type Node struct {
 	// the new focused element and walking up from the old one to clear. Lets
 	// :focus-within evaluate O(1) during selector matching.
 	HasFocusWithin bool
+
+	// MarkerAnimatedStyle holds property values a Web Animation targeting
+	// this element's ::marker pseudo-element (Element.animate with
+	// {pseudoElement: '::marker'}) has sampled at the current time. Written
+	// by the JS animate() binding in pkg/js/dom.go; consumed by the layout
+	// tree builder's marker style resolution, which applies the values
+	// through the ::marker allowed-property filter — the louis14 analog of
+	// Blink adding CSSProperty::kValidForMarker to the cascade filter when
+	// applying animation interpolations to a kPseudoIdMarker style
+	// (StyleResolver::ApplyAnimatedStyle, style_resolver.cc:2626-2636 @
+	// 43cee02dc59fdad798675a735737510ecf0c9064). Values are stored
+	// UNFILTERED (Blink filters at style application, not at animation
+	// creation); nil when no marker animation is active.
+	MarkerAnimatedStyle map[string]string
 }
 
 type NodeType int
@@ -126,6 +140,16 @@ type Document struct {
 	// document.createRange/getSelection/addRange/removeAllRanges bindings
 	// in pkg/js/dom_selection.go.
 	Selection *Range
+
+	// LiveRanges holds every script-created DOM Range (document.createRange
+	// / new Range()) so node-removal mutations can apply the WHATWG DOM
+	// §4.2.3 live-range boundary adjustments ("remove" steps 12-16) to
+	// them. Mirrors Blink's Document::AttachRange registry consulted by
+	// Document::NodeWillBeRemoved (core/dom/document.cc @ Chromium
+	// 906a32d8634edf17db094507908f439bd9b52de5); the Selection Range above
+	// gets the same adjustment without being registered here. Populated by
+	// pkg/js/dom_selection.go's newRangeProxy.
+	LiveRanges []*Range
 
 	// TargetTextRanges holds the document's current ::target-text highlight
 	// matches (LOU-349), or nil if window.location's hash/href has never
@@ -244,11 +268,59 @@ func NewDocument() *Document {
 // bounded by the removed subtree, and skipped entirely when no element
 // is currently focused.
 func (d *Document) NotifyNodeDetached(removed *Node) {
-	if d == nil || d.FocusedElement == nil || removed == nil {
+	if d == nil || removed == nil {
 		return
 	}
-	if removed.Contains(d.FocusedElement) {
+	if d.FocusedElement != nil && removed.Contains(d.FocusedElement) {
 		d.SetFocusedElement(nil)
+	}
+	// WHATWG DOM §4.2.3 "remove" steps 12-16: live ranges whose boundary
+	// points live inside the removed subtree collapse to (parent, index of
+	// removed node); boundary points in the parent after the removed child
+	// shift back by one. Mirrors Blink Document::NodeWillBeRemoved's Range
+	// fixup (core/dom/document.cc @ Chromium
+	// 906a32d8634edf17db094507908f439bd9b52de5). Without this, e.g.
+	// first-letter-of-html-root-refcrash.html's selectAllChildren range
+	// keeps a stale end offset across document.body.remove() and
+	// surroundContents swallows content appended after the removal.
+	parent := removed.Parent
+	if parent == nil {
+		return
+	}
+	idx := removed.IndexInParent()
+	if idx < 0 {
+		return
+	}
+	if d.Selection != nil {
+		adjustRangeForRemoval(d.Selection, removed, parent, idx)
+	}
+	for _, r := range d.LiveRanges {
+		if r == d.Selection {
+			// Selection#addRange stores the same *Range pointer a
+			// createRange proxy registered here — adjust it exactly once.
+			continue
+		}
+		adjustRangeForRemoval(r, removed, parent, idx)
+	}
+}
+
+// adjustRangeForRemoval applies the DOM §4.2.3 boundary-point adjustments
+// for the removal of `removed` (child idx of parent) to one live Range.
+func adjustRangeForRemoval(r *Range, removed, parent *Node, idx int) {
+	if r == nil {
+		return
+	}
+	if r.StartContainer != nil && removed.Contains(r.StartContainer) {
+		r.StartContainer = parent
+		r.StartOffset = idx
+	} else if r.StartContainer == parent && r.StartOffset > idx {
+		r.StartOffset--
+	}
+	if r.EndContainer != nil && removed.Contains(r.EndContainer) {
+		r.EndContainer = parent
+		r.EndOffset = idx
+	} else if r.EndContainer == parent && r.EndOffset > idx {
+		r.EndOffset--
 	}
 }
 

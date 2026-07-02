@@ -98,6 +98,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		}
 		// Second layout pass to pick up DOM mutations made by JS.
 		engine2 := layout.NewLayoutEngine(float64(width), float64(height))
+		// CSS Transitions: the post-script pass compares against the first
+		// pass's computed styles (before-change styles).
+		engine2.SetPreviousStyles(engine.ComputedStyles())
 		engine2.SetFontConfig(fontConfig)
 		if fetcher != nil {
 			engine2.SetImageFetcher(fetcher)
