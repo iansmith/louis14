@@ -462,3 +462,67 @@ func TestParallelFlow_CompletedParentCarriesChildContinuation(t *testing.T) {
 		t.Errorf("inner consumed = %v, want 100 (one fragmentainer's worth)", got)
 	}
 }
+
+// TestMonolithic_LeafNeverGetsResumeToken: a monolithic leaf child taller
+// than the fragmentainer must be moved past the break point AS A UNIT —
+// the parent must never emit a consumed-progress resume token for it.
+// Blink: "If it's too tall to fit, it will either overflow the
+// fragmentainer or get brutally sliced ... depending on fragmentation type
+// (multicol vs. printing)" — for multicol it overflows, never resumes
+// (fragmentation_utils.cc:329-339 @ a9f50e522efa). Louis14's parent-side
+// LEAF-slicing dispatch used to emit `{Node: child, ConsumedBlockSize: N}`
+// tokens for monolithic leaves; since the space gate also (correctly)
+// stops forwarding resume tokens into monolithic children, the resumed
+// child re-rendered at full height every time and the token never
+// finished — the multicol-nested-011 infinite row loop (30s watchdog
+// hang).
+//
+// Geometry mirrors nested-011's inner wrapper: fragmentainer 50 with
+// IsBlockSizeOverride (a column slot), monolithic contain:size leaf h100.
+func TestMonolithic_LeafNeverGetsResumeToken(t *testing.T) {
+	leaf := makeNode("div")
+	parent := makeNode("div", leaf)
+	node := buildTestTree(parent, map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "width", "100px"),
+		leaf: makeStyle("display", "block", "contain", "size",
+			"width", "100px", "height", "100px"),
+	})
+
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
+		SetIsFixedBlockSize(true).
+		SetIsBlockSizeOverride(true).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(50).
+		SetFragmentainerOffset(0).
+		SetBlockFragmentationType(FragmentColumn).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+	// The monolithic leaf must be placed whole (100, overflowing the 50px
+	// fragmentainer) ...
+	leafFrag := findScrollFragment(result.Fragment)
+	if leafFrag == nil {
+		t.Fatal("monolithic leaf fragment not placed")
+	}
+	if got := leafFrag.Size.HeightF64(); got != 100 {
+		t.Errorf("leaf fragment height = %v, want 100 (moved past the breakpoint as a unit)", got)
+	}
+	// ... and must NOT appear in the outgoing break token as an in-progress
+	// resume (that token can never finish: the gate correctly refuses to
+	// slice the child on resume, so consumed progress never reaches the
+	// leaf's declared size — an infinite fragmentainer loop).
+	if result.BreakToken != nil {
+		for _, ct := range result.BreakToken.ChildBreakTokens {
+			if ct.Node == node.Children()[0] && !ct.IsBreakBefore {
+				t.Errorf("outgoing token carries an in-progress resume for the monolithic leaf (consumed=%v)",
+					ct.ConsumedBlockSize.Float64())
+			}
+		}
+	}
+}

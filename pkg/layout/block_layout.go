@@ -1671,6 +1671,25 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// unchanged.
 					if childResult.BreakToken != nil {
 						pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
+					} else if childResult.Fragment != nil && childResult.Fragment.IsMonolithic {
+						// LOU-365: a monolithic child is moved past the break
+						// point AS A UNIT — it overflows the fragmentainer and
+						// is DONE; never emit a consumed-progress resume token
+						// for it (fragmentation_utils.cc:329-339 @
+						// a9f50e522efa). The leaf-slicing branch below would
+						// emit one, but the space gate (correctly) refuses to
+						// slice the child on resume, so that token can never
+						// finish — an infinite fragmentainer loop
+						// (multicol-nested-011 watchdog hang). The parent's
+						// own continuation resumes at the next sibling.
+						if childIdx+1 < len(children) {
+							pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
+								Node:          children[childIdx+1],
+								IsBreakBefore: true,
+							})
+						} else {
+							pendingHasSeenAllChildren = true
+						}
 					} else if len(child.Children()) == 0 && !hasOnlyInlineChildren(child) {
 						// Leaf block: child completed but its declared size overflowed.
 						childConsumed := fragEnd - actualChildBlockOff
