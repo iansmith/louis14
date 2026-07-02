@@ -610,6 +610,40 @@ func TestEquivalentInlineDisplay(t *testing.T) {
 	}
 }
 
+// TestEquivalentBlockDisplay covers the blockification mapping. Mirrors Blink
+// `core/css/resolver/style_adjuster.cc:248-301` `EquivalentBlockDisplay`
+// @ 43cee02dc59fdad798675a735737510ecf0c9064: block-level displays (including
+// kListItem, :258-262) are returned unchanged, and kInlineListItem maps to
+// kListItem (:277-278) — list-item-ness survives blockification, so a floated
+// `display: list-item` pseudo keeps generating its ::marker (LOU-358).
+func TestEquivalentBlockDisplay(t *testing.T) {
+	cases := []struct {
+		in, want DisplayType
+	}{
+		{DisplayInline, DisplayBlock},
+		{DisplayInlineBlock, DisplayBlock},
+		{DisplayFlowRoot, DisplayBlock},
+		{DisplayInlineFlex, DisplayFlex},
+		{DisplayInlineGrid, DisplayGrid},
+		{DisplayInlineTable, DisplayTable},
+		{DisplayRuby, DisplayBlockRuby},
+		{DisplayRubyText, DisplayBlock},
+		{DisplayInlineListItem, DisplayListItem},
+		// Already block-level — identity.
+		{DisplayBlock, DisplayBlock},
+		{DisplayTable, DisplayTable},
+		{DisplayFlex, DisplayFlex},
+		{DisplayGrid, DisplayGrid},
+		{DisplayListItem, DisplayListItem},
+		{DisplayBlockRuby, DisplayBlockRuby},
+	}
+	for _, c := range cases {
+		if got := EquivalentBlockDisplay(c.in); got != c.want {
+			t.Errorf("EquivalentBlockDisplay(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // CSS Cascade 5 §6.2 + §6.1.3: each anonymous @layer block is its own
 // distinct layer, and revert-layer rolls back to the value the property
 // held at the start of the current layer.
@@ -871,11 +905,22 @@ func TestApplyMarkerUADefaults_NoAuthorRules(t *testing.T) {
 	if v, ok := markerStyle.Get("text-transform"); !ok || v != "none" {
 		t.Errorf("marker text-transform = %q, want %q (UA default must override inherited value)", v, "none")
 	}
-	if v, ok := markerStyle.Get("white-space"); !ok || v != "pre" {
-		t.Errorf("marker white-space = %q, want %q (UA default must be set)", v, "pre")
+	// Blink core/css/marker.css @ 43cee02dc59fdad798675a735737510ecf0c9064 does
+	// NOT set white-space on ::marker — only OUTSIDE markers get white-space:pre,
+	// stamped by StyleAdjuster::AdjustStyleForMarker (style_adjuster.cc:502-507
+	// @ 43cee02d; louis14: resolveMarkerStyle's !markerInside branch). The UA
+	// defaults must leave the inherited value alone so an inside marker's
+	// trailing suffix space is end-of-line-collapsible (WPT css-pseudo/
+	// marker-text-decoration-skip-ink).
+	if v, ok := markerStyle.Get("white-space"); ok && v == "pre" {
+		t.Errorf("marker white-space = %q; the UA ::marker defaults must not stamp white-space", v)
 	}
 	if v, ok := markerStyle.Get("font-variant-numeric"); !ok || v != "tabular-nums" {
 		t.Errorf("marker font-variant-numeric = %q, want %q (UA default must be set)", v, "tabular-nums")
+	}
+	// marker.css @ 43cee02d: text-align-last: auto !important.
+	if v, ok := markerStyle.Get("text-align-last"); !ok || v != "auto" {
+		t.Errorf("marker text-align-last = %q, want %q (UA default must be set)", v, "auto")
 	}
 }
 

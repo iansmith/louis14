@@ -594,15 +594,16 @@ func measureWidth(text string, fontSize float64, fontPath string) float64 {
 	if err != nil {
 		w = math.Floor(float64(len(text)) * fontSize * 0.6)
 	} else {
-		// Return the exact sub-pixel advance (no rounding).
+		// Return the exact sub-pixel advance (no rounding, no minimum).
 		// Layout accumulates these as float64, so adjacent text boxes are
 		// positioned at exact fractional-pixel boundaries. DrawText then
 		// decomposes each box's X into floor(X) + frac(X)*64 as StartPenX,
 		// producing glyph positions identical to a single combined run.
+		// Zero-advance runs (e.g. a lone U+200B) measure 0, matching Blink
+		// ShapeResult::Width — the old `w < 1 → 1` clamp was a leftover
+		// make-it-visible guard from the pre-HarfBuzz gg measurement path
+		// and made a floated ZWSP-only ::before 1px too wide (LOU-358).
 		w = float64(adv) / 64.0
-		if w < 1 && len(text) > 0 {
-			w = 1
-		}
 	}
 	measureCache.Store(key, w)
 	return w
