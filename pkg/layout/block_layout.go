@@ -2845,7 +2845,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	childMargins := ResolveMargins(childStyle, parentWDM, contentInlineSize)
 
 	// Floats establish a new BFC.
-	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+	csBuilder := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(childWDM, bla.ctx)).
 		SetOrthogonalFallbackBlockSize(
@@ -2858,8 +2858,36 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 			InlineSize: contentInlineSize,
 			BlockSize:  availableBlock, // resolves height:100% against container's explicit height
 		}).
-		SetPercentageResolutionInlineSize(contentInlineSize).
-		Build()
+		SetPercentageResolutionInlineSize(contentInlineSize)
+
+	// LOU-365: propagate the fragmentainer to non-monolithic floats. In
+	// Blink, floats participate in block fragmentation through the same
+	// SetupSpaceBuilderForFragmentation as in-flow children, with the
+	// same monolithic gate (fragmentation_utils.cc:321-345 @
+	// a9f50e522efa). Louis14 does not implement float SLICING (a float
+	// whose content overflows the fragmentainer keeps one whole
+	// fragment), but an inner fragmentation context inside the float —
+	// e.g. a floated multicol with column-fill:auto — must see the outer
+	// fragmentainer's remaining space to clamp its column block-size
+	// (Blink ConstrainColumnBlockSize; driver:
+	// nested-floated-multicol-with-monolithic-child, where the floated
+	// inner multicol otherwise grows past the outer column and paints
+	// below it). The offset is the float's tentative block position; the
+	// balancing-pass flag keeps measure-pass semantics consistent with
+	// the in-flow site above.
+	if bla.space.HasBlockFragmentation &&
+		!child.IsMonolithic(parentWDM.WM != childWDM.WM) {
+		floatFragOffset := bla.space.FragmentainerOffset + blockCursor +
+			prevMarginStrut.Resolve() + childMargins.BlockStart
+		csBuilder.
+			SetHasBlockFragmentation(true).
+			SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
+			SetFragmentainerOffset(floatFragOffset).
+			SetBlockFragmentationType(bla.space.BlockFragmentationType).
+			SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
+			SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns)
+	}
+	childSpace := csBuilder.Build()
 
 	// Layout the float's contents.
 	childResult := layoutElement(bla.ctx, child, childSpace)
