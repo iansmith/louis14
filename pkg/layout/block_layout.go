@@ -2042,13 +2042,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Non-spanner resumed blocks keep the existing intrinsic-as-fragment-
 		// size / explicit-remaining branches below — those approximate the
 		// per-fragment box extent for non-column contexts.
+		// LOU-370: gate resumed-fragment sizing on break-INSIDE (see
+		// BlockBreakToken.IsBreakInside), not bare token presence — a
+		// break-BEFORE token never started, so it sizes fresh instead of
+		// subtracting consumed size / substituting intrinsic content.
 		isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
-		if isColumnSpanner && incomingBreakToken != nil {
+		if isColumnSpanner && incomingBreakToken.IsBreakInside() {
 			finalBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
 			if finalBlockSize < 0 {
 				finalBlockSize = 0
 			}
-		} else if incomingBreakToken != nil && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
+		} else if incomingBreakToken.IsBreakInside() && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
 			// Resumed non-column block (e.g. spanner content in outer fragmentainer):
 			// use the actual content placed in this fragment, not the CSS explicit height.
 			// The CSS height belonged to the first fragment; this resumed fragment shows
@@ -2072,7 +2076,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				finalBlockSize = clampToRemainingBlockBudget(
 					finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
 			}
-		} else if incomingBreakToken != nil && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
+		} else if incomingBreakToken.IsBreakInside() && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
 			// Resumed leaf block: show remaining declared height (CSS height - consumed).
 			finalBlockSize = clampToRemainingBlockBudget(
 				finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
