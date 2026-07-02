@@ -337,7 +337,6 @@ func BreakBeforeChildIfNeeded(
 	// (fragmentation_utils.cc:1105-1113).
 	if space.IsInitialColumnBalancingPass && ShouldAvoidBreakInside(space, layoutResult) {
 		blockSize := CalculateUnbreakableBlockSize(space, layoutResult, fragmentainerBlockOffset)
-		println("DBG BBCIN floor:", int(blockSize*100)) // XXX LOU-365 debug
 		builder.PropagateTallestUnbreakableBlockSize(blockSize)
 	}
 
