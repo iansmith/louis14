@@ -2814,7 +2814,10 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		}
 	}
 
-	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
+	// hidden suppresses the rule exactly like none: column-rule-style takes
+	// border-style values (CSS Multi-column §5.2), and hidden paints nothing.
+	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleStyle != "hidden" &&
+		layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
 		r.drawColumnRules(layer)
 	}
 
@@ -5435,41 +5438,17 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	}
 }
 
-// columnExtentRange returns the absolute Y range covered by all
-// IsColumnBox children of box. Used by drawColumnRules to bound rule
-// block-extent to the column fragmentainers' actual placements rather
-// than the multicol container's full content area. Mirrors Blink
-// BoxFragmentPainter::PaintColumnRules's per-column rule_block_start /
-// rule_block_end derivation (box_fragment_painter.cc ~1876).
-func columnExtentRange(box *layout.Box) (top, bottom float64, ok bool) {
-	for _, child := range box.Children {
-		if child == nil || !child.IsColumnBox {
-			continue
-		}
-		cy := child.Y
-		cb := child.Y + child.Height
-		if !ok {
-			top = cy
-			bottom = cb
-			ok = true
-			continue
-		}
-		if cy < top {
-			top = cy
-		}
-		if cb > bottom {
-			bottom = cb
-		}
-	}
-	return
-}
-
-// drawColumnRules draws vertical rules between multicol columns.
-// Rules are centered in the gap between adjacent columns.
-// When layer.GapGeometry is set (Phase 12h.6), CrossGaps drive the positions
-// and spanner-adjacent gaps are skipped. Otherwise falls back to the ad-hoc loop.
-// Phase 20 P20.4: rule block-extent is derived from the placed column
-// fragmentainers (Box.IsColumnBox children) when available, mirroring Blink.
+// drawColumnRules draws the column rules between multicol columns.
+//
+// The primary path mirrors Blink BoxFragmentPainter::PaintColumnRules
+// (box_fragment_painter.cc:1775-1913 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// per-row rule segments are derived from the column fragmentainer children,
+// all geometry is computed logically and converted through the multicol's
+// WritingModeConverter, and each rule rect is pixel-snapped before painting.
+//
+// The ad-hoc fallback is only reached when no column fragmentainers exist
+// and GapGeometry is nil (pre-12h.6 code paths): numCols-1 evenly spaced
+// vertical rules.
 func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	box := layer.Box
 	ruleWidth := layer.ColumnRuleWidth
@@ -5480,98 +5459,19 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 
 	r.setColor(layer.ColumnRuleColor)
 
-	// Content area start (inside border and padding) — shared by both paths.
-	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
-	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
-	contentH := math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - contentY
-
-	// Phase 20 P20.4: derive the rule's block extent from the actual column
-	// fragmentainers rather than the multicol's full content area. Mirrors
-	// Blink BoxFragmentPainter::PaintColumnRules (box_fragment_painter.cc
-	// ~line 1876), which computes rule_block_start/end from adjacent column-
-	// fragment offsets/sizes, not from the container box. With the multicol
-	// container's broad ClipContentToBorderBox workaround (3389efe7) about to
-	// be removed in P20.5, deriving rule extent from column boxes prevents
-	// rules from drawing past the columns into the multicol's stretched-or-
-	// padded area (flex-stretched parent, column-fill:auto with shorter
-	// columns, etc.). Box.IsColumnBox is forwarded from
-	// PhysicalFragment.BoxType == BoxTypeColumn (P20.1-P20.3).
-	//
-	// Note: this is the simple "union of column extents" form. Blink's
-	// algorithm tracks per-row extents and stretches the last row to the
-	// container's content_block_end (a known TODO in Blink to remove). For
-	// louis14 the union matches the column box bounds — the typical case is
-	// a single row of columns; multi-row cases (with spanners) already skip
-	// spanner-adjacent gaps via gg.IsMultiColSpanner.
-	colsTopY, colsBottomY, hasCols := columnExtentRange(box)
-	if hasCols {
-		contentY = math.Round(colsTopY)
-		contentH = math.Round(colsBottomY) - contentY
-		if contentH < 0 {
-			contentH = 0
-		}
+	if r.paintColumnRulesFromColumnBoxes(layer) {
+		return
 	}
-
-	// Blink stretches the last row's column rules to the container's
-	// content-box block end (box_fragment_painter.cc ~line 1876).
-	// Per-row detection mirrors Blink's !items_until_last_row gate:
-	// only cross gaps at indices >= LastRowCrossGapStart belong to the
-	// last row and get stretched. The content-box bottom accounts for
-	// the scrollbar block-end reservation (matches Blink's subtraction
-	// of scrollbars.block_end from ContentRect().BlockEndOffset()).
-	// Mirrors Blink behavior noted as "a known TODO in Blink to remove".
-	stretchedH := contentH
-	if hasCols {
-		cbBottom := math.Round(box.Y + box.Height - box.Border.Bottom - box.Padding.Bottom)
-		if gg := layer.GapGeometry; gg != nil {
-			cbBottom -= gg.ScrollbarBlockEnd
-			if cbBottom > contentY+contentH {
-				stretchedH = cbBottom - contentY
-			}
-		}
-	}
-
-	drawRule := func(ruleX float64, ruleH float64) {
-		switch layer.ColumnRuleStyle {
-		case "solid":
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
-			r.dc.Fill()
-		case "dashed":
-			r.drawDashedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
-		case "dotted":
-			r.drawDottedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
-		case "double":
-			thirdW := ruleWidth / 3
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, ruleH)
-			r.dc.Fill()
-			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, ruleH)
-			r.dc.Fill()
-		default:
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
-			r.dc.Fill()
-		}
-	}
-
-	if gg := layer.GapGeometry; gg != nil {
-		// GapGeometry path: use layout-computed cross gap positions.
-		// CrossGap.GapInlineOffset is content-box relative (logical inline);
-		// for HTB writing mode that equals physical X offset from content origin.
-		for i, cg := range gg.CrossGaps {
-			if gg.IsMultiColSpanner(i, layout.GapForColumns) {
-				continue // spanner-adjacent gap: no rule
-			}
-			ruleX := contentX + math.Round(cg.GapInlineOffset)
-			ruleH := contentH
-			if i >= gg.LastRowCrossGapStart {
-				ruleH = stretchedH
-			}
-			drawRule(ruleX, ruleH)
-		}
+	if layer.GapGeometry != nil {
+		// Multicol container without materialized columns (structural
+		// fragment carrying an empty GapGeometry): nothing to paint.
 		return
 	}
 
-	// Ad-hoc fallback: only reached when GapGeometry is nil (pre-12h.6
-	// code paths). Draw numCols-1 rules evenly spaced.
+	// Ad-hoc fallback.
+	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
+	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
+	contentH := math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - contentY
 	colWidth := layer.ColumnWidth
 	gap := layer.ColumnGap
 	numCols := layer.ColumnCount
@@ -5580,7 +5480,241 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	}
 	for i := 1; i < numCols; i++ {
 		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
-		drawRule(ruleX, contentH)
+		x, y, w, h := pixelSnap(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+		r.drawColumnRuleRect(layer.ColumnRuleStyle, x, y, w, h, false)
+	}
+}
+
+// paintColumnRulesFromColumnBoxes paints per-row column-rule segments from
+// the multicol's column fragmentainer children (Box.IsColumnBox, forwarded
+// from PhysicalFragment.BoxType == BoxTypeColumn, P20.1-P20.3). Returns
+// false when the box has no column children, leaving the caller's fallback
+// to run.
+//
+// Port of Blink BoxFragmentPainter::PaintColumnRules
+// (box_fragment_painter.cc:1775-1913 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//   - :1803-1804 a WritingModeConverter over the multicol's writing direction
+//     and fragment size; all geometry below is logical, converted at the end;
+//   - :1806-1828 first child walk counts the rows after the first (row wraps
+//     and spanners), giving the items_until_last_row gate;
+//   - :1837-1873 second walk tracks per-row rule extents; on a row wrap the
+//     rule continues through the preceding row gap (:1865-1870);
+//   - :1876-1889 last-row rules stretch to the content-box block end minus
+//     the block-end scrollbar reservation;
+//   - :1891-1906 LogicalRect(center - thickness/2, ...) -> ToPhysical ->
+//     ToPixelSnappedRect -> draw.
+func (r *Renderer) paintColumnRulesFromColumnBoxes(layer *PaintLayer) bool {
+	box := layer.Box
+	ruleWidth := layer.ColumnRuleWidth
+
+	wdm := layout.NewWritingDirectionMode(box.Style)
+	conv := layout.NewConverter(wdm, layout.PhysicalSize{Width: box.Width, Height: box.Height})
+
+	// Logical rect of a column child, relative to the multicol border box
+	// (Blink: converter.ToLogical(PhysicalRect(child.offset, child->Size()))).
+	type logicalRect struct {
+		inlineStart, inlineEnd float64
+		blockStart, blockEnd   float64
+	}
+	columnRect := func(child *layout.Box) logicalRect {
+		size := layout.PhysicalSize{Width: child.Width, Height: child.Height}
+		off := conv.ToLogicalOffset(layout.PhysicalOffset{X: child.X - box.X, Y: child.Y - box.Y}, size)
+		lsize := layout.ToLogicalSize(size, wdm.WM)
+		return logicalRect{
+			inlineStart: off.InlineOffset,
+			inlineEnd:   off.InlineOffset + lsize.InlineSize,
+			blockStart:  off.BlockOffset,
+			blockEnd:    off.BlockOffset + lsize.BlockSize,
+		}
+	}
+
+	itemsUntilLastRow, hasColumns := countColumnRuleRowItems(box.Children, func(child *layout.Box) float64 {
+		return columnRect(child).blockStart
+	})
+	if !hasColumns {
+		return false
+	}
+
+	// Content-box block end for the last-row stretch (bfp.cc:1876-1889):
+	// converter.ToLogical(ContentRect()).BlockEndOffset() minus the
+	// block-end scrollbar reservation.
+	contentSize := layout.PhysicalSize{
+		Width:  box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
+		Height: box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom,
+	}
+	contentOff := conv.ToLogicalOffset(layout.PhysicalOffset{
+		X: box.Border.Left + box.Padding.Left,
+		Y: box.Border.Top + box.Padding.Top,
+	}, contentSize)
+	contentBlockEnd := contentOff.BlockOffset + layout.ToLogicalSize(contentSize, wdm.WM).BlockSize
+	if gg := layer.GapGeometry; gg != nil {
+		contentBlockEnd -= gg.ScrollbarBlockEnd
+	}
+
+	// GapGeometry.CrossGaps is layout's authoritative record of inter-column
+	// gaps (one entry per column boundary in the widest row). louis14's
+	// multicol layout can emit an empty trailing column fragment without
+	// recording a cross gap for it (multicol-span-all-006/007/008's phantom
+	// pre-spanner column); such a pair must not get a rule segment. No Blink
+	// analog: Blink's layout never emits column fragments without gaps, so
+	// its painter needs no such guard. recordedGaps < 0 means "no gap record
+	// available" (legacy paths) — paint every pair.
+	recordedGaps := -1
+	if gg := layer.GapGeometry; gg != nil {
+		recordedGaps = len(gg.CrossGaps)
+	}
+
+	var ruleBlockStart, ruleBlockEnd float64
+	var prevInlineEnd, prevBlockEnd float64
+	var rowBlockOffset float64
+	haveRow := false
+	gapIdx := 0
+	for _, child := range box.Children {
+		if child == nil {
+			continue
+		}
+		if !child.IsColumnBox {
+			// Column spanner. Continue in the next row, if there are 2
+			// columns or more there.
+			itemsUntilLastRow--
+			haveRow = false
+			continue
+		}
+
+		cr := columnRect(child)
+		if !haveRow {
+			// No directly preceding row: first row altogether, or just
+			// after a spanner.
+			haveRow = true
+			rowBlockOffset = cr.blockStart
+			ruleBlockStart = cr.blockStart
+			ruleBlockEnd = cr.blockEnd
+			gapIdx = 0
+			// Rules are painted *between* columns; wait for a second one.
+		} else if rowBlockOffset != cr.blockStart {
+			// Wrapped to a new row. Paint rules in the preceding row-gap
+			// as well (bfp.cc:1865-1870).
+			rowBlockOffset = cr.blockStart
+			itemsUntilLastRow--
+			ruleBlockStart = prevBlockEnd
+			ruleBlockEnd = cr.blockEnd
+			gapIdx = 0
+		} else {
+			if recordedGaps < 0 || gapIdx < recordedGaps {
+				center := (cr.inlineStart + prevInlineEnd) / 2
+				ruleLength := ruleBlockEnd - ruleBlockStart
+				// Paint column rules as tall as the entire multicol
+				// container, but only when at the last row (bfp.cc:1876-1889).
+				if itemsUntilLastRow <= 0 {
+					if stretched := contentBlockEnd - ruleBlockStart; stretched > ruleLength {
+						ruleLength = stretched
+					}
+				}
+
+				// LogicalRect -> ToPhysical -> ToPixelSnappedRect (bfp.cc:1891-1906).
+				physSize := layout.ToPhysicalSize(layout.LogicalSize{InlineSize: ruleWidth, BlockSize: ruleLength}, wdm.WM)
+				physOff := conv.ToPhysicalOffset(layout.LogicalOffset{
+					InlineOffset: center - ruleWidth/2,
+					BlockOffset:  ruleBlockStart,
+				}, physSize)
+				x, y, w, h := pixelSnap(box.X+physOff.X, box.Y+physOff.Y, physSize.Width, physSize.Height)
+				r.drawColumnRuleRect(layer.ColumnRuleStyle, x, y, w, h, !wdm.IsHorizontal())
+			}
+			gapIdx++
+		}
+
+		prevInlineEnd = cr.inlineEnd
+		prevBlockEnd = cr.blockEnd
+	}
+	return true
+}
+
+// clampLineWidth snaps a computed line width (column-rule-width) to whole
+// CSS pixels: values strictly between 0 and 1 round up to 1, everything
+// else floors. Mirrors Blink StyleBuilderConverter::ClampLineWidth
+// (style_builder_converter.cc:1964-1971 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// which column-rule-width reaches through ConvertBorderWidth (:2600-2601).
+// Applied at the PaintLayer boundary because the computed-value home
+// (pkg/css GetColumnRuleWidth) is outside LOU-366's file territory —
+// flagged for promotion into pkg/css alongside border-width handling.
+func clampLineWidth(width float64) float64 {
+	if width > 0 && width < 1 {
+		return 1
+	}
+	return math.Floor(width)
+}
+
+// countColumnRuleRowItems counts spanners and additional rows among a
+// multicol's children — the number of items until the last row of columns,
+// which gates the last-row rule stretch. Spanners and row wrapping may
+// result in more than one row. hasColumns is false when no column
+// fragmentainers exist. Mirrors the first child walk of Blink's
+// PaintColumnRules (bfp.cc:1806-1828 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func countColumnRuleRowItems(children []*layout.Box, blockStartOf func(*layout.Box) float64) (itemsUntilLastRow int, hasColumns bool) {
+	haveRow := false
+	rowBlockOffset := 0.0
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		if child.IsColumnBox {
+			hasColumns = true
+			blockOffset := blockStartOf(child)
+			if !haveRow {
+				// No directly preceding row: first row altogether, or
+				// just after a spanner.
+				haveRow = true
+				rowBlockOffset = blockOffset
+			} else if rowBlockOffset != blockOffset {
+				// Wrapped to a new row.
+				rowBlockOffset = blockOffset
+				itemsUntilLastRow++
+			}
+		} else {
+			// Assuming this is a spanner (bfp.cc:1824).
+			itemsUntilLastRow++
+			haveRow = false
+		}
+	}
+	return itemsUntilLastRow, hasColumns
+}
+
+// drawColumnRuleRect paints one pixel-snapped column-rule segment.
+// horizontalRule is true when the multicol's writing mode is vertical, so
+// the rule runs along the physical horizontal axis (Blink picks the
+// equivalent BoxSide at bfp.cc:1897-1902: kLeft for horizontal writing
+// modes, kTop otherwise). The rule thickness is the rect's cross extent.
+// Collapsed-border-model styles without a dedicated branch (groove, ridge,
+// inset, outset) fall through to a solid fill.
+func (r *Renderer) drawColumnRuleRect(style string, x, y, w, h float64, horizontalRule bool) {
+	switch style {
+	case "dashed", "dotted":
+		x1, y1, x2, y2, thickness := x+w/2, y, x+w/2, y+h, w
+		if horizontalRule {
+			x1, y1, x2, y2, thickness = x, y+h/2, x+w, y+h/2, h
+		}
+		if style == "dashed" {
+			r.drawDashedLine(x1, y1, x2, y2, thickness)
+		} else {
+			r.drawDottedLine(x1, y1, x2, y2, thickness)
+		}
+	case "double":
+		if horizontalRule {
+			third := h / 3
+			r.dc.DrawRectangle(x, y, w, third)
+			r.dc.Fill()
+			r.dc.DrawRectangle(x, y+h-third, w, third)
+			r.dc.Fill()
+		} else {
+			third := w / 3
+			r.dc.DrawRectangle(x, y, third, h)
+			r.dc.Fill()
+			r.dc.DrawRectangle(x+w-third, y, third, h)
+			r.dc.Fill()
+		}
+	default: // solid and collapsed-border-model fallbacks
+		r.dc.DrawRectangle(x, y, w, h)
+		r.dc.Fill()
 	}
 }
 

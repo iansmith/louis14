@@ -1635,7 +1635,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if !box.IsColumnBox && box.Text == "" &&
 		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) {
 		layer.IsMulticol = true
-		layer.ColumnRuleWidth = s.GetColumnRuleWidth()
+		layer.ColumnRuleWidth = clampLineWidth(s.GetColumnRuleWidth())
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
 		layer.ColumnRuleColor = s.GetColumnRuleColor()
 		layer.ColumnGap = s.GetColumnGapMulticol()
