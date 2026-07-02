@@ -233,3 +233,25 @@ func TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule(t *testing.T) {
 		t.Errorf("recorded CrossGap: pixel (50,15) = %v, want blue rule", c)
 	}
 }
+
+// TestColumnRule_HiddenStyle_PaintsNothing: column-rule-style uses
+// border-style values, where hidden — like none — suppresses the rule
+// entirely (CSS Multi-column §5.2 / CSS Backgrounds §3.1). The paint gate
+// previously excluded only "none", so hidden fell through to the default
+// solid-rect arm.
+func TestColumnRule_HiddenStyle_PaintsNothing(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="width:101px; height:50px; columns:2; column-gap:7px; column-rule-width:3px; column-rule-style:hidden; column-rule-color:blue; column-fill:auto;">
+  <div style="height:200px"></div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 300, 100)
+
+	const y = 25
+	for x := 40; x < 64; x++ {
+		r, g, b := rgbAt(img, x, y)
+		if !(r == 255 && g == 255 && b == 255) {
+			t.Errorf("pixel (%d,%d) = (%d,%d,%d): want pure white (hidden rule must paint nothing)", x, y, r, g, b)
+		}
+	}
+}

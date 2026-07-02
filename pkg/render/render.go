@@ -2814,7 +2814,10 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		}
 	}
 
-	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
+	// hidden suppresses the rule exactly like none: column-rule-style takes
+	// border-style values (CSS Multi-column §5.2), and hidden paints nothing.
+	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleStyle != "hidden" &&
+		layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
 		r.drawColumnRules(layer)
 	}
 
