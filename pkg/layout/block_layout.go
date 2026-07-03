@@ -98,6 +98,32 @@ func clampToRemainingBlockBudget(value, explicitBlockSize, consumed float64) flo
 	return value
 }
 
+// desiredBlockSizeAtBlockEnd reports whether a definite-height block that
+// broke inside is satisfied — i.e. its declared block-size, minus what earlier
+// fragments consumed, fits in the remaining fragmentainer space. When true the
+// caller marks the outgoing break token IsAtBlockEnd (the box finished; only
+// overflow / parallel-flow content remains).
+//
+// LOU-370: the consumed-size subtraction is gated on break-INSIDE. Blink
+// guards the same subtraction in FinishFragmentation with
+// `!previous_break_token->IsBreakBefore()` (fragmentation_utils.cc @
+// a9f50e522efa) — a break-before token has nothing consumed, so the gate is a
+// no-op today but keeps the semantics Blink-faithful.
+func desiredBlockSizeAtBlockEnd(space ConstraintSpace, explicitBlockSize float64, incomingBreakToken *BlockBreakToken) bool {
+	spaceLeft := space.FragmentainerBlockSize - space.FragmentainerOffset
+	if spaceLeft < 0 {
+		spaceLeft = 0
+	}
+	desiredBlockSize := explicitBlockSize
+	if incomingBreakToken.IsBreakInside() {
+		desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
+		if desiredBlockSize < 0 {
+			desiredBlockSize = 0
+		}
+	}
+	return desiredBlockSize <= spaceLeft
+}
+
 // Layout performs block layout and returns the result.
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
@@ -1674,21 +1700,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// `box_block_size_` from the wrapper's CSS, not from the
 					// ConstraintSpace fragmentainer override.
 					if childResult.BreakToken != nil && hasExplicitBlock &&
-						!bla.space.IsBlockSizeOverride {
-						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-						if spaceLeft < 0 {
-							spaceLeft = 0
-						}
-						desiredBlockSize := explicitBlockSize
-						if incomingBreakToken != nil {
-							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
-							if desiredBlockSize < 0 {
-								desiredBlockSize = 0
-							}
-						}
-						if desiredBlockSize <= spaceLeft {
-							pendingIsAtBlockEnd = true
-						}
+						!bla.space.IsBlockSizeOverride &&
+						desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, incomingBreakToken) {
+						pendingIsAtBlockEnd = true
 					}
 
 					// Child-break dispatch tree. Verbatim from pre-6.4.b
@@ -1889,21 +1903,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					pendingHasInflowChildBreakInside = true
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					if hasExplicitBlock {
-						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-						if spaceLeft < 0 {
-							spaceLeft = 0
-						}
-						desiredBlockSize := explicitBlockSize
-						if incomingBreakToken != nil {
-							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
-							if desiredBlockSize < 0 {
-								desiredBlockSize = 0
-							}
-						}
-						if desiredBlockSize <= spaceLeft {
-							pendingIsAtBlockEnd = true
-						}
+					if hasExplicitBlock &&
+						desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, incomingBreakToken) {
+						pendingIsAtBlockEnd = true
 					}
 					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
 					break
@@ -2042,13 +2044,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Non-spanner resumed blocks keep the existing intrinsic-as-fragment-
 		// size / explicit-remaining branches below — those approximate the
 		// per-fragment box extent for non-column contexts.
+		// LOU-370: gate resumed-fragment sizing on break-INSIDE (see
+		// BlockBreakToken.IsBreakInside), not bare token presence — a
+		// break-BEFORE token never started, so it sizes fresh instead of
+		// subtracting consumed size / substituting intrinsic content.
 		isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
-		if isColumnSpanner && incomingBreakToken != nil {
+		if isColumnSpanner && incomingBreakToken.IsBreakInside() {
 			finalBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
 			if finalBlockSize < 0 {
 				finalBlockSize = 0
 			}
-		} else if incomingBreakToken != nil && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
+		} else if incomingBreakToken.IsBreakInside() && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
 			// Resumed non-column block (e.g. spanner content in outer fragmentainer):
 			// use the actual content placed in this fragment, not the CSS explicit height.
 			// The CSS height belonged to the first fragment; this resumed fragment shows
@@ -2072,7 +2078,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				finalBlockSize = clampToRemainingBlockBudget(
 					finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
 			}
-		} else if incomingBreakToken != nil && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
+		} else if incomingBreakToken.IsBreakInside() && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
 			// Resumed leaf block: show remaining declared height (CSS height - consumed).
 			finalBlockSize = clampToRemainingBlockBudget(
 				finalBlockSize, explicitBlockSize, incomingBreakToken.ConsumedBlockSize.Float64())
@@ -2136,6 +2142,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// to every node with HasBlockFragmentation, and the earlier
 	// break-token-misalignment concerns this gate guarded against are
 	// resolved by step 3.5.B's parent zero-clamp on resume.
+	//
+	// The `> 0` guard keeps a 0-height column fragmentainer from
+	// manufacturing a self-break. Blink's FinishFragmentation raises
+	// space_left to encompass unbreakable content
+	// (fragmentation_utils.cc:589-599 @ a9f50e522efa) so a definite-block-size
+	// unbreakable child OVERFLOWS a zero-height column whole rather than
+	// asking for a continuation in the next column (multicol-zero-height-002).
+	// The budget-exhausted post-spanner case
+	// (multicol-span-all-children-height-003's block2) reaches this clamp with
+	// a 1px column (layoutLine's budget-exhausted floor), not 0, so it stays on
+	// the `> 0` path — no 0-height relaxation is needed here.
 	var didBreakSelf bool
 	var selfBreakShortage float64
 	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&

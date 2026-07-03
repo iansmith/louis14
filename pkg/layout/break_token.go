@@ -135,6 +135,21 @@ func (t *BlockBreakToken) HasBreakToken() bool {
 	return t != nil
 }
 
+// IsBreakInside reports whether this token represents a break INSIDE a node —
+// i.e. the node already started laying out in a previous fragmentainer and is
+// resuming — as opposed to a break *before* the node (which never started).
+// Mirrors Blink's IsBreakInside (fragmentation_utils.h:63-67 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// `token && !token->IsBreakBefore() && !token->IsRepeated()`. Louis14 has no
+// repeated-content fragmentation, so the IsRepeated clause is absent.
+//
+// Resumed-fragment sizing (consumed-size subtraction / intrinsic-content
+// substitution) applies only under a break-inside token: a break-before token
+// carries nothing consumed, so its fragment must size fresh.
+func (t *BlockBreakToken) IsBreakInside() bool {
+	return t != nil && !t.IsBreakBefore
+}
+
 // InputBreakToken returns the first child break token for resumption, or nil.
 func (t *BlockBreakToken) InputBreakToken() *BlockBreakToken {
 	if t == nil || len(t.ChildBreakTokens) == 0 {
