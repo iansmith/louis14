@@ -176,6 +176,32 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 	return N, W
 }
 
+// isConstrainedByOuterFragmentation reports whether this multicol sits inside
+// another fragmentation context (multicol / paged media) with a known
+// fragmentainer block-size — so its columns must cap at the outer boundary and
+// emit a break token for the outer algorithm to resume. Mirrors Blink's
+// is_constrained_by_outer_fragmentation_context_ = HasKnownFragmentainerBlockSize()
+// (column_layout_algorithm.cc:311-318 @ a9f50e522efa). The measurement pass is
+// excluded because it has no committed fragmentainer geometry to cap against.
+func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
+	return mla.space.HasBlockFragmentation &&
+		mla.space.FragmentainerBlockSize != Indefinite &&
+		!mla.space.IsInitialColumnBalancingPass
+}
+
+// columnBreakTokenAdvanced reports whether a column's outgoing break token made
+// forward progress: its consumed block-size must strictly exceed the previous
+// column's. This is the load-bearing comparison of the inner column loop's
+// non-advancing-token guard (no Blink analog: defensive). `prevConsumed` is
+// NaN before the first column, so the first token always counts as progress
+// (any comparison with NaN is false, and we invert). Only the consumed
+// block-size is a valid progress signal — the sequence number always
+// increments (it is a fragment counter) even when a 0-height column places
+// nothing.
+func columnBreakTokenAdvanced(consumed, prevConsumed float64) bool {
+	return !(consumed <= prevConsumed)
+}
+
 // hasAutoColumnHeight returns true when the CSS column-height is auto (or
 // unset). Mirrors Blink's Style().HasAutoColumnHeight().
 func (mla *MulticolLayoutAlgorithm) hasAutoColumnHeight() bool {
@@ -436,9 +462,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// the inner multicol must break at the outer column boundary and emit a
 	// BreakToken so the outer algorithm can resume us in the next column.
 	// Mirrors Blink's ColumnLayoutAlgorithm tracking OuterFragmentainerBlockSize.
-	hasOuterFrag := mla.space.HasBlockFragmentation &&
-		mla.space.FragmentainerBlockSize != Indefinite &&
-		!mla.space.IsInitialColumnBalancingPass
+	hasOuterFrag := mla.isConstrainedByOuterFragmentation()
 	outerAvailable := mla.space.FragmentainerBlockSize - mla.space.FragmentainerOffset
 
 	// Phase 14b: defer entire multicol when its required column block-size
@@ -1446,12 +1470,9 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 	// Outer remaining space: cap column height so columns don't exceed what
 	// fits in the current outer fragmentainer. Mirrors Blink's
-	// is_constrained_by_outer_fragmentation_context_ =
-	// HasKnownFragmentainerBlockSize() (cla.cc:311-318 @ a9f50e522efa) and
-	// available_outer_space (cla.cc:819-824).
-	constrainedByOuter := mla.space.HasBlockFragmentation &&
-		mla.space.FragmentainerBlockSize != Indefinite &&
-		!mla.space.IsInitialColumnBalancingPass
+	// is_constrained_by_outer_fragmentation_context_ (cla.cc:311-318 @
+	// a9f50e522efa) and available_outer_space (cla.cc:819-824).
+	constrainedByOuter := mla.isConstrainedByOuterFragmentation()
 	outerRemaining := 0.0
 	if constrainedByOuter {
 		rem := mla.space.FragmentainerBlockSize - mla.space.FragmentainerOffset - lineOffset - multicolBlockBorderPadding
@@ -1709,7 +1730,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// continuing would loop forever — stop the row.
 			if colBreakToken != nil {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
-				if consumed <= prevTokenConsumed {
+				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
 					colBreakToken = nil
 					break
 				}

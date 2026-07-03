@@ -98,6 +98,32 @@ func clampToRemainingBlockBudget(value, explicitBlockSize, consumed float64) flo
 	return value
 }
 
+// desiredBlockSizeAtBlockEnd reports whether a definite-height block that
+// broke inside is satisfied — i.e. its declared block-size, minus what earlier
+// fragments consumed, fits in the remaining fragmentainer space. When true the
+// caller marks the outgoing break token IsAtBlockEnd (the box finished; only
+// overflow / parallel-flow content remains).
+//
+// LOU-370: the consumed-size subtraction is gated on break-INSIDE. Blink
+// guards the same subtraction in FinishFragmentation with
+// `!previous_break_token->IsBreakBefore()` (fragmentation_utils.cc @
+// a9f50e522efa) — a break-before token has nothing consumed, so the gate is a
+// no-op today but keeps the semantics Blink-faithful.
+func desiredBlockSizeAtBlockEnd(space ConstraintSpace, explicitBlockSize float64, incomingBreakToken *BlockBreakToken) bool {
+	spaceLeft := space.FragmentainerBlockSize - space.FragmentainerOffset
+	if spaceLeft < 0 {
+		spaceLeft = 0
+	}
+	desiredBlockSize := explicitBlockSize
+	if incomingBreakToken.IsBreakInside() {
+		desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
+		if desiredBlockSize < 0 {
+			desiredBlockSize = 0
+		}
+	}
+	return desiredBlockSize <= spaceLeft
+}
+
 // Layout performs block layout and returns the result.
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
@@ -1674,27 +1700,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// `box_block_size_` from the wrapper's CSS, not from the
 					// ConstraintSpace fragmentainer override.
 					if childResult.BreakToken != nil && hasExplicitBlock &&
-						!bla.space.IsBlockSizeOverride {
-						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-						if spaceLeft < 0 {
-							spaceLeft = 0
-						}
-						desiredBlockSize := explicitBlockSize
-						// LOU-370: subtract consumed size only under break-INSIDE.
-						// Blink guards this same subtraction in FinishFragmentation
-						// with `!previous_break_token->IsBreakBefore()`
-						// (fragmentation_utils.cc @ a9f50e522efa). A break-before
-						// token has nothing consumed, so this is a no-op today, but
-						// the gate keeps the audit complete and Blink-faithful.
-						if incomingBreakToken.IsBreakInside() {
-							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
-							if desiredBlockSize < 0 {
-								desiredBlockSize = 0
-							}
-						}
-						if desiredBlockSize <= spaceLeft {
-							pendingIsAtBlockEnd = true
-						}
+						!bla.space.IsBlockSizeOverride &&
+						desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, incomingBreakToken) {
+						pendingIsAtBlockEnd = true
 					}
 
 					// Child-break dispatch tree. Verbatim from pre-6.4.b
@@ -1895,25 +1903,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					pendingHasInflowChildBreakInside = true
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					if hasExplicitBlock {
-						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-						if spaceLeft < 0 {
-							spaceLeft = 0
-						}
-						desiredBlockSize := explicitBlockSize
-						// LOU-370: subtract consumed size only under break-INSIDE
-						// (see the identical gate above / Blink
-						// FinishFragmentation @ a9f50e522efa). No-op for
-						// break-before, kept for audit completeness.
-						if incomingBreakToken.IsBreakInside() {
-							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
-							if desiredBlockSize < 0 {
-								desiredBlockSize = 0
-							}
-						}
-						if desiredBlockSize <= spaceLeft {
-							pendingIsAtBlockEnd = true
-						}
+					if hasExplicitBlock &&
+						desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, incomingBreakToken) {
+						pendingIsAtBlockEnd = true
 					}
 					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
 					break
