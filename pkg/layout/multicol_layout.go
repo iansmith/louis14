@@ -1126,9 +1126,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// `min-height` still bumps the result.
 	if mla.style != nil && mla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
 		finalBlockSize = 0
-		minBlock := ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
-		if finalBlockSize < minBlock {
-			finalBlockSize = minBlock
+		if finalBlockSize < mla.minBlockSize {
+			finalBlockSize = mla.minBlockSize
 		}
 	}
 	// Phase 25 Cmt-8: when a nested multicol finishes with blockCursor <
