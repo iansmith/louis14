@@ -32,22 +32,16 @@ import (
 // snap the glyph raster origin consistently with the already-rounded
 // baseline so the em box edges land on whole rows.
 func TestAhemGlyphNoFractionalSeam(t *testing.T) {
-	// LOU-367 BLOCKED on mazzy: the α=0.804/0.2 seam is baked INTO the glyph
-	// alpha mask by mazzy's rasterizer, not applied at composite time, so it
-	// cannot be removed render-side. The raw mask returned by the provider for
-	// Ahem 'A' @16px is 17x18 with row 0 alpha=205 (0.804) and row 16 alpha=51
-	// (0.2) — those are the seam rows, present before any baseline positioning.
-	// drawTextStr's only lever is the baseline `y`, which merely chooses which
-	// integer device row the pre-baked mask lands on; it cannot alter the
-	// mask's internal per-row coverage. Grid-fitting requires snapping the
-	// glyph's fractional top edge (ascent 12.7969px) to an integer row BEFORE
-	// baking, in mazzy's RenderGlyph (~/mazzy/mazarin/textshape/rasterize.go
-	// :64-69, the floor(minY)/ceil(maxY) pixel-bounds computation) — a
-	// READ-ONLY sibling repo that Ian must sign off on per-file. This test is
-	// the executable reproduction; unskip it once the mazzy grid-fit lands.
-	t.Skip("LOU-367 BLOCKED: seam baked into mazzy glyph mask; fix needs " +
-		"mazarin/textshape/rasterize.go RenderGlyph (read-only sibling repo)")
-
+	// LOU-367: the α=0.804/0.2 seam was baked INTO the glyph alpha mask by
+	// mazzy's rasterizer (RenderGlyph in mazarin/textshape/rasterize.go floored
+	// the outline bounds onto the pixel grid, so Ahem's 12.7969px ascent edge
+	// antialiased into the mask itself — the raw mask for 'A' @16px was 17x18
+	// with row 0 alpha=205 and row 16 alpha=51, present before any baseline
+	// positioning). drawTextStr's baseline round only chooses which integer
+	// device row the mask lands on; it cannot alter the mask's per-row
+	// coverage. The fix grid-fits the mask in RenderGlyph (rasterizes with the
+	// exact fractional top edge as the y origin so the em box lands on whole
+	// rows). This test guards that mazzy-side grid-fit against regression.
 	const fontSize = 16
 	const canvasW, canvasH = 32, 48
 

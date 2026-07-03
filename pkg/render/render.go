@@ -6119,15 +6119,13 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 // consistent glyph positioning regardless of how a line's text is split across
 // inline runs.
 //
-// LOU-367: this baseline round is the ONLY render-side lever over glyph Y
-// placement, and it cannot remove the fractional em-box seam that Ahem tests
-// hit (α≈0.804 top / 0.2 bottom, e.g. multicol-rule-px-001). That seam is
-// baked into the glyph alpha mask by mazzy's rasterizer (RenderGlyph in
-// mazarin/textshape/rasterize.go floors the outline bounds onto the pixel
-// grid, so Ahem's 12.7969px ascent edge antialiases into the mask itself,
-// independent of the baseline). See TestAhemGlyphNoFractionalSeam for the
-// executable proof. Grid-fitting requires re-baking the mask in mazzy (a
-// read-only sibling repo); it is unreachable from render.go.
+// LOU-367: this baseline round chooses the integer device row the glyph mask
+// lands on. It pairs with mazzy's RenderGlyph grid-fit (rasterize.go): the
+// rasterizer now bakes the mask with the exact fractional top edge as the y
+// origin (DrMinY rounded), so a full-em Ahem glyph lands on whole rows with no
+// fractional α≈0.804/0.2 seam (previously the floored outline bounds baked the
+// seam into the mask; e.g. multicol-rule-px-001). See
+// TestAhemGlyphNoFractionalSeam for the executable guard.
 func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features []textshape.FontFeature) {
 	y = math.Round(y)
 	if len(features) > 0 {
