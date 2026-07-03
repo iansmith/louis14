@@ -1730,9 +1730,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			if colBreakToken == nil {
 				if mla.space.HasBlockFragmentation && rowHasDeferredOOFs {
 					inlineOffset += usedColWidth + gap
-					// Blink cla.cc:1022-1025: stop at column-count only when
-					// inline overflow is not permitted.
-					if !noWrapMode && !overflowInline && col+1 >= numCols {
+					// Emit empty trailing columns only up to column-count: the
+					// break token is nil, so all in-flow content is placed and
+					// there is nothing left to overflow. overflowInline /
+					// noWrapMode govern overflow of REMAINING CONTENT
+					// (cla.cc:1022-1025), not these OOF-drain padding columns —
+					// bounding this branch only by them let the loop emit
+					// unbounded empty columns forever
+					// (fixedpos-static-pos-with-viewport-cb-003 hang). The
+					// flat-fragmentainer requirement needs exactly column-count
+					// columns, so always stop there.
+					if col+1 >= numCols {
 						break
 					}
 					continue
