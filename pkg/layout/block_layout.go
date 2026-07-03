@@ -2151,22 +2151,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// break-token-misalignment concerns this gate guarded against are
 	// resolved by step 3.5.B's parent zero-clamp on resume.
 	//
-	// LOU-370: a genuine 0-height column fragmentainer (budget exhausted by
-	// earlier column rows + spanners — multicol-span-all-children-height-003's
-	// post-spanner block2) must still clamp its content to 0. Blink's
-	// FinishFragmentation has no `space_left > 0` guard; it clamps to
-	// space_left even when that is 0 (fragmentation_utils.cc:542-657 @
-	// a9f50e522efa). Relax the `> 0` guard for column fragmentation so a
-	// 0-height column clips its overflowing block instead of painting it full
-	// height. Other fragmentation types keep the conservative `> 0` guard.
-	fragBlockSizePositive := bla.space.FragmentainerBlockSize > 0 ||
-		(bla.space.FragmentainerBlockSize == 0 &&
-			bla.space.BlockFragmentationType == FragmentColumn)
+	// The `> 0` guard keeps a 0-height column fragmentainer from
+	// manufacturing a self-break. Blink's FinishFragmentation raises
+	// space_left to encompass unbreakable content
+	// (fragmentation_utils.cc:589-599 @ a9f50e522efa) so a definite-block-size
+	// unbreakable child OVERFLOWS a zero-height column whole rather than
+	// asking for a continuation in the next column (multicol-zero-height-002).
+	// The budget-exhausted post-spanner case
+	// (multicol-span-all-children-height-003's block2) reaches this clamp with
+	// a 1px column (layoutLine's budget-exhausted floor), not 0, so it stays on
+	// the `> 0` path — no 0-height relaxation is needed here.
 	var didBreakSelf bool
 	var selfBreakShortage float64
 	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&
 		bla.space.FragmentainerBlockSize != Indefinite &&
-		fragBlockSizePositive && hasExplicitBlock &&
+		bla.space.FragmentainerBlockSize > 0 && hasExplicitBlock &&
 		!bla.space.IsInitialColumnBalancingPass {
 		spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
 		if spaceLeft < 0 {
