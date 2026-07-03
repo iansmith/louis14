@@ -2150,11 +2150,23 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// to every node with HasBlockFragmentation, and the earlier
 	// break-token-misalignment concerns this gate guarded against are
 	// resolved by step 3.5.B's parent zero-clamp on resume.
+	//
+	// LOU-370: a genuine 0-height column fragmentainer (budget exhausted by
+	// earlier column rows + spanners — multicol-span-all-children-height-003's
+	// post-spanner block2) must still clamp its content to 0. Blink's
+	// FinishFragmentation has no `space_left > 0` guard; it clamps to
+	// space_left even when that is 0 (fragmentation_utils.cc:542-657 @
+	// a9f50e522efa). Relax the `> 0` guard for column fragmentation so a
+	// 0-height column clips its overflowing block instead of painting it full
+	// height. Other fragmentation types keep the conservative `> 0` guard.
+	fragBlockSizePositive := bla.space.FragmentainerBlockSize > 0 ||
+		(bla.space.FragmentainerBlockSize == 0 &&
+			bla.space.BlockFragmentationType == FragmentColumn)
 	var didBreakSelf bool
 	var selfBreakShortage float64
 	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&
 		bla.space.FragmentainerBlockSize != Indefinite &&
-		bla.space.FragmentainerBlockSize > 0 && hasExplicitBlock &&
+		fragBlockSizePositive && hasExplicitBlock &&
 		!bla.space.IsInitialColumnBalancingPass {
 		spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
 		if spaceLeft < 0 {
