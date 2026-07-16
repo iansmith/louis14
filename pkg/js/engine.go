@@ -132,6 +132,11 @@ func New() *Engine {
 //     RunProgram return.
 //   - takeScreenshot is a no-op: the visualtest harness captures after
 //     JS finishes regardless of when the test signals.
+//   - waitForCompositorReady (upstream in /web-animations/testcommon.js)
+//     resolves once the compositor has committed a frame; louis14 has no
+//     compositor, so an immediately-resolving promise is the faithful
+//     equivalent — the caller's await continuation still runs before
+//     Execute returns because goja drains the job queue.
 var wptReftestPrelude = goja.MustCompile("wptReftestPrelude", `
 function waitForAtLeastOneFrame() {
   return new Promise(function(resolve) {
@@ -141,6 +146,9 @@ function waitForAtLeastOneFrame() {
   });
 }
 function takeScreenshot() {}
+function waitForCompositorReady() {
+  return Promise.resolve();
+}
 `, false)
 
 // RegisterOnloadCallback stores an element-level onload callback.

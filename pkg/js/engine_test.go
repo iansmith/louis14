@@ -234,6 +234,33 @@ func TestWaitForAtLeastOneFrameResolvesAndRunsMutation(t *testing.T) {
 	}
 }
 
+func TestWaitForCompositorReadyResolvesAndRunsMutation(t *testing.T) {
+	// Mirrors the WPT pattern from
+	// css-backgrounds/color-mix-currentcolor-background-repaint.html: await
+	// waitForCompositorReady() (defined upstream in
+	// /web-animations/testcommon.js, which the harness doesn't fetch), then
+	// mutate the DOM. The prelude must define the symbol as a resolving
+	// promise so the mutation runs before Execute() returns.
+	doc := parseHTML(t, `<div id="target"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		(async function() {
+			await waitForCompositorReady();
+			document.getElementById('target').classList.add('green');
+		})();
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	target := getElementById(doc.Root, "target")
+	if target == nil {
+		t.Fatal("target not found")
+	}
+	if got := target.Attributes["class"]; got != "green" {
+		t.Errorf("expected class mutation after awaiting waitForCompositorReady, got class=%q", got)
+	}
+}
+
 func TestScriptError(t *testing.T) {
 	doc := parseHTML(t, `<p>text</p>`)
 	engine := New()
