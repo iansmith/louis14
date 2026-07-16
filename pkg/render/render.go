@@ -6118,6 +6118,14 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 // rasterizer's subpixel pen carry (StartPenX in textshape.DrawText) produces
 // consistent glyph positioning regardless of how a line's text is split across
 // inline runs.
+//
+// LOU-367: this baseline round chooses the integer device row the glyph mask
+// lands on. It pairs with mazzy's RenderGlyph grid-fit (rasterize.go): the
+// rasterizer now bakes the mask with the exact fractional top edge as the y
+// origin (DrMinY rounded), so a full-em Ahem glyph lands on whole rows with no
+// fractional α≈0.804/0.2 seam (previously the floored outline bounds baked the
+// seam into the mask; e.g. multicol-rule-px-001). See
+// TestAhemGlyphNoFractionalSeam for the executable guard.
 func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features []textshape.FontFeature) {
 	y = math.Round(y)
 	if len(features) > 0 {
