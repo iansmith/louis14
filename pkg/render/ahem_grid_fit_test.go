@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"testing"
 
@@ -28,9 +29,9 @@ import (
 // interior row is fully opaque and there is no partial-coverage seam.
 //
 // No Blink analog at the layout level: this is rasterizer grid-fitting
-// (Freetype hinting in Skia's glyph pipeline). The louis14-side remedy is to
-// snap the glyph raster origin consistently with the already-rounded
-// baseline so the em box edges land on whole rows.
+// (Freetype hinting in Skia's glyph pipeline). The remedy is therefore
+// rasterizer-side — it landed in mazzy, not louis14; see the root-cause note
+// in the test body below.
 func TestAhemGlyphNoFractionalSeam(t *testing.T) {
 	// LOU-367: the α=0.804/0.2 seam was baked INTO the glyph alpha mask by
 	// mazzy's rasterizer (RenderGlyph in mazarin/textshape/rasterize.go floored
@@ -51,11 +52,11 @@ func TestAhemGlyphNoFractionalSeam(t *testing.T) {
 	}
 
 	// Paint 'A' (a solid full-em Ahem square) at several fractional
-	// baselines. Whatever the fraction, after the render-side origin snap the
-	// painted em box must have fully-opaque interior rows and no sub-opaque
-	// seam row at its top/bottom edges.
+	// baselines. Whatever the fraction, the grid-fitted mask must give the
+	// painted em box fully-opaque interior rows and no sub-opaque seam row at
+	// its top/bottom edges.
 	for _, frac := range []float64{0.0, 0.2, 0.4, 0.5, 0.8} {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("frac=%.1f", frac), func(t *testing.T) {
 			target := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
 			dc := textshape.NewDrawContextForImage(target, newProvider())
 			r := &Renderer{
@@ -74,7 +75,8 @@ func TestAhemGlyphNoFractionalSeam(t *testing.T) {
 
 			// Baseline chosen so the intended em-box top sits at an integer
 			// row plus `frac`: baseline = topRow + frac + ascent. drawTextStr
-			// rounds this, so the raster origin must be snapped to match.
+			// rounds this baseline; the rasterizer's grid-fit must still land
+			// the mask's em-box edges on whole rows for every `frac`.
 			const topRow = 8
 			baseline := float64(topRow) + frac + ascent
 
