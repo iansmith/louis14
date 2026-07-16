@@ -219,6 +219,73 @@ func TestSpannerMarginStrut_TrailingSpannerMargin_LOU363(t *testing.T) {
 	}
 }
 
+// LOU-363 defect 3 / LOU-370 sub-item (b): a post-spanner column row in a
+// definite-height multicol gets only the REMAINING height budget, not the full
+// container height — and content that doesn't fit the budgeted columns
+// overflows into extra columns along the inline axis instead of being dropped.
+//
+// Blink: LayoutLine starts the column block-size from
+// remaining_content_block_size_ minus CurrentContentBlockOffset(line_offset)
+// (cla.cc:805-816 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// ConstrainColumnBlockSize subtracts the break-token consumed size and the
+// line offset from the specified-height cap (cla.cc:1774-1809); and
+// ColumnsOverflowInInlineDirection permits overflow columns when not nested
+// (cla.cc:1823-1842, loop condition :1022-1025).
+//
+// Mirrors css-multicol/multicol-span-all-children-height-002 (percentage
+// heights replaced with the resolved px values).
+func TestPostSpannerRowBudget_LOU363(t *testing.T) {
+	block1 := makeNode("div")
+	spanner := makeNode("div")
+	block2 := makeNode("div")
+	mc := makeNode("div", block1, spanner, block2)
+
+	styles := map[*html.Node]*css.Style{
+		mc: makeStyle("display", "block", "column-count", "2", "column-gap", "0",
+			"width", "400px", "height", "200px"),
+		block1:  makeStyle("display", "block", "height", "200px"),
+		spanner: makeStyle("display", "block", "column-span", "all", "height", "50px"),
+		block2:  makeStyle("display", "block", "height", "200px"),
+	}
+
+	result := layoutMulticolForTest(t, mc, styles)
+
+	// Container height stays at the declared 200px; pre-fix the post-spanner
+	// row got the full 200px budget (100px balanced columns), inflating the
+	// fragment to 250px.
+	if got := result.Fragment.Size.HeightF64(); got != 200 {
+		t.Errorf("multicol block-size = %v, want 200 (declared height)", got)
+	}
+
+	spanners := spannerChildren(result)
+	if len(spanners) != 1 {
+		t.Fatalf("expected 1 spanner fragment, got %d", len(spanners))
+	}
+	if got := spanners[0].Offset.Top.Float64(); got != 100 {
+		t.Errorf("spanner at y=%v, want y=100 (block1 balanced into 2x100px columns)", got)
+	}
+
+	// Post-spanner row: budget = 200 - (100+50) = 50px per column; block2's
+	// 200px fragments into 4 columns of 50px (2 overflowing the inline axis).
+	var postCols []ChildLink
+	for _, ch := range result.Fragment.Children {
+		if ch.Fragment.BoxType == BoxTypeColumn && ch.Offset.Top.Float64() == 150 {
+			postCols = append(postCols, ch)
+		}
+	}
+	if len(postCols) != 4 {
+		t.Fatalf("expected 4 post-spanner columns (2 overflow), got %d", len(postCols))
+	}
+	for i, col := range postCols {
+		if got := col.Fragment.Size.HeightF64(); got != 50 {
+			t.Errorf("post-spanner column %d height = %v, want 50 (remaining budget)", i, got)
+		}
+		if want := float64(i) * 200; col.Offset.Left.Float64() != want {
+			t.Errorf("post-spanner column %d at x=%v, want %v", i, col.Offset.Left.Float64(), want)
+		}
+	}
+}
+
 // LOU-363 defect 2: spanner inline margins must be resolved and used for the
 // spanner's inline offset — including `auto` centering.
 //
