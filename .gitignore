@@ -24,13 +24,16 @@ test-output.txt
 .local-mazarin/
 
 # Root-level markdown — personal notes, scratch work, ticket-local prompts.
-# Ticket-local files belong in ~/.claude/ticket-active/<TICKET>/; design docs
+# Ticket-local files belong in .slopstop/ticket-active/<TICKET>/; design docs
 # belong in design/. CLAUDE.md is the one tracked exception.
 /*.md
 !/CLAUDE.md
 
-# Personal scratch / drafts — design docs go to design/ (tracked).
-/docs/
+# Personal scratch / drafts — design docs go to design/ (tracked). Formerly /docs/.
+/scratch/
+
+# slopstop project-local ticket tracking (transient working state, not source)
+.slopstop/
 
 # IDE files
 .vscode/
