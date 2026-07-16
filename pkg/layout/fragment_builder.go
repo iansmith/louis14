@@ -820,17 +820,30 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		}
 	}
 
+	// Layout containment suppresses the box's baselines: parents synthesize
+	// from the border-box edge instead (existing HasBaseline==false /
+	// LastBaseline==0 fallbacks). Table cells are exempt. Mirrors Blink
+	// physical_box_fragment.cc:442 @ ea697c8865fc20dc39c19d49845a184f6d0ab24c:
+	//   const bool allow_baseline =
+	//       !layout_object_->ShouldApplyLayoutContainment() ||
+	//       layout_object_->IsTableCell();
+	allowBaseline := b.style == nil ||
+		!b.style.ShouldApplyLayoutContainment() ||
+		b.style.GetDisplay() == css.DisplayTableCell
+
 	result := &LayoutResult{
-		Fragment:                         fragment,
-		IntrinsicBlockSize:               b.intrinsicBlockSize,
-		Baseline:                         b.baseline,
-		HasBaseline:                      b.hasBaseline,
-		LastBaseline:                     b.lastBaseline,
-		UseLastBaselineForInlineBaseline: b.useLastBaselineForInlineBaseline,
-		UnpositionedListMarker:           b.unpositionedListMarker,
-		EndMarginStrut:                   b.endMarginStrut,
-		ExclusionSpace:                   b.exclusionSpace,
-		BreakAppeal:                      BreakAppealPerfect,
+		Fragment:               fragment,
+		IntrinsicBlockSize:     b.intrinsicBlockSize,
+		UnpositionedListMarker: b.unpositionedListMarker,
+		EndMarginStrut:         b.endMarginStrut,
+		ExclusionSpace:         b.exclusionSpace,
+		BreakAppeal:            BreakAppealPerfect,
+	}
+	if allowBaseline {
+		result.Baseline = b.baseline
+		result.HasBaseline = b.hasBaseline
+		result.LastBaseline = b.lastBaseline
+		result.UseLastBaselineForInlineBaseline = b.useLastBaselineForInlineBaseline
 	}
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
