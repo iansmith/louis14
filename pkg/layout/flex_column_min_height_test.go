@@ -21,8 +21,7 @@ import (
 // suggestion is 0.
 //
 // Blink: flex_layout_algorithm.cc content-size suggestion layout uses
-// kIndefiniteSize for the percentage resolution block-size
-// @ Chromium main d70076d8.
+// kIndefiniteSize for the percentage resolution block-size.
 func TestFlexLayout_ColumnMinHeightAutoPercentageChildren(t *testing.T) {
 	grandchild := makeNode("div")
 	child := makeNode("div", grandchild)
