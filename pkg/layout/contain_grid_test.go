@@ -10,14 +10,19 @@ func TestGridTrackSizing_SizeContainmentZeroesItemContributions(t *testing.T) {
 	cases := []struct {
 		name           string
 		contain        string
+		wantMinContent float64
 		wantMaxContent float64
 	}{
-		// Under size containment, auto track = 0 → max-content = 0+20+80 = 100.
-		{"contain size zeroes auto track", "size", 100},
-		{"contain strict zeroes auto track", "strict", 100},
-		{"contain inline-size zeroes auto track", "inline-size", 100},
-		// Without containment, auto track = item's 500px → max-content = 500+20+80 = 600.
-		{"no containment keeps item contribution", "", 600},
+		// Under size containment, auto track = 0 → min/max-content = 0+20+80 = 100.
+		{"contain size zeroes auto track", "size", 100, 100},
+		{"contain strict zeroes auto track", "strict", 100, 100},
+		{"contain inline-size zeroes auto track", "inline-size", 100, 100},
+		// Without containment, auto track = item's 500px → min/max-content = 500+20+80 = 600.
+		{"no containment keeps item contribution", "", 600, 600},
+		// contain:content does NOT include size — items contribute normally.
+		{"contain content preserves item contribution", "content", 600, 600},
+		// contain:layout does NOT include size — items contribute normally.
+		{"contain layout preserves item contribution", "layout", 600, 600},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,6 +58,10 @@ func TestGridTrackSizing_SizeContainmentZeroesItemContributions(t *testing.T) {
 				Build()
 
 			mm := ComputeMinMaxSizes(ctx, layoutRoot, space)
+			if mm.MinContent != tc.wantMinContent {
+				t.Errorf("with contain:%q, min-content = %v, want %v",
+					tc.contain, mm.MinContent, tc.wantMinContent)
+			}
 			if mm.MaxContent != tc.wantMaxContent {
 				t.Errorf("with contain:%q, max-content = %v, want %v",
 					tc.contain, mm.MaxContent, tc.wantMaxContent)
