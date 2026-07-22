@@ -239,8 +239,20 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// --- Track sizing: rows ---
+	// Compute the effective available block size for row stretch/fr distribution.
+	// When the grid has no explicit height but has min-height, the grid's used
+	// block size will be at least min-height — use it as the available size so
+	// the §12.5 stretch step and fr distribution can fill the space.
+	rowAvailable := explicitBlockSize
+	if !hasExplicitBlock {
+		minBlock := ResolveMinBlockSize(gla.style, wdm, gla.space, geom)
+		if mb := minBlock.Float64(); mb > 0 {
+			rowAvailable = mb
+		}
+	}
+
 	// For row auto-sizing, use the maximum content height of items in each row.
-	rowSizes := gla.resolveTrackSizes(rowTracks, explicitBlockSize, rowGap, false, items, numCols, numRows, wdm, geom)
+	rowSizes := gla.resolveTrackSizes(rowTracks, rowAvailable, rowGap, false, items, numCols, numRows, wdm, geom)
 
 	// For auto rows, size them to the maximum content block-size of their items.
 	// In vertical writing modes, block-size is the physical width; in HTB it is height.
@@ -275,13 +287,14 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Distribute fr units for rows if container has explicit block size.
-	if hasExplicitBlock {
+	// Distribute fr units for rows if the available block size is definite
+	// (explicit height or min-height).
+	if rowAvailable > 0 {
 		totalRowGaps := rowGap * float64(numRows-1)
 		if numRows <= 1 {
 			totalRowGaps = 0
 		}
-		gla.distributeFr(rowTracks, rowSizes, explicitBlockSize-totalRowGaps)
+		gla.distributeFr(rowTracks, rowSizes, rowAvailable-totalRowGaps)
 	}
 
 	// Re-layout items that have percentage heights or need stretching.
@@ -458,10 +471,10 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
 	// when no explicit block-size is set. For grid containers, resolveTrackSizes
-	// already zeroes item contributions and skips auto-stretch under containment,
-	// so totalRowSize is the correct "as-if-empty" value (fixed tracks + gaps
-	// only; auto tracks stay at 0). The generic sizeContainedIntrinsicBlockSize
-	// would incorrectly zero even fixed row tracks.
+	// already zeroes item contributions under containment, so totalRowSize is
+	// the correct "as-if-empty" value (fixed tracks + gaps + any stretch/fr
+	// distribution from a definite available size). The generic
+	// sizeContainedIntrinsicBlockSize would incorrectly zero even fixed row tracks.
 	if !sizeContained {
 		intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
 	}
@@ -989,8 +1002,9 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 
 	// CSS Grid §12.5 step 5: stretch auto tracks to fill remaining free space
 	// when the container has a definite size (justify/align-content: normal).
-	// Under containment, auto tracks stay at 0 — no stretching.
-	if available >= 0 && !skipItemContrib {
+	// This distributes the container's own free space — not item content — so
+	// it runs even under size containment (which only zeroes item contributions).
+	if available >= 0 {
 		totalUsed := 0.0
 		autoCount := 0
 		for i, t := range tracks {
@@ -1314,9 +1328,9 @@ func (gla *GridLayoutAlgorithm) alignOffset(itemSize, available float64, align s
 	switch align {
 	case "center":
 		return (available - itemSize) / 2
-	case "end", "flex-end":
+	case "end", "flex-end", "last baseline":
 		return available - itemSize
-	case "stretch", "normal", "start", "flex-start":
+	case "stretch", "normal", "start", "flex-start", "baseline", "first baseline":
 		return 0
 	default:
 		return 0
