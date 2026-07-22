@@ -156,7 +156,11 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 
 	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
 	// Inline-size containment also zeroes intrinsic inline sizes.
-	if style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment() {
+	// Grid containers are exempt: their intrinsic size includes fixed tracks and
+	// gaps even when item contributions are zeroed. measureGridMinMax handles the
+	// per-track containment gate internally.
+	isGrid := disp == css.DisplayGrid || disp == css.DisplayInlineGrid
+	if !isGrid && (style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()) {
 		return MinMaxSizes{}
 	}
 
@@ -1275,9 +1279,14 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 
 	// Per-item min/max contributions sized once and reused for every
 	// auto/intrinsic track that the item may occupy.
+	// Under size/inline-size containment, item contributions are zero — the
+	// container is sized as if it had no content. Fixed tracks and gaps still
+	// contribute. Mirrors Blink's CalculateMinMaxSizesIgnoringChildren gate.
+	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	type itemContrib struct{ min, max float64 }
-	itemSizes := make([]itemContrib, 0, len(items))
-	if hasItem {
+	var itemSizes []itemContrib
+	if hasItem && !contained {
+		itemSizes = make([]itemContrib, 0, len(items))
 		for _, c := range items {
 			if c.IsText() {
 				continue
