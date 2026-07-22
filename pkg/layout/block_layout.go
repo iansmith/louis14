@@ -59,6 +59,9 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 	if hasExplicitBlock {
 		return explicitBlockSize
 	}
+	if bla.space.IsBlockSizeIndefinite() {
+		return Indefinite
+	}
 	if bla.node != nil && bla.node.isAnonymous {
 		if bla.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			return bla.space.PercentageResolutionSize.BlockSize.Float64()
