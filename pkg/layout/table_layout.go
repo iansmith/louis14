@@ -1029,12 +1029,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					blockShift = rowHeight - effectiveContent
 				}
 				if blockShift > 0 {
-					conv := NewConverter(wdm, geomSizeToOld(cellFrag.Size))
-					physShift := conv.ToPhysicalOffset(LogicalOffset{
-						InlineOffset: 0,
-						BlockOffset:  blockShift,
-					}, PhysicalSize{})
-					shift := geometry.PhysicalOffsetFromF64Round(physShift.X, physShift.Y)
+					shift := geometry.PhysicalOffsetFromF64Round(
+						cellResizeVAShift(wdm, contentBlockSize, rowHeight, blockShift))
 					for cci := range cellFrag.Children {
 						cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
 					}
@@ -1304,12 +1300,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				blockShift = spannedBlock - contentBlockSize
 			}
 			if blockShift > 0 {
-				conv := NewConverter(wdm, geomSizeToOld(cellFrag.Size))
-				physShift := conv.ToPhysicalOffset(LogicalOffset{
-					InlineOffset: 0,
-					BlockOffset:  blockShift,
-				}, PhysicalSize{})
-				shift := geometry.PhysicalOffsetFromF64Round(physShift.X, physShift.Y)
+				shift := geometry.PhysicalOffsetFromF64Round(
+					cellResizeVAShift(wdm, contentBlockSize, spannedBlock, blockShift))
 				for cci := range cellFrag.Children {
 					cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
 				}

@@ -337,3 +337,40 @@ func TestOffsetRoundTrip_AllPositions(t *testing.T) {
 		}
 	}
 }
+
+func TestCellResizeVAShift(t *testing.T) {
+	oldBlock := 20.0
+	newBlock := 100.0
+	blockShift := (newBlock - oldBlock) / 2 // 40 for middle
+
+	tests := []struct {
+		wdm    WritingDirectionMode
+		wantDX float64
+		wantDY float64
+	}{
+		// HTB: pure downward shift
+		{WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}, 0, 40},
+		{WritingDirectionMode{WritingModeHorizontalTB, DirectionRTL}, 0, 40},
+		// VRL: anchor adjustment (80) minus VA shift (40) = +40 rightward
+		{WritingDirectionMode{WritingModeVerticalRL, DirectionLTR}, 40, 0},
+		{WritingDirectionMode{WritingModeVerticalRL, DirectionRTL}, 40, 0},
+		// VLR: pure rightward shift (block-start = left, no anchor adjustment)
+		{WritingDirectionMode{WritingModeVerticalLR, DirectionLTR}, 40, 0},
+		{WritingDirectionMode{WritingModeVerticalLR, DirectionRTL}, 40, 0},
+		// SRL: same as VRL
+		{WritingDirectionMode{WritingModeSidewaysRL, DirectionLTR}, 40, 0},
+		{WritingDirectionMode{WritingModeSidewaysRL, DirectionRTL}, 40, 0},
+		// SLR: same as VLR
+		{WritingDirectionMode{WritingModeSidewaysLR, DirectionLTR}, 40, 0},
+		{WritingDirectionMode{WritingModeSidewaysLR, DirectionRTL}, 40, 0},
+	}
+	for _, tt := range tests {
+		t.Run(modeName(tt.wdm), func(t *testing.T) {
+			dx, dy := cellResizeVAShift(tt.wdm, oldBlock, newBlock, blockShift)
+			if dx != tt.wantDX || dy != tt.wantDY {
+				t.Errorf("cellResizeVAShift(%s, %.0f, %.0f, %.0f) = (%.1f, %.1f), want (%.1f, %.1f)",
+					modeName(tt.wdm), oldBlock, newBlock, blockShift, dx, dy, tt.wantDX, tt.wantDY)
+			}
+		})
+	}
+}

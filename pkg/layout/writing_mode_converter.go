@@ -354,3 +354,30 @@ func ToPhysicalEdges(edges LogicalEdges, wdm WritingDirectionMode) PhysicalEdges
 	}
 	return PhysicalEdges{}
 }
+
+// cellResizeVAShift computes the physical (dx, dy) child offset adjustment
+// when a table cell is resized from oldBlock to newBlock and vertical-align
+// shifts content by blockShift in the block direction.
+//
+// In horizontal-tb the block-start edge (top) is at the physical origin, so
+// resizing the block-size (height) doesn't move children — the shift is just
+// (0, blockShift). In vertical-rl/sideways-rl the block-start edge (right) is
+// at the far side of the physical width. Growing the cell pushes the left edge
+// further left while the right edge stays put, but children's physical X
+// positions were computed against the old (smaller) width, so they end up
+// (newBlock - oldBlock) away from block-start. The shift must compensate.
+func cellResizeVAShift(wdm WritingDirectionMode, oldBlock, newBlock, blockShift float64) (float64, float64) {
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		return 0, blockShift
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		// Children were placed with outerW = oldBlock. Now outerW = newBlock.
+		// They're (newBlock - oldBlock) too far from block-start (right edge).
+		// Anchor adjustment = +(newBlock - oldBlock) to restore block-start,
+		// then VA shift = -blockShift toward block-end (left).
+		return (newBlock - oldBlock) - blockShift, 0
+	case WritingModeVerticalLR, WritingModeSidewaysLR:
+		return blockShift, 0
+	}
+	return 0, blockShift
+}
