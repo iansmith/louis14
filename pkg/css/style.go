@@ -10041,7 +10041,7 @@ func parseTransformFunction(name, args string) *Transform {
 		parts := strings.Split(args, ",")
 		values := make([]float64, 0)
 		for _, part := range parts {
-			if val, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err == nil {
+			if val, ok := parseScaleFactor(part); ok {
 				values = append(values, val)
 			}
 		}
@@ -10053,12 +10053,12 @@ func parseTransformFunction(name, args string) *Transform {
 		}
 
 	case "scaleX":
-		if val, err := strconv.ParseFloat(args, 64); err == nil {
+		if val, ok := parseScaleFactor(args); ok {
 			return &Transform{Type: "scale", Values: []float64{val, 1}}
 		}
 
 	case "scaleY":
-		if val, err := strconv.ParseFloat(args, 64); err == nil {
+		if val, ok := parseScaleFactor(args); ok {
 			return &Transform{Type: "scale", Values: []float64{1, val}}
 		}
 
@@ -10219,6 +10219,21 @@ func parseTransformValue(val string) (float64, bool, bool) {
 	}
 
 	return 0, false, false
+}
+
+// parseScaleFactor parses a scale() / scaleX() / scaleY() argument as a
+// unitless number or a <percentage> (pct/100). Mirrors Blink's
+// transform_builder.cc scale handling (@ 5e86b772), which resolves scale
+// factors via CSSPrimitiveValue::ComputeNumber for both forms, per CSS
+// Transforms L1 §funcdef-scale.
+func parseScaleFactor(val string) (float64, bool) {
+	if pct, ok := ParsePercentage(val); ok {
+		return pct / 100, true
+	}
+	if num, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil {
+		return num, true
+	}
+	return 0, false
 }
 
 // serializeTransforms is the inverse of parseTransforms: it renders parsed
@@ -10719,7 +10734,8 @@ func ComposeProjective(transforms []Transform) [9]float64 {
 }
 
 // GetPerspective returns the `perspective` property distance in px and whether
-// it is set (false for the default `none` or a non-positive value). The
+// it is set (false for the default `none` or a negative value; 0 is set and
+// clamps to the 1px minimum, per Blink ComputedStyle::HasPerspective). The
 // perspective property establishes a 3D perspective for the element's
 // children — a child's transform composes with this perspective matrix
 // (about perspective-origin) before projecting to screen. CSS Transforms L2
@@ -10734,11 +10750,14 @@ func (s *Style) GetPerspective() (float64, bool) {
 		return 0, false
 	}
 	d, parsed := s.GetLengthForVal(val)
-	if !parsed || d <= 0 {
+	if !parsed || d < 0 {
+		// Blink: HasPerspective() is Perspective() >= 0 — only a negative
+		// value means "no perspective"; 0 IS set (computed_style.h @ 5e86b772).
 		return 0, false
 	}
-	// CSS Transforms L2 §6: sub-1px perspective values are clamped to 1px
-	// so the perspective matrix is still applied.
+	// CSS Transforms L2 §6: sub-1px perspective values (including 0) are
+	// clamped to 1px so the perspective matrix is still applied. Blink:
+	// UsedPerspective() = max(1.0f, Perspective()).
 	if d < 1 {
 		d = 1
 	}
