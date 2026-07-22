@@ -164,6 +164,10 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	colTracks = gla.extendTracks(colTracks, numCols, autoColTrack)
 	rowTracks = gla.extendTracks(rowTracks, numRows, autoRowTrack)
 
+	// CSS Grid §7.2.2.1: auto-fit collapses empty tracks to 0px.
+	colTracks = collapseAutoFitEmptyTracks(colTracks, items, true)
+	rowTracks = collapseAutoFitEmptyTracks(rowTracks, items, false)
+
 	// --- Track sizing: columns ---
 	colSizes := gla.resolveTrackSizes(colTracks, contentInlineSize, colGap, true, items, numCols, numRows, wdm, geom)
 
@@ -892,13 +896,43 @@ func (gla *GridLayoutAlgorithm) expandAutoFillFit(tracks []css.GridTrack, availa
 			}
 
 			for i := 0; i < reps; i++ {
-				result = append(result, t.AutoTemplate...)
+				for _, at := range t.AutoTemplate {
+					at.AutoFitExpanded = t.AutoFit
+					result = append(result, at)
+				}
 			}
 		} else {
 			result = append(result, t)
 		}
 	}
 	return result
+}
+
+// collapseAutoFitEmptyTracks zeros out auto-fit-expanded tracks that contain
+// no items (CSS Grid §7.2.2.1).
+func collapseAutoFitEmptyTracks(tracks []css.GridTrack, items []*gridItem, isColumn bool) []css.GridTrack {
+	for i := range tracks {
+		if !tracks[i].AutoFitExpanded {
+			continue
+		}
+		occupied := false
+		for _, item := range items {
+			var start, end int
+			if isColumn {
+				start, end = item.colStart, item.colEnd
+			} else {
+				start, end = item.rowStart, item.rowEnd
+			}
+			if start <= i && i < end {
+				occupied = true
+				break
+			}
+		}
+		if !occupied {
+			tracks[i] = css.GridTrack{Size: 0, AutoFitExpanded: true}
+		}
+	}
+	return tracks
 }
 
 // resolveTrackSizes resolves track sizes from track definitions.

@@ -9128,23 +9128,24 @@ func splitCountersSepAndStyle(tail string) (sep, style string) {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size          float64     // Size in pixels (0 for auto)
-	Auto          bool        // true if track is auto-sized
-	Fr            float64     // fractional unit value (0 if not fr)
-	Percent       float64     // percentage value (e.g., 75 for "75%")
-	IsMinMax      bool        // true if this is a minmax() track
-	MinSize       float64     // minimum size (px) for minmax()
-	MaxFr         float64     // maximum as fr value for minmax()
-	MaxSize       float64     // maximum as fixed size (px) for minmax()
-	MaxAuto       bool        // true if max is "auto" for minmax()
-	MinContent    bool        // true if value is "min-content"
-	MaxContent    bool        // true if value is "max-content"
-	IsFitContent  bool        // true if this is a fit-content() track
-	FitContentMax float64     // argument to fit-content() in pixels
-	AutoFill      bool        // true if this is a repeat(auto-fill, ...) sentinel
-	AutoFit       bool        // true if this is a repeat(auto-fit, ...) sentinel
-	AutoTemplate  []GridTrack // template tracks for auto-fill/auto-fit
-	IsSubgrid     bool        // true if this represents a "subgrid" keyword
+	Size            float64     // Size in pixels (0 for auto)
+	Auto            bool        // true if track is auto-sized
+	Fr              float64     // fractional unit value (0 if not fr)
+	Percent         float64     // percentage value (e.g., 75 for "75%")
+	IsMinMax        bool        // true if this is a minmax() track
+	MinSize         float64     // minimum size (px) for minmax()
+	MaxFr           float64     // maximum as fr value for minmax()
+	MaxSize         float64     // maximum as fixed size (px) for minmax()
+	MaxAuto         bool        // true if max is "auto" for minmax()
+	MinContent      bool        // true if value is "min-content"
+	MaxContent      bool        // true if value is "max-content"
+	IsFitContent    bool        // true if this is a fit-content() track
+	FitContentMax   float64     // argument to fit-content() in pixels
+	AutoFill        bool        // true if this is a repeat(auto-fill, ...) sentinel
+	AutoFit         bool        // true if this is a repeat(auto-fit, ...) sentinel
+	AutoFitExpanded bool        // true if this track was expanded from an auto-fit repetition
+	AutoTemplate    []GridTrack // template tracks for auto-fill/auto-fit
+	IsSubgrid       bool        // true if this represents a "subgrid" keyword
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
