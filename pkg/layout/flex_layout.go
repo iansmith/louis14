@@ -4377,7 +4377,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		}
 		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionInlineSize(containerInlineSize).
 			SetIsContentSuggestionLayout(true).
 			Build()
