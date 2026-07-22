@@ -66,6 +66,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			explicitBlockSize = 0
 		}
 	}
+	sizeContained := gla.style != nil && gla.style.ShouldApplySizeContainment()
 
 	// Parse grid template definitions with named lines.
 	colTracks, colLineNames := gla.style.GetGridTemplateColumnsWithNames()
@@ -243,7 +244,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// For auto rows, size them to the maximum content block-size of their items.
 	// In vertical writing modes, block-size is the physical width; in HTB it is height.
-	for r := 0; r < numRows; r++ {
+	// Under size containment, skip — item contributions are zero.
+	for r := 0; r < numRows && !sizeContained; r++ {
 		if r < len(rowTracks) && !rowTracks[r].Auto && rowTracks[r].Fr == 0 {
 			continue // fixed row
 		}
@@ -455,8 +457,14 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	intrinsicBlockSize := totalRowSize
 
 	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
-	// when no explicit block-size is set (see contain_utils.go).
-	intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
+	// when no explicit block-size is set. For grid containers, resolveTrackSizes
+	// already zeroes item contributions and skips auto-stretch under containment,
+	// so totalRowSize is the correct "as-if-empty" value (fixed tracks + gaps
+	// only; auto tracks stay at 0). The generic sizeContainedIntrinsicBlockSize
+	// would incorrectly zero even fixed row tracks.
+	if !sizeContained {
+		intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
+	}
 
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
@@ -900,6 +908,14 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		}
 	}
 
+	// Under size/inline-size containment, item contributions are zero — the
+	// container is sized as if it had no content. Fixed tracks and gaps still
+	// contribute. ShouldApplySizeContainment covers both axes; inline-size
+	// containment only applies to the inline (column) pass.
+	skipItemContrib := gla.style != nil &&
+		(gla.style.ShouldApplySizeContainment() ||
+			(isInline && gla.style.ShouldApplyInlineSizeContainment()))
+
 	// Resolve min-content/max-content/auto tracks from item content sizes.
 	for i, t := range tracks {
 		if !t.Auto && !t.MinContent && !t.MaxContent && t.Fr == 0 && !t.IsFitContent && !(t.IsMinMax && t.MaxAuto) {
@@ -914,38 +930,36 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		// ComputeMinMaxSizes. Mirrors Blink's ResolveIntrinsicTrackSizes
 		// (grid_track_sizing_algorithm.cc:911, SHA 4883d11fef).
 		measureContrib := isInline && t.IsFitContent
-		for _, item := range items {
-			var start, end int
-			if isInline {
-				start, end = item.colStart, item.colEnd
-			} else {
-				start, end = item.rowStart, item.rowEnd
-			}
-			if start <= i && end > i {
-				span := end - start
-				if span <= 0 {
-					span = 1
+		if !skipItemContrib {
+			for _, item := range items {
+				var start, end int
+				if isInline {
+					start, end = item.colStart, item.colEnd
+				} else {
+					start, end = item.rowStart, item.rowEnd
 				}
-				var itemMax, itemMin float64
-				if measureContrib {
-					itemMin, itemMax = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
-				} else if item.result != nil {
-					// Use the physical dimension that corresponds to the logical direction.
-					// For inline tracks: inline = Width in HTB, Height in VLR.
-					// For block tracks:  block  = Height in HTB, Width in VLR.
-					// Formula: useWidth when (isInline != wdm.IsVertical()).
-					if isInline != wdm.IsVertical() {
-						itemMax = item.result.Fragment.Size.WidthF64()
-					} else {
-						itemMax = item.result.Fragment.Size.HeightF64()
+				if start <= i && end > i {
+					span := end - start
+					if span <= 0 {
+						span = 1
 					}
-					itemMin = itemMax
-				}
-				if c := itemMax / float64(span); c > maxSize {
-					maxSize = c
-				}
-				if c := itemMin / float64(span); c > minContentSize {
-					minContentSize = c
+					var itemMax, itemMin float64
+					if measureContrib {
+						itemMin, itemMax = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
+					} else if item.result != nil {
+						if isInline != wdm.IsVertical() {
+							itemMax = item.result.Fragment.Size.WidthF64()
+						} else {
+							itemMax = item.result.Fragment.Size.HeightF64()
+						}
+						itemMin = itemMax
+					}
+					if c := itemMax / float64(span); c > maxSize {
+						maxSize = c
+					}
+					if c := itemMin / float64(span); c > minContentSize {
+						minContentSize = c
+					}
 				}
 			}
 		}
@@ -975,7 +989,8 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 
 	// CSS Grid §12.5 step 5: stretch auto tracks to fill remaining free space
 	// when the container has a definite size (justify/align-content: normal).
-	if available >= 0 {
+	// Under containment, auto tracks stay at 0 — no stretching.
+	if available >= 0 && !skipItemContrib {
 		totalUsed := 0.0
 		autoCount := 0
 		for i, t := range tracks {
