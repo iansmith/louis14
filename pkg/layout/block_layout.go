@@ -713,7 +713,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// hypothetical inline-level OOF.
 				staticInlineOffset := 0.0
 				if isInlineLevelDisplay(childStyle.GetDisplay()) && exclusionSpace != nil {
-					// FindAvailableInlineSize returns inline-start offset in the
+					// FindLocalFloatOffsets returns inline-start offset in the
 					// same coordinate system the enclosing block uses when
 					// placing in-flow inline content (mirrors inline_layout.go
 					// line-start recomputation after placing floats).
