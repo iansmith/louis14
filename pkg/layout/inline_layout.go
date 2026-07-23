@@ -218,6 +218,25 @@ func inlineOOFCandidate(node *LayoutInputNode, inlineOffset, blockOffset float64
 	}
 }
 
+// computeLineBoundsBFC returns the line box's start/end BFC inline coordinates
+// given the block's content bounds and float exclusion offsets.
+// floatStart is the BFC inline coordinate of the right edge of the leftmost
+// active float; floatEnd is the distance consumed from the BFC container's
+// inline-end edge.
+func computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, floatStart, floatEnd float64) (lineStartBFC, lineEndBFC float64) {
+	lineStartBFC = bfcInlineOrigin
+	lineEndBFC = bfcInlineOrigin + contentInlineSize
+	if floatStart > 0 && floatStart > lineStartBFC {
+		lineStartBFC = floatStart
+	}
+	if floatEnd > 0 {
+		if rightEdge := bfcContainerInlineSize - floatEnd; rightEdge < lineEndBFC {
+			lineEndBFC = rightEdge
+		}
+	}
+	return
+}
+
 // layoutInlineChildren handles inline formatting context for a block container.
 // It collects inline content, breaks it into lines, and adds line box fragments
 // to the builder.
@@ -637,19 +656,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
 		}
 
-		// Compute line box bounds in BFC coordinates.
-		// floatStart/floatEnd are in local (container-relative) coords; convert to BFC-absolute.
-		lineStartBFC := bfcInlineOrigin
-		lineEndBFC := bfcInlineOrigin + contentInlineSize
-		if floatStart > 0 && bfcInlineOrigin+floatStart > lineStartBFC {
-			lineStartBFC = bfcInlineOrigin + floatStart
-		}
-		if floatEnd > 0 {
-			rightEdge := bfcInlineOrigin + contentInlineSize - floatEnd
-			if rightEdge < lineEndBFC {
-				lineEndBFC = rightEdge
-			}
-		}
+		lineStartBFC, lineEndBFC := computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, floatStart, floatEnd)
 		lineInlineOffsetFromFloat := lineStartBFC - bfcInlineOrigin // local offset
 		lineAvailableInline := lineEndBFC - lineStartBFC
 		if lineAvailableInline < 0 {
@@ -666,17 +673,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				blockOffset = clearedBlock - bfcBlockOrigin
 				bfcBlock = clearedBlock
 				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
-				lineStartBFC = bfcInlineOrigin
-				lineEndBFC = bfcInlineOrigin + contentInlineSize
-				if floatStart > 0 && bfcInlineOrigin+floatStart > lineStartBFC {
-					lineStartBFC = bfcInlineOrigin + floatStart
-				}
-				if floatEnd > 0 {
-					rightEdge := bfcInlineOrigin + contentInlineSize - floatEnd
-					if rightEdge < lineEndBFC {
-						lineEndBFC = rightEdge
-					}
-				}
+				lineStartBFC, lineEndBFC = computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, floatStart, floatEnd)
 				lineInlineOffsetFromFloat = lineStartBFC - bfcInlineOrigin
 				lineAvailableInline = lineEndBFC - lineStartBFC
 				if lineAvailableInline < 0 {
@@ -1033,17 +1030,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if floatsPlacedOnLine && exclusionSpace != nil {
 			bfcBlockNow := bfcBlockOrigin + blockOffset
 			newFloatStart, newFloatEnd := exclusionSpace.FindAvailableInlineSize(bfcBlockNow, 0, bfcContainerInlineSize)
-			newStartBFC := bfcInlineOrigin
-			newEndBFC := bfcInlineOrigin + contentInlineSize
-			if newFloatStart > 0 && bfcInlineOrigin+newFloatStart > newStartBFC {
-				newStartBFC = bfcInlineOrigin + newFloatStart
-			}
-			if newFloatEnd > 0 {
-				rightEdge := bfcInlineOrigin + contentInlineSize - newFloatEnd
-				if rightEdge < newEndBFC {
-					newEndBFC = rightEdge
-				}
-			}
+			newStartBFC, newEndBFC := computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, newFloatStart, newFloatEnd)
 			lineInlineOffset = newStartBFC - bfcInlineOrigin + appliedTextIndent
 			lineAvailableInline = newEndBFC - newStartBFC - appliedTextIndent
 			if lineAvailableInline < 0 {
