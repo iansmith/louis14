@@ -432,22 +432,22 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				logicalSide = css.FloatLeft
 			}
 		}
-		floatBlockOffset := es.FindFloatPosition(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, floatOriginBFC)
-		var floatInlineOffset float64
+		floatBlockOffset := es.FindFloatPositionLocal(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, floatOriginBFC, bfcInlineOrigin, bfcContainerInlineSize)
+		var floatInlineBFC float64
+		localStartOff, localEndOff := es.FindLocalFloatOffsets(floatBlockOffset, floatBlockSize, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 		if logicalSide == css.FloatLeft {
-			startOff, _ := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
-			floatInlineOffset = startOff + pf.margins.InlineStart
+			floatInlineBFC = bfcInlineOrigin + localStartOff + pf.margins.InlineStart
 		} else {
-			_, endOff := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
-			floatInlineOffset = contentInlineSize - endOff - pf.margins.InlineEnd - pf.childLogical.InlineSize()
+			containerEnd := bfcInlineOrigin + contentInlineSize
+			floatInlineBFC = containerEnd - localEndOff - pf.margins.InlineEnd - pf.childLogical.InlineSize()
 		}
 		localFloatBlock := floatBlockOffset - bfcBlockOrigin
 		builder.AddChild(pf.fragment, LogicalOffset{
-			InlineOffset: floatInlineOffset,
+			InlineOffset: floatInlineBFC - bfcInlineOrigin,
 			BlockOffset:  localFloatBlock + pf.margins.BlockStart,
 		})
 		return es.Add(Exclusion{
-			InlineOffset: floatInlineOffset - pf.margins.InlineStart,
+			InlineOffset: floatInlineBFC - pf.margins.InlineStart,
 			BlockOffset:  floatBlockOffset,
 			InlineSize:   floatInlineSize,
 			BlockSize:    floatBlockSize,
