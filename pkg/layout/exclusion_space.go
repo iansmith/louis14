@@ -183,21 +183,54 @@ func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockO
 // can be placed. Floats are placed as high as possible (CSS 2.1 §9.5.1 Rule 6),
 // dropping down only when there isn't enough inline space.
 func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize, floatBlockSize float64, availableInlineSize, startBlockOffset float64) float64 {
-	if es == nil || availableInlineSize <= 0 {
+	return es.FindFloatPositionLocal(side, floatInlineSize, floatBlockSize, availableInlineSize, startBlockOffset, 0, availableInlineSize)
+}
+
+// FindLocalFloatOffsets queries the exclusion space with BFC-absolute
+// coordinates and returns the result as offsets relative to the content box
+// at [bfcInlineOrigin, bfcInlineOrigin+contentInlineSize] in BFC space.
+//
+// This is the BFC-to-local conversion companion to FindAvailableInlineSize.
+// For BFC roots (bfcInlineOrigin=0, bfcContainerInlineSize=contentInlineSize)
+// it returns the same values as a direct FindAvailableInlineSize call.
+func (es *ExclusionSpace) FindLocalFloatOffsets(blockOffset, blockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize float64) (localStart, localEnd float64) {
+	bfcStart, bfcEnd := es.FindAvailableInlineSize(blockOffset, blockExtent, bfcContainerInlineSize)
+
+	localStart = bfcStart - bfcInlineOrigin
+	if localStart < 0 {
+		localStart = 0
+	}
+
+	rightFloatLeftEdge := bfcContainerInlineSize - bfcEnd
+	contentRightEdge := bfcInlineOrigin + contentInlineSize
+	localEnd = contentRightEdge - rightFloatLeftEdge
+	if localEnd < 0 {
+		localEnd = 0
+	}
+
+	return
+}
+
+// FindFloatPositionLocal finds the block offset where a float of the given
+// size can be placed, accounting for the containing block's BFC offset.
+// contentInlineSize is the containing block's content width. The exclusion
+// space is queried in BFC-absolute coordinates and the available-space check
+// is clamped to the content area at [bfcInlineOrigin, bfcInlineOrigin+contentInlineSize].
+func (es *ExclusionSpace) FindFloatPositionLocal(side css.FloatType, floatInlineSize, floatBlockSize, contentInlineSize, startBlockOffset, bfcInlineOrigin, bfcContainerInlineSize float64) float64 {
+	if es == nil || contentInlineSize <= 0 {
 		return startBlockOffset
 	}
 
 	currentBlock := startBlockOffset
 
 	for attempt := 0; attempt < 100; attempt++ {
-		startOff, endOff := es.FindAvailableInlineSize(currentBlock, floatBlockSize, availableInlineSize)
-		remaining := availableInlineSize - startOff - endOff
+		localStart, localEnd := es.FindLocalFloatOffsets(currentBlock, floatBlockSize, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
+		remaining := contentInlineSize - localStart - localEnd
 
 		if floatInlineSize <= remaining {
 			return currentBlock
 		}
 
-		// Find the next block position where an exclusion ends.
 		nextBlock := currentBlock + 1
 		foundNext := false
 		for _, e := range es.exclusions {
@@ -209,10 +242,6 @@ func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize,
 			}
 		}
 
-		// If no exclusion ends past the current position, the float
-		// simply doesn't fit in the available inline size. Per CSS 2.1
-		// §9.5.1 rule 6, place it as high as possible — further scanning
-		// won't find more room since there are no exclusions to clear.
 		if !foundNext {
 			return currentBlock
 		}

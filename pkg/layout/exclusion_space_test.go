@@ -301,3 +301,94 @@ func TestBlockLayout_ClearBoth(t *testing.T) {
 		t.Errorf("clear child Y: got %v, want 100", clearFrag.Offset.TopF64())
 	}
 }
+
+// TestBlockLayout_FloatInPaddedNonBFC verifies that a float inside a padded
+// non-BFC child produces a BFC-absolute exclusion InlineOffset. When the
+// exclusion is local-relative instead of BFC-absolute, sibling flow-root
+// blocks in the same BFC incorrectly overlap the float.
+//
+// Structure:
+//
+//	BFC root (width:200, overflow:hidden)
+//	  ├── wrapper (padding-left:20, non-BFC) → bfcInlineOrigin = 20
+//	  │     └── float:left (width:50, height:100)
+//	  └── flow-root sibling (height:30)  → should start at BFC inline 70
+func TestBlockLayout_FloatInPaddedNonBFC(t *testing.T) {
+	floatChild := makeNode("div")
+	wrapper := makeNode("div", floatChild)
+	sibling := makeNode("div")
+	root := makeNode("div", wrapper, sibling)
+
+	styles := map[*html.Node]*css.Style{
+		root:       makeStyle("width", "200px", "display", "flow-root"),
+		wrapper:    makeStyle("padding-left", "20px", "display", "block"),
+		floatChild: makeStyle("width", "50px", "height", "100px", "float", "left", "display", "block"),
+		sibling:    makeStyle("height", "30px", "display", "flow-root"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+
+	if len(result.Fragment.Children) != 2 {
+		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
+	}
+
+	// The flow-root sibling avoids the float. The float is at BFC inline
+	// offset 20 (wrapper padding) with width 50, so the sibling must start
+	// at BFC inline 70 — not 50 (which would be the wrong, local-relative
+	// result).
+	siblingFrag := result.Fragment.Children[1]
+	if got := siblingFrag.Offset.LeftF64(); got != 70 {
+		t.Errorf("flow-root sibling inline offset: got %v, want 70 (BFC-absolute float right edge)", got)
+	}
+}
+
+// TestBlockLayout_RightFloatInPaddedNonBFC is the right-float counterpart
+// of TestBlockLayout_FloatInPaddedNonBFC. A right float inside a padded
+// non-BFC wrapper must produce a BFC-absolute exclusion so that sibling
+// flow-root blocks leave the correct gap from the inline-end edge.
+func TestBlockLayout_RightFloatInPaddedNonBFC(t *testing.T) {
+	floatChild := makeNode("div")
+	wrapper := makeNode("div", floatChild)
+	sibling := makeNode("div")
+	root := makeNode("div", wrapper, sibling)
+
+	// BFC root: 200px wide.
+	// wrapper: 20px padding on each side → contentInlineSize = 160, bfcInlineOrigin = 20.
+	// right float: 50px wide, inside the wrapper's 160px content box.
+	// Float's left edge in BFC = 200 - 20 (padding-right) - 50 (float width) = 130.
+	// Sibling flow-root must have its inline-end clamped at BFC 130.
+	styles := map[*html.Node]*css.Style{
+		root:       makeStyle("width", "200px", "display", "flow-root"),
+		wrapper:    makeStyle("padding-left", "20px", "padding-right", "20px", "display", "block"),
+		floatChild: makeStyle("width", "50px", "height", "100px", "float", "right", "display", "block"),
+		sibling:    makeStyle("height", "30px", "display", "flow-root"),
+	}
+
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
+
+	if len(result.Fragment.Children) != 2 {
+		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
+	}
+
+	// Sibling should have width = 130 (BFC 0..130, avoiding the right float).
+	siblingFrag := result.Fragment.Children[1]
+	if got := siblingFrag.Fragment.Size.WidthF64(); got != 130 {
+		t.Errorf("flow-root sibling width: got %v, want 130", got)
+	}
+}

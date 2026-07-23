@@ -713,12 +713,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// hypothetical inline-level OOF.
 				staticInlineOffset := 0.0
 				if isInlineLevelDisplay(childStyle.GetDisplay()) && exclusionSpace != nil {
-					// FindAvailableInlineSize returns inline-start offset in the
+					// FindLocalFloatOffsets returns inline-start offset in the
 					// same coordinate system the enclosing block uses when
 					// placing in-flow inline content (mirrors inline_layout.go
 					// line-start recomputation after placing floats).
 					bfcBlock := bfcBlockOrigin + staticBlockOffset
-					floatStartOff, _ := exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
+					floatStartOff, _ := exclusionSpace.FindLocalFloatOffsets(bfcBlock, 0, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 					if floatStartOff > 0 {
 						staticInlineOffset = floatStartOff
 					}
@@ -739,7 +739,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Handle floats.
 			if childStyle.GetFloat() != css.FloatNone {
 				bla.layoutFloat(child, childStyle, wdm, contentInlineSize, childAvailableBlock,
-					blockCursor, &prevMarginStrut, exclusionSpace, builder, &exclusionSpace, bfcBlockOrigin)
+					blockCursor, &prevMarginStrut, exclusionSpace, builder, &exclusionSpace, bfcBlockOrigin,
+					bfcInlineOrigin, bfcContainerInlineSize)
 				// Only BFC roots extend auto block-size to clear floats
 				// (CSS 2.1 §10.6.7). Non-BFC parents let floats overflow;
 				// hasOwnFloats is already true for BFC roots (initialized
@@ -917,7 +918,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				tentativeStrut.Append(childMargins.BlockStart)
 				floatCheckBlock = bfcBlockOrigin + blockCursor + tentativeStrut.Resolve()
 			}
-			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(floatCheckBlock, 0, childAvailableInline)
+			floatStartOff, floatEndOff := exclusionSpace.FindLocalFloatOffsets(floatCheckBlock, 0, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist;
 			// only their line boxes shorten around floats. So only BFC children
 			// have their available inline-size reduced by float exclusions.
@@ -951,15 +952,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					Build()
 				if resolvedInline, ok := ResolveInlineSize(childStyle, childWDM, tmpSpace, childGeomForBFC); ok {
 					neededInline := resolvedInline.Float64() + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
-					availBesideFloats := childAvailableInline - floatStartOff - floatEndOff
+					availBesideFloats := contentInlineSize - floatStartOff - floatEndOff
 					if neededInline > availBesideFloats {
 						// Doesn't fit — find the earliest block position
 						// where the BFC fits alongside remaining floats.
-						// Use FindFloatPosition which iterates through float
-						// boundaries (CSS 2.1 §9.5 Rule 5).
-						newBlockBfc := exclusionSpace.FindFloatPosition(
+						// Use FindFloatPositionLocal which iterates through
+						// float boundaries (CSS 2.1 §9.5 Rule 5).
+						newBlockBfc := exclusionSpace.FindFloatPositionLocal(
 							css.FloatLeft, neededInline, 0,
-							childAvailableInline, floatCheckBlock)
+							contentInlineSize, floatCheckBlock,
+							bfcInlineOrigin, bfcContainerInlineSize)
 						newBlock := newBlockBfc - bfcBlockOrigin
 						if newBlock > blockCursor {
 							blockCursor = newBlock
@@ -967,7 +969,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							hasClearance = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								exclusionSpace, bfcBlockOrigin+blockCursor, 0,
-								childAvailableInline, childMargins.InlineSum())
+								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
 						}
 					}
 				}
@@ -1109,17 +1111,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isChildNewFC {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
 				bfcBlockExtent := childLogicalTmp.BlockSize() + childMargins.BlockSum()
-				origFloatStartOff, origFloatEndOff := exclusionSpace.FindAvailableInlineSize(
-					floatCheckBlock, bfcBlockExtent, childAvailableInline)
+				origFloatStartOff, origFloatEndOff := exclusionSpace.FindLocalFloatOffsets(
+					floatCheckBlock, bfcBlockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 				if origFloatStartOff > 0 || origFloatEndOff > 0 {
 					neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
-					availableInline := childAvailableInline - origFloatStartOff - origFloatEndOff
+					availableInline := contentInlineSize - origFloatStartOff - origFloatEndOff
 					if neededInline > availableInline {
 						// Child doesn't fit — find the earliest block position
 						// where the BFC fits alongside remaining floats.
-						newBlockBfc := exclusionSpace.FindFloatPosition(
+						newBlockBfc := exclusionSpace.FindFloatPositionLocal(
 							css.FloatLeft, neededInline, bfcBlockExtent,
-							childAvailableInline, floatCheckBlock)
+							contentInlineSize, floatCheckBlock,
+							bfcInlineOrigin, bfcContainerInlineSize)
 						newBlock := newBlockBfc - bfcBlockOrigin
 						if newBlock > blockCursor {
 							blockCursor = newBlock
@@ -1127,7 +1130,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							hasClearance = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								exclusionSpace, bfcBlockOrigin+blockCursor, bfcBlockExtent,
-								childAvailableInline, childMargins.InlineSum())
+								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
 							// Re-layout with the new available size.
 							csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 								SetOrthogonalFallbackInlineSize(
@@ -2943,6 +2946,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	builder *BoxFragmentBuilder,
 	outES **ExclusionSpace,
 	bfcBlockOrigin float64,
+	bfcInlineOrigin float64,
+	bfcContainerInlineSize float64,
 ) {
 	childWDM := NewWritingDirectionMode(childStyle)
 	// Resolve float margins in the parent's coordinates for positioning.
@@ -3027,8 +3032,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 	// Find where the float fits (CSS 2.1 §9.5.1 Rule 6: as high as possible).
 	floatSide := childStyle.GetFloat()
-	floatBlockOffset := es.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize,
-		contentInlineSize, floatBlockStart)
+	floatBlockOffset := es.FindFloatPositionLocal(floatSide, floatInlineSize, floatBlockSize,
+		contentInlineSize, floatBlockStart, bfcInlineOrigin, bfcContainerInlineSize)
 
 	// LOU-365 (CodeRabbit 3514362236): clear / exclusion repositioning can
 	// move the float past its tentative position, and a stale fragmentainer
@@ -3081,28 +3086,29 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		}
 	}
 
-	// Compute the float's inline position.
-	var floatInlineOffset float64
+	// Compute the float's inline position in BFC coordinates.
+	// FindAvailableInlineSize returns BFC-absolute offsets because the
+	// exclusion InlineOffset values are BFC-absolute.
+	var floatInlineBFC float64
+	localStartOff, localEndOff := es.FindLocalFloatOffsets(floatBlockOffset, floatBlockSize, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 	if logicalSide == css.FloatLeft {
-		startOff, _ := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
-		floatInlineOffset = startOff + childMargins.InlineStart
+		floatInlineBFC = bfcInlineOrigin + localStartOff + childMargins.InlineStart
 	} else {
-		_, endOff := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
-		floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
+		containerEnd := bfcInlineOrigin + contentInlineSize
+		floatInlineBFC = containerEnd - localEndOff - childMargins.InlineEnd - childLogical.InlineSize()
 	}
 
-	// Add the float fragment to the builder. Convert the BFC-relative
-	// block offset to local coordinates for fragment positioning.
+	// Add the float fragment to the builder in local coordinates.
 	localFloatBlockOffset := floatBlockOffset - bfcBlockOrigin
 	builder.AddChild(childResult.Fragment, LogicalOffset{
-		InlineOffset: floatInlineOffset,
+		InlineOffset: floatInlineBFC - bfcInlineOrigin,
 		BlockOffset:  localFloatBlockOffset + childMargins.BlockStart,
 	})
 
 	// Add an exclusion for this float. The exclusion uses BFC-relative
 	// coordinates so it works correctly throughout the BFC.
 	exclusion := Exclusion{
-		InlineOffset: floatInlineOffset - childMargins.InlineStart,
+		InlineOffset: floatInlineBFC - childMargins.InlineStart,
 		BlockOffset:  floatBlockOffset, // BFC-relative
 		InlineSize:   floatInlineSize,
 		BlockSize:    floatBlockSize,
@@ -3307,9 +3313,9 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 // the float-blocked inline position; a float that still overlaps the new block
 // range keeps its (possibly smaller) offset.
 // block_layout_algorithm.cc:2082-2108 @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
-func reQueryFloatsAfterDrop(exclusionSpace *ExclusionSpace, dropBlockBfc, blockExtent, childAvailableInline, childMarginInlineSum float64) (floatStartOff, floatEndOff, childInlineForSpace float64) {
-	floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(dropBlockBfc, blockExtent, childAvailableInline)
-	childInlineForSpace = childAvailableInline - childMarginInlineSum - floatStartOff - floatEndOff
+func reQueryFloatsAfterDrop(exclusionSpace *ExclusionSpace, dropBlockBfc, blockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMarginInlineSum float64) (floatStartOff, floatEndOff, childInlineForSpace float64) {
+	floatStartOff, floatEndOff = exclusionSpace.FindLocalFloatOffsets(dropBlockBfc, blockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
+	childInlineForSpace = contentInlineSize - childMarginInlineSum - floatStartOff - floatEndOff
 	if childInlineForSpace < 0 {
 		childInlineForSpace = 0
 	}
