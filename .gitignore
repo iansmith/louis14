@@ -28,6 +28,10 @@ test-output.txt
 # belong in design/. CLAUDE.md is the one tracked exception.
 /*.md
 !/CLAUDE.md
+# Mirrored universal rules, imported by CLAUDE.md. Must be tracked — a trailing
+# comment here would NOT be a comment (.gitignore only honours # at line start)
+# and would silently make this negation match nothing.
+!/CLAUDE-universal.md
 
 # Personal scratch / drafts — design docs go to design/ (tracked). Formerly /docs/.
 /scratch/
