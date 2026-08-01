@@ -1,0 +1,129 @@
+system = "linear"
+key    = "LOU"
+prefix = "LOU"
+
+# Project-local ticket tracking (v3 recommended). Relative paths resolve
+# against the main worktree root. .slopstop/ is gitignored — transient
+# working state, not source. Migrated off the ~/.claude/ticket-active
+# default (2026-07-16): that path is a protected path for headless fleet
+# agents (Write silently fails even with --add-dir), and was previously a
+# single directory shared across every slopstop-managed project on this
+# machine.
+tracking_dir = ".slopstop/ticket-active"
+archive_dir  = ".slopstop/ticket-archive"
+
+# Tier→model map for the four-tier slopstop process.
+# Table form (v3.1.0+): each tier is a sub-table with provider, model, and optional
+# version. The tier gate matches on model family and, when pinned, a dotted-prefix
+# version match (e.g. version = "4.6" matches claude-opus-4-6). Stage skills
+# hard-stop when the session model doesn't match the stage's tier; subagent tiers
+# (adversaries/reviewers/fleet) are set from this table. Stage→tier mapping
+# ([stage_tiers]) is left at its defaults.
+#
+# Only the fleet stages gate on these (defaults: design=huge, tickets=large,
+# run=medium, plus their checkers). The serial start/plan/pr/merge pipeline this
+# repo actually ships through is ungated, so these are inert until/unless a fleet
+# run happens here — see the swarm-approach-abandoned memory.
+[tiers.huge]        # :design + huge-tier checks (ticket-tree/rewrite/report adversaries)
+provider = "anthropic"
+model    = "opus"
+version  = "5"
+
+[tiers.large]       # :tickets + failure-driven rewrites + umbrella/integration drift checks
+provider = "anthropic"
+model    = "opus"
+version  = "5"
+
+[tiers.medium]      # :run orchestrator + per-ticket reviewer/adversary subagents
+provider = "anthropic"
+model    = "sonnet"
+version  = "5"
+
+[tiers.small]       # fleet implementation agents (no version pin)
+provider = "anthropic"
+model    = "sonnet"
+version  = "5"  # set 2026-08-01 (grand synchronization)
+
+# Point this repo's runs at the local Phase-1 metering router (see ~/slopstop/router).
+# :design health-checks it at run start and :run points each fleet agent at it
+# (ANTHROPIC_BASE_URL + X-Slopstop-Run/X-Slopstop-Ticket headers), so fleet traffic is
+# metered by default. A dead router never blocks a run — agents fall back to direct API.
+# Inert for this repo's serial pipeline; configured so a future fleet run is metered.
+[fleet.router]
+enabled = true
+host    = "127.0.0.1"
+port    = 8484
+
+# Fleet monitoring posture. "kill" terminates any fleet agent that writes outside
+# its ticket's file map — the graduated posture for real runs (as opposed to
+# "warn", the supervised-observation mode used during the meta-test).
+[fleet.monitoring]
+filemap_violation = "kill"
+
+# PR code review backend for /slopstop-pr.
+# Both CodeRabbit and Greptile are OFF (CodeRabbit subscription cancelled
+# 2026-07-17; Greptile never installed). Claude /code-review is the sole
+# review backend for this repo.
+[pr_review]
+backend = "claude"
+effort  = "high"
+# fix=false pairs with [autonomous] on_red_findings = "fix-and-retry" below,
+# which already applies the 🔴/🟡 findings. Setting fix=true too would just make
+# on_red_findings a harmless no-op (slopstop v3.5.0+: warns once, doesn't error).
+fix     = false
+
+# Non-interactive mode.
+#
+# NOTE: enabled=true drives :pr / :start / :archive / :plan autonomously. It does
+# NOT by itself make :merge autonomous — per the skill's merge-autonomous.md, full
+# autonomous :merge is activated by passing --autonomous on the :merge command line.
+# The merge_* keys below are read only on those --autonomous runs. Interactive
+# :merge still auto-confirms via [workflow] skip_confirm (below). [workflow]
+# skip_archive, unlike these, applies in BOTH modes — it's not [autonomous]-scoped.
+[autonomous]
+enabled = true
+
+# branch_type is deliberately NOT pinned. This repo ships a mix of fix/ and feat/
+# tickets (cf. fix/LOU-370, feat/LOU-364), so forcing a single prefix would
+# mislabel branches. :start falls back to the label/title heuristic, which
+# [workflow] skip_confirm accepts without prompting.
+
+# All keys below are set so headless agents never stall on an "ask" prompt with no
+# human present to answer it.
+# :plan — Phase 0 red tests unexpectedly pass (possible stale ticket): proceed.
+# NB: in this repo a red test that unexpectedly passes has meant the TEST was
+# stale debt, not the code (LOU-333; memory: feedback_red_test_can_be_stale_debt).
+# "continue" won't stall the run, but check that case in the report before
+# implementing against it.
+on_phase0_tests_pass = "continue"
+# :plan — ≥2 parallel-safe work items found: launch them.
+on_parallel_agents   = "proceed"
+# :plan — adversary-found gap tests: add them all.
+on_test_gaps         = "add-all"
+
+# :pr — simplify pass modifies the working tree: accept the changes.
+on_simplify_changes = "accept"
+# :pr — pre-commit tests fail: abort (do NOT commit-anyway on a real failure).
+on_test_failure     = "abort"
+# :pr — auto-fix 🔴 and 🟡 findings and re-review, rather than asking. Paired
+# with [pr_review] fix=false above — see the note there.
+on_red_findings     = "fix-and-retry"
+# :pr — slop-detection violations: skip the check rather than stall.
+on_slop_findings    = "skip"
+
+# :merge — repo rule: ALWAYS a real merge commit, never squash/rebase (CLAUDE.md §3;
+# squash/rebase lose fixup context and break git bisect).
+merge_strategy      = "merge"
+merge_target_state  = "auto"    # advance the ticket exactly one state, never force-jump to Done
+
+metrics_emit_path = ".slopstop/metrics"
+
+# Don't prompt for the branch type on /slopstop-start — use the heuristic
+# suggestion (from ticket labels/title) automatically. Only falls back to
+# asking when the heuristic produces no suggestion at all.
+# skip_archive=false: :merge always chains into :archive on terminal state
+# (slopstop v3.4.0+, both interactive and autonomous — replaces the old
+# [autonomous] archive_immediately key, which no longer exists).
+[workflow]
+skip_confirm = true
+skip_archive = false

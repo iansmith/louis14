@@ -52,6 +52,3 @@ Thumbs.db
 l14open
 l14show
 
-# Machine-local slopstop config: pins model tiers/versions, a localhost metering
-# router, and ~/.claude paths — per-machine settings, not shareable project state.
-.project-conf.toml
