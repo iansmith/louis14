@@ -98,12 +98,20 @@ func TestNestedMulticol_ShrinkToFitColumnBlockSize(t *testing.T) {
 // Blink ref: may_have_more_space_in_next_outer_fragmentainer + min_break_appeal
 // (cla.cc:893-902, :1027-1066 @ a9f50e522efa).
 func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
-	// Inner content: a break-inside:avoid div that's taller than the inner
-	// column height (constrained by outer remaining space). The inner multicol
-	// must break it, violating break-inside:avoid.
-	innerChild := makeNode("div")
+	// Inner content: a break-inside:avoid container with two children,
+	// totaling 80px — taller than the inner column height (50px, constrained
+	// by outer remaining space). The BLA must break between the children,
+	// violating break-inside:avoid, which should demote the appeal.
+	grandchild1 := makeNode("div")
+	grandchild2 := makeNode("div")
+	innerChild := makeNode("div", grandchild1, grandchild2)
 	innerMC := makeNode("div", innerChild)
 
+	grandchildStyle := makeStyle(
+		"display", "block",
+		"height", "40px",
+		"background", "green",
+	)
 	styles := map[*html.Node]*css.Style{
 		innerMC: makeStyle(
 			"display", "block",
@@ -113,10 +121,10 @@ func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
 		),
 		innerChild: makeStyle(
 			"display", "block",
-			"height", "80px",
 			"break-inside", "avoid",
-			"background", "green",
 		),
+		grandchild1: grandchildStyle,
+		grandchild2: grandchildStyle,
 	}
 
 	ctx := testContext()
@@ -160,7 +168,7 @@ func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
 //   - First outer child: height:50 (fills half of first outer col)
 //   - Inner multicol: columns:2, column-fill:auto, column-gap:0
 //   - Inner content 1: height:50 (fills first inner col at 25x50)
-//   - Inner content 2: height:50, break-inside:avoid
+//   - Inner content 2: height:100, break-inside:avoid
 //
 // Expected: The inner multicol's first fragment (in outer col 1) should have
 // both inner columns populated. The second inner child should either:
@@ -203,7 +211,7 @@ func TestNestedMulticol_ContentDistribution(t *testing.T) {
 		),
 		innerChild2: makeStyle(
 			"display", "block",
-			"height", "50px",
+			"height", "100px",
 			"break-inside", "avoid",
 			"background", "green",
 		),
@@ -239,7 +247,7 @@ func TestNestedMulticol_ContentDistribution(t *testing.T) {
 	}
 
 	// The total content placed across both outer columns should account for
-	// all inner content (50px firstChild + inner multicol with 50+50 content).
+	// all inner content (50px firstChild + inner multicol with 50+100 content).
 	// Verify the outer mc uses its full height.
 	outerBlockSize := NewLogicalFragment(wdm, result.Fragment).BlockSize()
 	if outerBlockSize < 99 {
