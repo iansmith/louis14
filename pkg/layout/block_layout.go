@@ -1028,13 +1028,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childIsMonolithic := child.IsMonolithic(wdm.WM != childWDM.WM)
 			if bla.space.HasBlockFragmentation && !childIsMonolithic {
 				childFragOffset := bla.space.FragmentainerOffset + blockCursor + prevMarginStrut.Resolve()
-				csBuilder.
-					SetHasBlockFragmentation(true).
-					SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
-					SetFragmentainerOffset(childFragOffset).
-					SetBlockFragmentationType(bla.space.BlockFragmentationType).
-					SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
-					SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns)
+				bla.setupSpaceBuilderForFragmentation(csBuilder, childFragOffset)
 
 				// Propagate the "spanner descendants blocked" flag: set it when
 				// any ancestor already blocks, or when the current block itself
@@ -1351,12 +1345,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Phase 12d: forced-break / break-appeal dispatch in column context.
 			// Mirrors Blink's BreakBeforeChildIfNeeded called by every block
-			// algorithm right after laying out an in-flow child. Skipped for
-			// resumed children (those with an incoming token) — break-before at
-			// the start of a fragmentainer is a no-op per CSS Fragmentation §3.
+			// algorithm right after laying out an in-flow child; only a child
+			// that is first-for-node can break before.
 			if bla.space.HasBlockFragmentation &&
 				bla.space.BlockFragmentationType == FragmentColumn &&
-				resumeChildTokens[child] == nil {
+				isFirstForNode(resumeChildTokens[child]) {
 
 				hasContainerSeparation := !firstNonEmptyChild
 				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
@@ -1426,21 +1419,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 					// Phase 12g: when a soft break-before fires (not forced), the
 					// child didn't fit in the remaining fragmentainer space and
-					// was pushed to the next one. The space we WOULD have needed
-					// is the child's block-size, and the space we HAVE is
-					// (fragmentainerBlockSize − fragOff). Report the difference
-					// as MinSpaceShortage so the multicol balancing loop can
-					// stretch just enough to keep the child whole with its
-					// siblings. Without this, avoid-inside violations on
-					// subsequent children report shortage=0 and the stretch
-					// loop has no signal to grow the column.
+					// was pushed to the next one. Report space shortage so the
+					// multicol balancing loop can stretch just enough to keep
+					// the child whole with its siblings. Mirrors Blink's
+					// BreakBeforeChild → PropagateSpaceShortage →
+					// CalculateSpaceShortage (fragmentation_utils.cc:944-1049 @
+					// a9f50e522efa): if the child reported shortage inside (it
+					// broke inside and we chose to break before it instead),
+					// use that — its own layout is incomplete, so a whole-child
+					// figure is impossible; otherwise the shortage is the
+					// child's block-size minus the space we have.
 					if !isForced && childResult != nil && childResult.Fragment != nil &&
 						bla.space.FragmentainerBlockSize != Indefinite {
-						childBlock := NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
-						spaceLeft := bla.space.FragmentainerBlockSize - fragOff
-						if childBlock > spaceLeft {
-							result.MinSpaceShortage = childBlock - spaceLeft
+						shortage := childResult.MinSpaceShortage
+						if shortage <= 0 {
+							childBlock := NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+							shortage = childBlock - (bla.space.FragmentainerBlockSize - fragOff)
 						}
+						result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
 					}
 					result.PropagatedTopMargin = propagatedTopMargin
 					return result
@@ -2987,12 +2983,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 			}).
 			SetPercentageResolutionInlineSize(contentInlineSize)
 		if floatHasFragmentation {
-			b = b.SetHasBlockFragmentation(true).
-				SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
-				SetFragmentainerOffset(fragOffset).
-				SetBlockFragmentationType(bla.space.BlockFragmentationType).
-				SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
-				SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns)
+			bla.setupSpaceBuilderForFragmentation(b, fragOffset)
 		}
 		return b.Build()
 	}
@@ -3792,4 +3783,31 @@ func computeOrthogonalFallbackBlockForChildren(
 
 	// Not a scroller: inherit the ancestor's fallback unchanged.
 	return space.OrthogonalFallbackBlockSize
+}
+
+// setupSpaceBuilderForFragmentation copies this block's fragmentation context
+// into a child's constraint-space builder at the given fragmentainer offset.
+// Mirrors Blink's SetupSpaceBuilderForFragmentation
+// (fragmentation_utils.cc:333-372 @ a9f50e522efa), including MinBreakAppeal
+// (:369) so a container that is breakable at the start of a resumed
+// fragment stays breakable through its descendants.
+func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *ConstraintSpaceBuilder, fragmentainerOffset float64) {
+	b.SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
+		SetFragmentainerOffset(fragmentainerOffset).
+		SetBlockFragmentationType(bla.space.BlockFragmentationType).
+		SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
+		SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns).
+		SetMinBreakAppeal(bla.space.MinBreakAppeal)
+}
+
+// isFirstForNode reports whether a child resumed with the given token (nil
+// when not resumed) is producing its first fragment, so a break before it is
+// possible. A break-inside token means an earlier fragment exists: Blink's
+// MovePastBreakpoint returns early for it (fragmentation_utils.cc:1119-1131
+// @ a9f50e522efa). A break-before token means the child has not started —
+// unless the break was forced, in which case it must not fire again.
+func isFirstForNode(resumeToken *BlockBreakToken) bool {
+	return !resumeToken.IsBreakInside() &&
+		(resumeToken == nil || !resumeToken.IsForcedBreak)
 }

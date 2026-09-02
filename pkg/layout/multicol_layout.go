@@ -1668,7 +1668,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// actually determined the column height (not when column-height is
 			// explicit). Prevents fragment background extension (Change 3) from
 			// firing in explicit column-height contexts (CSS multicol-2).
-			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns && mla.hasAutoColumnHeight(), true)
+			// Blink cla.cc:930-935 @ a9f50e522efa: pass the worst appeal seen
+			// so far in this row (min_break_appeal, unset → LastResort) into
+			// the column's space. Only set once a column has completed under
+			// the may_have_more_space gate; it lets a resumed column break
+			// before its first child (IsBreakableAtStartOfResumedContainer)
+			// to push content to the next outer fragmentainer.
+			colMinBreakAppeal := BreakAppealLastResort
+			if mayHaveMoreSpace && col > 0 {
+				colMinBreakAppeal = minBreakAppeal
+			}
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceControlsColumnHeight, true, colMinBreakAppeal)
 			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
 			if result == nil || result.Fragment == nil {
 				break
@@ -1760,7 +1770,12 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// loop header). If this column's outgoing token's consumed size did
 			// not advance past the previous column's, no progress was made and
 			// continuing would loop forever — stop the row.
-			if colBreakToken != nil {
+			// The guard applies only when the column-count cap is off; a
+			// capped row terminates on its own, and a non-advancing column
+			// there is legitimate — e.g. one that pushed its first child
+			// whole to the next outer fragmentainer (breakable at start of
+			// a resumed container, cla.cc:930-935) and must keep its token.
+			if colBreakToken != nil && (colBlockSize == Indefinite || noWrapMode || overflowInline) {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
 				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
 					colBreakToken = nil
@@ -2576,6 +2591,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	breakToken *BlockBreakToken,
 	balanceColumns bool,
 	fixedBlockSize bool,
+	minBreakAppeal BreakAppeal,
 ) ConstraintSpace {
 	// A balanced estimate of 0 means the row contains no non-spanner content.
 	// Treat it as Indefinite so the column fragment's height is driven purely
@@ -2612,7 +2628,8 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		SetPercentageResolutionInlineSize(colWidth).
 		SetHasBlockFragmentation(true).
 		SetBlockFragmentationType(FragmentColumn).
-		SetIsInsideBalancedColumns(balanceColumns)
+		SetIsInsideBalancedColumns(balanceColumns).
+		SetMinBreakAppeal(minBreakAppeal)
 
 	if isFixed {
 		// IsBlockSizeOverride + IsFixedBlockSize: the column height overrides any

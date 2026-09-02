@@ -159,10 +159,10 @@ func CalculateBreakBetweenValue(child *LayoutInputNode, builder *BoxFragmentBuil
 //   - hasContainerSeparation: there is at least one prior in-flow child in
 //     this container (so a break before this child is a real boundary, not
 //     the start-of-container).
-//   - breakable: whether a break at the start of a resumed container is
-//     allowed (mirrors IsBreakableAtStartOfResumedContainer). For 12d's
-//     simplified path we pass false — start-of-container breaks aren't
-//     supported until orphans/widows machinery (12g) needs them.
+//   - breakableAtStartOfResumedContainer: a break before the first child of
+//     a resumed container is allowed (IsBreakableAtStartOfResumedContainer);
+//     the appeal then floors at the space's MinBreakAppeal instead of
+//     LastResort.
 func CalculateBreakAppealBefore(
 	space ConstraintSpace,
 	breakBetween string,
@@ -213,6 +213,23 @@ func CalculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResul
 	return appeal
 }
 
+// IsBreakableAtStartOfResumedContainer reports whether a break is allowed
+// before the first child of a container that resumed after a break. Normally
+// that is not a valid breakpoint (nothing would be placed in the
+// fragmentainer), but when the enclosing column algorithm passed down a
+// MinBreakAppeal better than LastResort — a nested multicol that may have
+// more space in the next outer fragmentainer (cla.cc:930-935) — breaking here
+// is permitted so content can be pushed to that outer fragmentainer instead
+// of taking a worse break. Mirrors Blink's
+// IsBreakableAtStartOfResumedContainer (fragmentation_utils.cc:214-219 @
+// a9f50e522efa): MinBreakAppeal != LastResort && IsBreakInside(previous
+// break token) && is_first_for_node. `space` is the container's own space, so
+// its BreakToken is the previous break token; callers only invoke this for
+// children that are first-for-node (no incoming token, or a break-before one).
+func IsBreakableAtStartOfResumedContainer(space ConstraintSpace) bool {
+	return space.MinBreakAppeal != BreakAppealLastResort && space.BreakToken.IsBreakInside()
+}
+
 // MovePastBreakpoint decides whether the laid-out child can be accepted in
 // the current fragmentainer. Returns true when the child fits and no break
 // is needed; false when a break must be inserted before this child.
@@ -241,7 +258,8 @@ func MovePastBreakpoint(
 	// a fresh fragmentainer (entire fragmentainer free). Without an
 	// orphans/widows reason to break, refuse — otherwise we'd loop forever
 	// emitting empty fragmentainers.
-	refuseBreakBefore := spaceLeft >= fragmentainerBlockSize
+	refuseBreakBefore := spaceLeft >= fragmentainerBlockSize &&
+		!IsBreakableAtStartOfResumedContainer(space)
 
 	mustBreakBefore := false
 	if spaceLeft < 0 {
@@ -351,9 +369,48 @@ func BreakBeforeChildIfNeeded(
 		return BreakStatusContinue, false
 	}
 
-	// Compute appeal-inside + propagate any break-inside:avoid violation up
-	// to the column builder so the multicol stretch loop sees it.
+	// A child that is breakable at the start of a resumed container
+	// (IsBreakableAtStartOfResumedContainer) is treated like one with
+	// container separation below, and the refuse-at-fragmentainer-start rule
+	// (MovePastBreakpoint, fragmentation_utils.cc:1168-1171 @ a9f50e522efa:
+	// no progress yet in this fragmentainer, so a break here would risk an
+	// infinite run of empty fragmentainers) is lifted for it.
+	breakableAtStart := IsBreakableAtStartOfResumedContainer(space)
+	spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
+	refuseBreakBefore := fragmentainerBlockOffset <= 0 && !breakableAtStart
+	canBreakBefore := (hasContainerSeparation || breakableAtStart) &&
+		!refuseBreakBefore && fragmentainerBlockSize != Indefinite && layoutResult != nil
+	var appealBefore BreakAppeal
+	if canBreakBefore {
+		appealBefore = CalculateBreakAppealBefore(
+			space, CalculateBreakBetweenValue(child, builder),
+			hasContainerSeparation, breakableAtStart)
+	}
+	breakBefore := func() (BreakStatus, bool) {
+		builder.SetBreakAppeal(appealBefore)
+		return BreakStatusBrokeBefore, false
+	}
+	hasFragment := canBreakBefore && layoutResult.Fragment != nil
+	var childBlockSize float64
+	if hasFragment {
+		childBlockSize = NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
+	}
+
 	appealInside := CalculateBreakAppealInside(space, layoutResult)
+
+	// Blink MovePastBreakpoint (fragmentation_utils.cc:1198-1213): the child
+	// fits but broke inside (here or in an inner fragmentation context), or
+	// its inside-appeal is sub-perfect. Keep that break only if it is at
+	// least as appealing as breaking before the child; otherwise break
+	// before it so the whole child moves to the next fragmentainer.
+	if hasFragment && childBlockSize <= spaceLeft &&
+		(layoutResult.BreakToken.IsBreakInside() || appealInside < BreakAppealPerfect) &&
+		appealInside < appealBefore {
+		return breakBefore()
+	}
+
+	// Propagate any break-inside:avoid violation up to the column builder so
+	// the multicol stretch loop sees it.
 	if appealInside < BreakAppealPerfect {
 		if !builder.hasBreakAppeal || appealInside < builder.breakAppeal {
 			builder.SetBreakAppeal(appealInside)
@@ -364,57 +421,29 @@ func BreakBeforeChildIfNeeded(
 	// via LayoutResult.BlockSizeForFragmentation. Set today only by inner multicol
 	// containers with column-fill:auto + explicit height that can't fit their
 	// declared column block-size in the remaining outer fragmentainer space.
-	// When that hint exceeds the actual remaining space and we have container
-	// separation, push the child to the next outer fragmentainer instead of
-	// placing a clipped fragment whose contents would leak into the outer
-	// overflow area. Mirrors Blink's MovePastBreakpoint, which uses
-	// BlockSizeForFragmentation (not the fragment's own size) for the
-	// "block_size > space_left → break before" decision.
-	if hasContainerSeparation && fragmentainerBlockSize != Indefinite &&
-		layoutResult != nil && layoutResult.BlockSizeForFragmentation > 0 {
-		spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
-		refuseBreakBefore := spaceLeft >= fragmentainerBlockSize
-		if layoutResult.BlockSizeForFragmentation > spaceLeft && !refuseBreakBefore {
-			appealBefore := CalculateBreakAppealBefore(
-				space,
-				CalculateBreakBetweenValue(child, builder),
-				hasContainerSeparation,
-				false,
-			)
-			builder.SetBreakAppeal(appealBefore)
-			return BreakStatusBrokeBefore, false
-		}
+	// When that hint exceeds the actual remaining space, push the child to the
+	// next outer fragmentainer instead of placing a clipped fragment whose
+	// contents would leak into the outer overflow area. Mirrors Blink's
+	// MovePastBreakpoint, which uses BlockSizeForFragmentation (not the
+	// fragment's own size) for the "block_size > space_left → break before"
+	// decision.
+	if canBreakBefore && layoutResult.BlockSizeForFragmentation > 0 &&
+		layoutResult.BlockSizeForFragmentation > spaceLeft {
+		return breakBefore()
 	}
 
 	// break-inside avoidance on the child: if the child overflows the
-	// fragmentainer AND we have container separation (so a break before it is
-	// a real boundary), break before to push the whole child to the next
-	// column instead of splitting it. Fires for break-inside:avoid-column
-	// style values AND for monolithic fragments — ShouldAvoidBreakInside
-	// covers both, mirroring Blink's fragmentation_utils.cc:188-196 (a
-	// monolithic fragment always avoids inside-breaks) @ a9f50e522efa.
-	// Mirrors Blink's MovePastBreakpoint, scoped narrowly to the
-	// avoid-inside case so we don't take over normal overflow handling
-	// (which block_layout.go's existing overflow handler owns — taking it
-	// over regressed spanner-fragmentation-006/008).
-	if hasContainerSeparation && fragmentainerBlockSize != Indefinite &&
-		layoutResult != nil && layoutResult.Fragment != nil {
-		if ShouldAvoidBreakInside(space, layoutResult) {
-			fragment := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment)
-			blockSize := fragment.BlockSize()
-			spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
-			refuseBreakBefore := spaceLeft >= fragmentainerBlockSize
-			if blockSize > spaceLeft && !refuseBreakBefore {
-				appealBefore := CalculateBreakAppealBefore(
-					space,
-					CalculateBreakBetweenValue(child, builder),
-					hasContainerSeparation,
-					/*breakableAtStartOfResumedContainer=*/ false,
-				)
-				builder.SetBreakAppeal(appealBefore)
-				return BreakStatusBrokeBefore, false
-			}
-		}
+	// fragmentainer, break before to push the whole child to the next column
+	// instead of splitting it. Fires for break-inside:avoid-column style
+	// values AND for monolithic fragments — ShouldAvoidBreakInside covers
+	// both, mirroring Blink's fragmentation_utils.cc:188-196 (a monolithic
+	// fragment always avoids inside-breaks) @ a9f50e522efa. Mirrors Blink's
+	// MovePastBreakpoint, scoped narrowly to the avoid-inside case so we
+	// don't take over normal overflow handling (which block_layout.go's
+	// existing overflow handler owns — taking it over regressed
+	// spanner-fragmentation-006/008).
+	if hasFragment && childBlockSize > spaceLeft && ShouldAvoidBreakInside(space, layoutResult) {
+		return breakBefore()
 	}
 	return BreakStatusContinue, false
 }
