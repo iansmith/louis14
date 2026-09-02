@@ -1132,11 +1132,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// blockOffset is content-relative: measure the boundary and the
 			// "no progress yet" guard from the content edge's fragmentainer
 			// offset, so the container's own block-start border/padding both
-			// consumes fragmentainer space and counts as progress. Blink
+			// consumes fragmentainer space and counts as progress on a first
+			// fragment (and, being cleared on a continuation, does not). Blink
 			// reaches BreakBeforeChildIfNeeded for line boxes through
 			// FinishInflow (block_layout_algorithm.cc:2634 @ a9f50e522efa)
 			// with the same content-edge origin as block children
-			// (FragmentainerOffsetAtBfc + bfc_block_offset, :3156-3158).
+			// (FragmentainerOffsetAtBfc + bfc_block_offset, :3156-3158); the
+			// guard is MovePastBreakpoint's refuse_break_before, space_left >=
+			// fragmentainer_block_size (fragmentation_utils.cc:1169-1171).
 			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
 			if blockOffset+lineHeight > fragEnd && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a

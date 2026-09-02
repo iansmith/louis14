@@ -30,13 +30,16 @@ type BlockLayoutAlgorithm struct {
 	// 3156-3158, :3620-3633). Set once in Layout() from the fragment
 	// geometry; meaningful only when HasBlockFragmentation.
 	//
-	// The block-start edge is counted on every fragment, matching how this
-	// algorithm sizes its fragments (SetBoxData carries the full
-	// geom.Border/Padding on continuations too). Blink drops it on a
-	// slice-mode continuation (fragmentation_utils.cc:504-510,
-	// ClearBorderScrollbarPaddingBlockStart); louis14's BLA does not model
-	// that yet, so children of a continuation are still placed past the
-	// repeated edge and this offset must agree with where they are placed.
+	// The block-start edge counts only on the first fragment: Blink clears
+	// it on a slice-mode continuation (fragmentation_utils.cc:504-510,
+	// ClearBorderScrollbarPaddingBlockStart), so a resumed fragment has
+	// consumed nothing before its first child and MovePastBreakpoint's
+	// refuse_break_before (:1169-1171) holds again — counting a repeated
+	// edge re-pushes the first child from every column and never
+	// terminates. louis14's BLA still repeats the edge when sizing and
+	// placing a continuation (SetBoxData carries the full geom.Border/
+	// Padding), so on a continuation children sit past an edge this offset
+	// does not count; clearing the edge there too is a separate change.
 	fragmentainerOffsetForChildren float64
 }
 
@@ -153,7 +156,10 @@ func desiredBlockSizeAtBlockEnd(space ConstraintSpace, explicitBlockSize float64
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
 	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
-	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset + geom.BorderBoxPadding().BlockStart
+	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset
+	if !bla.space.BreakToken.IsBreakInside() {
+		bla.fragmentainerOffsetForChildren += geom.BorderBoxPadding().BlockStart
+	}
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
 
@@ -1003,9 +1009,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			// newChildSpaceBuilder is shared by the initial layout and the
 			// re-layout below floats of a new-FC child that did not fit
-			// beside them; childBlockOff (the child's block offset within
-			// this block's content box) is the only input that differs.
-			// Blink lays out each layout opportunity through the same
+			// beside them: childBlockOff is the child's block offset within
+			// this block's content box, and childInlineForSpace is read at
+			// call time (the drop re-queries it). Blink lays out each
+			// layout opportunity through the same
 			// CreateConstraintSpaceForChild (LayoutNewFormattingContext,
 			// block_layout_algorithm.cc:2158-2163 @ a9f50e522efa), so the
 			// re-layout keeps the fragmentation context and the resume token.
@@ -1044,6 +1051,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					SetExclusionSpace(exclusionSpace)
+
+				// For non-BFC children, propagate the BFC block and inline
+				// offsets so they can correctly query the exclusion space in
+				// their own layout.
+				if !isChildNewFC {
+					// The child's tentative BFC offset = parent's BFC origin +
+					// child's local position (blockCursor + pending margin).
+					tentativeChildBfcOff := bfcBlockOrigin + childBlockOff + childMargins.BlockStart
+					b.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
+					// The child's BFC inline offset = parent's BFC inline origin +
+					// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
+					// position as if floats don't exist, so use margin only.
+					b.SetBfcInlineOffset(layoutunit.FromFloat64Round(bfcInlineOrigin + childMargins.InlineStart))
+					b.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
+				}
+
 				if !bla.space.HasBlockFragmentation || childIsMonolithic {
 					return b
 				}
@@ -1076,23 +1099,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				return b
 			}
 
-			csBuilder := newChildSpaceBuilder(blockCursor + prevMarginStrut.Resolve())
-
-			// For non-BFC children, propagate the BFC block and inline offsets
-			// so they can correctly query the exclusion space in their own layout.
-			if !isChildNewFC {
-				// The child's tentative BFC offset = parent's BFC origin +
-				// child's local position (blockCursor + pending margin).
-				tentativeChildBfcOff := bfcBlockOrigin + blockCursor + prevMarginStrut.Resolve() + childMargins.BlockStart
-				csBuilder.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
-				// The child's BFC inline offset = parent's BFC inline origin +
-				// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
-				// position as if floats don't exist, so use margin only.
-				csBuilder.SetBfcInlineOffset(layoutunit.FromFloat64Round(bfcInlineOrigin + childMargins.InlineStart))
-				csBuilder.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
-			}
-
-			childSpace := csBuilder.Build()
+			childSpace := newChildSpaceBuilder(blockCursor + prevMarginStrut.Resolve()).Build()
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
