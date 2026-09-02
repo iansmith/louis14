@@ -3805,9 +3805,12 @@ func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *Constraint
 // when not resumed) is producing its first fragment, so a break before it is
 // possible. A break-inside token means an earlier fragment exists: Blink's
 // MovePastBreakpoint returns early for it (fragmentation_utils.cc:1119-1131
-// @ a9f50e522efa). A break-before token means the child has not started —
-// unless the break was forced, in which case it must not fire again.
+// @ a9f50e522efa). A break-before token — forced or not — means the child
+// has not started, and Blink runs the full break-before dispatch for it; a
+// forced value cannot fire again because there is no container separation
+// at the start of a resumed container (block_layout_algorithm.cc:3160-3169
+// @ a9f50e522efa), while the soft-break arms (including
+// IsBreakableAtStartOfResumedContainer) still apply.
 func isFirstForNode(resumeToken *BlockBreakToken) bool {
-	return !resumeToken.IsBreakInside() &&
-		(resumeToken == nil || !resumeToken.IsForcedBreak)
+	return !resumeToken.IsBreakInside()
 }

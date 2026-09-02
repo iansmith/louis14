@@ -396,3 +396,47 @@ func TestMulticolNested_NoWrapCapsWhenMayHaveMoreSpace(t *testing.T) {
 		t.Errorf("got %d columns, want 2 (capped at column-count)", got)
 	}
 }
+
+// TestMulticolNested_ForcedBreakBeforeResumedChildIsPushable: a child
+// resumed at the start of a column from a forced break-before token has not
+// started, so it is first-for-node and Blink runs the full break-before
+// dispatch for it (MovePastBreakpoint's early return is only for resumed
+// fragments, fragmentation_utils.cc:1119-1131 @ a9f50e522efa). Under the
+// may_have_more_space gate with MinBreakAppeal = Perfect, a break-inside:avoid
+// box that would be sliced there is pushed whole to the next outer
+// fragmentainer (IsBreakableAtStartOfResumedContainer, :214-219, :1198-1213),
+// exactly as when the break before it was soft. The forced value cannot fire
+// again: there is no container separation at the start of the resumed column
+// (block_layout_algorithm.cc:3160-3169).
+func TestMulticolNested_ForcedBreakBeforeResumedChildIsPushable(t *testing.T) {
+	filler := makeNode("div")
+	avoid := makeNode("div")
+	innerMC := makeNode("div", filler, avoid)
+	styles := map[*html.Node]*css.Style{
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		filler:  makeStyle("display", "block", "height", "50px"),
+		avoid:   makeStyle("display", "block", "height", "100px", "break-inside", "avoid", "break-before", "column"),
+	}
+
+	// 100px outer fragmentainer, multicol at offset 50 (gate open): 50px
+	// columns. Column 1 takes the filler and breaks (forced) before the
+	// avoid box; column 2 resumes it with MinBreakAppeal = Perfect and must
+	// push it whole rather than slice it.
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 100, 50)
+	if result.BreakToken == nil {
+		t.Fatal("expected a break token (avoid box continues in the next outer fragmentainer)")
+	}
+	if tok := findChildBreakToken(result.BreakToken, avoid); tok == nil || !tok.IsBreakBefore {
+		t.Errorf("avoid token = %+v, want IsBreakBefore (pushed whole, not sliced in column 2)", tok)
+	}
+	if result.BreakAppeal != BreakAppealPerfect {
+		t.Errorf("inner mc BreakAppeal = %v, want Perfect", result.BreakAppeal)
+	}
+	cols := result.Fragment.Children
+	if len(cols) != 2 {
+		t.Fatalf("got %d columns, want 2", len(cols))
+	}
+	if n := len(cols[1].Fragment.Children); n != 0 {
+		t.Errorf("column 2 has %d children, want 0 (avoid box pushed to the next outer fragmentainer)", n)
+	}
+}
