@@ -1129,8 +1129,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if bla.space.HasBlockFragmentation &&
 			bla.space.FragmentainerBlockSize != Indefinite &&
 			!bla.space.IsInitialColumnBalancingPass {
-			fragEnd := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-			if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
+			// blockOffset is content-relative: measure the boundary and the
+			// "no progress yet" guard from the content edge's fragmentainer
+			// offset, so the container's own block-start border/padding both
+			// consumes fragmentainer space and counts as progress (Blink
+			// FragmentainerOffsetForChildren, block_layout_algorithm.cc:1765
+			// @ a9f50e522efa).
+			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
+			if blockOffset+lineHeight > fragEnd && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a
 				// break token so the next column resumes from this line.
 				// blockOffset > 0 guard: never emit an empty column (at least one

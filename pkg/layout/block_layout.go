@@ -16,6 +16,28 @@ type BlockLayoutAlgorithm struct {
 	node  *LayoutInputNode
 	style *css.Style
 	space ConstraintSpace
+
+	// fragmentainerOffsetForChildren is the fragmentainer offset of this
+	// block's content edge — the origin every child block offset, line
+	// offset and float offset is measured from. bla.space.FragmentainerOffset
+	// is the block's own border edge (Blink ConstraintSpace::
+	// FragmentainerOffset(), constraint_space.h:335-346 @ a9f50e522efa), so
+	// children sit one block-start border+scrollbar+padding further in.
+	// Mirrors Blink's LayoutAlgorithm::FragmentainerOffsetForChildren()
+	// (layout_algorithm.h:164-166) as consumed by BreakBeforeChildIfNeeded
+	// and CreateConstraintSpaceForChild, whose BFC block offsets are past
+	// the container's BorderScrollbarPadding() (block_layout_algorithm.cc:
+	// 3156-3158, :3620-3633). Set once in Layout() from the fragment
+	// geometry; meaningful only when HasBlockFragmentation.
+	//
+	// The block-start edge is counted on every fragment, matching how this
+	// algorithm sizes its fragments (SetBoxData carries the full
+	// geom.Border/Padding on continuations too). Blink drops it on a
+	// slice-mode continuation (fragmentation_utils.cc:504-510,
+	// ClearBorderScrollbarPaddingBlockStart); louis14's BLA does not model
+	// that yet, so children of a continuation are still placed past the
+	// repeated edge and this offset must agree with where they are placed.
+	fragmentainerOffsetForChildren float64
 }
 
 // NewBlockLayoutAlgorithm creates a block layout algorithm for the given
@@ -131,6 +153,7 @@ func desiredBlockSizeAtBlockEnd(space ConstraintSpace, explicitBlockSize float64
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
 	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
+	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset + geom.BorderBoxPadding().BlockStart
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
 
@@ -978,39 +1001,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isOrthogonal {
 				blockForChild = orthogonalAvailableBlock
 			}
-			csBuilder := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
-				SetOrthogonalFallbackInlineSize(
-					orthogonalFallbackSize(childWDM, bla.ctx)).
-				SetOrthogonalFallbackBlockSize(
-					computeOrthogonalFallbackBlockForChildren(
-						bla.style, wdm, bla.space, geom, bla.ctx,
-						hasExplicitBlock, explicitBlockSize)).
-				SetAvailableSize(LogicalSize{
-					InlineSize: childInlineForSpace,
-					BlockSize:  blockForChild,
-				}).
-				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: contentInlineSize,
-					BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
-				}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				SetExclusionSpace(exclusionSpace)
-
-			// For non-BFC children, propagate the BFC block and inline offsets
-			// so they can correctly query the exclusion space in their own layout.
-			if !isChildNewFC {
-				// The child's tentative BFC offset = parent's BFC origin +
-				// child's local position (blockCursor + pending margin).
-				tentativeChildBfcOff := bfcBlockOrigin + blockCursor + prevMarginStrut.Resolve() + childMargins.BlockStart
-				csBuilder.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
-				// The child's BFC inline offset = parent's BFC inline origin +
-				// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
-				// position as if floats don't exist, so use margin only.
-				csBuilder.SetBfcInlineOffset(layoutunit.FromFloat64Round(bfcInlineOrigin + childMargins.InlineStart))
-				csBuilder.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
-			}
-
-			// Propagate fragmentation context to children — except
+			// newChildSpaceBuilder is shared by the initial layout and the
+			// re-layout below floats of a new-FC child that did not fit
+			// beside them; childBlockOff (the child's block offset within
+			// this block's content box) is the only input that differs.
+			// Blink lays out each layout opportunity through the same
+			// CreateConstraintSpaceForChild (LayoutNewFormattingContext,
+			// block_layout_algorithm.cc:2158-2163 @ a9f50e522efa), so the
+			// re-layout keeps the fragmentation context and the resume token.
+			//
+			// Fragmentation context is propagated to children — except
 			// monolithic ones. A monolithic non-inline child's constraint
 			// space gets no fragmentainer block-size/offset/type at all:
 			// it is laid out unfragmented, and if too tall to fit it
@@ -1026,9 +1026,28 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// (Layout() entry above), so the parent-side floor propagation
 			// in BreakBeforeChildIfNeeded fires.
 			childIsMonolithic := child.IsMonolithic(wdm.WM != childWDM.WM)
-			if bla.space.HasBlockFragmentation && !childIsMonolithic {
-				childFragOffset := bla.space.FragmentainerOffset + blockCursor + prevMarginStrut.Resolve()
-				bla.setupSpaceBuilderForFragmentation(csBuilder, childFragOffset)
+			newChildSpaceBuilder := func(childBlockOff float64) *ConstraintSpaceBuilder {
+				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+					SetOrthogonalFallbackInlineSize(
+						orthogonalFallbackSize(childWDM, bla.ctx)).
+					SetOrthogonalFallbackBlockSize(
+						computeOrthogonalFallbackBlockForChildren(
+							bla.style, wdm, bla.space, geom, bla.ctx,
+							hasExplicitBlock, explicitBlockSize)).
+					SetAvailableSize(LogicalSize{
+						InlineSize: childInlineForSpace,
+						BlockSize:  blockForChild,
+					}).
+					SetPercentageResolutionSize(LogicalSize{
+						InlineSize: contentInlineSize,
+						BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
+					}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					SetExclusionSpace(exclusionSpace)
+				if !bla.space.HasBlockFragmentation || childIsMonolithic {
+					return b
+				}
+				bla.setupSpaceBuilderForFragmentation(b, bla.fragmentainerOffsetForChildren+childBlockOff)
 
 				// Propagate the "spanner descendants blocked" flag: set it when
 				// any ancestor already blocks, or when the current block itself
@@ -1037,7 +1056,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// DoesAncestryAllowColumnSpanner (layout_box.cc:2987-3001).
 				if bla.space.ColumnSpannerDescendantsBlocked ||
 					shouldPreventColumnSpannerDescendants(bla.node) {
-					csBuilder.SetColumnSpannerDescendantsBlocked(true)
+					b.SetColumnSpannerDescendantsBlocked(true)
 				}
 
 				// Propagate "inside column-spanner" so the Phase 16.d.1 clamp
@@ -1047,13 +1066,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// the 360h leaf inside spanner 1) self-fragment and confuse
 				// the existing pendingContentOverflow resume mechanism.
 				if bla.space.IsInsideColumnSpanner {
-					csBuilder.SetIsInsideColumnSpanner(true)
+					b.SetIsInsideColumnSpanner(true)
 				}
 
 				// Pass child break token if resuming this specific child.
 				if tok, ok := resumeChildTokens[child]; ok {
-					csBuilder.SetBreakToken(tok)
+					b.SetBreakToken(tok)
 				}
+				return b
+			}
+
+			csBuilder := newChildSpaceBuilder(blockCursor + prevMarginStrut.Resolve())
+
+			// For non-BFC children, propagate the BFC block and inline offsets
+			// so they can correctly query the exclusion space in their own layout.
+			if !isChildNewFC {
+				// The child's tentative BFC offset = parent's BFC origin +
+				// child's local position (blockCursor + pending margin).
+				tentativeChildBfcOff := bfcBlockOrigin + blockCursor + prevMarginStrut.Resolve() + childMargins.BlockStart
+				csBuilder.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
+				// The child's BFC inline offset = parent's BFC inline origin +
+				// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
+				// position as if floats don't exist, so use margin only.
+				csBuilder.SetBfcInlineOffset(layoutunit.FromFloat64Round(bfcInlineOrigin + childMargins.InlineStart))
+				csBuilder.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
 			}
 
 			childSpace := csBuilder.Build()
@@ -1125,25 +1161,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								exclusionSpace, bfcBlockOrigin+blockCursor, bfcBlockExtent,
 								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
-							// Re-layout with the new available size.
-							csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
-								SetOrthogonalFallbackInlineSize(
-									orthogonalFallbackSize(childWDM, bla.ctx)).
-								SetOrthogonalFallbackBlockSize(
-									computeOrthogonalFallbackBlockForChildren(
-										bla.style, wdm, bla.space, geom, bla.ctx,
-										hasExplicitBlock, explicitBlockSize)).
-								SetAvailableSize(LogicalSize{
-									InlineSize: childInlineForSpace,
-									BlockSize:  blockForChild,
-								}).
-								SetPercentageResolutionSize(LogicalSize{
-									InlineSize: contentInlineSize,
-									BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
-								}).
-								SetPercentageResolutionInlineSize(contentInlineSize).
-								SetExclusionSpace(exclusionSpace)
-							childSpace = csBuilder2.Build()
+							// Re-layout at the new position with the new
+							// available size; the margin strut was consumed
+							// by the drop, so the child sits at blockCursor.
+							childSpace = newChildSpaceBuilder(blockCursor).Build()
 							childResult = layoutElement(bla.ctx, child, childSpace)
 						}
 					}
@@ -1353,7 +1374,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 				hasContainerSeparation := !firstNonEmptyChild
 				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
-				fragOff := bla.space.FragmentainerOffset + tentativeBlockOff
+				fragOff := bla.fragmentainerOffsetForChildren + tentativeBlockOff
 				status, isForced := BreakBeforeChildIfNeeded(
 					bla.space, child, childResult,
 					fragOff, bla.space.FragmentainerBlockSize,
@@ -1388,7 +1409,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						extendedBlock := intrinsicBlock
 						if intrinsicBlock > 0 && bla.space.FragmentainerBlockSize != Indefinite &&
 							bla.space.IsInsideBalancedColumns {
-							remaining := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset - intrinsicBlock
+							remaining := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren - intrinsicBlock
 							if remaining > 0 {
 								extendedBlock += remaining
 							}
@@ -1612,7 +1633,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Fragmentation: check if we've overflowed the fragmentainer.
 			if bla.space.HasBlockFragmentation {
 				fragSize := bla.space.FragmentainerBlockSize
-				fragEnd := fragSize - bla.space.FragmentainerOffset
+				// blockCursor is content-relative, so the boundary is measured
+				// from the content edge's fragmentainer offset.
+				fragEnd := fragSize - bla.fragmentainerOffsetForChildren
 				// Stop when blockCursor overflows OR when blockCursor exactly
 				// reaches the fragmentainer boundary AND the child still has
 				// remaining content (its BreakToken signals it didn't fully fit).
@@ -2996,7 +3019,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	}
 
 	// Layout the float's contents at its tentative block position.
-	tentativeFragOffset := bla.space.FragmentainerOffset + blockCursor +
+	tentativeFragOffset := bla.fragmentainerOffsetForChildren + blockCursor +
 		prevMarginStrut.Resolve() + childMargins.BlockStart
 	childResult := layoutElement(bla.ctx, child, buildFloatSpace(tentativeFragOffset))
 	childLogical := NewLogicalFragment(parentWDM, childResult.Fragment)
@@ -3042,7 +3065,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	// itself is kept from the first pass: relayout at a deeper offset can
 	// only shrink the fragment, which cannot invalidate the fit.
 	if floatHasFragmentation {
-		finalFragOffset := bla.space.FragmentainerOffset +
+		finalFragOffset := bla.fragmentainerOffsetForChildren +
 			(floatBlockOffset - bfcBlockOrigin) + childMargins.BlockStart
 		if finalFragOffset != tentativeFragOffset {
 			childResult = layoutElement(bla.ctx, child, buildFloatSpace(finalFragOffset))
