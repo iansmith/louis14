@@ -1657,8 +1657,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// bypasses the balance estimate and uses the explicit column height.
 		// So the gate excludes balance only when it is actually controlling
 		// the column block-size (balanceColumns && hasAutoColumnHeight).
+		// Blink ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @
+		// a9f50e522efa): under an outer fragmentation context, nowrap
+		// columns overflow inline only when the column is known to fit the
+		// outer fragmentainer; when content may instead resume in the next
+		// outer fragmentainer (mayHaveMoreSpace), the column-count cap
+		// applies even with column-wrap:nowrap. Without the cap, a resumed
+		// column that pushes its first child whole (breakable at start of a
+		// resumed container) never advances the token, and the guard below
+		// would drop that content instead of handing it to the outer.
 		balanceControlsColumnHeight := balanceColumns && mla.hasAutoColumnHeight()
-		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize
+		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
 		// The column-count cap is off — the column loop runs on the break
 		// token alone — under Indefinite column height, no-wrap mode, or
 		// inline overflow (cla.cc:1022-1025).

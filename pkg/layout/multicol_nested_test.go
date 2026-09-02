@@ -352,3 +352,47 @@ func TestMulticolNested_BlockStartPaddingOpensMayHaveMoreSpaceGate(t *testing.T)
 		t.Errorf("BreakAppeal = %v, want Perfect (breaking before the avoid box is a clean break)", result.BreakAppeal)
 	}
 }
+
+// TestMulticolNested_NoWrapCapsWhenMayHaveMoreSpace: Blink's
+// ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @ a9f50e522efa) lets
+// nowrap columns overflow inline under an outer fragmentation context only
+// when the column is known to fit the outer fragmentainer; otherwise the
+// column-count cap applies (cla.cc:1022-1025) and content resumes in the
+// next outer fragmentainer. An explicit-height inner multicol whose columns
+// exceed the outer remaining space therefore caps at column-count even with
+// column-wrap:nowrap — and the second column, resumed with MinBreakAppeal =
+// Perfect, pushes the break-inside:avoid box whole to the next outer
+// fragmentainer. Without the cap the row runs on the break token alone, the
+// pushing column never advances it, and the non-advancing-token guard drops
+// the box entirely.
+func TestMulticolNested_NoWrapCapsWhenMayHaveMoreSpace(t *testing.T) {
+	filler := makeNode("div")
+	grandchild1 := makeNode("div")
+	grandchild2 := makeNode("div")
+	avoid := makeNode("div", grandchild1, grandchild2)
+	innerMC := makeNode("div", filler, avoid)
+
+	grandchildStyle := makeStyle("display", "block", "height", "50px")
+	styles := map[*html.Node]*css.Style{
+		innerMC:     makeStyle("display", "block", "height", "200px", "column-count", "2", "column-gap", "0", "column-fill", "auto", "padding-top", "10px"),
+		filler:      makeStyle("display", "block", "height", "30px"),
+		avoid:       makeStyle("display", "block", "break-inside", "avoid"),
+		grandchild1: grandchildStyle,
+		grandchild2: grandchildStyle,
+	}
+
+	// 60px outer fragmentainer at offset 0: 10px padding leaves 50px
+	// columns (200px explicit height does not fit, so no inline overflow).
+	// Column 1 takes the 30px filler and breaks before the 100px avoid box;
+	// column 2 pushes it whole and the row caps there.
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 60, 0)
+	if result.BreakToken == nil {
+		t.Fatal("expected a break token (avoid box continues in the next outer fragmentainer)")
+	}
+	if tok := findChildBreakToken(result.BreakToken, avoid); tok == nil || !tok.IsBreakBefore {
+		t.Errorf("avoid token = %+v, want IsBreakBefore (pushed whole to the next outer fragmentainer, not dropped)", tok)
+	}
+	if got := len(result.Fragment.Children); got != 2 {
+		t.Errorf("got %d columns, want 2 (capped at column-count)", got)
+	}
+}
