@@ -310,9 +310,7 @@ func MovePastBreakpoint(
 		// Mirrors Blink's flow where each column's overall BreakAppeal is the
 		// worst of its descendants' inside-appeals.
 		if appealInside < BreakAppealPerfect {
-			if !builder.hasBreakAppeal || appealInside < builder.breakAppeal {
-				builder.SetBreakAppeal(appealInside)
-			}
+			builder.ClampBreakAppeal(appealInside)
 		}
 	}
 	return movePast
@@ -346,12 +344,10 @@ func BreakBeforeChildIfNeeded(
 	// measure loop (Phase 17) gets one continuation token per forced-break segment.
 	// Soft breaks are gated on definite fragmentainerBlockSize below, so they
 	// won't fire when FragmentainerBlockSize=Indefinite (as set in the measure pass).
-	if hasContainerSeparation {
-		breakBetween := CalculateBreakBetweenValue(child, builder)
-		if IsForcedBreakValue(space, breakBetween) {
-			builder.SetBreakAppeal(BreakAppealPerfect)
-			return BreakStatusBrokeBefore, true
-		}
+	breakBetween := CalculateBreakBetweenValue(child, builder)
+	if hasContainerSeparation && IsForcedBreakValue(space, breakBetween) {
+		builder.SetBreakAppeal(BreakAppealPerfect)
+		return BreakStatusBrokeBefore, true
 	}
 
 	// Phase 16.d.2/3 (v2 B2): during initial column-balancing pass, propagate
@@ -383,8 +379,7 @@ func BreakBeforeChildIfNeeded(
 	var appealBefore BreakAppeal
 	if canBreakBefore {
 		appealBefore = CalculateBreakAppealBefore(
-			space, CalculateBreakBetweenValue(child, builder),
-			hasContainerSeparation, breakableAtStart)
+			space, breakBetween, hasContainerSeparation, breakableAtStart)
 	}
 	breakBefore := func() (BreakStatus, bool) {
 		builder.SetBreakAppeal(appealBefore)
@@ -412,9 +407,7 @@ func BreakBeforeChildIfNeeded(
 	// Propagate any break-inside:avoid violation up to the column builder so
 	// the multicol stretch loop sees it.
 	if appealInside < BreakAppealPerfect {
-		if !builder.hasBreakAppeal || appealInside < builder.breakAppeal {
-			builder.SetBreakAppeal(appealInside)
-		}
+		builder.ClampBreakAppeal(appealInside)
 	}
 
 	// Phase 14b: child signaled "I need more block-size than my fragment shows"

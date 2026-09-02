@@ -1799,12 +1799,15 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// loop header). If this column's outgoing token's consumed size did
 			// not advance past the previous column's, no progress was made and
 			// continuing would loop forever — stop the row.
-			// The guard applies only when the column-count cap is off; a
-			// capped row terminates on its own, and a non-advancing column
-			// there is legitimate — e.g. one that pushed its first child
-			// whole to the next outer fragmentainer (breakable at start of
-			// a resumed container, cla.cc:930-935) and must keep its token.
-			if colBreakToken != nil && capOff {
+			// One legitimate non-advancing column is exempt: a resumed
+			// column that pushed its first child whole to the next outer
+			// fragmentainer (breakable at start of a resumed container,
+			// cla.cc:930-935) is empty by design and must keep its token;
+			// the column-count cap ends that row (MinBreakAppeal is only
+			// passed under mayHaveMoreSpace, which implies the cap is on).
+			pushedToNextOuter := colMinBreakAppeal != BreakAppealLastResort &&
+				len(colFrag.Children) == 0
+			if colBreakToken != nil && !pushedToNextOuter {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
 				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
 					colBreakToken = nil
@@ -1961,9 +1964,8 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// accepted row to the multicol's builder (ClampBreakAppeal) so the outer
 	// fragmentainer can retry with a better breakpoint. Build() copies it
 	// into the result's BreakAppeal.
-	if minBreakAppeal < BreakAppealPerfect &&
-		(!builder.hasBreakAppeal || minBreakAppeal < builder.breakAppeal) {
-		builder.SetBreakAppeal(minBreakAppeal)
+	if minBreakAppeal < BreakAppealPerfect {
+		builder.ClampBreakAppeal(minBreakAppeal)
 	}
 
 	// Blink cla.cc:1218-1231: a line is "empty" when its single column box has

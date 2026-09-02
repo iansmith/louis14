@@ -1349,7 +1349,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// that is first-for-node can break before.
 			if bla.space.HasBlockFragmentation &&
 				bla.space.BlockFragmentationType == FragmentColumn &&
-				isFirstForNode(resumeChildTokens[child]) {
+				resumeChildTokens[child].IsFirstForNode() {
 
 				hasContainerSeparation := !firstNonEmptyChild
 				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
@@ -1433,7 +1433,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						bla.space.FragmentainerBlockSize != Indefinite {
 						shortage := childResult.MinSpaceShortage
 						if shortage <= 0 {
-							childBlock := NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+							// Blink's BlockSizeForFragmentation(result): the
+							// child's fragmentation block-size when it reported
+							// one (an inner multicol that needs more than its
+							// fragment shows), else the fragment's own size.
+							childBlock := childResult.BlockSizeForFragmentation
+							if childBlock <= 0 {
+								childBlock = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+							}
 							shortage = childBlock - (bla.space.FragmentainerBlockSize - fragOff)
 						}
 						result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
@@ -3799,18 +3806,4 @@ func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *Constraint
 		SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
 		SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns).
 		SetMinBreakAppeal(bla.space.MinBreakAppeal)
-}
-
-// isFirstForNode reports whether a child resumed with the given token (nil
-// when not resumed) is producing its first fragment, so a break before it is
-// possible. A break-inside token means an earlier fragment exists: Blink's
-// MovePastBreakpoint returns early for it (fragmentation_utils.cc:1119-1131
-// @ a9f50e522efa). A break-before token — forced or not — means the child
-// has not started, and Blink runs the full break-before dispatch for it; a
-// forced value cannot fire again because there is no container separation
-// at the start of a resumed container (block_layout_algorithm.cc:3160-3169
-// @ a9f50e522efa), while the soft-break arms (including
-// IsBreakableAtStartOfResumedContainer) still apply.
-func isFirstForNode(resumeToken *BlockBreakToken) bool {
-	return !resumeToken.IsBreakInside()
 }

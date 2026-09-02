@@ -509,6 +509,16 @@ func (b *BoxFragmentBuilder) SetBreakAppeal(appeal BreakAppeal) {
 	b.hasBreakAppeal = true
 }
 
+// ClampBreakAppeal lowers the recorded break appeal to `appeal` when that is
+// worse than what is recorded (an unset appeal counts as Perfect). Used to
+// fold a child's or a column's sub-perfect appeal into the container's
+// result. Mirrors Blink's FragmentBuilder::ClampBreakAppeal.
+func (b *BoxFragmentBuilder) ClampBreakAppeal(appeal BreakAppeal) {
+	if !b.hasBreakAppeal || appeal < b.breakAppeal {
+		b.SetBreakAppeal(appeal)
+	}
+}
+
 func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
 	b.outOfFlowCandidates = append(b.outOfFlowCandidates, c)
 }
