@@ -1154,8 +1154,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					shortage = 0
 				}
 				inlineBreakToken = &BlockBreakToken{
-					Node:                 bla.node,
-					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset + bla.space.FragmentainerOffset),
+					Node: bla.node,
+					// Consumed is what this block laid out (its content up to
+					// the break), like the block-child token; the container's
+					// fragmentainer offset is not part of it.
+					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
 					InlineItemStartIndex: lineStartIdx,
 					InlineTextOffset:     lineStartTextOffset,
 					InlineShortage:       shortage,
