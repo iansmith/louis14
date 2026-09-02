@@ -150,6 +150,18 @@ func (t *BlockBreakToken) IsBreakInside() bool {
 	return t != nil && !t.IsBreakBefore
 }
 
+// IsFirstForNode reports whether a child resumed with this token (nil when
+// not resumed) is producing its first fragment, so a break before it is
+// possible. A break-before token — forced or not — means the child has not
+// started. Mirrors Blink's is_first_for_node / PhysicalBoxFragment::
+// IsFirstForNode as consumed by MovePastBreakpoint (fragmentation_utils.cc:
+// 1119-1131 @ a9f50e522efa); a forced break-before cannot fire again at the
+// start of a resumed container because there is no container separation
+// there (block_layout_algorithm.cc:3160-3169).
+func (t *BlockBreakToken) IsFirstForNode() bool {
+	return !t.IsBreakInside()
+}
+
 // InputBreakToken returns the first child break token for resumption, or nil.
 func (t *BlockBreakToken) InputBreakToken() *BlockBreakToken {
 	if t == nil || len(t.ChildBreakTokens) == 0 {

@@ -49,6 +49,12 @@ type MulticolLayoutAlgorithm struct {
 	// cla.cc:1790-1793 ResolveInitialMinBlockLength). Resolved once in
 	// Layout() because resolution needs the fragment geometry.
 	minBlockSize float64
+	// blockStartBorderPadding is the multicol's block-start border +
+	// scrollbar + padding: Blink's initial intrinsic_block_size_
+	// (BorderScrollbarPadding().block_start, cla.cc:335 @ a9f50e522efa),
+	// the progress that opens the may_have_more_space gate in layoutLine
+	// before any line or spanner has been placed. Resolved once in Layout().
+	blockStartBorderPadding float64
 	// rowGapSize is the block-axis gap between column rows in a
 	// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Read from
 	// the element's `row-gap` property via GetRowGapMulticol. Resolved
@@ -405,6 +411,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// CalculateInitialFragmentGeometry, so this only matters for the
 	// max-height (auto block-size) case.
 	mla.minBlockSize = ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
+	mla.blockStartBorderPadding = geom.BorderBoxPadding().BlockStart
 
 	// column-fill: balance forces balanced column distribution.
 	// Also forced when nested inside an outer fragmentation context whose
@@ -1538,6 +1545,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// content-driven (auto), which would collapse the multicol to a single
 	// column of indefinite height.
 	var colBlockSize float64
+	shrinkToFitColumnBlockSize := false
 	switch {
 	case !mla.hasAutoColumnHeight():
 		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
@@ -1551,6 +1559,15 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	default:
 		if minimumColumnBlockSize != Indefinite {
 			colBlockSize = mla.constrainColumnBlockSize(minimumColumnBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
+		} else if constrainedByOuter && outerRemaining > 0 {
+			// Blink cla.cc:857-872 @ a9f50e522efa: when an auto-height
+			// multicol with column-fill:auto has no explicit/max height
+			// but is constrained by an outer fragmentainer, use the outer
+			// remaining space as the column block-size. Without this, the
+			// columns get indefinite height and all content stacks in a
+			// single column, defeating the nested fragmentation protocol.
+			colBlockSize = mla.constrainColumnBlockSize(outerRemaining, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
+			shrinkToFitColumnBlockSize = true
 		} else {
 			colBlockSize = Indefinite
 		}
@@ -1582,6 +1599,25 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	var finalColBreakToken *BlockBreakToken
 	var lastInnerResult *LayoutResult
 
+	// Blink cla.cc:886-902 @ a9f50e522efa: when the multicol is
+	// constrained by an outer fragmentation context, is not itself a
+	// break-inside continuation (its own incoming token, not the column
+	// token: a post-spanner line resumes from a break-inside column token
+	// while the multicol is still in its first fragment), columns don't
+	// overflow inline, and either prior content has contributed block size
+	// (intrinsic_block_size_: block-start border/padding, earlier lines,
+	// spanners) or the multicol is not at the start of the outer
+	// fragmentainer, a sub-perfect break appeal in any column should
+	// propagate to the multicol's own result so the outer's stretch loop
+	// can retry with more space. (Narrower than hasViolatingBreak below,
+	// which drives this multicol's own stretch loop regardless of the
+	// outer context.)
+	mayHaveMoreSpace := constrainedByOuter &&
+		!mla.space.BreakToken.IsBreakInside() &&
+		!overflowInline &&
+		(lineOffset > 0 || mla.blockStartBorderPadding > 0 || mla.space.FragmentainerOffset > 0)
+	minBreakAppeal := BreakAppealPerfect
+
 	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.
 	for {
 		var columns []struct {
@@ -1597,6 +1633,8 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		forcedBreakCount := 0
 		hasViolatingBreak := false
 		rowHasDeferredOOFs := false
+
+		minBreakAppeal = BreakAppealPerfect
 
 		// Reset break token to the incoming token at the start of each iteration.
 		colBreakToken := nextColToken
@@ -1619,8 +1657,21 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// bypasses the balance estimate and uses the explicit column height.
 		// So the gate excludes balance only when it is actually controlling
 		// the column block-size (balanceColumns && hasAutoColumnHeight).
+		// Blink ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @
+		// a9f50e522efa): under an outer fragmentation context, nowrap
+		// columns overflow inline only when the column is known to fit the
+		// outer fragmentainer; when content may instead resume in the next
+		// outer fragmentainer (mayHaveMoreSpace), the column-count cap
+		// applies even with column-wrap:nowrap. Without the cap, a resumed
+		// column that pushes its first child whole (breakable at start of a
+		// resumed container) never advances the token, and the guard below
+		// would drop that content instead of handing it to the outer.
 		balanceControlsColumnHeight := balanceColumns && mla.hasAutoColumnHeight()
-		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite
+		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
+		// The column-count cap is off — the column loop runs on the break
+		// token alone — under Indefinite column height, no-wrap mode, or
+		// inline overflow (cla.cc:1022-1025).
+		capOff := colBlockSize == Indefinite || noWrapMode || overflowInline
 
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
@@ -1636,12 +1687,22 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// true progress signal. Blink guarantees termination via break-token
 		// progress invariants; louis14 asserts it explicitly.
 		prevTokenConsumed := math.NaN()
-		for col := 0; col < numCols || colBlockSize == Indefinite || noWrapMode || overflowInline; col++ {
+		for col := 0; col < numCols || capOff; col++ {
 			// IsInsideBalancedColumns is true only when the balance algorithm
 			// actually determined the column height (not when column-height is
 			// explicit). Prevents fragment background extension (Change 3) from
 			// firing in explicit column-height contexts (CSS multicol-2).
-			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns && mla.hasAutoColumnHeight(), true)
+			// Blink cla.cc:930-935 @ a9f50e522efa: pass the worst appeal seen
+			// so far in this row (min_break_appeal, unset → LastResort) into
+			// the column's space. Only set once a column has completed under
+			// the may_have_more_space gate; it lets a resumed column break
+			// before its first child (IsBreakableAtStartOfResumedContainer)
+			// to push content to the next outer fragmentainer.
+			colMinBreakAppeal := BreakAppealLastResort
+			if mayHaveMoreSpace && col > 0 {
+				colMinBreakAppeal = minBreakAppeal
+			}
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceControlsColumnHeight, true, colMinBreakAppeal)
 			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
 			if result == nil || result.Fragment == nil {
 				break
@@ -1724,11 +1785,29 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 			colBreakToken = result.BreakToken
 			lastInnerResult = result
+			// Blink cla.cc:1022-1025: the row ends at column-count when
+			// content remains and inline overflow is not permitted.
+			rowCapped := colBreakToken != nil && !noWrapMode && !overflowInline && col+1 >= numCols
+			// Blink cla.cc:1027-1037: track the worst break appeal across
+			// columns when the outer fragmentainer may have more space. Blink
+			// leaves the column loop on the cap before folding the appeal in,
+			// so the column that ends a capped row never contributes.
+			if mayHaveMoreSpace && !rowCapped && result.BreakAppeal < minBreakAppeal {
+				minBreakAppeal = result.BreakAppeal
+			}
 			// no Blink analog: defensive non-advancing-token guard (see the
 			// loop header). If this column's outgoing token's consumed size did
 			// not advance past the previous column's, no progress was made and
 			// continuing would loop forever — stop the row.
-			if colBreakToken != nil {
+			// One legitimate non-advancing column is exempt: a resumed
+			// column that pushed its first child whole to the next outer
+			// fragmentainer (breakable at start of a resumed container,
+			// cla.cc:930-935) is empty by design and must keep its token;
+			// the column-count cap ends that row (MinBreakAppeal is only
+			// passed under mayHaveMoreSpace, which implies the cap is on).
+			pushedToNextOuter := colMinBreakAppeal != BreakAppealLastResort &&
+				len(colFrag.Children) == 0
+			if colBreakToken != nil && !pushedToNextOuter {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
 				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
 					colBreakToken = nil
@@ -1769,10 +1848,10 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			}
 			inlineOffset += usedColWidth + gap
 
-			// Blink cla.cc:1022-1025: stop at column-count only when inline
-			// overflow is not permitted — otherwise keep placing overflow
-			// columns until the content is consumed.
-			if !noWrapMode && !overflowInline && col+1 >= numCols {
+			// Stop at column-count only when inline overflow is not
+			// permitted — otherwise keep placing overflow columns until the
+			// content is consumed.
+			if rowCapped {
 				break
 			}
 		}
@@ -1881,6 +1960,14 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		}
 	}
 
+	// Blink cla.cc:1027-1066: propagate the worst column break appeal of the
+	// accepted row to the multicol's builder (ClampBreakAppeal) so the outer
+	// fragmentainer can retry with a better breakpoint. Build() copies it
+	// into the result's BreakAppeal.
+	if minBreakAppeal < BreakAppealPerfect {
+		builder.ClampBreakAppeal(minBreakAppeal)
+	}
+
 	// Blink cla.cc:1218-1231: a line is "empty" when its single column box has
 	// no extent and no children — e.g. the spanner-detection line between two
 	// adjacent spanners — OR when its only content is the empty continuation
@@ -1949,6 +2036,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// content (not the pinned 6px column fragment).
 		if col.result != nil && col.result.BlockSizeForFragmentation > h {
 			h = col.result.BlockSizeForFragmentation
+		}
+		// Blink cla.cc:949-971 @ a9f50e522efa: when the column block-size
+		// was derived from the outer fragmentainer (shrink-to-fit), use the
+		// intrinsic content height for the row advance instead of the
+		// (potentially larger) fragment block-size. The multicol's own
+		// block-size shrinks to content rather than consuming all outer
+		// remaining space. Blink clears the flag after the first column and
+		// resets the contribution to the full column block-size for every
+		// later one, so only a single-column line shrinks.
+		if shrinkToFitColumnBlockSize && len(finalColumns) == 1 && col.intrinsicBlock < h {
+			h = col.intrinsicBlock
 		}
 		if h > maxColHeight {
 			maxColHeight = h
@@ -2526,6 +2624,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	breakToken *BlockBreakToken,
 	balanceColumns bool,
 	fixedBlockSize bool,
+	minBreakAppeal BreakAppeal,
 ) ConstraintSpace {
 	// A balanced estimate of 0 means the row contains no non-spanner content.
 	// Treat it as Indefinite so the column fragment's height is driven purely
@@ -2562,7 +2661,8 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		SetPercentageResolutionInlineSize(colWidth).
 		SetHasBlockFragmentation(true).
 		SetBlockFragmentationType(FragmentColumn).
-		SetIsInsideBalancedColumns(balanceColumns)
+		SetIsInsideBalancedColumns(balanceColumns).
+		SetMinBreakAppeal(minBreakAppeal)
 
 	if isFixed {
 		// IsBlockSizeOverride + IsFixedBlockSize: the column height overrides any

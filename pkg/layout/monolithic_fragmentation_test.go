@@ -313,11 +313,21 @@ func TestAvoidInside_BalancingFloorUsesFullBlockSize(t *testing.T) {
 // stretch loop — the break-inside:avoid half of
 // multicol-overflow-clip-auto-sized.
 //
+// The avoid box sits after a sibling (container separation), so Blink's
+// MovePastBreakpoint (fragmentation_utils.cc:1198-1213) compares the
+// inside-appeal (ViolatingBreakAvoid) with the appeal of breaking before
+// (Perfect) and breaks BEFORE the box instead of keeping the slice: the
+// parent's result carries a break-before token for it, a Perfect appeal,
+// and — via BreakBeforeChild → PropagateSpaceShortage (:944-975) — the
+// shortage the child reported inside. The avoid violation itself surfaces
+// only where the box is finally sliced: at the start of the next column,
+// where breaking before is refused (:1168-1171).
+//
 // Mirrors the driver's structure: the avoid box holds two TEXT lines (via
 // <br>), so its own inline layout records the line-level shortage on its
 // result; the column-level walk must lift it. Exact metrics depend on the
-// font, so the assertions are positivity of the shortage plus the avoid
-// violation — the exact-pixel bar is held by the reftest.
+// font, so the assertions are positivity of the shortage plus the
+// break-before — the exact-pixel bar is held by the reftest.
 func TestAvoidInside_ChildInternalShortagePropagates(t *testing.T) {
 	first := makeNode("div")
 	t1 := &html.Node{Type: html.TextNode, Text: "line one"}
@@ -350,10 +360,14 @@ func TestAvoidInside_ChildInternalShortagePropagates(t *testing.T) {
 		t.Fatal("layout returned nil")
 	}
 	if result.BreakToken == nil {
-		t.Fatal("expected the avoid box to break (fragmentainer too short for both lines)")
+		t.Fatal("expected a break (fragmentainer too short for both lines)")
 	}
-	if result.BreakAppeal >= BreakAppealPerfect {
-		t.Errorf("BreakAppeal = %v, want < Perfect (avoid violated by slicing)", result.BreakAppeal)
+	avoidTok := findChildBreakToken(result.BreakToken, avoid)
+	if avoidTok == nil || !avoidTok.IsBreakBefore {
+		t.Errorf("avoid box token = %+v, want IsBreakBefore (pushed whole to the next column, not sliced here)", avoidTok)
+	}
+	if result.BreakAppeal != BreakAppealPerfect {
+		t.Errorf("BreakAppeal = %v, want Perfect (breaking before the avoid box is a clean class-A break)", result.BreakAppeal)
 	}
 	if got := result.MinSpaceShortage; got <= 0 {
 		t.Errorf("MinSpaceShortage = %v, want > 0 (avoid child's internal line shortage)", got)
