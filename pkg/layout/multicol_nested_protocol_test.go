@@ -93,25 +93,123 @@ func TestNestedMulticol_ShrinkToFitColumnBlockSize(t *testing.T) {
 // TestNestedMulticol_BreakAppealPropagation verifies that when content inside
 // an inner multicol column violates break-inside:avoid, the inner multicol's
 // layout result carries a sub-perfect BreakAppeal, signaling to the outer
-// fragmentainer that a better breakpoint may exist.
+// fragmentainer that a better breakpoint may exist — but ONLY when Blink's
+// may_have_more_space_in_next_outer_fragmentainer gate holds. That gate
+// requires progress before the multicol in the outer fragmentainer
+// (!IsAtFragmentainerStart, set when fragmentainer_offset <= 0 —
+// fragmentation_utils.cc:343-344) or intrinsic progress inside it. At the
+// very start of the outer fragmentainer, pushing content to the next outer
+// fragmentainer gains nothing, so Blink reports Perfect.
 //
 // Blink ref: may_have_more_space_in_next_outer_fragmentainer + min_break_appeal
-// (cla.cc:893-902, :1027-1066 @ a9f50e522efa).
+// (cla.cc:886-902, :1027-1066, :1328-1329 @ a9f50e522efa).
 func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
-	// Inner content: a break-inside:avoid container with two children,
-	// totaling 80px — taller than the inner column height (50px, constrained
-	// by outer remaining space). The BLA must break between the children,
-	// violating break-inside:avoid, which should demote the appeal.
-	grandchild1 := makeNode("div")
-	grandchild2 := makeNode("div")
-	innerChild := makeNode("div", grandchild1, grandchild2)
-	innerMC := makeNode("div", innerChild)
+	cases := []struct {
+		name       string
+		outerOff   float64
+		wantDemote bool
+	}{
+		{"at outer fragmentainer start: gate closed, appeal stays Perfect", 0, false},
+		{"past outer fragmentainer start: gate open, appeal demoted", 10, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Inner content: a break-inside:avoid container with two
+			// children, totaling 80px — taller than the inner column height
+			// (outer remaining space). The BLA must break between the
+			// children, violating break-inside:avoid.
+			grandchild1 := makeNode("div")
+			grandchild2 := makeNode("div")
+			innerChild := makeNode("div", grandchild1, grandchild2)
+			innerMC := makeNode("div", innerChild)
 
-	grandchildStyle := makeStyle(
-		"display", "block",
-		"height", "40px",
-		"background", "green",
-	)
+			grandchildStyle := makeStyle(
+				"display", "block",
+				"height", "40px",
+				"background", "green",
+			)
+			styles := map[*html.Node]*css.Style{
+				innerMC: makeStyle(
+					"display", "block",
+					"column-count", "2",
+					"column-gap", "0",
+					"column-fill", "auto",
+				),
+				innerChild: makeStyle(
+					"display", "block",
+					"break-inside", "avoid",
+				),
+				grandchild1: grandchildStyle,
+				grandchild2: grandchildStyle,
+			}
+
+			ctx := testContext()
+			innerMCNode := buildTestTree(innerMC, styles)
+			wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+
+			// Outer fragmentainer is 50px tall; the inner multicol sits at
+			// tc.outerOff within it, so (50 - outerOff) remains.
+			remaining := 50 - tc.outerOff
+			space := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: remaining}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: remaining}).
+				SetHasBlockFragmentation(true).
+				SetFragmentainerBlockSize(50).
+				SetFragmentainerOffset(tc.outerOff).
+				SetBlockFragmentationType(FragmentColumn).
+				Build()
+
+			result := NewMulticolLayoutAlgorithm(ctx, innerMCNode, space).Layout()
+			if result == nil || result.Fragment == nil {
+				t.Fatal("inner multicol layout returned nil result")
+			}
+
+			demoted := result.BreakAppeal < BreakAppealPerfect
+			if demoted != tc.wantDemote {
+				t.Errorf("inner mc BreakAppeal = %v, want demoted=%v (outer offset %v)",
+					result.BreakAppeal, tc.wantDemote, tc.outerOff)
+			}
+		})
+	}
+}
+
+// findChildBreakToken walks a break-token tree and returns the token for
+// node, or nil when the node has no token in the tree.
+func findChildBreakToken(tok *BlockBreakToken, node *html.Node) *BlockBreakToken {
+	if tok == nil {
+		return nil
+	}
+	if tok.Node != nil && tok.Node.DOMNode == node {
+		return tok
+	}
+	for _, c := range tok.ChildBreakTokens {
+		if found := findChildBreakToken(c, node); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// TestNestedMulticol_BreakableAtStartOfResumedContainer is the
+// multicol-nested-013 protocol in miniature. The inner multicol sits at
+// offset 50 of a 100px outer column (Blink's may_have_more_space gate is
+// open), with a 50px child that exactly fills inner column 1 and a 100px
+// break-inside:avoid child that cannot fit the 50px inner columns.
+//
+// Blink's protocol: column 1 ends with a Perfect break before the avoid
+// child, so min_break_appeal becomes Perfect and is passed into column 2's
+// constraint space (cla.cc:930-935 @ a9f50e522efa). Column 2 is a resumed
+// container whose first child is unstarted, and with MinBreakAppeal better
+// than LastResort it is *breakable at start*
+// (IsBreakableAtStartOfResumedContainer, fragmentation_utils.cc:214-219), so
+// MovePastBreakpoint does not refuse the break (fragmentation_utils.cc:1168-1171)
+// and the avoid child is pushed whole to the next outer fragmentainer rather
+// than sliced. Column 2 is therefore EMPTY with a break-before token for the
+// avoid child, and the multicol's appeal stays Perfect.
+func TestNestedMulticol_BreakableAtStartOfResumedContainer(t *testing.T) {
+	filler := makeNode("div")
+	avoid := makeNode("div")
+	innerMC := makeNode("div", filler, avoid)
 	styles := map[*html.Node]*css.Style{
 		innerMC: makeStyle(
 			"display", "block",
@@ -119,27 +217,24 @@ func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
 			"column-gap", "0",
 			"column-fill", "auto",
 		),
-		innerChild: makeStyle(
+		filler: makeStyle("display", "block", "height", "50px", "width", "200%"),
+		avoid: makeStyle(
 			"display", "block",
+			"height", "100px",
+			"width", "200%",
 			"break-inside", "avoid",
 		),
-		grandchild1: grandchildStyle,
-		grandchild2: grandchildStyle,
 	}
 
 	ctx := testContext()
 	innerMCNode := buildTestTree(innerMC, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-
-	// Simulate being inside an outer fragmentainer with 50px remaining.
-	// The inner child is 80px with break-inside:avoid, which can't fit
-	// in a 50px column without violating the avoidance.
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
 		SetHasBlockFragmentation(true).
-		SetFragmentainerBlockSize(50).
-		SetFragmentainerOffset(0).
+		SetFragmentainerBlockSize(100).
+		SetFragmentainerOffset(50).
 		SetBlockFragmentationType(FragmentColumn).
 		Build()
 
@@ -147,13 +242,25 @@ func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
 	if result == nil || result.Fragment == nil {
 		t.Fatal("inner multicol layout returned nil result")
 	}
-
-	// The inner multicol should report a sub-perfect break appeal because
-	// the break-inside:avoid constraint was violated.
-	if result.BreakAppeal >= BreakAppealPerfect {
-		t.Errorf("inner mc BreakAppeal = %v, want < BreakAppealPerfect; "+
-			"break-inside:avoid violation should propagate sub-perfect appeal",
-			result.BreakAppeal)
+	if result.BreakAppeal != BreakAppealPerfect {
+		t.Errorf("BreakAppeal = %v, want Perfect: the avoid child must be pushed, not sliced", result.BreakAppeal)
+	}
+	if result.BreakToken == nil {
+		t.Fatal("BreakToken = nil, want a token resuming the avoid child in the next outer fragmentainer")
+	}
+	tok := findChildBreakToken(result.BreakToken, avoid)
+	if tok == nil || !tok.IsBreakBefore {
+		t.Errorf("avoid child token = %+v, want IsBreakBefore (unstarted)", tok)
+	}
+	cols := result.Fragment.Children
+	if len(cols) != 2 {
+		t.Fatalf("got %d columns, want 2", len(cols))
+	}
+	if n := len(cols[0].Fragment.Children); n != 1 {
+		t.Errorf("column 1 has %d children, want 1 (the 50px filler)", n)
+	}
+	if n := len(cols[1].Fragment.Children); n != 0 {
+		t.Errorf("column 2 has %d children, want 0 (avoid child pushed to next outer fragmentainer)", n)
 	}
 }
 
