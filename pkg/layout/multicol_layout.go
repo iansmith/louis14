@@ -1659,6 +1659,10 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// the column block-size (balanceColumns && hasAutoColumnHeight).
 		balanceControlsColumnHeight := balanceColumns && mla.hasAutoColumnHeight()
 		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize
+		// The column-count cap is off — the column loop runs on the break
+		// token alone — under Indefinite column height, no-wrap mode, or
+		// inline overflow (cla.cc:1022-1025).
+		capOff := colBlockSize == Indefinite || noWrapMode || overflowInline
 
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
@@ -1674,7 +1678,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// true progress signal. Blink guarantees termination via break-token
 		// progress invariants; louis14 asserts it explicitly.
 		prevTokenConsumed := math.NaN()
-		for col := 0; col < numCols || colBlockSize == Indefinite || noWrapMode || overflowInline; col++ {
+		for col := 0; col < numCols || capOff; col++ {
 			// IsInsideBalancedColumns is true only when the balance algorithm
 			// actually determined the column height (not when column-height is
 			// explicit). Prevents fragment background extension (Change 3) from
@@ -1791,7 +1795,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// there is legitimate — e.g. one that pushed its first child
 			// whole to the next outer fragmentainer (breakable at start of
 			// a resumed container, cla.cc:930-935) and must keep its token.
-			if colBreakToken != nil && (colBlockSize == Indefinite || noWrapMode || overflowInline) {
+			if colBreakToken != nil && capOff {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
 				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
 					colBreakToken = nil
