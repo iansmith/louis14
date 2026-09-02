@@ -49,6 +49,12 @@ type MulticolLayoutAlgorithm struct {
 	// cla.cc:1790-1793 ResolveInitialMinBlockLength). Resolved once in
 	// Layout() because resolution needs the fragment geometry.
 	minBlockSize float64
+	// blockStartBorderPadding is the multicol's block-start border +
+	// scrollbar + padding: Blink's initial intrinsic_block_size_
+	// (BorderScrollbarPadding().block_start, cla.cc:335 @ a9f50e522efa),
+	// the progress that opens the may_have_more_space gate in layoutLine
+	// before any line or spanner has been placed. Resolved once in Layout().
+	blockStartBorderPadding float64
 	// rowGapSize is the block-axis gap between column rows in a
 	// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Read from
 	// the element's `row-gap` property via GetRowGapMulticol. Resolved
@@ -405,6 +411,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// CalculateInitialFragmentGeometry, so this only matters for the
 	// max-height (auto block-size) case.
 	mla.minBlockSize = ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
+	mla.blockStartBorderPadding = geom.BorderBoxPadding().BlockStart
 
 	// column-fill: balance forces balanced column distribution.
 	// Also forced when nested inside an outer fragmentation context whose
@@ -1598,15 +1605,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// token: a post-spanner line resumes from a break-inside column token
 	// while the multicol is still in its first fragment), columns don't
 	// overflow inline, and either prior content has contributed block size
-	// or the multicol is not at the start of the outer fragmentainer, a
-	// sub-perfect break appeal in any column should propagate to the
-	// multicol's own result so the outer's stretch loop can retry with
-	// more space. (Narrower than hasViolatingBreak below, which drives
-	// this multicol's own stretch loop regardless of the outer context.)
+	// (intrinsic_block_size_: block-start border/padding, earlier lines,
+	// spanners) or the multicol is not at the start of the outer
+	// fragmentainer, a sub-perfect break appeal in any column should
+	// propagate to the multicol's own result so the outer's stretch loop
+	// can retry with more space. (Narrower than hasViolatingBreak below,
+	// which drives this multicol's own stretch loop regardless of the
+	// outer context.)
 	mayHaveMoreSpace := constrainedByOuter &&
 		!mla.space.BreakToken.IsBreakInside() &&
 		!overflowInline &&
-		(lineOffset > 0 || mla.space.FragmentainerOffset > 0)
+		(lineOffset > 0 || mla.blockStartBorderPadding > 0 || mla.space.FragmentainerOffset > 0)
 	minBreakAppeal := BreakAppealPerfect
 
 	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.

@@ -306,3 +306,49 @@ func TestMulticolNested_ShrinkToFitOnlyForSingleColumnLine(t *testing.T) {
 		t.Errorf("inner mc block-size = %v, want 50 (two-column line keeps the outer remaining space)", got)
 	}
 }
+
+// TestMulticolNested_BlockStartPaddingOpensMayHaveMoreSpaceGate: Blink's
+// may_have_more_space_in_next_outer_fragmentainer gate opens on
+// intrinsic_block_size_, which starts at BorderScrollbarPadding().block_start
+// (cla.cc:335, :896-897 @ a9f50e522efa) — so an inner multicol with
+// block-start padding has made progress even at outer fragmentainer offset 0
+// with no earlier line or spanner. The second column then resumes with
+// MinBreakAppeal = Perfect and pushes the break-inside:avoid box whole to the
+// next outer fragmentainer instead of slicing it.
+func TestMulticolNested_BlockStartPaddingOpensMayHaveMoreSpaceGate(t *testing.T) {
+	filler := makeNode("div")
+	grandchild1 := makeNode("div")
+	grandchild2 := makeNode("div")
+	avoid := makeNode("div", grandchild1, grandchild2)
+	innerMC := makeNode("div", filler, avoid)
+
+	grandchildStyle := makeStyle("display", "block", "height", "30px")
+	styles := map[*html.Node]*css.Style{
+		innerMC:     makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto", "padding-top", "10px"),
+		filler:      makeStyle("display", "block", "height", "30px"),
+		avoid:       makeStyle("display", "block", "break-inside", "avoid"),
+		grandchild1: grandchildStyle,
+		grandchild2: grandchildStyle,
+	}
+
+	// 60px outer fragmentainer at offset 0: 10px padding leaves 50px
+	// columns. Column 1 takes the 30px filler and breaks before the 60px
+	// avoid box; column 2 must push it rather than slice it.
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 60, 0)
+	if result.BreakToken == nil {
+		t.Fatal("expected a break token (avoid box continues in the next outer fragmentainer)")
+	}
+	if tok := findChildBreakToken(result.BreakToken, avoid); tok == nil || !tok.IsBreakBefore {
+		t.Errorf("avoid token = %+v, want IsBreakBefore (pushed whole, not sliced)", tok)
+	}
+	cols := result.Fragment.Children
+	if len(cols) != 2 {
+		t.Fatalf("got %d columns, want 2", len(cols))
+	}
+	if n := len(cols[1].Fragment.Children); n != 0 {
+		t.Errorf("column 2 has %d children, want 0 (avoid box pushed to next outer fragmentainer)", n)
+	}
+	if result.BreakAppeal != BreakAppealPerfect {
+		t.Errorf("BreakAppeal = %v, want Perfect (breaking before the avoid box is a clean break)", result.BreakAppeal)
+	}
+}
