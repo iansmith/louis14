@@ -1129,8 +1129,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if bla.space.HasBlockFragmentation &&
 			bla.space.FragmentainerBlockSize != Indefinite &&
 			!bla.space.IsInitialColumnBalancingPass {
-			fragEnd := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-			if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
+			// blockOffset is content-relative: measure the boundary and the
+			// "no progress yet" guard from the content edge's fragmentainer
+			// offset, so the container's own block-start border/padding both
+			// consumes fragmentainer space and counts as progress on a first
+			// fragment (and, being cleared on a continuation, does not). Blink
+			// reaches BreakBeforeChildIfNeeded for line boxes through
+			// FinishInflow (block_layout_algorithm.cc:2634 @ a9f50e522efa)
+			// with the same content-edge origin as block children
+			// (FragmentainerOffsetAtBfc + bfc_block_offset, :3156-3158); the
+			// guard is MovePastBreakpoint's refuse_break_before, space_left >=
+			// fragmentainer_block_size (fragmentation_utils.cc:1169-1171).
+			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
+			if blockOffset+lineHeight > fragEnd && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a
 				// break token so the next column resumes from this line.
 				// blockOffset > 0 guard: never emit an empty column (at least one
@@ -1143,8 +1154,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					shortage = 0
 				}
 				inlineBreakToken = &BlockBreakToken{
-					Node:                 bla.node,
-					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset + bla.space.FragmentainerOffset),
+					Node: bla.node,
+					// Consumed is what this block laid out (its content up to
+					// the break), like the block-child token; the container's
+					// fragmentainer offset is not part of it.
+					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
 					InlineItemStartIndex: lineStartIdx,
 					InlineTextOffset:     lineStartTextOffset,
 					InlineShortage:       shortage,
