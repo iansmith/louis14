@@ -1,0 +1,469 @@
+# ss-queue
+
+Scout failing tests and/or open tickets and build/refresh the swarm candidate queue with wave assignments.
+
+## Purpose
+
+Produces a dated queue file and updates the primary queue file — an ordered list of fixable failures for the next swarm wave. Each entry contains a bounded hypothesis, source file footprint, reference-implementation analog, and wave assignment. All project-specific parameters come from the **queue brief file**, not from this skill.
+
+## Invocation
+
+```
+/ss-queue [<brief-path>] [source=<tests|tickets|both>] [<section>]
+```
+
+- `<brief-path>` — path to the swarm brief. If omitted, auto-discover the unique `docs/swarm-lanes/swarm-brief*.md` in cwd. Any arg containing `/` or ending in `.md` is treated as the brief path.
+- `source` — discovery source (default: `tests`):
+  - `tests` — run the test suite and scout failures (original mode)
+  - `tickets` — evaluate open tickets from the ticket system
+  - `both` — run both discovery paths and merge results
+- `<section>` — for `source=tests`: section name(s) to sweep, or `all` (default). Ignored for `source=tickets`.
+
+Examples:
+```
+/ss-queue                                          # tests, all sections
+/ss-queue source=tickets                           # evaluate open tickets
+/ss-queue source=both css-flexbox                  # tickets + flex section
+/ss-queue docs/swarm-lanes/swarm-brief-lou.md source=tickets
+```
+
+---
+
+## Execution
+
+### Step 0 — Load the brief
+
+Read the brief file. Extract **all** project specifics — nothing is hardcoded in this skill:
+
+| Brief key | Used for |
+|-----------|----------|
+| `Queue path` | Where to write the primary queue JSON |
+| `Queue dated pattern` | Where to write the dated preservation copy |
+| `Sections discovery` | Shell command listing available sections |
+| `Target candidates` | How many ready candidates to aim for |
+| `Max waves` | Cap on wave number assignment (default: 6) |
+| `Diff ready threshold` | Max diff% for `ready` status |
+| `Diff flagged threshold` | Max diff% for `flagged` (above = exclude) |
+| `Section test` | Command template (with `<section>` placeholder) |
+| `Target test` | Command template for a specific test |
+| `Conflict rule` / hot-files list | Files allowing only one lane per wave |
+| `Scout criteria` | Pass/fail rules for each candidate |
+| `Ticket system`, `Project prefix` | Ticket deduplication and fetch |
+| `Ticket states to evaluate` | Which ticket states are in scope for `source=tickets` |
+| `Reference system` | Name of reference implementation (e.g. "Blink/Chromium") |
+| `Reference citation label` | Field label in output (e.g. "Blink analog") |
+| `Blink reference SHA` (or equivalent) | Pin for all reference citations |
+| `Max candidates per section` | How many candidates to produce per section (default: 5) |
+
+Also read any other project config (Go command, binary paths, etc.) for scout agent prompts.
+
+Record `master_head`: `git rev-parse origin/master`
+
+### Step 0b — Load deduplication state
+
+Load these before any discovery:
+1. Existing queue file (`Queue path`) — candidates already present.
+2. **All** tickets from the ticket system (team/prefix from brief, state = "In Progress") — areas already being worked; skip these in both discovery paths.
+
+### Step 0c — Route to discovery path(s)
+
+Based on `source`:
+- `tests` → run **Discovery: from-tests** only
+- `tickets` → run **Discovery: from-tickets** only
+- `both` → run both in parallel; merge their candidate lists before Step 4
+
+---
+
+## Discovery: from-tests
+
+*Used when `source=tests` or `source=both`.*
+
+### T1 — Identify sections
+
+If `all`: run the brief's `Sections discovery` command to get the full list.
+If specific section(s) were provided: use exactly those.
+
+**Do not skip sections that already have entries in the existing queue** unless every entry
+in that section already has a `ticket_id` (meaning they are being actively worked). Sections
+with no ticket yet — even if they appeared in a prior sweep — are re-scouted so new
+candidates can be found up to the `Max candidates per section` limit.
+
+### T2 — Two-stage Haiku → Sonnet pipeline via Workflow
+
+Run a Workflow with `pipeline(sections, gatherStage, hypothesizeStage)`.
+
+**No barrier between stages** — as soon as a Haiku gather agent finishes a section, its
+qualifying candidates flow immediately into Sonnet hypothesis agents. Sections finishing
+early don't wait for slow sections.
+
+---
+
+#### Stage 1 — Haiku gather agents (one per section)
+
+Model: `haiku`. Purpose: mechanical evidence collection only — no reasoning, no hypotheses.
+
+Each agent receives (filled from the brief):
+- Section name and section test command
+- Project root and Go command (or equivalent build command)
+- Diff thresholds (exclude, flagged, ready)
+- Max candidates per section
+- Project hard rules (e.g. never git stash)
+
+**What the Haiku gather agent does:**
+
+1. **Run the section test.** Parse every `FAIL`/failure line for test name, total diff
+   pixels, diff%, and max-diff value. If no failures → return `{ section, candidates: [] }`.
+
+2. **Filter by diff threshold.** Discard tests above the exclude threshold immediately.
+   Sort survivors by diff% ascending. Take the top N (brief's `Max candidates per section`).
+
+3. **For each surviving test:**
+   a. Read the test HTML file and its `<link rel="match">` reference file.
+   b. Extract 2–4 CSS feature keywords / property names visible in the test markup.
+   c. Grep the project source tree for those keywords. Collect the top matching file paths
+      and the surrounding 5 lines of each hit.
+   d. From the grep hits, identify 1–3 most-likely source files. Read the 30–50 most
+      relevant lines from each (the function most likely responsible for the diff, not the
+      whole file).
+   e. Collect all of the above as `source_excerpts`.
+
+4. Return structured JSON per the **gather schema** below. Do not form hypotheses.
+   Do not speculate about root causes. Just gather facts faithfully.
+
+**Gather agent is strictly read-only.** It runs the test suite and reads files. No edits.
+
+**Gather schema:**
+
+```json
+{
+  "type": "object",
+  "required": ["section", "candidates"],
+  "properties": {
+    "section": { "type": "string" },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["test", "diff_pct", "test_html", "ref_html", "keyword_hits", "source_excerpts", "candidate_files"],
+        "properties": {
+          "test":            { "type": "string", "description": "Exact test path" },
+          "diff_pct":        { "type": "number" },
+          "diff_px":         { "type": "number" },
+          "max_diff":        { "type": "number" },
+          "test_html":       { "type": "string", "description": "Full content of the test HTML file" },
+          "ref_html":        { "type": "string", "description": "Full content of the reference HTML file" },
+          "keyword_hits":    { "type": "array", "items": { "type": "string" },
+                               "description": "grep hits: 'file:line: content'" },
+          "source_excerpts": { "type": "array", "items": { "type": "string" },
+                               "description": "Relevant 30-50 line excerpts from source files, pre-read" },
+          "candidate_files": { "type": "array", "items": { "type": "string" },
+                               "description": "Source file paths that the excerpts came from" }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+#### Stage 2 — Sonnet hypothesis agents (one per candidate)
+
+Model: `sonnet`. Purpose: reasoning only — the evidence is already pre-loaded by Stage 1.
+
+Each agent receives the full gather record for one candidate (test HTML, ref HTML, keyword
+hits, source excerpts, candidate files). It does **not** re-read files or re-run tests.
+
+**What the Sonnet hypothesis agent does:**
+
+1. **Identify the exact mechanism** from the pre-read evidence. Form a falsifiable causal
+   claim: `"the diff is because <X> in <file:line>, fixable by <Y>."` Reject vague
+   claims ("something in layout") — specificity is required.
+
+2. **Look up the reference-implementation analog** (using the reference system and SHA
+   from the brief). Name the file, type/function, and SHA. If no analog exists, state
+   `no analog: <reason>`.
+
+3. **List `primary_files`** (files requiring meaningful code changes) and `also_touches`
+   (minor call-site updates).
+
+4. **Estimate post-fix diff%** and assign `confidence` (`high` / `medium` / `low`).
+   `high` = mechanism is unambiguous from the evidence and the fix is clear.
+   `medium` = root cause is identified but the fix needs more reading.
+   `low` = plausible hypothesis but the pre-read evidence is insufficient to confirm.
+
+5. **Check scout criteria** (verbatim from the brief) and set `status`:
+   `ready` / `flagged` / `blocked` / `excluded`.
+
+6. Return a single candidate object per the Appendix schema.
+
+**Sonnet hypothesis agents are also read-only.** They reason over evidence already
+gathered; they do not shell out, grep, or open files.
+
+---
+
+#### Stage 2 pipeline note
+
+Because `pipeline()` has no barrier, Stage 2 agents for section A start running while
+section B is still in Stage 1. The orchestrator accumulates results as they arrive and
+proceeds to Step 4 only after all sections have completed both stages.
+
+---
+
+## Discovery: from-tickets
+
+*Used when `source=tickets` or `source=both`.*
+
+This path evaluates open (unstarted) tickets from the ticket system as potential queue candidates. It uses a **two-tier review**: fast haiku agents apply the checklist mechanically; the orchestrator (sonnet) reviews uncertain verdicts and makes final calls.
+
+### K1 — Fetch candidate tickets
+
+Fetch tickets from the ticket system with:
+- Team/prefix from brief
+- States: the brief's `Ticket states to evaluate` (typically `Backlog`, `Todo`)
+
+Exclude:
+- Tickets already in the existing queue (match on ticket ID or `area`+`label`)
+- Tickets whose area is covered by an In Progress ticket (loaded in Step 0b)
+- Tickets with no hypothesis or file footprint in their description (obviously incomplete)
+
+### K2 — Launch haiku evaluation swarm via Workflow
+
+One haiku agent per ticket, all in parallel (`model: haiku`).
+
+**What each haiku evaluator does** — provide it with:
+- The full ticket description (title + body)
+- The scout criteria verbatim from the brief
+- The brief's reference SHA and hard rules
+- The project's source tree location and Go command
+
+**Haiku evaluator task:**
+
+> You are evaluating a ticket as a potential swarm queue candidate. Apply the scout criteria
+> checklist below mechanically. Your job is to return a structured verdict — not prose.
+>
+> **Step 1 — Check each scout criterion:**
+> For each criterion in the brief's `Scout criteria`, mark it pass/fail/unknown based solely
+> on what is in the ticket description. Do not speculate; if the ticket is silent on a
+> criterion, mark it `unknown`.
+>
+> **Step 2 — Verify the file footprint against current source:**
+> The ticket may have been filed weeks or months ago. For each file named in the ticket:
+> - Check that the file still exists at that path.
+> - Grep for the key symbol or mechanism named in the hypothesis.
+> - If the code has already been fixed (the mechanism no longer exists), mark criterion 1
+>   as `fail` with reason "already implemented."
+>
+> **Step 3 — Verify the target test still fails:**
+> Run the specific target test from the ticket using the brief's `Target test` command.
+> A test that now passes is no longer a valid candidate — mark it `already_fixed`.
+>
+> **Step 4 — Return verdict:**
+> - `pass` — all criteria pass, test still fails, file footprint verified
+> - `fail` — one or more criteria definitively fail (record which and why)
+> - `uncertain` — one or more criteria are `unknown` OR the hypothesis looks plausible
+>   but you cannot confirm the root cause without deeper analysis
+> - `already_fixed` — the target test now passes; no work needed
+
+**Haiku evaluator output schema:**
+
+```json
+{
+  "type": "object",
+  "required": ["ticket_id", "verdict", "criteria_results", "candidate"],
+  "properties": {
+    "ticket_id":       { "type": "string" },
+    "verdict":         { "type": "string", "enum": ["pass", "fail", "uncertain", "already_fixed"] },
+    "confidence":      { "type": "string", "enum": ["high", "medium", "low"] },
+    "fail_reasons":    { "type": "array", "items": { "type": "string" } },
+    "criteria_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": { "type": "string" },
+          "result":    { "type": "string", "enum": ["pass", "fail", "unknown"] },
+          "note":      { "type": "string" }
+        }
+      }
+    },
+    "code_still_matches": { "type": "boolean", "description": "true if the source files still show the described gap" },
+    "test_still_fails":   { "type": "boolean" },
+    "candidate": {
+      "description": "Populated on pass or uncertain — the queue entry to add if accepted",
+      "type": ["object", "null"],
+      "properties": {
+        "area":               { "type": "string" },
+        "label":              { "type": "string" },
+        "status":             { "type": "string", "enum": ["ready", "flagged", "blocked", "defer"] },
+        "source_ticket":      { "type": "string", "description": "Ticket ID this candidate was derived from" },
+        "tests":              { "type": "array", "items": { "type": "string" } },
+        "hypothesis":         { "type": "string" },
+        "reference_analog":   { "type": "object", "properties": { "file": {"type":"string"}, "symbol": {"type":"string"}, "sha": {"type":"string"} } },
+        "primary_files":      { "type": "array", "items": { "type": "string" } },
+        "also_touches":       { "type": "array", "items": { "type": "string" } },
+        "estimated_diff_pct": { "type": ["number", "null"] },
+        "confidence":         { "type": "string", "enum": ["high", "medium", "low"] },
+        "reject_reason":      { "type": ["string", "null"] },
+        "blocker_ticket":     { "type": ["string", "null"] }
+      }
+    }
+  }
+}
+```
+
+### K3 — Orchestrator review of uncertain verdicts
+
+After the haiku swarm returns:
+
+**Automatic decisions (no human needed):**
+- `pass` + `confidence=high` → accept the candidate as-is
+- `fail` → discard; log the `fail_reasons`
+- `already_fixed` → discard; note it in the report as a stale ticket to close
+
+**Orchestrator review required:**
+- `pass` + `confidence=medium` or `low` → orchestrator reads the ticket + haiku report and decides: accept / reject / accept-with-modifications
+- `uncertain` → orchestrator reads the ticket, reviews the criteria results, does any additional source-reading needed, and makes the call
+- Any verdict where `code_still_matches=false` or `test_still_fails=false` contradicts the expected result → investigate before accepting
+
+The orchestrator records its decision for each reviewed ticket: `accepted`, `rejected` (with reason), or `modified` (with what changed in the candidate).
+
+---
+
+## Steps 4–7 — Common to both discovery paths
+
+### Step 4 — Collect, filter, and deduplicate
+
+After all discovery agents return:
+
+1. **Flatten** all candidates (from both paths if `source=both`) into one list.
+2. **Apply diff thresholds** from the brief:
+   - `> exclude threshold` → drop entirely
+   - `> flagged threshold` → status = `flagged`
+3. **Apply scout criteria** — reject any candidate that fails; record `reject_reason`.
+4. **Deduplicate**: match on `area` + `label`; skip if already in queue and not `done`. If `source=both`, prefer the ticket-sourced entry when a test-sourced and ticket-sourced candidate overlap (the ticket has a richer hypothesis).
+5. **Merge siblings**: same section, same root cause, same file footprint → one entry with multiple `tests[]`.
+
+### Step 5 — Assign waves
+
+Read the hot-files list from the brief's `Conflict rule` and `Max waves` from Queue config.
+
+**Greedy wave-assignment algorithm** (deterministic — run in the Workflow script):
+
+```
+Sort: ready before flagged; within status: estimated_diff_pct asc, confidence desc (high→medium→low).
+
+wave_files[1..MAX_WAVE] = empty sets
+
+For each candidate (sorted):
+  For wave = 1 to MAX_WAVE:
+    if candidate.primary_files ∩ wave_files[wave] == ∅:
+      candidate.wave = wave
+      wave_files[wave] += candidate.primary_files
+      break
+  If no wave found:
+    candidate.wave = null
+    candidate.status = "deferred-conflict"
+
+blocked/defer: wave = null (skip loop)
+```
+
+**Hot files are hard constraints.** Non-hot shared files are soft: record a `merge_note` but do not block assignment.
+
+### Step 6 — Write the queue
+
+Write both paths from the brief:
+
+```json
+{
+  "sweep_date": "<YYYY-MM-DD>",
+  "master_head": "<SHA>",
+  "brief": "<brief file path>",
+  "source": "<tests|tickets|both>",
+  "total": 42,
+  "ready": 28,
+  "flagged": 6,
+  "blocked": 3,
+  "deferred": 5,
+  "waves": { "1": 8, "2": 7, "3": 6, "4": 4, "5": 3 },
+  "candidates": [ ... ]
+}
+```
+
+Per-candidate fields: `area`, `label`, `status`, `wave`, `tests`, `hypothesis`, `reference_analog`, `primary_files`, `also_touches`, `estimated_diff_pct`, `confidence`, `reject_reason`, `blocker_ticket`, `merge_note`, `source_ticket` (populated when candidate came from `source=tickets`).
+
+### Step 7 — Report
+
+```
+Queue built: <total> candidates  [source: <tests|tickets|both>]
+  Wave 1 (launch-ready): <n>
+  Wave 2: <n>
+  ...
+  Flagged (diff > ready threshold): <n>
+  Blocked: <n>
+  Deferred: <n>
+
+From-tickets summary (if source=tickets or both):
+  Evaluated: <n tickets>
+  Auto-accepted (haiku pass/high): <n>
+  Orchestrator-reviewed: <n>  →  accepted <n>, rejected <n>, modified <n>
+  Discarded (fail): <n>
+  Stale (already fixed): <n>  ← consider closing these tickets
+
+Stored:
+  <Queue dated pattern>
+  <Queue path> (overwritten)
+```
+
+Wave 1 table (sorted by diff%):
+
+| source | area | label | diff% | primary file(s) | confidence |
+|--------|------|-------|-------|-----------------|------------|
+
+`*` = hot file from the brief's conflict rule.
+`T` = candidate sourced from a ticket (`source_ticket` populated).
+
+---
+
+## Appendix — test-scout candidate schema
+
+```json
+{
+  "type": "object",
+  "required": ["section", "candidates"],
+  "properties": {
+    "section": { "type": "string" },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["area", "label", "status", "tests", "primary_files", "estimated_diff_pct", "confidence"],
+        "properties": {
+          "area":               { "type": "string" },
+          "label":              { "type": "string" },
+          "status":             { "type": "string", "enum": ["ready", "flagged", "blocked", "defer"] },
+          "tests":              { "type": "array", "items": { "type": "string" } },
+          "hypothesis":         { "type": "string" },
+          "reference_analog":   { "type": "object", "properties": { "file": {"type":"string"}, "symbol": {"type":"string"}, "sha": {"type":"string"} } },
+          "primary_files":      { "type": "array", "items": { "type": "string" } },
+          "also_touches":       { "type": "array", "items": { "type": "string" } },
+          "estimated_diff_pct": { "type": ["number", "null"] },
+          "confidence":         { "type": "string", "enum": ["high", "medium", "low"] },
+          "reject_reason":      { "type": ["string", "null"] },
+          "blocker_ticket":     { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## What this skill never does
+
+- Edits source files (all agents are read-only during scouting).
+- Commits or pushes anything.
+- Creates Linear tickets (that is `/ss-run`'s job).
+- Hardcodes project-specific values — everything comes from the brief.
+- Auto-accepts uncertain haiku verdicts — uncertain cases always go to orchestrator review.
