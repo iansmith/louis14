@@ -1,7 +1,7 @@
 <!-- This file is MIRRORED.  Do not edit it here unless this repo is the
      reference (slopstop / ticket-plugin).  Edit the reference copy, then run
-     tools/fleet-sync/migrate-universal-block.py --apply to propagate.
-     Imported by CLAUDE.md via a single `@CLAUDE-universal.md` line. -->
+     tools/fleet-sync/setup-project.py --apply to propagate.
+     Loaded automatically from .claude/rules/ — there is no import line. -->
 
 
 # Universal Project Rules
@@ -10,9 +10,10 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 ## 1. Pre-commit
 
-- **ALWAYS run `/simplify` on uncommitted changes before every commit.** No exceptions on size — a one-line change can introduce a duplicate constant, touch the wrong file, or violate a project rule, all of which `/simplify` catches cheaply. Apply real findings inline before committing.
+- **Quality review happens once, at PR time — not before every commit.** `:pr`'s review gate reads the whole branch diff, so nothing escapes by being committed early. Commit freely; the gate is at the merge. (Measured 2026-08-04: a multi-agent cleanup pass before every commit cost 13–30 min and missed the most serious defect in its own diff, which a single review pass found in ~4 min. The rule this replaces called that pass "cheap" — it was written when it was one agent.)
 - Run the project's build + targeted tests (the package or area you touched) before commit. Run the full suite only when touching shared/cross-cutting code.
 - Commit, then push — only after the above are clean. **If the project has multiple remotes, push to all of them.**
+- **A project with no test suite is a deliberate, documented exception — never a default.** It must say so in its own `CLAUDE.md`, under a heading naming this section, and state what it validates with instead. "There are no tests here" is a claim that needs a reason and an owner; discovering it by finding no `tests/` directory is not the same thing.
 
 ## 2. Tests
 
@@ -20,6 +21,8 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 - **A failing test is signal, not chore.** Investigate the root cause before changing anything. Never delete a test, narrow an assertion, call `Skip()`, or cite an unverified "flake" to silence it. "Known flake" is a label, not an explanation.
 
 (Test scope before commit is covered by §1. Project-specific guidance on test runtime and scoping lives in each project's CLAUDE.md.)
+
+**These rules bind wherever tests are the verification mechanism, which is nearly everywhere.** A project that has genuinely replaced them — see §1's last bullet — still owes the same guarantee by other means: something must fail loudly, before merge, when the change is wrong. What must never happen is the guarantee quietly going missing because the mechanism did.
 
 ## 3. Git
 
@@ -83,14 +86,17 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - `docs/` is **gitignored** — used for personal notes, scratch work, drafts. Not committed.
 - `design/` is **tracked**, but you do **not** add files to it without explicit user confirmation. Design docs are deliberate artifacts.
-- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory** (`~/.claude/ticket-active/<TICKET>/`), not into `docs/` or `design/`.
+- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory** (`$TRACKING_DIR/<TICKET>/`), not into `docs/` or `design/`. Resolve `$TRACKING_DIR` per the three-tier ladder in `tracking-dir-resolution.md`: Tier 1 = explicit `tracking_dir` key in `.project-conf.toml`; Tier 2 = `.slopstop/ticket-active` when `.slopstop/` exists at the worktree root; Tier 3 (legacy fallback) = `~/.claude/ticket-active`. First match wins.
 
 ## 9. Automated PR review
 
-- **Claude `/code-review` is the base review, and the only one that gates a merge.** Every PR gets it; a PR is reviewed once it is clean. Nothing else is required.
-- **Every project must set `[pr_review] backend = "claude"` explicitly.** `coderabbit` is the *default*, so a missing `[pr_review]` block is the bug, not the safe state: it sends `:pr` into Step 6-cr's poll (60s × 20), which under CodeRabbit's rate limiting usually burns 20 minutes and returns nothing. `backend` accepts `claude` | `coderabbit` | `greptile` — it stays per-project config, so never hard-code a tool name into a workflow.
-- **CodeRabbit is opportunistic: read it if it is already there, never wait for it.** It reviews free on public repos but rate-limits hard, so most PRs get nothing. Before merging, look **once**, and sort what you find three ways — a real review (work its findings: verify each against the actual code, apply the real ones, state which you refuted and why); a non-review notice (match `Review limit reached`, or `auto reviews are disabled` when the base is not the default branch — **neither is a clean pass**); or silence. The last two are the same action: merge on the Claude review. Do not post `@coderabbitai review` to force one — it spends rate-limit budget on a review that lands after you have merged.
-- `/simplify`'s pre-commit role is to preempt review findings, not to substitute for the actual review.
+- **The gate is a review by a context that did not write the code, and every PR gets one.** In an autonomous run that is two things, both mandatory: the stage-10 `review` loop, running to `REVIEW CLEAN` and capped at 5 rounds; then stage 10b handoff verification — fresh checkers at the tier above, fed artifacts only and never the agent's own claims, producing a blessing bound to the branch tip SHA. **Which checkers is decided by the ticket's mode, not by cost:** a normal ticket gets both a `review` and a requirements adversary; a *refactor* ticket gets the reviewer only (there are no new requirements to check against), and a *backfill* ticket gets the adversary only (there is no new production code to review). One of the two is always wrong for an invariant ticket, and skipping it is the structural argument — never a saving. The rule underneath both is **the session that wrote the code never reviews it, and never decides which criticisms of it are valid.** It has an incident behind it: PR #411 recorded a passing review the authoring session had performed on its own work. The isolation is real and comes from the **launch form**: every worker runs as a subagent via `Agent()` (`worker-launch.md`), which gives it its own context window and no access to the conversation that wrote the code. **Corrected 2026-08-10:** this bullet used to say the worker *"carries `context: fork`, … rather than by a flag anyone can forget."* No slopstop skill declares `context: fork` — `grep -rn "context: *fork" skills/` returns nothing — so that named the wrong mechanism and, worse, offered false reassurance: invoking `Skill(slopstop:review)` **inline** instead of through `Agent()` would run the review in the calling context, which is exactly the PR #411 arrangement. It is enforced by the launch form, and the launch form is a step that can be got wrong. Launch workers per `worker-launch.md`; never invoke a review skill inline.
+- **Claude `/code-review` CAN be invoked by an agent**, as `Skill(skill: "code-review", args: "<PR#>")`. **Corrected 2026-08-27**, and it replaces a bullet that asserted the exact opposite: that it carries `disable-model-invocation`, that *"a skill, a subagent, or a headless run cannot"* launch it, and that *"any call site that appears to invoke it is **inert**"* — citing a harness check dated 2026-08-09. Re-tested on 2026-08-27 by a subagent reviewing a consuming-project PR: the call was accepted, ran as forked execution, and returned real findings, among them four false claims in the authoring session's own doc comments. Whether the old bullet was wrong when written or the harness changed under it cannot be told apart from here; what is known is that it does not hold now, and that it stood unchallenged for eighteen days. Whether it cost anything in that window is unknown — nobody may have tried — so the case for fixing it rests on it being false and cheap to check, not on damage anyone can point to.
+  - Verified is the **plain** form, invoked through `Skill()` from a subagent. `/code-review ultra` — the multi-agent cloud review — is billed per run and was **not** part of that check. Leave it to the user to launch until someone verifies otherwise, and never spend it on a guess.
+  - **The isolation requirement above is untouched, and it is the half that matters.** That an agent *may* make the call changes nothing about *from where*: invoking `/code-review` inline in the session that wrote the code is still precisely the PR #411 arrangement this section exists to prevent. Launch it from an `Agent()` whose context did not write the diff.
+  - The durable lesson is not about this command. A written-down claim about what the harness forbids can be wrong when written **or** go stale afterwards, and from the outside those look identical — which is why "it was verified once, on a date" is not the reassurance it reads as. This one was believed because it was confident, specific, and dated. When such a claim is what stops you doing something useful, re-test it before repeating it; here the test was a single call.
+- **`[pr_review] backend` does not choose who reviews.** The forked `review` worker runs on every PR whatever the value is. The key selects only *whose bot comments* the bot-read step goes looking for; it accepts `claude` | `coderabbit` | `greptile`, stays per-project config, and is never hard-coded into a workflow. A project with no `[pr_review]` block still gets the full review gate — the default only changes which bot is read.
+- **Bot reviews are opportunistic: read them if already there, never wait.** CodeRabbit reviews free on public repos but rate-limits hard, so most PRs get nothing. Before merging, look **once**, and sort what you find three ways — a real review (work its findings: verify each against the actual code, apply the real ones, state which you refuted and why); a non-review notice (match `Review limit reached`, or `auto reviews are disabled` when the base is not the default branch — **neither is a clean pass**); or silence. The last two are the same action: proceed on the `review` worker's verdict, which is the gate regardless. Do not post `@coderabbitai review` to force one — it spends rate-limit budget on a review that lands after you have merged.
 - When a project has multiple remotes, **prefer the GitHub remote** for any hosted review bot. Bot reviews do not work on Bitbucket; if Bitbucket is the only remote, factor that into the review plan separately.
 
 ## 10. Adding a new rule — where it lives
@@ -114,12 +120,18 @@ list into every copy of it (universal §5), and a mirrored file naming other
 projects also breaks any repo whose own rules forbid referencing a sibling.
 
 **Propagation is mechanical — do not hand-copy.** The unit is this whole file, so
-propagating is a copy and verifying is a hash compare:
+propagating is a copy and verifying is a byte compare. `setup-project.py` owns both;
+it does more than the rules (skills, `.gitignore`, `.project-conf.toml`), and this
+file is one of the things it brings into line:
 
 ```bash
-python3 ~/ticket-plugin/tools/fleet-sync/migrate-universal-block.py --apply    # propagate
-python3 ~/ticket-plugin/tools/fleet-sync/migrate-universal-block.py --verify   # one hash = in sync
+python3 ~/ticket-plugin/tools/fleet-sync/setup-project.py --repos <repo> --apply   # propagate
+python3 ~/ticket-plugin/tools/fleet-sync/setup-project.py --repos <repo>           # verify — writes nothing
 ```
+
+Omit `--repos` for the whole fleet. **Propagation stays the maintainer's call**: the
+repos sit in different states, several are shared with other contributors, and being
+behind is a normal condition rather than a fault to auto-correct.
 
 A project may deliberately **override** a universal rule — the conventional form is a
 section headed `## <Topic> (overrides universal §N)`. Overrides live in that project's

@@ -371,11 +371,18 @@ func BreakBeforeChildIfNeeded(
 	// (MovePastBreakpoint, fragmentation_utils.cc:1168-1171 @ a9f50e522efa:
 	// no progress yet in this fragmentainer, so a break here would risk an
 	// infinite run of empty fragmentainers) is lifted for it.
+	// A break before the child is refused only for lack of progress
+	// (nothing consumed in the fragmentainer yet, and the container is not
+	// breakable at its resumed start). Container separation does not gate
+	// the break — it shapes appealBefore (LastResort without separation),
+	// so a child that does not fit is still pushed rather than placed
+	// overflowing (MovePastBreakpoint, fragmentation_utils.cc:1169-1213 @
+	// a9f50e522efa: move_past = refuse_break_before, then only a fitting
+	// child moves past).
 	breakableAtStart := IsBreakableAtStartOfResumedContainer(space)
 	spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
 	refuseBreakBefore := fragmentainerBlockOffset <= 0 && !breakableAtStart
-	canBreakBefore := (hasContainerSeparation || breakableAtStart) &&
-		!refuseBreakBefore && fragmentainerBlockSize != Indefinite && layoutResult != nil
+	canBreakBefore := !refuseBreakBefore && fragmentainerBlockSize != Indefinite && layoutResult != nil
 	var appealBefore BreakAppeal
 	if canBreakBefore {
 		appealBefore = CalculateBreakAppealBefore(

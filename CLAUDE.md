@@ -13,7 +13,6 @@ byte-identical everywhere. **Edit them in the slopstop repo (the reference copy)
 propagate; never edit the copy in this repo.** Project-specific rules and deliberate
 overrides go below, in this file, where they take precedence.
 
-@CLAUDE-universal.md
 
 ---
 

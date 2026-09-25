@@ -17,7 +17,6 @@ test-output.txt
 *.out
 
 # Claude Code
-.claude/
 .project-prefix
 
 # Local working copy of mazarin/textshape (cross-repo change staging)
@@ -33,8 +32,9 @@ test-output.txt
 # and would silently make this negation match nothing.
 !/CLAUDE-universal.md
 
-# Personal scratch / drafts — design docs go to design/ (tracked). Formerly /docs/.
+# Personal scratch / drafts — design docs go to design/ (tracked).
 /scratch/
+/docs/
 
 # slopstop project-local ticket tracking (transient working state, not source)
 .slopstop/
@@ -52,3 +52,22 @@ Thumbs.db
 l14open
 l14show
 
+# slopstop: exclude .claude CONTENTS, not the directory. git cannot re-include a path whose
+# parent directory is excluded, so `.claude/` would make the negations below inert and the
+# generated skills would never be committed — defeating the version freeze they exist for.
+#
+# agents/ is exempted ahead of BILL-486, which may ship per-tier subagent definitions there.
+# Cost if that ticket closes wontfix: nothing, the directory simply stays absent. Cost of
+# adding it late: definitions land on disk, never get committed, and effort silently inherits
+# while the config reads as configured — the same silent shape that left one repo with zero
+# tracked skills.
+.claude/*
+!.claude/rules
+!.claude/skills
+!.claude/agents
+
+# slopstop project config. The SHARED file is tracked -- it holds project settings (system,
+# key, prefix, tiers, thresholds), not per-machine ones, and ignoring it means a second
+# developer clones the repo and gets none of them. Per-developer deviations -- a fork URL, a
+# local endpoint -- go in the LOCAL file, which is ignored.
+.project-conf-local.toml

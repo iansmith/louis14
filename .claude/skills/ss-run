@@ -1,0 +1,532 @@
+# ss-run
+
+Execute a fix-swarm: read a queue built by `/ss-queue`, launch a single Workflow that
+drives up to N lanes in parallel through three model-optimised phases (Opus plan →
+Haiku implement → Sonnet PR), then runs the serial funnel (regression gate → adversary
+→ merge → archive) for each completed lane — all inside the Workflow so the main
+session accumulates no funnel context. All project-specific parameters come from the
+**swarm brief file**, not from this skill.
+
+## Invocation
+
+```
+/ss-run [<brief-path>] [queue=<path>] [wave=<N>] [dry-run]
+```
+
+- `<brief-path>` — path to the swarm brief. If omitted, auto-discover the unique
+  `docs/swarm-lanes/swarm-brief*.md` in cwd. Any arg containing `/` or ending in `.md`
+  is treated as the brief path.
+- `queue=<path>` — queue JSON. Default: the brief's `Queue path` value.
+- `wave=<N>` — run only this wave. Default: 1; advance automatically when exhausted.
+- `dry-run` — prep worktrees and print what would be launched, but start no agents.
+
+Slot count is taken from the brief's `Parallel slots` field (default 8). The Workflow
+harness enforces it automatically.
+
+---
+
+## Execution
+
+### Step 0 — Load brief and queue
+
+Find the brief file:
+1. Use the explicit path if provided (any arg with `/` or ending in `.md`).
+2. Otherwise glob `docs/swarm-lanes/swarm-brief*.md` in cwd and pick the unique match.
+3. If not found: stop with `"No swarm brief found. Pass <brief-path> or place swarm-brief*.md in docs/swarm-lanes/."`
+
+Read the brief and extract all project-specific values — nothing below is hardcoded in
+this skill:
+
+| Brief key | Variable | Used for |
+|-----------|----------|----------|
+| `Campaign tree` | `$CAMPAIGN_TREE` | Root of all worktree operations |
+| `Go command` (or equivalent) | `$GO_CMD` | Build, vet, fmt |
+| `Build verify target` | `$BUILD_TARGET` | `go build` and `go vet` checks |
+| `Section test` | `$SECTION_TEST_CMD` | Regression gate |
+| `Target test` | `$TARGET_TEST_CMD` | Lane implementer |
+| `Blink reference SHA` (or equivalent) | `$REFERENCE_SHA` | Plan quality gate |
+| `Frozen dependency` | `$FROZEN_DEP` | Prereq path check |
+| `Parallel slots` | `$SLOTS` | Workflow concurrency cap |
+| `Queue path` | `$QUEUE_PATH` | Default queue file location |
+| `RUNLOG path` | `$RUNLOG_PATH` | Append-only run log (replace `<YYYY-MM-DD>` with today) |
+| `gh` binary | `$GH` | GitHub CLI |
+| `Hard rules` section | `$HARD_RULES` | Passed verbatim into every agent prompt |
+| `Adversary checklist` section | `$ADVERSARY_CHECKLIST` | Gate agent |
+| `Regression gate` section | `$REGRESSION_GATE` | Gate agent |
+| `Worktree setup` block | `$WORKTREE_SETUP` | Per-lane setup commands (contains `WT=` line) |
+
+Resolve the queue file: `queue=` arg → brief's `Queue path` → newest dated queue file
+matching the brief's `Queue dated pattern`.
+
+Read the queue JSON. Confirm ≥ 1 entry with `status: "ready"` and `wave == $WAVE`.
+
+---
+
+### Step 1 — Session prereqs
+
+Verify ALL before any lane work:
+
+1. `git -C $CAMPAIGN_TREE status` → `On branch master` AND `nothing to commit`.
+   If not: stop. Resolve stale state before proceeding.
+2. `$FROZEN_DEP` exists on disk.
+3. `$GH auth status` exits 0.
+4. `go.work` / `go.work.sum` are listed in `$CAMPAIGN_TREE/.git/info/exclude`. Add them if
+   missing.
+5. `$GO_CMD build $BUILD_TARGET` in `$CAMPAIGN_TREE` exits 0.
+
+If `dry-run`: after prereqs, print the wave plan and stop.
+
+---
+
+### Step 2 — Wave selection
+
+Load all entries with `status: "ready"` and `wave == $WAVE`. Sort by `estimated_diff_pct`
+ASC. This is the entry list for the Workflow.
+
+If the wave is empty and `$WAVE == 1`: advance to wave 2. If all waves exhausted: stop.
+
+---
+
+### Step 3 — Prep worktrees
+
+For each entry in the wave:
+
+1. Derive the worktree path `wt` by substituting `<N>` (the ticket number extracted from
+   `entry.ticket_id`) into the `WT=` line of the brief's `Worktree setup` block.
+2. Execute the brief's full `Worktree setup` commands with `<N>` substituted.
+3. Add `entry.wt = <resolved wt path>`.
+4. Run `$GO_CMD build $BUILD_TARGET` in `entry.wt`. If it fails: mark
+   `status: "prep-failed"`, log the error, remove the worktree with
+   `git worktree remove --force <wt>`, and drop the entry from the wave list.
+
+Continue with remaining entries after any prep failure.
+
+---
+
+### Step 4 — Launch the Workflow (lanes + funnel)
+
+Build the `args` object:
+
+```json
+{
+  "entries": [ ...wave entries, each with wt field added... ],
+  "runlog_path": "<$RUNLOG_PATH with YYYY-MM-DD replaced by today>",
+  "brief": {
+    "hard_rules":          "<$HARD_RULES>",
+    "adversary_checklist": "<$ADVERSARY_CHECKLIST>",
+    "regression_gate":     "<$REGRESSION_GATE>",
+    "reference_sha":       "<$REFERENCE_SHA>",
+    "go_cmd":              "<$GO_CMD>",
+    "build_target":        "<$BUILD_TARGET>",
+    "target_test_cmd":     "<$TARGET_TEST_CMD>",
+    "section_test_cmd":    "<$SECTION_TEST_CMD>",
+    "campaign_tree":       "<$CAMPAIGN_TREE>",
+    "slots":               <$SLOTS>
+  }
+}
+```
+
+Call the **Workflow tool** with the script below and the args object above. The Workflow
+runs all five phases — plan, implement, PR (parallel per-lane), then gate and merge
+(serial per-lane in the funnel). It returns a compact wave summary; all detail lives in
+the ticket comments and RUNLOG.
+
+### Workflow script (pass verbatim as `script`)
+
+```javascript
+export const meta = {
+  name: 'ss-lane-runner',
+  description: 'Fix-swarm: plan → implement → PR (parallel) → gate → merge (serial)',
+  phases: [
+    { title: 'Plan',      detail: 'Opus: reference-aligned plan per ticket' },
+    { title: 'Implement', detail: 'Haiku: code, regression gate, build' },
+    { title: 'PR',        detail: 'Sonnet: simplify, push, CodeRabbit triage' },
+    { title: 'Gate',      detail: 'Sonnet: independent regression gate + adversary (serial)' },
+    { title: 'Merge',     detail: 'Sonnet: merge + archive + RUNLOG (serial)' },
+  ],
+}
+
+const { entries, brief, runlog_path } = args
+
+// ── Schemas ──────────────────────────────────────────────────────────────────
+
+const LANE_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['ticket', 'status'],
+  properties: {
+    ticket:             { type: 'string' },
+    pr_url:             { type: 'string' },
+    pr_number:          { type: 'number' },
+    fail_set_a:         { type: 'array',  items: { type: 'string' } },
+    fail_set_b:         { type: 'array',  items: { type: 'string' } },
+    newly_fixed:        { type: 'number' },
+    cr_status:          { type: 'string', enum: ['clean','addressed','debatable-listed'] },
+    debatable_findings: { type: 'array',  items: { type: 'string' } },
+    wip_commit:         { type: 'string' },
+    changed_files:      { type: 'array',  items: { type: 'string' } },
+    status:             { type: 'string', enum: ['pr-ready','escalate','failed'] },
+    escalation_reason:  { type: 'string' },
+  },
+}
+
+const GATE_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['ticket', 'verdict'],
+  properties: {
+    ticket:       { type: 'string' },
+    verdict:      { type: 'string', enum: ['pass', 'fail', 'escalate'] },
+    reason:       { type: 'string' },
+    fail_set_a:   { type: 'array', items: { type: 'string' } },
+    fail_set_b:   { type: 'array', items: { type: 'string' } },
+    newly_fixed:  { type: 'number' },
+    new_failures: { type: 'array', items: { type: 'string' } },
+  },
+}
+
+const MERGE_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['ticket', 'status'],
+  properties: {
+    ticket:    { type: 'string' },
+    status:    { type: 'string', enum: ['merged', 'failed', 'escalate'] },
+    merge_sha: { type: 'string' },
+    reason:    { type: 'string' },
+    area:      { type: 'string' },
+    tests:     { type: 'array', items: { type: 'string' } },
+    newly_fixed: { type: 'number' },
+    cr_status: { type: 'string' },
+  },
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const startup = (wt, ticket) =>
+  `=== STARTUP CHECK ===\n` +
+  `cd ${wt}; confirm pwd ends with that path AND ` +
+  `git branch --show-current == fix/${ticket}.\n` +
+  `If either fails: STOP and report — do not proceed.\n`
+
+const hardRules   = brief.hard_rules
+const sha         = brief.reference_sha
+const goCmd       = brief.go_cmd
+const buildTarget = brief.build_target
+
+// Retry wrapper: if agent() returns null (rate limit / transient error),
+// wait 60s × attempt before retrying so the rate-limit window clears.
+async function agentWithRetry(prompt, opts, maxRetries) {
+  const retries = maxRetries !== undefined ? maxRetries : 3
+  for (let i = 0; i < retries; i++) {
+    const r = await agent(prompt, opts)
+    if (r !== null) return r
+    if (i < retries - 1) {
+      const delaySec = 60 * (i + 1)  // 60s, 120s, ...
+      log(`null result for ${opts.label} — waiting ${delaySec}s before retry ${i+2}/${retries}`)
+      await new Promise(resolve => setTimeout(resolve, delaySec * 1000))
+    }
+  }
+  log(`${opts.label} failed after ${retries} attempts — marking as null`)
+  return null
+}
+
+// ── Phases 1-3: parallel pipeline ────────────────────────────────────────────
+
+const laneResults = await pipeline(
+  entries,
+
+  // Phase 1: Planner (Opus)
+  (entry) => agentWithRetry(
+    `You are the PLANNER for ${entry.ticket_id} in the fix-swarm. Model: Opus.
+Sole job: produce a high-quality, reference-aligned implementation plan.
+
+WORKTREE_ROOT = ${entry.wt}
+TICKET = ${entry.ticket_id}   BRANCH = fix/${entry.ticket_id}
+${startup(entry.wt, entry.ticket_id)}
+=== HARD RULES ===
+${hardRules}
+
+=== CONTEXT ===
+Target tests (must reach 0% diff): ${entry.tests.join(', ')}
+Hypothesis: ${entry.hypothesis}
+Reference analog: ${entry.reference_analog.file} — \`${entry.reference_analog.symbol}\` @ ${entry.reference_analog.sha}
+Primary files: ${entry.primary_files.join(', ')}
+task_plan.md seeded at: ~/.claude/ticket-active/${entry.ticket_id}/task_plan.md
+
+=== TASK ===
+Run /slopstop-plan.
+
+SELF-GATE — plan must satisfy ALL:
+- Every work item cites reference symbol + file + SHA ${sha}.
+- "Done when" names a specific test at 0% diff.
+- No Skip(), magic numeric constant, or per-test conditional.
+- Approach mirrors reference implementation algorithm structure.
+- Orthogonal blockers → ticket split, not a workaround.
+
+Revise and resubmit if any criterion fails. Fail twice → STOP and report.
+Write ALL ticket tracking files via Bash heredoc (Write tool blocked on ticket files).
+You have NO Agent tool — perform /slopstop-plan sub-passes inline.
+
+Return: PLAN_STATUS=approved|gate-failed, then a 2-3 line plan summary.`,
+    { model: 'opus', label: `plan:${entry.ticket_id}`, phase: 'Plan' }
+  ),
+
+  // Phase 2: Implementer (Haiku)
+  (planResult, entry) => agentWithRetry(
+    `You are the IMPLEMENTER for ${entry.ticket_id} in the fix-swarm. Model: Haiku.
+Job: implement the plan, reach 0% diff, run the regression gate.
+
+WORKTREE_ROOT = ${entry.wt}
+TICKET = ${entry.ticket_id}   BRANCH = fix/${entry.ticket_id}
+${startup(entry.wt, entry.ticket_id)}
+Planner result: ${planResult}
+Read plan before anything: ~/.claude/ticket-active/${entry.ticket_id}/task_plan.md
+
+=== HARD RULES ===
+${hardRules}
+
+=== TASK ===
+Target tests: ${entry.tests.join(', ')}
+Test command: ${brief.target_test_cmd}
+Primary files: ${entry.primary_files.join(', ')}
+
+STEPS:
+1. Read task_plan.md. Implement each work item in ${entry.wt} ONLY. Do NOT commit yet.
+2. Run target test(s). Reach 0% diff.
+3. Regression gate — follow the brief's procedure verbatim:
+${brief.regression_gate}
+4. ${goCmd} fmt ./...
+   ${goCmd} build ./...
+   ${goCmd} vet ${buildTarget}
+5. Write handoff via Bash heredoc:
+   cat > ~/.claude/ticket-active/${entry.ticket_id}/phase2-handoff.md <<'EOF'
+   WIP_COMMIT=<sha>
+   FAIL_SET_A=<space-separated or NONE>
+   FAIL_SET_B=<space-separated or NONE>
+   NEWLY_FIXED=<count>
+   TARGET_DIFF=<0% or actual>
+   CHANGED_FILES=<space-separated list>
+   EOF
+
+Write ALL ticket tracking files via Bash heredoc. You have NO Agent tool.
+Return: TARGET_DIFF=<val> NEWLY_FIXED=<n> NEW_FAILS=<0 or list> WIP_COMMIT=<sha> CHANGED_FILES=<list>`,
+    { model: 'haiku', label: `impl:${entry.ticket_id}`, phase: 'Implement' }
+  ),
+
+  // Phase 3: PR agent (Sonnet)
+  (implResult, entry) => agentWithRetry(
+    `You are the PR AGENT for ${entry.ticket_id} in the fix-swarm. Model: Sonnet.
+Job: open the PR, triage CodeRabbit, stop before merge.
+
+WORKTREE_ROOT = ${entry.wt}
+TICKET = ${entry.ticket_id}   BRANCH = fix/${entry.ticket_id}
+${startup(entry.wt, entry.ticket_id)}
+Implementer result: ${implResult}
+Read: ~/.claude/ticket-active/${entry.ticket_id}/phase2-handoff.md
+
+=== HARD RULES ===
+${hardRules}
+
+=== TASK ===
+Run /slopstop-pr.
+
+For each CodeRabbit finding:
+- APPLY if mechanical and clearly correct (commit + push).
+- DISPOSITION as false positive with one-line reason if premise is wrong
+  (verify by reading the actual code — do not trust CR's claim).
+- LIST as debatable with one-line reasoning if material and uncertain.
+
+STOP after /slopstop-pr. Do NOT run /slopstop-merge or /slopstop-archive.
+Write ALL ticket tracking files via Bash heredoc. You have NO Agent tool — run
+/slopstop-pr sub-passes inline (reuse / simplification / efficiency / altitude).`,
+    { model: 'sonnet', label: `pr:${entry.ticket_id}`, phase: 'PR',
+      schema: LANE_RESULT_SCHEMA }
+  ),
+)
+
+// ── Phases 4-5: serial funnel ─────────────────────────────────────────────────
+// for-await loop guarantees each merge completes before the next begins.
+// master HEAD must advance serially; concurrent merges would conflict.
+
+const prReady  = laneResults.filter(Boolean).filter(r => r.status === 'pr-ready')
+const escalated = laneResults.filter(Boolean).filter(r => r.status !== 'pr-ready')
+
+for (const e of escalated) {
+  log(`ESCALATED (pre-funnel): ${e.ticket} — ${e.escalation_reason}`)
+}
+
+const funnelResults = []
+
+for (const lane of prReady) {
+
+  // Phase 4: Gate agent — independent regression gate + adversary (Sonnet)
+  const gate = await agentWithRetry(
+    `You are the GATE AGENT for ${lane.ticket} in the fix-swarm funnel. Model: Sonnet.
+Job: run the independent regression gate and adversary checklist. Do NOT merge.
+
+TICKET = ${lane.ticket}   PR = ${lane.pr_url}   PR_NUMBER = ${lane.pr_number}
+Worktree is still present from the lane agent.
+
+=== HARD RULES ===
+${hardRules}
+
+=== TASK ===
+
+**A. Independent regression gate** (re-run from scratch — never trust lane self-report):
+
+${brief.regression_gate}
+
+If new failures > 0: set verdict=fail, reason="new regressions: <list>", post gate
+comment to ticket, return immediately. Do NOT proceed to B.
+
+Post this comment to the ticket:
+## Regression gate (independent)
+Section: <section>
+New failures: NONE ✅  (or: <list> ❌)
+Newly fixed: +<N> tests
+FAIL set A (branch HEAD): <tests or "none">
+FAIL set B (origin/master): <tests or "none">
+
+**B. Adversary step** (only if A passed):
+
+Run /code-review — it auto-discovers the open PR for the current branch.
+For each finding: APPLY if mechanical+correct; disposition as false-positive with
+one-line reason if premise is wrong; set verdict=escalate if material AND debatable.
+
+Then work through the adversary checklist item by item:
+${brief.adversary_checklist}
+
+Post this comment to the ticket:
+## Adversary gate
+/code-review: <clean ✅ | N findings resolved ✅ | escalated ❌>
+<PR review comment link>
+
+Adversary checklist:
+<each item: PASS ✅ or FAIL ❌>
+
+Overall: PASS ✅  (or: FAIL ❌)
+
+If any checklist item fails: verdict=fail. If any finding is escalated: verdict=escalate.
+
+**C. Remove worktree** (only if A and B both passed):
+git worktree remove --force <wt-path>
+
+Return structured result.`,
+    { model: 'sonnet', label: `gate:${lane.ticket}`, phase: 'Gate',
+      schema: GATE_RESULT_SCHEMA }
+  )
+
+  if (!gate || gate.verdict !== 'pass') {
+    const reason = gate ? `${gate.verdict}: ${gate.reason}` : 'agent returned null'
+    log(`GATE FAIL: ${lane.ticket} — ${reason}`)
+    funnelResults.push({ ticket: lane.ticket, status: 'gate-failed', reason })
+    continue
+  }
+
+  // Phase 5: Merge agent — merge + archive + RUNLOG (Sonnet)
+  const merge = await agentWithRetry(
+    `You are the MERGE AGENT for ${lane.ticket} in the fix-swarm funnel. Model: Sonnet.
+Job: merge the PR, archive the ticket, append to the RUNLOG.
+The worktree has already been removed by the gate agent.
+
+TICKET = ${lane.ticket}   PR = ${lane.pr_url}   PR_NUMBER = ${lane.pr_number}
+Campaign tree: ${brief.campaign_tree}
+
+=== HARD RULES ===
+${hardRules}
+
+Gate result: newly_fixed=${gate.newly_fixed}, CR_status=${lane.cr_status}
+
+=== TASK ===
+
+1. In the campaign tree, switch to fix/${lane.ticket}:
+   git -C ${brief.campaign_tree} checkout fix/${lane.ticket}
+
+2. Run /slopstop-merge --pr ${lane.pr_number} --strategy merge
+   Self-approve the confirmation step. Real merge commit; advances ticket to Done;
+   deletes branch; switches campaign root to master.
+
+3. Run /slopstop-archive ${lane.ticket}
+   Verify the ticket has regression gate + adversary gate comments before archiving;
+   post any missing ones now.
+
+4. Append one line to ${runlog_path}:
+   ${lane.ticket} | <area> | <tests joined by comma> | diff: 0% | +${gate.newly_fixed} fixed | CR: ${lane.cr_status} | adversary: PASS | merged: <merge-sha>
+
+5. Return structured result including the merge SHA.`,
+    { model: 'sonnet', label: `merge:${lane.ticket}`, phase: 'Merge',
+      schema: MERGE_RESULT_SCHEMA }
+  )
+
+  if (!merge || merge.status !== 'merged') {
+    const reason = merge ? `${merge.status}: ${merge.reason}` : 'agent returned null'
+    log(`MERGE FAIL: ${lane.ticket} — ${reason}`)
+    funnelResults.push({ ticket: lane.ticket, status: 'merge-failed', reason })
+    continue
+  }
+
+  log(`MERGED: ${lane.ticket} @ ${merge.merge_sha} (+${gate.newly_fixed} fixed)`)
+  funnelResults.push(merge)
+}
+
+// ── Summary ────────────────────────────────────────────────────────────────────
+
+const merged    = funnelResults.filter(r => r.status === 'merged')
+const gateFail  = funnelResults.filter(r => r.status === 'gate-failed')
+const mergeFail = funnelResults.filter(r => r.status === 'merge-failed')
+
+return {
+  merged:        merged.map(r => ({ ticket: r.ticket, sha: r.merge_sha, fixed: r.newly_fixed })),
+  gate_failed:   gateFail.map(r => ({ ticket: r.ticket, reason: r.reason })),
+  merge_failed:  mergeFail.map(r => ({ ticket: r.ticket, reason: r.reason })),
+  escalated:     escalated.map(e => ({ ticket: e.ticket, reason: e.escalation_reason })),
+  total_fixed:   merged.reduce((n, r) => n + (r.newly_fixed || 0), 0),
+}
+```
+
+---
+
+### Step 5 — Process Workflow summary
+
+The Workflow returns a compact summary object. For each wave:
+
+1. Print the summary (merged / gate_failed / merge_failed / escalated).
+2. Update queue entries: set `status: "merged"` for each merged ticket, `status: "escalate"`
+   for any failed or escalated ticket.
+3. If `gate_failed` or `merge_failed` entries exist: report them to the human with the
+   reason. Do not retry automatically — these need human review.
+4. If all entries escalated or failed: stop. Otherwise proceed to the next wave.
+
+---
+
+### Step 6 — Escalation
+
+Escalated lanes from the Workflow summary need human attention. Report ticket ID, PR URL,
+which gate failed, and the reason. Do not merge or archive until resolved.
+
+Common escalation causes:
+- New regressions in the regression gate
+- Material debatable `/code-review` finding
+- Adversary checklist item failed
+- Merge conflict needing hand-resolution
+- Target never reached 0% — split to a new ticket, do not hack
+
+---
+
+## Invariants
+
+- **NEVER `git stash`** — one global stash stack; cross-contamination is guaranteed.
+- **Serial funnel only** — the `for` loop in the Workflow guarantees each merge completes
+  before the next begins. master HEAD advances serially.
+- **All gates must pass before merge** — target 0%, regression clean, `/code-review`
+  resolved, adversary checklist PASS, PR mergeable, `/simplify` applied.
+- **Ticket is the record** — regression result and adversary gate must be posted as ticket
+  comments before archive runs. The merge agent verifies this.
+- **RUNLOG is append-only.**
+- **Zero main-session funnel context** — the entire pipeline and funnel runs inside the
+  Workflow; the main session sees only the compact summary.
+
+## What this skill never does
+
+- Hardcodes project-specific values — everything comes from the brief.
+- Merges or archives an escalated lane without human sign-off.
+- Runs `git stash` at any point.
+- Runs funnel steps for multiple lanes concurrently.
