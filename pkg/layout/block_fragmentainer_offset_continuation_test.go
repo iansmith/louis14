@@ -56,7 +56,8 @@ func TestPaddedContainer_ContinuationRefusesBreakBeforeFirstLine(t *testing.T) {
 	}
 }
 
-// layoutTwoColumnAutoFillColumns is layoutTwoColumnAutoFill without the
+// layoutTwoColumnAutoFillColumns lays out the same two-column column-fill:auto
+// fixture as layoutTwoColumn through layoutMulticolForTest, without the
 // two-column check, for fixtures that may need overflow columns.
 func layoutTwoColumnAutoFillColumns(t *testing.T, container *html.Node, styles map[*html.Node]*css.Style) []ChildLink {
 	t.Helper()
@@ -139,12 +140,10 @@ func TestFloatDroppedAvoidChild_PushedWhole(t *testing.T) {
 		avoid:     makeStyle("display", "flow-root", "width", "max-content", "break-inside", "avoid"),
 		inner:     makeStyle("display", "block", "width", "80px", "height", "60px"),
 	}
-	mcFrag := layoutTwoColumnAutoFill(t, container, styles)
+	mcFrag := layoutTwoColumn(t, container, styles, "auto")
 	col1, col2 := mcFrag.Children[0].Fragment, mcFrag.Children[1].Fragment
-	for _, ch := range col1.Children[0].Fragment.Children {
-		if ch.Fragment.Node == avoid {
-			t.Errorf("avoid box present in column 1 (%v tall); want it pushed whole to column 2", ch.Fragment.Size.HeightF64())
-		}
+	if l := childLinkFor(col1.Children[0].Fragment, avoid); l != nil {
+		t.Errorf("avoid box present in column 1 (%v tall); want it pushed whole to column 2", l.Fragment.Size.HeightF64())
 	}
 	if len(col2.Children) != 1 {
 		t.Fatalf("column 2 has %d children, want 1 (the container's continuation)", len(col2.Children))
