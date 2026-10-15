@@ -917,6 +917,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// margin already places the element past the float, clearance = 0, but
 			// the clear property still inhibits parent-child margin collapsing.
 			hasClearance := false
+			// isPushedByFloats: clearance or a float drop actually moved the
+			// child down — Blink's is_pushed_by_floats, set only when
+			// clearance past floats applies (block_layout_algorithm.cc:
+			// 2326-2337 @ a9f50e522efa). Unlike hasClearance it stays false
+			// when `clear` inserts no gap.
+			isPushedByFloats := false
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone && !exclusionSpace.IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
@@ -936,6 +942,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						// block-start margin is re-appended at step 1 below.
 						blockCursor = clearedBlock - childMargins.BlockStart
 						prevMarginStrut = MarginStrut{} // consumed by clearance
+						isPushedByFloats = true
 					}
 					// Whether or not a gap was inserted, the clear property
 					// inhibits parent-child margin collapsing (CSS 2.1 §8.3.1).
@@ -1006,7 +1013,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						if newBlock > blockCursor {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
-							hasClearance = true
+							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								exclusionSpace, bfcBlockOrigin+blockCursor, 0,
 								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
@@ -1163,7 +1170,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						if newBlock > blockCursor {
 							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
-							hasClearance = true
+							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								exclusionSpace, bfcBlockOrigin+blockCursor, bfcBlockExtent,
 								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
@@ -1392,11 +1399,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				bla.space.BlockFragmentationType == FragmentColumn &&
 				resumeChildTokens[child].IsFirstForNode() {
 
-				// A child dropped past floats or clearance is separated from
-				// the container even when it is the first child (Blink:
-				// child_bfc_offset.block_offset > child_bfc_offset_estimate ||
-				// IsPushedByFloats(), block_layout_algorithm.cc:1993-1997).
-				hasContainerSeparation := !firstNonEmptyChild || hasClearance
+				// A child that clearance or a float drop moved down is
+				// separated from the container even when it is the first
+				// child (Blink: IsPushedByFloats() in has_container_separation,
+				// block_layout_algorithm.cc:1994-1997 and :2622-2625 @
+				// a9f50e522efa). A `clear` that inserted no gap does not
+				// separate it.
+				hasContainerSeparation := !firstNonEmptyChild || isPushedByFloats
 				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
 				fragOff := bla.fragmentainerOffsetForChildren + tentativeBlockOff
 				status, isForced := BreakBeforeChildIfNeeded(
@@ -1438,7 +1447,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 								extendedBlock += remaining
 							}
 						}
-						borderBoxBlock := extendedBlock + geom.BlockBorderPadding()
+						// This fragment breaks, so in slice mode it carries no
+						// block-end border/padding (Blink
+						// ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:
+						// 527-545 @ a9f50e522efa).
+						borderBoxBlock := extendedBlock + EffectiveBlockBorderPadding(
+							geom, builder.HasClonedBoxDecorations(), incomingBreakToken, true)
 						builder.SetSize(LogicalSize{
 							InlineSize: geom.BorderBoxSize.InlineSize,
 							BlockSize:  borderBoxBlock,
@@ -1520,9 +1534,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Step 5: Handle parent-child top margin collapsing.
 			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
-			// child has no clearance.
+			// child has no clearance (a `clear` value, or a float drop).
 			var actualChildBlockOff float64
-			if firstNonEmptyChild && canPropagateTop && !hasClearance {
+			if firstNonEmptyChild && canPropagateTop && !hasClearance && !isPushedByFloats {
 				// Propagate the accumulated margin strut upward.
 				propagatedTopMargin = prevMarginStrut
 				actualChildBlockOff = 0

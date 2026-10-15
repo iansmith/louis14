@@ -244,10 +244,11 @@ func TestClearWithoutGap_BreaksBeforeContainer(t *testing.T) {
 // container's column-1 fragment a 95px border box (to the column end, no
 // padding-bottom) and its column-2 fragment 80+15 = 95px.
 //
-// Blink: FinishFragmentation drops the block-end border/padding of a
-// fragment that breaks unless box-decoration-break is clone
-// (fragmentation_utils.cc @ a9f50e522efa), and the break-before fragment is
-// stretched to the fragmentainer end by the same function.
+// Blink: ShouldIncludeBlockEndBorderPadding excludes the block-end
+// border/padding of a fragment that breaks inside unless its end decorations
+// are cloned (fragmentation_utils.cc:527-545 @ a9f50e522efa), and
+// FinishFragmentation stretches the breaking fragment to the fragmentainer
+// end (:547).
 func TestBreakBeforeExtension_OmitsBlockEndEdge(t *testing.T) {
 	first := makeNode("div")
 	avoid := makeNode("div")
