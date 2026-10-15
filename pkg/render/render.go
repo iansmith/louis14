@@ -3673,7 +3673,8 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		}
 
 		// Paint image.
-		if bg.Image != nil && r.imageFetcher != nil {
+		// data: URIs decode inline and need no fetcher.
+		if bg.Image != nil && (r.imageFetcher != nil || images.IsDataURI(bg.Image.Data.Absolute)) {
 			if lHasRadius {
 				r.dc.Push()
 				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
@@ -4207,7 +4208,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 
 // drawImage paints an <img> element with object-fit and object-position support.
 func (r *Renderer) drawImage(layer *PaintLayer) {
-	if layer.ImageSrc == "" || r.imageFetcher == nil {
+	if layer.ImageSrc == "" || (r.imageFetcher == nil && !images.IsDataURI(layer.ImageSrc)) {
 		return
 	}
 	box := layer.Box
@@ -4454,13 +4455,13 @@ func scaleImage(src image.Image, srcW, srcH, dstW, dstH int, imageRendering stri
 //
 // Mirrors Blink's NinePieceImagePainter.
 func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
-	if r.imageFetcher == nil {
-		return false
-	}
-
 	// PaintLayer.BorderImageSource is *CSSImageValue post-LOU-138 phase 7.3;
 	// the url() inner was extracted by cascade-time wrapping in paint_layer.go.
 	src := layer.BorderImageSource.Data.Absolute
+
+	if r.imageFetcher == nil && !images.IsDataURI(src) {
+		return false
+	}
 
 	img, err := images.LoadImageWithFetcher(src, r.imageFetcher)
 	if err != nil {
