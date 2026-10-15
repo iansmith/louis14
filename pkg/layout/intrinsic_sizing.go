@@ -168,11 +168,15 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 }
 
 func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
-	if ctx == nil || ctx.ImageFetcher == nil {
+	if ctx == nil {
 		return IntrinsicSizingInfo{}
 	}
 	src, ok := node.DOMNode.GetAttribute("src")
 	if !ok || src == "" {
+		return IntrinsicSizingInfo{}
+	}
+	// data: URIs decode inline and need no fetcher.
+	if ctx.ImageFetcher == nil && !images.IsDataURI(src) {
 		return IntrinsicSizingInfo{}
 	}
 
