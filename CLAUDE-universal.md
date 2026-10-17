@@ -1,6 +1,5 @@
-<!-- This file is MIRRORED.  Do not edit it here unless this repo is the
-     reference (slopstop / ticket-plugin).  Edit the reference copy, then run
-     tools/fleet-sync/migrate-universal-block.py --apply to propagate.
+<!-- This file is MIRRORED.  Do not edit it here unless this repo holds the
+     reference copy.  Edit the reference copy, then propagate it.
      Imported by CLAUDE.md via a single `@CLAUDE-universal.md` line. -->
 
 
@@ -83,12 +82,11 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - `docs/` is **gitignored** — used for personal notes, scratch work, drafts. Not committed.
 - `design/` is **tracked**, but you do **not** add files to it without explicit user confirmation. Design docs are deliberate artifacts.
-- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory** (`~/.claude/ticket-active/<TICKET>/`), not into `docs/` or `design/`.
+- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory**, not into `docs/` or `design/`.
 
 ## 9. Automated PR review
 
 - **Claude `/code-review` is the base review, and the only one that gates a merge.** Every PR gets it; a PR is reviewed once it is clean. Nothing else is required.
-- **Every project must set `[pr_review] backend = "claude"` explicitly.** `coderabbit` is the *default*, so a missing `[pr_review]` block is the bug, not the safe state: it sends `:pr` into Step 6-cr's poll (60s × 20), which under CodeRabbit's rate limiting usually burns 20 minutes and returns nothing. `backend` accepts `claude` | `coderabbit` | `greptile` — it stays per-project config, so never hard-code a tool name into a workflow.
 - **CodeRabbit is opportunistic: read it if it is already there, never wait for it.** It reviews free on public repos but rate-limits hard, so most PRs get nothing. Before merging, look **once**, and sort what you find three ways — a real review (work its findings: verify each against the actual code, apply the real ones, state which you refuted and why); a non-review notice (match `Review limit reached`, or `auto reviews are disabled` when the base is not the default branch — **neither is a clean pass**); or silence. The last two are the same action: merge on the Claude review. Do not post `@coderabbitai review` to force one — it spends rate-limit budget on a review that lands after you have merged.
 - `/simplify`'s pre-commit role is to preempt review findings, not to substitute for the actual review.
 - When a project has multiple remotes, **prefer the GitHub remote** for any hosted review bot. Bot reviews do not work on Bitbucket; if Bitbucket is the only remote, factor that into the review plan separately.
@@ -97,29 +95,16 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - **Project-specific operational tip or bug record** → `feedback_*.md` in this project's memory dir; index it in `MEMORY.md`. Default home for new learnings.
 - **Project-specific rule every session must follow** → the project-specific section of this `CLAUDE.md`. Delete the memory file if it would duplicate.
-- **Universal rule applying to every project of Ian's** → edit **this file in the
-  `ticket-plugin` (slopstop) repo**, which is the reference copy, then propagate. Don't
-  drift one project's copy.
+- **Universal rule applying to every project of Ian's** → edit **the reference copy of
+  this file**, then propagate. Don't drift one project's copy.
 
-**This file is mirrored, and `ticket-plugin`'s copy is the reference.** Every other
-project carries a byte-identical `CLAUDE-universal.md` at its repo root, pulled into
-context by a one-line `@CLAUDE-universal.md` import in that project's `CLAUDE.md`. Edit
-the reference and propagate outward — never edit a mirror, and never propagate from one.
-Fitting home: slopstop is the tool these rules run on.
+**This file is mirrored from a single reference copy.** Every project carries a
+byte-identical `CLAUDE-universal.md` at its repo root, pulled into context by a one-line
+`@CLAUDE-universal.md` import in that project's `CLAUDE.md`. Edit the reference and
+propagate outward — never edit a mirror, and never propagate from one.
 
-**The fleet list is not repeated here.** It lives in one place —
-`tools/fleet-sync/fleet.py` in the slopstop repo — and every sync/audit script
-imports it from there. Enumerating the repos in this file would duplicate that
-list into every copy of it (universal §5), and a mirrored file naming other
-projects also breaks any repo whose own rules forbid referencing a sibling.
-
-**Propagation is mechanical — do not hand-copy.** The unit is this whole file, so
-propagating is a copy and verifying is a hash compare:
-
-```bash
-python3 ~/ticket-plugin/tools/fleet-sync/migrate-universal-block.py --apply    # propagate
-python3 ~/ticket-plugin/tools/fleet-sync/migrate-universal-block.py --verify   # one hash = in sync
-```
+**Propagation is a whole-file copy, and verifying is a hash compare** — every copy must
+hash identically to the reference. Do not hand-merge sections.
 
 A project may deliberately **override** a universal rule — the conventional form is a
 section headed `## <Topic> (overrides universal §N)`. Overrides live in that project's
