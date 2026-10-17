@@ -82,7 +82,7 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - `docs/` is **gitignored** — used for personal notes, scratch work, drafts. Not committed.
 - `design/` is **tracked**, but you do **not** add files to it without explicit user confirmation. Design docs are deliberate artifacts.
-- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory**, not into `docs/` or `design/`.
+- Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's notes directory** named in the project's `CLAUDE.md`, not into `docs/` or `design/`.
 
 ## 9. Automated PR review
 

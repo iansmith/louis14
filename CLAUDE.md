@@ -60,6 +60,10 @@ Line numbers alone become noise within ~6 months. SHA-pinned citations make stal
 - When citing a symbol, include both `file:line` AND the SHA in the reference.
 - When picking up a plan that's older than ~3 months, vet citations against current Blink HEAD before relying on them.
 
+## Ticket notes
+
+The ticket notes directory (universal §8) is `~/.claude/ticket-LOU-<N>/`.
+
 ## Sibling project: mazzy
 
 - Louis14 depends on mazzy via `replace mazarin/textshape => ../mazzy/mazarin/textshape` in `go.mod`. Concurrent development happens in `~/mazzy`.
