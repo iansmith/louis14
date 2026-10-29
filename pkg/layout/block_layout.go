@@ -940,6 +940,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// distribution, so this clamp must not fire (TestColumnHeight_PhaseB).
 				preSpannerExtent := preSpannerExtentWithinBudget(blockCursor)
 
+				// Establish the spanner path, and note whether nothing in
+				// this resumed fragment precedes the spanner (Blink
+				// SetColumnSpannerPath + SetIsEmptySpannerParent(
+				// Children().empty() && is_resuming_),
+				// block_layout_algorithm.cc:1042-1055 @ a9f50e522efa).
+				builder.SetColumnSpannerPath(&ColumnSpannerPath{Box: child})
+				builder.SetIsEmptySpannerParent(len(builder.children) == 0 && incomingBreakToken.IsBreakInside())
+
 				// Break token resumes AFTER the spanner on the next LayoutLine call.
 				// The spanner caused the break, so the resumed fragment keeps
 				// its margins (no discard) and the sibling's break-before is
@@ -953,7 +961,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					spannerBreakToken = &BlockBreakToken{
 						Node:                    bla.node,
 						ConsumedBlockSize:       layoutunit.FromFloat64Round(preSpannerExtent),
-						IsCausedByColumnSpanner: true,
+						IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
 						ChildBreakTokens: []*BlockBreakToken{{
 							Node:          children[childIdx+1],
 							IsBreakBefore: true,
@@ -1016,7 +1024,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetExclusionSpace(exclusionSpace)
 				result := builder.Build()
 				result.BreakToken = spannerBreakToken
-				result.ColumnSpannerPath = &ColumnSpannerPath{Box: child}
 				result.PropagatedTopMargin = propagatedTopMargin
 				if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
 					result.BlockSizeForFragmentation = intrinsicBlock
@@ -1463,12 +1470,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = preSpannerChildOff + preSpannerExtent
 
+				// Wrap the child's spanner path and take over its empty-
+				// spanner-parent bit (Blink PropagateBreakInfo,
+				// box_fragment_builder.cc:594-608 @ a9f50e522efa).
+				builder.SetColumnSpannerPath(&ColumnSpannerPath{
+					Box:   child,
+					Child: childResult.ColumnSpannerPath,
+				})
+				builder.SetIsEmptySpannerParent(childResult.IsEmptySpannerParent)
 				var outToken *BlockBreakToken
 				if resumeToken != nil {
 					outToken = &BlockBreakToken{
 						Node:                    bla.node,
 						ConsumedBlockSize:       layoutunit.FromFloat64Round(blockCursor),
-						IsCausedByColumnSpanner: true,
+						IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
 					}
 					if incomingBreakToken != nil {
 						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
@@ -1504,10 +1519,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetExclusionSpace(exclusionSpace)
 				result := builder.Build()
 				result.BreakToken = outToken
-				result.ColumnSpannerPath = &ColumnSpannerPath{
-					Box:   child,
-					Child: childResult.ColumnSpannerPath,
-				}
 				result.PropagatedTopMargin = propagatedTopMargin
 				if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
 					result.BlockSizeForFragmentation = intrinsicBlock

@@ -2155,18 +2155,12 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// Blink cla.cc:1218-1231: a line is "empty" when its single column box has
 	// no extent and no children — e.g. the spanner-detection line between two
 	// adjacent spanners — OR when its only content is the empty continuation
-	// of a resumed block whose next child is the spanner (Blink's
-	// is_empty_spanner_parent, bla.cc:1050-1055, propagated up via
-	// box_fragment_builder.cc:596-605 @ a9f50e522efa; louis14 has no builder
-	// flag, so the equivalent is derived from the spanner path + incoming
-	// token below). colBlockSize == Indefinite corresponds to Blink's
-	// content-based zero estimate for a contentless column-fill:auto line
-	// (Blink resolves the auto block-size to 0 via ResolveColumnAutoBlockSize
-	// before the check).
-	isEmptySpannerParent := lastInnerResult != nil &&
-		lastInnerResult.ColumnSpannerPath != nil &&
-		len(finalColumns) == 1 && finalColumns[0].intrinsicBlock == 0 &&
-		spannerParentIsResuming(lastInnerResult.ColumnSpannerPath, nextColToken)
+	// of a resumed block whose next child is the spanner (the column result's
+	// IsEmptySpannerParent, cla.cc:990 @ a9f50e522efa). colBlockSize ==
+	// Indefinite corresponds to Blink's content-based zero estimate for a
+	// contentless column-fill:auto line (Blink resolves the auto block-size
+	// to 0 via ResolveColumnAutoBlockSize before the check).
+	isEmptySpannerParent := lastInnerResult != nil && lastInnerResult.IsEmptySpannerParent
 	lineIsEmpty = (colBlockSize == 0 || colBlockSize == Indefinite) &&
 		len(finalColumns) == 1 &&
 		(len(finalColumns[0].fragment.Children) == 0 || isEmptySpannerParent)
@@ -2933,40 +2927,6 @@ func spannerLeafNode(path *ColumnSpannerPath) *LayoutInputNode {
 		return path.Box
 	}
 	return spannerLeafNode(path.Child)
-}
-
-// spannerParentIsResuming reports whether the innermost block directly
-// containing the detected spanner is RESUMING (a break-inside continuation)
-// rather than starting fresh in this column line. It matches the spanner
-// path's intermediate containers against the incoming column break token
-// chain: every container on the path must appear with a break-inside token
-// (IsBreakBefore false).
-//
-// This is the multicol-level equivalent of Blink's is_empty_spanner_parent
-// input `is_resuming_` (bla.cc:1050-1055 @ a9f50e522efa) — a FRESH parent
-// wrapping a spanner starts a box in this line, so a preceding spanner's
-// trailing margin must NOT collapse through it (WPT
-// multicol-span-all-margin-nested-001), while a resumed parent's empty
-// continuation lets the margin collapse (multicol-span-all-margin-003).
-func spannerParentIsResuming(path *ColumnSpannerPath, incoming *BlockBreakToken) bool {
-	if incoming == nil || incoming.IsBreakBefore {
-		return false
-	}
-	token := incoming
-	for p := path; p != nil && p.Child != nil; p = p.Child {
-		var next *BlockBreakToken
-		for _, ct := range token.ChildBreakTokens {
-			if ct.Node == p.Box {
-				next = ct
-				break
-			}
-		}
-		if next == nil || next.IsBreakBefore {
-			return false
-		}
-		token = next
-	}
-	return true
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
