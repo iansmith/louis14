@@ -972,19 +972,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			totalColumnsRendered += columnsPlaced
 
-			// column-fill:auto + spanner: once any row encountered a spanner,
-			// subsequent rows must also balance — but ONLY when the multicol has
-			// auto height (no explicit block-size constraint). For fixed-height
-			// multicol + column-fill:auto + spanner, post-spanner content is NOT
-			// balanced (per WPT no-balancing-after-column-span); each post-spanner
-			// row fills to the remaining row height sequentially.
-			// Mirrors Blink's HasKnownFragmentainerBlockSize gate in
-			// column_layout_algorithm.cc — when block-size is auto the algorithm
-			// must balance to determine row heights even after a spanner.
-			if spannerPath != nil && !balanceColumns && !hasExplicitBlock {
-				balanceColumns = true
-			}
-
 			walker.Next()
 
 			if spannerPath == nil {
@@ -1726,7 +1713,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	case !mla.hasAutoColumnHeight():
 		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 	case balanceColumns:
-		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
+		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize, true)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 	case hasExplicitBlock:
 		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
@@ -1743,7 +1730,10 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			colBlockSize = mla.constrainColumnBlockSize(outerRemaining, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 			shrinkToFitColumnBlockSize = true
 		} else {
-			colBlockSize = Indefinite
+			// An unconstrained column-fill:auto line still gets a
+			// content-based column block-size, unbalanced
+			// (has_content_based_block_size, cla.cc:845-856 @ a9f50e522efa).
+			colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize, false)
 		}
 	}
 
@@ -2073,7 +2063,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		if !balanceColumns {
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
-				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
+				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize, true)
 				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 				continue
 			}
@@ -2527,6 +2517,7 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	gap float64,
 	nextColToken *BlockBreakToken,
 	containerPercentResolutionBlockSize float64,
+	balanceColumns bool,
 ) float64 {
 	// When the multicol container has an explicit height, use it as the
 	// available block-size for the measurement pass so that percentage-height
@@ -2695,7 +2686,12 @@ measure:
 		return tallestUnbreakable
 	}
 
-	distributeImplicitBreaks(runs, numCols)
+	// Balancing creates as many columns as specified; otherwise (an
+	// unconstrained column-fill:auto line) the content stays in as few
+	// columns as it needs (cla.cc:1726-1729 @ a9f50e522efa).
+	if balanceColumns {
+		distributeImplicitBreaks(runs, numCols)
+	}
 
 	estimate := tallestColumnBlockSize(runs)
 	if estimate < 1 {
