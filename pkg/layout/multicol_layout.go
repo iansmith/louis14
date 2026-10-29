@@ -2478,7 +2478,10 @@ type contentRun struct {
 }
 
 func (r contentRun) columnBlockSize() float64 {
-	return math.Ceil(r.contentBlockSize / float64(r.implicitBreaksAssumed+1))
+	// Rounded up to a LayoutUnit (1/64px), as Blink's
+	// LayoutUnit::FromFloatCeil (column_layout_algorithm.cc:1564-1572 @
+	// a9f50e522efa).
+	return layoutunit.FromFloat64Ceil(r.contentBlockSize / float64(r.implicitBreaksAssumed+1)).Float64()
 }
 
 // distributeImplicitBreaks bumps implicitBreaksAssumed on the tallest run
