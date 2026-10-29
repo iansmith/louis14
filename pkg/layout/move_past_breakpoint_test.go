@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -90,5 +91,65 @@ func TestMovePastBreakpoint_ChildPushedPastEndByMarginBreaksBefore(t *testing.T)
 	}
 	if got := l.Offset.Top.Float64(); got != 0 {
 		t.Errorf("pushed child in column 2 at %v, want 0 (margin truncated after the break)", got)
+	}
+}
+
+// TestMovePastBreakpoint_ChildThatDoesNotFitBreaksBefore (LOU-392): Blink's
+// fit rule (fragmentation_utils.cc:1191-1226 @ a9f50e522efa) breaks before
+// any child whose block-size for fragmentation exceeds the space left — not
+// only break-inside:avoid or monolithic ones — unless breaking there is
+// refused (no progress yet) or content is required before breaking.
+func TestMovePastBreakpoint_ChildThatDoesNotFitBreaksBefore(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := ConstraintSpace{
+		WritingDirection:       wdm,
+		HasBlockFragmentation:  true,
+		FragmentainerBlockSize: 100,
+		BlockFragmentationType: FragmentColumn,
+		MinBreakAppeal:         BreakAppealLastResort,
+	}
+	tall := &LayoutResult{BreakAppeal: BreakAppealPerfect, Fragment: &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, 80)}}
+	for _, tc := range []struct {
+		name   string
+		offset float64
+		space  ConstraintSpace
+		want   bool
+	}{
+		{"mid-fragmentainer, does not fit: break before", 50, space, false},
+		{"at fragmentainer start: refuse, move past", 0, space, true},
+		{"fits: move past", 20, space, true},
+	} {
+		builder := NewBoxFragmentBuilder(wdm)
+		if got := MovePastBreakpoint(tc.space, tall, tc.offset, 100, BreakAppealPerfect, builder); got != tc.want {
+			t.Errorf("%s: MovePastBreakpoint = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMovePastBreakpoint_MovingPastOverflowReportsShortage (LOU-392): a child
+// moved past at the fragmentainer start although its block-size for
+// fragmentation overflows reports the shortage, even when only its
+// BlockSizeForFragmentation (not its fragment) overflows
+// (PropagateSpaceShortage, fragmentation_utils.cc:1230-1240 @ a9f50e522efa).
+func TestMovePastBreakpoint_MovingPastOverflowReportsShortage(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := ConstraintSpace{
+		WritingDirection:       wdm,
+		HasBlockFragmentation:  true,
+		FragmentainerBlockSize: 100,
+		BlockFragmentationType: FragmentColumn,
+		MinBreakAppeal:         BreakAppealLastResort,
+	}
+	overflowing := &LayoutResult{
+		BreakAppeal:               BreakAppealPerfect,
+		BlockSizeForFragmentation: 150,
+		Fragment:                  &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, 60)},
+	}
+	builder := NewBoxFragmentBuilder(wdm)
+	if !MovePastBreakpoint(space, overflowing, 0, 100, BreakAppealPerfect, builder) {
+		t.Fatal("MovePastBreakpoint at the fragmentainer start = false, want true (refuse to break before)")
+	}
+	if !builder.hasMinimalSpaceShortage || builder.minimalSpaceShortage != 50 {
+		t.Errorf("reported shortage = %v (set=%v), want 50", builder.minimalSpaceShortage, builder.hasMinimalSpaceShortage)
 	}
 }

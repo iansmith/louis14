@@ -1707,15 +1707,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						bla.space.FragmentainerBlockSize != Indefinite {
 						shortage := TrustedChildSpaceShortage(bla.space, childResult)
 						if shortage <= 0 {
-							// Blink's BlockSizeForFragmentation(result): the
-							// child's fragmentation block-size when it reported
-							// one (an inner multicol that needs more than its
-							// fragment shows), else the fragment's own size.
-							childBlock := childResult.BlockSizeForFragmentation
-							if childBlock <= 0 {
-								childBlock = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
-							}
-							shortage = childBlock - (bla.space.FragmentainerBlockSize - fragOff)
+							shortage = BlockSizeForFragmentation(wdm, childResult) - (bla.space.FragmentainerBlockSize - fragOff)
 						}
 						result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
 					}
