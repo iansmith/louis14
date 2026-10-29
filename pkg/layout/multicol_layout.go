@@ -356,7 +356,8 @@ func (mla *MulticolLayoutAlgorithm) previouslyConsumedContentBlockSize() float64
 // @ a9f50e522efa).
 func (mla *MulticolLayoutAlgorithm) clonedEdgesOfPreviousFragments() float64 {
 	tok := mla.space.BreakToken
-	if tok == nil || tok.IsBreakBefore {
+	// A token that consumed nothing came from no laid-out fragment.
+	if tok == nil || tok.IsBreakBefore || tok.ConsumedBlockSize.IsZero() {
 		return 0
 	}
 	return float64(tok.SequenceNumber+1) * mla.borderScrollbarPadding.BlockSum()

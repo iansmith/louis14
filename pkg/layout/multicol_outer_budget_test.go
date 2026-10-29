@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 )
 
@@ -461,4 +462,35 @@ func TestMulticolNested_MinHeightAppliesPerFragment(t *testing.T) {
 			t.Errorf("first avoid block at y=%v, want 25", a1Offset)
 		}
 	})
+}
+
+// TestMulticolPreviouslyConsumedContentBlockSize (LOU-396): nested multicol
+// tokens carry Blink's border-box ConsumedBlockSize; the content consumed is
+// that less the edges earlier fragments carried — the first fragment's
+// block-start edge, or with cloned decorations both edges of every fragment.
+func TestMulticolPreviouslyConsumedContentBlockSize(t *testing.T) {
+	tok := func(consumed float64, seq int) *BlockBreakToken {
+		return &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(consumed), SequenceNumber: seq}
+	}
+	for _, tc := range []struct {
+		name   string
+		cloned bool
+		token  *BlockBreakToken
+		want   float64
+	}{
+		{"no token", false, nil, 0},
+		{"slice, one fragment", false, tok(100, 0), 90},
+		{"slice, two fragments", false, tok(200, 1), 190},
+		{"clone, two fragments", true, tok(200, 1), 170},
+		{"zero-height forced-break token", true, tok(0, 0), 0},
+	} {
+		mla := &MulticolLayoutAlgorithm{
+			space:                   ConstraintSpace{BreakToken: tc.token},
+			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
+			hasClonedBoxDecorations: tc.cloned,
+		}
+		if got := mla.previouslyConsumedContentBlockSize(); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
