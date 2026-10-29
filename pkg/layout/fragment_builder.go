@@ -170,8 +170,10 @@ type BoxFragmentBuilder struct {
 	hasClonedBoxDecorations bool
 
 	// previousBreakAfter is the break-after value of the most recently added
-	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
-	// break-before to compute the effective break-between. Mirrors Blink's
+	// in-flow child, joined with the value that child propagated
+	// (PropagateChildBreakValues). JoinedBreakBetweenValue joins it with the
+	// next child's break-before to compute the effective break-between, and
+	// Build copies it into LayoutResult.FinalBreakAfter. Mirrors Blink's
 	// BoxFragmentBuilder::previous_break_after_ + JoinedBreakBetweenValue.
 	previousBreakAfter string
 
@@ -544,9 +546,11 @@ func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult
 }
 
 // SetPreviousBreakAfter records the break-after value of the most recently
-// added in-flow child. JoinedBreakBetweenValue uses it to compute the
-// effective break-between value when a subsequent child is added.
-// Mirrors Blink's BoxFragmentBuilder::SetPreviousBreakAfter.
+// added in-flow child (PropagateChildBreakValues), or resets it (the
+// multicol after a non-empty column line). JoinedBreakBetweenValue uses it to
+// compute the effective break-between value when a subsequent child is
+// added. Mirrors Blink's BoxFragmentBuilder::SetPreviousBreakAfter
+// (box_fragment_builder.h:524 @ a9f50e522efa).
 func (b *BoxFragmentBuilder) SetPreviousBreakAfter(v string) {
 	b.previousBreakAfter = v
 }
