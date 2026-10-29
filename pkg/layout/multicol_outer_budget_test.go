@@ -79,3 +79,62 @@ func TestMulticolNested_ZeroSpaceLeftIsALimit(t *testing.T) {
 		t.Errorf("inner mc at 0 space left completed with no break token; want a break token for unplaced content")
 	}
 }
+
+// TestMulticolNested_SpannerFragmentainerOffsetIncludesBlockStartEdge
+// (LOU-391): a spanner's fragmentainer offset is
+// FragmentainerOffsetForChildren() + block_offset, with block_offset measured
+// from the multicol's border-box edge (column_layout_algorithm.cc:1354-1356,
+// :1402-1403 @ a9f50e522efa). With 30px of block-start padding in a 100px
+// outer fragmentainer, the spanner starts at 30, so of its two 40px blocks
+// only the first fits and the spanner breaks inside.
+func TestMulticolNested_SpannerFragmentainerOffsetIncludesBlockStartEdge(t *testing.T) {
+	first := makeNode("div")
+	second := makeNode("div")
+	spanner := makeNode("div", first, second)
+	innerMC := makeNode("div", spanner)
+	block := makeStyle("display", "block", "height", "40px")
+	styles := map[*html.Node]*css.Style{
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "padding-top", "30px"),
+		spanner: makeStyle("display", "block", "column-span", "all"),
+		first:   block,
+		second:  block,
+	}
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 100, 0)
+	if result.BreakToken == nil {
+		t.Errorf("inner mc completed; want a break inside the spanner (its second block ends at 110 > 100)")
+	}
+}
+
+// TestMulticolFragmentainerSpaceForChildren_Clone (LOU-391): cloned
+// decorations shrink the capacity by both block edges and shift the
+// children's offset by the block-start edge
+// (fragmentation_utils.h:187-226 @ a9f50e522efa); slice leaves both alone.
+func TestMulticolFragmentainerSpaceForChildren_Clone(t *testing.T) {
+	for _, tc := range []struct {
+		cloned                   bool
+		wantCapacity, wantOffset float64
+		wantSpaceLeftForChildren float64
+	}{
+		{cloned: false, wantCapacity: 100, wantOffset: 20, wantSpaceLeftForChildren: 80},
+		{cloned: true, wantCapacity: 85, wantOffset: 10, wantSpaceLeftForChildren: 75},
+	} {
+		mla := &MulticolLayoutAlgorithm{
+			space: ConstraintSpace{
+				HasBlockFragmentation:  true,
+				FragmentainerBlockSize: 100,
+				FragmentainerOffset:    20,
+			},
+			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
+			hasClonedBoxDecorations: tc.cloned,
+		}
+		if got := mla.fragmentainerCapacityForChildren(); got != tc.wantCapacity {
+			t.Errorf("cloned=%v: capacity = %v, want %v", tc.cloned, got, tc.wantCapacity)
+		}
+		if got := mla.fragmentainerOffsetForChildren(); got != tc.wantOffset {
+			t.Errorf("cloned=%v: offset = %v, want %v", tc.cloned, got, tc.wantOffset)
+		}
+		if got := mla.fragmentainerSpaceLeftForChildren(); got != tc.wantSpaceLeftForChildren {
+			t.Errorf("cloned=%v: space left = %v, want %v", tc.cloned, got, tc.wantSpaceLeftForChildren)
+		}
+	}
+}
