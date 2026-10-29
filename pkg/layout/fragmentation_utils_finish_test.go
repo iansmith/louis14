@@ -17,6 +17,7 @@ func TestFinishFragmentation(t *testing.T) {
 		IsColumnFragmentation:   true,
 		TrailingBorderPadding:   10,
 		BlockStartBorderPadding: 10,
+		IsSlice:                 true,
 	}
 	for _, tc := range []struct {
 		name string
@@ -34,7 +35,7 @@ func TestFinishFragmentation(t *testing.T) {
 		{"unbreakable content taller than space: allowed to overflow", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 50, 120, 90
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 70}},
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 40}},
 		{"resumed slice fragment: no block-start edge", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize, in.PreviousBreakToken = 100, 100, 60, resumed
 			return in
@@ -63,10 +64,15 @@ func TestFinishFragmentation(t *testing.T) {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = Indefinite, 300, 300
 			return in
 		}, FinishFragmentationResult{FragmentBlockSize: 300, IntrinsicBlockSize: 300, ConsumedBlockSize: 300, IsAtBlockEnd: true, IncludeBlockStart: true, IncludeBlockEnd: true}},
-		{"first fragment, space smaller than the block-start edge: last-resort appeal", func(in FinishFragmentationInput) FinishFragmentationInput {
-			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 5, 120, 30
+		{"clone: resumed fragment keeps both edges while breaking itself", func(in FinishFragmentationInput) FinishFragmentationInput {
+			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize, in.PreviousBreakToken = 50, 140, 30, resumed
+			in.IsSlice, in.ShouldCloneBoxEndDecorations, in.PreventBreakBeforeBlockEndDecorations = false, true, true
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 20, IntrinsicBlockSize: 20, ConsumedBlockSize: 20, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 115, ClampAppealToLastResort: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 50, IntrinsicBlockSize: 50, ConsumedBlockSize: 90, DidBreakSelf: true, IncludeBlockStart: true, IncludeBlockEnd: true, SpaceShortage: 50}},
+		{"first fragment, space smaller than the block-start edge: last-resort appeal", func(in FinishFragmentationInput) FinishFragmentationInput {
+			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 5, 120, 10
+			return in
+		}, FinishFragmentationResult{FragmentBlockSize: 5, IntrinsicBlockSize: 5, ConsumedBlockSize: 5, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 115, ClampAppealToLastResort: true}},
 	} {
 		if got := FinishFragmentation(tc.in(base)); got != tc.want {
 			t.Errorf("%s:\n got  %+v\n want %+v", tc.name, got, tc.want)

@@ -559,3 +559,164 @@ func BreakBeforeChildIfNeeded(
 	builder.SetBreakAppeal(appealBefore)
 	return BreakStatusBrokeBefore, false
 }
+
+// FinishFragmentationInput is the builder state Blink's FinishFragmentation
+// reads (fragmentation_utils.cc:547-822 @ a9f50e522efa). All sizes are
+// border-box block sizes.
+type FinishFragmentationInput struct {
+	// SpaceLeft is FragmentainerSpaceLeft(builder, is_for_children=false):
+	// the space left from this box's border edge, or Indefinite when the
+	// fragmentainer block-size is unknown (initial column balancing pass).
+	SpaceLeft             float64
+	HasBlockFragmentation bool
+	// IsColumnFragmentation and IsInitialColumnBalancingPass gate the space
+	// shortage report (only multicol balancing consumes it).
+	IsColumnFragmentation        bool
+	IsInitialColumnBalancingPass bool
+	PreviousBreakToken           *BlockBreakToken
+	// FragmentsTotalBlockSize is the box's block-size over all fragments
+	// (ComputeBlockSizeForFragment), IntrinsicBlockSize this fragment's
+	// content extent including its block-start and block-end edges.
+	FragmentsTotalBlockSize float64
+	IntrinsicBlockSize      float64
+	// TrailingBorderPadding is BorderScrollbarPadding().block_end;
+	// BlockStartBorderPadding the initial fragment geometry's block-start
+	// border + scrollbar + padding (no valid breakpoint inside it).
+	TrailingBorderPadding                 float64
+	BlockStartBorderPadding               float64
+	PreventBreakBeforeBlockEndDecorations bool
+	FoundColumnSpanner                    bool
+	// ShouldBreakInside: a child broke inside or before (child break
+	// tokens exist). HasInflowChildBreakInside: an in-flow child broke
+	// inside (not a parallel flow); a new formatting context also folds in
+	// a fragmentainer break among its floats (Blink's
+	// GetExclusionSpace().HasFragmentainerBreak(), :689-691).
+	ShouldBreakInside            bool
+	HasInflowChildBreakInside    bool
+	IsKnownToFitInFragmentainer  bool
+	ShouldCloneBoxEndDecorations bool
+	// IsSlice is box-decoration-break:slice.
+	IsSlice bool
+}
+
+// FinishFragmentationResult is what Blink's FinishFragmentation writes to the
+// builder.
+type FinishFragmentationResult struct {
+	FragmentBlockSize  float64
+	IntrinsicBlockSize float64
+	ConsumedBlockSize  float64
+	DidBreakSelf       bool
+	IsAtBlockEnd       bool
+	IncludeBlockStart  bool
+	IncludeBlockEnd    bool
+	// SpaceShortage > 0 is the amount reported via PropagateSpaceShortage.
+	SpaceShortage           float64
+	ClampAppealToLastResort bool
+}
+
+// FinishFragmentation decides this fragment's block-size and whether the box
+// breaks, is at its block end, and which block edges it carries. Mirrors
+// Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
+// a9f50e522efa). Not ported: monolithic overflow (louis14 has no
+// BlockBreakToken.MonolithicOverflow), kDisableFragmentation for
+// block-overflow-clipping boxes, and early breaks (kNeedsEarlierBreak).
+func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
+	spaceLeft := in.SpaceLeft
+	previous := in.PreviousBreakToken
+	previouslyConsumed := 0.0
+	if previous != nil && !previous.IsBreakBefore {
+		previouslyConsumed = previous.ConsumedBlockSize.Float64()
+	}
+	isPastEnd := previous != nil && previous.IsAtBlockEnd
+
+	desiredBlockSize := math.Max(0, in.FragmentsTotalBlockSize-previouslyConsumed)
+	desiredIntrinsic := in.IntrinsicBlockSize
+	out := FinishFragmentationResult{
+		FragmentBlockSize:  desiredBlockSize,
+		IntrinsicBlockSize: desiredIntrinsic,
+	}
+
+	// There is a last-resort breakpoint before the trailing border/padding,
+	// if progress can still be guaranteed.
+	subtractable := 0.0
+	if !in.PreventBreakBeforeBlockEndDecorations && desiredBlockSize > in.TrailingBorderPadding {
+		subtractable = in.TrailingBorderPadding
+	}
+	// Tall unbreakable content may make this fragment take up more space.
+	if spaceLeft != Indefinite {
+		spaceLeft = math.Max(spaceLeft, desiredIntrinsic-subtractable)
+	}
+
+	if in.FoundColumnSpanner {
+		out.DidBreakSelf = true
+	}
+	switch {
+	case isPastEnd:
+		out.FragmentBlockSize = 0
+	case in.FoundColumnSpanner:
+		// Layout was interrupted by a spanner; resume inside this block.
+		out.FragmentBlockSize = math.Max(0, math.Min(desiredBlockSize, desiredIntrinsic)-in.TrailingBorderPadding)
+	case spaceLeft != Indefinite && desiredBlockSize > spaceLeft && in.HasBlockFragmentation:
+		// Taller than the space left; overflow only for unbreakable content.
+		modifiedIntrinsic := math.Max(spaceLeft, desiredIntrinsic-subtractable)
+		out.IntrinsicBlockSize = modifiedIntrinsic
+		out.FragmentBlockSize = math.Min(desiredBlockSize-subtractable, modifiedIntrinsic)
+		if out.FragmentBlockSize < desiredBlockSize {
+			out.DidBreakSelf = true
+		}
+	}
+
+	out.IncludeBlockStart = !(previouslyConsumed > 0 && (in.IsSlice || isPastEnd))
+	out.IncludeBlockEnd = !((out.DidBreakSelf && !in.ShouldCloneBoxEndDecorations) || isPastEnd)
+	out.ConsumedBlockSize = previouslyConsumed + out.FragmentBlockSize
+
+	if in.FoundColumnSpanner || !in.HasBlockFragmentation {
+		return out
+	}
+
+	if spaceLeft == Indefinite {
+		// Unknown space (initial column balancing pass): no break.
+		if !in.HasInflowChildBreakInside || isPastEnd {
+			out.IsAtBlockEnd = true
+		}
+		return out
+	}
+
+	if in.ShouldBreakInside {
+		// A break token is needed to resume broken or unstarted children;
+		// decide whether this box itself is at its block end.
+		if isPastEnd {
+			out.IsAtBlockEnd = true
+		} else if desiredBlockSize <= spaceLeft &&
+			(!in.HasInflowChildBreakInside || in.IsKnownToFitInFragmentainer) {
+			out.IsAtBlockEnd = true
+		}
+		if out.IsAtBlockEnd {
+			// Consumed block-size includes the rest of the fragmentainer.
+			out.ConsumedBlockSize = previouslyConsumed + math.Max(out.FragmentBlockSize, spaceLeft)
+		} else if !in.ShouldCloneBoxEndDecorations {
+			out.IncludeBlockEnd = false
+		}
+		return out
+	}
+
+	if desiredBlockSize > spaceLeft {
+		// No child broke inside, but this box is too tall to fit.
+		if previouslyConsumed == 0 && spaceLeft < in.BlockStartBorderPadding {
+			// No valid breakpoint inside the block-start edge.
+			out.ClampAppealToLastResort = true
+		}
+		if in.IsColumnFragmentation && !in.IsInitialColumnBalancingPass {
+			out.SpaceShortage = desiredBlockSize - spaceLeft
+		}
+		if desiredBlockSize <= desiredIntrinsic {
+			// Breaking here is inside or right before the block-end edge.
+			out.ClampAppealToLastResort = true
+		}
+		return out
+	}
+
+	// The end of the block fits in the current fragmentainer.
+	out.IsAtBlockEnd = true
+	return out
+}
