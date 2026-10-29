@@ -190,11 +190,9 @@ type ConstraintSpace struct {
 	// the spanner breaks BEFORE as a unit, never mid-content; its overflow
 	// content resumes through the spanner's break token, which
 	// MulticolLayoutAlgorithm carries to the next outer fragmentainer).
-	// The Phase 16.d.1 per-fragment block-size clamp must be skipped on
-	// spanner descendants — otherwise the leaf's self-fragmentation produces
-	// a break-token chain that the spanner resume path in multicol_layout.go
-	// doesn't understand, causing spanner content to incorrectly fragment across
-	// outer columns instead of overflowing once monolithically.
+	// Propagated to every spanner descendant; nothing reads it since the
+	// louis14 per-fragment clamp it gated gave way to FinishFragmentation
+	// (LOU-400).
 	IsInsideColumnSpanner bool
 
 	// MinBreakAppeal is the lowest break appeal that is acceptable in this
@@ -524,8 +522,7 @@ func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *Con
 }
 
 // SetIsInsideColumnSpanner marks that this space is inside a column-spanner
-// layout. Phase 16.d.1 per-fragment block-size clamp must be skipped on
-// spanner descendants — see ConstraintSpace.IsInsideColumnSpanner doc.
+// layout — see ConstraintSpace.IsInsideColumnSpanner doc.
 func (b *ConstraintSpaceBuilder) SetIsInsideColumnSpanner(v bool) *ConstraintSpaceBuilder {
 	b.space.IsInsideColumnSpanner = v
 	return b
