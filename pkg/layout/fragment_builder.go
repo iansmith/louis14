@@ -458,33 +458,6 @@ func (b *BoxFragmentBuilder) BlockSizeForFragmentation() (float64, bool) {
 	return b.blockSizeForFragmentation, b.hasBlockSizeForFragmentation
 }
 
-// blockSizeForFragmentationOfChild returns the child's effective BSFF
-// contribution — the max of the child's explicit
-// LayoutResult.BlockSizeForFragmentation and the child fragment's own
-// logical block-size plus any ConsumedBlockSize carried on its outgoing
-// break-token.
-//
-// Mirrors Blink's free function in fragmentation_utils.cc:
-//
-//	LayoutUnit BlockSizeForFragmentation(const LayoutResult& result,
-//	                                     WritingDirection writing_direction);
-//
-// which is the canonical "what extent should a parent attribute to this
-// child for fragmentation purposes" computation.
-func blockSizeForFragmentationOfChild(wdm WritingDirectionMode, child *LayoutResult) float64 {
-	if child == nil || child.Fragment == nil {
-		return 0
-	}
-	bs := NewLogicalFragment(wdm, child.Fragment).BlockSize()
-	if child.BreakToken != nil {
-		bs += child.BreakToken.ConsumedBlockSize.Float64()
-	}
-	if child.BlockSizeForFragmentation > bs {
-		bs = child.BlockSizeForFragmentation
-	}
-	return bs
-}
-
 // SetPreviousBreakAfter records the break-after value of the most recently
 // added in-flow child. JoinedBreakBetweenValue uses it to compute the
 // effective break-between value when a subsequent child is added.

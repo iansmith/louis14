@@ -98,12 +98,7 @@ func CalculateUnbreakableBlockSize(
 	if layoutResult == nil || layoutResult.Fragment == nil {
 		return 0
 	}
-	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
-	// Blink BlockSizeForFragmentation prefers the result's explicit
-	// fragmentation size when one was computed (fragmentation_utils.cc:1548).
-	if layoutResult.BlockSizeForFragmentation > blockSize {
-		blockSize = layoutResult.BlockSizeForFragmentation
-	}
+	blockSize := BlockSizeForFragmentation(space.WritingDirection, layoutResult)
 	// v2 B2.5: monolithic + intrinsic > fragment block-size → use intrinsic.
 	if layoutResult.Fragment.IsMonolithic && layoutResult.IntrinsicBlockSize > blockSize {
 		blockSize = layoutResult.IntrinsicBlockSize
@@ -398,17 +393,9 @@ func IsBreakableAtStartOfResumedContainer(space ConstraintSpace) bool {
 // current fragmentainer (true), or whether a break must be inserted before it
 // (false). Mirrors Blink's MovePastBreakpoint (fragmentation_utils.cc:1141-1240
 // @ a9f50e522efa); the child-overload pre-checks (:1068-1139) live in
-// BreakBeforeChildIfNeeded and at its block_layout.go call site.
-//
-// Ported in full: the unknown-fragmentainer early-out (:1151-1155),
-// refuse_break_before (:1164-1171) and must_break_before (:1172-1189).
-// Narrowed (LOU-388 WI-2b ports the rest): of the fit rules (:1191-1240) only
-// "fits but broke inside with a worse appeal than breaking before" and
-// "doesn't fit and avoids breaking inside" break before; a child that simply
-// does not fit is moved past and left to block_layout.go's overflow handler,
-// which also owns PropagateSpaceShortage (taking that over regressed
-// spanner-fragmentation-006/008). The Phase 14b BlockSizeForFragmentation
-// hook is louis14-only (deleted by WI-7).
+// BreakBeforeChildIfNeeded and at its block_layout.go call site. Not ported:
+// early breaks (no EarlyBreak / RelayoutAndBreakEarlier yet) and
+// SetIsBlockSizeForFragmentationClamped.
 func MovePastBreakpoint(
 	space ConstraintSpace,
 	layoutResult *LayoutResult,
@@ -440,33 +427,61 @@ func MovePastBreakpoint(
 		return refuseBreakBefore
 	}
 
-	// Propagate any break-inside:avoid violation up to the column builder so
-	// the multicol stretch loop sees it (a break before overwrites it via
-	// SetBreakAppeal).
+	// louis14: propagate any break-inside:avoid violation up to the column
+	// builder so the multicol stretch loop sees it (a break before
+	// overwrites it via SetBreakAppeal).
 	appealInside := CalculateBreakAppealInside(space, layoutResult)
 	if appealInside < BreakAppealPerfect {
 		builder.ClampBreakAppeal(appealInside)
 	}
+
+	blockSize := BlockSizeForFragmentation(space.WritingDirection, layoutResult)
 	if refuseBreakBefore {
+		propagateSpaceShortageIfOverflowing(space, layoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
 		return true
 	}
+	switch {
+	case blockSize <= spaceLeft:
+		// The child fits. If it broke inside (here or in an inner
+		// fragmentation context), or its inside-appeal is sub-perfect, keep
+		// that break only if it is at least as appealing as breaking before.
+		brokeOrSubPerfect := breakToken.IsBreakInside() || appealInside < BreakAppealPerfect
+		return !brokeOrSubPerfect || appealInside >= appealBefore
+	case appealBefore == BreakAppealLastResort && space.RequiresContentBeforeBreaking:
+		// Doesn't fit, but content is required here.
+		propagateSpaceShortageIfOverflowing(space, layoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
+		return true
+	}
+	return false
+}
 
-	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
-	// The child fits but broke inside (here or in an inner fragmentation
-	// context), or its inside-appeal is sub-perfect: keep that break only if
-	// it is at least as appealing as breaking before.
-	fitsButBreakingInsideIsWorse := blockSize <= spaceLeft &&
-		(breakToken.IsBreakInside() || appealInside < BreakAppealPerfect) &&
-		appealInside < appealBefore
-	// Phase 14b (no Blink analog): an inner multicol signalled "I need more
-	// block-size than my fragment shows" via BlockSizeForFragmentation.
-	needsMoreThanFragmentShows := layoutResult.BlockSizeForFragmentation > 0 &&
-		layoutResult.BlockSizeForFragmentation > spaceLeft
-	// A child that does not fit and must not break inside (break-inside:avoid
-	// or monolithic, fragmentation_utils.cc:188-196) moves whole to the next
-	// fragmentainer.
-	unbreakableAndDoesNotFit := blockSize > spaceLeft && ShouldAvoidBreakInside(space, layoutResult)
-	return !fitsButBreakingInsideIsWorse && !needsMoreThanFragmentShows && !unbreakableAndDoesNotFit
+// propagateSpaceShortageIfOverflowing reports the space shortage of a child
+// that is moved past although it does not fit (monolithic content at the
+// start of the fragmentainer), so column balancing can stretch. Mirrors
+// MovePastBreakpoint → PropagateSpaceShortage → CalculateSpaceShortage
+// (fragmentation_utils.cc:1016-1053, :1230-1240 @ a9f50e522efa), with
+// louis14's TrustedChildSpaceShortage narrowing of the child-reported value.
+func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *LayoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
+	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
+		return
+	}
+	shortage := TrustedChildSpaceShortage(space, layoutResult)
+	if shortage <= 0 {
+		shortage = fragmentainerBlockOffset + blockSize - fragmentainerBlockSize
+	}
+	builder.PropagateSpaceShortage(shortage)
+}
+
+// BlockSizeForFragmentation is the block-size a parent attributes to a
+// child result when fitting it into a fragmentainer: the result's
+// fragmentation size (content overflowing the box, e.g. a regrown inner
+// multicol line) when it exceeds the fragment's own border-box size.
+// Mirrors Blink's free BlockSizeForFragmentation(result, writing_direction)
+// (fragmentation_utils.cc:1545-1583 @ a9f50e522efa); louis14's result field
+// is 0 unless overflow was recorded, hence the max.
+func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutResult) float64 {
+	return math.Max(NewLogicalFragment(wdm, layoutResult.Fragment).BlockSize(),
+		layoutResult.BlockSizeForFragmentation)
 }
 
 // TrustedChildSpaceShortage returns the space shortage a broken child
