@@ -113,7 +113,9 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 // LOU-370: the consumed-size subtraction is gated on break-INSIDE, as Blink
 // guards it with `!previous_break_token->IsBreakBefore()`.
 func desiredBlockSizeAtBlockEnd(space ConstraintSpace, borderBoxBlockSize float64, incomingBreakToken *BlockBreakToken) bool {
-	spaceLeft := max(0, space.FragmentainerBlockSize-space.FragmentainerOffset)
+	// FragmentainerSpaceLeft over a valid (at least 1px) capacity
+	// (fragmentation_utils.h:156-173, :249-257).
+	spaceLeft := max(0, max(1, space.FragmentainerBlockSize)-space.FragmentainerOffset)
 	return borderBoxBlockSize-previouslyConsumedBlockSize(incomingBreakToken) <= spaceLeft
 }
 
