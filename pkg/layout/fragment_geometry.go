@@ -62,33 +62,53 @@ func (fg FragmentGeometry) BlockScrollbarSum() float64 {
 	return fg.Scrollbar.BlockStart + fg.Scrollbar.BlockEnd
 }
 
-// EffectiveBlockBorderPadding returns the effective block-direction border +
-// scrollbar + padding sum that should contribute to this fragment's geometric
-// block-size, accounting for box-decoration-break and fragment position.
+// ClearBorderScrollbarPaddingBlockStart drops the block-start edge, for a
+// fragment that does not carry it. Mirrors Blink's BoxFragmentBuilder::
+// ClearBorderScrollbarPaddingBlockStart (box_fragment_builder.h:307-312 @
+// a9f50e522efa).
+func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockStart() {
+	fg.Border.BlockStart, fg.Scrollbar.BlockStart, fg.Padding.BlockStart = 0, 0, 0
+}
+
+// ClearBorderScrollbarPaddingBlockEnd drops the block-end edge, for a
+// fragment that does not carry it (box_fragment_builder.h:307-312 @
+// a9f50e522efa).
+func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
+	fg.Border.BlockEnd, fg.Scrollbar.BlockEnd, fg.Padding.BlockEnd = 0, 0, 0
+}
+
+// FragmentBlockEdges returns the block border and padding a multicol
+// fragment carries, accounting for box-decoration-break and fragment
+// position: a resumed fragment drops its block-start edge unless cloned, a
+// breaking one its block-end edge unless cloned, and a fragment past the
+// box's block end carries neither (Blink ShouldIncludeBlockStartBorderPadding
+// / ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
+// a9f50e522efa).
 //
-// In clone mode every fragment behaves as an independent decorated box — all
-// borders appear on every fragment regardless of position.
-//
-// In slice mode (default) borders belong to the whole element — block-start
-// appears only on the first fragment, block-end only on the last.
-//
-// Mirrors Blink's FinishFragmentation sides bitmask via
-// ShouldIncludeBlockEndBorderPadding / ShouldCloneBlockStartBorderPadding.
-func EffectiveBlockBorderPadding(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) float64 {
-	if hasClonedBoxDecorations {
-		return geom.BlockBorderPadding()
-	}
-	border := geom.Border
-	padding := geom.Padding
+// Only a resume that consumed something is a continuation here, unlike
+// Blink's IsBreakInside: louis14's multicol resumes with a zero-consumed
+// break-inside token after the zero-height stub it emits for a forced break
+// before a column spanner (MulticolLayoutAlgorithm.Layout), its stand-in for
+// propagating that break-before to the multicol itself (Blink
+// SetInitialBreakBeforeIfNeeded, box_fragment_builder.cc:640-642), so that
+// resume is the box's first real fragment (spanner-fragmentation-009).
+func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) (border, padding LogicalEdges) {
+	border, padding = geom.Border, geom.Padding
+	pastEnd := breakToken != nil && breakToken.IsAtBlockEnd
 	isContinuation := breakToken != nil && !breakToken.ConsumedBlockSize.IsZero()
-	if isContinuation {
-		border.BlockStart = 0
-		padding.BlockStart = 0
+	if pastEnd || (isContinuation && !hasClonedBoxDecorations) {
+		border.BlockStart, padding.BlockStart = 0, 0
 	}
-	if isBreaking {
-		border.BlockEnd = 0
-		padding.BlockEnd = 0
+	if pastEnd || (isBreaking && !hasClonedBoxDecorations) {
+		border.BlockEnd, padding.BlockEnd = 0, 0
 	}
+	return border, padding
+}
+
+// EffectiveBlockBorderPadding returns the block border + padding that
+// contributes to this fragment's block-size (see FragmentBlockEdges).
+func EffectiveBlockBorderPadding(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) float64 {
+	border, padding := FragmentBlockEdges(geom, hasClonedBoxDecorations, breakToken, isBreaking)
 	return border.BlockStart + border.BlockEnd + padding.BlockStart + padding.BlockEnd
 }
 
