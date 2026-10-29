@@ -199,11 +199,6 @@ type MulticolLayoutAlgorithm struct {
 	// both have content (CSS Multicol L1 §5). no Blink analog: Blink's
 	// gap_accumulator_ tracks this itself.
 	totalColumnsRendered int
-	// isFirstRow: the next column line is the first row of a column run
-	// (the run between spanners, or before the first spanner); row wrap
-	// advances the line offset only after the first row. Mirrors Blink's
-	// is_first_row (column_layout_algorithm.cc:715 @ a9f50e522efa).
-	isFirstRow bool
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -776,7 +771,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.outgoingMulticolData = nil
 	mla.hasForcedBreakAfter = false
 	mla.hasProcessedFirstChild = false
-	mla.isFirstRow = true
 	if result := mla.LayoutChildren(builder); result != nil {
 		return result
 	}
@@ -1153,11 +1147,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 			mla.hasForcedBreakAfter = true
 			break
 		}
-
-		// Reset isFirstRow so the next iteration's column-content branch
-		// (the post-spanner column run) doesn't apply the row-advance guard
-		// before placing its first row.
-		mla.isFirstRow = true
 	}
 
 	// A spanner that continues in a parallel flow (its box fit; only its
@@ -1178,167 +1167,183 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 	return nil
 }
 
-// LayoutFragmentationContext lays out one line of column content at the
-// walker's current column-content entry and handles what follows it: a
-// spanner found by the line (walker.MoveToSpanner), a wrapped row
-// (walker.AddNextColumnBreakToken), or an outer fragmentainer break. It
-// returns the broken outer fragment, or stop=true when LayoutChildren should
-// leave the walker loop. Mirrors Blink's
+// LayoutFragmentationContext lays out column content from the walker's
+// current column-content entry, one line per row, until the content is done,
+// a spanner ends a line (walker.MoveToSpanner), or the outer fragmentainer
+// breaks. It returns the broken outer fragment, or stop=true when
+// LayoutChildren should leave the walker loop. Mirrors Blink's
 // ColumnLayoutAlgorithm::LayoutFragmentationContext
 // (column_layout_algorithm.h:105-107, column_layout_algorithm.cc:710-780 @
-// a9f50e522efa), with louis14 deviations: the walker is a parameter because
-// the walker bookkeeping Blink does in LayoutChildren (cla.cc:583-611)
-// happens here, and the line commit Blink does inside LayoutLine
-// (cla.cc:1233-1251) happens here after LayoutLine returns.
+// a9f50e522efa), including its do/while over wrapped rows (:714-777).
+//
+// louis14 deviations, kept as they were before the split:
+//   - The walker is a parameter: the walker bookkeeping Blink does in
+//     LayoutChildren after this returns (cla.cc:583-611) happens here, and
+//     each wrapped row's token is installed with
+//     walker.AddNextColumnBreakToken as the row starts, where Blink installs
+//     the remaining token once, after the loop (cla.cc:610-611).
+//   - The line commit Blink does inside LayoutLine (cla.cc:1233-1251)
+//     happens here after LayoutLine returns.
+//   - A first row truncated by the outer fragmentainer breaks right away
+//     with its MulticolBreakTokenData; Blink sets the data and keeps looping
+//     (cla.cc:763-777).
 func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *BlockBreakToken, marginStrut *MarginStrut, walker *MulticolPartWalker, builder *BoxFragmentBuilder) (result *LayoutResult, stop bool) {
-	// Blink cla.cc:716-724: the line offset includes any trailing
-	// margin from a preceding spanner. The strut is NOT reset yet —
-	// if the line turns out to be empty, the margin collapses
-	// through it (and as far as the spec is concerned, the line
-	// won't even exist).
-	lineOffset := mla.blockCursor + marginStrut.Resolve()
+	// isFirstRow: the line is the first row of this column run (the run
+	// between spanners, or before the first spanner); row wrap advances the
+	// line offset only after the first row. Blink's is_first_row
+	// (column_layout_algorithm.cc:715 @ a9f50e522efa).
+	isFirstRow := true
+	for {
+		// Blink cla.cc:716-724: the line offset includes any trailing
+		// margin from a preceding spanner. The strut is NOT reset yet —
+		// if the line turns out to be empty, the margin collapses
+		// through it (and as far as the spec is concerned, the line
+		// won't even exist).
+		lineOffset := mla.blockCursor + marginStrut.Resolve()
 
-	// Blink cla.cc:795-797 row-advance guard. Fires whenever
-	// !mla.isFirstRow OR we find ourselves past the start of the current
-	// row (after a spanner that didn't quite align to a row boundary
-	// even after the pre-commit snap, or in the initial position when
-	// `column-height: 0` makes every offset a row-start).
-	needsRowAdvance := !mla.isFirstRow
-	if !needsRowAdvance && mla.shouldWrapColumns() && mla.hasRowHeight() &&
-		mla.rowHeight() > 0 &&
-		mla.remainingRowHeightAtOffset(lineOffset) <= 0 {
-		needsRowAdvance = true
-	}
-	if needsRowAdvance {
-		if mla.hasRowHeight() {
-			lineOffset += mla.offsetToNextRow(lineOffset)
+		// Blink cla.cc:795-797 row-advance guard. Fires whenever
+		// !isFirstRow OR we find ourselves past the start of the current
+		// row (after a spanner that didn't quite align to a row boundary
+		// even after the pre-commit snap, or in the initial position when
+		// `column-height: 0` makes every offset a row-start).
+		needsRowAdvance := !isFirstRow
+		if !needsRowAdvance && mla.shouldWrapColumns() && mla.hasRowHeight() &&
+			mla.rowHeight() > 0 &&
+			mla.remainingRowHeightAtOffset(lineOffset) <= 0 {
+			needsRowAdvance = true
 		}
-		// Blink cla.cc:739-747: only after a wrapped row.
-		if mla.isConstrainedByOuterFragmentation() && !mla.isFirstRow && mla.hasRowHeight() &&
-			mla.rowHeight() > mla.spaceLeftForContent()-lineOffset {
-			// No room for another row in the outer fragmentainer —
-			// stop now and let the outer context resume any remaining
-			// content in the next outer column.
-			if nextColumnToken != nil {
-				// walker.Current() still points to this column-
-				// content entry (we never called walker.Next).
-				// flushWalker pushes it (and any remaining
-				// parent-token entries) in document order.
-				return mla.breakOuter(walker, builder), false
+		if needsRowAdvance {
+			if mla.hasRowHeight() {
+				lineOffset += mla.offsetToNextRow(lineOffset)
 			}
-			return nil, true
-		}
-	}
-
-	rowStart := lineOffset
-	line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, mla.balanceColumns, builder)
-	if line == nil {
-		// Blink cla.cc:575-581, :662-685 @ a9f50e522efa: an outer fragmentainer break
-		// was inserted before this line. This multicol takes up the
-		// remaining space; the line (walker.Current(), not yet
-		// advanced) and everything after it resume in the next outer
-		// fragmentainer.
-		mla.blockCursor = math.Max(mla.blockCursor, mla.spaceLeftForContent())
-		return mla.breakOuter(walker, builder), false
-	}
-	mla.hasProcessedFirstChild = mla.hasProcessedFirstChild || !line.isEmpty
-	// Blink cla.cc:1233-1251: only a non-empty line updates the
-	// layout position (which already incorporates the strut) and
-	// resets the strut. An empty line — e.g. the spanner-detection
-	// line between two adjacent spanners — leaves both untouched so
-	// the pending margin collapses through.
-	if !line.isEmpty {
-		mla.blockCursor = lineOffset + line.intrinsicBlockSizeContribution
-		*marginStrut = MarginStrut{}
-		// Blink cla.cc:1233-1235 @ a9f50e522efa: column content
-		// separates a preceding spanner's break-after from what
-		// follows.
-		builder.SetPreviousBreakAfter("auto")
-	}
-	mla.totalColumnsRendered += line.columnsPlaced
-
-	// column-fill:auto + spanner: once any row encountered a spanner,
-	// subsequent rows must also balance — but ONLY when the multicol has
-	// auto height (no explicit block-size constraint). For fixed-height
-	// multicol + column-fill:auto + spanner, post-spanner content is NOT
-	// balanced (per WPT no-balancing-after-column-span); each post-spanner
-	// row fills to the remaining row height sequentially.
-	// Mirrors Blink's HasKnownFragmentainerBlockSize gate in
-	// column_layout_algorithm.cc — when block-size is auto the algorithm
-	// must balance to determine row heights even after a spanner.
-	if line.columnSpannerPath != nil && !mla.balanceColumns && !mla.hasExplicitBlock {
-		mla.balanceColumns = true
-	}
-
-	walker.Next()
-
-	if line.columnSpannerPath == nil {
-		// Phase 18 WRITE site (Blink cla.cc:822-833). When the first
-		// row of a column-run is truncated by the outer fragmentainer
-		// (rowHeight > spaceLeft - rowStart) and column content is
-		// still pending, defer to outer with a ConsumedRowBlockSize
-		// carrier so the next outer fragment continues the same row at
-		// the right phase. Without this, the next outer fragment would
-		// start at row offset 0 and re-paint the already-consumed slice.
-		if line.breakToken != nil && mla.isFirstRow && mla.isConstrainedByOuterFragmentation() &&
-			mla.shouldWrapColumns() && mla.hasRowHeight() {
-			// Blink overflow formula: how much of the row exceeds the outer
-			// available space. Only emit a carrier when overflow > 0.
-			overflow := mla.remainingRowHeightAtOffset(rowStart) - (mla.spaceLeftForContent() - rowStart)
-			if overflow > 0 {
-				mla.outgoingMulticolData = &MulticolBreakTokenData{
-					ConsumedRowBlockSize: mla.rowHeight() - overflow,
+			// Blink cla.cc:739-747: only after a wrapped row.
+			if mla.isConstrainedByOuterFragmentation() && !isFirstRow && mla.hasRowHeight() &&
+				mla.rowHeight() > mla.spaceLeftForContent()-lineOffset {
+				// No room for another row in the outer fragmentainer —
+				// stop now and let the outer context resume any remaining
+				// content in the next outer column.
+				if nextColumnToken != nil {
+					// walker.Current() still points to this column-
+					// content entry (we never called walker.Next).
+					// flushWalker pushes it (and any remaining
+					// parent-token entries) in document order.
+					return mla.breakOuter(walker, builder), false
 				}
+				return nil, true
+			}
+		}
+
+		rowStart := lineOffset
+		line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, mla.balanceColumns, builder)
+		if line == nil {
+			// Blink cla.cc:575-581, :662-685 @ a9f50e522efa: an outer fragmentainer break
+			// was inserted before this line. This multicol takes up the
+			// remaining space; the line (walker.Current(), not yet
+			// advanced) and everything after it resume in the next outer
+			// fragmentainer.
+			mla.blockCursor = math.Max(mla.blockCursor, mla.spaceLeftForContent())
+			return mla.breakOuter(walker, builder), false
+		}
+		mla.hasProcessedFirstChild = mla.hasProcessedFirstChild || !line.isEmpty
+		// Blink cla.cc:1233-1251: only a non-empty line updates the
+		// layout position (which already incorporates the strut) and
+		// resets the strut. An empty line — e.g. the spanner-detection
+		// line between two adjacent spanners — leaves both untouched so
+		// the pending margin collapses through.
+		if !line.isEmpty {
+			mla.blockCursor = lineOffset + line.intrinsicBlockSizeContribution
+			*marginStrut = MarginStrut{}
+			// Blink cla.cc:1233-1235 @ a9f50e522efa: column content
+			// separates a preceding spanner's break-after from what
+			// follows.
+			builder.SetPreviousBreakAfter("auto")
+		}
+		mla.totalColumnsRendered += line.columnsPlaced
+
+		// column-fill:auto + spanner: once any row encountered a spanner,
+		// subsequent rows must also balance — but ONLY when the multicol has
+		// auto height (no explicit block-size constraint). For fixed-height
+		// multicol + column-fill:auto + spanner, post-spanner content is NOT
+		// balanced (per WPT no-balancing-after-column-span); each post-spanner
+		// row fills to the remaining row height sequentially.
+		// Mirrors Blink's HasKnownFragmentainerBlockSize gate in
+		// column_layout_algorithm.cc — when block-size is auto the algorithm
+		// must balance to determine row heights even after a spanner.
+		if line.columnSpannerPath != nil && !mla.balanceColumns && !mla.hasExplicitBlock {
+			mla.balanceColumns = true
+		}
+
+		walker.Next()
+
+		if line.columnSpannerPath == nil {
+			// Phase 18 WRITE site (Blink cla.cc:822-833). When the first
+			// row of a column-run is truncated by the outer fragmentainer
+			// (rowHeight > spaceLeft - rowStart) and column content is
+			// still pending, defer to outer with a ConsumedRowBlockSize
+			// carrier so the next outer fragment continues the same row at
+			// the right phase. Without this, the next outer fragment would
+			// start at row offset 0 and re-paint the already-consumed slice.
+			if line.breakToken != nil && isFirstRow && mla.isConstrainedByOuterFragmentation() &&
+				mla.shouldWrapColumns() && mla.hasRowHeight() {
+				// Blink overflow formula: how much of the row exceeds the outer
+				// available space. Only emit a carrier when overflow > 0.
+				overflow := mla.remainingRowHeightAtOffset(rowStart) - (mla.spaceLeftForContent() - rowStart)
+				if overflow > 0 {
+					mla.outgoingMulticolData = &MulticolBreakTokenData{
+						ConsumedRowBlockSize: mla.rowHeight() - overflow,
+					}
+					mla.outBuilder.AddBreakToken(line.breakToken)
+					return mla.breakOuter(walker, builder), false
+				}
+			}
+			// Phase 12f (Blink cla.cc:835): row-wrap — when wrap is in
+			// effect and a column row exited with content still pending,
+			// continue the same column-run by starting another row below
+			// the one we just placed. Driver: column-height-001.html.
+			// AddNextColumnBreakToken installs remainingToken as the next
+			// walker entry (mirrors Blink's
+			// MulticolPartWalker::AddNextColumnBreakToken).
+			if line.breakToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
+				// Record the row gap boundary for column-rule painting
+				// (Blink: gap_accumulator_->AddMainGap when has_wrapped &&
+				// row_gap_size_ > LayoutUnit()). blockCursor is the end of the
+				// row just laid out; the gap extends from there by rowGapSize.
+				if mla.rowGapSize > 0 {
+					mla.addMainGap(mla.blockCursor, SpannerGapNone)
+				}
+				walker.AddNextColumnBreakToken(line.breakToken)
+				isFirstRow = false
+				nextColumnToken = line.breakToken
+				continue
+			}
+			// Phase 12c: nested multicol hit the outer fragmentainer
+			// boundary with content still pending. Emit an outer break
+			// result carrying the column-rows continuation so the outer
+			// fragmentation context can resume this multicol in its next
+			// outer column.
+			if line.breakToken != nil && mla.isConstrainedByOuterFragmentation() {
 				mla.outBuilder.AddBreakToken(line.breakToken)
 				return mla.breakOuter(walker, builder), false
 			}
+			return nil, true // all column content done (no outer fragmentation)
 		}
-		// Phase 12f (Blink cla.cc:835): row-wrap — when wrap is in
-		// effect and a column row exited with content still pending,
-		// continue the same column-run by starting another row below
-		// the one we just placed. Driver: column-height-001.html.
-		// AddNextColumnBreakToken installs remainingToken as the next
-		// walker entry (mirrors Blink's
-		// MulticolPartWalker::AddNextColumnBreakToken).
-		if line.breakToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
-			// Record the row gap boundary for column-rule painting
-			// (Blink: gap_accumulator_->AddMainGap when has_wrapped &&
-			// row_gap_size_ > LayoutUnit()). blockCursor is the end of the
-			// row just laid out; the gap extends from there by rowGapSize.
-			if mla.rowGapSize > 0 {
-				mla.addMainGap(mla.blockCursor, SpannerGapNone)
-			}
-			walker.AddNextColumnBreakToken(line.breakToken)
-			mla.isFirstRow = false
-			return nil, false
-		}
-		// Phase 12c: nested multicol hit the outer fragmentainer
-		// boundary with content still pending. Emit an outer break
-		// result carrying the column-rows continuation so the outer
-		// fragmentation context can resume this multicol in its next
-		// outer column.
-		if line.breakToken != nil && mla.isConstrainedByOuterFragmentation() {
-			mla.outBuilder.AddBreakToken(line.breakToken)
-			return mla.breakOuter(walker, builder), false
-		}
-		return nil, true // all column content done (no outer fragmentation)
-	}
 
-	// Spanner discovered via ColumnSpannerPath. Queue it for the next
-	// iteration via MoveToSpanner; remainingToken (post-spanner column
-	// content, if any) is stored as the walker's nextColumnToken so it
-	// becomes the iteration AFTER the spanner.
-	//
-	// NB: in commit 2 with the still-positional WRITE site, walker may
-	// have had additional parent-token entries pending (slot[1] partial
-	// spanner with resume info, slot[2] colRows). MoveToSpanner resets
-	// the walker, dropping those. Commit 3 changes the WRITE site so
-	// that the spanner's resume info appears as the NEXT walker entry
-	// directly (no re-detect col_token at slot[0]) — at which point
-	// MoveToSpanner is only called for genuinely-fresh discoveries.
-	spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
-	walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
-	return nil, false
+		// Spanner discovered via ColumnSpannerPath. Queue it for the next
+		// iteration via MoveToSpanner; remainingToken (post-spanner column
+		// content, if any) is stored as the walker's nextColumnToken so it
+		// becomes the iteration AFTER the spanner.
+		//
+		// NB: in commit 2 with the still-positional WRITE site, walker may
+		// have had additional parent-token entries pending (slot[1] partial
+		// spanner with resume info, slot[2] colRows). MoveToSpanner resets
+		// the walker, dropping those. Commit 3 changes the WRITE site so
+		// that the spanner's resume info appears as the NEXT walker entry
+		// directly (no re-detect col_token at slot[0]) — at which point
+		// MoveToSpanner is only called for genuinely-fresh discoveries.
+		spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
+		walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
+		return nil, false
+	}
 }
 
 // layoutSpannerResult is what LayoutSpanner reports to LayoutChildren.
