@@ -142,6 +142,14 @@ type LayoutResult struct {
 	// out at full container width. Mirrors Blink's ColumnSpannerPath
 	// (column_spanner_path.h) and LayoutResult::GetColumnSpannerPath().
 	ColumnSpannerPath *ColumnSpannerPath
+
+	// IsEmptySpannerParent is set when nothing in this fragment precedes the
+	// spanner on ColumnSpannerPath (the spanner's parent resumed with no
+	// children placed), so the column line holding it counts as empty and a
+	// preceding spanner's margin collapses through it. Mirrors Blink's
+	// LayoutResult::IsEmptySpannerParent (layout_result.h:219 @
+	// a9f50e522efa).
+	IsEmptySpannerParent bool
 }
 
 // ColumnSpannerPath is a linked list identifying the path from the current

@@ -181,6 +181,17 @@ type BoxFragmentBuilder struct {
 	// FragmentBuilder::break_appeal_.
 	breakAppeal    BreakAppeal
 	hasBreakAppeal bool
+
+	// columnSpannerPath is the path to a column spanner found inside this
+	// box; hasColumnSpanner is set with it, or alone when a spanner was
+	// found but is not to be laid out yet (a parallel flow broke before it).
+	// isEmptySpannerParent marks that nothing in this fragment precedes the
+	// spanner. Mirrors Blink's FragmentBuilder::column_spanner_path_,
+	// has_column_spanner_ and is_empty_spanner_parent_ (fragment_builder.h:
+	// 639, :674-675 @ a9f50e522efa).
+	columnSpannerPath    *ColumnSpannerPath
+	hasColumnSpanner     bool
+	isEmptySpannerParent bool
 }
 
 type logicalChildLink struct {
@@ -742,6 +753,38 @@ func (b *BoxFragmentBuilder) DropChildrenAtOrPastBlockOffset(blockOffset float64
 	b.children = filtered
 }
 
+// SetHasColumnSpanner records whether a column spanner was found inside this
+// box. Mirrors Blink's FragmentBuilder::SetHasColumnSpanner
+// (fragment_builder.h:435-437 @ a9f50e522efa).
+func (b *BoxFragmentBuilder) SetHasColumnSpanner(v bool) {
+	b.hasColumnSpanner = v
+}
+
+// SetColumnSpannerPath sets the path to the column spanner found inside this
+// box, and records that one was found. Mirrors Blink's
+// FragmentBuilder::SetColumnSpannerPath (fragment_builder.h:438-441 @
+// a9f50e522efa).
+func (b *BoxFragmentBuilder) SetColumnSpannerPath(path *ColumnSpannerPath) {
+	b.columnSpannerPath = path
+	b.SetHasColumnSpanner(path != nil)
+}
+
+// FoundColumnSpanner reports whether a column spanner was found inside this
+// box, with or without a path. Mirrors Blink's
+// FragmentBuilder::FoundColumnSpanner (fragment_builder.h:442-445 @
+// a9f50e522efa).
+func (b *BoxFragmentBuilder) FoundColumnSpanner() bool {
+	return b.hasColumnSpanner
+}
+
+// SetIsEmptySpannerParent marks that this fragment holds nothing before the
+// spanner it was interrupted by. Mirrors Blink's
+// FragmentBuilder::SetIsEmptySpannerParent (fragment_builder.h:446-449 @
+// a9f50e522efa).
+func (b *BoxFragmentBuilder) SetIsEmptySpannerParent(v bool) {
+	b.isEmptySpannerParent = v
+}
+
 // Build converts all logical coordinates to physical and returns the
 // immutable PhysicalFragment and LayoutResult.
 //
@@ -821,6 +864,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		EndMarginStrut:         b.endMarginStrut,
 		ExclusionSpace:         b.exclusionSpace,
 		BreakAppeal:            BreakAppealPerfect,
+		ColumnSpannerPath:      b.columnSpannerPath,
+		IsEmptySpannerParent:   b.isEmptySpannerParent,
 	}
 	if allowBaseline {
 		result.Baseline = b.baseline
