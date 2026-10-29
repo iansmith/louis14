@@ -183,6 +183,15 @@ type ConstraintSpace struct {
 	// is a non-block-flow element, or has a transform.
 	ColumnSpannerDescendantsBlocked bool
 
+	// ColumnSpannerPath is the rest of the path to a column spanner found
+	// by the enclosing multicol's balancing pass, when this node is on it:
+	// its Box is the child of this node that leads to the spanner. Nil when
+	// this node is not on a spanner path. Blink carries it in
+	// LayoutAlgorithmParams::column_spanner_path and steps it down with
+	// FollowColumnSpannerPath (fragmentation_utils.h:560-570 @
+	// a9f50e522efa); louis14 has no params struct, so it rides on the space.
+	ColumnSpannerPath *ColumnSpannerPath
+
 	// IsInsideColumnSpanner is true when this space (or any ancestor space)
 	// is the spanner-layout space built by MulticolLayoutAlgorithm's
 	// layoutSpannerInFrag / layoutSpanner. Spanners are placed monolithically
@@ -525,6 +534,13 @@ func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintS
 // descendant should be ignored because some ancestor prevents it.
 func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *ConstraintSpaceBuilder {
 	b.space.ColumnSpannerDescendantsBlocked = v
+	return b
+}
+
+// SetColumnSpannerPath sets the spanner path below this node — see
+// ConstraintSpace.ColumnSpannerPath doc.
+func (b *ConstraintSpaceBuilder) SetColumnSpannerPath(path *ColumnSpannerPath) *ConstraintSpaceBuilder {
+	b.space.ColumnSpannerPath = path
 	return b
 }
 

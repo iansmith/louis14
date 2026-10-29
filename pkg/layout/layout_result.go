@@ -150,6 +150,14 @@ type LayoutResult struct {
 	// LayoutResult::IsEmptySpannerParent (layout_result.h:219 @
 	// a9f50e522efa).
 	IsEmptySpannerParent bool
+
+	// ShouldForceSameFragmentationFlow is set when this box contains a
+	// column spanner: a break inside it stays in its parent's flow even when
+	// the box itself is at its block end, so no parallel flow opens before
+	// the spanner. Mirrors Blink's LayoutResult::
+	// ShouldForceSameFragmentationFlow (layout_result.h:368-370 @
+	// a9f50e522efa).
+	ShouldForceSameFragmentationFlow bool
 }
 
 // ColumnSpannerPath is a linked list identifying the path from the current

@@ -150,6 +150,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset + geom.BorderBoxPadding().BlockStart
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+	// A node on the spanner path keeps its breaks in its parent's flow, so
+	// content after the spanner is not laid out before it
+	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
+	if bla.space.ColumnSpannerPath != nil {
+		builder.SetShouldForceSameFragmentationFlow()
+	}
 
 	// CSS Lists §3 / Blink BlockLayoutAlgorithm constructor (bla.cc:319-327):
 	// if this is a list item with an OUTSIDE marker, seed the
@@ -1259,6 +1265,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					b.SetIsInsideColumnSpanner(true)
 				}
 
+				// Step the spanner path down to the child when the child is
+				// the next node on it (FollowColumnSpannerPath,
+				// fragmentation_utils.h:560-570 @ a9f50e522efa).
+				if path := bla.space.ColumnSpannerPath; path != nil && path.Box == child {
+					b.SetColumnSpannerPath(path.Child)
+				}
+
 				// Pass child break token if resuming this specific child.
 				if tok, ok := resumeChildTokens[child]; ok {
 					b.SetBreakToken(tok)
@@ -1872,7 +1885,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// progress slices keep their dedicated branch below.
 				childBrokeShortOfBoundary := childHasBreak && blockCursor < fragEnd &&
 					childBlockSize > 0 &&
-					!IsParallelFlowContinuation(childResult.BreakToken)
+					!IsInParallelFlow(childResult)
 				if fragSize != Indefinite && (blockCursor > fragEnd ||
 					(blockCursor == fragEnd && childHasBreak) ||
 					childBrokeShortOfBoundary) {
@@ -2142,7 +2155,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// the continuation entirely (fixed-size-child-with-overflow:
 				// content rendered in column 1 only). Promoted into the
 				// outgoing token after the walk.
-				if fragSize != Indefinite && IsParallelFlowContinuation(childResult.BreakToken) {
+				if fragSize != Indefinite && IsInParallelFlow(childResult) {
 					pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, childResult.BreakToken)
 				}
 			}
@@ -3288,7 +3301,7 @@ func resumeSkipsChild(
 // multicol-span-all-children-height-012's zero-height wrapper relies on
 // stopping when unseen siblings are still pending.
 func isPureParallelFlowResume(childResult *LayoutResult, incomingBreakToken *BlockBreakToken, laterSiblingHasToken bool) bool {
-	return IsParallelFlowContinuation(childResult.BreakToken) &&
+	return IsInParallelFlow(childResult) &&
 		!childResult.BreakToken.IsCausedByColumnSpanner &&
 		childResult.ColumnSpannerPath == nil &&
 		incomingBreakToken != nil && (incomingBreakToken.HasSeenAllChildren || laterSiblingHasToken)
