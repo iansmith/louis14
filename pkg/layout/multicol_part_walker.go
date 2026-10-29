@@ -47,6 +47,11 @@ type MulticolPartWalker struct {
 	// returned a ColumnSpannerPath). Mirrors Blink's descendant_node_.
 	descendantNode *LayoutInputNode
 
+	// descendantParent is the block that contains descendantNode, whose
+	// children are walked for sibling spanners. louis14's layout nodes have
+	// no sibling links; Blink reads descendant_node_.NextSibling().
+	descendantParent *LayoutInputNode
+
 	// childTokenIdx is the index into parentBreakToken.ChildBreakTokens
 	// for the next entry to inspect. Mirrors Blink's child_token_idx_.
 	childTokenIdx int
@@ -109,13 +114,14 @@ func (w *MulticolPartWalker) Next() {
 	}
 }
 
-// MoveToSpanner moves the walker to the specified spanner and records
-// the trailing column-content resume token to walk after the spanner
-// (and any sibling spanners). Mirrors Blink's
+// MoveToSpanner moves the walker to the specified spanner (a child of
+// parent) and records the trailing column-content resume token to walk
+// after the spanner (and any sibling spanners). Mirrors Blink's
 // MulticolPartWalker::MoveToSpanner.
-func (w *MulticolPartWalker) MoveToSpanner(spanner *LayoutInputNode, nextColumnToken *BlockBreakToken) {
+func (w *MulticolPartWalker) MoveToSpanner(spanner, parent *LayoutInputNode, nextColumnToken *BlockBreakToken) {
 	*w = MulticolPartWalker{multicolContainer: w.multicolContainer}
 	w.descendantNode = spanner
+	w.descendantParent = parent
 	w.nextColumnToken = nextColumnToken
 	w.updateCurrent()
 }
@@ -176,12 +182,12 @@ func (w *MulticolPartWalker) moveToNext() {
 		// descendantNode / nextColumnToken.
 	}
 	if w.descendantNode != nil {
-		// Blink walks DOM siblings for chained spanner discovery
-		// (descendant_node_.NextSibling()). Louis14's spanner discovery
-		// happens inside MulticolLayoutAlgorithm via ColumnSpannerPath
-		// returns from per-column LayoutLine; chained spanners surface
-		// through subsequent LayoutLine calls, not via DOM traversal.
-		// So we clear descendantNode and fall through.
+		// A spanner directly following this one is the next part
+		// (column content skips sibling spanners when it resumes).
+		if next := nextSiblingSpanner(w.descendantParent, w.descendantNode); next != nil {
+			w.descendantNode = next
+			return
+		}
 		w.descendantNode = nil
 		if w.nextColumnToken != nil {
 			return
@@ -232,4 +238,32 @@ func (b *MulticolBreakTokenBuilder) Children() []*BlockBreakToken {
 // IsEmpty reports whether any child break tokens have been accumulated.
 func (b *MulticolBreakTokenBuilder) IsEmpty() bool {
 	return len(b.children) == 0
+}
+
+// nextSiblingSpanner returns the sibling right after spanner in parent's
+// children when it is also a spanner, skipping text (which block layout
+// skips too); nil otherwise. Mirrors Blink's descendant_node_.NextSibling()
+// && IsColumnSpanAll() (column_layout_algorithm.cc:207-212 @ a9f50e522efa).
+func nextSiblingSpanner(parent, spanner *LayoutInputNode) *LayoutInputNode {
+	if parent == nil {
+		return nil
+	}
+	children := parent.Children()
+	for i, c := range children {
+		if c != spanner {
+			continue
+		}
+		for _, next := range children[i+1:] {
+			if next.IsText() {
+				continue
+			}
+			if style := next.Style(); style != nil && style.GetColumnSpan() == "all" &&
+				isSelfValidColumnSpanner(style) {
+				return next
+			}
+			return nil
+		}
+		return nil
+	}
+	return nil
 }

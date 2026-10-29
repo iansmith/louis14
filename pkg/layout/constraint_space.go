@@ -195,6 +195,13 @@ type ConstraintSpace struct {
 	// (LOU-400).
 	IsInsideColumnSpanner bool
 
+	// IsPastBreak is true when there is a preceding break in the current
+	// fragmentainer (typically in a parallel flow), so a column spanner
+	// found now must wait until the fragmentainers before it are done.
+	// Mirrors Blink's ConstraintSpace::IsPastBreak (constraint_space.h:578-580
+	// @ a9f50e522efa).
+	IsPastBreak bool
+
 	// MinBreakAppeal is the lowest break appeal that is acceptable in this
 	// fragmentation context. Read by CalculateBreakAppealBefore +
 	// IsBreakableAtStartOfResumedContainer; defaults to LastResort (any break
@@ -518,6 +525,13 @@ func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintS
 // descendant should be ignored because some ancestor prevents it.
 func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *ConstraintSpaceBuilder {
 	b.space.ColumnSpannerDescendantsBlocked = v
+	return b
+}
+
+// SetIsPastBreak marks a preceding break in the current fragmentainer — see
+// ConstraintSpace.IsPastBreak doc.
+func (b *ConstraintSpaceBuilder) SetIsPastBreak(v bool) *ConstraintSpaceBuilder {
+	b.space.IsPastBreak = v
 	return b
 }
 

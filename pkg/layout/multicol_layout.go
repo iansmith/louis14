@@ -1042,8 +1042,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// that the spanner's resume info appears as the NEXT walker entry
 			// directly (no re-detect col_token at slot[0]) — at which point
 			// MoveToSpanner is only called for genuinely-fresh discoveries.
-			spanner := spannerLeafNode(spannerPath)
-			walker.MoveToSpanner(spanner, remainingToken)
+			spanner, spannerParent := spannerLeafNode(spannerPath, contentNode)
+			walker.MoveToSpanner(spanner, spannerParent, remainingToken)
 			continue
 		}
 
@@ -2888,14 +2888,18 @@ func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType Span
 }
 
 // spannerLeafNode traverses a ColumnSpannerPath linked list and returns the
-// Box at the leaf (where Child == nil). This is the actual column-span:all
-// element, which may be a grandchild or deeper descendant of the multicol
-// flow thread. Mirrors Blink's ColumnSpannerPath::SpannerBox() (column_spanner_path.h).
-func spannerLeafNode(path *ColumnSpannerPath) *LayoutInputNode {
-	if path.Child == nil {
-		return path.Box
+// Box at the leaf (where Child == nil) — the actual column-span:all element,
+// which may be a grandchild or deeper descendant of the multicol flow thread
+// — and the block containing it (root when the spanner is a child of the
+// column content itself). Mirrors Blink's ColumnSpannerPath::SpannerBox()
+// (column_spanner_path.h).
+func spannerLeafNode(path *ColumnSpannerPath, root *LayoutInputNode) (spanner, parent *LayoutInputNode) {
+	parent = root
+	for path.Child != nil {
+		parent = path.Box
+		path = path.Child
 	}
-	return spannerLeafNode(path.Child)
+	return path.Box, parent
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
