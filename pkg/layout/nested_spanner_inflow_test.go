@@ -28,7 +28,7 @@ func nonEmptyRects(rects map[string][]fragRect) map[string][]fragRect {
 // zero-height rects dropped).
 //
 // Blink places such a child like any in-flow child (FinishInflow → AddResult,
-// block_layout_algorithm.cc:2733-2738 @ a9f50e522efa): the parent advances by
+// block_layout_algorithm.cc:2732-2736 @ a9f50e522efa): the parent advances by
 // the child's fragment block-size (ComputeInflowPosition, :2953), which
 // FinishFragmentation's FoundColumnSpanner branch clamped to
 // min(desired, intrinsic) - trailing border/padding (fragmentation_utils.cc:

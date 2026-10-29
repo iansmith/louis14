@@ -1455,64 +1455,43 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					hasContainerSeparation, builder)
 
 				if status == BreakStatusBrokeBefore {
-					// Emit a partial fragment without placing this child;
-					// outgoing break token points at THIS child with
-					// IsBreakBefore=true (and IsForcedBreak when the value
-					// was column/page).
-					intrinsicBlock := blockCursor
-					// CSS Fragmentation §3.4.2: a non-last fragment's background
-					// extends to the fragmentainer boundary — here only inside
-					// balanced columns and when content was actually placed
-					// (intrinsicBlock > 0): extending an empty fragment (e.g.
-					// break-inside:avoid on the first child) would confuse the
-					// balance loop. Blink stretches unconditionally
-					// (ConsumeRemainingFragmentainerSpace, :3167); the gate is
-					// louis14's.
-					extendedBlock := intrinsicBlock
-					if intrinsicBlock > 0 && bla.space.IsInsideBalancedColumns {
-						extendedBlock = consumeRemainingFragmentainerSpace(intrinsicBlock)
-					}
-					// Breaking before a child breaks this block inside, so in
-					// slice mode it carries no block-end edge, in size or paint
-					// (Blink AddBreakBeforeChild sets has_inflow_child_break_inside,
-					// box_fragment_builder.cc:121-143 @ a9f50e522efa), and
-					// FinishFragmentation decides its size, consumed block-size
-					// and whether it is at its block end, the pushed child then
-					// continuing in a parallel flow (fragmentation_utils.cc:
-					// 717-777).
-					finish := setBreakingSize(extendedBlock)
-					outToken := &BlockBreakToken{
-						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-						IsAtBlockEnd:      finish.IsAtBlockEnd,
-					}
-					if !usesFinishFragmentation {
-						outToken.ConsumedBlockSize = layoutunit.FromFloat64Round(fragmentainerConsumedBlockSize(blockCursor))
-						outToken.IsAtBlockEnd = incomingBreakToken != nil && incomingBreakToken.IsAtBlockEnd
-					}
-					if incomingBreakToken != nil {
-						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
-					}
-					outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+					// Break before this child without placing it, and finish
+					// this fragment through the single post-loop exit, as
+					// Blink's HandleInflow returns kSuccess on kBrokeBefore
+					// (block_layout_algorithm.cc:2646-2659 @ a9f50e522efa) and
+					// the child loop then stops (:1108-1115).
+					// BreakBeforeChild → AddBreakBeforeChild records the
+					// child's break-before token, a forced break, and
+					// has_inflow_child_break_inside_ (box_fragment_builder.cc:
+					// 121-143), so this block breaks inside: in slice mode it
+					// carries no block-end edge, and FinishFragmentation
+					// decides its size, consumed block-size and whether it is
+					// at its block end, the pushed child then continuing in a
+					// parallel flow (fragmentation_utils.cc:717-777).
+					pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
 						Node:          child,
 						IsBreakBefore: true,
 						IsForcedBreak: isForced,
 					})
-					builder.SetIntrinsicBlockSize(intrinsicBlock)
-					builder.SetNode(bla.node.DOMNode)
-					builder.SetStyle(bla.style)
-					builder.SetLayoutNode(bla.node)
-					builder.SetBoxData(&PhysicalBoxData{
-						Border:    ToPhysicalEdges(geom.Border, wdm),
-						Padding:   ToPhysicalEdges(geom.Padding, wdm),
-						Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
-					})
-					builder.SetEndMarginStrut(prevMarginStrut)
-					builder.SetExclusionSpace(exclusionSpace)
-					result := builder.Build()
-					result.BreakToken = outToken
+					pendingShouldBreakInside = true
+					pendingHasInflowChildBreakInside = true
 					if isForced {
-						result.HasForcedBreak = true
+						pendingHasForcedBreak = true
+					}
+					// The content placed before the break (a column box's
+					// consumed size while its column height is unknown).
+					pendingIntrinsicAtBreak = blockCursor
+					pendingHaveIntrinsicAtBreak = true
+					// CSS Fragmentation §3.4.2: a non-last fragment's background
+					// extends to the fragmentainer boundary — here only inside
+					// balanced columns and when content was actually placed
+					// (blockCursor > 0): extending an empty fragment (e.g.
+					// break-inside:avoid on the first child) would confuse the
+					// balance loop. Blink stretches unconditionally
+					// (ConsumeRemainingFragmentainerSpace, :3167, moving the
+					// inflow position, :3084-3095); the gate is louis14's.
+					if blockCursor > 0 && bla.space.IsInsideBalancedColumns {
+						blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 					}
 					// Phase 12g: when a soft break-before fires (not forced), the
 					// child didn't fit in the remaining fragmentainer space and
@@ -1532,10 +1511,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						if shortage <= 0 {
 							shortage = BlockSizeForFragmentation(wdm, childResult) - (bla.space.FragmentainerBlockSize - fragOff)
 						}
-						result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
+						pendingMinSpaceShortage = MinPositiveSpaceShortage(pendingMinSpaceShortage, shortage)
 					}
-					result.PropagatedTopMargin = propagatedTopMargin
-					return result
+					break
 				}
 			}
 
