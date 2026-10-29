@@ -1282,7 +1282,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// spanner itself. Driver: spanner-fragmentation-006 — without
 				// this propagation the spanner's grand-leaf descendants (e.g.
 				// the 360h leaf inside spanner 1) self-fragment and confuse
-				// the existing pendingContentOverflow resume mechanism.
+				// the multicol's spanner-resume path.
 				if bla.space.IsInsideColumnSpanner {
 					b.SetIsInsideColumnSpanner(true)
 				}

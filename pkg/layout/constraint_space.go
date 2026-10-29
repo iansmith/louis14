@@ -188,12 +188,12 @@ type ConstraintSpace struct {
 	// layoutSpannerInFrag / layoutSpanner. Spanners are placed monolithically
 	// in the multicol flow (Blink: ColumnLayoutAlgorithm::LayoutSpanner —
 	// the spanner breaks BEFORE as a unit, never mid-content; its overflow
-	// content is handled by the existing pendingContentOverflow mechanism
-	// in MulticolLayoutAlgorithm). The Phase 16.d.1 per-fragment block-size
-	// clamp must be skipped on spanner descendants — otherwise the leaf's
-	// self-fragmentation produces a break-token chain that the spanner
-	// resume mechanism in multicol_layout.go (line 663-676 / 724) doesn't
-	// understand, causing spanner content to incorrectly fragment across
+	// content resumes through the spanner's break token, which
+	// MulticolLayoutAlgorithm carries to the next outer fragmentainer).
+	// The Phase 16.d.1 per-fragment block-size clamp must be skipped on
+	// spanner descendants — otherwise the leaf's self-fragmentation produces
+	// a break-token chain that the spanner resume path in multicol_layout.go
+	// doesn't understand, causing spanner content to incorrectly fragment across
 	// outer columns instead of overflowing once monolithically.
 	IsInsideColumnSpanner bool
 
