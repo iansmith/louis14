@@ -101,3 +101,53 @@ func TestBlockLayout_SpannerParentState_LOU403(t *testing.T) {
 		t.Error("resumed wrapper with no children placed is not an empty spanner parent")
 	}
 }
+
+// LOU-403: the empty-spanner-parent bit of the innermost parent propagates up
+// through an intermediate block on the spanner path, as Blink's
+// PropagateBreakInfo copies the child's IsEmptySpannerParent
+// (box_fragment_builder.cc:594-608 @ a9f50e522efa).
+func TestBlockLayout_NestedSpannerParentState_LOU403(t *testing.T) {
+	spanner1 := makeNode("div")
+	spanner2 := makeNode("div")
+	inner := makeNode("div", spanner1, spanner2)
+	outer := makeNode("div", inner)
+
+	styles := map[*html.Node]*css.Style{
+		outer:    makeStyle("display", "block"),
+		inner:    makeStyle("display", "block"),
+		spanner1: makeStyle("display", "block", "column-span", "all", "height", "10px"),
+		spanner2: makeStyle("display", "block", "column-span", "all", "height", "10px"),
+	}
+	ctx := testContext()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	outerNode := buildTestTree(outer, styles)
+	innerNode := outerNode.Children()[0]
+	spanner2Node := innerNode.Children()[1]
+
+	space := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(100).
+		SetBlockFragmentationType(FragmentColumn).
+		SetBreakToken(&BlockBreakToken{
+			Node:                    outerNode,
+			IsCausedByColumnSpanner: true,
+			ChildBreakTokens: []*BlockBreakToken{{
+				Node:                    innerNode,
+				IsCausedByColumnSpanner: true,
+				ChildBreakTokens: []*BlockBreakToken{{
+					Node: spanner2Node, IsBreakBefore: true, IsForcedBreak: true,
+				}},
+			}},
+		}).
+		Build()
+	result := NewBlockLayoutAlgorithm(ctx, outerNode, space).Layout()
+	path := result.ColumnSpannerPath
+	if path == nil || path.Box != innerNode || path.Child == nil || path.Child.Box != spanner2Node {
+		t.Fatalf("spanner path = %+v, want inner → spanner2", path)
+	}
+	if !result.IsEmptySpannerParent {
+		t.Error("outer did not propagate the resumed inner block's IsEmptySpannerParent")
+	}
+}
