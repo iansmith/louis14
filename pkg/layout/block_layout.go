@@ -403,6 +403,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// fragmentainer end (finishFragmentationContentBlockSize over the rest
 	// of its declared content); otherwise contentBlock, the (stretched)
 	// content block-size, plus the edges this fragment carries.
+	// boxFitsAtBlockEnd reports whether this box's remaining declared size
+	// fits the fragmentainer, so a break inside it leaves the box at its
+	// block end with the child continuing in a parallel flow (Blink
+	// FinishFragmentation, fragmentation_utils.cc:744-755 @ a9f50e522efa).
+	// A column wrapper's IsBlockSizeOverride size is the column slot, not a
+	// declared size, so it never qualifies (the C51 gate below).
+	boxFitsAtBlockEnd := func() bool {
+		return hasExplicitBlock && !bla.space.IsBlockSizeOverride &&
+			desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, geom.BlockBorderPadding(), bla.space.BreakToken)
+	}
 	breakingBorderBox := func(contentBlock float64) {
 		switch {
 		case hasExplicitBlock && bla.space.IsBlockSizeOverride:
@@ -1629,6 +1639,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						IsBreakBefore: true,
 						IsForcedBreak: isForced,
 					})
+					// Blink FinishFragmentation (fragmentation_utils.cc:744-755
+					// @ a9f50e522efa): when this box's own remaining declared
+					// size still fits, it ends here and the pushed child
+					// continues in a parallel flow — the same at-block-end
+					// predicate the overflow path below applies. Narrowed vs
+					// Blink to soft breaks: louis14's resume of a forced
+					// break-before inside an at-block-end box loses the
+					// forced-break column (spanner-in-child-after-parallel-
+					// flow-004), so forced breaks keep the plain break token.
+					if !isForced && boxFitsAtBlockEnd() {
+						outToken.IsAtBlockEnd = true
+					}
 
 					intrinsicBlock := blockCursor
 					// Breaking before a child breaks this block inside, so in
@@ -1680,7 +1702,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// child's block-size minus the space we have.
 					if !isForced && childResult != nil && childResult.Fragment != nil &&
 						bla.space.FragmentainerBlockSize != Indefinite {
-						shortage := childResult.MinSpaceShortage
+						shortage := TrustedChildSpaceShortage(bla.space, childResult)
 						if shortage <= 0 {
 							// Blink's BlockSizeForFragmentation(result): the
 							// child's fragmentation block-size when it reported
@@ -1908,27 +1930,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// child, use that. The boundary arithmetic above is zero
 					// when the child's slice ends exactly at the fragmentainer
 					// boundary, which would starve the multicol stretch loop
-					// of its grow-by amount. Mirrors Blink's
-					// CalculateSpaceShortage (fragmentation_utils.cc:1027-1049
-					// @ a9f50e522efa): "if we broke inside the child ...
-					// space shortage was reported inside the child, use that."
-					//
-					// Narrowed vs Blink to children whose slicing violated a
-					// break-avoidance (break-inside:avoid / monolithic): Blink
-					// merges unconditionally but its stretch loop is budget-
-					// clamped by ConstrainColumnBlockSize (cla.cc:1799-1809 @
-					// a9f50e522efa — the CurrentContentBlockOffset/consumed
-					// subtraction louis14 does not implement yet; see the
-					// css-multicol round-1 Target 1 plan). Merging for
-					// non-violating breaks over-stretches budget-clamped
-					// definite-height rows (LOU-320/LOU-325 unit tests). A child
-					// whose own break violated an avoid deeper inside (appeal
-					// below perfect) counts too: without the block-end edge a
-					// breaking fragment no longer overshoots, so the reported
-					// shortage is the only grow-by signal left (f20).
-					if childResult.BreakToken != nil && childResult.MinSpaceShortage > 0 &&
-						(ShouldAvoidBreakInside(bla.space, childResult) || childResult.BreakAppeal < BreakAppealPerfect) {
-						shortage = childResult.MinSpaceShortage
+					// of its grow-by amount (Blink CalculateSpaceShortage);
+					// TrustedChildSpaceShortage carries louis14's narrowing.
+					if trusted := TrustedChildSpaceShortage(bla.space, childResult); trusted > 0 {
+						shortage = trusted
 					}
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
@@ -1965,9 +1970,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// Mirrors Blink's FinishFragmentation, which reads
 					// `box_block_size_` from the wrapper's CSS, not from the
 					// ConstraintSpace fragmentainer override.
-					if childResult.BreakToken != nil && hasExplicitBlock &&
-						!bla.space.IsBlockSizeOverride &&
-						desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize, geom.BlockBorderPadding(), incomingBreakToken) {
+					if childResult.BreakToken != nil && boxFitsAtBlockEnd() {
 						pendingIsAtBlockEnd = true
 					}
 

@@ -1353,11 +1353,14 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// a structural continuation fragment is still required to satisfy
 	// remaining explicit CSS block-size. Only fires when blockCursor > 0
 	// (actual in-flow content was placed), NOT for pure structural fragments
-	// that Cmt-8 already delivered (blockCursor == 0). Mirrors the Blink
-	// break check but accounting for the Cmt-8 post-hoc absorption.
+	// that Cmt-8 already delivered (blockCursor == 0), and only while declared
+	// block-size actually remains past this fragment (a box whose declared
+	// height ends exactly at the outer end is done: Blink's FinishFragmentation
+	// does not break it). Mirrors the Blink break check but accounting for the
+	// Cmt-8 post-hoc absorption.
 	if balanceColumns && hasOuterFrag && hasExplicitBlock && blockCursor > 0 && blockCursor < spaceLeft &&
 		blockCursor < mla.remainingContentBlockSize && finalBlockSize > blockCursor &&
-		finalBlockSize >= spaceLeft {
+		finalBlockSize >= spaceLeft && finalBlockSize < mla.remainingContentBlockSize {
 		// LOU-143: expand blockCursor to finalBlockSize so the gap geometry
 		// emitted inside buildOuterBreakResult stretches the last row's
 		// column rules to the content-box block end (Cmt-8 absorption
