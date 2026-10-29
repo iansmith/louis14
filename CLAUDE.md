@@ -8,10 +8,9 @@ Depends on **mazzy** (`mazarin/textshape`) via a `go.mod` replace pointing at `~
 
 ## Universal Project Rules
 
-These live in `CLAUDE-universal.md` alongside this file — one mirrored copy per project,
-byte-identical everywhere. **Edit them in the slopstop repo (the reference copy) and
-propagate; never edit the copy in this repo.** Project-specific rules and deliberate
-overrides go below, in this file, where they take precedence.
+These live in `CLAUDE-universal.md` alongside this file — a mirrored copy; never edit it
+here (see its §10). Project-specific rules and deliberate overrides go below, in this
+file, where they take precedence.
 
 @CLAUDE-universal.md
 
@@ -39,7 +38,7 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go <command>
 
 The louis14 codebase is modeled on Blink's LayoutNG. When starting work on a new area — coding **or** planning — the first step is to look at what Blink/Chromium does: types, algorithms, abstractions. Mirror their type names, algorithm structure, and constraint-passing patterns; don't invent parallel vocabulary for a concept Blink already names. A plan written without a Blink survey is not an acceptable plan for this codebase.
 
-**The Blink survey is per work item, not a one-time chapter at the top of the plan.** Every numbered work item — in `/ticket-plan` or any other plan doc — must independently cite the Blink type, algorithm, or file it mirrors, or explicitly note `no Blink analog: <reason>` if the item is genuinely louis14-specific. An upfront-only survey lets piecemeal items drift from Blink even when the plan's introduction looks aligned. For `/ticket-plan` specifically: Step 1c (the Explore investigation) gathers these citations, and Step 2b's work items surface them in the "Detailed steps" block — SHA-pinned per the citation discipline below.
+**The Blink survey is per work item, not a one-time chapter at the top of the plan.** Every numbered work item in a plan doc must independently cite the Blink type, algorithm, or file it mirrors, or explicitly note `no Blink analog: <reason>` if the item is genuinely louis14-specific. An upfront-only survey lets piecemeal items drift from Blink even when the plan's introduction looks aligned. Citations are SHA-pinned per the citation discipline below.
 
 When porting a Blink primitive, place it in the louis14 package that mirrors Blink's *source location*, not wherever a phase brief literally says. E.g. `platform/geometry/layout_unit.h` → `pkg/geometry/layoutunit`; `core/layout/geometry/physical_rect.h` → `pkg/geometry`. Blink's factoring is load-bearing.
 
@@ -61,6 +60,10 @@ Line numbers alone become noise within ~6 months. SHA-pinned citations make stal
 - When citing a symbol, include both `file:line` AND the SHA in the reference.
 - When picking up a plan that's older than ~3 months, vet citations against current Blink HEAD before relying on them.
 
+## Ticket notes
+
+The ticket notes directory (universal §8) is `~/.claude/ticket-LOU-<N>/`.
+
 ## Sibling project: mazzy
 
 - Louis14 depends on mazzy via `replace mazarin/textshape => ../mazzy/mazarin/textshape` in `go.mod`. Concurrent development happens in `~/mazzy`.
@@ -69,7 +72,7 @@ Line numbers alone become noise within ~6 months. SHA-pinned citations make stal
 
 ## Worktree setup
 
-`~/louis14` owns `master` directly — a single working tree (HEAD on `master`). Ship tickets **serially** from here via the `/slopstop-*` pipeline; branch with `git switch -c <type>/LOU-N origin/master`. (The former `~/louis14-campaign` orchestration tree + per-ticket lane worktrees were removed 2026-06-21 — see the `swarm-approach-abandoned` memory; don't resurrect that approach without first solving its integration problems.)
+`~/louis14` owns `master` directly — a single working tree (HEAD on `master`). Ship tickets **serially** from here; branch with `git switch -c <type>/LOU-N origin/master`. (The former `~/louis14-campaign` orchestration tree + per-ticket lane worktrees were removed 2026-06-21 — see the `swarm-approach-abandoned` memory; don't resurrect that approach without first solving its integration problems.)
 
 If you DO spin up a worktree (e.g. an `isolation: "worktree"` agent, or `/code-review ultra`), it needs two symlinks before any non-targeted test sweep, or it hits catastrophic false regressions:
 

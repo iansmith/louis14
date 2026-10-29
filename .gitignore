@@ -18,14 +18,12 @@ test-output.txt
 
 # Claude Code
 .claude/
-.project-prefix
 
 # Local working copy of mazarin/textshape (cross-repo change staging)
 .local-mazarin/
 
-# Root-level markdown — personal notes, scratch work, ticket-local prompts.
-# Ticket-local files belong in .slopstop/ticket-active/<TICKET>/; design docs
-# belong in design/. CLAUDE.md is the one tracked exception.
+# Root-level markdown — personal notes, scratch work.
+# Design docs belong in design/. The negations below are the tracked exceptions.
 /*.md
 !/CLAUDE.md
 # Mirrored universal rules, imported by CLAUDE.md. Must be tracked — a trailing
@@ -33,11 +31,10 @@ test-output.txt
 # and would silently make this negation match nothing.
 !/CLAUDE-universal.md
 
-# Personal scratch / drafts — design docs go to design/ (tracked). Formerly /docs/.
+# Personal notes and drafts (CLAUDE-universal.md §8).
+/docs/
+# Local scratch output (e.g. reftest sweeps).
 /scratch/
-
-# slopstop project-local ticket tracking (transient working state, not source)
-.slopstop/
 
 # IDE files
 .vscode/
