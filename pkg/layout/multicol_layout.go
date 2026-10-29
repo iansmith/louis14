@@ -540,8 +540,11 @@ func (mla *MulticolLayoutAlgorithm) offsetToNextRow(lineOffset float64) float64 
 	return offsetToRowEnd + mla.rowGapSize
 }
 
-// Layout performs multi-column layout and returns the result.
-// Mirrors Blink's ColumnLayoutAlgorithm::Layout().
+// Layout performs multi-column layout and returns the result. Mirrors
+// Blink's ColumnLayoutAlgorithm::Layout (column_layout_algorithm.cc:265-431
+// @ a9f50e522efa): resolve the per-layout state, lay the parts out in
+// LayoutChildren (:337), then size and finish the fragment. The Phase 14b
+// defer before LayoutChildren has no Blink analog (deleted by plan WI-7).
 func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := mla.space.WritingDirection
 	mla.geom = CalculateInitialFragmentGeometry(mla.ctx, mla.node, mla.style, wdm, mla.space)
@@ -560,8 +563,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Callsite 1: seed the unpositioned list marker from the node + break token.
 	// Mirrors Blink cla.cc:240–253 (constructor body).
-	// ListMarkerBlockNodeIfListItem returns nil until the layout-time marker
-	// path is enabled — this makes the protocol a no-op in the current engine.
+	// ListMarkerBlockNodeIfListItem returns only an outside marker (nil for
+	// inside markers and non-list-items).
 	if markerNode := mla.node.ListMarkerBlockNodeIfListItem(); markerNode != nil {
 		if !markerNode.ListMarkerOccupiesWholeLine() {
 			incoming := mla.space.BreakToken
@@ -930,16 +933,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		InlineSize: mla.contentInlineSize + mla.geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + effBP,
 	})
-	physBorder := ToPhysicalEdges(border, wdm)
-	physPadding := ToPhysicalEdges(padding, wdm)
-	physScrollbar := ToPhysicalEdges(mla.geom.Scrollbar, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-	builder.SetBoxData(&PhysicalBoxData{
-		Margin:    physMargin,
-		Border:    physBorder,
-		Padding:   physPadding,
-		Scrollbar: physScrollbar,
-	})
+	mla.setPhysicalBoxData(builder, border, padding)
 	builder.SetIntrinsicBlockSize(mla.blockCursor)
 
 	// Callsite 2: place any unclaimed list marker before building.
@@ -965,17 +959,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// descendants still resume through the walker, so HasSeenAllChildren
 	// stays false for them (Cmt-5b; multicol-nested-032).
 	if mla.isConstrainedByOuterFragmentation() && nestedFinish.DidBreakSelf {
-		seqNum := 0
-		if mla.space.BreakToken != nil {
-			seqNum = mla.space.BreakToken.SequenceNumber + 1
-		}
-		result.BreakToken = &BlockBreakToken{
-			Node:               mla.node,
-			ConsumedBlockSize:  layoutunit.FromFloat64Round(nestedFinish.ConsumedBlockSize),
-			SequenceNumber:     seqNum,
-			HasSeenAllChildren: !builder.HasOutOfFlowFragmentainerDescendants(),
-			IsAtBlockEnd:       nestedFinish.IsAtBlockEnd,
-		}
+		result.BreakToken = mla.createBreakToken(nestedFinish)
+		result.BreakToken.HasSeenAllChildren = !builder.HasOutOfFlowFragmentainerDescendants()
 	}
 
 	result.PropagatedOOFCandidates = propagatedOOF
@@ -1085,7 +1070,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 		entry := walker.Current()
 
 		if entry.DescendantNode == nil {
-			// Column content (Blink cla.cc:574-612).
+			// Column content (Blink cla.cc:574-614).
 			result, stop := mla.LayoutFragmentationContext(entry.BreakToken, &marginStrut, walker, builder)
 			if result != nil {
 				return result
@@ -1096,7 +1081,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 			continue
 		}
 
-		// A spanner (Blink cla.cc:628-660).
+		// A spanner (Blink cla.cc:627-659).
 		status := mla.LayoutSpanner(entry.DescendantNode, entry.BreakToken, &marginStrut, builder)
 
 		// Advance the walker past this spanner entry (Blink cla.cc:651).
@@ -1124,7 +1109,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 		// fires once.
 		//
 		// No Blink analog: Blink records the spanner's break-after through
-		// PropagateChildBreakValues above, where it forces a break before a
+		// PropagateChildBreakValues (in LayoutSpanner), where it forces a break before a
 		// following spanner (CalculateBreakBetweenValue) or becomes this
 		// multicol's FinalBreakAfter; following column content resets it
 		// (cla.cc:1233-1235 @ a9f50e522efa), so Blink never breaks between
@@ -1194,14 +1179,14 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 	// (column_layout_algorithm.cc:715 @ a9f50e522efa).
 	isFirstRow := true
 	for {
-		// Blink cla.cc:716-724: the line offset includes any trailing
+		// Blink cla.cc:717-724: the line offset includes any trailing
 		// margin from a preceding spanner. The strut is NOT reset yet —
 		// if the line turns out to be empty, the margin collapses
 		// through it (and as far as the spec is concerned, the line
 		// won't even exist).
 		lineOffset := mla.blockCursor + marginStrut.Resolve()
 
-		// Blink cla.cc:795-797 row-advance guard. Fires whenever
+		// Blink cla.cc:730-739 row-advance guard. Fires whenever
 		// !isFirstRow OR we find ourselves past the start of the current
 		// row (after a spanner that didn't quite align to a row boundary
 		// even after the pre-commit snap, or in the initial position when
@@ -1216,12 +1201,15 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			if mla.hasRowHeight() {
 				lineOffset += mla.offsetToNextRow(lineOffset)
 			}
-			// Blink cla.cc:739-747: only after a wrapped row.
+			// Blink cla.cc:741-746: only after a wrapped row.
 			if mla.isConstrainedByOuterFragmentation() && !isFirstRow && mla.hasRowHeight() &&
 				mla.rowHeight() > mla.spaceLeftForContent()-lineOffset {
 				// No room for another row in the outer fragmentainer —
 				// stop now and let the outer context resume any remaining
 				// content in the next outer column.
+				// nextColumnToken is never nil here: isFirstRow is false
+				// only after a wrap, which sets a non-nil token. The nil arm
+				// is kept as the pre-split loop had it.
 				if nextColumnToken != nil {
 					// walker.Current() still points to this column-
 					// content entry (we never called walker.Next).
@@ -1276,7 +1264,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		walker.Next()
 
 		if line.columnSpannerPath == nil {
-			// Phase 18 WRITE site (Blink cla.cc:822-833). When the first
+			// Phase 18 WRITE site (Blink cla.cc:763-774). When the first
 			// row of a column-run is truncated by the outer fragmentainer
 			// (rowHeight > spaceLeft - rowStart) and column content is
 			// still pending, defer to outer with a ConsumedRowBlockSize
@@ -1296,11 +1284,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 					return mla.breakOuter(walker, builder), false
 				}
 			}
-			// Phase 12f (Blink cla.cc:835): row-wrap — when wrap is in
+			// Phase 12f (Blink cla.cc:776-777): row-wrap — when wrap is in
 			// effect and a column row exited with content still pending,
 			// continue the same column-run by starting another row below
 			// the one we just placed. Driver: column-height-001.html.
-			// AddNextColumnBreakToken installs remainingToken as the next
+			// AddNextColumnBreakToken installs the line's token as the next
 			// walker entry (mirrors Blink's
 			// MulticolPartWalker::AddNextColumnBreakToken).
 			if line.breakToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
@@ -1328,18 +1316,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			return nil, true // all column content done (no outer fragmentation)
 		}
 
-		// Spanner discovered via ColumnSpannerPath. Queue it for the next
-		// iteration via MoveToSpanner; remainingToken (post-spanner column
-		// content, if any) is stored as the walker's nextColumnToken so it
-		// becomes the iteration AFTER the spanner.
-		//
-		// NB: in commit 2 with the still-positional WRITE site, walker may
-		// have had additional parent-token entries pending (slot[1] partial
-		// spanner with resume info, slot[2] colRows). MoveToSpanner resets
-		// the walker, dropping those. Commit 3 changes the WRITE site so
-		// that the spanner's resume info appears as the NEXT walker entry
-		// directly (no re-detect col_token at slot[0]) — at which point
-		// MoveToSpanner is only called for genuinely-fresh discoveries.
+		// Spanner discovered via ColumnSpannerPath (Blink cla.cc:589-604).
+		// Queue it for the next LayoutChildren iteration via MoveToSpanner;
+		// the line's break token (post-spanner column content, if any) is
+		// stored as the walker's nextColumnToken so it becomes the iteration
+		// AFTER the spanner.
 		spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
 		walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
 		return nil, false
@@ -1377,11 +1358,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 	// The line the spanner ended is done (cla.cc:1338 @ a9f50e522efa).
 	mla.spannerPath = nil
 
-	// Derive resume state from breakToken. With the WRITE side
-	// flattened in Commit 3, each piece is a standalone flat walker
-	// entry (no nested ChildBreakTokens layering for clip vs content-
-	// overflow on the same spanner). breakToken IS the spanner's
-	// break token directly:
+	// Derive resume state from breakToken. Each piece of a resumed
+	// multicol is a standalone flat walker entry (no nested
+	// ChildBreakTokens layering for clip vs content-overflow on the same
+	// spanner). breakToken IS the spanner's break token directly:
 	//   ConsumedBlockSize > 0 (and no children)         → clip-resume
 	//   ChildBreakTokens non-empty (and Consumed == 0)  → content-overflow
 	//                                                     resume; pass the
@@ -1490,8 +1470,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 			return layoutSpannerResult{status: BreakStatusBrokeBefore, isForcedBreak: isForced}
 		}
 	}
-	// Blink cla.cc:656-660 @ a9f50e522efa: once the spanner broke inside, this
-	// fragmentainer is done — content after it resumes in the next one.
+	// Reported to LayoutChildren, which ends this fragmentainer once the
+	// spanner broke inside (Blink cla.cc:656-660 @ a9f50e522efa).
 	spannerBrokeInside := false
 	if fullResult != nil && fullResult.Fragment != nil {
 		spanFrag = fullResult.Fragment
@@ -1576,7 +1556,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 // (column_layout_algorithm.cc:389-431). louis14 keeps this second finish
 // path; the main path's tail in Layout() is the other.
 func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBuilder) *LayoutResult {
-	wdm := mla.space.WritingDirection
 	// Blink cla.cc:662-666 @ a9f50e522efa: broke in the main flow (an
 	// unfinished part, or an in-flow child broke inside) — this multicol
 	// takes up the remaining space. Every outgoing token is in-flow
@@ -1602,16 +1581,7 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	})
 	builder.SetIntrinsicBlockSize(mla.blockCursor)
 	builder.SetLayoutNode(mla.node)
-	physBorder := ToPhysicalEdges(border, wdm)
-	physPadding := ToPhysicalEdges(padding, wdm)
-	physScrollbar := ToPhysicalEdges(mla.geom.Scrollbar, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-	builder.SetBoxData(&PhysicalBoxData{
-		Margin:    physMargin,
-		Border:    physBorder,
-		Padding:   physPadding,
-		Scrollbar: physScrollbar,
-	})
+	mla.setPhysicalBoxData(builder, border, padding)
 	// LOU-143: emit gap geometry on every outer-break-result path so the
 	// column-rule painter has accurate cross-gap positions and last-row
 	// stretch info. Without this, broken-out fragments fall through to
@@ -1623,18 +1593,9 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	// MulticolLayoutAlgorithm.Layout.
 	mla.buildGapGeometry(builder, mla.contentInlineSize, math.Max(0, finish.FragmentBlockSize-effBP), mla.geom)
 	result := builder.Build()
-	seqNum := 0
-	if mla.space.BreakToken != nil {
-		seqNum = mla.space.BreakToken.SequenceNumber + 1
-	}
-	result.BreakToken = &BlockBreakToken{
-		Node:              mla.node,
-		ChildBreakTokens:  mla.outBuilder.Children(),
-		MulticolData:      mla.outgoingMulticolData,
-		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    seqNum,
-		IsAtBlockEnd:      finish.IsAtBlockEnd,
-	}
+	result.BreakToken = mla.createBreakToken(finish)
+	result.BreakToken.ChildBreakTokens = mla.outBuilder.Children()
+	result.BreakToken.MulticolData = mla.outgoingMulticolData
 	// Cmt-5b: when outBuilder is empty AND there are no deferred OOF
 	// fragmentainer descendants, the inner-mc's main loop has exhausted
 	// all in-flow children with no continuation needed, but declared
@@ -1695,6 +1656,42 @@ func (mla *MulticolLayoutAlgorithm) flushWalker(walker *MulticolPartWalker) {
 func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, builder *BoxFragmentBuilder) *LayoutResult {
 	mla.flushWalker(walker)
 	return mla.buildOuterBreakResult(builder)
+}
+
+// createBreakToken builds this multicol's outgoing break token from a
+// FinishFragmentation result: the node, the consumed (border-box)
+// block-size, the sequence number and IsAtBlockEnd. Each finish path then
+// sets what only it carries (child break tokens, MulticolBreakTokenData,
+// HasSeenAllChildren, the unpositioned list marker). Mirrors
+// BlockBreakToken::Create and its constructor (block_break_token.cc:34-42,
+// :65-78 @ a9f50e522efa), which read these fields from the builder.
+// louis14 deviation: the sequence number is the incoming token's plus one
+// for any incoming token; Blink skips the increment after a break-before
+// token (SetupFragmentBuilderForFragmentation, fragmentation_utils.cc:426-430).
+func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
+	seqNum := 0
+	if mla.space.BreakToken != nil {
+		seqNum = mla.space.BreakToken.SequenceNumber + 1
+	}
+	return &BlockBreakToken{
+		Node:              mla.node,
+		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
+		SequenceNumber:    seqNum,
+		IsAtBlockEnd:      finish.IsAtBlockEnd,
+	}
+}
+
+// setPhysicalBoxData records the fragment's physical margin, border,
+// padding and scrollbar on builder. no Blink analog: louis14's
+// PhysicalBoxData (Blink's fragment builder carries these itself).
+func (mla *MulticolLayoutAlgorithm) setPhysicalBoxData(builder *BoxFragmentBuilder, border, padding LogicalEdges) {
+	wdm := mla.space.WritingDirection
+	builder.SetBoxData(&PhysicalBoxData{
+		Margin:    ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm),
+		Border:    ToPhysicalEdges(border, wdm),
+		Padding:   ToPhysicalEdges(padding, wdm),
+		Scrollbar: ToPhysicalEdges(mla.geom.Scrollbar, wdm),
+	})
 }
 
 // layoutLineResult is what LayoutLine reports about the line it laid out.
@@ -2476,9 +2473,10 @@ func resolveSpannerInlineMargins(
 }
 
 // layoutSpanner lays out a column-span:all element at the full multicol
-// container width. Mirrors Blink's ColumnLayoutAlgorithm::LayoutSpanner()
-// (cla.cc:1397) — creates a new FC constraint space at full container inline
-// size and lays out the spanner node.
+// container width: the layout() step of Blink's LayoutSpanner
+// (column_layout_algorithm.cc:1355-1362 @ a9f50e522efa) with a space like
+// CreateConstraintSpaceForSpanner's (:1865-1894). LOU-411 merges it with
+// layoutSpannerInFrag.
 func (mla *MulticolLayoutAlgorithm) layoutSpanner(
 	spanner *LayoutInputNode,
 	contentInlineSize float64,
