@@ -217,3 +217,118 @@ func TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage(t *testing.T
 		t.Fatalf("inner mc MinSpaceShortage = %v, want > 0 (100px monolith in a 40px line)", result.MinSpaceShortage)
 	}
 }
+
+// TestMulticolNested_SpannerAtOuterEndIsPushed (LOU-388 WI-4): a spanner of a
+// nested multicol goes through BreakBeforeChildIfNeeded
+// (column_layout_algorithm.cc:1398-1411 @ a9f50e522efa); one that starts at
+// the outer fragmentainer end is broken before and placed whole at the top of
+// the next outer column, and content after it is not laid out in the
+// exhausted outer column. multicol-span-all-children-height-007; Chrome 155
+// (probe p007): inner fragments 110, 110, 70 tall; the spanner at the top of
+// the second; block2's first row 60 tall below it.
+func TestMulticolNested_SpannerAtOuterEndIsPushed(t *testing.T) {
+	block1 := makeNode("div")
+	spanner := makeNode("div")
+	block2 := makeNode("div")
+	innerMC := makeNode("div", block1, spanner, block2)
+	outerMC := makeNode("div", innerMC)
+	styles := map[*html.Node]*css.Style{
+		outerMC: makeStyle("display", "block", "width", "400px", "height", "110px",
+			"column-count", "2", "column-gap", "16px"),
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "16px", "height", "270px",
+			"border-top-width", "10px", "border-top-style", "solid",
+			"border-bottom-width", "10px", "border-bottom-style", "solid",
+			"border-left-width", "10px", "border-left-style", "solid",
+			"border-right-width", "10px", "border-right-style", "solid"),
+		block1:  makeStyle("display", "block", "height", "200px"),
+		spanner: makeStyle("display", "block", "height", "50px", "column-span", "all"),
+		block2:  makeStyle("display", "block", "height", "240px"),
+	}
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil {
+		t.Fatal("outer mc layout returned nil")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	var heights []float64
+	var frags []*PhysicalFragment
+	for _, col := range result.Fragment.Children {
+		if l := childLinkFor(col.Fragment, innerMC); l != nil {
+			heights = append(heights, NewLogicalFragment(wdm, l.Fragment).BlockSize())
+			frags = append(frags, l.Fragment)
+		}
+	}
+	if len(heights) != 3 || heights[0] != 110 || heights[1] != 110 || heights[2] != 70 {
+		t.Fatalf("inner mc fragment heights = %v, want [110 110 70]", heights)
+	}
+	if l := childLinkFor(frags[0], spanner); l != nil {
+		t.Errorf("spanner placed in the first inner fragment at y=%v; want it pushed", l.Offset.Top.Float64())
+	}
+	l := childLinkFor(frags[1], spanner)
+	if l == nil {
+		t.Fatal("second inner fragment has no spanner")
+	}
+	if got := l.Offset.Top.Float64(); got != 0 {
+		t.Errorf("spanner in the second inner fragment at y=%v, want 0", got)
+	}
+}
+
+// TestMulticolNested_LineThatDoesNotFitIsBrokenBefore (LOU-388 WI-4): after
+// a spanner, a nested multicol's column line that does not fit in the outer
+// fragmentainer is broken before as a whole (LayoutLine → MovePastBreakpoint →
+// nullptr, column_layout_algorithm.cc:1194-1213 @ a9f50e522efa), so it starts
+// the next outer column. multicol-nested-017; Chrome 155 (scratchpad probe
+// p017): inner fragments 50 then 100 tall; the spanner is in the first.
+func TestMulticolNested_LineThatDoesNotFitIsBrokenBefore(t *testing.T) {
+	filler := makeNode("div")
+	a := makeNode("div")
+	sp := makeNode("div")
+	line := makeNode("div", makeTextNode("x"))
+	last := makeNode("div")
+	box := makeNode("div", sp, line, last)
+	innerMC := makeNode("div", a, box)
+	outerMC := makeNode("div", filler, innerMC)
+	styles := map[*html.Node]*css.Style{
+		outerMC: makeStyle("display", "block", "width", "100px", "height", "110px",
+			"column-count", "2", "column-gap", "0", "column-fill", "auto", "line-height", "50px"),
+		filler:  makeStyle("display", "block", "height", "60px"),
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto", "line-height", "50px"),
+		a:       makeStyle("display", "block", "height", "40px"),
+		box:     makeStyle("display", "block", "height", "100px", "line-height", "50px"),
+		sp:      makeStyle("display", "block", "height", "20px", "column-span", "all"),
+		line:    makeStyle("display", "block", "width", "200%", "line-height", "50px"),
+		last:    makeStyle("display", "block", "width", "200%", "height", "50px"),
+	}
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil {
+		t.Fatal("outer mc layout returned nil")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	var heights []float64
+	var frags []*PhysicalFragment
+	for _, col := range result.Fragment.Children {
+		if l := childLinkFor(col.Fragment, innerMC); l != nil {
+			heights = append(heights, NewLogicalFragment(wdm, l.Fragment).BlockSize())
+			frags = append(frags, l.Fragment)
+		}
+	}
+	if len(heights) != 2 || heights[0] != 50 || heights[1] != 100 {
+		t.Fatalf("inner mc fragment heights = %v, want [50 100]", heights)
+	}
+	if childLinkFor(frags[0], sp) == nil {
+		t.Errorf("first inner fragment has no spanner")
+	}
+}
