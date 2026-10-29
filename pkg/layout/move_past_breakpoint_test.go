@@ -125,3 +125,31 @@ func TestMovePastBreakpoint_ChildThatDoesNotFitBreaksBefore(t *testing.T) {
 		}
 	}
 }
+
+// TestMovePastBreakpoint_MovingPastOverflowReportsShortage (LOU-392): a child
+// moved past at the fragmentainer start although its block-size for
+// fragmentation overflows reports the shortage, even when only its
+// BlockSizeForFragmentation (not its fragment) overflows
+// (PropagateSpaceShortage, fragmentation_utils.cc:1230-1240 @ a9f50e522efa).
+func TestMovePastBreakpoint_MovingPastOverflowReportsShortage(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := ConstraintSpace{
+		WritingDirection:       wdm,
+		HasBlockFragmentation:  true,
+		FragmentainerBlockSize: 100,
+		BlockFragmentationType: FragmentColumn,
+		MinBreakAppeal:         BreakAppealLastResort,
+	}
+	overflowing := &LayoutResult{
+		BreakAppeal:               BreakAppealPerfect,
+		BlockSizeForFragmentation: 150,
+		Fragment:                  &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, 60)},
+	}
+	builder := NewBoxFragmentBuilder(wdm)
+	if !MovePastBreakpoint(space, overflowing, 0, 100, BreakAppealPerfect, builder) {
+		t.Fatal("MovePastBreakpoint at the fragmentainer start = false, want true (refuse to break before)")
+	}
+	if !builder.hasMinimalSpaceShortage || builder.minimalSpaceShortage != 50 {
+		t.Errorf("reported shortage = %v (set=%v), want 50", builder.minimalSpaceShortage, builder.hasMinimalSpaceShortage)
+	}
+}
