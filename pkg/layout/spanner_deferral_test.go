@@ -68,3 +68,35 @@ func TestSpannerDeferredUntilParallelFlowFinishes_LOU405(t *testing.T) {
 		}
 	}
 }
+
+// LOU-405: the trailing margin of the last child before a spanner stays in
+// the column (columns are formatting-context roots; Blink's FinishLayout
+// adds the end margin strut whether or not the box breaks,
+// block_layout_algorithm.cc:1306-1349 @ a9f50e522efa). Chrome 155: a 100px
+// block with a 40px bottom margin balances to a 70px row and the spanner
+// sits at y=70, with or without content after the spanner.
+func TestSpannerPrecedingMarginStaysInColumn_LOU405(t *testing.T) {
+	for _, withSibling := range []bool{false, true} {
+		block := makeNode("div")
+		spanner := makeNode("div")
+		kids := []*html.Node{block, spanner}
+		styles := map[*html.Node]*css.Style{
+			block:   makeStyle("display", "block", "height", "100px", "margin-bottom", "40px"),
+			spanner: makeStyle("display", "block", "column-span", "all", "height", "10px"),
+		}
+		if withSibling {
+			after := makeNode("div")
+			kids = append(kids, after)
+			styles[after] = makeStyle("display", "block", "height", "20px")
+		}
+		mc := makeNode("div", kids...)
+		styles[mc] = makeStyle("display", "block", "width", "200px", "column-count", "2", "column-gap", "0")
+		spanners := spannerChildren(layoutMulticolForTest(t, mc, styles))
+		if len(spanners) != 1 {
+			t.Fatalf("withSibling=%v: got %d spanners, want 1", withSibling, len(spanners))
+		}
+		if got := spanners[0].Offset.Top.Float64(); got != 70 {
+			t.Errorf("withSibling=%v: spanner at y=%v, want 70 (row of (100+40)/2)", withSibling, got)
+		}
+	}
+}

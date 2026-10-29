@@ -383,7 +383,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// FinishFragmentationForFragmentainer (fragmentation_utils.cc:823-860 @
 	// a9f50e522efa).
 	fragmentainerConsumedBlockSize := func(contentExtent float64) float64 {
-		if bla.space.FragmentainerBlockSize != Indefinite && !bla.space.IsInitialColumnBalancingPass {
+		if isFragmentainerBox && bla.space.FragmentainerBlockSize != Indefinite &&
+			!bla.space.IsInitialColumnBalancingPass {
 			return previouslyConsumed + max(1, bla.space.FragmentainerBlockSize)
 		}
 		return previouslyConsumed + contentExtent
@@ -2175,7 +2176,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// 6.2 forced-break path, which returns before reaching here.
 	// 6.4.c activates the gate when frag-overflow flows through the
 	// natural post-loop.
-	if !pendingShouldBreakInside {
+	// A fragment interrupted by a spanner keeps its trailing margins and
+	// float clearance, as any finished fragment does (Blink's FinishLayout
+	// adds the end margin strut whether or not the box breaks,
+	// block_layout_algorithm.cc:1298-1349 @ a9f50e522efa).
+	breaksBeforeEnd := pendingShouldBreakInside && !builder.FoundColumnSpanner()
+	if !breaksBeforeEnd {
 		// The strut is reset even when it resolves to nothing: a
 		// discarding strut (DiscardMargins) must not leak out as the end
 		// margin strut, or it would discard the next sibling's margin.
@@ -2203,7 +2209,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.6.7: For elements that own floats (BFC roots or elements
 	// that contain their own floats), auto block-size extends to clear them.
 	// Elements that only inherit floats from a parent BFC do not extend.
-	if !pendingShouldBreakInside && !hasExplicitBlock && hasOwnFloats {
+	if !breaksBeforeEnd && !hasExplicitBlock && hasOwnFloats {
 		bfcCursor := bfcBlockOrigin + blockCursor
 		clearedBlockBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
 		clearedBlock := clearedBlockBfc - bfcBlockOrigin
@@ -2223,7 +2229,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// block-size to the list item's intrinsic block size. This MUST run before
 	// builder.SetIntrinsicBlockSize / SetSize so the bump propagates (Blink
 	// runs it from FinishLayout, before the builder is finalized).
-	bla.positionListMarkerWithoutLineBoxes(builder, &intrinsicBlockSize)
+	// Not when a child broke inside: the marker goes with the content of a
+	// later fragment (block_layout_algorithm.cc:1440-1448 @ a9f50e522efa).
+	if !pendingHasInflowChildBreakInside {
+		bla.positionListMarkerWithoutLineBoxes(builder, &intrinsicBlockSize)
+	}
 
 	// A fragment that breaks — a child broke inside, or a child continues
 	// in a parallel flow past this box's end — carries no block-end edge in
