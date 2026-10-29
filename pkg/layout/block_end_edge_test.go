@@ -228,3 +228,20 @@ func TestEffectiveBlockBorderPadding_PastEnd(t *testing.T) {
 		t.Errorf("zero-consumed resume = %v, want 16 (first real fragment keeps both edges)", got)
 	}
 }
+
+// TestBreakingFragment_MeasurePassKeepsDeclaredHeight: the initial balancing
+// pass has an indefinite fragmentainer, so a definite-height box breaking
+// there keeps its declared height; cutting it lost the forced-break child.
+// Chrome 155: C 150 tall in column 1, A 60, B at the top of column 2.
+func TestBreakingFragment_MeasurePassKeepsDeclaredHeight(t *testing.T) {
+	tree := ms("mc", props("width", "100px", "column-count", "2", "column-gap", "0", "column-fill", "balance"),
+		ms("C", props("height", "150px"),
+			ms("A", props("height", "60px")),
+			ms("B", props("height", "40px", "break-before", "column"))))
+	frag, ids := layoutInFlowRoot(t, tree)
+	got := borderBoxRectsByID(frag, ids)
+	checkRects(t, got, map[string][]fragRect{"A": {{0, 0, 50, 60}}, "B": {{50, 0, 50, 40}}})
+	if c := got["C"]; len(c) == 0 || c[0].h != 150 {
+		t.Errorf("C fragments = %v, want the column-1 fragment 150 tall (Chrome 155)", c)
+	}
+}
