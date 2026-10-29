@@ -1,76 +1,27 @@
 package layout
 
 import (
+	"slices"
 	"testing"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
 
-// LOU-320: contract of the pure budget-distribution helper. A definite-height
-// block fragmented across column-span splits hands each segment no more than the
-// budget still unconsumed by prior fragments.
-//
-//   - value fits within remaining budget → value unchanged.
-//   - first (unconsumed) segment over the declared height → clamp to the height.
-//   - positive budget exhausted or over-consumed (remaining <= 0) → 0, so a
-//     resumed fragment can never regain full size after the budget is spent.
-//   - a non-positive budget (height:0 box with overflow) is not a height to
-//     distribute → value untouched, so overflowing content still renders
-//     (regression guard for spanner-in-child-after-parallel-flow-004).
-func TestClampToRemainingBlockBudget_LOU320(t *testing.T) {
-	tests := []struct {
-		name                               string
-		value, explicitBlockSize, consumed float64
-		want                               float64
-	}{
-		{"fits within remaining budget", 50, 450, 400, 50},
-		{"over-budget first segment clamps", 200, 100, 0, 100},
-		{"exhausted budget yields zero", 200, 350, 350, 0},
-		{"over-consumed budget yields zero", 200, 300, 400, 0},
-		{"zero-height box keeps overflow content", 90, 0, 90, 90},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := clampToRemainingBlockBudget(tc.value, tc.explicitBlockSize, tc.consumed)
-			if got != tc.want {
-				t.Errorf("clampToRemainingBlockBudget(%v, %v, %v) = %v, want %v",
-					tc.value, tc.explicitBlockSize, tc.consumed, got, tc.want)
-			}
-		})
-	}
-}
-
 // LOU-320: block-size distribution of a definite-height block split by
 // column-span:all descendants.
 //
 // Mirrors css-multicol/multicol-span-all-children-height-004a. A
 // `div.container{height:450px}` sits inside an auto-height column-count:2
-// multicol and contains [block1, spanner1, block2, spanner2, block3]. The two
-// spanners fragment the container into three column-set segments. The
-// container's 450px MUST be distributed across the three fragments so each
-// holds just enough for its children, the total equalling 450 — NOT
-// re-applied in full to each fragment.
+// multicol and contains [block1, spanner1, block2, spanner2, block3]. The
+// container's 450px is distributed across its fragments (Blink
+// FinishFragmentation, fragmentation_utils.cc:606-640 @ a9f50e522efa) while
+// the column rows stay content-driven: the last segment has 50px of the
+// container left, but block3 (200px) still balances to a 100px row and
+// overflows its container. Chrome 155 (headless, getClientRects, LOU-400):
 //
-// Expected layout (from multicol-span-all-children-height-004a-ref.html, which
-// renders the distribution as three separate articles):
-//
-//	segment 1 (block1 200px): container fragment 200px → balanced 2×100px → col-set 100px tall
-//	spanner1 50px                                                          → at y=100
-//	segment 2 (block2 200px): container fragment 200px → balanced 2×100px → col-set 100px tall
-//	spanner2 50px                                                          → at y=250
-//	segment 3 (block3 200px): only 50px of container budget LEFT
-//	                          (450 − 200 − 200), which the 2-column balance
-//	                          splits to a 25px col-set row (block3 overflows)
-//
-//	total multicol block-size = 100 + 50 + 100 + 50 + 25 = 325px
-//
-// Bug: louis14 gives the resumed third container fragment its intrinsic content
-// size (200px) instead of the remaining declared budget (50px), so segment 3
-// renders 100px tall (block3 balanced 2×100px) and the multicol totals 400px.
-//
-// block_layout.go:1733-1738 — resumed non-override block uses
-// `finalBlockSize = intrinsicBlockSize`, ignoring `explicitBlockSize − consumed`.
+//	container fragments: 100,100 | 100,100 | 50,0
+//	spanner1 y=100, spanner2 y=250, multicol block-size 400
 func TestSpanBlockSize_LOU320_DefiniteHeightContainerSplitBySpanners(t *testing.T) {
 	block1 := makeNode("div")
 	spanner1 := makeNode("div")
@@ -140,44 +91,40 @@ func TestSpanBlockSize_LOU320_DefiniteHeightContainerSplitBySpanners(t *testing.
 		t.Errorf("spanner2 at y=%v, want y=250 (after segments 1+2 and spanner1: 100+50+100)", spannerTops[1])
 	}
 
-	// Total height (verified against multicol-span-all-children-height-004a-ref.html):
-	// segment 1 (block1 200px) → 100px column row; spanner1 50px;
-	// segment 2 (block2 200px) → 100px column row; spanner2 50px;
-	// segment 3 has only 50px of the container's 450px budget left (450-200-200),
-	// which the 2-column balance splits to a 25px column row (block3 overflows).
-	// 100 + 50 + 100 + 50 + 25 = 325.
-	got := result.Fragment.Size.HeightF64()
-	const want = 325.0
-	if got != want {
-		t.Errorf("multicol block-size = %v, want %v "+
-			"(container 450px distributed across spanner splits: 100+50+100+50+25)", got, want)
+	assertColumnFirstChildHeights(t, result, []float64{100, 100, 100, 100, 50, 0})
+	if got := result.Fragment.Size.HeightF64(); got != 400 {
+		t.Errorf("multicol block-size = %v, want 400 (rows 100+50+100+50+100, Chrome)", got)
+	}
+}
+
+// assertColumnFirstChildHeights checks the block-size of the first child of
+// every column of a multicol result, in column order.
+func assertColumnFirstChildHeights(t *testing.T, result *LayoutResult, want []float64) {
+	t.Helper()
+	var got []float64
+	for _, ch := range result.Fragment.Children {
+		if ch.Fragment.BoxType == BoxTypeColumn && len(ch.Fragment.Children) > 0 {
+			got = append(got, ch.Fragment.Children[0].Fragment.Size.HeightF64())
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("container fragment heights = %v, want %v (Chrome)", got, want)
 	}
 }
 
 // LOU-325: a MIDDLE segment whose block content OVERFLOWS the container's
-// remaining budget must still surface the trailing spanner and zero-budget
-// final segment.
+// remaining budget must still surface the trailing spanner and the final
+// segment.
 //
 // Mirrors css-multicol/multicol-span-all-children-height-004b. Same shape as
-// 004a but the container is height:350px, so the budget is exhausted by the
-// second segment:
+// 004a but the container is height:350px, so its budget is exhausted inside
+// the second segment. The container's fragments take what is left of it, the
+// column rows stay content-driven (Blink FinishFragmentation,
+// fragmentation_utils.cc:606-640 @ a9f50e522efa). Chrome 155 (headless,
+// getClientRects, LOU-400):
 //
-//	segment 1 (block1 200px): budget 350, block1 fits → 2×100px column row → 100px
-//	spanner1 50px                                                          → at y=100
-//	segment 2 (block2 200px): only 150px of budget LEFT (350−200). block2
-//	                          OVERFLOWS it; the 150px balances to a 75px column
-//	                          row (block2 clipped). consumed accumulates the
-//	                          CLAMPED 150 (→ 350 total), not block2's raw 200.
-//	spanner2 50px                                                          → at y=225
-//	segment 3 (block3 200px): 0px budget LEFT (350−350) → 0px column row
-//
-//	total = 100 + 50 + 75 + 50 + 0 = 275px
-//
-// Bug (pre-fix): block2 (200px) fills the bounded render columns (2×75=150px)
-// and produces a plain continuation token, so the render never reaches
-// spanner2 — the multicol dropped spanner2 AND segment 3 entirely, collapsing
-// the total to 225px. The measure pass DOES reach the spanner at indefinite
-// column height; layoutLine now falls back to that captured detection result.
+//	container fragments: 100,100 | 100,50 | 0,0
+//	spanner1 y=100, spanner2 y=250, multicol block-size 400
 func TestSpanBlockSize_LOU325_MiddleSegmentOverflowsBudget(t *testing.T) {
 	block1 := makeNode("div")
 	spanner1 := makeNode("div")
@@ -239,14 +186,12 @@ func TestSpanBlockSize_LOU325_MiddleSegmentOverflowsBudget(t *testing.T) {
 	if spannerTops[0] != 100 {
 		t.Errorf("spanner1 at y=%v, want y=100 (after segment 1: block1 balanced to a 100px column row)", spannerTops[0])
 	}
-	if spannerTops[1] != 225 {
-		t.Errorf("spanner2 at y=%v, want y=225 (100 + 50 + 75: segment 2 clamped to the 150px remaining budget → 75px column row)", spannerTops[1])
+	if spannerTops[1] != 250 {
+		t.Errorf("spanner2 at y=%v, want y=250 (100 + 50 + 100, Chrome)", spannerTops[1])
 	}
+	assertColumnFirstChildHeights(t, result, []float64{100, 100, 100, 50, 0, 0})
 
-	got := result.Fragment.Size.HeightF64()
-	const want = 275.0
-	if got != want {
-		t.Errorf("multicol block-size = %v, want %v "+
-			"(container 350px: 100+50+75+50+0; block2 overflows the 150px segment-2 budget, segment 3 gets a 0px budget)", got, want)
+	if got := result.Fragment.Size.HeightF64(); got != 400 {
+		t.Errorf("multicol block-size = %v, want 400 (rows 100+50+100+50+100, Chrome)", got)
 	}
 }

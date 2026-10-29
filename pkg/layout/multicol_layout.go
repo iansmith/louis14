@@ -1183,8 +1183,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// optionally ChildBreakTokens for every resume case (S5/S6 in the
 		// audit's case table). Forwarding entry.BreakToken straight into
 		// layoutSpannerInFrag handles both clip-resume and content-overflow-
-		// resume uniformly — the BLA's prev_consumed math and Phase 16.d.1
-		// clamp produce a correctly-sized fragment. The geometric clip
+		// resume uniformly — the BLA's FinishFragmentation produces a
+		// correctly-sized fragment. The geometric clip
 		// post-mutation that Fab A used to do is no longer needed; the
 		// Fab A clip body at :899-936 is also redundant and goes in 6.6.B.
 		var fullResult *LayoutResult
@@ -1881,7 +1881,9 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				colMinBreakAppeal = minBreakAppeal
 			}
 			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceControlsColumnHeight, true, colMinBreakAppeal)
-			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
+			columnAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace)
+			columnAlgorithm.SetBoxType(BoxTypeColumn)
+			result := columnAlgorithm.Layout()
 			if result == nil || result.Fragment == nil {
 				break
 			}
@@ -2307,22 +2309,24 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 	// Determine spanner path and remaining token from the last inner result.
 	if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-		// When a spanner is detected and NO pre-spanner in-column content was
-		// placed in any column of this row (all intrinsic sizes are 0), commit
-		// the spanner at the row origin — not below an empty forced slot
-		// (IsFixedBlockSize + column-height can make an empty column fragment
-		// report a full row height via BlockSize()). For rows where at least
-		// one column placed content before the spanner, keep the existing
-		// forced-row-height advance so subsequent rows align correctly.
-		anyIntrinsic := false
+		// When a spanner is detected and no column of this row holds
+		// pre-spanner content, commit the spanner at the row origin — not
+		// below an empty forced slot (IsFixedBlockSize + column-height can
+		// make an empty column fragment report a full row height). Content
+		// overflowing its boxes counts: a column whose intrinsic block-size
+		// is 0 still holds content when its block-size for fragmentation is
+		// not (Blink measures a column by its BlockSizeForFragmentation,
+		// cla.cc:1652-1672 @ a9f50e522efa; spanner-in-child-after-parallel-
+		// flow-004, a height:0 box whose child overflows it).
+		anyContent := false
 		for _, col := range finalColumns {
-			if col.intrinsicBlock > 0 {
-				anyIntrinsic = true
+			if col.intrinsicBlock > 0 || FragmentainerBlockSizeForFragmentation(wdm, col.fragment) > 0 {
+				anyContent = true
 				break
 			}
 		}
 		rowAdvance := maxColHeight
-		if !anyIntrinsic {
+		if !anyContent {
 			rowAdvance = 0
 		}
 		return rowAdvance, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken, lineIsEmpty, false
@@ -2616,7 +2620,9 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 
 	const maxIterations = 1000 // safety valve against non-advancing break-token bugs
 	for i := 0; i < maxIterations; i++ {
-		result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, buildSpace(breakToken)).Layout()
+		balancingAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, contentNode, buildSpace(breakToken))
+		balancingAlgorithm.SetBoxType(BoxTypeColumn)
+		result := balancingAlgorithm.Layout()
 		if result == nil {
 			break
 		}
@@ -2634,6 +2640,11 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 					}
 				}
 			}
+			// The run encompasses content overflowing its boxes: Blink
+			// measures the column's BlockSizeForFragmentation
+			// (column_layout_algorithm.cc:1652-1672 @ a9f50e522efa), which
+			// louis14 recomputes from the fragment tree (LOU-399).
+			colBSize = math.Max(colBSize, FragmentainerBlockSizeForFragmentation(wdm, result.Fragment))
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}
 

@@ -182,35 +182,6 @@ func ShouldIncludeBlockEndBorderPadding(previousBreakToken *BlockBreakToken, sho
 	return !hasInflowChildBreakInside
 }
 
-// finishFragmentationContentBlockSize is the sizing half of Blink's
-// FinishFragmentation in louis14 content-box units: given the space left in
-// the fragmentainer from this box's border edge, the fragment geometry (its
-// edges already cleared), the box's declared block-end border/padding and the
-// content block-size it still wants, it returns the content block-size that
-// fits, whether the box breaks itself, and the space shortage. When the box
-// does not fit, a last-resort breakpoint sits before the trailing
-// border/padding unless end decorations are cloned
-// (preventBreakBeforeBlockEndDecorations) or nothing but the edge remains, so
-// a self-break always makes progress. Mirrors fragmentation_utils.cc:559-587
-// (desired, trailing, subtractable), :641-662 (self-break final size) and
-// :798-800 (shortage) @ a9f50e522efa; louis14 keeps truncating tall
-// unbreakable content instead of Blink's :589-599 widening.
-func finishFragmentationContentBlockSize(spaceLeft float64, geom FragmentGeometry, declaredBlockEnd, contentBlockSize float64, preventBreakBeforeBlockEndDecorations bool) (content float64, didBreakSelf bool, shortage float64) {
-	start := geom.BorderBoxPadding().BlockStart
-	trailing := geom.BorderBoxPadding().BlockEnd
-	desired := start + contentBlockSize + declaredBlockEnd
-	if desired <= spaceLeft {
-		return contentBlockSize, false, 0
-	}
-	subtractable := 0.0
-	if !preventBreakBeforeBlockEndDecorations && desired > trailing {
-		subtractable = trailing
-	}
-	final := math.Min(desired-subtractable, math.Max(spaceLeft, start+trailing-subtractable))
-	content = math.Max(0, final-start-(trailing-subtractable))
-	return content, final < desired, desired - spaceLeft
-}
-
 // FragmentainerBlockSizeForFragmentation returns a fragmentainer's (column's)
 // block-size for fragmentation: the furthest block-end reached by its
 // children, each contributing its own border-box block-size or, when it does
@@ -246,7 +217,10 @@ func FragmentainerBlockSizeForFragmentation(wdm WritingDirectionMode, fragmentai
 // a9f50e522efa).
 func blockSizeForFragmentationOfFragment(wdm WritingDirectionMode, frag *PhysicalFragment) float64 {
 	own := NewLogicalFragment(wdm, frag).BlockSize()
-	if clipsBlockAxisOverflow(frag.Style, wdm) {
+	// A line box contributes its own block-size; the glyph boxes of its
+	// text may overhang it (box_fragment_builder.cc:484-495 propagates a
+	// line box's own size).
+	if frag.Type != FragmentBox || clipsBlockAxisOverflow(frag.Style, wdm) {
 		return own
 	}
 	return math.Max(own, FragmentainerBlockSizeForFragmentation(wdm, frag))

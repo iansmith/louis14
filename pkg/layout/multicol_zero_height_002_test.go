@@ -19,17 +19,16 @@ import (
 // tall unbreakable content, so desired_block_size does not exceed space_left
 // and SetDidBreakSelf is skipped — the block overflows rather than continuing.
 //
-// Regression guard for the LOU-370 Phase 16.d.1 `space_left > 0` relaxation:
-// relaxing it for 0-height FragmentColumn spaces (as an earlier iteration did)
-// forced this unbreakable child to self-break → a continuation → the strip.
-// The `> 0` guard must stay; children-height-003's budget-exhausted post-
-// spanner block reaches the clamp with a 1px column (not 0), so it is
-// unaffected.
+// The fragmentainer capacity is at least 1px (Blink
+// ClampedToValidFragmentainerCapacity, fragmentation_utils.h:156-173), so it
+// is the unbreakable content that keeps the child whole: the stand-in for the
+// glyph must itself be unbreakable (LOU-400).
 func TestZeroHeightUnbreakableNoContinuation(t *testing.T) {
 	// .multicol { column-width:100px; inline-size:300px; block-size:0 }
 	// with one unbreakable .child { inline-size:100px; block-size:100px }.
 	// The inner block stands in for the single-glyph Ahem line (an
-	// unbreakable 100px unit) so the test needs no font.
+	// unbreakable 100px unit) so the test needs no font; size containment
+	// makes it monolithic, as the line is.
 	glyph := makeNode("div")
 	child := makeNode("div", glyph)
 	mc := makeNode("div", child)
@@ -37,7 +36,7 @@ func TestZeroHeightUnbreakableNoContinuation(t *testing.T) {
 		mc: makeStyle("display", "block", "column-width", "100px",
 			"width", "300px", "height", "0"),
 		child: makeStyle("display", "block", "width", "100px", "height", "100px"),
-		glyph: makeStyle("display", "block", "height", "100px"),
+		glyph: makeStyle("display", "block", "height", "100px", "contain", "size"),
 	}
 
 	result := layoutMulticolForTest(t, mc, styles)
