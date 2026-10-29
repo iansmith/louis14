@@ -192,6 +192,13 @@ type BoxFragmentBuilder struct {
 	columnSpannerPath    *ColumnSpannerPath
 	hasColumnSpanner     bool
 	isEmptySpannerParent bool
+
+	// shouldForceSameFragmentationFlow keeps this box's breaks in its
+	// parent's flow: it contains a column spanner, so content after it must
+	// not be laid out in a parallel flow before the spanner. Mirrors Blink's
+	// BoxFragmentBuilder::SetShouldForceSameFragmentationFlow
+	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
+	shouldForceSameFragmentationFlow bool
 }
 
 type logicalChildLink struct {
@@ -777,6 +784,12 @@ func (b *BoxFragmentBuilder) FoundColumnSpanner() bool {
 	return b.hasColumnSpanner
 }
 
+// SetShouldForceSameFragmentationFlow marks that this box's breaks stay in
+// its parent's flow (see shouldForceSameFragmentationFlow).
+func (b *BoxFragmentBuilder) SetShouldForceSameFragmentationFlow() {
+	b.shouldForceSameFragmentationFlow = true
+}
+
 // SetIsEmptySpannerParent marks that this fragment holds nothing before the
 // spanner it was interrupted by. Mirrors Blink's
 // FragmentBuilder::SetIsEmptySpannerParent (fragment_builder.h:446-449 @
@@ -866,6 +879,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		BreakAppeal:            BreakAppealPerfect,
 		ColumnSpannerPath:      b.columnSpannerPath,
 		IsEmptySpannerParent:   b.isEmptySpannerParent,
+
+		ShouldForceSameFragmentationFlow: b.shouldForceSameFragmentationFlow,
 	}
 	if allowBaseline {
 		result.Baseline = b.baseline

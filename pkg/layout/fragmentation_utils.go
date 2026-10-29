@@ -119,6 +119,17 @@ func IsParallelFlowContinuation(tok *BlockBreakToken) bool {
 	return tok != nil && (tok.IsAtBlockEnd || tok.IsInParallelFlow)
 }
 
+// IsInParallelFlow reports whether a child result's break continues in a
+// parallel flow: the child is at its block end (or explicitly in a parallel
+// flow) and does not contain a column spanner, which forces its breaks into
+// the parent's flow. Mirrors child_is_in_same_flow in Blink's
+// BoxFragmentBuilder::PropagateBreakInfo (box_fragment_builder.cc:503-510 @
+// a9f50e522efa).
+func IsInParallelFlow(childResult *LayoutResult) bool {
+	return IsParallelFlowContinuation(childResult.BreakToken) &&
+		!childResult.ShouldForceSameFragmentationFlow
+}
+
 // AdjustMarginsForFragmentation truncates the block margins of a child that
 // resumes with breakToken. A leading margin belongs in front of the first
 // fragment only, and is truncated after an unforced break too (floats never

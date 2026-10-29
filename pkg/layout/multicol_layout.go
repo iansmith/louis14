@@ -114,6 +114,15 @@ type MulticolLayoutAlgorithm struct {
 	// container_builder_.PropagateTallestUnbreakableBlockSize call at
 	// column_layout_algorithm.cc:1706-1712. v2 Path X port.
 	lastMeasuredTallestUnbreakable float64
+
+	// spannerPath is the path to the spanner that ends the current line of
+	// columns, found by the balancing pass and handed to every column
+	// layout of the line, so blocks on it keep their breaks in the same
+	// flow. Reset before balancing and when the spanner is laid out.
+	// Mirrors Blink's ColumnLayoutAlgorithm::spanner_path_
+	// (column_layout_algorithm.cc:942, :1338, :1526, :1637-1694 @
+	// a9f50e522efa).
+	spannerPath *ColumnSpannerPath
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -1049,6 +1058,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 		// === Spanner branch (Blink cla.cc:656-684 LayoutSpanner). ===
 		spanner := entry.DescendantNode
+		// The line the spanner ended is done (cla.cc:1338 @ a9f50e522efa).
+		mla.spannerPath = nil
 
 		// Derive resume state from entry.BreakToken. With the WRITE side
 		// flattened in Commit 3, each piece is a standalone flat walker
@@ -2562,7 +2573,8 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		b = b.SetIsInitialColumnBalancingPass(true).
 			SetHasBlockFragmentation(true).
 			SetFragmentainerBlockSize(Indefinite).
-			SetBlockFragmentationType(FragmentColumn)
+			SetBlockFragmentationType(FragmentColumn).
+			SetColumnSpannerPath(mla.spannerPath)
 		if breakToken != nil {
 			b = b.SetBreakToken(breakToken)
 		}
@@ -2573,6 +2585,8 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	// (column_layout_algorithm.cc:1734-1934). Each iteration measures one
 	// "tall strip" with no soft breaks allowed, advancing through the content
 	// via break-tokens. One contentRun is recorded per inter-forced-break segment.
+	mla.spannerPath = nil
+measure:
 	var runs []contentRun
 	breakToken := nextColToken
 	forcedBreaks := 0
@@ -2624,11 +2638,16 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 
 		if result.ColumnSpannerPath != nil {
-			// Spanner detected during measure pass. Mirrors Blink
-			// cla.cc:1697 — break out and let the main layout pass place
-			// the spanner. The Blink recursion case (cla.cc:1690-1696,
-			// forced_break_count && !knew_about_spanner) is deferred —
-			// lower priority.
+			// Spanner detected during measure pass: the line ends there.
+			// Record the path for the column layouts of this line; if
+			// forced breaks were taken before the spanner was known, they
+			// may have opened parallel flows wrongly, so measure again
+			// with the path (cla.cc:1680-1694 @ a9f50e522efa).
+			knewAboutSpanner := mla.spannerPath != nil
+			mla.spannerPath = result.ColumnSpannerPath
+			if forcedBreaks > 0 && !knewAboutSpanner {
+				goto measure
+			}
 			//
 			// Earlier attempt: also measured the spanner's content here
 			// to contribute to tallestUnbreakable. Reverted — caused
@@ -2839,6 +2858,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
 	}
+	b = b.SetColumnSpannerPath(mla.spannerPath)
 
 	return b.Build()
 }
