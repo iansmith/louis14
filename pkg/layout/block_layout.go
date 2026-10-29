@@ -1648,7 +1648,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// break-before inside an at-block-end box loses the
 					// forced-break column (spanner-in-child-after-parallel-
 					// flow-004), so forced breaks keep the plain break token.
-					if !isForced && boxFitsAtBlockEnd() {
+					// A box already past its block end stays there (Blink
+					// FinishFragmentation :735-739, the unified reader's Site B).
+					if (!isForced && boxFitsAtBlockEnd()) ||
+						(incomingBreakToken != nil && incomingBreakToken.IsAtBlockEnd) {
 						outToken.IsAtBlockEnd = true
 					}
 

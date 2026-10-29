@@ -61,3 +61,34 @@ func TestMovePastBreakpoint_InnerMulticolAtFragmentainerEndBreaksBefore(t *testi
 		}
 	}
 }
+
+// TestMovePastBreakpoint_ChildPushedPastEndByMarginBreaksBefore (LOU-383): a
+// child whose block-start margin pushes its border edge past the
+// fragmentainer end must be broken before (must_break_before for
+// space_left < 0, fragmentation_utils.cc:1174-1176 @ a9f50e522efa); it starts
+// the next column with its margin truncated.
+func TestMovePastBreakpoint_ChildPushedPastEndByMarginBreaksBefore(t *testing.T) {
+	first := makeNode("div")
+	pushed := makeNode("div")
+	container := makeNode("div", first, pushed)
+	styles := map[*html.Node]*css.Style{
+		container: makeStyle("display", "block"),
+		first:     makeStyle("display", "block", "height", "90px"),
+		pushed:    makeStyle("display", "block", "height", "10px", "margin-top", "20px"),
+	}
+	mc := layoutTwoColumn(t, container, styles, "auto")
+	if l := childLinkFor(mc.Children[0].Fragment.Children[0].Fragment, pushed); l != nil {
+		t.Errorf("pushed child placed in column 1 at %v; want it broken before", l.Offset.Top.Float64())
+	}
+	col2 := mc.Children[1].Fragment
+	if len(col2.Children) == 0 {
+		t.Fatal("column 2 is empty")
+	}
+	l := childLinkFor(col2.Children[0].Fragment, pushed)
+	if l == nil {
+		t.Fatal("column 2 has no fragment for the pushed child")
+	}
+	if got := l.Offset.Top.Float64(); got != 0 {
+		t.Errorf("pushed child in column 2 at %v, want 0 (margin truncated after the break)", got)
+	}
+}
