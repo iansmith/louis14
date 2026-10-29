@@ -138,3 +138,82 @@ func TestMulticolFragmentainerSpaceForChildren_Clone(t *testing.T) {
 		}
 	}
 }
+
+// TestMulticolNested_OverflowRegrowsLineAndParentPushesIt (LOU-388 WI-3):
+// when a column of a nested multicol overflows past the outer fragmentainer
+// (monolithic content taller than the line), the line is laid out again with
+// columns tall enough to encompass the overflow (LayoutLine
+// minimum_column_block_size, column_layout_algorithm.cc:1027-1066 @
+// a9f50e522efa), and the parent's MovePastBreakpoint then pushes the taller
+// multicol whole to the next outer column. multicol-nested-024; Chrome 155
+// (probe p024): the inner multicol starts in outer column 2, 150 tall, with
+// one 100px contain:size block per 25px inner column.
+func TestMulticolNested_OverflowRegrowsLineAndParentPushesIt(t *testing.T) {
+	first := makeNode("div")
+	b1, b2, b3 := makeNode("div"), makeNode("div"), makeNode("div")
+	innerMC := makeNode("div", b1, b2, b3)
+	outerMC := makeNode("div", first, innerMC)
+	mono := makeStyle("display", "block", "height", "100px", "contain", "size")
+	styles := map[*html.Node]*css.Style{
+		outerMC: makeStyle("display", "block", "width", "100px", "height", "150px",
+			"column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		first:   makeStyle("display", "block", "height", "100px"),
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0"),
+		b1:      mono, b2: mono, b3: mono,
+	}
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil || len(result.Fragment.Children) < 2 {
+		t.Fatal("outer mc layout returned fewer than 2 columns")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	if l := childLinkFor(result.Fragment.Children[0].Fragment, innerMC); l != nil {
+		t.Errorf("outer col 1 holds an inner mc fragment (h=%v); want it pushed to col 2",
+			NewLogicalFragment(wdm, l.Fragment).BlockSize())
+	}
+	inner := childLinkFor(result.Fragment.Children[1].Fragment, innerMC)
+	if inner == nil {
+		t.Fatal("outer col 2 has no inner mc fragment")
+	}
+	if got := inner.Offset.Top.Float64(); got != 0 {
+		t.Errorf("inner mc in outer col 2 at y=%v, want 0", got)
+	}
+	if got := NewLogicalFragment(wdm, inner.Fragment).BlockSize(); got != 150 {
+		t.Errorf("inner mc in outer col 2: block-size = %v, want 150", got)
+	}
+}
+
+// TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage (LOU-393):
+// inside an outer balanced multicol (not its initial pass), a nested line
+// whose column overflows the outer fragmentainer reports the column's space
+// shortage so the outer multicol can stretch (column_layout_algorithm.cc:
+// 1043-1049 @ a9f50e522efa).
+func TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage(t *testing.T) {
+	mono := makeNode("div")
+	innerMC := makeNode("div", mono)
+	styles := map[*html.Node]*css.Style{
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		mono:    makeStyle("display", "block", "height", "100px", "contain", "size"),
+	}
+	ctx := testContext()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(60).
+		SetFragmentainerOffset(20).
+		SetBlockFragmentationType(FragmentColumn).
+		SetIsInsideBalancedColumns(true).
+		Build()
+	result := NewMulticolLayoutAlgorithm(ctx, buildTestTree(innerMC, styles), space).Layout()
+	if result == nil || result.MinSpaceShortage <= 0 {
+		t.Fatalf("inner mc MinSpaceShortage = %v, want > 0 (100px monolith in a 40px line)", result.MinSpaceShortage)
+	}
+}
