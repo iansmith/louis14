@@ -56,7 +56,8 @@ func TestBlockLayout_FinishFragmentationBorderBox_LOU400(t *testing.T) {
 	container := makeNode("div", child)
 	styles := map[*html.Node]*css.Style{
 		container: makeStyle("display", "block", "height", "250px",
-			"border-top", "20px solid black", "border-bottom", "20px solid black"),
+			"border-top-width", "20px", "border-top-style", "solid",
+			"border-bottom-width", "20px", "border-bottom-style", "solid"),
 		child: makeStyle("display", "block", "height", "200px"),
 	}
 	results := layoutBlockFragments(t, container, styles, 100, 5)
