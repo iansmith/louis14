@@ -156,6 +156,7 @@ func TestNestedMulticol_BreakAppealPropagation(t *testing.T) {
 				SetHasBlockFragmentation(true).
 				SetFragmentainerBlockSize(50).
 				SetFragmentainerOffset(tc.outerOff).
+				SetIsAtFragmentainerStart(tc.outerOff <= 0).
 				SetBlockFragmentationType(FragmentColumn).
 				Build()
 

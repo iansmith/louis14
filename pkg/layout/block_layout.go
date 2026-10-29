@@ -3257,6 +3257,11 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 			SetPercentageResolutionInlineSize(contentInlineSize)
 		if floatHasFragmentation {
 			bla.setupSpaceBuilderForFragmentation(b, fragOffset)
+			// Blink only ever sets the flag here (floats_utils.cc:95-96), on
+			// top of the border-edge rule above.
+			if isFloatAtFragmentainerStart(fragOffset, childMargins.BlockStart) {
+				b.SetIsAtFragmentainerStart(true)
+			}
 		}
 		return b.Build()
 	}
@@ -4063,7 +4068,8 @@ func computeOrthogonalFallbackBlockForChildren(
 // Mirrors Blink's SetupSpaceBuilderForFragmentation
 // (fragmentation_utils.cc:333-372 @ a9f50e522efa), including MinBreakAppeal
 // (:369) so a container that is breakable at the start of a resumed
-// fragment stays breakable through its descendants.
+// fragment stays breakable through its descendants, and IsAtFragmentainerStart
+// for an offset at or before the fragmentainer start (:343-344).
 func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *ConstraintSpaceBuilder, fragmentainerOffset float64) {
 	b.SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
@@ -4071,5 +4077,14 @@ func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *Constraint
 		SetBlockFragmentationType(bla.space.BlockFragmentationType).
 		SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
 		SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns).
-		SetMinBreakAppeal(bla.space.MinBreakAppeal)
+		SetMinBreakAppeal(bla.space.MinBreakAppeal).
+		SetIsAtFragmentainerStart(fragmentainerOffset <= 0)
+}
+
+// isFloatAtFragmentainerStart reports whether a float whose border edge sits
+// at fragmentainerOffset is at the fragmentainer start: for floats it is the
+// block-start margin edge that matters, since float margins are unbreakable
+// and never truncated. Mirrors floats_utils.cc:89-96 @ a9f50e522efa.
+func isFloatAtFragmentainerStart(fragmentainerOffset, marginBlockStart float64) bool {
+	return fragmentainerOffset-marginBlockStart <= 0
 }

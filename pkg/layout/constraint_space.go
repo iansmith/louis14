@@ -146,6 +146,14 @@ type ConstraintSpace struct {
 	// this constraint space's start. Used to compute remaining space.
 	FragmentainerOffset float64
 
+	// IsAtFragmentainerStart is true when this space's block-start edge is at
+	// (or before) the start of the fragmentainer — set when FragmentainerOffset
+	// <= 0, and for floats when the block-start margin edge is (float margins
+	// are unbreakable, so a positive margin does not move a float off the
+	// start). Mirrors Blink's ConstraintSpace::IsAtFragmentainerStart
+	// (constraint_space.h:349-357 @ a9f50e522efa).
+	IsAtFragmentainerStart bool
+
 	// BlockFragmentationType distinguishes column vs page fragmentation.
 	BlockFragmentationType FragmentationType
 
@@ -471,6 +479,14 @@ func (b *ConstraintSpaceBuilder) SetFragmentainerBlockSize(v float64) *Constrain
 // SetFragmentainerOffset sets the offset from fragmentainer start.
 func (b *ConstraintSpaceBuilder) SetFragmentainerOffset(v float64) *ConstraintSpaceBuilder {
 	b.space.FragmentainerOffset = v
+	return b
+}
+
+// SetIsAtFragmentainerStart marks the space as starting at the fragmentainer
+// start. Mirrors Blink's ConstraintSpaceBuilder::SetIsAtFragmentainerStart
+// (constraint_space_builder.h:211 @ a9f50e522efa).
+func (b *ConstraintSpaceBuilder) SetIsAtFragmentainerStart(v bool) *ConstraintSpaceBuilder {
+	b.space.IsAtFragmentainerStart = v
 	return b
 }
 

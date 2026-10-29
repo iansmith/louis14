@@ -1588,7 +1588,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	mayHaveMoreSpace := constrainedByOuter &&
 		!mla.space.BreakToken.IsBreakInside() &&
 		!overflowInline &&
-		(lineOffset > 0 || mla.blockStartBorderPadding > 0 || mla.space.FragmentainerOffset > 0)
+		(lineOffset > 0 || mla.blockStartBorderPadding > 0 || !mla.space.IsAtFragmentainerStart)
 	minBreakAppeal := BreakAppealPerfect
 
 	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.
@@ -2264,7 +2264,10 @@ func (mla *MulticolLayoutAlgorithm) layoutSpannerInFrag(
 		SetFragmentainerBlockSize(fragBS).
 		SetFragmentainerOffset(fragOff).
 		SetBlockFragmentationType(FragmentColumn).
-		SetIsInsideColumnSpanner(true)
+		SetIsInsideColumnSpanner(true).
+		// As SetupSpaceBuilderForFragmentation does for Blink's spanner
+		// space (fragmentation_utils.cc:343-344 @ a9f50e522efa).
+		SetIsAtFragmentainerStart(fragOff <= 0)
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
 	}
