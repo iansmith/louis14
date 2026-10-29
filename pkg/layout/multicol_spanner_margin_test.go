@@ -32,6 +32,7 @@ func layoutMulticolInFragmentainer(t *testing.T, mc *html.Node, styles map[*html
 		b = b.SetHasBlockFragmentation(true).
 			SetFragmentainerBlockSize(fragBlockSize).
 			SetFragmentainerOffset(fragOffset).
+			SetIsAtFragmentainerStart(fragOffset <= 0).
 			SetBlockFragmentationType(FragmentColumn)
 	}
 	result := NewMulticolLayoutAlgorithm(ctx, mcNode, b.Build()).Layout()

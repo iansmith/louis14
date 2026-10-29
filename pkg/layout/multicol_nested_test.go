@@ -145,6 +145,7 @@ func TestMulticolNested_InnerEmitsBreakTokenWhenContentExceedsOuterCol(t *testin
 		SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(50).
 		SetFragmentainerOffset(0).
+		SetIsAtFragmentainerStart(true).
 		SetBlockFragmentationType(FragmentColumn).
 		Build()
 
