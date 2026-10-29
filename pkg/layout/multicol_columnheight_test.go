@@ -76,6 +76,7 @@ func TestColumnHeight_PhaseA_ConsumedRowBlockSizeNoSpuriousFire(t *testing.T) {
 			SetHasBlockFragmentation(true).
 			SetFragmentainerBlockSize(75).
 			SetFragmentainerOffset(0).
+			SetIsAtFragmentainerStart(true).
 			SetBlockFragmentationType(FragmentColumn).
 			Build()
 
@@ -104,6 +105,7 @@ func TestColumnHeight_PhaseA_ConsumedRowBlockSizeNoSpuriousFire(t *testing.T) {
 			SetHasBlockFragmentation(true).
 			SetFragmentainerBlockSize(75).
 			SetFragmentainerOffset(0).
+			SetIsAtFragmentainerStart(true).
 			SetBlockFragmentationType(FragmentColumn).
 			SetBreakToken(bt1).
 			Build()
