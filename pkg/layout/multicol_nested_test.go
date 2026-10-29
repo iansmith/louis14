@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -439,5 +440,89 @@ func TestMulticolNested_ForcedBreakBeforeResumedChildIsPushable(t *testing.T) {
 	}
 	if n := len(cols[1].Fragment.Children); n != 0 {
 		t.Errorf("column 2 has %d children, want 0 (avoid box pushed to the next outer fragmentainer)", n)
+	}
+}
+
+// TestMulticolNested_ShrinkToFitUsesBlockSizeForFragmentation (LOU-390): the
+// shrink-to-fit line contribution of a nested auto-filled multicol is
+// min(column block-size, column BlockSizeForFragmentation)
+// (column_layout_algorithm.cc:949-971 @ a9f50e522efa). In the second outer
+// column the inner multicol resumes with only a parallel-flow overflow piece
+// (the 200%-wide child), so its column has no intrinsic block-size of its own
+// but still occupies 50px. Geometry from Chrome 155 on multicol-nested-026:
+// inner fragments [[0,0,50,100],[50,0,50,50]], sibling at [50,50,50,50].
+func TestMulticolNested_ShrinkToFitUsesBlockSizeForFragmentation(t *testing.T) {
+	tall := makeNode("div")
+	wide := makeNode("div")
+	wrapper := makeNode("div", tall, wide)
+	innerMC := makeNode("div", wrapper)
+	sibling := makeNode("div")
+	outerMC := makeNode("div", innerMC, sibling)
+
+	styles := map[*html.Node]*css.Style{
+		outerMC: makeStyle("display", "block", "width", "100px", "height", "100px",
+			"column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		wrapper: makeStyle("display", "block", "height", "150px"),
+		tall:    makeStyle("display", "block", "height", "150px"),
+		wide:    makeStyle("display", "block", "width", "200%", "height", "100px"),
+		sibling: makeStyle("display", "block", "height", "50px"),
+	}
+
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil {
+		t.Fatal("outer mc layout returned nil")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	if len(result.Fragment.Children) != 2 {
+		t.Fatalf("outer mc has %d columns, want 2", len(result.Fragment.Children))
+	}
+	col2 := result.Fragment.Children[1].Fragment
+	innerLink := childLinkFor(col2, innerMC)
+	sibLink := childLinkFor(col2, sibling)
+	if innerLink == nil || sibLink == nil {
+		t.Fatalf("outer col 2 is missing the inner mc (%v) or the sibling (%v)", innerLink != nil, sibLink != nil)
+	}
+	if got := NewLogicalFragment(wdm, innerLink.Fragment).BlockSize(); got != 50 {
+		t.Errorf("inner mc fragment in outer col 2: block-size = %v, want 50", got)
+	}
+	if got := sibLink.Offset.Top.Float64(); got != 50 {
+		t.Errorf("sibling in outer col 2: block offset = %v, want 50", got)
+	}
+}
+
+// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow (LOU-390): a
+// child that clips block-axis overflow contributes only its own box, and an
+// out-of-flow child contributes nothing (box_fragment_builder.cc:746-761 @
+// a9f50e522efa).
+func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	box := func(h float64, style *css.Style, children ...ChildLink) *PhysicalFragment {
+		return &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, h), Style: style, Children: children}
+	}
+	at := func(y float64, f *PhysicalFragment) ChildLink {
+		return ChildLink{Offset: geometry.PhysicalOffsetFromF64Round(0, y), Fragment: f}
+	}
+	tall := box(80, nil)
+	for _, tc := range []struct {
+		name  string
+		child *PhysicalFragment
+		want  float64
+	}{
+		{"visible overflow extends", box(20, nil, at(0, tall)), 90},
+		{"overflow:hidden clips", box(20, makeStyle("overflow", "hidden"), at(0, tall)), 30},
+		{"abspos ignored", box(20, makeStyle("position", "absolute"), at(0, tall)), 0},
+	} {
+		col := box(100, nil, at(10, tc.child))
+		if got := FragmentainerBlockSizeForFragmentation(wdm, col); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

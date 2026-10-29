@@ -215,6 +215,71 @@ func finishFragmentationContentBlockSize(spaceLeft float64, geom FragmentGeometr
 	return content, final < desired, desired - spaceLeft
 }
 
+// FragmentainerBlockSizeForFragmentation returns a fragmentainer's (column's)
+// block-size for fragmentation: the furthest block-end reached by its
+// children, each contributing its own border-box block-size or, when it does
+// not clip block-axis overflow, the block-end of its own content if that is
+// further. A fragmentainer's own block-size is not included. Mirrors the
+// value Blink's BoxFragmentBuilder accumulates in PropagateChildData
+// (box_fragment_builder.cc:484-495 @ a9f50e522efa) and finalizes for a
+// fragmentainer box (:743-745, children only), recomputed from the fragment
+// tree because louis14's LayoutResult.BlockSizeForFragmentation records only
+// overflow past a child's own box (see PropagateChildBlockSizeForFragmentation).
+// Unification target: once that builder field accumulates Blink's value, this
+// walk is redundant and should be deleted.
+func FragmentainerBlockSizeForFragmentation(wdm WritingDirectionMode, fragmentainer *PhysicalFragment) float64 {
+	if fragmentainer == nil {
+		return 0
+	}
+	conv := NewConverter(wdm, geomSizeToOld(fragmentainer.Size))
+	extent := 0.0
+	for _, child := range fragmentainer.Children {
+		if child.Fragment == nil || isOutOfFlowFragment(child.Fragment) {
+			continue
+		}
+		physOffset := PhysicalOffset{X: child.Offset.Left.Float64(), Y: child.Offset.Top.Float64()}
+		offset := conv.ToLogicalOffset(physOffset, geomSizeToOld(child.Fragment.Size)).BlockOffset
+		extent = math.Max(extent, offset+blockSizeForFragmentationOfFragment(wdm, child.Fragment))
+	}
+	return extent
+}
+
+// blockSizeForFragmentationOfFragment is a non-fragmentainer box's block-size
+// for fragmentation: its border-box block-size, extended by its children's
+// unless it clips block-axis overflow (box_fragment_builder.cc:746-761 @
+// a9f50e522efa).
+func blockSizeForFragmentationOfFragment(wdm WritingDirectionMode, frag *PhysicalFragment) float64 {
+	own := NewLogicalFragment(wdm, frag).BlockSize()
+	if clipsBlockAxisOverflow(frag.Style, wdm) {
+		return own
+	}
+	return math.Max(own, FragmentainerBlockSizeForFragmentation(wdm, frag))
+}
+
+// clipsBlockAxisOverflow reports whether style clips overflow along the block
+// axis of wdm (Blink BlockNode::GetOverflowClipAxes & block_axis).
+func clipsBlockAxisOverflow(style *css.Style, wdm WritingDirectionMode) bool {
+	if style == nil {
+		return false
+	}
+	overflow := style.GetOverflowY()
+	if wdm.WM != WritingModeHorizontalTB {
+		overflow = style.GetOverflowX()
+	}
+	return overflow != css.OverflowVisible
+}
+
+// isOutOfFlowFragment reports whether frag is an absolutely or fixed
+// positioned box, which does not contribute to its container's in-flow
+// block-size for fragmentation.
+func isOutOfFlowFragment(frag *PhysicalFragment) bool {
+	if frag.Style == nil {
+		return false
+	}
+	pos := frag.Style.GetPosition()
+	return pos == css.PositionAbsolute || pos == css.PositionFixed
+}
+
 // MinPositiveSpaceShortage merges two space-shortage reports, keeping the
 // smallest positive value. Non-positive inputs mean "no shortage reported"
 // and the result is clamped to zero so a negative operand never leaks
