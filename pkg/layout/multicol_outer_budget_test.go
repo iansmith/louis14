@@ -1,0 +1,140 @@
+package layout
+
+import (
+	"testing"
+
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
+
+// TestMulticolNested_LineBudgetIgnoresBlockEndBorder (LOU-391): a nested
+// multicol's line budget is FragmentainerSpaceLeftForChildren() − line_offset
+// (column_layout_algorithm.cc:819-829 @ a9f50e522efa). With
+// box-decoration-break:slice nothing is reserved for the block-end
+// border/padding (fragmentation_utils.h:187-257): it belongs to the last
+// fragment only. Geometry from Chrome 155 (scratchpad probe w1a): a 100px
+// outer column holds an inner fragment 100 tall whose two columns are 100
+// tall (five 20px blocks each), not 80.
+func TestMulticolNested_LineBudgetIgnoresBlockEndBorder(t *testing.T) {
+	var blocks []*html.Node
+	styles := map[*html.Node]*css.Style{}
+	for i := 0; i < 14; i++ {
+		b := makeNode("div")
+		styles[b] = makeStyle("display", "block", "height", "20px")
+		blocks = append(blocks, b)
+	}
+	innerMC := makeNode("div", blocks...)
+	outerMC := makeNode("div", innerMC)
+	styles[outerMC] = makeStyle("display", "block", "width", "200px", "height", "100px",
+		"column-count", "2", "column-gap", "0", "column-fill", "auto")
+	styles[innerMC] = makeStyle("display", "block", "column-count", "2", "column-gap", "0",
+		"border-bottom-width", "20px", "border-bottom-style", "solid")
+
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil || len(result.Fragment.Children) == 0 {
+		t.Fatal("outer mc layout returned no columns")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	inner := childLinkFor(result.Fragment.Children[0].Fragment, innerMC)
+	if inner == nil {
+		t.Fatal("outer col 1 has no inner mc fragment")
+	}
+	if got := NewLogicalFragment(wdm, inner.Fragment).BlockSize(); got != 100 {
+		t.Errorf("first inner fragment block-size = %v, want 100", got)
+	}
+	for i, col := range inner.Fragment.Children {
+		if got := NewLogicalFragment(wdm, col.Fragment).BlockSize(); got != 100 {
+			t.Errorf("first inner fragment column %d block-size = %v, want 100", i, got)
+		}
+	}
+}
+
+// TestMulticolNested_ZeroSpaceLeftIsALimit (LOU-391): with no space left in
+// the outer fragmentainer the available outer space is 0, a real limit
+// (ConstrainColumnBlockSize clamps to available_outer_space.ClampNegativeToZero(),
+// column_layout_algorithm.cc:1743-1746 @ a9f50e522efa), not "unconstrained".
+// Columns still accept 1px of content each (ClampedToValidFragmentainerCapacity,
+// fragmentation_utils.h:156-173), so the inner multicol places some content
+// and reports a break token for the rest — it must not consume everything.
+func TestMulticolNested_ZeroSpaceLeftIsALimit(t *testing.T) {
+	var blocks []*html.Node
+	styles := map[*html.Node]*css.Style{}
+	for i := 0; i < 4; i++ {
+		b := makeNode("div")
+		styles[b] = makeStyle("display", "block", "height", "20px")
+		blocks = append(blocks, b)
+	}
+	innerMC := makeNode("div", blocks...)
+	styles[innerMC] = makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto")
+
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 100, 100)
+	if result.BreakToken == nil {
+		t.Errorf("inner mc at 0 space left completed with no break token; want a break token for unplaced content")
+	}
+}
+
+// TestMulticolNested_SpannerFragmentainerOffsetIncludesBlockStartEdge
+// (LOU-391): a spanner's fragmentainer offset is
+// FragmentainerOffsetForChildren() + block_offset, with block_offset measured
+// from the multicol's border-box edge (column_layout_algorithm.cc:1354-1356,
+// :1402-1403 @ a9f50e522efa). With 30px of block-start padding in a 100px
+// outer fragmentainer, the spanner starts at 30, so of its two 40px blocks
+// only the first fits and the spanner breaks inside.
+func TestMulticolNested_SpannerFragmentainerOffsetIncludesBlockStartEdge(t *testing.T) {
+	first := makeNode("div")
+	second := makeNode("div")
+	spanner := makeNode("div", first, second)
+	innerMC := makeNode("div", spanner)
+	block := makeStyle("display", "block", "height", "40px")
+	styles := map[*html.Node]*css.Style{
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "padding-top", "30px"),
+		spanner: makeStyle("display", "block", "column-span", "all"),
+		first:   block,
+		second:  block,
+	}
+	result := layoutMulticolInFragmentainer(t, innerMC, styles, 100, 0)
+	if result.BreakToken == nil {
+		t.Errorf("inner mc completed; want a break inside the spanner (its second block ends at 110 > 100)")
+	}
+}
+
+// TestMulticolFragmentainerSpaceForChildren_Clone (LOU-391): cloned
+// decorations shrink the capacity by both block edges and shift the
+// children's offset by the block-start edge
+// (fragmentation_utils.h:187-226 @ a9f50e522efa); slice leaves both alone.
+func TestMulticolFragmentainerSpaceForChildren_Clone(t *testing.T) {
+	for _, tc := range []struct {
+		cloned                   bool
+		wantCapacity, wantOffset float64
+		wantSpaceLeftForChildren float64
+	}{
+		{cloned: false, wantCapacity: 100, wantOffset: 20, wantSpaceLeftForChildren: 80},
+		{cloned: true, wantCapacity: 85, wantOffset: 10, wantSpaceLeftForChildren: 75},
+	} {
+		mla := &MulticolLayoutAlgorithm{
+			space: ConstraintSpace{
+				HasBlockFragmentation:  true,
+				FragmentainerBlockSize: 100,
+				FragmentainerOffset:    20,
+			},
+			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
+			hasClonedBoxDecorations: tc.cloned,
+		}
+		if got := mla.fragmentainerCapacityForChildren(); got != tc.wantCapacity {
+			t.Errorf("cloned=%v: capacity = %v, want %v", tc.cloned, got, tc.wantCapacity)
+		}
+		if got := mla.fragmentainerOffsetForChildren(); got != tc.wantOffset {
+			t.Errorf("cloned=%v: offset = %v, want %v", tc.cloned, got, tc.wantOffset)
+		}
+		if got := mla.fragmentainerSpaceLeftForChildren(); got != tc.wantSpaceLeftForChildren {
+			t.Errorf("cloned=%v: space left = %v, want %v", tc.cloned, got, tc.wantSpaceLeftForChildren)
+		}
+	}
+}
