@@ -128,14 +128,12 @@ type MulticolLayoutAlgorithm struct {
 	// --- Per-layout invariants, resolved once in Layout() before
 	// LayoutChildren runs and read by the methods it calls. ---
 
-	// geom is this fragment's initial geometry (Blink: the
-	// fragment_geometry the algorithm is constructed with, read through
-	// container_builder_). no Blink analog as a member: Blink keeps it on
-	// container_builder_.
+	// geom is this fragment's initial geometry. no Blink analog as a
+	// member: Blink reads it through container_builder_.
 	geom FragmentGeometry
 	// contentNode is the anonymous column-content node wrapping the
 	// multicol's children (Blink lays columns out on the multicol node
-	// itself, column_layout_algorithm.cc:1619-1621 @ a9f50e522efa). It is
+	// itself, column_layout_algorithm.cc:944-945 @ a9f50e522efa). It is
 	// read from mla.node.contentNodeCache so its pointer is stable across
 	// Layout() calls (break tokens resume by node identity).
 	contentNode *LayoutInputNode
@@ -152,8 +150,8 @@ type MulticolLayoutAlgorithm struct {
 	hasExplicitBlock  bool
 	explicitBlockSize float64
 	// effectiveMaxBlockSize is the resolved max-block-size when the
-	// block-size is auto, else Indefinite (Blink ResolveMaxBlockLength in
-	// ConstrainColumnBlockSize, column_layout_algorithm.cc:1736 @
+	// block-size is auto, else Indefinite (Blink resolves it inside
+	// ConstrainColumnBlockSize, column_layout_algorithm.cc:1774-1775 @
 	// a9f50e522efa).
 	effectiveMaxBlockSize float64
 
@@ -1352,7 +1350,7 @@ type layoutSpannerResult struct {
 // spanner to the next outer fragmentainer adds its break-before to
 // mla.outBuilder and returns BreakStatusBrokeBefore; LayoutChildren then
 // advances the walker and breaks. layoutSpanner / layoutSpannerInFrag are
-// the spanner_node.Layout step of this method (cla.cc:1357-1362).
+// the layout() step of this method (cla.cc:1355-1362).
 func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, breakToken *BlockBreakToken, marginStrut *MarginStrut, builder *BoxFragmentBuilder) layoutSpannerResult {
 	wdm := mla.space.WritingDirection
 	// The line the spanner ended is done (cla.cc:1338 @ a9f50e522efa).
