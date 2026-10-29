@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"math"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
@@ -372,8 +374,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 	// fragmentainerSpaceLeft is the space left from this box's border edge
-	// to the fragmentainer end.
+	// to the fragmentainer end; unbounded while there is no end yet (the
+	// initial column-balancing pass measures with an indefinite
+	// fragmentainer).
 	fragmentainerSpaceLeft := func() float64 {
+		if bla.space.FragmentainerBlockSize == Indefinite {
+			return math.Inf(1)
+		}
 		return max(0, bla.space.FragmentainerBlockSize-bla.space.FragmentainerOffset)
 	}
 	// consumeRemainingFragmentainerSpace stretches a breaking fragment's
@@ -1408,7 +1415,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// block_layout_algorithm.cc:820-827 (SetShouldForceSameFragmentation
 				// Flow) + AddChild before SetColumnSpannerPath (:1028-1032), Chromium
 				// main @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
-				preSpannerChildOff := blockCursor + prevMarginStrut.Resolve()
+				// Advance by the child's PRE-spanner content extent
+				// (IntrinsicBlockSize), not its fragment border-box size: a
+				// definite-height child split by a spanner reports its full CSS
+				// height as the fragment size but only placed `IntrinsicBlockSize`
+				// of content before the spanner. Using the full size would make
+				// the pre-spanner column row the whole container height.
+				preSpannerExtent := childResult.IntrinsicBlockSize
+				if preSpannerExtent <= 0 {
+					preSpannerExtent = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+				}
+				// A child with content before the spanner sits at its
+				// collapsed border edge, as in Steps 5-6 below; an empty one
+				// resolves none of its own margins into the row, as Chrome
+				// does (multicol-span-all-margin-nested-002).
+				var preSpannerChildOff float64
+				if preSpannerExtent > 0 {
+					collapsed := collapsedWithChild(childResult.PropagatedTopMargin)
+					preSpannerChildOff = borderEdgeAt(collapsed)
+					if isAdjoiningBlockStart() {
+						propagatedTopMargin = collapsed
+					}
+				} else {
+					preSpannerChildOff = blockCursor + prevMarginStrut.Resolve()
+				}
 				childOffset := LogicalOffset{
 					InlineOffset: childMargins.InlineStart,
 					BlockOffset:  preSpannerChildOff,
@@ -1421,16 +1451,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
-				// Advance by the child's PRE-spanner content extent
-				// (IntrinsicBlockSize), not its fragment border-box size: a
-				// definite-height child split by a spanner reports its full CSS
-				// height as the fragment size but only placed `IntrinsicBlockSize`
-				// of content before the spanner. Using the full size would make
-				// the pre-spanner column row the whole container height.
-				preSpannerExtent := childResult.IntrinsicBlockSize
-				if preSpannerExtent <= 0 {
-					preSpannerExtent = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
-				}
 				blockCursor = preSpannerChildOff + preSpannerExtent
 
 				var outToken *BlockBreakToken
