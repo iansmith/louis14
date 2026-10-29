@@ -8251,14 +8251,17 @@ func (s *Style) GetColumnCount() int {
 // 0 is clamped up to 1px per CSS Multi-column 1 §3.1: "the used value of
 // column-width may differ from the specified value (e.g., if there is not
 // enough room) but it will not be less than 1px (or some other minimum)."
-// Required by WPT zero-column-width-layout.
+// Required by WPT zero-column-width-layout. Font-relative and viewport units
+// resolve against this element's font metrics and viewport (GetLengthForVal),
+// as Blink's ConvertComputedLength<float> does at style-building time
+// (css_properties.json5:7368 @ a9f50e522efa).
 func (s *Style) GetColumnWidth() float64 {
 	if val, ok := s.Get("column-width"); ok {
 		val = strings.TrimSpace(val)
 		if val == "auto" {
 			return 0
 		}
-		if w, ok := ParseLength(val); ok {
+		if w, ok := s.GetLengthForVal(val); ok {
 			if w < 1 && w >= 0 {
 				return 1
 			}
@@ -8327,7 +8330,7 @@ func (s *Style) GetColumnHeight() float64 {
 		if v == "" || v == "auto" {
 			return -1
 		}
-		if h, ok := ParseLengthWithFontSize(v, s.GetFontSize()); ok && h >= 0 {
+		if h, ok := s.GetLengthForVal(v); ok && h >= 0 {
 			return h
 		}
 	}
@@ -8373,7 +8376,7 @@ func (s *Style) GetColumnGapMulticolWithBase(percentBase float64) float64 {
 				return num * percentBase / 100.0
 			}
 		}
-		if w, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+		if w, ok := s.GetLengthForVal(val); ok {
 			return w
 		}
 	}
@@ -8383,15 +8386,15 @@ func (s *Style) GetColumnGapMulticolWithBase(percentBase float64) float64 {
 // GetRowGapMulticol returns the row-gap between column rows in a
 // `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Default `normal`
 // computes to 1em, matching `column-gap` and Blink's row_gap_ resolution
-// in column_layout_algorithm.cc. Mirrors GetColumnGapMulticol so em
-// resolution goes through the element's own font-size.
+// in column_layout_algorithm.cc. Mirrors GetColumnGapMulticol so
+// font-relative units resolve against the element's own font metrics.
 func (s *Style) GetRowGapMulticol() float64 {
 	if val, ok := s.Get("row-gap"); ok {
 		val = strings.TrimSpace(val)
 		if val == "normal" {
 			return s.GetFontSize()
 		}
-		if w, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+		if w, ok := s.GetLengthForVal(val); ok {
 			return w
 		}
 	}
