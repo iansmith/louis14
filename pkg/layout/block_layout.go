@@ -1073,14 +1073,56 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			isChildNewFC := createsFormattingContext(childStyle, child) ||
 				wdm.WM != childWDM.WM
 
+			// A child's border edge within this block's content box: a child
+			// adjoining this block's block-start shares this block's border
+			// edge, whose fragmentainer offset already resolves the margins
+			// collapsing through it; any other child sits past the collapsed
+			// strut. Every box's fragmentainer offset is its resolved border
+			// edge, as in Blink (FragmentainerOffsetAtBfc + bfc_block_offset,
+			// block_layout_algorithm.cc:3156-3158, :3619-3633 @ a9f50e522efa).
+			var childBlockOffset float64
+			isAdjoiningBlockStart := func() bool {
+				return firstNonEmptyChild && canPropagateTop && !hasClearance && !isPushedByFloats
+			}
+			borderEdgeAt := func(collapsed MarginStrut) float64 {
+				if isAdjoiningBlockStart() {
+					return blockCursor
+				}
+				if isChildNewFC {
+					// A new FC propagates no margins; its edge is
+					// childBlockOffset, which float drops move.
+					return childBlockOffset
+				}
+				return blockCursor + collapsed.Resolve()
+			}
+			// collapsedWithChild is the pending strut collapsed with the
+			// child's block-start margin and the margins collapsing up through
+			// its block-start (Steps 1-2 below).
+			collapsedWithChild := func(childPropagated MarginStrut) MarginStrut {
+				strut := prevMarginStrut
+				strut.Append(childMargins.BlockStart)
+				if !childPropagated.IsEmpty() {
+					strut.AppendStrut(childPropagated)
+				}
+				return strut
+			}
+			// childBlockOffset is the child's border edge in this block's
+			// content box past the pending strut collapsed with its own
+			// margin: Blink's child_bfc_offset_estimate, which a drop below
+			// floats moves to the start of the layout opportunity that fits
+			// (child_bfc_offset; block_layout_algorithm.cc:1854-1861,
+			// :2228-2229 @ a9f50e522efa). A drop never re-adds the margin.
+			childBlockOffset = blockCursor + collapsedWithChild(MarginStrut{}).Resolve()
+			// childBfcBlockOff is a non-FC child's BFC offset estimate,
+			// before its own margin.
+			childBfcBlockOff := blockCursor + prevMarginStrut.Resolve()
+
 			// Compute available inline for this child, accounting for floats.
 			// floatCheckBlock is BFC-relative so exclusion space queries are correct.
 			isOrthogonal := wdm.IsOrthogonalTo(childWDM)
 			floatCheckBlock := bfcBlockOrigin + blockCursor
 			if isChildNewFC {
-				tentativeStrut := prevMarginStrut
-				tentativeStrut.Append(childMargins.BlockStart)
-				floatCheckBlock = bfcBlockOrigin + blockCursor + tentativeStrut.Resolve()
+				floatCheckBlock = bfcBlockOrigin + childBlockOffset
 			}
 			floatStartOff, floatEndOff := exclusionSpace.FindLocalFloatOffsets(floatCheckBlock, 0, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist;
@@ -1127,12 +1169,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							contentInlineSize, floatCheckBlock,
 							bfcInlineOrigin, bfcContainerInlineSize)
 						newBlock := newBlockBfc - bfcBlockOrigin
-						if newBlock > blockCursor {
-							blockCursor = newBlock
-							prevMarginStrut = MarginStrut{}
+						if newBlock > childBlockOffset {
+							childBlockOffset = newBlock
 							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
-								exclusionSpace, bfcBlockOrigin+blockCursor, 0,
+								exclusionSpace, bfcBlockOrigin+childBlockOffset, 0,
 								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
 						}
 					}
@@ -1144,12 +1185,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			// newChildSpaceBuilder is shared by the initial layout and the
 			// re-layouts below floats and at the resolved border edge:
-			// childBlockOff is the child's block offset within this block's
-			// content box before its own margin (its BFC offset estimate),
-			// borderEdgeOff is its border edge there with every margin
-			// collapsing through its block-start resolved (its fragmentainer
-			// offset), and childInlineForSpace is read at call time (the
-			// drop re-queries it). Blink lays out each
+			// borderEdgeOff is the child's border edge within this block's
+			// content box with every margin collapsing through its
+			// block-start resolved (its fragmentainer offset), and
+			// childInlineForSpace is read at call time (the drop re-queries
+			// it). Blink lays out each
 			// layout opportunity through the same
 			// CreateConstraintSpaceForChild (LayoutNewFormattingContext,
 			// block_layout_algorithm.cc:2158-2163 @ a9f50e522efa), so the
@@ -1171,7 +1211,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// (Layout() entry above), so the parent-side floor propagation
 			// in BreakBeforeChildIfNeeded fires.
 			childIsMonolithic := child.IsMonolithic(wdm.WM != childWDM.WM)
-			newChildSpaceBuilder := func(childBlockOff, borderEdgeOff float64) *ConstraintSpaceBuilder {
+			newChildSpaceBuilder := func(borderEdgeOff float64) *ConstraintSpaceBuilder {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
 						orthogonalFallbackSize(childWDM, bla.ctx)).
@@ -1196,7 +1236,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if !isChildNewFC {
 					// The child's tentative BFC offset = parent's BFC origin +
 					// child's local position (blockCursor + pending margin).
-					tentativeChildBfcOff := bfcBlockOrigin + childBlockOff + childMargins.BlockStart
+					tentativeChildBfcOff := bfcBlockOrigin + childBfcBlockOff + childMargins.BlockStart
 					b.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
 					// The child's BFC inline offset = parent's BFC inline origin +
 					// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
@@ -1237,36 +1277,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				return b
 			}
 
-			// A child's border edge within this block's content box: a child
-			// adjoining this block's block-start shares this block's border
-			// edge, whose fragmentainer offset already resolves the margins
-			// collapsing through it; any other child sits past the collapsed
-			// strut. Every box's fragmentainer offset is its resolved border
-			// edge, as in Blink (FragmentainerOffsetAtBfc + bfc_block_offset,
-			// block_layout_algorithm.cc:3156-3158, :3619-3633 @ a9f50e522efa).
-			isAdjoiningBlockStart := func() bool {
-				return firstNonEmptyChild && canPropagateTop && !hasClearance && !isPushedByFloats
-			}
-			borderEdgeAt := func(collapsed MarginStrut) float64 {
-				if isAdjoiningBlockStart() {
-					return blockCursor
-				}
-				return blockCursor + collapsed.Resolve()
-			}
-			// collapsedWithChild is the pending strut collapsed with the
-			// child's block-start margin and the margins collapsing up through
-			// its block-start (Steps 1-2 below).
-			collapsedWithChild := func(childPropagated MarginStrut) MarginStrut {
-				strut := prevMarginStrut
-				strut.Append(childMargins.BlockStart)
-				if !childPropagated.IsEmpty() {
-					strut.AppendStrut(childPropagated)
-				}
-				return strut
-			}
-			childBfcBlockOff := blockCursor + prevMarginStrut.Resolve()
 			borderEdgeOff := borderEdgeAt(collapsedWithChild(MarginStrut{}))
-			childSpace := newChildSpaceBuilder(childBfcBlockOff, borderEdgeOff).Build()
+			childSpace := newChildSpaceBuilder(borderEdgeOff).Build()
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
@@ -1280,7 +1292,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// (block_layout_algorithm.cc:844-849, :2539-2580 @ a9f50e522efa).
 			if bla.space.HasBlockFragmentation && !childIsMonolithic {
 				if resolved := borderEdgeAt(collapsedWithChild(childResult.PropagatedTopMargin)); resolved != borderEdgeOff {
-					childSpace = newChildSpaceBuilder(childBfcBlockOff, resolved).Build()
+					childSpace = newChildSpaceBuilder(resolved).Build()
 					childResult = layoutElement(bla.ctx, child, childSpace)
 				}
 			}
@@ -1316,9 +1328,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// availability_block_size (cf. exclusion_space.cc).
 			if isChildNewFC {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
-				bfcBlockExtent := childLogicalTmp.BlockSize() + childMargins.BlockSum()
+				bfcBlockExtent := childLogicalTmp.BlockSize()
 				origFloatStartOff, origFloatEndOff := exclusionSpace.FindLocalFloatOffsets(
-					floatCheckBlock, bfcBlockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
+					bfcBlockOrigin+childBlockOffset, bfcBlockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
 				if origFloatStartOff > 0 || origFloatEndOff > 0 {
 					neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
 					availableInline := contentInlineSize - origFloatStartOff - origFloatEndOff
@@ -1327,20 +1339,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						// where the BFC fits alongside remaining floats.
 						newBlockBfc := exclusionSpace.FindFloatPositionLocal(
 							css.FloatLeft, neededInline, bfcBlockExtent,
-							contentInlineSize, floatCheckBlock,
+							contentInlineSize, bfcBlockOrigin+childBlockOffset,
 							bfcInlineOrigin, bfcContainerInlineSize)
 						newBlock := newBlockBfc - bfcBlockOrigin
-						if newBlock > blockCursor {
-							blockCursor = newBlock
-							prevMarginStrut = MarginStrut{}
+						if newBlock > childBlockOffset {
+							childBlockOffset = newBlock
 							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
-								exclusionSpace, bfcBlockOrigin+blockCursor, bfcBlockExtent,
+								exclusionSpace, bfcBlockOrigin+childBlockOffset, bfcBlockExtent,
 								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
-							// Re-layout at the new position with the new
-							// available size; the margin strut was consumed
-							// by the drop, so the child sits at blockCursor.
-							childSpace = newChildSpaceBuilder(blockCursor, blockCursor).Build()
+							// Re-layout at the opportunity with the new
+							// available size.
+							childSpace = newChildSpaceBuilder(childBlockOffset).Build()
 							childResult = layoutElement(bla.ctx, child, childSpace)
 						}
 					}
@@ -1398,10 +1408,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// block_layout_algorithm.cc:820-827 (SetShouldForceSameFragmentation
 				// Flow) + AddChild before SetColumnSpannerPath (:1028-1032), Chromium
 				// main @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
-				childBlockOffset := blockCursor + prevMarginStrut.Resolve()
+				preSpannerChildOff := blockCursor + prevMarginStrut.Resolve()
 				childOffset := LogicalOffset{
 					InlineOffset: childMargins.InlineStart,
-					BlockOffset:  childBlockOffset,
+					BlockOffset:  preSpannerChildOff,
 				}
 				if isChildNewFC {
 					// Same line-left clamp as the main in-flow path (LOU-327):
@@ -1421,7 +1431,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if preSpannerExtent <= 0 {
 					preSpannerExtent = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
 				}
-				blockCursor = childBlockOffset + preSpannerExtent
+				blockCursor = preSpannerChildOff + preSpannerExtent
 
 				var outToken *BlockBreakToken
 				if resumeToken != nil {
@@ -1716,8 +1726,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				blockCursor = childBlockSize
 			} else {
 				// Step 6: Normal margin resolution.
-				collapsedMargin := prevMarginStrut.Resolve()
-				actualChildBlockOff = blockCursor + collapsedMargin
+				// The child's border edge (Blink LogicalFromBfcOffsets of
+				// child_bfc_offset, block_layout_algorithm.cc:2016-2018 @
+				// a9f50e522efa).
+				actualChildBlockOff = borderEdgeAt(prevMarginStrut)
 				childOffset := LogicalOffset{
 					InlineOffset: childInlineOffset,
 					BlockOffset:  actualChildBlockOff,
