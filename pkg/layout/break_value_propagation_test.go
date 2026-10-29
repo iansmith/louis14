@@ -124,6 +124,9 @@ func TestPropagateChildBreakValues_ResultValues(t *testing.T) {
 		{"the first child's auto wins over a later break-before",
 			ms("W", nil, ms("X", h("10px")), ms("B", h("10px", "break-before", "column"))),
 			100, "auto", "auto"},
+		{"the first child's auto wins over a later break-before:avoid",
+			ms("W", nil, ms("X", h("10px")), ms("B", h("10px", "break-before", "avoid"))),
+			100, "auto", "auto"},
 		{"a later auto break-after overwrites an earlier avoid",
 			ms("W", nil, ms("A", h("10px", "break-after", "avoid")), ms("B", h("10px"))),
 			100, "auto", "auto"},
@@ -143,6 +146,39 @@ func TestPropagateChildBreakValues_ResultValues(t *testing.T) {
 			}
 			if res.FinalBreakAfter != tc.final {
 				t.Errorf("FinalBreakAfter = %q, want %q", res.FinalBreakAfter, tc.final)
+			}
+		})
+	}
+}
+
+// TestPropagateChildBreakValues_Exclusions: column boxes, floats and
+// out-of-flow boxes do not propagate (box_fragment_builder.cc:627-630 @
+// a9f50e522efa), while a normal block child does.
+func TestPropagateChildBreakValues_Exclusions(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	child := func(boxType BoxType, style ...string) *LayoutResult {
+		return &LayoutResult{
+			Fragment:           &PhysicalFragment{Type: FragmentBox, BoxType: boxType, Style: makeStyle(style...)},
+			InitialBreakBefore: "column",
+			FinalBreakAfter:    "column",
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		child *LayoutResult
+		want  string
+	}{
+		{"block", child(BoxTypeNormal, "display", "block"), "column"},
+		{"column box", child(BoxTypeColumn, "display", "block"), "auto"},
+		{"float", child(BoxTypeNormal, "display", "block", "float", "left"), "auto"},
+		{"out-of-flow", child(BoxTypeNormal, "display", "block", "position", "absolute"), "auto"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewBoxFragmentBuilder(wdm)
+			b.PropagateChildBreakValues(tc.child)
+			res := b.Build()
+			if res.InitialBreakBefore != tc.want || res.FinalBreakAfter != tc.want {
+				t.Errorf("InitialBreakBefore, FinalBreakAfter = %q, %q, want %q", res.InitialBreakBefore, res.FinalBreakAfter, tc.want)
 			}
 		})
 	}

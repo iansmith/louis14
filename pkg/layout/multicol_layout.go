@@ -345,8 +345,7 @@ func (mla *MulticolLayoutAlgorithm) previouslyConsumedContentBlockSize() float64
 // @ a9f50e522efa).
 func (mla *MulticolLayoutAlgorithm) clonedEdgesOfPreviousFragments() float64 {
 	tok := mla.space.BreakToken
-	// A token that consumed nothing came from no laid-out fragment.
-	if tok == nil || tok.IsBreakBefore || tok.ConsumedBlockSize.IsZero() {
+	if tok == nil || tok.IsBreakBefore {
 		return 0
 	}
 	return float64(tok.SequenceNumber+1) * mla.borderScrollbarPadding.BlockSum()
@@ -593,12 +592,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// CalculateInitialFragmentGeometry, so this only matters for the
 	// max-height (auto block-size) case.
 	mla.minBlockSize = ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
-	// A token that consumed nothing (louis14's zero-height forced-break
-	// fragment, standing in for Blink breaking before the whole multicol,
-	// cla.cc:1206-1212 @ a9f50e522efa)
-	// resumes as a first fragment.
-	if ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) ||
-		mla.space.BreakToken.ConsumedBlockSize.IsZero() {
+	if ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) {
 		mla.blockStartBorderPadding = mla.borderScrollbarPadding.BlockStart
 	}
 
@@ -969,6 +963,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			if !lineIsEmpty {
 				blockCursor = lineOffset + rowBlockAdvance
 				marginStrut = MarginStrut{}
+				// Blink cla.cc:1233-1235 @ a9f50e522efa: column content
+				// separates a preceding spanner's break-after from what
+				// follows.
+				builder.SetPreviousBreakAfter("auto")
 			}
 			totalColumnsRendered += columnsPlaced
 
@@ -1086,48 +1084,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// reads incomingBreakToken.ConsumedBlockSize and ChildBreakTokens
 		// itself and resumes accordingly.
 		hasSpannerResume := entry.BreakToken != nil
-
-		// Forced break-before:column on spanner: propagate to the parent
-		// column context. Only on fresh layout (not resumed) so the break
-		// fires once.
-		if hasOuterFrag && mla.space.BreakToken == nil &&
-			spanner.Style() != nil && spanner.Style().GetBreakBefore() == "column" {
-			var result *LayoutResult
-			if blockCursor == 0 {
-				// No column content was placed yet — produce a zero-height
-				// fragment so borders are not painted in this outer column
-				// (they belong to the resumed fragment in the next outer
-				// column).
-				builder.SetSize(LogicalSize{
-					InlineSize: contentInlineSize + geom.InlineBorderPadding(),
-					BlockSize:  0,
-				})
-				builder.SetIntrinsicBlockSize(0)
-				builder.SetLayoutNode(mla.node)
-				physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin, Scrollbar: PhysicalEdges{}})
-				result = builder.Build()
-				result.BreakToken = &BlockBreakToken{
-					Node: mla.node,
-					ChildBreakTokens: []*BlockBreakToken{{
-						Node:          spanner,
-						IsBreakBefore: true,
-						IsForcedBreak: true,
-					}},
-				}
-			} else {
-				// Advance the walker past this spanner entry so the
-				// outgoing break token doesn't re-break-before it; then
-				// emit a synthetic break-before-spanner and flush any
-				// remaining walker entries (e.g., MoveToSpanner-stored
-				// post-spanner column-content).
-				walker.Next()
-				outBuilder.AddBreakBeforeChild(spanner, true)
-				result = breakOuter()
-			}
-			result.HasForcedBreak = true
-			return result
-		}
 
 		// Blink cla.cc:1339-1347 (@ a9f50e522efa): resolve the spanner's
 		// margins against the multicol's content-box inline size and collapse
@@ -1256,6 +1212,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				BlockOffset: spannerBlockOffset,
 			}
 			builder.AddChild(spanFrag, spannerOffset)
+			// Blink AddResult (cla.cc:1427) → PropagateChildBreakValues
+			// (box_fragment_builder.cc:226-232, :618-657 @ a9f50e522efa): a
+			// leading spanner's break-before becomes this multicol's
+			// InitialBreakBefore, so the parent breaks before the multicol
+			// when it has container separation; a spanner's break-after
+			// joins the break before the next spanner, or becomes the
+			// multicol's FinalBreakAfter when nothing follows it.
+			if mla.space.ShouldPropagateChildBreakValues() {
+				builder.PropagateChildBreakValues(spanResult)
+			}
 			// LOU-111 step 4: propagate the spanner's BSFF into this
 			// multicol's running BSFF so an outer multicol slicing this
 			// multicol's fragments sees the true content-overflow extent
@@ -1296,6 +1262,14 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Forced break-after:column on spanner: propagate to the parent
 		// column context. Only on fresh layout (not resumed) so the break
 		// fires once.
+		//
+		// No Blink analog: Blink records the spanner's break-after through
+		// PropagateChildBreakValues above, where it forces a break before a
+		// following spanner (CalculateBreakBetweenValue) or becomes this
+		// multicol's FinalBreakAfter; following column content resets it
+		// (cla.cc:1233-1235 @ a9f50e522efa), so Blink never breaks between
+		// such a spanner and column content. This stand-in is kept: it is
+		// what spanner-fragmentation-012 passes on (ledger L35).
 		if hasOuterFrag && spanFrag != nil && !hasSpannerResume &&
 			mla.space.BreakToken == nil &&
 			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {

@@ -482,7 +482,7 @@ func TestMulticolPreviouslyConsumedContentBlockSize(t *testing.T) {
 		{"slice, one fragment", false, tok(100, 0), 90},
 		{"slice, two fragments", false, tok(200, 1), 190},
 		{"clone, two fragments", true, tok(200, 1), 170},
-		{"zero-height forced-break token", true, tok(0, 0), 0},
+		{"clone, zero-consumed break-inside token clamps to 0", true, tok(0, 0), 0},
 	} {
 		mla := &MulticolLayoutAlgorithm{
 			space:                   ConstraintSpace{BreakToken: tc.token},
