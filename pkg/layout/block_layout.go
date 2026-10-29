@@ -1771,18 +1771,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					childInlineOffset, actualChildBlockOff, builder)
 			}
 
-			// Phase 12d: record this child's break-after on the builder so the
-			// next sibling's break-between value can join with it. Mirrors
-			// Blink's BoxFragmentBuilder::AddChild → SetPreviousBreakAfter
-			// (which reads layout_result.FinalBreakAfter — for non-fragmented
-			// children that's the same as the child's style break-after). Only
-			// fire when non-auto so a default-everywhere "auto" doesn't
-			// inadvertently overwrite a non-default previous value.
-			if bla.space.HasBlockFragmentation &&
-				bla.space.BlockFragmentationType == FragmentColumn {
-				if ba := childStyle.GetBreakAfter(); ba != "auto" {
-					builder.SetPreviousBreakAfter(ba)
-				}
+			// The break-after recorded before this child, which the
+			// break-between check below joins with this child's break-before
+			// (Blink computes it in BreakBeforeChildIfNeeded, before AddResult
+			// propagates this child's values, fragmentation_utils.cc:908-916
+			// @ a9f50e522efa).
+			breakAfterBeforeChild := builder.PreviousBreakAfter()
+			// Propagate this child's break values: the first child's
+			// break-before becomes ours, and its break-after is joined with
+			// the next sibling's break-before. Mirrors Blink's
+			// BoxFragmentBuilder::AddResult → PropagateChildBreakValues
+			// (box_fragment_builder.cc:226-232, :618-657 @ a9f50e522efa).
+			if bla.space.ShouldPropagateChildBreakValues() {
+				builder.PropagateChildBreakValues(childResult)
 			}
 
 			firstNonEmptyChild = false
@@ -2041,8 +2042,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						!hasOnlyInlineChildren(child) &&
 						fragEnd-actualChildBlockOff == 0
 					if isBreakBeforeCurrent && childStyle != nil {
-						breakBetween := builder.JoinedBreakBetweenValue(
-							childStyle.GetBreakBefore())
+						breakBetween := JoinFragmentainerBreakValues(
+							breakAfterBeforeChild, childStyle.GetBreakBefore())
 						if IsAvoidBreakValue(bla.space, breakBetween) &&
 							pendingBreakAppeal > BreakAppealViolatingBreakAvoid {
 							pendingBreakAppeal = BreakAppealViolatingBreakAvoid

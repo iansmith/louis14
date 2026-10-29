@@ -170,10 +170,21 @@ type BoxFragmentBuilder struct {
 	hasClonedBoxDecorations bool
 
 	// previousBreakAfter is the break-after value of the most recently added
-	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
-	// break-before to compute the effective break-between. Mirrors Blink's
+	// in-flow child, joined with the value that child propagated
+	// (PropagateChildBreakValues). JoinedBreakBetweenValue joins it with the
+	// next child's break-before to compute the effective break-between, and
+	// Build copies it into LayoutResult.FinalBreakAfter. Mirrors Blink's
 	// BoxFragmentBuilder::previous_break_after_ + JoinedBreakBetweenValue.
 	previousBreakAfter string
+
+	// initialBreakBefore is the joined break-before value of the first
+	// in-flow child added, set once (hasInitialBreakBefore) even when it is
+	// auto, so a later child's break-before never replaces it. Copied into
+	// LayoutResult.InitialBreakBefore at Build(). Mirrors Blink's
+	// BoxFragmentBuilder::initial_break_before_, a std::optional
+	// (box_fragment_builder.h:822 @ a9f50e522efa).
+	initialBreakBefore    string
+	hasInitialBreakBefore bool
 
 	// breakAppeal is the appeal of the break that produced this fragment;
 	// BreakAppealPerfect when no break was inserted. Read into
@@ -476,10 +487,70 @@ func (b *BoxFragmentBuilder) BlockSizeForFragmentation() (float64, bool) {
 	return b.blockSizeForFragmentation, b.hasBlockSizeForFragmentation
 }
 
+// SetInitialBreakBefore records the break-before value to propagate to the
+// parent. Mirrors Blink's BoxFragmentBuilder::SetInitialBreakBefore
+// (box_fragment_builder.h:514-516 @ a9f50e522efa).
+func (b *BoxFragmentBuilder) SetInitialBreakBefore(v string) {
+	b.initialBreakBefore = v
+	b.hasInitialBreakBefore = true
+}
+
+// SetInitialBreakBeforeIfNeeded records v only when no value was recorded
+// yet, so the first in-flow child wins even when its value is auto. Mirrors
+// Blink's BoxFragmentBuilder::SetInitialBreakBeforeIfNeeded
+// (box_fragment_builder.h:518-521 @ a9f50e522efa).
+func (b *BoxFragmentBuilder) SetInitialBreakBeforeIfNeeded(v string) {
+	if !b.hasInitialBreakBefore {
+		b.SetInitialBreakBefore(v)
+	}
+}
+
+// PreviousBreakAfter returns the break-after value recorded for the most
+// recently added in-flow child ("auto" when none). Mirrors Blink's
+// BoxFragmentBuilder::PreviousBreakAfter (box_fragment_builder.h:523 @
+// a9f50e522efa).
+func (b *BoxFragmentBuilder) PreviousBreakAfter() string {
+	if b.previousBreakAfter == "" {
+		return "auto"
+	}
+	return b.previousBreakAfter
+}
+
+// PropagateChildBreakValues propagates an in-flow child's break values: the
+// first child's break-before (joined with the value it propagated) becomes
+// this box's initial break-before, and every child's break-after (joined
+// with the value it propagated) overwrites the previous break-after, so the
+// last child's becomes this box's final break-after. Inline, column-box,
+// floating and out-of-flow fragments do not propagate. Callers gate it on
+// ConstraintSpace.ShouldPropagateChildBreakValues. Mirrors Blink's
+// BoxFragmentBuilder::PropagateChildBreakValues (box_fragment_builder.cc:
+// 618-657 @ a9f50e522efa; exclusions :627-630); page names are not ported
+// (louis14 does not paginate).
+func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult) {
+	if childResult == nil {
+		return
+	}
+	frag := childResult.Fragment
+	if frag == nil || frag.Type != FragmentBox || frag.IsColumnBox() || isOutOfFlowFragment(frag) {
+		return
+	}
+	breakBefore, breakAfter := "auto", "auto"
+	if s := frag.Style; s != nil {
+		if s.GetFloat() != css.FloatNone {
+			return
+		}
+		breakBefore, breakAfter = s.GetBreakBefore(), s.GetBreakAfter()
+	}
+	b.SetInitialBreakBeforeIfNeeded(JoinFragmentainerBreakValues(childResult.InitialBreakBefore, breakBefore))
+	b.SetPreviousBreakAfter(JoinFragmentainerBreakValues(childResult.FinalBreakAfter, breakAfter))
+}
+
 // SetPreviousBreakAfter records the break-after value of the most recently
-// added in-flow child. JoinedBreakBetweenValue uses it to compute the
-// effective break-between value when a subsequent child is added.
-// Mirrors Blink's BoxFragmentBuilder::SetPreviousBreakAfter.
+// added in-flow child (PropagateChildBreakValues), or resets it (the
+// multicol after a non-empty column line). JoinedBreakBetweenValue uses it to
+// compute the effective break-between value when a subsequent child is
+// added. Mirrors Blink's BoxFragmentBuilder::SetPreviousBreakAfter
+// (box_fragment_builder.h:524 @ a9f50e522efa).
 func (b *BoxFragmentBuilder) SetPreviousBreakAfter(v string) {
 	b.previousBreakAfter = v
 }
@@ -881,6 +952,19 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		IsEmptySpannerParent:   b.isEmptySpannerParent,
 
 		ShouldForceSameFragmentationFlow: b.shouldForceSameFragmentationFlow,
+
+		InitialBreakBefore: "auto",
+		FinalBreakAfter:    "auto",
+	}
+	// Mirrors Blink's LayoutResult constructor (layout_result.cc:89-95 @
+	// a9f50e522efa): propagated break values stop at a box with layout
+	// containment. The ShouldPropagateChildBreakValues gate is applied where
+	// PropagateChildBreakValues is called; without it nothing is recorded.
+	if b.style == nil || !b.style.ShouldApplyLayoutContainment() {
+		if b.hasInitialBreakBefore {
+			result.InitialBreakBefore = b.initialBreakBefore
+		}
+		result.FinalBreakAfter = b.PreviousBreakAfter()
 	}
 	if allowBaseline {
 		result.Baseline = b.baseline

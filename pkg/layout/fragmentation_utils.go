@@ -21,10 +21,13 @@ import (
 //   - EarlyBreak storage / RelayoutAndBreakEarlier retry → Phase 12g
 //   - Paginated PageName interaction → not multicol
 //   - FlexColumnBreakInfo per-column flex info → not multicol
-//   - LayoutResult.InitialBreakBefore / FinalBreakAfter propagation across
-//     resumed fragments → defer; for now we read break-before / break-after
-//     directly off the child's style at the call site, which is correct for
-//     non-resumed children (the only case 12d's drivers exercise).
+//   - The soft-break half of LayoutResult.InitialBreakBefore /
+//     FinalBreakAfter propagation: Blink's BreakBeforeChild propagates the
+//     pushed child's break values when the break is not forced
+//     (fragmentation_utils.cc:970-972 @ a9f50e522efa); louis14 does not
+//     (ledger L37). Propagation from added children is ported
+//     (BoxFragmentBuilder.PropagateChildBreakValues, LOU-400).
+//   - Flex/grid row-item break propagation → not multicol
 
 // ShouldAvoidBreakInside returns true if the layout result should not be
 // broken across fragmentainers — either because its fragment is monolithic
@@ -281,17 +284,24 @@ func MinPositiveSpaceShortage(a, b float64) float64 {
 }
 
 // CalculateBreakBetweenValue returns the effective break-between value for the
-// boundary BEFORE this child, joining the parent's previous-break-after (set
-// when the previous in-flow child was added) with the child's break-before.
-// Mirrors Blink's CalculateBreakBetweenValue (fragmentation_utils.cc).
+// boundary BEFORE this child: the parent's previous break-after (propagated
+// when the previous in-flow child was added) joined with the child's
+// break-before and the break-before the child's layout propagated up from
+// its first descendant (LayoutResult.InitialBreakBefore). Mirrors Blink's
+// CalculateBreakBetweenValue (fragmentation_utils.cc:131-160 @
+// a9f50e522efa).
 //
-// We omit the IsFirstForNode() / paginated PageName interactions: the caller
-// in block_layout.go only invokes this for non-resumed children in column
-// fragmentation context.
-func CalculateBreakBetweenValue(child *LayoutInputNode, builder *BoxFragmentBuilder) string {
+// Blink returns auto for a child whose fragment is not first-for-node
+// (:143-153); here both callers (BlockLayoutAlgorithm and the multicol
+// spanner site) only reach BreakBeforeChildIfNeeded for a first-for-node
+// child. Inline children and paginated page names are not ported.
+func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResult, builder *BoxFragmentBuilder) string {
 	childBreakBefore := "auto"
 	if s := child.Style(); s != nil {
 		childBreakBefore = s.GetBreakBefore()
+	}
+	if layoutResult != nil {
+		childBreakBefore = JoinFragmentainerBreakValues(childBreakBefore, layoutResult.InitialBreakBefore)
 	}
 	return builder.JoinedBreakBetweenValue(childBreakBefore)
 }
@@ -515,7 +525,7 @@ func BreakBeforeChildIfNeeded(
 	// measure loop (Phase 17) gets one continuation token per forced-break segment.
 	// Soft breaks are gated on definite fragmentainerBlockSize below, so they
 	// won't fire when FragmentainerBlockSize=Indefinite (as set in the measure pass).
-	breakBetween := CalculateBreakBetweenValue(child, builder)
+	breakBetween := CalculateBreakBetweenValue(child, layoutResult, builder)
 	if hasContainerSeparation && IsForcedBreakValue(space, breakBetween) {
 		builder.SetBreakAppeal(BreakAppealPerfect)
 		return BreakStatusBrokeBefore, true

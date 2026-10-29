@@ -84,19 +84,10 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 // box's block end carries neither (Blink ShouldIncludeBlockStartBorderPadding
 // / ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
 // a9f50e522efa).
-//
-// Only a resume that consumed something is a continuation here, unlike
-// Blink's IsBreakInside: louis14's multicol resumes with a zero-consumed
-// break-inside token after the zero-height stub it emits for a forced break
-// before a column spanner (MulticolLayoutAlgorithm.Layout), its stand-in for
-// propagating that break-before to the multicol itself (Blink
-// SetInitialBreakBeforeIfNeeded, box_fragment_builder.cc:640-642), so that
-// resume is the box's first real fragment (spanner-fragmentation-009).
 func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) (border, padding LogicalEdges) {
 	border, padding = geom.Border, geom.Padding
 	pastEnd := breakToken != nil && breakToken.IsAtBlockEnd
-	isContinuation := breakToken != nil && !breakToken.ConsumedBlockSize.IsZero()
-	if pastEnd || (isContinuation && !hasClonedBoxDecorations) {
+	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, breakToken) {
 		border.BlockStart, padding.BlockStart = 0, 0
 	}
 	if pastEnd || (isBreaking && !hasClonedBoxDecorations) {

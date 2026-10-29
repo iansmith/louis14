@@ -263,6 +263,23 @@ func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
 	return cs.PercentageResolutionSize.BlockSize.Float64() < 0
 }
 
+// ShouldPropagateChildBreakValues reports whether a box laid out in this
+// space propagates its children's break-before / break-after values up
+// through LayoutResult.InitialBreakBefore / FinalBreakAfter. Mirrors Blink's
+// ConstraintSpace::ShouldPropagateChildBreakValues (constraint_space.h:618-620
+// @ a9f50e522efa).
+//
+// No Blink analog for the derivation: Blink sets a dedicated bit in
+// SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:346, cleared for
+// monolithic children at :336-338), CreateConstraintSpaceForFragmentainer
+// (:1391) and the column-balancing space (column_layout_algorithm.cc:1850).
+// louis14 only fragments columns, gives a monolithic child no block
+// fragmentation, and gives the balancing space block fragmentation, so
+// HasBlockFragmentation answers the same question (ledger L32).
+func (cs ConstraintSpace) ShouldPropagateChildBreakValues() bool {
+	return cs.HasBlockFragmentation
+}
+
 // RemainingFragmentainerBlockSize returns how much block-size is available
 // from the current offset to the fragmentainer end. Returns Indefinite
 // when not in a fragmentation context.
