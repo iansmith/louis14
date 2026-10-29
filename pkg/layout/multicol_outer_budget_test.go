@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 )
 
@@ -378,5 +379,118 @@ func TestMulticolNested_ParallelFlowSpannerDoesNotStopLayout(t *testing.T) {
 	}
 	if got := l.Offset.Top.Float64(); got != 50 {
 		t.Errorf("second spanner at y=%v, want 50", got)
+	}
+}
+
+// innerFragmentHeights lays out outerMC and returns the block-sizes of
+// innerMC's fragments in outer-column order, plus the block offset of node
+// `after` in the first outer column that holds it (-1 if none).
+func innerFragmentHeights(t *testing.T, outerMC, innerMC, after *html.Node, styles map[*html.Node]*css.Style, width float64) ([]float64, float64) {
+	t.Helper()
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: width, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: width, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil {
+		t.Fatal("outer mc layout returned nil")
+	}
+	dumpFragmentTree(t, "", result.Fragment)
+	var heights []float64
+	afterOffset := -1.0
+	for _, col := range result.Fragment.Children {
+		if l := childLinkFor(col.Fragment, innerMC); l != nil {
+			heights = append(heights, NewLogicalFragment(wdm, l.Fragment).BlockSize())
+		}
+		if l := childLinkFor(col.Fragment, after); l != nil && afterOffset < 0 {
+			afterOffset = l.Offset.Top.Float64()
+		}
+	}
+	return heights, afterOffset
+}
+
+// TestMulticolNested_MinHeightAppliesPerFragment (LOU-388 WI-6b): a nested
+// multicol's fragment block-size comes from ComputeBlockSizeForFragment
+// (height, min-height, max-height over all fragments) and FinishFragmentation
+// (column_layout_algorithm.cc:376-393 @ a9f50e522efa). Chrome 155 (scratchpad
+// probes p027/p028): multicol-nested-027's inner multicol with min-height:75
+// and 50px of content is 75 tall, its sibling at y=75; multicol-nested-028's
+// with min-height:125 spans fragments of 100 and 25.
+func TestMulticolNested_MinHeightAppliesPerFragment(t *testing.T) {
+	t.Run("nested-027", func(t *testing.T) {
+		content := makeNode("div")
+		innerMC := makeNode("div", content)
+		sib := makeNode("div")
+		avoid := makeNode("div")
+		outerMC := makeNode("div", innerMC, sib, avoid)
+		styles := map[*html.Node]*css.Style{
+			outerMC: makeStyle("display", "block", "width", "100px", "height", "100px", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+			innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto", "min-height", "75px"),
+			content: makeStyle("display", "block", "height", "50px"),
+			sib:     makeStyle("display", "block", "height", "25px"),
+			avoid:   makeStyle("display", "block", "height", "100px", "break-inside", "avoid"),
+		}
+		heights, sibOffset := innerFragmentHeights(t, outerMC, innerMC, sib, styles, 100)
+		if len(heights) != 1 || heights[0] != 75 {
+			t.Errorf("inner fragment heights = %v, want [75]", heights)
+		}
+		if sibOffset != 75 {
+			t.Errorf("sibling at y=%v, want 75", sibOffset)
+		}
+	})
+	t.Run("nested-028", func(t *testing.T) {
+		content := makeNode("div")
+		innerMC := makeNode("div", content)
+		a1 := makeNode("div")
+		a2 := makeNode("div")
+		outerMC := makeNode("div", innerMC, a1, a2)
+		styles := map[*html.Node]*css.Style{
+			outerMC: makeStyle("display", "block", "width", "100px", "height", "100px", "column-count", "4", "column-gap", "0", "column-fill", "auto"),
+			innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto", "min-height", "125px"),
+			content: makeStyle("display", "block", "height", "205px"),
+			a1:      makeStyle("display", "block", "height", "75px", "break-inside", "avoid"),
+			a2:      makeStyle("display", "block", "height", "200px", "break-inside", "avoid"),
+		}
+		heights, a1Offset := innerFragmentHeights(t, outerMC, innerMC, a1, styles, 100)
+		if len(heights) != 2 || heights[0] != 100 || heights[1] != 25 {
+			t.Errorf("inner fragment heights = %v, want [100 25]", heights)
+		}
+		if a1Offset != 25 {
+			t.Errorf("first avoid block at y=%v, want 25", a1Offset)
+		}
+	})
+}
+
+// TestMulticolPreviouslyConsumedContentBlockSize (LOU-396): nested multicol
+// tokens carry Blink's border-box ConsumedBlockSize; the content consumed is
+// that less the edges earlier fragments carried — the first fragment's
+// block-start edge, or with cloned decorations both edges of every fragment.
+func TestMulticolPreviouslyConsumedContentBlockSize(t *testing.T) {
+	tok := func(consumed float64, seq int) *BlockBreakToken {
+		return &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(consumed), SequenceNumber: seq}
+	}
+	for _, tc := range []struct {
+		name   string
+		cloned bool
+		token  *BlockBreakToken
+		want   float64
+	}{
+		{"no token", false, nil, 0},
+		{"slice, one fragment", false, tok(100, 0), 90},
+		{"slice, two fragments", false, tok(200, 1), 190},
+		{"clone, two fragments", true, tok(200, 1), 170},
+		{"zero-height forced-break token", true, tok(0, 0), 0},
+	} {
+		mla := &MulticolLayoutAlgorithm{
+			space:                   ConstraintSpace{BreakToken: tc.token},
+			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
+			hasClonedBoxDecorations: tc.cloned,
+		}
+		if got := mla.previouslyConsumedContentBlockSize(); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
