@@ -2016,15 +2016,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			h = col.result.BlockSizeForFragmentation
 		}
 		// Blink cla.cc:949-971 @ a9f50e522efa: when the column block-size
-		// was derived from the outer fragmentainer (shrink-to-fit), use the
-		// intrinsic content height for the row advance instead of the
-		// (potentially larger) fragment block-size. The multicol's own
-		// block-size shrinks to content rather than consuming all outer
-		// remaining space. Blink clears the flag after the first column and
-		// resets the contribution to the full column block-size for every
-		// later one, so only a single-column line shrinks.
-		if shrinkToFitColumnBlockSize && len(finalColumns) == 1 && col.intrinsicBlock < h {
-			h = col.intrinsicBlock
+		// was derived from the outer fragmentainer (shrink-to-fit), replace the
+		// row advance computed above with min(column block-size, the
+		// column's BlockSizeForFragmentation — its content including
+		// overflow, e.g. a resumed parallel-flow piece). The multicol's own
+		// block-size shrinks
+		// to content rather than consuming all outer remaining space. Blink
+		// clears the flag after the first column and resets the contribution
+		// to the full column block-size for every later one, so only a
+		// single-column line shrinks.
+		if shrinkToFitColumnBlockSize && len(finalColumns) == 1 {
+			h = math.Min(colBlockSize, FragmentainerBlockSizeForFragmentation(wdm, col.fragment))
 		}
 		if h > maxColHeight {
 			maxColHeight = h
