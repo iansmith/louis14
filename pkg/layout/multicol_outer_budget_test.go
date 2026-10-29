@@ -332,3 +332,51 @@ func TestMulticolNested_LineThatDoesNotFitIsBrokenBefore(t *testing.T) {
 		t.Errorf("first inner fragment has no spanner")
 	}
 }
+
+// TestMulticolNested_ParallelFlowSpannerDoesNotStopLayout (LOU-394): a
+// spanner whose box fits while its content overflows continues in a parallel
+// flow — not an in-flow break inside — so layout continues after it in the
+// same outer fragmentainer (column_layout_algorithm.cc:656-660 @
+// a9f50e522efa). spanner-fragmentation-004's structure: the second spanner
+// is placed in the first outer column, right after the first.
+func TestMulticolNested_ParallelFlowSpannerDoesNotStopLayout(t *testing.T) {
+	c1, c2, c3 := makeNode("div"), makeNode("div"), makeNode("div")
+	sp1 := makeNode("div", c1, c2, c3)
+	sp2 := makeNode("div")
+	after := makeNode("div")
+	innerMC := makeNode("div", sp1, sp2, after)
+	outerMC := makeNode("div", innerMC)
+	styles := map[*html.Node]*css.Style{
+		outerMC: makeStyle("display", "block", "width", "100px", "height", "100px",
+			"column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0"),
+		sp1:     makeStyle("display", "block", "height", "50px", "column-span", "all"),
+		c1:      makeStyle("display", "block", "height", "50px"),
+		c2:      makeStyle("display", "block", "height", "50px"),
+		c3:      makeStyle("display", "block", "height", "100px"),
+		sp2:     makeStyle("display", "block", "height", "10px", "column-span", "all"),
+		after:   makeStyle("display", "block", "height", "80px"),
+	}
+	ctx := testContext()
+	outerNode := buildTestTree(outerMC, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		Build()
+	result := layoutElement(ctx, outerNode, space)
+	if result == nil || result.Fragment == nil || len(result.Fragment.Children) == 0 {
+		t.Fatal("outer mc layout returned no columns")
+	}
+	inner := childLinkFor(result.Fragment.Children[0].Fragment, innerMC)
+	if inner == nil {
+		t.Fatal("outer col 1 has no inner mc fragment")
+	}
+	l := childLinkFor(inner.Fragment, sp2)
+	if l == nil {
+		t.Fatal("second spanner not placed in outer col 1; layout stopped after the parallel-flow spanner")
+	}
+	if got := l.Offset.Top.Float64(); got != 50 {
+		t.Errorf("second spanner at y=%v, want 50", got)
+	}
+}
