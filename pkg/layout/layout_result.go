@@ -136,10 +136,12 @@ type LayoutResult struct {
 	// this to BreakAppealPerfect. Mirrors Blink's LayoutResult::GetBreakAppeal.
 	BreakAppeal BreakAppeal
 
-	// ColumnSpannerPath is non-nil when a column-span:all element was
-	// encountered and the algorithm returned early without laying it out.
-	// The multicol algorithm extracts the spanner via this path and lays it
-	// out at full container width. Mirrors Blink's ColumnSpannerPath
+	// ColumnSpannerPath is non-nil when layout of this box stopped at a
+	// column-span:all element: its own child, or one inside an in-flow child
+	// whose path it wraps (BoxFragmentBuilder.PropagateBreakInfo,
+	// box_fragment_builder.cc:594-608 @ a9f50e522efa). The multicol
+	// algorithm extracts the spanner via this path and lays it out at full
+	// container width. Mirrors Blink's ColumnSpannerPath
 	// (column_spanner_path.h) and LayoutResult::GetColumnSpannerPath().
 	ColumnSpannerPath *ColumnSpannerPath
 

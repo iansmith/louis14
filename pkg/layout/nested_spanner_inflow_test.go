@@ -166,7 +166,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 			// Chrome probe f6.html (guard). The interrupted child's
 			// margin-bottom is not in the pre-spanner row (Blink drops the
 			// trailing strut of a child broken inside, ComputeInflowPosition,
-			// block_layout_algorithm.cc:3014-3030); it applies after the
+			// block_layout_algorithm.cc:3014-3031); it applies after the
 			// spanner.
 			name: "F6_parent_margin_bottom_after_spanner",
 			mc:   wide2,
@@ -279,7 +279,7 @@ func TestNestedSpannerParentStopsChildLoop_LOU410(t *testing.T) {
 	// fragmentainer), root > [w{...} > [a{height:40px}, sp], sib{height:200px}].
 	// The loop stops after w (block_layout_algorithm.cc:1108-1115), so sib is
 	// not laid out; w's trailing margin is dropped because w broke inside
-	// (:3014-3030), so the content stays 40.
+	// (:3014-3031), so the content stays 40.
 	for _, tc := range []struct {
 		name    string
 		wStyles []string

@@ -545,6 +545,29 @@ func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult
 	b.SetPreviousBreakAfter(JoinFragmentainerBreakValues(childResult.FinalBreakAfter, breakAfter))
 }
 
+// PropagateBreakInfo takes over the column spanner found inside an in-flow
+// child: it wraps the child's spanner path and copies the child's
+// empty-spanner-parent bit, so the multicol reaches the spanner through this
+// box. Mirrors the spanner block of Blink's BoxFragmentBuilder::
+// PropagateBreakInfo (box_fragment_builder.cc:594-608 @ a9f50e522efa), which
+// AddResult calls before PropagateChildBreakValues (:227-232). Only that
+// block is ported here; the rest of Blink's PropagateBreakInfo lives at the
+// BlockLayoutAlgorithm call sites (PropagateChildBlockSizeForFragmentation,
+// PropagateTallestUnbreakableBlockSize, the local
+// pendingHasInflowChildBreakInside, the appeal clamp in MovePastBreakpoint).
+// Blink gates the block on IsInColumnBfc inside; the builder holds no
+// ConstraintSpace, so the caller gates it. A louis14 path omits Blink's head
+// Node(): a result's path starts at the child, so {Box: child, Child: path}
+// is Blink's ColumnSpannerPath(Node(), child_path), and the space-side
+// follow checks path.Box == child.
+func (b *BoxFragmentBuilder) PropagateBreakInfo(child *LayoutInputNode, childResult *LayoutResult) {
+	if childResult == nil || childResult.ColumnSpannerPath == nil {
+		return
+	}
+	b.SetColumnSpannerPath(&ColumnSpannerPath{Box: child, Child: childResult.ColumnSpannerPath})
+	b.SetIsEmptySpannerParent(childResult.IsEmptySpannerParent)
+}
+
 // SetPreviousBreakAfter records the break-after value of the most recently
 // added in-flow child (PropagateChildBreakValues), or resets it (the
 // multicol after a non-empty column line). JoinedBreakBetweenValue uses it to

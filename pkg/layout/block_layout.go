@@ -835,31 +835,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			resumeChildIdx = len(children)
 		}
 
-		// preSpannerExtentWithinBudget clamps the content placed before a
-		// column spanner to the remaining declared budget of a genuine CSS
-		// height in columns (LOU-320). The FIRST inter-spanner segment is
-		// clamped too (not only resumed ones): a first block exceeding the
-		// definite height must record a clamped ConsumedBlockSize, else later
-		// fragments resume from a negative remaining budget. consumed is 0 on
-		// the first segment.
-		preSpannerExtentWithinBudget := func(extent float64) float64 {
-			if !hasExplicitBlock || bla.space.IsBlockSizeOverride ||
-				bla.space.BlockFragmentationType != FragmentColumn {
-				return extent
-			}
-			if explicitBlockSize <= 0 {
-				// Not a height to distribute: content shows as overflow.
-				return extent
-			}
-			// What is left of the border box once earlier fragments and this
-			// fragment's block-start edge are taken out (Blink's
-			// FoundColumnSpanner branch of FinishFragmentation,
-			// fragmentation_utils.cc:606-640 @ a9f50e522efa, in content terms).
-			remaining := explicitBlockSize + fragmentsBorderPadding - previouslyConsumed -
-				geom.BorderBoxPadding().BlockStart
-			return max(0, min(extent, remaining))
-		}
-
 		for childIdx, child := range children {
 			// When resuming, skip children completed in previous fragments
 			// (and, between/before tokened children, those without their own
@@ -1373,140 +1348,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
 			}
 
-			// Propagate nested ColumnSpannerPath: if a descendant of `child`
-			// returned column-span:all, wrap the path and return early so the
-			// multicol algorithm can extract the spanner at full container width.
-			// Mirrors Blink's BlockLayoutAlgorithm setting SetColumnSpannerPath
-			// on container_builder_ when child layout_result has a non-nil
-			// GetColumnSpannerPath() (block_layout_algorithm.cc).
-			if bla.space.HasBlockFragmentation &&
-				bla.space.BlockFragmentationType == FragmentColumn &&
-				childResult.ColumnSpannerPath != nil {
-
-				// Build a break token so multicol can resume after the spanner:
-				// if the child still has content (its own break token) carry that;
-				// otherwise point to the next sibling.
-				var resumeToken *BlockBreakToken
-				if childResult.BreakToken != nil {
-					resumeToken = childResult.BreakToken
-				} else if childIdx+1 < len(children) {
-					// Forced, as at the direct-spanner site above.
-					resumeToken = &BlockBreakToken{
-						Node:          children[childIdx+1],
-						IsBreakBefore: true,
-						IsForcedBreak: true,
-					}
-				}
-				// LOU-320: place this child's PRE-spanner fragment before
-				// extracting the nested spanner. The child (e.g. a fixed-height
-				// container) holds the column content up to the spanner; this is
-				// the partial fragment `childResult.Fragment` produced when the
-				// child's own layout stopped at the spanner. Without placing it,
-				// a spanner nested inside this child leaves the pre-spanner column
-				// row empty and reports intrinsicBlock=0, collapsing the row (the
-				// container's blocks vanish). Direct-child spanners don't need this
-				// because their pre-spanner siblings were placed in earlier loop
-				// iterations. Mirrors Blink keeping pre-spanner content in-flow:
-				// block_layout_algorithm.cc:820-827 (SetShouldForceSameFragmentation
-				// Flow) + AddChild before SetColumnSpannerPath (:1028-1032), Chromium
-				// main @ d694f1edc784ebb2ce84dedde5ae3905d50c14f2.
-				// Advance by the child's PRE-spanner content extent
-				// (IntrinsicBlockSize), not its fragment border-box size: a
-				// definite-height child split by a spanner reports its full CSS
-				// height as the fragment size but only placed `IntrinsicBlockSize`
-				// of content before the spanner. Using the full size would make
-				// the pre-spanner column row the whole container height.
-				preSpannerExtent := childResult.IntrinsicBlockSize
-				if preSpannerExtent <= 0 {
-					preSpannerExtent = NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
-				}
-				// A child with content before the spanner sits at its
-				// collapsed border edge, as in Steps 5-6 below; an empty one
-				// resolves none of its own margins into the row, as Chrome
-				// does (multicol-span-all-margin-nested-002).
-				var preSpannerChildOff float64
-				if preSpannerExtent > 0 {
-					collapsed := collapsedWithChild(childResult.PropagatedTopMargin)
-					preSpannerChildOff = borderEdgeAt(collapsed)
-					if isAdjoiningBlockStart() {
-						propagatedTopMargin = collapsed
-					}
-				} else {
-					preSpannerChildOff = blockCursor + prevMarginStrut.Resolve()
-				}
-				childOffset := LogicalOffset{
-					InlineOffset: childMargins.InlineStart,
-					BlockOffset:  preSpannerChildOff,
-				}
-				if isChildNewFC {
-					// Same line-left clamp as the main in-flow path (LOU-327):
-					// a negative inline margin cannot pull the new-FC border box
-					// into a line-left float's margin area.
-					childOffset.InlineOffset = newFCInlineOffsetBesideFloats(childMargins.InlineStart, floatStartOff)
-				}
-				builder.AddChild(childResult.Fragment, childOffset)
-				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
-				blockCursor = preSpannerChildOff + preSpannerExtent
-
-				// Wrap the child's spanner path and take over its empty-
-				// spanner-parent bit (Blink PropagateBreakInfo,
-				// box_fragment_builder.cc:594-608 @ a9f50e522efa).
-				builder.SetColumnSpannerPath(&ColumnSpannerPath{
-					Box:   child,
-					Child: childResult.ColumnSpannerPath,
-				})
-				builder.SetIsEmptySpannerParent(childResult.IsEmptySpannerParent)
-				var outToken *BlockBreakToken
-				if resumeToken != nil {
-					consumed := previouslyConsumed + geom.BorderBoxPadding().BlockStart + blockCursor
-					if isFragmentainerBox {
-						consumed = fragmentainerConsumedBlockSize(blockCursor)
-					}
-					outToken = &BlockBreakToken{
-						Node:                    bla.node,
-						ConsumedBlockSize:       layoutunit.FromFloat64Round(consumed),
-						IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
-					}
-					if incomingBreakToken != nil {
-						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
-					}
-					outToken.ChildBreakTokens = []*BlockBreakToken{resumeToken}
-				}
-				intrinsicBlock := blockCursor
-				builder.SetIntrinsicBlockSize(intrinsicBlock)
-				builder.SetNode(bla.node.DOMNode)
-				builder.SetStyle(bla.style)
-				builder.SetLayoutNode(bla.node)
-				// As at the direct-spanner site: an interrupted fragment drops
-				// its block-end edge, and a genuine CSS height is sized by the
-				// content placed before the spanner within its budget.
-				if outToken != nil && !shouldCloneBoxEndDecorations {
-					geom.ClearBorderScrollbarPaddingBlockEnd()
-				}
-				if hasExplicitBlock && bla.space.IsBlockSizeOverride {
-					builder.SetSize(geom.BorderBoxSize)
-				} else {
-					builder.SetSize(LogicalSize{
-						InlineSize: geom.BorderBoxSize.InlineSize,
-						BlockSize:  preSpannerExtentWithinBudget(intrinsicBlock) + geom.BlockBorderPadding(),
-					})
-				}
-				builder.SetBoxData(&PhysicalBoxData{
-					Border:    ToPhysicalEdges(geom.Border, wdm),
-					Padding:   ToPhysicalEdges(geom.Padding, wdm),
-					Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
-				})
-				builder.SetEndMarginStrut(prevMarginStrut)
-				builder.SetExclusionSpace(exclusionSpace)
-				result := builder.Build()
-				result.BreakToken = outToken
-				result.PropagatedTopMargin = propagatedTopMargin
-				if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
-					result.BlockSizeForFragmentation = intrinsicBlock
-				}
-				return result
-			}
-
 			// CSS 2.1 §9.5: Floats from non-BFC children escape to the
 			// parent BFC. After laying out a non-BFC child, update our
 			// exclusion space so subsequent siblings see the child's floats.
@@ -1771,6 +1612,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					childInlineOffset, actualChildBlockOff, builder)
 			}
 
+			// A column spanner was found inside this child: take over its
+			// path (Blink AddResult → PropagateBreakInfo, box_fragment_
+			// builder.cc:227-228, :594-608 @ a9f50e522efa; IsInColumnBfc has
+			// no louis14 flag, so a column fragmentation space stands in).
+			inColumnBfc := bla.space.HasBlockFragmentation &&
+				bla.space.BlockFragmentationType == FragmentColumn
+			if inColumnBfc {
+				builder.PropagateBreakInfo(child, childResult)
+			}
+
 			// The break-after recorded before this child, which the
 			// break-between check below joins with this child's break-before
 			// (Blink computes it in BreakBeforeChildIfNeeded, before AddResult
@@ -1859,6 +1710,33 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Reset margin strut to the child's block-end margin.
 			prevMarginStrut = childResult.EndMarginStrut
 			prevMarginStrut.Append(childMargins.BlockEnd)
+
+			// The child was interrupted by a column spanner inside it, so it
+			// broke inside in this flow: finish this fragment and lay out no
+			// more siblings (Blink BlockLayoutAlgorithm::Layout,
+			// block_layout_algorithm.cc:1108-1115 @ a9f50e522efa;
+			// PropagateBreakInfo sets has_inflow_child_break_inside_,
+			// box_fragment_builder.cc:567-570, which :598-599 DCHECKs for a
+			// spanner path). The post-loop finishFragmentation sizes the
+			// fragment through its FoundColumnSpanner branch
+			// (fragmentation_utils.cc:601-628) and the token reader derives
+			// IsCausedByColumnSpanner. Only this case stops here; the general
+			// stop on any in-flow child break waits for the louis14-only
+			// boundary gates to go (ledger L43).
+			if inColumnBfc && childResult.ColumnSpannerPath != nil {
+				// A child that broke inside before its block end applies no
+				// trailing margin (ComputeInflowPosition,
+				// block_layout_algorithm.cc:3014-3031).
+				if childResult.BreakToken != nil && !childResult.BreakToken.IsAtBlockEnd {
+					prevMarginStrut = MarginStrut{}
+				}
+				pendingShouldBreakInside = true
+				pendingHasInflowChildBreakInside = true
+				pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
+				pendingIntrinsicAtBreak = blockCursor
+				pendingHaveIntrinsicAtBreak = true
+				break
+			}
 
 			// Fragmentation: check if we've overflowed the fragmentainer.
 			if bla.space.HasBlockFragmentation {
@@ -2708,6 +2586,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// missing tag half.
 		if incomingBreakToken != nil && incomingBreakToken.IsAtBlockEnd {
 			isAtBlockEnd = true
+		}
+		// A column box's token is never at its block end in Blink
+		// (FinishFragmentationForFragmentainer sets no such state,
+		// fragmentation_utils.cc:823-866 @ a9f50e522efa); louis14 carries
+		// it forward to size the columns of a parallel flow. A spanner ends
+		// the column row, so the content after it resumes in a new row, not
+		// past its end (ledger L54).
+		if isFragmentainerBox && builder.FoundColumnSpanner() {
+			isAtBlockEnd = false
 		}
 		consumedBlockSize := fragmentainerConsumedBlockSize(consumed)
 		if usesFinishFragmentation {
