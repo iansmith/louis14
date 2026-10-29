@@ -1734,8 +1734,8 @@ type layoutLineResult struct {
 // and the line may flip its own copy (column-fill:auto line that finds a
 // spanner) before the one-time regrow recursion re-runs the line with it.
 // Blink's has_wrapped and margin_strut parameters are not ported: louis14
-// records the row gap and commits the line in LayoutChildren's column
-// branch.
+// records the row gap and commits the line in LayoutFragmentationContext
+// after LayoutLine returns.
 func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	nextColumnToken *BlockBreakToken,
 	lineOffset float64,
