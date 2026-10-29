@@ -311,15 +311,7 @@ func TestFragmentationMargins(t *testing.T) {
 			frag, ids := layoutTwoColumnSpec(t, tc.tree, tc.balance)
 			got := borderBoxRectsByID(frag, ids)
 			checkRects(t, got, tc.rects)
-			for id, want := range tc.tops {
-				var tops [][2]float64
-				for _, r := range got[id] {
-					tops = append(tops, [2]float64{r.x, r.y})
-				}
-				if !slices.Equal(tops, want) {
-					t.Errorf("%s fragment origins = %v, want %v (Chrome 155)", id, tops, want)
-				}
-			}
+			checkTops(t, got, tc.tops)
 		})
 	}
 }

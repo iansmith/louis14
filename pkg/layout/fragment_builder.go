@@ -881,6 +881,9 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		IsEmptySpannerParent:   b.isEmptySpannerParent,
 
 		ShouldForceSameFragmentationFlow: b.shouldForceSameFragmentationFlow,
+
+		InitialBreakBefore: "auto",
+		FinalBreakAfter:    "auto",
 	}
 	if allowBaseline {
 		result.Baseline = b.baseline

@@ -158,6 +158,19 @@ type LayoutResult struct {
 	// ShouldForceSameFragmentationFlow (layout_result.h:368-370 @
 	// a9f50e522efa).
 	ShouldForceSameFragmentationFlow bool
+
+	// InitialBreakBefore is the break-before value propagated up from this
+	// box's first in-flow child (joined with that child's own propagated
+	// value), for the parent to join into the break-between value before
+	// this box. "auto" when none was propagated. Mirrors Blink's
+	// LayoutResult::InitialBreakBefore (layout_result.h:414 @ a9f50e522efa).
+	InitialBreakBefore string
+
+	// FinalBreakAfter is the break-after value propagated up from this box's
+	// last in-flow child, for the parent to join into the break-between
+	// value after this box. "auto" when none was propagated. Mirrors Blink's
+	// LayoutResult::FinalBreakAfter (layout_result.h:420 @ a9f50e522efa).
+	FinalBreakAfter string
 }
 
 // ColumnSpannerPath is a linked list identifying the path from the current
