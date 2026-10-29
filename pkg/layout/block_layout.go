@@ -609,6 +609,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		geom.Border.BlockStart == 0 && geom.Padding.BlockStart == 0 &&
 		!incomingBreakToken.IsBreakInside()
 	firstNonEmptyChild := true
+	// Whether a child placed so far left a breakpoint before the next one,
+	// giving it container separation (Blink BlockLayoutAlgorithm::
+	// has_break_opportunity_before_next_child_, block_layout_algorithm.cc:
+	// 311, :2767-2772 @ a9f50e522efa). Unlike firstNonEmptyChild, a child
+	// resumed in a parallel flow does not set it. Blink's MonolithicOverflow
+	// seeding (:868-876) is omitted: louis14 never sets
+	// BlockBreakToken.MonolithicOverflow.
+	hasBreakOpportunityBeforeNextChild := false
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
@@ -717,6 +725,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
+		// no Blink analog: Blink decides per line box (non-zero height,
+		// fragmentation_utils.cc:885-892 @ a9f50e522efa); louis14 places
+		// inline content as one unit.
+		hasBreakOpportunityBeforeNextChild = true
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -1446,7 +1458,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// block_layout_algorithm.cc:1994-1997 and :2622-2625 @
 				// a9f50e522efa). A `clear` that inserted no gap does not
 				// separate it.
-				hasContainerSeparation := !firstNonEmptyChild || isPushedByFloats
+				hasContainerSeparation := hasBreakOpportunityBeforeNextChild || isPushedByFloats
 				// Steps 1-2 have collapsed the child's margins into the strut.
 				fragOff := bla.fragmentainerOffsetForChildren + borderEdgeAt(prevMarginStrut)
 				status, isForced := BreakBeforeChildIfNeeded(
@@ -1616,6 +1628,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			firstNonEmptyChild = false
+			// A child resumed in a parallel flow leaves no breakpoint before
+			// the next sibling, so a forced break-before on that sibling does
+			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
+			// 2767-2772 @ a9f50e522efa).
+			if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
+				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(resumeChildTokens[child])
+			}
 
 			// For a <fieldset>, the first/last baseline comes from the
 			// anonymous content block, not the <legend>. Mirrors Blink's
