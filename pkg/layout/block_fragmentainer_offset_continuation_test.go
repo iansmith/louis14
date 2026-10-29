@@ -61,16 +61,7 @@ func TestPaddedContainer_ContinuationRefusesBreakBeforeFirstLine(t *testing.T) {
 // two-column check, for fixtures that may need overflow columns.
 func layoutTwoColumnAutoFillColumns(t *testing.T, container *html.Node, styles map[*html.Node]*css.Style) []ChildLink {
 	t.Helper()
-	mc := makeNode("div", container)
-	styles[mc] = makeStyle(
-		"display", "block",
-		"width", "100px",
-		"height", "100px",
-		"column-count", "2",
-		"column-gap", "0",
-		"column-fill", "auto",
-	)
-	cols := layoutMulticolForTest(t, mc, styles).Fragment.Children
+	cols := layoutMulticolForTest(t, twoColumnMulticol(container, styles, "auto"), styles).Fragment.Children
 	if len(cols) < 2 {
 		t.Fatalf("multicol has %d columns, want at least 2", len(cols))
 	}

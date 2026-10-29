@@ -33,11 +33,10 @@ func childLinkFor(parent *PhysicalFragment, n *html.Node) *ChildLink {
 	return nil
 }
 
-// layoutTwoColumn lays out a 100x100 two-column multicol with the given
-// column-fill (column-gap:0, so each column is 50 wide and at most 100 tall)
-// whose single child is `container`, and returns the multicol fragment.
-func layoutTwoColumn(t *testing.T, container *html.Node, styles map[*html.Node]*css.Style, columnFill string) *PhysicalFragment {
-	t.Helper()
+// twoColumnMulticol wraps container in a 100x100 two-column multicol with the
+// given column-fill and column-gap:0 (each column 50 wide, at most 100 tall),
+// registering its style, and returns the multicol node.
+func twoColumnMulticol(container *html.Node, styles map[*html.Node]*css.Style, columnFill string) *html.Node {
 	mc := makeNode("div", container)
 	styles[mc] = makeStyle(
 		"display", "block",
@@ -47,6 +46,15 @@ func layoutTwoColumn(t *testing.T, container *html.Node, styles map[*html.Node]*
 		"column-gap", "0",
 		"column-fill", columnFill,
 	)
+	return mc
+}
+
+// layoutTwoColumn lays out a 100x100 two-column multicol with the given
+// column-fill (column-gap:0, so each column is 50 wide and at most 100 tall)
+// whose single child is `container`, and returns the multicol fragment.
+func layoutTwoColumn(t *testing.T, container *html.Node, styles map[*html.Node]*css.Style, columnFill string) *PhysicalFragment {
+	t.Helper()
+	mc := twoColumnMulticol(container, styles, columnFill)
 	ctx := testContext()
 	root := buildTestTree(mc, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
