@@ -573,26 +573,14 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// loop in column_layout_algorithm.cc:605-714.
 	buildOuterBreakResult := func() *LayoutResult {
 		didBreakSelf := true // Content exceeded outer fragmentainer.
-		effBP := EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
+		border, padding := FragmentBlockEdges(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
+		effBP := border.BlockSum() + padding.BlockSum()
 		builder.SetSize(LogicalSize{
 			InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 			BlockSize:  blockCursor + effBP,
 		})
 		builder.SetIntrinsicBlockSize(blockCursor)
 		builder.SetLayoutNode(mla.node)
-		border := geom.Border
-		padding := geom.Padding
-		if !builder.HasClonedBoxDecorations() {
-			isContinuation := mla.space.BreakToken != nil && !mla.space.BreakToken.ConsumedBlockSize.IsZero()
-			if isContinuation {
-				border.BlockStart = 0
-				padding.BlockStart = 0
-			}
-			if didBreakSelf {
-				border.BlockEnd = 0
-				padding.BlockEnd = 0
-			}
-		}
 		physBorder := ToPhysicalEdges(border, wdm)
 		physPadding := ToPhysicalEdges(padding, wdm)
 		physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
@@ -1293,24 +1281,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	didBreakSelf := false // Main path: all remaining content fits.
-	effBP := EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
+	border, padding := FragmentBlockEdges(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
+	effBP := border.BlockSum() + padding.BlockSum()
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + effBP,
 	})
-	border := geom.Border
-	padding := geom.Padding
-	if !builder.HasClonedBoxDecorations() {
-		isContinuation := mla.space.BreakToken != nil && !mla.space.BreakToken.ConsumedBlockSize.IsZero()
-		if isContinuation {
-			border.BlockStart = 0
-			padding.BlockStart = 0
-		}
-		if didBreakSelf {
-			border.BlockEnd = 0
-			padding.BlockEnd = 0
-		}
-	}
 	physBorder := ToPhysicalEdges(border, wdm)
 	physPadding := ToPhysicalEdges(padding, wdm)
 	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)

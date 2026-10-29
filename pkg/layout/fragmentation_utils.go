@@ -1,6 +1,10 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"math"
+
+	"louis14/pkg/css"
+)
 
 // fragmentation_utils.go — Blink-parity port of forced-break + break-appeal
 // dispatch. Mirrors third_party/blink/renderer/core/layout/fragmentation_utils.{h,cc}.
@@ -140,6 +144,75 @@ func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *Logical
 	if breakToken.IsAtBlockEnd {
 		margins.BlockEnd = 0
 	}
+}
+
+// ShouldCloneBlockStartBorderPadding reports whether this fragment repeats
+// its block-start border/padding: box-decoration-break:clone, unless the
+// fragment is past the box's block end. Mirrors Blink's
+// ShouldCloneBlockStartBorderPadding (fragmentation_utils.cc:61-78 @
+// a9f50e522efa); its MonolithicOverflow clause is omitted because louis14
+// never sets BlockBreakToken.MonolithicOverflow.
+func ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
+	if !hasClonedBoxDecorations {
+		return false
+	}
+	return previousBreakToken == nil || !previousBreakToken.IsAtBlockEnd
+}
+
+// ShouldIncludeBlockStartBorderPadding reports whether this fragment carries
+// its block-start border/padding: the first fragment does, a resumed one
+// only when cloned. Mirrors Blink fragmentation_utils.cc:522-525 @
+// a9f50e522efa.
+func ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
+	return !previousBreakToken.IsBreakInside() ||
+		ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, previousBreakToken)
+}
+
+// ShouldIncludeBlockEndBorderPadding reports whether this fragment carries
+// its block-end border/padding: not past the block end; always when it does
+// not break, is known to fit, or clones its end decorations; never when a
+// new formatting context breaks; otherwise only when no in-flow child broke
+// inside it. Mirrors Blink fragmentation_utils.cc:527-545 @ a9f50e522efa.
+func ShouldIncludeBlockEndBorderPadding(previousBreakToken *BlockBreakToken, shouldBreakInside, isKnownToFitInFragmentainer, shouldCloneBoxEndDecorations, isNewFormattingContext, hasInflowChildBreakInside bool) bool {
+	if previousBreakToken != nil && previousBreakToken.IsAtBlockEnd {
+		return false
+	}
+	if !shouldBreakInside || isKnownToFitInFragmentainer || shouldCloneBoxEndDecorations {
+		return true
+	}
+	if isNewFormattingContext {
+		return false
+	}
+	return !hasInflowChildBreakInside
+}
+
+// finishFragmentationContentBlockSize is the sizing half of Blink's
+// FinishFragmentation in louis14 content-box units: given the space left in
+// the fragmentainer from this box's border edge, the fragment geometry (its
+// edges already cleared), the box's declared block-end border/padding and the
+// content block-size it still wants, it returns the content block-size that
+// fits, whether the box breaks itself, and the space shortage. When the box
+// does not fit, a last-resort breakpoint sits before the trailing
+// border/padding unless end decorations are cloned
+// (preventBreakBeforeBlockEndDecorations) or nothing but the edge remains, so
+// a self-break always makes progress. Mirrors fragmentation_utils.cc:559-587
+// (desired, trailing, subtractable), :641-662 (self-break final size) and
+// :798-800 (shortage) @ a9f50e522efa; louis14 keeps truncating tall
+// unbreakable content instead of Blink's :589-599 widening.
+func finishFragmentationContentBlockSize(spaceLeft float64, geom FragmentGeometry, declaredBlockEnd, contentBlockSize float64, preventBreakBeforeBlockEndDecorations bool) (content float64, didBreakSelf bool, shortage float64) {
+	start := geom.BorderBoxPadding().BlockStart
+	trailing := geom.BorderBoxPadding().BlockEnd
+	desired := start + contentBlockSize + declaredBlockEnd
+	if desired <= spaceLeft {
+		return contentBlockSize, false, 0
+	}
+	subtractable := 0.0
+	if !preventBreakBeforeBlockEndDecorations && desired > trailing {
+		subtractable = trailing
+	}
+	final := math.Min(desired-subtractable, math.Max(spaceLeft, start+trailing-subtractable))
+	content = math.Max(0, final-start-(trailing-subtractable))
+	return content, final < desired, desired - spaceLeft
 }
 
 // MinPositiveSpaceShortage merges two space-shortage reports, keeping the

@@ -209,20 +209,22 @@ func matchesUnlessSkipped(got, want float64) bool {
 	return want == notChecked || got == want
 }
 
-// TestEffectiveBlockBorderPadding_BreakInsideZeroConsumed: a continuation is
-// any break-inside resume, even one that consumed nothing, and a past-end
-// (parallel-flow) fragment carries neither block edge. Blink decides both
-// from the break token, not from consumed size: ShouldIncludeBlockStart
-// BorderPadding (fragmentation_utils.cc:522-525) and
-// ShouldIncludeBlockEndBorderPadding (:527-545) @ a9f50e522efa.
-func TestEffectiveBlockBorderPadding_BreakInsideZeroConsumed(t *testing.T) {
+// TestEffectiveBlockBorderPadding_PastEnd: a multicol fragment past the
+// box's block end (a parallel flow) carries neither block edge, cloned or
+// not (Blink ShouldCloneBlockStartBorderPadding is false past the block end
+// and ShouldIncludeBlockEndBorderPadding returns false,
+// fragmentation_utils.cc:61-78, :527-545 @ a9f50e522efa). A zero-consumed
+// resume keeps its block-start edge: it follows louis14's zero-height
+// break-before-spanner stub and is the box's first real fragment
+// (spanner-fragmentation-009).
+func TestEffectiveBlockBorderPadding_PastEnd(t *testing.T) {
 	geom := FragmentGeometry{
 		Padding: LogicalEdges{BlockStart: 8, BlockEnd: 8},
 	}
-	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{}, false); got != 8 {
-		t.Errorf("zero-consumed break-inside continuation = %v, want 8 (block-end edge only)", got)
-	}
 	if got := EffectiveBlockBorderPadding(geom, true, &BlockBreakToken{IsAtBlockEnd: true}, false); got != 0 {
 		t.Errorf("past-end fragment with cloned decorations = %v, want 0 (neither edge)", got)
+	}
+	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{}, false); got != 16 {
+		t.Errorf("zero-consumed resume = %v, want 16 (first real fragment keeps both edges)", got)
 	}
 }
