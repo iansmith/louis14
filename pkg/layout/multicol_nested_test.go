@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -494,5 +495,34 @@ func TestMulticolNested_ShrinkToFitUsesBlockSizeForFragmentation(t *testing.T) {
 	}
 	if got := sibLink.Offset.Top.Float64(); got != 50 {
 		t.Errorf("sibling in outer col 2: block offset = %v, want 50", got)
+	}
+}
+
+// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow (LOU-390): a
+// child that clips block-axis overflow contributes only its own box, and an
+// out-of-flow child contributes nothing (box_fragment_builder.cc:746-761 @
+// a9f50e522efa).
+func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	box := func(h float64, style *css.Style, children ...ChildLink) *PhysicalFragment {
+		return &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, h), Style: style, Children: children}
+	}
+	at := func(y float64, f *PhysicalFragment) ChildLink {
+		return ChildLink{Offset: geometry.PhysicalOffsetFromF64Round(0, y), Fragment: f}
+	}
+	tall := box(80, nil)
+	for _, tc := range []struct {
+		name  string
+		child *PhysicalFragment
+		want  float64
+	}{
+		{"visible overflow extends", box(20, nil, at(0, tall)), 90},
+		{"overflow:hidden clips", box(20, makeStyle("overflow", "hidden"), at(0, tall)), 30},
+		{"abspos ignored", box(20, makeStyle("position", "absolute"), at(0, tall)), 0},
+	} {
+		col := box(100, nil, at(10, tc.child))
+		if got := FragmentainerBlockSizeForFragmentation(wdm, col); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
