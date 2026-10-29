@@ -188,3 +188,32 @@ func TestMulticolNested_OverflowRegrowsLineAndParentPushesIt(t *testing.T) {
 		t.Errorf("inner mc in outer col 2: block-size = %v, want 150", got)
 	}
 }
+
+// TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage (LOU-393):
+// inside an outer balanced multicol (not its initial pass), a nested line
+// whose column overflows the outer fragmentainer reports the column's space
+// shortage so the outer multicol can stretch (column_layout_algorithm.cc:
+// 1043-1049 @ a9f50e522efa).
+func TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage(t *testing.T) {
+	mono := makeNode("div")
+	innerMC := makeNode("div", mono)
+	styles := map[*html.Node]*css.Style{
+		innerMC: makeStyle("display", "block", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+		mono:    makeStyle("display", "block", "height", "100px", "contain", "size"),
+	}
+	ctx := testContext()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(60).
+		SetFragmentainerOffset(20).
+		SetBlockFragmentationType(FragmentColumn).
+		SetIsInsideBalancedColumns(true).
+		Build()
+	result := NewMulticolLayoutAlgorithm(ctx, buildTestTree(innerMC, styles), space).Layout()
+	if result == nil || result.MinSpaceShortage <= 0 {
+		t.Fatalf("inner mc MinSpaceShortage = %v, want > 0 (100px monolith in a 40px line)", result.MinSpaceShortage)
+	}
+}
