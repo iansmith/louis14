@@ -367,3 +367,52 @@ func TestMulticol_NonEmptyLineResetsPreviousBreakAfter(t *testing.T) {
 		})
 	}
 }
+
+// TestBreakBeforeLeaf_AppealJoinsPreviousSiblingBreakAfter (LOU-400 review 1,
+// ledger L39): breaking before a leaf child that starts exactly at the
+// fragmentainer end joins the PREVIOUS sibling's break-after with the leaf's
+// break-before, not the leaf's own break-after, which AddResult has not yet
+// propagated. Blink: BreakBeforeChildIfNeeded computes CalculateBreakAppealBefore
+// → CalculateBreakBetweenValue → builder.JoinedBreakBetweenValue before the
+// child's AddResult (fragmentation_utils.cc:130-160, :221-235, :895-920 @
+// a9f50e522efa); the appeal is kBreakAppealViolatingBreakAvoid only when that
+// join is an avoid value. Expected values are that arithmetic.
+//
+// The fixture uses a zero-size fragmentainer (the balance-estimate fragSize==0
+// path): with a positive fragmentainer, louis14's BreakBeforeChildIfNeeded
+// breaks before such an X itself (BrokeBefore), so the post-layout
+// isBreakBeforeCurrent check in BlockLayoutAlgorithm does not see it. With
+// size 0, MovePastBreakpoint refuses every break-before (no progress), X
+// overflows from offset 0 = the fragmentainer end, and the post-layout check
+// scores the break before X.
+// X is monolithic (contain:size) so it overflows whole instead of being
+// sliced, as in TestZeroHeightUnbreakableNoContinuation. A is a flow-root so
+// it does not collapse through (a collapsed-through child never reaches
+// PropagateChildBreakValues in louis14).
+func TestBreakBeforeLeaf_AppealJoinsPreviousSiblingBreakAfter(t *testing.T) {
+	h := func(v string, more ...string) []string { return append([]string{"height", v}, more...) }
+	for _, tc := range []struct {
+		name string
+		tree marginSpec
+		want BreakAppeal
+	}{
+		{"the leaf's own break-after:avoid-column does not taint the break before it",
+			ms("W", nil, ms("A", h("0px", "display", "flow-root")), ms("X", h("10px", "contain", "size", "break-after", "avoid-column"))),
+			BreakAppealPerfect},
+		{"the previous sibling's break-after:avoid-column does",
+			ms("W", nil, ms("A", h("0px", "display", "flow-root", "break-after", "avoid-column")), ms("X", h("10px", "contain", "size"))),
+			BreakAppealViolatingBreakAvoid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			styles := map[*html.Node]*css.Style{}
+			ids := map[*html.Node]string{}
+			res := layoutBlockInFragmentainer(t, tc.tree.build(styles, ids), styles, 0, 0)
+			if res.BreakToken == nil {
+				t.Fatalf("W did not break in a 0px fragmentainer (X overflows it)")
+			}
+			if res.BreakAppeal != tc.want {
+				t.Errorf("BreakAppeal = %v, want %v", res.BreakAppeal, tc.want)
+			}
+		})
+	}
+}
