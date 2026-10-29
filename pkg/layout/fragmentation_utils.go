@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // fragmentation_utils.go — Blink-parity port of forced-break + break-appeal
 // dispatch. Mirrors third_party/blink/renderer/core/layout/fragmentation_utils.{h,cc}.
 //
@@ -115,6 +117,29 @@ func CalculateUnbreakableBlockSize(
 // MovePastBreakpoint (fragmentation_utils.cc:1178-1186 @ a9f50e522efa).
 func IsParallelFlowContinuation(tok *BlockBreakToken) bool {
 	return tok != nil && (tok.IsAtBlockEnd || tok.IsInParallelFlow)
+}
+
+// AdjustMarginsForFragmentation truncates the block margins of a child that
+// resumes with breakToken. A leading margin belongs in front of the first
+// fragment only, and is truncated after an unforced break too (floats never
+// truncate); a trailing margin was already applied in the fragmentainer
+// where the block ended when the token is past its block end (a parallel
+// flow). Mirrors Blink's AdjustMarginsForFragmentation
+// (fragmentation_utils.h:279-296 @ a9f50e522efa).
+func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *LogicalEdges) {
+	if breakToken == nil {
+		return
+	}
+	isFloating := func() bool {
+		return breakToken.Node != nil && breakToken.Node.Style() != nil &&
+			breakToken.Node.Style().GetFloat() != css.FloatNone
+	}
+	if !breakToken.IsBreakBefore || (!breakToken.IsForcedBreak && !isFloating()) {
+		margins.BlockStart = 0
+	}
+	if breakToken.IsAtBlockEnd {
+		margins.BlockEnd = 0
+	}
 }
 
 // MinPositiveSpaceShortage merges two space-shortage reports, keeping the

@@ -927,16 +927,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// its block-start margin into the running strut BEFORE computing the
 		// spanner's block offset. A resumed spanner has already consumed its
 		// block-start margin, except when resuming from a forced break-before
-		// (AdjustMarginsForFragmentation, fragmentation_utils.h:279-289).
+		// (AdjustMarginsForFragmentation, fragmentation_utils.h:279-296).
 		spannerStyle := spanner.Style()
 		var spannerMargins LogicalEdges
 		if spannerStyle != nil {
 			spannerMargins = ResolveMargins(spannerStyle, wdm, contentInlineSize)
 		}
-		if hasSpannerResume &&
-			(!entry.BreakToken.IsBreakBefore || !entry.BreakToken.IsForcedBreak) {
-			spannerMargins.BlockStart = 0
-		}
+		AdjustMarginsForFragmentation(entry.BreakToken, &spannerMargins)
 		marginStrut.Append(spannerMargins.BlockStart)
 		// Blink cla.cc:1354-1356: block_offset = intrinsic_block_size_ +
 		// margin_strut->Sum(). This collapsed strut (a preceding spanner's
@@ -1683,10 +1680,13 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// advance past the previous column's — would spin forever (e.g. content
 		// resumed into a 0-height post-spanner column,
 		// multicol-span-all-children-height-003). The sequence number always
-		// increments (it is a fragment counter), so consumed size is the only
-		// true progress signal. Blink guarantees termination via break-token
-		// progress invariants; louis14 asserts it explicitly.
+		// increments (it is a fragment counter), so consumed size is the
+		// progress signal, plus one bounded exception: a column that turns a
+		// forced break-before into an unforced one (forcedBreakBeforeCount).
+		// Blink guarantees termination via break-token progress invariants;
+		// louis14 asserts it explicitly.
 		prevTokenConsumed := math.NaN()
+		prevTokenForced := 0
 		for col := 0; col < numCols || capOff; col++ {
 			// IsInsideBalancedColumns is true only when the balance algorithm
 			// actually determined the column height (not when column-height is
@@ -1809,11 +1809,13 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				len(colFrag.Children) == 0
 			if colBreakToken != nil && !pushedToNextOuter {
 				consumed := colBreakToken.ConsumedBlockSize.Float64()
-				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) {
+				forced := forcedBreakBeforeCount(colBreakToken)
+				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) && forced >= prevTokenForced {
 					colBreakToken = nil
 					break
 				}
 				prevTokenConsumed = consumed
+				prevTokenForced = forced
 			}
 			// Phase 25 Cmt-5c: track whether any column saw deferred OOF
 			// descendants this row, so we keep emitting empty trailing

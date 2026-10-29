@@ -162,6 +162,28 @@ func (t *BlockBreakToken) IsFirstForNode() bool {
 	return !t.IsBreakInside()
 }
 
+// forcedBreakBeforeCount counts the forced break-before tokens in tok's
+// subtree. A column that consumes nothing still makes progress when it turns
+// a forced break-before into an unforced one: a forced break keeps the
+// child's block-start margin, so a child that does not fit below it is
+// pushed once more, and the unforced push truncates the margin in the next
+// column (AdjustMarginsForFragmentation), where the child is placed. Blink
+// needs no guard for this (Chrome leaves one empty column); this keeps
+// louis14's non-advancing-token guard from dropping the child.
+func forcedBreakBeforeCount(tok *BlockBreakToken) int {
+	if tok == nil {
+		return 0
+	}
+	n := 0
+	if tok.IsBreakBefore && tok.IsForcedBreak {
+		n++
+	}
+	for _, ct := range tok.ChildBreakTokens {
+		n += forcedBreakBeforeCount(ct)
+	}
+	return n
+}
+
 // InputBreakToken returns the first child break token for resumption, or nil.
 func (t *BlockBreakToken) InputBreakToken() *BlockBreakToken {
 	if t == nil || len(t.ChildBreakTokens) == 0 {

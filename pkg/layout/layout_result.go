@@ -421,6 +421,14 @@ func (lf LogicalFragment) BlockSize() float64 {
 type MarginStrut struct {
 	PositiveMargin float64
 	NegativeMargin float64 // stored as a negative value (e.g., -10)
+
+	// DiscardMargins discards every margin adjoining this strut: Resolve()
+	// returns 0 and IsEmpty() reports true whatever was appended. Set when a
+	// container resumes after an unforced fragmentainer break, where margins
+	// adjoining the fragmentainer start are truncated. Mirrors Blink's
+	// MarginStrut::discard_margins (geometry/margin_strut.h:29-30, Sum()
+	// :40-44, IsEmpty() margin_strut.cc:32-36 @ a9f50e522efa).
+	DiscardMargins bool
 }
 
 // Append adds a margin value to the strut.
@@ -439,17 +447,25 @@ func (ms *MarginStrut) Append(margin float64) {
 // Resolve returns the collapsed margin value.
 // CSS 2.1 §8.3.1: collapsed margin = max(positives) + min(negatives).
 func (ms MarginStrut) Resolve() float64 {
+	if ms.DiscardMargins {
+		return 0
+	}
 	return ms.PositiveMargin + ms.NegativeMargin
 }
 
 // IsEmpty returns true if no margins have been appended.
 func (ms MarginStrut) IsEmpty() bool {
+	if ms.DiscardMargins {
+		return true
+	}
 	return ms.PositiveMargin == 0 && ms.NegativeMargin == 0
 }
 
 // AppendStrut merges another strut into this one, keeping the max positive
-// and most negative margins from both.
+// and most negative margins from both; a discarding strut makes the merge
+// discard too.
 func (ms *MarginStrut) AppendStrut(other MarginStrut) {
+	ms.DiscardMargins = ms.DiscardMargins || other.DiscardMargins
 	if other.PositiveMargin > ms.PositiveMargin {
 		ms.PositiveMargin = other.PositiveMargin
 	}

@@ -412,6 +412,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var resumeChildTokens map[*LayoutInputNode]*BlockBreakToken
 	if incomingBreakToken != nil {
 		blockCursor = 0 // We start at 0 in the new fragmentainer; consumed is tracked by the token.
+		// Resumed after an unforced break that no column spanner caused:
+		// margins adjoining the fragmentainer start are discarded. Mirrors
+		// Blink BlockLayoutAlgorithm::Layout (block_layout_algorithm.cc:
+		// 859-866 @ a9f50e522efa).
+		if incomingBreakToken.IsBreakInside() && !incomingBreakToken.IsForcedBreak &&
+			!incomingBreakToken.IsCausedByColumnSpanner {
+			prevMarginStrut.DiscardMargins = true
+		}
 		if len(incomingBreakToken.ChildBreakTokens) > 0 {
 			resumeChildTokens = make(map[*LayoutInputNode]*BlockBreakToken, len(incomingBreakToken.ChildBreakTokens))
 			for _, ct := range incomingBreakToken.ChildBreakTokens {
@@ -476,9 +484,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
 	// When a block has no block-start border/padding and isn't a new BFC,
-	// the first child's margin propagates upward.
+	// the first child's margin propagates upward. A resumed fragment never
+	// collapses through its block-start: margins generated inside it are
+	// dealt with in this fragment (Blink rule C, block_layout_algorithm.cc:
+	// 879-891 @ a9f50e522efa).
 	canPropagateTop := !bla.space.IsNewFormattingContext &&
-		geom.Border.BlockStart == 0 && geom.Padding.BlockStart == 0
+		geom.Border.BlockStart == 0 && geom.Padding.BlockStart == 0 &&
+		!incomingBreakToken.IsBreakInside()
 	firstNonEmptyChild := true
 	var propagatedTopMargin MarginStrut
 
@@ -594,6 +606,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
+		// The inline content ends the margins adjoining this block's
+		// start, so a discarding strut (a resumed block) does not leak out
+		// as its end margin strut. Mirrors Blink ComputeInflowPosition
+		// replacing the strut with the inline child's end margin strut
+		// (block_layout_algorithm.cc:2983 @ a9f50e522efa).
+		prevMarginStrut = MarginStrut{}
 
 		// CSS Lists §3 / Blink PositionOrPropagateListMarker: a list item with
 		// inline content places its OUTSIDE marker against the first line box's
@@ -833,14 +851,23 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 
 				// Break token resumes AFTER the spanner on the next LayoutLine call.
+				// The spanner caused the break, so the resumed fragment keeps
+				// its margins (no discard) and the sibling's break-before is
+				// forced, retaining its block-start margin. Mirrors Blink
+				// AddBreakBeforeChild(sibling, ..., is_forced_break=true)
+				// (block_layout_algorithm.cc:1060-1068) and
+				// is_caused_by_column_spanner_ from FoundColumnSpanner
+				// (block_break_token.cc:70) @ a9f50e522efa.
 				var spannerBreakToken *BlockBreakToken
 				if childIdx+1 < len(children) {
 					spannerBreakToken = &BlockBreakToken{
-						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(preSpannerExtent),
+						Node:                    bla.node,
+						ConsumedBlockSize:       layoutunit.FromFloat64Round(preSpannerExtent),
+						IsCausedByColumnSpanner: true,
 						ChildBreakTokens: []*BlockBreakToken{{
 							Node:          children[childIdx+1],
 							IsBreakBefore: true,
+							IsForcedBreak: true,
 						}},
 					}
 					if incomingBreakToken != nil {
@@ -909,6 +936,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// coordinate system. Mirrors Blink's ComputeMargins which uses
 			// ConstraintSpace().GetWritingDirection() (the parent's).
 			childMargins := ResolveMargins(childStyle, wdm, childAvailableInline)
+			// A resumed child's margins are truncated at the break, except
+			// after a forced break. Mirrors Blink ComputeChildData (block_layout_algorithm.cc:
+			// 2836-2847 @ a9f50e522efa).
+			if childToken := resumeChildTokens[child]; childToken != nil {
+				AdjustMarginsForFragmentation(childToken, &childMargins)
+				if childToken.IsForcedBreak {
+					prevMarginStrut = MarginStrut{}
+				}
+			}
 
 			// Handle clear property.
 			// CSS 2.1 §8.3.1: The element is placed so its border edge is at or below
@@ -1026,10 +1062,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				blockForChild = orthogonalAvailableBlock
 			}
 			// newChildSpaceBuilder is shared by the initial layout and the
-			// re-layout below floats of a new-FC child that did not fit
-			// beside them: childBlockOff is the child's block offset within
-			// this block's content box, and childInlineForSpace is read at
-			// call time (the drop re-queries it). Blink lays out each
+			// re-layouts below floats and at the resolved border edge:
+			// childBlockOff is the child's block offset within this block's
+			// content box before its own margin (its BFC offset estimate),
+			// borderEdgeOff is its border edge there with every margin
+			// collapsing through its block-start resolved (its fragmentainer
+			// offset), and childInlineForSpace is read at call time (the
+			// drop re-queries it). Blink lays out each
 			// layout opportunity through the same
 			// CreateConstraintSpaceForChild (LayoutNewFormattingContext,
 			// block_layout_algorithm.cc:2158-2163 @ a9f50e522efa), so the
@@ -1051,7 +1090,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// (Layout() entry above), so the parent-side floor propagation
 			// in BreakBeforeChildIfNeeded fires.
 			childIsMonolithic := child.IsMonolithic(wdm.WM != childWDM.WM)
-			newChildSpaceBuilder := func(childBlockOff float64) *ConstraintSpaceBuilder {
+			newChildSpaceBuilder := func(childBlockOff, borderEdgeOff float64) *ConstraintSpaceBuilder {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
 						orthogonalFallbackSize(childWDM, bla.ctx)).
@@ -1088,7 +1127,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if !bla.space.HasBlockFragmentation || childIsMonolithic {
 					return b
 				}
-				bla.setupSpaceBuilderForFragmentation(b, bla.fragmentainerOffsetForChildren+childBlockOff)
+				bla.setupSpaceBuilderForFragmentation(b, bla.fragmentainerOffsetForChildren+borderEdgeOff)
 
 				// Propagate the "spanner descendants blocked" flag: set it when
 				// any ancestor already blocks, or when the current block itself
@@ -1117,10 +1156,53 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				return b
 			}
 
-			childSpace := newChildSpaceBuilder(blockCursor + prevMarginStrut.Resolve()).Build()
+			// A child's border edge within this block's content box: a child
+			// adjoining this block's block-start shares this block's border
+			// edge, whose fragmentainer offset already resolves the margins
+			// collapsing through it; any other child sits past the collapsed
+			// strut. Every box's fragmentainer offset is its resolved border
+			// edge, as in Blink (FragmentainerOffsetAtBfc + bfc_block_offset,
+			// block_layout_algorithm.cc:3156-3158, :3619-3633 @ a9f50e522efa).
+			isAdjoiningBlockStart := func() bool {
+				return firstNonEmptyChild && canPropagateTop && !hasClearance && !isPushedByFloats
+			}
+			borderEdgeAt := func(collapsed MarginStrut) float64 {
+				if isAdjoiningBlockStart() {
+					return blockCursor
+				}
+				return blockCursor + collapsed.Resolve()
+			}
+			// collapsedWithChild is the pending strut collapsed with the
+			// child's block-start margin and the margins collapsing up through
+			// its block-start (Steps 1-2 below).
+			collapsedWithChild := func(childPropagated MarginStrut) MarginStrut {
+				strut := prevMarginStrut
+				strut.Append(childMargins.BlockStart)
+				if !childPropagated.IsEmpty() {
+					strut.AppendStrut(childPropagated)
+				}
+				return strut
+			}
+			childBfcBlockOff := blockCursor + prevMarginStrut.Resolve()
+			borderEdgeOff := borderEdgeAt(collapsedWithChild(MarginStrut{}))
+			childSpace := newChildSpaceBuilder(childBfcBlockOff, borderEdgeOff).Build()
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
+
+			// Margins collapsing up through the child's block-start move its
+			// border edge, which is known only now: lay it out once more at
+			// the resolved edge, so its breaks are decided where it is
+			// placed. Mirrors Blink aborting a fragmented child whose BFC
+			// block offset resolves differently from the estimate and
+			// re-laying it out at ForcedBfcBlockOffset
+			// (block_layout_algorithm.cc:844-849, :2539-2580 @ a9f50e522efa).
+			if bla.space.HasBlockFragmentation && !childIsMonolithic {
+				if resolved := borderEdgeAt(collapsedWithChild(childResult.PropagatedTopMargin)); resolved != borderEdgeOff {
+					childSpace = newChildSpaceBuilder(childBfcBlockOff, resolved).Build()
+					childResult = layoutElement(bla.ctx, child, childSpace)
+				}
+			}
 
 			// LOU-365 (CodeRabbit 3514362226): supplement the child-side
 			// builder tagging for writing-mode roots the child cannot see.
@@ -1177,7 +1259,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							// Re-layout at the new position with the new
 							// available size; the margin strut was consumed
 							// by the drop, so the child sits at blockCursor.
-							childSpace = newChildSpaceBuilder(blockCursor).Build()
+							childSpace = newChildSpaceBuilder(blockCursor, blockCursor).Build()
 							childResult = layoutElement(bla.ctx, child, childSpace)
 						}
 					}
@@ -1215,9 +1297,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if childResult.BreakToken != nil {
 					resumeToken = childResult.BreakToken
 				} else if childIdx+1 < len(children) {
+					// Forced, as at the direct-spanner site above.
 					resumeToken = &BlockBreakToken{
 						Node:          children[childIdx+1],
 						IsBreakBefore: true,
+						IsForcedBreak: true,
 					}
 				}
 				// LOU-320: place this child's PRE-spanner fragment before
@@ -1261,8 +1345,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				var outToken *BlockBreakToken
 				if resumeToken != nil {
 					outToken = &BlockBreakToken{
-						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
+						Node:                    bla.node,
+						ConsumedBlockSize:       layoutunit.FromFloat64Round(blockCursor),
+						IsCausedByColumnSpanner: true,
 					}
 					if incomingBreakToken != nil {
 						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
@@ -1312,13 +1397,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// Step 1: Append child's block-start margin to the strut.
-			prevMarginStrut.Append(childMargins.BlockStart)
-
 			// Step 2: Include any propagated top margin from the child
 			// (recursive parent-child collapsing).
-			if !childResult.PropagatedTopMargin.IsEmpty() {
-				prevMarginStrut.AppendStrut(childResult.PropagatedTopMargin)
-			}
+			prevMarginStrut = collapsedWithChild(childResult.PropagatedTopMargin)
 
 			// Step 3: Check if margins collapse through this element.
 			// CSS 2.1 §8.3.1: An element's margins collapse through it if
@@ -1406,8 +1487,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// a9f50e522efa). A `clear` that inserted no gap does not
 				// separate it.
 				hasContainerSeparation := !firstNonEmptyChild || isPushedByFloats
-				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
-				fragOff := bla.fragmentainerOffsetForChildren + tentativeBlockOff
+				// Steps 1-2 have collapsed the child's margins into the strut.
+				fragOff := bla.fragmentainerOffsetForChildren + borderEdgeAt(prevMarginStrut)
 				status, isForced := BreakBeforeChildIfNeeded(
 					bla.space, child, childResult,
 					fragOff, bla.space.FragmentainerBlockSize,
@@ -1536,7 +1617,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
 			// child has no clearance (a `clear` value, or a float drop).
 			var actualChildBlockOff float64
-			if firstNonEmptyChild && canPropagateTop && !hasClearance && !isPushedByFloats {
+			if isAdjoiningBlockStart() {
 				// Propagate the accumulated margin strut upward.
 				propagatedTopMargin = prevMarginStrut
 				actualChildBlockOff = 0
@@ -2053,12 +2134,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// 6.4.c activates the gate when frag-overflow flows through the
 	// natural post-loop.
 	if !pendingShouldBreakInside {
-		if bla.space.IsNewFormattingContext && !prevMarginStrut.IsEmpty() {
+		// The strut is reset even when it resolves to nothing: a
+		// discarding strut (DiscardMargins) must not leak out as the end
+		// margin strut, or it would discard the next sibling's margin.
+		if bla.space.IsNewFormattingContext {
 			// BFC roots: trailing margins don't propagate out, and they
 			// extend the auto height (CSS 2.1 §10.6.7).
 			blockCursor += prevMarginStrut.Resolve()
 			prevMarginStrut = MarginStrut{} // consumed
-		} else if !canPropagateBottom && !prevMarginStrut.IsEmpty() {
+		} else if !canPropagateBottom {
 			if !hasExplicitBlock {
 				// Auto block-size with block-end border/padding: the last child's
 				// margin is trapped inside the parent and extends the auto height
