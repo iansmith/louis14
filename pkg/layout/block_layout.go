@@ -3230,7 +3230,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	builder.AddChild(childResult.Fragment, floatOffset)
 	// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:227-229,
 	// :479-489 @ a9f50e522efa); the float-margin term of
-	// BlockSizeForFragmentation (fragmentation_utils.cc:1563-1569) is not
+	// BlockSizeForFragmentation (fragmentation_utils.cc:1562-1570) is not
 	// ported.
 	builder.PropagateChildBlockSizeForFragmentation(childResult, floatOffset)
 

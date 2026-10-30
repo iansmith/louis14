@@ -462,8 +462,7 @@ func (b *BoxFragmentBuilder) SetBlockSizeForFragmentation(v float64) {
 }
 
 // BlockSizeForFragmentation returns the current accumulated BSFF (content
-// relative, before Build's finalization) and whether any child was
-// propagated.
+// relative, before Build's finalization) and whether any was recorded.
 func (b *BoxFragmentBuilder) BlockSizeForFragmentation() (float64, bool) {
 	return b.blockSizeForFragmentation, b.hasBlockSizeForFragmentation
 }
@@ -858,15 +857,15 @@ func (b *BoxFragmentBuilder) SetIsEmptySpannerParent(v bool) {
 // only its own block-size when it clips block-axis overflow. A fragmentainer
 // (column) keeps the children-only value. Mirrors BoxFragmentBuilder::
 // ToBoxFragment (box_fragment_builder.cc:743-761 @ a9f50e522efa); the
-// clamped branch (:751-757) is not ported.
+// clamped condition (:750-751) is not ported.
 func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 	bsff := 0.0
 	if b.hasBlockSizeForFragmentation {
 		bsff = b.blockSizeForFragmentation
 		if b.boxData != nil {
-			edges := ToLogicalEdges(b.boxData.Border, b.wdm)
+			border := ToLogicalEdges(b.boxData.Border, b.wdm)
 			padding := ToLogicalEdges(b.boxData.Padding, b.wdm)
-			bsff += edges.BlockStart + padding.BlockStart
+			bsff += border.BlockStart + padding.BlockStart
 		}
 	}
 	if b.boxType == BoxTypeColumn {

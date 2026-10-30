@@ -85,15 +85,17 @@ type LayoutResult struct {
 	// Used by column balancing to determine how much to stretch.
 	MinSpaceShortage float64
 
-	// BlockSizeForFragmentation is the size the parent should use when
-	// deciding whether to break before this child in a fragmentation
-	// context, IF this value is > 0. Defaults to 0 (use the fragment's
-	// own block-size). Mirrors Blink's LayoutResult::BlockSizeForFragmentation
-	// — a multicol container with column-fill:auto + explicit height that
-	// can't fit its required column block-size in the remaining outer
-	// fragmentainer space sets this to its declared height, signaling the
-	// parent's BreakBeforeChildIfNeeded to push the entire multicol to the
-	// next outer fragmentainer instead of producing a clipped fragment.
+	// BlockSizeForFragmentation is the block-size the parent uses when
+	// fitting this child into a fragmentainer: the furthest block-end of
+	// the fragment's content, overflow included, and at least its own
+	// block-size — a fragmentainer (column) records its children's extent
+	// only. Recorded by BoxFragmentBuilder.Build when the fragment was laid
+	// out with block fragmentation; 0 otherwise (Blink's kIndefiniteSize:
+	// read the fragment's own block-size, see the free
+	// BlockSizeForFragmentation). Mirrors Blink's
+	// LayoutResult::BlockSizeForFragmentation (layout_result.cc:75-79 @
+	// a9f50e522efa). A few louis14 sites overwrite it after Build (the
+	// Phase 14b nested-multicol defer, the nested-spanner early return).
 	BlockSizeForFragmentation float64
 
 	// HasForcedBreak is true if this layout emitted a forced column/page break

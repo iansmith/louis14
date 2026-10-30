@@ -1752,7 +1752,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// Determine the used column block-size (Blink cla.cc:840-856 @
 	// a9f50e522efa). Balanced columns come first, also under column-height:
 	// the balanced size is then capped by the row's remaining height
-	// (constrainColumnBlockSize, Blink ConstrainColumnBlockSize :1813-1816).
+	// (constrainColumnBlockSize, Blink ConstrainColumnBlockSize :1815-1818).
 	// Phase 12f (Blink cla.cc:806-809): otherwise a non-auto column-height
 	// fixes the column block-size to the row's remaining height at this line
 	// offset. This is the hard upper bound on a single row of columns.
@@ -1881,8 +1881,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// column that pushes its first child whole (breakable at start of a
 		// resumed container) never advances the token, and the guard below
 		// would drop that content instead of handing it to the outer.
-		balanceControlsColumnHeight := balanceColumns
-		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
+		noWrapMode := !mla.shouldWrapColumns() && !balanceColumns && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
 		// The column-count cap is off — the column loop runs on the break
 		// token alone — under Indefinite column height, no-wrap mode, or
 		// inline overflow (cla.cc:1022-1025).
@@ -1906,10 +1905,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		prevTokenConsumed := math.NaN()
 		prevTokenForced := 0
 		for col := 0; col < mla.usedColumnCount || capOff; col++ {
-			// IsInsideBalancedColumns is true only when the balance algorithm
-			// actually determined the column height (not when column-height is
-			// explicit). Prevents fragment background extension (Change 3) from
-			// firing in explicit column-height contexts (CSS multicol-2).
+			// IsInsideBalancedColumns is set when the line is balanced (also
+			// under column-height; Blink passes balance_columns, cla.cc:929-935
+			// @ a9f50e522efa).
 			// Blink cla.cc:930-935 @ a9f50e522efa: pass the worst appeal seen
 			// so far in this row (min_break_appeal, unset → LastResort) into
 			// the column's space. Only set once a column has completed under
@@ -1920,7 +1918,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			if mayHaveMoreSpace && col > 0 {
 				colMinBreakAppeal = minBreakAppeal
 			}
-			colSpace := mla.createConstraintSpaceForColumn(wdm, mla.usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceControlsColumnHeight, true, colMinBreakAppeal)
+			colSpace := mla.createConstraintSpaceForColumn(wdm, mla.usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, true, colMinBreakAppeal)
 			columnAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, mla.contentNode, colSpace)
 			columnAlgorithm.SetBoxType(BoxTypeColumn)
 			result := columnAlgorithm.Layout()
@@ -2127,7 +2125,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			break
 		}
 
-		// Blink cla.cc:1153-1173 @ a9f50e522efa: stretch the columns by the
+		// Blink cla.cc:1150-1173 @ a9f50e522efa: stretch the columns by the
 		// minimal space shortage and retry. With no soft break opportunity
 		// left (forced breaks already use up the columns) no stretch can
 		// help — unless this multicol is nested in another fragmentation
@@ -2240,8 +2238,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			mla.attemptToPositionListMarker(col.fragment, col.result, builder, col.offset.BlockOffset)
 			isFirstCol = false
 		}
-		// The contribution of a line without a used column block-size (see
-		// below): the tallest column, including content overflowing it.
+		// The tallest column, including content overflowing it, for the
+		// line's contribution below.
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
 		if col.result != nil && col.result.BlockSizeForFragmentation > h {
 			h = col.result.BlockSizeForFragmentation
@@ -2331,7 +2329,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// could have been stretched (constrainColumnBlockSize), so the spanner
 	// is placed below content that overflowed the columns. It stands in for
 	// the space shortage Blink's stretch loop gets from such content (an
-	// unbreakable line, cla.cc:1153-1173) and louis14 does not report yet
+	// unbreakable line, cla.cc:1150-1173) and louis14 does not report yet
 	// (LOU-399's trusted-space-shortage half; ledger L90).
 	contribution := colBlockSize
 	switch {

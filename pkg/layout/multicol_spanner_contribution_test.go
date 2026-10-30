@@ -12,7 +12,7 @@ import (
 //   - column-fill:balance balances also under column-height; the used
 //     column-height only caps the balanced size (ColumnLayoutAlgorithm::
 //     LayoutLine, column_layout_algorithm.cc:840-856; ConstrainColumnBlockSize
-//     :1813-1816).
+//     :1815-1818).
 //   - a line contributes its column block-size (:949), shrunk to the first
 //     column's BlockSizeForFragmentation when shrink-to-fit (:953-971).
 //   - a line is empty when its column block-size is 0, it has one column, and

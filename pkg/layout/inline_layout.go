@@ -450,7 +450,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
 		// 227-229, :479-489 @ a9f50e522efa): the float at its own block-size
 		// (its result is not kept here; the float-margin term,
-		// fragmentation_utils.cc:1563-1569, is not ported).
+		// fragmentation_utils.cc:1562-1570, is not ported).
 		builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: pf.fragment}, floatOffset)
 		return es.Add(Exclusion{
 			InlineOffset: floatInlineBFC - pf.margins.InlineStart,

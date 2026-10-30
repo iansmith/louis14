@@ -531,7 +531,7 @@ func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
 // multicol nested in an outer fragmentation context whose forced breaks
 // leave no soft break opportunity stretches its columns to all the space
 // the outer fragmentainer gives it, instead of giving up at the 10px forced
-// runs (column_layout_algorithm.cc:1153-1173 @ a9f50e522efa; its balancing
+// runs (column_layout_algorithm.cc:1150-1173 @ a9f50e522efa; its balancing
 // measure ignores runs past column-count forced breaks, :1629-1633).
 // Chrome 155 headless, LOU-411 probe8.html (multicol-nested-column-rule-003's
 // shape): the green box's four fragments are each 100px tall.
