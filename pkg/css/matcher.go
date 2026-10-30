@@ -50,15 +50,20 @@ func MatchesSelector(node *html.Node, selector Selector) bool {
 	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace})
 }
 
-// parseNestedSelector parses a functional pseudo-class argument (:is/:where/
-// :not/:has/:nth-child(of)) at match time and resolves its compounds
-// against the outermost selector's default namespace, as Blink would have
-// when parsing the nested selector list (ctx.resistDefaultNamespace carries
-// the subject-compound exception). No Blink analog:
-// louis14 keeps those arguments as strings (SelectorPart.PseudoClasses).
-func parseNestedSelector(sel string, ctx matchContext) Selector {
+// parseNestedSelector parses one comma branch of a functional pseudo-class
+// argument (:is/:where/:not/:has/:nth-child(of)) at match time and resolves
+// its compounds against the outermost selector's default namespace, as
+// Blink would have when parsing the nested selector list. The
+// subject-compound exception (ctx.resistDefaultNamespace) applies only when
+// atEnd, i.e. sel is the argument's last branch: Blink requires the compound
+// to be AtEndIgnoringWhitespace of the argument block
+// (core/css/parser/css_selector_parser.cc:1318-1322 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), and an earlier branch is
+// followed by a comma. No Blink analog for re-parsing: louis14 keeps those
+// arguments as strings (SelectorPart.PseudoClasses).
+func parseNestedSelector(sel string, ctx matchContext, atEnd bool) Selector {
 	s := ParseSelector(sel)
-	s.resolveNamespaces(ctx.defaultNamespace, ctx.resistDefaultNamespace)
+	s.resolveNamespaces(ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd)
 	return s
 }
 
@@ -309,12 +314,12 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// Element must NOT match ANY of the selectors in the list
 		selectors := splitSelectorGroup(strings.TrimSpace(arg))
 		ctx.resistDefaultNamespace = true // css_selector_parser.cc:1712 @ d4ecdfed88f9
-		for _, sel := range selectors {
+		for i, sel := range selectors {
 			sel = strings.TrimSpace(sel)
 			if sel == "" {
 				continue
 			}
-			innerSel := parseNestedSelector(sel, ctx)
+			innerSel := parseNestedSelector(sel, ctx, i == len(selectors)-1)
 			if len(innerSel.Parts) > 0 && matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1], ctx) {
 				return false // Element matches one of the :not() selectors → fail
 			}
@@ -837,7 +842,7 @@ func isNthOfRightBoundary(ch byte) bool {
 func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx matchContext) bool {
 	branches := splitSelectorGroup(ofSel)
 	parsedBranches := make([]Selector, 0, len(branches))
-	for _, b := range branches {
+	for i, b := range branches {
 		b = strings.TrimSpace(b)
 		if b == "" {
 			continue
@@ -847,7 +852,7 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx mat
 		if containsPseudoElementArg([]string{b}) {
 			continue
 		}
-		parsedBranches = append(parsedBranches, parseNestedSelector(b, ctx))
+		parsedBranches = append(parsedBranches, parseNestedSelector(b, ctx, i == len(branches)-1))
 	}
 	if len(parsedBranches) == 0 {
 		return false
@@ -1069,8 +1074,8 @@ func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	if containsPseudoElementArg(selectors) {
 		return false
 	}
-	for _, sel := range selectors {
-		innerSel := parseNestedSelector(strings.TrimSpace(sel), ctx)
+	for i, sel := range selectors {
+		innerSel := parseNestedSelector(strings.TrimSpace(sel), ctx, i == len(selectors)-1)
 		if len(innerSel.Parts) == 0 {
 			continue
 		}
@@ -1156,15 +1161,16 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 	ctx.insideHas = true
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1686 @ d4ecdfed88f9
 	selectors := splitSelectorGroup(strings.TrimSpace(selectorStr))
-	for _, sel := range selectors {
+	for i, sel := range selectors {
 		sel = strings.TrimSpace(sel)
 		if sel == "" {
 			continue
 		}
+		atEnd := i == len(selectors)-1
 		if strings.HasPrefix(sel, ">") {
 			// Direct child combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := parseNestedSelector(innerSel, ctx)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, child := range node.Children {
 					if child.Type == html.ElementNode {
@@ -1177,7 +1183,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 		} else if strings.HasPrefix(sel, "+") {
 			// Adjacent sibling combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := parseNestedSelector(innerSel, ctx)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				next := getNextElementSibling(node)
 				if next != nil && matchesSelectorPart(next, parsed.Parts[len(parsed.Parts)-1], ctx) {
@@ -1187,7 +1193,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 		} else if strings.HasPrefix(sel, "~") {
 			// General sibling combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := parseNestedSelector(innerSel, ctx)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, sib := range getSubsequentSiblings(node) {
 					if matchesSelectorPart(sib, parsed.Parts[len(parsed.Parts)-1], ctx) {
@@ -1197,7 +1203,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 			}
 		} else {
 			// Default: descendant combinator
-			parsed := parseNestedSelector(sel, ctx)
+			parsed := parseNestedSelector(sel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				if hasMatchingDescendant(node, parsed.Parts[len(parsed.Parts)-1], ctx) {
 					return true

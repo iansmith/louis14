@@ -64,9 +64,9 @@ func (ss *Stylesheet) parserAddNamespace(prefix, uri string) {
 //     resist_default_namespace_, set for :is/:where/:has/:not) the last
 //     compound ignores the default namespace (ignore_default_namespace_,
 //     :1310-1322), so `*|*:is(:disabled)` still matches in any namespace
-//     (is-default-ns-002). Divergence: louis14 treats the last compound of
-//     each comma branch as the subject; Blink's AtEndIgnoringWhitespace
-//     check sees only the last branch of the argument list (LOU-438 L6).
+//     (is-default-ns-002). Like Blink's AtEndIgnoringWhitespace check, only
+//     the last branch of the argument list qualifies: parseNestedSelector
+//     passes resistDefaultNamespace false for the others.
 //
 // Prefixed selectors keep matching any namespace (no prefix map, LOU-437
 // L4). No Blink analog for running this after parsing: louis14's
