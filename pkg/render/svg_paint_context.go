@@ -1,6 +1,7 @@
 package render
 
 import (
+	"image"
 	"image/color"
 
 	"louis14/pkg/css"
@@ -18,11 +19,13 @@ import (
 //
 // Phase 2 carries:
 //   - dc: the DrawContext to paint into.
-//   - originX/Y: the CSS-px offset of the SVG content-box origin
-//     within the page coordinate system. The viewBox→viewport
-//     transform is applied AFTER this translation, so a shape at
-//     user-units (10, 20) inside <svg> at page (50, 100) ultimately
-//     paints at page-space (60, 120) (modulo the viewBox map).
+//   - originX/Y: the CSS-px offset of the SVG content origin within
+//     the page coordinate system: the pixel-snapped border-box origin
+//     plus the unsnapped border+padding offset (see paintSVGRoot). The
+//     viewBox→viewport transform is applied AFTER this translation, so
+//     a shape at user-units (10, 20) inside <svg> whose content origin
+//     is page (50, 100) paints at page-space (60, 120) (modulo the
+//     viewBox map).
 //   - viewport: the user-space rectangle the SVG content paints into.
 //     Currently equals (0, 0, containerWidth, containerHeight) but
 //     Phase 3's nested <svg> will push a smaller viewport here.
@@ -51,6 +54,13 @@ type svgPaintContext struct {
 	//
 	//   translate(originX, originY) · root.LocalToBorderBoxTransform ·
 	//     CurrentTransform
+	//
+	// The first two factors are Blink's
+	// SVGRootPainter::TransformToPixelSnappedBorderBox
+	// (core/paint/svg_root_painter.cc:28-67 @ Chromium
+	// 5992657f556bcd9d207a4aca187488462f027cab). louis14's
+	// LocalToBorderBoxTransform is content-box-relative, unlike Blink's,
+	// so originX/originY carry the border+padding offset instead.
 	//
 	// Paint servers need this to map a shape's reference bbox (which
 	// is in user-space) into the device-pixel rect they need to
@@ -86,4 +96,21 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 		B: c.B,
 		A: uint8(c.A * 255),
 	})
+}
+
+// viewportDeviceClip returns the SVG root viewport in device pixels, for the
+// filter composite paths that write straight to the target image and so
+// bypass the DrawContext clip stack. The edges are int()-truncated; with a
+// fractional viewport size the right/bottom edge can differ by 1px from
+// paintSVGRoot's pixel-snapped viewport clip (LOU-426 follow-up).
+//
+// no Blink analog: Blink composites filter output under the replaced
+// content clip property node; louis14's filter composite bypasses the DC.
+func (c *svgPaintContext) viewportDeviceClip() image.Rectangle {
+	return image.Rect(
+		int(c.originX),
+		int(c.originY),
+		int(c.originX+c.viewport.Width()),
+		int(c.originY+c.viewport.Height()),
+	)
 }
