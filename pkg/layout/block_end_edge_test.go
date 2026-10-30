@@ -209,7 +209,7 @@ func matchesUnlessSkipped(got, want float64) bool {
 	return want == notChecked || got == want
 }
 
-// TestEffectiveBlockBorderPadding_PastEnd: a multicol fragment past the
+// TestFragmentBlockEdges_PastEnd: a multicol fragment past the
 // box's block end (a parallel flow) carries neither block edge, cloned or
 // not (Blink ShouldCloneBlockStartBorderPadding is false past the block end
 // and ShouldIncludeBlockEndBorderPadding returns false,
@@ -218,17 +218,21 @@ func matchesUnlessSkipped(got, want float64) bool {
 // break inside (ShouldIncludeBlockStartBorderPadding,
 // fragmentation_utils.cc:522-525), not on how much it consumed: a
 // zero-consumed break-inside token drops it, a break-before token keeps it.
-func TestEffectiveBlockBorderPadding_PastEnd(t *testing.T) {
+func TestFragmentBlockEdges_PastEnd(t *testing.T) {
 	geom := FragmentGeometry{
 		Padding: LogicalEdges{BlockStart: 8, BlockEnd: 8},
 	}
-	if got := EffectiveBlockBorderPadding(geom, true, &BlockBreakToken{IsAtBlockEnd: true}, false); got != 0 {
+	blockSum := func(cloned bool, token *BlockBreakToken) float64 {
+		border, padding := FragmentBlockEdges(geom, cloned, token)
+		return border.BlockSum() + padding.BlockSum()
+	}
+	if got := blockSum(true, &BlockBreakToken{IsAtBlockEnd: true}); got != 0 {
 		t.Errorf("past-end fragment with cloned decorations = %v, want 0 (neither edge)", got)
 	}
-	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{}, false); got != 8 {
+	if got := blockSum(false, &BlockBreakToken{}); got != 8 {
 		t.Errorf("zero-consumed break-inside resume = %v, want 8 (block-start edge dropped)", got)
 	}
-	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{IsBreakBefore: true}, false); got != 16 {
+	if got := blockSum(false, &BlockBreakToken{IsBreakBefore: true}); got != 16 {
 		t.Errorf("break-before resume = %v, want 16 (first fragment keeps both edges)", got)
 	}
 }

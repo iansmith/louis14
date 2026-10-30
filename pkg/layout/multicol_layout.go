@@ -944,7 +944,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		border, padding = nestedBorder, nestedPadding
 		applyNestedFinish(builder, nestedFinish)
 	} else {
-		border, padding = FragmentBlockEdges(mla.geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, false)
+		border, padding = FragmentBlockEdges(mla.geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken)
 	}
 	effBP := border.BlockSum() + padding.BlockSum()
 	builder.SetSize(LogicalSize{

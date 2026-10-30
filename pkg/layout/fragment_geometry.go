@@ -78,29 +78,21 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 }
 
 // FragmentBlockEdges returns the block border and padding a multicol
-// fragment carries, accounting for box-decoration-break and fragment
-// position: a resumed fragment drops its block-start edge unless cloned, a
-// breaking one its block-end edge unless cloned, and a fragment past the
-// box's block end carries neither (Blink ShouldIncludeBlockStartBorderPadding
-// / ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
+// fragment that does not break inside carries: a resumed fragment drops its
+// block-start edge unless cloned, and a fragment past the box's block end
+// carries neither (Blink ShouldIncludeBlockStartBorderPadding /
+// ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
 // a9f50e522efa).
-func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) (border, padding LogicalEdges) {
+func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken) (border, padding LogicalEdges) {
 	border, padding = geom.Border, geom.Padding
-	pastEnd := breakToken != nil && breakToken.IsAtBlockEnd
 	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, breakToken) {
 		border.BlockStart, padding.BlockStart = 0, 0
 	}
-	if pastEnd || (isBreaking && !hasClonedBoxDecorations) {
+	// Not breaking inside: only the past-the-block-end clause can drop it.
+	if !ShouldIncludeBlockEndBorderPadding(breakToken, false, false, false, false, false) {
 		border.BlockEnd, padding.BlockEnd = 0, 0
 	}
 	return border, padding
-}
-
-// EffectiveBlockBorderPadding returns the block border + padding that
-// contributes to this fragment's block-size (see FragmentBlockEdges).
-func EffectiveBlockBorderPadding(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) float64 {
-	border, padding := FragmentBlockEdges(geom, hasClonedBoxDecorations, breakToken, isBreaking)
-	return border.BlockStart + border.BlockEnd + padding.BlockStart + padding.BlockEnd
 }
 
 // ComputeFragmentGeometry resolves border and padding from a CSS style
