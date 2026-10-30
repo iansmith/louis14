@@ -298,7 +298,11 @@ func TestParse_ElementNamespaceURI(t *testing.T) {
 		`<desc><em></em></desc></g></svg>` +
 		`<math><mi><i></i><mglyph></mglyph></mi><mrow></mrow>` +
 		`<annotation-xml encoding="text/html"><p></p></annotation-xml>` +
-		`<annotation-xml><svg></svg></annotation-xml></math></div>`)
+		`<annotation-xml><svg></svg></annotation-xml></math>` +
+		`<svg><title><b></b></title></svg>` +
+		`<math><annotation-xml encoding="Application/XHTML+XML"><u></u></annotation-xml>` +
+		`<mi><malignmark></malignmark></mi><mo><s></s></mo>` +
+		`<mn><kbd></kbd></mn><ms><var></var></ms><mtext><samp></samp></mtext></math></div>`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,6 +330,15 @@ func TestParse_ElementNamespaceURI(t *testing.T) {
 		{"p", 0, XHTMLNamespaceURI}, // annotation-xml encoding=text/html
 		{"annotation-xml", 1, MathMLNamespaceURI},
 		{"svg", 1, SVGNamespaceURI}, // annotation-xml > svg
+		{"title", 0, SVGNamespaceURI},
+		{"b", 0, XHTMLNamespaceURI},           // SVG title is an HTML integration point
+		{"u", 0, XHTMLNamespaceURI},           // annotation-xml encoding=application/xhtml+xml (case-insensitive)
+		{"malignmark", 0, MathMLNamespaceURI}, // mi > malignmark stays MathML
+		{"mo", 0, MathMLNamespaceURI},
+		{"s", 0, XHTMLNamespaceURI},    // mo, mn, ms and mtext are MathML text integration points
+		{"kbd", 0, XHTMLNamespaceURI},  // mn
+		{"var", 0, XHTMLNamespaceURI},  // ms
+		{"samp", 0, XHTMLNamespaceURI}, // mtext
 	}
 	for _, tc := range cases {
 		els := elementsNamed(doc.Root, tc.tag)
