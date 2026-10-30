@@ -34,3 +34,32 @@ func TestLhUnit_LineHeightResolvesAgainstParent(t *testing.T) {
 		}
 	}
 }
+
+// TestLineHeight_InheritsComputedLength: a length, percentage or calc()
+// line-height computes to an absolute length, which descendants inherit;
+// only a bare number inherits as a multiplier (CSS 2.1 §10.8.1). Mirrors
+// Blink's StyleBuilderConverter::ConvertLineHeight
+// (style_builder_converter.cc:2212 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func TestLineHeight_InheritsComputedLength(t *testing.T) {
+	for _, tc := range []struct {
+		lineHeight string
+		want       float64 // span's line-height; div is 10px, span 40px
+	}{
+		{"2em", 20},
+		{"200%", 20},
+		{"calc(1em + 10px)", 20},
+		{"calc(50% + 15px)", 20},
+		{"2", 80},
+		{"25px", 25},
+	} {
+		doc, _ := html.Parse(`<style>div { font-size: 10px; line-height: ` + tc.lineHeight +
+			`; } span { font-size: 40px; }</style><div><span>x</span></div>`)
+		for node, style := range ApplyStylesToDocument(doc, 800, 600) {
+			if node.TagName == "span" {
+				if got := style.GetLineHeight(); got != tc.want {
+					t.Errorf("line-height %s: span = %v, want %v", tc.lineHeight, got, tc.want)
+				}
+			}
+		}
+	}
+}
