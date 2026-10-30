@@ -26,7 +26,15 @@ type Style struct {
 	Properties     map[string]string
 	ViewportWidth  float64 // Viewport width in pixels (for vw/vmin/vmax units)
 	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
-	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
+	ChWidth        float64 // Measured advance width of "0" in the element's font; valid only when HasZeroWidth
+
+	// HasZeroWidth reports that ChWidth was measured from the element's font,
+	// so a ChWidth of 0 is a real zero-advance "0" glyph rather than "not yet
+	// measured" (ch then falls back to 0.5em / 1em upright). Set together with
+	// ChWidth by SetZeroWidth. Mirrors Blink's FontMetrics::HasZeroWidth /
+	// SetZeroWidth (platform/fonts/font_metrics.h:173 @
+	// 5992657f556bcd9d207a4aca187488462f027cab).
+	HasZeroWidth bool
 
 	// UsedFontSize is the post-`font-size-adjust` font-size in pixels; 0 is a
 	// valid value (font-size-adjust: 0 — glyphs collapse to invisible). Read
@@ -574,6 +582,13 @@ func (s *Style) GetLength(property string) (float64, bool) {
 // string rather than a property name. Used for resolving fit-content() arguments.
 func (s *Style) GetLengthForVal(val string) (float64, bool) {
 	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize, s.IcWidth)
+}
+
+// SetZeroWidth records the measured advance of "0" (which may be 0) and marks
+// it as measured. Mirrors Blink's FontMetrics::SetZeroWidth (see HasZeroWidth).
+func (s *Style) SetZeroWidth(w float64) {
+	s.ChWidth = w
+	s.HasZeroWidth = true
 }
 
 // chScale returns the ch unit multiplier relative to fontSize for this style's font.
@@ -7711,6 +7726,7 @@ func copyStyleResolutionContext(dst, src *Style) {
 	dst.ViewportWidth = src.ViewportWidth
 	dst.ViewportHeight = src.ViewportHeight
 	dst.ChWidth = src.ChWidth
+	dst.HasZeroWidth = src.HasZeroWidth
 	dst.UsedFontSize = src.UsedFontSize
 	dst.UsedFontSizeSet = src.UsedFontSizeSet
 	dst.XHeight = src.XHeight
