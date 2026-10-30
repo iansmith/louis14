@@ -55,7 +55,7 @@ type SelectorPart struct {
 
 	// NamespaceURI is the resolved namespace of the type or universal
 	// selector (Blink CSSSelector::TagQName().NamespaceURI(),
-	// core/css/css_selector.h:504 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// core/css/css_selector.h:505 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	// "" means any namespace (Blink g_star_atom), so a zero-value
 	// SelectorPart and every context-free parse match elements in any
 	// namespace. Divergence: Blink's explicit no-namespace (g_empty_atom,
