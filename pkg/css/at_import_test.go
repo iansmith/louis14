@@ -16,6 +16,7 @@ func TestParseImportURL(t *testing.T) {
 		{`@import "foo.css" screen;`, "foo.css"},
 		{`@import url("sub/dir/foo.css");`, "sub/dir/foo.css"},
 		{`@import url(  spaced.css  );`, "spaced.css"},
+		{`@import URL(foo.css);`, "foo.css"}, // url is ASCII case-insensitive
 		// Malformed inputs return "".
 		{`@import;`, ""},
 		{`@import url(;`, ""},

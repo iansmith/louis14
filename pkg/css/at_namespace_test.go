@@ -132,6 +132,8 @@ func TestConsumeNamespaceRule(t *testing.T) {
 	}{
 		{`@namespace url("x");`, "", "x", true},
 		{`@namespace url(x);`, "", "x", true},
+		{`@namespace URL(x);`, "", "x", true}, // url is ASCII case-insensitive (Blink EqualIgnoringAsciiCase)
+		{`@namespace pfx Url("x");`, "pfx", "x", true},
 		{`@namespace "x";`, "", "x", true},
 		{`@namespace 'x';`, "", "x", true},
 		{`@namespace pfx "x";`, "pfx", "x", true},
