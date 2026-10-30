@@ -1925,6 +1925,9 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 			}
 		}
+		// line-height likewise computes against the pseudo-element's own
+		// (now final) font-size and the originating element's line-height.
+		absolutizeLineHeight(finalStyle, parentStyles[0])
 	}
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
@@ -3390,6 +3393,17 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// (style_builder_converter.cc:1998 @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		absolutizeOutlineOffset(style)
+		// line-height computes to an absolute length unless it is `normal` or a
+		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
+		// than re-resolving em / % against their own font-size. Mirrors Blink's
+		// StyleBuilderConverter::ConvertLineHeight (style_builder_converter.cc:2212
+		// @ 5992657f556bcd9d207a4aca187488462f027cab): lengths and calc() become
+		// Length::Fixed, a percentage is taken of the element's computed font-size,
+		// and only a number is kept as a multiplier. Blink applies line-height while
+		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
+		// here resolves against the parent's line-height (StyleCascade::Apply →
+		// StyleResolverState::UpdateLineHeight, style_cascade.cc:309-315 @ same SHA).
+		absolutizeLineHeight(style, styles[node.Parent])
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
@@ -3403,9 +3417,10 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		// A matching @container rule can re-introduce a var()-deferred
 		// shorthand or a font-relative outline-offset; re-run the
-		// computed-time normalizations (both are idempotent).
+		// computed-time normalizations (all are idempotent).
 		reexpandVarShorthands(style)
 		absolutizeOutlineOffset(style)
+		absolutizeLineHeight(style, styles[node.Parent])
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors
@@ -4046,4 +4061,82 @@ func rbOnlyInlineRecursive(node *html.Node) bool {
 		}
 	}
 	return true
+}
+
+// absolutizeLineHeight rewrites style's line-height to its computed length in
+// px, resolving lh against parent's line-height (1.2em fallback with no
+// parent). It leaves alone the values that compute to themselves: `normal`, a
+// bare number (or a unitless calc()), plain px, and values using ex / ch / ic
+// / cap, whose font metrics louis14 only measures at layout time
+// (Style.XHeight etc.), so Style.GetLineHeight resolves those there instead.
+// Idempotent, so it can re-run after a late line-height write (var()
+// shorthand re-expansion, @container rules).
+func absolutizeLineHeight(s *Style, parent *Style) {
+	val, ok := s.Get("line-height")
+	if !ok {
+		return
+	}
+	v := strings.TrimSpace(val)
+	if v == "" || strings.EqualFold(v, "normal") {
+		return
+	}
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return
+	}
+	units := dimensionUnits(v)
+	parentLh := 0.0
+	for _, unit := range units {
+		switch unit {
+		case "ex", "ch", "ic", "cap":
+			return
+		case "lh":
+			if parent != nil && parentLh == 0 {
+				parentLh = parent.GetLineHeight()
+			}
+		}
+	}
+	isMath := IsMathFunction(v)
+	if isMath && len(units) == 0 { // unitless calc(): a number
+		return
+	}
+	if !isMath && len(units) == 1 && units[0] == "px" {
+		return
+	}
+	if px, ok := computedLineHeightPx(s, v, isMath, parentLh); ok {
+		s.Set("line-height", fmt.Sprintf("%.6gpx", px))
+	}
+}
+
+// computedLineHeightPx resolves a length / percentage / calc() line-height to
+// px, with lh taken as parentLh.
+func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (float64, bool) {
+	fontSize := s.GetFontSize()
+	if isMath {
+		return EvalMathFunction(v, calcContext{
+			fontSize:       fontSize,
+			percentBase:    fontSize,
+			viewportWidth:  s.ViewportWidth,
+			viewportHeight: s.ViewportHeight,
+			chScale:        s.chScale(),
+			lhSize:         parentLh,
+		})
+	}
+	if pct, ok := ParsePercentage(v); ok {
+		return pct / 100.0 * fontSize, true
+	}
+	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), 0, 0, parentLh, 0)
+}
+
+// dimensionUnits returns the unit (or "%") of each <dimension> /
+// <percentage> token in a CSS value, e.g. ["em", "px"] for
+// "calc(1em + 10px)". Function names are not dimensions.
+func dimensionUnits(val string) []string {
+	var units []string
+	for _, tok := range tokenizeCalc(val) {
+		num := strings.TrimPrefix(tok, "-")
+		if unit := strings.TrimLeft(num, "0123456789."); unit != "" && len(unit) < len(num) {
+			units = append(units, unit)
+		}
+	}
+	return units
 }

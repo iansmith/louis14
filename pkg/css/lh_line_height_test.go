@@ -63,3 +63,18 @@ func TestLineHeight_InheritsComputedLength(t *testing.T) {
 		}
 	}
 }
+
+// TestLineHeight_VarFontShorthandInheritsComputedLength: a line-height set by
+// a var()-deferred `font` shorthand (expanded after the main cascade, in
+// reexpandVarShorthands) is absolutized too.
+func TestLineHeight_VarFontShorthandInheritsComputedLength(t *testing.T) {
+	doc, _ := html.Parse(`<style>div { --f: 10px/2em serif; font: var(--f); }
+		span { font-size: 40px; }</style><div><span>x</span></div>`)
+	for node, style := range ApplyStylesToDocument(doc, 800, 600) {
+		if node.TagName == "span" {
+			if got := style.GetLineHeight(); got != 20 {
+				t.Errorf("span line-height = %v, want 20 (div's 2em at 10px)", got)
+			}
+		}
+	}
+}
