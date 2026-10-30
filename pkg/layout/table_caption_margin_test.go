@@ -59,9 +59,10 @@ func assertNear(t *testing.T, what string, got, want float64) {
 // margins.block_start before the caption, places it at
 // LogicalOffset(margins.inline_start, block_offset), and advances by the
 // caption block size plus margins.block_end; the table block size is the
-// final child_block_offset (:1592). Top captions are added at :989-993 and
-// bottom captions at :1585-1589. The position:relative offset is separate
-// and paint-time (relative_utils.cc ComputeRelativeOffsetForBoxFragment).
+// final child_block_offset (:1592 @ d4ecdfed88f9). Top captions are added
+// at :989-993 and bottom captions at :1585-1589. The position:relative
+// offset is separate and paint-time (ComputeRelativeOffsetForBoxFragment,
+// relative_utils.cc:92 @ d4ecdfed88f9).
 //
 // Caption: width:100px; height:50px; margin-left:200px; margin-top:10px;
 // margin-bottom:5px; position:relative; left:-200px (the
@@ -106,8 +107,8 @@ func TestTableCaption_Margins_LOU434(t *testing.T) {
 	})
 
 	t.Run("percent", func(t *testing.T) {
-		// Blink ComputeCaptionMargins (:118-128) resolves % against the
-		// table border-box inline size; at border:0/padding:0 that equals
+		// Blink ComputeCaptionMargins (:118-128 @ d4ecdfed88f9) resolves %
+		// against the table border-box inline size; at border:0/padding:0 that equals
 		// the 300px content box louis14 uses.
 		res := layoutCaptionTable(t, table,
 			[]string{"width", "100px", "height", "10px", "margin-left", "10%"})
@@ -131,8 +132,8 @@ func TestTableCaption_AutoInlineMargins_LOU434(t *testing.T) {
 	})
 	t.Run("auto-width-table", func(t *testing.T) {
 		// Blink widens an auto table to at least its caption's min size
-		// (ComputeAssignableTableInlineSize :250-251), so the caption's
-		// auto-margin free space is 0. louis14 does not widen the table
+		// (ComputeAssignableTableInlineSize :250-251 @ d4ecdfed88f9), so the
+		// caption's auto-margin free space is 0. louis14 does not widen the table
 		// (ComputeCaptionConstraint is deferred), but resolving against the
 		// final table inline size rather than the 800px container still gives
 		// Blink's offset: the free space clamps to 0.

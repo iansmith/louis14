@@ -2253,7 +2253,7 @@ type captionResult struct {
 //   - Auto inline margins resolve against tableContentInline, the final table
 //     content inline size; Blink uses the border-box inline size, which it
 //     also floors at the caption's min size (ComputeCaptionConstraint,
-//     :38-59), which louis14 does not port.
+//     :38-59 @ d4ecdfed88f9), which louis14 does not port.
 //
 // An auto-width caption stretches to the available size minus its inline
 // margins: Blink's kStretchImplicit (:73) feeds the kStretch inline size,
