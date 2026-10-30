@@ -225,7 +225,7 @@ func TestComputeColumnWidths_ColMinWidthBeatsMaxWidth(t *testing.T) {
 // TestTableCell_ExplicitHeightVerticalAlign pins vertical-align on an in-table
 // cell whose explicit height exceeds its content. Blink aligns the content in
 // FinalizeTableCellLayout (third_party/blink/renderer/core/layout/table/
-// table_layout_utils.cc:1597-1630 @ d4ecdfed88f962439247c2ad36b8fe47805b1520):
+// table_layout_utils.cc:1599-1638 @ d4ecdfed88f962439247c2ad36b8fe47805b1520):
 // free_space = cell block-size - intrinsic block-size, moved by free_space/2
 // for middle and free_space for bottom (CSS 2.1 §17.5.4). Cell 100px tall,
 // content 20px: middle puts the content at 40, bottom at 80.
@@ -294,7 +294,7 @@ func layoutTableForTest(root *html.Node, styles map[*html.Node]*css.Style) *Layo
 // block_layout_algorithm.cc:1255-1261 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), and FinalizeTableCellLayout
 // moves every child, floats included, by free_space/2 for middle
-// (table_layout_utils.cc:1597-1630). Cell 100px tall holding only a 20px
+// (table_layout_utils.cc:1599-1638). Cell 100px tall holding only a 20px
 // float: free space 80, float at 40 (not 50, which ignores the float).
 func TestTableCell_VerticalAlignFreeSpaceCountsFloats(t *testing.T) {
 	float := makeNode("div")
@@ -328,7 +328,7 @@ func TestTableCell_VerticalAlignFreeSpaceCountsFloats(t *testing.T) {
 // cell's min/max contribution to its column is the inline size (in the
 // table's writing mode) of the cell laid out, as Blink's
 // BlockNode::ComputeMinMaxSizes does for an orthogonal flow root
-// (core/layout/block_node.cc:968-991 @
+// (core/layout/block_node.cc:968-998 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), which
 // TableTypes::CreateCellInlineConstraint calls
 // (table/table_layout_algorithm_types.cc:138-163). A vertical-rl cell with
@@ -359,5 +359,43 @@ func TestTableColumn_OrthogonalCellContributesLaidOutInlineSize(t *testing.T) {
 	}
 	if w := findFragmentByNode(result.Fragment, table).Size.WidthF64(); w != 300 {
 		t.Errorf("table width = %v, want 300", w)
+	}
+}
+
+// TestTable_AbsposInAnonymousCellKeepsOuterContainingBlock: an absolutely
+// positioned child of a row-group is wrapped in an anonymous row and cell
+// (Blink LayoutTableSection::AddChild / LayoutTableRow::AddChild,
+// table/layout_table_section.cc:73-102 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520) but stays out of flow: its
+// containing block is the positioned ancestor outside the table, so
+// `top: 0; left: 0` puts it at that ancestor's padding-box origin, 25px
+// above and left of the content-box origin where the in-flow marker sits
+// (WPT css-contain/contain-layout-009..012).
+func TestTable_AbsposInAnonymousCellKeepsOuterContainingBlock(t *testing.T) {
+	abspos := makeNode("div")
+	rg := makeNode("div", makeTextNode("\n  "), abspos, makeTextNode("\n"))
+	table := makeNode("div", rg)
+	marker := makeNode("div")
+	wrapper := makeNode("div", marker, table)
+	root := makeNode("div", wrapper)
+	result := layoutTableForTest(root, map[*html.Node]*css.Style{
+		root: makeStyle("display", "block"),
+		wrapper: makeStyle("display", "block", "position", "relative", "width", "50px", "height", "50px",
+			"padding-top", "25px", "padding-left", "25px", "padding-right", "25px", "padding-bottom", "25px"),
+		marker: makeStyle("display", "block", "height", "1px"),
+		table:  makeStyle("display", "table"),
+		rg:     makeStyle("display", "table-row-group"),
+		abspos: makeStyle("display", "block", "position", "absolute", "top", "0", "left", "0", "width", "100px", "height", "100px"),
+	})
+	mx, my, ok := physicalOffsetOfNodeWithin(result.Fragment, wrapper, marker)
+	if !ok {
+		t.Fatal("marker fragment not found under the wrapper")
+	}
+	x, y, ok := physicalOffsetOfNodeWithin(result.Fragment, wrapper, abspos)
+	if !ok {
+		t.Fatal("abspos fragment not found under the wrapper")
+	}
+	if x != mx-25 || y != my-25 {
+		t.Errorf("abspos at (%v, %v), want the wrapper padding-box origin (%v, %v)", x, y, mx-25, my-25)
 	}
 }
