@@ -1322,14 +1322,14 @@ func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHe
 	}
 	var w, h float64
 	if wVal, ok := rootStyle.Get("width"); ok {
-		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
+		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
 			w = length
 		} else if pct, ok := ParsePercentage(wVal); ok {
 			w = pct / 100.0 * viewportWidth
 		}
 	}
 	if hVal, ok := rootStyle.Get("height"); ok {
-		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
+		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
 			h = length
 		} else if pct, ok := ParsePercentage(hVal); ok {
 			h = pct / 100.0 * viewportHeight
@@ -4120,13 +4120,13 @@ func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (fl
 			xHeight:        s.XHeight,
 			capHeight:      s.CapHeight,
 			lhSize:         parentLh,
-			icWidth:        s.IcWidth,
+			icWidth:        s.ideographicInlineSize(),
 		})
 	}
 	if pct, ok := ParsePercentage(v); ok {
 		return pct / 100.0 * fontSize, true
 	}
-	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, parentLh, s.IcWidth)
+	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, parentLh, s.ideographicInlineSize())
 }
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /
