@@ -7782,8 +7782,8 @@ func copyStyleResolutionContext(dst, src *Style) {
 
 // CreateAnonymousStyleWithDisplay builds the style for an anonymous box —
 // an anonymous block, table row-group/row/cell wrapper, or block-ruby's inline
-// ruby child — and is louis14's only anonymous-box style builder. Mirrors
-// Blink StyleResolver::CreateAnonymousStyleBuilderWithDisplay and its
+// ruby child. Like Blink, louis14 has one builder parameterised by display,
+// not per-display variants. Mirrors Blink StyleResolver::CreateAnonymousStyleBuilderWithDisplay and its
 // CreateAnonymousStyleWithDisplay wrapper
 // (core/css/resolver/style_resolver.cc:3607-3622 @
 // 5992657f556bcd9d207a4aca187488462f027cab), which Blink calls for anonymous
