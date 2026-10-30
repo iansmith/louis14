@@ -442,10 +442,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			floatInlineBFC = containerEnd - localEndOff - pf.margins.InlineEnd - pf.childLogical.InlineSize()
 		}
 		localFloatBlock := floatBlockOffset - bfcBlockOrigin
-		builder.AddChild(pf.fragment, LogicalOffset{
+		floatOffset := LogicalOffset{
 			InlineOffset: floatInlineBFC - bfcInlineOrigin,
 			BlockOffset:  localFloatBlock + pf.margins.BlockStart,
-		})
+		}
+		builder.AddChild(pf.fragment, floatOffset)
+		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
+		// 227-229, :479-489 @ a9f50e522efa): the float at its own block-size
+		// (its result is not kept here; the float-margin term,
+		// fragmentation_utils.cc:1563-1569, is not ported).
+		builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: pf.fragment}, floatOffset)
 		return es.Add(Exclusion{
 			InlineOffset: floatInlineBFC - pf.margins.InlineStart,
 			BlockOffset:  floatBlockOffset,
@@ -1179,10 +1185,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// This is the block offset of the line + the line's ascent.
 		lastBaselineOffset = blockOffset + lineAscent
 
-		builder.AddChild(lineFragment, LogicalOffset{
+		lineOffset := LogicalOffset{
 			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
-		})
+		}
+		builder.AddChild(lineFragment, lineOffset)
+		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
+		// 227-229, :479-489 @ a9f50e522efa): a line box records no
+		// BlockSizeForFragmentation, so it contributes its own block-size
+		// (fragmentation_utils.cc:1545-1583), not its glyphs' overhang.
+		builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: lineFragment}, lineOffset)
 
 		// Propagate OOF candidates collected from atomic inline children
 		// (e.g. abs-pos descendants of inline-blocks) to the parent block.

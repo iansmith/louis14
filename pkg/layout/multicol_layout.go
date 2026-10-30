@@ -567,6 +567,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.geom = CalculateInitialFragmentGeometry(mla.ctx, mla.node, mla.style, wdm, mla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
+	builder.SetConstraintSpace(&mla.space)
 
 	// Phase 25 Cmt-3: an outer (non-nested) multicol IS the block-fragmentation
 	// context root. The flag gates `OutOfFlowLayoutPart.HandleFragmentation`'s
@@ -1473,15 +1474,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		if mla.space.ShouldPropagateChildBreakValues() {
 			builder.PropagateChildBreakValues(spanResult)
 		}
-		// LOU-111 step 4: propagate the spanner's BSFF into this
-		// multicol's running BSFF so an outer multicol slicing this
-		// multicol's fragments sees the true content-overflow extent
-		// (analog of column_layout_algorithm.cc:977-982 +
-		// fragmentation_utils.cc BlockSizeForFragmentation helper).
-		// Without this, a spanner whose content overflows past its
-		// declared box reports only its box-size up the chain, and
-		// the outer multicol's per-column row-advance picks the wrong
-		// slice height.
+		// Blink AddResult (cla.cc:1427) → PropagateBreakInfo
+		// (box_fragment_builder.cc:479-489 @ a9f50e522efa): the spanner's
+		// block-end for fragmentation, its content overflow included,
+		// reaches this multicol's.
 		if spanResult != nil {
 			builder.PropagateChildBlockSizeForFragmentation(spanResult, spannerOffset)
 			mla.propagateBaselineFromChild(spanResult, builder, spannerBlockOffset)
@@ -1933,12 +1929,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				break
 			}
 
+			// The column algorithm's builder tagged the fragment
+			// BoxTypeColumn (Blink SetBoxType(kColumnBox),
+			// column_layout_algorithm.cc:945 @ a9f50e522efa).
 			colFrag := result.Fragment
-			// Tag the column fragmentainer so the painter (P20.3) and
-			// column-rule painter (P20.4) can recognise it. Mirrors
-			// Blink column_layout_algorithm.cc:1620 SetBoxType(kColumnBox)
-			// on the per-column BlockLayoutAlgorithm.
-			colFrag.BoxType = BoxTypeColumn
 			colHeight := NewLogicalFragment(wdm, colFrag).BlockSize()
 			// Blink does not set any per-column paint clip (BoxFragmentPainter::PaintBlockChild
 			// fragmentainer branch). Phase 12h F2 partial added ClipBlockAxisOnly here to handle
@@ -2234,18 +2228,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// 1114; see findings.md § "Phase 16.d Blink research"). The field is
 		// also removed by this commit; engine.go propagation + paint_layer.go
 		// branch are removed in lockstep.
+		// Columns are added with AddChild, not AddResult, so their
+		// BlockSizeForFragmentation does not reach this multicol's (Blink
+		// column_layout_algorithm.cc:1275 @ a9f50e522efa).
 		builder.AddChild(col.fragment, col.offset)
-		// LOU-111 step 4: propagate the column's BSFF so this multicol's
-		// own outgoing BSFF reflects the maximum column-row content extent
-		// (including any monolithic / parallel-flow overflow inside the
-		// column body). An OUTER multicol slicing this multicol's
-		// fragments reads the inner BSFF at lines 1631-1632 below to size
-		// its column rows correctly. Mirrors Blink's
-		// BoxFragmentBuilder::PropagateChildData max-merge
-		// (box_fragment_builder.cc:977-982).
-		if col.result != nil {
-			builder.PropagateChildBlockSizeForFragmentation(col.result, col.offset)
-		}
 		// Callsite 1 (Track B): propagate baseline from each column child.
 		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.
 		if col.result != nil {
@@ -2345,11 +2331,12 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// column block-size (Indefinite; Blink's has_content_based_block_size,
 	// held PR #201) and contributes its tallest column instead.
 	// no Blink analog: a line that ends at a spanner contributes at least its
-	// tallest column, overflow included, so the spanner is placed below
-	// content that overflowed the columns. It stands in for the space
-	// shortage Blink's stretch loop gets from such content (an unbreakable
-	// line, cla.cc:1153-1173) and louis14 does not report yet (LOU-399's
-	// trusted-space-shortage half; ledger L90).
+	// tallest column, overflow included, as far as the column block-size
+	// could have been stretched (constrainColumnBlockSize), so the spanner
+	// is placed below content that overflowed the columns. It stands in for
+	// the space shortage Blink's stretch loop gets from such content (an
+	// unbreakable line, cla.cc:1153-1173) and louis14 does not report yet
+	// (LOU-399's trusted-space-shortage half; ledger L90).
 	contribution := colBlockSize
 	switch {
 	case shrinkToFitColumnBlockSize && len(finalColumns) == 1:
@@ -2357,7 +2344,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	case colBlockSize == Indefinite:
 		contribution = maxColHeight
 	case hasSpannerDetector:
-		contribution = math.Max(colBlockSize, maxColHeight)
+		contribution = math.Max(colBlockSize, mla.constrainColumnBlockSize(maxColHeight, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset))
 	}
 	// Blink cla.cc:1229-1251: a non-empty line moves the layout position
 	// past itself (lineOffset already holds the strut) and resets the

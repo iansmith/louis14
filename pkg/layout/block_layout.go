@@ -150,6 +150,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset + geom.BorderBoxPadding().BlockStart
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+	builder.SetConstraintSpace(&bla.space)
+	builder.SetBoxType(bla.boxType)
 	// A node on the spanner path keeps its breaks in its parent's flow, so
 	// content after the spanner is not laid out before it
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
@@ -2747,7 +2749,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if pendingHasForcedBreak {
 				result.HasForcedBreak = true
 			}
-			if pendingIntrinsicAtBreak > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+			// Raise only: Build already recorded the accumulated value.
+			if pendingIntrinsicAtBreak > max(NewLogicalFragment(wdm, result.Fragment).BlockSize(), result.BlockSizeForFragmentation) {
 				result.BlockSizeForFragmentation = pendingIntrinsicAtBreak
 			}
 		}
@@ -3220,10 +3223,16 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 	// Add the float fragment to the builder in local coordinates.
 	localFloatBlockOffset := floatBlockOffset - bfcBlockOrigin
-	builder.AddChild(childResult.Fragment, LogicalOffset{
+	floatOffset := LogicalOffset{
 		InlineOffset: floatInlineBFC - bfcInlineOrigin,
 		BlockOffset:  localFloatBlockOffset + childMargins.BlockStart,
-	})
+	}
+	builder.AddChild(childResult.Fragment, floatOffset)
+	// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:227-229,
+	// :479-489 @ a9f50e522efa); the float-margin term of
+	// BlockSizeForFragmentation (fragmentation_utils.cc:1563-1569) is not
+	// ported.
+	builder.PropagateChildBlockSizeForFragmentation(childResult, floatOffset)
 
 	// Add an exclusion for this float. The exclusion uses BFC-relative
 	// coordinates so it works correctly throughout the BFC.

@@ -117,17 +117,14 @@ type BoxFragmentBuilder struct {
 	minimalSpaceShortage    float64
 	hasMinimalSpaceShortage bool
 
-	// blockSizeForFragmentation tracks the running max-merged block-end
-	// of every child contribution in this builder's logical coordinate
-	// space — i.e., for each child propagated via
-	// PropagateChildBlockSizeForFragmentation, the maximum of
-	// `offset.BlockOffset + effectiveChildBSFF`. This is the parent's
-	// notion of how far its content actually extends (including any
-	// descendant overflow), which can exceed the parent's own
-	// block-size when children overflow past the parent's content box.
-	// Mirrors Blink's BoxFragmentBuilder::block_size_for_fragmentation_
-	// (box_fragment_builder.h) and its accumulation in PropagateChildData
-	// at box_fragment_builder.cc:977-982:
+	// blockSizeForFragmentation is the furthest block-end of the in-flow
+	// children propagated through PropagateChildBlockSizeForFragmentation,
+	// in this builder's content-relative logical coordinates: the extent
+	// the content reaches, overflow included, which may exceed the box's
+	// own block-size. Build finalizes it (see there). Mirrors Blink's
+	// BoxFragmentBuilder::block_size_for_fragmentation_ and its
+	// accumulation in PropagateBreakInfo (box_fragment_builder.cc:479-489
+	// @ a9f50e522efa):
 	//
 	//	LayoutUnit block_end_in_container =
 	//	    offset.block_offset
@@ -137,8 +134,7 @@ type BoxFragmentBuilder struct {
 	//	    block_size_for_fragmentation_, block_end_in_container);
 	//
 	// louis14 omits the annotation-adjustment term — no ruby/annotation
-	// layout exists yet. Read into LayoutResult.BlockSizeForFragmentation
-	// at Build() when hasBlockSizeForFragmentation is set.
+	// layout exists yet — and the clamped flag (:491-494).
 	blockSizeForFragmentation    float64
 	hasBlockSizeForFragmentation bool
 
@@ -434,53 +430,20 @@ func (b *BoxFragmentBuilder) TallestUnbreakableBlockSize() float64 {
 	return b.tallestUnbreakableBlockSize
 }
 
-// PropagateChildBlockSizeForFragmentation max-merges a child's content
-// overflow extent into this builder's running BSFF. Mirrors Blink's
-// max-merge in BoxFragmentBuilder::PropagateChildData
-// (box_fragment_builder.cc:977-982), with one louis14-specific tweak:
-// propagation fires only when the child's effective BSFF exceeds its
-// physical extent (child fragment block-size + ConsumedBlockSize). For
-// children that fully fit inside their own box (the common case), the
-// builder's BSFF is NOT advanced — this keeps the field's louis14
-// semantics as a true "monolithic / parallel-flow overflow indicator",
-// which downstream consumers (e.g. multicol_layout.go:1631-1633's
-// per-column row-advance) compare directly against fragment block-size.
-//
-// Without the gate, normal in-flow stacking (e.g. successive spanners,
-// nested multicol content that fragments naturally across columns)
-// would inflate parent BSFF and trigger row-advance / regrowth paths
-// that should only fire for true overflow.
-//
-// The "effective" child BSFF is the max of the child's
-// LayoutResult.BlockSizeForFragmentation and the child fragment's own
-// block-size plus any ConsumedBlockSize on its outgoing break-token —
-// mirrors Blink's free function
-// fragmentation_utils.cc::BlockSizeForFragmentation.
-//
-// No-op if the child is nil, carries no fragment, or shows no overflow.
+// PropagateChildBlockSizeForFragmentation max-merges an in-flow child's
+// block-end for fragmentation — offset + BlockSizeForFragmentation(child) —
+// into this builder's running value, when the fragment is laid out with
+// block fragmentation. Mirrors the BlockSizeForFragmentation part of Blink's
+// BoxFragmentBuilder::PropagateBreakInfo (box_fragment_builder.cc:479-489 @
+// a9f50e522efa), which AddResult runs only under block fragmentation
+// (:227-229). No-op if the child is nil or carries no fragment.
 func (b *BoxFragmentBuilder) PropagateChildBlockSizeForFragmentation(
 	child *LayoutResult, offset LogicalOffset,
 ) {
-	if child == nil || child.Fragment == nil {
+	if b.space == nil || !b.space.HasBlockFragmentation || child == nil || child.Fragment == nil {
 		return
 	}
-	physicalExtent := NewLogicalFragment(b.wdm, child.Fragment).BlockSize()
-	if child.BreakToken != nil {
-		physicalExtent += child.BreakToken.ConsumedBlockSize.Float64()
-	}
-	childBSFF := physicalExtent
-	if child.BlockSizeForFragmentation > childBSFF {
-		childBSFF = child.BlockSizeForFragmentation
-	}
-	// Gate: child must indicate true overflow past its own physical
-	// extent for the propagation to fire.
-	if childBSFF <= physicalExtent {
-		return
-	}
-	blockEnd := offset.BlockOffset + childBSFF
-	if blockEnd <= 0 {
-		return
-	}
+	blockEnd := offset.BlockOffset + BlockSizeForFragmentation(b.wdm, child)
 	if !b.hasBlockSizeForFragmentation || blockEnd > b.blockSizeForFragmentation {
 		b.blockSizeForFragmentation = blockEnd
 		b.hasBlockSizeForFragmentation = true
@@ -488,10 +451,7 @@ func (b *BoxFragmentBuilder) PropagateChildBlockSizeForFragmentation(
 }
 
 // SetBlockSizeForFragmentation overwrites the builder's running BSFF with
-// the given value (clamped non-negative). Used by callsites that want to
-// inject an explicit floor — for example, a nested multicol whose own
-// outer-hint BSFF is the declared block-size of the container, not the
-// max-merge of its column children. Mirrors Blink's
+// the given value (clamped non-negative). Mirrors Blink's
 // BoxFragmentBuilder::SetBlockSizeForFragmentation (box_fragment_builder.h).
 func (b *BoxFragmentBuilder) SetBlockSizeForFragmentation(v float64) {
 	if v < 0 {
@@ -501,11 +461,9 @@ func (b *BoxFragmentBuilder) SetBlockSizeForFragmentation(v float64) {
 	b.hasBlockSizeForFragmentation = true
 }
 
-// BlockSizeForFragmentation returns the current accumulated BSFF and whether
-// it has been set. Read into LayoutResult.BlockSizeForFragmentation at
-// Build() — but callers that set the field directly on the result after
-// Build() returns will continue to override (those will be migrated as
-// step 3+4 wire in propagation callsites).
+// BlockSizeForFragmentation returns the current accumulated BSFF (content
+// relative, before Build's finalization) and whether any child was
+// propagated.
 func (b *BoxFragmentBuilder) BlockSizeForFragmentation() (float64, bool) {
 	return b.blockSizeForFragmentation, b.hasBlockSizeForFragmentation
 }
@@ -892,6 +850,34 @@ func (b *BoxFragmentBuilder) SetIsEmptySpannerParent(v bool) {
 	b.isEmptySpannerParent = v
 }
 
+// finalBlockSizeForFragmentation is the block-size for fragmentation the
+// built fragment records: the children's furthest block-end, made border-box
+// relative by the block-start border and padding (louis14 child offsets are
+// content-box relative; zero on a slice continuation, whose boxData omits
+// it); for a box other than a fragmentainer at least its own block-size, or
+// only its own block-size when it clips block-axis overflow. A fragmentainer
+// (column) keeps the children-only value. Mirrors BoxFragmentBuilder::
+// ToBoxFragment (box_fragment_builder.cc:743-761 @ a9f50e522efa); the
+// clamped branch (:751-757) is not ported.
+func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
+	bsff := 0.0
+	if b.hasBlockSizeForFragmentation {
+		bsff = b.blockSizeForFragmentation
+		if b.boxData != nil {
+			edges := ToLogicalEdges(b.boxData.Border, b.wdm)
+			padding := ToLogicalEdges(b.boxData.Padding, b.wdm)
+			bsff += edges.BlockStart + padding.BlockStart
+		}
+	}
+	if b.boxType == BoxTypeColumn {
+		return bsff
+	}
+	if clipsBlockAxisOverflow(b.style, b.wdm) {
+		return b.size.BlockSize
+	}
+	return max(bsff, b.size.BlockSize)
+}
+
 // Build converts all logical coordinates to physical and returns the
 // immutable PhysicalFragment and LayoutResult.
 //
@@ -939,6 +925,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		LayoutNode:       b.layoutNode,
 		GapGeometry:      b.gapGeometry,
 		IsMonolithic:     b.isMonolithic,
+		BoxType:          b.boxType,
 	}
 
 	// Phase 25 Cmt-2: stash any deferred OOF fragmentainer descendants and
@@ -998,8 +985,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
 	}
-	if b.hasBlockSizeForFragmentation {
-		result.BlockSizeForFragmentation = b.blockSizeForFragmentation
+	if b.space != nil && b.space.HasBlockFragmentation {
+		result.BlockSizeForFragmentation = b.finalBlockSizeForFragmentation()
 	}
 	if b.hasTallestUnbreakableBlockSize {
 		result.TallestUnbreakableBlockSize = b.tallestUnbreakableBlockSize
