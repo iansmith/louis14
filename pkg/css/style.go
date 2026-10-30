@@ -51,28 +51,28 @@ type Style struct {
 
 	// XHeight is the measured x-height in pixels of the element's font at the
 	// used font-size (0 = not measured; ex unit then falls back to 0.5em).
-	// Populated by the same layout-time pass that fills ChWidth.
+	// Filled at cascade time by Style.UpdateFont, like ChWidth.
 	XHeight float64
 
 	// CapHeight is the measured cap-height in pixels of the element's font at
 	// the used font-size (0 = not measured; cap unit then falls back to 0.7em).
 	// Sourced from the OS/2 sCapHeight metric. Mirrors Blink's
 	// FontMetrics::CapHeight() in font_metrics.h at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Populated by the same
-	// layout-time pass that fills XHeight.
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Filled at cascade time by
+	// Style.UpdateFont, like XHeight.
 	CapHeight float64
 
 	// LhSize is the computed line-height in pixels of the element (0 = not
 	// computed; lh unit then falls back to 1.2em). CSS Values 4 §6.1: the lh
 	// unit equals the element's computed line-height. Mirrors Blink's
 	// FontSizes::Lh() → CSSToLengthConversionData::FontSizes at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Populated by the same
-	// layout-time pass that fills ChWidth.
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Filled at cascade time by
+	// Style.UpdateLineHeight, once line-height is computed.
 	LhSize float64
 
 	// IcWidth is the measured advance width of U+6C34 (水) in pixels of the
 	// element's font at the used font-size (0 = not measured; ic unit then falls
-	// back to 1em). Populated by the same layout-time pass that fills ChWidth.
+	// back to 1em). Filled at cascade time by Style.UpdateFont, like ChWidth.
 	// CSS Values 4 §6.1: the ic unit equals the advance measure of the full-width
 	// CJK character U+6C34. Mirrors Blink's FontSizes::Ic() at SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
@@ -157,6 +157,18 @@ type Style struct {
 	// ancestor's author colors keep suppressing the UA pair for the whole
 	// subtree. Meaningless (always false) on non-highlight styles.
 	HasAuthorHighlightColors bool
+
+	// fontSelector is the font lookup Style.UpdateFont builds this style's
+	// font from. The cascade sets it on every element style
+	// (ApplyStylesToDocumentWithFontSelector); pseudo-element styles take the
+	// originating element's, and Clone / anonymous styles copy it through
+	// copyStyleResolutionContext, so any style can re-build its font after a
+	// late font-property write. nil = no fonts (unit fallbacks). Mirrors the
+	// FontSelector a Blink Font carries (Font::GetFontSelector,
+	// platform/fonts/font.h:195/253 @ 5992657f556bcd9d207a4aca187488462f027cab),
+	// which FontBuilder::ComputeFontSelector reuses for a style whose
+	// font-family is not set (core/css/resolver/font_builder.cc:647).
+	fontSelector FontSelector
 }
 
 func NewStyle() *Style {
@@ -6132,8 +6144,8 @@ func (s *Style) GetFontSize() float64 {
 
 // GetUsedFontSize returns the *used* font-size in pixels — the specified
 // size with CSS Fonts 5 §1.7 `font-size-adjust` applied. Returns
-// [GetFontSize] when font-size-adjust is `none` or the layout-time
-// metric pass has not yet populated UsedFontSize. Glyph rasterization
+// [GetFontSize] when font-size-adjust is `none` or no font has been built
+// for the style (Style.UpdateFont populates UsedFontSize). Glyph rasterization
 // and text shaping should pass this value to the shaper; box geometry
 // stays on [GetFontSize] (see that accessor's contract).
 //
@@ -7720,8 +7732,8 @@ func ApplyMeasurableTextTransform(s string, t TextTransform) string {
 
 // copyStyleResolutionContext copies the non-property resolution context —
 // viewport size, font metrics, base direction, font-feature rules — from src
-// to dst. Shared by Clone and CreateAnonymousStyleWithDisplay so the field
-// list cannot drift.
+// to dst. Shared by Clone, CreateAnonymousStyleWithDisplay and the
+// NewAnonymous*Style constructors so the field list cannot drift.
 func copyStyleResolutionContext(dst, src *Style) {
 	dst.ViewportWidth = src.ViewportWidth
 	dst.ViewportHeight = src.ViewportHeight
@@ -7736,6 +7748,7 @@ func copyStyleResolutionContext(dst, src *Style) {
 	dst.BaseDir = src.BaseDir
 	dst.FontFeatureValues = src.FontFeatureValues // shared by reference; never mutated post-cascade
 	dst.HasAuthorHighlightColors = src.HasAuthorHighlightColors
+	dst.fontSelector = src.fontSelector
 }
 
 // CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
@@ -14733,12 +14746,13 @@ type AppliedTextDecoration struct {
 	Inset             TextDecorationInset
 	// SourceStyle points to the Style of the element that contributed this
 	// decoration entry. Used by recomputeTextDecorationInsets (engine.go) to
-	// re-resolve font-relative values (e.g. ch units in text-decoration-inset)
-	// after ChWidth is measured, for ALL copies of this entry — both on the
-	// originating element and on descendant styles that inherited the vector.
-	// The pointer is stable; computeChWidths writes into the same object.
-	// Shallow-copied when AppliedTextDecorations vectors are cloned, so every
-	// copy points back to the same measured source style.
+	// re-resolve text-decoration-inset after first-frame transitions rewrite
+	// the source's font or inset post-cascade, for ALL copies of this entry —
+	// both on the originating element and on descendant styles that inherited
+	// the vector — and by pkg/render. The pointer is stable; the transition
+	// step rewrites the same object. Shallow-copied when
+	// AppliedTextDecorations vectors are cloned, so every copy points back to
+	// the same source style.
 	SourceStyle *Style
 
 	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
@@ -15066,8 +15080,8 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		IsLastFragment:  true,
 		IsClone:         s.GetBoxDecorationBreak() == BoxDecorationBreakClone,
 		// SourceStyle allows recomputeTextDecorationInsets (engine.go) to
-		// re-resolve font-relative values after ChWidth is measured, including
-		// in all descendant styles that inherited a copy of this entry.
+		// re-resolve the inset after first-frame transitions, including in all
+		// descendant styles that inherited a copy of this entry.
 		SourceStyle: s,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
