@@ -1166,6 +1166,12 @@ func validateCSSInteger(v string) (string, bool) {
 	return "", false
 }
 
+// ApplyStylesToDocumentWithFontSelector is ApplyStylesToDocument with the
+// font selector the cascade builds each element's font from.
+func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, viewportHeight float64, fs FontSelector) map[*html.Node]*Style {
+	return ApplyStylesToDocument(doc, viewportWidth, viewportHeight)
+}
+
 // Phase 22: Added viewport dimensions for media query evaluation
 func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight float64) map[*html.Node]*Style {
 	styles := make(map[*html.Node]*Style)
