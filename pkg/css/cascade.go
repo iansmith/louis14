@@ -2892,13 +2892,7 @@ func NewBlockifiedStyle(inline *Style) *Style {
 // from the parent and have display:block with zero margin/border/padding.
 func NewAnonymousBlockStyle(parent *Style) *Style {
 	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
+	copyStyleResolutionContext(s, parent)
 	s.Set("display", "block")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -2938,13 +2932,7 @@ func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 // an anonymous table-cell box.
 func NewAnonymousTableCellStyle(parent *Style) *Style {
 	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
+	copyStyleResolutionContext(s, parent)
 	s.Set("display", "table-cell")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -2962,13 +2950,7 @@ func NewAnonymousTableCellStyle(parent *Style) *Style {
 // boxes. Mirrors Blink's LayoutTableRow::CreateAnonymousWithParent.
 func NewAnonymousTableRowStyle(parent *Style) *Style {
 	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
+	copyStyleResolutionContext(s, parent)
 	s.Set("display", "table-row")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
@@ -2995,13 +2977,7 @@ func NewAnonymousTableRowStyle(parent *Style) *Style {
 // display:ruby.
 func NewAnonymousInlineRubyStyle(parent *Style) *Style {
 	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
+	copyStyleResolutionContext(s, parent)
 	s.Set("display", "ruby")
 	for prop := range inheritableProperties {
 		if val, ok := parent.Get(prop); ok {
@@ -3018,13 +2994,7 @@ func NewAnonymousInlineRubyStyle(parent *Style) *Style {
 // table-row-group. Mirrors Blink's LayoutTableSection::CreateAnonymousWithParent.
 func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
 	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
+	copyStyleResolutionContext(s, parent)
 	s.Set("display", "table-row-group")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {

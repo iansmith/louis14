@@ -7732,8 +7732,8 @@ func ApplyMeasurableTextTransform(s string, t TextTransform) string {
 
 // copyStyleResolutionContext copies the non-property resolution context —
 // viewport size, font metrics, base direction, font-feature rules — from src
-// to dst. Shared by Clone and CreateAnonymousStyleWithDisplay so the field
-// list cannot drift.
+// to dst. Shared by Clone, CreateAnonymousStyleWithDisplay and the
+// NewAnonymous*Style constructors so the field list cannot drift.
 func copyStyleResolutionContext(dst, src *Style) {
 	dst.ViewportWidth = src.ViewportWidth
 	dst.ViewportHeight = src.ViewportHeight
