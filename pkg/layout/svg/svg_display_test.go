@@ -96,3 +96,31 @@ func TestBuildSVGTree_DisplayNoneReturnsNil(t *testing.T) {
 		t.Errorf("BuildSVGTree(<rect>, nil resolver) is not an *SVGShape")
 	}
 }
+
+// TestBuildSVGRoot_DisplayNoneNonGroupDropsResources pins that only <g>
+// keeps a hidden container when display:none. Any other container, such as
+// a nested <svg> or an <a>, gets no layout object at all
+// (SVGElement::LayoutObjectIsNeeded, core/svg/svg_element.cc:873-875 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), so its subtree is never
+// built and a gradient inside it never becomes a
+// LayoutSVGResourceContainer: it cannot be referenced. The displayed rows
+// are the control: the same subtree registers its gradient when shown.
+func TestBuildSVGRoot_DisplayNoneNonGroupDropsResources(t *testing.T) {
+	for _, tag := range []string{"svg", "a"} {
+		for _, hidden := range []bool{false, true} {
+			grad := &fakeAdapter{tag: "lineargradient", attrs: map[string]string{"id": "gr"}}
+			container := &fakeAdapter{tag: tag, children: []*fakeAdapter{grad}}
+			svgElt := &fakeAdapter{tag: "svg", children: []*fakeAdapter{container}}
+			resolver := hiddenStyleResolver()
+			if hidden {
+				resolver = hiddenStyleResolver(container)
+			}
+
+			root := BuildSVGRoot(svgElt, geometry.SizeF{Width: 100, Height: 100}, resolver)
+
+			if _, got := root.Resources.LookupAsPaintServer("gr"); got == hidden {
+				t.Errorf("<%s> display:none=%v: gradient registered = %v, want %v", tag, hidden, got, !hidden)
+			}
+		}
+	}
+}
