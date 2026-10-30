@@ -144,9 +144,7 @@ func (p *Parser) Parse() (*Document, error) {
 							Parent:  node,
 						})
 					}
-					parent := p.currentParent()
-					node.Parent = parent
-					parent.Children = append(parent.Children, node)
+					insertElement(node, p.currentParent())
 					continue
 				}
 			}
@@ -232,10 +230,7 @@ func (p *Parser) Parse() (*Document, error) {
 				parent = p.currentParent()
 			}
 
-			if ns := namespaceForInsertedElement(token.TagName, parent); ns != XHTMLNamespaceURI {
-				node.namespaceURI = ns
-			}
-			parent.AddChild(node)
+			insertElement(node, parent)
 
 			// Handle <meta name="viewport" content="width=...">
 			if token.TagName == "meta" {
@@ -834,6 +829,21 @@ func stripCDATA(s string) string {
 		s = trailing[:len(trailing)-len("]]>")]
 	}
 	return s
+}
+
+// insertElement appends the element node to parent, giving it the namespace
+// namespaceForInsertedElement picks. Both start-tag insertion paths (the
+// data-block <script> and the generic element path) use it, as Blink routes
+// each start-tag element through HTMLConstructionSite::InsertHTMLElement or
+// InsertForeignElement (core/html/parser/html_construction_site.cc:1059,
+// :1127 @ d4ecdfed88f962439247c2ad36b8fe47805b1520). The synthesized
+// html/head/body nodes and the reparenting moves bypass it and keep the
+// unset (XHTML) namespace.
+func insertElement(node, parent *Node) {
+	if ns := namespaceForInsertedElement(node.TagName, parent); ns != XHTMLNamespaceURI {
+		node.namespaceURI = ns
+	}
+	parent.AddChild(node)
 }
 
 // namespaceForInsertedElement returns the namespace of an element with
