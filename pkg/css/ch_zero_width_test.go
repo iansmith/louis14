@@ -27,3 +27,25 @@ func TestChUnit_MeasuredZeroAdvance(t *testing.T) {
 		t.Errorf("unmeasured ch: calc(100px + 5ch) = %v, want 150 (ch falls back to 0.5em = 10px)", got)
 	}
 }
+
+// TestChUnit_AnonymousStylesKeepMeasuredZeroWidth (LOU-414): anonymous boxes
+// copy the parent's measured "0" advance together with HasZeroWidth, so ch on
+// an anonymous box uses the parent font's measurement, not the 0.5em fallback.
+func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
+	parent := NewStyle()
+	parent.Set("font-size", "20px")
+	parent.SetZeroWidth(0)
+	for name, newAnon := range map[string]func(*Style) *Style{
+		"NewAnonymousBlockStyle":         NewAnonymousBlockStyle,
+		"NewAnonymousTableCellStyle":     NewAnonymousTableCellStyle,
+		"NewAnonymousTableRowStyle":      NewAnonymousTableRowStyle,
+		"NewAnonymousInlineRubyStyle":    NewAnonymousInlineRubyStyle,
+		"NewAnonymousTableRowGroupStyle": NewAnonymousTableRowGroupStyle,
+	} {
+		s := newAnon(parent)
+		s.Set("width", "calc(100px + 5ch)")
+		if got, _ := s.GetLength("width"); got != 100 {
+			t.Errorf("%s: calc(100px + 5ch) = %v, want 100 (parent's measured ch = 0)", name, got)
+		}
+	}
+}
