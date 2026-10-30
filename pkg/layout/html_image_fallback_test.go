@@ -20,7 +20,10 @@ package layout
 //
 // Expected geometry is derived from those rules plus CSS 2.1 §10.3.9
 // shrink-to-fit with Ahem metrics (every glyph is 1em x 1em), never from
-// louis14 output.
+// louis14 output. The host boxes of the AltTextHost, DoesNotEstablishMulticol
+// (inline), TreatImageAsReplaced and FlexItem cases were also measured in
+// Chromium 152.0.7977.167 (getBoundingClientRect of the same markup) on
+// 2026-10-30 and match.
 
 import (
 	"bytes"
@@ -216,8 +219,8 @@ func TestImageFallback_DoesNotEstablishMulticol(t *testing.T) {
 		if box == nil {
 			t.Fatal("no box for the fallback img")
 		}
-		if box.Width != 100 {
-			t.Errorf("fallback img width = %v, want 100 (not the multicol min-content of 290)", box.Width)
+		if box.Width != 100 || box.Height != 40 {
+			t.Errorf("fallback img = %v, want 100x40 (not the multicol min-content of 290; two one-word lines)", boxDims(box))
 		}
 		if box.IsMulticolContainer {
 			t.Errorf("fallback img is a multicol container; AllowsColumns must veto <img>")
@@ -397,8 +400,10 @@ func TestImageFallback_TreatImageAsReplaced(t *testing.T) {
 		if IsReplacedElement(node) {
 			t.Errorf("broken img with alt is replaced; want fallback content")
 		}
-		if box == nil || box.Width != 40 {
-			t.Errorf("display:block fallback host = %v; want width 40", boxDims(box))
+		// 40 - 16 (icon) leaves no room for the 50px word, so it wraps
+		// below the 16px icon: 16 + 20.
+		if box == nil || box.Width != 40 || box.Height != 36 {
+			t.Errorf("display:block fallback host = %v; want 40x36", boxDims(box))
 		}
 		if icon := findBox(fl.root, byID("alttext-image")); icon == nil {
 			t.Errorf("display:block fallback host has no alttext-image icon")
