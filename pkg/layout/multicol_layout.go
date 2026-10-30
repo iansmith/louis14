@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/html"
 )
 
 // MulticolLayoutAlgorithm implements CSS Multi-column Layout Module Level 1.
@@ -222,6 +223,26 @@ func isMulticolContainer(style *css.Style) bool {
 	}
 	return style.GetColumnCount() > 0 || style.GetColumnWidth() > 0 ||
 		style.GetColumnHeight() >= 0
+}
+
+// AllowsColumns reports whether the element may become a multicol container
+// when its style specifies columns. An <img> never does: its block flow
+// exists only to hold the alt text of a broken image. Mirrors
+// LayoutBlockFlow::AllowsColumns (layout_block_flow.cc:621-647, the
+// HTMLImageElement check at :641-645 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). Blink's other exclusions (ruby,
+// display:layout(), MathML) are not ported.
+func AllowsColumns(node *html.Node) bool {
+	return node.TagName != "img"
+}
+
+// shouldBeMulticol reports whether node establishes a multicol container:
+// its style specifies columns and the element allows them. Mirrors
+// LayoutBlockFlow::UpdateForMulticol's ShouldBeMulticol
+// (layout_block_flow.cc:650-653 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// Anonymous boxes (no DOM node) allow columns.
+func shouldBeMulticol(node *LayoutInputNode, style *css.Style) bool {
+	return isMulticolContainer(style) && (node.DOMNode == nil || AllowsColumns(node.DOMNode))
 }
 
 // ResolveColumnCountForPaint is a public wrapper around resolveColumnCount

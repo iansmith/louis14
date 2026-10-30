@@ -429,7 +429,7 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 	switch display {
 	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
 		css.DisplayInlineBlock, css.DisplayInlineListItem:
-		if isMulticolContainer(style) {
+		if shouldBeMulticol(node, style) {
 			return measureMulticolMinMax(node, ctx, space)
 		}
 	}
@@ -677,6 +677,13 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		if line.Width > minContent {
 			minContent = line.Width
 		}
+		// A float's min-content contribution is a lower bound
+		// (inline_node.cc:2273-2276 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+		for _, f := range lineFloats(ctx, &line, space, blockForPct) {
+			if f.min > minContent {
+				minContent = f.min
+			}
+		}
 	}
 
 	// Max-content: never wrap.
@@ -693,9 +700,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	for maxLB.NextLine(&line) {
-		if line.Width > maxContent {
-			maxContent = line.Width
-		}
+		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, blockForPct), line.Width, maxContent)
 	}
 
 	// CSS Text §7.1: text-indent contributes to the intrinsic inline-size of
@@ -713,6 +718,56 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
+}
+
+// inlineFloat is one float placed on a line during intrinsic sizing.
+type inlineFloat struct {
+	style    *css.Style
+	min, max float64 // min/max-content contributions, margins included
+}
+
+// lineFloats returns the min/max-content contributions of the floats the
+// line breaker placed on line, in order. Mirrors the kFloating branch of
+// Blink's ComputeContentSize loop (inline_node.cc:2243-2280 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), which measures each float as a
+// new formatting context with its inline margins.
+func lineFloats(ctx *LayoutContext, line *LineInfo, space ConstraintSpace, blockForPct float64) []inlineFloat {
+	var floats []inlineFloat
+	for i := range line.Results {
+		r := &line.Results[i]
+		if r.Item.Type != InlineItemFloat || r.Item.LayoutNode == nil || r.Item.LayoutNode.Style() == nil {
+			continue
+		}
+		min, max := childInlineContribution(ctx, r.Item.LayoutNode, space, blockForPct, false)
+		floats = append(floats, inlineFloat{style: r.Item.LayoutNode.Style(), min: min, max: max})
+	}
+	return floats
+}
+
+// floatsMaxSizeForLine folds one max-content line into maxInlineSize: the
+// line's floats sit beside its content, so their max-content sizes add to
+// the line width, except that a float clearing the previous float's side
+// starts a new row. Port of FloatsMaxSize::ComputeMaxSizeForLine
+// (inline_node.cc:2025-2059 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// Blink's MinMaxSizesFloatInput (floats preceding the inline content in the
+// parent block) has no louis14 analog: measureBlockMinMax flushes floats
+// before each in-flow child.
+func floatsMaxSizeForLine(floats []inlineFloat, lineInlineSize, maxInlineSize float64) float64 {
+	floatsInlineSize := 0.0
+	previous := css.FloatNone
+	for _, f := range floats {
+		clear := f.style.GetClear()
+		if (previous == css.FloatLeft && (clear == css.ClearBoth || clear == css.ClearLeft)) ||
+			(previous == css.FloatRight && (clear == css.ClearBoth || clear == css.ClearRight)) {
+			maxInlineSize = math.Max(maxInlineSize, lineInlineSize+floatsInlineSize)
+			floatsInlineSize = 0
+		}
+		// A negative margin that moves the float outside the content area
+		// must not affect the content size.
+		floatsInlineSize += math.Max(f.max, 0)
+		previous = f.style.GetFloat()
+	}
+	return math.Max(maxInlineSize, lineInlineSize+floatsInlineSize)
 }
 
 // computeContentMinMaxSizes is like ComputeMinMaxSizes but does NOT
@@ -1585,38 +1640,17 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			continue
 		}
 
-		childWDM := NewWritingDirectionMode(childStyle)
-		isOrthogonal := parentWDM.IsOrthogonalTo(childWDM)
+		isOrthogonal := parentWDM.IsOrthogonalTo(NewWritingDirectionMode(childStyle))
+		// Propagate the column-BFC bit so spanners nested in non-FC
+		// wrappers are excluded at every depth, mirroring Blink's
+		// constraint-space inheritance of is_in_column_bfc. The bit dies
+		// where the child could not host a valid spanner descendant
+		// (shouldPreventColumnSpannerDescendants: new FC, spanner itself,
+		// table internals, transforms — layout_box.cc:3003 analogue).
+		childInColumnBfc := isInColumnBfc && !shouldPreventColumnSpannerDescendants(child)
+		childMin, childMax := childInlineContribution(ctx, child, space, nodeBlockSize, childInColumnBfc)
 
-		var childMin, childMax float64
-		if isOrthogonal {
-			// Orthogonal child: the parent's inline direction aligns with the
-			// child's block direction. We need the child's block-size, which
-			// requires actually laying out the child.
-			// Mirrors Blink's NGOrthogonalWritingModeRootInlineSize().
-			childMin, childMax = measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
-		} else {
-			// Parallel child: use standard min/max inline-size computation.
-			// Pass the node's definite block-size so children can resolve
-			// percentage heights against it (e.g., img { height: 100% }
-			// inside a div with height: 100px).
-			childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
-
-			// Propagate the column-BFC bit so spanners nested in non-FC
-			// wrappers are excluded at every depth, mirroring Blink's
-			// constraint-space inheritance of is_in_column_bfc. The bit dies
-			// where the child could not host a valid spanner descendant
-			// (shouldPreventColumnSpannerDescendants: new FC, spanner itself,
-			// table internals, transforms — layout_box.cc:3003 analogue).
-			childInColumnBfc := isInColumnBfc && !shouldPreventColumnSpannerDescendants(child)
-			childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)
-
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-			childBP := childGeom.InlineBorderPadding()
-			childMargins := ResolveMargins(childStyle, childWDM, 0)
-			childMin = childMM.MinContent + childBP + childMargins.InlineSum()
-			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
-
+		if !isOrthogonal {
 			floatType := childStyle.GetFloat()
 			if floatType == css.FloatLeft || floatType == css.FloatRight {
 				// CSS 2.1 §9.5.1: clear forces a float below previous floats
@@ -1697,6 +1731,29 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 	}
 
 	return result
+}
+
+// childInlineContribution returns child's min/max-content contribution to
+// its parent's inline size. An orthogonal child is laid out and its
+// block-size taken (Blink's NGOrthogonalWritingModeRootInlineSize); a
+// parallel child contributes its content sizes plus inline border, padding
+// and margins. nodeBlockSize is the parent's definite block-size, so the
+// child can resolve percentage heights against it (e.g. img { height: 100% }
+// inside a div with height: 100px). Mirrors
+// ComputeMinAndMaxContentContribution plus the ComputeMarginsFor inline sum
+// that Blink's block and inline min/max algorithms add to it.
+func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space ConstraintSpace, nodeBlockSize float64, childInColumnBfc bool) (min, max float64) {
+	childStyle := child.Style()
+	parentWDM := space.WritingDirection
+	childWDM := NewWritingDirectionMode(childStyle)
+	if parentWDM.IsOrthogonalTo(childWDM) {
+		return measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
+	}
+	childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
+	childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)
+	extra := ComputeFragmentGeometry(childStyle, childWDM).InlineBorderPadding() +
+		ResolveMargins(childStyle, childWDM, 0).InlineSum()
+	return childMM.MinContent + extra, childMM.MaxContent + extra
 }
 
 // measureOrthogonalChild lays out an orthogonal child and returns its

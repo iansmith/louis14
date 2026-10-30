@@ -81,8 +81,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 
 	// Phase 1: Compute styles.
-	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
-	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	computedStyles := computeDocumentStyles(doc, le.viewport.width, le.viewport.height, le.imageFetcher)
 	// CSS Transitions (first-frame): when this is a post-script re-layout,
 	// compare against the previous pass's styles and override transitioned
 	// properties with their value at local time 0. Runs AFTER logical-
@@ -254,8 +253,11 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	doc.BaseDir = nestedBaseDir
 
-	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
-	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	// Re-root the image fetcher to the nested document's URI so relative
+	// sub-resources resolve against the nested document's location; the
+	// image layout disposition pass needs it before the cascade.
+	nestedImageFetcher := ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI)
+	computedStyles := computeDocumentStyles(doc, vpWidth, vpHeight, nestedImageFetcher)
 	computeChWidths(computedStyles, ctx.FontConfig)
 	recomputeTextDecorationInsets(computedStyles)
 
@@ -281,7 +283,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		ViewportWidth:   vpWidth,
 		ViewportHeight:  vpHeight,
 		BaseDir:         doc.BaseDir,
-		ImageFetcher:    ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI),
+		ImageFetcher:    nestedImageFetcher,
 		DocumentFetcher: ReRootedDocumentFetcher(ctx.DocumentFetcher, nestedDocURI),
 		FontConfig:      ctx.FontConfig,
 	}
@@ -319,6 +321,47 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 
 	return &NestedDocumentResult{Result: result, RootOffsetX: rootOffsetX, Doc: doc}
+}
+
+// computeDocumentStyles is the style phase shared by the top-level and
+// nested-document layouts: it decides each <img>'s layout disposition, runs
+// the cascade, resolves logical properties, and applies the fallback-content
+// host style callback. The disposition must be known before the cascade
+// because it changes replaced-ness (text-decoration propagation) and the
+// host's style, as in Blink where SetLayoutDisposition triggers a style
+// recalc (html_image_element.cc:1165-1170 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). The host callback runs after
+// logical-property resolution so it sees the final width/height, as
+// Blink's AdjustHostStyle does.
+func computeDocumentStyles(doc *html.Document, vpWidth, vpHeight float64, fetcher images.ImageFetcher) map[*html.Node]*css.Style {
+	resetImageLayoutDispositions(doc.Root, fetcher)
+	styles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
+	css.ResolveLogicalPropertiesInTree(doc.Root, styles)
+	css.AdjustImageFallbackHostStylesInTree(doc.Root, styles)
+	return styles
+}
+
+// resetImageLayoutDispositions sets every <img> under root to primary
+// content when its image is potentially available and to fallback content
+// otherwise. Mirrors HTMLImageElement::ResetLayoutDisposition
+// (html_image_element.cc:1066-1088 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): EnsurePrimaryContent when
+// ImageLoader::ImageIsPotentiallyAvailable, else
+// EnsureCollapsedOrFallbackContent (kCollapsed is not ported). louis14 lays
+// out statically, so the disposition is recomputed on every layout pass
+// rather than on load completion; the pass is idempotent.
+func resetImageLayoutDispositions(root *html.Node, fetcher images.ImageFetcher) {
+	if root.Type == html.ElementNode && root.TagName == "img" {
+		src, _ := root.GetAttribute("src")
+		if images.ImageIsPotentiallyAvailable(src, fetcher) {
+			root.LayoutDisposition = html.LayoutDispositionPrimaryContent
+		} else {
+			root.LayoutDisposition = html.LayoutDispositionFallbackContent
+		}
+	}
+	for _, c := range root.Children {
+		resetImageLayoutDispositions(c, fetcher)
+	}
 }
 
 // nonLayoutTags are elements that never participate in layout as root content.

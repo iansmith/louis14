@@ -4,8 +4,8 @@ import "testing"
 
 // TestInlineMinMax_FloatsContribute pins InlineNode's float contribution to
 // the intrinsic sizes of an inline formatting context (ComputeContentSize's
-// FloatsMaxSize and min-content float term, inline_node.cc:2007-2063 and
-// :2240-2289 @ d4ecdfed88f962439247c2ad36b8fe47805b1520): at max-content a
+// FloatsMaxSize and min-content float term, inline_node.cc:2008-2064 and
+// :2236-2296 @ d4ecdfed88f962439247c2ad36b8fe47805b1520): at max-content a
 // line's floats sit beside its text, so their max-content contributions
 // (with margins) add to the line width; at min-content each float's
 // min-content contribution is a lower bound. Ahem 10px: "XXXXX" is 50px.

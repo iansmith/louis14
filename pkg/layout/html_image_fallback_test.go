@@ -279,7 +279,7 @@ func TestImageFallback_AltTextShadowTree(t *testing.T) {
 		if got := texts[0].X - hostBox.X; got != 16 {
 			t.Errorf("alt text starts at inline offset %v, want 16 (beside the 16px icon float)", got)
 		}
-		alt := findDOMElement(icon.Node.Parent, byID("alttext"))
+		alt := styledElementByID(fl.styles, "alttext")
 		if alt == nil || alt.Parent != icon.Node.Parent {
 			t.Errorf("span#alttext missing from the alttext-container")
 		}
@@ -517,5 +517,21 @@ func TestImageFallback_NestedDocument(t *testing.T) {
 	}
 	if IsReplacedElement(img) {
 		t.Errorf("broken img with alt in a nested document is replaced; want fallback content")
+	}
+}
+
+// TestImageFallback_FlexItemUsesCSSAspectRatio: a fallback img flex item is
+// a non-replaced box (html_image_element.cc:525-526 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), so its preferred aspect ratio is
+// the CSS aspect-ratio, not an image's natural ratio. CSS Flexbox §9.2 step
+// 3B: with a definite (stretched) cross size of 100px and aspect-ratio 2/1,
+// the flex base size is 200px.
+func TestImageFallback_FlexItemUsesCSSAspectRatio(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0">
+<div style="display:flex; width:400px; height:100px; `+fallbackTestFont+`"><img alt="X" src="missing.png" style="aspect-ratio:2/1"></div>`,
+		erroringImageFetcher)
+	_, box := fl.img(t)
+	if box == nil || box.Width != 200 || box.Height != 100 {
+		t.Errorf("fallback img flex item = %v, want 200x100", boxDims(box))
 	}
 }

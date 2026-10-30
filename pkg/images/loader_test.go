@@ -108,12 +108,16 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 	}
 	pngData := pngBuf.Bytes()
 	const svgData = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="5"></svg>`
+	// No width/height: no natural size, only a ratio, but the image loaded.
+	const viewBoxOnlySVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 5"></svg>`
 	fetcher := func(uri string) ([]byte, error) {
 		switch uri {
 		case "ok.png":
 			return pngData, nil
 		case "ok.svg":
 			return []byte(svgData), nil
+		case "viewbox.svg":
+			return []byte(viewBoxOnlySVG), nil
 		}
 		return nil, fmt.Errorf("404: %s", uri)
 	}
@@ -132,6 +136,7 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 		{"fetch error", "missing.png", fetcher, false},
 		{"valid png", "ok.png", fetcher, true},
 		{"valid svg", "ok.svg", fetcher, true},
+		{"viewBox-only svg", "viewbox.svg", fetcher, true},
 		{"svg fetch error", "missing.svg", fetcher, false},
 	}
 	for _, c := range cases {

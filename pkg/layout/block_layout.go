@@ -3294,7 +3294,7 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		// analogue), shrink-to-fit sized and establishing its own FC, so the
 		// UnpositionedListMarker carry/claim runs inside it just like a
 		// block-level list item.
-		if isMulticolContainer(style) {
+		if shouldBeMulticol(node, style) {
 			return NewMulticolLayoutAlgorithm(ctx, node, space).Layout()
 		}
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
