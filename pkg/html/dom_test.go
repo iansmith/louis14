@@ -341,3 +341,25 @@ func TestUTF16OffsetToByteOffset(t *testing.T) {
 		})
 	}
 }
+
+// TestCloneNode_PreservesNamespaceURI pins that cloning keeps the element
+// namespace (Blink Element::CloneWithoutAttributesAndChildren creates the
+// clone from the source's TagQName(), element.cc:1257-1262 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func TestCloneNode_PreservesNamespaceURI(t *testing.T) {
+	doc, err := Parse(`<svg><rect></rect></svg>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg := elementsNamed(doc.Root, "svg")[0]
+	if got := svg.CloneNode(false).NamespaceURI(); got != SVGNamespaceURI {
+		t.Errorf("shallow clone: NamespaceURI() = %q, want SVG", got)
+	}
+	deep := svg.CloneNode(true)
+	if got := deep.NamespaceURI(); got != SVGNamespaceURI {
+		t.Errorf("deep clone: NamespaceURI() = %q, want SVG", got)
+	}
+	if got := deep.Children[0].NamespaceURI(); got != SVGNamespaceURI {
+		t.Errorf("deep clone child: NamespaceURI() = %q, want SVG", got)
+	}
+}

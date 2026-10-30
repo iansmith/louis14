@@ -31,6 +31,15 @@ type Selector struct {
 	Specificity   int              // Specificity score for cascade
 	PseudoElement string           // Phase 11: Pseudo-element (::before, ::after)
 
+	// defaultNamespace is the default namespace (from `@namespace <uri>;`)
+	// of the stylesheet this selector was parsed in; "" when that sheet has
+	// none, or for a context-free ParseSelector. The matcher re-parses
+	// functional-pseudo arguments (:is/:where/:not/:has/:nth-child(of)) from
+	// strings at match time, so the sheet's default namespace travels with
+	// the selector into those re-parses (see parseNestedSelector). No Blink
+	// analog: Blink resolves nested selector lists once, at parse time.
+	defaultNamespace string
+
 	// Legacy fields for backward compatibility with simple selectors
 	Type  SelectorType // Deprecated: use Parts instead
 	Value string       // Deprecated: use Parts instead
@@ -43,6 +52,21 @@ type SelectorPart struct {
 	ID            string              // ID (without the #)
 	Attributes    []AttributeSelector // Attribute selectors
 	PseudoClasses []string            // Pseudo-classes (e.g., "hover", "focus", "active", "visited")
+
+	// NamespaceURI is the resolved namespace of the type or universal
+	// selector (Blink CSSSelector::TagQName().NamespaceURI(),
+	// core/css/css_selector.h:504 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// "" means any namespace (Blink g_star_atom), so a zero-value
+	// SelectorPart and every context-free parse match elements in any
+	// namespace. Divergence: Blink's explicit no-namespace (g_empty_atom,
+	// from `|tag` or `@namespace ""`) is not representable; both keep
+	// meaning "any".
+	NamespaceURI string
+
+	// hasNamespacePrefix is true when the type or universal selector was
+	// written with a `prefix|` (Blink: a non-null QualifiedName prefix).
+	// Only unprefixed type selectors take the default namespace.
+	hasNamespacePrefix bool
 }
 
 // AttributeSelector represents an attribute selector like [type="text"]
@@ -290,6 +314,15 @@ type Stylesheet struct {
 	Keyframes         map[string][]KeyframeRule // animation name → keyframe stops
 	CounterStyles     []CounterStyleRule        // @counter-style rules
 	FontFeatureValues []FontFeatureValuesRule   // @font-feature-values rules
+
+	// DefaultNamespace is the URI of this sheet's default-namespace
+	// `@namespace <uri>;` rule; "" when it has none (Blink's g_star_atom,
+	// any namespace). Mirrors StyleSheetContents::DefaultNamespace
+	// (core/css/style_sheet_contents.h:76 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). It is per sheet: an
+	// @import'ed sheet resolves its own selectors against its own default
+	// namespace, and resolveAtImport does not copy this field.
+	DefaultNamespace string
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source, while
