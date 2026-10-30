@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
 
@@ -253,5 +254,44 @@ func TestBreakingFragment_MeasurePassKeepsDeclaredHeight(t *testing.T) {
 	checkRects(t, got, map[string][]fragRect{"A": {{0, 0, 50, 60}}, "B": {{50, 0, 50, 40}}})
 	if c := got["C"]; len(c) == 0 || c[0].h != 150 {
 		t.Errorf("C fragments = %v, want the column-1 fragment 150 tall (Chrome 155)", c)
+	}
+}
+
+// TestMulticolBlockSizeIncludesBlockScrollbar: a multicol's fragment
+// block-size is its content plus BorderScrollbarPadding().BlockSum(), so a
+// reserved horizontal scrollbar adds to it (Blink
+// ColumnLayoutAlgorithm::Layout sizes from the builder's
+// BorderScrollbarPadding, column_layout_algorithm.cc:345-393 @
+// a9f50e522efa).
+func TestMulticolBlockSizeIncludesBlockScrollbar(t *testing.T) {
+	child := makeNode("div")
+	mc := makeNode("div", child)
+	mcStyle := makeStyle(
+		"display", "block",
+		"column-count", "2",
+		"column-gap", "0",
+		"overflow-x", "scroll",
+	)
+	styles := map[*html.Node]*css.Style{
+		mc:    mcStyle,
+		child: makeStyle("display", "block", "height", "200px"),
+	}
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	scrollbar := ComputeScrollbarLogicalEdges(mcStyle, wdm).BlockEnd
+	if scrollbar == 0 {
+		t.Fatal("overflow-x:scroll reserves no block-end scrollbar; the test cannot discriminate")
+	}
+
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		Build()
+	result := NewMulticolLayoutAlgorithm(testContext(), buildTestTree(mc, styles), space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+	// 200px of content balances to 100px columns.
+	if got, want := result.Fragment.Size.HeightF64(), 100+scrollbar; got != want {
+		t.Errorf("multicol block-size = %v, want %v (100px columns + %vpx scrollbar)", got, want, scrollbar)
 	}
 }

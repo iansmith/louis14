@@ -35,7 +35,7 @@ func TestFinishFragmentation(t *testing.T) {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 50, 120, 90
 			return in
 		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, DidBreakSelf: true, SpaceShortage: 40}},
-		{"resumed slice fragment: no block-start edge", func(in FinishFragmentationInput) FinishFragmentationInput {
+		{"resumed fragment that fits: at block end, keeps its block-end edge", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize, in.PreviousBreakToken = 100, 100, 60, resumed
 			return in
 		}, FinishFragmentationResult{FragmentBlockSize: 60, IntrinsicBlockSize: 60, ConsumedBlockSize: 100, IsAtBlockEnd: true, IncludeBlockEnd: true}},
