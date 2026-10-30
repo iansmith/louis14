@@ -193,8 +193,9 @@ type ConstraintSpace struct {
 	ColumnSpannerPath *ColumnSpannerPath
 
 	// IsInsideColumnSpanner is true when this space (or any ancestor space)
-	// is the spanner-layout space built by MulticolLayoutAlgorithm's
-	// layoutSpannerInFrag / layoutSpanner. Spanners are placed monolithically
+	// is the spanner-layout space built by
+	// MulticolLayoutAlgorithm.CreateConstraintSpaceForSpanner (no Blink
+	// analog: louis14-only flag). Spanners are placed monolithically
 	// in the multicol flow (Blink: ColumnLayoutAlgorithm::LayoutSpanner —
 	// the spanner breaks BEFORE as a unit, never mid-content; its overflow
 	// content resumes through the spanner's break token, which

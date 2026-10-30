@@ -43,8 +43,8 @@ import (
 // is set by:
 //   - block_layout.go BLA Layout entry when style.HasSizeContainment()
 //     (CSS Containment 2 §2.6).
-//   - multicol_layout.go layoutSpanner / layoutSpannerInFrag when the
-//     spanner's measured intrinsic block-size exceeds its declared box
+//   - multicol_layout.go LayoutSpanner (markSpannerMonolithicIfOverflowed)
+//     when the spanner's measured intrinsic block-size exceeds its declared box
 //     (implicit monolithic for column-balance).
 //   - (Future) replaced elements (img, video, canvas, iframe).
 func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
