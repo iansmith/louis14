@@ -59,7 +59,7 @@ func assertNear(t *testing.T, what string, got, want float64) {
 // margins.block_start before the caption, places it at
 // LogicalOffset(margins.inline_start, block_offset), and advances by the
 // caption block size plus margins.block_end; the table block size is the
-// final child_block_offset (:1592 @ d4ecdfed88f9). Top captions are added
+// final child_block_offset clamped to >= 0 (:1592 @ d4ecdfed88f9). Top captions are added
 // at :989-993 and bottom captions at :1585-1589. The position:relative
 // offset is separate and paint-time (ComputeRelativeOffsetForBoxFragment,
 // relative_utils.cc:92 @ d4ecdfed88f9).

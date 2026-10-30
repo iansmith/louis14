@@ -1362,7 +1362,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
 	}
 
-	finalBlockSize := blockOffset
+	// Negative caption margins can pull blockOffset below 0; Blink clamps
+	// (child_block_offset.ClampNegativeToZero(), table_layout_algorithm.cc:1592
+	// @ d4ecdfed88f9).
+	finalBlockSize := max(0, blockOffset)
 
 	// CSS 2.1 §17.5.3 + CSS Tables 3 §11.5.3 "Computing the table height":
 	// honor an explicit table block-size as a floor, even when the table has
