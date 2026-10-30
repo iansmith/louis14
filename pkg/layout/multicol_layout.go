@@ -342,11 +342,12 @@ func (mla *MulticolLayoutAlgorithm) spaceLeftForContent() float64 {
 // through the content to the block-end edge (ClampIntrinsicBlockSize ignores
 // the content under size containment), ComputeBlockSizeForFragment resolves
 // height / min-height / max-height over all fragments, and FinishFragmentation
-// fits the result into the outer fragmentainer. contentBlockSize is the
+// fits the result into the outer fragmentainer. The content size is the
 // content-relative cursor; shouldBreakInside / hasInflowChildBreakInside
 // describe the outgoing child break tokens.
-func (mla *MulticolLayoutAlgorithm) finishNestedFragment(geom FragmentGeometry, contentBlockSize float64,
-	hasExplicitBlock bool, maxBlockSize float64, shouldBreakInside, hasInflowChildBreakInside bool) FinishFragmentationResult {
+func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasInflowChildBreakInside bool) FinishFragmentationResult {
+	geom, contentBlockSize := mla.geom, mla.blockCursor
+	hasExplicitBlock, maxBlockSize := mla.hasExplicitBlock, mla.effectiveMaxBlockSize
 	bsp := mla.borderScrollbarPadding
 	if mla.style != nil && mla.style.ShouldApplySizeContainment() && !hasExplicitBlock {
 		contentBlockSize = 0
@@ -389,7 +390,6 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(geom FragmentGeometry, 
 		HasInflowChildBreakInside:             hasInflowChildBreakInside,
 		IsKnownToFitInFragmentainer:           hasExplicitBlock && spaceLeft != Indefinite && desired <= spaceLeft,
 		ShouldCloneBoxEndDecorations:          mla.hasClonedBoxDecorations,
-		IsSlice:                               !mla.hasClonedBoxDecorations,
 	})
 }
 
@@ -426,17 +426,13 @@ func (mla *MulticolLayoutAlgorithm) clonedEdgesOfPreviousFragments() float64 {
 	return float64(tok.SequenceNumber+1) * mla.borderScrollbarPadding.BlockSum()
 }
 
-// nestedFragmentEdges returns the block border and padding a nested
-// fragment carries per FinishFragmentation's sides to include.
-func (mla *MulticolLayoutAlgorithm) nestedFragmentEdges(geom FragmentGeometry, res FinishFragmentationResult) (border, padding LogicalEdges) {
-	border, padding = geom.Border, geom.Padding
-	if !res.IncludeBlockStart {
-		border.BlockStart, padding.BlockStart = 0, 0
-	}
+// clearBlockEndExcludedBy drops mla.geom's block-end edge when a nested
+// fragment does not carry it per FinishFragmentation. The block-start edge
+// was settled once in Layout (SetupFragmentBuilderForFragmentation).
+func (mla *MulticolLayoutAlgorithm) clearBlockEndExcludedBy(res FinishFragmentationResult) {
 	if !res.IncludeBlockEnd {
-		border.BlockEnd, padding.BlockEnd = 0, 0
+		mla.geom.ClearBorderScrollbarPaddingBlockEnd()
 	}
-	return border, padding
 }
 
 // applyNestedFinish reports FinishFragmentation's space shortage and break
@@ -687,9 +683,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// CalculateInitialFragmentGeometry, so this only matters for the
 	// max-height (auto block-size) case.
 	mla.minBlockSize = ResolveMinBlockSize(mla.style, wdm, mla.space, mla.geom).Float64()
-	if ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) {
-		mla.blockStartBorderPadding = mla.borderScrollbarPadding.BlockStart
+	// A slice-mode continuation carries no block-start border/scrollbar/
+	// padding, so mla.geom drops it once here, after the declared edges
+	// (borderScrollbarPadding, explicitBlockSize, min/max) are resolved.
+	// Mirrors Blink's ClearBorderScrollbarPaddingBlockStart in
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:504-510
+	// @ a9f50e522efa), as BlockLayoutAlgorithm.Layout does.
+	if !ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) {
+		mla.geom.ClearBorderScrollbarPaddingBlockStart()
 	}
+	mla.blockStartBorderPadding = mla.geom.BorderBoxPadding().BlockStart
 
 	// column-fill: balance forces balanced column distribution.
 	// Also forced when nested inside an outer fragmentation context whose
@@ -852,11 +855,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa); declared height left over for later fragments makes it
 	// break itself.
 	var nestedFinish FinishFragmentationResult
-	var nestedBorder, nestedPadding LogicalEdges
 	if mla.isConstrainedByOuterFragmentation() {
-		nestedFinish = mla.finishNestedFragment(mla.geom, mla.blockCursor, mla.hasExplicitBlock, mla.effectiveMaxBlockSize, false, false)
-		nestedBorder, nestedPadding = mla.nestedFragmentEdges(mla.geom, nestedFinish)
-		finalBlockSize = math.Max(0, nestedFinish.FragmentBlockSize-nestedBorder.BlockSum()-nestedPadding.BlockSum())
+		nestedFinish = mla.finishNestedFragment(false, false)
+		mla.clearBlockEndExcludedBy(nestedFinish)
+		finalBlockSize = math.Max(0, nestedFinish.FragmentBlockSize-mla.geom.BlockBorderPadding())
 	}
 
 	// Phase 12e: max-height caps the multicol's content block-size when no
@@ -938,20 +940,22 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Not nested: all remaining content fits (no fragmentation).
-	var border, padding LogicalEdges
 	if mla.isConstrainedByOuterFragmentation() {
-		border, padding = nestedBorder, nestedPadding
 		applyNestedFinish(builder, nestedFinish)
 	} else {
-		border, padding = FragmentBlockEdges(mla.geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken)
+		// Not nested: all remaining content fits (no fragmentation), so
+		// only the past-the-block-end clause can drop the block-end edge
+		// and the remaining flags are never read.
+		const shouldBreakInside = false
+		if !ShouldIncludeBlockEndBorderPadding(mla.space.BreakToken, shouldBreakInside, false, false, false, false) {
+			mla.geom.ClearBorderScrollbarPaddingBlockEnd()
+		}
 	}
-	effBP := border.BlockSum() + padding.BlockSum()
 	builder.SetSize(LogicalSize{
 		InlineSize: mla.contentInlineSize + mla.geom.InlineBorderPadding(),
-		BlockSize:  finalBlockSize + effBP,
+		BlockSize:  finalBlockSize + mla.geom.BlockBorderPadding(),
 	})
-	mla.setPhysicalBoxData(builder, border, padding)
+	mla.setPhysicalBoxData(builder)
 	builder.SetIntrinsicBlockSize(mla.blockCursor)
 
 	// Callsite 2: place any unclaimed list marker before building.
@@ -1523,17 +1527,16 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	if hasInflowChildBreakInside {
 		mla.blockCursor = math.Max(mla.blockCursor, mla.spaceLeftForContent())
 	}
-	finish := mla.finishNestedFragment(mla.geom, mla.blockCursor, mla.hasExplicitBlock, mla.effectiveMaxBlockSize, true, hasInflowChildBreakInside)
+	finish := mla.finishNestedFragment(true, hasInflowChildBreakInside)
 	applyNestedFinish(builder, finish)
-	border, padding := mla.nestedFragmentEdges(mla.geom, finish)
-	effBP := border.BlockSum() + padding.BlockSum()
+	mla.clearBlockEndExcludedBy(finish)
 	builder.SetSize(LogicalSize{
 		InlineSize: mla.contentInlineSize + mla.geom.InlineBorderPadding(),
 		BlockSize:  finish.FragmentBlockSize,
 	})
 	builder.SetIntrinsicBlockSize(mla.blockCursor)
 	builder.SetLayoutNode(mla.node)
-	mla.setPhysicalBoxData(builder, border, padding)
+	mla.setPhysicalBoxData(builder)
 	// LOU-143: emit gap geometry on every outer-break-result path so the
 	// column-rule painter has accurate cross-gap positions and last-row
 	// stretch info. Without this, broken-out fragments fall through to
@@ -1543,7 +1546,7 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	// when no columns were placed (firstColumnOffsetSet=false), which
 	// the painter handles. Mirrors the post-loop call at the bottom of
 	// MulticolLayoutAlgorithm.Layout.
-	mla.buildGapGeometry(builder, mla.contentInlineSize, math.Max(0, finish.FragmentBlockSize-effBP), mla.geom)
+	mla.buildGapGeometry(builder, mla.contentInlineSize, math.Max(0, finish.FragmentBlockSize-mla.geom.BlockBorderPadding()), mla.geom)
 	result := builder.Build()
 	result.BreakToken = mla.createBreakToken(finish)
 	result.BreakToken.ChildBreakTokens = mla.outBuilder.Children()
@@ -1634,14 +1637,15 @@ func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationR
 }
 
 // setPhysicalBoxData records the fragment's physical margin, border,
-// padding and scrollbar on builder. no Blink analog: louis14's
-// PhysicalBoxData (Blink's fragment builder carries these itself).
-func (mla *MulticolLayoutAlgorithm) setPhysicalBoxData(builder *BoxFragmentBuilder, border, padding LogicalEdges) {
+// padding and scrollbar (mla.geom, its excluded block edges cleared) on
+// builder. no Blink analog: louis14's PhysicalBoxData (Blink's fragment
+// builder carries these itself).
+func (mla *MulticolLayoutAlgorithm) setPhysicalBoxData(builder *BoxFragmentBuilder) {
 	wdm := mla.space.WritingDirection
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:    ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm),
-		Border:    ToPhysicalEdges(border, wdm),
-		Padding:   ToPhysicalEdges(padding, wdm),
+		Border:    ToPhysicalEdges(mla.geom.Border, wdm),
+		Padding:   ToPhysicalEdges(mla.geom.Padding, wdm),
 		Scrollbar: ToPhysicalEdges(mla.geom.Scrollbar, wdm),
 	})
 }

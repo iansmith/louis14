@@ -77,25 +77,6 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 	fg.Border.BlockEnd, fg.Scrollbar.BlockEnd, fg.Padding.BlockEnd = 0, 0, 0
 }
 
-// FragmentBlockEdges returns the block border and padding a multicol
-// fragment that does not break inside carries: a resumed fragment drops its
-// block-start edge unless cloned, and a fragment past the box's block end
-// carries neither (Blink ShouldIncludeBlockStartBorderPadding /
-// ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
-// a9f50e522efa).
-func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken) (border, padding LogicalEdges) {
-	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, breakToken) {
-		geom.ClearBorderScrollbarPaddingBlockStart()
-	}
-	// Not breaking inside, so only the past-the-block-end clause can drop it
-	// and the remaining flags are never read.
-	const shouldBreakInside = false
-	if !ShouldIncludeBlockEndBorderPadding(breakToken, shouldBreakInside, false, false, false, false) {
-		geom.ClearBorderScrollbarPaddingBlockEnd()
-	}
-	return geom.Border, geom.Padding
-}
-
 // ComputeFragmentGeometry resolves border and padding from a CSS style
 // into logical edges for the given writing direction.
 // An optional percentageBase (containing block inline-size) can be passed
