@@ -2431,8 +2431,8 @@ func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) 
 	}
 
 	// Paragraph cap-height: prefer the measured OS/2 sCapHeight (Style.CapHeight,
-	// set in engine.go from the font metrics pass). Fall back to the spec's
-	// 0.7em heuristic only when unmeasured.
+	// set by the cascade's Style.UpdateFont). Fall back to the spec's 0.7em
+	// heuristic only when unmeasured.
 	paraCap := parentStyle.CapHeight
 	if paraCap <= 0 {
 		paraCap = 0.7 * paraFontSize
@@ -2485,6 +2485,14 @@ func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) 
 	flStyle.Set("font-size", fontSizePx)
 	flStyle.Set("line-height", fontSizePx)
 	flStyle.Set("margin-top", px(blockOffset))
+	// The cascade built flStyle's font at the author's ::first-letter size;
+	// re-build it at the initial-letter size so the used size and metrics
+	// follow. Blink likewise gives the initial-letter text a new Font at the
+	// adjusted size with the same FontSelector (StyleForInitialLetterText,
+	// core/css/resolver/style_resolver.cc:3996 @
+	// 5992657f556bcd9d207a4aca187488462f027cab).
+	flStyle.UpdateFont(nil)
+	flStyle.UpdateLineHeight()
 }
 
 // whiteSpacePreservesBreaks reports whether the given white-space value
