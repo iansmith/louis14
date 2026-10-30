@@ -36,9 +36,11 @@ type fontKey struct {
 }
 
 // fontMetrics holds the per-font measurements that drive CSS font-relative
-// unit resolution (ch/ex/cap) for a given (font, size). The ic advance is
-// resolved separately (see CreateFont) so that U+6C34 (水) is sourced from a
-// declared family whose @font-face unicode-range covers it.
+// unit resolution (ch/ex/cap) for a given (font, size). CreateFont reads ch
+// from the U+0030 primary font and ex/cap from the U+0020 one, which can be
+// different fonts. The ic advance is resolved separately (see CreateFont) so
+// that U+6C34 (水) is sourced from a declared family whose @font-face
+// unicode-range covers it.
 type fontMetrics struct {
 	chWidth float64
 	xHeight float64
@@ -50,17 +52,21 @@ func NewCSSFontSelector(fc FontConfig) *CSSFontSelector {
 	return &CSSFontSelector{fc: fc, cache: make(map[fontKey]fontMetrics), icCache: make(map[icKey]float64)}
 }
 
-// CreateFont selects s's primary font from its font properties and returns
-// that font's metrics at the CSS Fonts 5 §1.7 font-size-adjust used size.
-// Mirrors Blink's FontBuilder::CreateFont (core/css/resolver/font_builder.cc
-// :656): UpdateAdjustedSize (:378) derives the used size from the first
-// available font's aspect value, then the Font's primary SimpleFontData
-// supplies the metrics — the "0" advance (SetZeroWidth(ZeroInlineSize()),
-// platform/fonts/simple_font_data.cc:243-245), x-height and cap-height
-// (FontMetrics, platform/fonts/font_metrics.h:98/86), all @
-// 5992657f556bcd9d207a4aca187488462f027cab, and the optional 水 advance
-// (SimpleFontData::IdeographicInlineSize, simple_font_data.cc:459-473 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// CreateFont selects s's per-probe primary fonts from its font properties
+// and returns their metrics at the CSS Fonts 5 §1.7 font-size-adjust used
+// size. Mirrors Blink's FontBuilder::CreateFont (core/css/resolver/
+// font_builder.cc:656): UpdateAdjustedSize (:378) derives the used size from
+// the aspect value of Font::PrimaryFont() (:397) — the first font covering
+// U+0020 — for every font-size-adjust metric. The unit metrics then come from
+// the primary font for each probe character, as
+// CSSToLengthConversionData::FontSizes reads them (core/css/
+// css_to_length_conversion_data.cc): x-height (Ex :97) and cap-height (Cap
+// :171) from PrimaryFont(), the "0" advance (Ch :119) from
+// PrimaryFontWithDigitZero() — the first font covering U+0030, set by
+// SetZeroWidth(ZeroInlineSize()) (platform/fonts/simple_font_data.cc:245) —
+// all @ 5992657f556bcd9d207a4aca187488462f027cab; and the optional 水
+// advance (SimpleFontData::IdeographicInlineSize, simple_font_data.cc:459-473
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	fc := fs.fc
 	specifiedSize := s.GetFontSize()
@@ -70,11 +76,17 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	mono := s.IsMonospaceFamily()
 	ahem := s.IsAhemFamily()
 	synth := s.GetFontSynthesis()
-	fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
+	// The primary font for a probe character: Blink's Font::PrimaryFont()
+	// (U+0020) and PrimaryFontWithDigitZero() (U+0030), platform/fonts/
+	// font.h:231/:237 @ 5992657f556bcd9d207a4aca187488462f027cab.
+	primaryFontFor := func(lookupChar rune) string {
+		return fc.FontPathForCovering(family, bold, italic, mono, ahem, synth.Weight, synth.Style, lookupChar)
+	}
+	spacePath, zeroPath := primaryFontFor(' '), primaryFontFor('0')
 
-	// Measure metrics at the specified size so we can read the first font's
-	// actual aspect ratio for font-size-adjust resolution.
-	baseMetrics := fs.metrics(fontPath, specifiedSize)
+	// Measure metrics at the specified size so we can read the primary
+	// font's actual aspect ratio for font-size-adjust resolution.
+	baseMetrics := fs.metrics(spacePath, specifiedSize)
 
 	// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
 	// `none` and `from-font` leave the used size equal to the specified
@@ -82,20 +94,20 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	usedSize := specifiedSize
 	adjust := s.GetFontSizeAdjust()
 	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
+		actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, spacePath)
 		if actualRatio > 0 {
 			usedSize = specifiedSize * adjust.Value / actualRatio
 		} else {
 			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; clamp to 0 to match Blink's behavior of
-			// hiding the glyphs (matches font-size-adjust-zero-* refs).
+			// size is undefined; louis14 clamps to 0, hiding the glyphs
+			// (Blink leaves the size unadjusted: see firstFontAspectRatio).
 			usedSize = 0
 		}
 	}
 
 	usedMetrics := baseMetrics
 	if usedSize != specifiedSize {
-		usedMetrics = fs.metrics(fontPath, usedSize)
+		usedMetrics = fs.metrics(spacePath, usedSize)
 	}
 
 	// ic unit: CSS Values 4 §6.1 defines ic as the advance of U+6C34 (水) in
@@ -122,7 +134,7 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 
 	return css.Font{
 		AdjustedSize:             usedSize,
-		ZeroWidth:                usedMetrics.chWidth,
+		ZeroWidth:                fs.metrics(zeroPath, usedSize).chWidth,
 		XHeight:                  usedMetrics.xHeight,
 		CapHeight:                usedMetrics.capHght,
 		IdeographicInlineSize:    ic,
@@ -160,9 +172,15 @@ func (fs *CSSFontSelector) waterAdvance(fontPath string, fontSize float64) float
 }
 
 // firstFontAspectRatio returns the first available font's actual aspect ratio
-// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Returns 0 when
-// the font has no usable value for the metric — callers treat that as a
-// zero-sized used font-size.
+// for the requested font-size-adjust metric (CSS Fonts 5 §1.7); fontPath and m
+// are the U+0020 primary font's (Blink FontBuilder::UpdateAdjustedSize uses
+// font->PrimaryFont() for every metric, core/css/resolver/font_builder.cc:397
+// @ 5992657f556bcd9d207a4aca187488462f027cab). Returns 0 when the font has no
+// usable value for the metric — callers treat that as a zero-sized used
+// font-size. Blink instead leaves the size unadjusted
+// (FontSizeFunctions::MetricsMultiplierAdjustedFontSize returns nullopt for a
+// zero aspect, core/css/font_size_functions.cc:292-295 @ the same SHA); the
+// clamp is a pre-existing louis14 divergence.
 func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSize float64, fontPath string) float64 {
 	if fontSize <= 0 {
 		return 0
@@ -174,11 +192,9 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSi
 		return m.chWidth / fontSize
 	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
 		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
-		// height of the U+6C34 (水) glyph. Mirror Blink's behavior: the metric
-		// is sourced from the same fontPath; when 水 isn't present (e.g. Ahem),
-		// the metric is undefined and the spec calls for the user agent to
-		// behave as if `font-size-adjust: none` — Blink resolves the ratio to
-		// 0 which clamps the used size to 0. We follow Blink.
+		// height of the U+6C34 (水) glyph, measured in the same (U+0020
+		// primary) font as Blink does; when 水 isn't present (e.g. Ahem), the
+		// metric is undefined and the ratio is 0 (see the clamp above).
 		w, h := MeasureText("水", fontSize, fontPath)
 		wf, hf := w.Float64(), h.Float64()
 		if wf == 0 || hf == 0 {
