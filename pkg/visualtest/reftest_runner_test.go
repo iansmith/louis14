@@ -424,8 +424,8 @@ func runReftestInner(t *testing.T, testPath string) reftestResult {
 	tmpDir := t.TempDir()
 	testPNG := filepath.Join(tmpDir, "test.png")
 	testBasePath := filepath.Dir(testPath)
-	testWPTRoot := findWPTRoot(testPath)
-	testContent := ApplyWPTSubstitutions(string(content), testPath, testWPTRoot)
+	testResolver := newWPTResourceResolver(testBasePath)
+	testContent := ApplyWPTSubstitutions(string(content), testPath, testResolver.docRoot)
 
 	if err := RenderHTMLToFileWithBase(testContent, testPNG, width, height, testBasePath); err != nil {
 		return reftestResult{reftestFatal, fmt.Sprintf("failed to render test: %v", err)}
@@ -436,14 +436,11 @@ func runReftestInner(t *testing.T, testPath string) reftestResult {
 	// where either rendering is acceptable.
 	var lastResult *CompareResult
 	for i, refHref := range refHrefs {
-		// Resolve reference path relative to test file.
-		// WPT absolute paths (starting with "/") are resolved against the WPT root.
-		var refPath string
-		if strings.HasPrefix(refHref, "/") {
-			wptRoot := findWPTRoot(testPath)
-			refPath = filepath.Join(wptRoot, refHref[1:])
-		} else {
-			refPath = filepath.Join(filepath.Dir(testPath), refHref)
+		// Resolve the reference the way every subresource of the test
+		// resolves (wptResourceResolver).
+		refPath, err := testResolver.filesystemPath(refHref)
+		if err != nil {
+			continue
 		}
 		if _, err := os.Stat(refPath); os.IsNotExist(err) {
 			continue // Skip missing references, try next
@@ -456,7 +453,7 @@ func runReftestInner(t *testing.T, testPath string) reftestResult {
 
 		refPNG := filepath.Join(tmpDir, fmt.Sprintf("ref%d.png", i))
 		refBasePath := filepath.Dir(refPath)
-		refWPTRoot := findWPTRoot(refPath)
+		refWPTRoot := findWPTRoot(refBasePath)
 		refSubstituted := ApplyWPTSubstitutions(string(refContent), refPath, refWPTRoot)
 
 		if err := RenderHTMLToFileWithBase(refSubstituted, refPNG, width, height, refBasePath); err != nil {
@@ -545,20 +542,6 @@ func copyFile(src, dst string) {
 		return
 	}
 	os.WriteFile(dst, data, 0644)
-}
-
-// findWPTRoot returns the wpt-css2 or wpt-css3 ancestor directory of testPath.
-// WPT absolute hrefs (starting with "/") are resolved against this root.
-func findWPTRoot(testPath string) string {
-	dir := filepath.Dir(testPath)
-	for dir != "." && dir != "/" {
-		base := filepath.Base(dir)
-		if base == "wpt-css2" || base == "wpt-css3" {
-			return dir
-		}
-		dir = filepath.Dir(dir)
-	}
-	return filepath.Dir(testPath)
 }
 
 // findRefLink extracts the href from <link rel="match" href="..."> in HTML content.
@@ -701,7 +684,12 @@ func TestListReftestResults(t *testing.T) {
 		relPath, _ := filepath.Rel(testDir, testFile)
 		content, _ := os.ReadFile(testFile)
 		refHref := findRefLink(string(content))
-		refPath := filepath.Join(filepath.Dir(testFile), refHref)
+		refPath, err := newWPTResourceResolver(filepath.Dir(testFile)).filesystemPath(refHref)
+		if err != nil {
+			t.Logf("  SKIP  %s (%v)", relPath, err)
+			skipped++
+			continue
+		}
 
 		if _, err := os.Stat(refPath); os.IsNotExist(err) {
 			t.Logf("  SKIP  %s (ref not found)", relPath)

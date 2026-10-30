@@ -1,6 +1,7 @@
 package visualtest
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -179,6 +180,39 @@ func TestFindWPTRoot(t *testing.T) {
 	} {
 		if got := filepath.ToSlash(findWPTRoot(filepath.FromSlash(tc.dir))); got != tc.want {
 			t.Errorf("findWPTRoot(%q) = %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// TestFileFetchers_ShareFilesystemPath pins that the harness fetcher kinds
+// (the image fetcher is r.readFile itself) load through the shared resolver: from a nested reference dir, each one
+// must return the bytes of the literal corpus file wptserve would serve.
+func TestFileFetchers_ShareFilesystemPath(t *testing.T) {
+	r := newWPTResourceResolver("testdata/wpt-css3/css-values/reference")
+	for _, tc := range []struct {
+		name  string
+		fetch func(string) ([]byte, error)
+		uri   string
+		want  string
+	}{
+		{"image", r.readFile, "/css/support/60x60-green.png", "testdata/wpt-css3/css/support/60x60-green.png"},
+		{"document", func(uri string) ([]byte, error) {
+			s, err := createFileDocumentFetcher(r)(uri)
+			return []byte(s), err
+		}, "/css/reference/blank.html", "testdata/wpt-css3/reference/blank.html"},
+		{"external SVG", createExternalSVGFetcher(r), "/css/filter-effects/support/hueRotate.svg", "testdata/wpt-css3/filter-effects/support/hueRotate.svg"},
+	} {
+		want, err := os.ReadFile(filepath.FromSlash(tc.want))
+		if err != nil {
+			t.Fatalf("%s: reading expected corpus file: %v", tc.name, err)
+		}
+		got, err := tc.fetch(tc.uri)
+		if err != nil {
+			t.Errorf("%s fetcher(%q): %v", tc.name, tc.uri, err)
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s fetcher(%q) returned %d bytes, want the %d bytes of %s", tc.name, tc.uri, len(got), len(want), tc.want)
 		}
 	}
 }
