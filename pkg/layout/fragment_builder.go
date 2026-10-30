@@ -210,6 +210,29 @@ type BoxFragmentBuilder struct {
 	// BoxFragmentBuilder::SetShouldForceSameFragmentationFlow
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
 	shouldForceSameFragmentationFlow bool
+
+	// space is the constraint space the fragment is laid out in, when the
+	// algorithm sets it: BlockSizeForFragmentation is accumulated and
+	// recorded only when it has block fragmentation. Mirrors Blink's
+	// FragmentBuilder::space_ (GetConstraintSpace).
+	space *ConstraintSpace
+
+	// boxType is the type of box the fragment is (BoxTypeColumn for a
+	// fragmentainer), copied to PhysicalFragment.BoxType at Build. Mirrors
+	// Blink's FragmentBuilder::box_type_ (SetBoxType).
+	boxType BoxType
+}
+
+// SetConstraintSpace records the space the fragment is laid out in. Mirrors
+// the space Blink's FragmentBuilder is constructed with.
+func (b *BoxFragmentBuilder) SetConstraintSpace(space *ConstraintSpace) {
+	b.space = space
+}
+
+// SetBoxType sets the type of box the fragment is. Mirrors Blink's
+// FragmentBuilder::SetBoxType.
+func (b *BoxFragmentBuilder) SetBoxType(t BoxType) {
+	b.boxType = t
 }
 
 type logicalChildLink struct {
