@@ -1184,8 +1184,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 //     each wrapped row's token is installed with
 //     walker.AddNextColumnBreakToken as the row starts, where Blink installs
 //     the remaining token once, after the loop (cla.cc:610-611).
-//   - The line commit Blink does inside LayoutLine (cla.cc:1233-1251)
-//     happens here after LayoutLine returns.
 //   - A first row truncated by the outer fragmentainer breaks right away
 //     with its MulticolBreakTokenData; Blink sets the data and keeps looping
 //     (cla.cc:763-777).
@@ -1239,7 +1237,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		}
 
 		rowStart := lineOffset
-		line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, mla.balanceColumns, builder)
+		line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, mla.balanceColumns, marginStrut, builder)
 		if line == nil {
 			// Blink cla.cc:575-581, :662-685 @ a9f50e522efa: an outer fragmentainer break
 			// was inserted before this line. This multicol takes up the
@@ -1248,20 +1246,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			// fragmentainer.
 			mla.blockCursor = math.Max(mla.blockCursor, mla.spaceLeftForContent())
 			return mla.breakOuter(walker, builder), false
-		}
-		mla.hasProcessedFirstChild = mla.hasProcessedFirstChild || !line.isEmpty
-		// Blink cla.cc:1233-1251: only a non-empty line updates the
-		// layout position (which already incorporates the strut) and
-		// resets the strut. An empty line — e.g. the spanner-detection
-		// line between two adjacent spanners — leaves both untouched so
-		// the pending margin collapses through.
-		if !line.isEmpty {
-			mla.blockCursor = lineOffset + line.intrinsicBlockSizeContribution
-			*marginStrut = MarginStrut{}
-			// Blink cla.cc:1233-1235 @ a9f50e522efa: column content
-			// separates a preceding spanner's break-after from what
-			// follows.
-			builder.SetPreviousBreakAfter("auto")
 		}
 		mla.totalColumnsRendered += line.columnsPlaced
 
@@ -1669,14 +1653,9 @@ func (mla *MulticolLayoutAlgorithm) setPhysicalBoxData(builder *BoxFragmentBuild
 
 // layoutLineResult is what LayoutLine reports about the line it laid out.
 // Blink returns the last column's LayoutResult instead
-// (column_layout_algorithm.h:109-119 @ a9f50e522efa) and commits the line's
-// effects itself; louis14 commits them in the caller, so it returns the
-// pieces the caller needs.
+// (column_layout_algorithm.h:109-119 @ a9f50e522efa); louis14 returns the
+// pieces of it the caller reads.
 type layoutLineResult struct {
-	// intrinsicBlockSizeContribution is the line's block-size advance:
-	// Blink's intrinsic_block_size_contribution
-	// (column_layout_algorithm.cc:906 @ a9f50e522efa).
-	intrinsicBlockSizeContribution float64
 	// columnsPlaced counts the line's columns with content. no Blink analog:
 	// it feeds RenderedColumnCount for the CSS Multicol L1 §5 rule painter
 	// (Blink's gap_accumulator_ counts columns itself).
@@ -1690,32 +1669,31 @@ type layoutLineResult struct {
 	// the last column's token after the non-advancing-token guard, which may
 	// have dropped it.
 	breakToken *BlockBreakToken
-	// isEmpty: the line has no content, so the caller neither advances the
-	// layout position nor resets the margin strut. Blink's is_empty
-	// (column_layout_algorithm.cc:1229-1231).
-	isEmpty bool
 }
 
 // LayoutLine implements the outer stretch / inner per-column loop for one
 // line of columns — all columns between two spanners (or the full content if
 // no spanners). It returns nil when an outer fragmentainer break is inserted
-// before the line; nothing is committed then. Mirrors Blink's
-// ColumnLayoutAlgorithm::LayoutLine (column_layout_algorithm.h:115-119,
-// column_layout_algorithm.cc:799-1331 @ a9f50e522efa), which returns
-// nullptr in that case (:1214).
+// before the line; nothing is committed then. Otherwise a non-empty line
+// moves the layout position (blockCursor) past itself and resets
+// marginStrut, whose pending margin is already in lineOffset; an empty line
+// leaves both, so the margin collapses through it (cla.cc:1218-1251).
+// Mirrors Blink's ColumnLayoutAlgorithm::LayoutLine
+// (column_layout_algorithm.h:115-119, column_layout_algorithm.cc:799-1331 @
+// a9f50e522efa), which returns nullptr in that case (:1214).
 //
 // balanceColumns has no Blink analog as a parameter: Blink recomputes
 // balance_columns per line (:840-843); louis14 passes its sticky state in,
 // and the line may flip its own copy (column-fill:auto line that finds a
 // spanner) before the one-time regrow recursion re-runs the line with it.
-// Blink's has_wrapped and margin_strut parameters are not ported: louis14
-// records the row gap and commits the line in LayoutFragmentationContext
-// after LayoutLine returns.
+// Blink's has_wrapped parameter is not ported: louis14 records the row gap
+// in LayoutFragmentationContext.
 func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	nextColumnToken *BlockBreakToken,
 	lineOffset float64,
 	minimumColumnBlockSize float64,
 	balanceColumns bool,
+	marginStrut *MarginStrut,
 	builder *BoxFragmentBuilder,
 ) *layoutLineResult {
 	wdm := mla.space.WritingDirection
@@ -2062,7 +2040,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 					// A regrown line never regrows again (Blink recurses at
 					// most once: !minimum_column_block_size).
 					if minimumColumnBlockSize == Indefinite && colBlockSize != Indefinite && blockEndOverflow > colBlockSize {
-						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, balanceColumns, builder)
+						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, balanceColumns, marginStrut, builder)
 					}
 				}
 			}
@@ -2280,26 +2258,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			mla.attemptToPositionListMarker(col.fragment, col.result, builder, col.offset.BlockOffset)
 			isFirstCol = false
 		}
+		// The contribution of a line without a used column block-size (see
+		// below): the tallest column, including content overflowing it.
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
-		// Phase 16.b.2: use BSFF for row advance — Blink parity (cla.cc:1300-1370).
-		// BSFF = monolithic-overflow-aware content size, so the row advance reflects
-		// actual content needs and the spanner is placed below full pre-spanner
-		// content (not the pinned 6px column fragment).
 		if col.result != nil && col.result.BlockSizeForFragmentation > h {
 			h = col.result.BlockSizeForFragmentation
-		}
-		// Blink cla.cc:949-971 @ a9f50e522efa: when the column block-size
-		// was derived from the outer fragmentainer (shrink-to-fit), replace the
-		// row advance computed above with min(column block-size, the
-		// column's BlockSizeForFragmentation — its content including
-		// overflow, e.g. a resumed parallel-flow piece). The multicol's own
-		// block-size shrinks
-		// to content rather than consuming all outer remaining space. Blink
-		// clears the flag after the first column and resets the contribution
-		// to the full column block-size for every later one, so only a
-		// single-column line shrinks.
-		if shrinkToFitColumnBlockSize && len(finalColumns) == 1 {
-			h = math.Min(colBlockSize, FragmentainerBlockSizeForFragmentation(wdm, col.fragment))
 		}
 		if h > maxColHeight {
 			maxColHeight = h
@@ -2346,13 +2309,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// GapGeometry (Track A): record first column offset and cross gaps.
 	// Mirrors Blink cla.cc:1650–1665 AddCrossGap / AddNumberOfColumnsForCurrentRow.
 	hasSpannerDetector := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
-	// Restore the row-advance cap for rows that do NOT end with a spanner.
-	// Pre-spanner rows use BSFF-based maxColHeight (set above via ColumnSpannerPath
-	// condition) and must NOT be capped. All other rows (normal balance, column-fill:auto,
-	// explicit column-height) must cap to colBlockSize to prevent oversized containers.
-	if colBlockSize != Indefinite && maxColHeight > colBlockSize && !hasSpannerDetector {
-		maxColHeight = colBlockSize
-	}
 	if len(finalColumns) > 0 && !mla.firstColumnOffsetSet {
 		mla.firstColumnOffset = finalColumns[0].offset
 		mla.firstColumnOffsetSet = true
@@ -2378,43 +2334,56 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		}
 	}
 
-	// Determine spanner path and remaining token from the last inner result.
-	if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-		// When a spanner is detected and no column of this row holds
-		// pre-spanner content, commit the spanner at the row origin — not
-		// below an empty forced slot (IsFixedBlockSize + column-height can
-		// make an empty column fragment report a full row height). Content
-		// overflowing its boxes counts: a column whose intrinsic block-size
-		// is 0 still holds content when its block-size for fragmentation is
-		// not (Blink measures a column by its BlockSizeForFragmentation,
-		// cla.cc:1652-1672 @ a9f50e522efa; spanner-in-child-after-parallel-
-		// flow-004, a height:0 box whose child overflows it).
-		anyContent := false
-		for _, col := range finalColumns {
-			if col.intrinsicBlock > 0 || FragmentainerBlockSizeForFragmentation(wdm, col.fragment) > 0 {
-				anyContent = true
-				break
-			}
-		}
-		rowAdvance := maxColHeight
-		if !anyContent {
-			rowAdvance = 0
-		}
+	// Blink cla.cc:906, :927, :949-971 @ a9f50e522efa: the line contributes
+	// its used column block-size. When that size was derived from the outer
+	// fragmentainer (shrink-to-fit), a single-column line contributes only
+	// the column's content, overflow included (its BlockSizeForFragmentation),
+	// so the multicol shrinks to content rather than consuming all outer
+	// remaining space; Blink clears the flag after the first column and
+	// resets the contribution to the column block-size for every later one.
+	// no Blink analog: an unconstrained column-fill:auto line has no used
+	// column block-size (Indefinite; Blink's has_content_based_block_size,
+	// held PR #201) and contributes its tallest column instead.
+	// no Blink analog: a line that ends at a spanner contributes at least its
+	// tallest column, overflow included, so the spanner is placed below
+	// content that overflowed the columns. It stands in for the space
+	// shortage Blink's stretch loop gets from such content (an unbreakable
+	// line, cla.cc:1153-1173) and louis14 does not report yet (LOU-399's
+	// trusted-space-shortage half; ledger L90).
+	contribution := colBlockSize
+	switch {
+	case shrinkToFitColumnBlockSize && len(finalColumns) == 1:
+		contribution = math.Min(colBlockSize, FragmentainerBlockSizeForFragmentation(wdm, finalColumns[0].fragment))
+	case colBlockSize == Indefinite:
+		contribution = maxColHeight
+	case hasSpannerDetector:
+		contribution = math.Max(colBlockSize, maxColHeight)
+	}
+	// Blink cla.cc:1229-1251: a non-empty line moves the layout position
+	// past itself (lineOffset already holds the strut) and resets the
+	// strut; column content also separates a preceding spanner's
+	// break-after from what follows. An empty line — e.g. the
+	// spanner-detection line between two adjacent spanners — leaves both, so
+	// the pending margin collapses through.
+	if !lineIsEmpty {
+		mla.hasProcessedFirstChild = true
+		builder.SetPreviousBreakAfter("auto")
+		mla.blockCursor = lineOffset + contribution
+		*marginStrut = MarginStrut{}
+	}
+
+	// The spanner that ended the line and the column-content token to resume
+	// at.
+	if hasSpannerDetector {
 		return &layoutLineResult{
-			intrinsicBlockSizeContribution: rowAdvance,
-			columnsPlaced:                  columnsPlaced,
-			columnSpannerPath:              lastInnerResult.ColumnSpannerPath,
-			breakToken:                     lastInnerResult.BreakToken,
-			isEmpty:                        lineIsEmpty,
+			columnsPlaced:     columnsPlaced,
+			columnSpannerPath: lastInnerResult.ColumnSpannerPath,
+			breakToken:        lastInnerResult.BreakToken,
 		}
 	}
-	// Return any remaining column break token so the caller can include it
-	// in the outer break result and resume column rows in the next outer column.
 	return &layoutLineResult{
-		intrinsicBlockSizeContribution: maxColHeight,
-		columnsPlaced:                  columnsPlaced,
-		breakToken:                     finalColBreakToken,
-		isEmpty:                        lineIsEmpty,
+		columnsPlaced: columnsPlaced,
+		breakToken:    finalColBreakToken,
 	}
 }
 
@@ -2632,7 +2601,9 @@ measure:
 			colBSize := result.IntrinsicBlockSize
 			if colBSize <= 0 {
 				colBSize = result.BlockSizeForFragmentation
-				if result.Fragment != nil {
+				// The override above sizes the fragment to the container's
+				// height, so it says nothing about the content then.
+				if result.Fragment != nil && !hasExplicitContainerHeight {
 					if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
 						colBSize = fragBSize
 					}
