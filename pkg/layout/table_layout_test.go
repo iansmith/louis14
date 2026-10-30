@@ -361,17 +361,31 @@ func TestTableLayout_RelativeCellPercentInlineInsetResolvesAgainstRowInlineSize(
 // fragment, but its percentage insets still resolve against its originating
 // row's specified block size, as Blink adds every cell through the row it
 // originates in (table_row_layout_algorithm.cc:167
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520). An auto-height originating
+// row has an indefinite block size, so top:100% is auto (offset 0) even when
+// the table itself has a definite height: the table's child available size
+// must not re-resolve the inset.
 func TestTableLayout_RelativeRowspanCellPercentInsetUsesOriginatingRow(t *testing.T) {
-	cell := ms("c", props("display", "table-cell", "padding", "0", "position", "relative", "top", "100%"),
-		ms("i", props("width", "100px", "height", "100px")))
-	cell.attrs = map[string]string{"rowspan": "2"}
-	frag, ids := layoutInFlowRoot(t,
-		ms("t", props("display", "table", "border-spacing", "0"),
-			ms("r1", props("display", "table-row", "height", "10px"), cell),
-			ms("r2", props("display", "table-row"))))
-	if x, y := relativeOffsetByID(t, frag, ids, "c"); x != 0 || y != 10 {
-		t.Errorf("c RelativeOffset = (%v, %v), want (0, 10)", x, y)
+	for _, tc := range []struct {
+		name               string
+		tableProps, r1Prop []string
+		wantY              float64
+	}{
+		{"sized row", props("display", "table", "border-spacing", "0"),
+			props("display", "table-row", "height", "10px"), 10},
+		{"auto row in sized table", props("display", "table", "border-spacing", "0", "height", "300px"),
+			props("display", "table-row"), 0},
+	} {
+		cell := ms("c", props("display", "table-cell", "padding", "0", "position", "relative", "top", "100%"),
+			ms("i", props("width", "100px", "height", "100px")))
+		cell.attrs = map[string]string{"rowspan": "2"}
+		frag, ids := layoutInFlowRoot(t,
+			ms("t", tc.tableProps,
+				ms("r1", tc.r1Prop, cell),
+				ms("r2", props("display", "table-row"))))
+		if x, y := relativeOffsetByID(t, frag, ids, "c"); x != 0 || y != tc.wantY {
+			t.Errorf("%s: c RelativeOffset = (%v, %v), want (0, %v)", tc.name, x, y, tc.wantY)
+		}
 	}
 }
 
