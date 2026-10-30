@@ -115,3 +115,43 @@ func TestMatchesSelector_ResistDefaultNamespaceSites(t *testing.T) {
 		})
 	}
 }
+
+// TestMatchesSelector_ResistDefaultNamespaceOnlyLastBranch pins where Blink's
+// subject exemption applies in a multi-branch argument: ignore_default_namespace_
+// is set only when the compound is AtEndIgnoringWhitespace of the argument
+// block (css_selector_parser.cc:48-53 and :1318-1322 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), and inside
+// ConsumeForgivingComplexSelectorList (:384-420) a non-final branch is
+// followed by a comma, so only the last branch's type-less subject ignores
+// the XHTML default. `.a` in an earlier branch stays `xhtml|*.a` and does not
+// match the SVG <text class=a>.
+func TestMatchesSelector_ResistDefaultNamespaceOnlyLastBranch(t *testing.T) {
+	doc, err := html.Parse(svgContainerDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		sel  string
+		node string // tag of the element matched against
+		want bool
+	}{
+		{"*|*:is(.a, .b)", "text", false},
+		{"*|*:is(.b, .a)", "text", true},
+		{"*|*:where(.a, .b)", "text", false},
+		{"*|*:where(.b, .a)", "text", true},
+		{"*|*:not(.a, .b)", "text", true},
+		{"*|*:not(.b, .a)", "text", false},
+		{"*|g:has(.a, .b)", "g", false},
+		{"*|g:has(.b, .a)", "g", true},
+		{"*|*:is(:nth-child(1 of .a, .b))", "text", false},
+		{"*|*:is(:nth-child(1 of .b, .a))", "text", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sel, func(t *testing.T) {
+			node := elementsByTag(doc, tc.node)[0]
+			if got := MatchesSelector(node, sheetSelector(t, xhtmlDefaultNamespaceRule, tc.sel)); got != tc.want {
+				t.Errorf("%s matches SVG <%s> = %v, want %v", tc.sel, tc.node, got, tc.want)
+			}
+		})
+	}
+}
