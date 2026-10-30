@@ -551,3 +551,49 @@ func TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411(t *testing.T) {
 		"g":  {{0, 0, 10, 100}, {30, 0, 10, 100}, {60, 0, 10, 100}, {90, 0, 10, 100}},
 	})
 }
+
+// TestColumnBSFF_ClipAndOutOfFlow_LOU411: the builder twin of
+// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow. A column
+// builder accumulates its children's block-size for fragmentation: a child
+// that clips block-axis overflow contributes only its own box, an
+// out-of-flow child (added without AddResult) nothing
+// (box_fragment_builder.cc:479-489, :743-761 @ a9f50e522efa).
+func TestColumnBSFF_ClipAndOutOfFlow_LOU411(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	fragSpace := &ConstraintSpace{HasBlockFragmentation: true}
+	// box lays out a 20px box holding an 80px child.
+	box := func(style *css.Style) *LayoutResult {
+		b := NewBoxFragmentBuilder(wdm)
+		b.SetConstraintSpace(fragSpace)
+		b.SetSize(LogicalSize{InlineSize: 50, BlockSize: 20})
+		if style != nil {
+			b.SetStyle(style)
+		}
+		tall := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, 80)}}
+		b.AddChild(tall.Fragment, LogicalOffset{})
+		b.PropagateChildBlockSizeForFragmentation(tall, LogicalOffset{})
+		return b.Build()
+	}
+	for _, tc := range []struct {
+		name      string
+		child     *LayoutResult
+		outOfFlow bool
+		want      float64
+	}{
+		{"visible overflow extends", box(nil), false, 90},
+		{"overflow:hidden clips", box(makeStyle("overflow", "hidden")), false, 30},
+		{"abspos ignored", box(makeStyle("position", "absolute")), true, 0},
+	} {
+		col := NewBoxFragmentBuilder(wdm)
+		col.SetConstraintSpace(fragSpace)
+		col.SetBoxType(BoxTypeColumn)
+		col.SetSize(LogicalSize{InlineSize: 50, BlockSize: 100})
+		col.AddChild(tc.child.Fragment, LogicalOffset{BlockOffset: 10})
+		if !tc.outOfFlow {
+			col.PropagateChildBlockSizeForFragmentation(tc.child, LogicalOffset{BlockOffset: 10})
+		}
+		if got := col.Build().BlockSizeForFragmentation; got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

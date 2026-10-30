@@ -412,3 +412,31 @@ func TestLogicalFragment_ReadLogicalSize(t *testing.T) {
 		t.Errorf("VRL: inline=%v block=%v, want 600,800", lf2.InlineSize(), lf2.BlockSize())
 	}
 }
+
+// TestBlockSizeForFragmentation_FragmentainerIsRaw_LOU411: a fragmentainer's
+// block-size for fragmentation is its children-only value; any other box's
+// is at least its own block-size (fragmentation_utils.cc:1545-1583 with
+// box_fragment_builder.cc:743-745 @ a9f50e522efa; louis14 records 0 for
+// Blink's kIndefiniteSize "not calculated").
+func TestBlockSizeForFragmentation_FragmentainerIsRaw_LOU411(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	result := func(boxType BoxType, h int, bsff float64) *LayoutResult {
+		return &LayoutResult{
+			Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, h), BoxType: boxType},
+			BlockSizeForFragmentation: bsff,
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		result *LayoutResult
+		want   float64
+	}{
+		{"column: children only", result(BoxTypeColumn, 100, 40), 40},
+		{"box, not recorded: own size", result(BoxTypeNormal, 100, 0), 100},
+		{"box with overflow", result(BoxTypeNormal, 100, 130), 130},
+	} {
+		if got := BlockSizeForFragmentation(wdm, tc.result); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
