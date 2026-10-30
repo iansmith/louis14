@@ -2876,6 +2876,7 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.HasZeroWidth = parent.HasZeroWidth
 	s.XHeight = parent.XHeight
 	s.CapHeight = parent.CapHeight
 	s.LhSize = parent.LhSize
@@ -2921,6 +2922,7 @@ func NewAnonymousTableCellStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.HasZeroWidth = parent.HasZeroWidth
 	s.XHeight = parent.XHeight
 	s.CapHeight = parent.CapHeight
 	s.LhSize = parent.LhSize
@@ -2944,6 +2946,7 @@ func NewAnonymousTableRowStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.HasZeroWidth = parent.HasZeroWidth
 	s.XHeight = parent.XHeight
 	s.CapHeight = parent.CapHeight
 	s.LhSize = parent.LhSize
@@ -2976,6 +2979,7 @@ func NewAnonymousInlineRubyStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.HasZeroWidth = parent.HasZeroWidth
 	s.XHeight = parent.XHeight
 	s.CapHeight = parent.CapHeight
 	s.LhSize = parent.LhSize
@@ -2998,6 +3002,7 @@ func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
 	s.ChWidth = parent.ChWidth
+	s.HasZeroWidth = parent.HasZeroWidth
 	s.XHeight = parent.XHeight
 	s.CapHeight = parent.CapHeight
 	s.LhSize = parent.LhSize

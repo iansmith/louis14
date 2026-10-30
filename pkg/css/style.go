@@ -602,7 +602,7 @@ func (s *Style) chScale() float64 {
 	wm, _ := s.Get("writing-mode")
 
 	horizontalCh := func() float64 {
-		if s.ChWidth > 0 {
+		if s.HasZeroWidth {
 			if fs := s.GetFontSize(); fs > 0 {
 				return s.ChWidth / fs
 			}
