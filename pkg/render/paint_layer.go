@@ -2731,37 +2731,5 @@ func (layer *PaintLayer) sortZLists() {
 // `selfTransforms` already contains the element's own resolved transforms
 // (with percent translates resolved against its own border-box).
 func computeBackfaceHidden(box *layout.Box, selfTransforms []css.Transform) bool {
-	cumulative := append([]css.Transform(nil), selfTransforms...)
-	// Walk ancestors: include each ancestor's transform iff its PARENT
-	// is preserve-3d (the standard 3D rendering context rule). The first
-	// ancestor whose parent is flat (or which has no parent) terminates
-	// the walk — its own transform IS still included because that
-	// ancestor itself sits in a flat context, but its own contribution to
-	// the back-face check is only relevant when the descendant shares
-	// its 3D context. Concretely: walk while `ancestor.Style.GetTransformStyle()
-	// == preserve-3d`; that means "descendants see my transform".
-	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil; ancestor = ancestor.Parent {
-		if ancestor.Style.GetTransformStyle() != css.TransformStylePreserve3D {
-			break
-		}
-		// Compose ancestor's transform into the cumulative list (prepended
-		// because parent transforms apply first). Convert the parsed CSS
-		// transforms directly — percent translates on an ancestor don't
-		// affect back-face math (translates touch tx/ty only).
-		ancTransforms := ancestor.Style.GetTransforms()
-		if len(ancTransforms) > 0 {
-			cumulative = append(append([]css.Transform(nil), ancTransforms...), cumulative...)
-		}
-		// Also include the ancestor's individual transform properties
-		// (translate / rotate / scale longhands) in canonical order.
-		if deg, ok := ancestor.Style.GetIndividualRotate(); ok {
-			cumulative = append([]css.Transform{{Type: "rotate", Values: []float64{deg}}}, cumulative...)
-		}
-		if sx, sy, ok := ancestor.Style.GetIndividualScale(); ok {
-			cumulative = append([]css.Transform{{Type: "scale", Values: []float64{sx, sy}}}, cumulative...)
-		}
-		// translate ancestor longhand: not relevant to back-face math.
-		_ = ancestor
-	}
-	return css.IsBackFaceVisible(cumulative)
+	return css.IsBackFaceVisible(append(preserve3DAncestorTransforms(box), selfTransforms...))
 }

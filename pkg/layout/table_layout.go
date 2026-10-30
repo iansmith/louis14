@@ -1842,9 +1842,14 @@ func assignColumnIndices(rows []tableRow) int {
 }
 
 // singleBlockInnerChild returns the sole non-text, non-whitespace child of
-// an anonymous cell wrapper if exactly one exists and it is a block-level
-// element — otherwise nil. Used by buildRow to preserve margin-propagation
-// semantics for bare blocks wrapped at tree-build time.
+// an anonymous cell wrapper if exactly one exists and it is an in-flow
+// block-level element — otherwise nil. Used by buildRow to preserve
+// margin-propagation semantics for bare blocks wrapped at tree-build time.
+// A floated or absolutely positioned child keeps its wrapper: unwrapped, it
+// would be laid out as the cell itself, in flow, whereas Blink keeps it a
+// float / out-of-flow box inside the anonymous cell
+// (LayoutTableRow::AddChild, table/layout_table_row.cc:87-116 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func singleBlockInnerChild(wrapper *LayoutInputNode) *LayoutInputNode {
 	var found *LayoutInputNode
 	for _, c := range wrapper.Children() {
@@ -1855,7 +1860,7 @@ func singleBlockInnerChild(wrapper *LayoutInputNode) *LayoutInputNode {
 			return nil // non-whitespace text ⇒ inline content, keep wrapper
 		}
 		s := c.Style()
-		if s == nil {
+		if s == nil || isOutOfFlowOrFloat(c) {
 			return nil
 		}
 		// Inline-level children stay inside the wrapper (multi-inline runs
@@ -2122,17 +2127,21 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					// (colConstrained for this column was set in the pre-pass above.)
 				} else {
 					// Compute intrinsic size.
-					// For orthogonal cells (e.g. vertical-rl cell in horizontal table),
-					// ComputeMinMaxSizes returns the cell's LOGICAL inline sizes (from the
-					// cell's own WDM perspective), which equals the TABLE's BLOCK direction
-					// (not the column width direction). However, this "accidental" behavior
-					// produces correct column widths when no explicit col width is given,
-					// because the cell's logical inline-size (= physical height for vertical-rl)
-					// represents the cell's contribution to column sizing in those cases.
+					// For an orthogonal cell (e.g. vertical-rl cell in a
+					// horizontal table) the contribution is the inline size,
+					// in the table's writing mode, of the cell laid out: Blink
+					// BlockNode::ComputeMinMaxSizes runs layout for an
+					// orthogonal flow root and returns min = max = that size
+					// (core/layout/block_node.cc:968-998 @
+					// d4ecdfed88f962439247c2ad36b8fe47805b1520), which
+					// TableTypes::CreateCellInlineConstraint calls
+					// (table/table_layout_algorithm_types.cc:138-163). The
+					// laid-out fragment is border-box, so no border+padding is
+					// added.
 					//
 					// When the column is constrained by a specified width (col/colgroup
 					// OR any cell — Blink Column.is_constrained), that width is
-					// authoritative, so we skip the orthogonal cell's unreliable intrinsic
+					// authoritative, so we skip the orthogonal cell's intrinsic
 					// sizing rather than let it override the constraint. colConstrained is
 					// fully populated before this loop, so the decision does not depend on
 					// the order cells/rows are visited.
@@ -2150,12 +2159,18 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 							SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
 							SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
 							Build()
-						mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
-						// Convert content-box to border-box for column sizing.
-						cellGeom := ComputeFragmentGeometry(cell.style, childWDM)
-						cellBP := cellGeom.InlineBorderPadding()
-						cellMin := mm.MinContent + cellBP
-						cellMax := mm.MaxContent + cellBP
+						var cellMin, cellMax float64
+						if isOrthogonal {
+							res := layoutElement(tla.ctx, cell.node, childSpace)
+							cellMin = NewLogicalFragment(tla.space.WritingDirection, res.Fragment).InlineSize()
+							cellMax = cellMin
+						} else {
+							mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
+							// Convert content-box to border-box for column sizing.
+							cellBP := ComputeFragmentGeometry(cell.style, childWDM).InlineBorderPadding()
+							cellMin = mm.MinContent + cellBP
+							cellMax = mm.MaxContent + cellBP
+						}
 						// Anonymous cell wrappers: the wrapped child's inline
 						// margins are part of the cell's intrinsic contribution
 						// (the layout pass at Phase 2/3 offsets the child by
