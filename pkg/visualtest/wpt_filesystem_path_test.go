@@ -152,6 +152,35 @@ func TestWPTResourceResolver_FilesystemPath(t *testing.T) {
 		})
 	})
 
+	t.Run("query_and_fragment", func(t *testing.T) {
+		// wptserve maps only the URL's path to a file; the query and the
+		// fragment never reach the filesystem (css-fonts/fallback-url-to-local
+		// loads url(/fonts/Revalia.woff?pipe=trickle(d1)).
+		runWPTPathRows(t, []wptPathRow{
+			{
+				name:      "query on a root-relative URL",
+				basePath:  "testdata/wpt-css3/css-fonts",
+				uri:       "/fonts/Revalia.woff?pipe=trickle(d1)",
+				want:      "testdata/wpt-css3/fonts/Revalia.woff",
+				mustExist: true,
+			},
+			{
+				name:      "fragment on a relative URL",
+				basePath:  "testdata/wpt-css3/css-values",
+				uri:       "resources/IcTestZeroWidth.woff2#x",
+				want:      "testdata/wpt-css3/css-values/resources/IcTestZeroWidth.woff2",
+				mustExist: true,
+			},
+			{
+				name:      "query on a WPT host URL",
+				basePath:  "testdata/wpt-css3/css-values/reference",
+				uri:       "http://web-platform.test:8000/fonts/ahem.css?x=1",
+				want:      "testdata/wpt-css3/fonts/ahem.css",
+				mustExist: true,
+			},
+		})
+	})
+
 	t.Run("unsupported_schemes", func(t *testing.T) {
 		r := newWPTResourceResolver("testdata/wpt-css3/css-pseudo")
 		for _, uri := range []string{"https://example.com/x", "//example.com/x", "data:,x", "file:///etc/hosts"} {
