@@ -67,3 +67,19 @@ func clipOf(t *testing.T, s *Style) *ClipRect {
 	}
 	return cr
 }
+
+// TestOutlineWidth_InheritsComputedLength: outline-width computes to an
+// absolute length at style build, so `outline-width: inherit` copies the
+// parent's px rather than re-resolving 1em against the child's font. Blink's
+// outline-width converter is ConvertBorderWidth, which computes the length
+// through CssToLengthConversionData (core/css/resolver/style_builder_converter.cc
+// :1974-2002; core/css/css_properties.json5:4922-4930 @
+// 5992657f556bcd9d207a4aca187488462f027cab). WPT css-ui/outline-008.
+func TestOutlineWidth_InheritsComputedLength(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#p { font-size: 10px; outline: solid 1em transparent; }
+		#c { font-size: 5px; outline-width: inherit; outline-style: solid; }</style>
+		<div id="p"><div id="c"></div></div>`, nil)
+	if got := styleByID(t, styles, "c").GetOutlineWidth(); got != 10 {
+		t.Errorf("outline-width: inherit of the parent's 1em at 10px = %v, want 10", got)
+	}
+}
