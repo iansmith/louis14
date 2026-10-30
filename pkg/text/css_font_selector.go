@@ -99,8 +99,8 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 			usedSize = specifiedSize * adjust.Value / actualRatio
 		} else {
 			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; louis14 clamps to 0, hiding the glyphs
-			// (Blink leaves the size unadjusted: see firstFontAspectRatio).
+			// size is undefined; louis14 clamps to 0, hiding the glyphs.
+			// Blink differs (see firstFontAspectRatio).
 			usedSize = 0
 		}
 	}
@@ -177,10 +177,13 @@ func (fs *CSSFontSelector) waterAdvance(fontPath string, fontSize float64) float
 // font->PrimaryFont() for every metric, core/css/resolver/font_builder.cc:397
 // @ 5992657f556bcd9d207a4aca187488462f027cab). Returns 0 when the font has no
 // usable value for the metric — callers treat that as a zero-sized used
-// font-size. Blink instead leaves the size unadjusted
-// (FontSizeFunctions::MetricsMultiplierAdjustedFontSize returns nullopt for a
-// zero aspect, core/css/font_size_functions.cc:292-295 @ the same SHA); the
-// clamp is a pre-existing louis14 divergence.
+// font-size. That clamp is a pre-existing louis14 divergence from Blink on
+// both paths: for a missing metric (no 水 glyph, !HasXHeight, !HasZeroWidth,
+// CapHeight <= 0) Blink's AspectValue falls back to aspect 1.0 and still
+// adjusts the size (core/css/font_size_functions.cc:134-136 @ the same SHA);
+// only a metric that is present but measures 0 makes
+// FontSizeFunctions::MetricsMultiplierAdjustedFontSize return nullopt and
+// leave the size unadjusted (:292-295).
 func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSize float64, fontPath string) float64 {
 	if fontSize <= 0 {
 		return 0
