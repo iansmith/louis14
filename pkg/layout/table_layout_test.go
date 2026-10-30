@@ -221,3 +221,57 @@ func TestComputeColumnWidths_ColMinWidthBeatsMaxWidth(t *testing.T) {
 		t.Errorf("col0 width = %v, want 100 (min-width:100px beats max-width:0)", widths[0])
 	}
 }
+
+// TestTableCell_ExplicitHeightVerticalAlign pins vertical-align on an in-table
+// cell whose explicit height exceeds its content. Blink aligns the content in
+// FinalizeTableCellLayout (third_party/blink/renderer/core/layout/table/
+// table_layout_utils.cc:1597-1630 @ d4ecdfed88f962439247c2ad36b8fe47805b1520):
+// free_space = cell block-size - intrinsic block-size, moved by free_space/2
+// for middle and free_space for bottom (CSS 2.1 §17.5.4). Cell 100px tall,
+// content 20px: middle puts the content at 40, bottom at 80.
+func TestTableCell_ExplicitHeightVerticalAlign(t *testing.T) {
+	for _, tc := range []struct {
+		va   string
+		want float64
+	}{
+		{"middle", 40},
+		{"bottom", 80},
+	} {
+		t.Run(tc.va, func(t *testing.T) {
+			content := makeNode("div")
+			td := makeNode("td", content)
+			tr := makeNode("tr", td)
+			table := makeNode("table", tr)
+			styles := map[*html.Node]*css.Style{
+				table:   makeStyle("display", "table", "border-spacing", "0"),
+				tr:      makeStyle("display", "table-row"),
+				td:      makeStyle("display", "table-cell", "height", "100px", "vertical-align", tc.va),
+				content: makeStyle("display", "block", "width", "20px", "height", "20px"),
+			}
+			tree := buildTestTree(table, styles)
+			wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+			space := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+				Build()
+			result := NewTableLayoutAlgorithm(testContext(), tree, space).Layout()
+
+			cellFrag := findFragmentByNode(result.Fragment, td)
+			if cellFrag == nil {
+				t.Fatal("cell fragment not found")
+			}
+			if h := cellFrag.Size.HeightF64(); h != 100 {
+				t.Fatalf("cell height = %v, want 100", h)
+			}
+			for _, ch := range cellFrag.Children {
+				if ch.Fragment.LayoutNode != nil && ch.Fragment.LayoutNode.DOMNode == content {
+					if got := ch.Offset.TopF64(); got != tc.want {
+						t.Errorf("content block offset in cell = %v, want %v", got, tc.want)
+					}
+					return
+				}
+			}
+			t.Fatal("content fragment is not a child of the cell fragment")
+		})
+	}
+}
