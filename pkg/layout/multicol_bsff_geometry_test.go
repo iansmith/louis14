@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -96,4 +97,52 @@ func specKids(kids ...marginSpec) func(map[*html.Node]*css.Style, map[*html.Node
 		}
 		return nodes
 	}
+}
+
+// TestCalculateUnbreakableBlockSize_MonolithicUsesFragmentSize_LOU411: a
+// monolithic box's unbreakable block-size is its block-size for
+// fragmentation — the border box, as it records none — never its content's
+// intrinsic block-size (CalculateUnbreakableBlockSize,
+// fragmentation_utils.cc:979-993, BlockSizeForFragmentation :1545-1583 @
+// a9f50e522efa).
+func TestCalculateUnbreakableBlockSize_MonolithicUsesFragmentSize_LOU411(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := ConstraintSpace{WritingDirection: wdm}
+	result := &LayoutResult{
+		Fragment:           &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 30), IsMonolithic: true},
+		IntrinsicBlockSize: 100,
+	}
+	if got := CalculateUnbreakableBlockSize(space, result, 0); got != 30 {
+		t.Errorf("CalculateUnbreakableBlockSize = %v, want 30", got)
+	}
+}
+
+// TestBalancingFloorMonolithicContent_LOU411: a size-contained box is
+// monolithic; its 100px of visible content does not raise the balancing
+// floor or the column BlockSizeForFragmentation past its 30px border box
+// (layout_result.cc:75-79: no block fragmentation, nothing recorded).
+// Chrome 155 headless, LOU-411 probe5.html L.
+func TestBalancingFloorMonolithicContent_LOU411(t *testing.T) {
+	checkMonolithicFloor(t, props("height", "30px", "contain", "size"))
+}
+
+// TestBalancingFloorScrollContainerOverflow_LOU411: likewise for a scroll
+// container. Chrome 155 headless, LOU-411 probe5.html L2.
+func TestBalancingFloorScrollContainerOverflow_LOU411(t *testing.T) {
+	checkMonolithicFloor(t, props("height", "30px", "overflow", "auto"))
+}
+
+func checkMonolithicFloor(t *testing.T, boxProps []string) {
+	t.Helper()
+	frag, ids := layoutColumnsSpec(t, props("column-count", "2", "column-gap", "0", "width", "200px"),
+		ms("a", props("height", "20px")),
+		ms("sc", boxProps, ms("c", props("height", "100px"))),
+		ms("b", props("height", "20px")),
+	)
+	checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+		"a":  {{0, 0, 100, 20}},
+		"sc": {{0, 20, 100, 30}},
+		"b":  {{100, 0, 100, 20}},
+	})
+	checkMulticolHeight(t, frag, 50)
 }

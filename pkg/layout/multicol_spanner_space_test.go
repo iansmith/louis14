@@ -250,3 +250,50 @@ func TestSpannerPercentageHeightWithAndWithoutOuterFragmentation_LOU411(t *testi
 		checkRects(t, borderBoxRectsByID(frag, ids), want)
 	})
 }
+
+// spannerOverflowFixture is probe.html's C/C0 multicol: [a, a 10px spanner
+// holding s1 10px + 100px + s2 10px, b].
+func spannerOverflowFixture(mcProps []string, blockHeight string) marginSpec {
+	return ms("mc", mcProps,
+		ms("a", props("height", blockHeight)),
+		ms("s", props("column-span", "all", "height", "10px"),
+			ms("s1", props("height", "10px")),
+			ms("", props("height", "100px")),
+			ms("s2", props("height", "10px")),
+		),
+		ms("b", props("height", blockHeight)),
+	)
+}
+
+// TestSpannerOverflowingDeclaredHeight_LOU411 (DoD D2): a spanner whose
+// content overflows its declared height is not monolithic. Blink never
+// marks it so; its overflow reaches the parent through its
+// BlockSizeForFragmentation (box_fragment_builder.cc:479-489, :758-761 @
+// a9f50e522efa), the balanced lines around it ignore it, and nested in an
+// outer fragmentation context it breaks inside like any block. Chrome 155
+// headless, LOU-411 probe.html C0 (top level) and Co/C (nested).
+func TestSpannerOverflowingDeclaredHeight_LOU411(t *testing.T) {
+	inner := props("column-count", "2", "column-gap", "0")
+	t.Run("top-level", func(t *testing.T) {
+		frag, ids := layoutOuterMulticolSpec(t, nil, spannerOverflowFixture(append(inner, "width", "200px"), "40px"))
+		checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+			"mc": {{0, 0, 200, 50}},
+			"a":  {{0, 0, 100, 20}, {100, 0, 100, 20}},
+			"s":  {{0, 20, 200, 10}},
+			"s2": {{0, 130, 200, 10}},
+			"b":  {{0, 30, 100, 20}, {100, 30, 100, 20}},
+		})
+	})
+	t.Run("nested", func(t *testing.T) {
+		frag, ids := layoutOuterMulticolSpec(t,
+			props("column-count", "2", "column-gap", "0", "column-fill", "auto", "width", "200px", "height", "100px"),
+			spannerOverflowFixture(inner, "20px"))
+		checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+			"a":  {{0, 0, 50, 10}, {50, 0, 50, 10}},
+			"s":  {{0, 10, 100, 10}, {100, 0, 100, 0}},
+			"s1": {{0, 10, 100, 10}},
+			"s2": {{100, 20, 100, 10}},
+			"b":  {{0, 20, 50, 10}, {50, 20, 50, 10}},
+		})
+	})
+}
