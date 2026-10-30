@@ -341,3 +341,24 @@ func TestParse_ElementNamespaceURI(t *testing.T) {
 		t.Errorf("unset Node: NamespaceURI() = %q, want XHTML", got)
 	}
 }
+
+// TestParse_ScriptDataBlockNamespaceURI pins that a non-JS (data-block)
+// <script> takes its namespace the same way as every other element: inside
+// <svg> it is inserted with InsertForeignElement(token, current_namespace)
+// (core/html/parser/html_tree_builder.cc:3128 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), so it is an SVG element.
+func TestParse_ScriptDataBlockNamespaceURI(t *testing.T) {
+	doc, err := Parse(`<div><script type="text/x">a</script><svg><script type="text/x">b</script></svg></div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := elementsNamed(doc.Root, "script")
+	if len(scripts) != 2 {
+		t.Fatalf("parsed %d <script> elements, want 2", len(scripts))
+	}
+	for i, want := range []string{XHTMLNamespaceURI, SVGNamespaceURI} {
+		if got := scripts[i].NamespaceURI(); got != want {
+			t.Errorf("<script>#%d: NamespaceURI() = %q, want %q", i, got, want)
+		}
+	}
+}
