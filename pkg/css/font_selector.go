@@ -20,10 +20,10 @@ type FontSelector interface {
 // font's metrics at the font-size-adjust used size. Mirrors the values
 // CSSToLengthConversionData::FontSizes reads from Font for ex / ch / ic / cap
 // (core/css/css_to_length_conversion_data.cc:95/117/139/169): FontMetrics
-// XHeight / CapHeight / SetZeroWidth (platform/fonts/font_metrics.h:98/86/173)
-// and SimpleFontData::IdeographicInlineSize
-// (platform/fonts/simple_font_data.cc:461), all @
-// 5992657f556bcd9d207a4aca187488462f027cab.
+// XHeight / CapHeight / SetZeroWidth (platform/fonts/font_metrics.h:98/86/173,
+// @ 5992657f556bcd9d207a4aca187488462f027cab) and the optional
+// SimpleFontData::IdeographicInlineSize (platform/fonts/simple_font_data.h:110
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 type Font struct {
 	// AdjustedSize is the font-size-adjust used size (Blink
 	// FontDescription::AdjustedSize, set by FontBuilder::UpdateAdjustedSize,
@@ -52,10 +52,10 @@ type Font struct {
 
 // UpdateFont builds s's font from its now-final font properties and stores
 // the metrics the font-relative units read (Style.UsedFontSize, ChWidth,
-// XHeight, CapHeight, IcWidth). A non-nil fs becomes s's selector; with nil,
-// s keeps the selector it carries (set by the cascade, inherited by pseudo
-// and anonymous styles and clones); with none, s keeps the unmeasured
-// fallbacks. Mirrors StyleResolverState::UpdateFont
+// XHeight, CapHeight, IcWidth / HasIdeographicInlineSize). A non-nil fs
+// becomes s's selector; with nil, s keeps the selector it carries (set by the
+// cascade, inherited by pseudo and anonymous styles and clones); with none, s
+// keeps the unmeasured fallbacks. Mirrors StyleResolverState::UpdateFont
 // (core/css/resolver/style_resolver_state.cc:553 @
 // 5992657f556bcd9d207a4aca187488462f027cab), which runs FontBuilder::CreateFont
 // and then points CSSToLengthConversionData::FontSizes at the new font.
@@ -72,7 +72,7 @@ func (s *Style) UpdateFont(fs FontSelector) {
 	s.SetZeroWidth(f.ZeroWidth)
 	s.XHeight = f.XHeight
 	s.CapHeight = f.CapHeight
-	s.IcWidth = f.IdeographicInlineSize
+	s.IcWidth, s.HasIdeographicInlineSize = f.IdeographicInlineSize, f.HasIdeographicInlineSize
 }
 
 // UpdateLineHeight records s's computed line-height as the lh unit's size.
