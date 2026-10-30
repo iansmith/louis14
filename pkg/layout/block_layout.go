@@ -1737,12 +1737,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  0,
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
-				// LOU-111 step 4: propagate child's overflow extent into
-				// the parent's BSFF so parallel-flow / monolithic overflow
-				// reaches outer fragmentation contexts. Gated inside the
-				// propagator to fire only when the child shows true
-				// overflow past its physical extent (see fragment_builder
-				// .go docs); harmless for normal stacking.
+				// Under block fragmentation, max-merge this in-flow child's
+				// block-end for fragmentation (offset + its
+				// BlockSizeForFragmentation) into the builder, mirroring
+				// Blink AddResult -> PropagateBreakInfo
+				// (box_fragment_builder.cc:227-229, :479-489 @
+				// a9f50e522efa).
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = childBlockSize
 			} else {
@@ -1756,7 +1756,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  actualChildBlockOff,
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
-				// LOU-111 step 4: propagate child's overflow. See note above.
+				// Max-merge the child's block-end for fragmentation. See
+				// note above.
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = actualChildBlockOff + childBlockSize
 			}

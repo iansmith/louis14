@@ -329,11 +329,6 @@ type PhysicalFragment struct {
 	//   - `contain: size` (CSS Containment 2 §2.6: a size-contained box
 	//     has no intrinsic size from its descendants, so they're treated
 	//     as monolithic for fragmentation).
-	//   - Spanners whose explicit declared height is less than their
-	//     measured content height (implicit monolithic at the column-
-	//     balancing level — the spanner's box won't grow to fit content,
-	//     but the column box must accommodate the content so the
-	//     overflow doesn't visually cross column boundaries).
 	//   - (Future) replaced elements (img, video, canvas, iframe).
 	//
 	// Currently consumed only by `ShouldAvoidBreakInside`
