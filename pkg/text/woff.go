@@ -21,6 +21,18 @@ func isWOFF1(data []byte) bool {
 	return sig == woffSignature
 }
 
+// sfntSearchParams returns the SFNT offset-table binary-search fields for
+// numTables table records (OpenType spec, "Table Directory").
+func sfntSearchParams(numTables int) (searchRange, entrySelector, rangeShift int) {
+	searchRange = 1
+	for searchRange*2 <= numTables {
+		searchRange *= 2
+		entrySelector++
+	}
+	searchRange *= 16
+	return searchRange, entrySelector, numTables*16 - searchRange
+}
+
 // woffHeader is the WOFF file header (44 bytes).
 type woffHeader struct {
 	Signature      uint32
@@ -40,11 +52,11 @@ type woffHeader struct {
 
 // woffTableDir is a WOFF table directory entry (20 bytes).
 type woffTableDir struct {
-	Tag            uint32
-	Offset         uint32
-	CompLength     uint32
-	OrigLength     uint32
-	OrigChecksum   uint32
+	Tag          uint32
+	Offset       uint32
+	CompLength   uint32
+	OrigLength   uint32
+	OrigChecksum uint32
 }
 
 // decompressWOFF1 converts WOFF1 data to standard TrueType/OpenType data.
@@ -75,15 +87,7 @@ func decompressWOFF1(data []byte) ([]byte, error) {
 	numTables := int(hdr.NumTables)
 	headerSize := 12 + 16*numTables
 
-	// Calculate search parameters for TrueType header
-	searchRange := 1
-	entrySelector := 0
-	for searchRange*2 <= numTables {
-		searchRange *= 2
-		entrySelector++
-	}
-	searchRange *= 16
-	rangeShift := numTables*16 - searchRange
+	searchRange, entrySelector, rangeShift := sfntSearchParams(numTables)
 
 	// Decompress all tables first
 	tableData := make([][]byte, numTables)
