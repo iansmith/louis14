@@ -22,43 +22,21 @@ func RenderHTMLToFile(htmlContent string, outputPath string, width, height int) 
 	return RenderHTMLToFileWithBase(htmlContent, outputPath, width, height, "")
 }
 
-// RenderHTMLToFileWithBase renders HTML content to a PNG file with a base path for resolving relative image URLs
+// RenderHTMLToFileWithBase renders HTML content to a PNG file. basePath is
+// the directory of the document; when set, every subresource the document
+// references (stylesheets, scripts, @font-face sources, images, nested
+// documents, external SVG) is loaded from the WPT corpus through one
+// wptResourceResolver for that directory.
 func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, height int, basePath string) error {
-	// Parse HTML — use fetcher for external CSS if basePath is set
 	var doc *html.Document
 	var err error
 
-	// wptRoot is one level above basePath (e.g. wpt-css2/ for tests in wpt-css2/linebox/).
-	// Absolute URL paths like /fonts/ahem.css are resolved relative to this root.
-	wptRoot := ""
+	var resolver wptResourceResolver
 	if basePath != "" {
-		wptRoot = filepath.Dir(basePath)
-	}
-
-	if basePath != "" {
-		cssFetcher := func(uri string) (string, error) {
-			if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				return "", fmt.Errorf("unsupported URI scheme: %s", uri)
-			}
-			var cssPath string
-			if strings.HasPrefix(uri, "/") {
-				// Absolute path — resolve relative to the WPT root.
-				cssPath = filepath.Join(wptRoot, uri)
-			} else {
-				cssPath = filepath.Join(basePath, uri)
-			}
-			data, err := os.ReadFile(cssPath)
-			if err != nil {
-				return "", err
-			}
-			return string(data), nil
-		}
-		// Scripts share the same basePath/wptRoot resolution rules as CSS
-		// (relative to the test's own dir, absolute relative to the WPT
-		// root), so reuse cssFetcher's closure for <script src="...">
-		// content rather than duplicating the same os.ReadFile/filepath.Join
-		// logic a third time (see createFileImageFetcher /
-		// createFileDocumentFetcher below for the other two).
+		resolver = newWPTResourceResolver(basePath)
+		// Scripts resolve exactly like stylesheets, so <script src> reuses
+		// the CSS fetcher.
+		cssFetcher := createFileCSSFetcher(resolver)
 		doc, err = html.ParseWithScriptFetcher(htmlContent, cssFetcher, html.ScriptFetcher(cssFetcher))
 	} else {
 		doc, err = html.Parse(htmlContent)
@@ -70,7 +48,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Build font config with any @font-face rules from the document.
 	fontConfig := text.DefaultFontConfig()
 	if basePath != "" {
-		if fc, ok := buildFontConfig(doc, basePath, wptRoot); ok {
+		if fc, ok := buildFontConfig(doc, resolver); ok {
 			fontConfig = fc
 		}
 	}
@@ -82,9 +60,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher
 	if basePath != "" {
-		fetcher = createFileImageFetcher(basePath, wptRoot)
+		fetcher = resolver.readFile
 		engine.SetImageFetcher(fetcher)
-		engine.SetDocumentFetcher(createFileDocumentFetcher(basePath, wptRoot))
+		engine.SetDocumentFetcher(createFileDocumentFetcher(resolver))
 	}
 
 	boxes := engine.Layout(doc)
@@ -106,7 +84,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 			engine2.SetImageFetcher(fetcher)
 		}
 		if basePath != "" {
-			engine2.SetDocumentFetcher(createFileDocumentFetcher(basePath, wptRoot))
+			engine2.SetDocumentFetcher(createFileDocumentFetcher(resolver))
 		}
 		boxes = engine2.Layout(doc)
 	}
@@ -125,7 +103,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		renderer.SetImageFetcher(fetcher)
 	}
 	if basePath != "" {
-		renderer.SetExternalSVGFetcher(createExternalSVGFetcher(basePath, wptRoot))
+		renderer.SetExternalSVGFetcher(createExternalSVGFetcher(resolver))
 	}
 	if len(counterStyles) > 0 {
 		renderer.SetCounterStyles(counterStyles)
@@ -166,9 +144,18 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	return nil
 }
 
+// createFileCSSFetcher creates the CSSFetcher (also used for <script src>)
+// that loads stylesheets from the WPT corpus through resolver.
+func createFileCSSFetcher(resolver wptResourceResolver) html.CSSFetcher {
+	return func(uri string) (string, error) {
+		data, err := resolver.readFile(uri)
+		return string(data), err
+	}
+}
+
 // buildFontConfig processes @font-face rules from the document and returns an
 // updated FontConfig with a registry, or false if there are no web fonts.
-func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontConfig, bool) {
+func buildFontConfig(doc *html.Document, resolver wptResourceResolver) (text.FontConfig, bool) {
 	var allFaces []css.FontFaceRule
 	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
 		allFaces = append(allFaces, stylesheet.FontFaces...)
@@ -178,15 +165,6 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 	}
 
 	registry := text.NewFontRegistry()
-	fontFetcher := func(uri string) ([]byte, error) {
-		var fontPath string
-		if strings.HasPrefix(uri, "/") {
-			fontPath = filepath.Join(wptRoot, uri)
-		} else {
-			fontPath = filepath.Join(basePath, uri)
-		}
-		return os.ReadFile(fontPath)
-	}
 
 	for _, face := range allFaces {
 		if face.Src == nil {
@@ -198,7 +176,7 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 			Descent: face.DescentOverride,
 			LineGap: face.LineGapOverride,
 		}
-		path, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fontFetcher)
+		path, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, resolver.readFile)
 		if err != nil {
 			log.Printf("font-face: %v", err)
 			// The URL fetch failed, but a local/system font may still serve
@@ -223,56 +201,18 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 	return fc, true
 }
 
-// createFileImageFetcher creates an ImageFetcher that loads images from the filesystem.
-// Absolute paths are resolved relative to wptRoot; relative paths relative to basePath.
-// URLs pointing at a configured WPT host (e.g. `http://web-platform.test:8000/...`)
-// are rewritten to wptRoot-rooted filesystem paths.
-func createFileImageFetcher(basePath, wptRoot string) images.ImageFetcher {
-	cfg := DefaultWPTServerConfig()
-	return func(uri string) ([]byte, error) {
-		if strings.HasPrefix(uri, "data:") {
-			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
-		}
-		if rewritten, ok := stripWPTHost(uri, cfg); ok {
-			uri = rewritten
-		} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "//") {
-			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
-		}
-		var imagePath string
-		if strings.HasPrefix(uri, "/") {
-			imagePath = filepath.Join(wptRoot, uri)
-		} else {
-			imagePath = filepath.Join(basePath, uri)
-		}
-		return os.ReadFile(imagePath)
-	}
-}
-
-// createFileDocumentFetcher creates a DocumentFetcher that loads HTML documents
-// from the filesystem. Handles relative file paths, data:text/html, URIs, and
-// WPT-host URLs (e.g. `//www.not-web-platform.test:8000/...`). If the fetched
-// file has a `.sub.` stem its contents are run through ApplyWPTSubstitutions.
-func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher {
-	cfg := DefaultWPTServerConfig()
+// createFileDocumentFetcher creates a DocumentFetcher that loads HTML
+// documents from the WPT corpus through resolver, after decoding inline
+// data:text/html, URIs. A fetched file with a `.sub.` stem is run through
+// ApplyWPTSubstitutions.
+func createFileDocumentFetcher(resolver wptResourceResolver) layout.DocumentFetcher {
 	return func(uri string) (string, error) {
-		// Handle data: URIs (e.g. data:text/html,<html>...</html>)
-		if strings.HasPrefix(uri, "data:text/html,") {
-			content := strings.TrimPrefix(uri, "data:text/html,")
+		if content, ok := strings.CutPrefix(uri, "data:text/html,"); ok {
 			return content, nil
 		}
-		if strings.HasPrefix(uri, "data:") {
-			return "", fmt.Errorf("unsupported URI scheme: %s", uri)
-		}
-		if rewritten, ok := stripWPTHost(uri, cfg); ok {
-			uri = rewritten
-		} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "//") {
-			return "", fmt.Errorf("unsupported URI scheme: %s", uri)
-		}
-		var docPath string
-		if strings.HasPrefix(uri, "/") {
-			docPath = filepath.Join(wptRoot, uri)
-		} else {
-			docPath = filepath.Join(basePath, uri)
+		docPath, err := resolver.filesystemPath(uri)
+		if err != nil {
+			return "", err
 		}
 		data, err := os.ReadFile(docPath)
 		if err != nil {
@@ -280,28 +220,23 @@ func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher 
 		}
 		content := string(data)
 		if strings.Contains(filepath.Base(docPath), ".sub.") {
-			content = ApplyWPTSubstitutions(content, docPath, wptRoot)
+			content = ApplyWPTSubstitutions(content, docPath, resolver.docRoot)
 		}
 		return content, nil
 	}
 }
 
 // createExternalSVGFetcher creates an ExternalSVGFetcher closure for
-// `filter: url(doc#id)` references. Handles three URL forms:
-//
-//   - data: URLs decode inline via stdnet.DecodeDataURL.
-//   - Absolute paths (`/foo/x.svg`) resolve relative to wptRoot.
-//   - Relative paths (`support/x.svg`) resolve against basePath.
+// `filter: url(doc#id)` references. data: URLs decode inline via
+// stdnet.DecodeDataURL and file:// URLs read the named file; everything
+// else loads from the WPT corpus through resolver.
 //
 // LOU-138 phase 5 eliminated the previous cssDirs fallback: external
 // stylesheets now carry their own ParserContext.BaseDir, so url() refs
 // inside them get pre-resolved at CSS parse time against the sheet's own
 // location. The fetcher receives the already-rooted URI on first try.
-//
-// file:// URLs are accepted too (read via os.ReadFile after path
-// extraction). Network (http(s)://) URIs are rejected — tests don't
-// hit the network. LOU-130 Phase 2 wiring.
-func createExternalSVGFetcher(basePath, wptRoot string) func(uri string) ([]byte, error) {
+// LOU-130 Phase 2 wiring.
+func createExternalSVGFetcher(resolver wptResourceResolver) func(uri string) ([]byte, error) {
 	return func(uri string) ([]byte, error) {
 		switch {
 		case stdnet.IsDataURL(uri):
@@ -313,13 +248,8 @@ func createExternalSVGFetcher(basePath, wptRoot string) func(uri string) ([]byte
 				return nil, err
 			}
 			return os.ReadFile(p)
-		case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
-			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
 		default:
-			if strings.HasPrefix(uri, "/") {
-				return os.ReadFile(filepath.Join(wptRoot, uri))
-			}
-			return os.ReadFile(filepath.Join(basePath, uri))
+			return resolver.readFile(uri)
 		}
 	}
 }
