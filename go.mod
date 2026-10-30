@@ -3,6 +3,7 @@ module louis14
 go 1.26.2
 
 require (
+	github.com/andybalholm/brotli v1.2.0
 	github.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3
 	github.com/fogleman/gg v1.3.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c

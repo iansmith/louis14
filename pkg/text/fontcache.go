@@ -112,12 +112,8 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 		return "", fmt.Errorf("fetching font %s: %w", srcURL, err)
 	}
 
-	if format == "woff" || (format == "" && isWOFF1(data)) {
-		decompressed, err := decompressWOFF1(data)
-		if err != nil {
-			return "", fmt.Errorf("decompressing WOFF1: %w", err)
-		}
-		data = decompressed
+	if data, err = decodeWebFont(data); err != nil {
+		return "", err
 	}
 
 	verbatimStyle := normalizeStyleVerbatim(style)
