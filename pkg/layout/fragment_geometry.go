@@ -84,15 +84,16 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 // ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
 // a9f50e522efa).
 func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken) (border, padding LogicalEdges) {
-	border, padding = geom.Border, geom.Padding
 	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, breakToken) {
-		border.BlockStart, padding.BlockStart = 0, 0
+		geom.ClearBorderScrollbarPaddingBlockStart()
 	}
-	// Not breaking inside: only the past-the-block-end clause can drop it.
-	if !ShouldIncludeBlockEndBorderPadding(breakToken, false, false, false, false, false) {
-		border.BlockEnd, padding.BlockEnd = 0, 0
+	// Not breaking inside, so only the past-the-block-end clause can drop it
+	// and the remaining flags are never read.
+	const shouldBreakInside = false
+	if !ShouldIncludeBlockEndBorderPadding(breakToken, shouldBreakInside, false, false, false, false) {
+		geom.ClearBorderScrollbarPaddingBlockEnd()
 	}
-	return border, padding
+	return geom.Border, geom.Padding
 }
 
 // ComputeFragmentGeometry resolves border and padding from a CSS style

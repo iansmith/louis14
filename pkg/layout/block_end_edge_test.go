@@ -209,7 +209,7 @@ func matchesUnlessSkipped(got, want float64) bool {
 	return want == notChecked || got == want
 }
 
-// TestFragmentBlockEdges_PastEnd: a multicol fragment past the
+// TestFragmentBlockEdges: a multicol fragment past the
 // box's block end (a parallel flow) carries neither block edge, cloned or
 // not (Blink ShouldCloneBlockStartBorderPadding is false past the block end
 // and ShouldIncludeBlockEndBorderPadding returns false,
@@ -218,22 +218,31 @@ func matchesUnlessSkipped(got, want float64) bool {
 // break inside (ShouldIncludeBlockStartBorderPadding,
 // fragmentation_utils.cc:522-525), not on how much it consumed: a
 // zero-consumed break-inside token drops it, a break-before token keeps it.
-func TestFragmentBlockEdges_PastEnd(t *testing.T) {
+func TestFragmentBlockEdges(t *testing.T) {
 	geom := FragmentGeometry{
+		Border:  LogicalEdges{BlockStart: 8, BlockEnd: 8},
 		Padding: LogicalEdges{BlockStart: 8, BlockEnd: 8},
 	}
-	blockSum := func(cloned bool, token *BlockBreakToken) float64 {
-		border, padding := FragmentBlockEdges(geom, cloned, token)
-		return border.BlockSum() + padding.BlockSum()
-	}
-	if got := blockSum(true, &BlockBreakToken{IsAtBlockEnd: true}); got != 0 {
-		t.Errorf("past-end fragment with cloned decorations = %v, want 0 (neither edge)", got)
-	}
-	if got := blockSum(false, &BlockBreakToken{}); got != 8 {
-		t.Errorf("zero-consumed break-inside resume = %v, want 8 (block-start edge dropped)", got)
-	}
-	if got := blockSum(false, &BlockBreakToken{IsBreakBefore: true}); got != 16 {
-		t.Errorf("break-before resume = %v, want 16 (first fragment keeps both edges)", got)
+	for _, tc := range []struct {
+		name               string
+		cloned             bool
+		token              *BlockBreakToken
+		wantStart, wantEnd float64
+	}{
+		{"past-end fragment with cloned decorations carries neither edge", true, &BlockBreakToken{IsAtBlockEnd: true}, 0, 0},
+		{"zero-consumed break-inside resume drops the block-start edge", false, &BlockBreakToken{}, 0, 8},
+		{"break-before resume keeps both edges", false, &BlockBreakToken{IsBreakBefore: true}, 8, 8},
+	} {
+		border, padding := FragmentBlockEdges(geom, tc.cloned, tc.token)
+		for _, e := range []struct {
+			kind  string
+			edges LogicalEdges
+		}{{"border", border}, {"padding", padding}} {
+			if e.edges.BlockStart != tc.wantStart || e.edges.BlockEnd != tc.wantEnd {
+				t.Errorf("%s: block-start/end %s = %v/%v, want %v/%v",
+					tc.name, e.kind, e.edges.BlockStart, e.edges.BlockEnd, tc.wantStart, tc.wantEnd)
+			}
+		}
 	}
 }
 
