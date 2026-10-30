@@ -440,6 +440,7 @@ func runReftestInner(t *testing.T, testPath string) reftestResult {
 		// resolves (wptResourceResolver).
 		refPath, err := testResolver.filesystemPath(refHref)
 		if err != nil {
+			t.Logf("reference %d/%d skipped: %v", i+1, len(refHrefs), err)
 			continue
 		}
 		if _, err := os.Stat(refPath); os.IsNotExist(err) {

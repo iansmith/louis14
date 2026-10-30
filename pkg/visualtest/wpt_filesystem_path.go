@@ -80,6 +80,8 @@ func newWPTResourceResolver(basePath string) wptResourceResolver {
 // wptserve/handlers.py:32-50 @ d4ecdfed88f962439247c2ad36b8fe47805b1520):
 // strip the mount's url_base and join the rest onto the mount's directory.
 //
+//   - Only the URL's path names the file: the query and fragment are
+//     dropped first (filesystem_path reads request.url_parts.path).
 //   - A URL on a configured WPT host is first reduced to its path
 //     (stripWPTHost).
 //   - A root-relative path is dot-segment-normalised (path.Clean, as KURL
@@ -91,6 +93,9 @@ func newWPTResourceResolver(basePath string) wptResourceResolver {
 //     tests do not touch the network.
 //   - A relative URL is joined onto basePath (the document's directory).
 func (r wptResourceResolver) filesystemPath(uri string) (string, error) {
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
 	if rewritten, ok := stripWPTHost(uri, r.cfg); ok {
 		uri = rewritten
 	}
