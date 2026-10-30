@@ -765,6 +765,18 @@ func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset Logical
 			fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(fragment.Style, b.wdm, b.childAvailableSize)
 		}
 	}
+	b.addChildInternal(fragment, offset)
+}
+
+// addChildInternal appends a child without resolving its relative offset.
+// Callers that already set fragment.RelativeOffset against a containing block
+// other than this builder's childAvailableSize use it directly, so a zero
+// result is not re-resolved. Mirrors Blink's FragmentBuilder::AddChildInternal
+// (fragment_builder.h:560 @ d4ecdfed88f962439247c2ad36b8fe47805b1520), reached
+// from BoxFragmentBuilder::AddChild with a supplied relative_offset, which
+// skips ComputeRelativeOffsetForBoxFragment (box_fragment_builder.cc:255-267
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func (b *BoxFragmentBuilder) addChildInternal(fragment *PhysicalFragment, offset LogicalOffset) {
 	b.children = append(b.children, logicalChildLink{
 		offset:   offset,
 		fragment: fragment,

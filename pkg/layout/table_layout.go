@@ -1301,9 +1301,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		// Attach directly to the table builder at the originating
 		// row's block-offset. Its relative offset still resolves against
-		// the originating row, the row Blink adds it through.
+		// the originating row, the row Blink adds it through; addChildInternal
+		// keeps the table's child available size from re-resolving a zero
+		// (auto) result.
 		relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
-		builder.AddChild(cellFrag, LogicalOffset{
+		builder.addChildInternal(cellFrag, LogicalOffset{
 			InlineOffset: cl.inlineOffset,
 			BlockOffset:  p.blockOffset + cl.cellBlockOffset,
 		})
