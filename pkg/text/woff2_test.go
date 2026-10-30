@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+// fetchCSSValuesResource is a FontFetcher over the committed WPT
+// css-values/resources fonts (IcTest*.woff2 and friends).
+func fetchCSSValuesResource(url string) ([]byte, error) {
+	return os.ReadFile("../visualtest/testdata/wpt-css3/css-values/resources/" + url)
+}
+
 // TestRegisterFontFace_WOFF2 (LOU-415): a WOFF2 @font-face source decodes to
 // a usable SFNT, so the face's own glyph advances are measured. The WPT
 // IcTest fonts give 水 (U+6C34) a full-width (1em), half-width (0.5em) or zero
@@ -12,9 +18,6 @@ import (
 // (platform/fonts/web_font_decoder.cc:189 @
 // 5992657f556bcd9d207a4aca187488462f027cab) → woff2::ConvertWOFF2ToTTF.
 func TestRegisterFontFace_WOFF2(t *testing.T) {
-	const resources = "../visualtest/testdata/wpt-css3/css-values/resources/"
-	fetch := func(url string) ([]byte, error) { return os.ReadFile(resources + url) }
-
 	for _, tc := range []struct {
 		file string
 		want float64 // advance of 水 at 20px
@@ -24,7 +27,7 @@ func TestRegisterFontFace_WOFF2(t *testing.T) {
 		{"IcTestZeroWidth.woff2", 0},
 	} {
 		fr := NewFontRegistry()
-		path, err := fr.RegisterFontFace("LOU415-"+tc.file, tc.file, "woff2", "normal", "normal", fetch)
+		path, err := fr.RegisterFontFace("LOU415-"+tc.file, tc.file, "woff2", "normal", "normal", fetchCSSValuesResource)
 		if err != nil {
 			t.Errorf("%s: RegisterFontFace: %v", tc.file, err)
 			continue
