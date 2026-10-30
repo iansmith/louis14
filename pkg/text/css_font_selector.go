@@ -37,8 +37,8 @@ type fontKey struct {
 
 // fontMetrics holds the per-font measurements that drive CSS font-relative
 // unit resolution (ch/ex/cap) for a given (font, size). The ic advance is
-// resolved separately (see CreateFont) so that U+6C34 (水) is always sourced
-// from a font that actually contains the glyph.
+// resolved separately (see CreateFont) so that U+6C34 (水) is sourced from a
+// declared family whose @font-face unicode-range covers it.
 type fontMetrics struct {
 	chWidth float64
 	xHeight float64
@@ -57,9 +57,10 @@ func NewCSSFontSelector(fc FontConfig) *CSSFontSelector {
 // available font's aspect value, then the Font's primary SimpleFontData
 // supplies the metrics — the "0" advance (SetZeroWidth(ZeroInlineSize()),
 // platform/fonts/simple_font_data.cc:243-245), x-height and cap-height
-// (FontMetrics, platform/fonts/font_metrics.h:98/86) and the 水 advance
-// (IdeographicInlineSize, simple_font_data.cc:461), all @
-// 5992657f556bcd9d207a4aca187488462f027cab.
+// (FontMetrics, platform/fonts/font_metrics.h:98/86), all @
+// 5992657f556bcd9d207a4aca187488462f027cab, and the optional 水 advance
+// (SimpleFontData::IdeographicInlineSize, simple_font_data.cc:459-473 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	fc := fs.fc
 	specifiedSize := s.GetFontSize()
@@ -98,27 +99,34 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	}
 
 	// ic unit: CSS Values 4 §6.1 defines ic as the advance of U+6C34 (水) in
-	// the element's font. Only measure from a font that explicitly covers 水 in
-	// the declared font-family list (via the registry). If no such font exists,
-	// the advance stays 0 and the ic unit falls back to 1em. We do NOT fall
-	// back to builtin serif/sans-serif here — doing so would pick up any
-	// system CJK font and produce wrong ic values for Latin-only declared fonts.
-	ic := 0.0
+	// the element's font. Only measure from a declared family whose
+	// @font-face unicode-range covers 水 (via the registry), as Blink picks
+	// Font::PrimaryFontWithCjkWater (platform/fonts/font.h:154/:250 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). The advance is present only
+	// then — even when it is 0 — as SimpleFontData::IdeographicAdvanceWidth
+	// sets its optional only for a font with the 水 glyph
+	// (simple_font_data.cc:435-445 @ d4ecdfed88f962439247c2ad36b8fe47805b1520);
+	// louis14 checks the unicode-range, not the cmap. With no such family it
+	// is absent and the ic unit falls back to 1em. We do NOT fall back to
+	// builtin serif/sans-serif here — doing so would pick up any system CJK
+	// font and produce wrong ic values for Latin-only declared fonts.
+	ic, hasIC := 0.0, false
 	if fc.Registry != nil {
 		for _, fam := range ParseFontFamilyList(family) {
 			if icPath := fc.Registry.LookupForCodepoint(fam, '水', bold, italic, synth.Style); icPath != "" {
-				ic = fs.waterAdvance(icPath, usedSize)
+				ic, hasIC = fs.waterAdvance(icPath, usedSize), true
 				break
 			}
 		}
 	}
 
 	return css.Font{
-		AdjustedSize:          usedSize,
-		ZeroWidth:             usedMetrics.chWidth,
-		XHeight:               usedMetrics.xHeight,
-		CapHeight:             usedMetrics.capHght,
-		IdeographicInlineSize: ic,
+		AdjustedSize:             usedSize,
+		ZeroWidth:                usedMetrics.chWidth,
+		XHeight:                  usedMetrics.xHeight,
+		CapHeight:                usedMetrics.capHght,
+		IdeographicInlineSize:    ic,
+		HasIdeographicInlineSize: hasIC,
 	}
 }
 

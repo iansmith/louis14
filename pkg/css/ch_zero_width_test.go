@@ -50,36 +50,41 @@ func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
 	}
 }
 
-// TestAnonymousStylesCopyStyleResolutionContext (LOU-428): every anonymous-box
-// style carries its parent's full resolution context — all font metrics, the
-// used font-size and the font selector — as Blink builds an anonymous style
-// from the parent style, inheriting its Font
+// TestAnonymousStylesCopyStyleResolutionContext (LOU-428, LOU-431): every
+// anonymous-box style and every clone carries its parent's full resolution
+// context — all font metrics (with their measured flags), the used font-size
+// and the font selector — as Blink builds an anonymous style from the parent
+// style, inheriting its Font
 // (StyleResolver::CreateAnonymousStyleBuilderWithDisplay,
-// core/css/resolver/style_resolver.cc:3607 @
-// 5992657f556bcd9d207a4aca187488462f027cab).
+// core/css/resolver/style_resolver.cc:3318 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 	parent := NewStyle()
 	parent.Set("font-size", "20px")
 	parent.ViewportWidth, parent.ViewportHeight = 800, 600
 	parent.SetZeroWidth(11)
 	parent.UsedFontSize, parent.UsedFontSizeSet = 18, true
-	parent.XHeight, parent.CapHeight, parent.LhSize, parent.IcWidth = 9, 14, 30, 19
+	parent.XHeight, parent.CapHeight, parent.LhSize = 9, 14, 30
+	parent.IcWidth, parent.HasIdeographicInlineSize = 19, true
 	parent.BaseDir = "base/"
 	parent.fontSelector = fakeFontSelector{}
 	for name, newAnon := range map[string]func(*Style) *Style{
-		"NewAnonymousBlockStyle":         NewAnonymousBlockStyle,
-		"NewAnonymousTableCellStyle":     NewAnonymousTableCellStyle,
-		"NewAnonymousTableRowStyle":      NewAnonymousTableRowStyle,
-		"NewAnonymousInlineRubyStyle":    NewAnonymousInlineRubyStyle,
-		"NewAnonymousTableRowGroupStyle": NewAnonymousTableRowGroupStyle,
+		"NewAnonymousBlockStyle":          NewAnonymousBlockStyle,
+		"NewAnonymousTableCellStyle":      NewAnonymousTableCellStyle,
+		"NewAnonymousTableRowStyle":       NewAnonymousTableRowStyle,
+		"NewAnonymousInlineRubyStyle":     NewAnonymousInlineRubyStyle,
+		"NewAnonymousTableRowGroupStyle":  NewAnonymousTableRowGroupStyle,
+		"Clone":                           (*Style).Clone,
+		"CreateAnonymousStyleWithDisplay": func(p *Style) *Style { return CreateAnonymousStyleWithDisplay(p, "block") },
 	} {
 		s := newAnon(parent)
 		if s.ViewportWidth != 800 || s.ViewportHeight != 600 || s.ChWidth != 11 || !s.HasZeroWidth ||
 			s.UsedFontSize != 18 || !s.UsedFontSizeSet || s.XHeight != 9 || s.CapHeight != 14 ||
-			s.LhSize != 30 || s.IcWidth != 19 || s.BaseDir != "base/" || s.fontSelector != parent.fontSelector {
-			t.Errorf("%s dropped resolution context: viewport %vx%v ch %v/%v used %v/%v ex %v cap %v lh %v ic %v base %q selector %v",
+			s.LhSize != 30 || s.IcWidth != 19 || !s.HasIdeographicInlineSize || s.BaseDir != "base/" ||
+			s.fontSelector != parent.fontSelector {
+			t.Errorf("%s dropped resolution context: viewport %vx%v ch %v/%v used %v/%v ex %v cap %v lh %v ic %v/%v base %q selector %v",
 				name, s.ViewportWidth, s.ViewportHeight, s.ChWidth, s.HasZeroWidth, s.UsedFontSize, s.UsedFontSizeSet,
-				s.XHeight, s.CapHeight, s.LhSize, s.IcWidth, s.BaseDir, s.fontSelector)
+				s.XHeight, s.CapHeight, s.LhSize, s.IcWidth, s.HasIdeographicInlineSize, s.BaseDir, s.fontSelector)
 		}
 	}
 }

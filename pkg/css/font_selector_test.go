@@ -10,16 +10,20 @@ import (
 // fakeFontSelector is a deterministic stand-in for text.CSSFontSelector. Its
 // ratios differ from every fallback (ex 0.5em, ch 0.5em, ic 1em, cap 0.7em) so
 // a value that came from the font cannot be mistaken for a fallback.
-// font-family "b" has a 0.3em x-height; "noic" has no 水 glyph.
+// font-family "b" has a 0.3em x-height; "noic" has no 水 glyph; "zeroic" has
+// a 水 glyph with a zero advance.
 type fakeFontSelector struct{}
 
 func (fakeFontSelector) CreateFont(s *Style) Font {
 	fs := s.GetFontSize()
-	f := Font{AdjustedSize: fs, ZeroWidth: 0.6 * fs, XHeight: 0.4 * fs, CapHeight: 0.8 * fs, IdeographicInlineSize: 0.9 * fs}
+	f := Font{AdjustedSize: fs, ZeroWidth: 0.6 * fs, XHeight: 0.4 * fs, CapHeight: 0.8 * fs,
+		IdeographicInlineSize: 0.9 * fs, HasIdeographicInlineSize: true}
 	switch fam, _ := s.Get("font-family"); strings.TrimSpace(fam) {
 	case "b":
 		f.XHeight = 0.3 * fs
 	case "noic":
+		f.IdeographicInlineSize, f.HasIdeographicInlineSize = 0, false
+	case "zeroic":
 		f.IdeographicInlineSize = 0
 	}
 	return f
@@ -56,7 +60,8 @@ func TestLineHeight_FontMetricUnitsInheritComputedLength(t *testing.T) {
 		{"a", "calc(1em + 1ic)", 19},  // 水 advance 0.9em
 		{"a", "calc(1em + 1cap)", 18}, // cap-height 0.8em
 		{"a", "2ex", 8},
-		{"noic", "calc(1em + 1ic)", 20}, // FontSizes::Ic falls back to 1em
+		{"noic", "calc(1em + 1ic)", 20},   // FontSizes::Ic falls back to 1em
+		{"zeroic", "calc(1em + 1ic)", 10}, // a present zero 水 advance gives ic = 0
 	} {
 		doc, _ := html.Parse(`<style>div { font-family: ` + tc.family + `; font-size: 10px; line-height: ` +
 			tc.lineHeight + `; } span { font-size: 40px; }</style><div><span>x</span></div>`)
