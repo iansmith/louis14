@@ -245,8 +245,9 @@ type NestedDocumentResult struct {
 //     fetched, as HTMLFrameElementBase::OpenURL does with
 //     GetDocument().CompleteURL(url_)
 //     (third_party/blink/renderer/core/html/html_frame_element_base.cc:70)
-//     and HTMLObjectElement with GetDocument().CompleteURL(url_)
-//     (third_party/blink/renderer/core/html/html_object_element.cc:227).
+//     and HTMLPlugInElement::RequestObject with
+//     GetDocument().CompleteURL(url_)
+//     (third_party/blink/renderer/core/html/html_plugin_element.cc:702).
 //     The base is the completed URL's directory, so each nesting level
 //     composes onto its parent's base.
 //
