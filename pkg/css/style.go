@@ -85,6 +85,12 @@ type Style struct {
 	// (when a moved node lands in a new document, the next cascade pass
 	// re-stamps this field). Empty for top-level documents.
 	//
+	// It is also the base an <img src> is completed against at layout
+	// (getImgIntrinsicInfo) and at paint (newPaintLayer), as
+	// Document::CompleteURL does
+	// (third_party/blink/renderer/core/dom/document.cc:7553 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	//
 	// Post-LOU-138 phase 7: getter-time `url()` resolution no longer
 	// reads this field — typed wrappers (CSSImageValue / CSSURIValue)
 	// store the parse-time-resolved absolute form and consumers read

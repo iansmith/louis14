@@ -3209,37 +3209,9 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	if bla.node.DOMNode == nil {
 		return nil
 	}
-	dom := bla.node.DOMNode
-	var uri string
-	var htmlContent string
-
-	switch dom.TagName {
-	case "iframe":
-		// srcdoc takes priority over src per HTML spec.
-		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
-			htmlContent = srcdoc
-			uri = ""
-		} else {
-			uri, _ = dom.GetAttribute("src")
-		}
-	case "object":
-		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
-			uri, _ = dom.GetAttribute("data")
-		}
-	default:
+	htmlContent, baseDir, ok := openFrameOwnerURL(bla.ctx, bla.node.DOMNode)
+	if !ok {
 		return nil
-	}
-
-	// If we have inline srcdoc content, skip the fetcher entirely.
-	if htmlContent == "" {
-		if uri == "" || bla.ctx.DocumentFetcher == nil {
-			return nil
-		}
-		var err error
-		htmlContent, err = bla.ctx.DocumentFetcher(uri)
-		if err != nil {
-			return nil
-		}
 	}
 
 	// Compute the content-box physical size for the nested viewport.
@@ -3249,16 +3221,7 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  blockSize,
 	}, wdm.WM)
 
-	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
-	if res == nil {
-		return nil
-	}
-	// Retain the parsed nested document on the iframe/object DOM node so that
-	// JS can access iframe.contentDocument after layout completes.
-	if res.Doc != nil {
-		dom.NestedDocument = res.Doc
-	}
-	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
 }
 
 // layoutElement dispatches to the appropriate layout algorithm based on

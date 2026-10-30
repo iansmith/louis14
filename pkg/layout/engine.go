@@ -7,6 +7,7 @@ import (
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
+	urlpkg "louis14/pkg/url"
 )
 
 // LayoutEngine performs CSS layout, producing a tree of positioned Box fragments.
@@ -232,27 +233,86 @@ type NestedDocumentResult struct {
 	Doc *html.Document
 }
 
-// layoutNestedDocument parses and lays out a nested HTML document (for iframe/object)
-// using the given physical dimensions as the viewport. nestedDocURI is the src/data
-// URI of the nested document, used to re-root relative image/document URIs so that
-// sub-resources of the nested document resolve correctly relative to its location.
-// Returns the root layout result, or nil if parsing/layout fails.
-func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, nestedDocURI string) *NestedDocumentResult {
-	// Compute the nested document's BaseDir from its fully-qualified URL
-	// (outer base + iframe src). URLs inside the nested doc resolve against
-	// this base, so the outer renderer's single fetcher can serve sub-
-	// resources for any depth of nesting. Mirrors how Blink threads the
-	// owner-document base through `CSSParserContext` for each parse pass.
-	nestedBaseDir := css.URLDir(css.CompleteURL(nestedDocURI, ctx.BaseDir))
-	if nestedBaseDir == "." {
-		nestedBaseDir = ""
+// openFrameOwnerURL selects and fetches the document an <iframe> or <object>
+// embeds, and returns its HTML and its base (the Document::BaseURL analog).
+//
+//   - <iframe srcdoc>: the srcdoc text; its base is the container
+//     document's base, as Document::FallbackBaseURL returns
+//     same_origin_parent->BaseURL() for a srcdoc document
+//     (third_party/blink/renderer/core/dom/document.cc:5046, :5063).
+//   - <iframe src> / <object data> (type "" or text/html): the URL is
+//     completed against the embedding document's base before it is
+//     fetched, as HTMLFrameElementBase::OpenURL does with
+//     GetDocument().CompleteURL(url_)
+//     (third_party/blink/renderer/core/html/html_frame_element_base.cc:70)
+//     and HTMLObjectElement with GetDocument().CompleteURL(url_)
+//     (third_party/blink/renderer/core/html/html_object_element.cc:227).
+//     The base is the completed URL's directory, so each nesting level
+//     composes onto its parent's base.
+//
+// Citations @ d4ecdfed88f962439247c2ad36b8fe47805b1520. ok is false when
+// owner embeds no HTML document or the fetch fails.
+func openFrameOwnerURL(ctx *LayoutContext, owner *html.Node) (htmlContent, baseDir string, ok bool) {
+	var raw string
+	switch owner.TagName {
+	case "iframe":
+		// srcdoc takes priority over src per HTML spec.
+		if srcdoc, has := owner.GetAttribute("srcdoc"); has && srcdoc != "" {
+			return srcdoc, ctx.BaseDir, true
+		}
+		raw, _ = owner.GetAttribute("src")
+	case "object":
+		if dataType, _ := owner.GetAttribute("type"); dataType == "text/html" || dataType == "" {
+			raw, _ = owner.GetAttribute("data")
+		}
+	default:
+		return "", "", false
 	}
 
+	uri := urlpkg.CompleteURL(raw, ctx.BaseDir)
+	if uri == "" || ctx.DocumentFetcher == nil {
+		return "", "", false
+	}
+	htmlContent, err := ctx.DocumentFetcher(uri)
+	if err != nil {
+		return "", "", false
+	}
+	baseDir = urlpkg.URLDir(uri)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	return htmlContent, baseDir, true
+}
+
+// layoutFrameOwnerDocument lays out the document openFrameOwnerURL returned
+// in a vpW x vpH viewport, retains it on owner for iframe.contentDocument,
+// and returns the root fragment with its X offset, or nil.
+func layoutFrameOwnerDocument(ctx *LayoutContext, owner *html.Node, htmlContent, baseDir string, vpW, vpH float64) *nestedDocFragment {
+	res := layoutNestedDocument(ctx, htmlContent, vpW, vpH, baseDir)
+	if res == nil {
+		return nil
+	}
+	if res.Doc != nil {
+		owner.NestedDocument = res.Doc
+	}
+	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+}
+
+// layoutNestedDocument parses and lays out a nested HTML document (for
+// iframe/object) using the given physical dimensions as the viewport.
+// baseDir is the nested document's base, the analog of Document::BaseURL
+// (third_party/blink/renderer/core/dom/document.cc:5083 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), computed by
+// openFrameOwnerURL. Every relative URL in the document is completed
+// against it where it is used (Document::CompleteURL, document.cc:7553), so
+// the fetchers stay document-agnostic. Returns the root layout result, or
+// nil if parsing/layout fails.
+func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, baseDir string) *NestedDocumentResult {
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
 		return nil
 	}
-	doc.BaseDir = nestedBaseDir
+	doc.BaseDir = baseDir
 
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
@@ -274,15 +334,15 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
-	// Build nested context — inherit fonts; re-root fetchers to the nested doc's URI
-	// so that relative sub-resources (images, stylesheets, child iframes) resolve
-	// correctly relative to the nested document's location, not the outer document's.
+	// Build the nested context: inherit fonts and the document-agnostic
+	// fetchers; relative URLs reach them already completed against
+	// doc.BaseDir.
 	nestedCtx := &LayoutContext{
 		ViewportWidth:   vpWidth,
 		ViewportHeight:  vpHeight,
 		BaseDir:         doc.BaseDir,
-		ImageFetcher:    ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI),
-		DocumentFetcher: ReRootedDocumentFetcher(ctx.DocumentFetcher, nestedDocURI),
+		ImageFetcher:    ctx.ImageFetcher,
+		DocumentFetcher: ctx.DocumentFetcher,
 		FontConfig:      ctx.FontConfig,
 	}
 

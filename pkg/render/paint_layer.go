@@ -7,6 +7,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	urlpkg "louis14/pkg/url"
 	"mazarin/textshape"
 )
 
@@ -122,7 +123,7 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc       string        // src attribute value; empty if not an img element
+	ImageSrc       string        // <img> src completed against its owning document's base; empty if not an img element
 	ObjectFit      css.ObjectFit // fill, contain, cover, none, scale-down
 	ObjectPosition [2]float64    // x%, y% in range [0,1]; default (0.5, 0.5)
 	ImageRendering string        // auto, pixelated, crisp-edges, -webkit-optimize-contrast
@@ -1066,9 +1067,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.Opacity = s.GetOpacity()
 
 	// Replaced element (img): capture src for paint-time image loading.
+	// Blink paints the ImageResourceContent the element already fetched;
+	// louis14 has no per-element resource and re-fetches by string, so the
+	// src is completed here against the owning document's base, as
+	// ImageLoader::ImageSourceToKURL does
+	// (third_party/blink/renderer/core/loader/image_loader.cc:746 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	if box.Node != nil && box.Node.TagName == "img" {
 		if src, ok := box.Node.GetAttribute("src"); ok {
-			layer.ImageSrc = src
+			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
 		layer.ObjectFit = s.GetObjectFit()
 		opX, opY := s.GetObjectPosition()
