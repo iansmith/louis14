@@ -555,9 +555,10 @@ func TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411(t *testing.T) {
 // TestColumnBSFF_ClipAndOutOfFlow_LOU411: the builder twin of
 // TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow. A column
 // builder accumulates its children's block-size for fragmentation: a child
-// that clips block-axis overflow contributes only its own box, an
-// out-of-flow child (added without AddResult) nothing
-// (box_fragment_builder.cc:479-489, :743-761 @ a9f50e522efa).
+// that clips block-axis overflow contributes only its own box
+// (box_fragment_builder.cc:479-489, :743-761 @ a9f50e522efa). The
+// out-of-flow half lives in TestColumnBSFF_OutOfFlowChildIgnored_LOU411,
+// which runs it through block layout.
 func TestColumnBSFF_ClipAndOutOfFlow_LOU411(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	fragSpace := &ConstraintSpace{HasBlockFragmentation: true}
@@ -575,25 +576,45 @@ func TestColumnBSFF_ClipAndOutOfFlow_LOU411(t *testing.T) {
 		return b.Build()
 	}
 	for _, tc := range []struct {
-		name      string
-		child     *LayoutResult
-		outOfFlow bool
-		want      float64
+		name  string
+		child *LayoutResult
+		want  float64
 	}{
-		{"visible overflow extends", box(nil), false, 90},
-		{"overflow:hidden clips", box(makeStyle("overflow", "hidden")), false, 30},
-		{"abspos ignored", box(makeStyle("position", "absolute")), true, 0},
+		{"visible overflow extends", box(nil), 90},
+		{"overflow:hidden clips", box(makeStyle("overflow", "hidden")), 30},
 	} {
 		col := NewBoxFragmentBuilder(wdm)
 		col.SetConstraintSpace(fragSpace)
 		col.SetBoxType(BoxTypeColumn)
 		col.SetSize(LogicalSize{InlineSize: 50, BlockSize: 100})
 		col.AddChild(tc.child.Fragment, LogicalOffset{BlockOffset: 10})
-		if !tc.outOfFlow {
-			col.PropagateChildBlockSizeForFragmentation(tc.child, LogicalOffset{BlockOffset: 10})
-		}
+		col.PropagateChildBlockSizeForFragmentation(tc.child, LogicalOffset{BlockOffset: 10})
 		if got := col.Build().BlockSizeForFragmentation; got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestColumnBSFF_OutOfFlowChildIgnored_LOU411: block layout under block
+// fragmentation does not fold an abspos child into the builder's
+// block-size for fragmentation. Blink's BlockLayoutAlgorithm hands an
+// out-of-flow child to AddOutOfFlowChildCandidate (block_layout_algorithm.cc:
+// 1719 @ a9f50e522efa), never to AddResult, so PropagateBreakInfo
+// (box_fragment_builder.cc:227-229, :479-489 @ a9f50e522efa) never sees its
+// extent; under fragmentation the candidate is promoted to a fragmentainer
+// descendant (out_of_flow_layout_part.cc:1190-1201 @ a9f50e522efa) and laid
+// out after the columns. Blink's arithmetic: the wrapper's only in-flow child
+// is 20px tall, so its BlockSizeForFragmentation is 20 even though the
+// abspos child reaches 200px.
+func TestColumnBSFF_OutOfFlowChildIgnored_LOU411(t *testing.T) {
+	styles := map[*html.Node]*css.Style{}
+	ids := map[*html.Node]string{}
+	tree := ms("W", props("position", "relative"),
+		ms("A", props("height", "20px")),
+		ms("O", props("position", "absolute", "top", "0px", "width", "10px", "height", "200px")),
+	)
+	res := layoutBlockInFragmentainer(t, tree.build(styles, ids), styles, 1000, 0)
+	if got := res.BlockSizeForFragmentation; got != 20 {
+		t.Errorf("BlockSizeForFragmentation = %v, want 20 (abspos extent excluded)", got)
 	}
 }
