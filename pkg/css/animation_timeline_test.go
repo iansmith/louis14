@@ -25,8 +25,14 @@ const timelineTestCSS = `<style>
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 #target { display: none; }
 #target.animate { animation: display-animation 1s; display: block; }
-#target.go { animation: fade 1s linear; }
-#target.held { animation: fade 1s linear; animation-play-state: paused; }
+@keyframes stay-displayed { from { display: block; } to { display: block; } }
+#target.go { animation: fade 1s linear; display: block; }
+#target.held { animation: fade 1s linear; animation-play-state: paused; display: block; }
+#target.hidden-go { animation: fade 1s linear; }
+#target.exit { animation: stay-displayed 1s; }
+#target.hidden-animate { animation: display-animation 1s; }
+.parent-hidden { display: none; }
+#child { animation: fade 1s linear; }
 </style>`
 
 // timelineTarget returns the single <div> in doc.
@@ -163,5 +169,114 @@ func TestCSSAnimationRemovedThenReaddedRestarts(t *testing.T) {
 	want := (3 * html.ApproximateFrameTime).Seconds()
 	if got := opacityOf(t, s); math.Abs(got-want) > 1e-9 {
 		t.Errorf("opacity = %v, want %v", got, want)
+	}
+}
+
+// The display:none tests below follow CSS Animations 1 §2: setting display to
+// none terminates the running animations of the element and its descendants,
+// and making it displayed again starts the ones its style names. In Blink,
+// CalculateAnimationUpdate walks the animation-name list only when the new
+// base display or the previous computed style's display is not none
+// (css_animations.cc:1864-1866), and Element::RecalcOwnStyle cancels the
+// element's CSS animations when its base display is none and no style is
+// stored (element.cc:5572-5583), all @ d4ecdfed88f962439247c2ad36b8fe47805b1520.
+
+func TestCSSAnimationDisplayNoneAtLoadStartsWhenShown(t *testing.T) {
+	// The clock-0 pass names the animation while the element is display:none
+	// and has no previous style, so the animation does not start then. It
+	// starts in the pass that displays the element, after 3 frames, and so
+	// samples at the timeline time.
+	s := restyleAfterFrames(t, "hidden-go", "go", 3)
+	want := (3 * html.ApproximateFrameTime).Seconds()
+	if got := opacityOf(t, s); math.Abs(got-want) > 1e-9 {
+		t.Errorf("opacity = %v, want %v", got, want)
+	}
+}
+
+func TestCSSAnimationInDisplayNoneSubtreeStartsWhenShown(t *testing.T) {
+	// A displayed grandchild of a display:none element is in a display:none
+	// subtree: its animation starts only when the ancestor is displayed.
+	doc, err := html.Parse(timelineTestCSS + `<section id="parent" class="parent-hidden"><div><p id="child">x</p></div></section>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var parent, child *html.Node
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
+		switch n.Attributes["id"] {
+		case "parent":
+			parent = n
+		case "child":
+			child = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(doc.Root)
+	if parent == nil || child == nil {
+		t.Fatal("parent or child missing")
+	}
+	ApplyStylesToDocument(doc, 800, 600)
+	doc.AnimationClock.UpdateTime(3 * html.ApproximateFrameTime)
+	parent.Attributes["class"] = ""
+	s := ApplyStylesToDocument(doc, 800, 600)[child]
+	want := (3 * html.ApproximateFrameTime).Seconds()
+	if got := opacityOf(t, s); math.Abs(got-want) > 1e-9 {
+		t.Errorf("grandchild opacity = %v, want %v", got, want)
+	}
+}
+
+func TestCSSAnimationCancelledByDisplayNoneRestarts(t *testing.T) {
+	// The load-time animation is held at 0. Hiding the element cancels it
+	// (element.cc:5572-5583); showing it again starts a new animation, which
+	// samples at the timeline time.
+	doc, err := html.Parse(timelineTestCSS + `<div id="target" class="go"></div>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	target := timelineTarget(t, doc)
+	ApplyStylesToDocument(doc, 800, 600)
+	doc.AnimationClock.UpdateTime(3 * html.ApproximateFrameTime)
+	target.Attributes["class"] = "hidden-go"
+	ApplyStylesToDocument(doc, 800, 600)
+	target.Attributes["class"] = "go"
+	s := ApplyStylesToDocument(doc, 800, 600)[target]
+	want := (3 * html.ApproximateFrameTime).Seconds()
+	if got := opacityOf(t, s); math.Abs(got-want) > 1e-9 {
+		t.Errorf("opacity = %v, want %v", got, want)
+	}
+}
+
+func TestCSSAnimationStartedAsElementIsHiddenKeepsItDisplayed(t *testing.T) {
+	// The element was displayed in the previous pass, so the pass that sets
+	// its base display to none still starts the animations it names
+	// (css_animations.cc:1864-1866 checks the old style's display). An
+	// animation that interpolates display to block keeps it displayed and
+	// running, so it is not cancelled and holds display: block in a later
+	// pass too.
+	doc, err := html.Parse(timelineTestCSS + `<div id="target" class="go"></div>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	target := timelineTarget(t, doc)
+	ApplyStylesToDocument(doc, 800, 600)
+	doc.AnimationClock.UpdateTime(3 * html.ApproximateFrameTime)
+	target.Attributes["class"] = "exit"
+	for pass := 1; pass <= 2; pass++ {
+		s := ApplyStylesToDocument(doc, 800, 600)[target]
+		if got, _ := s.Get("display"); got != "block" {
+			t.Errorf("pass %d: display = %q, want \"block\"", pass, got)
+		}
+	}
+}
+
+func TestCSSAnimationNamedWhileStayingHiddenDoesNotStart(t *testing.T) {
+	// The element was display:none in the previous pass and its base display
+	// stays none, so the newly named none->block animation does not start
+	// (css_animations.cc:1864-1866) and the element stays display:none.
+	s := restyleAfterFrames(t, "", "hidden-animate", 3)
+	if got, _ := s.Get("display"); got != "none" {
+		t.Errorf("display = %q, want \"none\"", got)
 	}
 }
