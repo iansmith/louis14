@@ -1646,7 +1646,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 		case css.DisplayTableCell:
 			// Bare cell without a row — wrap in an anonymous row
 			// (CSS 2.1 §17.2.1).
-			anonRowStyle := css.NewAnonymousTableRowStyle(tla.style)
+			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
 				isAnonymous: true,
@@ -1667,13 +1667,13 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			// must be wrapped in an anonymous table-row + anonymous table-cell per
 			// CSS 2.1 §17.2.1. Each such child becomes the sole cell of an
 			// anonymous row.
-			anonCellStyle := css.NewAnonymousTableCellStyle(tla.style)
+			anonCellStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableCell))
 			anonCell := &LayoutInputNode{
 				style:       anonCellStyle,
 				children:    []*LayoutInputNode{child},
 				isAnonymous: true,
 			}
-			anonRowStyle := css.NewAnonymousTableRowStyle(tla.style)
+			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
 				children:    []*LayoutInputNode{anonCell},

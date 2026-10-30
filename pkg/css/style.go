@@ -7760,8 +7760,8 @@ func ApplyMeasurableTextTransform(s string, t TextTransform) string {
 
 // copyStyleResolutionContext copies the non-property resolution context —
 // viewport size, font metrics, base direction, font-feature rules — from src
-// to dst. Shared by Clone, CreateAnonymousStyleWithDisplay and the
-// NewAnonymous*Style constructors so the field list cannot drift.
+// to dst. Shared by Clone and CreateAnonymousStyleWithDisplay so the field
+// list cannot drift.
 func copyStyleResolutionContext(dst, src *Style) {
 	dst.ViewportWidth = src.ViewportWidth
 	dst.ViewportHeight = src.ViewportHeight
@@ -7780,15 +7780,26 @@ func copyStyleResolutionContext(dst, src *Style) {
 	dst.fontSelector = src.fontSelector
 }
 
-// CreateAnonymousStyleWithDisplay builds the style for an anonymous box:
-// only inherited properties (including custom properties) are carried over
-// from the parent, and display is set explicitly. Mirrors Blink
-// StyleResolver::CreateAnonymousStyleWithDisplay, which the list-marker
-// machinery uses for the default ::marker style
-// (ListMarker::UpdateMarkerContentIfNeeded, list_marker.cc:320-323 @
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — non-inherited properties such
-// as borders, margins, and padding must NOT leak from the originating list
-// item onto the marker box.
+// CreateAnonymousStyleWithDisplay builds the style for an anonymous box —
+// an anonymous block, table row-group/row/cell wrapper, or block-ruby's inline
+// ruby child — and is louis14's only anonymous-box style builder. Mirrors
+// Blink StyleResolver::CreateAnonymousStyleBuilderWithDisplay and its
+// CreateAnonymousStyleWithDisplay wrapper
+// (core/css/resolver/style_resolver.cc:3607-3622 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which Blink calls for anonymous
+// blocks (layout_block.cc:515), table sections, rows and cells
+// (layout_table_section.cc:20, layout_table_row.cc:21, layout_table_cell.cc:30),
+// the block-ruby inline ruby (layout_ruby_as_block.cc:28) and a list marker's
+// image/text child (list_marker.cc:300, :323), all @ 5992657f556b. The style
+// is the initial style plus the parent's inherited properties, custom
+// properties included; the parent's unicode-bidi; the parent's applied
+// text-decoration vector; and display. Non-inherited properties such as
+// borders, margins and padding never leak from the parent.
+//
+// louis14 also builds the default ::marker box's own style here
+// (resolveMarkerStyle); Blink cascades that style instead, so the marker
+// path reapplies the marker UA defaults and AdjustStyleForMarker's
+// position-dependent changes afterwards.
 func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
 	s := NewStyle()
 	if parent != nil {
@@ -7796,11 +7807,23 @@ func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
 		// it, inherited values on the anonymous box (e.g. viewport-unit
 		// font sizes) resolve against zeroes.
 		copyStyleResolutionContext(s, parent)
+		// ComputedStyleBuilder(InitialStyle(), parent_style) (:3610): the
+		// parent's declared inherited values and custom properties, copied
+		// verbatim so var() resolves against the copied --* exactly as it
+		// does on the parent.
 		for prop, val := range parent.Properties {
 			if inheritableProperties[prop] || strings.HasPrefix(prop, "--") {
 				s.Properties[prop] = val
 			}
 		}
+		// SetUnicodeBidi(parent_style.GetUnicodeBidi()) (:3611). Absent on
+		// the parent means Blink's initial value, normal.
+		if bidi, ok := parent.Properties["unicode-bidi"]; ok {
+			s.Properties["unicode-bidi"] = bidi
+		}
+		// SetBaseTextDecorationData(parent_style.AppliedTextDecorationData())
+		// (:3612).
+		s.InheritAppliedTextDecorationsFrom(parent)
 	}
 	s.Set("display", display)
 	return s
