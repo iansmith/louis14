@@ -123,3 +123,22 @@ func TestLineHeight_SyntheticRootInheritsComputedLength(t *testing.T) {
 		}
 	}
 }
+
+// TestLineHeight_ExWithoutFontSelectorInheritsComputedLength (LOU-428): with
+// no font selector the cascade still computes an ex line-height to px, using
+// Blink's em/2 fallback for a font without an x-height
+// (CSSToLengthConversionData::FontSizes::Ex,
+// core/css/css_to_length_conversion_data.cc:95-99 @
+// 5992657f556bcd9d207a4aca187488462f027cab), so the 40px child inherits the
+// parent's 15px instead of re-resolving to 60px.
+func TestLineHeight_ExWithoutFontSelectorInheritsComputedLength(t *testing.T) {
+	doc, _ := html.Parse(`<style>div { font-size: 10px; line-height: calc(1em + 1ex); }
+		span { font-size: 40px; }</style><div><span>x</span></div>`)
+	for node, style := range ApplyStylesToDocument(doc, 800, 600) {
+		if node.TagName == "span" {
+			if got := style.GetLineHeight(); got != 15 {
+				t.Errorf("span line-height = %v, want 15 (div's 10px + 0.5em ex)", got)
+			}
+		}
+	}
+}

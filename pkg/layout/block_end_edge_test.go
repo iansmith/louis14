@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
 
@@ -209,27 +210,33 @@ func matchesUnlessSkipped(got, want float64) bool {
 	return want == notChecked || got == want
 }
 
-// TestEffectiveBlockBorderPadding_PastEnd: a multicol fragment past the
-// box's block end (a parallel flow) carries neither block edge, cloned or
-// not (Blink ShouldCloneBlockStartBorderPadding is false past the block end
-// and ShouldIncludeBlockEndBorderPadding returns false,
+// TestShouldIncludeBlockBorderPadding: a fragment past the box's block end
+// (a parallel flow) carries neither block edge, cloned or not (Blink
+// ShouldCloneBlockStartBorderPadding is false past the block end and
+// ShouldIncludeBlockEndBorderPadding returns false,
 // fragmentation_utils.cc:61-78, :527-545 @ a9f50e522efa). Whether a resumed
 // fragment carries its block-start edge depends only on the token being a
 // break inside (ShouldIncludeBlockStartBorderPadding,
 // fragmentation_utils.cc:522-525), not on how much it consumed: a
 // zero-consumed break-inside token drops it, a break-before token keeps it.
-func TestEffectiveBlockBorderPadding_PastEnd(t *testing.T) {
-	geom := FragmentGeometry{
-		Padding: LogicalEdges{BlockStart: 8, BlockEnd: 8},
-	}
-	if got := EffectiveBlockBorderPadding(geom, true, &BlockBreakToken{IsAtBlockEnd: true}, false); got != 0 {
-		t.Errorf("past-end fragment with cloned decorations = %v, want 0 (neither edge)", got)
-	}
-	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{}, false); got != 8 {
-		t.Errorf("zero-consumed break-inside resume = %v, want 8 (block-start edge dropped)", got)
-	}
-	if got := EffectiveBlockBorderPadding(geom, false, &BlockBreakToken{IsBreakBefore: true}, false); got != 16 {
-		t.Errorf("break-before resume = %v, want 16 (first fragment keeps both edges)", got)
+func TestShouldIncludeBlockBorderPadding(t *testing.T) {
+	const shouldBreakInside = false
+	for _, tc := range []struct {
+		name               string
+		cloned             bool
+		token              *BlockBreakToken
+		wantStart, wantEnd bool
+	}{
+		{"past-end fragment with cloned decorations carries neither edge", true, &BlockBreakToken{IsAtBlockEnd: true}, false, false},
+		{"zero-consumed break-inside resume drops the block-start edge", false, &BlockBreakToken{}, false, true},
+		{"break-before resume keeps both edges", false, &BlockBreakToken{IsBreakBefore: true}, true, true},
+	} {
+		start := ShouldIncludeBlockStartBorderPadding(tc.cloned, tc.token)
+		end := ShouldIncludeBlockEndBorderPadding(tc.token, shouldBreakInside, false, false, false, false)
+		if start != tc.wantStart || end != tc.wantEnd {
+			t.Errorf("%s: include block-start/end = %v/%v, want %v/%v",
+				tc.name, start, end, tc.wantStart, tc.wantEnd)
+		}
 	}
 }
 
@@ -247,5 +254,44 @@ func TestBreakingFragment_MeasurePassKeepsDeclaredHeight(t *testing.T) {
 	checkRects(t, got, map[string][]fragRect{"A": {{0, 0, 50, 60}}, "B": {{50, 0, 50, 40}}})
 	if c := got["C"]; len(c) == 0 || c[0].h != 150 {
 		t.Errorf("C fragments = %v, want the column-1 fragment 150 tall (Chrome 155)", c)
+	}
+}
+
+// TestMulticolBlockSizeIncludesBlockScrollbar: a multicol's fragment
+// block-size is its content plus BorderScrollbarPadding().BlockSum(), so a
+// reserved horizontal scrollbar adds to it (Blink
+// ColumnLayoutAlgorithm::Layout sizes from the builder's
+// BorderScrollbarPadding, column_layout_algorithm.cc:345-393 @
+// a9f50e522efa).
+func TestMulticolBlockSizeIncludesBlockScrollbar(t *testing.T) {
+	child := makeNode("div")
+	mc := makeNode("div", child)
+	mcStyle := makeStyle(
+		"display", "block",
+		"column-count", "2",
+		"column-gap", "0",
+		"overflow-x", "scroll",
+	)
+	styles := map[*html.Node]*css.Style{
+		mc:    mcStyle,
+		child: makeStyle("display", "block", "height", "200px"),
+	}
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	scrollbar := ComputeScrollbarLogicalEdges(mcStyle, wdm).BlockEnd
+	if scrollbar == 0 {
+		t.Fatal("overflow-x:scroll reserves no block-end scrollbar; the test cannot discriminate")
+	}
+
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		Build()
+	result := NewMulticolLayoutAlgorithm(testContext(), buildTestTree(mc, styles), space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil")
+	}
+	// 200px of content balances to 100px columns.
+	if got, want := result.Fragment.Size.HeightF64(), 100+scrollbar; got != want {
+		t.Errorf("multicol block-size = %v, want %v (100px columns + %vpx scrollbar)", got, want, scrollbar)
 	}
 }
