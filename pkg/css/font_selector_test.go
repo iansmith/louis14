@@ -125,6 +125,24 @@ func TestLineHeight_ContainerRuleReresolvesFont(t *testing.T) {
 	}
 }
 
+// TestLineHeight_ContainerRuleFontOnlyReresolvesLineHeight (LOU-428): an
+// @container rule that changes only font-size still re-derives a line-height
+// declared in an ordinary rule, since Blink applies @container rules inside the
+// one cascade before UpdateFont and line-height (style_cascade.cc:310-315 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestLineHeight_ContainerRuleFontOnlyReresolvesLineHeight(t *testing.T) {
+	doc, _ := html.Parse(`<style>p { line-height: 2ex; } @container (min-width: 100px) { p { font-size: 20px; } }</style>
+		<div style="container-type: inline-size; width: 500px; font-size: 10px"><p>x</p></div>`)
+	styles := ApplyStylesToDocumentWithFontSelector(doc, 800, 600, fakeFontSelector{})
+	p := styleByTag(t, styles, "p")
+	if got := p.GetFontSize(); got != 20 {
+		t.Fatalf("p font-size = %v, want 20 (the @container rule must match)", got)
+	}
+	if got := p.GetLineHeight(); got != 16 {
+		t.Errorf("p line-height = %v, want 16 (2 × 0.4em x-height at the @container font's 20px)", got)
+	}
+}
+
 // TestLineHeight_SyntheticRootFontMetricUnits (LOU-428): in a fragment parse,
 // :root's ex line-height is computed against :root's font before it is copied
 // onto the synthetic doc.Root style, which gets its own font metrics too.
