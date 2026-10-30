@@ -131,21 +131,19 @@ func TestColumnHeight_PhaseA_ConsumedRowBlockSizeNoSpuriousFire(t *testing.T) {
 // column-height:20px, column-wrap, row-gap:10px, columns:2, rowStride=30.
 // Layout: 10px content + 5px spanner + 20px content + 5px spanner.
 //
-// Trace with column-height=20, row-gap=10 (stride=30):
+// Blink balances column-fill:balance under column-height too
+// (column_layout_algorithm.cc:840-856 @ a9f50e522efa), and a line
+// contributes its column block-size (:949):
 //
-//	Row 0 (y=0–20): content1(10px). colBlockSize=20 (full row). Balanced to 5px/col.
-//	  rowBlockAdvance=20. blockCursor=20. Spanner1 detected.
-//	Spanner1(5px) pre-snap: offsetInCurrentRow(20)=20, remaining=0, 5>0 → snap.
-//	  offsetToNextRow(20)=0+10=10. blockCursor=30. Spanner1 at y=30–34.
-//	  blockCursor=35. isFirstRow reset to true.
-//	Row 1 (content2): lineOffset=35. colBlockSize=remainingRowHeight(35)=20-5=15.
-//	  content2=20px. col1 gets 15px, col2 resumes 5px then detects spanner2.
-//	  rowBlockAdvance=15. blockCursor=50. Spanner2 detected.
-//	Spanner2(5px) pre-snap: offsetInCurrentRow(50)=Mod(50,30)=20, remaining=0.
-//	  5>0 → snap fires. offsetToNextRow(50)=0+10=10. blockCursor=60.
-//	  Spanner2 at y=60 (correct: no remaining row space, snap to next row boundary).
+//	Row 0: content1 (10px) balances to 5px per column; the line contributes
+//	  5. Spanner1 (5px) fits in the row's remaining 15px: no snap, y=5.
+//	Row 0 again (lineOffset 10): content2 (20px) balances to 10px per
+//	  column; the line contributes 10. Spanner2 at offset 20 has no room
+//	  left in the row (remaining 0) and snaps to the next row, y=30.
 //
-// Contract: spanner1 at y=30, spanner2 at y=60.
+// Contract (Chrome 155 headless, LOU-411 probe7.html; corrected from
+// louis14-derived 30/60 when LOU-411 made column-height balance, ledger
+// L88): spanner1 at y=5, spanner2 at y=30.
 func TestColumnHeight_PhaseB_SpannerSnapOnlyWhenDoesNotFit(t *testing.T) {
 	t.Run("column-height-013", func(t *testing.T) {
 		content1 := makeNode("div")
@@ -164,13 +162,13 @@ func TestColumnHeight_PhaseB_SpannerSnapOnlyWhenDoesNotFit(t *testing.T) {
 				"row-gap", "10px",
 				"column-gap", "0",
 			),
-			// content1: 10px → 5px/col balanced in 20px row
+			// content1: 10px → 5px/col balanced in the 20px row
 			content1: makeStyle("display", "block", "height", "10px"),
-			// spanner1 lands at y=30 (remaining=0 at y=20, snap correct)
+			// spanner1 lands at y=5 (fits in the row)
 			spanner1: makeStyle("display", "block", "height", "5px", "column-span", "all"),
-			// content2: 20px in colBlockSize=15 → col1 15px, col2 5px + spanner2
+			// content2: 20px → 10px/col balanced
 			content2: makeStyle("display", "block", "height", "20px"),
-			// spanner2: 5px at y=60 (remaining=0 at y=50, snap correct)
+			// spanner2: 5px at y=30 (remaining=0 at y=20, snaps)
 			spanner2: makeStyle("display", "block", "height", "5px", "column-span", "all"),
 		}
 
@@ -202,14 +200,14 @@ func TestColumnHeight_PhaseB_SpannerSnapOnlyWhenDoesNotFit(t *testing.T) {
 				len(spannerOffsets), len(result.Fragment.Children))
 		}
 
-		// spanner1: remaining=0 at y=20, snap fires → y=30.
-		if spannerOffsets[0] != 30 {
-			t.Errorf("spanner1 at y=%v, want y=30", spannerOffsets[0])
+		// spanner1 fits after the 5px balanced line: no snap.
+		if spannerOffsets[0] != 5 {
+			t.Errorf("spanner1 at y=%v, want y=5 (Chrome 155)", spannerOffsets[0])
 		}
 
-		// spanner2: col1 consumes 15px → blockCursor=50, remaining=0, snap fires → y=60.
-		if spannerOffsets[1] != 60 {
-			t.Errorf("spanner2 at y=%v, want y=60", spannerOffsets[1])
+		// spanner2 at row offset 20 has no room left: it snaps to y=30.
+		if spannerOffsets[1] != 30 {
+			t.Errorf("spanner2 at y=%v, want y=30 (Chrome 155)", spannerOffsets[1])
 		}
 	})
 }

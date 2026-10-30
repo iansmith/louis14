@@ -526,3 +526,95 @@ func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
 		}
 	}
 }
+
+// TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411: a balanced
+// multicol nested in an outer fragmentation context whose forced breaks
+// leave no soft break opportunity stretches its columns to all the space
+// the outer fragmentainer gives it, instead of giving up at the 10px forced
+// runs (column_layout_algorithm.cc:1150-1173 @ a9f50e522efa; its balancing
+// measure ignores runs past column-count forced breaks, :1629-1633).
+// Chrome 155 headless, LOU-411 probe8.html (multicol-nested-column-rule-003's
+// shape): the green box's four fragments are each 100px tall.
+func TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411(t *testing.T) {
+	frag, ids := layoutOuterMulticolSpec(t,
+		props("column-count", "2", "column-gap", "20px", "column-fill", "auto", "width", "100px", "height", "100px"),
+		ms("in", props("column-count", "2", "column-gap", "20px"),
+			ms("g", nil,
+				ms("", props("height", "10px", "break-after", "column")),
+				ms("", props("height", "10px", "break-after", "column")),
+				ms("", props("height", "200px")),
+			),
+		),
+	)
+	checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+		"in": {{0, 0, 40, 100}, {60, 0, 40, 100}},
+		"g":  {{0, 0, 10, 100}, {30, 0, 10, 100}, {60, 0, 10, 100}, {90, 0, 10, 100}},
+	})
+}
+
+// TestColumnBSFF_ClipAndOutOfFlow_LOU411: the builder twin of
+// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow. A column
+// builder accumulates its children's block-size for fragmentation: a child
+// that clips block-axis overflow contributes only its own box
+// (box_fragment_builder.cc:479-489, :743-761 @ a9f50e522efa). The
+// out-of-flow half lives in TestColumnBSFF_OutOfFlowChildIgnored_LOU411,
+// which runs it through block layout.
+func TestColumnBSFF_ClipAndOutOfFlow_LOU411(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	fragSpace := &ConstraintSpace{HasBlockFragmentation: true}
+	// box lays out a 20px box holding an 80px child.
+	box := func(style *css.Style) *LayoutResult {
+		b := NewBoxFragmentBuilder(wdm)
+		b.SetConstraintSpace(fragSpace)
+		b.SetSize(LogicalSize{InlineSize: 50, BlockSize: 20})
+		if style != nil {
+			b.SetStyle(style)
+		}
+		tall := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, 80)}}
+		b.AddChild(tall.Fragment, LogicalOffset{})
+		b.PropagateChildBlockSizeForFragmentation(tall, LogicalOffset{})
+		return b.Build()
+	}
+	for _, tc := range []struct {
+		name  string
+		child *LayoutResult
+		want  float64
+	}{
+		{"visible overflow extends", box(nil), 90},
+		{"overflow:hidden clips", box(makeStyle("overflow", "hidden")), 30},
+	} {
+		col := NewBoxFragmentBuilder(wdm)
+		col.SetConstraintSpace(fragSpace)
+		col.SetBoxType(BoxTypeColumn)
+		col.SetSize(LogicalSize{InlineSize: 50, BlockSize: 100})
+		col.AddChild(tc.child.Fragment, LogicalOffset{BlockOffset: 10})
+		col.PropagateChildBlockSizeForFragmentation(tc.child, LogicalOffset{BlockOffset: 10})
+		if got := col.Build().BlockSizeForFragmentation; got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestColumnBSFF_OutOfFlowChildIgnored_LOU411: block layout under block
+// fragmentation does not fold an abspos child into the builder's
+// block-size for fragmentation. Blink's BlockLayoutAlgorithm hands an
+// out-of-flow child to AddOutOfFlowChildCandidate (block_layout_algorithm.cc:
+// 1719 @ a9f50e522efa), never to AddResult, so PropagateBreakInfo
+// (box_fragment_builder.cc:227-229, :479-489 @ a9f50e522efa) never sees its
+// extent; under fragmentation the candidate is promoted to a fragmentainer
+// descendant (out_of_flow_layout_part.cc:1190-1201 @ a9f50e522efa) and laid
+// out after the columns. Blink's arithmetic: the wrapper's only in-flow child
+// is 20px tall, so its BlockSizeForFragmentation is 20 even though the
+// abspos child reaches 200px.
+func TestColumnBSFF_OutOfFlowChildIgnored_LOU411(t *testing.T) {
+	styles := map[*html.Node]*css.Style{}
+	ids := map[*html.Node]string{}
+	tree := ms("W", props("position", "relative"),
+		ms("A", props("height", "20px")),
+		ms("O", props("position", "absolute", "top", "0px", "width", "10px", "height", "200px")),
+	)
+	res := layoutBlockInFragmentainer(t, tree.build(styles, ids), styles, 1000, 0)
+	if got := res.BlockSizeForFragmentation; got != 20 {
+		t.Errorf("BlockSizeForFragmentation = %v, want 20 (abspos extent excluded)", got)
+	}
+}

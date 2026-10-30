@@ -150,6 +150,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	bla.fragmentainerOffsetForChildren = bla.space.FragmentainerOffset + geom.BorderBoxPadding().BlockStart
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+	builder.SetConstraintSpace(&bla.space)
+	builder.SetBoxType(bla.boxType)
 	// A node on the spanner path keeps its breaks in its parent's flow, so
 	// content after the spanner is not laid out before it
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
@@ -1735,12 +1737,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  0,
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
-				// LOU-111 step 4: propagate child's overflow extent into
-				// the parent's BSFF so parallel-flow / monolithic overflow
-				// reaches outer fragmentation contexts. Gated inside the
-				// propagator to fire only when the child shows true
-				// overflow past its physical extent (see fragment_builder
-				// .go docs); harmless for normal stacking.
+				// Under block fragmentation, max-merge this in-flow child's
+				// block-end for fragmentation (offset + its
+				// BlockSizeForFragmentation) into the builder, mirroring
+				// Blink AddResult -> PropagateBreakInfo
+				// (box_fragment_builder.cc:227-229, :479-489 @
+				// a9f50e522efa).
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = childBlockSize
 			} else {
@@ -1754,7 +1756,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  actualChildBlockOff,
 				}
 				builder.AddChild(childResult.Fragment, childOffset)
-				// LOU-111 step 4: propagate child's overflow. See note above.
+				// Max-merge the child's block-end for fragmentation. See
+				// note above.
 				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
@@ -2747,7 +2750,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if pendingHasForcedBreak {
 				result.HasForcedBreak = true
 			}
-			if pendingIntrinsicAtBreak > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+			// Raise only: Build already recorded the accumulated value.
+			if pendingIntrinsicAtBreak > max(NewLogicalFragment(wdm, result.Fragment).BlockSize(), result.BlockSizeForFragmentation) {
 				result.BlockSizeForFragmentation = pendingIntrinsicAtBreak
 			}
 		}
@@ -3220,10 +3224,16 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 	// Add the float fragment to the builder in local coordinates.
 	localFloatBlockOffset := floatBlockOffset - bfcBlockOrigin
-	builder.AddChild(childResult.Fragment, LogicalOffset{
+	floatOffset := LogicalOffset{
 		InlineOffset: floatInlineBFC - bfcInlineOrigin,
 		BlockOffset:  localFloatBlockOffset + childMargins.BlockStart,
-	})
+	}
+	builder.AddChild(childResult.Fragment, floatOffset)
+	// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:227-229,
+	// :479-489 @ a9f50e522efa); the float-margin term of
+	// BlockSizeForFragmentation (fragmentation_utils.cc:1562-1570) is not
+	// ported.
+	builder.PropagateChildBlockSizeForFragmentation(childResult, floatOffset)
 
 	// Add an exclusion for this float. The exclusion uses BFC-relative
 	// coordinates so it works correctly throughout the BFC.
@@ -3932,21 +3942,13 @@ func computeOrthogonalFallbackBlockForChildren(
 }
 
 // setupSpaceBuilderForFragmentation copies this block's fragmentation context
-// into a child's constraint-space builder at the given fragmentainer offset.
-// Mirrors Blink's SetupSpaceBuilderForFragmentation
-// (fragmentation_utils.cc:333-372 @ a9f50e522efa), including MinBreakAppeal
-// (:369) so a container that is breakable at the start of a resumed
-// fragment stays breakable through its descendants, and IsAtFragmentainerStart
-// for an offset at or before the fragmentainer start (:343-344).
+// into a child's constraint-space builder at the given fragmentainer offset
+// (SetupSpaceBuilderForFragmentation, fragmentation_utils.cc:379-397 @
+// a9f50e522efa). louis14 deviation: it passes this block's raw
+// FragmentainerBlockSize where Blink passes FragmentainerCapacity(builder,
+// is_for_children) (fragmentation_utils.h:187-203).
 func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *ConstraintSpaceBuilder, fragmentainerOffset float64) {
-	b.SetHasBlockFragmentation(true).
-		SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
-		SetFragmentainerOffset(fragmentainerOffset).
-		SetBlockFragmentationType(bla.space.BlockFragmentationType).
-		SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
-		SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns).
-		SetMinBreakAppeal(bla.space.MinBreakAppeal).
-		SetIsAtFragmentainerStart(fragmentainerOffset <= 0)
+	SetupSpaceBuilderForFragmentation(bla.space, fragmentainerOffset, bla.space.FragmentainerBlockSize, b)
 }
 
 // isFloatAtFragmentainerStart reports whether a float whose border edge sits
