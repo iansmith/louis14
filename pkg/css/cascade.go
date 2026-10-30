@@ -3470,6 +3470,12 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 			// First element child matches :root — compute its style to capture
 			// :root rules, then extract inheritable properties for doc.Root.
 			rootChildStyle := ComputeStyle(firstElem, stylesheets, viewportWidth, viewportHeight, ctx)
+			// Copy computed, not declared, values: resolve font-size against the
+			// initial 16px (doc.Root has no style yet) and line-height to a
+			// length, as for the :root element itself, so doc.Root's children
+			// inherit lengths rather than re-resolving em / %.
+			ApplyInheritedProperties(firstElem, rootChildStyle, styles)
+			absolutizeLineHeight(rootChildStyle, nil)
 			for prop := range inheritableProperties {
 				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
 				// Don't propagate from :root to synthetic doc root — otherwise every

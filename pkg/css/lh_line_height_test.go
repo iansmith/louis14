@@ -78,3 +78,48 @@ func TestLineHeight_VarFontShorthandInheritsComputedLength(t *testing.T) {
 		}
 	}
 }
+
+// TestLineHeight_PseudoElementLhResolvesAgainstOriginating: lh in a
+// pseudo-element's line-height resolves against the originating element's
+// line-height, its inheritance parent.
+func TestLineHeight_PseudoElementLhResolvesAgainstOriginating(t *testing.T) {
+	stylesheet, err := ParseStylesheet(`
+		p { font-size: 10px; line-height: 30px; }
+		p::before { content: "x"; font-size: 40px; line-height: 2lh; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*Stylesheet{stylesheet}
+	node := &html.Node{Type: html.ElementNode, TagName: "p"}
+	originating := ComputeStyle(node, stylesheets, 800, 600, nil)
+	before := ComputePseudoElementStyle(node, "before", stylesheets, 800, 600, originating)
+	if got := before.GetLineHeight(); got != 60 {
+		t.Errorf("::before line-height = %v, want 60 (2 × p's 30px)", got)
+	}
+}
+
+// TestLineHeight_SyntheticRootInheritsComputedLength: in a fragment parse
+// (no <html>), :root's line-height reaches doc.Root's other children through
+// the synthetic root style, which must carry the computed length too.
+func TestLineHeight_SyntheticRootInheritsComputedLength(t *testing.T) {
+	for _, tc := range []struct {
+		rootFontSize string
+		want         float64 // p's line-height: :root's 2em
+	}{
+		{"10px", 20},
+		{"62.5%", 20}, // of the initial 16px
+	} {
+		doc := html.NewDocument()
+		doc.Stylesheets = append(doc.Stylesheets, html.StylesheetSource{
+			Text: ":root { font-size: " + tc.rootFontSize + "; line-height: 2em; } p { font-size: 40px; }"})
+		first := &html.Node{Type: html.ElementNode, TagName: "div", Parent: doc.Root}
+		p := &html.Node{Type: html.ElementNode, TagName: "p", Parent: doc.Root}
+		doc.Root.Children = append(doc.Root.Children, first, p)
+
+		style := ApplyStylesToDocument(doc, 800, 600)[p]
+		if got := style.GetLineHeight(); got != tc.want {
+			t.Errorf(":root font-size %s: p line-height = %v, want %v", tc.rootFontSize, got, tc.want)
+		}
+	}
+}
