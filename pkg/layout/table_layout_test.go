@@ -275,3 +275,89 @@ func TestTableCell_ExplicitHeightVerticalAlign(t *testing.T) {
 		})
 	}
 }
+
+// layoutTableForTest lays out root (a block containing tables) in an
+// 800x600 horizontal-tb space.
+func layoutTableForTest(root *html.Node, styles map[*html.Node]*css.Style) *LayoutResult {
+	tree := buildTestTree(root, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		Build()
+	return NewBlockLayoutAlgorithm(testContext(), tree, space).Layout()
+}
+
+// TestTableCell_VerticalAlignFreeSpaceCountsFloats: a table cell is a new
+// formatting context, so its intrinsic block-size encloses its floats even
+// when it has an explicit height (Blink BlockLayoutAlgorithm::FinishLayout,
+// block_layout_algorithm.cc:1255-1261 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), and FinalizeTableCellLayout
+// moves every child, floats included, by free_space/2 for middle
+// (table_layout_utils.cc:1597-1630). Cell 100px tall holding only a 20px
+// float: free space 80, float at 40 (not 50, which ignores the float).
+func TestTableCell_VerticalAlignFreeSpaceCountsFloats(t *testing.T) {
+	float := makeNode("div")
+	td := makeNode("td", float)
+	tr := makeNode("tr", td)
+	table := makeNode("table", tr)
+	root := makeNode("div", table)
+	result := layoutTableForTest(root, map[*html.Node]*css.Style{
+		root:  makeStyle("display", "block"),
+		table: makeStyle("display", "table", "border-spacing", "0"),
+		tr:    makeStyle("display", "table-row"),
+		td:    makeStyle("display", "table-cell", "height", "100px", "vertical-align", "middle"),
+		float: makeStyle("display", "block", "float", "left", "width", "20px", "height", "20px"),
+	})
+	cellFrag := findFragmentByNode(result.Fragment, td)
+	if cellFrag == nil {
+		t.Fatal("cell fragment not found")
+	}
+	for _, ch := range cellFrag.Children {
+		if ch.Fragment.LayoutNode != nil && ch.Fragment.LayoutNode.DOMNode == float {
+			if got := ch.Offset.TopF64(); got != 40 {
+				t.Errorf("float block offset in cell = %v, want 40", got)
+			}
+			return
+		}
+	}
+	t.Fatal("float fragment is not a child of the cell fragment")
+}
+
+// TestTableColumn_OrthogonalCellContributesLaidOutInlineSize: an orthogonal
+// cell's min/max contribution to its column is the inline size (in the
+// table's writing mode) of the cell laid out, as Blink's
+// BlockNode::ComputeMinMaxSizes does for an orthogonal flow root
+// (core/layout/block_node.cc:968-991 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), which
+// TableTypes::CreateCellInlineConstraint calls
+// (table/table_layout_algorithm_types.cc:138-163). A vertical-rl cell with
+// height 180px (its inline size) stacking three 100px-wide blocks is 300px
+// wide, so the auto table is 300px wide.
+func TestTableColumn_OrthogonalCellContributesLaidOutInlineSize(t *testing.T) {
+	c1, c2, c3 := makeNode("div"), makeNode("div"), makeNode("div")
+	td := makeNode("td", c1, c2, c3)
+	tr := makeNode("tr", td)
+	table := makeNode("table", tr)
+	root := makeNode("div", table)
+	styles := map[*html.Node]*css.Style{
+		root:  makeStyle("display", "block"),
+		table: makeStyle("display", "table", "border-spacing", "0"),
+		tr:    makeStyle("display", "table-row"),
+		td:    makeStyle("display", "table-cell", "height", "180px", "writing-mode", "vertical-rl"),
+	}
+	for _, c := range []*html.Node{c1, c2, c3} {
+		styles[c] = makeStyle("display", "block", "width", "100px")
+	}
+	result := layoutTableForTest(root, styles)
+	cellFrag := findFragmentByNode(result.Fragment, td)
+	if cellFrag == nil {
+		t.Fatal("cell fragment not found")
+	}
+	if w, h := cellFrag.Size.WidthF64(), cellFrag.Size.HeightF64(); w != 300 || h != 180 {
+		t.Errorf("orthogonal cell = %vx%v, want 300x180", w, h)
+	}
+	if w := findFragmentByNode(result.Fragment, table).Size.WidthF64(); w != 300 {
+		t.Errorf("table width = %v, want 300", w)
+	}
+}

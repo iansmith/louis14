@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"slices"
 	"testing"
 )
 
@@ -173,38 +174,51 @@ func TestGenerateMissingTableParents_SiblingSplitsRun(t *testing.T) {
 }
 
 func TestGenerateMissingTableParents_InlineParentGetsInlineTable(t *testing.T) {
-	t.Run("display inline", func(t *testing.T) {
-		cell := makeNode("div")
-		span := makeNode("span", cell)
-		div := makeNode("div", span)
-		styles := map[*html.Node]*css.Style{
-			div:  makeStyle("display", "block"),
-			span: makeStyle("display", "inline"),
-			cell: makeStyle("display", "table-cell"),
-		}
-		root := buildTestTree(div, styles)
-		// The inline-table is inline-level, so the span is not split by
-		// block-in-inline and no anonymous block appears.
-		s := requireOnlyChild(t, "div children", root.Children())
-		if s.DOMNode != span || s.isContinuation {
-			t.Fatalf("div child is DOM %q (continuation=%v), want the unsplit span", s.TagName(), s.isContinuation)
-		}
-		table := requireOnlyChild(t, "span children", s.Children())
-		requireTableRowGroupRow(t, table, css.DisplayInlineTable, cell)
-	})
-	t.Run("display ruby", func(t *testing.T) {
-		cell := makeNode("div")
-		ruby := makeNode("span", cell)
-		div := makeNode("div", ruby)
-		styles := map[*html.Node]*css.Style{
-			div:  makeStyle("display", "block"),
-			ruby: makeStyle("display", "ruby"),
-			cell: makeStyle("display", "table-cell"),
-		}
-		root := buildTestTree(div, styles)
-		table := ancestorOf(root, cell, 3)
-		requireTableRowGroupRow(t, table, css.DisplayInlineTable, cell)
-	})
+	for _, display := range []string{"inline", "ruby", "inline list-item"} {
+		t.Run("display "+display, func(t *testing.T) {
+			cell := makeNode("div")
+			span := makeNode("span", cell)
+			div := makeNode("div", span)
+			styles := map[*html.Node]*css.Style{
+				div:  makeStyle("display", "block"),
+				span: makeStyle("display", display),
+				cell: makeStyle("display", "table-cell"),
+			}
+			root := buildTestTree(div, styles)
+			// The inline-table is inline-level, so the inline parent is not
+			// split by block-in-inline and no anonymous block appears.
+			s := requireOnlyChild(t, "div children", root.Children())
+			if s.DOMNode != span || s.isContinuation {
+				t.Fatalf("div child is DOM %q (continuation=%v), want the unsplit %s box",
+					s.TagName(), s.isContinuation, display)
+			}
+			table := ancestorOf(root, cell, 3)
+			if !slices.Contains(s.Children(), table) {
+				t.Fatalf("anonymous table is not a direct child of the %s box", display)
+			}
+			requireTableRowGroupRow(t, table, css.DisplayInlineTable, cell)
+		})
+	}
+}
+
+// A `display: block ruby` box's children move under an anonymous inline
+// `display: ruby` box (Blink LayoutRubyAsBlock), so an orphan cell among them
+// gets an inline-table, and sibling text is not wrapped in an anonymous block.
+func TestGenerateMissingTableParents_BlockRubyGetsInlineTable(t *testing.T) {
+	cell := makeNode("div")
+	txt := makeTextNode("x")
+	ruby := makeNode("div", txt, cell)
+	styles := map[*html.Node]*css.Style{
+		ruby: makeStyle("display", "block ruby"),
+		cell: makeStyle("display", "table-cell"),
+	}
+	root := buildTestTree(ruby, styles)
+	inner := requireAnon(t, "block-ruby child", requireOnlyChild(t, "block ruby children", root.Children()), css.DisplayRuby)
+	if len(inner) != 2 || inner[0].DOMNode != txt {
+		t.Fatalf("anonymous ruby has %d children (first anonymous=%v), want [text, inline-table]",
+			len(inner), len(inner) > 0 && inner[0].IsAnonymous())
+	}
+	requireTableRowGroupRow(t, inner[1], css.DisplayInlineTable, cell)
 }
 
 func TestGenerateMissingTableParents_BlockifiedAndTableParentsExempt(t *testing.T) {
