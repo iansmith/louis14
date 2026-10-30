@@ -19,7 +19,9 @@ import (
 // src> by ImageLoader::ImageSourceToKURL
 // (third_party/blink/renderer/core/loader/image_loader.cc:746) and for
 // iframe src by HTMLFrameElementBase::OpenURL
-// (third_party/blink/renderer/core/html/html_frame_element_base.cc:70). A
+// (third_party/blink/renderer/core/html/html_frame_element_base.cc:70) and
+// for object data by HTMLPlugInElement::RequestObject
+// (third_party/blink/renderer/core/html/html_plugin_element.cc:702). A
 // srcdoc document's base is its container document's base
 // (Document::FallbackBaseURL, document.cc:5046/:5063). All @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520.
@@ -76,6 +78,20 @@ func TestLayoutNestedDocument_RelativeURLsCompleteAgainstOwnerDocument(t *testin
 			docs:                 map[string]string{"/r/frame.html": `<img src="` + name(4) + `">`},
 			imgs:                 map[string][2]int{"/r/" + name(4): {30, 20}},
 			want:                 "/r/" + name(4),
+			bareMustNotBeFetched: true,
+		},
+		{
+			// <object data> takes the same completion path as <iframe src>
+			// (HTMLPlugInElement::RequestObject, html_plugin_element.cc:702),
+			// so the inner object's data and image compose onto a/.
+			name:  "objectDepth2",
+			outer: `<object data="a/frame.html"></object>`,
+			docs: map[string]string{
+				"a/frame.html":   `<object data="b/inner.html"></object>`,
+				"a/b/inner.html": `<img src="` + name(6) + `">`,
+			},
+			imgs:                 map[string][2]int{"a/b/" + name(6): {30, 20}},
+			want:                 "a/b/" + name(6),
 			bareMustNotBeFetched: true,
 		},
 		{
