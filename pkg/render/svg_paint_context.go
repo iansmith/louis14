@@ -100,9 +100,10 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 
 // viewportDeviceClip returns the SVG root viewport in device pixels, for the
 // filter composite paths that write straight to the target image and so
-// bypass the DrawContext clip stack. The edges are int()-truncated; with a
-// fractional viewport size the right/bottom edge can differ by 1px from
-// paintSVGRoot's pixel-snapped viewport clip (LOU-426 follow-up).
+// bypass the DrawContext clip stack. The edges are int()-truncated, while
+// paintSVGRoot's fallback viewport clip rounds via pixelSnap, so any edge can
+// differ by 1px from it whenever originX/Y is fractional (fractional border or
+// padding) or the viewport size is fractional (LOU-426 follow-up).
 //
 // no Blink analog: Blink composites filter output under the replaced
 // content clip property node; louis14's filter composite bypasses the DC.
