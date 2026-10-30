@@ -809,7 +809,7 @@ func resolveFontMetricsForStyle(style *css.Style, fc text.FontConfig, measure fu
 
 	style.UsedFontSize = usedSize
 	style.UsedFontSizeSet = true
-	style.ChWidth = usedMetrics.chWidth
+	style.SetZeroWidth(usedMetrics.chWidth)
 	style.XHeight = usedMetrics.xHeight
 	style.CapHeight = usedMetrics.capHght
 

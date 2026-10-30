@@ -26,7 +26,7 @@ func TestGetTextDecorationInsetChUnit(t *testing.T) {
 	s := NewStyle()
 	s.Set("font-size", "10px")
 	// Ahem: advance of "0" is 1em, so ChWidth == font-size.
-	s.ChWidth = 10.0
+	s.SetZeroWidth(10.0)
 	s.Set("text-decoration-inset", "2ch -2ch")
 
 	got := s.GetTextDecorationInset()
@@ -45,7 +45,7 @@ func TestGetTextDecorationInsetChUnit(t *testing.T) {
 func TestGetTextDecorationInsetChUnitSingleValue(t *testing.T) {
 	s := NewStyle()
 	s.Set("font-size", "10px")
-	s.ChWidth = 10.0
+	s.SetZeroWidth(10.0)
 	s.Set("text-decoration-inset", "3ch")
 
 	got := s.GetTextDecorationInset()

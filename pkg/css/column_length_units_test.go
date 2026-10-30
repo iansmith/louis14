@@ -11,7 +11,7 @@ func TestMulticolLengths_FontRelativeUnits(t *testing.T) {
 	newStyle := func(prop, val string) *Style {
 		s := NewStyle()
 		s.Set("font-size", "20px")
-		s.ChWidth = 12
+		s.SetZeroWidth(12)
 		s.ViewportWidth = 800
 		s.Set(prop, val)
 		return s
