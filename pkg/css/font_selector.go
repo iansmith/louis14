@@ -43,3 +43,51 @@ type Font struct {
 	// measured zero advance still falls back to 1em (LOU-422, not fixed here).
 	IdeographicInlineSize float64
 }
+
+// UpdateFont builds s's font from its now-final font properties and stores
+// the metrics the font-relative units read (Style.UsedFontSize, ChWidth,
+// XHeight, CapHeight, IcWidth). A non-nil fs becomes s's selector; with nil,
+// s keeps the selector it carries (set by the cascade, inherited by pseudo
+// and anonymous styles and clones); with none, s keeps the unmeasured
+// fallbacks. Mirrors StyleResolverState::UpdateFont
+// (core/css/resolver/style_resolver_state.cc:553 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which runs FontBuilder::CreateFont
+// and then points CSSToLengthConversionData::FontSizes at the new font.
+func (s *Style) UpdateFont(fs FontSelector) {
+	if fs != nil {
+		s.fontSelector = fs
+	}
+	if s.fontSelector == nil {
+		return
+	}
+	f := s.fontSelector.CreateFont(s)
+	s.UsedFontSize = f.AdjustedSize
+	s.UsedFontSizeSet = true
+	s.SetZeroWidth(f.ZeroWidth)
+	s.XHeight = f.XHeight
+	s.CapHeight = f.CapHeight
+	s.IcWidth = f.IdeographicInlineSize
+}
+
+// UpdateLineHeight records s's computed line-height as the lh unit's size.
+// Mirrors StyleResolverState::UpdateLineHeight
+// (core/css/resolver/style_resolver_state.cc:565 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which sets the conversion data's
+// LineHeightSize once line-height is applied.
+func (s *Style) UpdateLineHeight() {
+	s.LhSize = s.GetLineHeight()
+}
+
+// applyFontAndLineHeight is the font / line-height step of the cascade: build
+// the element's font, compute line-height against it (lh against parent's),
+// then record the lh size. Mirrors StyleCascade::Apply's UpdateFont →
+// line-height → UpdateLineHeight sequence
+// (core/css/resolver/style_cascade.cc:310-315 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Idempotent, so it re-runs after a
+// late font or line-height write (@container rules, var() re-expansion,
+// first-frame transitions).
+func applyFontAndLineHeight(s, parent *Style) {
+	s.UpdateFont(nil)
+	absolutizeLineHeight(s, parent)
+	s.UpdateLineHeight()
+}

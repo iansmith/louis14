@@ -1166,14 +1166,21 @@ func validateCSSInteger(v string) (string, bool) {
 	return "", false
 }
 
-// ApplyStylesToDocumentWithFontSelector is ApplyStylesToDocument with the
-// font selector the cascade builds each element's font from.
-func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, viewportHeight float64, fs FontSelector) map[*html.Node]*Style {
-	return ApplyStylesToDocument(doc, viewportWidth, viewportHeight)
-}
-
+// ApplyStylesToDocument cascades doc with no font selector: font-relative
+// units keep their unmeasured fallbacks (ex 0.5em, ch 0.5em, ic 1em, cap
+// 0.7em). See ApplyStylesToDocumentWithFontSelector.
 // Phase 22: Added viewport dimensions for media query evaluation
 func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight float64) map[*html.Node]*Style {
+	return ApplyStylesToDocumentWithFontSelector(doc, viewportWidth, viewportHeight, nil)
+}
+
+// ApplyStylesToDocumentWithFontSelector cascades doc, building each element's
+// font from fs as the cascade goes so ex / ch / ic / cap resolve against the
+// element's own font metrics at computed-value time. Blink's StyleEngine owns
+// the document's FontSelector and FontBuilder hands it to every Font it
+// creates (core/css/resolver/font_builder.cc:644/682 @
+// 5992657f556bcd9d207a4aca187488462f027cab). nil means no fonts.
+func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, viewportHeight float64, fs FontSelector) map[*html.Node]*Style {
 	styles := make(map[*html.Node]*Style)
 
 	// Parse all stylesheets
@@ -1203,7 +1210,7 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -1931,9 +1938,12 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 			}
 		}
-		// line-height likewise computes against the pseudo-element's own
-		// (now final) font-size and the originating element's line-height.
-		absolutizeLineHeight(finalStyle, parentStyles[0])
+		// The pseudo-element builds its font from the originating element's
+		// font selector (Blink resolves pseudo-element styles through the same
+		// StyleCascade::Apply font step), then line-height computes against
+		// that font and the originating element's line-height.
+		finalStyle.fontSelector = parentStyles[0].fontSelector
+		applyFontAndLineHeight(finalStyle, parentStyles[0])
 	}
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
@@ -3375,9 +3385,10 @@ func absolutizeOutlineOffset(style *Style) {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
+		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		// CSS Variables 1 §3.2: a shorthand whose declared value contains
@@ -3399,17 +3410,20 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// (style_builder_converter.cc:1998 @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		absolutizeOutlineOffset(style)
+		// The element's font properties are final here, so build its font
+		// (UpdateFont), then compute line-height against it, then record the lh
+		// size (UpdateLineHeight) — Blink's StyleCascade::Apply order
+		// (style_cascade.cc:310-315 @ 5992657f556bcd9d207a4aca187488462f027cab).
 		// line-height computes to an absolute length unless it is `normal` or a
 		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
-		// than re-resolving em / % against their own font-size. Mirrors Blink's
-		// StyleBuilderConverter::ConvertLineHeight (style_builder_converter.cc:2212
-		// @ 5992657f556bcd9d207a4aca187488462f027cab): lengths and calc() become
+		// than re-resolving em / % / ex / ch / ic / cap against their own font.
+		// Mirrors Blink's StyleBuilderConverter::ConvertLineHeight
+		// (style_builder_converter.cc:2212 @ same SHA): lengths and calc() become
 		// Length::Fixed, a percentage is taken of the element's computed font-size,
 		// and only a number is kept as a multiplier. Blink applies line-height while
 		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
-		// here resolves against the parent's line-height (StyleCascade::Apply →
-		// StyleResolverState::UpdateLineHeight, style_cascade.cc:309-315 @ same SHA).
-		absolutizeLineHeight(style, styles[node.Parent])
+		// here resolves against the parent's line-height.
+		applyFontAndLineHeight(style, styles[node.Parent])
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
@@ -3422,11 +3436,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		// A matching @container rule can re-introduce a var()-deferred
-		// shorthand or a font-relative outline-offset; re-run the
-		// computed-time normalizations (all are idempotent).
+		// shorthand, a font property or a font-relative outline-offset; re-run
+		// the computed-time normalizations, font included (all are idempotent).
 		reexpandVarShorthands(style)
 		absolutizeOutlineOffset(style)
-		absolutizeLineHeight(style, styles[node.Parent])
+		applyFontAndLineHeight(style, styles[node.Parent])
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors
@@ -3476,12 +3490,14 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 			// First element child matches :root — compute its style to capture
 			// :root rules, then extract inheritable properties for doc.Root.
 			rootChildStyle := ComputeStyle(firstElem, stylesheets, viewportWidth, viewportHeight, ctx)
+			rootChildStyle.fontSelector = fs
 			// Copy computed, not declared, values: resolve font-size against the
 			// initial 16px (doc.Root has no style yet) and line-height to a
-			// length, as for the :root element itself, so doc.Root's children
-			// inherit lengths rather than re-resolving em / %.
+			// length against :root's own font, as for the :root element itself,
+			// so doc.Root's children inherit lengths rather than re-resolving
+			// em / % / ex / ch / ic / cap.
 			ApplyInheritedProperties(firstElem, rootChildStyle, styles)
-			absolutizeLineHeight(rootChildStyle, nil)
+			applyFontAndLineHeight(rootChildStyle, nil)
 			for prop := range inheritableProperties {
 				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
 				// Don't propagate from :root to synthetic doc root — otherwise every
@@ -3500,6 +3516,10 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 				}
 			}
 			if len(syntheticRootStyle.Properties) > 0 {
+				// The synthetic root is a style like any other: build its font
+				// so its own metrics (and lh size) are set too.
+				syntheticRootStyle.UpdateFont(fs)
+				syntheticRootStyle.UpdateLineHeight()
 				styles[node] = syntheticRootStyle
 			}
 		}
@@ -3507,7 +3527,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs)
 	}
 }
 
@@ -4077,12 +4097,14 @@ func rbOnlyInlineRecursive(node *html.Node) bool {
 
 // absolutizeLineHeight rewrites style's line-height to its computed length in
 // px, resolving lh against parent's line-height (1.2em fallback with no
-// parent). It leaves alone the values that compute to themselves: `normal`, a
-// bare number (or a unitless calc()), plain px, and values using ex / ch / ic
-// / cap, whose font metrics louis14 only measures at layout time
-// (Style.XHeight etc.), so Style.GetLineHeight resolves those there instead.
+// parent) and ex / ch / ic / cap against the element's own font metrics, which
+// Style.UpdateFont filled just before (Blink CSSToLengthConversionData::
+// FontSizes::Ex / Ch / Ic / Cap, core/css/css_to_length_conversion_data.cc
+// :95/117/139/169 @ 5992657f556bcd9d207a4aca187488462f027cab; unmeasured
+// metrics take the unit fallbacks). It leaves alone the values that compute
+// to themselves: `normal`, a bare number (or a unitless calc()) and plain px.
 // Idempotent, so it can re-run after a late line-height write (var()
-// shorthand re-expansion, @container rules).
+// shorthand re-expansion, @container rules, first-frame transitions).
 func absolutizeLineHeight(s *Style, parent *Style) {
 	val, ok := s.Get("line-height")
 	if !ok {
@@ -4098,13 +4120,8 @@ func absolutizeLineHeight(s *Style, parent *Style) {
 	units := dimensionUnits(v)
 	parentLh := 0.0
 	for _, unit := range units {
-		switch unit {
-		case "ex", "ch", "ic", "cap":
-			return
-		case "lh":
-			if parent != nil && parentLh == 0 {
-				parentLh = parent.GetLineHeight()
-			}
+		if unit == "lh" && parent != nil && parentLh == 0 {
+			parentLh = parent.GetLineHeight()
 		}
 	}
 	isMath := IsMathFunction(v)
@@ -4130,13 +4147,16 @@ func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (fl
 			viewportWidth:  s.ViewportWidth,
 			viewportHeight: s.ViewportHeight,
 			chScale:        s.chScale(),
+			xHeight:        s.XHeight,
+			capHeight:      s.CapHeight,
 			lhSize:         parentLh,
+			icWidth:        s.IcWidth,
 		})
 	}
 	if pct, ok := ParsePercentage(v); ok {
 		return pct / 100.0 * fontSize, true
 	}
-	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), 0, 0, parentLh, 0)
+	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, parentLh, s.IcWidth)
 }
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /
