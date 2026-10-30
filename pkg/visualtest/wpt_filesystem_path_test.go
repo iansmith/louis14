@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"louis14/pkg/html"
 )
 
 // LOU-416: expected paths are literal corpus paths (relative to the
@@ -184,9 +186,12 @@ func TestFindWPTRoot(t *testing.T) {
 	}
 }
 
-// TestFileFetchers_ShareFilesystemPath pins that the harness fetcher kinds
-// (the image fetcher is r.readFile itself) load through the shared resolver: from a nested reference dir, each one
-// must return the bytes of the literal corpus file wptserve would serve.
+// TestFileFetchers_ShareFilesystemPath pins that every harness fetcher kind
+// loads through the shared resolver: from a nested reference dir, the CSS
+// (and script, which reuses it), image (r.readFile itself), document and
+// external SVG fetchers must each return the bytes of the literal corpus file
+// wptserve would serve, and buildFontConfig's @font-face fetch must register
+// the face behind a root-relative src.
 func TestFileFetchers_ShareFilesystemPath(t *testing.T) {
 	r := newWPTResourceResolver("testdata/wpt-css3/css-values/reference")
 	for _, tc := range []struct {
@@ -195,6 +200,10 @@ func TestFileFetchers_ShareFilesystemPath(t *testing.T) {
 		uri   string
 		want  string
 	}{
+		{"CSS/script", func(uri string) ([]byte, error) {
+			s, err := createFileCSSFetcher(r)(uri)
+			return []byte(s), err
+		}, "/css/css-flexbox/support/flexbox.css", "testdata/wpt-css3/css-flexbox/support/flexbox.css"},
 		{"image", r.readFile, "/css/support/60x60-green.png", "testdata/wpt-css3/css/support/60x60-green.png"},
 		{"document", func(uri string) ([]byte, error) {
 			s, err := createFileDocumentFetcher(r)(uri)
@@ -214,5 +223,19 @@ func TestFileFetchers_ShareFilesystemPath(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s fetcher(%q) returned %d bytes, want the %d bytes of %s", tc.name, tc.uri, len(got), len(want), tc.want)
 		}
+	}
+
+	// @font-face: the src is the one ic-unit-008-ref.html uses. A face whose
+	// fetch failed is declared but has no registered entry, so Lookup is "".
+	doc, err := html.Parse(`<style>@font-face { font-family: Lou416FontFetch; src: url(/css/css-values/resources/IcTestFullWidth.woff2); }</style>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	fc, ok := buildFontConfig(doc, r)
+	if !ok {
+		t.Fatal("buildFontConfig found no @font-face rules")
+	}
+	if fc.Registry.Lookup("Lou416FontFetch", false, false) == "" {
+		t.Error("@font-face src /css/css-values/resources/IcTestFullWidth.woff2 was not fetched through the resolver")
 	}
 }

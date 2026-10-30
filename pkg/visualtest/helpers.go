@@ -36,10 +36,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		resolver = newWPTResourceResolver(basePath)
 		// Scripts resolve exactly like stylesheets, so <script src> reuses
 		// the CSS fetcher.
-		cssFetcher := func(uri string) (string, error) {
-			data, err := resolver.readFile(uri)
-			return string(data), err
-		}
+		cssFetcher := createFileCSSFetcher(resolver)
 		doc, err = html.ParseWithScriptFetcher(htmlContent, cssFetcher, html.ScriptFetcher(cssFetcher))
 	} else {
 		doc, err = html.Parse(htmlContent)
@@ -145,6 +142,15 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	}
 
 	return nil
+}
+
+// createFileCSSFetcher creates the CSSFetcher (also used for <script src>)
+// that loads stylesheets from the WPT corpus through resolver.
+func createFileCSSFetcher(resolver wptResourceResolver) html.CSSFetcher {
+	return func(uri string) (string, error) {
+		data, err := resolver.readFile(uri)
+		return string(data), err
+	}
 }
 
 // buildFontConfig processes @font-face rules from the document and returns an
