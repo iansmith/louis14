@@ -261,6 +261,15 @@ func transitionProperty(n *html.Node, prop string, timing Timing, newStyle, oldS
 		return
 	}
 	newStyle.Properties[prop] = val
+	// louis14 samples transitions after the cascade, so a transitioned font
+	// property must re-build the font and line-height here (and on each
+	// descendant it propagates to, below); Blink applies interpolations inside
+	// StyleCascade::Apply (ApplyInterpolations, core/css/resolver/
+	// style_cascade.cc:320 @ 5992657f556bcd9d207a4aca187488462f027cab) and
+	// needs no re-run. Done for every transitioned property: the step is
+	// idempotent and the selector caches fonts. A line-height already computed
+	// to px from the after-change font stays as computed, as for em (LOU-418).
+	applyFontAndLineHeight(newStyle, styles[n.Parent])
 	if inheritableProperties[prop] {
 		for _, c := range n.Children {
 			propagateInheritedTransitionValue(c, prop, newVal, val, styles)
@@ -289,6 +298,7 @@ func propagateInheritedTransitionValue(n *html.Node, prop, newVal, val string, s
 			return
 		}
 		s.Properties[prop] = val
+		applyFontAndLineHeight(s, styles[n.Parent])
 	}
 	for _, c := range n.Children {
 		propagateInheritedTransitionValue(c, prop, newVal, val, styles)
