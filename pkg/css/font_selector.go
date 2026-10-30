@@ -38,10 +38,16 @@ type Font struct {
 	XHeight float64
 	// CapHeight is the cap-height in px; 0 = none (cap falls back to 0.7em).
 	CapHeight float64
-	// IdeographicInlineSize is the advance of 水 in px. 0 means none, where
-	// Blink uses std::optional (simple_font_data.cc:461 @ 5992657f556b), so a
-	// measured zero advance still falls back to 1em (LOU-422, not fixed here).
+	// IdeographicInlineSize is the advance of 水 in px; valid only when
+	// HasIdeographicInlineSize, so a measured 0 is a real zero advance.
 	IdeographicInlineSize float64
+	// HasIdeographicInlineSize reports that a font covering 水 supplied
+	// IdeographicInlineSize: has_value() of Blink's std::optional<float>
+	// SimpleFontData::IdeographicInlineSize (platform/fonts/simple_font_data.h
+	// :110, set at simple_font_data.cc:459-473 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). Without it ic falls back to
+	// 1em.
+	HasIdeographicInlineSize bool
 }
 
 // UpdateFont builds s's font from its now-final font properties and stores

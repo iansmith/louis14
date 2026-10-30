@@ -71,12 +71,21 @@ type Style struct {
 	LhSize float64
 
 	// IcWidth is the measured advance width of U+6C34 (水) in pixels of the
-	// element's font at the used font-size (0 = not measured; ic unit then falls
-	// back to 1em). Filled at cascade time by Style.UpdateFont, like ChWidth.
-	// CSS Values 4 §6.1: the ic unit equals the advance measure of the full-width
-	// CJK character U+6C34. Mirrors Blink's FontSizes::Ic() at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	// element's font at the used font-size; valid only when
+	// HasIdeographicInlineSize. Filled at cascade time by Style.UpdateFont,
+	// like ChWidth. CSS Values 4 §6.1: the ic unit equals the advance measure
+	// of the full-width CJK character U+6C34.
 	IcWidth float64
+
+	// HasIdeographicInlineSize reports that IcWidth was measured from a font
+	// covering 水, so an IcWidth of 0 is a real zero advance (ic = 0) rather
+	// than "no such font" (ic falls back to 1em). Together with IcWidth it is
+	// Blink's std::optional<float> SimpleFontData::IdeographicInlineSize
+	// (platform/fonts/simple_font_data.h:110), which
+	// CSSToLengthConversionData::FontSizes::Ic replaces with Em only when it has
+	// no value (core/css/css_to_length_conversion_data.cc:145-158), both @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520.
+	HasIdeographicInlineSize bool
 
 	// BaseDir is the owning document's BaseDir, propagated by the cascade
 	// (see ApplyStylesToDocument). Used by inline `style=""` parsing in
