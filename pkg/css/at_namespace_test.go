@@ -139,6 +139,7 @@ func TestConsumeNamespaceRule(t *testing.T) {
 		{`@namespace "x" y;`, "", "", false},
 		{`@namespace pfx;`, "", "", false},
 		{`@namespace;`, "", "", false},
+		{`@namespaces "x";`, "", "", false}, // a different at-keyword
 	}
 	for _, tc := range cases {
 		t.Run(tc.rule, func(t *testing.T) {
@@ -214,13 +215,14 @@ func TestMatchesSelector_DefaultNamespaceInFunctionalPseudo(t *testing.T) {
 	}
 }
 
-// TestMatchesSelector_TypelessCompoundIgnoresDefaultNamespace pins that a
-// compound without a type selector inside :is/:where/:not stays
-// namespace-unconstrained, as Blink's ignore_default_namespace_ makes the
-// subject compound (css_selector_parser.cc:1318-1321 @
+// TestMatchesSelector_TypelessCompoundIgnoresDefaultNamespace pins that the
+// subject compound without a type selector inside :is/:where/:not stays
+// namespace-unconstrained, as Blink's ignore_default_namespace_ makes it
+// (css_selector_parser.cc:1318-1321 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520); is-default-ns-002 and
 // not-default-ns-002 depend on it. Regression guard: green before and
-// after the fix, red if resolution reaches type-less compounds.
+// after the fix, red if resolution reaches the type-less SUBJECT compound
+// inside :is/:where/:not.
 func TestMatchesSelector_TypelessCompoundIgnoresDefaultNamespace(t *testing.T) {
 	input := firstElement(t, "<input disabled>", "input")
 	cases := []struct {
