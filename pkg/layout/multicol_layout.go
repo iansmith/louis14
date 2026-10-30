@@ -461,6 +461,24 @@ func columnBreakTokenAdvanced(consumed, prevConsumed float64) bool {
 	return !(consumed <= prevConsumed)
 }
 
+// columnsOverflowInInlineDirection reports whether columns past
+// column-count are laid out beside the others (overflowing the multicol in
+// the inline direction) rather than in a new row or the next outer
+// fragmentainer: never when columns wrap; under an outer fragmentation
+// context only when the column block-size is known to fit in the outer
+// fragmentainer; otherwise always. Mirrors Blink's
+// ColumnLayoutAlgorithm::ColumnsOverflowInInlineDirection
+// (column_layout_algorithm.cc:1823-1842 @ a9f50e522efa).
+func (mla *MulticolLayoutAlgorithm) columnsOverflowInInlineDirection(columnKnownToFitInOuterFragmentainer bool) bool {
+	if mla.shouldWrapColumns() {
+		return false
+	}
+	if mla.isConstrainedByOuterFragmentation() {
+		return columnKnownToFitInOuterFragmentainer
+	}
+	return true
+}
+
 // hasAutoColumnHeight returns true when the CSS column-height is auto (or
 // unset). Mirrors Blink's Style().HasAutoColumnHeight().
 func (mla *MulticolLayoutAlgorithm) hasAutoColumnHeight() bool {
@@ -1249,14 +1267,15 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 
 		// column-fill:auto + spanner: once any row encountered a spanner,
 		// subsequent rows must also balance — but ONLY when the multicol has
-		// auto height (no explicit block-size constraint). For fixed-height
-		// multicol + column-fill:auto + spanner, post-spanner content is NOT
-		// balanced (per WPT no-balancing-after-column-span); each post-spanner
-		// row fills to the remaining row height sequentially.
+		// auto height and auto column-height (no block-size constraint). For
+		// fixed-height or column-height multicol + column-fill:auto +
+		// spanner, post-spanner content is NOT balanced (per WPT
+		// no-balancing-after-column-span); each post-spanner row fills to the
+		// remaining row height sequentially.
 		// Mirrors Blink's HasKnownFragmentainerBlockSize gate in
 		// column_layout_algorithm.cc — when block-size is auto the algorithm
 		// must balance to determine row heights even after a spanner.
-		if line.columnSpannerPath != nil && !mla.balanceColumns && !mla.hasExplicitBlock {
+		if line.columnSpannerPath != nil && !mla.balanceColumns && !mla.hasExplicitBlock && mla.hasAutoColumnHeight() {
 			mla.balanceColumns = true
 		}
 
@@ -1754,21 +1773,16 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// (children-height-002/003 post-spanner block2).
 	freeBalancing := balanceColumns && mla.hasAutoColumnHeight() &&
 		mla.remainingContentBlockSize == Indefinite
-	overflowInline := false
-	if !mla.shouldWrapColumns() && !freeBalancing {
-		if mla.isConstrainedByOuterFragmentation() {
-			overflowInline = initialColBlockSize != Indefinite &&
-				initialColBlockSize <= outerRemaining
-		} else {
-			overflowInline = true
-		}
-	}
+	overflowInline := !freeBalancing && mla.columnsOverflowInInlineDirection(
+		initialColBlockSize != Indefinite && initialColBlockSize <= outerRemaining)
 
-	// Determine the used column block-size.
-	// Phase 12f (Blink cla.cc:806-809): non-auto column-height fixes the
-	// column block-size to the row's remaining height at this line offset,
-	// bypassing the balancing / max-height / auto branches. This is the hard
-	// upper bound on a single row of columns.
+	// Determine the used column block-size (Blink cla.cc:840-856 @
+	// a9f50e522efa). Balanced columns come first, also under column-height:
+	// the balanced size is then capped by the row's remaining height
+	// (constrainColumnBlockSize, Blink ConstrainColumnBlockSize :1813-1816).
+	// Phase 12f (Blink cla.cc:806-809): otherwise a non-auto column-height
+	// fixes the column block-size to the row's remaining height at this line
+	// offset. This is the hard upper bound on a single row of columns.
 	// Phase 12e (Blink behaviour): column-fill:auto + max-height on an auto-
 	// height multicol uses max-height as the column block-size so columns fill
 	// sequentially up to that height. Otherwise the column block-size is
@@ -1777,11 +1791,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	var colBlockSize float64
 	shrinkToFitColumnBlockSize := false
 	switch {
-	case !mla.hasAutoColumnHeight():
-		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 	case balanceColumns:
 		colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
+	case !mla.hasAutoColumnHeight():
+		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 	case mla.hasExplicitBlock:
 		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 	case mla.effectiveMaxBlockSize != Indefinite:
@@ -1880,11 +1894,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// `4883d11fef` where `ColumnLayoutAlgorithm::LayoutLine` does not
 		// cap by `used_column_count` when `!ShouldWrapColumns()` and each
 		// column has a known block-size.
-		// Balance is conceptually inactive when column-height is non-auto:
-		// the switch above takes the `!hasAutoColumnHeight()` branch, which
-		// bypasses the balance estimate and uses the explicit column height.
-		// So the gate excludes balance only when it is actually controlling
-		// the column block-size (balanceColumns && hasAutoColumnHeight).
+		// Balanced columns (column-fill:balance, also under column-height,
+		// or an outer balancing pass) are sized by the balancer, so they
+		// never take the no-wrap path; Blink passes the same balance_columns
+		// to CreateConstraintSpaceForFragmentainer (cla.cc:840-856, :929-933
+		// @ a9f50e522efa).
 		// Blink ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @
 		// a9f50e522efa): under an outer fragmentation context, nowrap
 		// columns overflow inline only when the column is known to fit the
@@ -1894,7 +1908,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// column that pushes its first child whole (breakable at start of a
 		// resumed container) never advances the token, and the guard below
 		// would drop that content instead of handing it to the outer.
-		balanceControlsColumnHeight := balanceColumns && mla.hasAutoColumnHeight()
+		balanceControlsColumnHeight := balanceColumns
 		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
 		// The column-count cap is off — the column loop runs on the break
 		// token alone — under Indefinite column height, no-wrap mode, or
@@ -2580,7 +2594,12 @@ measure:
 	var runs []contentRun
 	breakToken := nextColToken
 	forcedBreaks := 0
-	considerAllColumns := false // becomes true once forcedBreaks >= numCols (mirrors ColumnsOverflowInInlineDirection)
+	// Blink cla.cc:1629-1633 @ a9f50e522efa: when columns overflow in the
+	// inline direction (no wrapping, no outer fragmentation), runs after
+	// column-count forced breaks still shape the column block-size;
+	// otherwise that content ends up in a later row or outer fragmentainer
+	// and is ignored.
+	considerAllColumns := mla.columnsOverflowInInlineDirection(false)
 	// Phase 16.d.2/3 (v2 B2) accumulator: max unbreakable block-size observed
 	// across all measure-pass iterations. Floors the column block-size at line
 	// 1639 below so columns are at least as tall as the tallest break-inside:
@@ -2651,13 +2670,6 @@ measure:
 
 		if result.HasForcedBreak {
 			forcedBreaks++
-			// When forced breaks reach or exceed the column count, extra segments
-			// will overflow inline (column count expands). Switch to considerAllColumns
-			// so subsequent runs — which may be the tallest — are still recorded.
-			// Mirrors Blink's ColumnsOverflowInInlineDirection(false) guard.
-			if forcedBreaks >= numCols {
-				considerAllColumns = true
-			}
 		}
 		if result.BreakToken == nil {
 			break
