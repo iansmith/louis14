@@ -749,8 +749,10 @@ func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
 // CSS 2.1 §9.4.3: if the child is position:relative and its RelativeOffset
 // has not already been computed by the layout algorithm, compute it here
 // from the child's style and the parent's childAvailableSize. Mirrors
-// Blink's BoxFragmentBuilder::AddChild, which unconditionally calls
-// ComputeRelativeOffsetForBoxFragment at add-time; the RelativeOffset == 0
+// Blink's BoxFragmentBuilder::AddResult, which unconditionally calls
+// ComputeRelativeOffsetForBoxFragment at add-time
+// (box_fragment_builder.cc:262-267 @ d4ecdfed88f962439247c2ad36b8fe47805b1520;
+// louis14's computeRelativeOffsetForBoxFragment); the RelativeOffset == 0
 // guard lets existing per-algorithm tail blocks short-circuit the work.
 //
 // position:sticky emits zero layout-time offset — per Blink, the sticky
@@ -759,18 +761,8 @@ func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
 // scroll-based sticky tests arrive.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
 	if fragment != nil && fragment.Style != nil && fragment.RelativeOffset == (geometry.PhysicalOffset{}) && b.hasChildAvailableSize {
-		pos := fragment.Style.GetPosition()
-		if pos == css.PositionRelative {
-			cbBlock := b.childAvailableSize.BlockSize
-			if cbBlock == Indefinite {
-				cbBlock = 0 // auto CB height → percentages compute to 0
-			}
-			physCB := ToPhysicalSize(LogicalSize{
-				InlineSize: b.childAvailableSize.InlineSize,
-				BlockSize:  cbBlock,
-			}, b.wdm.WM)
-			off := fragment.Style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-			fragment.RelativeOffset = computeRelativeOffset(off, b.wdm)
+		if fragment.Style.GetPosition() == css.PositionRelative {
+			fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(fragment.Style, b.wdm, b.childAvailableSize)
 		}
 	}
 	b.children = append(b.children, logicalChildLink{

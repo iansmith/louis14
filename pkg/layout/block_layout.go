@@ -2669,23 +2669,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// but we use PercentageResolutionSize instead so that anonymous
 		// auto-height wraps (e.g. block-in-inline splits) do not collapse the
 		// block-axis CB to zero for their descendants.
-		cbInline := bla.space.PercentageResolutionSize.InlineSize.Float64()
-		if cbInline == Indefinite {
-			cbInline = 0
-		}
-		cbBlock := bla.space.PercentageResolutionSize.BlockSize.Float64()
-		if cbBlock == Indefinite {
-			cbBlock = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: cbInline,
-			BlockSize:  cbBlock,
-		}, wdm.WM)
-		offset := bla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			bla.style, wdm, geomLogicalToOld(bla.space.PercentageResolutionSize))
 	}
 
 	return result
+}
+
+// computeRelativeOffsetForBoxFragment resolves a position:relative box's
+// insets against available (its containing block's logical size, in the
+// container's writing mode wdm) and returns the physical offset. Mirrors
+// Blink's ComputeRelativeOffsetForBoxFragment
+// (third_party/blink/renderer/core/layout/relative_utils.cc:92
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520). An Indefinite axis resolves
+// percentages against 0; Blink's ComputeRelativeOffset (relative_utils.cc:18,
+// ResolveInset :29-35 @ the same SHA) treats them as auto instead, which
+// differs only when both insets on that axis are set.
+func computeRelativeOffsetForBoxFragment(style *css.Style, wdm WritingDirectionMode, available LogicalSize) geometry.PhysicalOffset {
+	if available.InlineSize == Indefinite {
+		available.InlineSize = 0
+	}
+	if available.BlockSize == Indefinite {
+		available.BlockSize = 0
+	}
+	physCB := ToPhysicalSize(available, wdm.WM)
+	return computeRelativeOffset(style.GetPositionOffsetResolved(physCB.Width, physCB.Height), wdm)
 }
 
 // computeRelativeOffset computes the physical offset for position:relative.
