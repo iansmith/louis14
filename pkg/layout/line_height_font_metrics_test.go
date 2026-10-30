@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 )
 
 // TestLayout_LineHeightFontMetricUnitsUseCascadeFont (LOU-428): the layout
@@ -44,5 +45,42 @@ func TestLayout_LineHeightFontMetricUnitsUseCascadeFont(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestLayoutNestedDocument_LineHeightFontMetricUnitsUseCascadeFont (LOU-428):
+// a nested (iframe / object) document's cascade gets the same font selector,
+// so an Ahem `line-height: 2ex` computes against Ahem's 0.8em x-height (16px
+// at 10px) rather than the 0.5em fallback (10px). Blink resolves a child
+// frame's styles through that document's own StyleResolver, which builds fonts
+// the same way (StyleResolverState::UpdateFont,
+// core/css/resolver/style_resolver_state.cc:553 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Guards engine.go's
+// layoutNestedDocument selector: passing nil there gives 10 / 10.
+func TestLayoutNestedDocument_LineHeightFontMetricUnitsUseCascadeFont(t *testing.T) {
+	ctx := &LayoutContext{ViewportWidth: 800, ViewportHeight: 600, FontConfig: text.DefaultFontConfig()}
+	res := layoutNestedDocument(ctx, `<style>html, body { margin: 0; } div { font: 10px Ahem; line-height: 2ex; }</style><div>x</div>`, 300, 150, "")
+	if res == nil || res.Result == nil || res.Result.Fragment == nil {
+		t.Fatal("layoutNestedDocument returned no fragment")
+	}
+	var div *PhysicalFragment
+	var find func(f *PhysicalFragment)
+	find = func(f *PhysicalFragment) {
+		if f.Node != nil && f.Node.TagName == "div" && div == nil {
+			div = f
+		}
+		for _, c := range f.Children {
+			find(c.Fragment)
+		}
+	}
+	find(res.Result.Fragment)
+	if div == nil || div.Style == nil {
+		t.Fatal("nested document has no styled div fragment")
+	}
+	if got := div.Style.GetLineHeight(); got != 16 {
+		t.Errorf("nested div line-height = %v, want 16 (2 × Ahem's 0.8em x-height at 10px)", got)
+	}
+	if got := div.Size.Height.Float64(); got != 16 {
+		t.Errorf("nested div height = %v, want one 16px line", got)
 	}
 }
