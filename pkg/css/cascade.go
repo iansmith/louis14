@@ -842,10 +842,14 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// time; without one every animation samples at 0, as ApplyAnimations does.
 	anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets))
 	var localTimes []float64
+	baseDisplayNone := finalStyle.GetDisplay() == DisplayNone
 	if clock != nil {
-		localTimes = calculateAnimationUpdate(node, anims, clock)
+		anims, localTimes = calculateAnimationUpdate(node, anims, clock, baseDisplayNone)
 	}
 	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
+	if clock != nil {
+		recordDisplayedStyle(node, baseDisplayNone, finalStyle.GetDisplay() == DisplayNone)
+	}
 
 	// CSS Values 5 §11.5: resolve typed attr() references in property values.
 	// attr() in non-content properties (e.g. background-color, width) must be

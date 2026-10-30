@@ -54,6 +54,19 @@ type Node struct {
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520). CloneNode does not copy it:
 	// a clone has not been styled yet.
 	ElementAnimations *ElementAnimations
+
+	// HasDisplayedStyle is true when the element's latest document style
+	// recalc left it displayed: its display is not none and no ancestor's
+	// is. It stands in for Blink's previous computed style in
+	// CSSAnimations::CalculateAnimationUpdate (old_style, read from
+	// Element::GetComputedStyle at core/animation/css/css_animations.cc:1838
+	// and tested for display != none at :1864-1866 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520); Blink keeps a computed
+	// style only for elements that need a layout object
+	// (Element::ShouldStoreComputedStyle, core/dom/element.cc:5508 @ the same
+	// SHA). Maintained by style resolution in pkg/css; CloneNode does not
+	// copy it.
+	HasDisplayedStyle bool
 }
 
 type NodeType int

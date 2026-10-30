@@ -888,10 +888,20 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 // :325-327). Animations created by a pipeline's clock-0 style pass therefore
 // stay at local time 0 for every later pass (ticket scope; Blink would let
 // them advance once frames run).
-func calculateAnimationUpdate(node *html.Node, anims []ResolvedAnimation, clock *html.AnimationClock) []float64 {
-	if len(anims) == 0 {
+//
+// The animation-name list is walked only when baseDisplayNone (the new
+// style's display before animations) is false or the element was displayed
+// after its previous recalc (node.HasDisplayedStyle), as Blink's
+// `style_builder.Display() != EDisplay::kNone || (old_style &&
+// old_style->Display() != EDisplay::kNone)` (:1864-1866); otherwise every
+// running animation is cancelled and none starts. An element inside a
+// display:none subtree runs none either (CSS Animations 1 §2: display:none
+// terminates the animations of the element and its descendants). The
+// returned animations are the ones to apply: anims, or nil when none runs.
+func calculateAnimationUpdate(node *html.Node, anims []ResolvedAnimation, clock *html.AnimationClock, baseDisplayNone bool) ([]ResolvedAnimation, []float64) {
+	if len(anims) == 0 || !parentHasDisplayedStyle(node) || (baseDisplayNone && !node.HasDisplayedStyle) {
 		node.ElementAnimations = nil
-		return nil
+		return nil, nil
 	}
 	var running []html.RunningAnimation
 	if node.ElementAnimations != nil {
@@ -921,7 +931,34 @@ func calculateAnimationUpdate(node *html.Node, anims []ResolvedAnimation, clock 
 		updated = append(updated, rec)
 	}
 	node.ElementAnimations = &html.ElementAnimations{CSSAnimations: updated}
-	return localTimes
+	return anims, localTimes
+}
+
+// recordDisplayedStyle sets node.HasDisplayedStyle after a style recalc from
+// the recalc's display before (baseDisplayNone) and after (displayNone)
+// animations. An element left undisplayed whose base display is none has its
+// CSS animations cancelled, as Blink Element::RecalcOwnStyle cancels them
+// when no style is stored and the base style's display is none
+// (core/dom/element.cc:5572-5583 @ d4ecdfed88f962439247c2ad36b8fe47805b1520);
+// an animation that interpolates display away from none keeps running.
+func recordDisplayedStyle(node *html.Node, baseDisplayNone, displayNone bool) {
+	node.HasDisplayedStyle = !displayNone && parentHasDisplayedStyle(node)
+	if !node.HasDisplayedStyle && baseDisplayNone {
+		node.ElementAnimations = nil
+	}
+}
+
+// parentHasDisplayedStyle reports whether node's parent element was left
+// displayed by the current recalc; style resolution is top-down, so the
+// parent's HasDisplayedStyle is already this recalc's. A node whose parent
+// is not a styled element (the synthetic document root) has a displayed
+// parent.
+func parentHasDisplayedStyle(node *html.Node) bool {
+	p := node.Parent
+	if p == nil || p.Type != html.ElementNode || p.TagName == "document" {
+		return true
+	}
+	return p.HasDisplayedStyle
 }
 
 // collectKeyframesMaps returns the @keyframes maps from a set of stylesheets,
