@@ -2156,17 +2156,26 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			break
 		}
 
-		// Cannot make progress: all breaks are forced.
+		// Blink cla.cc:1153-1173 @ a9f50e522efa: stretch the columns by the
+		// minimal space shortage and retry. With no soft break opportunity
+		// left (forced breaks already use up the columns) no stretch can
+		// help — unless this multicol is nested in another fragmentation
+		// context: then the columns take up all the space the multicol
+		// fragment may use (a box that breaks inside uses all the remaining
+		// fragmentainer space, css-break-3 §4.4), which
+		// constrainColumnBlockSize gives an unbounded request.
+		var newColBlockSize float64
 		if mla.usedColumnCount <= forcedBreakCount+1 {
-			break
+			if !mla.isConstrainedByOuterFragmentation() {
+				break
+			}
+			newColBlockSize = math.Inf(1)
+		} else {
+			if !hasShortage {
+				break
+			}
+			newColBlockSize = colBlockSize + minSpaceShortage
 		}
-
-		if !hasShortage {
-			break
-		}
-
-		// Stretch column height by the minimum shortage and retry.
-		newColBlockSize := colBlockSize + minSpaceShortage
 		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 		if newColBlockSize <= colBlockSize {
 			// Nested balancing: we can't stretch any further in this inner
