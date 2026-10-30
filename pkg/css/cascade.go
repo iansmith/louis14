@@ -3380,20 +3380,6 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// (style_builder_converter.cc:1998 @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		absolutizeOutlineOffset(style)
-		// The element's font properties are final here, so build its font
-		// (UpdateFont), then compute line-height against it, then record the lh
-		// size (UpdateLineHeight) — Blink's StyleCascade::Apply order
-		// (style_cascade.cc:310-315 @ 5992657f556bcd9d207a4aca187488462f027cab).
-		// line-height computes to an absolute length unless it is `normal` or a
-		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
-		// than re-resolving em / % / ex / ch / ic / cap against their own font.
-		// Mirrors Blink's StyleBuilderConverter::ConvertLineHeight
-		// (style_builder_converter.cc:2212 @ same SHA): lengths and calc() become
-		// Length::Fixed, a percentage is taken of the element's computed font-size,
-		// and only a number is kept as a multiplier. Blink applies line-height while
-		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
-		// here resolves against the parent's line-height.
-		applyFontAndLineHeight(style, styles[node.Parent])
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
@@ -3406,10 +3392,24 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		// A matching @container rule can re-introduce a var()-deferred
-		// shorthand, a font property or a font-relative outline-offset; re-run
-		// the computed-time normalizations, font included (all are idempotent).
+		// shorthand or a font-relative outline-offset; re-run those computed-time
+		// normalizations (both are idempotent).
 		reexpandVarShorthands(style)
 		absolutizeOutlineOffset(style)
+		// The element's font properties are final here (@container rules
+		// included, which Blink applies inside the same cascade), so build its font
+		// (UpdateFont), then compute line-height against it, then record the lh
+		// size (UpdateLineHeight) — Blink's StyleCascade::Apply order
+		// (style_cascade.cc:310-315 @ 5992657f556bcd9d207a4aca187488462f027cab).
+		// line-height computes to an absolute length unless it is `normal` or a
+		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
+		// than re-resolving em / % / ex / ch / ic / cap against their own font.
+		// Mirrors Blink's StyleBuilderConverter::ConvertLineHeight
+		// (style_builder_converter.cc:2212 @ same SHA): lengths and calc() become
+		// Length::Fixed, a percentage is taken of the element's computed font-size,
+		// and only a number is kept as a multiplier. Blink applies line-height while
+		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
+		// here resolves against the parent's line-height.
 		applyFontAndLineHeight(style, styles[node.Parent])
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees

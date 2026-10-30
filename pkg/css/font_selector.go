@@ -83,9 +83,10 @@ func (s *Style) UpdateLineHeight() {
 // then record the lh size. Mirrors StyleCascade::Apply's UpdateFont →
 // line-height → UpdateLineHeight sequence
 // (core/css/resolver/style_cascade.cc:310-315 @
-// 5992657f556bcd9d207a4aca187488462f027cab). Idempotent, so it re-runs after a
-// late font or line-height write (@container rules, var() re-expansion,
-// first-frame transitions).
+// 5992657f556bcd9d207a4aca187488462f027cab). applyStylesToNode runs it once, after
+// @container rules. It re-builds the font idempotently, so first-frame
+// transitions re-run it; a line-height already absolutized to px is not
+// re-derived from the new font.
 func applyFontAndLineHeight(s, parent *Style) {
 	s.UpdateFont(nil)
 	absolutizeLineHeight(s, parent)
