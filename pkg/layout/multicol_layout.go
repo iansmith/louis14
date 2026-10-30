@@ -2170,18 +2170,15 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// line is fine — and better, when the line does not fit nicely in the
 	// outer fragmentation context. Nothing is committed; the caller breaks
 	// and resumes the line in the next outer fragmentainer. The line's block
-	// size for fragmentation is its last column's content extent (a
-	// fragmentainer's BlockSizeForFragmentation).
+	// size for fragmentation is its last column's: the column's content
+	// extent (a fragmentainer's BlockSizeForFragmentation, children only).
 	// (Blink gates on HasBlockFragmentation; MovePastBreakpoint is a no-op
 	// while the outer fragmentainer size is unknown, so skip the work.)
 	if mla.isConstrainedByOuterFragmentation() && mla.blockStartBorderPadding+lineOffset > 0 &&
 		lastInnerResult != nil && len(finalColumns) > 0 {
-		lastColumn := finalColumns[len(finalColumns)-1].fragment
-		lineResult := *lastInnerResult
-		lineResult.BlockSizeForFragmentation = FragmentainerBlockSizeForFragmentation(wdm, lastColumn)
 		fragmentainerBlockOffset := mla.fragmentainerOffsetForChildren() + mla.blockStartBorderPadding + lineOffset
 		capacity := mla.fragmentainerCapacityForChildren()
-		if !MovePastBreakpoint(mla.space, &lineResult, fragmentainerBlockOffset, capacity, BreakAppealPerfect, builder) {
+		if !MovePastBreakpoint(mla.space, lastInnerResult, fragmentainerBlockOffset, capacity, BreakAppealPerfect, builder) {
 			// TODO(LOU-388): Blink also adds a last-resort break before the
 			// multicol itself when no column token exists yet (cla.cc:1206-
 			// 1212 @ a9f50e522efa); louis14's walker resumes from the start.
@@ -2340,7 +2337,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	contribution := colBlockSize
 	switch {
 	case shrinkToFitColumnBlockSize && len(finalColumns) == 1:
-		contribution = math.Min(colBlockSize, FragmentainerBlockSizeForFragmentation(wdm, finalColumns[0].fragment))
+		contribution = math.Min(colBlockSize, finalColumns[0].result.BlockSizeForFragmentation)
 	case colBlockSize == Indefinite:
 		contribution = maxColHeight
 	case hasSpannerDetector:
@@ -2598,9 +2595,8 @@ measure:
 			}
 			// The run encompasses content overflowing its boxes: Blink
 			// measures the column's BlockSizeForFragmentation
-			// (column_layout_algorithm.cc:1652-1672 @ a9f50e522efa), which
-			// louis14 recomputes from the fragment tree (LOU-399).
-			colBSize = math.Max(colBSize, FragmentainerBlockSizeForFragmentation(wdm, result.Fragment))
+			// (column_layout_algorithm.cc:1652-1672 @ a9f50e522efa).
+			colBSize = math.Max(colBSize, result.BlockSizeForFragmentation)
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}
 

@@ -13,11 +13,12 @@ import (
 // column_layout_algorithm.cc:1652-1672 @ a9f50e522efa). A column's value
 // holds its children only (box_fragment_builder.cc:743-745); a box that
 // takes part in fragmentation extends it by its children's overflow
-// (:758-761), a monolithic box (no block fragmentation, layout_result.cc:
-// 75-79) by its own border box only; line boxes and floats contribute like
-// any child (AddResult → PropagateBreakInfo, :227-229, :479-489).
+// (:758-761); line boxes and floats contribute like any child (AddResult →
+// PropagateBreakInfo, :227-229, :479-489).
 // Expected geometry is Chrome 155 headless (LOU-411 probe.html F1/F2,
-// probe6.html F3-F5, probe5.html L).
+// probe6.html F3-F5). probe5.html L (a monolithic box with overflowing
+// content) is TestBalancingFloorMonolithicContent_LOU411: it also needs the
+// monolithic floor to be the border box.
 func TestColumnBSFFSetsBalanceHeight_LOU411(t *testing.T) {
 	mc := props("column-count", "2", "column-gap", "0", "width", "200px")
 	for _, tc := range []struct {
@@ -72,22 +73,6 @@ func TestColumnBSFFSetsBalanceHeight_LOU411(t *testing.T) {
 				ms("f", props("float", "left", "width", "50px", "height", "100px", "contain", "size")))),
 			height: 100,
 			want:   map[string][]fragRect{"f": {{0, 0, 50, 100}}},
-		},
-		{
-			// The size-contained box is monolithic: it counts as its 30px
-			// border box, not its 100px of visible content.
-			name: "L monolithic box with overflowing content",
-			kids: specKids(
-				ms("a", props("height", "20px")),
-				ms("sc", props("height", "30px", "contain", "size"), ms("c", props("height", "100px"))),
-				ms("b", props("height", "20px")),
-			),
-			height: 50,
-			want: map[string][]fragRect{
-				"a":  {{0, 0, 100, 20}},
-				"sc": {{0, 20, 100, 30}},
-				"b":  {{100, 0, 100, 20}},
-			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

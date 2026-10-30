@@ -196,18 +196,17 @@ func ShouldIncludeBlockEndBorderPadding(previousBreakToken *BlockBreakToken, sho
 	return !hasInflowChildBreakInside
 }
 
-// FragmentainerBlockSizeForFragmentation returns a fragmentainer's (column's)
-// block-size for fragmentation: the furthest block-end reached by its
-// children, each contributing its own border-box block-size or, when it does
-// not clip block-axis overflow, the block-end of its own content if that is
-// further. A fragmentainer's own block-size is not included. Mirrors the
-// value Blink's BoxFragmentBuilder accumulates in PropagateChildData
-// (box_fragment_builder.cc:484-495 @ a9f50e522efa) and finalizes for a
-// fragmentainer box (:743-745, children only), recomputed from the fragment
-// tree because louis14's LayoutResult.BlockSizeForFragmentation records only
-// overflow past a child's own box (see PropagateChildBlockSizeForFragmentation).
-// Unification target: once that builder field accumulates Blink's value, this
-// walk is redundant and should be deleted.
+// FragmentainerBlockSizeForFragmentation returns how far a fragmentainer's
+// (column's) content reaches: the furthest block-end of its in-flow
+// children, each contributing its own border-box block-size or, when it
+// does not clip block-axis overflow, the block-end of its own content if
+// that is further — walked down the fragment tree, through monolithic boxes
+// too. no Blink analog: it stands in for the column's
+// BlockEndScrollableOverflow() in LayoutLine's regrow
+// (column_layout_algorithm.cc:1043-1046 @ a9f50e522efa), which louis14 does
+// not compute. Unlike the column result's BlockSizeForFragmentation
+// (box_fragment_builder.cc:743-761), it includes a monolithic box's
+// overflowing content, as scrollable overflow does.
 func FragmentainerBlockSizeForFragmentation(wdm WritingDirectionMode, fragmentainer *PhysicalFragment) float64 {
 	if fragmentainer == nil {
 		return 0
@@ -491,13 +490,20 @@ func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *La
 }
 
 // BlockSizeForFragmentation is the block-size a parent attributes to a
-// child result when fitting it into a fragmentainer: the result's
-// fragmentation size (content overflowing the box, e.g. a regrown inner
-// multicol line) when it exceeds the fragment's own border-box size.
-// Mirrors Blink's free BlockSizeForFragmentation(result, writing_direction)
-// (fragmentation_utils.cc:1545-1583 @ a9f50e522efa); louis14's result field
-// is 0 unless overflow was recorded, hence the max.
+// child result when fitting it into a fragmentainer: the result's recorded
+// block-size for fragmentation (its content, overflow included), or the
+// fragment's own border-box block-size when none was recorded. Mirrors
+// Blink's free BlockSizeForFragmentation(result, writing_direction)
+// (fragmentation_utils.cc:1545-1583 @ a9f50e522efa). louis14 records 0 where
+// Blink has kIndefiniteSize (no block fragmentation, a line box); since a box
+// records at least its own block-size (BoxFragmentBuilder.Build, Blink
+// box_fragment_builder.cc:758-761), the max equals Blink's value. A
+// fragmentainer (column) records its children only (:743-745), so its value
+// is read as is.
 func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutResult) float64 {
+	if layoutResult.Fragment.BoxType == BoxTypeColumn {
+		return layoutResult.BlockSizeForFragmentation
+	}
 	return math.Max(NewLogicalFragment(wdm, layoutResult.Fragment).BlockSize(),
 		layoutResult.BlockSizeForFragmentation)
 }
