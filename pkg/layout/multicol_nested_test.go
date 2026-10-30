@@ -526,3 +526,28 @@ func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
 		}
 	}
 }
+
+// TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411: a balanced
+// multicol nested in an outer fragmentation context whose forced breaks
+// leave no soft break opportunity stretches its columns to all the space
+// the outer fragmentainer gives it, instead of giving up at the 10px forced
+// runs (column_layout_algorithm.cc:1153-1173 @ a9f50e522efa; its balancing
+// measure ignores runs past column-count forced breaks, :1629-1633).
+// Chrome 155 headless, LOU-411 probe8.html (multicol-nested-column-rule-003's
+// shape): the green box's four fragments are each 100px tall.
+func TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411(t *testing.T) {
+	frag, ids := layoutOuterMulticolSpec(t,
+		props("column-count", "2", "column-gap", "20px", "column-fill", "auto", "width", "100px", "height", "100px"),
+		ms("in", props("column-count", "2", "column-gap", "20px"),
+			ms("g", nil,
+				ms("", props("height", "10px", "break-after", "column")),
+				ms("", props("height", "10px", "break-after", "column")),
+				ms("", props("height", "200px")),
+			),
+		),
+	)
+	checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+		"in": {{0, 0, 40, 100}, {60, 0, 40, 100}},
+		"g":  {{0, 0, 10, 100}, {30, 0, 10, 100}, {60, 0, 10, 100}, {90, 0, 10, 100}},
+	})
+}
