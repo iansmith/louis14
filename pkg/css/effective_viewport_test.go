@@ -15,18 +15,7 @@ func divVW(t *testing.T, htmlSrc string, vw, vh float64) float64 {
 	styles := ApplyStylesToDocument(doc, vw, vh)
 	for node, style := range styles {
 		if node.Type == html.ElementNode && node.TagName == "div" {
-			ctx := calcContext{
-				fontSize:       style.GetFontSize(),
-				percentBase:    vw,
-				viewportWidth:  style.ViewportWidth,
-				viewportHeight: style.ViewportHeight,
-				chScale:        style.chScale(),
-			}
-			val, ok := style.Get("width")
-			if !ok {
-				continue
-			}
-			if length, ok := parseLengthFullWithCh(val, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale, style.XHeight, style.CapHeight, style.LhSize, style.ideographicInlineSize()); ok {
+			if length, ok := style.GetLength("width"); ok {
 				return length
 			}
 		}

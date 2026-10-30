@@ -84,16 +84,18 @@ func (s *Style) UpdateLineHeight() {
 	s.LhSize = s.GetLineHeight()
 }
 
-// applyFontAndLineHeight is the font / line-height step of the cascade: build
-// the element's font, compute line-height against it (lh against parent's),
-// then record the lh size. Mirrors StyleCascade::Apply's UpdateFont →
-// line-height → UpdateLineHeight sequence
-// (core/css/resolver/style_cascade.cc:310-315 @
-// 5992657f556bcd9d207a4aca187488462f027cab). applyStylesToNode runs it once, after
-// @container rules. It re-builds the font idempotently, so first-frame
-// transitions re-run it; a line-height already absolutized to px is not
-// re-derived from the new font.
+// applyFontAndLineHeight is the font / line-height step of the cascade:
+// compute font-size against the parent, build the element's font, compute
+// line-height against it (lh against parent's), then record the lh size.
+// Mirrors StyleCascade::Apply's ApplyHighPriority (font-size among the
+// high-priority properties) → UpdateFont → line-height → UpdateLineHeight
+// sequence (core/css/resolver/style_cascade.cc:309-315 @
+// 5992657f556bcd9d207a4aca187488462f027cab). applyStylesToNode runs it once,
+// after @container rules; pseudo-elements, the synthetic root and first-frame
+// transitions run it too. Every step is idempotent: a font-size or
+// line-height already computed to px is not re-derived.
 func applyFontAndLineHeight(s, parent *Style) {
+	convertFontSize(s, parent)
 	s.UpdateFont(nil)
 	absolutizeLineHeight(s, parent)
 	s.UpdateLineHeight()

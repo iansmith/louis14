@@ -1321,15 +1321,17 @@ func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHe
 		return 0, 0
 	}
 	var w, h float64
+	ctx := rootStyle.cssToLengthConversionData()
+	ctx.viewportWidth, ctx.viewportHeight = viewportWidth, viewportHeight
 	if wVal, ok := rootStyle.Get("width"); ok {
-		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
+		if length, ok := parseLengthFullWithCh(wVal, ctx); ok {
 			w = length
 		} else if pct, ok := ParsePercentage(wVal); ok {
 			w = pct / 100.0 * viewportWidth
 		}
 	}
 	if hVal, ok := rootStyle.Get("height"); ok {
-		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
+		if length, ok := parseLengthFullWithCh(hVal, ctx); ok {
 			h = length
 		} else if pct, ok := ParsePercentage(hVal); ok {
 			h = pct / 100.0 * viewportHeight
@@ -1918,26 +1920,11 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// as above.
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
 
-	// CSS 2.1 §15.7: resolve a font-relative font-size (em / %) on the
-	// pseudo-element against the originating element's computed font-size. For
-	// regular elements ApplyInheritedProperties does this; pseudo-elements
-	// take their inherited font-size from the originating element. This must
-	// run after ApplyAnimations so an animated `font-size: 1em` is resolved
-	// too (e.g. inheritance-pseudo-element.html).
+	// The pseudo-element's font-size computes against the originating
+	// element's (its inheritance parent) inside applyFontAndLineHeight. This
+	// must run after ApplyAnimations so an animated `font-size: 1em` is
+	// resolved too (e.g. inheritance-pseudo-element.html).
 	if len(parentStyles) > 0 && parentStyles[0] != nil {
-		if fsVal, has := finalStyle.Get("font-size"); has {
-			trimmed := strings.TrimSpace(fsVal)
-			parentFS := parentStyles[0].GetFontSize()
-			if strings.HasSuffix(trimmed, "%") {
-				if pct, ok := ParsePercentage(trimmed); ok {
-					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
-				}
-			} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
-				if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
-					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
-				}
-			}
-		}
 		// The pseudo-element builds its font from the originating element's
 		// font selector (Blink resolves pseudo-element styles through the same
 		// StyleCascade::Apply font step), then line-height computes against
@@ -2736,55 +2723,24 @@ var inheritableProperties = map[string]bool{
 	"color-interpolation-filters": true,
 }
 
-// ApplyInheritedProperties copies inheritable properties from parent if not set on child.
-// Also resolves font-size em values using parent's computed font-size.
-// ApplyInheritedProperties applies inherited CSS properties from parent to child
+// ApplyInheritedProperties computes style's font-size against its parent
+// (convertFontSize), then copies inheritable properties from the parent that
+// style does not set.
 func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	if node.Parent == nil {
 		return
 	}
 	parentStyle := styles[node.Parent]
 
-	// Resolve font-size em, lh, and percentage values using parent's metrics.
-	// Parent has already been processed (top-down cascade), so its font-size
-	// is resolved to an absolute px value. This propagates through to
-	// children so 1em and 100% both resolve correctly per CSS 2.1 §15.7.
-	// For lh: CSS Values 4 §6.1 says "when used in font-size, lh refers to
-	// the computed metrics of the parent element". Mirrors Blink's cascade
-	// behavior in css_to_length_conversion_data.cc at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	//
-	// This runs BEFORE the "no parent style → nothing to inherit" early-return
-	// below: the ROOT element's parent is the non-element document, which has no
-	// style entry in the normal (parser-wrapped) case, yet the root must still
-	// resolve a % / em font-size against the INITIAL 16px (Blink: documentElement
-	// resolves font-relative values against InitialStyleForElement, not a
-	// document-node style — verified @ Chromium main
-	// 9ef004e13d28eed9671f6275685da42b8b08a610). parentFS defaults to 16px when
-	// there is no parent style, so the root resolves correctly. (lh needs the
-	// parent's line-height metrics, so it stays gated on a present parent.)
-	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
-		trimmed := strings.TrimSpace(fsVal)
-		parentFS := 16.0
-		if parentStyle != nil {
-			parentFS = parentStyle.GetFontSize()
-		}
-		if strings.HasSuffix(trimmed, "%") {
-			if pct, okPct := ParsePercentage(trimmed); okPct {
-				style.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
-			}
-		} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
-			if resolved, okEm := ParseLengthWithFontSize(fsVal, parentFS); okEm {
-				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
-			}
-		} else if strings.HasSuffix(trimmed, "lh") && parentStyle != nil {
-			// lh in font-size resolves against the parent's computed line-height.
-			if num, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "lh"), 64); err == nil {
-				parentLh := parentStyle.GetLineHeight()
-				style.Set("font-size", fmt.Sprintf("%.6gpx", num*parentLh))
-			}
-		}
-	}
+	// font-size computes against the parent's font (CSS Fonts 4 §2.5). This
+	// runs BEFORE the "no parent style → nothing to inherit" early-return
+	// below: the ROOT element's parent is the non-element document, which has
+	// no style entry in the normal (parser-wrapped) case, yet the root must
+	// still resolve its font-size against the INITIAL 16px (Blink:
+	// documentElement resolves font-relative values against
+	// InitialStyleForElement, not a document-node style — verified @ Chromium
+	// main 9ef004e13d28eed9671f6275685da42b8b08a610).
+	convertFontSize(style, parentStyle)
 
 	// No parent style → nothing more to inherit. The root <html> case (parent is
 	// the non-element document) reaches here after resolving its own font-relative
@@ -3485,6 +3441,8 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 					syntheticRootStyle.Set(prop, val)
 				}
 			}
+			// rem resolves against :root's computed font-size below doc.Root.
+			syntheticRootStyle.remFontSize = rootChildStyle.remFontSize
 			if len(syntheticRootStyle.Properties) > 0 {
 				// The synthetic root is a style like any other: build its font
 				// so its own metrics (and lh size) are set too.
@@ -4109,24 +4067,75 @@ func absolutizeLineHeight(s *Style, parent *Style) {
 // computedLineHeightPx resolves a length / percentage / calc() line-height to
 // px, with lh taken as parentLh.
 func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (float64, bool) {
-	fontSize := s.GetFontSize()
+	ctx := s.cssToLengthConversionData()
+	ctx.lhSize = parentLh
 	if isMath {
-		return EvalMathFunction(v, calcContext{
-			fontSize:       fontSize,
-			percentBase:    fontSize,
-			viewportWidth:  s.ViewportWidth,
-			viewportHeight: s.ViewportHeight,
-			chScale:        s.chScale(),
-			xHeight:        s.XHeight,
-			capHeight:      s.CapHeight,
-			lhSize:         parentLh,
-			icWidth:        s.ideographicInlineSize(),
-		})
+		ctx.percentBase = ctx.fontSize
+		return EvalMathFunction(v, ctx)
 	}
 	if pct, ok := ParsePercentage(v); ok {
-		return pct / 100.0 * fontSize, true
+		return pct / 100.0 * ctx.fontSize, true
 	}
-	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, parentLh, s.ideographicInlineSize())
+	return parseLengthFullWithCh(v, ctx)
+}
+
+// fontSizeConversionData returns the context s's font-size resolves against:
+// the parent's font for em / ex / ch / ic / cap and percentages, the parent's
+// line-height for lh, the parent's root font-size for rem, and s's viewport.
+// With no parent (the root element) it is the initial font with no root, so
+// the root's own rem is the initial size. Mirrors
+// StyleResolverState::FontSizeConversionData →
+// UnzoomedLengthConversionData(ParentStyle()->GetFontSizeStyle())
+// (core/css/resolver/style_resolver_state.cc:264-266, :242-262) and the root
+// case of FontSizes (core/css/css_to_length_conversion_data.cc:84-93, with
+// root_element_style_ null for documentElement,
+// core/css/resolver/element_resolve_context.cc:109-113), all @
+// 5992657f556bcd9d207a4aca187488462f027cab.
+func fontSizeConversionData(s, parent *Style) calcContext {
+	if parent == nil {
+		return calcContext{
+			fontSize:       initialFontSize,
+			percentBase:    initialFontSize,
+			viewportWidth:  s.ViewportWidth,
+			viewportHeight: s.ViewportHeight,
+			chScale:        0.5,
+		}
+	}
+	ctx := parent.cssToLengthConversionData()
+	ctx.lhSize = parent.GetLineHeight()
+	ctx.percentBase = ctx.fontSize
+	ctx.viewportWidth, ctx.viewportHeight = s.ViewportWidth, s.ViewportHeight
+	return ctx
+}
+
+// convertFontSize computes s's declared font-size to px against parent
+// (fontSizeConversionData) and records the root font-size s's own rem lengths
+// use: its own size for the root (parent nil), else the parent's. A math
+// function is clamped to font-size's non-negative range; a px literal is
+// already computed; a keyword stays as declared (GetFontSize reads it).
+// Idempotent, so it re-runs at the font step (applyFontAndLineHeight) after a
+// late font-size write. Mirrors StyleBuilderConverter::ConvertFontSize
+// (core/css/resolver/style_builder_converter.cc:974-991, which computes
+// through StyleBuilderConverterBase::ConvertFontSize :926-972 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func convertFontSize(s, parent *Style) {
+	if val, ok := s.Get("font-size"); ok {
+		v := strings.TrimSpace(val)
+		isMath := IsMathFunction(v)
+		if units := dimensionUnits(v); isMath || len(units) != 1 || units[0] != "px" {
+			if px, ok := computeLengthOrPercentage(v, fontSizeConversionData(s, parent)); ok {
+				if isMath {
+					px = math.Max(px, 0)
+				}
+				s.Set("font-size", fmt.Sprintf("%.6gpx", px))
+			}
+		}
+	}
+	if parent == nil {
+		s.remFontSize = optionalFloat{value: s.GetFontSize(), ok: true}
+	} else {
+		s.remFontSize = parent.remFontSize
+	}
 }
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /
