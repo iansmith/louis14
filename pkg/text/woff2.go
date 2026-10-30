@@ -254,6 +254,7 @@ type woff2Header struct {
 	compressedOffset int
 	compressedLength int
 	uncompressedSize int
+	totalSfntSize    int // final SFNT size (woff2 ComputeWOFF2FinalSize)
 }
 
 // readWOFF2Header mirrors woff2 ReadWOFF2Header for single fonts.
@@ -277,10 +278,15 @@ func readWOFF2Header(data []byte) (*woff2Header, error) {
 	if !ok || numTables == 0 {
 		return nil, errWOFF2
 	}
-	// reserved (2), totalSfntSize (4)
-	if !b.skip(6) {
+	// reserved (2)
+	if !b.skip(2) {
 		return nil, errWOFF2
 	}
+	totalSfntSize, ok := b.readU32()
+	if !ok {
+		return nil, errWOFF2
+	}
+	hdr.totalSfntSize = int(totalSfntSize)
 	compressedLength, ok := b.readU32()
 	if !ok {
 		return nil, errWOFF2
@@ -627,6 +633,10 @@ func reconstructGlyf(data []byte, loca woff2Table, info *woff2FontInfo) (glyf, l
 				nPointsVec = append(nPointsVec, n)
 				totalNPoints += n
 			}
+			// woff2 rejects total_n_points >= 1<<27 before sizing buffers.
+			if totalNPoints >= 1<<27 {
+				return nil, nil, errWOFF2
+			}
 			flagsBuf, ok := flagStream.read(totalNPoints)
 			if !ok {
 				return nil, nil, errWOFF2
@@ -775,7 +785,11 @@ func convertWOFF2ToTTF(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if hdr.uncompressedSize > maxWOFF2SFNTSize {
+	// Blink's DecodeFontWithIft size checks on ComputeWOFF2FinalSize.
+	if hdr.totalSfntSize == 0 || hdr.totalSfntSize < len(data) {
+		return nil, errWOFF2
+	}
+	if hdr.totalSfntSize > maxWOFF2SFNTSize || hdr.uncompressedSize > maxWOFF2SFNTSize {
 		return nil, fmt.Errorf("woff2: decompressed size exceeds %d bytes", maxWOFF2SFNTSize)
 	}
 	transformed, err := woff2Uncompress(data[hdr.compressedOffset:hdr.compressedOffset+hdr.compressedLength], hdr.uncompressedSize)
