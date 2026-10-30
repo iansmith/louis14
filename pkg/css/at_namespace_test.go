@@ -139,6 +139,7 @@ func TestConsumeNamespaceRule(t *testing.T) {
 		{`@namespace "x" y;`, "", "", false},
 		{`@namespace pfx;`, "", "", false},
 		{`@namespace;`, "", "", false},
+		{`@namespaces "x";`, "", "", false}, // a different at-keyword
 	}
 	for _, tc := range cases {
 		t.Run(tc.rule, func(t *testing.T) {

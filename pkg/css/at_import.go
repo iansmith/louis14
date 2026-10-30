@@ -43,47 +43,56 @@ func parseImportURL(rule string) string {
 // resolution moved from HTML-parse time to CSS-parse time so the
 // imported sheet's URL identity survives.
 func parseImport(rule string) (url, mediaList string) {
+	url, suffix, ok := consumeStringOrURI(statementAtRulePrelude(rule, "@import"))
+	if !ok {
+		return "", ""
+	}
+	return url, stripImportConditionPrefixes(suffix)
+}
+
+// statementAtRulePrelude strips the at-keyword (e.g. "@import") and the
+// terminating `;` from a body-less at-rule, returning the trimmed prelude.
+func statementAtRulePrelude(rule, keyword string) string {
 	rule = strings.TrimSpace(rule)
 	rule = strings.TrimSuffix(rule, ";")
 	rule = strings.TrimSpace(rule)
+	rule = strings.TrimPrefix(rule, keyword)
+	return strings.TrimSpace(rule)
+}
 
-	rule = strings.TrimPrefix(rule, "@import")
-	rule = strings.TrimSpace(rule)
-
+// consumeStringOrURI consumes a leading `url(...)` or quoted string from s
+// (already trimmed), returning its value and the trimmed remainder. Quotes
+// inside `url("...")` are stripped. ok is false when s starts with
+// neither form or the form is unterminated. Shared by @import and
+// @namespace, as Blink's ConsumeStringOrURI is
+// (core/css/parser/css_parser_impl.cc:80 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func consumeStringOrURI(s string) (value, rest string, ok bool) {
 	// url(...) form.
-	if strings.HasPrefix(rule, "url(") {
-		closeIdx := strings.Index(rule, ")")
+	if strings.HasPrefix(s, "url(") {
+		closeIdx := strings.Index(s, ")")
 		if closeIdx == -1 {
-			return "", ""
+			return "", "", false
 		}
-		inner := strings.TrimSpace(rule[4:closeIdx])
+		inner := strings.TrimSpace(s[4:closeIdx])
 		if len(inner) >= 2 {
 			if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
 				(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
 				inner = inner[1 : len(inner)-1]
 			}
 		}
-		suffix := strings.TrimSpace(rule[closeIdx+1:])
-		return inner, stripImportConditionPrefixes(suffix)
+		return inner, strings.TrimSpace(s[closeIdx+1:]), true
 	}
 
-	// Bare string form: @import "foo.css" or @import 'foo.css', optionally
-	// followed by a media-query-list (everything after the closing quote).
-	if len(rule) >= 2 && (rule[0] == '"' || rule[0] == '\'') {
-		quote := rule[0]
-		// Fast path: the whole remainder is a single quoted string.
-		if rule[len(rule)-1] == quote && strings.Count(rule, string(quote)) == 2 {
-			return rule[1 : len(rule)-1], ""
-		}
-		// Otherwise locate the closing quote and split.
-		if endQuote := strings.IndexByte(rule[1:], quote); endQuote >= 0 {
-			urlPart := rule[1 : endQuote+1]
-			suffix := strings.TrimSpace(rule[endQuote+2:])
-			return urlPart, stripImportConditionPrefixes(suffix)
+	// Bare string form: "foo" or 'foo', optionally followed by more
+	// prelude (everything after the closing quote).
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
+		if endQuote := strings.IndexByte(s[1:], s[0]); endQuote >= 0 {
+			return s[1 : endQuote+1], strings.TrimSpace(s[endQuote+2:]), true
 		}
 	}
 
-	return "", ""
+	return "", "", false
 }
 
 // stripImportConditionPrefixes removes the optional `layer` / `layer(...)`
@@ -202,32 +211,10 @@ func resolveAtImport(ctx *ParserContext, atImportRule string, dst *Stylesheet) {
 		return
 	}
 
-	// To extract the supports condition, we need to re-parse the rule's suffix
-	// before parseImport stripped it. Extract the raw conditional suffix here.
-	rule := strings.TrimSpace(atImportRule)
-	rule = strings.TrimSuffix(rule, ";")
-	rule = strings.TrimSpace(rule)
-	rule = strings.TrimPrefix(rule, "@import")
-	rule = strings.TrimSpace(rule)
-
-	var supportsCondition string
-	// Extract the conditional suffix (everything after the URL).
-	if strings.HasPrefix(rule, "url(") {
-		closeIdx := strings.Index(rule, ")")
-		if closeIdx >= 0 {
-			suffix := strings.TrimSpace(rule[closeIdx+1:])
-			_, supportsCondition = stripImportConditionPrefixesWithSupports(suffix)
-		}
-	} else if len(rule) >= 2 && (rule[0] == '"' || rule[0] == '\'') {
-		quote := rule[0]
-		if rule[len(rule)-1] == quote && strings.Count(rule, string(quote)) == 2 {
-			// Fast path: just the quoted URL, no suffix.
-			supportsCondition = ""
-		} else if endQuote := strings.IndexByte(rule[1:], quote); endQuote >= 0 {
-			suffix := strings.TrimSpace(rule[endQuote+2:])
-			_, supportsCondition = stripImportConditionPrefixesWithSupports(suffix)
-		}
-	}
+	// To extract the supports condition, re-read the conditional suffix
+	// (everything after the URL) that parseImport stripped.
+	_, suffix, _ := consumeStringOrURI(statementAtRulePrelude(atImportRule, "@import"))
+	_, supportsCondition := stripImportConditionPrefixesWithSupports(suffix)
 
 	// Evaluate the supports condition. If false, skip this @import.
 	if supportsCondition != "" {

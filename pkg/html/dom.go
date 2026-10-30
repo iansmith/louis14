@@ -71,6 +71,9 @@ const (
 // none was set. Mirrors Blink Element::namespaceURI (core/dom/element.h:701
 // @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (n *Node) NamespaceURI() string {
+	if n.namespaceURI == "" {
+		return XHTMLNamespaceURI
+	}
 	return n.namespaceURI
 }
 
@@ -494,9 +497,10 @@ func (n *Node) InsertBefore(newChild, refChild *Node) *Node {
 // are cloned recursively. The clone has no parent.
 func (n *Node) CloneNode(deep bool) *Node {
 	clone := &Node{
-		Type:    n.Type,
-		TagName: n.TagName,
-		Text:    n.Text,
+		Type:         n.Type,
+		TagName:      n.TagName,
+		Text:         n.Text,
+		namespaceURI: n.namespaceURI,
 	}
 	if n.Attributes != nil {
 		clone.Attributes = make(map[string]string, len(n.Attributes))
