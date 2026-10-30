@@ -43,9 +43,6 @@ import (
 // is set by:
 //   - block_layout.go BLA Layout entry when style.HasSizeContainment()
 //     (CSS Containment 2 §2.6).
-//   - multicol_layout.go LayoutSpanner (markSpannerMonolithicIfOverflowed)
-//     when the spanner's measured intrinsic block-size exceeds its declared box
-//     (implicit monolithic for column-balance).
 //   - (Future) replaced elements (img, video, canvas, iframe).
 func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
 	if layoutResult == nil || layoutResult.Fragment == nil {
@@ -84,12 +81,9 @@ func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) b
 //     place it at the top of a fresh column, so the column only needs
 //     to be as tall as the child itself.
 //
-// v2 B2.5 extension: when the fragment is monolithic AND its declared
-// block-size is shorter than the natural content height (IntrinsicBlockSize
-// > fragment block-size), use the IntrinsicBlockSize instead. Captures the
-// spanner-with-content-overflow case where the spanner's box stays at
-// declared height but its content paints past it; the column needs to grow
-// to accommodate the visible content area.
+// A monolithic box records no BlockSizeForFragmentation (it is laid out
+// without block fragmentation), so its border box counts, not its
+// overflowing content.
 //
 // Used at the BreakBeforeChildIfNeeded propagation site
 // (fragmentation_utils.cc:1105-1113).
@@ -102,10 +96,6 @@ func CalculateUnbreakableBlockSize(
 		return 0
 	}
 	blockSize := BlockSizeForFragmentation(space.WritingDirection, layoutResult)
-	// v2 B2.5: monolithic + intrinsic > fragment block-size → use intrinsic.
-	if layoutResult.Fragment.IsMonolithic && layoutResult.IntrinsicBlockSize > blockSize {
-		blockSize = layoutResult.IntrinsicBlockSize
-	}
 	if fragmentainerBlockOffset < 0 {
 		blockSize += fragmentainerBlockOffset
 	}

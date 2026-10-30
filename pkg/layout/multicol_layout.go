@@ -1399,7 +1399,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 	// block_offset.
 	fragOff := mla.fragmentainerOffsetForChildren() + blockOffset
 	fullResult := layoutElement(mla.ctx, spanner, mla.CreateConstraintSpaceForSpanner(spanner, blockOffset, breakToken))
-	mla.markSpannerMonolithicIfOverflowed(fullResult, wdm)
 	// Blink cla.cc:1364-1394 @ a9f50e522efa: a spanner that does not fit
 	// (with its pending collapsed margin) in the rest of a wrapping row
 	// moves to the next row; when that row does not fit in the outer
@@ -2400,30 +2399,6 @@ func resolveSpannerInlineMargins(
 		margins.InlineStart = availableSpace
 	}
 	return margins.InlineStart
-}
-
-// markSpannerMonolithicIfOverflowed sets PhysicalFragment.IsMonolithic on a
-// spanner result when the spanner's measured intrinsic block-size exceeds
-// the laid-out fragment's block-size — i.e., the spanner has an explicit
-// height that's shorter than its content. The spanner's box won't grow,
-// but its content paints past the box (overflow:visible default). For
-// column-balance purposes we treat the spanner as monolithic of size
-// IntrinsicBlockSize so the column block-size can grow to accommodate
-// the visible content area.
-//
-// Phase 16.e+18 v2 B2.5: this is louis14's mechanism for "spanner with
-// content > declared height", paired with extended
-// CalculateUnbreakableBlockSize that prefers IntrinsicBlockSize over
-// fragment block-size when IsMonolithic is set on a spanner-shaped
-// fragment.
-func (mla *MulticolLayoutAlgorithm) markSpannerMonolithicIfOverflowed(result *LayoutResult, wdm WritingDirectionMode) {
-	if result == nil || result.Fragment == nil {
-		return
-	}
-	fragBlock := NewLogicalFragment(wdm, result.Fragment).BlockSize()
-	if result.IntrinsicBlockSize > fragBlock {
-		result.Fragment.IsMonolithic = true
-	}
 }
 
 // resolveColumnAutoBlockSize estimates the balanced column height by doing an
