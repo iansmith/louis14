@@ -374,3 +374,49 @@ func TestTableLayout_RelativeRowspanCellPercentInsetUsesOriginatingRow(t *testin
 		t.Errorf("c RelativeOffset = (%v, %v), want (0, 10)", x, y)
 	}
 }
+
+// TestTableLayout_RowSpecifiedBlockSizeIsRowMinimum pins Blink's "Apply row's
+// CSS block size" step in ComputeMinimumRowBlockSize
+// (third_party/blink/renderer/core/layout/table/table_layout_utils.cc:305-315
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520): a row's fixed specified block
+// size is a floor on its block size, whatever its cells measure. The
+// height:100% cell is the WPT css-tables/table-as-item-cell-percentage-001
+// shape: its percentage is indefinite in the measure pass (the cell space's
+// kIndefiniteSize base, table_layout_utils.cc:1411-1412), so the 50px row
+// height must come from the row itself.
+func TestTableLayout_RowSpecifiedBlockSizeIsRowMinimum(t *testing.T) {
+	for _, cellProps := range [][]string{
+		props("display", "table-cell"),
+		props("display", "table-cell", "height", "100%"),
+	} {
+		frag, ids := layoutInFlowRoot(t,
+			ms("t", props("display", "table", "width", "100px", "border-spacing", "0"),
+				ms("r", props("display", "table-row", "height", "50px"),
+					ms("c", cellProps))))
+		got := borderBoxRectsByID(frag, ids)
+		for _, id := range []string{"t", "r", "c"} {
+			if len(got[id]) == 0 || got[id][0].h != 50 {
+				t.Errorf("cell %v: %s rects = %v, want height 50", cellProps, id, got[id])
+			}
+		}
+	}
+}
+
+// TestTableLayout_RelativeAnonymousCellChildPercentInsetIsAuto pins the other
+// side of the row basis: a relative block placed directly in a sized row is
+// wrapped in an anonymous cell, so its containing block is that cell, not the
+// row. The cell's initial block size is indefinite (the row does not grow:
+// ComputeCellBlockSize, table_layout_utils.cc:1352-1358), so the cell's
+// child_available_size block size is indefinite (CalculateChildAvailableSize,
+// length_utils.cc:1774; ComputeInitialBlockSizeForFragment :936) and Blink's
+// ResolveInset treats top:100% as auto (relative_utils.cc:29-35), all
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520: no offset.
+func TestTableLayout_RelativeAnonymousCellChildPercentInsetIsAuto(t *testing.T) {
+	frag, ids := layoutInFlowRoot(t,
+		ms("t", props("display", "table", "border-spacing", "0"),
+			ms("r", props("display", "table-row", "height", "10px"),
+				ms("g", props("position", "relative", "top", "100%", "width", "100px", "height", "100px")))))
+	if x, y := relativeOffsetByID(t, frag, ids, "g"); x != 0 || y != 0 {
+		t.Errorf("g RelativeOffset = (%v, %v), want (0, 0)", x, y)
+	}
+}
