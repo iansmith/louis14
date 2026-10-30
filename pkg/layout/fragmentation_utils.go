@@ -159,6 +159,18 @@ func ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBr
 	return previousBreakToken == nil || !previousBreakToken.IsAtBlockEnd
 }
 
+// HasBreakOpportunityBeforeNextChild reports whether placing a block child
+// leaves a class A breakpoint before its next sibling, giving that sibling
+// container separation: it does unless the child resumed at its block end,
+// i.e. sits in a parallel flow that must not affect this flow. Mirrors the
+// box-fragment branch of Blink's HasBreakOpportunityBeforeNextChild
+// (fragmentation_utils.cc:870-883 @ a9f50e522efa); the line-box branch
+// (:885-892) has no louis14 caller, since inline content is placed as one
+// unit rather than line by line.
+func HasBreakOpportunityBeforeNextChild(incomingChildBreakToken *BlockBreakToken) bool {
+	return incomingChildBreakToken == nil || !incomingChildBreakToken.IsAtBlockEnd
+}
+
 // ShouldIncludeBlockStartBorderPadding reports whether this fragment carries
 // its block-start border/padding: the first fragment does, a resumed one
 // only when cloned. Mirrors Blink fragmentation_utils.cc:522-525 @
