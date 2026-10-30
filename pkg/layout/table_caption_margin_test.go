@@ -106,6 +106,14 @@ func TestTableCaption_Margins_LOU434(t *testing.T) {
 		assertNear(t, "table block size", res.Fragment.Size.HeightF64(), 118)
 	})
 
+	t.Run("negative-margin-clamps-block-size", func(t *testing.T) {
+		// 0 + 50 - 80 = -30; Blink clamps the final child_block_offset with
+		// ClampNegativeToZero (table_layout_algorithm.cc:1592 @ d4ecdfed88f9).
+		res := layoutCaptionTable(t, table,
+			[]string{"width", "100px", "height", "50px", "margin-bottom", "-80px"})
+		assertNear(t, "table block size", res.Fragment.Size.HeightF64(), 0)
+	})
+
 	t.Run("percent", func(t *testing.T) {
 		// Blink ComputeCaptionMargins (:118-128 @ d4ecdfed88f9) resolves %
 		// against the table border-box inline size; at border:0/padding:0 that equals
