@@ -156,3 +156,49 @@ func TestKeyframeBareNumber_OpacityStillLerps(t *testing.T) {
 		t.Errorf("opacity 0->1 @0.5 = %q, want \"0.5\"", got)
 	}
 }
+
+// --- LOU-432: display interpolation ------------------------------------------
+//
+// Expected values come from Blink CSSDisplayNonInterpolableValue::Display
+// (core/animation/css_display_interpolation_type.cc:29-40 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): with exactly one endpoint
+// `none`, there is no halfway flip — none->X gives X for any fraction > 0,
+// and X->none keeps X until fraction >= 1. Any other pair flips at 0.5.
+
+func TestKeyframeDisplay_NoneEndpointHasNoMidpointFlip(t *testing.T) {
+	cases := []struct {
+		from, to string
+		progress float64
+		want     string
+	}{
+		{"none", "block", 0, "none"},
+		{"none", "block", 0.01, "block"},
+		{"none", "block", 0.25, "block"},
+		{"none", "block", 0.49, "block"},
+		{"none", "block", 1, "block"},
+		{"block", "none", 0.5, "block"},
+		{"block", "none", 0.99, "block"},
+		{"block", "none", 1, "none"},
+		{"block", "inline-block", 0.49, "block"},
+		{"block", "inline-block", 0.5, "inline-block"},
+	}
+	for _, c := range cases {
+		if got := sampleKeyframes(t, "display", c.from, c.to, c.progress, nil); got != c.want {
+			t.Errorf("display %s->%s @%v = %q, want %q", c.from, c.to, c.progress, got, c.want)
+		}
+	}
+}
+
+func TestKeyframeDisplay_NonConvertibleKeywordFlipsAtMidpoint(t *testing.T) {
+	// `ruby` is not one of the keywords CSSDisplayInterpolationType::
+	// MaybeConvertValue accepts (css_display_interpolation_type.cc:139-169
+	// @ d4ecdfed88f962439247c2ad36b8fe47805b1520), so the pair falls through
+	// to CSSDefaultInterpolationType (interpolation_types_map.cc:503-504 @
+	// same SHA), which flips at 0.5 even though one endpoint is none.
+	if got := sampleKeyframes(t, "display", "none", "ruby", 0.25, nil); got != "none" {
+		t.Errorf("display none->ruby @0.25 = %q, want \"none\"", got)
+	}
+	if got := sampleKeyframes(t, "display", "none", "ruby", 0.5, nil); got != "ruby" {
+		t.Errorf("display none->ruby @0.5 = %q, want \"ruby\"", got)
+	}
+}

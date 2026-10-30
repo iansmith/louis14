@@ -47,6 +47,13 @@ type Node struct {
 	// UNFILTERED (Blink filters at style application, not at animation
 	// creation); nil when no marker animation is active.
 	MarkerAnimatedStyle map[string]string
+
+	// ElementAnimations is the element's running CSS animations, maintained
+	// by style resolution in pkg/css; nil when the element has none. Mirrors
+	// Blink Element::GetElementAnimations (core/dom/element.h:1711 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). CloneNode does not copy it:
+	// a clone has not been styled yet.
+	ElementAnimations *ElementAnimations
 }
 
 type NodeType int
@@ -193,6 +200,14 @@ type Document struct {
 	// when no explicit `priority` differentiates them (no LOU-354 target
 	// test sets .priority).
 	CustomHighlightOrder []string
+
+	// AnimationClock is the document's animation time source, read by
+	// document.timeline and by CSS animation sampling and advanced by the
+	// requestAnimationFrame shim in pkg/js. Mirrors Blink
+	// Document::GetAnimationClock / animation_clock_
+	// (core/dom/document.h:1693, :3088 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). The zero value reads time 0.
+	AnimationClock AnimationClock
 }
 
 // Range is a simplified DOM Range: a pair of boundary points
