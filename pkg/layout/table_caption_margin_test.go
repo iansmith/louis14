@@ -153,3 +153,37 @@ func TestTableCaption_StretchMinusInlineMargins_LOU434(t *testing.T) {
 	assertNear(t, "caption inline size", ch.Fragment.Size.WidthF64(), 250)
 	assertNear(t, "caption offset.left", ch.Offset.Left.Float64(), 30)
 }
+
+// LOU-434: resolveInlineAutoMargins sets both inline margins as Blink
+// ResolveInlineAutoMargins does (length_utils.cc:1551-1570 @ d4ecdfed88f9):
+// both-auto splits the free space (clamped at 0) and sets inline_end to the
+// remainder; start-auto takes the clamped free space; end-auto sets inline_end
+// to the remainder after inline_start.
+func TestResolveInlineAutoMargins_LOU434(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	cases := []struct {
+		name               string
+		props              []string
+		available, inline  float64
+		in                 LogicalEdges
+		wantStart, wantEnd float64
+	}{
+		{"both-auto", []string{"margin-left", "auto", "margin-right", "auto"}, 300, 100,
+			LogicalEdges{}, 100, 100},
+		{"start-auto", []string{"margin-left", "auto", "margin-right", "20px"}, 300, 100,
+			LogicalEdges{InlineEnd: 20}, 180, 20},
+		{"end-auto", []string{"margin-left", "30px", "margin-right", "auto"}, 300, 100,
+			LogicalEdges{InlineStart: 30}, 30, 170},
+		{"negative-space-clamp", []string{"margin-left", "auto", "margin-right", "auto"}, 300, 400,
+			LogicalEdges{}, 0, -100},
+		{"no-auto", []string{"margin-left", "30px", "margin-right", "20px"}, 300, 100,
+			LogicalEdges{InlineStart: 30, InlineEnd: 20}, 30, 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveInlineAutoMargins(makeStyle(tc.props...), wdm, tc.available, tc.inline, tc.in)
+			assertNear(t, "InlineStart", got.InlineStart, tc.wantStart)
+			assertNear(t, "InlineEnd", got.InlineEnd, tc.wantEnd)
+		})
+	}
+}
