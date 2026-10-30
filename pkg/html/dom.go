@@ -47,6 +47,31 @@ type Node struct {
 	// UNFILTERED (Blink filters at style application, not at animation
 	// creation); nil when no marker animation is active.
 	MarkerAnimatedStyle map[string]string
+
+	// namespaceURI is the element's namespace, read through NamespaceURI().
+	// Unset means the XHTML namespace: the HTML parser's InsertHTMLElement
+	// path, JS createElement and the synthetic html/head/body all create
+	// HTML elements, so only the foreign-content path (<svg>, <math> and
+	// their descendants) sets it. Mirrors Blink Element::tag_name_'s
+	// namespace (Element::namespaceURI, core/dom/element.h:701 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	namespaceURI string
+}
+
+// Namespace URIs an element can carry (HTML §2.1.3 "Namespaces"). Mirror
+// Blink's html_names::xhtmlNamespaceURI, svg_names::kNamespaceURI and
+// mathml_names::kNamespaceURI.
+const (
+	XHTMLNamespaceURI  = "http://www.w3.org/1999/xhtml"
+	SVGNamespaceURI    = "http://www.w3.org/2000/svg"
+	MathMLNamespaceURI = "http://www.w3.org/1998/Math/MathML"
+)
+
+// NamespaceURI returns the element's namespace URI; XHTMLNamespaceURI when
+// none was set. Mirrors Blink Element::namespaceURI (core/dom/element.h:701
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func (n *Node) NamespaceURI() string {
+	return n.namespaceURI
 }
 
 type NodeType int

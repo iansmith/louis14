@@ -23,6 +23,12 @@ type matchContext struct {
 	// visitedness. Mirrors Blink SelectorChecker::CheckPseudoHas's forced
 	// "matches all links / never visited" behavior under the has-context.
 	insideHas bool
+
+	// defaultNamespace is the default namespace of the sheet the outermost
+	// selector came from (Selector.defaultNamespace), applied to the
+	// functional-pseudo arguments the matcher re-parses (parseNestedSelector).
+	// "" = any namespace.
+	defaultNamespace string
 }
 
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
