@@ -592,7 +592,20 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // ctx is the owning document's ParserContext — used to resolve url() tokens
 // inside the node's inline `style=""` attribute at parse time. Pass nil for
 // "no base URL" (test fixtures that don't exercise URL composition).
+//
+// CSS animations are sampled at local time 0 and node's running-animation
+// records are left untouched; the document cascade (ApplyStylesToDocument)
+// samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil)
+}
+
+// computeStyle is ComputeStyle with the document's AnimationClock. A non-nil
+// clock makes this a style recalc of node: its running CSS animations are
+// updated (calculateAnimationUpdate) and sampled at their timeline local
+// times. A nil clock samples every animation at local time 0 and leaves the
+// records alone, for probes that are not the element's style recalc.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -822,10 +835,17 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
 	// cascade origin sits below author !important (CSS Cascade §6.3), so
-	// ApplyAnimations skips any property in importantProps. animation-name and
-	// the other animation-* longhands have already been resolved (via rule
-	// declarations / inline style) into finalStyle by this point.
-	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+	// applyCSSAnimations skips any property in importantProps. animation-name
+	// and the other animation-* longhands have already been resolved (via rule
+	// declarations / inline style) into finalStyle by this point. With a
+	// clock, calculateAnimationUpdate supplies each animation's timeline local
+	// time; without one every animation samples at 0, as ApplyAnimations does.
+	anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets))
+	var localTimes []float64
+	if clock != nil {
+		localTimes = calculateAnimationUpdate(node, anims, clock)
+	}
+	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
 
 	// CSS Values 5 §11.5: resolve typed attr() references in property values.
 	// attr() in non-content properties (e.g. background-color, width) must be
@@ -1197,7 +1217,7 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, &doc.AnimationClock)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -3369,9 +3389,9 @@ func absolutizeOutlineOffset(style *Style) {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		// CSS Variables 1 §3.2: a shorthand whose declared value contains
@@ -3501,7 +3521,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, clock)
 	}
 }
 

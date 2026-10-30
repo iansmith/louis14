@@ -140,3 +140,28 @@ func TestCSSAnimationStartedWithoutFramesSamplesZero(t *testing.T) {
 		t.Errorf("opacity = %v, want 0", got)
 	}
 }
+
+func TestCSSAnimationRemovedThenReaddedRestarts(t *testing.T) {
+	// An animation-name dropped from the style cancels the running animation
+	// (Blink CalculateAnimationUpdate cancels every running animation left
+	// unmatched, update.CancelAnimation at css_animations.cc:2050-2053 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520); naming it again later
+	// starts a new one. Here the
+	// load-time animation is held at 0, removed once the clock has advanced,
+	// then re-added: the new animation samples at the timeline time.
+	doc, err := html.Parse(timelineTestCSS + `<div id="target" class="go"></div>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	target := timelineTarget(t, doc)
+	ApplyStylesToDocument(doc, 800, 600)
+	doc.AnimationClock.UpdateTime(3 * html.ApproximateFrameTime)
+	target.Attributes["class"] = ""
+	ApplyStylesToDocument(doc, 800, 600)
+	target.Attributes["class"] = "go"
+	s := ApplyStylesToDocument(doc, 800, 600)[target]
+	want := (3 * html.ApproximateFrameTime).Seconds()
+	if got := opacityOf(t, s); math.Abs(got-want) > 1e-9 {
+		t.Errorf("opacity = %v, want %v", got, want)
+	}
+}
