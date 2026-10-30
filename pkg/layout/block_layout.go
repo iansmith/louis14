@@ -3932,21 +3932,13 @@ func computeOrthogonalFallbackBlockForChildren(
 }
 
 // setupSpaceBuilderForFragmentation copies this block's fragmentation context
-// into a child's constraint-space builder at the given fragmentainer offset.
-// Mirrors Blink's SetupSpaceBuilderForFragmentation
-// (fragmentation_utils.cc:333-372 @ a9f50e522efa), including MinBreakAppeal
-// (:369) so a container that is breakable at the start of a resumed
-// fragment stays breakable through its descendants, and IsAtFragmentainerStart
-// for an offset at or before the fragmentainer start (:343-344).
+// into a child's constraint-space builder at the given fragmentainer offset
+// (SetupSpaceBuilderForFragmentation, fragmentation_utils.cc:379-397 @
+// a9f50e522efa). louis14 deviation: it passes this block's raw
+// FragmentainerBlockSize where Blink passes FragmentainerCapacity(builder,
+// is_for_children) (fragmentation_utils.h:187-203).
 func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *ConstraintSpaceBuilder, fragmentainerOffset float64) {
-	b.SetHasBlockFragmentation(true).
-		SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
-		SetFragmentainerOffset(fragmentainerOffset).
-		SetBlockFragmentationType(bla.space.BlockFragmentationType).
-		SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
-		SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns).
-		SetMinBreakAppeal(bla.space.MinBreakAppeal).
-		SetIsAtFragmentainerStart(fragmentainerOffset <= 0)
+	SetupSpaceBuilderForFragmentation(bla.space, fragmentainerOffset, bla.space.FragmentainerBlockSize, b)
 }
 
 // isFloatAtFragmentainerStart reports whether a float whose border edge sits

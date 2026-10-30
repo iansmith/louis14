@@ -2753,49 +2753,48 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 }
 
 // CreateConstraintSpaceForSpanner builds the constraint space a column
-// spanner is laid out in: a new formatting context at the multicol's
-// content-box inline size. blockOffset is the spanner's block offset from the
-// multicol's border-box block-start edge (Blink's block_offset). breakToken
-// resumes a spanner that broke inside; louis14 carries it on the space where
-// Blink passes it to spanner_node.Layout. Mirrors
+// spanner is laid out in: a new formatting context whose available and
+// percentage-resolution size are both the multicol's content-box size
+// (ChildAvailableSize; its block-size is Indefinite when the multicol's is
+// auto), with the multicol's block-fragmentation context set up at the
+// spanner's offset when the multicol takes part in block fragmentation —
+// including an outer initial column-balancing pass, where the fragmentainer
+// block-size is unknown — and the spanner is not monolithic. blockOffset is
+// the spanner's block offset from the multicol's border-box block-start edge
+// (Blink's block_offset). breakToken resumes a spanner that broke inside;
+// louis14 carries it on the space where Blink passes it to
+// spanner_node.Layout. Mirrors
 // ColumnLayoutAlgorithm::CreateConstraintSpaceForSpanner
-// (column_layout_algorithm.cc:1865-1893 @ a9f50e522efa).
+// (column_layout_algorithm.cc:1865-1893 @ a9f50e522efa) and
+// SetupSpaceBuilderForFragmentation(container_builder_, ...)
+// (fragmentation_utils.cc:379-397).
+//
+// Not ported: the orthogonal fallback inline size and
+// ShouldBlockContainerChildStretchAutoInlineSize / kStretchImplicit
+// (cla.cc:1871-1876; louis14's space has no inline auto behaviour, and an
+// auto-width spanner already fills the content box), the baseline algorithm
+// type and text-box-trim (cla.cc:1880-1886). SetIsInsideColumnSpanner has no
+// Blink analog.
 func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *LayoutInputNode, blockOffset float64, breakToken *BlockBreakToken) ConstraintSpace {
 	wdm := mla.space.WritingDirection
 	spannerWDM := NewWritingDirectionMode(spanner.Style())
-	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true)
-	if mla.isConstrainedByOuterFragmentation() || breakToken != nil {
-		b = b.SetAvailableSize(LogicalSize{
-			InlineSize: mla.contentInlineSize,
-			BlockSize:  Indefinite,
-		}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: mla.contentInlineSize,
-				BlockSize:  mla.containerPercentResolutionBlockSize,
-			}).
-			SetPercentageResolutionInlineSize(mla.contentInlineSize).
-			SetHasBlockFragmentation(true).
-			SetFragmentainerBlockSize(mla.space.FragmentainerBlockSize).
-			SetFragmentainerOffset(mla.fragmentainerOffsetForChildren() + blockOffset).
-			SetBlockFragmentationType(FragmentColumn).
-			SetIsInsideColumnSpanner(true).
-			SetIsAtFragmentainerStart(mla.fragmentainerOffsetForChildren()+blockOffset <= 0)
-		if breakToken != nil {
-			b = b.SetBreakToken(breakToken)
-		}
-		return b.Build()
-	}
-	return b.SetAvailableSize(LogicalSize{
+	childAvailableSize := LogicalSize{
 		InlineSize: mla.contentInlineSize,
 		BlockSize:  mla.containerPercentResolutionBlockSize,
-	}).
-		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: mla.contentInlineSize,
-			BlockSize:  mla.containerPercentResolutionBlockSize,
-		}).
+	}
+	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true).
+		SetAvailableSize(childAvailableSize).
+		SetPercentageResolutionSize(childAvailableSize).
 		SetPercentageResolutionInlineSize(mla.contentInlineSize).
-		SetIsInsideColumnSpanner(true).
-		Build()
+		SetIsInsideColumnSpanner(true)
+	if breakToken != nil {
+		b = b.SetBreakToken(breakToken)
+	}
+	if mla.space.HasBlockFragmentation && !spanner.IsMonolithic(wdm.WM != spannerWDM.WM) {
+		SetupSpaceBuilderForFragmentation(mla.space, mla.fragmentainerOffsetForChildren()+blockOffset,
+			mla.fragmentainerCapacityForChildren(), b)
+	}
+	return b.Build()
 }
 
 // createConstraintSpaceForColumn builds the constraint space for a single

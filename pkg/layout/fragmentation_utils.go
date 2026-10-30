@@ -367,6 +367,29 @@ func CalculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResul
 	return appeal
 }
 
+// SetupSpaceBuilderForFragmentation copies a parent's block-fragmentation
+// context into a child's constraint-space builder: the fragmentainer
+// block-size and the child's offset in the fragmentainer (with
+// IsAtFragmentainerStart for an offset at or before its start), the
+// fragmentation type, the column-balancing flags and MinBreakAppeal, so a
+// container that is breakable at the start of a resumed fragment stays
+// breakable through its descendants. Mirrors Blink's
+// SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:321-372 @
+// a9f50e522efa). The monolithic-child early return (:336-338) stays with the
+// callers, which then leave fragmentation off. Not ported (no louis14 field
+// or consumer): RequiresContentBeforeBreaking, IsInsideBreakAvoid,
+// ShouldIgnoreForcedBreaks and PageName.
+func SetupSpaceBuilderForFragmentation(parentSpace ConstraintSpace, fragmentainerOffset, fragmentainerBlockSize float64, b *ConstraintSpaceBuilder) {
+	b.SetHasBlockFragmentation(true).
+		SetFragmentainerBlockSize(fragmentainerBlockSize).
+		SetFragmentainerOffset(fragmentainerOffset).
+		SetBlockFragmentationType(parentSpace.BlockFragmentationType).
+		SetIsInitialColumnBalancingPass(parentSpace.IsInitialColumnBalancingPass).
+		SetIsInsideBalancedColumns(parentSpace.IsInsideBalancedColumns).
+		SetMinBreakAppeal(parentSpace.MinBreakAppeal).
+		SetIsAtFragmentainerStart(fragmentainerOffset <= 0)
+}
+
 // IsBreakableAtStartOfResumedContainer reports whether a break is allowed
 // before the first child of a container that resumed after a break. Normally
 // that is not a valid breakpoint (nothing would be placed in the
