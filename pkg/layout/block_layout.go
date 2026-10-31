@@ -444,7 +444,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			HasInflowChildBreakInside:             hasInflowChildBreakInside,
 			IsKnownToFitInFragmentainer:           isKnownToFitInFragmentainer,
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
-			IsSlice:                               !hasClonedBoxDecorations,
 		})
 		if !res.IncludeBlockEnd {
 			geom.ClearBorderScrollbarPaddingBlockEnd()
