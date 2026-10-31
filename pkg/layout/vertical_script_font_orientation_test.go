@@ -17,8 +17,11 @@ import (
 // re-builds its font, as Blink's ComputedStyleBuilder::UpdateFontOrientation
 // re-creates the FontDescription when the orientation changes
 // (core/style/computed_style.cc:3274-3287 @
-// 5992657f556bcd9d207a4aca187488462f027cab). Upright serif at 20px has
-// ZeroWidth 1em (20); rotated, it is the horizontal "0" advance (under 20).
+// 5992657f556bcd9d207a4aca187488462f027cab). Upright serif (Liberation
+// Serif, no vmtx) at 20px has ZeroWidth equal to its FontMetrics Height, the
+// OpenTypeVerticalData::AdvanceHeight fallback (platform/fonts/opentype/
+// open_type_vertical_data.cc:298-299 @ the same SHA); rotated, it is the
+// horizontal "0" advance, narrower than that.
 func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T) {
 	parent := css.NewStyle()
 	parent.Set("font-family", "serif")
@@ -26,8 +29,10 @@ func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T)
 	parent.Set("writing-mode", "vertical-rl")
 	parent.Set("text-orientation", "upright")
 	parent.UpdateFont(text.NewCSSFontSelector(text.DefaultFontConfig()))
-	if parent.ChWidth != 20 {
-		t.Fatalf("upright parent ZeroWidth = %v, want 20 (1em)", parent.ChWidth)
+	serif := text.DefaultFontConfig().FontPathForFamily("serif", false, false, false, false)
+	upright := text.FontAscentFromFont(20, serif, nil) + text.FontDescentFromFont(20, serif, nil)
+	if parent.ChWidth != upright {
+		t.Fatalf("upright parent ZeroWidth = %v, want the serif Height %v", parent.ChWidth, upright)
 	}
 
 	data := &InlineItemsData{}
@@ -47,7 +52,7 @@ func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T)
 	if to, _ := got.Get("text-orientation"); to != "sideways" {
 		t.Fatalf("clone text-orientation = %q, want sideways", to)
 	}
-	if got.ChWidth <= 0 || got.ChWidth >= 20 {
-		t.Errorf("sideways clone ZeroWidth = %v, want the rotated horizontal \"0\" advance (0 < w < 20), not upright 1em", got.ChWidth)
+	if got.ChWidth <= 0 || got.ChWidth >= upright {
+		t.Errorf("sideways clone ZeroWidth = %v, want the rotated horizontal \"0\" advance (0 < w < %v), not the upright one", got.ChWidth, upright)
 	}
 }
