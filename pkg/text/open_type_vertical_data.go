@@ -40,7 +40,7 @@ const (
 // newOpenTypeVerticalData loads the vertical metrics of the typeface whose
 // tables copyOpenTypeTable returns (nil for a missing table). Mirrors the
 // OpenTypeVerticalData constructor, which calls LoadMetrics on the typeface
-// (open_type_vertical_data.cc:139-141 @
+// (open_type_vertical_data.cc:140-142 @
 // 5992657f556bcd9d207a4aca187488462f027cab).
 func newOpenTypeVerticalData(copyOpenTypeTable func(tag uint32) []byte) *openTypeVerticalData {
 	v := &openTypeVerticalData{}
@@ -60,7 +60,7 @@ func validateTable(buffer []byte, size, count int) bool {
 // or missing table returns early with what loaded so far. Mirrors
 // OpenTypeVerticalData::LoadMetrics' advance path (open_type_vertical_data.cc:
 // 154-240 @ 5992657f556bcd9d207a4aca187488462f027cab): hhea/hmtx :158-184,
-// vhea :188-197, vmtx :225-240.
+// vhea :186-197, vmtx :220-240.
 func (v *openTypeVerticalData) loadMetrics(copyOpenTypeTable func(tag uint32) []byte) {
 	advances := func(headerTag, metricsTag uint32) []uint16 {
 		header := copyOpenTypeTable(headerTag)

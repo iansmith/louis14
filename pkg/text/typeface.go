@@ -12,7 +12,7 @@ import (
 // typeface is one font file's table data, read once: its vertical metrics and
 // unitsPerEm. It stands in for the SkTypeface that Blink's
 // OpenTypeVerticalData reads tables from (CopyOpenTypeTable,
-// platform/fonts/opentype/open_type_vertical_data.cc:143-151 @
+// platform/fonts/opentype/open_type_vertical_data.cc:144-152 @
 // 5992657f556bcd9d207a4aca187488462f027cab) and that HarfBuzzFace reads the
 // head table from. No Blink analog for the record itself: mazzy's
 // GlyphProvider keeps font bytes private, so louis14 records them itself.
@@ -29,7 +29,7 @@ const headUnitsPerEmOffset = 18
 
 // copyOpenTypeTable returns the table's bytes, nil when the font has no such
 // table or does not parse — as Blink's CopyOpenTypeTable resizes its buffer
-// to 0 (open_type_vertical_data.cc:143-151 @
+// to 0 (open_type_vertical_data.cc:144-152 @
 // 5992657f556bcd9d207a4aca187488462f027cab). Table extraction is go-text's
 // opentype.Loader.
 func copyOpenTypeTable(ld *opentype.Loader, tag uint32) []byte {
