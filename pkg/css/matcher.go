@@ -13,9 +13,11 @@ import (
 // matchContext carries the per-match flags that change how certain
 // pseudo-classes evaluate, mirroring Blink's
 // SelectorChecker::SelectorCheckingContext (core/css/selector_checker.h @
-// 4883d11fef4a). louis14 only needs the :has() scope flag today: per CSS
-// Selectors 4 §6.6.1.1, inside :has() the :link / :visited pseudo-classes
-// behave differently from general matching (history-leak privacy carve-out).
+// 4883d11fef4a): the :has() scope flag (per CSS Selectors 4 §6.6.1.1,
+// inside :has() the :link / :visited pseudo-classes behave differently from
+// general matching — history-leak privacy carve-out), plus the sheet's
+// default namespace for the functional-pseudo arguments louis14 re-parses
+// at match time.
 type matchContext struct {
 	// insideHas is true while evaluating the argument selector of a :has()
 	// pseudo-class. Inside :has(), :link matches ANY hyperlink and :visited
@@ -23,11 +25,64 @@ type matchContext struct {
 	// visitedness. Mirrors Blink SelectorChecker::CheckPseudoHas's forced
 	// "matches all links / never visited" behavior under the has-context.
 	insideHas bool
+
+	// defaultNamespace is the default namespace of the sheet the outermost
+	// selector came from (Selector.defaultNamespace), applied to the
+	// functional-pseudo arguments the matcher re-parses (parseNestedSelector).
+	// "" = any namespace.
+	defaultNamespace string
+
+	// resistDefaultNamespace is true while matching the argument of a
+	// :is/:where/:not/:has (and anything nested in it, :nth-child(of)
+	// included): the type-less subject compound of a re-parsed argument then
+	// ignores defaultNamespace (Selector.resolveNamespaces). Mirrors Blink
+	// CSSSelectorParser::resist_default_namespace_
+	// (core/css/parser/css_selector_parser.h:272, set by a base::AutoReset
+	// for :is :1627, :where :1642, :has :1686 and :not :1712 of
+	// css_selector_parser.cc @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// Like that AutoReset, setting it on the by-value ctx scopes it to the
+	// argument.
+	resistDefaultNamespace bool
 }
 
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
 func MatchesSelector(node *html.Node, selector Selector) bool {
-	return matchesSelectorCtx(node, selector, matchContext{})
+	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace})
+}
+
+// parseNestedSelector parses one comma branch of a functional pseudo-class
+// argument (:is/:where/:not/:has/:nth-child(of)) at match time and resolves
+// its compounds against the outermost selector's default namespace, as
+// Blink would have when parsing the nested selector list. The
+// subject-compound exception (ctx.resistDefaultNamespace) applies only when
+// atEnd, i.e. sel is the argument's last branch: Blink requires the compound
+// to be AtEndIgnoringWhitespace of the argument block
+// (core/css/parser/css_selector_parser.cc:1318-1322 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), and an earlier branch is
+// followed by a comma. No Blink analog for re-parsing: louis14 keeps those
+// arguments as strings (SelectorPart.PseudoClasses).
+func parseNestedSelector(sel string, ctx matchContext, atEnd bool) Selector {
+	s := ParseSelector(sel)
+	s.resolveNamespaces(ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd)
+	return s
+}
+
+// parseNestedSelectorList parses the comma branches of a functional
+// pseudo-class argument with parseNestedSelector, skipping empty branches.
+// atEnd is judged against the unfiltered list, so only the argument's last
+// branch can take the subject exemption. No Blink analog: Blink parses the
+// list once (ConsumeNestedSelectorList / ConsumeForgivingNestedSelectorList),
+// louis14 re-parses argument strings at match time.
+func parseNestedSelectorList(selectors []string, ctx matchContext) []Selector {
+	parsed := make([]Selector, 0, len(selectors))
+	for i, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		if sel == "" {
+			continue
+		}
+		parsed = append(parsed, parseNestedSelector(sel, ctx, i == len(selectors)-1))
+	}
+	return parsed
 }
 
 // matchesSelectorCtx is MatchesSelector with an explicit match context, used
@@ -94,11 +149,19 @@ func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int, 
 
 // matchesSelectorPart checks if a node matches a single selector part
 func matchesSelectorPart(node *html.Node, part SelectorPart, ctx matchContext) bool {
-	// Match element
+	// Match the type / universal selector: local name, then namespace
+	// ("" = any). Mirrors Blink MatchesTagName / MatchesUniversalTagName
+	// (core/css/selector_checker.cc:147-177 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). Blink's LocalNameUpper
+	// fallback for non-HTML elements in HTML documents (:152-162) is implicit
+	// here: the HTML tokenizer and parseSelectorPart both lowercase names.
 	if part.Element != "" && part.Element != "*" {
 		if node.TagName != part.Element {
 			return false
 		}
+	}
+	if part.NamespaceURI != "" && node.NamespaceURI() != part.NamespaceURI {
+		return false
 	}
 
 	// Match ID
@@ -264,21 +327,9 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		}
 		return matchesNthChild(node, anb)
 	case strings.HasPrefix(pc, "not("):
-		arg := pc[len("not(") : len(pc)-1] // strip "not(" and ")"
-		// Split by comma (paren-aware) to support selector lists: :not(A, B, C)
-		// Element must NOT match ANY of the selectors in the list
-		selectors := splitSelectorGroup(strings.TrimSpace(arg))
-		for _, sel := range selectors {
-			sel = strings.TrimSpace(sel)
-			if sel == "" {
-				continue
-			}
-			innerSel := ParseSelector(sel)
-			if len(innerSel.Parts) > 0 && matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1], ctx) {
-				return false // Element matches one of the :not() selectors → fail
-			}
-		}
-		return true // Element doesn't match any → passes :not()
+		// kPseudoNot dispatch, core/css/selector_checker.cc:2310-2311 @
+		// d4ecdfed88f962439247c2ad36b8fe47805b1520.
+		return checkPseudoNot(node, pc[len("not("):len(pc)-1], ctx)
 	case pc == "hover", pc == "active":
 		// Dynamic pseudo-classes never match in a static renderer
 		return false
@@ -795,24 +846,20 @@ func isNthOfRightBoundary(ch byte) bool {
 // has the same effect.
 func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx matchContext) bool {
 	branches := splitSelectorGroup(ofSel)
-	parsedBranches := make([]Selector, 0, len(branches))
-	for _, b := range branches {
-		b = strings.TrimSpace(b)
-		if b == "" {
-			continue
-		}
+	for i, b := range branches {
 		// Per spec, pseudo-elements are not allowed inside the `of` list.
-		// A branch containing one never matches anything.
+		// A branch containing one never matches anything; blanking it (rather
+		// than dropping it) keeps the last-branch position for atEnd.
 		if containsPseudoElementArg([]string{b}) {
-			continue
+			branches[i] = ""
 		}
-		parsedBranches = append(parsedBranches, ParseSelector(b))
 	}
+	parsedBranches := parseNestedSelectorList(branches, ctx)
 	if len(parsedBranches) == 0 {
 		return false
 	}
 	// Candidate must itself match S.
-	if !matchesAnyBranch(node, parsedBranches, ctx) {
+	if !matchesAnyInList(node, parsedBranches, ctx) {
 		return false
 	}
 	if node.Parent == nil {
@@ -825,7 +872,7 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx mat
 		if c.Type != html.ElementNode {
 			continue
 		}
-		if !matchesAnyBranch(c, parsedBranches, ctx) {
+		if !matchesAnyInList(c, parsedBranches, ctx) {
 			continue
 		}
 		count++
@@ -843,10 +890,16 @@ func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx mat
 	return matchesAnPlusB(idx, anb)
 }
 
-// matchesAnyBranch reports whether node matches any of the parsed complex
+// matchesAnyInList reports whether node matches any of the parsed complex
 // selectors. Each branch is matched as a full complex selector (combinators
 // resolved by walking ancestors/siblings), not just the rightmost compound.
-func matchesAnyBranch(node *html.Node, branches []Selector, ctx matchContext) bool {
+// Mirrors Blink SelectorChecker::MatchesAnyInList, which runs MatchSelector
+// on every branch of the list (core/css/selector_checker.cc:1573-1594, :875 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520) and backs :is/:where/:any
+// (:2519-2522) and :not (:1567-1571). Its is_sub_selector /
+// in_nested_complex_selector / pseudo_id settings have no louis14
+// counterpart in matchContext.
+func matchesAnyInList(node *html.Node, branches []Selector, ctx matchContext) bool {
 	for i := range branches {
 		if matchesSelectorCtx(node, branches[i], ctx) {
 			return true
@@ -1023,29 +1076,29 @@ func parseInt(s string) (int, bool) {
 // fails to match elements. This matches Blink behavior on the WPT
 // contextually-invalid-selectors-* tests.
 func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
+	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1627 / :1642 @ d4ecdfed88f9
 	selectors := splitSelectorGroup(strings.TrimSpace(arg))
 	if containsPseudoElementArg(selectors) {
 		return false
 	}
-	for _, sel := range selectors {
-		innerSel := ParseSelector(strings.TrimSpace(sel))
-		if len(innerSel.Parts) == 0 {
-			continue
-		}
-		// matchesSelectorCtx walks the full compound + combinator chain. The
-		// previous implementation matched only the rightmost compound, which
-		// caused `:is(#d + div, #d ~ #h)` to match every `div` instead of
-		// only the one adjacent to `#d`. Mirrors Blink's
-		// SelectorChecker::MatchSelector recursion @ 4883d11fef4a — :is()
-		// dispatches each branch through the regular complex-selector path.
-		// The match context (e.g. inside-:has) propagates into each branch so
-		// :is(:link)/:is(:visited) follow the same privacy rules as a bare
-		// :link/:visited in that position.
-		if matchesSelectorCtx(node, innerSel, ctx) {
-			return true
-		}
-	}
-	return false
+	// kPseudoIs/kPseudoWhere dispatch to MatchesAnyInList,
+	// core/css/selector_checker.cc:2519-2522 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520. The match context (e.g.
+	// inside-:has) propagates into each branch so :is(:link)/:is(:visited)
+	// follow the same privacy rules as a bare :link/:visited there.
+	return matchesAnyInList(node, parseNestedSelectorList(selectors, ctx), ctx)
+}
+
+// checkPseudoNot matches :not(arg): node must match none of the argument's
+// branches, each a full complex selector. Mirrors Blink
+// SelectorChecker::CheckPseudoNot, `!MatchesAnyInList(...)`
+// (core/css/selector_checker.cc:1567-1571 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). Unlike matchesIsLike there is
+// no whole-list pseudo-element gate: negated, it would make :not(::before)
+// match every element.
+func checkPseudoNot(node *html.Node, arg string, ctx matchContext) bool {
+	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1712 @ d4ecdfed88f9
+	return !matchesAnyInList(node, parseNestedSelectorList(splitSelectorGroup(strings.TrimSpace(arg)), ctx), ctx)
 }
 
 // containsPseudoElementArg returns true if any selector in the list contains a
@@ -1112,16 +1165,18 @@ func containsHas(s string) bool {
 // SelectorChecker::CheckPseudoHas @ 4883d11fef4a.
 func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 	ctx.insideHas = true
+	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1686 @ d4ecdfed88f9
 	selectors := splitSelectorGroup(strings.TrimSpace(selectorStr))
-	for _, sel := range selectors {
+	for i, sel := range selectors {
 		sel = strings.TrimSpace(sel)
 		if sel == "" {
 			continue
 		}
+		atEnd := i == len(selectors)-1
 		if strings.HasPrefix(sel, ">") {
 			// Direct child combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := ParseSelector(innerSel)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, child := range node.Children {
 					if child.Type == html.ElementNode {
@@ -1134,7 +1189,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 		} else if strings.HasPrefix(sel, "+") {
 			// Adjacent sibling combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := ParseSelector(innerSel)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				next := getNextElementSibling(node)
 				if next != nil && matchesSelectorPart(next, parsed.Parts[len(parsed.Parts)-1], ctx) {
@@ -1144,7 +1199,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 		} else if strings.HasPrefix(sel, "~") {
 			// General sibling combinator
 			innerSel := strings.TrimSpace(sel[1:])
-			parsed := ParseSelector(innerSel)
+			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, sib := range getSubsequentSiblings(node) {
 					if matchesSelectorPart(sib, parsed.Parts[len(parsed.Parts)-1], ctx) {
@@ -1154,7 +1209,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 			}
 		} else {
 			// Default: descendant combinator
-			parsed := ParseSelector(sel)
+			parsed := parseNestedSelector(sel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				if hasMatchingDescendant(node, parsed.Parts[len(parsed.Parts)-1], ctx) {
 					return true

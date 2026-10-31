@@ -153,8 +153,12 @@ func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode) {
 // the element identity but is now `display: block`, and the original
 // in-flow children move under a single new anonymous child whose
 // display is `ruby`. Border/padding/margin remain on the principal
-// block; the anonymous inline ruby inherits only inheritable
-// properties (text-align, font, etc.) via NewAnonymousInlineRubyStyle.
+// block; the anonymous inline ruby gets the anonymous-box style built
+// from the principal box (inherited properties such as text-align and font,
+// plus unicode-bidi and applied decorations) via
+// CreateAnonymousStyleWithDisplay, as Blink's LayoutRubyAsBlock::AddChild
+// does (core/layout/layout_ruby_as_block.cc:28 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
 func (b *LayoutTreeBuilder) wrapBlockRubyAsTwoBox(node *LayoutInputNode) {
 	if node == nil || node.style == nil {
 		return
@@ -170,7 +174,7 @@ func (b *LayoutTreeBuilder) wrapBlockRubyAsTwoBox(node *LayoutInputNode) {
 	// Original children become the children of a single anonymous
 	// inline `display:ruby` box.
 	anon := &LayoutInputNode{
-		style:       css.NewAnonymousInlineRubyStyle(node.style),
+		style:       css.CreateAnonymousStyleWithDisplay(node.style, string(css.DisplayRuby)),
 		children:    node.children,
 		isAnonymous: true,
 	}
@@ -687,18 +691,18 @@ func (b *LayoutTreeBuilder) wrapAnonymousTableBoxes(
 	}
 
 	var accepts func(*LayoutInputNode) bool
-	var newWrapperStyle func(*css.Style) *css.Style
+	var wrapperDisplay css.DisplayType
 	switch parentStyle.GetDisplay() {
 	case css.DisplayTable, css.DisplayInlineTable:
 		accepts = isProperTableChild
-		newWrapperStyle = css.NewAnonymousTableRowGroupStyle
+		wrapperDisplay = css.DisplayTableRowGroup
 	case css.DisplayTableRowGroup, css.DisplayTableHeaderGroup,
 		css.DisplayTableFooterGroup:
 		accepts = isProperRowGroupChild
-		newWrapperStyle = css.NewAnonymousTableRowStyle
+		wrapperDisplay = css.DisplayTableRow
 	case css.DisplayTableRow:
 		accepts = isProperRowChild
-		newWrapperStyle = css.NewAnonymousTableCellStyle
+		wrapperDisplay = css.DisplayTableCell
 	default:
 		return children
 	}
@@ -723,7 +727,7 @@ func (b *LayoutTreeBuilder) wrapAnonymousTableBoxes(
 			stray = nil
 			return
 		}
-		wrapperStyle := newWrapperStyle(parentStyle)
+		wrapperStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(wrapperDisplay))
 		// Recurse so the wrapper's own level is normalized too.
 		wrapperChildren := b.wrapAnonymousTableBoxes(stray, wrapperStyle)
 		result = append(result, &LayoutInputNode{
@@ -863,20 +867,11 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 			inlineRun = nil
 			return
 		}
-		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
-		// CSS Writing Modes §2.2: unicode-bidi does not inherit, but a
-		// plaintext/bidi-override/isolate-override block's inline content
-		// forms its paragraphs. When that inline content is wrapped into
-		// an anonymous block (because sibling blocks break up the inline
-		// run), the anonymous block must continue to apply the parent's
-		// unicode-bidi behaviour — otherwise each inline-run chunk loses
-		// its auto paragraph-direction resolution.
-		if bidiVal, ok := parentStyle.Get("unicode-bidi"); ok {
-			switch bidiVal {
-			case "plaintext", "bidi-override", "isolate-override":
-				anonStyle.Set("unicode-bidi", bidiVal)
-			}
-		}
+		// The builder copies the parent's unicode-bidi (Blink
+		// SetUnicodeBidi, style_resolver.cc:3611 @ 5992657f556b), so a
+		// plaintext/bidi-override/isolate-override block keeps applying to
+		// each inline-run chunk wrapped here (CSS Writing Modes §2.2).
+		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 		// CSS 2.1 §9.2.1.1: If the inline run contains block-in-inline
 		// continuation nodes, copy background-color from the inline element
 		// so the anonymous block fills the full block width with the inline's
@@ -1914,9 +1909,11 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		// text is underlined/etc.). The marker style is built post-cascade and
 		// never runs ResolveAppliedTextDecorations, so carry the originating
 		// element's accumulated vector across explicitly — mirroring Blink, where
-		// an inside marker inherits the decoration but an OUTSIDE marker
-		// (inline-block, atomic) is stopped by StopPropagateTextDecorations
-		// (style_adjuster.cc AdjustStyleForMarker @ 4883d11f). WPT
+		// an inside marker inherits the decoration (StyleAdjuster sets
+		// BaseTextDecorationData from the parent, style_adjuster.cc:1298-1299
+		// @ 5992657f556bcd9d207a4aca187488462f027cab). The default path's
+		// CreateAnonymousStyleWithDisplay already copied it; the author
+		// ::marker cascade path did not. WPT
 		// css-pseudo/marker-text-decoration-skip-ink.
 		markerStyle.InheritAppliedTextDecorationsFrom(style)
 	} else {
@@ -1927,6 +1924,13 @@ func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, style *css.Style
 		// of white-space:pre on markers; marker.css sets none, so inside
 		// markers keep the inherited value.
 		markerStyle.Set("white-space", "pre")
+		// An outside marker is an atomic inline-block (AdjustStyleForMarker,
+		// style_adjuster.cc:500), so StopPropagateTextDecorations
+		// (style_adjuster.cc:387-394) is true and StyleAdjuster nulls its
+		// BaseTextDecorationData (:1294-1296), all @
+		// 5992657f556bcd9d207a4aca187488462f027cab. Drop the vector the
+		// anonymous-style builder copied from the list item.
+		markerStyle.AppliedTextDecorations = nil
 	}
 
 	// Letter-spacing / word-spacing must not affect a predefined SYMBOL marker
@@ -2289,7 +2293,7 @@ func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 				// so the block part shifts together with the inline's continuations.
 				blockPart := grandchild
 				if child.Style().GetPosition() == css.PositionRelative || child.Style().GetPosition() == css.PositionSticky {
-					wrapStyle := css.NewAnonymousBlockStyle(parentStyle)
+					wrapStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 					wrapStyle.Set("position", string(child.Style().GetPosition()))
 					for _, prop := range []string{"top", "left", "right", "bottom"} {
 						if v, ok := child.Style().Get(prop); ok {

@@ -137,10 +137,12 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 		}
 		return ctx.elementProxy(node)
 	})
-	// createElementNS(namespaceURI, qualifiedName). louis14's DOM doesn't
-	// track namespaces — element identity in the renderer is by lowercase
-	// tag name (matching the tokenizer). The namespace argument is accepted
-	// for compatibility with WPT tests that build SVG nodes via
+	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
+	// a namespace (html.Node.NamespaceURI), but this binding still ignores
+	// its namespace argument, so the element reports the XHTML namespace;
+	// element identity in the renderer is by lowercase tag name (matching
+	// the tokenizer). The argument is accepted for compatibility with WPT
+	// tests that build SVG nodes via
 	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
 	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
@@ -216,6 +218,9 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 
 	// Phase 4: document.body, document.head, document.documentElement
 	registerDocumentProperties(ctx, docObj, doc)
+
+	// document.timeline (LOU-432).
+	registerDocumentTimeline(vm, docObj, doc)
 
 	// document.createRange / new Range() / getSelection() / activeElement /
 	// execCommand("selectAll") (LOU-344, LOU-354). bodyNode is recomputed
@@ -887,7 +892,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		// third_party/blink/renderer/core/animation/element_animation.cc) at
 		// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		//
-		// In the synchronous reftest harness there is no live timeline: the
+		// These animations are not attached to document.timeline: the
 		// returned Animation object is used exclusively via .pause() + .currentTime
 		// assignment to "freeze" the element at a specific progress. When
 		// currentTime is set, we compute the interpolated keyframe values at that
@@ -1498,8 +1503,8 @@ func propertyIndexedKeyframeRules(propIndexed map[string][]string) []css.Keyfram
 //
 // The Web Animations API (https://drafts.csswg.org/web-animations-1/) defines
 // Animation with a currentTime getter/setter and pause()/cancel()/finish()
-// methods. In the synchronous louis14 reftest harness there is no live
-// document timeline, so pause() is a no-op and the real work happens when JS
+// methods. louis14 does not attach these animations to document.timeline,
+// so pause() is a no-op and the real work happens when JS
 // assigns animation.currentTime: we sample the KeyframeEffect at the given
 // time offset and write the interpolated values into the element's inline style
 // attribute so the second layout pass in helpers.go captures the mutation.
@@ -1532,8 +1537,8 @@ func (a *animationAccessor) Get(key string) goja.Value {
 		}
 		return vm.ToValue(a.currentTime)
 	case "pause":
-		// pause(): in the static harness the animation has no running timeline,
-		// so pause is a semantic no-op. The real "pause" is that the JS script
+		// pause(): the animation is not attached to document.timeline, so
+		// pause is a semantic no-op. The real "pause" is that the JS script
 		// then sets currentTime explicitly.
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			return goja.Undefined()

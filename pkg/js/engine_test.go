@@ -1,7 +1,10 @@
 package js
 
 import (
+	"os"
+	"slices"
 	"testing"
+	"time"
 
 	"louis14/pkg/html"
 )
@@ -259,6 +262,83 @@ func TestWaitForCompositorReadyResolvesAndRunsMutation(t *testing.T) {
 	}
 	if got := target.Attributes["class"]; got != "green" {
 		t.Errorf("expected class mutation after awaiting waitForCompositorReady, got class=%q", got)
+	}
+}
+
+// LOU-432: document.timeline and the animation clock. Each
+// requestAnimationFrame frame advances html.Document.AnimationClock by one
+// html.ApproximateFrameTime before its callback runs, mirroring Blink's
+// AnimationClock ticked per frame (kApproximateFrameTime,
+// core/animation/animation_clock.cc:40) and the frame time passed to rAF
+// callbacks (ScriptedAnimationController::ExecuteFrameCallbacks,
+// core/dom/scripted_animation_controller.cc:176-181), both @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520.
+
+func TestDocumentTimelineAdvancesOneFramePerAnimationFrame(t *testing.T) {
+	doc := parseHTML(t, `<div id="target"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var rec = [document.timeline.currentTime];
+		setTimeout(function() { rec.push(document.timeline.currentTime); });
+		requestAnimationFrame(function(ts) {
+			rec.push(ts, document.timeline.currentTime);
+			requestAnimationFrame(function(ts2) {
+				rec.push(ts2, document.timeline.currentTime);
+			});
+		});
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	f := float64(html.ApproximateFrameTime) / float64(time.Millisecond)
+	want := []float64{0, 0, f, f, 2 * f, 2 * f}
+	var got []float64
+	if err := engine.vm.ExportTo(engine.vm.Get("rec"), &got); err != nil {
+		t.Fatalf("export rec: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("rec = %v, want %v", got, want)
+	}
+	if got, want := doc.AnimationClock.CurrentTime(), 2*html.ApproximateFrameTime; got != want {
+		t.Errorf("clock after Execute = %v, want %v", got, want)
+	}
+}
+
+func TestVendoredWaitForAnimationFramesResolvesAndRunsMutation(t *testing.T) {
+	// Runs the upstream WPT helper byte-for-byte (the copy vendored for
+	// css-animations/display-none-to-display-block.html). Its
+	// waitForAnimationFrames loops on requestAnimationFrame until
+	// document.timeline.currentTime has moved and frameCount frames ran;
+	// with a frozen timeline it recurses until the call-stack cap below.
+	common, err := os.ReadFile("../visualtest/testdata/wpt-css3/css-animations/support/testcommon.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := parseHTML(t, `<div id="target"></div>`)
+	engine := New()
+	engine.vm.SetMaxCallStackSize(2000)
+	doc.Scripts = append(doc.Scripts, string(common), `
+		var n = 0;
+		onload = async () => {
+			const target = document.getElementById('target');
+			await waitForAnimationFrames(1);
+			target.classList.add('a');
+			await waitForAnimationFrames(2, () => n++);
+			target.classList.add('b');
+		};
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	target := getElementById(doc.Root, "target")
+	if got := target.Attributes["class"]; got != "a b" {
+		t.Errorf("class = %q, want \"a b\"", got)
+	}
+	if got := engine.vm.Get("n").ToInteger(); got != 2 {
+		t.Errorf("onFrame ran %d times, want 2", got)
+	}
+	if got, want := doc.AnimationClock.CurrentTime(), 3*html.ApproximateFrameTime; got != want {
+		t.Errorf("clock after Execute = %v, want %v", got, want)
 	}
 }
 

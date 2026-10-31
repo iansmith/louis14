@@ -762,7 +762,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's column-box assumes.
 	if mla.node.contentNodeCache == nil {
 		mla.node.contentNodeCache = &LayoutInputNode{
-			style:       css.NewAnonymousBlockStyle(mla.style),
+			style:       css.CreateAnonymousStyleWithDisplay(mla.style, string(css.DisplayBlock)),
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
@@ -1068,29 +1068,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// paint-time application (engine.go box conversion). No Blink analog
 	// inside column_layout_algorithm.cc — Blink applies relative offsets
 	// generically in the parent (relative_utils.cc ComputeRelativeOffset);
-	// louis14's established pattern is this per-algorithm tail, copied from
-	// block_layout.go:2469-2489 (see there for the PercentageResolutionSize
-	// rationale).
+	// louis14's established pattern is this per-algorithm tail, shared with
+	// BlockLayoutAlgorithm.Layout's through computeRelativeOffsetForBoxFragment
+	// (see the block tail for the PercentageResolutionSize rationale).
 	//
 	// Known coverage limit: only the main (non-fragmented) return path gets
 	// the offset. Fragments returned via buildOuterBreakResult (multicol
 	// nested in an outer fragmentation context) skip it — the same gap the
 	// BLA pattern has for its own break-result returns.
 	if mla.style != nil && mla.style.GetPosition() == css.PositionRelative {
-		cbInline := mla.space.PercentageResolutionSize.InlineSize.Float64()
-		if cbInline == Indefinite {
-			cbInline = 0
-		}
-		cbBlock := mla.space.PercentageResolutionSize.BlockSize.Float64()
-		if cbBlock == Indefinite {
-			cbBlock = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: cbInline,
-			BlockSize:  cbBlock,
-		}, wdm.WM)
-		offset := mla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			mla.style, wdm, geomLogicalToOld(mla.space.PercentageResolutionSize))
 	}
 	return result
 }
@@ -1492,8 +1480,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		mla.addMainGap(mla.blockCursor, SpannerGapStart)
 		mla.addNumberOfColumnsForCurrentRow(-1)
 		spannerOffset := LogicalOffset{
-			InlineOffset: resolveSpannerInlineMargins(spannerStyle, wdm, mla.contentInlineSize,
-				NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins),
+			// The offset is content-box relative, so only the resolved
+			// inline-start margin contributes (cla.cc:1424-1426 @
+			// a9f50e522efa).
+			InlineOffset: resolveInlineAutoMargins(spannerStyle, wdm, mla.contentInlineSize,
+				NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins).InlineStart,
 			BlockOffset: spannerBlockOffset,
 		}
 		builder.AddChild(spanFrag, spannerOffset)
@@ -2402,37 +2393,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	}
 }
 
-// resolveSpannerInlineMargins returns the spanner's inline-start offset
-// within the multicol's content box, resolving `auto` inline margins against
-// the free space between the spanner's margin box and the multicol content
-// box. Mirrors ResolveInlineAutoMargins (length_utils.cc:1551-1570 @
-// a9f50e522efa) and the offset computation at cla.cc:1424-1426. The returned
-// offset is content-box relative (border/scrollbar/padding is added at box
-// conversion), so only the resolved inline-start margin contributes.
-func resolveSpannerInlineMargins(
-	spannerStyle *css.Style,
-	wdm WritingDirectionMode,
-	availableInline float64,
-	spannerInline float64,
-	margins LogicalEdges,
-) float64 {
-	if spannerStyle == nil {
-		return 0
-	}
-	autoStart, autoEnd, _, _ := PhysicalAutoMarginsToLogical(spannerStyle.GetMargin(), wdm)
-	availableSpace := availableInline - spannerInline - margins.InlineStart - margins.InlineEnd
-	if availableSpace < 0 {
-		availableSpace = 0
-	}
-	switch {
-	case autoStart && autoEnd:
-		margins.InlineStart = availableSpace / 2
-	case autoStart:
-		margins.InlineStart = availableSpace
-	}
-	return margins.InlineStart
-}
-
 // resolveColumnAutoBlockSize estimates the balanced column height by doing an
 // unconstrained layout of the content to get total height, then dividing by
 // the number of columns. Mirrors Blink's ResolveColumnAutoBlockSizeInternal().
@@ -3197,7 +3157,7 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			inlineRun = nil
 			return
 		}
-		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 		result = append(result, &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,

@@ -149,7 +149,7 @@ func parseMathArgCtx(s string, ctx calcContext) (float64, bool) {
 	}
 	// Other lengths and numbers — go through the length parser, which
 	// handles px/em/rem/vw/vh/ch/ex/cap/lh/calc()/min()/max()/clamp().
-	return parseLengthFullWithCh(s, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale, ctx.xHeight, ctx.capHeight, ctx.lhSize, ctx.icWidth)
+	return parseLengthFullWithCh(s, ctx)
 }
 
 // containsTopLevelOperator reports whether s has a top-level math operator
