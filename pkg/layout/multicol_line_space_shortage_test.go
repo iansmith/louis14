@@ -15,12 +15,12 @@ import (
 //     (BreakBeforeChildIfNeeded, fragmentation_utils.cc:1110-1118);
 //   - a line that does not fit but is moved past (first in the
 //     fragmentainer) reports its space shortage (MovePastBreakpoint,
-//     fragmentation_utils.cc:1233-1241 → PropagateSpaceShortage :995-1014);
+//     fragmentation_utils.cc:1232-1243 → PropagateSpaceShortage :995-1014);
 //   - a parent breaking before a child trusts every space shortage the child
 //     reported (CalculateSpaceShortage, fragmentation_utils.cc:1046-1051);
 //   - a line of columns contributes its column block-size, also when it ends
 //     at a spanner (ColumnLayoutAlgorithm::LayoutLine,
-//     column_layout_algorithm.cc:949, :1238).
+//     column_layout_algorithm.cc:949, :1249).
 // Expected geometry is Chrome 155.0.8059.41 headless (LOU-399 scratchpad
 // probe.html).
 
