@@ -3276,28 +3276,36 @@ func reexpandVarShorthands(style *Style) {
 	}
 }
 
-// absolutizeOutlineLengths rewrites a declared outline-offset and
-// outline-width that is not already a px literal to its absolute px computed
-// value against the element's own (final) font and viewport, so `inherit`
-// copies the parent's length instead of re-resolving em / ex / ch against the
-// child's font (WPT css-ui/outline-008, outline-010). Blink computes both at
+// absolutizeComputedLengths rewrites a declared outline-offset, outline-width
+// and tab-size length that is not already a px literal to its absolute px
+// computed value against the element's own (final) font and viewport, so an
+// inheriting child (outline via `inherit`, tab-size by default) copies the
+// parent's length instead of re-resolving em / ex / ch against the child's
+// font (WPT css-ui/outline-008, outline-010). Blink computes all three at
 // style build: outline-offset through ConvertOutlineOffset (magnitudes in
-// (0,1) round away from zero to ±1, larger ones truncate toward zero) and
-// outline-width through ConvertBorderWidth → ClampLineWidth
-// (core/css/resolver/style_builder_converter.cc:2004-2015, :1974-2002, :1965;
-// converters named in core/css/css_properties.json5 @
+// (0,1) round away from zero to ±1, larger ones truncate toward zero),
+// outline-width through ConvertBorderWidth → ClampLineWidth, and tab-size
+// through ConvertLengthOrTabSpaces, which keeps the length unrounded and a
+// bare number as a space count
+// (core/css/resolver/style_builder_converter.cc:2004-2015, :1974-2002, :1965,
+// :2182-2194; converters named in core/css/css_properties.json5 @
 // 5992657f556bcd9d207a4aca187488462f027cab). Keywords (thin / medium / thick)
-// stay as declared. Idempotent.
-func absolutizeOutlineLengths(style *Style) {
+// and bare numbers (a tab-size space count, or a unitless 0) stay as
+// declared. Idempotent.
+func absolutizeComputedLengths(style *Style) {
 	for _, p := range []struct {
 		property string
 		round    func(float64) float64
 	}{
 		{"outline-offset", convertOutlineOffset},
 		{"outline-width", clampLineWidth},
+		{"tab-size", func(px float64) float64 { return px }},
 	} {
 		val, ok := style.Get(p.property)
 		if !ok || isPxLiteral(val) {
+			continue
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil {
 			continue
 		}
 		if px, ok := style.GetLengthForVal(val); ok {
@@ -3378,10 +3386,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
 		// here resolves against the parent's line-height.
 		applyFontAndLineHeight(style, styles[node.Parent])
-		// CSS UI 4 §4.3: outline-offset and outline-width compute to absolute
-		// lengths, so compute them now that the font is final (@container rules
-		// included); an inheriting child then copies the px value.
-		absolutizeOutlineLengths(style)
+		// CSS UI 4 §4.3 (outline-offset, outline-width) and CSS Text 3 §4.2
+		// (tab-size) compute lengths to absolute values, so compute them now
+		// that the font is final (@container rules included); an inheriting
+		// child then copies the px value.
+		absolutizeComputedLengths(style)
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors
