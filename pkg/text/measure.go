@@ -305,31 +305,73 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 //
 // Spec: https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
 func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
-	families := ParseFontFamilyList(family)
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, 0)
+}
+
+// FontPathForStrut returns the font path for the "first available font" per
+// CSS Fonts 3 §5.4 — the first family whose @font-face unicode-range covers
+// U+0020 (SPACE) — used when computing the strut (CSS 2.1 §10.8.1 root inline
+// box). Blink's Font::PrimaryFont(), i.e.
+// FontFallbackList::PrimarySimpleFontDataWithSpace
+// (platform/fonts/font_fallback_list.h:73 @
+// 5992657f556bcd9d207a4aca187488462f027cab); see
+// determinePrimarySimpleFontData.
+func (fc FontConfig) FontPathForStrut(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, ' ')
+}
+
+// FontPathForCovering returns the font path for the first family in the list
+// whose @font-face unicode-range covers cp (cp == 0: no coverage check). Used
+// for per-run font selection in line-metric computation (InlineItemText) and
+// for the per-probe primary fonts of the font-relative units (CreateFont).
+// See determinePrimarySimpleFontData.
+func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, cp rune) string {
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, cp)
+}
+
+// determinePrimarySimpleFontData walks the font-family list and returns the
+// path of the first font that can serve lookupChar. Mirrors Blink's
+// FontFallbackList::DeterminePrimarySimpleFontData(Core)
+// (platform/fonts/font_fallback_list.cc:76/:87-140 @
+// 5992657f556bcd9d207a4aca187488462f027cab): a registered (@font-face)
+// family none of whose faces' unicode-range covers lookupChar is skipped, as
+// Blink skips a SegmentedFontData that does not ContainsCharacter (:109);
+// then the UA initial family (serif, Blink's -webkit-standard,
+// font_fallback_list.cc:181) and fc.FontPath (the last-resort font, :191).
+// The returned path stands in for Blink's SimpleFontData.
+//
+// Not ported: should_contain_glyph (:117, set only for tab-size; a covering
+// font without the glyph is LOU-425); IsLoadingFallback (:125; louis14 loads
+// @font-face synchronously); per-segment FontDataForCharacter, because faces
+// with the same family and variant collide on one syntheticFontPath.
+// lookupChar 0 is a louis14-only mode with no coverage gate
+// (Registry.LookupForCodepoint delegates to LookupWithPolicy), used by paint
+// and FontPathForFamilyWithSynthesis.
+func (fc FontConfig) determinePrimarySimpleFontData(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, lookupChar rune) string {
 	suppressBold := false
 	suppressItalic := false
-	for _, fam := range families {
+	for _, fam := range ParseFontFamilyList(family) {
 		if fc.Registry != nil {
-			// Registry.LookupWithPolicy returns the matched variant's path;
-			// when the requested weight/style isn't registered for this
-			// family, the policy-aware fallback inside Lookup applies (for
-			// italic + oblique-only: skip oblique entries; otherwise
-			// italic↔oblique substitution is allowed). The family-only
-			// fallback there is already a form of in-family "synthesis
-			// suppression" — louis14 doesn't apply a synthetic-bold stroke,
-			// so the returned regular face is rendered as-is regardless of
-			// the synthesis flag.
-			if path := fc.Registry.LookupWithPolicy(fam, bold, italic, synthStyle); path != "" {
+			// LookupForCodepoint returns the matched variant's path among the
+			// family's faces covering lookupChar; when the requested
+			// weight/style isn't registered for this family, the
+			// policy-aware fallback inside it applies (for italic +
+			// oblique-only: skip oblique entries; otherwise italic↔oblique
+			// substitution is allowed). The family-only fallback there is
+			// already a form of in-family "synthesis suppression" — louis14
+			// doesn't apply a synthetic-bold stroke, so the returned regular
+			// face is rendered as-is regardless of the synthesis flag.
+			if path := fc.Registry.LookupForCodepoint(fam, lookupChar, bold, italic, synthStyle); path != "" {
 				return path
 			}
-			// Family was named by @font-face but its fetch failed entirely.
-			// Falling through to the next family / UA default would mean
-			// "synthesizing" the requested variant via a different physical
-			// face. CSS Fonts 4 §6.6: suppress that selection when
-			// font-synthesis-weight / font-synthesis-style is none. The
-			// `oblique-only` policy doesn't carry into cross-family fallback
-			// suppression — that gate is about cross-family synthesis, not
-			// in-family substitution.
+			// Family was named by @font-face but its fetch failed entirely
+			// (or no face covers lookupChar). Falling through to the next
+			// family / UA default would mean "synthesizing" the requested
+			// variant via a different physical face. CSS Fonts 4 §6.6:
+			// suppress that selection when font-synthesis-weight /
+			// font-synthesis-style is none. The `oblique-only` policy doesn't
+			// carry into cross-family fallback suppression — that gate is
+			// about cross-family synthesis, not in-family substitution.
 			if fc.Registry.IsDeclared(fam) {
 				if bold && !synthBold {
 					suppressBold = true
@@ -349,116 +391,8 @@ func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic,
 	// those test-font / generic-family requests stay routed to fc.Ahem /
 	// fc.Monospace via fc.FontPath. Apply font-synthesis suppression (C04)
 	// before delegating to the platform default path.
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
-	if !ahem && !mono {
-		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
-			return path
-		}
-	}
-	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
-}
-
-// FontPathForStrut returns the font path for the "first available font" per
-// CSS Fonts 3 §5.4, used when computing the strut (CSS 2.1 §10.8.1 root
-// inline box). The first available font is the first family in the list whose
-// @font-face unicode-range covers U+0020 (SPACE), the reference character for
-// primary-font determination. If no registered face covers U+0020, falls back
-// to the same family-list traversal as FontPathForFamilyWithSynthesis.
-//
-// Mirrors Blink's FontFallbackList::DeterminePrimaryFont which walks the
-// FontFallbackIterator checking FontDataForCharacter(' ') for the first
-// covering face (third_party/blink/renderer/platform/fonts/font_fallback_list.cc
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func (fc FontConfig) FontPathForStrut(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
-	families := ParseFontFamilyList(family)
-	suppressBold := false
-	suppressItalic := false
-	for _, fam := range families {
-		if fc.Registry != nil {
-			// Use LookupForCodepoint with U+0020 (SPACE) so faces whose
-			// unicode-range excludes space are skipped — they are not the
-			// "first available" font per CSS Fonts 3 §5.4.
-			if path := fc.Registry.LookupForCodepoint(fam, ' ', bold, italic, synthStyle); path != "" {
-				return path
-			}
-			if fc.Registry.IsDeclared(fam) {
-				if bold && !synthBold {
-					suppressBold = true
-				}
-				if italic && synthStyle == css.FontSynthesisStyleNone {
-					suppressItalic = true
-				}
-			}
-		}
-		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
-			return path
-		}
-	}
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
-	if !ahem && !mono {
-		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
-			return path
-		}
-	}
-	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
-}
-
-// FontPathForCovering returns the font path for the first family in the list
-// whose @font-face unicode-range covers the given codepoint cp. Used for
-// per-run font selection in line-metric computation (InlineItemText): a face
-// that does not cover the run's first character should not contribute its
-// metrics to the line height. When cp == 0 or no Registry is set, delegates
-// to FontPathForFamilyWithSynthesis (no coverage check).
-//
-// Mirrors Blink's per-character fallback via CSSSegmentedFontFace at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, cp rune) string {
-	if cp == 0 || fc.Registry == nil {
-		return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synthBold, synthStyle)
-	}
-	families := ParseFontFamilyList(family)
-	suppressBold := false
-	suppressItalic := false
-	for _, fam := range families {
-		if fc.Registry != nil {
-			if path := fc.Registry.LookupForCodepoint(fam, cp, bold, italic, synthStyle); path != "" {
-				return path
-			}
-			if fc.Registry.IsDeclared(fam) {
-				if bold && !synthBold {
-					suppressBold = true
-				}
-				if italic && synthStyle == css.FontSynthesisStyleNone {
-					suppressItalic = true
-				}
-			}
-		}
-		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
-			return path
-		}
-	}
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
+	fallbackBold := bold && !suppressBold
+	fallbackItalic := italic && !suppressItalic
 	if !ahem && !mono {
 		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
 			return path
