@@ -399,3 +399,51 @@ func TestTable_AbsposInAnonymousCellKeepsOuterContainingBlock(t *testing.T) {
 		t.Errorf("abspos at (%v, %v), want the wrapper padding-box origin (%v, %v)", x, y, mx-25, my-25)
 	}
 }
+
+// TestTable_FloatInAnonymousCellStaysFloat: a floated child of a row-group
+// is wrapped in an anonymous row and cell and stays a float inside that
+// cell (Blink LayoutTableSection::AddChild / LayoutTableRow::AddChild,
+// table/layout_table_section.cc:73-102, table/layout_table_row.cc:87-116 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). It keeps its own 20x20 size at
+// the cell's content origin — the table's top-left, since display:table
+// has zero border-spacing and the anonymous cell zero padding — instead of
+// being laid out as the 100px-wide cell itself.
+func TestTable_FloatInAnonymousCellStaysFloat(t *testing.T) {
+	float := makeNode("div")
+	rg := makeNode("div", makeTextNode("\n  "), float, makeTextNode("\n"))
+	table := makeNode("div", rg)
+	root := makeNode("div", table)
+	result := layoutTableForTest(root, map[*html.Node]*css.Style{
+		root:  makeStyle("display", "block"),
+		table: makeStyle("display", "table", "width", "100px"),
+		rg:    makeStyle("display", "table-row-group"),
+		float: makeStyle("display", "block", "float", "left", "width", "20px", "height", "20px"),
+	})
+	var cell *PhysicalFragment
+	var findParent func(f *PhysicalFragment) bool
+	findParent = func(f *PhysicalFragment) bool {
+		for _, ch := range f.Children {
+			if ch.Fragment.LayoutNode != nil && ch.Fragment.LayoutNode.DOMNode == float {
+				cell = f
+				return true
+			}
+			if findParent(ch.Fragment) {
+				return true
+			}
+		}
+		return false
+	}
+	if !findParent(result.Fragment) {
+		t.Fatal("float fragment not found as a child fragment")
+	}
+	if cell.LayoutNode == nil || !cell.LayoutNode.IsAnonymous() ||
+		cell.LayoutNode.Style().GetDisplay() != css.DisplayTableCell {
+		t.Fatalf("float's parent fragment is not the anonymous table cell")
+	}
+	if f := findFragmentByNode(result.Fragment, float); f.Size.WidthF64() != 20 || f.Size.HeightF64() != 20 {
+		t.Errorf("float size = %vx%v, want 20x20", f.Size.WidthF64(), f.Size.HeightF64())
+	}
+	if x, y, ok := physicalOffsetOfNodeWithin(result.Fragment, table, float); !ok || x != 0 || y != 0 {
+		t.Errorf("float at (%v, %v) within the table (found %v), want (0, 0)", x, y, ok)
+	}
+}
