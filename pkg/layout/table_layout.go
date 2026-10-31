@@ -1666,14 +1666,17 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			// Non-table-structural children (display:block, display:inline, etc.)
 			// must be wrapped in an anonymous table-row + anonymous table-cell per
 			// CSS 2.1 §17.2.1. Each such child becomes the sole cell of an
-			// anonymous row.
-			anonCellStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableCell))
+			// anonymous row. The cell's style derives from the row's, as Blink's
+			// LayoutTableCell::CreateAnonymousWithParent(row)
+			// (core/layout/table/layout_table_cell.cc:27-35 @
+			// 5992657f556bcd9d207a4aca187488462f027cab).
+			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
+			anonCellStyle := css.CreateAnonymousStyleWithDisplay(anonRowStyle, string(css.DisplayTableCell))
 			anonCell := &LayoutInputNode{
 				style:       anonCellStyle,
 				children:    []*LayoutInputNode{child},
 				isAnonymous: true,
 			}
-			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
 				children:    []*LayoutInputNode{anonCell},
