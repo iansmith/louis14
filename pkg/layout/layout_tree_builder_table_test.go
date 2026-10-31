@@ -136,6 +136,48 @@ func TestGenerateMissingTableParents_ConsecutiveOrphansShareOneTable(t *testing.
 			t.Fatalf("middle child does not hold the preserved whitespace text")
 		}
 	})
+	// The drop decision reads the text's own style, as Blink's
+	// Text::TextLayoutObjectIsNeeded tests style.ShouldPreserveBreaks() on
+	// the style of the text's flat-tree parent (core/dom/text.cc:307, 339-348
+	// @ d4ecdfed88f962439247c2ad36b8fe47805b1520). Text under a
+	// display:contents element takes that element's style, not the box
+	// parent's.
+	t.Run("display:contents white-space pre keeps the text and splits the run", func(t *testing.T) {
+		c1, c2 := makeNode("div"), makeNode("div")
+		ws := makeTextNode("\n")
+		contents := makeNode("span", ws)
+		div := makeNode("div", c1, contents, c2)
+		styles := map[*html.Node]*css.Style{
+			div:      makeStyle("display", "block"),
+			contents: makeStyle("display", "contents", "white-space", "pre"),
+			c1:       makeStyle("display", "table-cell"),
+			c2:       makeStyle("display", "table-cell"),
+		}
+		root := buildTestTree(div, styles)
+		kids := root.Children()
+		if len(kids) != 3 {
+			t.Fatalf("div has %d children, want 3 (table, text, table)", len(kids))
+		}
+		requireTableRowGroupRow(t, kids[0], css.DisplayTable, c1)
+		requireTableRowGroupRow(t, kids[2], css.DisplayTable, c2)
+		if findLayoutNode(kids[1], ws) == nil {
+			t.Fatalf("middle child does not hold the preserved whitespace text")
+		}
+	})
+	t.Run("display:contents white-space normal drops the text under a pre parent", func(t *testing.T) {
+		c1, c2 := makeNode("div"), makeNode("div")
+		contents := makeNode("span", makeTextNode("\n"))
+		div := makeNode("div", c1, contents, c2)
+		styles := map[*html.Node]*css.Style{
+			div:      makeStyle("display", "block", "white-space", "pre"),
+			contents: makeStyle("display", "contents", "white-space", "normal"),
+			c1:       makeStyle("display", "table-cell"),
+			c2:       makeStyle("display", "table-cell"),
+		}
+		root := buildTestTree(div, styles)
+		table := requireOnlyChild(t, "div children", root.Children())
+		requireTableRowGroupRow(t, table, css.DisplayTable, c1, c2)
+	})
 }
 
 func TestGenerateMissingTableParents_SiblingSplitsRun(t *testing.T) {
