@@ -263,10 +263,3 @@ func RenderHTMLFile(htmlPath, outputPath string, width, height int) error {
 
 	return RenderHTMLToFile(string(htmlContent), outputPath, width, height)
 }
-
-// UpdateReferenceImage generates a new reference image
-// Use this when you've intentionally changed rendering behavior
-func UpdateReferenceImage(htmlPath, referencePath string, width, height int) error {
-	fmt.Printf("⚠️  Updating reference image: %s\n", referencePath)
-	return RenderHTMLFile(htmlPath, referencePath, width, height)
-}
