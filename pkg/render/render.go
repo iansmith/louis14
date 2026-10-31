@@ -6781,7 +6781,7 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 	}
 	// Upright vertical text (IsVerticalText, NOT the sideways-collapsed
 	// case — see drawTextSegment's IsVerticalText branch, render.go:
-	// ~6953-6967) advances each character by layer.FontSize along the
+	// ~6953-6967) advances each character by its upright advance along the
 	// advance axis, NOT by its horizontal glyph width — the per-character
 	// draw loop only uses measureTextStr(charStr) to CENTER the glyph
 	// within the cross-axis box.Width, never as an advance. WordSpacing has
@@ -6793,7 +6793,7 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 	// width IS the correct per-character advance there, same as horizontal
 	// text.
 	if layer.IsVerticalText && !layer.IsSidewaysRL && !layer.IsSidewaysLR {
-		return r.measureUprightVerticalSegmentAdvance(text, layer, includeTrailing)
+		return measureUprightVerticalSegmentAdvance(text, layer, r.fontPathForLayer(layer), includeTrailing)
 	}
 	if layer.LetterSpacing == 0 && layer.WordSpacing == 0 {
 		return r.measureTextStr(text, fontID, layer.FontFeatures)
@@ -6829,40 +6829,42 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 
 // measureUprightVerticalSegmentAdvance measures the advance-axis extent of
 // text exactly as drawTextSegment's upright-vertical per-character loop
-// (render.go's IsVerticalText branch) advances y: layer.FontSize per rune,
-// plus layer.LetterSpacing per rune when set (that loop has no
-// WordSpacing effect at all — see measureSegmentAdvanceTrailing's dispatch
-// comment for why sideways text does not take this path). includeTrailing
-// mirrors measureSegmentAdvance vs. measureSegmentVisualWidth's existing
-// contract: true keeps the final rune's own trailing LetterSpacing gap
-// (positioning a LATER segment), false drops it (sizing the highlighted
-// rect itself, which must not bleed into the gap before the next,
-// unselected rune).
-func (r *Renderer) measureUprightVerticalSegmentAdvance(text string, layer *PaintLayer, includeTrailing bool) float64 {
-	n := utf8.RuneCountInString(text)
-	if n == 0 {
+// (render.go's IsVerticalText branch) advances y: uprightVerticalRuneAdvance
+// per rune (that loop has no WordSpacing effect at all — see
+// measureSegmentAdvanceTrailing's dispatch comment for why sideways text does
+// not take this path). includeTrailing mirrors measureSegmentAdvance vs.
+// measureSegmentVisualWidth's existing contract: true keeps the final rune's
+// own trailing LetterSpacing gap (positioning a LATER segment), false drops
+// it (sizing the highlighted rect itself, which must not bleed into the gap
+// before the next, unselected rune).
+func measureUprightVerticalSegmentAdvance(text string, layer *PaintLayer, fontPath string, includeTrailing bool) float64 {
+	if text == "" {
 		return 0
 	}
-	total := float64(n) * uprightVerticalRuneAdvance(layer)
+	var total float64
+	for _, ch := range text {
+		total += uprightVerticalRuneAdvance(layer, ch, fontPath)
+	}
 	if !includeTrailing {
-		total -= uprightVerticalRuneAdvance(layer) - layer.FontSize
+		total -= layer.LetterSpacing
 	}
 	return total
 }
 
 // uprightVerticalRuneAdvance is the physical Y distance drawTextSegment's
 // own IsVerticalText per-character paint loop (render.go, a few hundred
-// lines below) advances for each rune: layer.FontSize, plus
-// layer.LetterSpacing when set (that loop has no WordSpacing effect at
-// all). Shared by the paint loop and measureUprightVerticalSegmentAdvance
-// so the highlight rect's measured extent can never drift from what the
-// glyphs actually draw at — the exact failure mode LOU-347 exists to fix,
-// now guarded against for the vertical-advance formula itself.
-func uprightVerticalRuneAdvance(layer *PaintLayer) float64 {
-	if layer.LetterSpacing != 0 {
-		return layer.FontSize + layer.LetterSpacing
-	}
-	return layer.FontSize
+// lines below) advances for rune ch: layout's upright advance of ch,
+// text.MeasureTextVerticalFromFont (the vertical advance Blink paints from
+// the shape result, HarfBuzzGetGlyphVerticalAdvance, platform/fonts/shaping/
+// harfbuzz_face.cc:359-372 @ 5992657f556bcd9d207a4aca187488462f027cab), plus
+// layer.LetterSpacing (that loop has no WordSpacing effect at all). Shared by
+// the paint loop, measureUprightVerticalSegmentAdvance and the upright
+// decoration length so the highlight rect's measured extent can never drift
+// from what the glyphs actually draw at — the exact failure mode LOU-347
+// exists to fix — nor from layout's advance.
+func uprightVerticalRuneAdvance(layer *PaintLayer, ch rune, fontPath string) float64 {
+	inline, _ := text.MeasureTextVerticalFromFont(string(ch), layer.FontSize, fontPath)
+	return inline.Float64() + layer.LetterSpacing
 }
 
 // setLayerColorOverride applies a ::selection color override to a segment
@@ -7348,9 +7350,9 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 
 	// Vertical text: draw each character stacked vertically.
 	// CSS Writing Modes §5.1: in vertical writing modes, upright glyphs
-	// advance in the block-progression (vertical) direction. For Ahem
-	// (1em × 1em squares) and other upright text, each character cell
-	// is fontSize tall and the glyph is centered horizontally.
+	// advance in the block-progression (vertical) direction. Each character
+	// cell is its vertical advance tall (uprightVerticalRuneAdvance) and the
+	// glyph is centered horizontally.
 	if layer.IsVerticalText {
 		y := box.Y
 		for _, ch := range text {
@@ -7361,7 +7363,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 				xOffset = 0
 			}
 			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.FontFeatures)
-			y += uprightVerticalRuneAdvance(layer)
+			y += uprightVerticalRuneAdvance(layer, ch, fontPath)
 		}
 		// Paint text decorations for upright vertical text (Strategy B).
 		// Mirrors Blink's writing-mode dispatch at
@@ -8359,10 +8361,7 @@ func (r *Renderer) paintTextOverflowEllipsis(layer *PaintLayer, box *layout.Box,
 	// Baseline alignment: inline run's baseline = box.Y + inlineAscent.
 	// Use the container font's ascent so the replacement's baseline
 	// matches the inline run's baseline.
-	inlineFontPath := r.fonts.FontPathForFamilyWithSynthesis(
-		layer.FontFamily, layer.FontBold, layer.FontItalic,
-		layer.FontMono, layer.FontAhem,
-		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	inlineFontPath := r.fontPathForLayer(layer)
 	inlineFontID := r.openFont(inlineFontPath, layer.FontSize)
 	if inlineFontID < 0 {
 		return
@@ -9127,13 +9126,10 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, bo
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
 
-	// The inline extent = number of characters × fontSize + letterSpacing.
-	// This is the physical HEIGHT of the vertical text column.
-	nChars := utf8.RuneCountInString(text)
-	inlineLen := float64(nChars) * layer.FontSize
-	if layer.LetterSpacing != 0 {
-		inlineLen += float64(nChars) * layer.LetterSpacing
-	}
+	// The inline extent: the glyphs' upright advances plus letter-spacing,
+	// as the paint loop steps them. This is the physical HEIGHT of the
+	// vertical text column.
+	inlineLen := measureUprightVerticalSegmentAdvance(text, layer, r.fontPathForLayer(layer), true)
 
 	// Determine which physical X direction is "under" (block-end) based on
 	// the writing mode. For vertical-rl, under = left; for vertical-lr, under = right.

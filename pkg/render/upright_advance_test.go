@@ -4,6 +4,8 @@ import (
 	"image"
 	"testing"
 
+	"louis14/pkg/css"
+	"louis14/pkg/layout"
 	"louis14/pkg/text"
 )
 
@@ -42,5 +44,49 @@ func TestUprightVerticalRuneAdvance_MatchesLayout(t *testing.T) {
 	}
 	if got := r.measureSegmentVisualWidth("00000", fontID, layer); got != want+8 {
 		t.Errorf("letter-spacing 2: measureSegmentVisualWidth = %v, want %v", got, want+8)
+	}
+}
+
+// TestDrawVerticalTextDecoration_LengthIsUprightAdvance (LOU-424): an upright
+// run's decoration line spans the run's painted inline extent — the glyphs'
+// upright advances — not 1em per character. Blink's TextDecorationInfo takes
+// the fragment's width (width_(width), core/paint/text_decoration_info.cc:238)
+// and an upright fragment advances by HarfBuzzGetGlyphVerticalAdvance
+// (platform/fonts/shaping/harfbuzz_face.cc:359-372), both @
+// 5992657f556bcd9d207a4aca187488462f027cab. Serif
+// (Liberation Serif, no vmtx) at 20px advances its FontMetrics Height per
+// glyph, so a 5-glyph line-through ends at 5 x Height, short of 5em.
+func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
+	const size, x0, y0 = 20.0, 20, 10
+	target := image.NewRGBA(image.Rect(0, 0, 80, 140))
+	r := NewRendererForImage(target)
+	red := css.Color{R: 255, A: 1}
+	box := &layout.Box{Text: "00000", X: x0, Y: y0, Width: size, Height: 5 * size, IsVerticalText: true}
+	layer := &PaintLayer{
+		Box: box, FontFamily: "serif", FontSize: size, IsVerticalText: true,
+		TextDecoration: css.TextDecorationLineThrough, TextDecorationColor: red, TextDecorationThickness: 2,
+	}
+	fontPath := r.fontPathForLayer(layer)
+	height := text.FontAscentFromFont(size, fontPath, nil) + text.FontDescentFromFont(size, fontPath, nil)
+	if 5*height+4 > 5*size {
+		t.Fatalf("fixture: 5 x serif Height (%v) must end at least 4px before 5em", 5*height)
+	}
+	fontID := r.fontIDForLayer(layer)
+	r.drawVerticalTextDecoration(layer, box.Text, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
+
+	rowHasRed := func(y int) bool {
+		for x := 0; x < target.Bounds().Dx(); x++ {
+			if c := target.RGBAAt(x, y); c.R > 200 && c.G < 60 && c.B < 60 {
+				return true
+			}
+		}
+		return false
+	}
+	end := y0 + int(5*height)
+	if !rowHasRed(end - 2) {
+		t.Errorf("no line-through at y=%d, inside the run's 5 x Height extent", end-2)
+	}
+	if rowHasRed(end + 2) {
+		t.Errorf("line-through at y=%d, past the run's 5 x Height extent (%d); it should end there, not at 5em (%d)", end+2, end, y0+5*int(size))
 	}
 }
