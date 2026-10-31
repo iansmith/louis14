@@ -133,12 +133,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	graph := builder.BuildGraph(adapter)
-	viewportClip := image.Rect(
-		int(pctx.originX),
-		int(pctx.originY),
-		int(pctx.originX+pctx.viewport.Width()),
-		int(pctx.originY+pctx.viewport.Height()),
-	)
+	viewportClip := pctx.viewportDeviceClip()
 	toComposite := srcBuf
 	compositeSpace := space
 	if graph != nil {

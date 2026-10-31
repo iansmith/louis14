@@ -7,6 +7,7 @@ import (
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
+	urlpkg "louis14/pkg/url"
 )
 
 // LayoutEngine performs CSS layout, producing a tree of positioned Box fragments.
@@ -80,8 +81,14 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		return []*Box{{Width: le.viewport.width, Height: le.viewport.height}}
 	}
 
-	// Phase 1: Compute styles.
-	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
+	// Phase 1: Compute styles. The cascade builds each element's font from
+	// the font selector as it goes (Blink's StyleResolverState::UpdateFont),
+	// so font metrics and font-relative units are final when it returns.
+	fontConfig := le.fontConfig
+	if fontConfig.Regular == "" {
+		fontConfig = text.DefaultFontConfig()
+	}
+	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, le.viewport.width, le.viewport.height, text.NewCSSFontSelector(fontConfig))
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 	// CSS Transitions (first-frame): when this is a post-script re-layout,
 	// compare against the previous pass's styles and override transitioned
@@ -89,24 +96,13 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// property resolution — prevStyles came from a pass that already
 	// resolved logical keys to physical, so both maps must be physical-
 	// keyed for the per-property diff (and resolution must not clobber a
-	// transitioned value) — and before ch-width metrics so downstream
-	// phases see the transitioned values.
+	// transitioned value). ApplyTransitionsFirstFrame re-builds the font of
+	// every style it rewrites; the text-decoration insets the cascade already
+	// recorded are then re-resolved against the transitioned values.
 	if le.prevStyles != nil {
 		css.ApplyTransitionsFirstFrame(doc.Root, computedStyles, le.prevStyles)
+		recomputeTextDecorationInsets(computedStyles)
 	}
-
-	// Phase 1b: Compute ch widths from actual font metrics.
-	fontConfig := le.fontConfig
-	if fontConfig.Regular == "" {
-		fontConfig = text.DefaultFontConfig()
-	}
-	computeChWidths(computedStyles, fontConfig)
-
-	// Phase 1c: Re-resolve text-decoration-inset now that ChWidth is known.
-	// During cascade (Phase 1), GetTextDecorationInset is called with ChWidth=0,
-	// causing ch units to resolve incorrectly. Now that computeChWidths has
-	// populated actual font metrics, re-resolve all AppliedTextDecoration insets.
-	recomputeTextDecorationInsets(computedStyles)
 
 	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
@@ -232,32 +228,90 @@ type NestedDocumentResult struct {
 	Doc *html.Document
 }
 
-// layoutNestedDocument parses and lays out a nested HTML document (for iframe/object)
-// using the given physical dimensions as the viewport. nestedDocURI is the src/data
-// URI of the nested document, used to re-root relative image/document URIs so that
-// sub-resources of the nested document resolve correctly relative to its location.
-// Returns the root layout result, or nil if parsing/layout fails.
-func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, nestedDocURI string) *NestedDocumentResult {
-	// Compute the nested document's BaseDir from its fully-qualified URL
-	// (outer base + iframe src). URLs inside the nested doc resolve against
-	// this base, so the outer renderer's single fetcher can serve sub-
-	// resources for any depth of nesting. Mirrors how Blink threads the
-	// owner-document base through `CSSParserContext` for each parse pass.
-	nestedBaseDir := css.URLDir(css.CompleteURL(nestedDocURI, ctx.BaseDir))
-	if nestedBaseDir == "." {
-		nestedBaseDir = ""
+// openFrameOwnerURL selects and fetches the document an <iframe> or <object>
+// embeds, and returns its HTML and its base (the Document::BaseURL analog).
+//
+//   - <iframe srcdoc>: the srcdoc text; its base is the container
+//     document's base, as Document::FallbackBaseURL returns
+//     same_origin_parent->BaseURL() for a srcdoc document
+//     (third_party/blink/renderer/core/dom/document.cc:5046, :5063).
+//   - <iframe src> / <object data> (type "" or text/html): the URL is
+//     completed against the embedding document's base before it is
+//     fetched, as HTMLFrameElementBase::OpenURL does with
+//     GetDocument().CompleteURL(url_)
+//     (third_party/blink/renderer/core/html/html_frame_element_base.cc:70)
+//     and HTMLPlugInElement::RequestObject with
+//     GetDocument().CompleteURL(url_)
+//     (third_party/blink/renderer/core/html/html_plugin_element.cc:702).
+//     The base is the completed URL's directory, so each nesting level
+//     composes onto its parent's base.
+//
+// Citations @ d4ecdfed88f962439247c2ad36b8fe47805b1520. ok is false when
+// owner embeds no HTML document or the fetch fails.
+func openFrameOwnerURL(ctx *LayoutContext, owner *html.Node) (htmlContent, baseDir string, ok bool) {
+	var raw string
+	switch owner.TagName {
+	case "iframe":
+		// srcdoc takes priority over src per HTML spec.
+		if srcdoc, has := owner.GetAttribute("srcdoc"); has && srcdoc != "" {
+			return srcdoc, ctx.BaseDir, true
+		}
+		raw, _ = owner.GetAttribute("src")
+	case "object":
+		if dataType, _ := owner.GetAttribute("type"); dataType == "text/html" || dataType == "" {
+			raw, _ = owner.GetAttribute("data")
+		}
+	default:
+		return "", "", false
 	}
 
+	uri := urlpkg.CompleteURL(raw, ctx.BaseDir)
+	if uri == "" || ctx.DocumentFetcher == nil {
+		return "", "", false
+	}
+	htmlContent, err := ctx.DocumentFetcher(uri)
+	if err != nil {
+		return "", "", false
+	}
+	baseDir = urlpkg.URLDir(uri)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	return htmlContent, baseDir, true
+}
+
+// layoutFrameOwnerDocument lays out the document openFrameOwnerURL returned
+// in a vpW x vpH viewport, retains it on owner for iframe.contentDocument,
+// and returns the root fragment with its X offset, or nil.
+func layoutFrameOwnerDocument(ctx *LayoutContext, owner *html.Node, htmlContent, baseDir string, vpW, vpH float64) *nestedDocFragment {
+	res := layoutNestedDocument(ctx, htmlContent, vpW, vpH, baseDir)
+	if res == nil {
+		return nil
+	}
+	if res.Doc != nil {
+		owner.NestedDocument = res.Doc
+	}
+	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+}
+
+// layoutNestedDocument parses and lays out a nested HTML document (for
+// iframe/object) using the given physical dimensions as the viewport.
+// baseDir is the nested document's base, the analog of Document::BaseURL
+// (third_party/blink/renderer/core/dom/document.cc:5083 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), computed by
+// openFrameOwnerURL. Every relative URL in the document is completed
+// against it where it is used (Document::CompleteURL, document.cc:7553), so
+// the fetchers stay document-agnostic. Returns the root layout result, or
+// nil if parsing/layout fails.
+func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, baseDir string) *NestedDocumentResult {
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
 		return nil
 	}
-	doc.BaseDir = nestedBaseDir
+	doc.BaseDir = baseDir
 
-	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
+	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, vpWidth, vpHeight, text.NewCSSFontSelector(ctx.FontConfig))
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
-	computeChWidths(computedStyles, ctx.FontConfig)
-	recomputeTextDecorationInsets(computedStyles)
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
@@ -274,15 +328,15 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
-	// Build nested context — inherit fonts; re-root fetchers to the nested doc's URI
-	// so that relative sub-resources (images, stylesheets, child iframes) resolve
-	// correctly relative to the nested document's location, not the outer document's.
+	// Build the nested context: inherit fonts and the document-agnostic
+	// fetchers; relative URLs reach them already completed against
+	// doc.BaseDir.
 	nestedCtx := &LayoutContext{
 		ViewportWidth:   vpWidth,
 		ViewportHeight:  vpHeight,
 		BaseDir:         doc.BaseDir,
-		ImageFetcher:    ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI),
-		DocumentFetcher: ReRootedDocumentFetcher(ctx.DocumentFetcher, nestedDocURI),
+		ImageFetcher:    ctx.ImageFetcher,
+		DocumentFetcher: ctx.DocumentFetcher,
 		FontConfig:      ctx.FontConfig,
 	}
 
@@ -729,180 +783,13 @@ func bidiMirror(r rune) rune {
 	return r
 }
 
-// fontMetrics holds the per-font measurements that drive CSS font-relative
-// unit resolution (ch/ex/cap) for a given (font, size).
-// IcWidth is resolved separately via FontPathForCovering so that U+6C34 (水)
-// is always sourced from a font that actually contains the glyph.
-type fontMetrics struct {
-	chWidth float64
-	xHeight float64
-	capHght float64
-}
-
-// computeChWidths measures per-font metrics needed to resolve CSS font-
-// relative units (ex, ch) and applies CSS Fonts 5 §1.7 `font-size-adjust`
-// to produce a used font-size. Populates `ChWidth`, `XHeight`, and
-// `UsedFontSize` on every Style.
-//
-// Mirrors Blink's `FontDescription::EffectiveSize()` (font_description.cc) and
-// `FontMetrics::XHeight()` (font_metrics.h) at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: the used font-size is computed by
-// scaling the specified size by `adjust_value / actual_aspect_ratio_of_first
-// _available_font`, then ex/ch are sourced from the used-size font's metrics
-// so font-dependent CSS units track the visible glyph size.
-func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
-	// Per-font metric cache keyed by (path, sizeRounded). Sub-pixel size jitter
-	// is rare; rounding stabilises the cache for tests rendering many elements
-	// at one size.
-	measure := newFontMetricsMeasurer(fc)
-	for _, style := range styles {
-		if style == nil {
-			continue
-		}
-		resolveFontMetricsForStyle(style, fc, measure)
-	}
-}
-
-// resolveFontMetricsForStyle populates the font-relative cached metric fields
-// (UsedFontSize, ChWidth, XHeight, CapHeight, LhSize) on a single style from
-// its current font properties, applying CSS Fonts 5 §1.7 font-size-adjust.
-// Shared by the bulk computeChWidths pass and by mergeFirstLineStyle, which
-// must re-resolve these caches after overriding font-size/line-height so the
-// merged ::first-line style does not carry the base font's stale metrics
-// (the GetUsedFontSize cache otherwise wins over the overridden Properties).
-// `measure` is the caller's metric cache.
-func resolveFontMetricsForStyle(style *css.Style, fc text.FontConfig, measure func(fontPath string, fontSize float64) fontMetrics) {
-	specifiedSize := style.GetFontSize()
-	family, _ := style.Get("font-family")
-	bold := style.GetFontWeight() == css.FontWeightBold
-	italic := style.GetFontStyle() == css.FontStyleItalic
-	mono := style.IsMonospaceFamily()
-	ahem := style.IsAhemFamily()
-	synth := style.GetFontSynthesis()
-	fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
-
-	// Measure metrics at the specified size so we can read the first font's
-	// actual aspect ratio for font-size-adjust resolution.
-	baseMetrics := measure(fontPath, specifiedSize)
-
-	// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
-	// `none` and `from-font` leave the used size equal to the specified
-	// size (from-font matches the first font's own aspect → factor 1).
-	usedSize := specifiedSize
-	adjust := style.GetFontSizeAdjust()
-	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
-		if actualRatio > 0 {
-			usedSize = specifiedSize * adjust.Value / actualRatio
-		} else {
-			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; clamp to 0 to match Blink's behavior of
-			// hiding the glyphs (matches font-size-adjust-zero-* refs).
-			usedSize = 0
-		}
-	}
-
-	usedMetrics := baseMetrics
-	if usedSize != specifiedSize {
-		usedMetrics = measure(fontPath, usedSize)
-	}
-
-	style.UsedFontSize = usedSize
-	style.UsedFontSizeSet = true
-	style.SetZeroWidth(usedMetrics.chWidth)
-	style.XHeight = usedMetrics.xHeight
-	style.CapHeight = usedMetrics.capHght
-
-	// ic unit: CSS Values 4 §6.1 defines ic as the advance of U+6C34 (水) in
-	// the element's font. Only measure from a font that explicitly covers 水 in
-	// the declared font-family list (via the registry). If no such font exists,
-	// IcWidth stays 0 and parseLengthFullWithCh falls back to 1em. We do NOT
-	// fall back to builtin serif/sans-serif here — doing so would pick up any
-	// system CJK font and produce wrong ic values for Latin-only declared fonts.
-	style.IcWidth = 0
-	if fc.Registry != nil {
-		for _, fam := range text.ParseFontFamilyList(family) {
-			if icPath := fc.Registry.LookupForCodepoint(fam, '水', bold, italic, synth.Style); icPath != "" {
-				icLU, _ := text.MeasureText("水", usedSize, icPath)
-				style.IcWidth = icLU.Float64()
-				break
-			}
-		}
-	}
-
-	// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
-	// unit equals the element's computed line-height. Mirrors Blink's
-	// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	style.LhSize = style.GetLineHeight()
-}
-
-// newFontMetricsMeasurer returns a freshly-cached metric measurer over fc —
-// the same closure computeChWidths builds, hoisted so a one-off caller
-// (mergeFirstLineStyle) can resolve a single style without the bulk pass.
-func newFontMetricsMeasurer(fc text.FontConfig) func(fontPath string, fontSize float64) fontMetrics {
-	type fontKey struct {
-		path     string
-		fontSize int32
-	}
-	cache := make(map[fontKey]fontMetrics)
-	return func(fontPath string, fontSize float64) fontMetrics {
-		k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
-		if m, ok := cache[k]; ok {
-			return m
-		}
-		chLU, _ := text.MeasureText("0", fontSize, fontPath)
-		m := fontMetrics{
-			chWidth: chLU.Float64(),
-			xHeight: text.FontXHeightFromFont(fontSize, fontPath),
-			capHght: text.FontCapHeightFromFont(fontSize, fontPath),
-		}
-		cache[k] = m
-		return m
-	}
-}
-
-// firstFontAspectRatio returns the first available font's actual aspect ratio
-// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Returns 0 when
-// the font has no usable value for the metric — callers treat that as a
-// zero-sized used font-size.
-func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSize float64, fontPath string) float64 {
-	if fontSize <= 0 {
-		return 0
-	}
-	switch metric {
-	case css.FontSizeAdjustCapHeight:
-		return m.capHght / fontSize
-	case css.FontSizeAdjustChWidth:
-		return m.chWidth / fontSize
-	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
-		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
-		// height of the U+6C34 (水) glyph. Mirror Blink's behavior: the metric
-		// is sourced from the same fontPath; when 水 isn't present (e.g. Ahem),
-		// the metric is undefined and the spec calls for the user agent to
-		// behave as if `font-size-adjust: none` — Blink resolves the ratio to
-		// 0 which clamps the used size to 0. We follow Blink.
-		w, h := text.MeasureText("水", fontSize, fontPath)
-		wf, hf := w.Float64(), h.Float64()
-		if wf == 0 || hf == 0 {
-			return 0
-		}
-		if metric == css.FontSizeAdjustIcWidth {
-			return wf / fontSize
-		}
-		return hf / fontSize
-	default:
-		// ex-height (default)
-		return m.xHeight / fontSize
-	}
-}
-
-// recomputeTextDecorationInsets re-resolves text-decoration-inset values for
-// all elements after ChWidth has been populated by computeChWidths. During
-// cascade, GetTextDecorationInset is called with ChWidth=0, causing ch units
-// to resolve incorrectly (using the 0.5 fallback instead of the actual font
-// metric). Mirrors the computeChWidths pattern: iterate the styles map directly
-// rather than walking the DOM.
+// recomputeTextDecorationInsets re-resolves the text-decoration-inset of every
+// AppliedTextDecoration after ApplyTransitionsFirstFrame has rewritten
+// properties post-cascade: the cascade recorded each inset
+// (ResolveAppliedTextDecorations) from the after-change font and inset, and a
+// transitioned font-size or text-decoration-inset changes it. Iterates the
+// styles map directly rather than walking the DOM. No Blink analog: Blink
+// applies interpolations inside the cascade, before the decoration is built.
 //
 // Each AppliedTextDecoration entry carries a SourceStyle pointer (set in
 // computeOwnTextDecorationContribution) so we can re-resolve even on

@@ -7,6 +7,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	urlpkg "louis14/pkg/url"
 	"mazarin/textshape"
 )
 
@@ -122,7 +123,7 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc       string        // src attribute value; empty if not an img element
+	ImageSrc       string        // <img> src completed against its owning document's base; empty if not an img element
 	ObjectFit      css.ObjectFit // fill, contain, cover, none, scale-down
 	ObjectPosition [2]float64    // x%, y% in range [0,1]; default (0.5, 0.5)
 	ImageRendering string        // auto, pixelated, crisp-edges, -webkit-optimize-contrast
@@ -877,18 +878,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
-	// SVG roots are always clipped per Blink's
-	// `LayoutSVGRoot::ComputeOverflowClipAxes` (Chromium @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — "svg document roots
-	// are always clipped". For an inline <svg> with no
-	// overflow-clip-margin we still let `paintSVGRoot`'s own viewport
-	// clip do the job (avoiding a duplicate pixel-snapped CSS clip
-	// that can shift by 1px relative to the SVG content origin, which
-	// is unsnapped). But when `overflow-clip-margin` is set, the SVG
-	// must go through the standard CSS-overflow paint path — that is
-	// the only path that consults the margin. We trigger that path
-	// here by forcing clipX/clipY true when the SVG carries the
-	// property.
+	// An inline <svg> is clipped by default in Blink: it respects CSS
+	// overflow like other replaced elements
+	// (LayoutSVGRoot::ComputeOverflowClipAxes,
+	// core/layout/svg/layout_svg_root.cc:550-575 @ Chromium
+	// 5992657f556bcd9d207a4aca187488462f027cab) and the UA sheet gives
+	// svg:not(:root) overflow:hidden (core/css/svg.css:48-54 @
+	// 5992657f556b). louis14 has no such UA rule, so for an inline <svg>
+	// with no overflow-clip-margin `paintSVGRoot` installs that default
+	// clip itself, pixel-snapped like the SVG content origin. When
+	// `overflow-clip-margin` is set, the SVG must go through the standard
+	// CSS-overflow paint path — that is the only path that consults the
+	// margin. We trigger that path here by forcing clipX/clipY true when
+	// the SVG carries the property.
 	isSVGRootNode := box.Node != nil && box.Node.TagName == "svg"
 	if isSVGRootNode {
 		if _, ok := s.GetOverflowClipMargin(); ok {
@@ -1066,9 +1068,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.Opacity = s.GetOpacity()
 
 	// Replaced element (img): capture src for paint-time image loading.
+	// Blink paints the ImageResourceContent the element already fetched;
+	// louis14 has no per-element resource and re-fetches by string, so the
+	// src is completed here against the owning document's base, as
+	// ImageLoader::ImageSourceToKURL does
+	// (third_party/blink/renderer/core/loader/image_loader.cc:746 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	if box.Node != nil && box.Node.TagName == "img" {
 		if src, ok := box.Node.GetAttribute("src"); ok {
-			layer.ImageSrc = src
+			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
 		layer.ObjectFit = s.GetObjectFit()
 		opX, opY := s.GetObjectPosition()

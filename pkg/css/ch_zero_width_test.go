@@ -35,17 +35,48 @@ func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
 	parent := NewStyle()
 	parent.Set("font-size", "20px")
 	parent.SetZeroWidth(0)
-	for name, newAnon := range map[string]func(*Style) *Style{
-		"NewAnonymousBlockStyle":         NewAnonymousBlockStyle,
-		"NewAnonymousTableCellStyle":     NewAnonymousTableCellStyle,
-		"NewAnonymousTableRowStyle":      NewAnonymousTableRowStyle,
-		"NewAnonymousInlineRubyStyle":    NewAnonymousInlineRubyStyle,
-		"NewAnonymousTableRowGroupStyle": NewAnonymousTableRowGroupStyle,
-	} {
-		s := newAnon(parent)
+	for _, display := range anonymousBoxDisplays {
+		s := CreateAnonymousStyleWithDisplay(parent, string(display))
 		s.Set("width", "calc(100px + 5ch)")
 		if got, _ := s.GetLength("width"); got != 100 {
-			t.Errorf("%s: calc(100px + 5ch) = %v, want 100 (parent's measured ch = 0)", name, got)
+			t.Errorf("%s: calc(100px + 5ch) = %v, want 100 (parent's measured ch = 0)", display, got)
+		}
+	}
+}
+
+// TestAnonymousStylesCopyStyleResolutionContext (LOU-428, LOU-431): every
+// anonymous-box style and every clone carries its parent's full resolution
+// context — all font metrics (with their measured flags), the used font-size
+// and the font selector — as Blink builds an anonymous style from the parent
+// style, inheriting its Font
+// (StyleResolver::CreateAnonymousStyleBuilderWithDisplay,
+// core/css/resolver/style_resolver.cc:3607 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
+	parent := NewStyle()
+	parent.Set("font-size", "20px")
+	parent.ViewportWidth, parent.ViewportHeight = 800, 600
+	parent.SetZeroWidth(11)
+	parent.UsedFontSize, parent.UsedFontSizeSet = 18, true
+	parent.XHeight, parent.CapHeight, parent.LhSize = 9, 14, 30
+	parent.IcWidth, parent.HasIdeographicInlineSize = 19, true
+	parent.BaseDir = "base/"
+	parent.fontSelector = fakeFontSelector{}
+	newStyles := map[string]func(*Style) *Style{"Clone": (*Style).Clone}
+	for _, display := range anonymousBoxDisplays {
+		newStyles["CreateAnonymousStyleWithDisplay("+string(display)+")"] = func(p *Style) *Style {
+			return CreateAnonymousStyleWithDisplay(p, string(display))
+		}
+	}
+	for name, newAnon := range newStyles {
+		s := newAnon(parent)
+		if s.ViewportWidth != 800 || s.ViewportHeight != 600 || s.ChWidth != 11 || !s.HasZeroWidth ||
+			s.UsedFontSize != 18 || !s.UsedFontSizeSet || s.XHeight != 9 || s.CapHeight != 14 ||
+			s.LhSize != 30 || s.IcWidth != 19 || !s.HasIdeographicInlineSize || s.BaseDir != "base/" ||
+			s.fontSelector != parent.fontSelector {
+			t.Errorf("%s dropped resolution context: viewport %vx%v ch %v/%v used %v/%v ex %v cap %v lh %v ic %v/%v base %q selector %v",
+				name, s.ViewportWidth, s.ViewportHeight, s.ChWidth, s.HasZeroWidth, s.UsedFontSize, s.UsedFontSizeSet,
+				s.XHeight, s.CapHeight, s.LhSize, s.IcWidth, s.HasIdeographicInlineSize, s.BaseDir, s.fontSelector)
 		}
 	}
 }

@@ -592,7 +592,20 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // ctx is the owning document's ParserContext — used to resolve url() tokens
 // inside the node's inline `style=""` attribute at parse time. Pass nil for
 // "no base URL" (test fixtures that don't exercise URL composition).
+//
+// CSS animations are sampled at local time 0 and node's running-animation
+// records are left untouched; the document cascade (ApplyStylesToDocument)
+// samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil)
+}
+
+// computeStyle is ComputeStyle with the document's AnimationClock. A non-nil
+// clock makes this a style recalc of node: its running CSS animations are
+// updated (calculateAnimationUpdate) and sampled at their timeline local
+// times. A nil clock samples every animation at local time 0 and leaves the
+// records alone, for probes that are not the element's style recalc.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -822,10 +835,21 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
 	// cascade origin sits below author !important (CSS Cascade §6.3), so
-	// ApplyAnimations skips any property in importantProps. animation-name and
-	// the other animation-* longhands have already been resolved (via rule
-	// declarations / inline style) into finalStyle by this point.
-	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+	// applyCSSAnimations skips any property in importantProps. animation-name
+	// and the other animation-* longhands have already been resolved (via rule
+	// declarations / inline style) into finalStyle by this point. With a
+	// clock, calculateAnimationUpdate supplies each animation's timeline local
+	// time; without one every animation samples at 0, as ApplyAnimations does.
+	anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets))
+	var localTimes []float64
+	baseDisplayNone := finalStyle.GetDisplay() == DisplayNone
+	if clock != nil {
+		anims, localTimes = calculateAnimationUpdate(node, anims, clock, baseDisplayNone)
+	}
+	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
+	if clock != nil {
+		recordDisplayedStyle(node, baseDisplayNone, finalStyle.GetDisplay() == DisplayNone)
+	}
 
 	// CSS Values 5 §11.5: resolve typed attr() references in property values.
 	// attr() in non-content properties (e.g. background-color, width) must be
@@ -1166,8 +1190,21 @@ func validateCSSInteger(v string) (string, bool) {
 	return "", false
 }
 
+// ApplyStylesToDocument cascades doc with no font selector: font-relative
+// units keep their unmeasured fallbacks (ex 0.5em, ch 0.5em, ic 1em, cap
+// 0.7em). See ApplyStylesToDocumentWithFontSelector.
 // Phase 22: Added viewport dimensions for media query evaluation
 func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight float64) map[*html.Node]*Style {
+	return ApplyStylesToDocumentWithFontSelector(doc, viewportWidth, viewportHeight, nil)
+}
+
+// ApplyStylesToDocumentWithFontSelector cascades doc, building each element's
+// font from fs as the cascade goes so ex / ch / ic / cap resolve against the
+// element's own font metrics at computed-value time. Blink's StyleEngine owns
+// the document's FontSelector and FontBuilder hands it to every Font it
+// creates (core/css/resolver/font_builder.cc:644/682 @
+// 5992657f556bcd9d207a4aca187488462f027cab). nil means no fonts.
+func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, viewportHeight float64, fs FontSelector) map[*html.Node]*Style {
 	styles := make(map[*html.Node]*Style)
 
 	// Parse all stylesheets
@@ -1197,7 +1234,7 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -1309,14 +1346,14 @@ func rootDeclaredSizeAgainstViewport(rootStyle *Style, viewportWidth, viewportHe
 	}
 	var w, h float64
 	if wVal, ok := rootStyle.Get("width"); ok {
-		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
+		if length, ok := parseLengthFullWithCh(wVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
 			w = length
 		} else if pct, ok := ParsePercentage(wVal); ok {
 			w = pct / 100.0 * viewportWidth
 		}
 	}
 	if hVal, ok := rootStyle.Get("height"); ok {
-		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.IcWidth); ok {
+		if length, ok := parseLengthFullWithCh(hVal, rootStyle.GetFontSize(), viewportWidth, viewportHeight, rootStyle.chScale(), rootStyle.XHeight, rootStyle.CapHeight, rootStyle.LhSize, rootStyle.ideographicInlineSize()); ok {
 			h = length
 		} else if pct, ok := ParsePercentage(hVal); ok {
 			h = pct / 100.0 * viewportHeight
@@ -1925,9 +1962,12 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 			}
 		}
-		// line-height likewise computes against the pseudo-element's own
-		// (now final) font-size and the originating element's line-height.
-		absolutizeLineHeight(finalStyle, parentStyles[0])
+		// The pseudo-element builds its font from the originating element's
+		// font selector (Blink resolves pseudo-element styles through the same
+		// StyleCascade::Apply font step), then line-height computes against
+		// that font and the originating element's line-height.
+		finalStyle.fontSelector = parentStyles[0].fontSelector
+		applyFontAndLineHeight(finalStyle, parentStyles[0])
 	}
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
@@ -2861,36 +2901,13 @@ func ApplyInheritedFrom(child, parent *Style) {
 // position:relative/sticky + top/right/bottom/left are also preserved so the
 // blocks inside a positioned inline shift with the inline (CSS 2.1 §9.4.3).
 func NewBlockifiedStyle(inline *Style) *Style {
-	s := NewAnonymousBlockStyle(inline)
+	s := CreateAnonymousStyleWithDisplay(inline, string(DisplayBlock))
 	// Preserve stacking-context-creating non-inheritable properties.
 	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change", "position", "top", "right", "bottom", "left"} {
 		if val, ok := inline.Get(prop); ok {
 			s.Set(prop, val)
 		}
 	}
-	return s
-}
-
-// NewAnonymousBlockStyle creates a style for an anonymous block box
-// (CSS 2.1 §9.2.1.1). Anonymous boxes inherit all inheritable properties
-// from the parent and have display:block with zero margin/border/padding.
-func NewAnonymousBlockStyle(parent *Style) *Style {
-	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
-	s.Set("display", "block")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -2906,118 +2923,19 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 // box would see an empty vector and miss its splitting box's decoration —
 // the LOU-151 bug observed on `text-decoration-subelements-005`.
 //
-// Mirrors Blink's `StyleResolver::CreateAnonymousStyleWithDisplay` which
-// carries the `AppliedTextDecoration` vector through to anonymous wrappers
-// (Blink ref @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Companion to
+// Mirrors Blink's builder.SetBaseTextDecorationData(
+// parent_style.AppliedTextDecorationData()) in
+// StyleResolver::CreateAnonymousStyleBuilderWithDisplay
+// (core/css/resolver/style_resolver.cc:3612 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Called by
+// CreateAnonymousStyleWithDisplay, and by resolveMarkerStyle for an inside
+// ::marker (the author ::marker cascade path does not go through the
+// builder). Companion to
 // the cascade-time method ResolveAppliedTextDecorations in style.go.
 func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 	if len(parent.AppliedTextDecorations) > 0 {
 		s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), parent.AppliedTextDecorations...)
 	}
-}
-
-// NewAnonymousTableCellStyle creates a style for an anonymous table-cell box
-// that inherits from the parent row style. Per CSS Tables §2.1, when a
-// non-table-cell child appears inside a table-row, it must be wrapped in
-// an anonymous table-cell box.
-func NewAnonymousTableCellStyle(parent *Style) *Style {
-	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
-	s.Set("display", "table-cell")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowStyle creates a style for an anonymous table-row box.
-// Per CSS 2.1 §17.2.1, non-row children of a table-row-group (and bare
-// non-row siblings of rows in a table) are wrapped in anonymous table-row
-// boxes. Mirrors Blink's LayoutTableRow::CreateAnonymousWithParent.
-func NewAnonymousTableRowStyle(parent *Style) *Style {
-	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
-	s.Set("display", "table-row")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousInlineRubyStyle creates a style for the single anonymous
-// inline `display: ruby` box that wraps the children of a block-level
-// `display: block ruby` element (CSS Display L3 + Blink's
-// LayoutRubyAsBlock two-box model). The principal box is the
-// block-flow generated from the block-ruby element itself; this style
-// is for the inline-ruby child that actually carries the ruby column
-// items.
-//
-// Per Blink layout_ruby_as_block.cc, the inline ruby child inherits
-// all inheritable properties from the principal box; non-inheritable
-// box properties (margin/border/padding) live on the principal block
-// box, not on the inline ruby. Mirrors NewAnonymousBlockStyle but with
-// display:ruby.
-func NewAnonymousInlineRubyStyle(parent *Style) *Style {
-	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
-	s.Set("display", "ruby")
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowGroupStyle creates a style for an anonymous
-// table-row-group box. Per CSS 2.1 §17.2.1, a run of non-proper-table
-// children of a table/inline-table is wrapped in an anonymous
-// table-row-group. Mirrors Blink's LayoutTableSection::CreateAnonymousWithParent.
-func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
-	s := NewStyle()
-	s.ViewportWidth = parent.ViewportWidth
-	s.ViewportHeight = parent.ViewportHeight
-	s.ChWidth = parent.ChWidth
-	s.HasZeroWidth = parent.HasZeroWidth
-	s.XHeight = parent.XHeight
-	s.CapHeight = parent.CapHeight
-	s.LhSize = parent.LhSize
-	s.Set("display", "table-row-group")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
 }
 
 // resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
@@ -3369,9 +3287,10 @@ func absolutizeOutlineOffset(style *Style) {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock)
+		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		// CSS Variables 1 §3.2: a shorthand whose declared value contains
@@ -3393,17 +3312,6 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// (style_builder_converter.cc:1998 @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		absolutizeOutlineOffset(style)
-		// line-height computes to an absolute length unless it is `normal` or a
-		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
-		// than re-resolving em / % against their own font-size. Mirrors Blink's
-		// StyleBuilderConverter::ConvertLineHeight (style_builder_converter.cc:2212
-		// @ 5992657f556bcd9d207a4aca187488462f027cab): lengths and calc() become
-		// Length::Fixed, a percentage is taken of the element's computed font-size,
-		// and only a number is kept as a multiplier. Blink applies line-height while
-		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
-		// here resolves against the parent's line-height (StyleCascade::Apply →
-		// StyleResolverState::UpdateLineHeight, style_cascade.cc:309-315 @ same SHA).
-		absolutizeLineHeight(style, styles[node.Parent])
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
 		// than its containing block, its display computes to inline-block.
 		resolveOrthogonalDisplay(node, style, styles)
@@ -3416,11 +3324,25 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		// A matching @container rule can re-introduce a var()-deferred
-		// shorthand or a font-relative outline-offset; re-run the
-		// computed-time normalizations (all are idempotent).
+		// shorthand or a font-relative outline-offset; re-run those computed-time
+		// normalizations (both are idempotent).
 		reexpandVarShorthands(style)
 		absolutizeOutlineOffset(style)
-		absolutizeLineHeight(style, styles[node.Parent])
+		// The element's font properties are final here (@container rules
+		// included, which Blink applies inside the same cascade), so build its font
+		// (UpdateFont), then compute line-height against it, then record the lh
+		// size (UpdateLineHeight) — Blink's StyleCascade::Apply order
+		// (style_cascade.cc:310-315 @ 5992657f556bcd9d207a4aca187488462f027cab).
+		// line-height computes to an absolute length unless it is `normal` or a
+		// bare number (CSS 2.1 §10.8.1), so descendants inherit the length rather
+		// than re-resolving em / % / ex / ch / ic / cap against their own font.
+		// Mirrors Blink's StyleBuilderConverter::ConvertLineHeight
+		// (style_builder_converter.cc:2212 @ same SHA): lengths and calc() become
+		// Length::Fixed, a percentage is taken of the element's computed font-size,
+		// and only a number is kept as a multiplier. Blink applies line-height while
+		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
+		// here resolves against the parent's line-height.
+		applyFontAndLineHeight(style, styles[node.Parent])
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors
@@ -3470,12 +3392,14 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 			// First element child matches :root — compute its style to capture
 			// :root rules, then extract inheritable properties for doc.Root.
 			rootChildStyle := ComputeStyle(firstElem, stylesheets, viewportWidth, viewportHeight, ctx)
+			rootChildStyle.fontSelector = fs
 			// Copy computed, not declared, values: resolve font-size against the
 			// initial 16px (doc.Root has no style yet) and line-height to a
-			// length, as for the :root element itself, so doc.Root's children
-			// inherit lengths rather than re-resolving em / %.
+			// length against :root's own font, as for the :root element itself,
+			// so doc.Root's children inherit lengths rather than re-resolving
+			// em / % / ex / ch / ic / cap.
 			ApplyInheritedProperties(firstElem, rootChildStyle, styles)
-			absolutizeLineHeight(rootChildStyle, nil)
+			applyFontAndLineHeight(rootChildStyle, nil)
 			for prop := range inheritableProperties {
 				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
 				// Don't propagate from :root to synthetic doc root — otherwise every
@@ -3494,6 +3418,10 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 				}
 			}
 			if len(syntheticRootStyle.Properties) > 0 {
+				// The synthetic root is a style like any other: build its font
+				// so its own metrics (and lh size) are set too.
+				syntheticRootStyle.UpdateFont(fs)
+				syntheticRootStyle.UpdateLineHeight()
 				styles[node] = syntheticRootStyle
 			}
 		}
@@ -3501,7 +3429,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock)
 	}
 }
 
@@ -4071,12 +3999,14 @@ func rbOnlyInlineRecursive(node *html.Node) bool {
 
 // absolutizeLineHeight rewrites style's line-height to its computed length in
 // px, resolving lh against parent's line-height (1.2em fallback with no
-// parent). It leaves alone the values that compute to themselves: `normal`, a
-// bare number (or a unitless calc()), plain px, and values using ex / ch / ic
-// / cap, whose font metrics louis14 only measures at layout time
-// (Style.XHeight etc.), so Style.GetLineHeight resolves those there instead.
+// parent) and ex / ch / ic / cap against the element's own font metrics, which
+// Style.UpdateFont filled just before (Blink CSSToLengthConversionData::
+// FontSizes::Ex / Ch / Ic / Cap, core/css/css_to_length_conversion_data.cc
+// :95/117/139/169 @ 5992657f556bcd9d207a4aca187488462f027cab; unmeasured
+// metrics take the unit fallbacks). It leaves alone the values that compute
+// to themselves: `normal`, a bare number (or a unitless calc()) and plain px.
 // Idempotent, so it can re-run after a late line-height write (var()
-// shorthand re-expansion, @container rules).
+// shorthand re-expansion, @container rules, first-frame transitions).
 func absolutizeLineHeight(s *Style, parent *Style) {
 	val, ok := s.Get("line-height")
 	if !ok {
@@ -4092,13 +4022,8 @@ func absolutizeLineHeight(s *Style, parent *Style) {
 	units := dimensionUnits(v)
 	parentLh := 0.0
 	for _, unit := range units {
-		switch unit {
-		case "ex", "ch", "ic", "cap":
-			return
-		case "lh":
-			if parent != nil && parentLh == 0 {
-				parentLh = parent.GetLineHeight()
-			}
+		if unit == "lh" && parent != nil && parentLh == 0 {
+			parentLh = parent.GetLineHeight()
 		}
 	}
 	isMath := IsMathFunction(v)
@@ -4124,13 +4049,16 @@ func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (fl
 			viewportWidth:  s.ViewportWidth,
 			viewportHeight: s.ViewportHeight,
 			chScale:        s.chScale(),
+			xHeight:        s.XHeight,
+			capHeight:      s.CapHeight,
 			lhSize:         parentLh,
+			icWidth:        s.ideographicInlineSize(),
 		})
 	}
 	if pct, ok := ParsePercentage(v); ok {
 		return pct / 100.0 * fontSize, true
 	}
-	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), 0, 0, parentLh, 0)
+	return parseLengthFullWithCh(v, fontSize, s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, parentLh, s.ideographicInlineSize())
 }
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /

@@ -307,6 +307,43 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// Compute table size.
+	contentInlineSize := 0.0
+	for _, w := range colWidths {
+		contentInlineSize += w
+	}
+	contentInlineSize += spacingForCols // include inline spacing in total
+
+	// Apply min-inline-size floor for auto-width tables.
+	// For explicit-width tables, CalculateInitialFragmentGeometry already
+	// enforced min/max on borderBoxInline. For auto-width tables the inline
+	// size was set to fill the container, min-width was trivially satisfied,
+	// and column sizing shrinks to max-content — so the floor must be
+	// re-applied post-column-sizing, mirroring the explicitTableBorderBoxBlock
+	// floor on the block axis above.
+	// Mirrors Blink TableLayoutAlgorithm where ComputeTableInlineSize accounts
+	// for min-inline-size when deriving the final table inline size from
+	// column widths @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if !hasExplicitTableWidth {
+		minInline := ResolveMinInlineSize(tla.style, wdm, tla.space, geom).Float64()
+		if minInline > 0 && contentInlineSize < minInline {
+			contentInlineSize = minInline
+		}
+	}
+
+	// Inline-size floor mirroring the block-size floor below: when a parent
+	// algorithm has already fixed the table's inline-size (e.g. a grid item
+	// with default `justify-self: normal` resolving to stretch), the table's
+	// own column-width sum is only a floor — the table must still fill the
+	// parent's pre-resolved track size so the container's own borders /
+	// background line up with the cell. Mirrors Blink's TableLayoutAlgorithm
+	// honoring the kFixedInlineSize flag when it derives the final
+	// border-box inline size.
+	borderBoxInline := contentInlineSize + geom.InlineBorderPadding()
+	if tla.space.IsFixedInlineSize && geom.BorderBoxSize.InlineSize > borderBoxInline {
+		borderBoxInline = geom.BorderBoxSize.InlineSize
+	}
+
 	// Separate top and bottom captions.
 	var topCaptions, bottomCaptions []tableCaption
 	for _, cap := range captions {
@@ -317,36 +354,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Layout top (block-start) captions.
+	// Lay out and add the top (block-start) captions. Mirrors Blink
+	// GenerateFragment's top-caption loop (table_layout_algorithm.cc:989-993
+	// @ d4ecdfed88f9).
+	tableContentInline := borderBoxInline - geom.InlineBorderPadding()
 	blockOffset := 0.0
 	for _, cap := range topCaptions {
-		capWDM := wdm
-		if cap.style != nil {
-			capWDM = NewWritingDirectionMode(cap.style)
-		}
-		capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
-			SetOrthogonalFallbackInlineSize(
-				orthogonalFallbackSize(capWDM, tla.ctx)).
-			SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(LogicalSize{
-				InlineSize: availableInline,
-				BlockSize:  Indefinite,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: availableInline,
-				BlockSize:  0,
-			}).
-			SetPercentageResolutionInlineSize(availableInline).
-			Build()
-
-		capResult := layoutElement(tla.ctx, cap.node, capSpace)
-		capLogical := NewLogicalFragment(wdm, capResult.Fragment)
-
-		builder.AddChild(capResult.Fragment, LogicalOffset{
-			InlineOffset: 0,
-			BlockOffset:  blockOffset,
-		})
-		blockOffset += capLogical.BlockSize()
+		tla.addCaptionResult(builder, wdm,
+			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
 	}
 
 	// Layout each row — single-pass pipeline (refactor-b ckpt 3).
@@ -439,24 +454,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		rowHeight := 0.0
 		cellLayouts := make([]cellMeasurement, 0, len(row.cells))
 
-		// CSS Tables + chromium bug 1227884: percent insets on a
-		// position:relative table-cell resolve against the ROW's
-		// SPECIFIED block-size (not the used/distributed size). If
-		// the row has no explicit height, percent resolves to 0.
-		// Mirrors Blink's table_row_constraint_space_builder behavior
-		// where the cell sub-space's percentage_resolution_block_size
-		// comes from the row's specified dimension.
-		rowSpecBlock := 0.0
-		if row.style != nil {
-			prop := "height"
-			if wdm.IsVertical() {
-				prop = "width"
-			}
-			if v, ok := row.style.GetLength(prop); ok {
-				rowSpecBlock = v
-			}
-		}
-
 		for _, cell := range row.cells {
 			// cell.colIndex was assigned by assignColumnIndices and
 			// honors rowspan reservations from earlier rows.
@@ -503,6 +500,23 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// The TableSectionData pointer threads the (soon-to-be-final)
 			// row sizing vector into the cell sub-space, mirroring Blink's
 			// TableSectionConstraintSpaceBuilder chain.
+			//
+			// The percentage-resolution block size is Indefinite, as in
+			// Blink's SetupTableCellConstraintSpaceBuilder
+			// (third_party/blink/renderer/core/layout/table/table_layout_utils.cc:1363,
+			// SetPercentageResolutionSize({percentage_inline_size,
+			// kIndefiniteSize}) at :1411-1412, quoting css-tables-3
+			// #computing-the-table-height at :1409-1410), so a %-height
+			// cell child (or the child an anonymous cell was unwrapped to,
+			// see buildRow) is auto. Blink's measure pass also lays the cell
+			// out with an indefinite initial block size (:222-230); its
+			// layout pass makes it definite only when ComputeCellBlockSize
+			// says so (:1333-1361: a fixed cell height, or a row that grew in
+			// a table with a specified block size). louis14 has no layout
+			// pass at the final row size, so the measure-pass value stands.
+			// All @ d4ecdfed88f962439247c2ad36b8fe47805b1520. A relative
+			// cell's percentage insets resolve against its row instead
+			// (Phase 3, relativeCellOffset).
 			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -514,7 +528,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				SetIsFixedInlineSize(true).
 				SetPercentageResolutionSize(LogicalSize{
 					InlineSize: layoutWidth,
-					BlockSize:  rowSpecBlock,
+					BlockSize:  Indefinite,
 				}).
 				SetPercentageResolutionInlineSize(layoutWidth).
 				SetTableSectionData(tableData).
@@ -1037,6 +1051,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
+			relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows)
 			rowBuilder.AddChild(cellFrag, LogicalOffset{
 				InlineOffset: cl.inlineOffset,
 				BlockOffset:  cl.cellBlockOffset,
@@ -1174,22 +1189,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// the table's available block-size) is skipped. Mirrors
 		// Blink's table_section_layout path for position:relative rows.
 		if row.style != nil && row.style.GetPosition() == css.PositionRelative && rowResult.Fragment.RelativeOffset == (geometry.PhysicalOffset{}) {
-			groupSpecBlock := 0.0
-			if row.groupStyle != nil {
-				prop := "height"
-				if wdm.IsVertical() {
-					prop = "width"
-				}
-				if v, ok := row.groupStyle.GetLength(prop); ok {
-					groupSpecBlock = v
-				}
-			}
-			physCB := ToPhysicalSize(LogicalSize{
+			rowResult.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(row.style, wdm, LogicalSize{
 				InlineSize: totalInlineForRows,
-				BlockSize:  groupSpecBlock,
-			}, wdm.WM)
-			off := row.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-			rowResult.Fragment.RelativeOffset = computeRelativeOffset(off, wdm)
+				BlockSize:  specifiedBlockSize(row.groupStyle, wdm),
+			})
 		}
 
 		if sectionBuilder != nil {
@@ -1312,8 +1315,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		// Attach directly to the table builder at the originating
-		// row's block-offset.
-		builder.AddChild(cellFrag, LogicalOffset{
+		// row's block-offset. Its relative offset still resolves against
+		// the originating row, the row Blink adds it through; addChildInternal
+		// keeps the table's child available size from re-resolving a zero
+		// (auto) result.
+		relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
+		builder.addChildInternal(cellFrag, LogicalOffset{
 			InlineOffset: cl.inlineOffset,
 			BlockOffset:  p.blockOffset + cl.cellBlockOffset,
 		})
@@ -1339,62 +1346,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += blockSpacing
 	}
 
-	// Layout bottom (block-end) captions.
+	// Lay out and add the bottom (block-end) captions. Mirrors Blink
+	// GenerateFragment's bottom-caption loop (table_layout_algorithm.cc:1585-1589
+	// @ d4ecdfed88f9).
 	for _, cap := range bottomCaptions {
-		capWDM := wdm
-		if cap.style != nil {
-			capWDM = NewWritingDirectionMode(cap.style)
-		}
-		capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
-			SetOrthogonalFallbackInlineSize(
-				orthogonalFallbackSize(capWDM, tla.ctx)).
-			SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(LogicalSize{
-				InlineSize: availableInline,
-				BlockSize:  Indefinite,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: availableInline,
-				BlockSize:  0,
-			}).
-			SetPercentageResolutionInlineSize(availableInline).
-			Build()
-
-		capResult := layoutElement(tla.ctx, cap.node, capSpace)
-		capLogical := NewLogicalFragment(wdm, capResult.Fragment)
-
-		builder.AddChild(capResult.Fragment, LogicalOffset{
-			InlineOffset: 0,
-			BlockOffset:  blockOffset,
-		})
-		blockOffset += capLogical.BlockSize()
+		tla.addCaptionResult(builder, wdm,
+			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
 	}
 
-	// Compute table size.
-	contentInlineSize := 0.0
-	for _, w := range colWidths {
-		contentInlineSize += w
-	}
-	contentInlineSize += spacingForCols // include inline spacing in total
-
-	// Apply min-inline-size floor for auto-width tables.
-	// For explicit-width tables, CalculateInitialFragmentGeometry already
-	// enforced min/max on borderBoxInline. For auto-width tables the inline
-	// size was set to fill the container, min-width was trivially satisfied,
-	// and column sizing shrinks to max-content — so the floor must be
-	// re-applied post-column-sizing, mirroring the explicitTableBorderBoxBlock
-	// floor on the block axis above.
-	// Mirrors Blink TableLayoutAlgorithm where ComputeTableInlineSize accounts
-	// for min-inline-size when deriving the final table inline size from
-	// column widths @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	if !hasExplicitTableWidth {
-		minInline := ResolveMinInlineSize(tla.style, wdm, tla.space, geom).Float64()
-		if minInline > 0 && contentInlineSize < minInline {
-			contentInlineSize = minInline
-		}
-	}
-
-	finalBlockSize := blockOffset
+	// Negative caption margins can pull blockOffset below 0; Blink clamps
+	// (child_block_offset.ClampNegativeToZero(), table_layout_algorithm.cc:1592
+	// @ d4ecdfed88f9).
+	finalBlockSize := max(0, blockOffset)
 
 	// CSS 2.1 §17.5.3 + CSS Tables 3 §11.5.3 "Computing the table height":
 	// honor an explicit table block-size as a floor, even when the table has
@@ -1412,19 +1375,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if explicitTableBorderBoxBlock != Indefinite &&
 		explicitTableBorderBoxBlock > borderBoxBlock {
 		borderBoxBlock = explicitTableBorderBoxBlock
-	}
-
-	// Inline-size floor mirroring the block-size floor above: when a parent
-	// algorithm has already fixed the table's inline-size (e.g. a grid item
-	// with default `justify-self: normal` resolving to stretch), the table's
-	// own column-width sum is only a floor — the table must still fill the
-	// parent's pre-resolved track size so the container's own borders /
-	// background line up with the cell. Mirrors Blink's TableLayoutAlgorithm
-	// honoring the kFixedInlineSize flag when it derives the final
-	// border-box inline size.
-	borderBoxInline := contentInlineSize + geom.InlineBorderPadding()
-	if tla.space.IsFixedInlineSize && geom.BorderBoxSize.InlineSize > borderBoxInline {
-		borderBoxInline = geom.BorderBoxSize.InlineSize
 	}
 
 	builder.SetSize(LogicalSize{
@@ -1646,7 +1596,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 		case css.DisplayTableCell:
 			// Bare cell without a row — wrap in an anonymous row
 			// (CSS 2.1 §17.2.1).
-			anonRowStyle := css.NewAnonymousTableRowStyle(tla.style)
+			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
 				isAnonymous: true,
@@ -1666,14 +1616,17 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			// Non-table-structural children (display:block, display:inline, etc.)
 			// must be wrapped in an anonymous table-row + anonymous table-cell per
 			// CSS 2.1 §17.2.1. Each such child becomes the sole cell of an
-			// anonymous row.
-			anonCellStyle := css.NewAnonymousTableCellStyle(tla.style)
+			// anonymous row. The cell's style derives from the row's, as Blink's
+			// LayoutTableCell::CreateAnonymousWithParent(row)
+			// (core/layout/table/layout_table_cell.cc:27-35 @
+			// 5992657f556bcd9d207a4aca187488462f027cab).
+			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
+			anonCellStyle := css.CreateAnonymousStyleWithDisplay(anonRowStyle, string(css.DisplayTableCell))
 			anonCell := &LayoutInputNode{
 				style:       anonCellStyle,
 				children:    []*LayoutInputNode{child},
 				isAnonymous: true,
 			}
-			anonRowStyle := css.NewAnonymousTableRowStyle(tla.style)
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
 				children:    []*LayoutInputNode{anonCell},
@@ -1839,6 +1792,48 @@ func assignColumnIndices(rows []tableRow) int {
 		}
 	}
 	return maxCol
+}
+
+// specifiedBlockSize returns style's specified block-axis length in the
+// writing mode wdm (height, or width when vertical), or Indefinite when style
+// is nil or the block size is not a length. No Blink analog: louis14
+// synthesizes row and section fragments without a row/section algorithm whose
+// ChildAvailableSize (CalculateChildAvailableSize, length_utils.cc) would carry
+// this; it is the basis for the chromium bug 1227884 relative insets.
+func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
+	if style == nil {
+		return Indefinite
+	}
+	prop := "height"
+	if wdm.IsVertical() {
+		prop = "width"
+	}
+	if v, ok := style.GetLength(prop); ok {
+		return v
+	}
+	return Indefinite
+}
+
+// relativeCellOffset sets a position:relative authored cell's RelativeOffset
+// against its row: the row's inline size and specified block size (chromium
+// bug 1227884, WPT css-position/position-relative-010/013), overriding the
+// value the cell's own layout resolved against its Indefinite percentage
+// base. Mirrors Blink, where TableRowLayoutAlgorithm adds each cell
+// (table_row_layout_algorithm.cc:167) and BoxFragmentBuilder::AddResult
+// resolves the offset against the row's child_available_size
+// (box_fragment_builder.cc:262-267); the section gives the row an indefinite
+// available block size (table_section_layout_algorithm.cc:38-39, :76-77), all
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520. An anonymous unwrapped cell is
+// skipped: its node stands in for the anonymous cell's child, whose
+// containing block is that cell's indefinite block size.
+func relativeCellOffset(cellFrag *PhysicalFragment, cell tableCell, rowStyle *css.Style, wdm WritingDirectionMode, rowInlineSize float64) {
+	if cell.isAnonymous || cell.style == nil || cell.style.GetPosition() != css.PositionRelative {
+		return
+	}
+	cellFrag.RelativeOffset = computeRelativeOffsetForBoxFragment(cell.style, wdm, LogicalSize{
+		InlineSize: rowInlineSize,
+		BlockSize:  specifiedBlockSize(rowStyle, wdm),
+	})
 }
 
 // singleBlockInnerChild returns the sole non-text, non-whitespace child of
@@ -2289,6 +2284,80 @@ type tableCaption struct {
 	node  *LayoutInputNode
 	style *css.Style
 	side  string // "top" or "bottom"
+}
+
+// captionResult is a laid-out caption with its resolved margins. Mirrors
+// Blink TableLayoutAlgorithm::CaptionResult (table_layout_algorithm.h:43 @
+// d4ecdfed88f9) minus its node, which louis14 reads from the fragment.
+type captionResult struct {
+	result  *LayoutResult
+	margins LogicalEdges // in the table's writing direction
+}
+
+// layoutCaption lays out one caption and resolves its margins. Mirrors Blink
+// ComputeCaptionMargins (table_layout_algorithm.cc:118-128),
+// CreateCaptionConstraintSpace (:61-90) and LayoutCaption (:92-111), all @
+// d4ecdfed88f9. Margins are resolved in the table's writing direction, as
+// Blink passes the table's to ComputeMarginsFor.
+//
+// Divergences from Blink:
+//   - Percentage margins and the caption's available size use
+//     availableInline (the table content box from initial geometry); Blink
+//     uses the final table border-box inline size. They agree for an
+//     explicit-width table with no inline border or padding.
+//   - Auto inline margins resolve against tableContentInline, the final table
+//     content inline size; Blink uses the border-box inline size, which it
+//     also floors at the caption's min size (ComputeCaptionConstraint,
+//     :38-59 @ d4ecdfed88f9), which louis14 does not port.
+//
+// An auto-width caption stretches to the available size minus its inline
+// margins: Blink's kStretchImplicit (:73) feeds the kStretch inline size,
+// which subtracts the box's own margins (length_utils.cc:46-58 @
+// d4ecdfed88f9). Percentage sizes still resolve against availableInline.
+func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDirectionMode, availableInline, tableContentInline float64) captionResult {
+	margins := ResolveMargins(cap.style, wdm, availableInline)
+	capWDM := wdm
+	if cap.style != nil {
+		capWDM = NewWritingDirectionMode(cap.style)
+	}
+	capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
+		SetOrthogonalFallbackInlineSize(
+			orthogonalFallbackSize(capWDM, tla.ctx)).
+		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(LogicalSize{
+			InlineSize: max(0, availableInline-margins.InlineSum()),
+			BlockSize:  Indefinite,
+		}).
+		SetPercentageResolutionSize(LogicalSize{
+			InlineSize: availableInline,
+			BlockSize:  0,
+		}).
+		SetPercentageResolutionInlineSize(availableInline).
+		Build()
+
+	result := layoutElement(tla.ctx, cap.node, capSpace)
+	margins = resolveInlineAutoMargins(cap.style, wdm, tableContentInline,
+		NewLogicalFragment(wdm, result.Fragment).InlineSize(), margins)
+	return captionResult{result: result, margins: margins}
+}
+
+// addCaptionResult adds a caption at its resolved margins and advances
+// *blockOffset past its margin box. Mirrors Blink's AddCaptionResult lambda
+// (table_layout_algorithm.cc:966-979 @ d4ecdfed88f9). Blink's AddResult also
+// records the margins on the child (SetMargins); louis14 has no such builder
+// field, and the caption's own layout records BoxData.Margin.
+//
+// The offset is relative to the table's content box, so captions sit inside
+// the table's border and padding; Blink places them in the table wrapper,
+// outside the table border. The caption's position:relative offset is applied
+// separately and is not folded into this offset.
+func (tla *TableLayoutAlgorithm) addCaptionResult(builder *BoxFragmentBuilder, wdm WritingDirectionMode, cr captionResult, blockOffset *float64) {
+	*blockOffset += cr.margins.BlockStart
+	builder.AddChild(cr.result.Fragment, LogicalOffset{
+		InlineOffset: cr.margins.InlineStart,
+		BlockOffset:  *blockOffset,
+	})
+	*blockOffset += NewLogicalFragment(wdm, cr.result.Fragment).BlockSize() + cr.margins.BlockEnd
 }
 
 // logicalBorderSpacing returns border spacing mapped to table logical coordinates.
@@ -3028,8 +3097,15 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 			if pct, ok := s.GetPercentage(prop); ok && pct > 0 {
 				row.Percent = pct
 			}
-			if _, ok := s.GetLength(prop); ok {
+			// A fixed specified block size is a floor on the row's
+			// block size, whatever its cells measure. Mirrors Blink's
+			// "Apply row's CSS block size" step in
+			// ComputeMinimumRowBlockSize
+			// (third_party/blink/renderer/core/layout/table/table_layout_utils.cc:305-315
+			// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+			if v, ok := s.GetLength(prop); ok {
 				row.IsConstrained = true
+				row.BlockSize = max(row.BlockSize, v)
 			}
 			if s.GetVisibility() == "collapse" {
 				row.IsCollapsed = true

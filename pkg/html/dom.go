@@ -47,6 +47,26 @@ type Node struct {
 	// UNFILTERED (Blink filters at style application, not at animation
 	// creation); nil when no marker animation is active.
 	MarkerAnimatedStyle map[string]string
+
+	// ElementAnimations is the element's running CSS animations, maintained
+	// by style resolution in pkg/css; nil when the element has none. Mirrors
+	// Blink Element::GetElementAnimations (core/dom/element.h:1711 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). CloneNode does not copy it:
+	// a clone has not been styled yet.
+	ElementAnimations *ElementAnimations
+
+	// HasDisplayedStyle is true when the element's latest document style
+	// recalc left it displayed: its display is not none and no ancestor's
+	// is. It stands in for Blink's previous computed style in
+	// CSSAnimations::CalculateAnimationUpdate (old_style, read from
+	// Element::GetComputedStyle at core/animation/css/css_animations.cc:1838
+	// and tested for display != none at :1864-1866 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520); Blink keeps a computed
+	// style only for elements that need a layout object
+	// (Element::ShouldStoreComputedStyle, core/dom/element.cc:5508 @ the same
+	// SHA). Maintained by style resolution in pkg/css; CloneNode does not
+	// copy it.
+	HasDisplayedStyle bool
 }
 
 type NodeType int
@@ -92,7 +112,11 @@ type Document struct {
 	// document's BaseDir, so a moved-out node's URLs naturally re-resolve
 	// against the outer base on the next cascade pass — louis14's
 	// re-cascade-per-layout-pass pipeline obviates the explicit
-	// `Element::DidMoveToNewDocument` hook Blink needs.
+	// `Element::DidMoveToNewDocument` hook Blink needs. The layout engine
+	// also completes the document's <img src> and iframe/object src
+	// against it where they are used (Document::CompleteURL,
+	// third_party/blink/renderer/core/dom/document.cc:7553 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	BaseDir string
 
 	// ParsedStylesheetsCache holds the per-document parse cache populated
@@ -193,6 +217,14 @@ type Document struct {
 	// when no explicit `priority` differentiates them (no LOU-354 target
 	// test sets .priority).
 	CustomHighlightOrder []string
+
+	// AnimationClock is the document's animation time source, read by
+	// document.timeline and by CSS animation sampling and advanced by the
+	// requestAnimationFrame shim in pkg/js. Mirrors Blink
+	// Document::GetAnimationClock / animation_clock_
+	// (core/dom/document.h:1693, :3088 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). The zero value reads time 0.
+	AnimationClock AnimationClock
 }
 
 // Range is a simplified DOM Range: a pair of boundary points

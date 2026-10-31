@@ -7,25 +7,13 @@ import (
 	"louis14/pkg/html"
 )
 
-// nonEmptyRects drops zero-block-size fragments: Chrome reports a 0px-tall
-// fragment of a spanner parent after its spanner that louis14 does not
-// always emit, and the difference is invisible (ledger L51).
-func nonEmptyRects(rects map[string][]fragRect) map[string][]fragRect {
-	out := map[string][]fragRect{}
-	for id, rs := range rects {
-		for _, r := range rs {
-			if r.h != 0 {
-				out[id] = append(out[id], r)
-			}
-		}
-	}
-	return out
-}
-
 // TestNestedSpannerParent_ChromeGeometry_LOU410 pins the geometry of boxes
 // whose column spanner sits inside an in-flow child (a nested spanner) against
-// Chrome 155.0.8059.41 (headless, getClientRects relative to the multicol,
-// zero-height rects dropped).
+// Chrome 155.0.8059.41 (headless, getClientRects relative to the multicol).
+// A spanner's parent resumes after the spanner in a 0px fragment (further
+// ancestors keep any trailing border/padding, e.g. r2's cont): a resumed
+// fragment resolves its BFC block-offset at its start and so never
+// self-collapses (is_resuming_, block_layout_algorithm.cc:888-898).
 //
 // Blink places such a child like any in-flow child (FinishInflow → AddResult,
 // block_layout_algorithm.cc:2732-2736 @ a9f50e522efa): the parent advances by
@@ -58,8 +46,8 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				ms("tail", h("40px")),
 			},
 			want: map[string][]fragRect{
-				"outer":     {{0, 0, 100, 75}, {100, 0, 100, 25}},
-				"container": {{0, 0, 100, 75}, {100, 0, 100, 25}},
+				"outer":     {{0, 0, 100, 75}, {100, 0, 100, 25}, {0, 95, 100, 0}},
+				"container": {{0, 0, 100, 75}, {100, 0, 100, 25}, {0, 95, 100, 0}},
 				"a":         {{0, 0, 100, 75}, {100, 0, 100, 75}},
 				"sp":        {{0, 75, 200, 20}},
 				"tail":      {{0, 95, 100, 20}, {100, 95, 100, 20}},
@@ -78,8 +66,8 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				ms("tail", h("40px")),
 			},
 			want: map[string][]fragRect{
-				"outer":     {{0, 0, 100, 75}, {100, 0, 100, 25}},
-				"container": {{0, 0, 100, 75}, {100, 0, 100, 75}},
+				"outer":     {{0, 0, 100, 75}, {100, 0, 100, 25}, {0, 95, 100, 0}},
+				"container": {{0, 0, 100, 75}, {100, 0, 100, 75}, {0, 95, 100, 0}},
 				"a":         {{0, 0, 100, 75}, {100, 0, 100, 75}},
 				"sp":        {{0, 75, 200, 20}},
 				"tail":      {{0, 95, 100, 20}, {100, 95, 100, 20}},
@@ -96,8 +84,8 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				ms("after", h("20px")),
 			},
 			want: map[string][]fragRect{
-				"outer": {{0, 0, 200, 50}},
-				"p":     {{0, 0, 200, 50}},
+				"outer": {{0, 0, 200, 50}, {0, 60, 200, 0}},
+				"p":     {{0, 0, 200, 50}, {0, 60, 200, 0}},
 				"b":     {{0, 10, 200, 40}},
 				"sp":    {{0, 50, 200, 10}},
 				"after": {{0, 60, 200, 20}},
@@ -118,7 +106,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 			},
 			want: map[string][]fragRect{
 				"cont":  {{0, 0, 50, 40}, {50, 0, 50, 10}, {0, 50, 50, 10}},
-				"child": {{0, 0, 50, 40}, {50, 0, 50, 40}},
+				"child": {{0, 0, 50, 40}, {50, 0, 50, 40}, {0, 50, 50, 0}},
 				"b":     {{0, 0, 50, 40}, {50, 0, 50, 40}},
 				"s":     {{0, 40, 100, 10}},
 				"c":     {{0, 60, 50, 5}, {50, 50, 50, 15}},
@@ -140,6 +128,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 			},
 			want: map[string][]fragRect{
 				"x": {{0, 0, 50, 30}, {50, 0, 50, 10}},
+				"g": {{50, 30, 50, 0}, {0, 40, 50, 0}},
 				"s": {{0, 30, 100, 10}},
 				"c": {{0, 40, 50, 10}, {50, 40, 50, 10}},
 			},
@@ -155,12 +144,31 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				ms("sib", h("200px")),
 			},
 			want: map[string][]fragRect{
-				"w":   {{0, 0, 100, 20}, {100, 0, 100, 20}},
+				"w":   {{0, 0, 100, 20}, {100, 0, 100, 20}, {0, 40, 100, 0}},
 				"a":   {{0, 0, 100, 20}, {100, 0, 100, 20}},
 				"sp":  {{0, 20, 200, 20}},
 				"sib": {{0, 40, 100, 100}, {100, 40, 100, 100}},
 			},
 			height: 140,
+		},
+		{
+			// Chrome probe fb.html (LOU-443). The kept 0px resumed fragment
+			// of w leaves a breakpoint before sib (HasBreakOpportunity
+			// BeforeNextChild, fragmentation_utils.cc:870-883 @
+			// a9f50e522efa), so sib's forced break-before fires.
+			name: "FB_forced_break_after_spanner_parent",
+			mc:   wide2,
+			kids: []marginSpec{
+				ms("w", nil, ms("a", h("40px")), ms("sp", span("20px"))),
+				ms("sib", h("40px", "break-before", "column")),
+			},
+			want: map[string][]fragRect{
+				"w":   {{0, 0, 100, 20}, {100, 0, 100, 20}, {0, 40, 100, 0}},
+				"a":   {{0, 0, 100, 20}, {100, 0, 100, 20}},
+				"sp":  {{0, 20, 200, 20}},
+				"sib": {{100, 40, 100, 40}},
+			},
+			height: 80,
 		},
 		{
 			// Chrome probe f6.html (guard). The interrupted child's
@@ -175,7 +183,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				ms("c", h("40px")),
 			},
 			want: map[string][]fragRect{
-				"g":  {{0, 0, 100, 20}, {100, 0, 100, 20}},
+				"g":  {{0, 0, 100, 20}, {100, 0, 100, 20}, {0, 40, 100, 0}},
 				"a":  {{0, 0, 100, 20}, {100, 0, 100, 20}},
 				"sp": {{0, 20, 200, 20}},
 				"c":  {{0, 60, 100, 10}, {100, 40, 100, 30}},
@@ -194,7 +202,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 			},
 			want: map[string][]fragRect{
 				"x":  {{0, 0, 100, 20}},
-				"g":  {{100, 0, 100, 20}},
+				"g":  {{100, 0, 100, 20}, {0, 30, 100, 0}},
 				"a":  {{100, 0, 100, 20}},
 				"sp": {{0, 20, 200, 10}},
 				"c":  {{0, 30, 100, 20}, {100, 30, 100, 20}},
@@ -204,7 +212,7 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			frag, ids := layoutColumnsSpec(t, tc.mc, tc.kids...)
-			checkRects(t, nonEmptyRects(borderBoxRectsByID(frag, ids)), tc.want)
+			checkRects(t, borderBoxRectsByID(frag, ids), tc.want)
 			if got := frag.Size.HeightF64(); got != tc.height {
 				t.Errorf("multicol height = %v, want %v (Chrome 155)", got, tc.height)
 			}

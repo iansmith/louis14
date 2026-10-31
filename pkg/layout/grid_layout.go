@@ -574,14 +574,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS position:relative offset. Sticky is scroll-time, not layout-time.
 	if gla.style != nil && gla.style.GetPosition() == css.PositionRelative {
-		cbWidth := gla.space.AvailableSize.InlineSize.Float64()
-		cbHeight := gla.space.AvailableSize.BlockSize.Float64()
-		if cbHeight == Indefinite {
-			cbHeight = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{InlineSize: cbWidth, BlockSize: cbHeight}, wdm.WM)
-		offset := gla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			gla.style, wdm, geomLogicalToOld(gla.space.AvailableSize))
 	}
 
 	return result
@@ -1154,7 +1148,7 @@ func buildGridChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 			}
 		}
 		if hasContent {
-			anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+			anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 			result = append(result, &LayoutInputNode{
 				style:       anonStyle,
 				children:    textRun,
