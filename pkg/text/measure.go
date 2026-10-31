@@ -499,9 +499,6 @@ func atkinsonMonoPath(dir string, bold, italic bool) string {
 	}
 }
 
-var DefaultFontPath = DefaultFontConfig().Regular
-var BoldFontPath = DefaultFontConfig().Bold
-
 // measureWidth returns the advance width of text for a given font path+size,
 // using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
 func measureWidth(text string, fontSize float64, fontPath string) float64 {
@@ -566,33 +563,6 @@ func MeasureText(text string, fontSize float64, fontPath string) (width, height 
 		height = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
-}
-
-// MeasureTextDefault measures text using the default font. Float64 wrapper
-// over MeasureText for legacy callers (louis13/); the snap discipline is
-// preserved internally.
-func MeasureTextDefault(text string, fontSize float64) (width, height float64) {
-	w, h := MeasureText(text, fontSize, DefaultFontPath)
-	return w.Float64(), h.Float64()
-}
-
-// MeasureTextWithWeight measures text using the specified font weight.
-// Float64 wrapper over MeasureText.
-func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, height float64) {
-	fontPath := DefaultFontPath
-	if bold {
-		fontPath = BoldFontPath
-	}
-	w, h := MeasureText(text, fontSize, fontPath)
-	return w.Float64(), h.Float64()
-}
-
-// MeasureTextWithStyle measures text with the full style combination. Float64
-// wrapper over MeasureText.
-func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	w, h := MeasureText(text, fontSize, fontPath)
-	return w.Float64(), h.Float64()
 }
 
 // MeasureTextVertical returns the inline advance of text in a vertical writing
@@ -1030,118 +1000,4 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
-}
-
-// BreakTextAtCharacterBoundary splits text so the prefix fits within maxWidth.
-func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	runes := []rune(textStr)
-	bestLen := 0
-	for i := 1; i <= len(runes); i++ {
-		prefix := string(runes[:i])
-		w := measureWidth(prefix, fontSize, fontPath)
-		if w > maxWidth {
-			break
-		}
-		bestLen = i
-	}
-	if bestLen == 0 {
-		return "", textStr
-	}
-	return string(runes[:bestLen]), string(runes[bestLen:])
-}
-
-// BreakTextIntoLines breaks text into lines that fit within maxWidth.
-func BreakTextIntoLines(text string, fontSize float64, bold bool, maxWidth float64) []string {
-	return BreakTextIntoLinesWithWrap(text, fontSize, bold, maxWidth, maxWidth)
-}
-
-// BreakTextIntoLinesWithWrap breaks text into lines with separate first/remaining widths.
-func BreakTextIntoLinesWithWrap(text string, fontSize float64, bold bool, firstLineMax, remainingMax float64) []string {
-	fontPath := DefaultFontPath
-	if bold {
-		fontPath = BoldFontPath
-	}
-	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
-}
-
-// BreakTextIntoLinesWithStyle breaks text with the full style combination.
-func BreakTextIntoLinesWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool, firstLineMax, remainingMax float64) []string {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
-}
-
-func breakLines(text string, fontSize float64, fontPath string, firstLineMax, remainingMax float64) []string {
-	if measureWidth(text, fontSize, fontPath) <= firstLineMax {
-		return []string{text}
-	}
-	leadingSpace := ""
-	if len(text) > 0 && (text[0] == ' ' || text[0] == '\t' || text[0] == '\n') {
-		leadingSpace = " "
-	}
-	words := splitIntoWords(text)
-	if len(words) == 0 {
-		return []string{text}
-	}
-	var lines []string
-	currentLine := ""
-	lineNum := 0
-	for i, word := range words {
-		if i == 0 && leadingSpace != "" {
-			word = leadingSpace + word
-		}
-		testLine := currentLine
-		if testLine != "" {
-			testLine += " "
-		}
-		testLine += word
-		maxWidth := remainingMax
-		if lineNum == 0 {
-			maxWidth = firstLineMax
-		}
-		if measureWidth(testLine, fontSize, fontPath) <= maxWidth {
-			currentLine = testLine
-		} else {
-			if currentLine != "" {
-				lines = append(lines, currentLine)
-				lineNum++
-			}
-			currentLine = word
-		}
-	}
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
-	if len(lines) == 0 {
-		return []string{text}
-	}
-	return lines
-}
-
-func splitIntoWords(text string) []string {
-	var words []string
-	currentWord := ""
-	for _, ch := range text {
-		if ch == ' ' || ch == '\t' || ch == '\n' {
-			if currentWord != "" {
-				words = append(words, currentWord)
-				currentWord = ""
-			}
-		} else {
-			currentWord += string(ch)
-		}
-	}
-	if currentWord != "" {
-		words = append(words, currentWord)
-	}
-	return words
-}
-
-// GetFirstWord returns the first word of the text.
-func GetFirstWord(text string) string {
-	words := splitIntoWords(text)
-	if len(words) > 0 {
-		return words[0]
-	}
-	return ""
 }
