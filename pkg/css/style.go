@@ -175,6 +175,15 @@ type Style struct {
 	// subtree. Meaningless (always false) on non-highlight styles.
 	HasAuthorHighlightColors bool
 
+	// UAShadowHostData is set on the style of an <img> showing fallback
+	// content (html.LayoutDispositionFallbackContent) by AdjustHostStyle; it
+	// carries the host's sizing and alt/src values to the alt-text shadow
+	// elements' style callbacks. Mirrors ComputedStyle's
+	// StyleUAShadowHostData (style_ua_shadow_host_data.h @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). Nil otherwise. Shared by
+	// reference across Clone(); never mutated after AdjustHostStyle.
+	UAShadowHostData *StyleUAShadowHostData
+
 	// fontSelector is the font lookup Style.UpdateFont builds this style's
 	// font from. The cascade sets it on every element style
 	// (ApplyStylesToDocumentWithFontSelector); pseudo-element styles take the
@@ -215,7 +224,8 @@ func (s *Style) Clone() *Style {
 		dst.AppliedTextDecorations = make([]AppliedTextDecoration, len(s.AppliedTextDecorations))
 		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
-	dst.CascadedProps = s.CascadedProps // shared by reference; never mutated post-cascade
+	dst.CascadedProps = s.CascadedProps       // shared by reference; never mutated post-cascade
+	dst.UAShadowHostData = s.UAShadowHostData // shared by reference; never mutated after AdjustHostStyle
 	return dst
 }
 
@@ -15074,9 +15084,9 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 // (applied_text_decoration.h:18-50, SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
 // The `node` argument is the DOM element this style belongs to (may be nil for
-// pseudo-elements / synthetic root). It is consulted only for tag-based
-// classification of replaced elements via html.IsReplacedElementTag, which is
-// the single source of truth for the replaced-tag list.
+// pseudo-elements / synthetic root). It is consulted only to classify
+// replaced elements via html.IsReplacedElement (the replaced-tag list plus
+// the <img> layout disposition).
 //
 // CSS Text Decor 4 §1.3 propagation boundaries (the "Phase 4 wiring" the
 // original Phase 1 comment promised):
@@ -15152,8 +15162,13 @@ func (s *Style) ResolveAppliedTextDecorations(parent *Style, node *html.Node) {
 // cross (CSS Text Decor 4 §1.3). The boundary set is:
 //
 //   - atomic inline-level boxes (style.IsAtomicInlineDisplay)
-//   - replaced elements (html.IsReplacedElementTag) — atomic inline-level
-//     per CSS Display 3 §2.2 even when their computed display says inline
+//   - replaced elements (html.IsReplacedElement) — atomic inline-level
+//     per CSS Display 3 §2.2 even when their computed display says inline.
+//     An <img> showing fallback content is not replaced: in Blink it keeps
+//     computed display inline, so StopPropagateTextDecorations
+//     (style_adjuster.cc:384-390 @ d4ecdfed88f962439247c2ad36b8fe47805b1520)
+//     lets an ancestor's decoration reach its alt text. Its display is
+//     remapped to inline-block only after this runs (AdjustHostStyle).
 //   - out-of-flow boxes (float != none, position: absolute|fixed)
 //
 // display:contents is handled separately by ResolveAppliedTextDecorations
@@ -15162,7 +15177,7 @@ func isPropagationBoundary(s *Style, node *html.Node) bool {
 	if s.IsAtomicInlineDisplay() {
 		return true
 	}
-	if node != nil && html.IsReplacedElementTag(node.TagName) {
+	if node != nil && html.IsReplacedElement(node) {
 		return true
 	}
 	switch s.GetPosition() {

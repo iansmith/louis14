@@ -892,7 +892,9 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 }
 
 // IsReplacedElement returns true for elements that are replaced
-// (have intrinsic dimensions, laid out as atomic inlines).
+// (have intrinsic dimensions, laid out as atomic inlines). Delegates to
+// html.IsReplacedElement, so an <img> showing fallback content (a
+// LayoutBlockFlow in Blink) is not replaced.
 //
 // Callers MUST guard with `node != nil` before invoking. This function
 // dereferences `node.TagName` without a nil check by design: it encodes
@@ -912,7 +914,7 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 // (which has no such guard because it doesn't need one) and the
 // established louis14 caller-side convention.
 func IsReplacedElement(node *html.Node) bool {
-	return html.IsReplacedElementTag(node.TagName)
+	return html.IsReplacedElement(node)
 }
 
 // IsTransformableBox reports whether the given box accepts CSS

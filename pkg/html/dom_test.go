@@ -342,6 +342,51 @@ func TestUTF16OffsetToByteOffset(t *testing.T) {
 	}
 }
 
+// TestIsReplacedElement_Disposition: an <img> with fallback content is a
+// LayoutBlockFlow, not a LayoutImage (HTMLImageElement::CreateLayoutObject,
+// html_image_element.cc:517-543 @ d4ecdfed88f962439247c2ad36b8fe47805b1520),
+// so it is not a replaced element; every other replaced tag is unaffected.
+func TestIsReplacedElement_Disposition(t *testing.T) {
+	primary := &Node{Type: ElementNode, TagName: "img"}
+	if !IsReplacedElement(primary) {
+		t.Errorf("primary-content img: IsReplacedElement = false, want true")
+	}
+	fallback := &Node{Type: ElementNode, TagName: "img", LayoutDisposition: LayoutDispositionFallbackContent}
+	if IsReplacedElement(fallback) {
+		t.Errorf("fallback-content img: IsReplacedElement = true, want false")
+	}
+	for _, tag := range []string{"video", "canvas", "iframe", "input"} {
+		if !IsReplacedElement(&Node{Type: ElementNode, TagName: tag}) {
+			t.Errorf("%s: IsReplacedElement = false, want true", tag)
+		}
+	}
+	if IsReplacedElement(&Node{Type: ElementNode, TagName: "div"}) {
+		t.Errorf("div: IsReplacedElement = true, want false")
+	}
+}
+
+// TestAltText mirrors HTMLImageElement::AltText (html_image_element.cc:
+// 434-443 @ d4ecdfed88f962439247c2ad36b8fe47805b1520): the alt attribute when
+// present (even empty), else the title attribute; unset (null) when neither.
+func TestAltText(t *testing.T) {
+	cases := []struct {
+		attrs   map[string]string
+		want    string
+		wantSet bool
+	}{
+		{map[string]string{"alt": "a", "title": "t"}, "a", true},
+		{map[string]string{"alt": "", "title": "t"}, "", true},
+		{map[string]string{"title": "t"}, "t", true},
+		{map[string]string{}, "", false},
+	}
+	for _, c := range cases {
+		got, set := (&Node{Type: ElementNode, TagName: "img", Attributes: c.attrs}).AltText()
+		if got != c.want || set != c.wantSet {
+			t.Errorf("AltText(%v) = (%q, %v), want (%q, %v)", c.attrs, got, set, c.want, c.wantSet)
+		}
+	}
+}
+
 // TestCloneNode_PreservesNamespaceURI pins that cloning keeps the element
 // namespace (Blink Element::CloneWithoutAttributesAndChildren creates the
 // clone from the source's TagQName(), element.cc:1257-1262 @

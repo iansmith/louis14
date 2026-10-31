@@ -88,8 +88,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	if fontConfig.Regular == "" {
 		fontConfig = text.DefaultFontConfig()
 	}
-	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, le.viewport.width, le.viewport.height, text.NewCSSFontSelector(fontConfig))
-	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	computedStyles := computeDocumentStyles(doc, le.viewport.width, le.viewport.height, le.imageFetcher, text.NewCSSFontSelector(fontConfig))
 	// CSS Transitions (first-frame): when this is a post-script re-layout,
 	// compare against the previous pass's styles and override transitioned
 	// properties with their value at local time 0. Runs AFTER logical-
@@ -310,8 +309,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	doc.BaseDir = baseDir
 
-	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, vpWidth, vpHeight, text.NewCSSFontSelector(ctx.FontConfig))
-	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	computedStyles := computeDocumentStyles(doc, vpWidth, vpHeight, ctx.ImageFetcher, text.NewCSSFontSelector(ctx.FontConfig))
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
@@ -373,6 +371,49 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 
 	return &NestedDocumentResult{Result: result, RootOffsetX: rootOffsetX, Doc: doc}
+}
+
+// computeDocumentStyles is the style phase shared by the top-level and
+// nested-document layouts: it decides each <img>'s layout disposition, runs
+// the cascade (building fonts from fontSelector), resolves logical
+// properties, and applies the fallback-content host style callback. The disposition must be known before the cascade
+// because it changes replaced-ness (text-decoration propagation) and the
+// host's style, as in Blink where SetLayoutDisposition triggers a style
+// recalc (html_image_element.cc:1165-1170 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). The host callback runs after
+// logical-property resolution so it sees the final width/height, as
+// Blink's AdjustHostStyle does.
+func computeDocumentStyles(doc *html.Document, vpWidth, vpHeight float64, fetcher images.ImageFetcher, fontSelector css.FontSelector) map[*html.Node]*css.Style {
+	resetImageLayoutDispositions(doc.Root, doc.BaseDir, fetcher)
+	styles := css.ApplyStylesToDocumentWithFontSelector(doc, vpWidth, vpHeight, fontSelector)
+	css.ResolveLogicalPropertiesInTree(doc.Root, styles)
+	css.AdjustImageFallbackHostStylesInTree(doc.Root, styles)
+	return styles
+}
+
+// resetImageLayoutDispositions sets every <img> under root to primary
+// content when its image is potentially available and to fallback content
+// otherwise. Mirrors HTMLImageElement::ResetLayoutDisposition
+// (html_image_element.cc:1066-1088 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): EnsurePrimaryContent when
+// ImageLoader::ImageIsPotentiallyAvailable, else
+// EnsureCollapsedOrFallbackContent (kCollapsed is not ported). louis14 lays
+// out statically, so the disposition is recomputed on every layout pass
+// rather than on load completion; the pass is idempotent. src is completed
+// against baseDir before the availability check, as
+// ImageLoader::ImageSourceToKURL does (image_loader.cc:746 @ the same SHA).
+func resetImageLayoutDispositions(root *html.Node, baseDir string, fetcher images.ImageFetcher) {
+	if root.Type == html.ElementNode && root.TagName == "img" {
+		src, _ := root.GetAttribute("src")
+		if images.ImageIsPotentiallyAvailable(urlpkg.CompleteURL(src, baseDir), fetcher) {
+			root.LayoutDisposition = html.LayoutDispositionPrimaryContent
+		} else {
+			root.LayoutDisposition = html.LayoutDispositionFallbackContent
+		}
+	}
+	for _, c := range root.Children {
+		resetImageLayoutDispositions(c, baseDir, fetcher)
+	}
 }
 
 // nonLayoutTags are elements that never participate in layout as root content.
