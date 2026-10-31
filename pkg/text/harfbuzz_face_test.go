@@ -41,10 +41,9 @@ func TestHarfBuzzFace_VerticalDataIgnoresAscentOverride(t *testing.T) {
 	p := registerTestFace(t, fr, "LOU424-Override", "LiberationSerif-Regular.ttf", fetchTestFont)
 	ascent := 1.5
 	fr.SetFontFaceOverride(p, MetricsOverride{Ascent: &ascent})
-	want := FontAscentFromFont(20, p, nil) + FontDescentFromFont(20, p, nil)
-	if want == 20 {
-		t.Fatalf("fixture: native Height at 20px = 20, must differ from 1em")
-	}
+	// The native height fallback at 20px: 18 + 4 = 22 (hhea 1825/-443 at
+	// upem 2048, TestAscentDescentWithHacks_HeightFallback).
+	const want = 22.0
 	if overridden := FontAscentFromFont(20, p, fr) + FontDescentFromFont(20, p, fr); overridden == want {
 		t.Fatalf("fixture: the ascent-override must change the registry ascent (%v)", overridden)
 	}

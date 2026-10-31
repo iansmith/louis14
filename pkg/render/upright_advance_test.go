@@ -25,10 +25,9 @@ func TestUprightVerticalRuneAdvance_MatchesLayout(t *testing.T) {
 	layer := &PaintLayer{FontFamily: "serif", FontSize: size, IsVerticalText: true}
 	fontPath := r.fonts.FontPathForFamilyWithSynthesis(layer.FontFamily, false, false, false, false,
 		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
-	height := text.FontAscentFromFont(size, fontPath, nil) + text.FontDescentFromFont(size, fontPath, nil)
-	if height == size {
-		t.Fatalf("fixture: the serif Height at %vpx must differ from 1em", size)
-	}
+	// Liberation Serif's height fallback at 20px: hhea 1825/-443 at upem
+	// 2048 → 18 + 4 (pkg/text TestAscentDescentWithHacks_HeightFallback).
+	const height = 22.0
 	want := 5 * height
 	if inline, _ := text.MeasureTextVerticalFromFont("00000", size, fontPath); inline.Float64() != want {
 		t.Errorf("layout MeasureTextVerticalFromFont = %v, want %v", inline.Float64(), want)
@@ -54,8 +53,8 @@ func TestUprightVerticalRuneAdvance_MatchesLayout(t *testing.T) {
 // and an upright fragment advances by HarfBuzzGetGlyphVerticalAdvance
 // (platform/fonts/shaping/harfbuzz_face.cc:359-372), both @
 // 5992657f556bcd9d207a4aca187488462f027cab. Serif
-// (Liberation Serif, no vmtx) at 20px advances its FontMetrics Height per
-// glyph, so a 5-glyph line-through ends at 5 x Height, short of 5em.
+// (Liberation Serif, no vmtx) at 20px advances its 22px height fallback per
+// glyph, so a 5-glyph line-through ends at 5 x 22, past 5em.
 func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	const size, x0, y0 = 20.0, 20, 10
 	target := image.NewRGBA(image.Rect(0, 0, 80, 140))
@@ -66,11 +65,9 @@ func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 		Box: box, FontFamily: "serif", FontSize: size, IsVerticalText: true,
 		TextDecoration: css.TextDecorationLineThrough, TextDecorationColor: red, TextDecorationThickness: 2,
 	}
-	fontPath := r.fontPathForLayer(layer)
-	height := text.FontAscentFromFont(size, fontPath, nil) + text.FontDescentFromFont(size, fontPath, nil)
-	if 5*height+4 > 5*size {
-		t.Fatalf("fixture: 5 x serif Height (%v) must end at least 4px before 5em", 5*height)
-	}
+	// Liberation Serif's height fallback at 20px: hhea 1825/-443 at upem
+	// 2048 → 18 + 4, so 5 glyphs end 10px past 5em.
+	const height = 22.0
 	fontID := r.fontIDForLayer(layer)
 	r.drawVerticalTextDecoration(layer, box.Text, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
 

@@ -84,24 +84,15 @@ func TestSimpleFontData_IdeographicAdvanceWidth(t *testing.T) {
 			}
 			wantInline := tc.want
 			if o == css.FontOrientationVerticalUpright && tc.present {
-				wantInline = fontMetricsHeight(20, tc.path)
+				// No vmtx: the height fallback, OS/2 sTypo 819/-205 at upem
+				// 1024 (USE_TYPO_METRICS) → 16 + 4 at 20px.
+				wantInline = 20
 			}
 			if w, ok := d.IdeographicInlineSize(); w != wantInline || ok != tc.present {
 				t.Errorf("%s, orientation %v: IdeographicInlineSize = (%v, %v), want (%v, %v)", tc.name, o, w, ok, wantInline, tc.present)
 			}
 		}
 	}
-}
-
-// fontMetricsHeight is Blink's FontMetrics::Height() — int_ascent_ +
-// int_descent_ (platform/fonts/font_metrics.h:129 @
-// 5992657f556bcd9d207a4aca187488462f027cab) — of the font at fontPath with no
-// metric overrides: the vertical advance OpenTypeVerticalData falls back to
-// when the font has no vmtx (open_type_vertical_data.cc:298-299 @ the same
-// SHA). The relational form of FontTest.IdeographicFullWidthUprightCjkNoVmtx's
-// expectation, GetFontMetrics().Height().
-func fontMetricsHeight(size float64, fontPath string) float64 {
-	return FontAscentFromFont(size, fontPath, nil) + FontDescentFromFont(size, fontPath, nil)
 }
 
 // fetchAdobeTestFont is a FontFetcher over pkg/text/testdata/adobe-fonts,
@@ -141,7 +132,9 @@ func TestFontTest_IdeographicFullWidthUprightCjkNoVmtx(t *testing.T) {
 	fr := NewFontRegistry()
 	p := registerTestFace(t, fr, "LOU424-FT-NoVmtx", "IcTestHalfWidth.woff2", fetchCSSValuesResource)
 	sel := NewCSSFontSelector(configWithRegistry(fr))
-	height := fontMetricsHeight(16, p)
+	// GetFontMetrics().Height() at 16px: OS/2 sTypo 819/-205 at upem 1024
+	// (USE_TYPO_METRICS) → 12.8 + 3.2 → 13 + 3.
+	const height = 16.0
 	if w, _ := sel.simpleFontData(p, 16, css.FontOrientationHorizontal).IdeographicAdvanceWidth(); w == height {
 		t.Fatalf("fixture: IcTestHalfWidth width %v equals its Height; the test could not tell them apart", w)
 	}

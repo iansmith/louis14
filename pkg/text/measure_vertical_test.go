@@ -16,10 +16,9 @@ func TestMeasureTextVerticalFromFont_AdvanceHeight(t *testing.T) {
 	fr := NewFontRegistry()
 	shortZero := registerTestFace(t, fr, "LOU424-MTV-ShortZero", "ChTestShortZero.woff", fetchCSSValuesResource)
 	serif := DefaultFontConfig().resolveBuiltinFamily("serif", false, false)
-	serifHeight := fontMetricsHeight(20, serif)
-	if serifHeight == 20 {
-		t.Fatal("fixture: Liberation Serif's Height at 20px must differ from 1em")
-	}
+	// Liberation Serif's height fallback at 20px: hhea 1825/-443 at upem
+	// 2048 → 18 + 4 (TestAscentDescentWithHacks_HeightFallback).
+	const serifHeight = 22.0
 	for _, tc := range []struct {
 		name, text, path string
 		size, want       float64
