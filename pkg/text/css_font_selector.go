@@ -108,9 +108,12 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 
 // simpleFontData returns the font at fontPath instantiated at fontSize and
 // orientation o. Glyph presence and measurements are cached per (font,
-// rounded size); the exact size and the orientation are stamped on each
-// returned copy, so ZeroInlineSize's fallback scales with the exact size, as
-// Blink's reads font_.getSize().
+// rounded size) — safe because every measurement shapes the font opened at
+// the rounded size (openFont), so sizes in one bucket measure identically;
+// the 水 advance is filled lazily, on first IdeographicAdvanceWidth. The exact
+// size and the orientation are stamped on each returned copy, so
+// ZeroInlineSize's fallback scales with the exact size, as Blink's reads
+// font_.getSize().
 func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o css.FontOrientation) simpleFontData {
 	k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
 	d, ok := fs.cache[k]
@@ -120,12 +123,10 @@ func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o c
 			capHeight: FontCapHeightFromFont(fontSize, fontPath),
 		}
 		d.zeroGlyph, d.zeroAdvance = glyphAdvance(fontPath, fontSize, kDigitZero)
-		if g, w := glyphAdvance(fontPath, fontSize, kCjkWater); g != 0 {
-			d.ideographicAdvanceWidth, d.hasIdeographicAdvanceWidth = w, true
-		}
+		d.ideographic = new(ideographicAdvance)
 		fs.cache[k] = d
 	}
-	d.platformData = fontPlatformData{size: fontSize, orientation: o}
+	d.platformData = fontPlatformData{fontPath: fontPath, size: fontSize, orientation: o}
 	return d
 }
 
