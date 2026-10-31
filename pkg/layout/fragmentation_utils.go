@@ -562,6 +562,18 @@ func BreakBeforeChildIfNeeded(
 		return BreakStatusBrokeBefore, true
 	}
 
+	// fragmentation_utils.cc:919-920 @ a9f50e522efa.
+	appealBefore := CalculateBreakAppealBefore(
+		space, breakBetween, hasContainerSeparation, IsBreakableAtStartOfResumedContainer(space))
+
+	// Child-overload MovePastBreakpoint (fragmentation_utils.cc:1077-1083 @
+	// a9f50e522efa): layout aborted, so no fragment was produced and there
+	// is nothing to move past — break before the child.
+	if layoutResult != nil && layoutResult.Status != LayoutResultSuccess {
+		builder.SetBreakAppeal(appealBefore)
+		return BreakStatusBrokeBefore, false
+	}
+
 	// Phase 16.d.2/3 (v2 B2): during initial column-balancing pass, propagate
 	// unbreakable block-size up to the column algorithm so it can floor the
 	// auto column block-size. Mirrors Blink's BreakBeforeChildIfNeeded
@@ -577,8 +589,6 @@ func BreakBeforeChildIfNeeded(
 		return BreakStatusContinue, false
 	}
 
-	appealBefore := CalculateBreakAppealBefore(
-		space, breakBetween, hasContainerSeparation, IsBreakableAtStartOfResumedContainer(space))
 	if MovePastBreakpoint(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize, appealBefore, builder) {
 		return BreakStatusContinue, false
 	}
