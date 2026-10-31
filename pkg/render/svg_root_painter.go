@@ -9,7 +9,8 @@ import (
 // paintSVGRoot is the entry point for SVG paint. Mirrors Blink's
 // SVGRootPainter::PaintReplaced (core/paint/svg_root_painter.{h,cc}):
 //
-//  1. Translate the DrawContext to the <svg> content-box origin.
+//  1. Translate the DrawContext to the pixel-snapped border-box origin
+//     plus the (unsnapped) border+padding offset.
 //  2. Apply LocalToBorderBoxTransform (the viewBox→viewport mapping).
 //  3. Recurse into the SVGRoot's children in tree order.
 //  4. Pop the transform stack.
@@ -29,14 +30,30 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	}
 
 	box := layer.Box
-	// Content-box origin in page coordinates. CSS 2.1 §10.7: the
-	// content-box origin is (box.X + border-left + padding-left,
-	// box.Y + border-top + padding-top). Pixel-snap is unnecessary
-	// here because the transform stack will sub-pixel position the
-	// path rasterizer correctly — Blink doesn't snap the SVG content
-	// origin either, only the outer <svg> border-box.
-	originX := box.X + box.Border.Left + box.Padding.Left
-	originY := box.Y + box.Border.Top + box.Padding.Top
+	// Content origin in page coordinates. Mirrors Blink's
+	// SVGRootPainter::TransformToPixelSnappedBorderBox
+	// (core/paint/svg_root_painter.cc:28-67 @ Chromium
+	// 5992657f556bcd9d207a4aca187488462f027cab): content paints under
+	// Translation(ToPixelSnappedRect(border box).origin) (:30-32), the same
+	// snap the <svg> background gets, PreConcat'd with
+	// LocalToBorderBoxTransform (:64-65). Blink's LocalToBorderBoxTransform
+	// carries the border+padding content offset unsnapped
+	// (LayoutSVGRoot::BuildLocalToBorderBoxTransform,
+	// core/layout/svg/layout_svg_root.cc:426-445 @ 5992657f556b); louis14's
+	// svg.SVGRoot.LocalToBorderBoxTransform is content-box-relative, so the
+	// unsnapped border+padding is added here instead.
+	//
+	// Blink's inline-root scale-to-fit when snapping shrinks the box
+	// (svg_root_painter.cc:41-61) is not ported: it is gated by
+	// SvgInlineRootPixelSnappingScaleAdjustment, status "test"
+	// (platform/runtime_enabled_features.json5:6672-6673 @ 5992657f556b),
+	// so shipping Chrome does not apply it. The document-element scale
+	// (:37-40) has no caller here: paintSVGRoot paints inline <svg> only.
+	snappedX, snappedY, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	contentOffsetX := box.Border.Left + box.Padding.Left
+	contentOffsetY := box.Border.Top + box.Padding.Top
+	originX := snappedX + contentOffsetX
+	originY := snappedY + contentOffsetY
 
 	// DeviceFromUser at the root paint scope is the composed
 	// translate(originX, originY) · LocalToBorderBoxTransform: maps a
@@ -63,26 +80,28 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	r.dc.Push()
 	defer r.dc.Pop()
 
-	// SVG 2 §3.5: the outermost <svg> is always clipped to its viewport
-	// (the UA stylesheet sets overflow:hidden on the SVG element).
-	// When overflow-x/overflow-y cause any clipping (layer.HasClip), the
-	// CSS-overflow paint path in `paintLayer` has already installed the
-	// correct per-axis clip rect — extending the unclipped axis to a very
-	// large extent so content overflows freely. HasClipMargin implies
-	// HasClip (it is set inside the same `if clipX || clipY` block in
-	// paint_layer.go), so checking HasClip alone covers both cases.
-	// Installing a second viewport clip here would unconditionally clip
-	// both axes and override the per-axis semantics set by the CSS path.
+	// Viewport clip. When layer.HasClip is set (overflow-x/overflow-y
+	// clip on some axis, or overflow-clip-margin; HasClipMargin implies
+	// HasClip, both are set in the same `if clipX || clipY` block in
+	// paint_layer.go), the CSS-overflow paint path in `paintLayer` has
+	// already installed the pixel-snapped per-axis clip, extending any
+	// unclipped axis; a second clip here would override those per-axis
+	// semantics.
 	//
-	// We only reach the body when !layer.HasClip (both axes overflow:visible),
-	// in which case no clipping is desired and the block is a no-op fallback.
-	//
-	// Mirrors Blink's LayoutSVGRoot::ComputeOverflowClipAxes which
-	// returns kOverflowClipBothAxis by default but honors per-axis
-	// overflow:visible (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	// Otherwise this fallback stands in for Blink's default inline-svg
+	// clip: the UA sheet gives svg:not(:root) overflow:hidden and
+	// overflow-clip-margin:content-box (core/css/svg.css:48-54 @ 5992657f556b),
+	// which UpdateOverflowClip turns into ToSnappedClipRect of the content
+	// box for a replaced element
+	// (core/paint/paint_property_tree_builder.cc:3409-3419, helper
+	// :2822-2824 @ 5992657f556b). louis14 has no such UA rule, so the
+	// painter installs it. The content box is snapped on its own, as
+	// Blink snaps the clip rect, not derived from the snapped origin: the
+	// two differ when border or padding is fractional.
 	if !layer.HasClip {
-		r.dc.DrawRectangle(originX, originY,
+		cx, cy, cw, ch := pixelSnap(box.X+contentOffsetX, box.Y+contentOffsetY,
 			root.ContainerSize.Width, root.ContainerSize.Height)
+		r.dc.DrawRectangle(cx, cy, cw, ch)
 		r.dc.Clip()
 	}
 

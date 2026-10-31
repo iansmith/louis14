@@ -621,8 +621,6 @@ type FinishFragmentationInput struct {
 	HasInflowChildBreakInside    bool
 	IsKnownToFitInFragmentainer  bool
 	ShouldCloneBoxEndDecorations bool
-	// IsSlice is box-decoration-break:slice.
-	IsSlice bool
 }
 
 // FinishFragmentationResult is what Blink's FinishFragmentation writes to the
@@ -633,7 +631,6 @@ type FinishFragmentationResult struct {
 	ConsumedBlockSize  float64
 	DidBreakSelf       bool
 	IsAtBlockEnd       bool
-	IncludeBlockStart  bool
 	IncludeBlockEnd    bool
 	// SpaceShortage > 0 is the amount reported via PropagateSpaceShortage.
 	SpaceShortage           float64
@@ -692,7 +689,6 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 		}
 	}
 
-	out.IncludeBlockStart = !(previouslyConsumed > 0 && (in.IsSlice || isPastEnd))
 	out.IncludeBlockEnd = !((out.DidBreakSelf && !in.ShouldCloneBoxEndDecorations) || isPastEnd)
 	out.ConsumedBlockSize = previouslyConsumed + out.FragmentBlockSize
 

@@ -17,7 +17,6 @@ func TestFinishFragmentation(t *testing.T) {
 		IsColumnFragmentation:   true,
 		TrailingBorderPadding:   10,
 		BlockStartBorderPadding: 10,
-		IsSlice:                 true,
 	}
 	for _, tc := range []struct {
 		name string
@@ -27,16 +26,16 @@ func TestFinishFragmentation(t *testing.T) {
 		{"fits: at block end", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 60, 60
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 60, IntrinsicBlockSize: 60, ConsumedBlockSize: 60, IsAtBlockEnd: true, IncludeBlockStart: true, IncludeBlockEnd: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 60, IntrinsicBlockSize: 60, ConsumedBlockSize: 60, IsAtBlockEnd: true, IncludeBlockEnd: true}},
 		{"taller than space: breaks itself before the trailing edge", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 50, 120, 30
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 50, IntrinsicBlockSize: 50, ConsumedBlockSize: 50, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 70}},
+		}, FinishFragmentationResult{FragmentBlockSize: 50, IntrinsicBlockSize: 50, ConsumedBlockSize: 50, DidBreakSelf: true, SpaceShortage: 70}},
 		{"unbreakable content taller than space: allowed to overflow", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 50, 120, 90
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 40}},
-		{"resumed slice fragment: no block-start edge", func(in FinishFragmentationInput) FinishFragmentationInput {
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, DidBreakSelf: true, SpaceShortage: 40}},
+		{"resumed fragment that fits: at block end, keeps its block-end edge", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize, in.PreviousBreakToken = 100, 100, 60, resumed
 			return in
 		}, FinishFragmentationResult{FragmentBlockSize: 60, IntrinsicBlockSize: 60, ConsumedBlockSize: 100, IsAtBlockEnd: true, IncludeBlockEnd: true}},
@@ -49,30 +48,30 @@ func TestFinishFragmentation(t *testing.T) {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 100, 40
 			in.FoundColumnSpanner = true
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 30, IntrinsicBlockSize: 40, ConsumedBlockSize: 30, DidBreakSelf: true, IncludeBlockStart: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 30, IntrinsicBlockSize: 40, ConsumedBlockSize: 30, DidBreakSelf: true}},
 		{"child broke inside, box fits but not known to fit: not at block end", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 80, 80
 			in.ShouldBreakInside, in.HasInflowChildBreakInside = true, true
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, IncludeBlockStart: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80}},
 		{"child broke inside, box known to fit: at block end, consumes the fragmentainer", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 80, 80
 			in.ShouldBreakInside, in.HasInflowChildBreakInside, in.IsKnownToFitInFragmentainer = true, true, true
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 100, IsAtBlockEnd: true, IncludeBlockStart: true, IncludeBlockEnd: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 100, IsAtBlockEnd: true, IncludeBlockEnd: true}},
 		{"unknown space (balancing pass): at block end unless broken by a child", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = Indefinite, 300, 300
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 300, IntrinsicBlockSize: 300, ConsumedBlockSize: 300, IsAtBlockEnd: true, IncludeBlockStart: true, IncludeBlockEnd: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 300, IntrinsicBlockSize: 300, ConsumedBlockSize: 300, IsAtBlockEnd: true, IncludeBlockEnd: true}},
 		{"clone: resumed fragment keeps both edges while breaking itself", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize, in.PreviousBreakToken = 50, 140, 30, resumed
-			in.IsSlice, in.ShouldCloneBoxEndDecorations, in.PreventBreakBeforeBlockEndDecorations = false, true, true
+			in.ShouldCloneBoxEndDecorations, in.PreventBreakBeforeBlockEndDecorations = true, true
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 50, IntrinsicBlockSize: 50, ConsumedBlockSize: 90, DidBreakSelf: true, IncludeBlockStart: true, IncludeBlockEnd: true, SpaceShortage: 50}},
+		}, FinishFragmentationResult{FragmentBlockSize: 50, IntrinsicBlockSize: 50, ConsumedBlockSize: 90, DidBreakSelf: true, IncludeBlockEnd: true, SpaceShortage: 50}},
 		{"first fragment, space smaller than the block-start edge: last-resort appeal", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 5, 120, 10
 			return in
-		}, FinishFragmentationResult{FragmentBlockSize: 5, IntrinsicBlockSize: 5, ConsumedBlockSize: 5, DidBreakSelf: true, IncludeBlockStart: true, SpaceShortage: 115, ClampAppealToLastResort: true}},
+		}, FinishFragmentationResult{FragmentBlockSize: 5, IntrinsicBlockSize: 5, ConsumedBlockSize: 5, DidBreakSelf: true, SpaceShortage: 115, ClampAppealToLastResort: true}},
 	} {
 		if got := FinishFragmentation(tc.in(base)); got != tc.want {
 			t.Errorf("%s:\n got  %+v\n want %+v", tc.name, got, tc.want)
