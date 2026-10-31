@@ -473,56 +473,13 @@ type nestedDocFragment struct {
 // layoutNestedDocument fetches and lays out the embedded document for
 // iframe/object elements. Returns the nested root fragment and its X offset, or nil.
 func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentBlock float64) *nestedDocFragment {
-	dom := rla.node.DOMNode
-	tag := dom.TagName
-
-	// Get the document URI from the appropriate attribute.
-	var uri string
-	var htmlContent string
-
-	switch tag {
-	case "iframe":
-		// srcdoc takes priority over src per HTML spec.
-		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
-			// Wrap the srcdoc text in a minimal document so the HTML parser has
-			// a proper <html><body> context, then lay it out without fetching.
-			htmlContent = srcdoc
-			uri = ""
-		} else {
-			uri, _ = dom.GetAttribute("src")
-		}
-	case "object":
-		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
-			uri, _ = dom.GetAttribute("data")
-		}
-	default:
+	htmlContent, baseDir, ok := openFrameOwnerURL(rla.ctx, rla.node.DOMNode)
+	if !ok {
 		return nil
-	}
-
-	// If we have inline srcdoc content, skip the fetcher entirely.
-	if htmlContent == "" {
-		if uri == "" || rla.ctx.DocumentFetcher == nil {
-			return nil
-		}
-		var err error
-		htmlContent, err = rla.ctx.DocumentFetcher(uri)
-		if err != nil {
-			return nil
-		}
 	}
 
 	// Compute physical viewport for the nested document.
-	wdm := rla.space.WritingDirection
-	physSize := ToPhysicalSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock}, wdm.WM)
+	physSize := ToPhysicalSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock}, rla.space.WritingDirection.WM)
 
-	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
-	if res == nil {
-		return nil
-	}
-	// Retain the parsed nested document on the iframe/object DOM node so that
-	// JS can access iframe.contentDocument after layout completes.
-	if res.Doc != nil {
-		dom.NestedDocument = res.Doc
-	}
-	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+	return layoutFrameOwnerDocument(rla.ctx, rla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
 }
