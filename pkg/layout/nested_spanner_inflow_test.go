@@ -10,7 +10,8 @@ import (
 // TestNestedSpannerParent_ChromeGeometry_LOU410 pins the geometry of boxes
 // whose column spanner sits inside an in-flow child (a nested spanner) against
 // Chrome 155.0.8059.41 (headless, getClientRects relative to the multicol).
-// Every spanner parent resumes after its spanner in a 0px fragment: a resumed
+// A spanner's parent resumes after the spanner in a 0px fragment (further
+// ancestors keep any trailing border/padding, e.g. r2's cont): a resumed
 // fragment resolves its BFC block-offset at its start and so never
 // self-collapses (is_resuming_, block_layout_algorithm.cc:888-898).
 //
@@ -149,6 +150,25 @@ func TestNestedSpannerParent_ChromeGeometry_LOU410(t *testing.T) {
 				"sib": {{0, 40, 100, 100}, {100, 40, 100, 100}},
 			},
 			height: 140,
+		},
+		{
+			// Chrome probe fb.html (LOU-443). The kept 0px resumed fragment
+			// of w leaves a breakpoint before sib (HasBreakOpportunity
+			// BeforeNextChild, fragmentation_utils.cc:870-883 @
+			// a9f50e522efa), so sib's forced break-before fires.
+			name: "FB_forced_break_after_spanner_parent",
+			mc:   wide2,
+			kids: []marginSpec{
+				ms("w", nil, ms("a", h("40px")), ms("sp", span("20px"))),
+				ms("sib", h("40px", "break-before", "column")),
+			},
+			want: map[string][]fragRect{
+				"w":   {{0, 0, 100, 20}, {100, 0, 100, 20}, {0, 40, 100, 0}},
+				"a":   {{0, 0, 100, 20}, {100, 0, 100, 20}},
+				"sp":  {{0, 20, 200, 20}},
+				"sib": {{100, 40, 100, 40}},
+			},
+			height: 80,
 		},
 		{
 			// Chrome probe f6.html (guard). The interrupted child's
