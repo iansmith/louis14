@@ -4353,7 +4353,7 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 					return MediaQueryUnknown
 				}
 			} else {
-				_, ok := ParseLengthFull(cond.Value, 16, 0, 0)
+				_, ok := ParseLengthFull(cond.Value, initialFontSize, 0, 0)
 				if !ok {
 					return MediaQueryUnknown
 				}

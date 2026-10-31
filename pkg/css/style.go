@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -194,6 +195,13 @@ type Style struct {
 	// from (core/css/css_to_length_conversion_data.cc:84-93 @
 	// 5992657f556bcd9d207a4aca187488462f027cab).
 	remFontSize optionalFloat
+
+	// specifiedLengths records, per computedLengthProperties property,
+	// the specified value absolutizeComputedLengths computed to px and the
+	// px value it wrote, so a re-run after a late font change (a first-frame
+	// font-size transition) recomputes from the specified value. No Blink
+	// analog: Blink re-runs the cascade from its declared values instead.
+	specifiedLengths map[string]specifiedLength
 }
 
 func NewStyle() *Style {
@@ -214,6 +222,7 @@ func (s *Style) Clone() *Style {
 		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
 	dst.CascadedProps = s.CascadedProps // shared by reference; never mutated post-cascade
+	dst.specifiedLengths = maps.Clone(s.specifiedLengths)
 	return dst
 }
 
@@ -795,7 +804,7 @@ func (s *Style) GetPercentage(property string) (float64, bool) {
 // viewport: em and rem are the initial 16px and viewport units are 0. A Style
 // accessor resolves through (*Style).GetLengthForVal instead.
 func ParseLength(val string) (float64, bool) {
-	return ParseLengthFull(val, 16.0, 0, 0)
+	return ParseLengthFull(val, initialFontSize, 0, 0)
 }
 
 // ParseLengthWithFontSize parses a length value with em and rem support.
@@ -13151,6 +13160,12 @@ func (s *Style) GetMaskImage() string {
 func (s *Style) GetTabSize() (float64, bool) {
 	if val, ok := s.Get("tab-size"); ok {
 		val = strings.TrimSpace(val)
+		// A unitless math function is a <number>: a space count.
+		if isUnitlessMath(val) {
+			if num, ok2 := EvalMathFunction(val, s.cssToLengthConversionData()); ok2 {
+				return num, false
+			}
+		}
 		// Try length first (px, em, etc.)
 		if length, ok2 := s.GetLengthForVal(val); ok2 {
 			return length, true // isLength=true

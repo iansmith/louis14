@@ -1956,6 +1956,9 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		finalStyle.fontSelector = parentStyles[0].fontSelector
 		applyFontAndLineHeight(finalStyle, parentStyles[0])
 	}
+	// The pseudo-element's lengths compute against its now-final font, as
+	// an element's do in applyStylesToNode.
+	absolutizeComputedLengths(finalStyle)
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
 	// explicitly set by a rule. GetDisplay() defaults to DisplayBlock for
@@ -2747,6 +2750,37 @@ var inheritableProperties = map[string]bool{
 	"color-interpolation-filters": true,
 }
 
+// fontParentStyle returns the style node's font-size (and lh in its
+// line-height) computes against: nil — the initial style — for the document
+// element, else the parent's style. In a fragment parse (no <html>) the
+// document element is the document node's first element child, which the
+// cascade re-runs under the synthetic doc.Root style that already carries its
+// own computed font; resolving against that would apply :root's em / % / rem
+// twice. Blink resolves documentElement's font against the initial style and
+// leaves its root_element_style_ null
+// (core/css/resolver/element_resolve_context.cc:109-113 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func fontParentStyle(node *html.Node, styles map[*html.Node]*Style) *Style {
+	parent := node.Parent
+	if parent == nil {
+		return nil
+	}
+	if parent.TagName == "document" && firstElementChild(parent) == node {
+		return nil
+	}
+	return styles[parent]
+}
+
+// firstElementChild returns n's first element child, or nil.
+func firstElementChild(n *html.Node) *html.Node {
+	for _, c := range n.Children {
+		if c.Type == html.ElementNode {
+			return c
+		}
+	}
+	return nil
+}
+
 // ApplyInheritedProperties computes style's font-size against its parent
 // (convertFontSize), then copies inheritable properties from the parent that
 // style does not set.
@@ -2756,15 +2790,10 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	}
 	parentStyle := styles[node.Parent]
 
-	// font-size computes against the parent's font (CSS Fonts 4 §2.5). This
-	// runs BEFORE the "no parent style → nothing to inherit" early-return
-	// below: the ROOT element's parent is the non-element document, which has
-	// no style entry in the normal (parser-wrapped) case, yet the root must
-	// still resolve its font-size against the INITIAL 16px (Blink:
-	// documentElement resolves font-relative values against
-	// InitialStyleForElement, not a document-node style — verified @ Chromium
-	// main 9ef004e13d28eed9671f6275685da42b8b08a610).
-	convertFontSize(style, parentStyle)
+	// font-size computes against fontParentStyle (CSS Fonts 4 §2.5) — the
+	// initial style for the root — so this runs before the nil-parent
+	// early return below.
+	convertFontSize(style, fontParentStyle(node, styles))
 
 	// No parent style → nothing more to inherit. The root <html> case (parent is
 	// the non-element document) reaches here after resolving its own font-relative
@@ -3208,40 +3237,124 @@ func reexpandVarShorthands(style *Style) {
 	}
 }
 
-// absolutizeComputedLengths rewrites a declared outline-offset, outline-width
-// and tab-size length that is not already a px literal to its absolute px
-// computed value against the element's own (final) font and viewport, so an
-// inheriting child (outline via `inherit`, tab-size by default) copies the
-// parent's length instead of re-resolving em / ex / ch against the child's
-// font (WPT css-ui/outline-008, outline-010). Blink computes all three at
-// style build: outline-offset through ConvertOutlineOffset (magnitudes in
-// (0,1) round away from zero to ±1, larger ones truncate toward zero),
-// outline-width through ConvertBorderWidth → ClampLineWidth, and tab-size
-// through ConvertLengthOrTabSpaces, which keeps the length unrounded and a
-// bare number as a space count
-// (core/css/resolver/style_builder_converter.cc:2004-2015, :1974-2002, :1965,
-// :2182-2194; converters named in core/css/css_properties.json5 @
-// 5992657f556bcd9d207a4aca187488462f027cab). Keywords (thin / medium / thick)
-// and bare numbers (a tab-size space count, or a unitless 0) stay as
-// declared. Idempotent.
+// computedLengthProperties are the properties whose <length> components
+// compute to absolute px at style build, with the rounding Blink's converter
+// applies (nil = unrounded): outline-offset through ConvertOutlineOffset,
+// outline-width through ConvertBorderWidth → ClampLineWidth, tab-size through
+// ConvertLengthOrTabSpaces (core/css/resolver/style_builder_converter.cc
+// :2004-2015, :1974-2002, :1965-1972, :2182-2194), text-indent through
+// TextIndent::ApplyValue → ConvertToLength
+// (core/css/properties/longhands/longhands_custom.cc:10267-10292),
+// text-underline-offset through ConvertTextUnderlineOffset →
+// ConvertLengthOrAuto (style_builder_converter.cc:3259-3263) and
+// border-spacing's -webkit-border-{horizontal,vertical}-spacing longhands
+// through ConvertComputedLength (style_builder_converter.h:478-482;
+// converters named in core/css/css_properties.json5), all @
+// 5992657f556bcd9d207a4aca187488462f027cab.
+var computedLengthProperties = []struct {
+	property string
+	round    func(float64) float64
+}{
+	{"outline-offset", convertOutlineOffset},
+	{"outline-width", clampLineWidth},
+	{"tab-size", nil},
+	{"text-indent", nil},
+	{"text-underline-offset", nil},
+	{"border-spacing", nil},
+}
+
+// specifiedLength records a computedLengthProperties value
+// absolutizeComputedLengths rewrote: the value it computed from and the px
+// value it wrote.
+type specifiedLength struct {
+	specified, computed string
+}
+
+// absolutizeComputedLengths rewrites each <length> component of the
+// computedLengthProperties to its absolute px computed value against the
+// element's own (final) font and viewport, so an inheriting child (by default
+// or through `inherit`) copies the parent's length instead of re-resolving em
+// / ex / ch against its own font (WPT css-ui/outline-008, outline-010).
+// Keywords, bare numbers (a tab-size space count, a unitless 0), unitless math
+// functions (a <number>) and percentages — bare or inside a math function —
+// stay as declared: a percentage resolves at use time (text-indent against the
+// containing block, text-underline-offset against the element's own 1em).
+//
+// It records each rewrite in style.specifiedLengths, and while a property
+// still holds the px value it wrote, recomputes from the recorded specified
+// value — so it re-runs correctly after a late font change (a first-frame
+// font-size transition), as Blink applies interpolations inside the cascade
+// before the dependent properties compute (StyleCascade::Apply →
+// ApplyInterpolations, core/css/resolver/style_cascade.cc:320 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Idempotent.
 func absolutizeComputedLengths(style *Style) {
-	for _, p := range []struct {
-		property string
-		round    func(float64) float64
-	}{
-		{"outline-offset", convertOutlineOffset},
-		{"outline-width", clampLineWidth},
-		{"tab-size", func(px float64) float64 { return px }},
-	} {
+	for _, p := range computedLengthProperties {
 		val, ok := style.Get(p.property)
-		if !ok || isPxLiteral(val) {
+		if !ok {
 			continue
 		}
-		if _, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil {
+		if rec, ok := style.specifiedLengths[p.property]; ok && rec.computed == val {
+			val = rec.specified
+		}
+		computed, changed := computeLengthComponents(style, val, p.round)
+		if !changed {
+			delete(style.specifiedLengths, p.property)
 			continue
 		}
-		if px, ok := style.GetLengthForVal(val); ok {
-			style.Set(p.property, fmt.Sprintf("%gpx", p.round(px)))
+		if style.specifiedLengths == nil {
+			style.specifiedLengths = make(map[string]specifiedLength)
+		}
+		style.specifiedLengths[p.property] = specifiedLength{specified: val, computed: computed}
+		style.Set(p.property, computed)
+	}
+}
+
+// computeLengthComponents rewrites each space-separated <length> component of
+// val to px against style, rounded by round (nil = unrounded), reporting
+// whether any component changed.
+func computeLengthComponents(style *Style, val string, round func(float64) float64) (string, bool) {
+	if round == nil && isPxLiteral(val) { // the common, inherited case
+		return val, false
+	}
+	parts := splitShorthandParts(val)
+	changed := false
+	for i, part := range parts {
+		// No units: a keyword, a bare number or a unitless math function.
+		if units := dimensionUnits(part); len(units) == 0 || slices.Contains(units, "%") {
+			continue
+		}
+		px, ok := style.GetLengthForVal(part)
+		if !ok {
+			continue
+		}
+		if round != nil {
+			px = round(px)
+		}
+		if s := fmt.Sprintf("%gpx", px); s != part {
+			parts[i], changed = s, true
+		}
+	}
+	if !changed {
+		return val, false
+	}
+	return strings.Join(parts, " "), true
+}
+
+// inheritComputedLengths re-copies the parent's computed value of each
+// inherited computedLengthProperties property style does not declare
+// (CascadedProps; `inherit` counts as not declared), for a re-run after the
+// parent's lengths were recomputed (a first-frame font-size transition). A
+// style without a CascadedProps record is left alone.
+func inheritComputedLengths(style, parent *Style) {
+	if parent == nil || style.CascadedProps == nil {
+		return
+	}
+	for _, p := range computedLengthProperties {
+		if !inheritableProperties[p.property] || style.CascadedProps[p.property] {
+			continue
+		}
+		if val, ok := parent.Properties[p.property]; ok {
+			style.Properties[p.property] = val
 		}
 	}
 }
@@ -3317,11 +3430,12 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// and only a number is kept as a multiplier. Blink applies line-height while
 		// CSSToLengthConversionData's LineHeightSize still holds the parent's, so lh
 		// here resolves against the parent's line-height.
-		applyFontAndLineHeight(style, styles[node.Parent])
-		// CSS UI 4 §4.3 (outline-offset, outline-width) and CSS Text 3 §4.2
-		// (tab-size) compute lengths to absolute values, so compute them now
-		// that the font is final (@container rules included); an inheriting
-		// child then copies the px value.
+		applyFontAndLineHeight(style, fontParentStyle(node, styles))
+		// CSS UI 4 §4.3 (outline-offset, outline-width), CSS Text 3 §4.2 / §8.1
+		// (tab-size, text-indent), CSS Text Decor 4 (text-underline-offset) and
+		// CSS 2.1 §17.6.1 (border-spacing) compute lengths to absolute values,
+		// so compute them now that the font is final (@container rules
+		// included); an inheriting child then copies the px value.
 		absolutizeComputedLengths(style)
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
@@ -3358,13 +3472,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	// fragments target a DocumentFragment). Verified @ Chromium main
 	// 9ef004e13d28eed9671f6275685da42b8b08a610.
 	if node.TagName == "document" && styles[node] == nil {
-		var firstElem *html.Node
-		for _, child := range node.Children {
-			if child.Type == html.ElementNode {
-				firstElem = child
-				break
-			}
-		}
+		firstElem := firstElementChild(node)
 		if firstElem != nil && firstElem.TagName != "html" {
 			syntheticRootStyle := NewStyle()
 			syntheticRootStyle.ViewportWidth = viewportWidth
@@ -4008,10 +4116,10 @@ func absolutizeLineHeight(s *Style, parent *Style) {
 			parentLh = parent.GetLineHeight()
 		}
 	}
-	isMath := IsMathFunction(v)
-	if isMath && len(units) == 0 { // unitless calc(): a number
+	if isUnitlessMath(v) { // a number
 		return
 	}
+	isMath := IsMathFunction(v)
 	if !isMath && len(units) == 1 && units[0] == "px" {
 		return
 	}
@@ -4091,6 +4199,12 @@ func convertFontSize(s, parent *Style) {
 	} else {
 		s.remFontSize = parent.remFontSize
 	}
+}
+
+// isUnitlessMath reports whether v is a math function with no <dimension> or
+// <percentage> term — a <number>, e.g. calc(2*4).
+func isUnitlessMath(v string) bool {
+	return IsMathFunction(v) && len(dimensionUnits(v)) == 0
 }
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /
