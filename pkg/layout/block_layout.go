@@ -152,6 +152,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetLayoutNode(bla.node)
 	builder.SetConstraintSpace(&bla.space)
 	builder.SetBoxType(bla.boxType)
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
+	// @ a9f50e522efa): resuming after a break inside this node.
+	builder.SetIsFirstForNode(!bla.space.BreakToken.IsBreakInside())
 	// A node on the spanner path keeps its breaks in its parent's flow, so
 	// content after the spanner is not laid out before it
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).

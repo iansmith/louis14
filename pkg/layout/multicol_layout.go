@@ -593,6 +593,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
 	builder.SetConstraintSpace(&mla.space)
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
+	// @ a9f50e522efa): resuming after a break inside this node.
+	builder.SetIsFirstForNode(!mla.space.BreakToken.IsBreakInside())
 
 	// Phase 25 Cmt-3: an outer (non-nested) multicol IS the block-fragmentation
 	// context root. The flag gates `OutOfFlowLayoutPart.HandleFragmentation`'s

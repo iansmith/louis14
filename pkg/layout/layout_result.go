@@ -175,7 +175,46 @@ type LayoutResult struct {
 	// value after this box. "auto" when none was propagated. Mirrors Blink's
 	// LayoutResult::FinalBreakAfter (layout_result.h:420 @ a9f50e522efa).
 	FinalBreakAfter string
+
+	// Status is the outcome of the layout pass that produced this result.
+	// Anything but LayoutResultSuccess means layout was aborted and there is
+	// no fragment. Zero value is LayoutResultSuccess. Mirrors Blink's
+	// LayoutResult::Status() (layout_result.h:239 @ a9f50e522efa).
+	Status EStatus
 }
+
+// EStatus is the outcome of a layout pass. Mirrors Blink's
+// LayoutResult::EStatus (layout_result.h:48-64 @ a9f50e522efa); values keep
+// Blink's names with the owning class as prefix (LayoutResult::kSuccess →
+// LayoutResultSuccess), as InlineItem::Type values are InlineItem*.
+//
+// louis14 produces only LayoutResultSuccess today. Blink's sole producer of
+// LayoutResultOutOfFragmentainerSpace is InlineLayoutAlgorithm aborting a
+// line whose <br clear> needs clearance past the fragmentainer
+// (inline_layout_algorithm.cc:1501-1503, AddAnyClearanceAfterLine
+// :1058-1061 @ a9f50e522efa); louis14 has no
+// ExclusionSpace::NeedsClearancePastFragmentainer and does not route line
+// boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak
+// needs early breaks (EarlyBreak / RelayoutAndBreakEarlier), not ported.
+// The consumers of a non-success status (BreakBeforeChildIfNeeded,
+// CalculateBreakAppealBefore) are ported so a producer can be added.
+type EStatus int
+
+const (
+	LayoutResultSuccess EStatus = iota
+	LayoutResultBfcBlockOffsetResolved
+	LayoutResultNeedsEarlierBreak
+	LayoutResultOutOfFragmentainerSpace
+	LayoutResultNeedsLineClampRelayout
+	LayoutResultDisableFragmentation
+	LayoutResultNeedsRelayoutWithNoChildScrollbarChanges
+	LayoutResultTextBoxTrimEndDidNotApply
+	// LayoutResultAlgorithmSpecific1 is shared by mutually exclusive
+	// algorithm-specific statuses (table rows, last table box, margin-trim),
+	// exactly as Blink shares the value; louis14 has none of their
+	// producers, so only the shared value is declared.
+	LayoutResultAlgorithmSpecific1
+)
 
 // ColumnSpannerPath is a linked list identifying the path from the current
 // node down to the first column-span:all element encountered during column
@@ -224,6 +263,15 @@ const (
 // fragmentainer. Mirrors Blink PhysicalFragment::IsColumnBox.
 func (f *PhysicalFragment) IsColumnBox() bool {
 	return f != nil && f.Type == FragmentBox && f.BoxType == BoxTypeColumn
+}
+
+// IsFirstForNode reports whether this is the first fragment generated for
+// its node; false for a fragment resumed after a break inside the node. A
+// nil fragment (aborted layout) counts as first. Mirrors Blink's
+// PhysicalBoxFragment::IsFirstForNode (physical_box_fragment.h:439 @
+// a9f50e522efa), copied from the builder (physical_box_fragment.cc:427).
+func (f *PhysicalFragment) IsFirstForNode() bool {
+	return f == nil || !f.notFirstForNode
 }
 
 // IsFragmentainerBox reports whether this fragment is a fragmentainer
@@ -337,6 +385,14 @@ type PhysicalFragment struct {
 	// (fragmentation_utils.go) for `TallestUnbreakableBlockSize`
 	// propagation during the initial column-balancing pass.
 	IsMonolithic bool
+
+	// notFirstForNode is set when this box fragment resumes its node after a
+	// break inside it (not its first fragment). Inverted so that every
+	// fragment not built by a fragmenting algorithm (line boxes, text,
+	// struct literals) reads as first-for-node, matching Blink's default
+	// (is_first_for_node_ = true, box_fragment_builder.h:790 @
+	// a9f50e522efa). Read through IsFirstForNode.
+	notFirstForNode bool
 
 	// RenderedColumnCount is the number of column fragments actually placed
 	// in this multicol fragment (column-fill:auto may render fewer columns
