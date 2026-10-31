@@ -8,13 +8,18 @@ import (
 	"louis14/pkg/css"
 )
 
-// TestCSSFontSelector_IdeographicInlineSizePresence (LOU-431): CreateFont
-// reports the 水 (U+6C34) advance as present whenever a declared family covers
-// 水 — including a zero advance — and as absent when none does, so the ic unit
-// can tell a measured 0 from the 1em fallback. Mirrors Blink's
+// TestCSSFontSelector_IdeographicInlineSizePresence (LOU-431, LOU-425):
+// CreateFont reports the 水 (U+6C34) advance as present when the U+6C34
+// primary font has the 水 glyph — including a zero advance — and as absent
+// when it does not, so the ic unit can tell a measured 0 from the 1em
+// fallback. The primary font is Blink's Font::PrimaryFontWithCjkWater
+// (platform/fonts/font.h:243 @ 5992657f556bcd9d207a4aca187488462f027cab):
+// the family walk of FontFallbackList::DeterminePrimarySimpleFontDataCore
+// (font_fallback_list.cc:87-140 @ the same SHA), which stops at a builtin
+// family whatever its glyphs. Presence mirrors
 // SimpleFontData::IdeographicAdvanceWidth, which sets its std::optional only
-// when the font has the 水 glyph (platform/fonts/simple_font_data.cc:435-445 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520). WPT fonts: css-values/resources.
+// when GlyphForCharacter(kCjkWater) is non-zero (simple_font_data.cc:437 @ the
+// same SHA). WPT fonts: css-values/resources.
 func TestCSSFontSelector_IdeographicInlineSizePresence(t *testing.T) {
 	fr := NewFontRegistry()
 	for _, file := range []string{"IcTestZeroWidth.woff2", "IcTestHalfWidth.woff2"} {
@@ -22,6 +27,10 @@ func TestCSSFontSelector_IdeographicInlineSizePresence(t *testing.T) {
 			t.Fatalf("%s: RegisterFontFace: %v", file, err)
 		}
 	}
+	// Latin faces with no unicode-range (they cover 水 by range) and no 水
+	// glyph.
+	registerTestFace(t, fr, "LOU425-Ic-ExTest", "ExTest.woff", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU425-Ic-ZeroW", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
 	sel := NewCSSFontSelector(configWithRegistry(fr))
 
 	for _, tc := range []struct {
@@ -32,11 +41,12 @@ func TestCSSFontSelector_IdeographicInlineSizePresence(t *testing.T) {
 		{"LOU431-IcTestZeroWidth.woff2", 0, true},
 		{"LOU431-IcTestHalfWidth.woff2", 10, true},
 		{"LOU431-none", 0, false},
+		{"LOU425-Ic-ExTest", 0, false},
+		{"LOU425-Ic-ZeroW", 0, false},
+		// The walk stops at the builtin serif (LiberationSerif, no 水).
+		{"serif, LOU431-IcTestHalfWidth.woff2", 0, false},
 	} {
-		s := css.NewStyle()
-		s.Set("font-size", "20px")
-		s.Set("font-family", tc.family)
-		f := sel.CreateFont(s)
+		f := createFontWith(sel, "20px", tc.family)
 		if f.IdeographicInlineSize != tc.want || f.HasIdeographicInlineSize != tc.present {
 			t.Errorf("%s: ideographic inline size = (%v, %v), want (%v, %v)",
 				tc.family, f.IdeographicInlineSize, f.HasIdeographicInlineSize, tc.want, tc.present)
@@ -74,13 +84,11 @@ func configWithRegistry(fr *FontRegistry) FontConfig {
 // createFontFor runs CreateFont over fr for a style with the given font-size,
 // font-family and (unless empty) font-size-adjust.
 func createFontFor(fr *FontRegistry, size, family, adjust string) css.Font {
-	s := css.NewStyle()
-	s.Set("font-size", size)
-	s.Set("font-family", family)
+	var props []string
 	if adjust != "" {
-		s.Set("font-size-adjust", adjust)
+		props = []string{"font-size-adjust", adjust}
 	}
-	return NewCSSFontSelector(configWithRegistry(fr)).CreateFont(s)
+	return createFontWith(NewCSSFontSelector(configWithRegistry(fr)), size, family, props...)
 }
 
 // noSpaceThenSquare is the ex-unit-004 shape: a first family whose
@@ -186,4 +194,122 @@ func TestCSSFontSelector_FontSizeAdjustAspectFromSpacePrimaryFont(t *testing.T) 
 			t.Errorf("ZeroWidth = %v, want 0 from the U+0030-covering face at the used size", f.ZeroWidth)
 		}
 	})
+}
+
+// createFontWith runs sel.CreateFont for a style with the given font-size,
+// font-family and extra properties (name/value pairs).
+func createFontWith(sel *CSSFontSelector, size, family string, props ...string) css.Font {
+	s := css.NewStyle()
+	s.Set("font-size", size)
+	s.Set("font-family", family)
+	for i := 0; i+1 < len(props); i += 2 {
+		s.Set(props[i], props[i+1])
+	}
+	return sel.CreateFont(s)
+}
+
+// TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback (LOU-425): when the
+// U+0030 primary font has no "0" glyph, ZeroWidth is 0.5 x the font's size,
+// not the advance of the .notdef glyph shaping substitutes. Mirrors Blink's
+// SimpleFontData::ZeroInlineSize no-glyph branch, size * 0.5 with
+// CSSChUnitSpecCompliantFallback stable (platform/fonts/
+// simple_font_data.cc:587 @ 5992657f556bcd9d207a4aca187488462f027cab), where
+// size is the font's own (font-size-adjust used) size, font_.getSize(). No
+// Blink unit test covers this branch. ExTest.woff and IcTestZeroWidth.woff2
+// have no "0" (go-text cmap probe); ExTest's .notdef advance is 1em.
+func TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU425-Zero-ExTest", "ExTest.woff", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU425-Zero-IcZero", "IcTestZeroWidth.woff2", fetchCSSValuesResource)
+
+	t.Run("no '0' glyph gives 0.5em", func(t *testing.T) {
+		sel := NewCSSFontSelector(configWithRegistry(fr))
+		for _, family := range []string{"LOU425-Zero-ExTest", "LOU425-Zero-IcZero"} {
+			if f := createFontWith(sel, "20px", family); f.ZeroWidth != 10 {
+				t.Errorf("%s at 20px: ZeroWidth = %v, want 10 (0.5em)", family, f.ZeroWidth)
+			}
+		}
+	})
+
+	t.Run("fallback uses the exact size, not the rounded cache key", func(t *testing.T) {
+		sel := NewCSSFontSelector(configWithRegistry(fr))
+		for _, tc := range []struct {
+			size string
+			want float64
+		}{{"10px", 5}, {"10.4px", 5.2}} {
+			if f := createFontWith(sel, tc.size, "LOU425-Zero-ExTest"); f.ZeroWidth != tc.want {
+				t.Errorf("ExTest at %s: ZeroWidth = %v, want %v", tc.size, f.ZeroWidth, tc.want)
+			}
+		}
+	})
+
+	t.Run("fallback base is the font-size-adjust used size", func(t *testing.T) {
+		sel := NewCSSFontSelector(configWithRegistry(fr))
+		f := createFontWith(sel, "20px", "LOU425-Zero-ExTest", "font-size-adjust", "ex-height 0.5")
+		if f.AdjustedSize == 20 {
+			t.Fatalf("fixture: font-size-adjust must change the used size (AdjustedSize = 20)")
+		}
+		if want := 0.5 * f.AdjustedSize; f.ZeroWidth != want {
+			t.Errorf("ZeroWidth = %v, want %v (0.5 x AdjustedSize %v)", f.ZeroWidth, want, f.AdjustedSize)
+		}
+	})
+}
+
+// TestSimpleFontData_ZeroInlineSizeOrientation (LOU-425): ZeroWidth depends on
+// the font's orientation, derived from writing-mode and text-orientation as
+// ComputedStyleBuilder::ComputeFontOrientation does (core/style/
+// computed_style.cc:3256-3272 @ 5992657f556bcd9d207a4aca187488462f027cab).
+// Without a "0" glyph, SimpleFontData::ZeroInlineSize gives size when
+// IsVerticalNonCjkUpright and size * 0.5 otherwise (platform/fonts/
+// simple_font_data.cc:579-598 @ the same SHA). With the glyph and upright
+// orientation Blink returns the vmtx AdvanceHeight (:572-576); louis14 returns
+// 1em until LOU-424, and the upright rows with a glyph pin that stand-in.
+func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU425-Orient-ExTest", "ExTest.woff", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU425-Orient-ZeroW", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
+	sel := NewCSSFontSelector(configWithRegistry(fr))
+
+	for _, tc := range []struct {
+		family, writingMode, textOrientation string
+		want                                 float64 // ZeroWidth at 20px
+	}{
+		// ExTest: no "0" glyph.
+		{"LOU425-Orient-ExTest", "horizontal-tb", "", 10},
+		{"LOU425-Orient-ExTest", "vertical-rl", "mixed", 10},
+		{"LOU425-Orient-ExTest", "vertical-rl", "sideways", 10},
+		{"LOU425-Orient-ExTest", "sideways-rl", "upright", 10},
+		{"LOU425-Orient-ExTest", "vertical-lr", "upright", 20},
+		// ChTestZeroWidthZero: a "0" glyph with a zero advance.
+		{"LOU425-Orient-ZeroW", "horizontal-tb", "", 0},
+		{"LOU425-Orient-ZeroW", "vertical-rl", "upright", 20},
+		// Builtin serif (LiberationSerif, "0" present).
+		{"serif", "vertical-rl", "upright", 20},
+	} {
+		props := []string{"writing-mode", tc.writingMode}
+		if tc.textOrientation != "" {
+			props = append(props, "text-orientation", tc.textOrientation)
+		}
+		if f := createFontWith(sel, "20px", tc.family, props...); f.ZeroWidth != tc.want {
+			t.Errorf("%s, %s / %q: ZeroWidth = %v, want %v",
+				tc.family, tc.writingMode, tc.textOrientation, f.ZeroWidth, tc.want)
+		}
+	}
+}
+
+// TestCSSFontSelector_FontSizeAdjustChWidthNoZeroGlyph (LOU-425): the
+// font-size-adjust ch-width aspect of a primary font with no "0" glyph is
+// 0.5, from the ZeroInlineSize fallback, not the .notdef advance. Blink's
+// AspectValue kChWidth reads FontMetrics::ZeroWidth whenever HasZeroWidth
+// (core/css/font_size_functions.cc:143-145 @
+// 5992657f556bcd9d207a4aca187488462f027cab), and PlatformGlyphInit always sets
+// it to ZeroInlineSize (platform/fonts/simple_font_data.cc:245). Used size per
+// CSS Fonts 5 §1.7: 20 x 0.25 / 0.5 = 10.
+func TestCSSFontSelector_FontSizeAdjustChWidthNoZeroGlyph(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU425-Adjust-ExTest", "ExTest.woff", fetchCSSValuesResource)
+	f := createFontFor(fr, "20px", "LOU425-Adjust-ExTest", "ch-width 0.25")
+	if f.AdjustedSize != 10 || f.ZeroWidth != 5 {
+		t.Errorf("(AdjustedSize, ZeroWidth) = (%v, %v), want (10, 5)", f.AdjustedSize, f.ZeroWidth)
+	}
 }

@@ -20,17 +20,20 @@ type FontSelector interface {
 // font's metrics at the font-size-adjust used size. Mirrors the values
 // CSSToLengthConversionData::FontSizes reads from Font for ex / ch / ic / cap
 // (core/css/css_to_length_conversion_data.cc:95/117/139/169): FontMetrics
-// XHeight / CapHeight / SetZeroWidth (platform/fonts/font_metrics.h:98/86/173,
-// @ 5992657f556bcd9d207a4aca187488462f027cab) and the optional
-// SimpleFontData::IdeographicInlineSize (platform/fonts/simple_font_data.h:110
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// XHeight / CapHeight / SetZeroWidth (platform/fonts/font_metrics.h:98/86/173)
+// and the optional SimpleFontData::IdeographicInlineSize (platform/fonts/
+// simple_font_data.h:111), all @ 5992657f556bcd9d207a4aca187488462f027cab.
 type Font struct {
 	// AdjustedSize is the font-size-adjust used size (Blink
 	// FontDescription::AdjustedSize, set by FontBuilder::UpdateAdjustedSize,
 	// font_builder.cc:378 @ 5992657f556b). Stored as Style.UsedFontSize.
 	AdjustedSize float64
-	// ZeroWidth is the advance of "0" (Blink FontMetrics::ZeroWidth). Always
-	// a measurement — Style.SetZeroWidth marks it measured.
+	// ZeroWidth is the inline advance of "0" in the U+0030 primary font
+	// (Blink FontMetrics::ZeroWidth, set to SimpleFontData::ZeroInlineSize,
+	// platform/fonts/simple_font_data.cc:245/:561 @
+	// 5992657f556bcd9d207a4aca187488462f027cab): the "0" glyph's advance
+	// (even 0), or 0.5em when the font has no "0" glyph, or 1em upright.
+	// Always set — Style.SetZeroWidth marks it measured.
 	ZeroWidth float64
 	// XHeight is the x-height in px; 0 means the font has none, and ex falls
 	// back to 0.5em (Blink FontMetrics::HasXHeight requires x_height_ > 0,
@@ -41,24 +44,27 @@ type Font struct {
 	// IdeographicInlineSize is the advance of 水 in px; valid only when
 	// HasIdeographicInlineSize, so a measured 0 is a real zero advance.
 	IdeographicInlineSize float64
-	// HasIdeographicInlineSize reports that a font covering 水 supplied
-	// IdeographicInlineSize: has_value() of Blink's std::optional<float>
-	// SimpleFontData::IdeographicInlineSize (platform/fonts/simple_font_data.h
-	// :110, set at simple_font_data.cc:459-473 @
-	// d4ecdfed88f962439247c2ad36b8fe47805b1520). Without it ic falls back to
+	// HasIdeographicInlineSize reports that the U+6C34 primary font has the
+	// 水 glyph, so IdeographicInlineSize is its advance: has_value() of
+	// Blink's std::optional<float> SimpleFontData::IdeographicInlineSize
+	// (platform/fonts/simple_font_data.h:111, set at simple_font_data.cc:461
+	// from IdeographicAdvanceWidth :437 @
+	// 5992657f556bcd9d207a4aca187488462f027cab). Without it ic falls back to
 	// 1em.
 	HasIdeographicInlineSize bool
 }
 
-// UpdateFont builds s's font from its now-final font properties and stores
-// the metrics the font-relative units read (Style.UsedFontSize, ChWidth,
-// XHeight, CapHeight, IcWidth / HasIdeographicInlineSize). A non-nil fs
-// becomes s's selector; with nil, s keeps the selector it carries (set by the
-// cascade, inherited by pseudo and anonymous styles and clones); with none, s
-// keeps the unmeasured fallbacks. Mirrors StyleResolverState::UpdateFont
-// (core/css/resolver/style_resolver_state.cc:553 @
-// 5992657f556bcd9d207a4aca187488462f027cab), which runs FontBuilder::CreateFont
-// and then points CSSToLengthConversionData::FontSizes at the new font.
+// UpdateFont builds s's font from its now-final font properties — plus
+// writing-mode and text-orientation, which set the font's orientation (Blink
+// ComputeFontOrientation) — and stores the metrics the font-relative units
+// read (Style.UsedFontSize, ChWidth, XHeight, CapHeight, IcWidth /
+// HasIdeographicInlineSize). A non-nil fs becomes s's selector; with nil, s
+// keeps the selector it carries (set by the cascade, inherited by pseudo and
+// anonymous styles and clones); with none, s keeps the unmeasured fallbacks.
+// Mirrors StyleResolverState::UpdateFont (core/css/resolver/
+// style_resolver_state.cc:553 @ 5992657f556bcd9d207a4aca187488462f027cab),
+// which runs FontBuilder::CreateFont and then points
+// CSSToLengthConversionData::FontSizes at the new font.
 func (s *Style) UpdateFont(fs FontSelector) {
 	if fs != nil {
 		s.fontSelector = fs

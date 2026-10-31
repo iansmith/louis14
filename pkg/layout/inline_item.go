@@ -581,6 +581,11 @@ func collectTextNode(
 		if to, _ := parentStyle.Get("text-orientation"); to != "sideways" {
 			clone := parentStyle.Clone()
 			clone.Set("text-orientation", "sideways")
+			// The font's orientation changed, so re-build it, as Blink's
+			// ComputedStyleBuilder::UpdateFontOrientation does
+			// (core/style/computed_style.cc:3274-3287 @
+			// 5992657f556bcd9d207a4aca187488462f027cab).
+			clone.UpdateFont(nil)
 			parentStyle = clone
 		}
 	}
