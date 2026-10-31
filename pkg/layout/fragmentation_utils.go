@@ -308,25 +308,50 @@ func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResu
 }
 
 // CalculateBreakAppealBefore scores the appeal of breaking before the given
-// child. Mirrors Blink's CalculateBreakAppealBefore (fragmentation_utils.cc).
-//
-// Args:
-//   - hasContainerSeparation: there is at least one prior in-flow child in
-//     this container (so a break before this child is a real boundary, not
-//     the start-of-container).
-//   - breakableAtStartOfResumedContainer: a break before the first child of
-//     a resumed container is allowed (IsBreakableAtStartOfResumedContainer);
-//     the appeal then floors at the space's MinBreakAppeal instead of
-//     LastResort.
+// child. Mirrors Blink's child overload of CalculateBreakAppealBefore
+// (fragmentation_utils.cc:222-233 @ a9f50e522efa): it derives the
+// break-between value and whether the start of a resumed container is
+// breakable, then defers to CalculateBreakAppealBeforeWithStatus.
+// hasContainerSeparation: there is at least one prior in-flow child in this
+// container (so a break before this child is a real boundary, not the
+// start-of-container).
 func CalculateBreakAppealBefore(
 	space ConstraintSpace,
+	child *LayoutInputNode,
+	layoutResult *LayoutResult,
+	builder *BoxFragmentBuilder,
+	hasContainerSeparation bool,
+) BreakAppeal {
+	status := LayoutResultSuccess
+	if layoutResult != nil {
+		status = layoutResult.Status
+	}
+	breakableAtStartOfContainer := IsBreakableAtStartOfResumedContainer(space, layoutResult)
+	breakBetween := CalculateBreakBetweenValue(child, layoutResult, builder)
+	return CalculateBreakAppealBeforeWithStatus(
+		space, status, breakBetween, hasContainerSeparation, breakableAtStartOfContainer)
+}
+
+// CalculateBreakAppealBeforeWithStatus is Blink's status overload of
+// CalculateBreakAppealBefore (fragmentation_utils.cc:235-266 @
+// a9f50e522efa); Go has no overloading. layoutResultStatus is
+// LayoutResultSuccess or LayoutResultOutOfFragmentainerSpace.
+// breakableAtStartOfContainer: a break before the first child of a resumed
+// container is allowed (IsBreakableAtStartOfResumedContainer); the appeal
+// then floors at the space's MinBreakAppeal instead of LastResort.
+func CalculateBreakAppealBeforeWithStatus(
+	space ConstraintSpace,
+	layoutResultStatus EStatus,
 	breakBetween string,
 	hasContainerSeparation bool,
-	breakableAtStartOfResumedContainer bool,
+	breakableAtStartOfContainer bool,
 ) BreakAppeal {
 	appeal := BreakAppealPerfect
-	if !hasContainerSeparation {
-		if !breakableAtStartOfResumedContainer {
+	// Without container separation this is the start of the container: not
+	// a valid break point, unless it is the start of a resumed container. A
+	// child that ran out of fragmentainer space must move on regardless.
+	if !hasContainerSeparation && layoutResultStatus == LayoutResultSuccess {
+		if !breakableAtStartOfContainer {
 			return BreakAppealLastResort
 		}
 		appeal = space.MinBreakAppeal
@@ -484,20 +509,33 @@ func SetupSpaceBuilderForFragmentation(parentSpace ConstraintSpace, fragmentaine
 }
 
 // IsBreakableAtStartOfResumedContainer reports whether a break is allowed
-// before the first child of a container that resumed after a break. Normally
-// that is not a valid breakpoint (nothing would be placed in the
-// fragmentainer), but when the enclosing column algorithm passed down a
-// MinBreakAppeal better than LastResort — a nested multicol that may have
-// more space in the next outer fragmentainer (cla.cc:930-935) — breaking here
-// is permitted so content can be pushed to that outer fragmentainer instead
-// of taking a worse break. Mirrors Blink's
-// IsBreakableAtStartOfResumedContainer (fragmentation_utils.cc:214-219 @
-// a9f50e522efa): MinBreakAppeal != LastResort && IsBreakInside(previous
-// break token) && is_first_for_node. `space` is the container's own space, so
-// its BreakToken is the previous break token; callers only invoke this for
-// children that are first-for-node (no incoming token, or a break-before one).
-func IsBreakableAtStartOfResumedContainer(space ConstraintSpace) bool {
-	return space.MinBreakAppeal != BreakAppealLastResort && space.BreakToken.IsBreakInside()
+// before the given child, laid out first in a container that resumed after
+// a break. Normally that is not a valid breakpoint (nothing would be placed
+// in the fragmentainer), but when the enclosing column algorithm passed down
+// a MinBreakAppeal better than LastResort — a nested multicol that may have
+// more space in the next outer fragmentainer (cla.cc:930-935) — breaking
+// here is permitted so content can be pushed to that outer fragmentainer
+// instead of taking a worse break. Mirrors Blink's result overload
+// (fragmentation_utils.cc:198-212 @ a9f50e522efa): an aborted result is
+// never breakable, and is_first_for_node comes from the child's fragment.
+// Blink's builder argument only supplies the previous break token, which
+// louis14 keeps on the container's own space.
+func IsBreakableAtStartOfResumedContainer(space ConstraintSpace, childLayoutResult *LayoutResult) bool {
+	if childLayoutResult == nil {
+		return IsBreakableAtStartOfResumedContainerWithFirstForNode(space, true)
+	}
+	if childLayoutResult.Status != LayoutResultSuccess {
+		return false
+	}
+	return IsBreakableAtStartOfResumedContainerWithFirstForNode(space, childLayoutResult.Fragment.IsFirstForNode())
+}
+
+// IsBreakableAtStartOfResumedContainerWithFirstForNode is Blink's builder
+// overload of IsBreakableAtStartOfResumedContainer (fragmentation_utils.cc:
+// 214-219 @ a9f50e522efa); Go has no overloading. `space` is the
+// container's own space, so its BreakToken is the previous break token.
+func IsBreakableAtStartOfResumedContainerWithFirstForNode(space ConstraintSpace, isFirstForNode bool) bool {
+	return space.MinBreakAppeal != BreakAppealLastResort && space.BreakToken.IsBreakInside() && isFirstForNode
 }
 
 // MovePastBreakpoint decides whether the laid-out child can stay in the
@@ -524,7 +562,7 @@ func MovePastBreakpoint(
 	// No space used in the fragmentainer yet: breaking before would make no
 	// progress, unless the container is breakable at its resumed start.
 	refuseBreakBefore := spaceLeft >= fragmentainerBlockSize &&
-		!IsBreakableAtStartOfResumedContainer(space)
+		!IsBreakableAtStartOfResumedContainer(space, layoutResult)
 
 	// A child that starts past the end (e.g. pushed by its margin) must be
 	// broken before; so must one that starts exactly at the end and broke
@@ -570,17 +608,12 @@ func MovePastBreakpoint(
 // that is moved past although it does not fit (monolithic content at the
 // start of the fragmentainer), so column balancing can stretch. Mirrors
 // MovePastBreakpoint → PropagateSpaceShortage → CalculateSpaceShortage
-// (fragmentation_utils.cc:1016-1053, :1230-1240 @ a9f50e522efa), with
-// louis14's TrustedChildSpaceShortage narrowing of the child-reported value.
+// (fragmentation_utils.cc:995-1053, :1230-1240 @ a9f50e522efa).
 func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *LayoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
 	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
 		return
 	}
-	shortage := TrustedChildSpaceShortage(space, layoutResult)
-	if shortage <= 0 {
-		shortage = fragmentainerBlockOffset + blockSize - fragmentainerBlockSize
-	}
-	builder.PropagateSpaceShortage(shortage)
+	builder.PropagateSpaceShortage(CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize))
 }
 
 // BlockSizeForFragmentation is the block-size a parent attributes to a
@@ -602,22 +635,20 @@ func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutRes
 		layoutResult.BlockSizeForFragmentation)
 }
 
-// TrustedChildSpaceShortage returns the space shortage a broken child
-// reported inside itself, or 0 when the parent should derive the shortage
-// from the child's size instead. Blink always trusts the child's report
-// (CalculateSpaceShortage, fragmentation_utils.cc:1046-1051 @ a9f50e522efa);
-// louis14 trusts it only when the child's break violated a break-avoidance
-// (break-inside:avoid / monolithic, or a sub-perfect appeal deeper inside).
-// louis14's inline layout reports no shortage for plain line breaks and its
-// stretch loop lacks Blink's CurrentContentBlockOffset budget clamp, so an
-// unconditional merge lets one column's report over-stretch a balanced row
-// (LOU-320/LOU-325 unit tests; LOU-383: multicol-span-all-margin-bottom-001).
-func TrustedChildSpaceShortage(space ConstraintSpace, childResult *LayoutResult) float64 {
-	if childResult.BreakToken != nil && childResult.MinSpaceShortage > 0 &&
-		(ShouldAvoidBreakInside(space, childResult) || childResult.BreakAppeal < BreakAppealPerfect) {
-		return childResult.MinSpaceShortage
+// CalculateSpaceShortage returns how much more fragmentainer space would have
+// let the child fit here: the space shortage the child reported inside itself
+// when it has one (it broke inside, or something inside it was moved past
+// without fitting, so a whole-child figure is impossible or pointless),
+// otherwise the child's block-size for fragmentation past the fragmentainer
+// end. Mirrors Blink's CalculateSpaceShortage (fragmentation_utils.cc:1021-1053
+// @ a9f50e522efa); the trusted child report is :1046-1051. Blink's
+// block_size_override and aborted-layout (kIndefiniteSize) cases have no
+// louis14 caller.
+func CalculateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, fragmentainerBlockOffset, fragmentainerBlockSize float64) float64 {
+	if layoutResult.MinSpaceShortage > 0 {
+		return layoutResult.MinSpaceShortage
 	}
-	return 0
+	return fragmentainerBlockOffset + BlockSizeForFragmentation(space.WritingDirection, layoutResult) - fragmentainerBlockSize
 }
 
 // BreakBeforeChildIfNeeded is the master fragmentation entry point a per-child
@@ -654,6 +685,17 @@ func BreakBeforeChildIfNeeded(
 		return BreakStatusBrokeBefore, true
 	}
 
+	// fragmentation_utils.cc:919-920 @ a9f50e522efa.
+	appealBefore := CalculateBreakAppealBefore(space, child, layoutResult, builder, hasContainerSeparation)
+
+	// Child-overload MovePastBreakpoint (fragmentation_utils.cc:1077-1083 @
+	// a9f50e522efa): layout aborted, so no fragment was produced and there
+	// is nothing to move past — break before the child.
+	if layoutResult != nil && layoutResult.Status != LayoutResultSuccess {
+		builder.SetBreakAppeal(appealBefore)
+		return BreakStatusBrokeBefore, false
+	}
+
 	// Phase 16.d.2/3 (v2 B2): during initial column-balancing pass, propagate
 	// unbreakable block-size up to the column algorithm so it can floor the
 	// auto column block-size. Mirrors Blink's BreakBeforeChildIfNeeded
@@ -669,8 +711,6 @@ func BreakBeforeChildIfNeeded(
 		return BreakStatusContinue, false
 	}
 
-	appealBefore := CalculateBreakAppealBefore(
-		space, breakBetween, hasContainerSeparation, IsBreakableAtStartOfResumedContainer(space))
 	if MovePastBreakpoint(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize, appealBefore, builder) {
 		return BreakStatusContinue, false
 	}
