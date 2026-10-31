@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -6351,6 +6352,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	if box == nil {
 		return
 	}
+	layer = r.withFontFaceFeatures(layer)
 
 	segs := r.computeSelectionSegments(box, box.Text)
 	if len(segs) == 1 && !segs[0].selected {
@@ -6670,6 +6672,44 @@ func maxTextShadowExtent(shadows []css.TextShadow) float64 {
 // drift between the two call sites.
 func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
 	return r.openFont(r.fontPathForLayer(layer), layer.FontSize)
+}
+
+// withFontFaceFeatures returns layer, or — when the face it draws with has
+// an @font-face font-feature-settings descriptor — a shallow copy whose
+// FontFeatures start with the descriptor features the property does not
+// override. Mirrors Blink's ShapeRange, which inserts the face's
+// FontPlatformData::ResolvedFeatures before the font's features
+// (platform/fonts/shaping/harfbuzz_shaper.cc:327-340 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func (r *Renderer) withFontFaceFeatures(layer *PaintLayer) *PaintLayer {
+	if r.fonts.Registry == nil {
+		return layer
+	}
+	descriptor := r.fonts.Registry.FontFeatureSettingsForPath(r.fontPathForLayer(layer))
+	if descriptor == "" {
+		return layer
+	}
+	resolved := resolveFontFeatureSettingsDescriptor(layer.FontFeatureSettings, parseFontFeatureSettings(descriptor))
+	if len(resolved) == 0 {
+		return layer
+	}
+	copied := *layer
+	copied.FontFeatures = append(resolved, layer.FontFeatures...)
+	return &copied
+}
+
+// resolveFontFeatureSettingsDescriptor keeps the descriptor features whose
+// tag the font-feature-settings property does not name. Mirrors Blink's
+// ResolveFontFeatureSettingsDescriptor (platform/fonts/
+// resolved_font_features.cc:14-43 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func resolveFontFeatureSettingsDescriptor(existing, descriptor []textshape.FontFeature) []textshape.FontFeature {
+	var resolved []textshape.FontFeature
+	for _, f := range descriptor {
+		if !slices.ContainsFunc(existing, func(e textshape.FontFeature) bool { return e.Tag == f.Tag }) {
+			resolved = append(resolved, f)
+		}
+	}
+	return resolved
 }
 
 // fontPathForLayer is the font file this layer's text is drawn with — the

@@ -244,6 +244,11 @@ type FontFaceRule struct {
 	AscentOverride  *float64 // ascent-override descriptor value
 	DescentOverride *float64 // descent-override descriptor value
 	LineGapOverride *float64 // line-gap-override descriptor value
+
+	// FeatureSettings is the font-feature-settings descriptor's value, ""
+	// when absent or "normal". Mirrors FontFace::feature_settings_
+	// (core/css/font_face.cc:522-523 @ 5992657f556bcd9d207a4aca187488462f027cab).
+	FeatureSettings string
 }
 
 // KeyframeRule represents a single keyframe stop in a @keyframes rule.
@@ -6341,6 +6346,10 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 			ff.DescentOverride = parseFontMetricOverride(val)
 		case "line-gap-override":
 			ff.LineGapOverride = parseFontMetricOverride(val)
+		case "font-feature-settings":
+			if val != "normal" {
+				ff.FeatureSettings = val
+			}
 		}
 	}
 

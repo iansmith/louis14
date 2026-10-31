@@ -2,6 +2,7 @@ package text
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -80,6 +81,9 @@ type FontRegistry struct {
 	// is used. MetricsOverrideForPath falls back to this map when no path match
 	// is found, after extracting the family from the font path.
 	overridesByFamily map[string]MetricsOverride
+	// featureSettingsByPath maps a synthetic font path to its @font-face
+	// font-feature-settings descriptor value (see FontFeatureSettingsForPath).
+	featureSettingsByPath map[string]string
 }
 
 // NewFontRegistry creates a new FontRegistry.
@@ -155,6 +159,56 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	}
 
 	return syntheticFontPath(lowerFamily, variant), nil
+}
+
+// AddUserFontFaceRules registers every @font-face rule's face with its
+// descriptors (unicode-range, metric overrides, font-feature-settings).
+// Mirrors StyleEngine::AddUserFontFaceRules (core/css/style_engine.cc:3612-3629
+// @ 5992657f556bcd9d207a4aca187488462f027cab), which creates a FontFace per
+// rule and adds it to the FontFaceCache. A face whose fetch fails is logged
+// and skipped, but its metric overrides are kept by family so a local font
+// serving that family still gets them.
+func (fr *FontRegistry) AddUserFontFaceRules(faces []css.FontFaceRule, fetcher FontFetcher) {
+	for _, face := range faces {
+		if face.Src == nil {
+			continue
+		}
+		mo := MetricsOverride{
+			Ascent:  face.AscentOverride,
+			Descent: face.DescentOverride,
+			LineGap: face.LineGapOverride,
+		}
+		path, err := fr.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fetcher)
+		if err != nil {
+			log.Printf("font-face: %v", err)
+			fr.SetFontFamilyOverride(face.Family, mo)
+			continue
+		}
+		fr.SetUnicodeRanges(path, face.UnicodeRanges)
+		fr.SetFontFaceOverride(path, mo)
+		if face.FeatureSettings != "" {
+			fr.mu.Lock()
+			if fr.featureSettingsByPath == nil {
+				fr.featureSettingsByPath = make(map[string]string)
+			}
+			fr.featureSettingsByPath[path] = face.FeatureSettings
+			fr.mu.Unlock()
+		}
+	}
+}
+
+// FontFeatureSettingsForPath returns the font-feature-settings descriptor of
+// the @font-face that registered path, "" for none — the value Blink's
+// CSSFontFace::GetFontData merges into the face's FontDescription
+// (core/css/css_font_face.cc:149-151 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func (fr *FontRegistry) FontFeatureSettingsForPath(path string) string {
+	if fr == nil {
+		return ""
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return fr.featureSettingsByPath[path]
 }
 
 // SetFontFaceOverride stores metric overrides for a synthetic font path.
