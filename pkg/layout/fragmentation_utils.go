@@ -308,25 +308,52 @@ func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResu
 }
 
 // CalculateBreakAppealBefore scores the appeal of breaking before the given
-// child. Mirrors Blink's CalculateBreakAppealBefore (fragmentation_utils.cc).
-//
-// Args:
-//   - hasContainerSeparation: there is at least one prior in-flow child in
-//     this container (so a break before this child is a real boundary, not
-//     the start-of-container).
-//   - breakableAtStartOfResumedContainer: a break before the first child of
-//     a resumed container is allowed (IsBreakableAtStartOfResumedContainer);
-//     the appeal then floors at the space's MinBreakAppeal instead of
-//     LastResort.
+// child. Mirrors Blink's child overload of CalculateBreakAppealBefore
+// (fragmentation_utils.cc:222-233 @ a9f50e522efa): it derives the
+// break-between value and whether the start of a resumed container is
+// breakable, then defers to CalculateBreakAppealBeforeWithStatus.
+// hasContainerSeparation: there is at least one prior in-flow child in this
+// container (so a break before this child is a real boundary, not the
+// start-of-container).
 func CalculateBreakAppealBefore(
 	space ConstraintSpace,
+	child *LayoutInputNode,
+	layoutResult *LayoutResult,
+	builder *BoxFragmentBuilder,
+	hasContainerSeparation bool,
+) BreakAppeal {
+	status := LayoutResultSuccess
+	if layoutResult != nil {
+		status = layoutResult.Status
+	}
+	// Result overload of IsBreakableAtStartOfResumedContainer
+	// (fragmentation_utils.cc:198-212 @ a9f50e522efa): an aborted result is
+	// never breakable at the start. Callers only pass first-for-node
+	// children.
+	breakableAtStartOfContainer := status == LayoutResultSuccess &&
+		IsBreakableAtStartOfResumedContainer(space)
+	breakBetween := CalculateBreakBetweenValue(child, layoutResult, builder)
+	return CalculateBreakAppealBeforeWithStatus(
+		space, status, breakBetween, hasContainerSeparation, breakableAtStartOfContainer)
+}
+
+// CalculateBreakAppealBeforeWithStatus is Blink's status overload of
+// CalculateBreakAppealBefore (fragmentation_utils.cc:235-266 @
+// a9f50e522efa); Go has no overloading. layoutResultStatus is
+// LayoutResultSuccess or LayoutResultOutOfFragmentainerSpace.
+// breakableAtStartOfContainer: a break before the first child of a resumed
+// container is allowed (IsBreakableAtStartOfResumedContainer); the appeal
+// then floors at the space's MinBreakAppeal instead of LastResort.
+func CalculateBreakAppealBeforeWithStatus(
+	space ConstraintSpace,
+	layoutResultStatus EStatus,
 	breakBetween string,
 	hasContainerSeparation bool,
-	breakableAtStartOfResumedContainer bool,
+	breakableAtStartOfContainer bool,
 ) BreakAppeal {
 	appeal := BreakAppealPerfect
 	if !hasContainerSeparation {
-		if !breakableAtStartOfResumedContainer {
+		if !breakableAtStartOfContainer {
 			return BreakAppealLastResort
 		}
 		appeal = space.MinBreakAppeal
@@ -563,8 +590,7 @@ func BreakBeforeChildIfNeeded(
 	}
 
 	// fragmentation_utils.cc:919-920 @ a9f50e522efa.
-	appealBefore := CalculateBreakAppealBefore(
-		space, breakBetween, hasContainerSeparation, IsBreakableAtStartOfResumedContainer(space))
+	appealBefore := CalculateBreakAppealBefore(space, child, layoutResult, builder, hasContainerSeparation)
 
 	// Child-overload MovePastBreakpoint (fragmentation_utils.cc:1077-1083 @
 	// a9f50e522efa): layout aborted, so no fragment was produced and there
