@@ -32,6 +32,7 @@ const (
 	tagHmtx          = 0x686d7478
 	tagVhea          = 0x76686561
 	tagVmtx          = 0x766d7478
+	tagOS2           = 0x4f532f32
 	maxWOFF2SFNTSize = 30 << 20 // Blink's kMaxDecompressedSize (30MB)
 )
 

@@ -36,24 +36,23 @@ func (h harfBuzzFace) UnitsPerEmFromHeadTable() int {
 // harfbuzz_font_data.h:47-83, :92-104), all @
 // 5992657f556bcd9d207a4aca187488462f027cab:
 //
-//   - size_per_unit_ = platform_data.size() / units_per_em (:71-77), at the
-//     font's exact size;
+//   - size_per_unit_ = platform_data.size() / UnitsPerEmFromHeadTable()
+//     (:71-77), at the font's exact size;
 //   - height_fallback_ = lroundf(ascent) + lroundf(descent) (:69), from
 //     FontMetrics::AscentDescentWithHacks called with no ascent/descent
-//     override (:64-65) — louis14's FontAscentFromFont + FontDescentFromFont
-//     with no registry, its FontMetrics::Height().
+//     override (:64-65) — ascentDescentWithHacks, the FreeType face
+//     ascender/descender Skia reports. Not louis14's line metrics
+//     (FontAscentFromFont/FontDescentFromFont), whose source differs
+//     (Liberation Serif 20px: 18 there, 22 here and in Chrome).
 //
-// The fallback inherits openFont's integer-size quantization (openFont opens
-// the font at the rounded size) and mazzy's ascent/descent source; both are
-// pre-existing louis14 metric choices, shared with line metrics. Blink
-// re-scales one shared OpenTypeVerticalData in place; louis14 returns a
+// Blink re-scales one shared OpenTypeVerticalData in place; louis14 returns a
 // scaled copy whose advance slices are shared read-only, so concurrent
 // callers at different sizes cannot race.
 func (h harfBuzzFace) VerticalData() openTypeVerticalData {
 	p := h.platformData
 	t := typefaceForPath(p.fontPath)
 	v := *t.vertical
-	height := FontAscentFromFont(p.size, p.fontPath, nil) + FontDescentFromFont(p.size, p.fontPath, nil)
-	v.SetScaleAndFallbackMetrics(p.size/float64(t.upem), int(height))
+	ascent, descent := ascentDescentWithHacks(t, p.size)
+	v.SetScaleAndFallbackMetrics(p.size/float64(h.UnitsPerEmFromHeadTable()), int(ascent+descent))
 	return v
 }
