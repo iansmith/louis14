@@ -747,10 +747,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
-		// no Blink analog: Blink decides per line box (non-zero height,
-		// fragmentation_utils.cc:885-892 @ a9f50e522efa); louis14 places
-		// inline content as one unit.
-		hasBreakOpportunityBeforeNextChild = true
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -1635,7 +1631,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
 			// 2767-2772 @ a9f50e522efa).
 			if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
-				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(resumeChildTokens[child])
+				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, resumeChildTokens[child])
 			}
 
 			// For a <fieldset>, the first/last baseline comes from the

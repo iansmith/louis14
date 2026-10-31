@@ -630,6 +630,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	var line LineInfo
 	isFirstLine := true
 	firstLineAscent = -1.0 // -1 means not yet set
+	// Whether a line placed so far left a breakpoint before the next line,
+	// giving it container separation. The lines are this block's only
+	// in-flow children, so this is the block's own flag (Blink
+	// BlockLayoutAlgorithm::has_break_opportunity_before_next_child_,
+	// block_layout_algorithm.cc:311, :2767-2772 @ a9f50e522efa).
+	hasBreakOpportunityBeforeNextChild := false
 
 	// openInlineStack tracks inline spans opened on prior lines that are
 	// still open at the start of the current line. Passed into createLineBoxEx
@@ -1172,6 +1178,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
 					inlineBreakToken.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
 				}
+				// The appeal of breaking before this line: last resort
+				// without container separation, so the parent prefers a
+				// break before this block when it has one. Blink
+				// BreakBeforeChildIfNeeded → CalculateBreakAppealBefore,
+				// whose break-between for an inline child is the joined
+				// value (fragmentation_utils.cc:133-136, :235-266), recorded
+				// by BreakBeforeChild (:944-1014) @ a9f50e522efa.
+				lineResult := &LayoutResult{Fragment: lineFragment}
+				builder.SetBreakAppeal(CalculateBreakAppealBeforeWithStatus(
+					bla.space, LayoutResultSuccess,
+					builder.JoinedBreakBetweenValue(lineResult.InitialBreakBefore),
+					hasBreakOpportunityBeforeNextChild,
+					IsBreakableAtStartOfResumedContainer(bla.space, lineResult)))
 				break
 			}
 			// A line that does not fit is moved past anyway when breaking
@@ -1204,6 +1223,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// BlockSizeForFragmentation, so it contributes its own block-size
 		// (fragmentation_utils.cc:1545-1583), not its glyphs' overhang.
 		builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: lineFragment}, lineOffset)
+		if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
+			hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, lineFragment, nil)
+		}
 
 		// Propagate OOF candidates collected from atomic inline children
 		// (e.g. abs-pos descendants of inline-blocks) to the parent block.
