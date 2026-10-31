@@ -270,12 +270,8 @@ func TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback(t *testing.T) {
 func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 	fr := NewFontRegistry()
 	registerTestFace(t, fr, "LOU425-Orient-ExTest", "ExTest.woff", fetchCSSValuesResource)
-	zeroW := registerTestFace(t, fr, "LOU425-Orient-ZeroW", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU425-Orient-ZeroW", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
 	sel := NewCSSFontSelector(configWithRegistry(fr))
-	serif := DefaultFontConfig().resolveBuiltinFamily("serif", false, false)
-	if fontMetricsHeight(20, serif) == 20 {
-		t.Fatal("fixture: Liberation Serif's Height at 20px must differ from 1em")
-	}
 
 	for _, tc := range []struct {
 		family, writingMode, textOrientation string
@@ -289,9 +285,11 @@ func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 		{"LOU425-Orient-ExTest", "vertical-lr", "upright", 20},
 		// ChTestZeroWidthZero: a "0" glyph with a zero advance.
 		{"LOU425-Orient-ZeroW", "horizontal-tb", "", 0},
-		{"LOU425-Orient-ZeroW", "vertical-rl", "upright", fontMetricsHeight(20, zeroW)},
-		// Builtin serif (LiberationSerif, "0" present).
-		{"serif", "vertical-rl", "upright", fontMetricsHeight(20, serif)},
+		// Height fallback: OS/2 sTypo 768/-256 at upem 1024 → 15 + 5.
+		{"LOU425-Orient-ZeroW", "vertical-rl", "upright", 20},
+		// Builtin serif (LiberationSerif, "0" present): hhea 1825/-443 at
+		// upem 2048 → 18 + 4, not 1em.
+		{"serif", "vertical-rl", "upright", 22},
 	} {
 		props := []string{"writing-mode", tc.writingMode}
 		if tc.textOrientation != "" {

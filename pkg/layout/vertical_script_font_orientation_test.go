@@ -29,8 +29,9 @@ func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T)
 	parent.Set("writing-mode", "vertical-rl")
 	parent.Set("text-orientation", "upright")
 	parent.UpdateFont(text.NewCSSFontSelector(text.DefaultFontConfig()))
-	serif := text.DefaultFontConfig().FontPathForFamily("serif", false, false, false, false)
-	upright := text.FontAscentFromFont(20, serif, nil) + text.FontDescentFromFont(20, serif, nil)
+	// Liberation Serif's height fallback at 20px: hhea 1825/-443 at upem
+	// 2048 → 18 + 4.
+	const upright = 22.0
 	if parent.ChWidth != upright {
 		t.Fatalf("upright parent ZeroWidth = %v, want the serif Height %v", parent.ChWidth, upright)
 	}
