@@ -84,3 +84,68 @@ func TestCalculateBreakAppealBefore_NoContainerSeparationSuccessIsLastResort(t *
 		t.Errorf("success, with separation: appeal = %v, want BreakAppealPerfect", got)
 	}
 }
+
+// TestCalculateBreakAppealBefore_ResumedChildAtStartOfResumedContainerIsLastResort
+// (LOU-419 review): at the start of a resumed container that permits a
+// break there (MinBreakAppeal above LastResort, previous break inside),
+// only a child producing its first fragment may take that floor. A child
+// itself resumed after a break inside it is not first-for-node, so breaking
+// before it stays last-resort (IsBreakableAtStartOfResumedContainer result
+// overload :198-212 ANDs in IsFirstForNode via :214-219 @ a9f50e522efa).
+func TestCalculateBreakAppealBefore_ResumedChildAtStartOfResumedContainerIsLastResort(t *testing.T) {
+	_, child, builder := outOfFragmentainerSpaceFixture()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 100}).
+		SetHasBlockFragmentation(true).
+		SetBlockFragmentationType(FragmentColumn).
+		SetFragmentainerBlockSize(100).
+		SetMinBreakAppeal(BreakAppealPerfect).
+		SetBreakToken(&BlockBreakToken{}).
+		Build()
+
+	firstForNode := &LayoutResult{Fragment: &PhysicalFragment{}}
+	if got := CalculateBreakAppealBefore(space, child, firstForNode, builder, false); got != BreakAppealPerfect {
+		t.Errorf("first-for-node child: appeal = %v, want MinBreakAppeal (BreakAppealPerfect)", got)
+	}
+	resumed := &LayoutResult{Fragment: &PhysicalFragment{notFirstForNode: true}}
+	if got := CalculateBreakAppealBefore(space, child, resumed, builder, false); got != BreakAppealLastResort {
+		t.Errorf("resumed child: appeal = %v, want BreakAppealLastResort", got)
+	}
+}
+
+// TestIsFirstForNode_ResumedFragmentsAreNotFirst (LOU-419 review): a block
+// and a nested multicol that break across two columns produce a first
+// fragment (IsFirstForNode) and a resumed one (not), as Blink's
+// SetupFragmentBuilderForFragmentation clears is_first_for_node after a
+// break inside (fragmentation_utils.cc:426-430 @ a9f50e522efa).
+func TestIsFirstForNode_ResumedFragmentsAreNotFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		style *css.Style
+	}{
+		{"block", makeStyle("display", "block")},
+		{"multicol", makeStyle("display", "block", "column-count", "1", "column-gap", "0")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tall := makeNode("div")
+			container := makeNode("div", tall)
+			styles := map[*html.Node]*css.Style{
+				container: tc.style,
+				tall:      makeStyle("display", "block", "height", "150px"),
+			}
+			mc := layoutTwoColumn(t, container, styles, "auto")
+			first := childLinkFor(mc.Children[0].Fragment, container)
+			second := childLinkFor(mc.Children[1].Fragment, container)
+			if first == nil || second == nil {
+				t.Fatalf("container fragments: col1=%v col2=%v, want both", first != nil, second != nil)
+			}
+			if !first.Fragment.IsFirstForNode() {
+				t.Errorf("column 1 fragment: IsFirstForNode = false, want true")
+			}
+			if second.Fragment.IsFirstForNode() {
+				t.Errorf("column 2 fragment: IsFirstForNode = true, want false")
+			}
+		})
+	}
+}

@@ -265,6 +265,15 @@ func (f *PhysicalFragment) IsColumnBox() bool {
 	return f != nil && f.Type == FragmentBox && f.BoxType == BoxTypeColumn
 }
 
+// IsFirstForNode reports whether this is the first fragment generated for
+// its node; false for a fragment resumed after a break inside the node. A
+// nil fragment (aborted layout) counts as first. Mirrors Blink's
+// PhysicalBoxFragment::IsFirstForNode (physical_box_fragment.h:439 @
+// a9f50e522efa), copied from the builder (physical_box_fragment.cc:427).
+func (f *PhysicalFragment) IsFirstForNode() bool {
+	return f == nil || !f.notFirstForNode
+}
+
 // IsFragmentainerBox reports whether this fragment is a fragmentainer
 // (currently only a multicol column box; pagination would extend this
 // to kPageArea). Mirrors Blink PhysicalFragment::IsFragmentainerBox /
@@ -376,6 +385,14 @@ type PhysicalFragment struct {
 	// (fragmentation_utils.go) for `TallestUnbreakableBlockSize`
 	// propagation during the initial column-balancing pass.
 	IsMonolithic bool
+
+	// notFirstForNode is set when this box fragment resumes its node after a
+	// break inside it (not its first fragment). Inverted so that every
+	// fragment not built by a fragmenting algorithm (line boxes, text,
+	// struct literals) reads as first-for-node, matching Blink's default
+	// (is_first_for_node_ = true, box_fragment_builder.h:790 @
+	// a9f50e522efa). Read through IsFirstForNode.
+	notFirstForNode bool
 
 	// RenderedColumnCount is the number of column fragments actually placed
 	// in this multicol fragment (column-fill:auto may render fewer columns
