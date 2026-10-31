@@ -54,7 +54,8 @@ type SelectorPart struct {
 	PseudoClasses []string            // Pseudo-classes (e.g., "hover", "focus", "active", "visited")
 
 	// NamespaceURI is the resolved namespace of the type or universal
-	// selector (Blink CSSSelector::TagQName().NamespaceURI(),
+	// selector, written or (for a type-less compound) the implicit `ns|*`
+	// (Blink CSSSelector::TagQName().NamespaceURI(),
 	// core/css/css_selector.h:505 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	// "" means any namespace (Blink g_star_atom), so a zero-value
 	// SelectorPart and every context-free parse match elements in any
@@ -65,7 +66,8 @@ type SelectorPart struct {
 
 	// hasNamespacePrefix is true when the type or universal selector was
 	// written with a `prefix|` (Blink: a non-null QualifiedName prefix).
-	// Only unprefixed type selectors take the default namespace.
+	// A prefixed type or universal selector never takes the default
+	// namespace (Selector.resolveNamespaces).
 	hasNamespacePrefix bool
 }
 

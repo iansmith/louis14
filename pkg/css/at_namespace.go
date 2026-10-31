@@ -45,35 +45,45 @@ func (ss *Stylesheet) parserAddNamespace(prefix, uri string) {
 	}
 }
 
-// resolveNamespaces gives every type or universal selector written without
-// a `prefix|` the default namespace, as Blink's CSSSelectorParser does with
-// DetermineNamespace(null prefix) -> DefaultNamespace()
-// (core/css/parser/css_selector_parser.cc:2244-2256 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520), for a type-only compound
-// (:1333-1343) and for the type selector PrependTypeSelectorIfNeeded
-// prepends to a longer compound (:2283-2295). defaultNamespace ""
+// resolveNamespaces gives the selector's compounds the default namespace,
+// as Blink's CSSSelectorParser does at parse time. defaultNamespace ""
 // (no @namespace) leaves the selector unconstrained.
 //
-// Compounds without a type selector are deliberately left unconstrained:
-// louis14 ports neither the implicit `ns|*` PrependTypeSelectorIfNeeded
-// adds to them under a non-`*` default namespace (:2278-2284) nor the
-// resist_default_namespace_ / ignore_default_namespace_ rule for :is/:where/
-// :not/:has arguments (:1318-1321) yet (LOU-438). Leaving them unconstrained
-// is what keeps is-default-ns-002 (`*|*:is(:disabled)`) matching; adding
-// the implicit `ns|*` without the ignore rule would break it.
+//   - A type or universal selector written without a `prefix|` takes it:
+//     DetermineNamespace(null prefix) -> DefaultNamespace()
+//     (core/css/parser/css_selector_parser.cc:2244-2256 @
+//     d4ecdfed88f962439247c2ad36b8fe47805b1520), for a type-only compound
+//     (:1333-1343) and for a type selector PrependTypeSelectorIfNeeded
+//     prepends to a longer compound (:2283-2290).
+//   - A compound without a type selector takes it too, as the implicit
+//     `ns|*` PrependTypeSelectorIfNeeded prepends whenever
+//     DefaultNamespace() is not `*` (:2270-2290), so under an XHTML
+//     default `.container` is `xhtml|*.container`.
+//   - Except the subject compound of a functional pseudo-class argument
+//     with no type selector: with resistDefaultNamespace (Blink
+//     resist_default_namespace_, set for :is/:where/:has/:not) the last
+//     compound ignores the default namespace (ignore_default_namespace_,
+//     :1310-1322), so `*|*:is(:disabled)` still matches in any namespace
+//     (is-default-ns-002). Like Blink's AtEndIgnoringWhitespace check, only
+//     the last branch of the argument list qualifies: parseNestedSelector
+//     passes resistDefaultNamespace false for the others.
 //
-// No Blink analog for running this after parsing: louis14's parseSelector
-// takes no sheet context because it also serves context-free callers
-// (ParseSelector for pkg/js, @supports selector()).
-func (s *Selector) resolveNamespaces(defaultNamespace string) {
+// Prefixed selectors keep matching any namespace (no prefix map, LOU-437
+// L4). No Blink analog for running this after parsing: louis14's
+// parseSelector takes no sheet context because it also serves
+// context-free callers (ParseSelector for pkg/js, @supports selector()).
+func (s *Selector) resolveNamespaces(defaultNamespace string, resistDefaultNamespace bool) {
 	if defaultNamespace == "" {
 		return
 	}
 	s.defaultNamespace = defaultNamespace
+	subject := len(s.Parts) - 1
 	for i := range s.Parts {
-		if s.Parts[i].Element != "" && !s.Parts[i].hasNamespacePrefix {
-			s.Parts[i].NamespaceURI = defaultNamespace
+		p := &s.Parts[i]
+		if p.hasNamespacePrefix || (p.Element == "" && resistDefaultNamespace && i == subject) {
+			continue
 		}
+		p.NamespaceURI = defaultNamespace
 	}
 }
 
@@ -88,7 +98,7 @@ func (s *Selector) resolveNamespaces(defaultNamespace string) {
 // d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (ss *Stylesheet) parserAppendRules(rules []Rule) {
 	for i := range rules {
-		rules[i].Selector.resolveNamespaces(ss.DefaultNamespace)
+		rules[i].Selector.resolveNamespaces(ss.DefaultNamespace, false)
 	}
 	ss.Rules = append(ss.Rules, rules...)
 }
