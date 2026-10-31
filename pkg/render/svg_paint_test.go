@@ -1,7 +1,10 @@
 package render_test
 
 import (
+	"fmt"
 	"image"
+	"math"
+	"strconv"
 	"testing"
 
 	"louis14/pkg/html"
@@ -1101,4 +1104,145 @@ func TestSVG_OverflowClipPerAxis(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// LOU-426: SVG root content origin + viewport clip follow the pixel-snapped
+// border box.
+//
+// Expected rows/columns come from Blink, not from louis14's output:
+// SVGRootPainter::TransformToPixelSnappedBorderBox translates content to
+// ToPixelSnappedRect(border box).origin (svg_root_painter.cc:28-32,
+// physical_rect.h:222-224) and then applies LocalToBorderBoxTransform, which
+// carries the border+padding content offset unsnapped
+// (layout_svg_root.cc:426-445). The default inline-svg viewport clip is
+// ToSnappedClipRect of the content box (paint_property_tree_builder.cc:2822-
+// 2824, :3409-3419). All @ Chromium 5992657f556bcd9d207a4aca187488462f027cab.
+// ---------------------------------------------------------------------------
+
+// fractionalSVGOffsets are the margin offsets of the block <svg> under test.
+// 40 is the integer control; the others land the border box between pixel
+// rows (48.9375 is the y the ch-unit-001 reference <svg> lays out at).
+var fractionalSVGOffsets = []float64{40, 40.3, 40.5, 40.7, 48.9375}
+
+// fractionalSVGPage renders a block 80x80 <svg> with the given inline style
+// and SVG content on a white page.
+func fractionalSVGPage(t *testing.T, style, content string) *image.RGBA {
+	t.Helper()
+	return renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<svg width="80" height="80" style="display:block;`+style+`">`+content+
+		`</svg></body></html>`, 200, 200)
+}
+
+// assertNotWhite fails when the pixel at (x, y) carries no paint at all.
+// Used where the row is only partially covered by geometry, so any amount of
+// paint counts.
+func assertNotWhite(t *testing.T, img *image.RGBA, x, y int, where string) {
+	t.Helper()
+	r, g, b, _ := img.At(x, y).RGBA()
+	if r>>8 >= 250 && g>>8 >= 250 && b>>8 >= 250 {
+		t.Errorf("%s at (%d,%d): got white, want painted", where, x, y)
+	}
+}
+
+// assertGreen / assertWhite: fully covered by the green rect / no paint.
+func assertGreen(t *testing.T, img *image.RGBA, x, y int, where string) {
+	t.Helper()
+	sampleColorClose(t, img, x, y, 0, 128, 0, 12, where)
+}
+
+func assertWhite(t *testing.T, img *image.RGBA, x, y int, where string) {
+	t.Helper()
+	sampleColorClose(t, img, x, y, 255, 255, 255, 0, where)
+}
+
+// TestSVG_RootContentPixelSnapped pins the SVG root content origin and the
+// fallback viewport clip to the pixel-snapped border box.
+func TestSVG_RootContentPixelSnapped(t *testing.T) {
+	// Each case places the <svg> border box at (offset, offset) and probes
+	// rows and columns S+d with S = round(offset), along the line S+mid.
+	cases := []struct {
+		name    string
+		content string
+		mid     int
+		green   []int
+		white   []int
+	}{
+		// inner: a 20x20 rect 10px inside the viewport, so only the content
+		// origin decides where it lands (the viewport clip never touches
+		// it). Blink: S+10 .. S+29.
+		{"inner", `<rect x="10" y="10" width="20" height="20" fill="green"/>`,
+			20, []int{10, 29}, []int{9, 30}},
+		// overflow: a rect that overhangs the viewport by 10px on every
+		// side, so the fallback viewport clip alone sets the painted edges.
+		// Blink: ToSnappedClipRect(content box) = [S, S+80) on both axes
+		// (SnapSizeToPixel(80, offset) = 80 for these offsets).
+		{"overflow", `<rect x="-10" y="-10" width="120" height="120" fill="green"/>`,
+			40, []int{0, 79}, []int{-1, 80}},
+	}
+	for _, tc := range cases {
+		for _, o := range fractionalSVGOffsets {
+			os := strconv.FormatFloat(o, 'f', -1, 64)
+			t.Run(tc.name+"/"+os, func(t *testing.T) {
+				img := fractionalSVGPage(t, "margin-top:"+os+"px;margin-left:"+os+"px", tc.content)
+				s := int(math.Round(o))
+				for _, d := range tc.green {
+					assertGreen(t, img, s+tc.mid, s+d, fmt.Sprintf("row S%+d", d))
+					assertGreen(t, img, s+d, s+tc.mid, fmt.Sprintf("column S%+d", d))
+				}
+				for _, d := range tc.white {
+					assertWhite(t, img, s+tc.mid, s+d, fmt.Sprintf("row S%+d", d))
+					assertWhite(t, img, s+d, s+tc.mid, fmt.Sprintf("column S%+d", d))
+				}
+			})
+		}
+	}
+
+	// fracPadding: the border box is snapped, the padding is added unsnapped
+	// on top (Blink folds content_rect.offset into LocalToBorderBoxTransform,
+	// layout_svg_root.cc:439-443). margin-top 40.3 -> snapped border-box y 40;
+	// padding-top 0.4 -> content origin y 40.4, so the rect at y=10 covers
+	// 50.4 .. 70.4 and touches row 50. Rounding box.Y+padding as one sum
+	// (41) would leave row 50 white.
+	const fracPadding = "margin-top:40.3px;padding-top:0.4px"
+	t.Run("fracPadding/inner", func(t *testing.T) {
+		img := fractionalSVGPage(t, fracPadding,
+			`<rect x="10" y="10" width="20" height="20" fill="green"/>`)
+		assertWhite(t, img, 20, 49, "row 49")
+		assertNotWhite(t, img, 20, 50, "row 50")
+		assertGreen(t, img, 20, 51, "row 51")
+	})
+
+	// fracPadding/overflow: the clip is ToSnappedClipRect of the content box
+	// (40.3 + 0.4 = 40.7 -> row 41), snapped on its own rather than derived
+	// from the snapped border-box origin.
+	t.Run("fracPadding/overflow", func(t *testing.T) {
+		img := fractionalSVGPage(t, fracPadding,
+			`<rect x="-10" y="-10" width="120" height="120" fill="green"/>`)
+		assertWhite(t, img, 40, 40, "row 40")
+		assertGreen(t, img, 40, 41, "row 41")
+		assertGreen(t, img, 40, 120, "row 120")
+		assertWhite(t, img, 40, 121, "row 121")
+	})
+}
+
+// TestSVG_RootPaintServerFollowsSnappedOrigin: paint servers map device
+// pixels back through DeviceFromUser, so DeviceFromUser must carry the same
+// snapped origin the DrawContext translate uses. margin-top 40.7 -> snapped
+// origin y 41; a userSpaceOnUse gradient with a hard stop at user y 40.7
+// (offset 0.50875 of 0..80) puts the red/blue boundary at device y 81.7.
+// The paint server samples pixel centres, so row 81 (81.5) is red and row 82
+// (82.5) is blue. An unsnapped DeviceFromUser moves the boundary to 81.4 and
+// turns row 81 blue.
+func TestSVG_RootPaintServerFollowsSnappedOrigin(t *testing.T) {
+	img := fractionalSVGPage(t, "margin-top:40.7px;margin-left:40.7px",
+		`<defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="80" gradientUnits="userSpaceOnUse">`+
+			`<stop offset="0" stop-color="red"/>`+
+			`<stop offset="0.50875" stop-color="red"/>`+
+			`<stop offset="0.50875" stop-color="blue"/>`+
+			`<stop offset="1" stop-color="blue"/>`+
+			`</linearGradient></defs>`+
+			`<rect x="0" y="0" width="80" height="80" fill="url(#lg)"/>`)
+	sampleColorClose(t, img, 81, 81, 255, 0, 0, 12, "row 81 (above the stop)")
+	sampleColorClose(t, img, 81, 82, 0, 0, 255, 12, "row 82 (below the stop)")
 }
