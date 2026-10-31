@@ -286,58 +286,56 @@ func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
 		!mla.space.IsInitialColumnBalancingPass
 }
 
+// fragmentainerBuilder is this multicol's FragmentainerBox: louis14 clones
+// the block-end decorations along with the block-start ones
+// (ShouldCloneBoxEndDecorations = hasClonedBoxDecorations, as in
+// finishFragmentation).
+func (mla *MulticolLayoutAlgorithm) fragmentainerBuilder() FragmentainerBox {
+	return FragmentainerBox{
+		Space:                        &mla.space,
+		BorderScrollbarPadding:       mla.borderScrollbarPadding,
+		HasClonedBoxDecorations:      mla.hasClonedBoxDecorations,
+		ShouldCloneBoxEndDecorations: mla.hasClonedBoxDecorations,
+	}
+}
+
 // fragmentainerCapacityForChildren is the outer fragmentainer block-size
-// available to this multicol's content: the raw size for
-// box-decoration-break:slice, minus the repeated block-start (and block-end)
-// decorations when they are cloned, and never less than 1px so content can
-// make progress; Indefinite while the outer fragmentainer block-size is
-// unknown (e.g. the outer's initial balancing pass). Mirrors Blink's
-// FragmentainerCapacity(builder,
-// is_for_children=true) and ClampedToValidFragmentainerCapacity
-// (fragmentation_utils.h:156-203 @ a9f50e522efa); louis14 always clones the
-// block-end decorations along with the block-start ones.
+// available to this multicol's content, or Indefinite while it is unknown
+// (e.g. the outer's initial balancing pass). Mirrors Blink's
+// LayoutAlgorithm::FragmentainerCapacityForChildren() (layout_algorithm.h:
+// 160-162 @ a9f50e522efa).
 func (mla *MulticolLayoutAlgorithm) fragmentainerCapacityForChildren() float64 {
 	if !mla.isConstrainedByOuterFragmentation() {
 		return Indefinite
 	}
-	size := mla.space.FragmentainerBlockSize
-	if mla.hasClonedBoxDecorations {
-		size -= mla.borderScrollbarPadding.BlockStart + mla.borderScrollbarPadding.BlockEnd
-	}
-	return math.Max(size, 1)
+	return FragmentainerCapacity(mla.fragmentainerBuilder(), true)
 }
 
 // fragmentainerOffsetForChildren is this multicol's offset from the outer
 // fragmentainer start as seen by its children: with cloned decorations a
 // child at the block-start content edge counts as offset 0. Mirrors Blink's
-// FragmentainerOffset(builder, is_for_children=true)
-// (fragmentation_utils.h:205-226 @ a9f50e522efa) — the border-box-edge
-// offset, unlike BlockLayoutAlgorithm.fragmentainerOffsetForChildren, which
-// already adds the block-start edge for that algorithm's content-relative
-// cursor.
+// LayoutAlgorithm::FragmentainerOffsetForChildren() (layout_algorithm.h:
+// 164-166 @ a9f50e522efa) — the border-box-edge offset, unlike
+// BlockLayoutAlgorithm.fragmentainerOffsetForChildren, which already adds
+// the block-start edge for that algorithm's content-relative cursor.
 func (mla *MulticolLayoutAlgorithm) fragmentainerOffsetForChildren() float64 {
-	offset := mla.space.FragmentainerOffset
-	if mla.hasClonedBoxDecorations && !(mla.space.BreakToken != nil && mla.space.BreakToken.IsAtBlockEnd) {
-		offset -= mla.borderScrollbarPadding.BlockStart
-	}
-	return offset
+	return FragmentainerOffset(mla.fragmentainerBuilder(), true)
 }
 
 // fragmentainerSpaceLeftForChildren is the outer fragmentainer space left
 // from this multicol's border-box block-start edge, clamped to zero, or
 // Indefinite when the outer fragmentainer block-size is unknown. Mirrors
-// Blink's LayoutAlgorithm::FragmentainerSpaceLeftForChildren() →
-// FragmentainerSpaceLeft(builder, is_for_children=true)
-// (layout_algorithm.h:168-170, fragmentation_utils.h:239-257 @
-// a9f50e522efa). Blink's line_offset is measured from the same border-box
-// edge (intrinsic_block_size_ starts at the block-start border/padding,
-// cla.cc:335); louis14's line offsets are content-box relative, so callers
-// subtract blockStartBorderPadding() (see spaceLeftForContent).
+// Blink's LayoutAlgorithm::FragmentainerSpaceLeftForChildren()
+// (layout_algorithm.h:168-170 @ a9f50e522efa). Blink's line_offset is
+// measured from the same border-box edge (intrinsic_block_size_ starts at
+// the block-start border/padding, cla.cc:335); louis14's line offsets are
+// content-box relative, so callers subtract blockStartBorderPadding() (see
+// spaceLeftForContent).
 func (mla *MulticolLayoutAlgorithm) fragmentainerSpaceLeftForChildren() float64 {
 	if !mla.isConstrainedByOuterFragmentation() {
 		return Indefinite
 	}
-	return math.Max(0, mla.fragmentainerCapacityForChildren()-mla.fragmentainerOffsetForChildren())
+	return FragmentainerSpaceLeft(mla.fragmentainerBuilder(), true)
 }
 
 // spaceLeftForContent is fragmentainerSpaceLeftForChildren() measured from
@@ -398,10 +396,11 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 		}
 		total = math.Max(total, mla.minBlockSize+bsp.BlockSum())
 	}
-	// FragmentainerSpaceLeft(builder, is_for_children=false).
+	// FragmentainerSpaceLeft(builder, is_for_children=false)
+	// (fragmentation_utils.cc:550-551 @ a9f50e522efa).
 	spaceLeft := Indefinite
 	if mla.isConstrainedByOuterFragmentation() {
-		spaceLeft = math.Max(0, math.Max(mla.space.FragmentainerBlockSize, 1)-mla.space.FragmentainerOffset)
+		spaceLeft = FragmentainerSpaceLeft(mla.fragmentainerBuilder(), false)
 	}
 	desired := math.Max(0, total-previouslyConsumed)
 	return FinishFragmentation(FinishFragmentationInput{
@@ -471,19 +470,6 @@ func applyNestedFinish(builder *BoxFragmentBuilder, res FinishFragmentationResul
 	if res.ClampAppealToLastResort {
 		builder.ClampBreakAppeal(BreakAppealLastResort)
 	}
-}
-
-// columnBreakTokenAdvanced reports whether a column's outgoing break token made
-// forward progress: its consumed block-size must strictly exceed the previous
-// column's. This is the load-bearing comparison of the inner column loop's
-// non-advancing-token guard (no Blink analog: defensive). `prevConsumed` is
-// NaN before the first column, so the first token always counts as progress
-// (any comparison with NaN is false, and we invert). Only the consumed
-// block-size is a valid progress signal — the sequence number always
-// increments (it is a fragment counter) even when a 0-height column places
-// nothing.
-func columnBreakTokenAdvanced(consumed, prevConsumed float64) bool {
-	return !(consumed <= prevConsumed)
 }
 
 // columnsOverflowInInlineDirection reports whether columns past
@@ -1686,8 +1672,7 @@ type layoutLineResult struct {
 	// breakToken is the column-content token to resume at: Blink's
 	// result->GetPhysicalFragment().GetBreakToken()
 	// (column_layout_algorithm.cc:586-587). On a line without a spanner it is
-	// the last column's token after the non-advancing-token guard, which may
-	// have dropped it.
+	// the last column's token.
 	breakToken *BlockBreakToken
 }
 
@@ -1915,20 +1900,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
 		// when inline overflow is not permitted (cla.cc:1022-1025).
-		//
-		// no Blink analog: defensive guard. When overflowInline (or Indefinite
-		// column height) removes the column-count cap, a column that makes zero
-		// progress — the outgoing break token's consumed block-size does not
-		// advance past the previous column's — would spin forever (e.g. content
-		// resumed into a 0-height post-spanner column,
-		// multicol-span-all-children-height-003). The sequence number always
-		// increments (it is a fragment counter), so consumed size is the
-		// progress signal, plus one bounded exception: a column that turns a
-		// forced break-before into an unforced one (forcedBreakBeforeCount).
-		// Blink guarantees termination via break-token progress invariants;
-		// louis14 asserts it explicitly.
-		prevTokenConsumed := math.NaN()
-		prevTokenForced := 0
 		for col := 0; col < mla.usedColumnCount || capOff; col++ {
 			// IsInsideBalancedColumns is set when the line is balanced (also
 			// under column-height; Blink passes balance_columns, cla.cc:929-935
@@ -2059,28 +2030,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, balanceColumns, marginStrut, builder)
 					}
 				}
-			}
-			// no Blink analog: defensive non-advancing-token guard (see the
-			// loop header). If this column's outgoing token's consumed size did
-			// not advance past the previous column's, no progress was made and
-			// continuing would loop forever — stop the row.
-			// One legitimate non-advancing column is exempt: a resumed
-			// column that pushed its first child whole to the next outer
-			// fragmentainer (breakable at start of a resumed container,
-			// cla.cc:930-935) is empty by design and must keep its token;
-			// the column-count cap ends that row (MinBreakAppeal is only
-			// passed under mayHaveMoreSpace, which implies the cap is on).
-			pushedToNextOuter := colMinBreakAppeal != BreakAppealLastResort &&
-				len(colFrag.Children) == 0
-			if colBreakToken != nil && !pushedToNextOuter {
-				consumed := colBreakToken.ConsumedBlockSize.Float64()
-				forced := forcedBreakBeforeCount(colBreakToken)
-				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) && forced >= prevTokenForced {
-					colBreakToken = nil
-					break
-				}
-				prevTokenConsumed = consumed
-				prevTokenForced = forced
 			}
 			// Phase 25 Cmt-5c: track whether any column saw deferred OOF
 			// descendants this row, so we keep emitting empty trailing

@@ -1146,7 +1146,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// (FragmentainerOffsetAtBfc + bfc_block_offset, :3156-3158); the
 			// guard is MovePastBreakpoint's refuse_break_before, space_left >=
 			// fragmentainer_block_size (fragmentation_utils.cc:1169-1171).
-			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
+			fragEnd := bla.fragmentainerCapacityForChildren() - bla.fragmentainerOffsetForChildren
 			if blockOffset+lineHeight > fragEnd && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a
 				// break token so the next column resumes from this line.
