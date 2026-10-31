@@ -35,17 +35,11 @@ func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
 	parent := NewStyle()
 	parent.Set("font-size", "20px")
 	parent.SetZeroWidth(0)
-	for name, newAnon := range map[string]func(*Style) *Style{
-		"NewAnonymousBlockStyle":         NewAnonymousBlockStyle,
-		"NewAnonymousTableCellStyle":     NewAnonymousTableCellStyle,
-		"NewAnonymousTableRowStyle":      NewAnonymousTableRowStyle,
-		"NewAnonymousInlineRubyStyle":    NewAnonymousInlineRubyStyle,
-		"NewAnonymousTableRowGroupStyle": NewAnonymousTableRowGroupStyle,
-	} {
-		s := newAnon(parent)
+	for _, display := range anonymousBoxDisplays {
+		s := CreateAnonymousStyleWithDisplay(parent, string(display))
 		s.Set("width", "calc(100px + 5ch)")
 		if got, _ := s.GetLength("width"); got != 100 {
-			t.Errorf("%s: calc(100px + 5ch) = %v, want 100 (parent's measured ch = 0)", name, got)
+			t.Errorf("%s: calc(100px + 5ch) = %v, want 100 (parent's measured ch = 0)", display, got)
 		}
 	}
 }
@@ -56,8 +50,8 @@ func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
 // and the font selector — as Blink builds an anonymous style from the parent
 // style, inheriting its Font
 // (StyleResolver::CreateAnonymousStyleBuilderWithDisplay,
-// core/css/resolver/style_resolver.cc:3318 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// core/css/resolver/style_resolver.cc:3607 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
 func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 	parent := NewStyle()
 	parent.Set("font-size", "20px")
@@ -68,15 +62,13 @@ func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 	parent.IcWidth, parent.HasIdeographicInlineSize = 19, true
 	parent.BaseDir = "base/"
 	parent.fontSelector = fakeFontSelector{}
-	for name, newAnon := range map[string]func(*Style) *Style{
-		"NewAnonymousBlockStyle":          NewAnonymousBlockStyle,
-		"NewAnonymousTableCellStyle":      NewAnonymousTableCellStyle,
-		"NewAnonymousTableRowStyle":       NewAnonymousTableRowStyle,
-		"NewAnonymousInlineRubyStyle":     NewAnonymousInlineRubyStyle,
-		"NewAnonymousTableRowGroupStyle":  NewAnonymousTableRowGroupStyle,
-		"Clone":                           (*Style).Clone,
-		"CreateAnonymousStyleWithDisplay": func(p *Style) *Style { return CreateAnonymousStyleWithDisplay(p, "block") },
-	} {
+	newStyles := map[string]func(*Style) *Style{"Clone": (*Style).Clone}
+	for _, display := range anonymousBoxDisplays {
+		newStyles["CreateAnonymousStyleWithDisplay("+string(display)+")"] = func(p *Style) *Style {
+			return CreateAnonymousStyleWithDisplay(p, string(display))
+		}
+	}
+	for name, newAnon := range newStyles {
 		s := newAnon(parent)
 		if s.ViewportWidth != 800 || s.ViewportHeight != 600 || s.ChWidth != 11 || !s.HasZeroWidth ||
 			s.UsedFontSize != 18 || !s.UsedFontSizeSet || s.XHeight != 9 || s.CapHeight != 14 ||

@@ -1851,17 +1851,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS position:relative — "start wins over end" in logical coordinates.
 	// Sticky is scroll-time, not layout-time; leave RelativeOffset zero here.
 	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
-		cbWidth := fla.space.AvailableSize.InlineSize.Float64()
-		cbHeight := fla.space.AvailableSize.BlockSize.Float64()
-		if cbHeight == Indefinite {
-			cbHeight = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: cbWidth,
-			BlockSize:  cbHeight,
-		}, wdm.WM)
-		offset := fla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			fla.style, wdm, geomLogicalToOld(fla.space.AvailableSize))
 	}
 
 	return result
@@ -1902,7 +1893,7 @@ func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 			}
 		}
 		if hasContent {
-			anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+			anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 			result = append(result, &LayoutInputNode{
 				style:       anonStyle,
 				children:    textRun,

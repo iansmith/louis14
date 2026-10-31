@@ -2901,30 +2901,13 @@ func ApplyInheritedFrom(child, parent *Style) {
 // position:relative/sticky + top/right/bottom/left are also preserved so the
 // blocks inside a positioned inline shift with the inline (CSS 2.1 §9.4.3).
 func NewBlockifiedStyle(inline *Style) *Style {
-	s := NewAnonymousBlockStyle(inline)
+	s := CreateAnonymousStyleWithDisplay(inline, string(DisplayBlock))
 	// Preserve stacking-context-creating non-inheritable properties.
 	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change", "position", "top", "right", "bottom", "left"} {
 		if val, ok := inline.Get(prop); ok {
 			s.Set(prop, val)
 		}
 	}
-	return s
-}
-
-// NewAnonymousBlockStyle creates a style for an anonymous block box
-// (CSS 2.1 §9.2.1.1). Anonymous boxes inherit all inheritable properties
-// from the parent and have display:block with zero margin/border/padding.
-func NewAnonymousBlockStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "block")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -2940,94 +2923,19 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 // box would see an empty vector and miss its splitting box's decoration —
 // the LOU-151 bug observed on `text-decoration-subelements-005`.
 //
-// Mirrors Blink's `StyleResolver::CreateAnonymousStyleWithDisplay` which
-// carries the `AppliedTextDecoration` vector through to anonymous wrappers
-// (Blink ref @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Companion to
+// Mirrors Blink's builder.SetBaseTextDecorationData(
+// parent_style.AppliedTextDecorationData()) in
+// StyleResolver::CreateAnonymousStyleBuilderWithDisplay
+// (core/css/resolver/style_resolver.cc:3612 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Called by
+// CreateAnonymousStyleWithDisplay, and by resolveMarkerStyle for an inside
+// ::marker (the author ::marker cascade path does not go through the
+// builder). Companion to
 // the cascade-time method ResolveAppliedTextDecorations in style.go.
 func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 	if len(parent.AppliedTextDecorations) > 0 {
 		s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), parent.AppliedTextDecorations...)
 	}
-}
-
-// NewAnonymousTableCellStyle creates a style for an anonymous table-cell box
-// that inherits from the parent row style. Per CSS Tables §2.1, when a
-// non-table-cell child appears inside a table-row, it must be wrapped in
-// an anonymous table-cell box.
-func NewAnonymousTableCellStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-cell")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowStyle creates a style for an anonymous table-row box.
-// Per CSS 2.1 §17.2.1, non-row children of a table-row-group (and bare
-// non-row siblings of rows in a table) are wrapped in anonymous table-row
-// boxes. Mirrors Blink's LayoutTableRow::CreateAnonymousWithParent.
-func NewAnonymousTableRowStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-row")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousInlineRubyStyle creates a style for the single anonymous
-// inline `display: ruby` box that wraps the children of a block-level
-// `display: block ruby` element (CSS Display L3 + Blink's
-// LayoutRubyAsBlock two-box model). The principal box is the
-// block-flow generated from the block-ruby element itself; this style
-// is for the inline-ruby child that actually carries the ruby column
-// items.
-//
-// Per Blink layout_ruby_as_block.cc, the inline ruby child inherits
-// all inheritable properties from the principal box; non-inheritable
-// box properties (margin/border/padding) live on the principal block
-// box, not on the inline ruby. Mirrors NewAnonymousBlockStyle but with
-// display:ruby.
-func NewAnonymousInlineRubyStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "ruby")
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowGroupStyle creates a style for an anonymous
-// table-row-group box. Per CSS 2.1 §17.2.1, a run of non-proper-table
-// children of a table/inline-table is wrapped in an anonymous
-// table-row-group. Mirrors Blink's LayoutTableSection::CreateAnonymousWithParent.
-func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-row-group")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
 }
 
 // resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
