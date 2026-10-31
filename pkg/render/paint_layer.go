@@ -274,6 +274,12 @@ type PaintLayer struct {
 	// Populated from CSS like "kern" 1, "liga" 0. Empty when "normal".
 	FontFeatures []textshape.FontFeature
 
+	// FontFeatureSettings is the font-feature-settings property alone (the
+	// leading entries of FontFeatures, before the font-variant-* features):
+	// Blink's FontDescription::FeatureSettings(), which decides which
+	// @font-face descriptor features survive (withFontFaceFeatures).
+	FontFeatureSettings []textshape.FontFeature
+
 	// Text emphasis marks (small marks above/below each character):
 	TextEmphasisMark  string    // resolved mark character ("●", "•", etc.); "" = none
 	TextEmphasisColor css.Color // defaults to currentColor
@@ -1308,6 +1314,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// CSS font-feature-settings.
 	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "normal" && ffs != "" {
 		layer.FontFeatures = parseFontFeatureSettings(ffs)
+		layer.FontFeatureSettings = layer.FontFeatures
 	}
 
 	// CSS Fonts 4 §6.7 font-variant-caps: emit the corresponding OpenType

@@ -1,6 +1,8 @@
 package text
 
 import (
+	"encoding/base64"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -107,5 +109,31 @@ func TestWOFF2TripletDecode(t *testing.T) {
 		if points[i] != want[i] {
 			t.Errorf("point %d = %+v, want %+v", i, points[i], want[i])
 		}
+	}
+}
+
+// TestRegisterFontFace_DataURL: an @font-face src that is a data: URL is
+// decoded in place, never handed to the fetcher. Mirrors Blink's
+// ResourceFetcher::CreateResourceForStaticData, which decodes a data: URL
+// with network_utils::ParseDataURL (platform/loader/fetch/
+// resource_fetcher.cc:1061-1063 @ 5992657f556bcd9d207a4aca187488462f027cab)
+// instead of issuing a network request. WPT css-values/ch-unit-019 loads its
+// icon font this way.
+func TestRegisterFontFace_DataURL(t *testing.T) {
+	raw, err := fetchCSSValuesResource("IcTestFullWidth.woff2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "data:font/woff2;base64," + base64.StdEncoding.EncodeToString(raw)
+	noFetch := func(url string) ([]byte, error) {
+		return nil, fmt.Errorf("fetcher called for %.30s", url)
+	}
+	fr := NewFontRegistry()
+	path, err := fr.RegisterFontFace("LOU424-data", src, "", "normal", "normal", noFetch)
+	if err != nil {
+		t.Fatalf("RegisterFontFace(data: URL): %v", err)
+	}
+	if got, _ := MeasureText("水", 20, path); got.Float64() != 20 {
+		t.Errorf("advance of 水 at 20px = %v, want 20", got.Float64())
 	}
 }

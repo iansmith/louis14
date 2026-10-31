@@ -165,36 +165,7 @@ func buildFontConfig(doc *html.Document, resolver wptResourceResolver) (text.Fon
 	}
 
 	registry := text.NewFontRegistry()
-
-	for _, face := range allFaces {
-		if face.Src == nil {
-			continue
-		}
-		hasOverride := face.AscentOverride != nil || face.DescentOverride != nil || face.LineGapOverride != nil
-		mo := text.MetricsOverride{
-			Ascent:  face.AscentOverride,
-			Descent: face.DescentOverride,
-			LineGap: face.LineGapOverride,
-		}
-		path, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, resolver.readFile)
-		if err != nil {
-			log.Printf("font-face: %v", err)
-			// The URL fetch failed, but a local/system font may still serve
-			// this family (e.g. local(Ahem) resolved to fc.Ahem). Store the
-			// override keyed by family so MetricsOverrideForPath can apply it
-			// when the system font path is returned by FontPathForFamily.
-			if hasOverride {
-				registry.SetFontFamilyOverride(face.Family, mo)
-			}
-			continue
-		}
-		if len(face.UnicodeRanges) > 0 {
-			registry.SetUnicodeRanges(path, face.UnicodeRanges)
-		}
-		if hasOverride {
-			registry.SetFontFaceOverride(path, mo)
-		}
-	}
+	registry.AddUserFontFaceRules(allFaces, resolver.readFile)
 
 	fc := text.DefaultFontConfig()
 	fc.Registry = registry
