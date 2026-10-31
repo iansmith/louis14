@@ -3459,13 +3459,21 @@ func hasPaintIsolation(style *css.Style) bool {
 // IsColumnSpanAll() && IsInColumnBfc() && HasBlockFragmentation()
 // (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa).
 func (bla *BlockLayoutAlgorithm) isColumnSpannerChild(child *LayoutInputNode) bool {
-	childStyle := child.Style()
 	return bla.space.HasBlockFragmentation &&
 		bla.space.BlockFragmentationType == FragmentColumn &&
-		childStyle != nil && childStyle.GetColumnSpan() == "all" &&
-		isSelfValidColumnSpanner(childStyle) &&
+		isColumnSpanAll(child) &&
 		!bla.space.ColumnSpannerDescendantsBlocked &&
 		!shouldPreventColumnSpannerDescendants(bla.node)
+}
+
+// isColumnSpanAll reports whether n is a column-span:all box that may span
+// columns on its own account. Mirrors the style half of Blink's
+// LayoutObject::IsColumnSpanAll (layout_object.h:1752-1757 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with isSelfValidColumnSpanner
+// standing in for IsValidColumnSpannerInTree.
+func isColumnSpanAll(n *LayoutInputNode) bool {
+	style := n.Style()
+	return style != nil && style.GetColumnSpan() == "all" && isSelfValidColumnSpanner(style)
 }
 
 // isSelfValidColumnSpanner returns true when an element with column-span:all

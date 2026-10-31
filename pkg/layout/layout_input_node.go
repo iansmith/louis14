@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"slices"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
@@ -39,6 +41,20 @@ type LayoutInputNode struct {
 
 	// children are the layout children (pre-filtered, may include anonymous wrappers).
 	children []*LayoutInputNode
+
+	// parent is the node whose children list holds this node in the
+	// persistent layout tree; nil for the root and for nodes outside it
+	// (an outside ::marker, per-layout anonymous wrappers built by
+	// flex/grid/table layout). Mirrors LayoutObject::parent_
+	// (layout_object.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// Written only by adoptChildren, so parent's children list always
+	// holds this node; siblings are derived from that list rather than
+	// stored. The link is one-directional across the multicol flow-thread
+	// re-parenting: the multicol's first layout makes its content node
+	// (contentNodeCache) the parent of its children, as Blink's
+	// LayoutMultiColumnFlowThread is, while the multicol's own children
+	// list still names them.
+	parent *LayoutInputNode
 
 	// isAnonymous is true for generated anonymous boxes (CSS 2.1 §9.2.1.1).
 	isAnonymous bool
@@ -152,6 +168,36 @@ func (n *LayoutInputNode) Style() *css.Style {
 // Children returns the layout children.
 func (n *LayoutInputNode) Children() []*LayoutInputNode {
 	return n.children
+}
+
+// adoptChildren makes n the layout parent of each of its children. Call it
+// wherever a persistent children list is finalized.
+func (n *LayoutInputNode) adoptChildren() {
+	for _, c := range n.children {
+		c.parent = n
+	}
+}
+
+// NextSibling returns the next block-level sibling in the layout tree, or
+// nil. Text siblings are skipped, as Blink's BlockNode::NextBlockSibling
+// skips the inline (text) LayoutObjects left among block children
+// (block_node.cc:1120-1143, block_node.h:88-89, layout_input_node.cc:185-188
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
+	if n.parent == nil {
+		return nil
+	}
+	siblings := n.parent.children
+	i := slices.Index(siblings, n)
+	if i < 0 {
+		return nil
+	}
+	for _, next := range siblings[i+1:] {
+		if !next.IsText() {
+			return next
+		}
+	}
+	return nil
 }
 
 // IsAnonymous returns true for generated anonymous boxes.

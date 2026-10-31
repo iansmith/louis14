@@ -68,7 +68,19 @@ func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
 	b.normalizeTableSubtrees(tree)
 	b.normalizeRubySubtrees(tree)
 	assignDOMIndices(tree)
+	linkLayoutParents(tree)
 	return tree
+}
+
+// linkLayoutParents sets every node's parent link once the tree's children
+// lists are final (the normalize passes above rewrite them). no Blink
+// analog: Blink's LayoutObject::AddChild links parent and siblings as the
+// tree is built; louis14 builds children slices bottom-up and links after.
+func linkLayoutParents(n *LayoutInputNode) {
+	n.adoptChildren()
+	for _, c := range n.children {
+		linkLayoutParents(c)
+	}
 }
 
 // normalizeTableSubtrees walks the built layout tree and applies the
