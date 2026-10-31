@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,7 +45,14 @@ var chromeFontFamilies = []string{
 	"Courier", "Courier New", "Liberation Mono",
 }
 
-var doctypeRe = regexp.MustCompile(`(?i)^\s*<!doctype[^>]*>`)
+// doctypeRe matches a leading doctype, along with any BOM and comments before
+// it, so the injected head goes after it and Chrome keeps the page's mode.
+var doctypeRe = regexp.MustCompile(`(?is)^\x{FEFF}?\s*(?:<!--.*?-->\s*)*<!doctype[^>]*>`)
+
+// fileURL returns the file:// URL of the absolute path p.
+func fileURL(p string) string {
+	return (&url.URL{Scheme: "file", Path: p}).String()
+}
 
 // fontFaceStyle returns a <style> element declaring the regular, bold, italic
 // and bold-italic face of every chromeFontFamilies name.
@@ -62,8 +70,8 @@ func fontFaceStyle() string {
 				if italic {
 					style = "italic"
 				}
-				fmt.Fprintf(&b, "@font-face{font-family:%q;font-weight:%s;font-style:%s;src:url(\"file://%s\")}\n",
-					name, weight, style, fc.FontPathForFamily(name, bold, italic, false, false))
+				fmt.Fprintf(&b, "@font-face{font-family:%q;font-weight:%s;font-style:%s;src:url(%q)}\n",
+					name, weight, style, fileURL(fc.FontPathForFamily(name, bold, italic, false, false)))
 			}
 		}
 	}
@@ -82,7 +90,7 @@ func chromeCapturePage(html, baseDir string) string {
 		rest = html[loc[1]:]
 	}
 	if baseDir != "" {
-		fmt.Fprintf(&head, "<base href=\"file://%s/\">", baseDir)
+		fmt.Fprintf(&head, "<base href=%q>", fileURL(baseDir)+"/")
 	}
 	head.WriteString(fontFaceStyle())
 	return head.String() + rest
@@ -122,7 +130,7 @@ func captureChromeReference(t *testing.T, tc visualTestCase) error {
 		fmt.Sprintf("--window-size=%d,%d", tc.width, tc.height),
 		"--user-data-dir="+filepath.Join(tmp, "profile"),
 		"--screenshot="+ref,
-		"file://"+page)
+		fileURL(page))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chrome: %v\n%s", err, out)
 	}
@@ -158,8 +166,13 @@ func isExpectedFailure(t *testing.T) bool {
 // TestMain loads expectedFailuresFile, and fails a full run whose list names a
 // test that no longer exists, so stale entries can't accumulate.
 func TestMain(m *testing.M) {
-	var err error
-	if expectedFailures, err = visualtest.LoadExpectedFailures(expectedFailuresFile); err != nil {
+	// LoadExpectedFailures treats a missing file as empty; here that would
+	// report every known gap as a regression, so require the file.
+	_, err := os.Stat(expectedFailuresFile)
+	if err == nil {
+		expectedFailures, err = visualtest.LoadExpectedFailures(expectedFailuresFile)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -174,4 +187,23 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+func TestChromeCapturePage_InjectsAfterDoctype(t *testing.T) {
+	for name, html := range map[string]string{
+		"plain":   "<!DOCTYPE html><p>x",
+		"bom":     "\uFEFF<!doctype html><p>x",
+		"comment": "<!-- a -->\n<!-- b --><!DOCTYPE html><p>x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			page := chromeCapturePage(html, "/a b#c")
+			doctype := strings.Index(strings.ToLower(page), "<!doctype")
+			if base := strings.Index(page, "<base"); doctype < 0 || base < doctype {
+				t.Errorf("<base> at %d precedes the doctype at %d", base, doctype)
+			}
+			if !strings.Contains(page, `<base href="file:///a%20b%23c/">`) {
+				t.Errorf("base href not URL-escaped: %.120q", page[doctype:])
+			}
+		})
+	}
 }
