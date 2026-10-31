@@ -195,6 +195,32 @@ func TestImageFallback_AltTextHostIsShrinkToFitBlockFlow(t *testing.T) {
 			t.Errorf("fallback img with inline-size = %v; want 66x20 (width reset to auto)", boxDims(box))
 		}
 	})
+	// StyleAdjuster blockifies floats and out-of-flow boxes
+	// (style_adjuster.cc:1173-1178 @ d4ecdfed88f962439247c2ad36b8fe47805b1520)
+	// before the AdjustStyle callback (:1436-1438), so the inline-only reset
+	// (html_image_fallback_helper.cc:274-281) does not fire: the presentational
+	// width/height hints size the host.
+	for _, c := range []struct{ name, style string }{
+		{"a floated host keeps its width/height hints", "float:left"},
+		{"an absolutely positioned host keeps its width/height hints", "position:absolute"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0">
+<div style="width:400px; `+fallbackTestFont+`"><img alt="XXXXX" src="missing.png" width="300" height="200" style="`+c.style+`"></div>`,
+				erroringImageFetcher)
+			node, box := fl.img(t)
+			assertBoxGeometry(t, "fallback img ("+c.style+")", box, 0, 0, 300, 200)
+			s := fl.styles[node]
+			if s == nil {
+				t.Fatal("no style for the fallback img")
+			}
+			for prop, want := range map[string]string{"width": "300px", "height": "200px"} {
+				if v, _ := s.Get(prop); v != want {
+					t.Errorf("computed %s = %q, want %s", prop, v, want)
+				}
+			}
+		})
+	}
 }
 
 func boxDims(b *Box) string {
