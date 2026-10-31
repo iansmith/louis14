@@ -2614,6 +2614,17 @@ func wrapTransformsWithOriginZ(transforms []css.Transform, oz float64) []css.Tra
 // flat parent's context, so its own transform was already 2D-projected
 // at its own paint).
 //
+// An anonymous ancestor without a transform of its own (e.g. the anonymous
+// table, row-group and row generated around a display:table-cell) is
+// skipped: the 3D rendering context follows the DOM ancestor chain, and
+// Blink resets the flattening state only for non-anonymous objects
+// (FragmentPaintPropertyTreeBuilder::UpdateTransform,
+// core/paint/paint_property_tree_builder.cc:1606-1620 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). Such a box has no DOM node.
+// Box.LayoutNode == nil is too broad a test: fragmentToBox also leaves it
+// nil for the block-in-inline wrapper, which keeps its inline's DOM node
+// and stands for that (non-anonymous) LayoutInline.
+//
 // Mirrors Blink's TransformPaintPropertyNode 3D-rendering-context walk
 // in paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
@@ -2622,6 +2633,9 @@ func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
 	}
 	var ancestors []css.Transform
 	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil; ancestor = ancestor.Parent {
+		if ancestor.Node == nil && len(ancestor.Style.GetTransforms()) == 0 {
+			continue
+		}
 		if ancestor.Style.GetTransformStyle() != css.TransformStylePreserve3D {
 			break
 		}

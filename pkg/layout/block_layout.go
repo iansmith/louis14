@@ -2105,11 +2105,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.6.7: For elements that own floats (BFC roots or elements
 	// that contain their own floats), auto block-size extends to clear them.
 	// Elements that only inherit floats from a parent BFC do not extend.
-	if !breaksBeforeEnd && !hasExplicitBlock && hasOwnFloats {
+	// clearedBlock (the content block offset past those floats) is also
+	// computed under an explicit block-size: the table-cell vertical-align
+	// below measures content extent including floats, as Blink's
+	// intrinsic_block_size_ does for every new formatting context
+	// (block_layout_algorithm.cc:1255-1261 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	clearedBlock := blockCursor
+	if !breaksBeforeEnd && hasOwnFloats {
 		bfcCursor := bfcBlockOrigin + blockCursor
 		clearedBlockBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
-		clearedBlock := clearedBlockBfc - bfcBlockOrigin
-		if clearedBlock > blockCursor {
+		clearedBlock = max(blockCursor, clearedBlockBfc-bfcBlockOrigin)
+		if !hasExplicitBlock {
 			blockCursor = clearedBlock
 		}
 	}
@@ -2245,33 +2252,44 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetEndMarginStrut(prevMarginStrut)
 	builder.SetExclusionSpace(exclusionSpace)
 
-	// CSS 2.1 §17.5.3 + CSS Tables 3 §5.4.1 — orphan table-cell vertical-align.
+	// CSS 2.1 §17.5.4 — table-cell vertical-align within the cell's own
+	// block-size. Mirrors Blink FinalizeTableCellLayout
+	// (core/layout/table/table_layout_utils.cc:1575-1640 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520), which
+	// BlockLayoutAlgorithm::FinishLayout runs for every table cell
+	// (core/layout/block_layout_algorithm.cc:1457-1458, gated on
+	// ConstraintSpace::IsTableCell()): the free space between the cell's
+	// block-size (e.g. an explicit `height` above its content) and its
+	// intrinsic block-size moves the children by free/2 (middle) or free
+	// (bottom). louis14's IsTableCell() signal is a non-nil
+	// TableSectionData, which only TableLayoutAlgorithm sets on a cell's
+	// space. Table parts outside a table are wrapped in an anonymous table
+	// at tree-build time (generateMissingTableParents), so a display
+	// table-cell box reaching block layout without one is a layout root or a
+	// box Blink blockifies, and gets no cell alignment.
 	//
-	// A `display: table-cell` box whose ancestor is NOT a proper <table>
-	// falls through to block layout here (see layout_tree_builder.go's
-	// `normalizeTableSubtrees` — reverse §17.2.1 anonymous-table generation
-	// is not implemented yet). For orphan cells we still need to honour
-	// vertical-align so content centres within the cell's explicit
-	// block-size, matching what browsers render after they wrap the
-	// standalone cell in anon table/row boxes.
+	// When distribution grows the row past the cell's block-size,
+	// table_layout.go's Phase-3 resize shifts the children again by the
+	// row-growth part; the two shifts sum to Blink's single shift against
+	// the final row block-size.
 	//
-	// Proper-table cells take the equivalent shift in table_layout.go's
-	// per-row sweep (see the `vaBlockShift` block). We skip this branch
-	// for those (distinguished by a non-nil TableSectionData on the
-	// constraint space), so the shift is applied exactly once.
-	//
-	// Mirrors Blink's `TableCellLayoutAlgorithm` applying
-	// `intrinsic_padding_before` to the cell's content when the row grows
-	// past the cell's intrinsic block-size.
+	// The content extent includes the cell's own floats: a cell is a new
+	// formatting context, whose Blink intrinsic block-size encloses its
+	// floats even under an explicit height (intrinsicBlockSize already
+	// does without one).
+	cellContentBlockSize := intrinsicBlockSize
+	if hasExplicitBlock {
+		cellContentBlockSize = max(cellContentBlockSize, clearedBlock)
+	}
 	if bla.style != nil && bla.style.GetDisplay() == css.DisplayTableCell &&
-		bla.space.TableSectionData == nil && finalBlockSize > intrinsicBlockSize {
+		bla.space.TableSectionData != nil && finalBlockSize > cellContentBlockSize {
 		va := bla.style.GetVerticalAlign()
 		var vaShift float64
 		switch va {
 		case css.VerticalAlignMiddle:
-			vaShift = (finalBlockSize - intrinsicBlockSize) / 2
+			vaShift = (finalBlockSize - cellContentBlockSize) / 2
 		case css.VerticalAlignBottom:
-			vaShift = finalBlockSize - intrinsicBlockSize
+			vaShift = finalBlockSize - cellContentBlockSize
 		}
 		if vaShift > 0 {
 			for i := range builder.children {
@@ -3277,8 +3295,14 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		return NewTableLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayTableRow, css.DisplayTableRowGroup, css.DisplayTableHeaderGroup,
 		css.DisplayTableFooterGroup, css.DisplayTableCell, css.DisplayTableCaption:
-		// Table internals laid out by their parent TableLayoutAlgorithm.
-		// If encountered at top level, treat as block.
+		// Table internals are laid out by their table's
+		// TableLayoutAlgorithm: generateMissingTableParents wraps every
+		// misparented one in an anonymous table at tree-build time. One
+		// reaches here only as the layout root or as a floated,
+		// absolutely positioned, flex or grid item — boxes Blink
+		// blockifies (style_adjuster.cc:765-772, 1174-1178 @
+		// d4ecdfed88f962439247c2ad36b8fe47805b1520) — so lay it out as a
+		// block.
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayFlex, css.DisplayInlineFlex:
 		return NewFlexLayoutAlgorithm(ctx, node, space).Layout()
@@ -3500,11 +3524,7 @@ func shouldPreventColumnSpannerDescendants(node *LayoutInputNode) bool {
 	}
 	// Condition 2: non-block-flow elements (table internals).
 	// CSS table display types that are not the table box itself.
-	d := style.GetDisplay()
-	switch d {
-	case css.DisplayTableCell, css.DisplayTableCaption,
-		css.DisplayTableRow, css.DisplayTableHeaderGroup,
-		css.DisplayTableFooterGroup, css.DisplayTableRowGroup:
+	if isTablePartDisplay(style.GetDisplay()) {
 		return true
 	}
 	// Condition 4: elements creating a new block formatting context.

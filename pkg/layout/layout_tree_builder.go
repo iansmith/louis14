@@ -1,8 +1,10 @@
 package layout
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -69,16 +71,15 @@ func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
 	return tree
 }
 
-// normalizeTableSubtrees walks the built layout tree and applies CSS 2.1
-// §17.2.1 anonymous-table-box generation inside every real table /
-// inline-table subtree. Scoping the normalization to table roots (rather
-// than running it from buildNode at every level) matches what Blink does:
-// standalone display:table-row-group / table-row / table-cell boxes whose
-// ancestor is not a table (e.g. a pseudo-element
-// `div:before { display: table-row-group }` on a non-table div) are left
-// alone — louis14 has not yet implemented the reverse §17.2.1 rule that
-// would generate an anonymous containing table around them, and existing
-// reftests rely on the legacy fall-through-to-block layout.
+// normalizeTableSubtrees walks the built layout tree and applies the
+// downward half of CSS 2.1 §17.2.1 anonymous-table-box generation (rules
+// 1-2: wrap misparented children of a table / row-group / row) inside every
+// real table / inline-table subtree. The upward half (rule 3, "generate
+// missing parents": a table part outside its table level gets an anonymous
+// table, as Blink LayoutObject::AddChild does at layout_object.cc:715-728 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520) runs earlier, per child list in
+// buildNode (generateMissingTableParents), which also fills each anonymous
+// table it creates, so this pass only has authored tables left to fix up.
 func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 	if node == nil {
 		return
@@ -396,6 +397,12 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	if afterNode := b.createPseudoElement(node, style, "after"); afterNode != nil {
 		rawChildren = append(rawChildren, unboxPseudoIfContents(afterNode)...)
 	}
+
+	// CSS 2.1 §17.2.1 rule 3: wrap misparented table parts in an anonymous
+	// table before block-in-inline splitting and anonymous-block generation
+	// classify the children, so they see a block-level table (or an
+	// inline-level inline-table) as Blink's AddChild produces.
+	rawChildren = b.generateMissingTableParents(rawChildren, style)
 
 	// CSS 2.1 §9.2.1.1: If an inline element contains a block-level box,
 	// split the inline around the block (block-in-inline splitting).
@@ -754,6 +761,150 @@ func (b *LayoutTreeBuilder) wrapAnonymousTableBoxes(
 		}
 	}
 	flush()
+	return result
+}
+
+// isTablePartDisplay reports whether d is a table-internal display: cell,
+// row, row-group (incl. header/footer groups) or caption. Mirrors Blink
+// LayoutObject::IsTablePart (core/layout/layout_object.h:1050-1054 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520) minus the column types, which
+// louis14 has no display value for.
+func isTablePartDisplay(d css.DisplayType) bool {
+	switch d {
+	case css.DisplayTableCell, css.DisplayTableRow, css.DisplayTableRowGroup,
+		css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup,
+		css.DisplayTableCaption:
+		return true
+	}
+	return false
+}
+
+// blockifiesChildren reports whether s blockifies its children (CSS Display
+// 3 §2.7: flex and grid containers). Mirrors Blink
+// ComputedStyle::BlockifiesChildren (core/style/computed_style.h:1790-1795
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520), which StyleAdjuster uses to
+// turn a table-cell flex/grid item into a block (style_adjuster.cc:765-772).
+func blockifiesChildren(s *css.Style) bool {
+	if s == nil {
+		return false
+	}
+	switch s.GetDisplay() {
+	case css.DisplayFlex, css.DisplayInlineFlex, css.DisplayGrid, css.DisplayInlineGrid:
+		return true
+	}
+	return false
+}
+
+// requiresAnonymousTableWrappers reports whether child is a table part that
+// needs an anonymous table generated around it (CSS 2.1 §17.2.1 rule 3). The
+// caller has already excluded table / row-group / row parents (they place
+// their own children, see wrapAnonymousTableBoxes) and blockifying parents.
+// Floated and absolutely positioned table parts are excluded because Blink
+// blockifies them at style time (style_adjuster.cc:1174-1178 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), so they are never table parts.
+// Mirrors Blink LayoutObject::RequiresAnonymousTableWrappers
+// (layout_object.cc:600-621 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func requiresAnonymousTableWrappers(child *LayoutInputNode) bool {
+	if child.IsText() || child.Style() == nil || isOutOfFlowOrFloat(child) {
+		return false
+	}
+	return isTablePartDisplay(child.Style().GetDisplay())
+}
+
+// anonymousTableDisplayFor returns the display of the anonymous table
+// generated inside parent: inline-table when parent is an inline box (or a
+// ruby box, which inlinifies its children), table otherwise. Mirrors Blink
+// LayoutTable::CreateAnonymousWithParent
+// (core/layout/table/layout_table.cc:36-51, display chosen at :43 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). `display: block ruby` counts:
+// its children move under an anonymous `display: ruby` box
+// (wrapBlockRubyAsTwoBox), like Blink's LayoutRubyAsBlock.
+func anonymousTableDisplayFor(parent *css.Style) string {
+	switch parent.GetDisplay() {
+	case css.DisplayInline, css.DisplayRuby, css.DisplayRubyText, css.DisplayBlockRuby:
+		return string(css.DisplayInlineTable)
+	}
+	if parent.IsInlineBoxListItem() {
+		return string(css.DisplayInlineTable)
+	}
+	return string(css.DisplayTable)
+}
+
+// generateMissingTableParents applies CSS 2.1 §17.2.1 rule 3 ("generate
+// missing parents") to a box's child list: each run of consecutive table
+// parts whose parent is not the matching table level is wrapped in one
+// anonymous table (or inline-table), which wrapAnonymousTableBoxes then
+// fills down to row-group and row.
+//
+// Mirrors Blink LayoutObject::AddChild (layout_object.cc:715-728 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): a table part reuses the
+// previous sibling when that is an anonymous table, otherwise it gets a new
+// one from LayoutTable::CreateAnonymousWithParent; table->AddChild then
+// builds the section and row (layout_table.cc:234-266). Collapsible
+// whitespace-only text after a table part produces no box in Blink
+// (Text::TextLayoutObjectIsNeeded, core/dom/text.cc:279-323: the previous
+// in-flow box is not inline), so it neither renders nor splits the run;
+// with preserved breaks (white-space: pre / pre-wrap / pre-line /
+// break-spaces) it does produce a box, which ends the run. The white-space
+// read is the text's own style (Blink passes the style of the text's
+// flat-tree parent, text.cc:339-348), which differs from parentStyle for
+// text under a display:contents element.
+//
+// Parents that place their own children are left alone: table, row-group
+// and row (Blink's LayoutTable / LayoutTableSection / LayoutTableRow
+// AddChild overrides; see wrapAnonymousTableBoxes), and flex / grid
+// containers, whose children Blink blockifies so they are not table parts.
+func (b *LayoutTreeBuilder) generateMissingTableParents(
+	children []*LayoutInputNode, parentStyle *css.Style,
+) []*LayoutInputNode {
+	if parentStyle == nil || blockifiesChildren(parentStyle) {
+		return children
+	}
+	switch parentStyle.GetDisplay() {
+	case css.DisplayTable, css.DisplayInlineTable, css.DisplayTableRowGroup,
+		css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup, css.DisplayTableRow:
+		return children
+	}
+	if !slices.ContainsFunc(children, requiresAnonymousTableWrappers) {
+		return children
+	}
+
+	result := make([]*LayoutInputNode, 0, len(children))
+	var table *LayoutInputNode // open anonymous table: the last node emitted
+	var run []*LayoutInputNode
+	prevInFlowIsTablePart := false
+	closeRun := func() {
+		if table != nil {
+			table.children = b.wrapAnonymousTableBoxes(run, table.style)
+			table, run = nil, nil
+		}
+	}
+	for _, child := range children {
+		switch {
+		case requiresAnonymousTableWrappers(child):
+			if table == nil {
+				table = &LayoutInputNode{
+					style: css.CreateAnonymousStyleWithDisplay(
+						parentStyle, anonymousTableDisplayFor(parentStyle)),
+					isAnonymous: true,
+				}
+				result = append(result, table)
+			}
+			run = append(run, child)
+			prevInFlowIsTablePart = true
+		case prevInFlowIsTablePart && child.IsText() &&
+			!whiteSpacePreservesBreaks(cmp.Or(child.Style(), parentStyle).GetWhiteSpace()) &&
+			isCSSWhitespaceOnly(child.TextContent()):
+			// No box for this text (see above).
+		default:
+			closeRun()
+			result = append(result, child)
+			if !isOutOfFlowOrFloat(child) {
+				prevInFlowIsTablePart = false
+			}
+		}
+	}
+	closeRun()
 	return result
 }
 
