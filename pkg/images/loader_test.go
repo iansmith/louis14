@@ -1,11 +1,12 @@
 package images
 
 import (
+	"bytes"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"bytes"
 	"testing"
 )
 
@@ -92,5 +93,55 @@ func TestGetImageDimensions_DataURI(t *testing.T) {
 	}
 	if w != 2 || h != 2 {
 		t.Errorf("expected 2x2, got %dx%d", w, h)
+	}
+}
+
+// TestImageIsPotentiallyAvailable mirrors ImageLoader::ImageIsPotentiallyAvailable
+// (image_loader.cc:284-310 @ d4ecdfed88f962439247c2ad36b8fe47805b1520): an
+// image that loaded with dimensions is available; one that failed is not; an
+// empty source URL never is. With no fetcher, louis14 makes no load attempt,
+// so a non-data: source is treated like Blink's "still loading" state.
+func TestImageIsPotentiallyAvailable(t *testing.T) {
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatal(err)
+	}
+	pngData := pngBuf.Bytes()
+	const svgData = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="5"></svg>`
+	// No width/height: no natural size, only a ratio, but the image loaded.
+	const viewBoxOnlySVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 5"></svg>`
+	fetcher := func(uri string) ([]byte, error) {
+		switch uri {
+		case "ok.png":
+			return pngData, nil
+		case "ok.svg":
+			return []byte(svgData), nil
+		case "viewbox.svg":
+			return []byte(viewBoxOnlySVG), nil
+		}
+		return nil, fmt.Errorf("404: %s", uri)
+	}
+	validDataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData)
+	cases := []struct {
+		name    string
+		src     string
+		fetcher ImageFetcher
+		want    bool
+	}{
+		{"empty src", "", fetcher, false},
+		{"empty src, no fetcher", "", nil, false},
+		{"no fetcher, still loading", "a.png", nil, true},
+		{"valid data: URI", validDataURI, nil, true},
+		{"corrupt data: URI", "data:image/png;base64,AAAA", nil, false},
+		{"fetch error", "missing.png", fetcher, false},
+		{"valid png", "ok.png", fetcher, true},
+		{"valid svg", "ok.svg", fetcher, true},
+		{"viewBox-only svg", "viewbox.svg", fetcher, true},
+		{"svg fetch error", "missing.svg", fetcher, false},
+	}
+	for _, c := range cases {
+		if got := ImageIsPotentiallyAvailable(c.src, c.fetcher); got != c.want {
+			t.Errorf("%s: ImageIsPotentiallyAvailable(%q) = %v, want %v", c.name, c.src, got, c.want)
+		}
 	}
 }

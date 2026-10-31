@@ -175,6 +175,15 @@ type Style struct {
 	// subtree. Meaningless (always false) on non-highlight styles.
 	HasAuthorHighlightColors bool
 
+	// UAShadowHostData is set on the style of an <img> showing fallback
+	// content (html.LayoutDispositionFallbackContent) by AdjustHostStyle; it
+	// carries the host's sizing and alt/src values to the alt-text shadow
+	// elements' style callbacks. Mirrors ComputedStyle's
+	// StyleUAShadowHostData (style_ua_shadow_host_data.h @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). Nil otherwise. Shared by
+	// reference across Clone(); never mutated after AdjustHostStyle.
+	UAShadowHostData *StyleUAShadowHostData
+
 	// fontSelector is the font lookup Style.UpdateFont builds this style's
 	// font from. The cascade sets it on every element style
 	// (ApplyStylesToDocumentWithFontSelector); pseudo-element styles take the
@@ -215,7 +224,8 @@ func (s *Style) Clone() *Style {
 		dst.AppliedTextDecorations = make([]AppliedTextDecoration, len(s.AppliedTextDecorations))
 		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
-	dst.CascadedProps = s.CascadedProps // shared by reference; never mutated post-cascade
+	dst.CascadedProps = s.CascadedProps       // shared by reference; never mutated post-cascade
+	dst.UAShadowHostData = s.UAShadowHostData // shared by reference; never mutated after AdjustHostStyle
 	return dst
 }
 
@@ -13765,80 +13775,6 @@ func (s *Style) GetScrollbarWidth() string {
 	return v
 }
 
-// ApplyHTMLDirAttribute maps the HTML dir attribute to CSS direction and
-// unicode-bidi properties. Per the HTML specification, dir="rtl" implies
-// direction:rtl and unicode-bidi:isolate (or isolate-override for <bdo>).
-// This is called as a post-processing step after CSS cascade to handle
-// the HTML presentational hint that the dir attribute represents.
-func ApplyHTMLDirAttribute(node *html.Node, style *Style) {
-	if node.Type != html.ElementNode {
-		return
-	}
-	dirAttr, ok := node.GetAttribute("dir")
-	if !ok {
-		return
-	}
-	dirAttr = strings.ToLower(strings.TrimSpace(dirAttr))
-
-	// Only set direction if not already explicitly set by author CSS.
-	// The dir attribute acts as a presentational hint (lower priority than CSS).
-	// However, for proper bidi behavior, we always apply it since the UA stylesheet
-	// normally handles this and our cascade doesn't have a UA rule for [dir].
-	switch dirAttr {
-	case "rtl":
-		style.Set("direction", "rtl")
-	case "ltr":
-		style.Set("direction", "ltr")
-	case "auto":
-		// dir="auto" is resolved per HTML §3.2.6 by scanning the
-		// element's descendant text for the first character with a
-		// strong Unicode bidi class. The shared elementDirectionality
-		// helper (matcher.go) walks ancestors when no strong character
-		// is found, matching the spec's "parent fallback" rule.
-		if elementDirectionality(node) == DirectionRTL {
-			style.Set("direction", "rtl")
-		} else {
-			style.Set("direction", "ltr")
-		}
-	}
-
-	// Per HTML spec, dir attribute also implies unicode-bidi.
-	// <bdo> gets isolate-override; all other elements get isolate.
-	if dirAttr == "rtl" || dirAttr == "ltr" || dirAttr == "auto" {
-		if _, hasBidi := style.Get("unicode-bidi"); !hasBidi {
-			if node.TagName == "bdo" {
-				style.Set("unicode-bidi", "isolate-override")
-			} else {
-				style.Set("unicode-bidi", "isolate")
-			}
-		}
-	}
-}
-
-// ApplyHTMLDirToTree walks the entire DOM tree and applies the HTML dir
-// attribute mapping for any node that has it. This should be called after
-// CSS cascade (ApplyStylesToDocument) but before layout.
-func ApplyHTMLDirToTree(node *html.Node, styles map[*html.Node]*Style) {
-	if node.Type == html.ElementNode {
-		if style, ok := styles[node]; ok {
-			ApplyHTMLDirAttribute(node, style)
-		}
-	}
-	for _, child := range node.Children {
-		ApplyHTMLDirToTree(child, styles)
-	}
-}
-
-// ComputeStyleWithLogical wraps ComputeStyle and also applies HTML dir attribute
-// mapping and resolves logical properties. This should be used by layout code
-// that calls ComputeStyle for individual nodes after the initial cascade.
-func ComputeStyleWithLogical(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
-	style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
-	ApplyHTMLDirAttribute(node, style)
-	ResolveLogicalProperties(node, style)
-	return style
-}
-
 // ResolveLogicalProperties remaps CSS logical properties (border-inline-start,
 // margin-block-end, etc.) to their physical counterparts based on the element's
 // computed writing-mode and direction. This must be called after the full CSS
@@ -15149,9 +15085,9 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 // (applied_text_decoration.h:18-50, SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
 // The `node` argument is the DOM element this style belongs to (may be nil for
-// pseudo-elements / synthetic root). It is consulted only for tag-based
-// classification of replaced elements via html.IsReplacedElementTag, which is
-// the single source of truth for the replaced-tag list.
+// pseudo-elements / synthetic root). It is consulted only to classify
+// replaced elements via html.IsReplacedElement (the replaced-tag list plus
+// the <img> layout disposition).
 //
 // CSS Text Decor 4 §1.3 propagation boundaries (the "Phase 4 wiring" the
 // original Phase 1 comment promised):
@@ -15227,8 +15163,13 @@ func (s *Style) ResolveAppliedTextDecorations(parent *Style, node *html.Node) {
 // cross (CSS Text Decor 4 §1.3). The boundary set is:
 //
 //   - atomic inline-level boxes (style.IsAtomicInlineDisplay)
-//   - replaced elements (html.IsReplacedElementTag) — atomic inline-level
-//     per CSS Display 3 §2.2 even when their computed display says inline
+//   - replaced elements (html.IsReplacedElement) — atomic inline-level
+//     per CSS Display 3 §2.2 even when their computed display says inline.
+//     An <img> showing fallback content is not replaced: in Blink it keeps
+//     computed display inline, so StopPropagateTextDecorations
+//     (style_adjuster.cc:384-390 @ d4ecdfed88f962439247c2ad36b8fe47805b1520)
+//     lets an ancestor's decoration reach its alt text. Its display is
+//     remapped to inline-block only after this runs (AdjustHostStyle).
 //   - out-of-flow boxes (float != none, position: absolute|fixed)
 //
 // display:contents is handled separately by ResolveAppliedTextDecorations
@@ -15237,7 +15178,7 @@ func isPropagationBoundary(s *Style, node *html.Node) bool {
 	if s.IsAtomicInlineDisplay() {
 		return true
 	}
-	if node != nil && html.IsReplacedElementTag(node.TagName) {
+	if node != nil && html.IsReplacedElement(node) {
 		return true
 	}
 	switch s.GetPosition() {

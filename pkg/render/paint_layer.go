@@ -1073,8 +1073,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// src is completed here against the owning document's base, as
 	// ImageLoader::ImageSourceToKURL does
 	// (third_party/blink/renderer/core/loader/image_loader.cc:746 @
-	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
-	if box.Node != nil && box.Node.TagName == "img" {
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). An <img> showing fallback
+	// content is a block flow that paints its alt text, never the image (only
+	// a LayoutImage paints one, HTMLImageElement::CreateLayoutObject,
+	// html_image_element.cc:517-543 @ the same SHA).
+	if box.Node != nil && box.Node.TagName == "img" && html.IsReplacedElement(box.Node) {
 		if src, ok := box.Node.GetAttribute("src"); ok {
 			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
@@ -1640,8 +1643,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	//     this guard each text run would paint its parent's rules at the
 	//     text-run box origin, producing phantom rules inside columns
 	//     (multicol-rule-solid-000.xht and siblings).
+	//   - AllowsColumns: an <img> (alt-text fallback) never becomes a
+	//     multicol container (layout.AllowsColumns).
 	if !box.IsColumnBox && box.Text == "" &&
-		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) {
+		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) &&
+		(box.Node == nil || layout.AllowsColumns(box.Node)) {
 		layer.IsMulticol = true
 		layer.ColumnRuleWidth = clampLineWidth(s.GetColumnRuleWidth())
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
