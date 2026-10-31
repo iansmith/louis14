@@ -1252,12 +1252,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					b.SetIsPastBreak(true)
 				}
 
-				// Propagate "inside column-spanner" to every spanner
-				// descendant, not just the spanner itself.
-				if bla.space.IsInsideColumnSpanner {
-					b.SetIsInsideColumnSpanner(true)
-				}
-
 				// Step the spanner path down to the child when the child is
 				// the next node on it (FollowColumnSpannerPath,
 				// fragmentation_utils.h:560-570 @ a9f50e522efa).
@@ -1996,7 +1990,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					break
 				}
 
-				// Forced column break propagated from a child (break-before/after:column).
+				// Forced column break inside a child (break-before/after:column).
 				// Fires even when blockCursor < fragEnd (column isn't full yet).
 				// Also fires during IsInitialColumnBalancingPass (fragSize=Indefinite) so the
 				// ContentRuns measure loop records one run per forced-break segment.
@@ -2007,22 +2001,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// the outgoing LayoutResult from the pending state — a verbatim
 				// move of the original inline body. Step 6.4 will subsume this
 				// reader into the unified FinishFragmentation analogue.
-				if (fragSize != Indefinite || bla.space.IsInitialColumnBalancingPass) && childResult.HasForcedBreak {
+				//
+				// A forced break inside the child always leaves its break
+				// token; a child's break-after reaches the next sibling
+				// through FinalBreakAfter and CalculateBreakBetweenValue
+				// instead (box_fragment_builder.cc:651-653,
+				// fragmentation_utils.cc:131-160 @ a9f50e522efa).
+				if (fragSize != Indefinite || bla.space.IsInitialColumnBalancingPass) && childResult.HasForcedBreak && childResult.BreakToken != nil {
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
 					pendingHasForcedBreak = true
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					if childResult.BreakToken != nil {
-						pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
-					} else if childIdx+1 < len(children) {
-						pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-							Node:          children[childIdx+1],
-							IsBreakBefore: true,
-						})
-					} else {
-						pendingHasSeenAllChildren = true
-					}
+					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
 					break
 				}
 
