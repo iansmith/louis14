@@ -1017,7 +1017,7 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	}
 	// ic unit: advance measure of the full-width CJK character (U+6C34 水).
 	// CSS Values 4 §6.1: equal to the advance measure of the 水 glyph, or 1em
-	// when no font has it. A present advance is used as-is, including 0.
+	// when the U+6C34 primary font has no 水 glyph. A present advance is used as-is, including 0.
 	// Mirrors CSSToLengthConversionData::FontSizes::Ic, which returns Em only
 	// when the optional IdeographicInlineSize has no value
 	// (core/css/css_to_length_conversion_data.cc:139-152 @
