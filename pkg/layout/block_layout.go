@@ -1403,7 +1403,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			// A resumed child resolves its BFC block-offset at its start, so
+			// it never self-collapses (Blink is_resuming_,
+			// block_layout_algorithm.cc:888-898 @ a9f50e522efa): the 0px
+			// fragment of a spanner parent after its spanner is kept.
 			collapseThrough := childBlockSize == 0 &&
+				!resumeChildTokens[child].IsBreakInside() &&
 				childResult.BreakToken == nil &&
 				childResult.BlockSizeForFragmentation == 0 &&
 				len(childResult.Fragment.Children) == 0 &&
