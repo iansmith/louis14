@@ -46,12 +46,11 @@ type wptMountPoint struct {
 // The table contents have no Blink analog: louis14's corpus is flattened.
 // Upstream /css/<section>/ is stored at wpt-css3/<section>/ (and
 // /css/reference/ at wpt-css3/reference/), so "/css/" maps onto the doc
-// root itself, as does "/" (for /fonts/, /images/, ...). The one exception
-// is /css/support/, whose vendored files live at the literal upstream path
-// wpt-css3/css/support/ (LOU-177). wpt-css2 references only /fonts/, which
+// root itself, as does "/" (for /fonts/, /images/, ...). Upstream
+// /css/support/ is stored at wpt-css3/support/ like every other /css/<x>/,
+// so it needs no mount of its own. wpt-css2 references only /fonts/, which
 // "/" serves.
 var wptMountPoints = []wptMountPoint{
-	{urlBase: "/css/support/", localDir: "css/support"},
 	{urlBase: "/css/", localDir: ""},
 	{urlBase: "/", localDir: ""},
 }

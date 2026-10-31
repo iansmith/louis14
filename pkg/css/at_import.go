@@ -61,15 +61,16 @@ func statementAtRulePrelude(rule, keyword string) string {
 }
 
 // consumeStringOrURI consumes a leading `url(...)` or quoted string from s
-// (already trimmed), returning its value and the trimmed remainder. Quotes
-// inside `url("...")` are stripped. ok is false when s starts with
-// neither form or the form is unterminated. Shared by @import and
-// @namespace, as Blink's ConsumeStringOrURI is
-// (core/css/parser/css_parser_impl.cc:80 @
+// (already trimmed), returning its value and the trimmed remainder. The
+// `url` name is ASCII case-insensitive (Blink EqualIgnoringAsciiCase(
+// token.Value(), "url")). Quotes inside `url("...")` are stripped. ok is
+// false when s starts with neither form or the form is unterminated.
+// Shared by @import and @namespace, as Blink's ConsumeStringOrURI is
+// (core/css/parser/css_parser_impl.cc:80, url check :90-91 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func consumeStringOrURI(s string) (value, rest string, ok bool) {
 	// url(...) form.
-	if strings.HasPrefix(s, "url(") {
+	if len(s) >= 4 && strings.EqualFold(s[:4], "url(") {
 		closeIdx := strings.Index(s, ")")
 		if closeIdx == -1 {
 			return "", "", false

@@ -13,10 +13,13 @@ import (
 // core/animation/animation_effect.cc, plus the steps() evaluator from
 // ui/gfx/animation/keyframe/timing_function.cc.
 //
-// louis14's reftest harness is a static renderer: the document timeline is
-// frozen at t=0. So the animation's local time is derived purely from
-// animation-delay (a negative delay pushes the animation into the active or
-// after phase — this is exactly how the in-scope "frozen" tests are authored).
+// louis14 renders a single frame. A CSS animation's local time is 0 unless a
+// style recalc started it after requestAnimationFrame frames advanced the
+// document's AnimationClock, in which case it is the clock's time (see
+// calculateAnimationUpdate). At local time 0 the animation's state is derived
+// purely from animation-delay (a negative delay pushes the animation into the
+// active or after phase — this is exactly how the in-scope "frozen" tests are
+// authored).
 
 // AnimationPhase mirrors Blink Timing::Phase.
 type AnimationPhase int
@@ -206,8 +209,8 @@ func (t Timing) activeDuration() float64 {
 }
 
 // ComputePhase mirrors Blink TimingCalculations::CalculatePhase. localTime is
-// the animation's local time (in a static render: -StartDelay measured from the
-// document timeline origin t=0).
+// the animation's local time in seconds since its start time; StartDelay is
+// subtracted here, not by the caller.
 func (t Timing) ComputePhase(localTime float64) AnimationPhase {
 	activeDur := t.activeDuration()
 	beforeActiveBoundary := math.Max(t.StartDelay, 0)
@@ -367,11 +370,10 @@ type ResolvedTiming struct {
 	Forwards         bool // current direction is forwards
 }
 
-// Resolve evaluates the full static-snapshot timing pipeline at localTime
-// (in a static render, localTime = -StartDelay relative to document time 0,
-// i.e. we pass localTime = 0 - StartDelay... no: localTime is the document
-// timeline time, which is 0). The phase/activeTime math already subtracts
-// StartDelay, so callers pass the document timeline time (0).
+// Resolve evaluates the full static-snapshot timing pipeline at localTime, the
+// animation's local time in seconds: 0 for an animation held since load, or
+// the document timeline's time for one started after frames advanced it. The
+// phase/activeTime math already subtracts StartDelay.
 func (t Timing) Resolve(localTime float64) ResolvedTiming {
 	phase := t.ComputePhase(localTime)
 	activeTime, resolved := t.computeActiveTime(localTime, phase)

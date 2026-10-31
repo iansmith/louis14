@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"louis14/pkg/html"
 )
 
 // CSS Animations: keyframe resolution and application to computed style.
@@ -18,8 +20,10 @@ import (
 //   - IdleTriggerAllowsVisualEffect: the fill-mode visibility gate (handled by
 //     Timing.Resolve().InEffect).
 //
-// louis14's reftest harness is a static renderer (document timeline frozen at
-// t=0), so the animation's effective state is derived purely from
+// louis14 renders one frame. An animation's local time is 0 unless it was
+// started by a style recalc after requestAnimationFrame frames advanced the
+// document's AnimationClock (calculateAnimationUpdate); then it is the clock's
+// time. With local time 0 the effective state is derived purely from
 // animation-delay. This file applies the in-effect keyframe declarations to
 // computed style; the cascade ordering (animation origin sits below author
 // !important) is enforced by the caller via the importantProps map.
@@ -47,6 +51,10 @@ type ResolvedAnimation struct {
 	Name   string
 	Timing Timing
 	Effect *KeyframeEffect
+	// Paused is true when animation-play-state is paused. Mirrors Blink's
+	// is_paused (core/animation/css/css_animations.cc:1885 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	Paused bool
 }
 
 // BuildKeyframeEffect normalizes a slice of raw KeyframeRule stops into a
@@ -336,10 +344,12 @@ func (k Keyframe) offsetOrSelf() float64 { return k.Offset }
 // nil (the element.animate() path), in which case only px and percent
 // endpoints interpolate.
 //
+// display with exactly one `none` endpoint flips at the none side's edge
+// (Blink CSSDisplayInterpolationType); see the branch below.
+//
 // For value types where interpolation is not implemented, the endpoint is
-// returned discretely, flipping at the midpoint (t < 0.5 -> from, else to) —
-// this is correct for every other in-scope test, which is either from==to
-// (constant) or frozen exactly on a keyframe offset.
+// returned discretely, flipping at the midpoint (t < 0.5 -> from, else to),
+// as Blink's FlipPrimitiveInterpolation does for a non-interpolable pair.
 func interpolateValue(prop, from, to string, t float64, base *Style) string {
 	if from == to {
 		return from
@@ -349,6 +359,25 @@ func interpolateValue(prop, from, to string, t float64, base *Style) string {
 	}
 	if t >= 1 {
 		return to
+	}
+	// display: no halfway flip when exactly one endpoint is none. Mirrors
+	// Blink CSSDisplayNonInterpolableValue::Display
+	// (core/animation/css_display_interpolation_type.cc:29-40 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520): none->X gives X for any
+	// fraction > 0 and X->none keeps X until fraction >= 1 (both endpoints
+	// are handled by the early returns above). Only the keywords
+	// CSSDisplayInterpolationType::MaybeConvertValue accepts (:139-169) take
+	// this path; any other pair falls to the midpoint flip below, as Blink's
+	// CSSDefaultInterpolationType does (interpolation_types_map.cc:503-504).
+	if prop == "display" {
+		f := strings.ToLower(strings.TrimSpace(from))
+		tv := strings.ToLower(strings.TrimSpace(to))
+		if displayInterpolableKeywords[f] && displayInterpolableKeywords[tv] && (f == "none") != (tv == "none") {
+			if f == "none" {
+				return to
+			}
+			return from
+		}
 	}
 	// Filter-list interpolation for the filter / backdrop-filter properties.
 	// Per CSS Filter Effects, the two filter-value-lists interpolate
@@ -407,6 +436,17 @@ func interpolateValue(prop, from, to string, t float64, base *Style) string {
 		return from
 	}
 	return to
+}
+
+// displayInterpolableKeywords is the set of display keywords Blink's
+// CSSDisplayInterpolationType::MaybeConvertValue converts
+// (core/animation/css_display_interpolation_type.cc:139-169 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+var displayInterpolableKeywords = map[string]bool{
+	"block": true, "contents": true, "flex": true, "flow-root": true,
+	"grid": true, "grid-lanes": true, "inline": true, "inline-block": true,
+	"inline-flex": true, "inline-grid": true, "list-item": true, "none": true,
+	"table": true, "table-row": true,
 }
 
 // interpolateBareNumber linearly interpolates between two bare CSS <number>
@@ -705,6 +745,7 @@ func resolveAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule) 
 	iterCounts := splitTopLevelCommas(getOr(style, "animation-iteration-count", "1"))
 	directions := splitTopLevelCommas(getOr(style, "animation-direction", "normal"))
 	fillModes := splitTopLevelCommas(getOr(style, "animation-fill-mode", "none"))
+	playStates := splitTopLevelCommas(getOr(style, "animation-play-state", "running"))
 
 	// CSS Animations §4: when a longhand list is shorter than animation-name,
 	// its values repeat (are "filled" by cycling).
@@ -748,7 +789,12 @@ func resolveAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule) 
 			TimingFunction:    easing,
 		}
 		eff := BuildKeyframeEffect(frames, easing)
-		resolved = append(resolved, ResolvedAnimation{Name: name, Timing: tm, Effect: eff})
+		resolved = append(resolved, ResolvedAnimation{
+			Name:   name,
+			Timing: tm,
+			Effect: eff,
+			Paused: strings.EqualFold(at(playStates, i, "running"), "paused"),
+		})
 	}
 	return resolved
 }
@@ -771,16 +817,30 @@ func getOr(style *Style, prop, def string) string {
 //
 // keyframesMaps is the ordered list of @keyframes maps to search for each
 // animation-name (Phase 2: document scope only).
+//
+// Every animation is sampled at local time 0. The document cascade instead
+// samples through calculateAnimationUpdate, which can give an animation the
+// document timeline's time.
 func ApplyAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule, importantProps map[string]bool) {
-	anims := resolveAnimations(style, keyframesMaps)
+	applyCSSAnimations(style, resolveAnimations(style, keyframesMaps), importantProps, nil)
+}
+
+// applyCSSAnimations writes the in-effect keyframe values of anims into style.
+// localTimes[i] is anims[i]'s local time in seconds; nil means 0 for every
+// animation.
+func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps map[string]bool, localTimes []float64) {
 	if len(anims) == 0 {
 		return
 	}
 	// Capture the underlying (un-animated) style so synthesized neutral
 	// keyframes can read base values. style is mutated below, so clone first.
 	base := style.Clone()
-	for _, a := range anims {
-		rt := a.Timing.Resolve(0)
+	for i, a := range anims {
+		var localTime float64
+		if localTimes != nil {
+			localTime = localTimes[i]
+		}
+		rt := a.Timing.Resolve(localTime)
 		if !rt.InEffect {
 			continue
 		}
@@ -807,6 +867,98 @@ func ApplyAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule, im
 			}
 		}
 	}
+}
+
+// calculateAnimationUpdate reconciles node's running CSS animations with
+// anims, the animations its new style names, and returns each animation's
+// local time in seconds. Mirrors Blink CSSAnimations::CalculateAnimationUpdate
+// (core/animation/css/css_animations.cc:1808), which matches each name in the
+// animation-name list against running_animations_ by name and name_index
+// (:1877-1883) and starts the unmatched ones (update.StartAnimation, :2035),
+// and MaybeApplyPendingUpdate (:2279), which plays the started animation,
+// pauses it when paused (:2404) and records it (:2412); all @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520. Running animations no longer
+// listed are dropped, as Blink cancels them (update.CancelAnimation,
+// :2050-2053).
+//
+// A matched animation keeps its record. A new one gets a resolved start time
+// of timeline zero only when the clock has advanced past 0 and it is not
+// paused; otherwise it is held at local time 0, as Blink starts a new
+// animation at inherited time 0 (CSSAnimationProxy::CalculateInheritedTime,
+// :325-327). Animations created by a pipeline's clock-0 style pass therefore
+// stay at local time 0 for every later pass (ticket scope; Blink would let
+// them advance once frames run).
+//
+// The animation-name list is walked only when baseDisplayNone (the new
+// style's display before animations) is false or the element was displayed
+// after its previous recalc (node.HasDisplayedStyle), as Blink's
+// `style_builder.Display() != EDisplay::kNone || (old_style &&
+// old_style->Display() != EDisplay::kNone)` (:1864-1866); otherwise every
+// running animation is cancelled and none starts. An element inside a
+// display:none subtree runs none either (CSS Animations 1 §2: display:none
+// terminates the animations of the element and its descendants). The
+// returned animations are the ones to apply: anims, or nil when none runs.
+func calculateAnimationUpdate(node *html.Node, anims []ResolvedAnimation, clock *html.AnimationClock, baseDisplayNone bool) ([]ResolvedAnimation, []float64) {
+	if len(anims) == 0 || !parentHasDisplayedStyle(node) || (baseDisplayNone && !node.HasDisplayedStyle) {
+		node.ElementAnimations = nil
+		return nil, nil
+	}
+	var running []html.RunningAnimation
+	if node.ElementAnimations != nil {
+		running = node.ElementAnimations.CSSAnimations
+	}
+	now := clock.CurrentTime()
+	localTimes := make([]float64, len(anims))
+	updated := make([]html.RunningAnimation, 0, len(anims))
+	nameCounts := make(map[string]int)
+	for i, a := range anims {
+		nameIndex := nameCounts[a.Name]
+		nameCounts[a.Name]++
+		rec := html.RunningAnimation{
+			Name:              a.Name,
+			NameIndex:         nameIndex,
+			StartTimeResolved: now > 0 && !a.Paused,
+		}
+		for _, r := range running {
+			if r.Name == a.Name && r.NameIndex == nameIndex {
+				rec = r
+				break
+			}
+		}
+		if rec.StartTimeResolved {
+			localTimes[i] = now.Seconds()
+		}
+		updated = append(updated, rec)
+	}
+	node.ElementAnimations = &html.ElementAnimations{CSSAnimations: updated}
+	return anims, localTimes
+}
+
+// recordDisplayedStyle sets node.HasDisplayedStyle after a style recalc from
+// the recalc's display before (baseDisplayNone) and after (displayNone)
+// animations. An element left undisplayed whose base display is none has its
+// CSS animations cancelled, as Blink Element::RecalcOwnStyle cancels them
+// when no style is stored and the base style's display is none
+// (core/dom/element.cc:5572-5583 @ d4ecdfed88f962439247c2ad36b8fe47805b1520);
+// an animation that interpolates display away from none keeps running.
+func recordDisplayedStyle(node *html.Node, baseDisplayNone, displayNone bool) {
+	node.HasDisplayedStyle = !displayNone && parentHasDisplayedStyle(node)
+	if !node.HasDisplayedStyle && baseDisplayNone {
+		node.ElementAnimations = nil
+	}
+}
+
+// parentHasDisplayedStyle reports whether node's parent element was left
+// displayed by the current recalc; style resolution is top-down, so the
+// parent's HasDisplayedStyle is already this recalc's. A node whose parent
+// is not a styled element (the synthetic document root) has a displayed
+// parent.
+func parentHasDisplayedStyle(node *html.Node) bool {
+	p := node.Parent
+	if p == nil || p.Type != html.ElementNode || p.TagName == "document" {
+		return true
+	}
+	return p.HasDisplayedStyle
 }
 
 // collectKeyframesMaps returns the @keyframes maps from a set of stylesheets,

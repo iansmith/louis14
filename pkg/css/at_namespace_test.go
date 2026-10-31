@@ -104,6 +104,7 @@ func TestParseStylesheet_NamespaceRuleOrdering(t *testing.T) {
 	}{
 		{"after a style rule", `div{color:red} @namespace url(svg);`, ""},
 		{"after a block at-rule", `@media all{} @namespace url(svg);`, ""},
+		{"after an @layer block", `@layer a {} @namespace url(svg);`, ""},
 		{"after an early @layer statement", `@layer a; @namespace url(svg);`, "svg"},
 		{"after a late @layer statement", `@namespace "hello"; @layer feh; @namespace "world";`, "hello"},
 		{"after @import", `@import "a.css"; @namespace "x";`, "x"},
@@ -132,6 +133,8 @@ func TestConsumeNamespaceRule(t *testing.T) {
 	}{
 		{`@namespace url("x");`, "", "x", true},
 		{`@namespace url(x);`, "", "x", true},
+		{`@namespace URL(x);`, "", "x", true}, // url is ASCII case-insensitive (Blink EqualIgnoringAsciiCase)
+		{`@namespace pfx Url("x");`, "pfx", "x", true},
 		{`@namespace "x";`, "", "x", true},
 		{`@namespace 'x';`, "", "x", true},
 		{`@namespace pfx "x";`, "pfx", "x", true},
@@ -247,7 +250,10 @@ func TestMatchesSelector_TypelessCompoundIgnoresDefaultNamespace(t *testing.T) {
 // d4ecdfed88f962439247c2ad36b8fe47805b1520) and for context-free
 // ParseSelector (pkg/js querySelector) type selectors match elements in
 // any namespace, HTML and SVG alike. Regression guard: green before and
-// after the fix, red if "" stops meaning "any namespace".
+// after the fix, red if "" stops meaning "any namespace". `|div` (Blink:
+// no namespace, g_empty_atom) and `x|div` with x undeclared (Blink: parse
+// failure) are deliberately absent: louis14 treats both as any-namespace,
+// a known divergence (LOU-437 decisions L4/L5), not behaviour to pin.
 func TestMatchesSelector_NoDefaultNamespaceIsAny(t *testing.T) {
 	doc, err := html.Parse(`<div></div><svg><rect></rect></svg>`)
 	if err != nil {
@@ -262,8 +268,6 @@ func TestMatchesSelector_NoDefaultNamespaceIsAny(t *testing.T) {
 	}{
 		{"sheet div", sheetSelector(t, "", "div"), div},
 		{"sheet *|div", sheetSelector(t, "", "*|div"), div},
-		{"sheet |div", sheetSelector(t, "", "|div"), div},
-		{"sheet x|div", sheetSelector(t, "", "x|div"), div},
 		{"sheet *|*:is(div)", sheetSelector(t, "", "*|*:is(div)"), div},
 		{"sheet rect", sheetSelector(t, "", "rect"), rect},
 		{"ParseSelector div", ParseSelector("div"), div},

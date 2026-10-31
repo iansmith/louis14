@@ -344,7 +344,7 @@ func TestSpannerInlineMargins_LOU363(t *testing.T) {
 // no direct Blink analog inside column_layout_algorithm.cc — Blink applies
 // relative offsets generically when the parent adds the child
 // (relative_utils.cc ComputeRelativeOffset). Louis14's established local
-// pattern is the per-algorithm tail: block_layout.go:2469-2489 (BLA),
+// pattern is the per-algorithm tail: BlockLayoutAlgorithm.Layout's (BLA),
 // grid_layout.go (grid), flex_layout.go (flex). MulticolLayoutAlgorithm has
 // no such tail, so `position:relative` offsets are silently dropped
 // (multicol-rule-004 paints at the static position).
