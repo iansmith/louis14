@@ -259,7 +259,8 @@ def missing_resources(path):
         # "${", "+": built in script; "@": author addresses without mailto:
         if not ref or NON_RELATIVE_RE.match(ref) or any(c in ref for c in ("${", "+", "@")):
             continue
-        target = (path.parent / ref).resolve()
+        # Lexical, not resolve(): a worktree's symlinked font dirs must not lead out of BASE_LOCAL.
+        target = Path(os.path.normpath(path.parent / ref))
         if not target.exists():
             yield target
 
@@ -270,7 +271,7 @@ def fetch_resources(local_subdirs, sha):
     BASE_LOCAL. Fetched documents are scanned in turn, so a support page's own resources come too.
     Targets outside BASE_LOCAL are reported, not fetched."""
     raw = f"https://raw.githubusercontent.com/web-platform-tests/wpt/{sha}"
-    base = BASE_LOCAL.resolve()
+    base = BASE_LOCAL
     queue = [p for d in local_subdirs for p in (base / d).rglob("*") if p.suffix in RESOURCE_EXTS]
     seen, fetched, failed, outside = set(), [], [], []
     while queue:
@@ -288,14 +289,16 @@ def fetch_resources(local_subdirs, sha):
             fetched.append(rel)
             if target.suffix in RESOURCE_EXTS:
                 queue.append(target)
-    for label, items in (("fetched", fetched), ("not found upstream", failed), ("outside wpt-css3", outside)):
+    for label, items in (("fetched", fetched), ("not fetched (404 or network error; rerun to retry)", failed), ("outside wpt-css3", outside)):
         log(f"{label}: {len(items)}")
         for item in sorted(items):
             log(f"  {item}")
 
 def main():
     # --resources <wpt-sha> <dir>...: fetch the missing support files the tests in <dir> load.
-    if len(sys.argv) > 2 and sys.argv[1] == "--resources":
+    if sys.argv[1:2] == ["--resources"]:
+        if len(sys.argv) < 4:
+            sys.exit("usage: download-wpt-tests.py --resources <wpt-sha> <dir>...")
         fetch_resources(sys.argv[3:], sys.argv[2])
         return
 
