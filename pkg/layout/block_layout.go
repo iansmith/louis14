@@ -1510,17 +1510,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// consumed size while its column height is unknown).
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					// CSS Fragmentation §3.4.2: a non-last fragment's background
-					// extends to the fragmentainer boundary — here only inside
-					// balanced columns and when content was actually placed
-					// (blockCursor > 0): extending an empty fragment (e.g.
-					// break-inside:avoid on the first child) would confuse the
-					// balance loop. Blink stretches unconditionally
-					// (ConsumeRemainingFragmentainerSpace, :3167, moving the
-					// inflow position, :3084-3095); the gate is louis14's.
-					if blockCursor > 0 && bla.space.IsInsideBalancedColumns {
-						blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
-					}
+					// The breaking fragment occupies the rest of the
+					// fragmentainer, on every break-before (forced :3167, soft
+					// :3287, block_layout_algorithm.cc @ a9f50e522efa). While
+					// the column height is unknown (the initial balancing
+					// pass) this is a no-op, so the balance loop measures the
+					// content alone.
+					blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 					// Phase 12g: a soft break before the child reports its
 					// space shortage so the multicol balancing loop can stretch
 					// (Blink BreakBeforeChild → PropagateSpaceShortage,
