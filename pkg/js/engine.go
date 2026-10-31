@@ -2,6 +2,7 @@ package js
 
 import (
 	"fmt"
+	"time"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -57,15 +58,28 @@ func New() *Engine {
 	// `window.onload`, `window.document`, etc. work as expected.
 	vm.Set("window", vm.GlobalObject())
 
-	// requestAnimationFrame: execute callbacks immediately in our
-	// single-threaded test environment. Tests use nested rAF calls to wait
-	// for "next frame" — in our case, we execute synchronously same tick.
+	// requestAnimationFrame: louis14 has no frame loop, so each call runs
+	// its callback immediately as its own animation frame. Tests use nested
+	// rAF calls to wait for "next frame"; those run synchronously in the
+	// same task. Each frame first advances the document's AnimationClock by
+	// one html.ApproximateFrameTime (Blink kApproximateFrameTime,
+	// core/animation/animation_clock.cc:40), then passes the frame time in
+	// ms as the callback's DOMHighResTimeStamp, as
+	// ScriptedAnimationController::ExecuteFrameCallbacks passes
+	// current_frame_time_ms_ (core/dom/scripted_animation_controller.cc:
+	// 176-181), both @ d4ecdfed88f962439247c2ad36b8fe47805b1520. Before
+	// Execute has a document, the timestamp is 0 and no clock advances.
 	var rafID int64
 	vm.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value {
 		rafID++
 		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
-			// Pass fake DOMHighResTimeStamp (0) as first argument
-			fn(goja.Undefined(), vm.ToValue(0)) //nolint:errcheck
+			var frameTime float64
+			if e.doc != nil {
+				clock := &e.doc.AnimationClock
+				clock.UpdateTime(clock.CurrentTime() + html.ApproximateFrameTime)
+				frameTime = frameTimeMs(clock.CurrentTime())
+			}
+			fn(goja.Undefined(), vm.ToValue(frameTime)) //nolint:errcheck
 		}
 		return vm.ToValue(rafID)
 	})
@@ -150,6 +164,12 @@ function waitForCompositorReady() {
   return Promise.resolve();
 }
 `, false)
+
+// frameTimeMs converts an AnimationClock time to the milliseconds that
+// DOMHighResTimeStamp and CSSNumberish timeline times use.
+func frameTimeMs(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
+}
 
 // RegisterOnloadCallback stores an element-level onload callback.
 // Called from DOM bindings when JS does element.onload = fn.
