@@ -516,17 +516,12 @@ func MovePastBreakpoint(
 // that is moved past although it does not fit (monolithic content at the
 // start of the fragmentainer), so column balancing can stretch. Mirrors
 // MovePastBreakpoint → PropagateSpaceShortage → CalculateSpaceShortage
-// (fragmentation_utils.cc:1016-1053, :1230-1240 @ a9f50e522efa), with
-// louis14's TrustedChildSpaceShortage narrowing of the child-reported value.
+// (fragmentation_utils.cc:995-1053, :1230-1240 @ a9f50e522efa).
 func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *LayoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
 	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
 		return
 	}
-	shortage := TrustedChildSpaceShortage(space, layoutResult)
-	if shortage <= 0 {
-		shortage = fragmentainerBlockOffset + blockSize - fragmentainerBlockSize
-	}
-	builder.PropagateSpaceShortage(shortage)
+	builder.PropagateSpaceShortage(CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize))
 }
 
 // BlockSizeForFragmentation is the block-size a parent attributes to a
@@ -548,22 +543,20 @@ func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutRes
 		layoutResult.BlockSizeForFragmentation)
 }
 
-// TrustedChildSpaceShortage returns the space shortage a broken child
-// reported inside itself, or 0 when the parent should derive the shortage
-// from the child's size instead. Blink always trusts the child's report
-// (CalculateSpaceShortage, fragmentation_utils.cc:1046-1051 @ a9f50e522efa);
-// louis14 trusts it only when the child's break violated a break-avoidance
-// (break-inside:avoid / monolithic, or a sub-perfect appeal deeper inside).
-// louis14's inline layout reports no shortage for plain line breaks and its
-// stretch loop lacks Blink's CurrentContentBlockOffset budget clamp, so an
-// unconditional merge lets one column's report over-stretch a balanced row
-// (LOU-320/LOU-325 unit tests; LOU-383: multicol-span-all-margin-bottom-001).
-func TrustedChildSpaceShortage(space ConstraintSpace, childResult *LayoutResult) float64 {
-	if childResult.BreakToken != nil && childResult.MinSpaceShortage > 0 &&
-		(ShouldAvoidBreakInside(space, childResult) || childResult.BreakAppeal < BreakAppealPerfect) {
-		return childResult.MinSpaceShortage
+// CalculateSpaceShortage returns how much more fragmentainer space would have
+// let the child fit here: the space shortage the child reported inside itself
+// when it has one (it broke inside, or something inside it was moved past
+// without fitting, so a whole-child figure is impossible or pointless),
+// otherwise the child's block-size for fragmentation past the fragmentainer
+// end. Mirrors Blink's CalculateSpaceShortage (fragmentation_utils.cc:1021-1053
+// @ a9f50e522efa); the trusted child report is :1046-1051. Blink's
+// block_size_override and aborted-layout (kIndefiniteSize) cases have no
+// louis14 caller.
+func CalculateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, fragmentainerBlockOffset, fragmentainerBlockSize float64) float64 {
+	if layoutResult.MinSpaceShortage > 0 {
+		return layoutResult.MinSpaceShortage
 	}
-	return 0
+	return fragmentainerBlockOffset + BlockSizeForFragmentation(space.WritingDirection, layoutResult) - fragmentainerBlockSize
 }
 
 // BreakBeforeChildIfNeeded is the master fragmentation entry point a per-child

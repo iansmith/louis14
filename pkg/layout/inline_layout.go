@@ -1147,7 +1147,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// guard is MovePastBreakpoint's refuse_break_before, space_left >=
 			// fragmentainer_block_size (fragmentation_utils.cc:1169-1171).
 			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
-			if blockOffset+lineHeight > fragEnd && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
+			// shortage is how much more space would let this line fit here.
+			shortage := blockOffset + lineHeight - fragEnd
+			if shortage > 0 && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a
 				// break token so the next column resumes from this line.
 				// blockOffset > 0 guard: never emit an empty column (at least one
@@ -1155,10 +1157,6 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// Per Blink: shortage is the minimum additional space needed
 				// to fit the overflowing line (per-break-point), not the
 				// cumulative overflow across all fragmentainers.
-				shortage := (blockOffset + lineHeight) - fragEnd
-				if shortage < 0 {
-					shortage = 0
-				}
 				inlineBreakToken = &BlockBreakToken{
 					Node: bla.node,
 					// Consumed is what this block laid out (its content up to
@@ -1175,6 +1173,17 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					inlineBreakToken.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
 				}
 				break
+			}
+			// A line that does not fit is moved past anyway when breaking
+			// before it would make no progress (the first line in the
+			// fragmentainer). Report the space shortage so column balancing
+			// can stretch to fit the unbreakable line. Mirrors
+			// MovePastBreakpoint's move-past branch → PropagateSpaceShortage
+			// (fragmentation_utils.cc:1232-1243, :995-1014 @ a9f50e522efa),
+			// reached for line boxes through BlockLayoutAlgorithm::
+			// BreakBeforeChildIfNeeded (block_layout_algorithm.cc:3178-3181).
+			if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
+				builder.PropagateSpaceShortage(shortage)
 			}
 		}
 
@@ -1218,42 +1227,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			))
 		}
 
-		// Phase 20 P20.6: during the multicol initial column-balancing
-		// pass, propagate each atomic inline's block-extent as a
-		// TallestUnbreakable contribution. Atomic inlines (display:
-		// inline-block, inline-flex, inline-grid, inline-table, replaced
-		// inline elements) cannot break across fragmentainer boundaries —
-		// they are implicitly monolithic for column-balancing. Without
-		// this propagation, the multicol's column auto-block-size doesn't
-		// account for the atomic inline's height; combined with the
-		// multicol container OverflowClip (P20.5), this leaves columns
-		// too short to contain the atomic inline and clips legitimate
-		// content (e.g. inline-block-and-column-span-all). Mirrors Blink
-		// fragmentation_utils.cc:1105-1113 PropagateTallestUnbreakableBlockSize
-		// for ShouldAvoidBreakInside children — atomic inlines hit this
-		// path in Blink via line-box inclusion of monolithic content.
+		// During the initial column-balancing pass, a line box is an
+		// unbreakable piece of content: line boxes are monolithic
+		// (PhysicalFragment::IsMonolithic, physical_fragment.cc:586-596 @
+		// a9f50e522efa; louis14's continuation split puts no block in a
+		// line, so no line is Blink's breakable block-in-inline line), so
+		// ShouldAvoidBreakInside holds and BreakBeforeChildIfNeeded floors
+		// the column block-size at the line's block-size
+		// (fragmentation_utils.cc:1110-1118, CalculateUnbreakableBlockSize
+		// :979-992). During that pass the fragmentainer block-offset is
+		// never negative, so the unbreakable size is the line's own.
 		if bla.space.IsInitialColumnBalancingPass {
-			lineHasAtomicInline := false
-			for _, r := range line.Results {
-				if r.Item != nil && r.Item.Type == InlineItemAtomicInline &&
-					r.LayoutResult != nil && r.LayoutResult.Fragment != nil {
-					lineHasAtomicInline = true
-					break
-				}
-			}
-			if lineHasAtomicInline {
-				// Propagate just the line's block-extent (without
-				// blockOffset). During the initial column-balancing pass
-				// the BLA isn't placed inside a fragmentainer yet — the
-				// fragmentainer block-offset is 0 for these candidates.
-				// What matters as a TallestUnbreakable floor is the
-				// individual line's height (the unbreakable unit), not
-				// the cumulative offset of the line within the IFC.
-				// Mirrors Blink's per-child PropagateTallestUnbreakableBlockSize
-				// in the initial balancing pass, where each child contributes
-				// its own block-extent independently.
-				builder.PropagateTallestUnbreakableBlockSize(lineHeight)
-			}
+			builder.PropagateTallestUnbreakableBlockSize(lineHeight)
 		}
 
 		blockOffset += lineHeight

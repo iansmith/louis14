@@ -833,7 +833,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			})
 			result := builder.Build()
 			result.BreakToken = inlineBreakToken
-			result.MinSpaceShortage = shortage
+			// Min-merge with a shortage an earlier, moved-past line already
+			// propagated (BoxFragmentBuilder::PropagateSpaceShortage).
+			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
 			result.PropagatedOOFCandidates = builder.outOfFlowCandidates
 			return result
 		}
@@ -1514,24 +1516,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					if blockCursor > 0 && bla.space.IsInsideBalancedColumns {
 						blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 					}
-					// Phase 12g: when a soft break-before fires (not forced), the
-					// child didn't fit in the remaining fragmentainer space and
-					// was pushed to the next one. Report space shortage so the
-					// multicol balancing loop can stretch just enough to keep
-					// the child whole with its siblings. Mirrors Blink's
-					// BreakBeforeChild → PropagateSpaceShortage →
-					// CalculateSpaceShortage (fragmentation_utils.cc:944-1049 @
-					// a9f50e522efa): if the child reported shortage inside (it
-					// broke inside and we chose to break before it instead),
-					// use that — its own layout is incomplete, so a whole-child
-					// figure is impossible; otherwise the shortage is the
-					// child's block-size minus the space we have.
+					// Phase 12g: a soft break before the child reports its
+					// space shortage so the multicol balancing loop can stretch
+					// (Blink BreakBeforeChild → PropagateSpaceShortage,
+					// fragmentation_utils.cc:944-1014 @ a9f50e522efa).
 					if !isForced && childResult != nil && childResult.Fragment != nil &&
 						bla.space.FragmentainerBlockSize != Indefinite {
-						shortage := TrustedChildSpaceShortage(bla.space, childResult)
-						if shortage <= 0 {
-							shortage = BlockSizeForFragmentation(wdm, childResult) - (bla.space.FragmentainerBlockSize - fragOff)
-						}
+						shortage := CalculateSpaceShortage(bla.space, childResult, fragOff, bla.space.FragmentainerBlockSize)
 						pendingMinSpaceShortage = MinPositiveSpaceShortage(pendingMinSpaceShortage, shortage)
 					}
 					break
@@ -1793,10 +1784,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// child, use that. The boundary arithmetic above is zero
 					// when the child's slice ends exactly at the fragmentainer
 					// boundary, which would starve the multicol stretch loop
-					// of its grow-by amount (Blink CalculateSpaceShortage);
-					// TrustedChildSpaceShortage carries louis14's narrowing.
-					if trusted := TrustedChildSpaceShortage(bla.space, childResult); trusted > 0 {
-						shortage = trusted
+					// of its grow-by amount. Blink trusts every child report
+					// (CalculateSpaceShortage, fragmentation_utils.cc:
+					// 1046-1051 @ a9f50e522efa).
+					if childResult.MinSpaceShortage > 0 {
+						shortage = childResult.MinSpaceShortage
 					}
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true

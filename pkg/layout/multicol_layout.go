@@ -1047,10 +1047,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// containers (multicol-zero-height-002 — content is explicitly
 		// expected to overflow visibly) don't get clipped. Closing
 		// remaining content-overflow regressions (inline-block-and-
-		// column-span-all etc.) is the job of P20.6 (TallestUnbreakable
-		// for atomic inlines), which makes the multicol grow to its
-		// real content extent so the clip stops cutting legitimate
-		// content.
+		// column-span-all etc.) is the job of the line-box
+		// TallestUnbreakable floor (layoutInlineChildren), which makes
+		// the multicol grow to its real content extent so the clip stops
+		// cutting legitimate content.
 		if finalBlockSize > 0 {
 			result.Fragment.IsMulticolContainer = true
 		}
@@ -2352,21 +2352,12 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// no Blink analog: an unconstrained column-fill:auto line has no used
 	// column block-size (Indefinite; Blink's has_content_based_block_size,
 	// held PR #201) and contributes its tallest column instead.
-	// no Blink analog: a line that ends at a spanner contributes at least its
-	// tallest column, overflow included, as far as the column block-size
-	// could have been stretched (constrainColumnBlockSize), so the spanner
-	// is placed below content that overflowed the columns. It stands in for
-	// the space shortage Blink's stretch loop gets from such content (an
-	// unbreakable line, cla.cc:1150-1173) and louis14 does not report yet
-	// (LOU-399's trusted-space-shortage half; ledger L90).
 	contribution := colBlockSize
 	switch {
 	case shrinkToFitColumnBlockSize && len(finalColumns) == 1:
 		contribution = math.Min(colBlockSize, finalColumns[0].result.BlockSizeForFragmentation)
 	case colBlockSize == Indefinite:
 		contribution = maxColHeight
-	case hasSpannerDetector:
-		contribution = math.Max(colBlockSize, mla.constrainColumnBlockSize(maxColHeight, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset))
 	}
 	// Blink cla.cc:1229-1251: a non-empty line moves the layout position
 	// past itself (lineOffset already holds the strut) and resets the
