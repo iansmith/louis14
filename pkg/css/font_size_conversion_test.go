@@ -395,3 +395,58 @@ func TestPseudoElement_ComputedLengths(t *testing.T) {
 		t.Errorf("::before tab-size calc(1em + 1px) = %q, want computed 11px", got)
 	}
 }
+
+// TestComputedLengths_SyntheticRootInheritsComputed: in a fragment parse (no
+// <html>), :root's inherited computed lengths reach doc.Root's other children
+// through the synthetic root style, so they must be computed against :root's
+// font before the copy: a 10px sibling inherits :root's 2em text-indent as
+// 40px, not re-resolved against its own font. No Blink analog for the
+// synthetic root (Blink always has a documentElement); the computed value is
+// TextIndent::ApplyValue's (core/css/properties/longhands/longhands_custom.cc
+// :10267-10292 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func TestComputedLengths_SyntheticRootInheritsComputed(t *testing.T) {
+	doc := html.NewDocument()
+	doc.Stylesheets = append(doc.Stylesheets, html.StylesheetSource{
+		Text: ":root { font-size: 20px; text-indent: 2em; } p { font-size: 10px; }"})
+	first := &html.Node{Type: html.ElementNode, TagName: "div", Parent: doc.Root}
+	p := &html.Node{Type: html.ElementNode, TagName: "p", Parent: doc.Root}
+	doc.Root.Children = append(doc.Root.Children, first, p)
+
+	if got, pct := ApplyStylesToDocument(doc, 800, 600)[p].GetTextIndent(); got != 40 || pct {
+		t.Errorf("sibling text-indent from :root 2em at 20px = %v (pct=%v), want 40px", got, pct)
+	}
+}
+
+// TestComputedLengths_MixedCalcKeepsPercentOnly: a math function mixing a
+// percentage with font-relative lengths computes the length terms and keeps
+// the percentage (Blink's ConvertToLength turns calc(10% + 2em) into
+// calc(10% + 20px) at a 10px font — CSSMathExpressionNode lengths resolve
+// through CssToLengthConversionData, TextIndent::ApplyValue,
+// core/css/properties/longhands/longhands_custom.cc:10267-10292 @
+// 5992657f556bcd9d207a4aca187488462f027cab), so a 30px child inherits 20px of
+// length, not 60px.
+func TestComputedLengths_MixedCalcKeepsPercentOnly(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#p { font-size: 10px; text-indent: calc(10% + 2em); }
+		#c { font-size: 30px; }</style><div id="p"><div id="c"></div></div>`, nil)
+	c := styleByID(t, styles, "c")
+	if got := c.ResolveTextIndent(100); got != 30 {
+		t.Errorf("inherited text-indent calc(10%% + 2em) from 10px at a 100px block = %v, want 30", got)
+	}
+	if got := styleByID(t, styles, "p").ResolveTextIndent(100); got != 30 {
+		t.Errorf("text-indent calc(10%% + 2em) at 10px in a 100px block = %v, want 30", got)
+	}
+}
+
+// TestTabSize_NegativeMathClampedToZero: tab-size is parsed as a
+// non-negative number (TabSize::ParseSingleValue, kNonNegative,
+// core/css/properties/longhands/longhands_custom.cc:9892-9905), and a math
+// function's result is clamped to that range
+// (CSSMathFunctionValue::ClampToPermittedRange,
+// core/css/css_math_function_value.cc:190-202), both @
+// 5992657f556bcd9d207a4aca187488462f027cab.
+func TestTabSize_NegativeMathClampedToZero(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#d { tab-size: calc(-2); }</style><div id="d"></div>`, nil)
+	if got, isLen := styleByID(t, styles, "d").GetTabSize(); got != 0 || isLen {
+		t.Errorf("tab-size calc(-2) = %v (length=%v), want 0 spaces", got, isLen)
+	}
+}
