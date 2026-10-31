@@ -269,3 +269,109 @@ func TestParser_MultipleStyleTags(t *testing.T) {
 		t.Errorf("second stylesheet incorrect: '%s'", doc.Stylesheets[1].Text)
 	}
 }
+
+// elementsNamed returns the elements under root named tag, in document order.
+func elementsNamed(root *Node, tag string) []*Node {
+	var out []*Node
+	if root.Type == ElementNode && root.TagName == tag {
+		out = append(out, root)
+	}
+	for _, c := range root.Children {
+		out = append(out, elementsNamed(c, tag)...)
+	}
+	return out
+}
+
+// TestParse_ElementNamespaceURI pins the namespace the parser gives each
+// element: <svg> and <math> start SVG / MathML subtrees whose descendants
+// inherit the namespace, except at HTML integration points (SVG
+// foreignObject/desc/title; MathML annotation-xml with an HTML encoding)
+// and MathML text integration points (mi/mo/mn/ms/mtext, except
+// mglyph/malignmark children), whose start-tag children are HTML; an <svg>
+// child of annotation-xml is SVG. Expected values from Blink
+// HTMLTreeBuilder (html_tree_builder.cc:1198 math, :1203 svg,
+// :2998-3027 ShouldProcessTokenInForeignContent, :3128
+// InsertForeignElement(token, current_namespace)) and HTMLElementStack
+// (html_element_stack.cc:262-290) @ d4ecdfed88f962439247c2ad36b8fe47805b1520.
+func TestParse_ElementNamespaceURI(t *testing.T) {
+	doc, err := Parse(`<div><svg><g><math></math><foreignObject><span></span></foreignObject>` +
+		`<desc><em></em></desc></g></svg>` +
+		`<math><mi><i></i><mglyph></mglyph></mi><mrow></mrow>` +
+		`<annotation-xml encoding="text/html"><p></p></annotation-xml>` +
+		`<annotation-xml><svg></svg></annotation-xml></math>` +
+		`<svg><title><b></b></title></svg>` +
+		`<math><annotation-xml encoding="Application/XHTML+XML"><u></u></annotation-xml>` +
+		`<mi><malignmark></malignmark></mi><mo><s></s></mo>` +
+		`<mn><kbd></kbd></mn><ms><var></var></ms><mtext><samp></samp></mtext></math></div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		tag  string
+		idx  int // occurrence of tag, in document order
+		want string
+	}{
+		{"html", 0, XHTMLNamespaceURI},
+		{"body", 0, XHTMLNamespaceURI},
+		{"div", 0, XHTMLNamespaceURI},
+		{"svg", 0, SVGNamespaceURI},
+		{"g", 0, SVGNamespaceURI},
+		{"math", 0, SVGNamespaceURI}, // <math> inside SVG content stays SVG
+		{"foreignobject", 0, SVGNamespaceURI},
+		{"span", 0, XHTMLNamespaceURI}, // foreignObject is an HTML integration point
+		{"desc", 0, SVGNamespaceURI},
+		{"em", 0, XHTMLNamespaceURI}, // desc is an HTML integration point
+		{"math", 1, MathMLNamespaceURI},
+		{"mi", 0, MathMLNamespaceURI},
+		{"i", 0, XHTMLNamespaceURI},       // mi is a MathML text integration point
+		{"mglyph", 0, MathMLNamespaceURI}, // ... except for mglyph
+		{"mrow", 0, MathMLNamespaceURI},
+		{"annotation-xml", 0, MathMLNamespaceURI},
+		{"p", 0, XHTMLNamespaceURI}, // annotation-xml encoding=text/html
+		{"annotation-xml", 1, MathMLNamespaceURI},
+		{"svg", 1, SVGNamespaceURI}, // annotation-xml > svg
+		{"title", 0, SVGNamespaceURI},
+		{"b", 0, XHTMLNamespaceURI},           // SVG title is an HTML integration point
+		{"u", 0, XHTMLNamespaceURI},           // annotation-xml encoding=application/xhtml+xml (case-insensitive)
+		{"malignmark", 0, MathMLNamespaceURI}, // mi > malignmark stays MathML
+		{"mo", 0, MathMLNamespaceURI},
+		{"s", 0, XHTMLNamespaceURI},    // mo, mn, ms and mtext are MathML text integration points
+		{"kbd", 0, XHTMLNamespaceURI},  // mn
+		{"var", 0, XHTMLNamespaceURI},  // ms
+		{"samp", 0, XHTMLNamespaceURI}, // mtext
+	}
+	for _, tc := range cases {
+		els := elementsNamed(doc.Root, tc.tag)
+		if len(els) <= tc.idx {
+			t.Errorf("<%s>#%d: not found (%d parsed)", tc.tag, tc.idx, len(els))
+			continue
+		}
+		if got := els[tc.idx].NamespaceURI(); got != tc.want {
+			t.Errorf("<%s>#%d: NamespaceURI() = %q, want %q", tc.tag, tc.idx, got, tc.want)
+		}
+	}
+	if got := (&Node{Type: ElementNode, TagName: "div"}).NamespaceURI(); got != XHTMLNamespaceURI {
+		t.Errorf("unset Node: NamespaceURI() = %q, want XHTML", got)
+	}
+}
+
+// TestParse_ScriptDataBlockNamespaceURI pins that a non-JS (data-block)
+// <script> takes its namespace the same way as every other element: inside
+// <svg> it is inserted with InsertForeignElement(token, current_namespace)
+// (core/html/parser/html_tree_builder.cc:3128 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), so it is an SVG element.
+func TestParse_ScriptDataBlockNamespaceURI(t *testing.T) {
+	doc, err := Parse(`<div><script type="text/x">a</script><svg><script type="text/x">b</script></svg></div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := elementsNamed(doc.Root, "script")
+	if len(scripts) != 2 {
+		t.Fatalf("parsed %d <script> elements, want 2", len(scripts))
+	}
+	for i, want := range []string{XHTMLNamespaceURI, SVGNamespaceURI} {
+		if got := scripts[i].NamespaceURI(); got != want {
+			t.Errorf("<script>#%d: NamespaceURI() = %q, want %q", i, got, want)
+		}
+	}
+}

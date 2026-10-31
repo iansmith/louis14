@@ -31,6 +31,15 @@ type Selector struct {
 	Specificity   int              // Specificity score for cascade
 	PseudoElement string           // Phase 11: Pseudo-element (::before, ::after)
 
+	// defaultNamespace is the default namespace (from `@namespace <uri>;`)
+	// of the stylesheet this selector was parsed in; "" when that sheet has
+	// none, or for a context-free ParseSelector. The matcher re-parses
+	// functional-pseudo arguments (:is/:where/:not/:has/:nth-child(of)) from
+	// strings at match time, so the sheet's default namespace travels with
+	// the selector into those re-parses (see parseNestedSelector). No Blink
+	// analog: Blink resolves nested selector lists once, at parse time.
+	defaultNamespace string
+
 	// Legacy fields for backward compatibility with simple selectors
 	Type  SelectorType // Deprecated: use Parts instead
 	Value string       // Deprecated: use Parts instead
@@ -43,6 +52,21 @@ type SelectorPart struct {
 	ID            string              // ID (without the #)
 	Attributes    []AttributeSelector // Attribute selectors
 	PseudoClasses []string            // Pseudo-classes (e.g., "hover", "focus", "active", "visited")
+
+	// NamespaceURI is the resolved namespace of the type or universal
+	// selector (Blink CSSSelector::TagQName().NamespaceURI(),
+	// core/css/css_selector.h:505 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// "" means any namespace (Blink g_star_atom), so a zero-value
+	// SelectorPart and every context-free parse match elements in any
+	// namespace. Divergence: Blink's explicit no-namespace (g_empty_atom,
+	// from `|tag` or `@namespace ""`) is not representable; both keep
+	// meaning "any".
+	NamespaceURI string
+
+	// hasNamespacePrefix is true when the type or universal selector was
+	// written with a `prefix|` (Blink: a non-null QualifiedName prefix).
+	// Only unprefixed type selectors take the default namespace.
+	hasNamespacePrefix bool
 }
 
 // AttributeSelector represents an attribute selector like [type="text"]
@@ -290,6 +314,15 @@ type Stylesheet struct {
 	Keyframes         map[string][]KeyframeRule // animation name → keyframe stops
 	CounterStyles     []CounterStyleRule        // @counter-style rules
 	FontFeatureValues []FontFeatureValuesRule   // @font-feature-values rules
+
+	// DefaultNamespace is the URI of this sheet's default-namespace
+	// `@namespace <uri>;` rule; "" when it has none (Blink's g_star_atom,
+	// any namespace). Mirrors StyleSheetContents::DefaultNamespace
+	// (core/css/style_sheet_contents.h:76 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520). It is per sheet: an
+	// @import'ed sheet resolves its own selectors against its own default
+	// namespace, and resolveAtImport does not copy this field.
+	DefaultNamespace string
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source, while
@@ -791,10 +824,34 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	// Find each rule (selector { declarations })
 	rules := splitRules(css)
 
+	// @namespace ordering (CSS Namespaces 3 §2): valid only after any
+	// @charset/@import and before every other rule, except that @layer
+	// statements seen before the first @import/@namespace keep it valid.
+	// Mirrors Blink ComputeNewAllowedRules (core/css/parser/
+	// css_parser_impl.cc:696-745 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// Approximations (LOU-437 decision L8): an unknown or invalid at-rule
+	// still closes the gate (Blink only counts parsed rules), and @import
+	// after @namespace is not rejected.
+	namespaceAllowed := true
+	seenImportOrNamespace := false
+
 	for _, ruleStr := range rules {
 		trimmed := strings.TrimSpace(ruleStr)
 		if strings.HasPrefix(trimmed, "@") {
+			if strings.HasPrefix(trimmed, "@namespace") {
+				// A valid, in-order @namespace records the default
+				// namespace (StyleSheetContents::ParserAppendRule, namespace
+				// branch, style_sheet_contents.cc:206-213 @ d4ecdfed88f9).
+				// A rejected one (out of order, or a parse error) changes
+				// no state: Blink drops it as a null rule.
+				if prefix, uri, ok := consumeNamespaceRule(trimmed); ok && namespaceAllowed {
+					seenImportOrNamespace = true
+					stylesheet.parserAddNamespace(prefix, uri)
+				}
+				continue
+			}
 			if strings.HasPrefix(trimmed, "@import") {
+				seenImportOrNamespace = true
 				// Fetch and parse the imported sheet with a fresh
 				// ParserContext rooted at the imported sheet's own URL
 				// dir, so url() refs inside resolve against that base
@@ -807,13 +864,20 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 				resolveAtImport(ctx, trimmed, stylesheet)
 				continue
 			}
+			// An @layer statement before any @import/@namespace keeps
+			// @namespace valid; any other rule is a regular rule.
+			isEarlyLayerStatement := strings.HasPrefix(trimmed, "@layer") &&
+				!strings.Contains(trimmed, "{") && !seenImportOrNamespace
+			if !isEarlyLayerStatement {
+				namespaceAllowed = false
+			}
 			// All other at-rules dispatch through the shared registry
 			// helper so @font-face / @keyframes / @counter-style nested
 			// inside @media / @supports bodies register identically to
 			// top-level (CSS Conditional 3 §2.5; mirrors Blink's
 			// CSSParserImpl::ConsumeAtRule recursion at
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-			stylesheet.Rules = append(stylesheet.Rules, dispatchAtRuleIntoStylesheet(ruleStr, stylesheet)...)
+			stylesheet.parserAppendRules(dispatchAtRuleIntoStylesheet(ruleStr, stylesheet))
 			continue
 		}
 
@@ -822,7 +886,8 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 			// Skip malformed rules
 			continue
 		}
-		stylesheet.Rules = append(stylesheet.Rules, rules...)
+		namespaceAllowed = false
+		stylesheet.parserAppendRules(rules)
 	}
 
 	return stylesheet, nil
@@ -919,9 +984,11 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 		return nil
 	}
 	// Unknown at-rules (@charset inside conditional body, @three-dee, @unknown,
-	// @namespace nested where invalid per CSS Namespaces, …) are silently
-	// dropped. Their `{ ... }` body or `; ` terminator was already consumed by
-	// splitRules so we don't need to do anything else here.
+	// …) and @namespace nested in a conditional body (invalid per CSS
+	// Namespaces 3 §2; a top-level @namespace never reaches here, see
+	// ParseStylesheet) are silently dropped. Their `{ ... }` body or `; `
+	// terminator was already consumed by splitRules so we don't need to do
+	// anything else here.
 	return nil
 }
 
@@ -1025,9 +1092,11 @@ func splitRules(css string) []string {
 			if !isAfterCloseBrace {
 				// At-rule terminator (no body) — emit rule text for at-rules
 				// that don't carry a `{ … }` body but still need to reach the
-				// at-rule scanner: @layer (declaration form) and @import.
+				// at-rule scanner: @layer (declaration form), @import and
+				// @namespace.
 				ruleText := strings.TrimSpace(css[start : i+1])
-				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") {
+				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") ||
+					strings.HasPrefix(ruleText, "@namespace") {
 					rules = append(rules, ruleText)
 				}
 				start = i + 1
@@ -3923,15 +3992,17 @@ func parseSelectorPart(s string) SelectorPart {
 			j++
 		}
 		part.Element = strings.ToLower(s[i:j])
-		// Normalize namespace-prefixed element selectors. Per CSS Selectors 4
-		// §6.1, an unprefixed type selector implicitly matches the default
-		// namespace; `ns|tag` restricts to namespace `ns`. louis14 does not
-		// track XML namespaces — the synthetic root + body never carry one
-		// — so `*|tag` (any-namespace tag) and `|tag` (no-namespace tag)
-		// both collapse to the bare tag, and `*|*` to `*`. This matches the
-		// behaviour authors get without an `@namespace` rule, which is the
-		// only case the WPT selectors corpus exercises.
+		// Namespace-prefixed type selectors (CSS Selectors 4 §6.1). An
+		// unprefixed type selector takes the sheet's default namespace,
+		// applied after parsing by Selector.resolveNamespaces; recording
+		// that a prefix was written keeps it out of that resolution. The
+		// prefix itself is not resolved: `*|tag` (any namespace), `|tag`
+		// (no namespace, which louis14 cannot represent) and `ns|tag`
+		// (louis14 keeps no @namespace prefix map) all match `tag` in any
+		// namespace, and `*|*` matches any element (LOU-437 decisions
+		// L4/L5).
 		if idx := strings.Index(part.Element, "|"); idx >= 0 {
+			part.hasNamespacePrefix = true
 			local := part.Element[idx+1:]
 			if local == "" || local == "*" {
 				part.Element = "*"
@@ -4091,8 +4162,9 @@ func normalizeAttrName(name string) string {
 		// `|attr` and `*|attr` — match the bare attribute name in HTML.
 		return local
 	}
-	// Named-namespace prefix: keep as-is. With no @namespace registry the
-	// selector matches nothing, which is the correct behavior for an
+	// Named-namespace prefix: keep as-is. With no @namespace prefix map
+	// (only the default namespace is recorded, Stylesheet.DefaultNamespace)
+	// the selector matches nothing, which is the correct behavior for an
 	// unregistered prefix per CSS Namespaces 3 §6.2.
 	return name
 }

@@ -144,9 +144,7 @@ func (p *Parser) Parse() (*Document, error) {
 							Parent:  node,
 						})
 					}
-					parent := p.currentParent()
-					node.Parent = parent
-					parent.Children = append(parent.Children, node)
+					insertElement(node, p.currentParent())
 					continue
 				}
 			}
@@ -232,7 +230,7 @@ func (p *Parser) Parse() (*Document, error) {
 				parent = p.currentParent()
 			}
 
-			parent.AddChild(node)
+			insertElement(node, parent)
 
 			// Handle <meta name="viewport" content="width=...">
 			if token.TagName == "meta" {
@@ -831,4 +829,99 @@ func stripCDATA(s string) string {
 		s = trailing[:len(trailing)-len("]]>")]
 	}
 	return s
+}
+
+// insertElement appends the element node to parent, giving it the namespace
+// namespaceForInsertedElement picks. Both start-tag insertion paths (the
+// data-block <script> and the generic element path) use it, as Blink routes
+// each start-tag element through HTMLConstructionSite::InsertHTMLElement or
+// InsertForeignElement (core/html/parser/html_construction_site.cc:1059,
+// :1127 @ d4ecdfed88f962439247c2ad36b8fe47805b1520). The synthesized
+// html/head/body nodes and the reparenting moves bypass it and keep the
+// unset (XHTML) namespace.
+func insertElement(node, parent *Node) {
+	if ns := namespaceForInsertedElement(node.TagName, parent); ns != XHTMLNamespaceURI {
+		node.namespaceURI = ns
+	}
+	parent.AddChild(node)
+}
+
+// namespaceForInsertedElement returns the namespace of an element with
+// start tag tag inserted under parent. Inside foreign content (an SVG or
+// MathML parent that is not an integration point for this tag) the element
+// takes the parent's namespace — Blink ProcessTokenInForeignContent's
+// InsertForeignElement(token, current_namespace)
+// (core/html/parser/html_tree_builder.cc:3109, :3128 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). Otherwise the "in body" rules
+// apply: <math> is MathML (:1198), <svg> is SVG (:1203), anything else is
+// HTML (HTMLConstructionSite::InsertHTMLElement,
+// html_construction_site.cc:1059).
+//
+// Not modelled (LOU-437 decision L7): the "breakout" that pops foreign
+// content for HTML start tags such as <div> or <p> directly inside <svg>,
+// and fragment (innerHTML) parsing context. Tag names arrive lowercased
+// from the tokenizer, so SVG's foreignObject is "foreignobject".
+func namespaceForInsertedElement(tag string, parent *Node) string {
+	if parent != nil && parent.Type == ElementNode && parent.NamespaceURI() != XHTMLNamespaceURI &&
+		shouldProcessTokenInForeignContent(tag, parent) {
+		return parent.NamespaceURI()
+	}
+	switch tag {
+	case "math":
+		return MathMLNamespaceURI
+	case "svg":
+		return SVGNamespaceURI
+	}
+	return XHTMLNamespaceURI
+}
+
+// shouldProcessTokenInForeignContent reports whether a start tag under the
+// foreign (non-HTML) element parent stays in foreign content. Ports the
+// start-tag cases of Blink HTMLTreeBuilder::ShouldProcessTokenInForeignContent
+// (core/html/parser/html_tree_builder.cc:2998-3027 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func shouldProcessTokenInForeignContent(tag string, parent *Node) bool {
+	if isMathMLTextIntegrationPoint(parent) && tag != "mglyph" && tag != "malignmark" {
+		return false
+	}
+	if parent.NamespaceURI() == MathMLNamespaceURI && parent.TagName == "annotation-xml" && tag == "svg" {
+		return false
+	}
+	return !isHTMLIntegrationPoint(parent)
+}
+
+// isMathMLTextIntegrationPoint mirrors Blink
+// HTMLElementStack::IsMathMLTextIntegrationPoint
+// (core/html/parser/html_element_stack.cc:262-270 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func isMathMLTextIntegrationPoint(n *Node) bool {
+	if n.NamespaceURI() != MathMLNamespaceURI {
+		return false
+	}
+	switch n.TagName {
+	case "mi", "mo", "mn", "ms", "mtext":
+		return true
+	}
+	return false
+}
+
+// isHTMLIntegrationPoint mirrors Blink HTMLElementStack::IsHTMLIntegrationPoint
+// (core/html/parser/html_element_stack.cc:273-290 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): MathML annotation-xml with an
+// HTML encoding, and SVG foreignObject / desc / title.
+func isHTMLIntegrationPoint(n *Node) bool {
+	switch n.NamespaceURI() {
+	case MathMLNamespaceURI:
+		if n.TagName != "annotation-xml" {
+			return false
+		}
+		encoding, _ := n.GetAttribute("encoding")
+		return strings.EqualFold(encoding, "text/html") || strings.EqualFold(encoding, "application/xhtml+xml")
+	case SVGNamespaceURI:
+		switch n.TagName {
+		case "foreignobject", "desc", "title":
+			return true
+		}
+	}
+	return false
 }
