@@ -273,3 +273,166 @@ func TestMediaQueryRem_IgnoresRootFontSize(t *testing.T) {
 		t.Errorf("@media (min-width: 50rem) at 800px: width = %v (ok=%v), want 7", got, ok)
 	}
 }
+
+// TestRem_SyntheticRootOwnFontSizeUsesInitialRem: in a fragment parse (no
+// <html>) the first element is :root, so its own rem font-size resolves
+// against the initial size even though it is re-cascaded under the synthetic
+// doc.Root style that carries its computed size — Blink leaves
+// root_element_style_ null for documentElement
+// (core/css/resolver/element_resolve_context.cc:109-113 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestRem_SyntheticRootOwnFontSizeUsesInitialRem(t *testing.T) {
+	for _, decl := range []string{"2rem", "2em", "200%"} {
+		doc := html.NewDocument()
+		doc.Stylesheets = append(doc.Stylesheets, html.StylesheetSource{
+			Text: ":root { font-size: " + decl + "; } p { width: 1rem; }"})
+		first := &html.Node{Type: html.ElementNode, TagName: "div", Parent: doc.Root}
+		p := &html.Node{Type: html.ElementNode, TagName: "p", Parent: doc.Root}
+		doc.Root.Children = append(doc.Root.Children, first, p)
+
+		styles := ApplyStylesToDocument(doc, 800, 600)
+		if got := styles[first].GetFontSize(); got != 32 {
+			t.Errorf(":root font-size %s = %v, want 32", decl, got)
+		}
+		if got := lengthOf(t, styles[p], "width"); got != 32 {
+			t.Errorf(":root font-size %s: sibling width 1rem = %v, want 32", decl, got)
+		}
+	}
+}
+
+// TestComputedLengths_InheritedFontRelative: text-indent,
+// text-underline-offset and border-spacing are inherited and compute their
+// lengths to absolute values, so a 30px child inherits the 10px parent's em /
+// ex lengths rather than re-resolving them against its own font. Blink:
+// TextIndent::ApplyValue → ConvertToLength(CssToLengthConversionData())
+// (core/css/properties/longhands/longhands_custom.cc:10267-10292),
+// ConvertTextUnderlineOffset → ConvertLengthOrAuto
+// (core/css/resolver/style_builder_converter.cc:3259-3263), and
+// -webkit-border-{horizontal,vertical}-spacing → ConvertComputedLength
+// (core/css/css_properties.json5:7061-7097, style_builder_converter.h:478-482),
+// all @ 5992657f556bcd9d207a4aca187488462f027cab. Percentages stay
+// percentages (text-indent of the containing block, text-underline-offset of
+// the element's own 1em). text-underline-offset and border-spacing inherit
+// through an explicit `inherit` here: louis14 does not yet list them in
+// inheritableProperties.
+func TestComputedLengths_InheritedFontRelative(t *testing.T) {
+	styles := cascadeHTML(t, `<style>
+		#p { font-size: 10px; text-indent: 2em; text-underline-offset: 1ex; border-spacing: 1em 2em; }
+		#q { font-size: 10px; text-indent: 10%; text-underline-offset: 10%; }
+		.c { font-size: 30px; text-underline-offset: inherit; border-spacing: inherit; }</style>
+		<div id="p"><div id="c" class="c"></div></div><div id="q"><div id="d" class="c"></div></div>`, nil)
+	c := styleByID(t, styles, "c")
+	if got, pct := c.GetTextIndent(); got != 20 || pct {
+		t.Errorf("inherited text-indent 2em from 10px = %v (pct=%v), want 20px", got, pct)
+	}
+	if got := c.GetTextUnderlineOffset(); got != 5 {
+		t.Errorf("inherited text-underline-offset 1ex from 10px = %v, want 5", got)
+	}
+	if h, v := c.GetBorderSpacing(), c.GetBorderSpacingV(); h != 10 || v != 20 {
+		t.Errorf("inherited border-spacing 1em 2em from 10px = %v %v, want 10 20", h, v)
+	}
+	d := styleByID(t, styles, "d")
+	if got, pct := d.GetTextIndent(); got != 0.1 || !pct {
+		t.Errorf("inherited text-indent 10%% = %v (pct=%v), want the 0.1 fraction", got, pct)
+	}
+	if got := d.GetTextUnderlineOffset(); got != 3 {
+		t.Errorf("inherited text-underline-offset 10%% at 30px = %v, want 3", got)
+	}
+}
+
+// TestComputedLengths_TransitionedFontSize: a first-frame font-size
+// transition re-computes the font-relative lengths against the interpolated
+// font, as Blink does by applying interpolations inside the cascade before
+// the dependent properties (StyleCascade::Apply → ApplyInterpolations,
+// core/css/resolver/style_cascade.cc:320 @
+// 5992657f556bcd9d207a4aca187488462f027cab); the inheriting child copies the
+// re-computed tab-size.
+func TestComputedLengths_TransitionedFontSize(t *testing.T) {
+	doc, _ := html.Parse(`<style>div { font-size: 20px; transition: font-size 1s; outline: solid 0.25em;
+		outline-offset: 0.25em; tab-size: 1em; text-indent: 1em; }</style><div><span>x</span></div>`)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	prev := make(map[*html.Node]*Style, len(styles))
+	for node, style := range styles {
+		c := style.Clone()
+		if node.TagName == "div" || node.TagName == "span" {
+			c.Properties["font-size"] = "10px"
+		}
+		prev[node] = c
+	}
+	ApplyTransitionsFirstFrame(doc.Root, styles, prev)
+	div, span := styleByTag(t, styles, "div"), styleByTag(t, styles, "span")
+	if got := div.GetFontSize(); got != 10 {
+		t.Fatalf("div font-size = %v, want the transition's start value 10", got)
+	}
+	if got := div.GetOutlineWidth(); got != 2 {
+		t.Errorf("outline-width 0.25em at 10px = %v, want 2", got)
+	}
+	if got := div.GetOutlineOffset(); got != 2 {
+		t.Errorf("outline-offset 0.25em at 10px = %v, want 2", got)
+	}
+	if got, isLen := div.GetTabSize(); got != 10 || !isLen {
+		t.Errorf("tab-size 1em at 10px = %v (length=%v), want 10px", got, isLen)
+	}
+	if got, _ := div.GetTextIndent(); got != 10 {
+		t.Errorf("text-indent 1em at 10px = %v, want 10", got)
+	}
+	if got, isLen := span.GetTabSize(); got != 10 || !isLen {
+		t.Errorf("span inherited tab-size = %v (length=%v), want 10px", got, isLen)
+	}
+}
+
+// TestTabSize_UnitlessMathIsSpaceCount: a unitless math function in tab-size
+// is a <number> — a space count — not a length (CSS Text 3 §4.2;
+// ConvertLengthOrTabSpaces keeps a number as TabSize spaces,
+// core/css/resolver/style_builder_converter.cc:2182-2194 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestTabSize_UnitlessMathIsSpaceCount(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#d { tab-size: calc(2*4); }</style><div id="d"></div>`, nil)
+	if got, isLen := styleByID(t, styles, "d").GetTabSize(); got != 8 || isLen {
+		t.Errorf("tab-size calc(2*4) = %v (length=%v), want 8 spaces", got, isLen)
+	}
+}
+
+// TestOutline_PxLiteralRounded: px outline lengths take the same Blink
+// rounding as other units — ConvertOutlineOffset and ConvertBorderWidth →
+// ClampLineWidth compute every <length> with no px special case
+// (core/css/resolver/style_builder_converter.cc:1965-2015 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestOutline_PxLiteralRounded(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#d { outline: solid 2.5px; outline-offset: 0.5px; }
+		#e { outline: solid 0.25em; outline-offset: -2.5px; font-size: 10px; }</style>
+		<div id="d"></div><div id="e"></div>`, nil)
+	d, e := styleByID(t, styles, "d"), styleByID(t, styles, "e")
+	if got := d.GetOutlineOffset(); got != 1 {
+		t.Errorf("outline-offset 0.5px = %v, want 1", got)
+	}
+	if got := d.GetOutlineWidth(); got != 2 {
+		t.Errorf("outline-width 2.5px = %v, want 2", got)
+	}
+	if got := e.GetOutlineOffset(); got != -2 {
+		t.Errorf("outline-offset -2.5px = %v, want -2", got)
+	}
+}
+
+// TestPseudoElement_ComputedLengths: a pseudo-element's outline-offset is
+// computed (rounded by ConvertOutlineOffset) like an element's — Blink builds
+// pseudo-element styles through the same StyleBuilder converters
+// (core/css/resolver/style_builder_converter.cc:2004-2015 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestPseudoElement_ComputedLengths(t *testing.T) {
+	doc, _ := html.Parse(`<style>#d { font-size: 10px; } #d::before { content: "x"; outline: solid 1px; outline-offset: 0.25em; tab-size: calc(1em + 1px); }</style><div id="d">y</div>`)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	var dNode *html.Node
+	for node := range styles {
+		if id, _ := node.GetAttribute("id"); id == "d" {
+			dNode = node
+		}
+	}
+	before := ComputePseudoElementStyle(dNode, "before", ParseDocumentStylesheets(doc), 800, 600, styles[dNode])
+	if got := before.GetOutlineOffset(); got != 2 {
+		t.Errorf("::before outline-offset 0.25em at 10px = %v, want 2", got)
+	}
+	if got := before.Properties["tab-size"]; got != "11px" {
+		t.Errorf("::before tab-size calc(1em + 1px) = %q, want computed 11px", got)
+	}
+}
