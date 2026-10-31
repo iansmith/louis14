@@ -81,3 +81,34 @@ func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 		}
 	}
 }
+
+// TestChUnit_FontSizesChReadsZeroWidth (LOU-425): ch reads the font's
+// ZeroWidth as given, with no orientation logic of its own, as
+// CSSToLengthConversionData::FontSizes::Ch does (core/css/
+// css_to_length_conversion_data.cc:117-126 @
+// 5992657f556bcd9d207a4aca187488462f027cab); the upright 1em lives in
+// SimpleFontData::ZeroInlineSize, inside the font. With no font selector (a
+// louis14-only mode; Blink always has a Font) ch falls back to 0.5em, or 1em
+// upright.
+func TestChUnit_FontSizesChReadsZeroWidth(t *testing.T) {
+	newStyle := func(writingMode, textOrientation string) *Style {
+		s := NewStyle()
+		s.Set("font-size", "20px")
+		s.Set("writing-mode", writingMode)
+		s.Set("text-orientation", textOrientation)
+		s.Set("width", "calc(5ch)")
+		return s
+	}
+
+	upright := newStyle("vertical-rl", "upright")
+	upright.SetZeroWidth(5)
+	if got, _ := upright.GetLength("width"); got != 25 {
+		t.Errorf("upright, ZeroWidth 5: calc(5ch) = %v, want 25 (ch = ZeroWidth)", got)
+	}
+	if got, _ := newStyle("vertical-rl", "upright").GetLength("width"); got != 100 {
+		t.Errorf("upright, no selector: calc(5ch) = %v, want 100 (ch falls back to 1em)", got)
+	}
+	if got, _ := newStyle("horizontal-tb", "mixed").GetLength("width"); got != 50 {
+		t.Errorf("horizontal, no selector: calc(5ch) = %v, want 50 (ch falls back to 0.5em)", got)
+	}
+}
