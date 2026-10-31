@@ -24,23 +24,32 @@ import (
 // origin. Returns (offset, true) when both are found in ancestor/descendant
 // relation. Used to read where a replaced child lands inside its inline-block.
 func offsetOfNodeWithin(root *PhysicalFragment, origin, target *html.Node) (float64, bool) {
+	x, _, ok := physicalOffsetOfNodeWithin(root, origin, target)
+	return x, ok
+}
+
+// physicalOffsetOfNodeWithin returns the cumulative physical (x, y) offset of
+// the first fragment wrapping target, measured relative to the fragment
+// wrapping origin, and whether both were found in ancestor/descendant
+// relation.
+func physicalOffsetOfNodeWithin(root *PhysicalFragment, origin, target *html.Node) (float64, float64, bool) {
 	originFrag := findFragmentByNode(root, origin)
 	if originFrag == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	var walk func(frag *PhysicalFragment, acc float64) (float64, bool)
-	walk = func(frag *PhysicalFragment, acc float64) (float64, bool) {
+	var walk func(frag *PhysicalFragment, x, y float64) (float64, float64, bool)
+	walk = func(frag *PhysicalFragment, x, y float64) (float64, float64, bool) {
 		if frag.Node == target || (frag.LayoutNode != nil && frag.LayoutNode.DOMNode == target) {
-			return acc, true
+			return x, y, true
 		}
 		for _, ch := range frag.Children {
-			if x, ok := walk(ch.Fragment, acc+ch.Offset.Left.Float64()); ok {
-				return x, true
+			if fx, fy, ok := walk(ch.Fragment, x+ch.Offset.LeftF64(), y+ch.Offset.TopF64()); ok {
+				return fx, fy, true
 			}
 		}
-		return 0, false
+		return 0, 0, false
 	}
-	return walk(originFrag, 0)
+	return walk(originFrag, 0, 0)
 }
 
 // TestInlineBlockWidth0ReplacedChildOverflowsLeft builds
