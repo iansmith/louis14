@@ -1459,8 +1459,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		mla.addMainGap(mla.blockCursor, SpannerGapStart)
 		mla.addNumberOfColumnsForCurrentRow(-1)
 		spannerOffset := LogicalOffset{
-			InlineOffset: resolveSpannerInlineMargins(spannerStyle, wdm, mla.contentInlineSize,
-				NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins),
+			// The offset is content-box relative, so only the resolved
+			// inline-start margin contributes (cla.cc:1424-1426 @
+			// a9f50e522efa).
+			InlineOffset: resolveInlineAutoMargins(spannerStyle, wdm, mla.contentInlineSize,
+				NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins).InlineStart,
 			BlockOffset: spannerBlockOffset,
 		}
 		builder.AddChild(spanFrag, spannerOffset)
@@ -2367,37 +2370,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		columnsPlaced: columnsPlaced,
 		breakToken:    finalColBreakToken,
 	}
-}
-
-// resolveSpannerInlineMargins returns the spanner's inline-start offset
-// within the multicol's content box, resolving `auto` inline margins against
-// the free space between the spanner's margin box and the multicol content
-// box. Mirrors ResolveInlineAutoMargins (length_utils.cc:1551-1570 @
-// a9f50e522efa) and the offset computation at cla.cc:1424-1426. The returned
-// offset is content-box relative (border/scrollbar/padding is added at box
-// conversion), so only the resolved inline-start margin contributes.
-func resolveSpannerInlineMargins(
-	spannerStyle *css.Style,
-	wdm WritingDirectionMode,
-	availableInline float64,
-	spannerInline float64,
-	margins LogicalEdges,
-) float64 {
-	if spannerStyle == nil {
-		return 0
-	}
-	autoStart, autoEnd, _, _ := PhysicalAutoMarginsToLogical(spannerStyle.GetMargin(), wdm)
-	availableSpace := availableInline - spannerInline - margins.InlineStart - margins.InlineEnd
-	if availableSpace < 0 {
-		availableSpace = 0
-	}
-	switch {
-	case autoStart && autoEnd:
-		margins.InlineStart = availableSpace / 2
-	case autoStart:
-		margins.InlineStart = availableSpace
-	}
-	return margins.InlineStart
 }
 
 // resolveColumnAutoBlockSize estimates the balanced column height by doing an
