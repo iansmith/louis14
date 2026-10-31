@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"louis14/pkg/css"
+	"louis14/pkg/images"
 	"mazarin/textshape"
 )
 
@@ -107,7 +108,14 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	fr.declaredFamilies[strings.ToLower(family)] = struct{}{}
 	fr.mu.Unlock()
 
-	data, err := fetcher(srcURL)
+	// A data: URL is decoded in place, never fetched — Blink's
+	// ResourceFetcher::CreateResourceForStaticData (platform/loader/fetch/
+	// resource_fetcher.cc:1061-1063 @ 5992657f556bcd9d207a4aca187488462f027cab).
+	fetch := fetcher
+	if images.IsDataURI(srcURL) {
+		fetch = images.DecodeDataURI
+	}
+	data, err := fetch(srcURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching font %s: %w", srcURL, err)
 	}

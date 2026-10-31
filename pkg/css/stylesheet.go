@@ -6299,7 +6299,11 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 
 	ff := &FontFaceRule{Weight: "normal", Style: "normal"}
 
-	for _, decl := range strings.Split(block, ";") {
+	// The block is an ordinary declaration list (Blink's ConsumeFontFaceRule
+	// runs ConsumeBlockContents, core/css/parser/css_parser_impl.cc:1548 @
+	// 5992657f556bcd9d207a4aca187488462f027cab), so a ';' inside a string or
+	// url() — url("data:font/woff2;base64,...") — does not end a descriptor.
+	for _, decl := range splitDeclarationParts(block) {
 		decl = strings.TrimSpace(decl)
 		if decl == "" {
 			continue
@@ -6665,8 +6669,12 @@ func unquoteCounterString(s string) string {
 // url("font.woff") format("woff"), url("font.ttf") format("truetype")
 // Returns the first usable URL and its format.
 func parseFontFaceSrc(src string) (string, string) {
-	// Split by comma for multiple sources
-	sources := strings.Split(src, ",")
+	// Split by top-level comma for multiple sources (a data: URL's payload
+	// comma is inside url(...)). Every format() Blink's IsSupportedFontFormat
+	// accepts is usable — woff2 included (core/css/parser/
+	// at_rule_descriptor_parser.cc:85-92 @
+	// 5992657f556bcd9d207a4aca187488462f027cab; pkg/text decodes WOFF2).
+	sources := splitTopLevelCommas(src)
 	for _, source := range sources {
 		source = strings.TrimSpace(source)
 		// Extract url(...)
@@ -6691,11 +6699,6 @@ func parseFontFaceSrc(src string) (string, string) {
 			if fmtEnd >= 0 {
 				format = strings.Trim(strings.TrimSpace(fmtContent[:fmtEnd]), `"'`)
 			}
-		}
-
-		// Skip WOFF2 (requires Brotli decoder)
-		if format == "woff2" {
-			continue
 		}
 
 		return url, format
