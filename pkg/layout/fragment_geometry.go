@@ -328,6 +328,31 @@ func ResolveMargins(style *css.Style, wdm WritingDirectionMode, containingBlockI
 	}, wdm)
 }
 
+// resolveInlineAutoMargins resolves a laid-out box's `auto` inline margins
+// against the free space left in availableInlineSize by its inline size and
+// non-auto margins (ResolveMargins resolves `auto` to 0). The margins are
+// read in the container's writing direction wdm. Mirrors Blink
+// ResolveInlineAutoMargins (length_utils.cc:1551-1570 @ d4ecdfed88f9). Used
+// for multicol spanner placement and table caption placement (Blink
+// LayoutCaption, table_layout_algorithm.cc:107 @ d4ecdfed88f9).
+func resolveInlineAutoMargins(style *css.Style, wdm WritingDirectionMode, availableInlineSize, inlineSize float64, margins LogicalEdges) LogicalEdges {
+	if style == nil {
+		return margins
+	}
+	autoStart, autoEnd, _, _ := PhysicalAutoMarginsToLogical(style.GetMargin(), wdm)
+	availableSpace := availableInlineSize - inlineSize - margins.InlineSum()
+	switch {
+	case autoStart && autoEnd:
+		margins.InlineStart = max(0, availableSpace/2)
+		margins.InlineEnd = availableInlineSize - inlineSize - margins.InlineStart
+	case autoStart:
+		margins.InlineStart = max(0, availableSpace)
+	case autoEnd:
+		margins.InlineEnd = availableInlineSize - inlineSize - margins.InlineStart
+	}
+	return margins
+}
+
 // applyBoxSizingInline converts a user-declared inline size into a content-box
 // inline size, honoring box-sizing and scrollbar reservation. Per CSS Overflow
 // §3.3 the classic scrollbar reduces the content area without enlarging the
