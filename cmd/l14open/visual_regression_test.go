@@ -9,9 +9,9 @@ import (
 	"louis14/pkg/visualtest"
 )
 
-// updateReferenceImages is a flag to regenerate reference images
-// Set to true when you intentionally change rendering behavior
-// Run with: go test -v ./cmd/l14open -run TestVisual
+// updateReferenceImages recaptures the reference images from Chrome instead
+// of comparing (see captureChromeReference).
+// Run with: UPDATE_REFS=1 go test -v ./cmd/l14open -run TestVisual
 var updateReferenceImages = os.Getenv("UPDATE_REFS") == "1"
 
 func TestVisualRegression_Phase1_Simple(t *testing.T) {
@@ -144,11 +144,11 @@ func TestVisualRegression_Phase2_ComplexNesting(t *testing.T) {
 
 func TestVisualRegression_Phase2_Padding(t *testing.T) {
 	testCase := visualTestCase{
-		name: "padding",
-		htmlContent: `<div style="background-color: blue; width: 200px; height: 100px; padding: 30px;"></div>`,
+		name:          "padding",
+		htmlContent:   `<div style="background-color: blue; width: 200px; height: 100px; padding: 30px;"></div>`,
 		referenceFile: "../../testdata/phase2/reference/padding.png",
-		width:  800,
-		height: 600,
+		width:         800,
+		height:        600,
 	}
 
 	runVisualTest(t, testCase)
@@ -156,11 +156,11 @@ func TestVisualRegression_Phase2_Padding(t *testing.T) {
 
 func TestVisualRegression_Phase2_Margin(t *testing.T) {
 	testCase := visualTestCase{
-		name: "margin",
-		htmlContent: `<div style="background-color: red; width: 150px; height: 150px; margin: 50px;"></div>`,
+		name:          "margin",
+		htmlContent:   `<div style="background-color: red; width: 150px; height: 150px; margin: 50px;"></div>`,
 		referenceFile: "../../testdata/phase2/reference/margin.png",
-		width:  800,
-		height: 600,
+		width:         800,
+		height:        600,
 	}
 
 	runVisualTest(t, testCase)
@@ -168,11 +168,11 @@ func TestVisualRegression_Phase2_Margin(t *testing.T) {
 
 func TestVisualRegression_Phase2_Border(t *testing.T) {
 	testCase := visualTestCase{
-		name: "border",
-		htmlContent: `<div style="background-color: yellow; width: 200px; height: 100px; border: 10px solid black;"></div>`,
+		name:          "border",
+		htmlContent:   `<div style="background-color: yellow; width: 200px; height: 100px; border: 10px solid black;"></div>`,
 		referenceFile: "../../testdata/phase2/reference/border.png",
-		width:  800,
-		height: 600,
+		width:         800,
+		height:        600,
 	}
 
 	runVisualTest(t, testCase)
@@ -180,11 +180,11 @@ func TestVisualRegression_Phase2_Border(t *testing.T) {
 
 func TestVisualRegression_Phase2_MarginPaddingBorder(t *testing.T) {
 	testCase := visualTestCase{
-		name: "margin_padding_border",
-		htmlContent: `<div style="background-color: green; width: 150px; height: 100px; margin: 20px; padding: 25px; border: 8px solid red;"></div>`,
+		name:          "margin_padding_border",
+		htmlContent:   `<div style="background-color: green; width: 150px; height: 100px; margin: 20px; padding: 25px; border: 8px solid red;"></div>`,
 		referenceFile: "../../testdata/phase2/reference/margin_padding_border.png",
-		width:  800,
-		height: 600,
+		width:         800,
+		height:        600,
 	}
 
 	runVisualTest(t, testCase)
@@ -1081,7 +1081,7 @@ func TestVisualRegression_Phase12_ComplexBorders(t *testing.T) {
 }
 
 // visualTestCase defines a visual regression test
-type visualTestCase struct{
+type visualTestCase struct {
 	name          string
 	htmlFile      string // Path to HTML file (optional, use this OR htmlContent)
 	htmlContent   string // Inline HTML content (optional, use this OR htmlFile)
@@ -1093,6 +1093,14 @@ type visualTestCase struct{
 // runVisualTest executes a visual regression test
 func runVisualTest(t *testing.T, tc visualTestCase) {
 	t.Helper()
+
+	if updateReferenceImages {
+		if err := captureChromeReference(t, tc); err != nil {
+			t.Fatalf("failed to capture Chrome reference: %v", err)
+		}
+		t.Logf("✓ Captured Chrome reference: %s", tc.referenceFile)
+		return
+	}
 
 	// Create temp directory for actual output
 	tmpDir := t.TempDir()
@@ -1110,15 +1118,6 @@ func runVisualTest(t *testing.T, tc visualTestCase) {
 		t.Fatalf("failed to render HTML: %v", err)
 	}
 
-	// If updating reference images, generate new reference and skip comparison
-	if updateReferenceImages {
-		if err := copyFile(actualPath, tc.referenceFile); err != nil {
-			t.Fatalf("failed to update reference image: %v", err)
-		}
-		t.Logf("✓ Updated reference image: %s", tc.referenceFile)
-		return
-	}
-
 	// Check if reference image exists
 	if _, err := os.Stat(tc.referenceFile); os.IsNotExist(err) {
 		t.Fatalf("Reference image does not exist: %s\nRun with UPDATE_REFS=1 to generate it", tc.referenceFile)
@@ -1134,7 +1133,14 @@ func runVisualTest(t *testing.T, tc visualTestCase) {
 		t.Fatalf("comparison failed: %v", err)
 	}
 
-	if !result.Match {
+	expected := isExpectedFailure(t)
+	switch {
+	case !result.Match && expected:
+		t.Logf("expected failure (%s): %d different pixels, max difference %d",
+			expectedFailuresFile, result.DifferentPixels, result.MaxDifference)
+	case result.Match && expected:
+		t.Errorf("unexpected pass: %s now matches Chrome; remove it from %s", t.Name(), expectedFailuresFile)
+	case !result.Match:
 		t.Errorf("Visual regression test failed: %s", tc.name)
 		t.Errorf("  Different pixels: %d / %d (%.2f%%)",
 			result.DifferentPixels,
@@ -1144,28 +1150,10 @@ func runVisualTest(t *testing.T, tc visualTestCase) {
 		t.Errorf("  Actual output: %s", actualPath)
 		t.Errorf("  Reference: %s", tc.referenceFile)
 		t.Errorf("  Diff image: %s", opts.DiffImagePath)
-		t.Errorf("\nTo update reference image if this change is intentional:")
-		t.Errorf("  UPDATE_REFS=1 go test -v ./cmd/l14open -run %s", t.Name())
-	} else {
+		t.Errorf("  Fix louis14, or list %s in %s if the mismatch is a known gap.", t.Name(), expectedFailuresFile)
+	default:
 		t.Logf("✓ Visual test passed: %s (max diff: %d)", tc.name, result.MaxDifference)
 	}
-}
-
-// copyFile copies a file from src to dst
-func copyFile(src, dst string) error {
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	// Read source
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-
-	// Write destination
-	return os.WriteFile(dst, data, 0644)
 }
 
 // Phase 13: Margin Auto Centering Tests

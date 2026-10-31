@@ -10,6 +10,31 @@ import (
 	"louis14/pkg/render"
 )
 
+// divBoxes lays out doc and returns its <div> boxes in tree order. The box
+// tree is rooted at <html> with a <body> child, as in Chrome, so tests can't
+// index the top-level boxes directly.
+func divBoxes(doc *html.Document, width, height float64) ([]*layout.Box, []*layout.Box) {
+	boxes := layout.NewLayoutEngine(width, height).Layout(doc)
+	var divs []*layout.Box
+	var walk func(*layout.Box)
+	walk = func(b *layout.Box) {
+		if b.Node != nil && b.Node.TagName == "div" {
+			divs = append(divs, b)
+		}
+		for _, c := range b.Children {
+			walk(c)
+		}
+	}
+	for _, b := range boxes {
+		walk(b)
+	}
+	return boxes, divs
+}
+
+// bodyMargin is the UA stylesheet's 8px body margin, which offsets every
+// in-flow <div> in these documents.
+const bodyMargin = 8.0
+
 func TestIntegration_SimpleHTMLToBoxes(t *testing.T) {
 	htmlContent := `<div style="background-color: red; width: 100px; height: 100px;"></div>`
 
@@ -19,28 +44,25 @@ func TestIntegration_SimpleHTMLToBoxes(t *testing.T) {
 		t.Fatalf("parse error: %v", err)
 	}
 
-	// Verify parsing
-	if len(doc.Root.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(doc.Root.Children))
-	}
-
 	// Layout
-	engine := layout.NewLayoutEngine(800, 600)
-	boxes := engine.Layout(doc)
+	_, divs := divBoxes(doc, 800, 600)
 
 	// Verify layout
-	if len(boxes) != 1 {
-		t.Fatalf("expected 1 box, got %d", len(boxes))
+	if len(divs) != 1 {
+		t.Fatalf("expected 1 div box, got %d", len(divs))
 	}
-	if boxes[0].Width != 100.0 {
-		t.Errorf("expected width=100, got %f", boxes[0].Width)
+	if divs[0].X != bodyMargin || divs[0].Y != bodyMargin {
+		t.Errorf("expected position=(%v,%v), got (%v,%v)", bodyMargin, bodyMargin, divs[0].X, divs[0].Y)
 	}
-	if boxes[0].Height != 100.0 {
-		t.Errorf("expected height=100, got %f", boxes[0].Height)
+	if divs[0].Width != 100.0 {
+		t.Errorf("expected width=100, got %f", divs[0].Width)
+	}
+	if divs[0].Height != 100.0 {
+		t.Errorf("expected height=100, got %f", divs[0].Height)
 	}
 
 	// Verify style
-	bgColor, ok := boxes[0].Style.Get("background-color")
+	bgColor, ok := divs[0].Style.Get("background-color")
 	if !ok {
 		t.Error("expected background-color to exist")
 	}
@@ -62,28 +84,27 @@ func TestIntegration_MultipleElements(t *testing.T) {
 	}
 
 	// Layout
-	engine := layout.NewLayoutEngine(800, 600)
-	boxes := engine.Layout(doc)
+	_, divs := divBoxes(doc, 800, 600)
 
 	// Verify
-	if len(boxes) != 2 {
-		t.Fatalf("expected 2 boxes, got %d", len(boxes))
+	if len(divs) != 2 {
+		t.Fatalf("expected 2 div boxes, got %d", len(divs))
 	}
 
 	// First box
-	if boxes[0].Width != 200.0 {
-		t.Errorf("box 0: expected width=200, got %f", boxes[0].Width)
+	if divs[0].Width != 200.0 {
+		t.Errorf("box 0: expected width=200, got %f", divs[0].Width)
 	}
-	if boxes[0].Y != 0.0 {
-		t.Errorf("box 0: expected Y=0, got %f", boxes[0].Y)
+	if divs[0].Y != bodyMargin {
+		t.Errorf("box 0: expected Y=%v, got %f", bodyMargin, divs[0].Y)
 	}
 
 	// Second box
-	if boxes[1].Width != 300.0 {
-		t.Errorf("box 1: expected width=300, got %f", boxes[1].Width)
+	if divs[1].Width != 300.0 {
+		t.Errorf("box 1: expected width=300, got %f", divs[1].Width)
 	}
-	if boxes[1].Y != 100.0 {
-		t.Errorf("box 1: expected Y=100, got %f", boxes[1].Y)
+	if divs[1].Y != bodyMargin+100 {
+		t.Errorf("box 1: expected Y=%v, got %f", bodyMargin+100, divs[1].Y)
 	}
 }
 
@@ -157,14 +178,13 @@ func TestIntegration_AllNamedColors(t *testing.T) {
 				t.Fatalf("parse error: %v", err)
 			}
 
-			engine := layout.NewLayoutEngine(800, 600)
-			boxes := engine.Layout(doc)
+			_, divs := divBoxes(doc, 800, 600)
 
-			if len(boxes) != 1 {
-				t.Fatalf("expected 1 box, got %d", len(boxes))
+			if len(divs) != 1 {
+				t.Fatalf("expected 1 div box, got %d", len(divs))
 			}
 
-			bgColor, ok := boxes[0].Style.Get("background-color")
+			bgColor, ok := divs[0].Style.Get("background-color")
 			if !ok {
 				t.Error("expected background-color to exist")
 			}
@@ -183,11 +203,10 @@ func TestIntegration_EmptyHTML(t *testing.T) {
 		t.Fatalf("parse error: %v", err)
 	}
 
-	engine := layout.NewLayoutEngine(800, 600)
-	boxes := engine.Layout(doc)
+	boxes, divs := divBoxes(doc, 800, 600)
 
-	if len(boxes) != 0 {
-		t.Errorf("expected 0 boxes for empty HTML, got %d", len(boxes))
+	if len(divs) != 0 {
+		t.Errorf("expected 0 div boxes for empty HTML, got %d", len(divs))
 	}
 
 	// Should still be able to render without crashing
@@ -219,19 +238,18 @@ func TestIntegration_DefaultDimensions(t *testing.T) {
 		t.Fatalf("parse error: %v", err)
 	}
 
-	engine := layout.NewLayoutEngine(1024, 768)
-	boxes := engine.Layout(doc)
+	_, divs := divBoxes(doc, 1024, 768)
 
-	if len(boxes) != 1 {
-		t.Fatalf("expected 1 box, got %d", len(boxes))
+	if len(divs) != 1 {
+		t.Fatalf("expected 1 div box, got %d", len(divs))
 	}
 
-	// Should use viewport width and default height
-	if boxes[0].Width != 1024.0 {
-		t.Errorf("expected width=1024 (viewport), got %f", boxes[0].Width)
+	// Should fill the body's content box and have auto height
+	if want := 1024 - 2*bodyMargin; divs[0].Width != want {
+		t.Errorf("expected width=%v (viewport minus body margins), got %f", want, divs[0].Width)
 	}
-	if boxes[0].Height != 0.0 {
-		t.Errorf("expected height=0 (auto, no children), got %f", boxes[0].Height)
+	if divs[0].Height != 0.0 {
+		t.Errorf("expected height=0 (auto, no children), got %f", divs[0].Height)
 	}
 }
 
@@ -247,16 +265,15 @@ func TestIntegration_ManyBoxes(t *testing.T) {
 		t.Fatalf("parse error: %v", err)
 	}
 
-	engine := layout.NewLayoutEngine(800, 600)
-	boxes := engine.Layout(doc)
+	boxes, divs := divBoxes(doc, 800, 600)
 
-	if len(boxes) != 50 {
-		t.Fatalf("expected 50 boxes, got %d", len(boxes))
+	if len(divs) != 50 {
+		t.Fatalf("expected 50 div boxes, got %d", len(divs))
 	}
 
 	// Verify they stack correctly
-	for i, box := range boxes {
-		expectedY := float64(i * 20)
+	for i, box := range divs {
+		expectedY := bodyMargin + float64(i*20)
 		if box.Y != expectedY {
 			t.Errorf("box %d: expected Y=%f, got %f", i, expectedY, box.Y)
 		}
@@ -267,13 +284,17 @@ func TestIntegration_ManyBoxes(t *testing.T) {
 	renderer.Render(boxes)
 }
 
-func TestIntegration_ParseError(t *testing.T) {
-	// Intentionally malformed HTML
+func TestIntegration_MalformedHTMLRecovers(t *testing.T) {
+	// HTML parsing never fails (HTML §13.2.2): a tag still open at EOF inside
+	// an attribute value is dropped, exactly as Chrome does.
 	htmlContent := `<div style="unclosed`
 
-	_, err := html.Parse(htmlContent)
-	if err == nil {
-		t.Error("expected parse error for malformed HTML")
+	doc, err := html.Parse(htmlContent)
+	if err != nil {
+		t.Fatalf("expected malformed HTML to parse, got %v", err)
+	}
+	if _, divs := divBoxes(doc, 800, 600); len(divs) != 0 {
+		t.Errorf("expected the unterminated tag to be dropped, got %d div boxes", len(divs))
 	}
 }
 
@@ -299,11 +320,10 @@ func TestIntegration_VariousSizes(t *testing.T) {
 				t.Fatalf("parse error: %v", err)
 			}
 
-			engine := layout.NewLayoutEngine(800, 600)
-			boxes := engine.Layout(doc)
+			boxes, divs := divBoxes(doc, 800, 600)
 
-			if len(boxes) != 1 {
-				t.Fatalf("expected 1 box, got %d", len(boxes))
+			if len(divs) != 1 {
+				t.Fatalf("expected 1 div box, got %d", len(divs))
 			}
 
 			// Just verify it doesn't crash and produces reasonable output

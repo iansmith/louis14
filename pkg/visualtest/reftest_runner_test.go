@@ -226,7 +226,7 @@ func TestWPTCSS3Reftests(t *testing.T) {
 	sort.Strings(testFiles)
 	t.Logf("Found %d WPT CSS3 reftest files", len(testFiles))
 
-	xfails, xfErr := loadExpectedFailures()
+	xfails, xfErr := LoadExpectedFailures(expectedFailuresPath)
 	if xfErr != nil {
 		t.Fatalf("failed to load expected-failure manifest: %v", xfErr)
 	}

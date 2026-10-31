@@ -46,6 +46,8 @@ test-output.txt
 # OS files
 .DS_Store
 Thumbs.db
-l14open
-l14show
+/l14open
+/l14show
+cmd/l14open/l14open
+cmd/l14show/l14show
 
