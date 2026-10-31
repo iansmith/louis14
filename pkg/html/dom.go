@@ -112,7 +112,11 @@ type Document struct {
 	// document's BaseDir, so a moved-out node's URLs naturally re-resolve
 	// against the outer base on the next cascade pass — louis14's
 	// re-cascade-per-layout-pass pipeline obviates the explicit
-	// `Element::DidMoveToNewDocument` hook Blink needs.
+	// `Element::DidMoveToNewDocument` hook Blink needs. The layout engine
+	// also completes the document's <img src> and iframe/object src
+	// against it where they are used (Document::CompleteURL,
+	// third_party/blink/renderer/core/dom/document.cc:7553 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	BaseDir string
 
 	// ParsedStylesheetsCache holds the per-document parse cache populated

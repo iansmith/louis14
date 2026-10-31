@@ -28,11 +28,15 @@ type LayoutContext struct {
 	ViewportWidth  float64
 	ViewportHeight float64
 
-	// BaseDir is the owning document's BaseDir (the value propagated to
-	// each computed Style by ApplyStylesToDocument). Nested-document
-	// layout (layoutNestedDocument) joins it with the iframe's src
-	// directory so URLs inside the nested doc resolve against a
-	// fully-qualified-relative-to-outer base.
+	// BaseDir is the document's base, the analog of Document::BaseURL
+	// (third_party/blink/renderer/core/dom/document.cc:5083 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520); ApplyStylesToDocument
+	// stamps the same value on each computed Style.BaseDir. Relative URLs
+	// are completed against it where they are used, as Document::CompleteURL
+	// (document.cc:7553) does: <img src> against Style.BaseDir
+	// (getImgIntrinsicInfo) and iframe/object src against it
+	// (openFrameOwnerURL), before they reach the document-agnostic
+	// ImageFetcher and DocumentFetcher. Empty for a top-level document.
 	BaseDir string
 
 	// ImageFetcher for loading images during layout (intrinsic sizing).
@@ -98,36 +102,4 @@ func (ctx *LayoutContext) SetOrthogonalResult(node *LayoutInputNode, result *Lay
 		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]*orthogonalCacheEntry)
 	}
 	ctx.OrthogonalLayoutCache[node] = &orthogonalCacheEntry{Result: result}
-}
-
-// ReRootedDocumentFetcher returns a DocumentFetcher that resolves relative URIs
-// against nestedDocURI's directory. Absolute URIs (scheme-prefixed, root-
-// relative, data:) pass through unchanged because css.CompleteURL short-
-// circuits on them.
-func ReRootedDocumentFetcher(outer DocumentFetcher, nestedDocURI string) DocumentFetcher {
-	if outer == nil {
-		return nil
-	}
-	base := css.URLDir(nestedDocURI)
-	if base == "." {
-		return outer
-	}
-	return func(uri string) (string, error) {
-		return outer(css.CompleteURL(uri, base))
-	}
-}
-
-// ReRootedImageFetcher returns an ImageFetcher that resolves relative URIs
-// against nestedDocURI's directory. Absolute URIs pass through unchanged.
-func ReRootedImageFetcher(outer images.ImageFetcher, nestedDocURI string) images.ImageFetcher {
-	if outer == nil {
-		return nil
-	}
-	base := css.URLDir(nestedDocURI)
-	if base == "." {
-		return outer
-	}
-	return func(uri string) ([]byte, error) {
-		return outer(css.CompleteURL(uri, base))
-	}
 }
