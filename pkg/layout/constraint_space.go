@@ -192,19 +192,6 @@ type ConstraintSpace struct {
 	// a9f50e522efa); louis14 has no params struct, so it rides on the space.
 	ColumnSpannerPath *ColumnSpannerPath
 
-	// IsInsideColumnSpanner is true when this space (or any ancestor space)
-	// is the spanner-layout space built by
-	// MulticolLayoutAlgorithm.CreateConstraintSpaceForSpanner (no Blink
-	// analog: louis14-only flag). Spanners are placed monolithically
-	// in the multicol flow (Blink: ColumnLayoutAlgorithm::LayoutSpanner —
-	// the spanner breaks BEFORE as a unit, never mid-content; its overflow
-	// content resumes through the spanner's break token, which
-	// MulticolLayoutAlgorithm carries to the next outer fragmentainer).
-	// Propagated to every spanner descendant; nothing reads it since the
-	// louis14 per-fragment clamp it gated gave way to FinishFragmentation
-	// (LOU-400).
-	IsInsideColumnSpanner bool
-
 	// IsPastBreak is true when there is a preceding break in the current
 	// fragmentainer (typically in a parallel flow), so a column spanner
 	// found now must wait until the fragmentainers before it are done.
@@ -279,20 +266,6 @@ func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
 // HasBlockFragmentation answers the same question (ledger L32).
 func (cs ConstraintSpace) ShouldPropagateChildBreakValues() bool {
 	return cs.HasBlockFragmentation
-}
-
-// RemainingFragmentainerBlockSize returns how much block-size is available
-// from the current offset to the fragmentainer end. Returns Indefinite
-// when not in a fragmentation context.
-func (cs ConstraintSpace) RemainingFragmentainerBlockSize(currentOffset float64) float64 {
-	if !cs.HasBlockFragmentation || cs.FragmentainerBlockSize == Indefinite {
-		return Indefinite
-	}
-	remaining := cs.FragmentainerBlockSize - (cs.FragmentainerOffset + currentOffset)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
 }
 
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
@@ -566,13 +539,6 @@ func (b *ConstraintSpaceBuilder) SetColumnSpannerPath(path *ColumnSpannerPath) *
 // ConstraintSpace.IsPastBreak doc.
 func (b *ConstraintSpaceBuilder) SetIsPastBreak(v bool) *ConstraintSpaceBuilder {
 	b.space.IsPastBreak = v
-	return b
-}
-
-// SetIsInsideColumnSpanner marks that this space is inside a column-spanner
-// layout — see ConstraintSpace.IsInsideColumnSpanner doc.
-func (b *ConstraintSpaceBuilder) SetIsInsideColumnSpanner(v bool) *ConstraintSpaceBuilder {
-	b.space.IsInsideColumnSpanner = v
 	return b
 }
 

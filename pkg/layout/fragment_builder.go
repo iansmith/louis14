@@ -157,6 +157,11 @@ type BoxFragmentBuilder struct {
 	// Mirrors Blink's PhysicalFragment::IsMonolithic.
 	isMonolithic bool
 
+	// notFirstForNode is the inverse of Blink's is_first_for_node_
+	// (box_fragment_builder.h:790 @ a9f50e522efa), so the zero value means
+	// first-for-node. Read into PhysicalFragment at Build().
+	notFirstForNode bool
+
 	// hasClonedBoxDecorations is set when the element has
 	// box-decoration-break:clone. When true, each fragment behaves as
 	// an independent decorated box — block-start AND block-end borders
@@ -331,6 +336,15 @@ func (b *BoxFragmentBuilder) ClearUnpositionedListMarker() {
 // height (implicit monolithic for column-balance).
 func (b *BoxFragmentBuilder) SetIsMonolithic(v bool) {
 	b.isMonolithic = v
+}
+
+// SetIsFirstForNode records whether the fragment being built is the first
+// one for its node. Mirrors Blink's BoxFragmentBuilder::SetIsFirstForNode
+// (box_fragment_builder.h:416 @ a9f50e522efa), called by
+// SetupFragmentBuilderForFragmentation when resuming after a break inside
+// the node (fragmentation_utils.cc:426-430).
+func (b *BoxFragmentBuilder) SetIsFirstForNode(isFirst bool) {
+	b.notFirstForNode = !isFirst
 }
 
 // SetHasClonedBoxDecorations marks this fragment as having cloned box
@@ -951,6 +965,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		LayoutNode:       b.layoutNode,
 		GapGeometry:      b.gapGeometry,
 		IsMonolithic:     b.isMonolithic,
+		notFirstForNode:  b.notFirstForNode,
 		BoxType:          b.boxType,
 	}
 

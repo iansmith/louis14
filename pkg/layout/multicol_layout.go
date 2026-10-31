@@ -184,11 +184,6 @@ type MulticolLayoutAlgorithm struct {
 	// fragmentainer. Mirrors Blink's container_builder_.SetBreakTokenData
 	// (column_layout_algorithm.cc:763-774 @ a9f50e522efa).
 	outgoingMulticolData *MulticolBreakTokenData
-	// hasForcedBreakAfter is set when a spanner's break-after:column fires
-	// with nothing after it to resume; the main result then reports
-	// HasForcedBreak. no Blink analog: the forced break-after stand-in
-	// (ledger L35).
-	hasForcedBreakAfter bool
 	// totalColumnsRendered counts the column fragments with content placed
 	// across all lines (spanners excluded), surfaced as RenderedColumnCount
 	// so the column-rule painter can draw rules only between columns that
@@ -286,58 +281,56 @@ func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
 		!mla.space.IsInitialColumnBalancingPass
 }
 
+// fragmentainerBuilder is this multicol's FragmentainerBox: louis14 clones
+// the block-end decorations along with the block-start ones
+// (ShouldCloneBoxEndDecorations = hasClonedBoxDecorations, as in
+// finishFragmentation).
+func (mla *MulticolLayoutAlgorithm) fragmentainerBuilder() FragmentainerBox {
+	return FragmentainerBox{
+		Space:                        &mla.space,
+		BorderScrollbarPadding:       mla.borderScrollbarPadding,
+		HasClonedBoxDecorations:      mla.hasClonedBoxDecorations,
+		ShouldCloneBoxEndDecorations: mla.hasClonedBoxDecorations,
+	}
+}
+
 // fragmentainerCapacityForChildren is the outer fragmentainer block-size
-// available to this multicol's content: the raw size for
-// box-decoration-break:slice, minus the repeated block-start (and block-end)
-// decorations when they are cloned, and never less than 1px so content can
-// make progress; Indefinite while the outer fragmentainer block-size is
-// unknown (e.g. the outer's initial balancing pass). Mirrors Blink's
-// FragmentainerCapacity(builder,
-// is_for_children=true) and ClampedToValidFragmentainerCapacity
-// (fragmentation_utils.h:156-203 @ a9f50e522efa); louis14 always clones the
-// block-end decorations along with the block-start ones.
+// available to this multicol's content, or Indefinite while it is unknown
+// (e.g. the outer's initial balancing pass). Mirrors Blink's
+// LayoutAlgorithm::FragmentainerCapacityForChildren() (layout_algorithm.h:
+// 160-162 @ a9f50e522efa).
 func (mla *MulticolLayoutAlgorithm) fragmentainerCapacityForChildren() float64 {
 	if !mla.isConstrainedByOuterFragmentation() {
 		return Indefinite
 	}
-	size := mla.space.FragmentainerBlockSize
-	if mla.hasClonedBoxDecorations {
-		size -= mla.borderScrollbarPadding.BlockStart + mla.borderScrollbarPadding.BlockEnd
-	}
-	return math.Max(size, 1)
+	return FragmentainerCapacity(mla.fragmentainerBuilder(), true)
 }
 
 // fragmentainerOffsetForChildren is this multicol's offset from the outer
 // fragmentainer start as seen by its children: with cloned decorations a
 // child at the block-start content edge counts as offset 0. Mirrors Blink's
-// FragmentainerOffset(builder, is_for_children=true)
-// (fragmentation_utils.h:205-226 @ a9f50e522efa) — the border-box-edge
-// offset, unlike BlockLayoutAlgorithm.fragmentainerOffsetForChildren, which
-// already adds the block-start edge for that algorithm's content-relative
-// cursor.
+// LayoutAlgorithm::FragmentainerOffsetForChildren() (layout_algorithm.h:
+// 164-166 @ a9f50e522efa) — the border-box-edge offset, unlike
+// BlockLayoutAlgorithm.fragmentainerOffsetForChildren, which already adds
+// the block-start edge for that algorithm's content-relative cursor.
 func (mla *MulticolLayoutAlgorithm) fragmentainerOffsetForChildren() float64 {
-	offset := mla.space.FragmentainerOffset
-	if mla.hasClonedBoxDecorations && !(mla.space.BreakToken != nil && mla.space.BreakToken.IsAtBlockEnd) {
-		offset -= mla.borderScrollbarPadding.BlockStart
-	}
-	return offset
+	return FragmentainerOffset(mla.fragmentainerBuilder(), true)
 }
 
 // fragmentainerSpaceLeftForChildren is the outer fragmentainer space left
 // from this multicol's border-box block-start edge, clamped to zero, or
 // Indefinite when the outer fragmentainer block-size is unknown. Mirrors
-// Blink's LayoutAlgorithm::FragmentainerSpaceLeftForChildren() →
-// FragmentainerSpaceLeft(builder, is_for_children=true)
-// (layout_algorithm.h:168-170, fragmentation_utils.h:239-257 @
-// a9f50e522efa). Blink's line_offset is measured from the same border-box
-// edge (intrinsic_block_size_ starts at the block-start border/padding,
-// cla.cc:335); louis14's line offsets are content-box relative, so callers
-// subtract blockStartBorderPadding() (see spaceLeftForContent).
+// Blink's LayoutAlgorithm::FragmentainerSpaceLeftForChildren()
+// (layout_algorithm.h:168-170 @ a9f50e522efa). Blink's line_offset is
+// measured from the same border-box edge (intrinsic_block_size_ starts at
+// the block-start border/padding, cla.cc:335); louis14's line offsets are
+// content-box relative, so callers subtract blockStartBorderPadding() (see
+// spaceLeftForContent).
 func (mla *MulticolLayoutAlgorithm) fragmentainerSpaceLeftForChildren() float64 {
 	if !mla.isConstrainedByOuterFragmentation() {
 		return Indefinite
 	}
-	return math.Max(0, mla.fragmentainerCapacityForChildren()-mla.fragmentainerOffsetForChildren())
+	return FragmentainerSpaceLeft(mla.fragmentainerBuilder(), true)
 }
 
 // spaceLeftForContent is fragmentainerSpaceLeftForChildren() measured from
@@ -398,10 +391,11 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 		}
 		total = math.Max(total, mla.minBlockSize+bsp.BlockSum())
 	}
-	// FragmentainerSpaceLeft(builder, is_for_children=false).
+	// FragmentainerSpaceLeft(builder, is_for_children=false)
+	// (fragmentation_utils.cc:550-551 @ a9f50e522efa).
 	spaceLeft := Indefinite
 	if mla.isConstrainedByOuterFragmentation() {
-		spaceLeft = math.Max(0, math.Max(mla.space.FragmentainerBlockSize, 1)-mla.space.FragmentainerOffset)
+		spaceLeft = FragmentainerSpaceLeft(mla.fragmentainerBuilder(), false)
 	}
 	desired := math.Max(0, total-previouslyConsumed)
 	return FinishFragmentation(FinishFragmentationInput{
@@ -471,19 +465,6 @@ func applyNestedFinish(builder *BoxFragmentBuilder, res FinishFragmentationResul
 	if res.ClampAppealToLastResort {
 		builder.ClampBreakAppeal(BreakAppealLastResort)
 	}
-}
-
-// columnBreakTokenAdvanced reports whether a column's outgoing break token made
-// forward progress: its consumed block-size must strictly exceed the previous
-// column's. This is the load-bearing comparison of the inner column loop's
-// non-advancing-token guard (no Blink analog: defensive). `prevConsumed` is
-// NaN before the first column, so the first token always counts as progress
-// (any comparison with NaN is false, and we invert). Only the consumed
-// block-size is a valid progress signal — the sequence number always
-// increments (it is a fragment counter) even when a 0-height column places
-// nothing.
-func columnBreakTokenAdvanced(consumed, prevConsumed float64) bool {
-	return !(consumed <= prevConsumed)
 }
 
 // columnsOverflowInInlineDirection reports whether columns past
@@ -593,6 +574,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
 	builder.SetConstraintSpace(&mla.space)
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
+	// @ a9f50e522efa): resuming after a break inside this node.
+	builder.SetIsFirstForNode(!mla.space.BreakToken.IsBreakInside())
 
 	// Phase 25 Cmt-3: an outer (non-nested) multicol IS the block-fragmentation
 	// context root. The flag gates `OutOfFlowLayoutPart.HandleFragmentation`'s
@@ -766,6 +750,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
+		mla.node.contentNodeCache.adoptChildren()
 	}
 	mla.contentNode = mla.node.contentNodeCache
 
@@ -823,7 +808,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil
-	mla.hasForcedBreakAfter = false
 	mla.hasProcessedFirstChild = false
 	if result := mla.LayoutChildren(builder); result != nil {
 		return result
@@ -1016,9 +1000,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	result.PropagatedOOFCandidates = propagatedOOF
-	if mla.hasForcedBreakAfter {
-		result.HasForcedBreak = true
-	}
 	if result.Fragment != nil {
 		result.Fragment.RenderedColumnCount = mla.totalColumnsRendered
 		// Phase 20 P20.5: tag the multicol container so the paint layer
@@ -1044,10 +1025,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// containers (multicol-zero-height-002 — content is explicitly
 		// expected to overflow visibly) don't get clipped. Closing
 		// remaining content-overflow regressions (inline-block-and-
-		// column-span-all etc.) is the job of P20.6 (TallestUnbreakable
-		// for atomic inlines), which makes the multicol grow to its
-		// real content extent so the clip stops cutting legitimate
-		// content.
+		// column-span-all etc.) is the job of the line-box
+		// TallestUnbreakable floor (layoutInlineChildren), which makes
+		// the multicol grow to its real content extent so the clip stops
+		// cutting legitimate content.
 		if finalBlockSize > 0 {
 			result.Fragment.IsMulticolContainer = true
 		}
@@ -1141,36 +1122,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 		// the next one.
 		if status.brokeInside {
 			return mla.breakOuter(walker, builder)
-		}
-
-		spanner := entry.DescendantNode
-		// Forced break-after:column on spanner: propagate to the parent
-		// column context. Only on fresh layout (not resumed) so the break
-		// fires once.
-		//
-		// No Blink analog: Blink records the spanner's break-after through
-		// PropagateChildBreakValues (in LayoutSpanner), where it forces a break before a
-		// following spanner (CalculateBreakBetweenValue) or becomes this
-		// multicol's FinalBreakAfter; following column content resets it
-		// (cla.cc:1233-1235 @ a9f50e522efa), so Blink never breaks between
-		// such a spanner and column content. This stand-in is kept: it is
-		// what spanner-fragmentation-012 passes on (ledger L35).
-		if mla.isConstrainedByOuterFragmentation() && status.placed && entry.BreakToken == nil &&
-			mla.space.BreakToken == nil &&
-			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {
-			if !walker.IsFinished() {
-				// walker.Next was already called above; current is the
-				// post-spanner walker entry (column-content from
-				// MoveToSpanner-stored next_column_token, or further
-				// parent-token entries). Flush them all so the next outer
-				// column resumes correctly.
-				result := mla.breakOuter(walker, builder)
-				result.HasForcedBreak = true
-				return result
-			}
-			// Nothing follows — propagate break-after to the parent context.
-			mla.hasForcedBreakAfter = true
-			break
 		}
 	}
 
@@ -1346,8 +1297,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		// the line's break token (post-spanner column content, if any) is
 		// stored as the walker's nextColumnToken so it becomes the iteration
 		// AFTER the spanner.
-		spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
-		walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
+		walker.MoveToSpanner(getSpannerFromPath(line.columnSpannerPath), line.breakToken)
 		return nil, false
 	}
 }
@@ -1366,9 +1316,6 @@ type layoutSpannerResult struct {
 	// for container_builder_.HasInflowChildBreakInside()
 	// (column_layout_algorithm.cc:656-657).
 	brokeInside bool
-	// placed: the spanner produced a fragment that was added. no Blink
-	// analog: it gates the forced break-after stand-in (ledger L35).
-	placed bool
 }
 
 // LayoutSpanner lays out and places one column spanner. Mirrors Blink's
@@ -1521,7 +1468,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		mla.hasProcessedFirstChild = true
 	}
 
-	return layoutSpannerResult{status: BreakStatusContinue, brokeInside: spannerBrokeInside, placed: spanFrag != nil}
+	return layoutSpannerResult{status: BreakStatusContinue, brokeInside: spannerBrokeInside}
 }
 
 // buildOuterBreakResult finalises the in-progress builder as a fragment that
@@ -1686,8 +1633,7 @@ type layoutLineResult struct {
 	// breakToken is the column-content token to resume at: Blink's
 	// result->GetPhysicalFragment().GetBreakToken()
 	// (column_layout_algorithm.cc:586-587). On a line without a spanner it is
-	// the last column's token after the non-advancing-token guard, which may
-	// have dropped it.
+	// the last column's token.
 	breakToken *BlockBreakToken
 }
 
@@ -1915,20 +1861,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
 		// when inline overflow is not permitted (cla.cc:1022-1025).
-		//
-		// no Blink analog: defensive guard. When overflowInline (or Indefinite
-		// column height) removes the column-count cap, a column that makes zero
-		// progress — the outgoing break token's consumed block-size does not
-		// advance past the previous column's — would spin forever (e.g. content
-		// resumed into a 0-height post-spanner column,
-		// multicol-span-all-children-height-003). The sequence number always
-		// increments (it is a fragment counter), so consumed size is the
-		// progress signal, plus one bounded exception: a column that turns a
-		// forced break-before into an unforced one (forcedBreakBeforeCount).
-		// Blink guarantees termination via break-token progress invariants;
-		// louis14 asserts it explicitly.
-		prevTokenConsumed := math.NaN()
-		prevTokenForced := 0
 		for col := 0; col < mla.usedColumnCount || capOff; col++ {
 			// IsInsideBalancedColumns is set when the line is balanced (also
 			// under column-height; Blink passes balance_columns, cla.cc:929-935
@@ -2054,28 +1986,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, balanceColumns, marginStrut, builder)
 					}
 				}
-			}
-			// no Blink analog: defensive non-advancing-token guard (see the
-			// loop header). If this column's outgoing token's consumed size did
-			// not advance past the previous column's, no progress was made and
-			// continuing would loop forever — stop the row.
-			// One legitimate non-advancing column is exempt: a resumed
-			// column that pushed its first child whole to the next outer
-			// fragmentainer (breakable at start of a resumed container,
-			// cla.cc:930-935) is empty by design and must keep its token;
-			// the column-count cap ends that row (MinBreakAppeal is only
-			// passed under mayHaveMoreSpace, which implies the cap is on).
-			pushedToNextOuter := colMinBreakAppeal != BreakAppealLastResort &&
-				len(colFrag.Children) == 0
-			if colBreakToken != nil && !pushedToNextOuter {
-				consumed := colBreakToken.ConsumedBlockSize.Float64()
-				forced := forcedBreakBeforeCount(colBreakToken)
-				if !columnBreakTokenAdvanced(consumed, prevTokenConsumed) && forced >= prevTokenForced {
-					colBreakToken = nil
-					break
-				}
-				prevTokenConsumed = consumed
-				prevTokenForced = forced
 			}
 			// Phase 25 Cmt-5c: track whether any column saw deferred OOF
 			// descendants this row, so we keep emitting empty trailing
@@ -2344,21 +2254,12 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// no Blink analog: an unconstrained column-fill:auto line has no used
 	// column block-size (Indefinite; Blink's has_content_based_block_size,
 	// held PR #201) and contributes its tallest column instead.
-	// no Blink analog: a line that ends at a spanner contributes at least its
-	// tallest column, overflow included, as far as the column block-size
-	// could have been stretched (constrainColumnBlockSize), so the spanner
-	// is placed below content that overflowed the columns. It stands in for
-	// the space shortage Blink's stretch loop gets from such content (an
-	// unbreakable line, cla.cc:1150-1173) and louis14 does not report yet
-	// (LOU-399's trusted-space-shortage half; ledger L90).
 	contribution := colBlockSize
 	switch {
 	case shrinkToFitColumnBlockSize && len(finalColumns) == 1:
 		contribution = math.Min(colBlockSize, finalColumns[0].result.BlockSizeForFragmentation)
 	case colBlockSize == Indefinite:
 		contribution = maxColHeight
-	case hasSpannerDetector:
-		contribution = math.Max(colBlockSize, mla.constrainColumnBlockSize(maxColHeight, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset))
 	}
 	// Blink cla.cc:1229-1251: a non-empty line moves the layout position
 	// past itself (lineOffset already holds the strut) and resets the
@@ -2710,8 +2611,7 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 // ShouldBlockContainerChildStretchAutoInlineSize / kStretchImplicit
 // (cla.cc:1871-1876; louis14's space has no inline auto behaviour, and an
 // auto-width spanner already fills the content box), the baseline algorithm
-// type and text-box-trim (cla.cc:1880-1886). SetIsInsideColumnSpanner has no
-// Blink analog.
+// type and text-box-trim (cla.cc:1880-1886).
 func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *LayoutInputNode, blockOffset float64, breakToken *BlockBreakToken) ConstraintSpace {
 	wdm := mla.space.WritingDirection
 	spannerWDM := NewWritingDirectionMode(spanner.Style())
@@ -2722,8 +2622,7 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true).
 		SetAvailableSize(childAvailableSize).
 		SetPercentageResolutionSize(childAvailableSize).
-		SetPercentageResolutionInlineSize(mla.contentInlineSize).
-		SetIsInsideColumnSpanner(true)
+		SetPercentageResolutionInlineSize(mla.contentInlineSize)
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
 	}
@@ -2879,19 +2778,17 @@ func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType Span
 	mla.mainGaps = append(mla.mainGaps, MainGap{GapOffset: blockOffset, SpannerType: gapType})
 }
 
-// spannerLeafNode traverses a ColumnSpannerPath linked list and returns the
-// Box at the leaf (where Child == nil) — the actual column-span:all element,
-// which may be a grandchild or deeper descendant of the multicol flow thread
-// — and the block containing it (root when the spanner is a child of the
-// column content itself). Mirrors Blink's ColumnSpannerPath::SpannerBox()
-// (column_spanner_path.h).
-func spannerLeafNode(path *ColumnSpannerPath, root *LayoutInputNode) (spanner, parent *LayoutInputNode) {
-	parent = root
+// getSpannerFromPath traverses a ColumnSpannerPath linked list and returns
+// the Box at the leaf (where Child == nil) — the actual column-span:all
+// element, which may be a grandchild or deeper descendant of the multicol
+// flow thread. Mirrors Blink's GetSpannerFromPath
+// (column_layout_algorithm.cc:224-229 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func getSpannerFromPath(path *ColumnSpannerPath) *LayoutInputNode {
 	for path.Child != nil {
-		parent = path.Box
 		path = path.Child
 	}
-	return path.Box, parent
+	return path.Box
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
@@ -3153,11 +3050,13 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			return
 		}
 		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-		result = append(result, &LayoutInputNode{
+		wrapper := &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,
 			isAnonymous: true,
-		})
+		}
+		wrapper.adoptChildren()
+		result = append(result, wrapper)
 		inlineRun = nil
 	}
 

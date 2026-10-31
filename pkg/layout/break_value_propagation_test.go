@@ -378,13 +378,12 @@ func TestMulticol_NonEmptyLineResetsPreviousBreakAfter(t *testing.T) {
 // a9f50e522efa); the appeal is kBreakAppealViolatingBreakAvoid only when that
 // join is an avoid value. Expected values are that arithmetic.
 //
-// The fixture uses a zero-size fragmentainer (the balance-estimate fragSize==0
-// path): with a positive fragmentainer, louis14's BreakBeforeChildIfNeeded
-// breaks before such an X itself (BrokeBefore), so the post-layout
-// isBreakBeforeCurrent check in BlockLayoutAlgorithm does not see it. With
-// size 0, MovePastBreakpoint refuses every break-before (no progress), X
-// overflows from offset 0 = the fragmentainer end, and the post-layout check
-// scores the break before X.
+// X starts exactly at the end of a 10px fragmentainer (A fills it), so
+// BreakBeforeChildIfNeeded breaks before it and scores that break. (The
+// fixture used to rely on a raw 0px fragmentainer reaching the post-layout
+// isBreakBeforeCurrent check; children now see Blink's 1px-minimum
+// FragmentainerCapacity, fragmentation_utils.h:156-203 @ a9f50e522efa, so a
+// 0px fragmentainer no longer puts offset 0 at its end — LOU-467.)
 // X is monolithic (contain:size) so it overflows whole instead of being
 // sliced, as in TestZeroHeightUnbreakableNoContinuation. A is a flow-root so
 // it does not collapse through (a collapsed-through child never reaches
@@ -397,22 +396,86 @@ func TestBreakBeforeLeaf_AppealJoinsPreviousSiblingBreakAfter(t *testing.T) {
 		want BreakAppeal
 	}{
 		{"the leaf's own break-after:avoid-column does not taint the break before it",
-			ms("W", nil, ms("A", h("0px", "display", "flow-root")), ms("X", h("10px", "contain", "size", "break-after", "avoid-column"))),
+			ms("W", nil, ms("A", h("10px", "display", "flow-root")), ms("X", h("10px", "contain", "size", "break-after", "avoid-column"))),
 			BreakAppealPerfect},
 		{"the previous sibling's break-after:avoid-column does",
-			ms("W", nil, ms("A", h("0px", "display", "flow-root", "break-after", "avoid-column")), ms("X", h("10px", "contain", "size"))),
+			ms("W", nil, ms("A", h("10px", "display", "flow-root", "break-after", "avoid-column")), ms("X", h("10px", "contain", "size"))),
 			BreakAppealViolatingBreakAvoid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			styles := map[*html.Node]*css.Style{}
 			ids := map[*html.Node]string{}
-			res := layoutBlockInFragmentainer(t, tc.tree.build(styles, ids), styles, 0, 0)
+			res := layoutBlockInFragmentainer(t, tc.tree.build(styles, ids), styles, 10, 0)
 			if res.BreakToken == nil {
-				t.Fatalf("W did not break in a 0px fragmentainer (X overflows it)")
+				t.Fatalf("W did not break in a 10px fragmentainer (X starts at its end)")
 			}
 			if res.BreakAppeal != tc.want {
 				t.Errorf("BreakAppeal = %v, want %v", res.BreakAppeal, tc.want)
 			}
 		})
 	}
+}
+
+// TestMulticol_SpannerBreakAfterPropagatesAsFinalBreakAfter_LOU471: inside an
+// outer fragmentainer, a spanner's break-after:column never breaks the outer
+// fragmentainer by itself. Blink records it through AddResult →
+// PropagateChildBreakValues (column_layout_algorithm.cc:1427;
+// box_fragment_builder.cc:651-653 @ a9f50e522efa): following column content
+// resets it (column_layout_algorithm.cc:1233-1235), and a last spanner's value
+// becomes the multicol's FinalBreakAfter, which the parent joins with the next
+// sibling's break-before (CalculateBreakBetweenValue,
+// fragmentation_utils.cc:131-160). Neither case sets HasForcedBreak or emits a
+// break token. The content fits the 300px fragmentainer, so any break is the
+// break-after's.
+func TestMulticol_SpannerBreakAfterPropagatesAsFinalBreakAfter_LOU471(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		spannerFirst bool
+		want         string
+	}{
+		{"column content after the spanner: no break", true, "auto"},
+		{"last spanner: FinalBreakAfter, no break", false, "column"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			styles := map[*html.Node]*css.Style{}
+			s := makeNode("div")
+			styles[s] = makeStyle("display", "block", "column-span", "all", "break-after", "column", "height", "50px")
+			c := makeNode("div")
+			styles[c] = makeStyle("display", "block", "height", "100px")
+			kids := []*html.Node{s, c}
+			if !tc.spannerFirst {
+				kids = []*html.Node{c, s}
+			}
+			mc := makeNode("div", kids...)
+			styles[mc] = makeStyle("display", "block", "column-count", "2", "column-gap", "0")
+			res := layoutMulticolInFragmentainer(t, mc, styles, 300, 50)
+			if res.BreakToken != nil {
+				t.Errorf("BreakToken = %+v, want nil", res.BreakToken)
+			}
+			if res.HasForcedBreak {
+				t.Error("HasForcedBreak = true, want false")
+			}
+			if res.FinalBreakAfter != tc.want {
+				t.Errorf("FinalBreakAfter = %q, want %q", res.FinalBreakAfter, tc.want)
+			}
+		})
+	}
+}
+
+// TestBreakPropagation_LastSpannerBreakAfterBreaksBeforeNextSibling_LOU471:
+// a nested multicol ending in a break-after:column spanner makes its parent
+// break before the multicol's next sibling, through FinalBreakAfter and
+// CalculateBreakBetweenValue (fragmentation_utils.cc:131-160, :908-916 @
+// a9f50e522efa) rather than through HasForcedBreak.
+func TestBreakPropagation_LastSpannerBreakAfterBreaksBeforeNextSibling_LOU471(t *testing.T) {
+	h := func(v string, more ...string) []string { return append([]string{"height", v}, more...) }
+	tree := ms("R", nil,
+		ms("I", props("column-count", "2", "column-gap", "0"),
+			ms("A", h("10px")), ms("S", h("20px", "column-span", "all", "break-after", "column"))),
+		ms("D", h("20px")))
+	frag, ids := layoutTwoColumnSpec(t, tree, false)
+	checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+		"S": {{0, 5, 50, 20}},
+		"D": {{50, 0, 50, 20}},
+	})
 }
