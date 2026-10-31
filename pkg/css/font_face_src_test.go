@@ -68,3 +68,16 @@ func TestParseFontFaceRule_FeatureSettingsDescriptor(t *testing.T) {
 		}
 	}
 }
+
+// TestParseFontFaceRule_FeatureSettingsNormalCaseInsensitive pins that the
+// descriptor's 'normal' keyword matches ASCII case-insensitively, like every
+// CSS keyword (CSS Syntax §2.3), so it records no descriptor.
+func TestParseFontFaceRule_FeatureSettingsNormalCaseInsensitive(t *testing.T) {
+	ff := parseFontFaceRule(`@font-face { font-family: X; src: url(x.ttf); font-feature-settings: Normal; }`)
+	if ff == nil {
+		t.Fatal("parseFontFaceRule returned nil")
+	}
+	if ff.FeatureSettings != "" {
+		t.Errorf("FeatureSettings = %q, want none for 'Normal'", ff.FeatureSettings)
+	}
+}
