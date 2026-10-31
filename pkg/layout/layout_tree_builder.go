@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -832,7 +833,10 @@ func anonymousTableDisplayFor(parent *css.Style) string {
 // (Text::TextLayoutObjectIsNeeded, core/dom/text.cc:279-323: the previous
 // in-flow box is not inline), so it neither renders nor splits the run;
 // with preserved breaks (white-space: pre / pre-wrap / pre-line /
-// break-spaces) it does produce a box, which ends the run.
+// break-spaces) it does produce a box, which ends the run. The white-space
+// read is the text's own style (Blink passes the style of the text's
+// flat-tree parent, text.cc:339-348), which differs from parentStyle for
+// text under a display:contents element.
 //
 // Parents that place their own children are left alone: table, row-group
 // and row (Blink's LayoutTable / LayoutTableSection / LayoutTableRow
@@ -853,7 +857,6 @@ func (b *LayoutTreeBuilder) generateMissingTableParents(
 		return children
 	}
 
-	preserveBreaks := whiteSpacePreservesBreaks(parentStyle.GetWhiteSpace())
 	result := make([]*LayoutInputNode, 0, len(children))
 	var table *LayoutInputNode // open anonymous table: the last node emitted
 	var run []*LayoutInputNode
@@ -877,7 +880,8 @@ func (b *LayoutTreeBuilder) generateMissingTableParents(
 			}
 			run = append(run, child)
 			prevInFlowIsTablePart = true
-		case prevInFlowIsTablePart && !preserveBreaks && child.IsText() &&
+		case prevInFlowIsTablePart && child.IsText() &&
+			!whiteSpacePreservesBreaks(cmp.Or(child.Style(), parentStyle).GetWhiteSpace()) &&
 			isCSSWhitespaceOnly(child.TextContent()):
 			// No box for this text (see above).
 		default:
