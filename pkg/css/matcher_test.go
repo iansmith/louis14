@@ -2,6 +2,8 @@ package css
 
 import (
 	"louis14/pkg/html"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -786,6 +788,95 @@ func TestNthChildOfTagnameList(t *testing.T) {
 		got := MatchesSelector(k, sel)
 		if got != want[i] {
 			t.Errorf("child %d <%s>: matches=%v, want %v", i, k.TagName, got, want[i])
+		}
+	}
+}
+
+// TestCheckPseudoNot_ComplexArgument pins :not() matching each argument as a
+// full complex selector, combinators included: Blink's
+// SelectorChecker::CheckPseudoNot is !MatchesAnyInList, which runs
+// MatchSelector on every branch of the list
+// (core/css/selector_checker.cc:1567-1594 and :875 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520). Markup and the 20 rows are
+// verbatim from WPT css/selectors/not-complex.html, a testharness file the
+// reftest runner does not run; like its main.querySelectorAll, each row
+// lists the ids of the divs under <main> that the selector matches.
+func TestCheckPseudoNot_ComplexArgument(t *testing.T) {
+	doc, err := html.Parse(`<main id=main>
+  <div id=a><div id=d></div></div>
+  <div id=b><div id=e></div></div>
+  <div id=c><div id=f></div></div>
+</main>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	divs := elementsByTag(doc, "div")
+	cases := []struct {
+		sel  string
+		want string // sorted, comma-joined ids
+	}{
+		{":not(#a)", "b,c,d,e,f"},
+		{":not(#a #d)", "a,b,c,e,f"},
+		{":not(#b div)", "a,b,c,d,f"},
+		{":not(div div)", "a,b,c"},
+		{":not(div + div)", "a,d,e,f"},
+		{":not(main > div)", "d,e,f"},
+		{":not(#a, #b)", "c,d,e,f"},
+		{":not(#f, main > div)", "d,e"},
+		{":not(div + div + div, div + div > div)", "a,b,d"},
+		{":not(div:nth-child(1))", "b,c"},
+		{":not(:not(div))", "a,b,c,d,e,f"},
+		{":not(:not(:not(div)))", ""},
+		{":not(div, span)", ""},
+		{":not(span, p)", "a,b,c,d,e,f"},
+		{":not(#unknown, .unknown)", "a,b,c,d,e,f"},
+		{":not(#unknown > div, span)", "a,b,c,d,e,f"},
+		{":not(#unknown ~ div, span)", "a,b,c,d,e,f"},
+		{":not(:hover div)", "a,b,c,d,e,f"},
+		{":not(:link div)", "a,b,c,d,e,f"},
+		{":not(:visited div)", "a,b,c,d,e,f"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sel, func(t *testing.T) {
+			sel := ParseSelector(tc.sel)
+			var ids []string
+			for _, d := range divs {
+				if MatchesSelector(d, sel) {
+					ids = append(ids, d.Attributes["id"])
+				}
+			}
+			sort.Strings(ids)
+			if got := strings.Join(ids, ","); got != tc.want {
+				t.Errorf("%s matches [%s], want [%s]", tc.sel, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckPseudoNot_PseudoElementArgument guards :not() against inheriting
+// :is()'s whole-list pseudo-element rule (matchesIsLike), which negated would
+// make these match every div. Blink disallows pseudo-elements inside :not()
+// (DisallowPseudoElementsScope, core/css/parser/css_selector_parser.cc:1708-1711
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520), so neither selector matches.
+func TestCheckPseudoNot_PseudoElementArgument(t *testing.T) {
+	div := firstElement(t, `<div></div>`, "div")
+	for _, s := range []string{"div:not(::before)", "div:not(.x, ::after)"} {
+		if MatchesSelector(div, ParseSelector(s)) {
+			t.Errorf("%s matches <div>, want no match", s)
+		}
+	}
+}
+
+// TestNthChildOf_PseudoElementBranch guards the `of` list's pseudo-element
+// filter in matchesNthChildOf: an `of ::before` list must not match the
+// element itself. Selectors-4 makes the `of` argument a
+// <complex-real-selector-list>, which excludes pseudo-elements; whether the
+// whole selector or only the branch is dropped, no element matches.
+func TestNthChildOf_PseudoElementBranch(t *testing.T) {
+	span := firstElement(t, `<p><span></span></p>`, "span")
+	for _, s := range []string{"span:nth-child(1 of ::before)", "span:nth-last-child(1 of :after)"} {
+		if MatchesSelector(span, ParseSelector(s)) {
+			t.Errorf("%s matches <span>, want no match", s)
 		}
 	}
 }

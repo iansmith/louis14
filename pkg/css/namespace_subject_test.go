@@ -16,14 +16,16 @@ const xhtmlDefaultNamespaceRule = `@namespace "http://www.w3.org/1999/xhtml";`
 const svgContainerDoc = `<svg><g class=container><rect class=p></rect><text class=a>t</text></g></svg>`
 
 // TestMatchesSelector_NonSubjectCompoundTakesDefaultNamespace pins the
-// is-default-ns-003 rule: inside :is()/:where() a compound that is not the
-// subject keeps the default namespace even without a type selector, as the
-// implicit `ns|*` Blink's PrependTypeSelectorIfNeeded prepends
+// is-default-ns-003 / not-default-ns-003 rule: inside :is()/:where()/:not()
+// a compound that is not the subject keeps the default namespace even without
+// a type selector, as the implicit `ns|*` Blink's PrependTypeSelectorIfNeeded prepends
 // (core/css/parser/css_selector_parser.cc:2270-2290 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520); ignore_default_namespace_
 // covers only the subject compound (:1310-1322 @ same SHA). So under an
 // XHTML default `.container` is `xhtml|*.container` and does not match the
-// SVG <g>. The HTML row is the control.
+// SVG <g>, so `:not(.container .a)` holds on the SVG <text class=a>
+// (CheckPseudoNot, core/css/selector_checker.cc:1567-1571 @ same SHA). The
+// HTML rows are the controls.
 func TestMatchesSelector_NonSubjectCompoundTakesDefaultNamespace(t *testing.T) {
 	svgText := firstElement(t, svgContainerDoc, "text")
 	htmlSpan := firstElement(t, `<div class=container><span class=a></span></div>`, "span")
@@ -36,6 +38,9 @@ func TestMatchesSelector_NonSubjectCompoundTakesDefaultNamespace(t *testing.T) {
 		{"is, SVG container", "*|*:is(.container .a)", svgText, false},
 		{"where, SVG container", "*|*:where(.container .a)", svgText, false},
 		{"is, HTML container", "*|*:is(.container .a)", htmlSpan, true},
+		{"not, SVG container", "*|*:not(.container .a)", svgText, true},
+		{"not, SVG container, g ancestor", "*|g *|*:not(.container .a)", svgText, true},
+		{"not, HTML container", "*|*:not(.container .a)", htmlSpan, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,8 +89,9 @@ func TestMatchesSelector_TypelessTopLevelCompoundTakesDefaultNamespace(t *testin
 // compound `.a` ignores the XHTML default namespace and so matches the SVG
 // element. :nth-child(of) sets no resist of its own (ConsumeNthChildOfSelectors,
 // :2226): at top level its `.a` keeps the default namespace, inside :is()
-// it inherits the resist. Rows avoid non-rightmost compounds inside :has()
-// and :not(), which louis14 does not yet match (LOU-439).
+// it inherits the resist. Rows avoid non-rightmost compounds inside :has(),
+// which louis14 does not yet match (matchesHas checks only the rightmost
+// compound of each relative argument).
 func TestMatchesSelector_ResistDefaultNamespaceSites(t *testing.T) {
 	doc, err := html.Parse(svgContainerDoc)
 	if err != nil {
