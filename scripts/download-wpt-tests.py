@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
 
-BASE_LOCAL = Path("/Users/iansmith/louis14/pkg/visualtest/testdata/wpt-css3")
+BASE_LOCAL = Path(__file__).resolve().parent.parent / "pkg/visualtest/testdata/wpt-css3"
 WPT_RAW = "https://raw.githubusercontent.com/web-platform-tests/wpt/master"
 WPT_API = "https://api.github.com/repos/web-platform-tests/wpt/contents"
 
@@ -94,15 +94,14 @@ def resolve_ref_path(test_wpt_path, ref_href):
             resolved.append(p)
     return "/".join(resolved)
 
-def download_file(wpt_path, local_path):
+def download_file(wpt_path, local_path, raw=WPT_RAW):
     """Download a file from WPT raw GitHub if it doesn't exist locally."""
     if local_path.exists():
         return "exists"
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{WPT_RAW}/{wpt_path}"
-    data = fetch_url(url)
+    data = fetch_url(f"{raw}/{wpt_path}")
     if data is None:
         return "failed"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
     local_path.write_bytes(data)
     return "downloaded"
 
@@ -242,7 +241,64 @@ def process_directory(wpt_dir, local_subdir):
         f"{stats['failed']} failed, {stats['not_reftests']} non-reftests")
     return {"dir": local_subdir, **stats}
 
+# Relative resource references in tests, references, stylesheets and SVGs.
+# rel=match/mismatch hrefs are left to the test pass above.
+RESOURCE_RE = re.compile(
+    r'''(?:\bsrc|\bhref|\bdata|xlink:href)\s*=\s*["']([^"'#?]+)|url\(\s*["']?([^"')#?]+)''',
+    re.IGNORECASE)
+REF_LINK_RE = re.compile(r'<link\b[^>]*\brel=["\']?(?:mis)?match\b[^>]*>', re.IGNORECASE)
+RESOURCE_EXTS = (".html", ".htm", ".xht", ".xhtml", ".svg", ".css")
+# A scheme (http:, data:, mailto:, ...) or a root-absolute path: not a vendorable relative resource.
+NON_RELATIVE_RE = re.compile(r'[a-z][a-z0-9+.-]*:|/', re.IGNORECASE)
+
+def missing_resources(path):
+    """Yield local paths of relative resources `path` references that do not exist."""
+    text = REF_LINK_RE.sub("", path.read_text(encoding="utf-8", errors="replace"))
+    for m in RESOURCE_RE.finditer(text):
+        ref = (m.group(1) or m.group(2)).strip()
+        # "${", "+": built in script; "@": author addresses without mailto:
+        if not ref or NON_RELATIVE_RE.match(ref) or any(c in ref for c in ("${", "+", "@")):
+            continue
+        target = (path.parent / ref).resolve()
+        if not target.exists():
+            yield target
+
+def fetch_resources(local_subdirs, sha):
+    """Download every missing relative resource referenced from local_subdirs, at WPT commit `sha`.
+
+    BASE_LOCAL mirrors WPT's css/ directory, so a target's WPT path is css/ plus its path under
+    BASE_LOCAL. Fetched documents are scanned in turn, so a support page's own resources come too.
+    Targets outside BASE_LOCAL are reported, not fetched."""
+    raw = f"https://raw.githubusercontent.com/web-platform-tests/wpt/{sha}"
+    base = BASE_LOCAL.resolve()
+    queue = [p for d in local_subdirs for p in (base / d).rglob("*") if p.suffix in RESOURCE_EXTS]
+    seen, fetched, failed, outside = set(), [], [], []
+    while queue:
+        for target in missing_resources(queue.pop()):
+            if target in seen:
+                continue
+            seen.add(target)
+            if not target.is_relative_to(base):
+                outside.append(str(target))
+                continue
+            rel = target.relative_to(base).as_posix()
+            if download_file(f"css/{rel}", target, raw) == "failed":
+                failed.append(rel)
+                continue
+            fetched.append(rel)
+            if target.suffix in RESOURCE_EXTS:
+                queue.append(target)
+    for label, items in (("fetched", fetched), ("not found upstream", failed), ("outside wpt-css3", outside)):
+        log(f"{label}: {len(items)}")
+        for item in sorted(items):
+            log(f"  {item}")
+
 def main():
+    # --resources <wpt-sha> <dir>...: fetch the missing support files the tests in <dir> load.
+    if len(sys.argv) > 2 and sys.argv[1] == "--resources":
+        fetch_resources(sys.argv[3:], sys.argv[2])
+        return
+
     # If specific dirs given as args, only process those
     target_dirs = sys.argv[1:] if len(sys.argv) > 1 else None
 
