@@ -741,7 +741,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's column-box assumes.
 	if mla.node.contentNodeCache == nil {
 		mla.node.contentNodeCache = &LayoutInputNode{
-			style:       css.NewAnonymousBlockStyle(mla.style),
+			style:       css.CreateAnonymousStyleWithDisplay(mla.style, string(css.DisplayBlock)),
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
@@ -3176,7 +3176,7 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			inlineRun = nil
 			return
 		}
-		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 		result = append(result, &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,

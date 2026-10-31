@@ -1902,7 +1902,7 @@ func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 			}
 		}
 		if hasContent {
-			anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+			anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 			result = append(result, &LayoutInputNode{
 				style:       anonStyle,
 				children:    textRun,
