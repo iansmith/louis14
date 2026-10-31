@@ -281,20 +281,6 @@ func (cs ConstraintSpace) ShouldPropagateChildBreakValues() bool {
 	return cs.HasBlockFragmentation
 }
 
-// RemainingFragmentainerBlockSize returns how much block-size is available
-// from the current offset to the fragmentainer end. Returns Indefinite
-// when not in a fragmentation context.
-func (cs ConstraintSpace) RemainingFragmentainerBlockSize(currentOffset float64) float64 {
-	if !cs.HasBlockFragmentation || cs.FragmentainerBlockSize == Indefinite {
-		return Indefinite
-	}
-	remaining := cs.FragmentainerBlockSize - (cs.FragmentainerOffset + currentOffset)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
 // It handles the writing-mode conversion automatically: when the child has
 // an orthogonal writing mode, inline/block axes are swapped.

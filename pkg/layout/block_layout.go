@@ -796,14 +796,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						// continuation resumes from the post-push height; otherwise a
 						// fragmented item with a tall outside marker resumes too high
 						// and misplaces later fragments. The early-return below reads
-						// InlineShortage when >0, else ConsumedBlockSize, so both must
-						// move with the content.
+						// both, so both must move with the content.
 						if inlineBreakToken != nil {
 							inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(
 								layoutunit.FromFloat64Round(contentPush))
-							if inlineBreakToken.InlineShortage > 0 {
-								inlineBreakToken.InlineShortage += contentPush
-							}
+							inlineBreakToken.InlineShortage += contentPush
 						}
 						if hasLastChildBaseline {
 							lastChildBlockOffset += contentPush
@@ -817,19 +814,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			// Use the per-break-point inline shortage when set (Blink-aligned),
-			// otherwise fall back to per-fragment consumed (not cumulative).
+			// The per-break-point line shortage: the only producer
+			// (layoutInlineChildren) breaks only when it is positive.
 			shortage := inlineBreakToken.InlineShortage
-			if shortage <= 0 {
-				consumedInFragment := inlineBreakToken.ConsumedBlockSize.Float64()
-				if incomingBreakToken != nil {
-					consumedInFragment -= incomingBreakToken.ConsumedBlockSize.Float64()
-				}
-				shortage = consumedInFragment - (bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset)
-				if shortage < 0 {
-					shortage = 0
-				}
-			}
 			// A line break breaks this block inside, as an in-flow child
 			// break (Blink AddBreakBeforeChild on the inline node,
 			// box_fragment_builder.cc:121-143 @ a9f50e522efa); the fragment
