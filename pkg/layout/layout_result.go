@@ -501,3 +501,11 @@ func (ms *MarginStrut) AppendStrut(other MarginStrut) {
 		ms.NegativeMargin = other.NegativeMargin
 	}
 }
+
+// ScrollableOverflow RED stub (LOU-469).
+func (f *PhysicalFragment) ScrollableOverflow() geometry.PhysicalRect {
+	return geometry.PhysicalRect{Size: f.Size}
+}
+
+// BlockEndScrollableOverflow RED stub (LOU-469).
+func (lf LogicalFragment) BlockEndScrollableOverflow() float64 { return lf.BlockSize() }

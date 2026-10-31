@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"slices"
 	"testing"
 
 	"louis14/pkg/css"
@@ -491,6 +492,42 @@ func TestMulticolPreviouslyConsumedContentBlockSize(t *testing.T) {
 		}
 		if got := mla.previouslyConsumedContentBlockSize(); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMulticolNested_ColumnOverflowRegrowKeepsLine (LOU-469): a nested
+// line whose column's scrollable overflow — from a monolith's overflowing
+// child, relative offset or transform — passes the outer fragmentainer is
+// laid out again with taller columns (LayoutLine, column_layout_algorithm.cc:
+// 1041-1066 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), but the line Chrome
+// renders keeps its 40px balanced columns in the first outer column. Chrome
+// 155 headless getClientRects (LOU-469 probes p1-p3): in {0,100,50,40},
+// b2 {0,120,25,20}, b3 {25,100,25,20}. b1's relative offset and transform
+// are applied at paint, so its fragment rect is not compared.
+func TestMulticolNested_ColumnOverflowRegrowKeepsLine(t *testing.T) {
+	mono := props("height", "20px", "contain", "size")
+	for name, b1 := range map[string]marginSpec{
+		"overflowing child": ms("b1", mono, ms("", props("height", "80px"))),
+		"relative offset":   ms("b1", append(props("position", "relative", "top", "60px"), mono...)),
+		"transform":         ms("b1", append(props("transform", "translateY(60px)"), mono...)),
+	} {
+		frag, ids := layoutOuterMulticolSpec(t,
+			props("width", "100px", "height", "150px", "column-count", "2", "column-gap", "0", "column-fill", "auto"),
+			ms("", props("height", "100px")),
+			ms("in", props("column-count", "2", "column-gap", "0"),
+				b1, ms("b2", mono), ms("b3", mono),
+			),
+		)
+		got := borderBoxRectsByID(frag, ids)
+		for id, want := range map[string][]fragRect{
+			"in": {{0, 100, 50, 40}},
+			"b2": {{0, 120, 25, 20}},
+			"b3": {{25, 100, 25, 20}},
+		} {
+			if !slices.Equal(got[id], want) {
+				t.Errorf("%s: %s fragments = %v, want %v (Chrome 155)", name, id, got[id], want)
+			}
 		}
 	}
 }

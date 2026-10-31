@@ -115,3 +115,19 @@ func (r PhysicalRect) Right() LayoutUnit { return r.Offset.Left.Add(r.Size.Width
 
 // Bottom returns top + height.
 func (r PhysicalRect) Bottom() LayoutUnit { return r.Offset.Top.Add(r.Size.Height) }
+
+// IsEmpty reports whether the rect has a non-positive width or height.
+// RED stub (LOU-469).
+func (r PhysicalRect) IsEmpty() bool { return false }
+
+// UniteEvenIfEmpty RED stub (LOU-469).
+func (r PhysicalRect) UniteEvenIfEmpty(other PhysicalRect) PhysicalRect { return r }
+
+// Intersect RED stub (LOU-469).
+func (r PhysicalRect) Intersect(other PhysicalRect) PhysicalRect { return r }
+
+// ExpandEdges RED stub (LOU-469).
+func (r PhysicalRect) ExpandEdges(top, right, bottom, left LayoutUnit) PhysicalRect { return r }
+
+// PhysicalRectEnclosingRect RED stub (LOU-469).
+func PhysicalRectEnclosingRect(rect RectF) PhysicalRect { return PhysicalRect{} }
