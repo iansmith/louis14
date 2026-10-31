@@ -83,3 +83,24 @@ func TestOutlineWidth_InheritsComputedLength(t *testing.T) {
 		t.Errorf("outline-width: inherit of the parent's 1em at 10px = %v, want 10", got)
 	}
 }
+
+// TestTabSize_InheritsComputedLength: tab-size is inherited and computes a
+// length to px at style build, so a 32px child of a 16px `tab-size: 2em`
+// parent inherits 32px rather than re-resolving 2em against its own font.
+// Blink's converter is ConvertLengthOrTabSpaces, which computes the length
+// through CssToLengthConversionData and keeps a bare number as a space count
+// (core/css/resolver/style_builder_converter.cc:2182-2194;
+// core/css/css_properties.json5 tab-size `inherited: true` @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestTabSize_InheritsComputedLength(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#p { font-size: 16px; tab-size: 2em; }
+		#c { font-size: 32px; }
+		#n { tab-size: 4; } #nc { font-size: 32px; }</style>
+		<pre id="p"><span id="c"></span></pre><pre id="n"><span id="nc"></span></pre>`, nil)
+	if got, isLength := styleByID(t, styles, "c").GetTabSize(); got != 32 || !isLength {
+		t.Errorf("inherited tab-size of the parent's 2em at 16px = (%v, %v), want (32, true)", got, isLength)
+	}
+	if got, isLength := styleByID(t, styles, "nc").GetTabSize(); got != 4 || isLength {
+		t.Errorf("inherited tab-size: 4 = (%v, %v), want (4, false) spaces", got, isLength)
+	}
+}
