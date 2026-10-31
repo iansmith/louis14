@@ -83,14 +83,27 @@ func TestWPTResourceResolver_FilesystemPath(t *testing.T) {
 	})
 
 	t.Run("css_support_vendored", func(t *testing.T) {
-		// 60x60-green.png is vendored only at wpt-css3/css/support/ (LOU-177).
-		runWPTPathRows(t, []wptPathRow{{
-			name:      "60x60-green from css-sizing",
-			basePath:  "testdata/wpt-css3/css-sizing",
-			uri:       "/css/support/60x60-green.png",
-			want:      "testdata/wpt-css3/css/support/60x60-green.png",
-			mustExist: true,
-		}})
+		// Upstream /css/support/ is stored at the flattened wpt-css3/support/,
+		// so the root-relative and the section-relative ../support/ forms
+		// name the same file, as they do under one wptserve doc root.
+		runWPTPathRows(t, []wptPathRow{
+			{
+				name:      "60x60-green from css-sizing",
+				basePath:  "testdata/wpt-css3/css-sizing",
+				uri:       "/css/support/60x60-green.png",
+				want:      "testdata/wpt-css3/support/60x60-green.png",
+				mustExist: true,
+			},
+			{
+				// block-fit-content-as-initial(-ref) and
+				// intrinsic-fixed-width-with-{max,min}-content-height.
+				name:      "relative 60x60-green from css-sizing",
+				basePath:  "testdata/wpt-css3/css-sizing",
+				uri:       "../support/60x60-green.png",
+				want:      "testdata/wpt-css3/support/60x60-green.png",
+				mustExist: true,
+			},
+		})
 	})
 
 	t.Run("css_reference", func(t *testing.T) {
@@ -233,7 +246,7 @@ func TestFileFetchers_ShareFilesystemPath(t *testing.T) {
 			s, err := createFileCSSFetcher(r)(uri)
 			return []byte(s), err
 		}, "/css/css-flexbox/support/flexbox.css", "testdata/wpt-css3/css-flexbox/support/flexbox.css"},
-		{"image", r.readFile, "/css/support/60x60-green.png", "testdata/wpt-css3/css/support/60x60-green.png"},
+		{"image", r.readFile, "/css/support/60x60-green.png", "testdata/wpt-css3/support/60x60-green.png"},
 		{"document", func(uri string) ([]byte, error) {
 			s, err := createFileDocumentFetcher(r)(uri)
 			return []byte(s), err
