@@ -4427,7 +4427,7 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 					return MediaQueryUnknown
 				}
 			} else {
-				_, ok := parseLengthFullWithCh(cond.Value, 16, 0, 0, 0.5, 0, 0, 0, optionalFloat{})
+				_, ok := ParseLengthFull(cond.Value, initialFontSize, 0, 0)
 				if !ok {
 					return MediaQueryUnknown
 				}
@@ -4686,7 +4686,7 @@ func parseMediaLength(val string) (float64, string) {
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		inner := val[5 : len(val)-1]
 		// 16px for font-size (media queries use initial font size, not element font-size)
-		if result, ok := EvalCalcWithPercent(inner, 16.0, 0); ok {
+		if result, ok := EvalCalcWithPercent(inner, initialFontSize, 0); ok {
 			return result, "px"
 		}
 	}
@@ -4696,7 +4696,7 @@ func parseMediaLength(val string) (float64, string) {
 		numStr := strings.TrimSuffix(val, "rem")
 		var num float64
 		if _, err := fmt.Sscanf(numStr, "%f", &num); err == nil {
-			return num * 16.0, "px"
+			return num * initialFontSize, "px"
 		}
 	}
 
@@ -4705,7 +4705,7 @@ func parseMediaLength(val string) (float64, string) {
 		numStr := strings.TrimSuffix(val, "em")
 		var num float64
 		if _, err := fmt.Sscanf(numStr, "%f", &num); err == nil {
-			return num * 16.0, "px"
+			return num * initialFontSize, "px"
 		}
 	}
 

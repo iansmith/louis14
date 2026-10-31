@@ -44,11 +44,11 @@ func TestChUnit_AnonymousStylesKeepMeasuredZeroWidth(t *testing.T) {
 	}
 }
 
-// TestAnonymousStylesCopyStyleResolutionContext (LOU-428, LOU-431): every
-// anonymous-box style and every clone carries its parent's full resolution
-// context — all font metrics (with their measured flags), the used font-size
-// and the font selector — as Blink builds an anonymous style from the parent
-// style, inheriting its Font
+// TestAnonymousStylesCopyStyleResolutionContext (LOU-428, LOU-431, LOU-427):
+// every anonymous-box style and every clone carries its parent's full
+// resolution context — all font metrics (with their measured flags), the used
+// font-size, the root font-size rem resolves against and the font selector —
+// as Blink builds an anonymous style from the parent style, inheriting its Font
 // (StyleResolver::CreateAnonymousStyleBuilderWithDisplay,
 // core/css/resolver/style_resolver.cc:3607 @
 // 5992657f556bcd9d207a4aca187488462f027cab).
@@ -62,6 +62,7 @@ func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 	parent.IcWidth, parent.HasIdeographicInlineSize = 19, true
 	parent.BaseDir = "base/"
 	parent.fontSelector = fakeFontSelector{}
+	parent.remFontSize = optionalFloat{value: 12, ok: true}
 	newStyles := map[string]func(*Style) *Style{"Clone": (*Style).Clone}
 	for _, display := range anonymousBoxDisplays {
 		newStyles["CreateAnonymousStyleWithDisplay("+string(display)+")"] = func(p *Style) *Style {
@@ -73,10 +74,10 @@ func TestAnonymousStylesCopyStyleResolutionContext(t *testing.T) {
 		if s.ViewportWidth != 800 || s.ViewportHeight != 600 || s.ChWidth != 11 || !s.HasZeroWidth ||
 			s.UsedFontSize != 18 || !s.UsedFontSizeSet || s.XHeight != 9 || s.CapHeight != 14 ||
 			s.LhSize != 30 || s.IcWidth != 19 || !s.HasIdeographicInlineSize || s.BaseDir != "base/" ||
-			s.fontSelector != parent.fontSelector {
-			t.Errorf("%s dropped resolution context: viewport %vx%v ch %v/%v used %v/%v ex %v cap %v lh %v ic %v/%v base %q selector %v",
+			s.fontSelector != parent.fontSelector || s.remFontSize != parent.remFontSize {
+			t.Errorf("%s dropped resolution context: viewport %vx%v ch %v/%v used %v/%v ex %v cap %v lh %v ic %v/%v base %q selector %v rem %v",
 				name, s.ViewportWidth, s.ViewportHeight, s.ChWidth, s.HasZeroWidth, s.UsedFontSize, s.UsedFontSizeSet,
-				s.XHeight, s.CapHeight, s.LhSize, s.IcWidth, s.HasIdeographicInlineSize, s.BaseDir, s.fontSelector)
+				s.XHeight, s.CapHeight, s.LhSize, s.IcWidth, s.HasIdeographicInlineSize, s.BaseDir, s.fontSelector, s.remFontSize)
 		}
 	}
 }
