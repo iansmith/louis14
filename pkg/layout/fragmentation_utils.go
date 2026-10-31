@@ -352,7 +352,10 @@ func CalculateBreakAppealBeforeWithStatus(
 	breakableAtStartOfContainer bool,
 ) BreakAppeal {
 	appeal := BreakAppealPerfect
-	if !hasContainerSeparation {
+	// Without container separation this is the start of the container: not
+	// a valid break point, unless it is the start of a resumed container. A
+	// child that ran out of fragmentainer space must move on regardless.
+	if !hasContainerSeparation && layoutResultStatus == LayoutResultSuccess {
 		if !breakableAtStartOfContainer {
 			return BreakAppealLastResort
 		}
