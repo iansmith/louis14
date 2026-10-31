@@ -866,3 +866,17 @@ func TestCheckPseudoNot_PseudoElementArgument(t *testing.T) {
 		}
 	}
 }
+
+// TestNthChildOf_PseudoElementBranch guards the `of` list's pseudo-element
+// filter in matchesNthChildOf: an `of ::before` list must not match the
+// element itself. Selectors-4 makes the `of` argument a
+// <complex-real-selector-list>, which excludes pseudo-elements; whether the
+// whole selector or only the branch is dropped, no element matches.
+func TestNthChildOf_PseudoElementBranch(t *testing.T) {
+	span := firstElement(t, `<p><span></span></p>`, "span")
+	for _, s := range []string{"span:nth-child(1 of ::before)", "span:nth-last-child(1 of :after)"} {
+		if MatchesSelector(span, ParseSelector(s)) {
+			t.Errorf("%s matches <span>, want no match", s)
+		}
+	}
+}
