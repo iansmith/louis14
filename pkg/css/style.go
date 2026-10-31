@@ -13151,10 +13151,15 @@ func (s *Style) GetMaskImage() string {
 func (s *Style) GetTabSize() (float64, bool) {
 	if val, ok := s.Get("tab-size"); ok {
 		val = strings.TrimSpace(val)
-		// A unitless math function is a <number>: a space count.
+		// A unitless math function is a <number>: a space count, clamped to
+		// tab-size's non-negative range (TabSize::ParseSingleValue kNonNegative,
+		// CSSMathFunctionValue::ClampToPermittedRange,
+		// core/css/properties/longhands/longhands_custom.cc:9892-9905,
+		// core/css/css_math_function_value.cc:190-202 @
+		// 5992657f556bcd9d207a4aca187488462f027cab).
 		if isUnitlessMath(val) {
 			if num, ok2 := EvalMathFunction(val, s.cssToLengthConversionData()); ok2 {
-				return num, false
+				return math.Max(num, 0), false
 			}
 		}
 		// Try length first (px, em, etc.)

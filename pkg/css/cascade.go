@@ -3296,7 +3296,16 @@ func computeLengthComponents(style *Style, val string, round func(float64) float
 	changed := false
 	for i, part := range parts {
 		// No units: a keyword, a bare number or a unitless math function.
-		if units := dimensionUnits(part); len(units) == 0 || slices.Contains(units, "%") {
+		units := dimensionUnits(part)
+		if len(units) == 0 {
+			continue
+		}
+		if slices.Contains(units, "%") {
+			// A percentage resolves at use time; compute only the length
+			// terms of a math function around it.
+			if s := computeMathLengthTerms(style, part); s != part {
+				parts[i], changed = s, true
+			}
 			continue
 		}
 		px, ok := style.GetLengthForVal(part)
@@ -3445,6 +3454,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 			// em / % / ex / ch / ic / cap.
 			ApplyInheritedProperties(firstElem, rootChildStyle, styles)
 			applyFontAndLineHeight(rootChildStyle, nil)
+			absolutizeComputedLengths(rootChildStyle)
 			for prop := range inheritableProperties {
 				// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
 				// Don't propagate from :root to synthetic doc root — otherwise every
@@ -4156,6 +4166,39 @@ func convertFontSize(s, parent *Style) {
 	} else {
 		s.remFontSize = parent.remFontSize
 	}
+}
+
+// computeMathLengthTerms rewrites each non-percentage <dimension> term of the
+// math function v to px against style, leaving percentages, numbers and
+// operators in place — calc(10% + 2em) at a 10px font becomes
+// calc(10% + 20px), as Blink's ConvertToLength resolves a mixed math
+// expression's lengths through CssToLengthConversionData and keeps the
+// percentage (CSSMathExpressionNode, applied by TextIndent::ApplyValue,
+// core/css/properties/longhands/longhands_custom.cc:10267-10292 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Anything else (a bare
+// percentage) is returned unchanged.
+func computeMathLengthTerms(style *Style, v string) string {
+	if !IsMathFunction(v) {
+		return v
+	}
+	var b strings.Builder
+	rest := v
+	for _, tok := range tokenizeCalc(v) {
+		at := strings.Index(rest, tok)
+		if at < 0 {
+			return v
+		}
+		b.WriteString(rest[:at])
+		rest = rest[at+len(tok):]
+		if units := dimensionUnits(tok); len(units) == 1 && units[0] != "%" {
+			if px, ok := style.GetLengthForVal(tok); ok {
+				tok = fmt.Sprintf("%gpx", px)
+			}
+		}
+		b.WriteString(tok)
+	}
+	b.WriteString(rest)
+	return b.String()
 }
 
 // isUnitlessMath reports whether v is a math function with no <dimension> or
