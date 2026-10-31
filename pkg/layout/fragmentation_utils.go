@@ -393,6 +393,98 @@ func CalculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResul
 	return appeal
 }
 
+// ClampedToValidFragmentainerCapacity floors a fragmentainer capacity at 1px:
+// to ensure content progression a fragmentainer must accept at least 1px of
+// content (css-break-3 §4.4). Mirrors Blink's
+// ClampedToValidFragmentainerCapacity(LayoutUnit)
+// (fragmentation_utils.h:153-158 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ClampedToValidFragmentainerCapacity(length float64) float64 {
+	return max(length, 1)
+}
+
+// FragmentainerBox is the part of a box's fragment builder that Blink's
+// FragmentainerCapacity / FragmentainerOffset / FragmentainerSpaceLeft read:
+// the box's constraint space (whose BreakToken is the previous break token),
+// its BorderScrollbarPadding, whether its style has
+// box-decoration-break:clone, and ShouldCloneBoxEndDecorations. no Blink
+// analog: louis14's BoxFragmentBuilder does not carry these, so callers
+// gather them (Blink reads them off BoxFragmentBuilder,
+// fragmentation_utils.h:164-257 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type FragmentainerBox struct {
+	Space                        *ConstraintSpace
+	BorderScrollbarPadding       LogicalEdges
+	HasClonedBoxDecorations      bool
+	ShouldCloneBoxEndDecorations bool
+}
+
+// clampedToValidFragmentainerCapacity is the builder overload of
+// ClampedToValidFragmentainerCapacity: for the fragment itself
+// (isForChildren false) a box that clones its block-end decorations must also
+// fit its repeated border/padding, so it always makes 1px of content
+// progress between the cloned edges. Mirrors Blink's
+// ClampedToValidFragmentainerCapacity(builder, length, is_for_children)
+// (fragmentation_utils.h:159-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (box FragmentainerBox) clampedToValidFragmentainerCapacity(length float64, isForChildren bool) float64 {
+	minimum := 1.0
+	if box.ShouldCloneBoxEndDecorations && !isForChildren {
+		minimum += box.BorderScrollbarPadding.BlockSum()
+	}
+	return max(length, minimum)
+}
+
+// FragmentainerCapacity is the fragmentainer block-size to use during layout,
+// or Indefinite when it is unknown (initial column balancing). For children
+// (isForChildren) cloned box decorations shrink the space, as children steer
+// clear of them; for the fragment itself they are included. Mirrors Blink's
+// FragmentainerCapacity (fragmentation_utils.h:175-203 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func FragmentainerCapacity(box FragmentainerBox, isForChildren bool) float64 {
+	space := box.Space
+	if !space.HasBlockFragmentation || space.FragmentainerBlockSize == Indefinite {
+		return Indefinite
+	}
+	size := space.FragmentainerBlockSize
+	if box.HasClonedBoxDecorations && isForChildren {
+		size -= box.BorderScrollbarPadding.BlockStart
+		if box.ShouldCloneBoxEndDecorations {
+			size -= box.BorderScrollbarPadding.BlockEnd
+		}
+	}
+	return box.clampedToValidFragmentainerCapacity(size, isForChildren)
+}
+
+// FragmentainerOffset is the box's border-edge offset from the fragmentainer
+// start. For children of a box with cloned decorations it is pulled back by
+// the block-start edge, so a child at the block-start content edge is at
+// offset 0 and cannot be broken before until there has been content
+// progress. Mirrors Blink's FragmentainerOffset (fragmentation_utils.h:
+// 205-235 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func FragmentainerOffset(box FragmentainerBox, isForChildren bool) float64 {
+	space := box.Space
+	if !space.HasBlockFragmentation {
+		return 0
+	}
+	offset := space.FragmentainerOffset
+	if box.HasClonedBoxDecorations && isForChildren &&
+		(space.BreakToken == nil || !space.BreakToken.IsAtBlockEnd) {
+		offset -= box.BorderScrollbarPadding.BlockStart
+	}
+	return offset
+}
+
+// FragmentainerSpaceLeft is the fragmentainer space left at the box's
+// block-start (clamped to zero), or Indefinite when the fragmentainer
+// block-size is unknown. Mirrors Blink's FragmentainerSpaceLeft
+// (fragmentation_utils.h:237-257 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func FragmentainerSpaceLeft(box FragmentainerBox, isForChildren bool) float64 {
+	capacity := FragmentainerCapacity(box, isForChildren)
+	if capacity == Indefinite {
+		return Indefinite
+	}
+	return max(0, capacity-FragmentainerOffset(box, isForChildren))
+}
+
 // SetupSpaceBuilderForFragmentation copies a parent's block-fragmentation
 // context into a child's constraint-space builder: the fragmentainer
 // block-size and the child's offset in the fragmentainer (with

@@ -1146,7 +1146,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// (FragmentainerOffsetAtBfc + bfc_block_offset, :3156-3158); the
 			// guard is MovePastBreakpoint's refuse_break_before, space_left >=
 			// fragmentainer_block_size (fragmentation_utils.cc:1169-1171).
-			fragEnd := bla.space.FragmentainerBlockSize - bla.fragmentainerOffsetForChildren
+			fragEnd := bla.fragmentainerCapacityForChildren() - bla.fragmentainerOffsetForChildren
 			// shortage is how much more space would let this line fit here.
 			shortage := blockOffset + lineHeight - fragEnd
 			if shortage > 0 && bla.fragmentainerOffsetForChildren+blockOffset > 0 {

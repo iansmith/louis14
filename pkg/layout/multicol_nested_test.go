@@ -364,9 +364,8 @@ func TestMulticolNested_BlockStartPaddingOpensMayHaveMoreSpaceGate(t *testing.T)
 // exceed the outer remaining space therefore caps at column-count even with
 // column-wrap:nowrap — and the second column, resumed with MinBreakAppeal =
 // Perfect, pushes the break-inside:avoid box whole to the next outer
-// fragmentainer. Without the cap the row runs on the break token alone, the
-// pushing column never advances it, and the non-advancing-token guard drops
-// the box entirely.
+// fragmentainer. Without the cap the row runs on the break token alone and
+// the pushing column never advances it.
 func TestMulticolNested_NoWrapCapsWhenMayHaveMoreSpace(t *testing.T) {
 	filler := makeNode("div")
 	grandchild1 := makeNode("div")
