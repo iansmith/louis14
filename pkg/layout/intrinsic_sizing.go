@@ -1,9 +1,11 @@
 package layout
 
 import (
-	"louis14/pkg/images"
 	"strconv"
 	"strings"
+
+	"louis14/pkg/images"
+	urlpkg "louis14/pkg/url"
 )
 
 // IntrinsicSizingInfo holds the natural dimensions and aspect ratio for a
@@ -167,6 +169,12 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 	return info
 }
 
+// getImgIntrinsicInfo returns an <img>'s natural size. Its src is completed
+// against the owning document's base (Style.BaseDir) before it is fetched,
+// as Blink's ImageLoader::ImageSourceToKURL does with
+// resolver_document.CompleteURL(src)
+// (third_party/blink/renderer/core/loader/image_loader.cc:746 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
 	if ctx == nil {
 		return IntrinsicSizingInfo{}
@@ -174,6 +182,9 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 	src, ok := node.DOMNode.GetAttribute("src")
 	if !ok || src == "" {
 		return IntrinsicSizingInfo{}
+	}
+	if s := node.Style(); s != nil {
+		src = urlpkg.CompleteURL(src, s.BaseDir)
 	}
 	// data: URIs decode inline and need no fetcher.
 	if ctx.ImageFetcher == nil && !images.IsDataURI(src) {

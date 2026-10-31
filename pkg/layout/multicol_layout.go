@@ -741,7 +741,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's column-box assumes.
 	if mla.node.contentNodeCache == nil {
 		mla.node.contentNodeCache = &LayoutInputNode{
-			style:       css.NewAnonymousBlockStyle(mla.style),
+			style:       css.CreateAnonymousStyleWithDisplay(mla.style, string(css.DisplayBlock)),
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
@@ -1047,29 +1047,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// paint-time application (engine.go box conversion). No Blink analog
 	// inside column_layout_algorithm.cc — Blink applies relative offsets
 	// generically in the parent (relative_utils.cc ComputeRelativeOffset);
-	// louis14's established pattern is this per-algorithm tail, copied from
-	// block_layout.go:2469-2489 (see there for the PercentageResolutionSize
-	// rationale).
+	// louis14's established pattern is this per-algorithm tail, shared with
+	// BlockLayoutAlgorithm.Layout's through computeRelativeOffsetForBoxFragment
+	// (see the block tail for the PercentageResolutionSize rationale).
 	//
 	// Known coverage limit: only the main (non-fragmented) return path gets
 	// the offset. Fragments returned via buildOuterBreakResult (multicol
 	// nested in an outer fragmentation context) skip it — the same gap the
 	// BLA pattern has for its own break-result returns.
 	if mla.style != nil && mla.style.GetPosition() == css.PositionRelative {
-		cbInline := mla.space.PercentageResolutionSize.InlineSize.Float64()
-		if cbInline == Indefinite {
-			cbInline = 0
-		}
-		cbBlock := mla.space.PercentageResolutionSize.BlockSize.Float64()
-		if cbBlock == Indefinite {
-			cbBlock = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: cbInline,
-			BlockSize:  cbBlock,
-		}, wdm.WM)
-		offset := mla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			mla.style, wdm, geomLogicalToOld(mla.space.PercentageResolutionSize))
 	}
 	return result
 }
@@ -3148,7 +3136,7 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			inlineRun = nil
 			return
 		}
-		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
 		result = append(result, &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,
