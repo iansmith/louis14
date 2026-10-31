@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -6351,6 +6352,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	if box == nil {
 		return
 	}
+	layer = r.withFontFaceFeatures(layer)
 
 	segs := r.computeSelectionSegments(box, box.Text)
 	if len(segs) == 1 && !segs[0].selected {
@@ -6669,11 +6671,51 @@ func maxTextShadowExtent(shadows []css.TextShadow) float64 {
 // paint — avoids re-deriving the font path/ID twice with any risk of
 // drift between the two call sites.
 func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
-	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+	return r.openFont(r.fontPathForLayer(layer), layer.FontSize)
+}
+
+// withFontFaceFeatures returns layer, or — when the face it draws with has
+// an @font-face font-feature-settings descriptor — a shallow copy whose
+// FontFeatures start with the descriptor features the property does not
+// override. Mirrors Blink's ShapeRange, which inserts the face's
+// FontPlatformData::ResolvedFeatures before the font's features
+// (platform/fonts/shaping/harfbuzz_shaper.cc:327-340 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func (r *Renderer) withFontFaceFeatures(layer *PaintLayer) *PaintLayer {
+	descriptor := r.fonts.Registry.FontFeatureSettingsForPath(r.fontPathForLayer(layer))
+	if descriptor == "" {
+		return layer
+	}
+	resolved := resolveFontFeatureSettingsDescriptor(layer.FontFeatureSettings, parseFontFeatureSettings(descriptor))
+	if len(resolved) == 0 {
+		return layer
+	}
+	copied := *layer
+	copied.FontFeatures = append(resolved, layer.FontFeatures...)
+	return &copied
+}
+
+// resolveFontFeatureSettingsDescriptor keeps the descriptor features whose
+// tag the font-feature-settings property does not name. Mirrors Blink's
+// ResolveFontFeatureSettingsDescriptor (platform/fonts/
+// resolved_font_features.cc:14-43 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func resolveFontFeatureSettingsDescriptor(existing, descriptor []textshape.FontFeature) []textshape.FontFeature {
+	var resolved []textshape.FontFeature
+	for _, f := range descriptor {
+		if !slices.ContainsFunc(existing, func(e textshape.FontFeature) bool { return e.Tag == f.Tag }) {
+			resolved = append(resolved, f)
+		}
+	}
+	return resolved
+}
+
+// fontPathForLayer is the font file this layer's text is drawn with — the
+// one font-selection rule every layer-based paint path shares.
+func (r *Renderer) fontPathForLayer(layer *PaintLayer) string {
+	return r.fonts.FontPathForFamilyWithSynthesis(
 		layer.FontFamily, layer.FontBold, layer.FontItalic,
 		layer.FontMono, layer.FontAhem,
 		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
-	return r.openFont(fontPath, layer.FontSize)
 }
 
 // measureSegmentAdvance measures the inline-axis advance of text exactly
@@ -6874,10 +6916,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		text = applyTextTransform(text, layer.TextTransform)
 	}
 
-	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
-		layer.FontFamily, layer.FontBold, layer.FontItalic,
-		layer.FontMono, layer.FontAhem,
-		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	fontPath := r.fontPathForLayer(layer)
 	fontID := r.openFont(fontPath, layer.FontSize)
 	if fontID < 0 {
 		return
@@ -7427,10 +7466,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	emphFontSize := layout.EmphasisMarkFontSize(layer.FontSize)
 
 	// Open a font for the emphasis mark at half size.
-	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
-		layer.FontFamily, layer.FontBold, layer.FontItalic,
-		layer.FontMono, layer.FontAhem,
-		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	fontPath := r.fontPathForLayer(layer)
 	emphFontID := r.openFont(fontPath, emphFontSize)
 	if emphFontID < 0 {
 		return
@@ -7511,10 +7547,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, ta, lh int) {
 	mark := layer.TextEmphasisMark
 	emphFontSize := layout.EmphasisMarkFontSize(layer.FontSize)
-	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
-		layer.FontFamily, layer.FontBold, layer.FontItalic,
-		layer.FontMono, layer.FontAhem,
-		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
+	fontPath := r.fontPathForLayer(layer)
 	emphFontID := r.openFont(fontPath, emphFontSize)
 	if emphFontID < 0 {
 		return
