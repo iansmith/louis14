@@ -81,8 +81,14 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		return []*Box{{Width: le.viewport.width, Height: le.viewport.height}}
 	}
 
-	// Phase 1: Compute styles.
-	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
+	// Phase 1: Compute styles. The cascade builds each element's font from
+	// the font selector as it goes (Blink's StyleResolverState::UpdateFont),
+	// so font metrics and font-relative units are final when it returns.
+	fontConfig := le.fontConfig
+	if fontConfig.Regular == "" {
+		fontConfig = text.DefaultFontConfig()
+	}
+	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, le.viewport.width, le.viewport.height, text.NewCSSFontSelector(fontConfig))
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 	// CSS Transitions (first-frame): when this is a post-script re-layout,
 	// compare against the previous pass's styles and override transitioned
@@ -90,24 +96,13 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// property resolution — prevStyles came from a pass that already
 	// resolved logical keys to physical, so both maps must be physical-
 	// keyed for the per-property diff (and resolution must not clobber a
-	// transitioned value) — and before ch-width metrics so downstream
-	// phases see the transitioned values.
+	// transitioned value). ApplyTransitionsFirstFrame re-builds the font of
+	// every style it rewrites; the text-decoration insets the cascade already
+	// recorded are then re-resolved against the transitioned values.
 	if le.prevStyles != nil {
 		css.ApplyTransitionsFirstFrame(doc.Root, computedStyles, le.prevStyles)
+		recomputeTextDecorationInsets(computedStyles)
 	}
-
-	// Phase 1b: Compute ch widths from actual font metrics.
-	fontConfig := le.fontConfig
-	if fontConfig.Regular == "" {
-		fontConfig = text.DefaultFontConfig()
-	}
-	computeChWidths(computedStyles, fontConfig)
-
-	// Phase 1c: Re-resolve text-decoration-inset now that ChWidth is known.
-	// During cascade (Phase 1), GetTextDecorationInset is called with ChWidth=0,
-	// causing ch units to resolve incorrectly. Now that computeChWidths has
-	// populated actual font metrics, re-resolve all AppliedTextDecoration insets.
-	recomputeTextDecorationInsets(computedStyles)
 
 	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
@@ -315,10 +310,8 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	doc.BaseDir = baseDir
 
-	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
+	computedStyles := css.ApplyStylesToDocumentWithFontSelector(doc, vpWidth, vpHeight, text.NewCSSFontSelector(ctx.FontConfig))
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
-	computeChWidths(computedStyles, ctx.FontConfig)
-	recomputeTextDecorationInsets(computedStyles)
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
@@ -790,180 +783,13 @@ func bidiMirror(r rune) rune {
 	return r
 }
 
-// fontMetrics holds the per-font measurements that drive CSS font-relative
-// unit resolution (ch/ex/cap) for a given (font, size).
-// IcWidth is resolved separately via FontPathForCovering so that U+6C34 (水)
-// is always sourced from a font that actually contains the glyph.
-type fontMetrics struct {
-	chWidth float64
-	xHeight float64
-	capHght float64
-}
-
-// computeChWidths measures per-font metrics needed to resolve CSS font-
-// relative units (ex, ch) and applies CSS Fonts 5 §1.7 `font-size-adjust`
-// to produce a used font-size. Populates `ChWidth`, `XHeight`, and
-// `UsedFontSize` on every Style.
-//
-// Mirrors Blink's `FontDescription::EffectiveSize()` (font_description.cc) and
-// `FontMetrics::XHeight()` (font_metrics.h) at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: the used font-size is computed by
-// scaling the specified size by `adjust_value / actual_aspect_ratio_of_first
-// _available_font`, then ex/ch are sourced from the used-size font's metrics
-// so font-dependent CSS units track the visible glyph size.
-func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
-	// Per-font metric cache keyed by (path, sizeRounded). Sub-pixel size jitter
-	// is rare; rounding stabilises the cache for tests rendering many elements
-	// at one size.
-	measure := newFontMetricsMeasurer(fc)
-	for _, style := range styles {
-		if style == nil {
-			continue
-		}
-		resolveFontMetricsForStyle(style, fc, measure)
-	}
-}
-
-// resolveFontMetricsForStyle populates the font-relative cached metric fields
-// (UsedFontSize, ChWidth, XHeight, CapHeight, LhSize) on a single style from
-// its current font properties, applying CSS Fonts 5 §1.7 font-size-adjust.
-// Shared by the bulk computeChWidths pass and by mergeFirstLineStyle, which
-// must re-resolve these caches after overriding font-size/line-height so the
-// merged ::first-line style does not carry the base font's stale metrics
-// (the GetUsedFontSize cache otherwise wins over the overridden Properties).
-// `measure` is the caller's metric cache.
-func resolveFontMetricsForStyle(style *css.Style, fc text.FontConfig, measure func(fontPath string, fontSize float64) fontMetrics) {
-	specifiedSize := style.GetFontSize()
-	family, _ := style.Get("font-family")
-	bold := style.GetFontWeight() == css.FontWeightBold
-	italic := style.GetFontStyle() == css.FontStyleItalic
-	mono := style.IsMonospaceFamily()
-	ahem := style.IsAhemFamily()
-	synth := style.GetFontSynthesis()
-	fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
-
-	// Measure metrics at the specified size so we can read the first font's
-	// actual aspect ratio for font-size-adjust resolution.
-	baseMetrics := measure(fontPath, specifiedSize)
-
-	// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
-	// `none` and `from-font` leave the used size equal to the specified
-	// size (from-font matches the first font's own aspect → factor 1).
-	usedSize := specifiedSize
-	adjust := style.GetFontSizeAdjust()
-	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
-		if actualRatio > 0 {
-			usedSize = specifiedSize * adjust.Value / actualRatio
-		} else {
-			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; clamp to 0 to match Blink's behavior of
-			// hiding the glyphs (matches font-size-adjust-zero-* refs).
-			usedSize = 0
-		}
-	}
-
-	usedMetrics := baseMetrics
-	if usedSize != specifiedSize {
-		usedMetrics = measure(fontPath, usedSize)
-	}
-
-	style.UsedFontSize = usedSize
-	style.UsedFontSizeSet = true
-	style.SetZeroWidth(usedMetrics.chWidth)
-	style.XHeight = usedMetrics.xHeight
-	style.CapHeight = usedMetrics.capHght
-
-	// ic unit: CSS Values 4 §6.1 defines ic as the advance of U+6C34 (水) in
-	// the element's font. Only measure from a font that explicitly covers 水 in
-	// the declared font-family list (via the registry). If no such font exists,
-	// IcWidth stays 0 and parseLengthFullWithCh falls back to 1em. We do NOT
-	// fall back to builtin serif/sans-serif here — doing so would pick up any
-	// system CJK font and produce wrong ic values for Latin-only declared fonts.
-	style.IcWidth = 0
-	if fc.Registry != nil {
-		for _, fam := range text.ParseFontFamilyList(family) {
-			if icPath := fc.Registry.LookupForCodepoint(fam, '水', bold, italic, synth.Style); icPath != "" {
-				icLU, _ := text.MeasureText("水", usedSize, icPath)
-				style.IcWidth = icLU.Float64()
-				break
-			}
-		}
-	}
-
-	// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
-	// unit equals the element's computed line-height. Mirrors Blink's
-	// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	style.LhSize = style.GetLineHeight()
-}
-
-// newFontMetricsMeasurer returns a freshly-cached metric measurer over fc —
-// the same closure computeChWidths builds, hoisted so a one-off caller
-// (mergeFirstLineStyle) can resolve a single style without the bulk pass.
-func newFontMetricsMeasurer(fc text.FontConfig) func(fontPath string, fontSize float64) fontMetrics {
-	type fontKey struct {
-		path     string
-		fontSize int32
-	}
-	cache := make(map[fontKey]fontMetrics)
-	return func(fontPath string, fontSize float64) fontMetrics {
-		k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
-		if m, ok := cache[k]; ok {
-			return m
-		}
-		chLU, _ := text.MeasureText("0", fontSize, fontPath)
-		m := fontMetrics{
-			chWidth: chLU.Float64(),
-			xHeight: text.FontXHeightFromFont(fontSize, fontPath),
-			capHght: text.FontCapHeightFromFont(fontSize, fontPath),
-		}
-		cache[k] = m
-		return m
-	}
-}
-
-// firstFontAspectRatio returns the first available font's actual aspect ratio
-// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Returns 0 when
-// the font has no usable value for the metric — callers treat that as a
-// zero-sized used font-size.
-func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m fontMetrics, fontSize float64, fontPath string) float64 {
-	if fontSize <= 0 {
-		return 0
-	}
-	switch metric {
-	case css.FontSizeAdjustCapHeight:
-		return m.capHght / fontSize
-	case css.FontSizeAdjustChWidth:
-		return m.chWidth / fontSize
-	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
-		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
-		// height of the U+6C34 (水) glyph. Mirror Blink's behavior: the metric
-		// is sourced from the same fontPath; when 水 isn't present (e.g. Ahem),
-		// the metric is undefined and the spec calls for the user agent to
-		// behave as if `font-size-adjust: none` — Blink resolves the ratio to
-		// 0 which clamps the used size to 0. We follow Blink.
-		w, h := text.MeasureText("水", fontSize, fontPath)
-		wf, hf := w.Float64(), h.Float64()
-		if wf == 0 || hf == 0 {
-			return 0
-		}
-		if metric == css.FontSizeAdjustIcWidth {
-			return wf / fontSize
-		}
-		return hf / fontSize
-	default:
-		// ex-height (default)
-		return m.xHeight / fontSize
-	}
-}
-
-// recomputeTextDecorationInsets re-resolves text-decoration-inset values for
-// all elements after ChWidth has been populated by computeChWidths. During
-// cascade, GetTextDecorationInset is called with ChWidth=0, causing ch units
-// to resolve incorrectly (using the 0.5 fallback instead of the actual font
-// metric). Mirrors the computeChWidths pattern: iterate the styles map directly
-// rather than walking the DOM.
+// recomputeTextDecorationInsets re-resolves the text-decoration-inset of every
+// AppliedTextDecoration after ApplyTransitionsFirstFrame has rewritten
+// properties post-cascade: the cascade recorded each inset
+// (ResolveAppliedTextDecorations) from the after-change font and inset, and a
+// transitioned font-size or text-decoration-inset changes it. Iterates the
+// styles map directly rather than walking the DOM. No Blink analog: Blink
+// applies interpolations inside the cascade, before the decoration is built.
 //
 // Each AppliedTextDecoration entry carries a SourceStyle pointer (set in
 // computeOwnTextDecorationContribution) so we can re-resolve even on

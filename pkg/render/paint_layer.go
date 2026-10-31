@@ -878,18 +878,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
-	// SVG roots are always clipped per Blink's
-	// `LayoutSVGRoot::ComputeOverflowClipAxes` (Chromium @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — "svg document roots
-	// are always clipped". For an inline <svg> with no
-	// overflow-clip-margin we still let `paintSVGRoot`'s own viewport
-	// clip do the job (avoiding a duplicate pixel-snapped CSS clip
-	// that can shift by 1px relative to the SVG content origin, which
-	// is unsnapped). But when `overflow-clip-margin` is set, the SVG
-	// must go through the standard CSS-overflow paint path — that is
-	// the only path that consults the margin. We trigger that path
-	// here by forcing clipX/clipY true when the SVG carries the
-	// property.
+	// An inline <svg> is clipped by default in Blink: it respects CSS
+	// overflow like other replaced elements
+	// (LayoutSVGRoot::ComputeOverflowClipAxes,
+	// core/layout/svg/layout_svg_root.cc:550-575 @ Chromium
+	// 5992657f556bcd9d207a4aca187488462f027cab) and the UA sheet gives
+	// svg:not(:root) overflow:hidden (core/css/svg.css:48-54 @
+	// 5992657f556b). louis14 has no such UA rule, so for an inline <svg>
+	// with no overflow-clip-margin `paintSVGRoot` installs that default
+	// clip itself, pixel-snapped like the SVG content origin. When
+	// `overflow-clip-margin` is set, the SVG must go through the standard
+	// CSS-overflow paint path — that is the only path that consults the
+	// margin. We trigger that path here by forcing clipX/clipY true when
+	// the SVG carries the property.
 	isSVGRootNode := box.Node != nil && box.Node.TagName == "svg"
 	if isSVGRootNode {
 		if _, ok := s.GetOverflowClipMargin(); ok {

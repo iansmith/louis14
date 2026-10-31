@@ -77,32 +77,6 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 	fg.Border.BlockEnd, fg.Scrollbar.BlockEnd, fg.Padding.BlockEnd = 0, 0, 0
 }
 
-// FragmentBlockEdges returns the block border and padding a multicol
-// fragment carries, accounting for box-decoration-break and fragment
-// position: a resumed fragment drops its block-start edge unless cloned, a
-// breaking one its block-end edge unless cloned, and a fragment past the
-// box's block end carries neither (Blink ShouldIncludeBlockStartBorderPadding
-// / ShouldIncludeBlockEndBorderPadding, fragmentation_utils.cc:522-545 @
-// a9f50e522efa).
-func FragmentBlockEdges(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) (border, padding LogicalEdges) {
-	border, padding = geom.Border, geom.Padding
-	pastEnd := breakToken != nil && breakToken.IsAtBlockEnd
-	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, breakToken) {
-		border.BlockStart, padding.BlockStart = 0, 0
-	}
-	if pastEnd || (isBreaking && !hasClonedBoxDecorations) {
-		border.BlockEnd, padding.BlockEnd = 0, 0
-	}
-	return border, padding
-}
-
-// EffectiveBlockBorderPadding returns the block border + padding that
-// contributes to this fragment's block-size (see FragmentBlockEdges).
-func EffectiveBlockBorderPadding(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) float64 {
-	border, padding := FragmentBlockEdges(geom, hasClonedBoxDecorations, breakToken, isBreaking)
-	return border.BlockStart + border.BlockEnd + padding.BlockStart + padding.BlockEnd
-}
-
 // ComputeFragmentGeometry resolves border and padding from a CSS style
 // into logical edges for the given writing direction.
 // An optional percentageBase (containing block inline-size) can be passed

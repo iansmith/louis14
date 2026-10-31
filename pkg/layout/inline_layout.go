@@ -1308,13 +1308,16 @@ var firstLineAllowedProperties = []string{
 //
 // fonts drives re-resolution of the merged style's cached font-relative
 // metrics. base.Clone() copies base's UsedFontSize / ChWidth / XHeight /
-// CapHeight / LhSize, which GetUsedFontSize and the ch/ex/cap/lh unit
-// resolvers read in preference to the raw Properties. When the merge
+// CapHeight / IcWidth / LhSize, which GetUsedFontSize and the ch/ex/ic/cap/lh
+// unit resolvers read in preference to the raw Properties. When the merge
 // overrides font-size or line-height, those caches go stale (the base font's
-// size wins over the overridden Properties), so we re-resolve them against
-// the merged font — the same metric pass computeChWidths runs over every
-// node style. Blink's ::first-line ComputedStyle is itself a fully resolved
-// style; this re-resolution is the louis14 analog.
+// size wins over the overridden Properties), so we re-build the merged font
+// and lh size — the same Style.UpdateFont / UpdateLineHeight step the cascade
+// runs for every element (StyleResolverState::UpdateFont / UpdateLineHeight,
+// core/css/resolver/style_resolver_state.cc:553/565 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Blink's ::first-line
+// ComputedStyle is itself a fully resolved style; this re-resolution is the
+// louis14 analog.
 func mergeFirstLineStyle(base, firstLine *css.Style, fonts text.FontConfig) *css.Style {
 	return mergeFirstLineStyleExcept(base, firstLine, nil, fonts)
 }
@@ -1356,7 +1359,8 @@ func mergeFirstLineStyleExcept(base, firstLine *css.Style, skip map[string]bool,
 			merged.Properties[prop] = val
 		}
 	}
-	resolveFontMetricsForStyle(merged, fonts, newFontMetricsMeasurer(fonts))
+	merged.UpdateFont(text.NewCSSFontSelector(fonts))
+	merged.UpdateLineHeight()
 	return merged
 }
 
