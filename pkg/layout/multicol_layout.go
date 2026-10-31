@@ -2043,12 +2043,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				// the line out once more with columns tall enough to
 				// encompass the overflow — whether the taller multicol then
 				// stays is the parent's call (MovePastBreakpoint).
-				// BlockEndScrollableOverflow stand-in: the column's size or
-				// its content's furthest block-end. Unlike scrollable
-				// overflow it ignores relative offsets, transforms,
-				// out-of-flow children and overflow-clip-margin (fails safe:
-				// no regrowth).
-				blockEndOverflow := math.Max(colHeight, FragmentainerBlockSizeForFragmentation(wdm, colFrag))
+				blockEndOverflow := NewLogicalFragment(wdm, colFrag).BlockEndScrollableOverflow()
 				if lineOffset+blockEndOverflow > mla.spaceLeftForContent() {
 					if mla.space.IsInsideBalancedColumns && !mla.space.IsInitialColumnBalancingPass && hasShortage {
 						builder.PropagateSpaceShortage(minSpaceShortage)

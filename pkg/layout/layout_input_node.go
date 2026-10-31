@@ -267,10 +267,7 @@ func (n *LayoutInputNode) ListMarkerOccupiesWholeLine() bool {
 // Mirrors LayoutBox::HasUnsplittableScrollingOverflow
 // (layout_box.cc:3639-3649 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (n *LayoutInputNode) hasUnsplittableScrollingOverflow() bool {
-	isScrollable := func(o css.OverflowType) bool {
-		return o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowHidden
-	}
-	return isScrollable(n.style.GetOverflowX()) || isScrollable(n.style.GetOverflowY())
+	return n.style.IsScrollContainer()
 }
 
 // IsMonolithic reports whether this node must never be fragmented across

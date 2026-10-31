@@ -117,17 +117,82 @@ func (r PhysicalRect) Right() LayoutUnit { return r.Offset.Left.Add(r.Size.Width
 func (r PhysicalRect) Bottom() LayoutUnit { return r.Offset.Top.Add(r.Size.Height) }
 
 // IsEmpty reports whether the rect has a non-positive width or height.
-// RED stub (LOU-469).
-func (r PhysicalRect) IsEmpty() bool { return false }
+// Mirrors Blink's PhysicalRect::IsEmpty (core/layout/geometry/
+// physical_rect.h:45 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) IsEmpty() bool {
+	return r.Size.Width.LessEqual(layoutunit.Zero) || r.Size.Height.LessEqual(layoutunit.Zero)
+}
 
-// UniteEvenIfEmpty RED stub (LOU-469).
-func (r PhysicalRect) UniteEvenIfEmpty(other PhysicalRect) PhysicalRect { return r }
+// UniteEvenIfEmpty returns the smallest rect containing both r and other,
+// even when either is empty. Mirrors Blink's PhysicalRect::UniteEvenIfEmpty
+// (core/layout/geometry/physical_rect.cc:81-95 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), including its offset
+// derivation from the far edges.
+func (r PhysicalRect) UniteEvenIfEmpty(other PhysicalRect) PhysicalRect {
+	left := layoutunit.Min(r.Offset.Left, other.Offset.Left)
+	top := layoutunit.Min(r.Offset.Top, other.Offset.Top)
+	right := layoutunit.Max(r.Right(), other.Right())
+	bottom := layoutunit.Max(r.Bottom(), other.Bottom())
+	size := PhysicalSize{Width: right.Sub(left), Height: bottom.Sub(top)}
+	return PhysicalRect{
+		Offset: PhysicalOffset{Left: right.Sub(size.Width), Top: bottom.Sub(size.Height)},
+		Size:   size,
+	}
+}
 
-// Intersect RED stub (LOU-469).
-func (r PhysicalRect) Intersect(other PhysicalRect) PhysicalRect { return r }
+// Intersect returns the intersection of r and other, or the zero rect when
+// they do not intersect. Mirrors Blink's PhysicalRect::Intersect
+// (core/layout/geometry/physical_rect.cc:116-131 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) Intersect(other PhysicalRect) PhysicalRect {
+	left := layoutunit.Max(r.Offset.Left, other.Offset.Left)
+	top := layoutunit.Max(r.Offset.Top, other.Offset.Top)
+	right := layoutunit.Min(r.Right(), other.Right())
+	bottom := layoutunit.Min(r.Bottom(), other.Bottom())
+	if right.LessEqual(left) || bottom.LessEqual(top) {
+		return PhysicalRect{}
+	}
+	return PhysicalRect{
+		Offset: PhysicalOffset{Left: left, Top: top},
+		Size:   PhysicalSize{Width: right.Sub(left), Height: bottom.Sub(top)},
+	}
+}
 
-// ExpandEdges RED stub (LOU-469).
-func (r PhysicalRect) ExpandEdges(top, right, bottom, left LayoutUnit) PhysicalRect { return r }
+// ExpandEdges returns r grown outward by the given per-side amounts
+// (negative amounts shrink it). Mirrors Blink's PhysicalRect::ExpandEdges
+// (core/layout/geometry/physical_rect.h:115-123 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) ExpandEdges(top, right, bottom, left LayoutUnit) PhysicalRect {
+	return PhysicalRect{
+		Offset: PhysicalOffset{Left: r.Offset.Left.Sub(left), Top: r.Offset.Top.Sub(top)},
+		Size: PhysicalSize{
+			Width:  r.Size.Width.Add(left).Add(right),
+			Height: r.Size.Height.Add(top).Add(bottom),
+		},
+	}
+}
 
-// PhysicalRectEnclosingRect RED stub (LOU-469).
-func PhysicalRectEnclosingRect(rect RectF) PhysicalRect { return PhysicalRect{} }
+// PhysicalRectEnclosingRect returns the smallest LayoutUnit rect that
+// encloses rect: its origin floored, its far edges ceiled. Mirrors Blink's
+// static PhysicalRect::EnclosingRect (core/layout/geometry/
+// physical_rect.h:177-183 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func PhysicalRectEnclosingRect(rect RectF) PhysicalRect {
+	offset := PhysicalOffset{
+		Left: layoutunit.FromFloat64Floor(rect.X()),
+		Top:  layoutunit.FromFloat64Floor(rect.Y()),
+	}
+	return PhysicalRect{
+		Offset: offset,
+		Size: PhysicalSize{
+			Width:  layoutunit.FromFloat64Ceil(rect.Right()).Sub(offset.Left),
+			Height: layoutunit.FromFloat64Ceil(rect.Bottom()).Sub(offset.Top),
+		},
+	}
+}
+
+// ToRectF converts r to a float rect. Mirrors Blink's explicit
+// PhysicalRect → gfx::RectF conversion (core/layout/geometry/
+// physical_rect.h:173-175 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) ToRectF() RectF {
+	return NewRectF(r.Offset.Left.Float64(), r.Offset.Top.Float64(), r.Size.Width.Float64(), r.Size.Height.Float64())
+}

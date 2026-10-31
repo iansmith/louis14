@@ -498,35 +498,6 @@ func TestMulticolNested_ShrinkToFitUsesBlockSizeForFragmentation(t *testing.T) {
 	}
 }
 
-// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow (LOU-390): a
-// child that clips block-axis overflow contributes only its own box, and an
-// out-of-flow child contributes nothing (box_fragment_builder.cc:746-761 @
-// a9f50e522efa).
-func TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow(t *testing.T) {
-	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	box := func(h float64, style *css.Style, children ...ChildLink) *PhysicalFragment {
-		return &PhysicalFragment{Size: geometry.PhysicalSizeFromF64Round(50, h), Style: style, Children: children}
-	}
-	at := func(y float64, f *PhysicalFragment) ChildLink {
-		return ChildLink{Offset: geometry.PhysicalOffsetFromF64Round(0, y), Fragment: f}
-	}
-	tall := box(80, nil)
-	for _, tc := range []struct {
-		name  string
-		child *PhysicalFragment
-		want  float64
-	}{
-		{"visible overflow extends", box(20, nil, at(0, tall)), 90},
-		{"overflow:hidden clips", box(20, makeStyle("overflow", "hidden"), at(0, tall)), 30},
-		{"abspos ignored", box(20, makeStyle("position", "absolute"), at(0, tall)), 0},
-	} {
-		col := box(100, nil, at(10, tc.child))
-		if got := FragmentainerBlockSizeForFragmentation(wdm, col); got != tc.want {
-			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
 // TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411: a balanced
 // multicol nested in an outer fragmentation context whose forced breaks
 // leave no soft break opportunity stretches its columns to all the space
@@ -552,8 +523,8 @@ func TestNestedForcedBreakColumnsStretchToOuterSpace_LOU411(t *testing.T) {
 	})
 }
 
-// TestColumnBSFF_ClipAndOutOfFlow_LOU411: the builder twin of
-// TestFragmentainerBlockSizeForFragmentation_ClipAndOutOfFlow. A column
+// TestColumnBSFF_ClipAndOutOfFlow_LOU411: the block-size-for-fragmentation
+// counterpart of TestColumnBlockEndScrollableOverflow. A column
 // builder accumulates its children's block-size for fragmentation: a child
 // that clips block-axis overflow contributes only its own box
 // (box_fragment_builder.cc:479-489, :743-761 @ a9f50e522efa). The
