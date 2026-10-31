@@ -26,14 +26,15 @@ type Style struct {
 	Properties     map[string]string
 	ViewportWidth  float64 // Viewport width in pixels (for vw/vmin/vmax units)
 	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
-	ChWidth        float64 // Measured advance width of "0" in the element's font; valid only when HasZeroWidth
+	ChWidth        float64 // The font's ZeroWidth (css.Font.ZeroWidth); valid only when HasZeroWidth
 
-	// HasZeroWidth reports that ChWidth was measured from the element's font,
-	// so a ChWidth of 0 is a real zero-advance "0" glyph rather than "not yet
-	// measured" (ch then falls back to 0.5em / 1em upright). Set together with
-	// ChWidth by SetZeroWidth. Mirrors Blink's FontMetrics::HasZeroWidth /
-	// SetZeroWidth (platform/fonts/font_metrics.h:173 @
-	// 5992657f556bcd9d207a4aca187488462f027cab).
+	// HasZeroWidth reports that a font selector set ChWidth, so a ChWidth of
+	// 0 is a real zero-advance "0" glyph. ChWidth already has the no-glyph
+	// 0.5em / upright 1em fallback baked in (SimpleFontData::ZeroInlineSize);
+	// false only means no selector ran, and chScale then falls back itself.
+	// Set together with ChWidth by SetZeroWidth. Mirrors Blink's
+	// FontMetrics::HasZeroWidth / SetZeroWidth (platform/fonts/
+	// font_metrics.h:178/:173 @ 5992657f556bcd9d207a4aca187488462f027cab).
 	HasZeroWidth bool
 
 	// UsedFontSize is the post-`font-size-adjust` font-size in pixels; 0 is a
@@ -77,14 +78,15 @@ type Style struct {
 	// of the full-width CJK character U+6C34.
 	IcWidth float64
 
-	// HasIdeographicInlineSize reports that IcWidth was measured from a font
-	// covering 水, so an IcWidth of 0 is a real zero advance (ic = 0) rather
-	// than "no such font" (ic falls back to 1em). Together with IcWidth it is
-	// Blink's std::optional<float> SimpleFontData::IdeographicInlineSize
-	// (platform/fonts/simple_font_data.h:110), which
-	// CSSToLengthConversionData::FontSizes::Ic replaces with Em only when it has
-	// no value (core/css/css_to_length_conversion_data.cc:145-158), both @
-	// d4ecdfed88f962439247c2ad36b8fe47805b1520.
+	// HasIdeographicInlineSize reports that IcWidth was measured from a U+6C34
+	// primary font that has the 水 glyph, so an IcWidth of 0 is a real zero
+	// advance (ic = 0) rather than "no 水 glyph" (ic falls back to 1em).
+	// Together with IcWidth it is Blink's std::optional<float>
+	// SimpleFontData::IdeographicInlineSize (platform/fonts/
+	// simple_font_data.h:111), which CSSToLengthConversionData::FontSizes::Ic
+	// replaces with Em only when it has no value (core/css/
+	// css_to_length_conversion_data.cc:139-152), both @
+	// 5992657f556bcd9d207a4aca187488462f027cab.
 	HasIdeographicInlineSize bool
 
 	// BaseDir is the owning document's BaseDir, propagated by the cascade
@@ -643,8 +645,8 @@ func (s *Style) cssToLengthConversionData() calcContext {
 
 // optionalFloat is a float64 that may be absent; the zero value is absent.
 // No Blink analog as a type: Go's stand-in for the std::optional<float> that
-// FontSizes::Ic reads (core/css/css_to_length_conversion_data.cc:148 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// FontSizes::Ic reads (core/css/css_to_length_conversion_data.cc:142 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
 type optionalFloat struct {
 	value float64
 	ok    bool
@@ -653,8 +655,8 @@ type optionalFloat struct {
 // ideographicInlineSize returns the element's 水 advance (IcWidth), present
 // only when HasIdeographicInlineSize — the value FontSizes::Ic reads from
 // PrimaryFontWithCjkWater()->IdeographicInlineSize()
-// (core/css/css_to_length_conversion_data.cc:147-150 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// (core/css/css_to_length_conversion_data.cc:141-145 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
 func (s *Style) ideographicInlineSize() optionalFloat {
 	return optionalFloat{value: s.IcWidth, ok: s.HasIdeographicInlineSize}
 }
@@ -666,41 +668,23 @@ func (s *Style) SetZeroWidth(w float64) {
 	s.HasZeroWidth = true
 }
 
-// chScale returns the ch unit multiplier relative to fontSize for this style's font.
-// CSS Values §6.1: ch is the advance measure of "0" in the inline axis.
-// Per CSS Writing Modes §7.5 and Blink's IsHorizontalTypographicMode():
-//   - vertical-rl/vertical-lr with text-orientation: upright → ch = 1em (vertical advance)
-//   - vertical-rl/vertical-lr with text-orientation: sideways or mixed (default) → ch = horizontal advance
-//   - sideways-rl/sideways-lr → always rotated, ch = horizontal advance
-//   - horizontal-tb → ch = horizontal advance
+// chScale returns the ch unit multiplier relative to the font-size: the
+// font's ZeroWidth over it, read as given. Mirrors
+// CSSToLengthConversionData::FontSizes::Ch (core/css/
+// css_to_length_conversion_data.cc:117-126 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which does no orientation logic:
+// SimpleFontData::ZeroInlineSize already returns 1em for upright text or the
+// 0.5em fallback for a font with no "0" glyph (text.simpleFontData). A style
+// no font selector measured (HasZeroWidth false) has no Blink analog — Blink
+// always has a Font — and falls back to ZeroInlineSizeFallback: 0.5em, or
+// 1em upright.
 func (s *Style) chScale() float64 {
-	wm, _ := s.Get("writing-mode")
-
-	horizontalCh := func() float64 {
-		if s.HasZeroWidth {
-			if fs := s.GetFontSize(); fs > 0 {
-				return s.ChWidth / fs
-			}
+	if s.HasZeroWidth {
+		if fs := s.GetFontSize(); fs > 0 {
+			return s.ChWidth / fs
 		}
-		return 0.5
 	}
-
-	switch wm {
-	case "vertical-rl", "vertical-lr":
-		to, _ := s.Get("text-orientation")
-		if to == "upright" {
-			// Upright glyphs: ch = vertical advance height of "0" ≈ 1em
-			return 1.0
-		}
-		// "sideways" or "mixed" (default): Latin "0" is rotated sideways
-		return horizontalCh()
-	case "sideways-rl", "sideways-lr":
-		// sideways-* always rotates glyphs regardless of text-orientation
-		return horizontalCh()
-	default:
-		// horizontal-tb: use measured horizontal advance width
-		return horizontalCh()
-	}
+	return ZeroInlineSizeFallback(1, s.ComputeFontOrientation())
 }
 
 // ParseURLReference extracts the fragment id from a CSS `url(#id)`
@@ -979,10 +963,8 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 		}
 		return num * ctx.fontSize, true
 	}
-	// ch unit: advance measure of '0' character in the inline axis.
-	// In horizontal writing modes, this is the horizontal advance width ≈ 0.5em.
-	// In vertical writing modes, this is the vertical advance height ≈ 1.0em.
-	// ctx.chScale controls this multiplier.
+	// ch unit: the advance measure of "0" in the inline axis (CSS Values 4
+	// §6.1.1), as the font's ZeroWidth over the font-size in ctx.chScale.
 	if strings.HasSuffix(val, "ch") {
 		numStr := strings.TrimSuffix(val, "ch")
 		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
@@ -1038,8 +1020,8 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	// when no font has it. A present advance is used as-is, including 0.
 	// Mirrors CSSToLengthConversionData::FontSizes::Ic, which returns Em only
 	// when the optional IdeographicInlineSize has no value
-	// (core/css/css_to_length_conversion_data.cc:145-158 @
-	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	// (core/css/css_to_length_conversion_data.cc:139-152 @
+	// 5992657f556bcd9d207a4aca187488462f027cab).
 	if strings.HasSuffix(val, "ic") {
 		numStr := strings.TrimSuffix(val, "ic")
 		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)

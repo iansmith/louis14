@@ -340,8 +340,11 @@ func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem
 // font_fallback_list.cc:181) and fc.FontPath (the last-resort font, :191).
 // The returned path stands in for Blink's SimpleFontData.
 //
-// Not ported: should_contain_glyph (:117, set only for tab-size; a covering
-// font without the glyph is LOU-425); IsLoadingFallback (:125; louis14 loads
+// Not ported: should_contain_glyph (:117), set only by
+// PrimarySimpleFontDataForTabSize (font_fallback_list.h:104), so a covering
+// font that lacks the probe glyph is selected, as in Blink, and handled
+// downstream (simpleFontData.ZeroInlineSize, ideographicAdvanceWidth);
+// IsLoadingFallback (:125; louis14 loads
 // @font-face synchronously); per-segment FontDataForCharacter, because faces
 // with the same family and variant collide on one syntheticFontPath.
 // lookupChar 0 is a louis14-only mode with no coverage gate

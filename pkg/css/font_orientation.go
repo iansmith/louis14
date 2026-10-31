@@ -30,9 +30,26 @@ func IsVerticalNonCjkUpright(o FontOrientation) bool {
 }
 
 // ComputeFontOrientation derives s's FontOrientation from its writing-mode
-// and text-orientation.
+// and text-orientation. Mirrors ComputedStyleBuilder::ComputeFontOrientation
+// (core/style/computed_style.cc:3256-3272 @
+// 5992657f556bcd9d207a4aca187488462f027cab): text-orientation has no effect
+// in a horizontal typographic mode — horizontal-tb, sideways-rl, sideways-lr
+// (IsHorizontalTypographicMode, platform/text/writing_mode.h:97 @ the same
+// SHA). sideways-right is text-orientation's legacy alias of sideways.
 func (s *Style) ComputeFontOrientation() FontOrientation {
-	return FontOrientationHorizontal
+	switch wm, _ := s.Get("writing-mode"); wm {
+	case "vertical-rl", "vertical-lr":
+	default:
+		return FontOrientationHorizontal
+	}
+	switch to, _ := s.Get("text-orientation"); to {
+	case "upright":
+		return FontOrientationVerticalUpright
+	case "sideways", "sideways-right":
+		return FontOrientationVerticalRotated
+	default:
+		return FontOrientationVerticalMixed
+	}
 }
 
 // ZeroInlineSizeFallback is the ch advance assumed for a font with no "0"
