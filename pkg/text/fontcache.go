@@ -154,7 +154,7 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	// measurement (via getLayout) and paint-time rendering (via the
 	// renderer's DrawContext, which reuses CurrentProvider) see the same
 	// `registered` map, so a single registration is enough.
-	if err := CurrentProvider().RegisterBuffer(lowerFamily, variant, data); err != nil {
+	if err := registerFontBuffer(CurrentProvider(), lowerFamily, variant, data); err != nil {
 		return "", fmt.Errorf("RegisterBuffer(%s): %w", lowerFamily, err)
 	}
 
@@ -492,7 +492,7 @@ func (fr *FontRegistry) ApplyTo(tl textshape.TextLayout) error {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	for _, e := range fr.entries {
-		if err := tl.RegisterBuffer(e.Family, e.Variant, e.Data); err != nil {
+		if err := registerFontBuffer(tl, e.Family, e.Variant, e.Data); err != nil {
 			return fmt.Errorf("RegisterBuffer(%s, %d): %w", e.Family, e.Variant, err)
 		}
 	}

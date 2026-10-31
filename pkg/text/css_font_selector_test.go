@@ -54,8 +54,9 @@ func TestCSSFontSelector_IdeographicInlineSizePresence(t *testing.T) {
 	}
 }
 
-// fetchTestFont is a FontFetcher over the one font committed under the repo's
-// fonts/ (Ahem.ttf); zero_advance_test.go reads the same file.
+// fetchTestFont is a FontFetcher over the repo's fonts/: the committed
+// Ahem.ttf (zero_advance_test.go reads the same file) and the gitignored
+// builtin set the tests already resolve through DefaultFontConfig.
 func fetchTestFont(url string) ([]byte, error) {
 	return os.ReadFile("../../fonts/" + url)
 }
@@ -262,8 +263,10 @@ func TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback(t *testing.T) {
 // Without a "0" glyph, SimpleFontData::ZeroInlineSize gives size when
 // IsVerticalNonCjkUpright and size * 0.5 otherwise (platform/fonts/
 // simple_font_data.cc:579-598 @ the same SHA). With the glyph and upright
-// orientation Blink returns the vmtx AdvanceHeight (:572-576); louis14 returns
-// 1em until LOU-424, and the upright rows with a glyph pin that stand-in.
+// orientation it returns the vertical advance OpenTypeVerticalData::
+// AdvanceHeight (:572-576); neither ChTestZeroWidthZero nor Liberation Serif
+// has vmtx, so that is the FontMetrics::Height() fallback
+// (open_type_vertical_data.cc:298-299 @ the same SHA).
 func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 	fr := NewFontRegistry()
 	registerTestFace(t, fr, "LOU425-Orient-ExTest", "ExTest.woff", fetchCSSValuesResource)
@@ -282,9 +285,11 @@ func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 		{"LOU425-Orient-ExTest", "vertical-lr", "upright", 20},
 		// ChTestZeroWidthZero: a "0" glyph with a zero advance.
 		{"LOU425-Orient-ZeroW", "horizontal-tb", "", 0},
+		// Height fallback: OS/2 sTypo 768/-256 at upem 1024 → 15 + 5.
 		{"LOU425-Orient-ZeroW", "vertical-rl", "upright", 20},
-		// Builtin serif (LiberationSerif, "0" present).
-		{"serif", "vertical-rl", "upright", 20},
+		// Builtin serif (LiberationSerif, "0" present): hhea 1825/-443 at
+		// upem 2048 → 18 + 4, not 1em.
+		{"serif", "vertical-rl", "upright", 22},
 	} {
 		props := []string{"writing-mode", tc.writingMode}
 		if tc.textOrientation != "" {
@@ -293,6 +298,30 @@ func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 		if f := createFontWith(sel, "20px", tc.family, props...); f.ZeroWidth != tc.want {
 			t.Errorf("%s, %s / %q: ZeroWidth = %v, want %v",
 				tc.family, tc.writingMode, tc.textOrientation, f.ZeroWidth, tc.want)
+		}
+	}
+}
+
+// TestSimpleFontData_ZeroInlineSizeUprightVmtx (LOU-424): upright, ZeroWidth
+// is the "0" glyph's vmtx advance scaled by size / unitsPerEm at the font's
+// exact size. ChTestShortZero.woff (WPT css-values resource, the font of
+// ch-unit-017) has upem 1024 and a "0" vmtx advance of 256, so 0.25em: 20 at
+// 80px and 20.1 at 80.4px (not the rounded cache key's 20). Mirrors
+// SimpleFontData::ZeroInlineSize (platform/fonts/simple_font_data.cc:572-576)
+// and HarfBuzzFontData's size_per_unit_ = platform_data.size() / upem
+// (platform/fonts/shaping/harfbuzz_font_data.h:77) @
+// 5992657f556bcd9d207a4aca187488462f027cab.
+func TestSimpleFontData_ZeroInlineSizeUprightVmtx(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU424-ShortZero", "ChTestShortZero.woff", fetchCSSValuesResource)
+	sel := NewCSSFontSelector(configWithRegistry(fr))
+	for _, tc := range []struct {
+		size string
+		want float64
+	}{{"80px", 20}, {"80.4px", 80.4 / 4}} {
+		f := createFontWith(sel, tc.size, "LOU424-ShortZero", "writing-mode", "vertical-rl", "text-orientation", "upright")
+		if f.ZeroWidth != tc.want {
+			t.Errorf("at %s: upright ZeroWidth = %v, want %v (0.25em)", tc.size, f.ZeroWidth, tc.want)
 		}
 	}
 }
