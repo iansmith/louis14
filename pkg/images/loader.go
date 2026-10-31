@@ -39,6 +39,19 @@ func IsDataURI(uri string) bool {
 // LoadImageFromDataURI decodes a data URI and returns the embedded image.
 // Format: data:[<mediatype>][;base64],<data>
 func LoadImageFromDataURI(uri string) (image.Image, error) {
+	data, err := DecodeDataURI(uri)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeImageBytes(data)
+}
+
+// DecodeDataURI returns the payload bytes of a data URI
+// (data:[<mediatype>][;base64],<data>), base64- or percent-decoded. The
+// louis14 counterpart of Blink's network_utils::ParseDataURL
+// (platform/network/network_utils.h:38 @
+// 5992657f556bcd9d207a4aca187488462f027cab), minus the MIME/response half.
+func DecodeDataURI(uri string) ([]byte, error) {
 	if !strings.HasPrefix(uri, "data:") {
 		return nil, fmt.Errorf("not a data URI")
 	}
@@ -75,8 +88,7 @@ func LoadImageFromDataURI(uri string) (image.Image, error) {
 		// non-hex characters, which breaks SVGs like width='100%'.
 		data = []byte(lenientPercentDecode(encoded))
 	}
-
-	return DecodeImageBytes(data)
+	return data, nil
 }
 
 // LoadImage loads an image from the filesystem or a data URI.

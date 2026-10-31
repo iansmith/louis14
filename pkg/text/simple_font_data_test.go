@@ -1,6 +1,7 @@
 package text
 
 import (
+	"os"
 	"testing"
 
 	"louis14/pkg/css"
@@ -46,17 +47,19 @@ func TestGlyphForCharacter(t *testing.T) {
 	}
 }
 
-// TestSimpleFontData_IdeographicAdvanceWidth (LOU-425 review): the 水
-// (U+6C34) advance of a SimpleFontData is present exactly when the font has
-// the 水 glyph — including a glyph whose advance is 0 — and its inline size is
-// that advance in every orientation until LOU-424 ports the vmtx upright
-// branch. Mirrors SimpleFontData::IdeographicAdvanceWidth and
-// IdeographicInlineSize (platform/fonts/simple_font_data.cc:437-447/:461-475
-// @ 5992657f556bcd9d207a4aca187488462f027cab), as exercised by
+// TestSimpleFontData_IdeographicAdvanceWidth (LOU-425 review, LOU-424): the
+// 水 (U+6C34) advance of a SimpleFontData is present exactly when the font has
+// the 水 glyph — including a glyph whose advance is 0. Its inline size is that
+// advance unless the orientation is upright, where it is the vertical advance
+// IdeographicAdvanceHeight: for these fonts, which have no vmtx, the
+// FontMetrics::Height() fallback. Mirrors SimpleFontData::
+// IdeographicAdvanceWidth, IdeographicAdvanceHeight and IdeographicInlineSize
+// (platform/fonts/simple_font_data.cc:437-447/:449-459/:461-475 @
+// 5992657f556bcd9d207a4aca187488462f027cab), as exercised by
 // FontTest.IdeographicFullWidthAhem / IdeographicFullWidthCjkNarrow
-// (platform/fonts/font_test.cc:109/:127 @ the same SHA). Expected advances
-// are the WPT fonts' designed widths (IcTestHalfWidth: 0.5em, IcTestZeroWidth:
-// 0); ExTest has no 水 glyph.
+// (platform/fonts/font_test.cc:109/:127 @ the same SHA). Expected widths are
+// the WPT fonts' designed widths (IcTestHalfWidth: 0.5em, IcTestZeroWidth: 0);
+// ExTest has no 水 glyph.
 func TestSimpleFontData_IdeographicAdvanceWidth(t *testing.T) {
 	fr := NewFontRegistry()
 	exTest := registerTestFace(t, fr, "LOU425-Ideo-ExTest", "ExTest.woff", fetchCSSValuesResource)
@@ -79,9 +82,90 @@ func TestSimpleFontData_IdeographicAdvanceWidth(t *testing.T) {
 			if w, ok := d.IdeographicAdvanceWidth(); w != tc.want || ok != tc.present {
 				t.Errorf("%s, orientation %v: IdeographicAdvanceWidth = (%v, %v), want (%v, %v)", tc.name, o, w, ok, tc.want, tc.present)
 			}
-			if w, ok := d.IdeographicInlineSize(); w != tc.want || ok != tc.present {
-				t.Errorf("%s, orientation %v: IdeographicInlineSize = (%v, %v), want (%v, %v)", tc.name, o, w, ok, tc.want, tc.present)
+			wantInline := tc.want
+			if o == css.FontOrientationVerticalUpright && tc.present {
+				// No vmtx: the height fallback, OS/2 sTypo 819/-205 at upem
+				// 1024 (USE_TYPO_METRICS) → 16 + 4 at 20px.
+				wantInline = 20
+			}
+			if w, ok := d.IdeographicInlineSize(); w != wantInline || ok != tc.present {
+				t.Errorf("%s, orientation %v: IdeographicInlineSize = (%v, %v), want (%v, %v)", tc.name, o, w, ok, wantInline, tc.present)
 			}
 		}
+	}
+}
+
+// fetchAdobeTestFont is a FontFetcher over pkg/text/testdata/adobe-fonts,
+// Blink's web_tests/external/wpt/fonts/adobe-fonts (BlinkWebTestsFontsTestDataPath,
+// platform/testing/unit_test_helpers.cc:134-137 @
+// 5992657f556bcd9d207a4aca187488462f027cab), vendored with its OFL LICENSE.
+func fetchAdobeTestFont(url string) ([]byte, error) {
+	return os.ReadFile("testdata/adobe-fonts/" + url)
+}
+
+// TestFontTest_IdeographicFullWidthUprightAhem (LOU-424): port of Blink's
+// FontTest.IdeographicFullWidthUprightAhem (platform/fonts/font_test.cc:
+// 141-147 @ 5992657f556bcd9d207a4aca187488462f027cab): a font with no 水
+// glyph has no ideographic inline size. Blink's Ahem.woff has no 水; louis14's
+// Ahem.ttf does, so ExTest.woff (no 水) stands in. Blink's test builds the
+// font with the default orientation; the upright row also checks that the
+// vertical branch keeps the presence gate.
+func TestFontTest_IdeographicFullWidthUprightAhem(t *testing.T) {
+	fr := NewFontRegistry()
+	p := registerTestFace(t, fr, "LOU424-FT-NoWater", "ExTest.woff", fetchCSSValuesResource)
+	sel := NewCSSFontSelector(configWithRegistry(fr))
+	for _, o := range []css.FontOrientation{css.FontOrientationHorizontal, css.FontOrientationVerticalUpright} {
+		if w, ok := sel.simpleFontData(p, 16, o).IdeographicInlineSize(); ok {
+			t.Errorf("orientation %v: IdeographicInlineSize = (%v, true), want no value", o, w)
+		}
+	}
+}
+
+// TestFontTest_IdeographicFullWidthUprightCjkNoVmtx (LOU-424): port of Blink's
+// FontTest.IdeographicFullWidthUprightCjkNoVmtx (platform/fonts/font_test.cc:
+// 150-161 @ 5992657f556bcd9d207a4aca187488462f027cab): a font with the 水
+// glyph and no vmtx synthesizes the upright advance as
+// GetFontMetrics().Height(). Blink's mplus-1p-regular.woff is not in the
+// repo; IcTestHalfWidth.woff2 (水 present, no vhea/vmtx, 0.5em wide) stands
+// in, since its width differs from its Height.
+func TestFontTest_IdeographicFullWidthUprightCjkNoVmtx(t *testing.T) {
+	fr := NewFontRegistry()
+	p := registerTestFace(t, fr, "LOU424-FT-NoVmtx", "IcTestHalfWidth.woff2", fetchCSSValuesResource)
+	sel := NewCSSFontSelector(configWithRegistry(fr))
+	// GetFontMetrics().Height() at 16px: OS/2 sTypo 819/-205 at upem 1024
+	// (USE_TYPO_METRICS) → 12.8 + 3.2 → 13 + 3.
+	const height = 16.0
+	if w, _ := sel.simpleFontData(p, 16, css.FontOrientationHorizontal).IdeographicAdvanceWidth(); w == height {
+		t.Fatalf("fixture: IcTestHalfWidth width %v equals its Height; the test could not tell them apart", w)
+	}
+	w, ok := sel.simpleFontData(p, 16, css.FontOrientationVerticalUpright).IdeographicInlineSize()
+	if !ok {
+		t.Fatal("upright IdeographicInlineSize has no value, want one")
+	}
+	if w != height {
+		t.Errorf("upright IdeographicInlineSize = %v, want FontMetrics Height %v", w, height)
+	}
+}
+
+// TestFontTest_IdeographicFullWidthUprightCjkVmtx (LOU-424): port of Blink's
+// FontTest.IdeographicFullWidthUprightCjkVmtx (platform/fonts/font_test.cc:
+// 163-173 @ 5992657f556bcd9d207a4aca187488462f027cab), with the same font,
+// adobe-fonts/CSSHWOrientationTest.otf: upright, the ideographic inline size
+// is 水's vmtx advance (1000 of 1000 units, so 16 at 16px), not its
+// horizontal half-width advance (500 units, 8 — Blink's
+// IdeographicFullWidthCjkNarrow, :127-138).
+func TestFontTest_IdeographicFullWidthUprightCjkVmtx(t *testing.T) {
+	fr := NewFontRegistry()
+	p := registerTestFace(t, fr, "CSSHWOrientationTest", "CSSHWOrientationTest.otf", fetchAdobeTestFont)
+	sel := NewCSSFontSelector(configWithRegistry(fr))
+	if w, ok := sel.simpleFontData(p, 16, css.FontOrientationHorizontal).IdeographicInlineSize(); !ok || w != 8 {
+		t.Fatalf("fixture: horizontal IdeographicInlineSize = (%v, %v), want (8, true)", w, ok)
+	}
+	w, ok := sel.simpleFontData(p, 16, css.FontOrientationVerticalUpright).IdeographicInlineSize()
+	if !ok {
+		t.Fatal("upright IdeographicInlineSize has no value, want one")
+	}
+	if w != 16 {
+		t.Errorf("upright IdeographicInlineSize = %v, want 16", w)
 	}
 }
