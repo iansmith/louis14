@@ -592,7 +592,20 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // ctx is the owning document's ParserContext — used to resolve url() tokens
 // inside the node's inline `style=""` attribute at parse time. Pass nil for
 // "no base URL" (test fixtures that don't exercise URL composition).
+//
+// CSS animations are sampled at local time 0 and node's running-animation
+// records are left untouched; the document cascade (ApplyStylesToDocument)
+// samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil)
+}
+
+// computeStyle is ComputeStyle with the document's AnimationClock. A non-nil
+// clock makes this a style recalc of node: its running CSS animations are
+// updated (calculateAnimationUpdate) and sampled at their timeline local
+// times. A nil clock samples every animation at local time 0 and leaves the
+// records alone, for probes that are not the element's style recalc.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -822,10 +835,21 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
 	// cascade origin sits below author !important (CSS Cascade §6.3), so
-	// ApplyAnimations skips any property in importantProps. animation-name and
-	// the other animation-* longhands have already been resolved (via rule
-	// declarations / inline style) into finalStyle by this point.
-	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+	// applyCSSAnimations skips any property in importantProps. animation-name
+	// and the other animation-* longhands have already been resolved (via rule
+	// declarations / inline style) into finalStyle by this point. With a
+	// clock, calculateAnimationUpdate supplies each animation's timeline local
+	// time; without one every animation samples at 0, as ApplyAnimations does.
+	anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets))
+	var localTimes []float64
+	baseDisplayNone := finalStyle.GetDisplay() == DisplayNone
+	if clock != nil {
+		anims, localTimes = calculateAnimationUpdate(node, anims, clock, baseDisplayNone)
+	}
+	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
+	if clock != nil {
+		recordDisplayedStyle(node, baseDisplayNone, finalStyle.GetDisplay() == DisplayNone)
+	}
 
 	// CSS Values 5 §11.5: resolve typed attr() references in property values.
 	// attr() in non-content properties (e.g. background-color, width) must be
@@ -1210,7 +1234,7 @@ func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, vi
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -2833,30 +2857,13 @@ func ApplyInheritedFrom(child, parent *Style) {
 // position:relative/sticky + top/right/bottom/left are also preserved so the
 // blocks inside a positioned inline shift with the inline (CSS 2.1 §9.4.3).
 func NewBlockifiedStyle(inline *Style) *Style {
-	s := NewAnonymousBlockStyle(inline)
+	s := CreateAnonymousStyleWithDisplay(inline, string(DisplayBlock))
 	// Preserve stacking-context-creating non-inheritable properties.
 	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change", "position", "top", "right", "bottom", "left"} {
 		if val, ok := inline.Get(prop); ok {
 			s.Set(prop, val)
 		}
 	}
-	return s
-}
-
-// NewAnonymousBlockStyle creates a style for an anonymous block box
-// (CSS 2.1 §9.2.1.1). Anonymous boxes inherit all inheritable properties
-// from the parent and have display:block with zero margin/border/padding.
-func NewAnonymousBlockStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "block")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -2872,94 +2879,19 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 // box would see an empty vector and miss its splitting box's decoration —
 // the LOU-151 bug observed on `text-decoration-subelements-005`.
 //
-// Mirrors Blink's `StyleResolver::CreateAnonymousStyleWithDisplay` which
-// carries the `AppliedTextDecoration` vector through to anonymous wrappers
-// (Blink ref @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Companion to
+// Mirrors Blink's builder.SetBaseTextDecorationData(
+// parent_style.AppliedTextDecorationData()) in
+// StyleResolver::CreateAnonymousStyleBuilderWithDisplay
+// (core/css/resolver/style_resolver.cc:3612 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Called by
+// CreateAnonymousStyleWithDisplay, and by resolveMarkerStyle for an inside
+// ::marker (the author ::marker cascade path does not go through the
+// builder). Companion to
 // the cascade-time method ResolveAppliedTextDecorations in style.go.
 func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 	if len(parent.AppliedTextDecorations) > 0 {
 		s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), parent.AppliedTextDecorations...)
 	}
-}
-
-// NewAnonymousTableCellStyle creates a style for an anonymous table-cell box
-// that inherits from the parent row style. Per CSS Tables §2.1, when a
-// non-table-cell child appears inside a table-row, it must be wrapped in
-// an anonymous table-cell box.
-func NewAnonymousTableCellStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-cell")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowStyle creates a style for an anonymous table-row box.
-// Per CSS 2.1 §17.2.1, non-row children of a table-row-group (and bare
-// non-row siblings of rows in a table) are wrapped in anonymous table-row
-// boxes. Mirrors Blink's LayoutTableRow::CreateAnonymousWithParent.
-func NewAnonymousTableRowStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-row")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousInlineRubyStyle creates a style for the single anonymous
-// inline `display: ruby` box that wraps the children of a block-level
-// `display: block ruby` element (CSS Display L3 + Blink's
-// LayoutRubyAsBlock two-box model). The principal box is the
-// block-flow generated from the block-ruby element itself; this style
-// is for the inline-ruby child that actually carries the ruby column
-// items.
-//
-// Per Blink layout_ruby_as_block.cc, the inline ruby child inherits
-// all inheritable properties from the principal box; non-inheritable
-// box properties (margin/border/padding) live on the principal block
-// box, not on the inline ruby. Mirrors NewAnonymousBlockStyle but with
-// display:ruby.
-func NewAnonymousInlineRubyStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "ruby")
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
-}
-
-// NewAnonymousTableRowGroupStyle creates a style for an anonymous
-// table-row-group box. Per CSS 2.1 §17.2.1, a run of non-proper-table
-// children of a table/inline-table is wrapped in an anonymous
-// table-row-group. Mirrors Blink's LayoutTableSection::CreateAnonymousWithParent.
-func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
-	s := NewStyle()
-	copyStyleResolutionContext(s, parent)
-	s.Set("display", "table-row-group")
-	// Copy all inheritable properties from the parent.
-	for prop := range inheritableProperties {
-		if val, ok := parent.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	s.InheritAppliedTextDecorationsFrom(parent)
-	return s
 }
 
 // resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
@@ -3342,9 +3274,9 @@ func isPxLiteral(val string) bool {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock)
 		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
@@ -3479,7 +3411,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock)
 	}
 }
 

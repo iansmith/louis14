@@ -459,12 +459,7 @@ func (sp *svgShapePainter) shapeDeviceReferenceBox() (image.Rectangle, bool, boo
 // must be applied explicitly because the composite path bypasses the
 // DC's transform/clip stack — see compositeFilterOutputOntoTarget.
 func (sp *svgShapePainter) compositeFilterResultOntoTarget(srcBuf, out *image.RGBA, region image.Rectangle, space filters.InterpolationSpace) {
-	viewportClip := image.Rect(
-		int(sp.ctx.originX),
-		int(sp.ctx.originY),
-		int(sp.ctx.originX+sp.ctx.viewport.Width()),
-		int(sp.ctx.originY+sp.ctx.viewport.Height()),
-	)
+	viewportClip := sp.ctx.viewportDeviceClip()
 	buf := out
 	if buf == nil {
 		// Apply returned nil (degenerate filter): composite the raw source
