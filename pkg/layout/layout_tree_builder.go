@@ -336,6 +336,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		rawChildren = append(rawChildren, unboxPseudoIfContents(beforeNode)...)
 	}
 
+	// An <img> showing fallback content lays out its alt-text shadow tree
+	// where DOM children go (HTMLImageElement::SetLayoutDisposition builds
+	// it on kFallbackContent, html_image_element.cc:1153-1162 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	if style != nil && node.TagName == "img" && node.LayoutDisposition == html.LayoutDispositionFallbackContent {
+		rawChildren = append(rawChildren, b.createAltTextShadowTree(node, style))
+	}
+
 	for _, child := range node.Children {
 		switch child.Type {
 		case html.TextNode:
@@ -1246,31 +1254,95 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 // used for generated image content: ::before/::after content:url() and
 // list-style-image markers.
 func (b *LayoutTreeBuilder) createSyntheticImage(src string, parent *html.Node) *LayoutInputNode {
-	imgNode := &html.Node{
+	imgNode, imgStyle := b.createSyntheticElement("img", map[string]string{"src": src}, parent)
+	imgStyle.Set("display", "inline")
+	return &LayoutInputNode{DOMNode: imgNode, style: imgStyle}
+}
+
+// createSyntheticElement creates an element that exists only in the layout
+// tree (not the DOM) as a child of parent, with a fresh style carrying
+// parent's inherited values, and registers that style in b.styles.
+//
+// CSS Cascade §6: a synthesized child (a generated <img> for content:url() /
+// list-style-image, or an alt-text fallback element) must carry its parent's
+// INHERITED property values (direction, color, font, etc.). Real DOM
+// children get these from the cascade's ApplyInheritedProperties pass, but a
+// synthetic node is built post-cascade and never goes through it — a fresh
+// css.NewStyle() has only initial values. ApplyInheritedFrom fills only the
+// inherited properties, so non-inherited values the caller sets afterwards
+// are untouched. (Found while fixing LOU-337's content:url() marker image.)
+// No Blink analog: louis14 synthesizes these nodes where Blink has pseudo
+// elements or a UA shadow tree.
+func (b *LayoutTreeBuilder) createSyntheticElement(tag string, attrs map[string]string, parent *html.Node) (*html.Node, *css.Style) {
+	node := &html.Node{
 		Type:       html.ElementNode,
-		TagName:    "img",
-		Attributes: map[string]string{"src": src},
+		TagName:    tag,
+		Attributes: attrs,
 		Parent:     parent,
 	}
-	imgStyle := css.NewStyle()
-	imgStyle.Set("display", "inline")
-	imgStyle.ViewportWidth = b.viewportWidth
-	imgStyle.ViewportHeight = b.viewportHeight
-	// CSS Cascade §6: a generated <img> for content:url() / list-style-image is a
-	// child of its originating pseudo (or ::marker), so it must carry that
-	// parent's INHERITED property values (direction, color, font, etc.). Real DOM
-	// children get these from the cascade's ApplyInheritedProperties pass, but
-	// this synthetic node is built post-cascade and never goes through it — it
-	// started from a fresh css.NewStyle() with only initial values, dropping
-	// everything the originating element established. Copy the parent's inherited
-	// values explicitly; the non-inherited slots set above (display:inline) are
-	// untouched, since ApplyInheritedFrom only fills inherited properties.
-	// (Found while fixing LOU-337's content:url() marker image.)
+	style := css.NewStyle()
+	style.ViewportWidth = b.viewportWidth
+	style.ViewportHeight = b.viewportHeight
 	if parentStyle := b.styles[parent]; parentStyle != nil {
-		css.ApplyInheritedFrom(imgStyle, parentStyle)
+		css.ApplyInheritedFrom(style, parentStyle)
 	}
-	b.styles[imgNode] = imgStyle
-	return &LayoutInputNode{DOMNode: imgNode, style: imgStyle}
+	b.styles[node] = style
+	return node, style
+}
+
+// createAltTextShadowTree builds the fallback content of an <img> whose
+// layout disposition is fallback content:
+//
+//	span#alttext-container > [img#alttext-image (16x16 broken-image icon),
+//	                          span#alttext > the alt text]
+//
+// Mirrors HTMLImageFallbackHelper::CreateAltTextShadowTree
+// (html_image_fallback_helper.cc:216-242 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), with the shadow elements' style
+// callbacks css.AdjustAltTextContainerStyle / css.AdjustAltTextImageStyle
+// (HTMLAltTextContainerElement / HTMLAltTextImageElement::AdjustStyle).
+// Each element's text decorations are resolved before its callback, so
+// ShowAsReplaced's decoration reset wins, as in Blink where AdjustStyle runs
+// after the base decoration data is set (style_adjuster.cc:1278-1283 vs
+// :1436-1438). The icon is a fallback image (html.Node.IsFallbackImage) with
+// the broken-image resource's natural size but no pixels: louis14 has no
+// copy of Blink's IDR_BROKENIMAGE, so only its 16x16 box is laid out.
+func (b *LayoutTreeBuilder) createAltTextShadowTree(host *html.Node, hostStyle *css.Style) *LayoutInputNode {
+	hostData := hostStyle.UAShadowHostData
+
+	container, containerStyle := b.createSyntheticElement("span", map[string]string{"id": "alttext-container"}, host)
+	containerStyle.Set("display", "inline")
+	containerStyle.ResolveAppliedTextDecorations(hostStyle, container)
+	css.AdjustAltTextContainerStyle(containerStyle, hostData)
+	containerLIN := &LayoutInputNode{DOMNode: container, style: containerStyle}
+
+	icon, iconStyle := b.createSyntheticElement("img", map[string]string{
+		"id": "alttext-image", "width": "16", "height": "16", "align": "left",
+	}, container)
+	icon.IsFallbackImage = true
+	iconStyle.Set("display", "inline")
+	iconStyle.Set("width", "16px")
+	iconStyle.Set("height", "16px")
+	for _, side := range []string{"top", "right", "bottom", "left"} {
+		iconStyle.Set("margin-"+side, "0px")
+	}
+	iconStyle.ResolveAppliedTextDecorations(containerStyle, icon)
+	css.AdjustAltTextImageStyle(iconStyle, hostData)
+	if iconStyle.GetDisplay() != css.DisplayNone {
+		containerLIN.children = append(containerLIN.children, &LayoutInputNode{DOMNode: icon, style: iconStyle})
+	}
+
+	altSpan, altStyle := b.createSyntheticElement("span", map[string]string{"id": "alttext"}, container)
+	altStyle.Set("display", "inline")
+	altStyle.ResolveAppliedTextDecorations(containerStyle, altSpan)
+	altText, _ := host.AltText()
+	textNode := &html.Node{Type: html.TextNode, Text: altText, Parent: altSpan}
+	containerLIN.children = append(containerLIN.children, &LayoutInputNode{
+		DOMNode:  altSpan,
+		style:    altStyle,
+		children: []*LayoutInputNode{{DOMNode: textNode, style: altStyle}},
+	})
+	return containerLIN
 }
 
 // quoteSourceStyle picks the style whose `quotes` value governs generated

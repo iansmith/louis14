@@ -3060,7 +3060,7 @@ func isAtomicInlineForPaint(layer *PaintLayer) bool {
 	// and a sub-pixel content size that rounds UP can spill past the
 	// content-box into the border ring — diverging from a sibling flex
 	// or inline-block path that DOES route through paintLayer.
-	if layer.Box.Node != nil && html.IsReplacedElementTag(layer.Box.Node.TagName) {
+	if layer.Box.Node != nil && html.IsReplacedElement(layer.Box.Node) {
 		s := layer.Box.Style
 		if s.GetOverflowX() != css.OverflowVisible || s.GetOverflowY() != css.OverflowVisible {
 			return true
@@ -3488,7 +3488,7 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 			return
 		case IsViewportDefiningBody(box):
 			return
-		case html.IsReplacedElementTag(box.Node.TagName):
+		case html.IsReplacedElement(box.Node):
 			return
 		}
 	}

@@ -48,6 +48,33 @@ type Node struct {
 	// creation); nil when no marker animation is active.
 	MarkerAnimatedStyle map[string]string
 
+	// LayoutDisposition is how an <img> appears in the layout: as its image
+	// (primary content) or as its alt-text fallback content. Meaningful only
+	// for img elements. Mirrors Blink's per-element
+	// HTMLImageElement::layout_disposition_ (html_image_element.h:209-223 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520); the zero value is Blink's
+	// initial kPrimaryContent. Set before the style cascade by the layout
+	// engine's disposition pass (the ResetLayoutDisposition analog), because
+	// the disposition drives both style adjustment and the layout object type.
+	LayoutDisposition LayoutDisposition
+
+	// IsFallbackImage marks the broken-image icon <img> synthesized inside
+	// an alt-text fallback tree; it shows the broken-image resource instead
+	// of loading a source. Mirrors HTMLImageElement::is_fallback_image_
+	// (SetIsFallbackImage, html_image_element.h:150, used by
+	// AttachLayoutTree → LayoutImageResource::UseBrokenImage,
+	// html_image_element.cc:546-551 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	IsFallbackImage bool
+
+	// namespaceURI is the element's namespace, read through NamespaceURI().
+	// Unset means the XHTML namespace: the HTML parser's InsertHTMLElement
+	// path, JS createElement and the synthetic html/head/body all create
+	// HTML elements, so only the foreign-content path (<svg>, <math> and
+	// their descendants) sets it. Mirrors Blink Element::tag_name_'s
+	// namespace (Element::namespaceURI, core/dom/element.h:701 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	namespaceURI string
+
 	// ElementAnimations is the element's running CSS animations, maintained
 	// by style resolution in pkg/css; nil when the element has none. Mirrors
 	// Blink Element::GetElementAnimations (core/dom/element.h:1711 @
@@ -68,6 +95,41 @@ type Node struct {
 	// copy it.
 	HasDisplayedStyle bool
 }
+
+// Namespace URIs an element can carry (HTML §2.1.3 "Namespaces"). Mirror
+// Blink's html_names::xhtmlNamespaceURI, svg_names::kNamespaceURI and
+// mathml_names::kNamespaceURI.
+const (
+	XHTMLNamespaceURI  = "http://www.w3.org/1999/xhtml"
+	SVGNamespaceURI    = "http://www.w3.org/2000/svg"
+	MathMLNamespaceURI = "http://www.w3.org/1998/Math/MathML"
+)
+
+// NamespaceURI returns the element's namespace URI; XHTMLNamespaceURI when
+// none was set. Mirrors Blink Element::namespaceURI (core/dom/element.h:701
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func (n *Node) NamespaceURI() string {
+	if n.namespaceURI == "" {
+		return XHTMLNamespaceURI
+	}
+	return n.namespaceURI
+}
+
+// LayoutDisposition mirrors Blink's HTMLImageElement::LayoutDisposition
+// (html_image_element.h:209-223 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// kCollapsed and kImageReplacement are not ported: louis14 has no
+// resource-error taxonomy (ResourceError::ShouldCollapseInitiator) and no
+// image-replacement feature.
+type LayoutDisposition uint8
+
+const (
+	// LayoutDispositionPrimaryContent: displayed as a (possibly still
+	// loading) image — Blink kPrimaryContent.
+	LayoutDispositionPrimaryContent LayoutDisposition = iota
+	// LayoutDispositionFallbackContent: the image is broken; the element
+	// shows a broken-image icon and its alt text — Blink kFallbackContent.
+	LayoutDispositionFallbackContent
+)
 
 type NodeType int
 
@@ -501,9 +563,10 @@ func (n *Node) InsertBefore(newChild, refChild *Node) *Node {
 // are cloned recursively. The clone has no parent.
 func (n *Node) CloneNode(deep bool) *Node {
 	clone := &Node{
-		Type:    n.Type,
-		TagName: n.TagName,
-		Text:    n.Text,
+		Type:         n.Type,
+		TagName:      n.TagName,
+		Text:         n.Text,
+		namespaceURI: n.namespaceURI,
 	}
 	if n.Attributes != nil {
 		clone.Attributes = make(map[string]string, len(n.Attributes))
@@ -640,10 +703,9 @@ func isVoidElement(tag string) bool {
 // effects (e.g. CSS Text Decor 4 §1.3 text-decoration propagation,
 // which does NOT cross into an atomic-inline subtree).
 //
-// Single source of truth for the louis14 codebase: callers in
-// pkg/layout (IsReplacedElement) and pkg/css (text-decoration cascade
-// boundary) both reach for this list. Add a tag to this switch and
-// every replaced-element behavior site picks it up.
+// Single source of truth for the replaced tag list. A caller that has the
+// element should ask IsReplacedElement instead, which also accounts for an
+// <img> showing fallback content.
 func IsReplacedElementTag(tag string) bool {
 	switch tag {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
@@ -651,6 +713,29 @@ func IsReplacedElementTag(tag string) bool {
 		return true
 	}
 	return false
+}
+
+// IsReplacedElement reports whether the element n is laid out as a replaced
+// element: its tag is replaced (IsReplacedElementTag) and it is not an <img>
+// showing fallback content. A fallback <img> gets a LayoutBlockFlow rather
+// than a LayoutImage (HTMLImageElement::CreateLayoutObject,
+// html_image_element.cc:517-543 @ d4ecdfed88f962439247c2ad36b8fe47805b1520),
+// so it is an ordinary block container holding its alt text.
+func IsReplacedElement(n *Node) bool {
+	return IsReplacedElementTag(n.TagName) &&
+		!(n.TagName == "img" && n.LayoutDisposition == LayoutDispositionFallbackContent)
+}
+
+// AltText returns the text an <img> represents when its image is not shown,
+// and whether there is any: the alt attribute when present (even empty),
+// else the title attribute. Mirrors HTMLImageElement::AltText
+// (html_image_element.cc:434-443 @ d4ecdfed88f962439247c2ad36b8fe47805b1520);
+// set=false is Blink's null String (neither attribute present).
+func (n *Node) AltText() (text string, set bool) {
+	if alt, ok := n.GetAttribute("alt"); ok {
+		return alt, true
+	}
+	return n.GetAttribute("title")
 }
 
 // IsSemiReplacedElementTag returns true for form control elements that have

@@ -11,7 +11,7 @@ import (
 // CSS Values §6.1: `ch` is the advance measure of "0" in the inline axis.
 // For Ahem the "0" glyph advance is 1em, so `2ch` at font-size 10px must be
 // 20px, and `-2ch` must be -20px. The previous implementation routed through
-// ParseLengthOrPercentageFontRelative, which hardcodes a 0.5em ch multiplier,
+// a font-relative length parser that hardcoded a 0.5em ch multiplier,
 // yielding 10px / -10px — a 1ch positional error that drifts the inset edge.
 //
 // Root cause for WPT text-decoration-inset-019 / -023: their inset edges are

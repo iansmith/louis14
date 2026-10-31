@@ -137,10 +137,12 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 		}
 		return ctx.elementProxy(node)
 	})
-	// createElementNS(namespaceURI, qualifiedName). louis14's DOM doesn't
-	// track namespaces — element identity in the renderer is by lowercase
-	// tag name (matching the tokenizer). The namespace argument is accepted
-	// for compatibility with WPT tests that build SVG nodes via
+	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
+	// a namespace (html.Node.NamespaceURI), but this binding still ignores
+	// its namespace argument, so the element reports the XHTML namespace;
+	// element identity in the renderer is by lowercase tag name (matching
+	// the tokenizer). The argument is accepted for compatibility with WPT
+	// tests that build SVG nodes via
 	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
 	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {

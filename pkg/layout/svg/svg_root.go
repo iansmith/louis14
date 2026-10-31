@@ -208,12 +208,41 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 	return root
 }
 
+// layoutObjectIsNeeded reports whether elt gets a node in the SVG paint
+// tree: false when its resolved style has display:none. A nil resolver or
+// nil style (geometry-only callers) counts as displayed. Mirrors Blink
+// SVGElement::LayoutObjectIsNeeded (core/svg/svg_element.cc:873-875 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520), which defers to
+// Element::LayoutObjectIsNeeded (core/dom/element.cc:4211-4214 @ same
+// SHA). Divergence: Blink also skips display:contents; louis14 keeps
+// building those (LOU-438 L4).
+func layoutObjectIsNeeded(elt ElementAdapter, styleResolver StyleResolver) bool {
+	if styleResolver == nil {
+		return true
+	}
+	style := styleResolver(elt)
+	return style == nil || style.GetDisplay() != css.DisplayNone
+}
+
+// buildSVGHiddenContainer walks elt's children only to register the
+// resources among them; nothing is painted. Mirrors Blink's
+// LayoutSVGHiddenContainer, used for <defs> (SVGDefsElement::
+// CreateLayoutObject, core/svg/svg_defs_element.cc:31-33) and for a
+// display:none <g> (core/svg/svg_g_element.cc:38-39 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+func buildSVGHiddenContainer(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver, resources *SVGResourceRegistry) {
+	for _, child := range elt.SVGChildren() {
+		_ = buildSVGTreeWithResources(child, lengthCtx, styleResolver, resources)
+	}
+}
+
 // buildSVGTreeWithResources is the resource-aware variant of
 // BuildSVGTree. It registers gradient/pattern resource elements into
 // the supplied registry and returns nil for them (so they don't end up
 // in the paint tree). Other elements recurse as in BuildSVGTree but
 // always go through this entry point so resource elements buried deep
-// inside `<g>`/`<defs>`/nested-`<svg>` are still discovered.
+// inside `<g>`/`<defs>`/nested-`<svg>` are still discovered. A
+// display:none element produces no paint node (layoutObjectIsNeeded).
 func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver, resources *SVGResourceRegistry) SVGNode {
 	if elt == nil {
 		return nil
@@ -262,8 +291,19 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		// its purpose is to declare resource elements. Recurse to
 		// register any paint servers inside, but do not produce a
 		// visible node.
-		for _, child := range elt.SVGChildren() {
-			_ = buildSVGTreeWithResources(child, lengthCtx, styleResolver, resources)
+		buildSVGHiddenContainer(elt, lengthCtx, styleResolver, resources)
+		return nil
+	}
+	// The resource elements and <defs> above register whatever their
+	// display; any other display:none element paints nothing. A
+	// display:none <g> still walks its children for the resources inside
+	// (Blink SVGGElement::CreateLayoutObject returns a
+	// LayoutSVGHiddenContainer for display:none,
+	// core/svg/svg_g_element.cc:32-50 @
+	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	if !layoutObjectIsNeeded(elt, styleResolver) {
+		if tag == "g" {
+			buildSVGHiddenContainer(elt, lengthCtx, styleResolver, resources)
 		}
 		return nil
 	}
@@ -390,9 +430,10 @@ func svgTextHasUnsupportedFilter(style *css.Style) bool {
 //
 // Mirrors the dispatch in Blink's LayoutTreeBuilder for SVG element
 // kinds (core/layout/svg/svg_resources.cc and the per-element
-// CreateLayoutObject impl on SVGGeometryElement subclasses).
+// CreateLayoutObject impl on SVGGeometryElement subclasses). A
+// display:none element produces no node (layoutObjectIsNeeded).
 func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver) SVGNode {
-	if elt == nil {
+	if elt == nil || !layoutObjectIsNeeded(elt, styleResolver) {
 		return nil
 	}
 	tag := elt.TagName()

@@ -305,31 +305,76 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 //
 // Spec: https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
 func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
-	families := ParseFontFamilyList(family)
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, 0)
+}
+
+// FontPathForStrut returns the font path for the "first available font" per
+// CSS Fonts 3 §5.4 — the first family whose @font-face unicode-range covers
+// U+0020 (SPACE) — used when computing the strut (CSS 2.1 §10.8.1 root inline
+// box). Blink's Font::PrimaryFont(), i.e.
+// FontFallbackList::PrimarySimpleFontDataWithSpace
+// (platform/fonts/font_fallback_list.h:73 @
+// 5992657f556bcd9d207a4aca187488462f027cab); see
+// determinePrimarySimpleFontData.
+func (fc FontConfig) FontPathForStrut(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, ' ')
+}
+
+// FontPathForCovering returns the font path for the first family in the list
+// whose @font-face unicode-range covers cp (cp == 0: no coverage check). Used
+// for per-run font selection in line-metric computation (InlineItemText) and
+// for the per-probe primary fonts of the font-relative units (CreateFont).
+// See determinePrimarySimpleFontData.
+func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, cp rune) string {
+	return fc.determinePrimarySimpleFontData(family, bold, italic, mono, ahem, synthBold, synthStyle, cp)
+}
+
+// determinePrimarySimpleFontData walks the font-family list and returns the
+// path of the first font that can serve lookupChar. Mirrors Blink's
+// FontFallbackList::DeterminePrimarySimpleFontData(Core)
+// (platform/fonts/font_fallback_list.cc:76/:87-140 @
+// 5992657f556bcd9d207a4aca187488462f027cab): a registered (@font-face)
+// family none of whose faces' unicode-range covers lookupChar is skipped, as
+// Blink skips a SegmentedFontData that does not ContainsCharacter (:109);
+// then the UA initial family (serif, Blink's -webkit-standard,
+// font_fallback_list.cc:181) and fc.FontPath (the last-resort font, :191).
+// The returned path stands in for Blink's SimpleFontData.
+//
+// Not ported: should_contain_glyph (:117), set only by
+// PrimarySimpleFontDataForTabSize (font_fallback_list.h:104), so a covering
+// font that lacks the probe glyph is selected, as in Blink, and handled
+// downstream (simpleFontData.ZeroInlineSize, IdeographicAdvanceWidth);
+// IsLoadingFallback (:125; louis14 loads
+// @font-face synchronously); per-segment FontDataForCharacter, because faces
+// with the same family and variant collide on one syntheticFontPath.
+// lookupChar 0 is a louis14-only mode with no coverage gate
+// (Registry.LookupForCodepoint delegates to LookupWithPolicy), used by paint
+// and FontPathForFamilyWithSynthesis.
+func (fc FontConfig) determinePrimarySimpleFontData(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, lookupChar rune) string {
 	suppressBold := false
 	suppressItalic := false
-	for _, fam := range families {
+	for _, fam := range ParseFontFamilyList(family) {
 		if fc.Registry != nil {
-			// Registry.LookupWithPolicy returns the matched variant's path;
-			// when the requested weight/style isn't registered for this
-			// family, the policy-aware fallback inside Lookup applies (for
-			// italic + oblique-only: skip oblique entries; otherwise
-			// italic↔oblique substitution is allowed). The family-only
-			// fallback there is already a form of in-family "synthesis
-			// suppression" — louis14 doesn't apply a synthetic-bold stroke,
-			// so the returned regular face is rendered as-is regardless of
-			// the synthesis flag.
-			if path := fc.Registry.LookupWithPolicy(fam, bold, italic, synthStyle); path != "" {
+			// LookupForCodepoint returns the matched variant's path among the
+			// family's faces covering lookupChar; when the requested
+			// weight/style isn't registered for this family, the
+			// policy-aware fallback inside it applies (for italic +
+			// oblique-only: skip oblique entries; otherwise italic↔oblique
+			// substitution is allowed). The family-only fallback there is
+			// already a form of in-family "synthesis suppression" — louis14
+			// doesn't apply a synthetic-bold stroke, so the returned regular
+			// face is rendered as-is regardless of the synthesis flag.
+			if path := fc.Registry.LookupForCodepoint(fam, lookupChar, bold, italic, synthStyle); path != "" {
 				return path
 			}
-			// Family was named by @font-face but its fetch failed entirely.
-			// Falling through to the next family / UA default would mean
-			// "synthesizing" the requested variant via a different physical
-			// face. CSS Fonts 4 §6.6: suppress that selection when
-			// font-synthesis-weight / font-synthesis-style is none. The
-			// `oblique-only` policy doesn't carry into cross-family fallback
-			// suppression — that gate is about cross-family synthesis, not
-			// in-family substitution.
+			// Family was named by @font-face but its fetch failed entirely
+			// (or no face covers lookupChar). Falling through to the next
+			// family / UA default would mean "synthesizing" the requested
+			// variant via a different physical face. CSS Fonts 4 §6.6:
+			// suppress that selection when font-synthesis-weight /
+			// font-synthesis-style is none. The `oblique-only` policy doesn't
+			// carry into cross-family fallback suppression — that gate is
+			// about cross-family synthesis, not in-family substitution.
 			if fc.Registry.IsDeclared(fam) {
 				if bold && !synthBold {
 					suppressBold = true
@@ -349,116 +394,8 @@ func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic,
 	// those test-font / generic-family requests stay routed to fc.Ahem /
 	// fc.Monospace via fc.FontPath. Apply font-synthesis suppression (C04)
 	// before delegating to the platform default path.
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
-	if !ahem && !mono {
-		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
-			return path
-		}
-	}
-	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
-}
-
-// FontPathForStrut returns the font path for the "first available font" per
-// CSS Fonts 3 §5.4, used when computing the strut (CSS 2.1 §10.8.1 root
-// inline box). The first available font is the first family in the list whose
-// @font-face unicode-range covers U+0020 (SPACE), the reference character for
-// primary-font determination. If no registered face covers U+0020, falls back
-// to the same family-list traversal as FontPathForFamilyWithSynthesis.
-//
-// Mirrors Blink's FontFallbackList::DeterminePrimaryFont which walks the
-// FontFallbackIterator checking FontDataForCharacter(' ') for the first
-// covering face (third_party/blink/renderer/platform/fonts/font_fallback_list.cc
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func (fc FontConfig) FontPathForStrut(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
-	families := ParseFontFamilyList(family)
-	suppressBold := false
-	suppressItalic := false
-	for _, fam := range families {
-		if fc.Registry != nil {
-			// Use LookupForCodepoint with U+0020 (SPACE) so faces whose
-			// unicode-range excludes space are skipped — they are not the
-			// "first available" font per CSS Fonts 3 §5.4.
-			if path := fc.Registry.LookupForCodepoint(fam, ' ', bold, italic, synthStyle); path != "" {
-				return path
-			}
-			if fc.Registry.IsDeclared(fam) {
-				if bold && !synthBold {
-					suppressBold = true
-				}
-				if italic && synthStyle == css.FontSynthesisStyleNone {
-					suppressItalic = true
-				}
-			}
-		}
-		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
-			return path
-		}
-	}
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
-	if !ahem && !mono {
-		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
-			return path
-		}
-	}
-	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
-}
-
-// FontPathForCovering returns the font path for the first family in the list
-// whose @font-face unicode-range covers the given codepoint cp. Used for
-// per-run font selection in line-metric computation (InlineItemText): a face
-// that does not cover the run's first character should not contribute its
-// metrics to the line height. When cp == 0 or no Registry is set, delegates
-// to FontPathForFamilyWithSynthesis (no coverage check).
-//
-// Mirrors Blink's per-character fallback via CSSSegmentedFontFace at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue, cp rune) string {
-	if cp == 0 || fc.Registry == nil {
-		return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synthBold, synthStyle)
-	}
-	families := ParseFontFamilyList(family)
-	suppressBold := false
-	suppressItalic := false
-	for _, fam := range families {
-		if fc.Registry != nil {
-			if path := fc.Registry.LookupForCodepoint(fam, cp, bold, italic, synthStyle); path != "" {
-				return path
-			}
-			if fc.Registry.IsDeclared(fam) {
-				if bold && !synthBold {
-					suppressBold = true
-				}
-				if italic && synthStyle == css.FontSynthesisStyleNone {
-					suppressItalic = true
-				}
-			}
-		}
-		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
-			return path
-		}
-	}
-	fallbackBold := bold
-	fallbackItalic := italic
-	if suppressBold {
-		fallbackBold = false
-	}
-	if suppressItalic {
-		fallbackItalic = false
-	}
+	fallbackBold := bold && !suppressBold
+	fallbackItalic := italic && !suppressItalic
 	if !ahem && !mono {
 		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
 			return path
@@ -565,9 +502,6 @@ func atkinsonMonoPath(dir string, bold, italic bool) string {
 	}
 }
 
-var DefaultFontPath = DefaultFontConfig().Regular
-var BoldFontPath = DefaultFontConfig().Bold
-
 // measureWidth returns the advance width of text for a given font path+size,
 // using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
 func measureWidth(text string, fontSize float64, fontPath string) float64 {
@@ -632,33 +566,6 @@ func MeasureText(text string, fontSize float64, fontPath string) (width, height 
 		height = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
-}
-
-// MeasureTextDefault measures text using the default font. Float64 wrapper
-// over MeasureText for legacy callers (louis13/); the snap discipline is
-// preserved internally.
-func MeasureTextDefault(text string, fontSize float64) (width, height float64) {
-	w, h := MeasureText(text, fontSize, DefaultFontPath)
-	return w.Float64(), h.Float64()
-}
-
-// MeasureTextWithWeight measures text using the specified font weight.
-// Float64 wrapper over MeasureText.
-func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, height float64) {
-	fontPath := DefaultFontPath
-	if bold {
-		fontPath = BoldFontPath
-	}
-	w, h := MeasureText(text, fontSize, fontPath)
-	return w.Float64(), h.Float64()
-}
-
-// MeasureTextWithStyle measures text with the full style combination. Float64
-// wrapper over MeasureText.
-func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	w, h := MeasureText(text, fontSize, fontPath)
-	return w.Float64(), h.Float64()
 }
 
 // MeasureTextVertical returns the inline advance of text in a vertical writing
@@ -1096,118 +1003,4 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
-}
-
-// BreakTextAtCharacterBoundary splits text so the prefix fits within maxWidth.
-func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	runes := []rune(textStr)
-	bestLen := 0
-	for i := 1; i <= len(runes); i++ {
-		prefix := string(runes[:i])
-		w := measureWidth(prefix, fontSize, fontPath)
-		if w > maxWidth {
-			break
-		}
-		bestLen = i
-	}
-	if bestLen == 0 {
-		return "", textStr
-	}
-	return string(runes[:bestLen]), string(runes[bestLen:])
-}
-
-// BreakTextIntoLines breaks text into lines that fit within maxWidth.
-func BreakTextIntoLines(text string, fontSize float64, bold bool, maxWidth float64) []string {
-	return BreakTextIntoLinesWithWrap(text, fontSize, bold, maxWidth, maxWidth)
-}
-
-// BreakTextIntoLinesWithWrap breaks text into lines with separate first/remaining widths.
-func BreakTextIntoLinesWithWrap(text string, fontSize float64, bold bool, firstLineMax, remainingMax float64) []string {
-	fontPath := DefaultFontPath
-	if bold {
-		fontPath = BoldFontPath
-	}
-	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
-}
-
-// BreakTextIntoLinesWithStyle breaks text with the full style combination.
-func BreakTextIntoLinesWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool, firstLineMax, remainingMax float64) []string {
-	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
-}
-
-func breakLines(text string, fontSize float64, fontPath string, firstLineMax, remainingMax float64) []string {
-	if measureWidth(text, fontSize, fontPath) <= firstLineMax {
-		return []string{text}
-	}
-	leadingSpace := ""
-	if len(text) > 0 && (text[0] == ' ' || text[0] == '\t' || text[0] == '\n') {
-		leadingSpace = " "
-	}
-	words := splitIntoWords(text)
-	if len(words) == 0 {
-		return []string{text}
-	}
-	var lines []string
-	currentLine := ""
-	lineNum := 0
-	for i, word := range words {
-		if i == 0 && leadingSpace != "" {
-			word = leadingSpace + word
-		}
-		testLine := currentLine
-		if testLine != "" {
-			testLine += " "
-		}
-		testLine += word
-		maxWidth := remainingMax
-		if lineNum == 0 {
-			maxWidth = firstLineMax
-		}
-		if measureWidth(testLine, fontSize, fontPath) <= maxWidth {
-			currentLine = testLine
-		} else {
-			if currentLine != "" {
-				lines = append(lines, currentLine)
-				lineNum++
-			}
-			currentLine = word
-		}
-	}
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
-	if len(lines) == 0 {
-		return []string{text}
-	}
-	return lines
-}
-
-func splitIntoWords(text string) []string {
-	var words []string
-	currentWord := ""
-	for _, ch := range text {
-		if ch == ' ' || ch == '\t' || ch == '\n' {
-			if currentWord != "" {
-				words = append(words, currentWord)
-				currentWord = ""
-			}
-		} else {
-			currentWord += string(ch)
-		}
-	}
-	if currentWord != "" {
-		words = append(words, currentWord)
-	}
-	return words
-}
-
-// GetFirstWord returns the first word of the text.
-func GetFirstWord(text string) string {
-	words := splitIntoWords(text)
-	if len(words) > 0 {
-		return words[0]
-	}
-	return ""
 }

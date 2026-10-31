@@ -547,6 +547,26 @@ func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, he
 	return bounds.Dx(), bounds.Dy(), nil
 }
 
+// ImageIsPotentiallyAvailable reports whether the image at src can be shown:
+// it loaded with usable dimensions, or no load was attempted yet. Mirrors
+// ImageLoader::ImageIsPotentiallyAvailable (image_loader.cc:284-310 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520): an empty source URL is never
+// available, and an image that is still loading is. louis14 loads
+// synchronously, so "still loading" is the case with no fetcher (no load is
+// attempted; data: URIs decode without one). Otherwise the image must
+// fetch and decode (SVG included: DecodeImageBytes rasterizes it) to a
+// positive size — Blink's "loaded without error and has an image".
+func ImageIsPotentiallyAvailable(src string, fetcher ImageFetcher) bool {
+	if src == "" {
+		return false
+	}
+	if fetcher == nil && !IsDataURI(src) {
+		return true
+	}
+	w, h, err := GetImageDimensionsWithFetcher(src, fetcher)
+	return err == nil && w > 0 && h > 0
+}
+
 // isNetworkURI returns true if the string looks like an HTTP/HTTPS URL.
 func isNetworkURI(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
