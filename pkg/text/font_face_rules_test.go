@@ -15,8 +15,8 @@ import (
 // 5992657f556bcd9d207a4aca187488462f027cab). A face without the descriptor
 // has none.
 func TestFontRegistry_AddUserFontFaceRules(t *testing.T) {
-	src := func(file string) *css.CSSURIValue {
-		return &css.CSSURIValue{Data: css.URLData{Relative: file, Absolute: file}}
+	src := func(file string) []css.FontFaceSrcValue {
+		return []css.FontFaceSrcValue{{URL: css.CSSURIValue{Data: css.URLData{Relative: file, Absolute: file}}}}
 	}
 	fr := NewFontRegistry()
 	fr.AddUserFontFaceRules([]css.FontFaceRule{
@@ -39,8 +39,8 @@ func TestFontRegistry_AddUserFontFaceRules(t *testing.T) {
 
 // TestFontRegistry_AddUserFontFaceRules_SrcFallback pins that a face whose
 // first src fails to load falls back to the next src in the list, as
-// Blink's CSSFontFace::FontLoaded / SetLoadStatus drops a failed
-// CSSFontFaceSource and loads the next (core/css/css_font_face.cc:96-110 @
+// Blink's CSSFontFace::FontLoaded drops a failed
+// CSSFontFaceSource and loads the next (core/css/css_font_face.cc:76-91 @
 // 5992657f556bcd9d207a4aca187488462f027cab).
 func TestFontRegistry_AddUserFontFaceRules_SrcFallback(t *testing.T) {
 	ss, err := css.ParseStylesheet(`@font-face {

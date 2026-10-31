@@ -121,7 +121,7 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	}
 	data, err := fetch(srcURL)
 	if err != nil {
-		return "", fmt.Errorf("fetching font %s: %w", srcURL, err)
+		return "", fmt.Errorf("fetching font %s: %w", images.DataURIForDisplay(srcURL), err)
 	}
 
 	if data, err = decodeWebFont(data); err != nil {
@@ -165,22 +165,31 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 // descriptors (unicode-range, metric overrides, font-feature-settings).
 // Mirrors StyleEngine::AddUserFontFaceRules (core/css/style_engine.cc:3612-3629
 // @ 5992657f556bcd9d207a4aca187488462f027cab), which creates a FontFace per
-// rule and adds it to the FontFaceCache. A face whose fetch fails is logged
+// rule and adds it to the FontFaceCache. A face none of whose srcs loads is logged
 // and skipped, but its metric overrides are kept by family so a local font
 // serving that family still gets them.
 func (fr *FontRegistry) AddUserFontFaceRules(faces []css.FontFaceRule, fetcher FontFetcher) {
 	for _, face := range faces {
-		if face.Src == nil {
-			continue
-		}
 		mo := MetricsOverride{
 			Ascent:  face.AscentOverride,
 			Descent: face.DescentOverride,
 			LineGap: face.LineGapOverride,
 		}
-		path, err := fr.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fetcher)
-		if err != nil {
-			log.Printf("font-face: %v", err)
+		// Try each src in order until one loads, as Blink's
+		// CSSFontFace::FontLoaded drops a failed source and loads the next
+		// (core/css/css_font_face.cc:76-91 @
+		// 5992657f556bcd9d207a4aca187488462f027cab).
+		path := ""
+		for _, src := range face.Src {
+			p, err := fr.RegisterFontFace(face.Family, src.URL.Data.Absolute, src.Format, face.Weight, face.Style, fetcher)
+			if err != nil {
+				log.Printf("font-face: %v", err)
+				continue
+			}
+			path = p
+			break
+		}
+		if path == "" {
 			fr.SetFontFamilyOverride(face.Family, mo)
 			continue
 		}

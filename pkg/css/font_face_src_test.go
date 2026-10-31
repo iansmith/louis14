@@ -1,6 +1,9 @@
 package css
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestParseFontFaceRule_DataURLSrc pins that an @font-face src whose data:
 // URL carries a ';' (the ";base64" parameter) and a ',' (the payload
@@ -18,8 +21,8 @@ func TestParseFontFaceRule_DataURLSrc(t *testing.T) {
 	if ff == nil {
 		t.Fatal("parseFontFaceRule returned nil")
 	}
-	if ff.Src == nil || ff.Src.Data.Absolute != dataURL {
-		t.Fatalf("Src = %+v, want Absolute %q", ff.Src, dataURL)
+	if len(ff.Src) != 1 || ff.Src[0].URL.Data.Absolute != dataURL {
+		t.Fatalf("Src = %+v, want one source with Absolute %q", ff.Src, dataURL)
 	}
 	if ff.Weight != "bold" {
 		t.Errorf("Weight = %q, want bold (descriptor after the data: src)", ff.Weight)
@@ -31,9 +34,9 @@ func TestParseFontFaceRule_DataURLSrc(t *testing.T) {
 // the first source.
 func TestParseFontFaceSrc_CommaInsideURL(t *testing.T) {
 	const dataURL = "data:font/woff;base64,d09GRgABAAAA"
-	got, _ := parseFontFaceSrc(`url("` + dataURL + `"), url(fallback.ttf)`)
-	if got != dataURL {
-		t.Errorf("parseFontFaceSrc = %q, want %q", got, dataURL)
+	got := parseFontFaceSrc(`url("` + dataURL + `"), url(fallback.ttf)`)
+	if len(got) != 2 || got[0].URL.Data.Absolute != dataURL || got[1].URL.Data.Absolute != "fallback.ttf" {
+		t.Errorf("parseFontFaceSrc = %+v, want [%q fallback.ttf]", got, dataURL)
 	}
 }
 
@@ -43,9 +46,9 @@ func TestParseFontFaceSrc_CommaInsideURL(t *testing.T) {
 // 5992657f556bcd9d207a4aca187488462f027cab), and pkg/text decodes WOFF2
 // (RegisterFontFace → decodeWebFont).
 func TestParseFontFaceSrc_WOFF2Format(t *testing.T) {
-	got, format := parseFontFaceSrc(`url(icon.woff2) format("woff2"), url(fallback.ttf)`)
-	if got != "icon.woff2" || format != "woff2" {
-		t.Errorf("parseFontFaceSrc = (%q, %q), want (icon.woff2, woff2)", got, format)
+	got := parseFontFaceSrc(`url(icon.woff2) format("woff2"), url(fallback.ttf)`)
+	if len(got) == 0 || got[0].URL.Data.Absolute != "icon.woff2" || got[0].Format != "woff2" {
+		t.Errorf("parseFontFaceSrc = %+v, want icon.woff2 format woff2 first", got)
 	}
 }
 
@@ -79,5 +82,24 @@ func TestParseFontFaceRule_FeatureSettingsNormalCaseInsensitive(t *testing.T) {
 	}
 	if ff.FeatureSettings != "" {
 		t.Errorf("FeatureSettings = %q, want none for 'Normal'", ff.FeatureSettings)
+	}
+}
+
+// TestParseFontFaceSrc_DropsUnsupportedFormats pins that a source whose
+// format() Blink's IsSupportedFontFormat rejects (embedded-opentype, svg, an
+// unknown keyword) is dropped at parse time, so the loader never fetches it
+// (core/css/parser/at_rule_descriptor_parser.cc:85-92 and
+// core/css/properties/css_parsing_utils.cc:6832-6844 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestParseFontFaceSrc_DropsUnsupportedFormats(t *testing.T) {
+	got := parseFontFaceSrc(`url(a.eot) format("embedded-opentype"), url(a.svg) format("svg"), ` +
+		`url(a.x) format("bogus"), url(a.woff2) format("WOFF2"), url(a.ttf) format("truetype-variations"), url(a.otf)`)
+	var urls []string
+	for _, v := range got {
+		urls = append(urls, v.URL.Data.Absolute)
+	}
+	want := []string{"a.woff2", "a.ttf", "a.otf"}
+	if strings.Join(urls, " ") != strings.Join(want, " ") {
+		t.Errorf("parseFontFaceSrc kept %v, want %v", urls, want)
 	}
 }

@@ -40,7 +40,7 @@ func TestResolveFontFeatureSettingsDescriptor(t *testing.T) {
 // mutated.
 func TestWithFontFaceFeatures(t *testing.T) {
 	fr := text.NewFontRegistry()
-	src := &css.CSSURIValue{Data: css.URLData{Relative: "Ahem.ttf", Absolute: "Ahem.ttf"}}
+	src := []css.FontFaceSrcValue{{URL: css.CSSURIValue{Data: css.URLData{Relative: "Ahem.ttf", Absolute: "Ahem.ttf"}}}}
 	fr.AddUserFontFaceRules([]css.FontFaceRule{
 		{Family: "LOU424-FFS", Src: src, Weight: "normal", Style: "normal", FeatureSettings: `"smcp" 1, "liga" 0`},
 	}, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })

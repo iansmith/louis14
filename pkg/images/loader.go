@@ -46,6 +46,19 @@ func LoadImageFromDataURI(uri string) (image.Image, error) {
 	return DecodeImageBytes(data)
 }
 
+// DataURIForDisplay returns uri for a log or error message: a data: URI keeps
+// only its header, never its (possibly megabytes-long) payload; any other
+// URI is returned unchanged.
+func DataURIForDisplay(uri string) string {
+	if !IsDataURI(uri) {
+		return uri
+	}
+	if i := strings.IndexByte(uri, ','); i >= 0 {
+		return fmt.Sprintf("%s,<%d bytes>", uri[:i], len(uri)-i-1)
+	}
+	return uri
+}
+
 // DecodeDataURI returns the payload bytes of a data URI
 // (data:[<mediatype>][;base64],<data>), base64- or percent-decoded. The
 // louis14 counterpart of Blink's network_utils::ParseDataURL

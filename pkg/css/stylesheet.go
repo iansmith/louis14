@@ -197,10 +197,16 @@ type ContainerCondition struct {
 	Value   string // "200px", etc.
 }
 
-// FontFaceRule represents a parsed @font-face rule. Src is typed as
-// *CSSURIValue per LOU-138 phase 7.5 — mirrors Blink's `CSSURIValue`
-// wrapping of @font-face src tokens (core/css/css_uri_value.h @
-// d4ecdfed8). Nil when the rule had no parseable src.
+// FontFaceSrcValue is one url() entry of an @font-face src list. Mirrors
+// Blink's CSSFontFaceSrcValue (core/css/css_font_face_src_value.h:47-110 @
+// 5992657f556bcd9d207a4aca187488462f027cab). URL is typed as CSSURIValue
+// per LOU-138 phase 7.5, mirroring Blink's CSSURIValue wrapping of src
+// tokens (core/css/css_uri_value.h @ d4ecdfed8).
+type FontFaceSrcValue struct {
+	URL    CSSURIValue
+	Format string // "truetype", "opentype", "woff", "woff2", or ""
+}
+
 // UnicodeRange represents a contiguous codepoint range from the CSS
 // @font-face unicode-range descriptor. Mirrors Blink's UnicodeRange struct in
 // platform/fonts/unicode_range_set.h @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
@@ -224,12 +230,12 @@ func CoversCodepoint(ranges []UnicodeRange, cp rune) bool {
 	return false
 }
 
+// FontFaceRule represents a parsed @font-face rule.
 type FontFaceRule struct {
-	Family string       // font-family (unquoted)
-	Src    *CSSURIValue // URL from src: url(...); nil if missing
-	Format string       // "truetype", "opentype", "woff", "woff2", or ""
-	Weight string       // font-weight value (e.g. "bold", "400", "700")
-	Style  string       // font-style value (e.g. "italic", "normal")
+	Family string             // font-family (unquoted)
+	Src    []FontFaceSrcValue // src url() entries in order; empty if none
+	Weight string             // font-weight value (e.g. "bold", "400", "700")
+	Style  string             // font-style value (e.g. "italic", "normal")
 
 	// UnicodeRanges restricts the codepoints for which this face is active.
 	// nil/empty means the CSS Fonts 3 default (U+0-10FFFF — all codepoints).
@@ -6329,11 +6335,7 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 			// been resolved by ctx.RewriteURLs at the top of
 			// ParseStylesheet, so both URLData fields hold the absolute
 			// form.
-			srcURL, fmtName := parseFontFaceSrc(val)
-			if srcURL != "" {
-				ff.Src = &CSSURIValue{Data: URLData{Relative: srcURL, Absolute: srcURL}}
-			}
-			ff.Format = fmtName
+			ff.Src = parseFontFaceSrc(val)
 		case "font-weight":
 			ff.Weight = val
 		case "font-style":
@@ -6347,13 +6349,13 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 		case "line-gap-override":
 			ff.LineGapOverride = parseFontMetricOverride(val)
 		case "font-feature-settings":
-			if val != "normal" {
+			if !strings.EqualFold(val, "normal") {
 				ff.FeatureSettings = val
 			}
 		}
 	}
 
-	if ff.Family == "" || ff.Src == nil {
+	if ff.Family == "" || len(ff.Src) == 0 {
 		return nil
 	}
 	return ff
@@ -6674,15 +6676,12 @@ func unquoteCounterString(s string) string {
 	return s
 }
 
-// parseFontFaceSrc extracts the URL and format from a src value like:
-// url("font.woff") format("woff"), url("font.ttf") format("truetype")
-// Returns the first usable URL and its format.
-func parseFontFaceSrc(src string) (string, string) {
+// parseFontFaceSrc returns every usable url() source, in order, from a src
+// value like: url("font.woff") format("woff"), url("font.ttf") format("truetype").
+func parseFontFaceSrc(src string) []FontFaceSrcValue {
+	var values []FontFaceSrcValue
 	// Split by top-level comma for multiple sources (a data: URL's payload
-	// comma is inside url(...)). Every format() Blink's IsSupportedFontFormat
-	// accepts is usable — woff2 included (core/css/parser/
-	// at_rule_descriptor_parser.cc:85-92 @
-	// 5992657f556bcd9d207a4aca187488462f027cab; pkg/text decodes WOFF2).
+	// comma is inside url(...)).
 	sources := splitTopLevelCommas(src)
 	for _, source := range sources {
 		source = strings.TrimSpace(source)
@@ -6710,7 +6709,28 @@ func parseFontFaceSrc(src string) (string, string) {
 			}
 		}
 
-		return url, format
+		if format != "" && !isSupportedFontFormat(format) {
+			continue
+		}
+		values = append(values, FontFaceSrcValue{
+			URL:    CSSURIValue{Data: URLData{Relative: url, Absolute: url}},
+			Format: format,
+		})
 	}
-	return "", ""
+	return values
+}
+
+// isSupportedFontFormat reports whether a src format() hint names a format
+// the loader can use; a source with any other hint is dropped at parse time.
+// Mirrors Blink's IsSupportedFontFormat and IsSupportedKeywordFormat
+// (core/css/parser/at_rule_descriptor_parser.cc:85-92,
+// core/css/properties/css_parsing_utils.cc:6832-6844 @
+// 5992657f556bcd9d207a4aca187488462f027cab). pkg/text decodes WOFF2.
+func isSupportedFontFormat(format string) bool {
+	switch strings.ToLower(format) {
+	case "collection", "opentype", "truetype", "woff", "woff2",
+		"woff-variations", "truetype-variations", "opentype-variations", "woff2-variations":
+		return true
+	}
+	return false
 }
