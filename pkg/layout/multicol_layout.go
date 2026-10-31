@@ -184,11 +184,6 @@ type MulticolLayoutAlgorithm struct {
 	// fragmentainer. Mirrors Blink's container_builder_.SetBreakTokenData
 	// (column_layout_algorithm.cc:763-774 @ a9f50e522efa).
 	outgoingMulticolData *MulticolBreakTokenData
-	// hasForcedBreakAfter is set when a spanner's break-after:column fires
-	// with nothing after it to resume; the main result then reports
-	// HasForcedBreak. no Blink analog: the forced break-after stand-in
-	// (ledger L35).
-	hasForcedBreakAfter bool
 	// totalColumnsRendered counts the column fragments with content placed
 	// across all lines (spanners excluded), surfaced as RenderedColumnCount
 	// so the column-rule painter can draw rules only between columns that
@@ -812,7 +807,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil
-	mla.hasForcedBreakAfter = false
 	mla.hasProcessedFirstChild = false
 	if result := mla.LayoutChildren(builder); result != nil {
 		return result
@@ -1005,9 +999,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	result.PropagatedOOFCandidates = propagatedOOF
-	if mla.hasForcedBreakAfter {
-		result.HasForcedBreak = true
-	}
 	if result.Fragment != nil {
 		result.Fragment.RenderedColumnCount = mla.totalColumnsRendered
 		// Phase 20 P20.5: tag the multicol container so the paint layer
@@ -1130,36 +1121,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 		// the next one.
 		if status.brokeInside {
 			return mla.breakOuter(walker, builder)
-		}
-
-		spanner := entry.DescendantNode
-		// Forced break-after:column on spanner: propagate to the parent
-		// column context. Only on fresh layout (not resumed) so the break
-		// fires once.
-		//
-		// No Blink analog: Blink records the spanner's break-after through
-		// PropagateChildBreakValues (in LayoutSpanner), where it forces a break before a
-		// following spanner (CalculateBreakBetweenValue) or becomes this
-		// multicol's FinalBreakAfter; following column content resets it
-		// (cla.cc:1233-1235 @ a9f50e522efa), so Blink never breaks between
-		// such a spanner and column content. This stand-in is kept: it is
-		// what spanner-fragmentation-012 passes on (ledger L35).
-		if mla.isConstrainedByOuterFragmentation() && status.placed && entry.BreakToken == nil &&
-			mla.space.BreakToken == nil &&
-			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {
-			if !walker.IsFinished() {
-				// walker.Next was already called above; current is the
-				// post-spanner walker entry (column-content from
-				// MoveToSpanner-stored next_column_token, or further
-				// parent-token entries). Flush them all so the next outer
-				// column resumes correctly.
-				result := mla.breakOuter(walker, builder)
-				result.HasForcedBreak = true
-				return result
-			}
-			// Nothing follows — propagate break-after to the parent context.
-			mla.hasForcedBreakAfter = true
-			break
 		}
 	}
 
@@ -1355,9 +1316,6 @@ type layoutSpannerResult struct {
 	// for container_builder_.HasInflowChildBreakInside()
 	// (column_layout_algorithm.cc:656-657).
 	brokeInside bool
-	// placed: the spanner produced a fragment that was added. no Blink
-	// analog: it gates the forced break-after stand-in (ledger L35).
-	placed bool
 }
 
 // LayoutSpanner lays out and places one column spanner. Mirrors Blink's
@@ -1510,7 +1468,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		mla.hasProcessedFirstChild = true
 	}
 
-	return layoutSpannerResult{status: BreakStatusContinue, brokeInside: spannerBrokeInside, placed: spanFrag != nil}
+	return layoutSpannerResult{status: BreakStatusContinue, brokeInside: spannerBrokeInside}
 }
 
 // buildOuterBreakResult finalises the in-progress builder as a fragment that
@@ -2658,8 +2616,7 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 // ShouldBlockContainerChildStretchAutoInlineSize / kStretchImplicit
 // (cla.cc:1871-1876; louis14's space has no inline auto behaviour, and an
 // auto-width spanner already fills the content box), the baseline algorithm
-// type and text-box-trim (cla.cc:1880-1886). SetIsInsideColumnSpanner has no
-// Blink analog.
+// type and text-box-trim (cla.cc:1880-1886).
 func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *LayoutInputNode, blockOffset float64, breakToken *BlockBreakToken) ConstraintSpace {
 	wdm := mla.space.WritingDirection
 	spannerWDM := NewWritingDirectionMode(spanner.Style())
@@ -2670,8 +2627,7 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true).
 		SetAvailableSize(childAvailableSize).
 		SetPercentageResolutionSize(childAvailableSize).
-		SetPercentageResolutionInlineSize(mla.contentInlineSize).
-		SetIsInsideColumnSpanner(true)
+		SetPercentageResolutionInlineSize(mla.contentInlineSize)
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
 	}

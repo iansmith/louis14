@@ -154,9 +154,6 @@ func TestCreateConstraintSpaceForSpanner_LOU411(t *testing.T) {
 			if p := got.PercentageResolutionSize.BlockSize.Float64(); p != w.percent {
 				t.Errorf("PercentageResolutionSize.BlockSize = %v, want %v (ChildAvailableSize)", p, w.percent)
 			}
-			if !got.IsInsideColumnSpanner {
-				t.Errorf("IsInsideColumnSpanner = false, want true")
-			}
 			if !w.frag {
 				return
 			}
