@@ -343,7 +343,7 @@ func (fc FontConfig) FontPathForCovering(family string, bold, italic, mono, ahem
 // Not ported: should_contain_glyph (:117), set only by
 // PrimarySimpleFontDataForTabSize (font_fallback_list.h:104), so a covering
 // font that lacks the probe glyph is selected, as in Blink, and handled
-// downstream (simpleFontData.ZeroInlineSize, ideographicAdvanceWidth);
+// downstream (simpleFontData.ZeroInlineSize, IdeographicAdvanceWidth);
 // IsLoadingFallback (:125; louis14 loads
 // @font-face synchronously); per-segment FontDataForCharacter, because faces
 // with the same family and variant collide on one syntheticFontPath.

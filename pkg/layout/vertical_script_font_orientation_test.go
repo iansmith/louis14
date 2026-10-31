@@ -16,7 +16,7 @@ import (
 // (SimpleFontData::ZeroInlineSize reads the font's orientation), so the clone
 // re-builds its font, as Blink's ComputedStyleBuilder::UpdateFontOrientation
 // re-creates the FontDescription when the orientation changes
-// (core/style/computed_style.cc:3274-3289 @
+// (core/style/computed_style.cc:3274-3287 @
 // 5992657f556bcd9d207a4aca187488462f027cab). Upright serif at 20px has
 // ZeroWidth 1em (20); rotated, it is the horizontal "0" advance (under 20).
 func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T) {
@@ -38,6 +38,7 @@ func TestCollectTextNode_VerticalScriptCloneUpdatesFontOrientation(t *testing.T)
 	for _, it := range data.Items {
 		if it.Style != nil && it.Style != parent {
 			got = it.Style
+			break
 		}
 	}
 	if got == nil {

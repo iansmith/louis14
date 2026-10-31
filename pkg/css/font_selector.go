@@ -60,10 +60,11 @@ type Font struct {
 // read (Style.UsedFontSize, ChWidth, XHeight, CapHeight, IcWidth /
 // HasIdeographicInlineSize). A non-nil fs becomes s's selector; with nil, s
 // keeps the selector it carries (set by the cascade, inherited by pseudo and
-// anonymous styles and clones); with none, s keeps the unmeasured fallbacks. Mirrors StyleResolverState::UpdateFont
-// (core/css/resolver/style_resolver_state.cc:553 @
-// 5992657f556bcd9d207a4aca187488462f027cab), which runs FontBuilder::CreateFont
-// and then points CSSToLengthConversionData::FontSizes at the new font.
+// anonymous styles and clones); with none, s keeps the unmeasured fallbacks.
+// Mirrors StyleResolverState::UpdateFont (core/css/resolver/
+// style_resolver_state.cc:553 @ 5992657f556bcd9d207a4aca187488462f027cab),
+// which runs FontBuilder::CreateFont and then points
+// CSSToLengthConversionData::FontSizes at the new font.
 func (s *Style) UpdateFont(fs FontSelector) {
 	if fs != nil {
 		s.fontSelector = fs
