@@ -9,10 +9,12 @@ import (
 )
 
 // marginSpec describes one block in a fragmentation-margin fixture: its id,
-// its style properties (display:block is implied) and its children.
+// its style properties (display:block is implied), its DOM attributes and its
+// children.
 type marginSpec struct {
 	id    string
 	props []string
+	attrs map[string]string
 	kids  []marginSpec
 }
 
@@ -30,6 +32,7 @@ func (s marginSpec) build(styles map[*html.Node]*css.Style, ids map[*html.Node]s
 		kids = append(kids, k.build(styles, ids))
 	}
 	n := makeNode("div", kids...)
+	n.Attributes = s.attrs
 	styles[n] = makeStyle(append([]string{"display", "block"}, s.props...)...)
 	ids[n] = s.id
 	return n

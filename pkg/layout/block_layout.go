@@ -444,7 +444,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			HasInflowChildBreakInside:             hasInflowChildBreakInside,
 			IsKnownToFitInFragmentainer:           isKnownToFitInFragmentainer,
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
-			IsSlice:                               !hasClonedBoxDecorations,
 		})
 		if !res.IncludeBlockEnd {
 			geom.ClearBorderScrollbarPaddingBlockEnd()
@@ -1404,7 +1403,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			// A resumed child resolves its BFC block-offset at its start, so
+			// it never self-collapses (Blink is_resuming_,
+			// block_layout_algorithm.cc:888-898 @ a9f50e522efa): the 0px
+			// fragment of a spanner parent after its spanner is kept.
 			collapseThrough := childBlockSize == 0 &&
+				!resumeChildTokens[child].IsBreakInside() &&
 				childResult.BreakToken == nil &&
 				childResult.BlockSizeForFragmentation == 0 &&
 				len(childResult.Fragment.Children) == 0 &&
@@ -2669,23 +2673,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// but we use PercentageResolutionSize instead so that anonymous
 		// auto-height wraps (e.g. block-in-inline splits) do not collapse the
 		// block-axis CB to zero for their descendants.
-		cbInline := bla.space.PercentageResolutionSize.InlineSize.Float64()
-		if cbInline == Indefinite {
-			cbInline = 0
-		}
-		cbBlock := bla.space.PercentageResolutionSize.BlockSize.Float64()
-		if cbBlock == Indefinite {
-			cbBlock = 0
-		}
-		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: cbInline,
-			BlockSize:  cbBlock,
-		}, wdm.WM)
-		offset := bla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
+			bla.style, wdm, geomLogicalToOld(bla.space.PercentageResolutionSize))
 	}
 
 	return result
+}
+
+// computeRelativeOffsetForBoxFragment resolves a position:relative box's
+// insets against available (its containing block's logical size, in the
+// container's writing mode wdm) and returns the physical offset. Mirrors
+// Blink's ComputeRelativeOffsetForBoxFragment
+// (third_party/blink/renderer/core/layout/relative_utils.cc:92
+// @ d4ecdfed88f962439247c2ad36b8fe47805b1520). An Indefinite axis resolves
+// percentages against 0; Blink's ComputeRelativeOffset (relative_utils.cc:18,
+// ResolveInset :29-35 @ the same SHA) treats them as auto instead, which
+// differs only when both insets on that axis are set.
+func computeRelativeOffsetForBoxFragment(style *css.Style, wdm WritingDirectionMode, available LogicalSize) geometry.PhysicalOffset {
+	if available.InlineSize == Indefinite {
+		available.InlineSize = 0
+	}
+	if available.BlockSize == Indefinite {
+		available.BlockSize = 0
+	}
+	physCB := ToPhysicalSize(available, wdm.WM)
+	return computeRelativeOffset(style.GetPositionOffsetResolved(physCB.Width, physCB.Height), wdm)
 }
 
 // computeRelativeOffset computes the physical offset for position:relative.
@@ -3209,37 +3221,9 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	if bla.node.DOMNode == nil {
 		return nil
 	}
-	dom := bla.node.DOMNode
-	var uri string
-	var htmlContent string
-
-	switch dom.TagName {
-	case "iframe":
-		// srcdoc takes priority over src per HTML spec.
-		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
-			htmlContent = srcdoc
-			uri = ""
-		} else {
-			uri, _ = dom.GetAttribute("src")
-		}
-	case "object":
-		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
-			uri, _ = dom.GetAttribute("data")
-		}
-	default:
+	htmlContent, baseDir, ok := openFrameOwnerURL(bla.ctx, bla.node.DOMNode)
+	if !ok {
 		return nil
-	}
-
-	// If we have inline srcdoc content, skip the fetcher entirely.
-	if htmlContent == "" {
-		if uri == "" || bla.ctx.DocumentFetcher == nil {
-			return nil
-		}
-		var err error
-		htmlContent, err = bla.ctx.DocumentFetcher(uri)
-		if err != nil {
-			return nil
-		}
 	}
 
 	// Compute the content-box physical size for the nested viewport.
@@ -3249,16 +3233,7 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  blockSize,
 	}, wdm.WM)
 
-	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
-	if res == nil {
-		return nil
-	}
-	// Retain the parsed nested document on the iframe/object DOM node so that
-	// JS can access iframe.contentDocument after layout completes.
-	if res.Doc != nil {
-		dom.NestedDocument = res.Doc
-	}
-	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
 }
 
 // layoutElement dispatches to the appropriate layout algorithm based on
