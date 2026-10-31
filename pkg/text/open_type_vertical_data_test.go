@@ -54,8 +54,8 @@ func longMetricsTable(advances ...uint16) []byte {
 
 // tableGetter is a CopyOpenTypeTable over an in-memory table map; a missing
 // tag returns nil, as CopyOpenTypeTable resizes the buffer to 0.
-func tableGetter(tables map[string][]byte) func(string) []byte {
-	return func(tag string) []byte { return tables[tag] }
+func tableGetter(tables map[uint32][]byte) func(uint32) []byte {
+	return func(tag uint32) []byte { return tables[tag] }
 }
 
 // TestOpenTypeVerticalData_AdvanceHeight (LOU-424): with vertical metrics,
@@ -66,11 +66,11 @@ func tableGetter(tables map[string][]byte) func(string) []byte {
 // 5992657f556bcd9d207a4aca187488462f027cab). Expected values are hand
 // arithmetic at 80px over 1024 units per em.
 func TestOpenTypeVerticalData_AdvanceHeight(t *testing.T) {
-	v := newOpenTypeVerticalData(tableGetter(map[string][]byte{
-		"hhea": metricsHeaderTable(2),
-		"hmtx": longMetricsTable(500, 600),
-		"vhea": metricsHeaderTable(4),
-		"vmtx": longMetricsTable(1024, 0, 256, 40000),
+	v := newOpenTypeVerticalData(tableGetter(map[uint32][]byte{
+		tagHhea: metricsHeaderTable(2),
+		tagHmtx: longMetricsTable(500, 600),
+		tagVhea: metricsHeaderTable(4),
+		tagVmtx: longMetricsTable(1024, 0, 256, 40000),
 	}))
 	v.SetScaleAndFallbackMetrics(80.0/1024, 99)
 	if !v.IsOpenType() || !v.HasVerticalMetrics() {
@@ -99,27 +99,27 @@ func TestOpenTypeVerticalData_AdvanceHeight(t *testing.T) {
 // HasVerticalMetrics is false and AdvanceHeight returns height_fallback_
 // unscaled (:298-299). IsOpenType is true once hhea and hmtx loaded (:158-184).
 func TestOpenTypeVerticalData_LoadMetricsGates(t *testing.T) {
-	full := func() map[string][]byte {
-		return map[string][]byte{
-			"hhea": metricsHeaderTable(2),
-			"hmtx": longMetricsTable(500, 600),
-			"vhea": metricsHeaderTable(2),
-			"vmtx": longMetricsTable(1000, 1000),
+	full := func() map[uint32][]byte {
+		return map[uint32][]byte{
+			tagHhea: metricsHeaderTable(2),
+			tagHmtx: longMetricsTable(500, 600),
+			tagVhea: metricsHeaderTable(2),
+			tagVmtx: longMetricsTable(1000, 1000),
 		}
 	}
 	for _, tc := range []struct {
 		name     string
-		edit     func(map[string][]byte)
+		edit     func(map[uint32][]byte)
 		openType bool
 	}{
-		{"no hhea", func(m map[string][]byte) { delete(m, "hhea") }, false},
-		{"numberOfHMetrics 0", func(m map[string][]byte) { m["hhea"] = metricsHeaderTable(0) }, false},
-		{"hmtx shorter than numberOfHMetrics", func(m map[string][]byte) { m["hmtx"] = longMetricsTable(500) }, false},
-		{"no vhea", func(m map[string][]byte) { delete(m, "vhea") }, true},
-		{"short vhea", func(m map[string][]byte) { m["vhea"] = m["vhea"][:35] }, true},
-		{"numOfLongVerMetrics 0", func(m map[string][]byte) { m["vhea"] = metricsHeaderTable(0) }, true},
-		{"vmtx shorter than numOfLongVerMetrics", func(m map[string][]byte) { m["vmtx"] = longMetricsTable(1000) }, true},
-		{"vhea without vmtx", func(m map[string][]byte) { delete(m, "vmtx") }, true},
+		{"no hhea", func(m map[uint32][]byte) { delete(m, tagHhea) }, false},
+		{"numberOfHMetrics 0", func(m map[uint32][]byte) { m[tagHhea] = metricsHeaderTable(0) }, false},
+		{"hmtx shorter than numberOfHMetrics", func(m map[uint32][]byte) { m[tagHmtx] = longMetricsTable(500) }, false},
+		{"no vhea", func(m map[uint32][]byte) { delete(m, tagVhea) }, true},
+		{"short vhea", func(m map[uint32][]byte) { m[tagVhea] = m[tagVhea][:35] }, true},
+		{"numOfLongVerMetrics 0", func(m map[uint32][]byte) { m[tagVhea] = metricsHeaderTable(0) }, true},
+		{"vmtx shorter than numOfLongVerMetrics", func(m map[uint32][]byte) { m[tagVmtx] = longMetricsTable(1000) }, true},
+		{"vhea without vmtx", func(m map[uint32][]byte) { delete(m, tagVmtx) }, true},
 	} {
 		tables := full()
 		tc.edit(tables)

@@ -83,6 +83,9 @@ func CurrentProvider() textshape.GlyphProvider {
 // RegisterBuffer has somewhere to write.
 func registerVendoredFonts(p textshape.GlyphProvider) {
 	csstest.Register(p)
+	for _, e := range csstest.Entries {
+		registerTypeface(e.Family, e.Variant, e.Data)
+	}
 }
 
 // SetTextLayout sets the shared TextLayout used for all text measurement.
@@ -1019,13 +1022,29 @@ func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float
 	return cum, true
 }
 
-// MeasureTextVerticalFromFont returns the inline advance of text in a vertical
-// writing mode using the given font path. Each upright glyph advances by fontSize.
-// Returns LayoutUnit values snapped via CEIL at this boundary — same Blink-
-// parity ShapeResult::SnappedWidth discipline as MeasureText.
+// MeasureTextVerticalFromFont returns the inline advance of upright text in a
+// vertical writing mode using the given font path: the sum of each glyph's
+// vertical advance, OpenTypeVerticalData::AdvanceHeight — the vmtx advance,
+// or the FontMetrics Height fallback when the font has no vmtx. Mirrors the
+// advance Blink's top-to-bottom HarfBuzz shaping of upright text reads,
+// HarfBuzzGetGlyphVerticalAdvance (platform/fonts/shaping/harfbuzz_face.cc:
+// 359-372 @ 5992657f556bcd9d207a4aca187488462f027cab), so N ch (ZeroInlineSize)
+// and N upright "0"s agree. louis14 sums per character rather than per shaped
+// glyph, so vertical alternates, ligatures and marks are not seen. Returns
+// LayoutUnit values snapped via CEIL at this boundary — same Blink-parity
+// ShapeResult::SnappedWidth discipline as MeasureText.
 func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance layoutunit.LayoutUnit) {
-	runeCount := utf8.RuneCountInString(text)
-	inlineAdvance = layoutunit.FromFloat64Ceil(float64(runeCount) * fontSize)
+	vd := fontPlatformData{fontPath: fontPath, size: fontSize}.GetHarfBuzzFace().VerticalData()
+	var advance float64
+	if vd.HasVerticalMetrics() {
+		for _, r := range text {
+			advance += vd.AdvanceHeight(glyphForCharacter(fontPath, fontSize, r))
+		}
+	} else {
+		// Every glyph advances by the height fallback; no glyph lookup needed.
+		advance = float64(utf8.RuneCountInString(text)) * vd.AdvanceHeight(0)
+	}
+	inlineAdvance = layoutunit.FromFloat64Ceil(advance)
 	m := openFont(fontPath, fontSize)
 	if m.FontID >= 0 && m.Height > 0 {
 		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(float64(m.Height) / 64.0))

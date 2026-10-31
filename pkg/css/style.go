@@ -673,8 +673,9 @@ func (s *Style) SetZeroWidth(w float64) {
 // CSSToLengthConversionData::FontSizes::Ch (core/css/
 // css_to_length_conversion_data.cc:117-126 @
 // 5992657f556bcd9d207a4aca187488462f027cab), which does no orientation logic:
-// SimpleFontData::ZeroInlineSize already returns 1em for upright text or the
-// 0.5em fallback for a font with no "0" glyph (text.simpleFontData). A style
+// SimpleFontData::ZeroInlineSize already returns the "0" glyph's vertical
+// advance for upright text, or the 0.5em / upright 1em fallback for a font
+// with no "0" glyph (text.simpleFontData). A style
 // no font selector measured (HasZeroWidth false) has no Blink analog — Blink
 // always has a Font — and falls back to ZeroInlineSizeFallback: 0.5em, or
 // 1em upright.

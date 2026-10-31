@@ -214,9 +214,10 @@ func (lb *LineBreaker) measuringStyle(itemStyle *css.Style) *css.Style {
 }
 
 // isVerticalMeasurement returns true when text in the given style should be
-// measured using vertical font metrics (em advance per glyph). This applies
-// only when text-orientation is "upright" — which renders all glyphs upright
-// with each one advancing by one em in the inline direction.
+// measured using vertical font metrics (each glyph's vertical advance,
+// text.MeasureTextVerticalFromFont). This applies only when text-orientation
+// is "upright" — which renders all glyphs upright, each advancing by its
+// vertical advance in the inline direction.
 //
 // For writing-mode: vertical-rl/lr with the default text-orientation "mixed",
 // Latin characters are rendered sideways and advance by their horizontal width.
@@ -228,7 +229,7 @@ func (lb *LineBreaker) isVerticalMeasurement(style *css.Style) bool {
 	if !lb.space.WritingDirection.IsVertical() || lb.space.WritingDirection.IsSideways() {
 		return false
 	}
-	// VRL/VLR: use em advance only for text-orientation: upright.
+	// VRL/VLR: use the vertical advance only for text-orientation: upright.
 	if style == nil {
 		return false
 	}
@@ -518,7 +519,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	}
 
 	// Measure the full text segment. In vertical writing modes, use vertical
-	// measurement where each upright glyph advances by fontSize.
+	// measurement where each upright glyph advances by its vertical advance.
 	isVertical := lb.isVerticalMeasurement(item.Style)
 	var fullWidth float64
 
