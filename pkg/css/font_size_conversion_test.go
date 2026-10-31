@@ -340,47 +340,6 @@ func TestComputedLengths_InheritedFontRelative(t *testing.T) {
 	}
 }
 
-// TestComputedLengths_TransitionedFontSize: a first-frame font-size
-// transition re-computes the font-relative lengths against the interpolated
-// font, as Blink does by applying interpolations inside the cascade before
-// the dependent properties (StyleCascade::Apply → ApplyInterpolations,
-// core/css/resolver/style_cascade.cc:320 @
-// 5992657f556bcd9d207a4aca187488462f027cab); the inheriting child copies the
-// re-computed tab-size.
-func TestComputedLengths_TransitionedFontSize(t *testing.T) {
-	doc, _ := html.Parse(`<style>div { font-size: 20px; transition: font-size 1s; outline: solid 0.25em;
-		outline-offset: 0.25em; tab-size: 1em; text-indent: 1em; }</style><div><span>x</span></div>`)
-	styles := ApplyStylesToDocument(doc, 800, 600)
-	prev := make(map[*html.Node]*Style, len(styles))
-	for node, style := range styles {
-		c := style.Clone()
-		if node.TagName == "div" || node.TagName == "span" {
-			c.Properties["font-size"] = "10px"
-		}
-		prev[node] = c
-	}
-	ApplyTransitionsFirstFrame(doc.Root, styles, prev)
-	div, span := styleByTag(t, styles, "div"), styleByTag(t, styles, "span")
-	if got := div.GetFontSize(); got != 10 {
-		t.Fatalf("div font-size = %v, want the transition's start value 10", got)
-	}
-	if got := div.GetOutlineWidth(); got != 2 {
-		t.Errorf("outline-width 0.25em at 10px = %v, want 2", got)
-	}
-	if got := div.GetOutlineOffset(); got != 2 {
-		t.Errorf("outline-offset 0.25em at 10px = %v, want 2", got)
-	}
-	if got, isLen := div.GetTabSize(); got != 10 || !isLen {
-		t.Errorf("tab-size 1em at 10px = %v (length=%v), want 10px", got, isLen)
-	}
-	if got, _ := div.GetTextIndent(); got != 10 {
-		t.Errorf("text-indent 1em at 10px = %v, want 10", got)
-	}
-	if got, isLen := span.GetTabSize(); got != 10 || !isLen {
-		t.Errorf("span inherited tab-size = %v (length=%v), want 10px", got, isLen)
-	}
-}
-
 // TestTabSize_UnitlessMathIsSpaceCount: a unitless math function in tab-size
 // is a <number> — a space count — not a length (CSS Text 3 §4.2;
 // ConvertLengthOrTabSpaces keeps a number as TabSize spaces,

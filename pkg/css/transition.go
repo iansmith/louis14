@@ -268,41 +268,13 @@ func transitionProperty(n *html.Node, prop string, timing Timing, newStyle, oldS
 	// style_cascade.cc:320 @ 5992657f556bcd9d207a4aca187488462f027cab) and
 	// needs no re-run. Done for every transitioned property: the step is
 	// idempotent and the selector caches fonts. A line-height already computed
-	// to px from the after-change font stays as computed, as for em (LOU-418);
-	// the computedLengthProperties are recomputed from their specified values.
-	reapplyFontDependentStyle(newStyle, fontParentStyle(n, styles))
+	// to px from the after-change font stays as computed, as for em (LOU-418).
+	applyFontAndLineHeight(newStyle, styles[n.Parent])
 	if inheritableProperties[prop] {
 		for _, c := range n.Children {
 			propagateInheritedTransitionValue(c, prop, newVal, val, styles)
 		}
-		// Re-run the font-dependent steps over the whole subtree, past
-		// descendants that stopped the propagation above: they still inherit
-		// n's recomputed lengths.
-		for _, c := range n.Children {
-			reapplyFontDependentSubtree(c, styles)
-		}
 	}
-}
-
-// reapplyFontDependentSubtree runs reapplyFontDependentStyle top-down over n
-// and its descendants.
-func reapplyFontDependentSubtree(n *html.Node, styles map[*html.Node]*Style) {
-	if s := styles[n]; s != nil {
-		reapplyFontDependentStyle(s, fontParentStyle(n, styles))
-	}
-	for _, c := range n.Children {
-		reapplyFontDependentSubtree(c, styles)
-	}
-}
-
-// reapplyFontDependentStyle re-runs, after a post-cascade transition write,
-// the cascade steps that depend on the element's font: the font and
-// line-height step, then the computed lengths — re-inheriting the parent's
-// recomputed ones first.
-func reapplyFontDependentStyle(s, parent *Style) {
-	applyFontAndLineHeight(s, parent)
-	inheritComputedLengths(s, parent)
-	absolutizeComputedLengths(s)
 }
 
 // propagateInheritedTransitionValue rewrites an inheritable property's
@@ -326,6 +298,7 @@ func propagateInheritedTransitionValue(n *html.Node, prop, newVal, val string, s
 			return
 		}
 		s.Properties[prop] = val
+		applyFontAndLineHeight(s, styles[n.Parent])
 	}
 	for _, c := range n.Children {
 		propagateInheritedTransitionValue(c, prop, newVal, val, styles)

@@ -3263,13 +3263,6 @@ var computedLengthProperties = []struct {
 	{"border-spacing", nil},
 }
 
-// specifiedLength records a computedLengthProperties value
-// absolutizeComputedLengths rewrote: the value it computed from and the px
-// value it wrote.
-type specifiedLength struct {
-	specified, computed string
-}
-
 // absolutizeComputedLengths rewrites each <length> component of the
 // computedLengthProperties to its absolute px computed value against the
 // element's own (final) font and viewport, so an inheriting child (by default
@@ -3279,33 +3272,16 @@ type specifiedLength struct {
 // functions (a <number>) and percentages — bare or inside a math function —
 // stay as declared: a percentage resolves at use time (text-indent against the
 // containing block, text-underline-offset against the element's own 1em).
-//
-// It records each rewrite in style.specifiedLengths, and while a property
-// still holds the px value it wrote, recomputes from the recorded specified
-// value — so it re-runs correctly after a late font change (a first-frame
-// font-size transition), as Blink applies interpolations inside the cascade
-// before the dependent properties compute (StyleCascade::Apply →
-// ApplyInterpolations, core/css/resolver/style_cascade.cc:320 @
-// 5992657f556bcd9d207a4aca187488462f027cab). Idempotent.
+// Idempotent.
 func absolutizeComputedLengths(style *Style) {
 	for _, p := range computedLengthProperties {
 		val, ok := style.Get(p.property)
 		if !ok {
 			continue
 		}
-		if rec, ok := style.specifiedLengths[p.property]; ok && rec.computed == val {
-			val = rec.specified
+		if computed, changed := computeLengthComponents(style, val, p.round); changed {
+			style.Set(p.property, computed)
 		}
-		computed, changed := computeLengthComponents(style, val, p.round)
-		if !changed {
-			delete(style.specifiedLengths, p.property)
-			continue
-		}
-		if style.specifiedLengths == nil {
-			style.specifiedLengths = make(map[string]specifiedLength)
-		}
-		style.specifiedLengths[p.property] = specifiedLength{specified: val, computed: computed}
-		style.Set(p.property, computed)
 	}
 }
 
@@ -3338,25 +3314,6 @@ func computeLengthComponents(style *Style, val string, round func(float64) float
 		return val, false
 	}
 	return strings.Join(parts, " "), true
-}
-
-// inheritComputedLengths re-copies the parent's computed value of each
-// inherited computedLengthProperties property style does not declare
-// (CascadedProps; `inherit` counts as not declared), for a re-run after the
-// parent's lengths were recomputed (a first-frame font-size transition). A
-// style without a CascadedProps record is left alone.
-func inheritComputedLengths(style, parent *Style) {
-	if parent == nil || style.CascadedProps == nil {
-		return
-	}
-	for _, p := range computedLengthProperties {
-		if !inheritableProperties[p.property] || style.CascadedProps[p.property] {
-			continue
-		}
-		if val, ok := parent.Properties[p.property]; ok {
-			style.Properties[p.property] = val
-		}
-	}
 }
 
 // convertOutlineOffset rounds a computed outline-offset: magnitudes in (0,1)

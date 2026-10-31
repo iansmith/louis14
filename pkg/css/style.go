@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -195,13 +194,6 @@ type Style struct {
 	// from (core/css/css_to_length_conversion_data.cc:84-93 @
 	// 5992657f556bcd9d207a4aca187488462f027cab).
 	remFontSize optionalFloat
-
-	// specifiedLengths records, per computedLengthProperties property,
-	// the specified value absolutizeComputedLengths computed to px and the
-	// px value it wrote, so a re-run after a late font change (a first-frame
-	// font-size transition) recomputes from the specified value. No Blink
-	// analog: Blink re-runs the cascade from its declared values instead.
-	specifiedLengths map[string]specifiedLength
 }
 
 func NewStyle() *Style {
@@ -222,7 +214,6 @@ func (s *Style) Clone() *Style {
 		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
 	dst.CascadedProps = s.CascadedProps // shared by reference; never mutated post-cascade
-	dst.specifiedLengths = maps.Clone(s.specifiedLengths)
 	return dst
 }
 
