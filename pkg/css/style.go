@@ -803,25 +803,6 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	return ParseLengthFull(val, fontSize, 0, 0)
 }
 
-// ParseLengthOrPercentageFontRelative parses a CSS value where percentages
-// resolve against the element's font-size (1em) — e.g. text-underline-offset,
-// text-decoration-thickness per CSS Text Decor L4. Returns the resolved
-// pixel value. Handles bare `%`, plain lengths, and `calc()` expressions
-// whose % terms also resolve against font-size.
-func ParseLengthOrPercentageFontRelative(val string, fontSize float64) (float64, bool) {
-	v := strings.TrimSpace(val)
-	if strings.HasSuffix(v, "%") {
-		if pct, ok := ParsePercentage(v); ok {
-			return pct / 100.0 * fontSize, true
-		}
-		return 0, false
-	}
-	if strings.HasPrefix(v, "calc(") && strings.HasSuffix(v, ")") {
-		return EvalCalcWithPercent(v[5:len(v)-1], fontSize, fontSize)
-	}
-	return ParseLengthWithFontSize(val, fontSize)
-}
-
 // splitCSSFunctionArgs splits comma-separated args respecting nested parens
 func splitCSSFunctionArgs(s string) []string {
 	var parts []string
