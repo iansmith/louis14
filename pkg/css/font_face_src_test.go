@@ -48,3 +48,23 @@ func TestParseFontFaceSrc_WOFF2Format(t *testing.T) {
 		t.Errorf("parseFontFaceSrc = (%q, %q), want (icon.woff2, woff2)", got, format)
 	}
 }
+
+// TestParseFontFaceRule_FeatureSettingsDescriptor pins the @font-face
+// font-feature-settings descriptor: its value is kept (FontFace::
+// feature_settings_, core/css/font_face.cc:522-523 @
+// 5992657f556bcd9d207a4aca187488462f027cab), and "normal" is no settings.
+func TestParseFontFaceRule_FeatureSettingsDescriptor(t *testing.T) {
+	for _, tc := range []struct{ decl, want string }{
+		{`font-feature-settings: "smcp" 1;`, `"smcp" 1`},
+		{`font-feature-settings: normal;`, ""},
+		{``, ""},
+	} {
+		ff := parseFontFaceRule(`@font-face { font-family: F; src: url(f.ttf); ` + tc.decl + ` }`)
+		if ff == nil {
+			t.Fatalf("%q: parseFontFaceRule returned nil", tc.decl)
+		}
+		if ff.FeatureSettings != tc.want {
+			t.Errorf("%q: FeatureSettings = %q, want %q", tc.decl, ff.FeatureSettings, tc.want)
+		}
+	}
+}
