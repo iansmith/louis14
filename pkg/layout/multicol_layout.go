@@ -755,6 +755,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
+		mla.node.contentNodeCache.adoptChildren()
 	}
 	mla.contentNode = mla.node.contentNodeCache
 
@@ -1335,8 +1336,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		// the line's break token (post-spanner column content, if any) is
 		// stored as the walker's nextColumnToken so it becomes the iteration
 		// AFTER the spanner.
-		spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
-		walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
+		walker.MoveToSpanner(getSpannerFromPath(line.columnSpannerPath), line.breakToken)
 		return nil, false
 	}
 }
@@ -2827,19 +2827,17 @@ func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType Span
 	mla.mainGaps = append(mla.mainGaps, MainGap{GapOffset: blockOffset, SpannerType: gapType})
 }
 
-// spannerLeafNode traverses a ColumnSpannerPath linked list and returns the
-// Box at the leaf (where Child == nil) — the actual column-span:all element,
-// which may be a grandchild or deeper descendant of the multicol flow thread
-// — and the block containing it (root when the spanner is a child of the
-// column content itself). Mirrors Blink's ColumnSpannerPath::SpannerBox()
-// (column_spanner_path.h).
-func spannerLeafNode(path *ColumnSpannerPath, root *LayoutInputNode) (spanner, parent *LayoutInputNode) {
-	parent = root
+// getSpannerFromPath traverses a ColumnSpannerPath linked list and returns
+// the Box at the leaf (where Child == nil) — the actual column-span:all
+// element, which may be a grandchild or deeper descendant of the multicol
+// flow thread. Mirrors Blink's GetSpannerFromPath
+// (column_layout_algorithm.cc:224-229 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func getSpannerFromPath(path *ColumnSpannerPath) *LayoutInputNode {
 	for path.Child != nil {
-		parent = path.Box
 		path = path.Child
 	}
-	return path.Box, parent
+	return path.Box
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
@@ -3101,11 +3099,13 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			return
 		}
 		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-		result = append(result, &LayoutInputNode{
+		wrapper := &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,
 			isAnonymous: true,
-		})
+		}
+		wrapper.adoptChildren()
+		result = append(result, wrapper)
 		inlineRun = nil
 	}
 
