@@ -16,23 +16,8 @@ import (
 // SimpleFontData computing them once per font. One selector serves one
 // cascade; it is not safe for concurrent use.
 type CSSFontSelector struct {
-	fc      FontConfig
-	cache   map[fontKey]simpleFontData
-	icCache map[icKey]ideographicAdvance
-}
-
-// icKey keys the 水-advance cache by the covering font and the exact used
-// size (the ic advance was never size-rounded).
-type icKey struct {
-	path     string
-	fontSize float64
-}
-
-// ideographicAdvance is SimpleFontData::IdeographicAdvanceWidth's
-// std::optional<float>: width is valid only when ok.
-type ideographicAdvance struct {
-	width float64
-	ok    bool
+	fc    FontConfig
+	cache map[fontKey]simpleFontData
 }
 
 // fontKey keys the simpleFontData cache. Sub-pixel size jitter is rare;
@@ -45,7 +30,7 @@ type fontKey struct {
 
 // NewCSSFontSelector returns a selector over fc with an empty metric cache.
 func NewCSSFontSelector(fc FontConfig) *CSSFontSelector {
-	return &CSSFontSelector{fc: fc, cache: make(map[fontKey]simpleFontData), icCache: make(map[icKey]ideographicAdvance)}
+	return &CSSFontSelector{fc: fc, cache: make(map[fontKey]simpleFontData)}
 }
 
 // CreateFont selects s's per-probe primary fonts from its font properties
@@ -109,15 +94,15 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	if usedSize != specifiedSize {
 		usedData = fs.simpleFontData(spacePath, usedSize, orientation)
 	}
-	ic := fs.ideographicAdvanceWidth(icPath, usedSize)
+	icWidth, hasIC := fs.simpleFontData(icPath, usedSize, orientation).IdeographicInlineSize()
 
 	return css.Font{
 		AdjustedSize:             usedSize,
 		ZeroWidth:                fs.simpleFontData(zeroPath, usedSize, orientation).ZeroInlineSize(),
 		XHeight:                  usedData.xHeight,
 		CapHeight:                usedData.capHeight,
-		IdeographicInlineSize:    ic.width,
-		HasIdeographicInlineSize: ic.ok,
+		IdeographicInlineSize:    icWidth,
+		HasIdeographicInlineSize: hasIC,
 	}
 }
 
@@ -131,41 +116,17 @@ func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o c
 	d, ok := fs.cache[k]
 	if !ok {
 		d = simpleFontData{
-			zeroGlyph: glyphForCharacter(fontPath, fontSize, kDigitZero),
 			xHeight:   FontXHeightFromFont(fontSize, fontPath),
 			capHeight: FontCapHeightFromFont(fontSize, fontPath),
 		}
-		if d.zeroGlyph != 0 {
-			zeroLU, _ := MeasureText("0", fontSize, fontPath)
-			d.zeroAdvance = zeroLU.Float64()
+		d.zeroGlyph, d.zeroAdvance = glyphAdvance(fontPath, fontSize, kDigitZero)
+		if g, w := glyphAdvance(fontPath, fontSize, kCjkWater); g != 0 {
+			d.ideographicAdvanceWidth, d.hasIdeographicAdvanceWidth = w, true
 		}
 		fs.cache[k] = d
 	}
 	d.platformData = fontPlatformData{size: fontSize, orientation: o}
 	return d
-}
-
-// ideographicAdvanceWidth returns the advance of 水 in the font at fontPath
-// and fontSize, present only when the font has the 水 glyph — even when the
-// advance is 0. Mirrors SimpleFontData::IdeographicAdvanceWidth
-// (platform/fonts/simple_font_data.cc:437 @
-// 5992657f556bcd9d207a4aca187488462f027cab), which sets its optional only
-// when GlyphForCharacter(kCjkWater) is non-zero. louis14 reads the horizontal
-// advance for every orientation; Blink's IdeographicInlineSize reads the vmtx
-// IdeographicAdvanceHeight when upright (:461-473), which is LOU-424's
-// vertical-metrics territory.
-func (fs *CSSFontSelector) ideographicAdvanceWidth(fontPath string, fontSize float64) ideographicAdvance {
-	k := icKey{path: fontPath, fontSize: fontSize}
-	if a, ok := fs.icCache[k]; ok {
-		return a
-	}
-	var a ideographicAdvance
-	if glyphForCharacter(fontPath, fontSize, kCjkWater) != 0 {
-		icLU, _ := MeasureText("水", fontSize, fontPath)
-		a = ideographicAdvance{width: icLU.Float64(), ok: true}
-	}
-	fs.icCache[k] = a
-	return a
 }
 
 // firstFontAspectRatio returns the first available font's actual aspect ratio
