@@ -6848,9 +6848,14 @@ func measureUprightVerticalSegmentAdvance(text string, layer *PaintLayer, fontPa
 // harfbuzz_face.cc:359-372 @ 5992657f556bcd9d207a4aca187488462f027cab), plus
 // layer.LetterSpacing (that loop has no WordSpacing effect at all). Shared by
 // the paint loop, measureUprightVerticalSegmentAdvance and the upright
-// decoration length so the highlight rect's measured extent can never drift
+// decoration length, so the highlight rect's measured extent never drifts
 // from what the glyphs actually draw at — the exact failure mode LOU-347
-// exists to fix — nor from layout's advance.
+// exists to fix. Against layout's advance it can drift slightly: paint snaps
+// each rune's advance up to 1/64px (LayoutUnit ceil) while layout snaps the
+// segment sum once, so for vmtx advances off the 1/64px grid paint runs
+// longer by under 1/64px per glyph (ChTestShortZero at 80.4px: layout 100.5,
+// paint 5 x 20.109375 = 100.546875). Advances on the grid (every no-vmtx
+// height fallback, an integer) agree exactly.
 func uprightVerticalRuneAdvance(layer *PaintLayer, ch rune, fontPath string) float64 {
 	inline, _ := text.MeasureTextVerticalFromFont(string(ch), layer.FontSize, fontPath)
 	return inline.Float64() + layer.LetterSpacing

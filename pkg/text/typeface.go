@@ -22,6 +22,9 @@ type typeface struct {
 	path     string // builtin font file, read at load when data is nil
 	vertical *openTypeVerticalData
 	upem     int
+	// ascender and descender are FreeType's FT_FaceRec ascender/descender
+	// in font units (sfntFaceAscenderDescender).
+	ascender, descender int
 }
 
 // headUnitsPerEmOffset is the offset of the head table's uint16 unitsPerEm.
@@ -43,7 +46,8 @@ func copyOpenTypeTable(ld *opentype.Loader, tag uint32) []byte {
 	return b
 }
 
-// load fills the vertical metrics and unitsPerEm once, then drops the bytes.
+// load fills the vertical metrics, unitsPerEm and ascender/descender once,
+// then drops the bytes.
 func (t *typeface) load() {
 	t.once.Do(func() {
 		data := t.data
@@ -57,6 +61,7 @@ func (t *typeface) load() {
 		get := func(tag uint32) []byte { return copyOpenTypeTable(ld, tag) }
 		t.vertical = newOpenTypeVerticalData(get)
 		t.upem = unitsPerEmFromHead(get(tagHead))
+		t.ascender, t.descender = sfntFaceAscenderDescender(get(tagHhea), get(tagOS2))
 		t.data = nil
 	})
 }
