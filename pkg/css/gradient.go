@@ -108,16 +108,12 @@ func ParseLinearGradient(value string) (*Gradient, bool) {
 
 // parseColorStop parses a color stop like "blue 150px" or "red 50%"
 func parseColorStop(stop string) (ColorStop, bool) {
-	parts := strings.Fields(stop)
-	if len(parts) == 0 {
-		return ColorStop{}, false
-	}
-
-	// Parse the color (first part)
-	color, ok := ParseColor(parts[0])
+	colorStr, posStr := SplitGradientColorStop(stop)
+	color, ok := consumeGradientStopColor(colorStr)
 	if !ok {
 		return ColorStop{}, false
 	}
+	positions := strings.Fields(posStr)
 
 	cs := ColorStop{
 		Color:  color,
@@ -125,8 +121,8 @@ func parseColorStop(stop string) (ColorStop, bool) {
 	}
 
 	// Parse the position if present
-	if len(parts) >= 2 {
-		pos := parts[1]
+	if len(positions) >= 1 {
+		pos := positions[0]
 		if strings.HasSuffix(pos, "px") {
 			// Absolute pixel position - we'll convert this to percentage later
 			// based on the container size
@@ -148,6 +144,74 @@ func parseColorStop(stop string) (ColorStop, bool) {
 	}
 
 	return cs, true
+}
+
+// consumeGradientStopColor parses a gradient color stop's <color>. Any
+// <color> is accepted, including currentcolor and color functions that
+// reference it (color-mix(), relative colors, ...), mirroring Blink's
+// ConsumeGradientColorStops → ConsumeColor
+// (core/css/properties/css_parsing_utils.cc:3028-3075 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). currentcolor has no value at
+// parse time — Blink keeps the stop as an unresolved CSSValue and resolves
+// it at paint time against the element's visited-dependent color
+// (ResolveStopColor, core/css/css_gradient_value.cc:394-409 @ same SHA; the
+// louis14 analog is pkg/render resolveStopColor). The parse-time Gradient
+// therefore records currentcolor as transparent black; its colors serve
+// validation only and are never painted.
+func consumeGradientStopColor(colorStr string) (Color, bool) {
+	return ParseColorWithCurrentColor(colorStr, Color{})
+}
+
+// SplitGradientColorStop splits a gradient color-stop token "green 25px"
+// into its <color> ("green") and position ("25px") parts.
+// A `(` at the head of the string is treated as part of the color only when
+// the preceding identifier is a known color function (rgb/rgba/hsl/hsla/
+// hwb/lab/lch/oklab/oklch/color/color-mix). Otherwise the `(` belongs to
+// a position-side function like calc()/min()/max()/clamp() and the split
+// falls back to the named-color path.
+func SplitGradientColorStop(s string) (colorStr, posStr string) {
+	s = strings.TrimSpace(s)
+
+	if parenIdx := strings.Index(s, "("); parenIdx >= 0 {
+		head := strings.ToLower(strings.TrimSpace(s[:parenIdx]))
+		if isColorFunctionHead(head) {
+			depth := 0
+			closeIdx := -1
+			for i := parenIdx; i < len(s); i++ {
+				if s[i] == '(' {
+					depth++
+				} else if s[i] == ')' {
+					depth--
+					if depth == 0 {
+						closeIdx = i
+						break
+					}
+				}
+			}
+			if closeIdx >= 0 {
+				return s[:closeIdx+1], strings.TrimSpace(s[closeIdx+1:])
+			}
+		}
+	}
+
+	// Named color or hex: split on first space (color has no spaces).
+	if idx := strings.Index(s, " "); idx >= 0 {
+		return s[:idx], strings.TrimSpace(s[idx+1:])
+	}
+	return s, ""
+}
+
+// isColorFunctionHead reports whether the given lowercased identifier is the
+// head of a CSS color function. The list mirrors the CSS Color 4 function
+// set recognized by css.ParseColor.
+func isColorFunctionHead(head string) bool {
+	switch head {
+	case "rgb", "rgba", "hsl", "hsla", "hwb",
+		"lab", "lch", "oklab", "oklch",
+		"color", "color-mix", "device-cmyk":
+		return true
+	}
+	return false
 }
 
 // splitGradientParts splits gradient content by commas, respecting parentheses
@@ -766,17 +830,15 @@ func parseAngleDeg(s string) float64 {
 }
 
 func parseConicColorStop(stop string) (ColorStop, bool) {
-	fields := strings.Fields(stop)
-	if len(fields) == 0 {
-		return ColorStop{}, false
-	}
-	color, ok := ParseColor(fields[0])
+	colorStr, posStr := SplitGradientColorStop(stop)
+	color, ok := consumeGradientStopColor(colorStr)
 	if !ok {
 		return ColorStop{}, false
 	}
+	positions := strings.Fields(posStr)
 	cs := ColorStop{Color: color, Offset: -1}
-	if len(fields) >= 2 {
-		pos := fields[1]
+	if len(positions) >= 1 {
+		pos := positions[0]
 		if strings.HasSuffix(pos, "%") {
 			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "%"), 64)
 			if err == nil {

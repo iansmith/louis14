@@ -10935,6 +10935,19 @@ func (fl *FillLayer) Len() int {
 	return n
 }
 
+// AnyLayerHasImage reports whether any layer in the list carries an image
+// (url() or gradient). Nil-safe: an absent list has no image. Mirrors
+// FillLayer::AnyLayerHasImage (core/style/fill_layer.h:235-238, computed in
+// fill_layer.cc:386,404 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (fl *FillLayer) AnyLayerHasImage() bool {
+	for cur := fl; cur != nil; cur = cur.Next {
+		if cur.Image != nil || cur.Gradient != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // IterateReverse calls fn for each layer from bottom to top (Blink paint order).
 func (fl *FillLayer) IterateReverse(fn func(*FillLayer)) {
 	if fl == nil {
