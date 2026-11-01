@@ -50,10 +50,9 @@ func TestCharacterDataInsertData(t *testing.T) {
 // end must shrink 2 -> 1), append a "PASS" text node to <html>, then
 // surroundContents(styleEl) must wrap ONLY the head into the style element,
 // leaving "PASS" as a rendered child of <html>.
-// Note: louis14's parser extracts <style> elements into doc.Stylesheets
-// rather than keeping them as DOM nodes, so the WPT file's `sheet` element
-// is not scriptable here; a synthetic <div> child of <head> stands in as the
-// wrap target — same shape (newParent lives INSIDE the extracted subtree).
+// A synthetic <div> child of <head> stands in for the WPT file's `sheet`
+// <style> as the wrap target — same shape (newParent lives INSIDE the
+// extracted subtree).
 func TestSelectionSurroundContentsAfterNodeRemoval(t *testing.T) {
 	doc := parseHTML(t, `<html><head></head><body>FAIL</body></html>`)
 	engine := New()

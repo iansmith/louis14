@@ -21,6 +21,13 @@ type Node struct {
 	// pkg/layout openFrameOwnerURL.
 	NestedDocument *Document
 
+	// LinkStyle is the sheet a <link rel=stylesheet> loaded, or nil (not a
+	// stylesheet link, or the fetch failed). Mirrors HTMLLinkElement::
+	// GetLinkStyle() (core/html/html_link_element.cc:310 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); Document.
+	// UpdateActiveStyleSheets collects it in tree order.
+	LinkStyle *StylesheetSource
+
 	// IsFocused is true when this element is the document's currently focused
 	// element. Mirrors Blink's per-Element focus bit, maintained by the focus
 	// pathway (Document::SetFocusedElement). Consulted by the CSS matcher for
@@ -204,7 +211,7 @@ type FrameSource struct {
 
 type Document struct {
 	Root          *Node
-	Stylesheets   []StylesheetSource // CSS from <style> tags + <link rel=stylesheet>
+	Stylesheets   []StylesheetSource // Derived from <style>/<link rel=stylesheet> in tree order by UpdateActiveStyleSheets
 	Scripts       []string           // JavaScript from <script> tags
 	ViewportWidth int                // From <meta name="viewport" content="width=...">
 
@@ -616,6 +623,7 @@ func (n *Node) CloneNode(deep bool) *Node {
 		TagName:      n.TagName,
 		Text:         n.Text,
 		namespaceURI: n.namespaceURI,
+		LinkStyle:    n.LinkStyle,
 	}
 	if n.Attributes != nil {
 		clone.Attributes = make(map[string]string, len(n.Attributes))
@@ -683,6 +691,10 @@ func (n *Node) SerializeOuter() string {
 
 func serializeNode(sb *strings.Builder, n *Node) {
 	if n.Type == TextNode {
+		if n.Parent != nil && isRawTextSerializationParent(n.Parent.TagName) {
+			sb.WriteString(n.Text)
+			return
+		}
 		sb.WriteString(escapeHTML(n.Text))
 		return
 	}
@@ -718,6 +730,21 @@ func serializeNode(sb *strings.Builder, n *Node) {
 	sb.WriteString("</")
 	sb.WriteString(n.TagName)
 	sb.WriteByte('>')
+}
+
+// isRawTextSerializationParent reports whether text children of tag
+// serialize unescaped. Mirrors MarkupFormatter::EntityMaskForText
+// (core/editing/serializers/markup_formatter.cc:394-426 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which returns
+// kEntityMaskInCdata for these parents. Blink's scripting-enabled
+// <noscript> case is omitted: louis14's parser tokenizes <noscript>
+// content as markup rather than raw text.
+func isRawTextSerializationParent(tag string) bool {
+	switch tag {
+	case "script", "style", "xmp", "iframe", "plaintext", "noembed", "noframes":
+		return true
+	}
+	return false
 }
 
 func escapeHTML(s string) string {
