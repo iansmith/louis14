@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image/color"
+	"math"
 	"testing"
 )
 
@@ -61,4 +62,41 @@ func TestRoundedInnerRectClipper_NonRenderableBackgroundClip(t *testing.T) {
 	assertPixel(t, img, 110, 70, white, "outside the radius-150 corner arc")
 	assertPixel(t, img, 140, 140, black, "inside the content box")
 	assertPixel(t, img, 149, 70, black, "inside the arc near the top edge")
+}
+
+// LOU-578: with anti-aliased fills, the border's inner edge is the exact
+// complement of the padding-box background's anti-aliased clip
+// (ClipOutContouredRect, box_border_painter.cc:1467-1469, and the
+// background's ClipContouredRect — both kAntiAliased, graphics_context.h:
+// 379-388 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A black border over
+// a black padding-box background then leaves at most Skia's conflation
+// seam (coverage c then 1-c composited Over: luminance ≤ 25%) along the
+// inner curve — not a light seam where the border was erased from every
+// pixel the inner rrect touches. The outer curve is anti-aliased.
+func TestBoxBorderPainter_RoundedInnerEdgeAntialiasedWithoutSeam(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="width:20px;height:20px;padding:20px;border:20px solid black;`+
+		`border-radius:100% 0 0 0;background-color:black;background-clip:padding-box"></div></body></html>`, 150, 150)
+	// The top-left outer arc has radius 100 about (100,100); the inner
+	// (padding-box) arc has radius 80 about the same centre.
+	maxLum, sawPartialOuter := 0, false
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			r, _, _, _ := img.At(x, y).RGBA()
+			lum := int(r >> 8)
+			d := math.Hypot(float64(x)+0.5-100, float64(y)+0.5-100)
+			if d < 98.5 && lum > maxLum {
+				maxLum = lum
+			}
+			if d > 99 && d < 101 && lum > 0 && lum < 255 {
+				sawPartialOuter = true
+			}
+		}
+	}
+	if maxLum > 80 {
+		t.Errorf("max luminance inside the rounded border box = %d, want ≤ 80 (seam along the inner curve)", maxLum)
+	}
+	if !sawPartialOuter {
+		t.Error("no anti-aliased (partially covered) pixel along the outer border curve")
+	}
 }
