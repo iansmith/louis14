@@ -794,3 +794,53 @@ func TestMaxTextShadowExtent(t *testing.T) {
 		})
 	}
 }
+
+// TestHighlightLayerStackColors_BackgroundCurrentColorUsesLayerColor
+// (LOU-550): `background-color: currentColor` on a highlight pseudo resolves
+// against THIS layer's resolved current color — its own `color`, which for
+// `color: currentColor` is the layer below's color, or the originating
+// element's color when no layer below has one — not the layer below's
+// background-color. Mirrors HighlightStyleUtils::HighlightBackgroundColor →
+// ResolveColor(current_layer_color) (core/highlight/highlight_style_utils.cc:
+// 255-271, 341-381 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// highlight-painting-currentcolor-002/002a/002b.html.
+func TestHighlightLayerStackColors_BackgroundCurrentColorUsesLayerColor(t *testing.T) {
+	stylesheet, err := css.ParseStylesheet(`
+		div { color: black; }
+		div::highlight(b) { color: lime; background-color: blue; }
+		div::selection { color: currentColor; background-color: currentColor; }
+	`, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet: %v", err)
+	}
+	stylesheets := []*css.Stylesheet{stylesheet}
+
+	div := &html.Node{Type: html.ElementNode, TagName: "div"}
+	tn := textNode("hello")
+	div.Children = []*html.Node{tn}
+	tn.Parent = div
+
+	divStyle := css.ComputeStyle(div, stylesheets, 800, 600, nil)
+	box := &layout.Box{Node: div, Style: divStyle}
+	r := &Renderer{
+		selectionStylesheets: stylesheets,
+		selectionViewportW:   800,
+		selectionViewportH:   600,
+		nodeBoxIndex:         map[*html.Node]*layout.Box{div: box},
+	}
+
+	lime := css.Color{R: 0, G: 255, B: 0, A: 1}
+	hc := r.highlightLayerStackColors(div, []highlightLayerName{
+		{kind: "custom", name: "b"},
+		{kind: "selection"},
+	})
+	if hc.background == nil || *hc.background != lime {
+		t.Errorf("selection over ::highlight(b): background = %v, want the layer's current color lime", hc.background)
+	}
+
+	black := divStyle.GetColor()
+	hc = r.highlightLayerStackColors(div, []highlightLayerName{{kind: "selection"}})
+	if hc.background == nil || *hc.background != black {
+		t.Errorf("selection alone: background = %v, want the originating color %v", hc.background, black)
+	}
+}
