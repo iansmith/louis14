@@ -25,3 +25,22 @@ func TestInnerBorderRadiusClip_UsesInnerRadii(t *testing.T) {
 	// Just outside the inner curve (centre (70,70), r=50): ~53px away.
 	sampleColorClose(t, img, 32, 35, 0, 0, 0, 0, "border outside inner curve (32,35)")
 }
+
+// TestInnerBorderRadiusClip_ClipMarginBorderBoxZero: overflow-clip-margin:
+// border-box 0 clips to the border box rounded like the border edge, via
+// AdjustRoundedClipForOverflowClipMargin (paint_property_tree_builder.cc:
+// 2909-2935 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — not the
+// padding-box inner-radius clip. Mirrors
+// css-overflow/overflow-clip-margin-border-radius-002 (last box).
+//
+// Border box 0..100 with radius 40 (centre (40,40)); pixel (20,15) is
+// ~32px from the centre — inside the border edge, in the border area
+// outside the padding box — so the black overflowing child shows there.
+func TestInnerBorderRadiusClip_ClipMarginBorderBoxZero(t *testing.T) {
+	const src = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="width:20px;height:20px;padding:20px;border:20px solid transparent;border-radius:40px;overflow:clip;overflow-clip-margin:border-box 0px">` +
+		`<div style="width:180px;height:180px;margin:-80px 0 0 -80px;background:black"></div></div></body></html>`
+	img := renderToImage(t, src, 200, 200)
+	sampleColorClose(t, img, 20, 15, 0, 0, 0, 0, "border area inside border edge (20,15)")
+	sampleColorClose(t, img, 3, 3, 255, 255, 255, 0, "outside border-edge corner (3,3)")
+}
