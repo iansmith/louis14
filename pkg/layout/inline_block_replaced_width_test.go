@@ -181,3 +181,54 @@ func TestInlineBlockPercentWidthInAutoHeightBlock_LOU484(t *testing.T) {
 		t.Errorf("inline-block width: got %.1f, want 100 (width:100%% of the 100px containing block)", got)
 	}
 }
+
+// LOU-484: an auto-height block gives its children an indefinite
+// percentage resolution block-size, so max-height:100% on a child is
+// ignored (CSS 2.1 §10.7) — for an atomic inline as for a block child.
+// Blink: a block's child space carries kIndefiniteSize as the percentage
+// block-size when the block-size is auto (CalculateChildPercentageSize,
+// length_utils.cc:1810-1828 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+// BlockNode::LayoutAtomicInline copies it (block_node.cc:1477-1481).
+// louis14 passed 0, which a definite-looking 0 turned into max-height:0
+// once atomic inlines copied the line's percentage size
+// (css-sizing/block-fit-content-as-initial).
+func TestPercentMaxHeightIgnoredInAutoHeightBlock_LOU484(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		child func() *html.Node
+		style *css.Style
+	}{
+		{"block", func() *html.Node { return makeNode("div") },
+			makeStyle("display", "block", "height", "60px", "max-height", "100%")},
+		{"img", func() *html.Node { return makeImgNode("green.png") },
+			makeStyle("display", "inline", "max-height", "100%")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := tc.child()
+			parent := makeNode("div", child)
+			body := makeNode("div", parent)
+			root := makeNode("div", body)
+			styles := map[*html.Node]*css.Style{
+				root:   makeStyle("display", "block", "height", "600px"),
+				body:   makeStyle("display", "block"),
+				parent: makeStyle("display", "block", "height", "fit-content"),
+				child:  tc.style,
+			}
+			wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+			space := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+				Build()
+
+			result := NewBlockLayoutAlgorithm(imgContextWithIntrinsic(60, 60), buildTestTree(root, styles), space).Layout()
+
+			childFrag := findFragmentByNode(result.Fragment, child)
+			if childFrag == nil {
+				t.Fatal("child fragment not found")
+			}
+			if got := childFrag.Size.HeightF64(); got != 60 {
+				t.Errorf("child height: got %.1f, want 60 (max-height:100%% of an auto-height parent is ignored)", got)
+			}
+		})
+	}
+}
