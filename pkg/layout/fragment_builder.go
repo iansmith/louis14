@@ -904,6 +904,70 @@ func (b *BoxFragmentBuilder) SetIsBlockFragmentationContextRoot() {
 	b.isBlockFragmentationContextRoot = true
 }
 
+// PropagateOOFPositionedInfo adopts the out-of-flow candidates and
+// fragmentainer descendants of childResult, a child added at offset (its
+// border-box offset in this builder's content box) and shifted by
+// relativeOffset. Candidates' static positions move from the child's
+// content box into this builder's: the child's offset, border+padding and
+// relative offset are added, through a physical round trip when the child's
+// writing direction differs. Fragmentainer descendants keep their
+// CB-relative static positions (PropagateOOFFragmentainerDescendants).
+// Every algorithm calls it right after adding the child. Mirrors Blink's
+// FragmentBuilder::PropagateOOFPositionedInfo (fragment_builder.cc:746-923
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which Blink's AddResult /
+// AddChild reach through PropagateFromFragment (:357-405). louis14's static
+// positions are content-box relative (Blink: border-box), hence the
+// border+padding term.
+func (b *BoxFragmentBuilder) PropagateOOFPositionedInfo(childResult *LayoutResult, childStyle *css.Style, offset, relativeOffset LogicalOffset) {
+	if childResult == nil {
+		return
+	}
+	hasFragmentedOofData := childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil
+	if len(childResult.PropagatedOOFCandidates) == 0 && !hasFragmentedOofData {
+		return
+	}
+	parentWDM := b.wdm
+	// The child's border+padding in its own logical axes, converted to
+	// this builder's through physical edges.
+	childWDM := NewWritingDirectionMode(childStyle)
+	childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+	physBP := ToPhysicalEdges(LogicalEdges{
+		InlineStart: childGeom.Border.InlineStart + childGeom.Padding.InlineStart,
+		InlineEnd:   childGeom.Border.InlineEnd + childGeom.Padding.InlineEnd,
+		BlockStart:  childGeom.Border.BlockStart + childGeom.Padding.BlockStart,
+		BlockEnd:    childGeom.Border.BlockEnd + childGeom.Padding.BlockEnd,
+	}, childWDM)
+	parentBP := ToLogicalEdges(physBP, parentWDM)
+	// adjusted_offset = offset + relative_offset (fragment_builder.cc:762).
+	adjusted := LogicalOffset{
+		InlineOffset: offset.InlineOffset + parentBP.InlineStart + relativeOffset.InlineOffset,
+		BlockOffset:  offset.BlockOffset + parentBP.BlockStart + relativeOffset.BlockOffset,
+	}
+
+	needsConversion := childWDM.WM != parentWDM.WM || childWDM.Dir != parentWDM.Dir
+	var childContentPhys PhysicalSize
+	if needsConversion && childResult.Fragment != nil {
+		childContentPhys = PhysicalSize{
+			Width:  max(0, childResult.Fragment.Size.WidthF64()-physBP.Left-physBP.Right),
+			Height: max(0, childResult.Fragment.Size.HeightF64()-physBP.Top-physBP.Bottom),
+		}
+	}
+	for _, cand := range childResult.PropagatedOOFCandidates {
+		if needsConversion {
+			// child-logical → physical → parent-logical, within the child's
+			// content box.
+			cand.StaticPosition = cand.StaticPosition.ConvertToPhysical(childWDM, childContentPhys).ConvertToLogical(parentWDM, childContentPhys)
+		}
+		cand.StaticPosition.Offset.InlineOffset += adjusted.InlineOffset
+		cand.StaticPosition.Offset.BlockOffset += adjusted.BlockOffset
+		b.AddOutOfFlowCandidate(cand)
+	}
+
+	if hasFragmentedOofData {
+		b.PropagateOOFFragmentainerDescendants(childResult.Fragment, adjusted, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, nil)
+	}
+}
+
 // PropagateOOFFragmentainerDescendants walks any deferred OOF fragmentainer
 // descendants stashed on `childFragment` (via FragmentedOofData) and appends
 // them to this builder's own deferred list. Mirrors Blink's

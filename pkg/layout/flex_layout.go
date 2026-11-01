@@ -1530,22 +1530,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			if item.fragment != nil && item.fragment.BoxData != nil {
 				item.fragment.BoxData.Margin = ToPhysicalEdges(item.margins, wdm)
 			}
-			builder.AddChild(item.fragment, LogicalOffset{
-				InlineOffset: inlineOff,
-				BlockOffset:  blockOff,
-			})
-			// Inherit OOF candidates propagated from non-positioned flex items.
-			if len(item.propagatedOOF) > 0 {
-				itemBP := ComputeFragmentGeometry(item.style, wdm)
-				blockAdj := blockOff + itemBP.Border.BlockStart + itemBP.Padding.BlockStart
-				inlineAdj := inlineOff + itemBP.Border.InlineStart + itemBP.Padding.InlineStart
-				for _, cand := range item.propagatedOOF {
-					adj := cand
-					adj.StaticPosition.Offset.BlockOffset += blockAdj
-					adj.StaticPosition.Offset.InlineOffset += inlineAdj
-					builder.AddOutOfFlowCandidate(adj)
-				}
-			}
+			itemOffset := LogicalOffset{InlineOffset: inlineOff, BlockOffset: blockOff}
+			itemRelativeOffset := builder.relativeOffsetFor(item.fragment)
+			builder.AddChildWithRelativeOffset(item.fragment, itemOffset, itemRelativeOffset)
+			builder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: item.fragment, PropagatedOOFCandidates: item.propagatedOOF},
+				item.style, itemOffset, itemRelativeOffset)
 		}
 	}
 
