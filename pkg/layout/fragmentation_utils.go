@@ -396,6 +396,16 @@ func hasCloneBoxDecorationBreak(style *css.Style) bool {
 	return style != nil && style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone
 }
 
+// InvolvedInBlockFragmentation reports whether a box laid out in space
+// takes part in block fragmentation: the space fragments, or the box resumes
+// after a break inside it (a box relaid out with fragmentation forced off
+// still finishes its last fragment from the consumed block-size). Mirrors
+// Blink's InvolvedInBlockFragmentation (fragmentation_utils.h:75-79 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func InvolvedInBlockFragmentation(space ConstraintSpace) bool {
+	return space.HasBlockFragmentation || space.BreakToken.IsBreakInside()
+}
+
 // FragmentainerCapacity is the fragmentainer block-size to use during layout,
 // or Indefinite when it is unknown (initial column balancing). For children
 // (isForChildren) cloned box decorations shrink the space, as children steer
@@ -827,6 +837,10 @@ type FinishFragmentationInput struct {
 	// HasEarlyBreak: the builder holds a breakpoint found earlier in this
 	// fragment (BoxFragmentBuilder::HasEarlyBreak).
 	HasEarlyBreak bool
+	// HasNonVisibleBlockOverflow: the box clips overflow along its block
+	// axis (BlockNode::HasNonVisibleBlockOverflow, block_node.cc:1356-1361
+	// @ a9f50e522efa).
+	HasNonVisibleBlockOverflow bool
 }
 
 // FinishFragmentationResult is what Blink's FinishFragmentation writes to the
@@ -852,13 +866,17 @@ type FinishFragmentationResult struct {
 	// (block_break_token.cc:77), and it makes the box break inside
 	// (BoxFragmentBuilder::ShouldBreakInside, box_fragment_builder.h:494-497).
 	MonolithicOverflow float64
+	// DisableFragmentation: a block-overflow-clipping box reached its end
+	// while something still broke inside it; lay it out again without
+	// fragmentation so it generates no further (zero-sized, clipped)
+	// fragments (BreakStatus::kDisableFragmentation, :748-758).
+	DisableFragmentation bool
 }
 
 // FinishFragmentation decides this fragment's block-size and whether the box
 // breaks, is at its block end, and which block edges it carries. Mirrors
 // Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
-// a9f50e522efa). Not ported: kDisableFragmentation for
-// block-overflow-clipping boxes.
+// a9f50e522efa).
 func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
 	spaceLeft := in.SpaceLeft
 	previous := in.PreviousBreakToken
@@ -939,6 +957,13 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 			out.IsAtBlockEnd = true
 		} else if desiredBlockSize <= spaceLeft &&
 			(!in.HasInflowChildBreakInside || in.IsKnownToFitInFragmentainer) {
+			if in.HasNonVisibleBlockOverflow {
+				// The end of a fragmentable box that clips block-axis
+				// overflow, with something broken inside: no more
+				// fragments from it (:748-758).
+				out.DisableFragmentation = true
+				return out
+			}
 			out.IsAtBlockEnd = true
 		}
 		if out.IsAtBlockEnd {

@@ -254,6 +254,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
 		bla.containerBuilder.SetIsMonolithic(true)
 	}
+	// A fragmentable node whose fragmentation was forced off at its first
+	// fragment is treated as monolithic, so its out-of-flow descendants are
+	// contained by it, matching OOF layout (SetupFragmentBuilderForFragmentation,
+	// fragmentation_utils.cc:408-424 @ a9f50e522efa).
+	if bla.space.IsBlockFragmentationForcedOff && !bla.space.BreakToken.IsBreakInside() {
+		bla.containerBuilder.SetIsMonolithic(true)
+	}
 	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
 	// initial column-balancing pass, propagate the container's own border-
 	// block-start and border-block-end as unbreakable floors. Mirrors Blink's
@@ -480,6 +487,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			IsKnownToFitInFragmentainer:           isKnownToFitInFragmentainer,
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
 			HasEarlyBreak:                         bla.containerBuilder.HasEarlyBreak(),
+			HasNonVisibleBlockOverflow:            clipsBlockAxisOverflow(bla.style, bla.node.DOMNode, wdm),
 		})
 		if !res.IncludeBlockEnd {
 			bla.containerBuilder.ClearBorderScrollbarPaddingBlockEnd()
@@ -838,6 +846,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// stretches to the fragmentainer end (block_layout_algorithm.cc:
 			// 3281-3288).
 			finish := setBreakingSize(consumeRemainingFragmentainerSpace(blockCursor))
+			if finish.DisableFragmentation {
+				// kDisableFragmentation (block_layout_algorithm.cc:
+				// 1485-1486, :652-654 @ a9f50e522efa).
+				return bla.relayoutWithoutFragmentation()
+			}
 			if bla.space.HasBlockFragmentation {
 				inlineBreakToken.ConsumedBlockSize = layoutunit.FromFloat64Round(finish.ConsumedBlockSize)
 				inlineBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
@@ -1301,6 +1314,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					b.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
 				}
 
+				// Pass child break token if resuming this specific child.
+				// Blink passes it in LayoutAlgorithmParams whether or not the
+				// space fragments, so a box relaid out with fragmentation
+				// forced off still resumes its children (LayoutBlockChild,
+				// block_layout_algorithm.cc:109-122 @ a9f50e522efa).
+				if tok, ok := resumeChildTokens[child]; ok {
+					b.SetBreakToken(tok)
+				}
+				// The early break inside the child, if the relayout breaks
+				// there (LayoutBlockChild → EnterEarlyBreakInChild,
+				// block_layout_algorithm.cc:109-122 @ a9f50e522efa).
+				b.SetEarlyBreak(EnterEarlyBreakInChild(child, bla.earlyBreak))
 				if !bla.space.HasBlockFragmentation || childIsMonolithic {
 					return b
 				}
@@ -1331,14 +1356,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					b.SetColumnSpannerPath(path.Child)
 				}
 
-				// Pass child break token if resuming this specific child.
-				if tok, ok := resumeChildTokens[child]; ok {
-					b.SetBreakToken(tok)
-				}
-				// The early break inside the child, if the relayout breaks
-				// there (LayoutBlockChild → EnterEarlyBreakInChild,
-				// block_layout_algorithm.cc:109-122 @ a9f50e522efa).
-				b.SetEarlyBreak(EnterEarlyBreakInChild(child, bla.earlyBreak))
 				return b
 			}
 
@@ -1913,9 +1930,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	shouldBreakInside := pendingShouldBreakInside || len(pendingParallelFlowChildTokens) > 0
 	var finish FinishFragmentationResult
 	var finalBlockSize float64
-	if bla.space.HasBlockFragmentation {
-		// In a fragmentation context the stitched block-size (declared, or
-		// earlier fragments plus this content, clamped by min/max) is
+	if InvolvedInBlockFragmentation(bla.space) {
+		// In a fragmentation context, or resuming after a break inside
+		// (InvolvedInBlockFragmentation, block_layout_algorithm.cc:1479 @
+		// a9f50e522efa), the stitched block-size (declared, or earlier
+		// fragments plus this content, clamped by min/max) is
 		// distributed by FinishFragmentation, which breaks the box itself
 		// when the rest does not fit (fragmentation_utils.cc:547-822); a
 		// column box takes its fragmentainer's block-size
@@ -1936,6 +1955,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		if finish.NeedsEarlierBreak && bla.earlyBreak == nil {
 			bla.containerBuilder.PropagateSpaceShortage(finish.SpaceShortage)
 			return bla.relayoutAndBreakEarlier(bla.containerBuilder.GetEarlyBreak())
+		}
+		// A block-axis clipping box reached its end with content still
+		// breaking inside: lay out again without fragmentation
+		// (FinalizeForFragmentation → kDisableFragmentation →
+		// RelayoutWithoutFragmentation, block_layout_algorithm.cc:1485-1486,
+		// :652-654 @ a9f50e522efa).
+		if finish.DisableFragmentation {
+			return bla.relayoutWithoutFragmentation()
 		}
 		finalBlockSize = max(0, finish.FragmentBlockSize-geom.BlockBorderPadding())
 	} else {

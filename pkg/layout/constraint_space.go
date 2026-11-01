@@ -227,6 +227,13 @@ type ConstraintSpace struct {
 	// ConstraintSpace::ShouldIgnoreForcedBreaks().
 	ShouldIgnoreForcedBreaks bool
 
+	// IsBlockFragmentationForcedOff is set on a node that participates in
+	// block fragmentation but was relaid out with fragmentation disabled
+	// because it clips block-axis overflow (CloneWithoutFragmentation).
+	// Mirrors Blink's ConstraintSpace::IsBlockFragmentationForcedOff
+	// (constraint_space.h:501-505 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsBlockFragmentationForcedOff bool
+
 	// --- Tables (single-pass sizing) ---
 
 	// TableSectionData carries the immutable, finalized row/section
@@ -290,6 +297,19 @@ func (cs ConstraintSpace) HasKnownFragmentainerBlockSize() bool {
 // space (column_layout_algorithm.cc:1850).
 func (cs ConstraintSpace) ShouldPropagateChildBreakValues() bool {
 	return cs.PropagateChildBreakValues
+}
+
+// CloneWithoutFragmentation returns a copy of this fragmentation space with
+// block fragmentation disabled and IsBlockFragmentationForcedOff set; the
+// rest of the fragmentation fields are kept, since as far as input is
+// concerned the node still takes part in fragmentation. Mirrors Blink's
+// ConstraintSpace::CloneWithoutFragmentation (constraint_space.h:143-153 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (cs ConstraintSpace) CloneWithoutFragmentation() ConstraintSpace {
+	cs.HasBlockFragmentation = false
+	cs.BlockFragmentationType = FragmentNone
+	cs.IsBlockFragmentationForcedOff = true
+	return cs
 }
 
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
