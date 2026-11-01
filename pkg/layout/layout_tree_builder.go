@@ -1029,11 +1029,7 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 		if isWhitespaceOnly(inlineRun) {
 			// Move floats/abs-pos out of the discarded run — they still
 			// need to participate in layout.
-			for _, c := range inlineRun {
-				if isOutOfFlowOrFloat(c) {
-					result = append(result, c)
-				}
-			}
+			result = appendOutOfFlowAndFloats(result, inlineRun)
 			inlineRun = nil
 			return
 		}
@@ -2335,6 +2331,18 @@ func isBlockContainerStyle(st *css.Style) bool {
 	}
 	d := st.GetDisplay()
 	return isBlockContainer(d) || (d == css.DisplayInlineListItem && !st.IsInlineBoxListItem())
+}
+
+// appendOutOfFlowAndFloats appends the floats and out-of-flow boxes of a
+// discarded whitespace-only run to dst: they stay direct children of the
+// block container rather than sit in an anonymous block.
+func appendOutOfFlowAndFloats(dst, run []*LayoutInputNode) []*LayoutInputNode {
+	for _, n := range run {
+		if isOutOfFlowOrFloat(n) {
+			dst = append(dst, n)
+		}
+	}
+	return dst
 }
 
 // isWhitespaceOnly returns true if the run contains only whitespace text nodes
