@@ -103,6 +103,32 @@ func TestEarlyBreakBeforeAvoidInsideChild_LOU487(t *testing.T) {
 	})
 }
 
+// break-between-avoid-012: whitespace around a float between blocks of a
+// multicol is not an in-flow child (Blink creates no LayoutText for
+// whitespace after a non-inline sibling, Text::TextLayoutObjectIsNeeded),
+// so the float is no breakpoint: the early break goes before B and B, the
+// float and D all move to column 2. LOU-500 (re-landed from LOU-487 now
+// that floats fragment, LOU-497).
+func TestEarlyBreakSkipsFloat_LOU500(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">
+<div style="columns:2; gap:0; column-fill:auto; width:100px; height:150px;">
+  <div id=a style="height:100px;"></div>
+  <div id=b style="height:30px;"></div>
+  <div id=fl style="float:left; width:50%;">
+    <div style="height:10px; contain:size;"></div>
+    <div style="height:10px; contain:size;"></div>
+  </div>
+  <div id=d style="break-before:avoid; break-inside:avoid;">
+    <div style="margin-left:auto; width:50%; height:20px;"></div>
+    <div style="height:50px;"></div>
+  </div>
+</div>`)
+	wantRects(t, got, map[string][]fragRect{
+		"a": {{0, 0, 50, 100}}, "b": {{50, 0, 50, 30}},
+		"fl": {{50, 30, 25, 20}}, "d": {{50, 30, 50, 70}},
+	})
+}
+
 // UpdateEarlyBreakBetweenLines (block_layout_algorithm.cc:3291-3325 @
 // a9f50e522efa): four 30px lines fit a 160px column, a break-before:avoid
 // square after them does not; the early break between the lines
@@ -180,4 +206,48 @@ func TestSoftBreakPropagatesChildBreakValues_LOU487(t *testing.T) {
 	if res.FinalBreakAfter != "avoid" {
 		t.Errorf("FinalBreakAfter = %q, want %q (the pushed child's break-after)", res.FinalBreakAfter, "avoid")
 	}
+}
+
+// A multicol nested in an outer fragmentation context finds the breakpoint
+// before spanner B more appealing than the one before C (break-before and
+// break-inside avoid): LayoutChildren returns kNeedsEarlierBreak and the
+// multicol relays out to break before B (column_layout_algorithm.cc:
+// 338-343, :653-655, :635-637 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Chrome 152 getClientRects: a [0,0,100,40], b [100,0,100,40],
+// c [100,40,100,40].
+func TestMulticolEarlyBreakBeforeSpanner_LOU500(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">
+<div style="columns:2; gap:0; column-fill:auto; width:200px; height:100px;">
+  <div style="columns:2; gap:0;">
+    <div id=a style="column-span:all; height:40px;"></div>
+    <div id=b style="column-span:all; height:40px;"></div>
+    <div id=c style="column-span:all; height:40px; break-before:avoid; break-inside:avoid;"></div>
+  </div>
+</div>`)
+	wantRects(t, got, map[string][]fragRect{
+		"a": {{0, 0, 100, 40}}, "b": {{100, 0, 100, 40}}, "c": {{100, 40, 100, 40}},
+	})
+}
+
+// The breakpoint before spanner B inside a nested multicol that did not
+// break is offered to the parent (the multicol's LayoutResult early break,
+// layout_result.cc:265-274 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); D
+// (break-before and break-inside avoid) does not fit, so the parent relays
+// out and the multicol breaks before B (EnterEarlyBreakInChild,
+// column_layout_algorithm.cc:635-637, :1349-1360 @ a9f50e522efa). Chrome 152
+// getClientRects: mc [0,0,100,100] [100,0,100,40], a [0,0,100,40],
+// b [100,0,100,40], d [100,40,100,40].
+func TestMulticolOffersEarlyBreakToParent_LOU500(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">
+<div style="columns:2; gap:0; column-fill:auto; width:200px; height:100px;">
+  <div id=mc style="columns:2; gap:0;">
+    <div id=a style="column-span:all; height:40px;"></div>
+    <div id=b style="column-span:all; height:40px;"></div>
+  </div>
+  <div id=d style="height:40px; break-before:avoid; break-inside:avoid;"></div>
+</div>`)
+	wantRects(t, got, map[string][]fragRect{
+		"mc": {{0, 0, 100, 100}, {100, 0, 100, 40}},
+		"a":  {{0, 0, 100, 40}}, "b": {{100, 0, 100, 40}}, "d": {{100, 40, 100, 40}},
+	})
 }
