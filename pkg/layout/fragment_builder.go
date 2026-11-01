@@ -952,27 +952,86 @@ func (b *BoxFragmentBuilder) AddOutOfFlowFragmentainerDescendant(d LogicalOofNod
 // AdjustFragmentainerDescendant moves a fragmentainer descendant deferred at
 // this containing block into stitched-CB coordinates: the containing-block
 // offset becomes the offset of the CB's first fragment, and the static
-// position is made relative to it. previousConsumedBlockSize is the CB's
-// incoming break token's (border-box) ConsumedBlockSize. Mirrors Blink's
+// position is made relative to it. When this box is the descendant's
+// fixedpos containing block (a fixed container) its fixedpos
+// containing-block offset is moved the same way. onlyFixedposContainingBlock
+// adjusts only the latter. previousConsumedBlockSize is the CB's incoming
+// break token's (border-box) ConsumedBlockSize. Mirrors Blink's
 // BoxFragmentBuilder::AdjustFragmentainerDescendant
 // (box_fragment_builder.cc:781-809 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), called from
-// OutOfFlowLayoutPart::LayoutCandidates (out_of_flow_layout_part.cc:1190-1200
-// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// OutOfFlowLayoutPart::LayoutCandidates (out_of_flow_layout_part.cc:1190-1200).
 //
 // louis14 static positions are content-box relative, Blink's border-box
 // relative (plan RC-8), so the static position takes the content block-size
 // the CB's earlier fragments consumed (previousConsumedContentBlockSize)
-// while the containing-block offset takes the border-box one. The
-// Fragment!=nil guard is Blink's (only an undeferred descendant is
-// adjusted). The fixedpos containing-block half of Blink's function is not
-// ported: louis14 never fills FixedposContainingBlock at a deferral site.
-func (b *BoxFragmentBuilder) AdjustFragmentainerDescendant(d *LogicalOofNodeForFragmentation, previousConsumedBlockSize, previousConsumedContentBlockSize float64) {
-	if d.ContainingBlock.Fragment != nil {
+// while the containing-block offsets take the border-box one.
+func (b *BoxFragmentBuilder) AdjustFragmentainerDescendant(d *LogicalOofNodeForFragmentation, onlyFixedposContainingBlock bool, previousConsumedBlockSize, previousConsumedContentBlockSize float64) {
+	if !onlyFixedposContainingBlock && d.ContainingBlock.Fragment == nil {
+		d.ContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
+		d.Candidate.StaticPosition.Offset.BlockOffset += previousConsumedContentBlockSize
+	}
+	if d.FixedposContainingBlock.Fragment == nil &&
+		(b.isFixedContainer() || d.FixedposInlineContainer.Container != nil) {
+		d.FixedposContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
+	}
+}
+
+// AdjustFixedposContainingBlockForFragmentainerDescendants applies the
+// fixedpos half of AdjustFragmentainerDescendant to every fragmentainer
+// descendant collected here. Mirrors Blink's
+// BoxFragmentBuilder::AdjustFixedposContainingBlockForFragmentainerDescendants
+// (box_fragment_builder.cc:811-821 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) AdjustFixedposContainingBlockForFragmentainerDescendants(previousConsumedBlockSize float64) {
+	for i := range b.oofPositionedFragmentainerDescendants {
+		b.AdjustFragmentainerDescendant(&b.oofPositionedFragmentainerDescendants[i], true, previousConsumedBlockSize, 0)
+	}
+}
+
+// AdjustFixedposContainingBlockForInnerMulticols makes the pending inner
+// multicols whose fixedpos containing block is this box (a fixed container,
+// its fragment not recorded yet) relative to its first fragment: the
+// fixedpos containing-block offset loses, and the multicol offset gains, the
+// block-size the box's earlier fragments consumed. Mirrors Blink's
+// BoxFragmentBuilder::AdjustFixedposContainingBlockForInnerMulticols
+// (box_fragment_builder.cc:823-845 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the multicol offset is
+// content-box relative in louis14, so it gains the consumed content
+// block-size.
+func (b *BoxFragmentBuilder) AdjustFixedposContainingBlockForInnerMulticols(previousConsumedBlockSize, previousConsumedContentBlockSize float64) {
+	if previousConsumedBlockSize == 0 {
 		return
 	}
-	d.ContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
-	d.Candidate.StaticPosition.Offset.BlockOffset += previousConsumedContentBlockSize
+	for _, multicol := range b.multicolsWithPendingOOFs {
+		if multicol.FixedposContainingBlock.Fragment == nil &&
+			(b.isFixedContainer() || multicol.FixedposInlineContainer.Container != nil) {
+			multicol.FixedposContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
+			multicol.MulticolOffset.BlockOffset += previousConsumedContentBlockSize
+		}
+	}
+}
+
+// isFixedContainer reports whether the box this builder lays out is a fixed
+// container (Blink's node_.IsFixedContainer()).
+func (b *BoxFragmentBuilder) isFixedContainer() bool {
+	return b.layoutNode != nil && b.layoutNode.IsFixedContainer()
+}
+
+// AdjustFixedposContainerInfo records boxFragment, a child being propagated
+// into this builder, as the fixedpos containing block of an OOF (or pending
+// multicol) that has none yet when it can contain fixed-position boxes.
+// Mirrors Blink's FragmentBuilder::AdjustFixedposContainerInfo
+// (fragment_builder.cc:1108-1143 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for box fragments; louis14
+// inline boxes are not fragments that carry OOF data, so the
+// inline-container branches are not ported.
+func (b *BoxFragmentBuilder) AdjustFixedposContainerInfo(boxFragment *PhysicalFragment, fixedposContainingBlockFragment **PhysicalFragment) {
+	if boxFragment == nil || *fixedposContainingBlockFragment != nil || boxFragment.LayoutNode == nil {
+		return
+	}
+	if boxFragment.LayoutNode.IsFixedContainer() {
+		*fixedposContainingBlockFragment = boxFragment
+	}
 }
 
 // AddMulticolWithPendingOOFs records an inner-multicol descendant whose own
@@ -999,10 +1058,9 @@ func (b *BoxFragmentBuilder) AddMulticolWithPendingOOFs(node *LayoutInputNode, i
 // candidate whose fixedpos containing block was found inside it becomes a
 // fragmentainer descendant of destination instead. Mirrors Blink's
 // FragmentBuilder::TransferOutOfFlowCandidates (fragment_builder.cc:682-710
-// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 does not yet record
-// a fixedpos containing block on a pending multicol (Blink's
-// AdjustFixedposContainerInfo, fragment_builder.cc:1108-1143, is not
-// ported), so that branch is not reached yet.
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The pending multicol's
+// fixedpos containing block is recorded while it propagates
+// (AdjustFixedposContainerInfo), its multicol offset then relative to it.
 func (b *BoxFragmentBuilder) TransferOutOfFlowCandidates(destination *BoxFragmentBuilder, additionalOffset LogicalOffset, multicol *MulticolWithPendingOOFs) {
 	for _, candidate := range b.outOfFlowCandidates {
 		candidate.StaticPosition.Offset.InlineOffset += additionalOffset.InlineOffset
@@ -1019,6 +1077,16 @@ func (b *BoxFragmentBuilder) TransferOutOfFlowCandidates(destination *BoxFragmen
 		destination.AddOutOfFlowCandidate(candidate)
 	}
 	b.outOfFlowCandidates = nil
+}
+
+// NeedsOutOfFlowLayoutPart reports whether the container this builder lays
+// out has out-of-flow work for its OutOfFlowLayoutPart: candidates,
+// fragmentainer descendants or inner multicols with pending OOFs (the
+// condition of the early return in Blink's OutOfFlowLayoutPart constructor,
+// out_of_flow_layout_part.cc:551-556 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) NeedsOutOfFlowLayoutPart() bool {
+	return len(b.outOfFlowCandidates) > 0 || b.HasOutOfFlowFragmentainerDescendants() || b.HasMulticolsWithPendingOOFs()
 }
 
 // HasOutOfFlowFragmentainerDescendants reports whether any deferred OOFs are
@@ -1173,20 +1241,19 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 		return
 	}
 	data := childFragment.FragmentedOofData
+	totalInline := offset.InlineOffset + relativeOffset.InlineOffset
+	totalBlock := offset.BlockOffset + relativeOffset.BlockOffset
+	cbAdjBlock := cbAdjustment.Float64()
+	// A descendant propagated out of a column spanner is tagged, so the
+	// inner multicol's pending-OOF layout leaves it to the next
+	// fragmentation context (fragment_builder.cc:974-975 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's IsColumnSpanAll
+	// also requires tree validity; louis14 checks the style half
+	// (isColumnSpanAll), which only matters for a column-span:all box that
+	// is not a real spanner and carries fragmentainer descendants.
+	isColumnSpanner := childFragment.LayoutNode != nil && isColumnSpanAll(childFragment.LayoutNode)
 
 	if len(data.OofPositionedFragmentainerDescendants) > 0 {
-		totalInline := offset.InlineOffset + relativeOffset.InlineOffset
-		totalBlock := offset.BlockOffset + relativeOffset.BlockOffset
-		cbAdjBlock := cbAdjustment.Float64()
-		// A descendant propagated out of a column spanner is tagged, so the
-		// inner multicol's pending-OOF layout leaves it to the next
-		// fragmentation context (fragment_builder.cc:974-975 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's
-		// IsColumnSpanAll also requires tree validity; louis14 checks the
-		// style half (isColumnSpanAll), which only matters for a
-		// column-span:all box that is not a real spanner and carries
-		// fragmentainer descendants.
-		isColumnSpanner := childFragment.LayoutNode != nil && isColumnSpanAll(childFragment.LayoutNode)
 		for _, d := range data.OofPositionedFragmentainerDescendants {
 			// An inner multicol keeps the fragmentainer descendants whose
 			// containing block is inside it: they are laid out in its
@@ -1215,15 +1282,26 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 					d.ContainingBlock.Fragment = childFragment
 				}
 			}
-			if d.FixedposContainingBlock.Fragment == nil && fixedposCB != nil {
-				d.FixedposContainingBlock = *fixedposCB
-			}
 			// StaticPosition stays CB-relative — do NOT shift by parent offsets.
 			// Only the CB offsets accumulate.
 			d.ContainingBlock.Offset.InlineOffset += totalInline
 			d.ContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
-			d.FixedposContainingBlock.Offset.InlineOffset += totalInline
-			d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
+			// The fixedpos containing block: found here when the child is a
+			// fixed container, then accumulating offsets like the
+			// containing block; else the one passed in
+			// (fragment_builder.cc:1042-1072).
+			fixedposFragment := d.FixedposContainingBlock.Fragment
+			b.AdjustFixedposContainerInfo(childFragment, &fixedposFragment)
+			if fixedposFragment != nil {
+				d.FixedposContainingBlock.Fragment = fixedposFragment
+				d.FixedposContainingBlock.Offset.InlineOffset += totalInline
+				d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
+				if isColumnSpanner {
+					d.FixedposContainingBlock.IsInsideColumnSpanner = true
+				}
+			} else if fixedposCB != nil {
+				d.FixedposContainingBlock = *fixedposCB
+			}
 			*out = append(*out, d)
 		}
 	}
@@ -1232,11 +1310,31 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 		return
 	}
 	for node, info := range data.MulticolsWithPendingOOFs {
-		// Translate the inner multicol's offset into this builder's frame so
-		// the outer drain site can position OOFs against the right column flow.
+		// Once the multicol's fixedpos containing block is found (here, when
+		// the child is a fixed container, or further down) its offset stays
+		// relative to it and the containing block's offset accumulates;
+		// until then the multicol offset is translated into this builder's
+		// frame (fragment_builder.cc:842-917 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		propagated := *info
-		propagated.MulticolOffset.InlineOffset += offset.InlineOffset + relativeOffset.InlineOffset
-		propagated.MulticolOffset.BlockOffset += offset.BlockOffset + relativeOffset.BlockOffset
+		fixedposFragment := propagated.FixedposContainingBlock.Fragment
+		b.AdjustFixedposContainerInfo(childFragment, &fixedposFragment)
+		if fixedposFragment != nil {
+			propagated.FixedposContainingBlock.Fragment = fixedposFragment
+			propagated.FixedposContainingBlock.RelativeOffset.InlineOffset += relativeOffset.InlineOffset
+			propagated.FixedposContainingBlock.RelativeOffset.BlockOffset += relativeOffset.BlockOffset
+			if !childFragment.IsFragmentainerBox() {
+				propagated.FixedposContainingBlock.Offset.InlineOffset += offset.InlineOffset
+				propagated.FixedposContainingBlock.Offset.BlockOffset += offset.BlockOffset
+			}
+			propagated.FixedposContainingBlock.Offset.BlockOffset += cbAdjBlock
+			if isColumnSpanner {
+				propagated.FixedposContainingBlock.IsInsideColumnSpanner = true
+			}
+		} else {
+			propagated.MulticolOffset.InlineOffset += totalInline
+			propagated.MulticolOffset.BlockOffset += totalBlock
+		}
 		b.AddMulticolWithPendingOOFs(node, &propagated)
 	}
 }

@@ -1288,10 +1288,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 resolves them
 	// against the content box.
 	var propagatedOOF []OutOfFlowCandidate
-	if len(builder.outOfFlowCandidates) > 0 {
+	if builder.NeedsOutOfFlowLayoutPart() {
 		propagatedOOF = NewOutOfFlowLayoutPart(tla.ctx, builder, tla.space,
 			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
-			previousConsumedContentBlockSize(tla.space, geom)).Run()
+			previousConsumedContentBlockSize(tla.space, geom.BorderBoxPadding().BlockStart)).Run()
 	}
 
 	result := builder.Build()
