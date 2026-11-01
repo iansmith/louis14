@@ -868,11 +868,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// root resolves them per fragmentainer in Cmt-3.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		isPositioned := mla.style != nil && mla.style.GetPosition() != css.PositionStatic
-		if isPositioned && !nestedDeferredOOFs {
+		// The multicol contains its absolute descendants when it is an
+		// absolute container, and its fixed ones too when it is a fixed
+		// container (transform, filter, containment: Blink's
+		// IsAbsoluteContainer / IsFixedContainer, read by the multicol's
+		// OutOfFlowLayoutPart, out_of_flow_layout_part.cc:544-545 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		isFixedContainer := mla.node.IsFixedContainer()
+		if mla.node.IsAbsoluteContainer() && !nestedDeferredOOFs {
+			// absoluteCandidates are the candidates this multicol contains.
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
 			for _, cand := range builder.outOfFlowCandidates {
-				if cand.IsFixedPosition {
+				if cand.IsFixedPosition && !isFixedContainer {
 					fixedCandidates = append(fixedCandidates, cand)
 				} else {
 					absoluteCandidates = append(absoluteCandidates, cand)
@@ -905,6 +912,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					containingBlockWDM:  wdm,
 					containingBlockSize: LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize},
 					geom:                mla.geom,
+					resolvesFixed:       isFixedContainer,
 				}
 				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
 					fixedCandidates = append(fixedCandidates, extra...)

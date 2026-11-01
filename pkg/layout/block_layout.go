@@ -2364,52 +2364,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 
-		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
-		// CSS Containment: layout and paint containment establish a containing
-		// block for absolutely positioned descendants (same as positioned elements).
-		isContainmentCB := bla.style != nil && (bla.style.ShouldApplyLayoutContainment() || bla.style.ShouldApplyPaintContainment())
-		// CSS Transforms §2.1 / Filter Effects 1+2 §"The filter property" /
-		// Will Change §2.2: transform, perspective, filter, backdrop-filter,
-		// and any will-change of a CB-establishing property create a
-		// containing block for all positioned descendants (including fixed).
-		isTransformCB := false
-		if bla.style != nil && !isContainmentCB {
-			if transforms := bla.style.GetTransforms(); len(transforms) > 0 {
-				isTransformCB = true
-			} else if filters := bla.style.GetFilter(); len(filters) > 0 {
-				isTransformCB = true
-			} else if bdFilters := bla.style.GetBackdropFilter(); len(bdFilters) > 0 {
-				isTransformCB = true
-			} else if bla.style.WillChangeEstablishesContainingBlock(true) {
-				isTransformCB = true
-			} else if bla.style.GetTransformStyle() == css.TransformStylePreserve3D {
-				// CSS Transforms L2 §11 / Blink's HasTransformRelatedProperty:
-				// transform-style:preserve-3d establishes a containing block
-				// for all positioned descendants (including fixed). Mirrors
-				// Blink's ComputedStyle::HasTransformRelatedProperty at SHA
-				// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-				isTransformCB = true
-			} else if bla.style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
-				// CSS Transforms L2 §11: backface-visibility:hidden establishes
-				// a containing block (and stacking context) when the element
-				// participates in a 3D rendering context. WPT
-				// backface-visibility-hidden-003 covers the case where the
-				// parent has transform-style:preserve-3d. Blink's
-				// HasTransformRelatedProperty treats backface-visibility:hidden
-				// as CB-establishing unconditionally; we mirror that.
-				isTransformCB = true
-			}
-		}
-		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
-		// CB triggers) establishes a CB for abs-pos descendants but NOT fixed
-		// — mirrors position:relative semantics. Handled separately from
-		// isTransformCB because fixed candidates must still propagate.
-		isWillChangeAbsposCB := false
-		if bla.style != nil && !isContainmentCB && !isTransformCB && !isPositioned {
-			if bla.style.WillChangeEstablishesContainingBlock(false) {
-				isWillChangeAbsposCB = true
-			}
-		}
+		// Blink's IsFixedContainer / IsAbsoluteContainer
+		// (layout_object.cc:1849-1912 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): containment, transforms,
+		// filters and the will-change of one contain all positioned
+		// descendants; a non-static position or an abspos-only will-change
+		// contains absolute ones only.
+		isFixedContainer := bla.node.IsFixedContainer()
+		isAbsoluteContainer := bla.node.IsAbsoluteContainer()
 		isRoot := bla.space.IsRootElement
 
 		if isRoot {
@@ -2433,7 +2395,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				resolvesFixed:          true,
 			}
 			oofPart.LayoutCandidates(regularCandidates, builder)
-		} else if isContainmentCB || isTransformCB {
+		} else if isFixedContainer {
 			// CSS Containment / CSS Transforms: containment, transforms, filters,
 			// and will-change:transform/perspective/filter make this element a
 			// containing block for ALL positioned descendants, including fixed.
@@ -2452,7 +2414,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				resolvesFixed:          true,
 			}
 			oofPart.LayoutCandidates(regularCandidates, builder)
-		} else if isPositioned || isWillChangeAbsposCB {
+		} else if isAbsoluteContainer {
 			// Positioned element OR will-change:position-like CB: resolve
 			// absolute candidates here, but propagate fixed candidates
 			// upward toward the ICB. (Will Change §2.2: abspos-only CB

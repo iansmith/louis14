@@ -1804,7 +1804,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		isPositioned := fla.style != nil && fla.style.GetPosition() != css.PositionStatic
 		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
 		// CB triggers) makes this flex container a CB for abs-pos descendants
-		// but not for fixed. Mirrors block_layout's isWillChangeAbsposCB.
+		// but not for fixed (the abspos-only half of LayoutInputNode.IsAbsoluteContainer).
 		isWillChangeAbsposCB := false
 		if fla.style != nil && !isPositioned {
 			if fla.style.WillChangeEstablishesContainingBlock(false) {
