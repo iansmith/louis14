@@ -141,8 +141,9 @@ func TestApplyStylesToDocument(t *testing.T) {
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	styles := ApplyStylesToDocument(doc, 800, 600)
 
-	// The parser creates implicit <html> and <body> wrappers per HTML5 §8.2.6.4.
-	// All 4 elements (html, body, 2 divs) should be styled.
+	// The parser creates implicit <html>, <head> and <body> wrappers per
+	// HTML5 §8.2.6.4, and the <style> is an HTMLStyleElement in <head>
+	// (LOU-569). All 6 elements (html, head, style, body, 2 divs) are styled.
 	// Only the 2 divs should have color set (from the CSS rules).
 	elementCount := 0
 	divCount := 0
@@ -159,8 +160,8 @@ func TestApplyStylesToDocument(t *testing.T) {
 		_ = style
 	}
 
-	if elementCount != 4 {
-		t.Errorf("expected 4 styled elements (html, body, 2 divs), got %d", elementCount)
+	if elementCount != 6 {
+		t.Errorf("expected 6 styled elements (html, head, style, body, 2 divs), got %d", elementCount)
 	}
 	if divCount != 2 {
 		t.Errorf("expected 2 divs, got %d", divCount)
