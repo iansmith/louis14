@@ -904,7 +904,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// is not one of its own columns, so they bubble past it and are laid
 	// out in the outer columns.
 	var propagatedOOF []OutOfFlowCandidate
-	if len(mla.containerBuilder.outOfFlowCandidates) > 0 {
+	if mla.containerBuilder.NeedsOutOfFlowLayoutPart() {
 		propagatedOOF = NewOutOfFlowLayoutPart(mla.ctx, mla.containerBuilder, mla.space,
 			LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
 			mla.previouslyConsumedContentBlockSize()).Run()

@@ -531,10 +531,10 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// louis14 resolves them against the content box (Blink: the grid area,
 	// GridLayoutAlgorithm::PlaceOutOfFlowItems, not ported).
 	var propagatedOOF []OutOfFlowCandidate
-	if len(builder.outOfFlowCandidates) > 0 {
+	if builder.NeedsOutOfFlowLayoutPart() {
 		propagatedOOF = NewOutOfFlowLayoutPart(gla.ctx, builder, gla.space,
 			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
-			previousConsumedContentBlockSize(gla.space, geom)).Run()
+			previousConsumedContentBlockSize(gla.space, geom.BorderBoxPadding().BlockStart)).Run()
 	}
 
 	result := builder.Build()

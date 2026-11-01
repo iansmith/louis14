@@ -1793,11 +1793,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// (box_fragment_builder.cc:660-671, called at the end of
 	// FlexLayoutAlgorithm::Layout @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	var propagatedOOF []OutOfFlowCandidate
-	if len(builder.outOfFlowCandidates) > 0 {
+	if builder.NeedsOutOfFlowLayoutPart() {
 		propagatedOOF = NewOutOfFlowLayoutPart(fla.ctx, builder, fla.space, LogicalSize{
 			InlineSize: contentInlineSize + geom.Padding.InlineSum(),
 			BlockSize:  finalBlockSize + geom.Padding.BlockSum(),
-		}, geom.Padding, previousConsumedContentBlockSize(fla.space, geom)).Run()
+		}, geom.Padding, previousConsumedContentBlockSize(fla.space, geom.BorderBoxPadding().BlockStart)).Run()
 	}
 
 	result := builder.Build()

@@ -159,10 +159,12 @@ func previouslyConsumedBlockSize(incomingBreakToken *BlockBreakToken) float64 {
 }
 
 // previousConsumedContentBlockSize is the content block-size the earlier
-// fragments of a box laid out in space with geometry geom consumed: the
-// consumed block-size less the declared block-start border and padding.
-func previousConsumedContentBlockSize(space ConstraintSpace, geom FragmentGeometry) float64 {
-	return max(0, previouslyConsumedBlockSize(space.BreakToken)-geom.BorderBoxPadding().BlockStart)
+// fragments of a box laid out in space consumed: the consumed block-size
+// less the declared block-start border, scrollbar and padding
+// (declaredBlockStart, taken before a continuation clears its block-start
+// edge from the fragment geometry).
+func previousConsumedContentBlockSize(space ConstraintSpace, declaredBlockStart float64) float64 {
+	return max(0, previouslyConsumedBlockSize(space.BreakToken)-declaredBlockStart)
 }
 
 // Layout performs block layout and returns the result.
@@ -2062,7 +2064,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §10.6.4 / CSS-POSITION-3: Lay out out-of-flow children.
 	propagatedOOF := resolveOutOfFlowCandidates(bla.ctx, bla.containerBuilder, bla.space, geom,
-		LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, previousConsumedContentBlockSize(bla.space, geom))
+		LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, previousConsumedContentBlockSize(bla.space, declaredBlockStart))
 
 	result := bla.containerBuilder.Build()
 
@@ -2180,7 +2182,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 // and fieldset_layout_algorithm.cc:147 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder, space ConstraintSpace, geom FragmentGeometry, contentSize LogicalSize, previousConsumedContent float64) []OutOfFlowCandidate {
-	if len(builder.outOfFlowCandidates) == 0 {
+	if !builder.NeedsOutOfFlowLayoutPart() {
 		return nil
 	}
 	paddingBoxSize := LogicalSize{
