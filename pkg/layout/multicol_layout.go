@@ -1787,7 +1787,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		colBreakToken := nextColumnToken
 		inlineOffset := 0.0
 
-
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
 		// when inline overflow is not permitted (cla.cc:1012-1025 @
