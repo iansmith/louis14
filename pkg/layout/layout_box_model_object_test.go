@@ -42,3 +42,40 @@ func TestBackgroundTransfersToView(t *testing.T) {
 		})
 	}
 }
+
+// TestIsDocumentElementOnlyForTheRoot pins LayoutObject::IsDocumentElement
+// (layout_object.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+// GetDocument().documentElement() == node_): only the root's layout object
+// is the document element. A synthetic generated-content image (a
+// ::before content:url() or list-style-image marker image) is built
+// without a layout parent but is not the document element; reporting it
+// made it a stacking context and gave it a view of its own (LOU-581,
+// css-pseudo/marker-content-012).
+func TestIsDocumentElementOnlyForTheRoot(t *testing.T) {
+	const img = `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"></svg>')`
+	doc, err := html.Parse(`<!DOCTYPE html><html><head><style>` +
+		`p::before { content: ` + img + ` } li { list-style-image: ` + img + ` }` +
+		`</style></head><body><p>x</p><ul><li>y</li><li style="list-style-position:inside">z</li></ul></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boxes := NewLayoutEngine(200, 200).Layout(doc)
+	root := boxes[0]
+	if !root.LayoutNode.IsDocumentElement() {
+		t.Fatal("root is not the document element")
+	}
+	var walk func(b *Box)
+	walk = func(b *Box) {
+		for _, c := range b.Children {
+			if c.LayoutNode != nil && c.LayoutNode.IsDocumentElement() {
+				tag := ""
+				if c.Node != nil {
+					tag = c.Node.TagName
+				}
+				t.Errorf("descendant <%s> reports IsDocumentElement", tag)
+			}
+			walk(c)
+		}
+	}
+	walk(root)
+}
