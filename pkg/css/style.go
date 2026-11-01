@@ -3210,6 +3210,31 @@ var nonDefaultInitialValues = map[string]string{
 	// 5992657f556bcd9d207a4aca187488462f027cab). GetFontSize reads the keyword
 	// as initialFontSize. Required by css-values/calc-rem-lang.
 	"font-size": "medium",
+	// Inherited per Blink's css_properties.json5 `inherited: true` @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (cssProperties), so each
+	// needs its explicit initial (reason 2). Values are the spec initials,
+	// each equal to its getter's absent-property fallback. Required by
+	// css-pseudo/marker-text-align-001 (text-align-last: initial).
+	"caption-side":            "top",
+	"fill":                    "black",
+	"fill-rule":               "nonzero",
+	"stroke":                  "none",
+	"stroke-dasharray":        "none",
+	"stroke-dashoffset":       "0",
+	"stroke-linecap":          "butt",
+	"stroke-linejoin":         "miter",
+	"stroke-miterlimit":       "4",
+	"stroke-width":            "1px",
+	"image-rendering":         "auto",
+	"scrollbar-color":         "auto",
+	"text-align-last":         "auto",
+	"text-underline-offset":   "auto",
+	"text-underline-position": "auto",
+	"font-optical-sizing":     "auto",
+	"font-size-adjust":        "none",
+	"font-variant-caps":       "normal",
+	"text-wrap":               "normal",
+	"word-wrap":               "normal",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,
