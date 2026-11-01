@@ -872,10 +872,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// nestedDeferredOOFs becomes true (via HasOutOfFlowFragmentainerDescendants)
 			// so the AddMulticolWithPendingOOFs registration below also fires.
 			if mla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				previouslyConsumed := previouslyConsumedBlockSize(mla.space.BreakToken)
+				previouslyConsumedContent := mla.previouslyConsumedContentBlockSize()
 				for _, cand := range absoluteCandidates {
-					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
-						Candidate: cand,
-					})
+					d := LogicalOofNodeForFragmentation{Candidate: cand}
+					builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+					builder.AddOutOfFlowFragmentainerDescendant(d)
 				}
 				absoluteCandidates = nil
 				if !nestedDeferredOOFs && builder.HasOutOfFlowFragmentainerDescendants() {

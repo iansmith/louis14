@@ -628,6 +628,32 @@ func (b *BoxFragmentBuilder) AddOutOfFlowFragmentainerDescendant(d LogicalOofNod
 	b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
 }
 
+// AdjustFragmentainerDescendant moves a fragmentainer descendant deferred at
+// this containing block into stitched-CB coordinates: the containing-block
+// offset becomes the offset of the CB's first fragment, and the static
+// position is made relative to it. previousConsumedBlockSize is the CB's
+// incoming break token's (border-box) ConsumedBlockSize. Mirrors Blink's
+// BoxFragmentBuilder::AdjustFragmentainerDescendant
+// (box_fragment_builder.cc:781-809 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), called from
+// OutOfFlowLayoutPart::LayoutCandidates (out_of_flow_layout_part.cc:1190-1200
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// louis14 static positions are content-box relative, Blink's border-box
+// relative (plan RC-8), so the static position takes the content block-size
+// the CB's earlier fragments consumed (previousConsumedContentBlockSize)
+// while the containing-block offset takes the border-box one. The
+// Fragment!=nil guard is Blink's (only an undeferred descendant is
+// adjusted). The fixedpos containing-block half of Blink's function is not
+// ported: louis14 never fills FixedposContainingBlock at a deferral site.
+func (b *BoxFragmentBuilder) AdjustFragmentainerDescendant(d *LogicalOofNodeForFragmentation, previousConsumedBlockSize, previousConsumedContentBlockSize float64) {
+	if d.ContainingBlock.Fragment != nil {
+		return
+	}
+	d.ContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
+	d.Candidate.StaticPosition.Offset.BlockOffset += previousConsumedContentBlockSize
+}
+
 // AddMulticolWithPendingOOFs records an inner-multicol descendant whose own
 // OOF fragmentainer descendants haven't been laid out yet. The outer
 // fragmentation root drains the entry in
