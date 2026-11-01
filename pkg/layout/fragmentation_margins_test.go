@@ -82,9 +82,16 @@ func layoutInFlowRoot(t *testing.T, tree marginSpec) (*PhysicalFragment, map[*ht
 // Chrome-measured want.
 func checkRects(t *testing.T, got, want map[string][]fragRect) {
 	t.Helper()
+	checkRectsFrom(t, got, want, "Chrome 155")
+}
+
+// checkRectsFrom is checkRects with the source of the expected values named
+// in the failure message.
+func checkRectsFrom(t *testing.T, got, want map[string][]fragRect, source string) {
+	t.Helper()
 	for id, w := range want {
 		if !slices.Equal(got[id], w) {
-			t.Errorf("%s fragments = %v, want %v (Chrome 155)", id, got[id], w)
+			t.Errorf("%s fragments = %v, want %v (%s)", id, got[id], w, source)
 		}
 	}
 }

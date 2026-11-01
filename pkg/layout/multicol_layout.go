@@ -1477,7 +1477,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 				NewLogicalFragment(wdm, spanFrag).InlineSize(), spannerMargins).InlineStart,
 			BlockOffset: spannerBlockOffset,
 		}
-		mla.containerBuilder.AddChild(spanFrag, spannerOffset)
+		spannerRelativeOffset := mla.containerBuilder.relativeOffsetFor(spanFrag)
+		mla.containerBuilder.AddChildWithRelativeOffset(spanFrag, spannerOffset, spannerRelativeOffset)
 		// Blink AddResult (cla.cc:1427) → PropagateFromFragment
 		// (fragment_builder.cc:357-405 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the spanner's OOF
@@ -1487,7 +1488,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		// louis14 gets structurally: the spanner is laid out from here, so a
 		// positioned ancestor inside the column content never sees them.
 		if spanResult != nil {
-			PropagateOOFCandidates(spanResult, spannerStyle, wdm, spannerOffset.InlineOffset, spannerOffset.BlockOffset, mla.containerBuilder)
+			mla.containerBuilder.PropagateOOFPositionedInfo(spanResult, spannerStyle, spannerOffset, spannerRelativeOffset)
 		}
 		// Blink AddResult (cla.cc:1427) → PropagateChildBreakValues
 		// (box_fragment_builder.cc:226-232, :618-657 @ a9f50e522efa): a

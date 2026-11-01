@@ -440,11 +440,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		relativeOffset := ComputeRelativeOffsetForBoxFragment(item.result.Fragment, wdm,
 			LogicalSize{InlineSize: itemInline, BlockSize: itemBlock})
 		builder.AddChildWithRelativeOffset(item.result.Fragment, offset, relativeOffset)
-
-		// Propagate OOF candidates from children.
-		for _, cand := range item.result.PropagatedOOFCandidates {
-			builder.AddOutOfFlowCandidate(cand)
-		}
+		builder.PropagateOOFPositionedInfo(item.result, item.style, offset, relativeOffset)
 	}
 
 	// Set first/last baseline from baseline-participating items in first/last rows.

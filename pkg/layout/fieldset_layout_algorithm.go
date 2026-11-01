@@ -407,8 +407,9 @@ func (fla *FieldsetLayoutAlgorithm) layoutLegend(legend *LayoutInputNode) {
 // offset, adopting its out-of-flow candidates (Blink AddResult).
 func (fla *FieldsetLayoutAlgorithm) addChildResult(child *LayoutInputNode, result *LayoutResult, inline, block float64) {
 	offset := fla.toContentOffset(inline, block)
-	fla.containerBuilder.AddChild(result.Fragment, offset)
-	PropagateOOFCandidates(result, child.Style(), fla.space.WritingDirection, offset.InlineOffset, offset.BlockOffset, fla.containerBuilder)
+	relativeOffset := fla.containerBuilder.relativeOffsetFor(result.Fragment)
+	fla.containerBuilder.AddChildWithRelativeOffset(result.Fragment, offset, relativeOffset)
+	fla.containerBuilder.PropagateOOFPositionedInfo(result, child.Style(), offset, relativeOffset)
 }
 
 // layoutFieldsetContent lays out the anonymous fieldset content box below the
