@@ -187,6 +187,27 @@ func TestSpannerTagsFragmentainerDescendants(t *testing.T) {
 	}
 }
 
+// TestTransformedMulticolIsFixedContainer pins a transformed multicol as the
+// containing block of its fixed-position descendants (plan probe pC): Blink
+// derives IsFixedContainer from the box's style for every box kind
+// (LayoutObject::ComputeIsFixedContainer, layout_object.cc:1849-1900 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and the multicol's
+// OutOfFlowLayoutPart reads it (out_of_flow_layout_part.cc:544-545). `f`
+// (top:10px; left:5px) is placed against the multicol's padding box at
+// (30,20); `fs` keeps its static position after a 150px block, in column 2.
+// Chrome 155 getClientRects.
+func TestTransformedMulticolIsFixedContainer(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0"><div style="height:20px"></div>`+
+		`<div style="`+oofProbeMulticol+`width:100px;height:100px;margin-left:30px;transform:translateX(0)">`+
+		`<div style="height:150px"></div>`+
+		`<div id=f style="position:fixed;top:10px;left:5px;width:10px;height:10px"></div>`+
+		`<div id=fs style="position:fixed;width:10px;height:10px"></div></div>`)
+	checkRects(t, got, map[string][]fragRect{
+		"f":  {{35, 30, 10, 10}},
+		"fs": {{80, 70, 10, 10}},
+	})
+}
+
 // TestInlineContainingBlockThroughAtomicInline pins Blink's inline
 // containing block for an OOF reached through an inline-block (plan probe
 // pF, multicol-oof-inline-cb-001): the inline-block's OOF descendants are
