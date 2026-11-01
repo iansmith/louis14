@@ -1431,7 +1431,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 		// buffer extent instead would shift the gradient line and the
 		// per-row colour banding off the element's own paint geometry.
 		maskR.drawLinearGradient(maskVal,
-			box.X-float64(bx), box.Y-float64(by), box.Width, box.Height)
+			box.X-float64(bx), box.Y-float64(by), box.Width, box.Height, box.Style)
 	} else if strings.HasPrefix(maskVal, "url(") {
 		// Image mask: load the image and use its alpha channel.
 		src := maskVal

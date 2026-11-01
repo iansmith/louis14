@@ -3,6 +3,8 @@ package render
 import (
 	"math"
 	"testing"
+
+	"louis14/pkg/css"
 )
 
 // TestResolveStopPositions_ClampsMonotonically verifies CSS Images 3 §3.4:
@@ -19,7 +21,7 @@ func TestResolveStopPositions_ClampsMonotonically(t *testing.T) {
 		{r: 0, g: 0, b: 1, a: 1, pos: 70, posIsSet: true, isPercent: true},   // blue 70%
 		{r: 0, g: 0.5, b: 0, a: 1, pos: 0, posIsSet: true, isPercent: false}, // green 0
 	}
-	resolveStopPositions(stops, 100)
+	resolveStopPositions(stops, 100, css.NewStyle())
 	if stops[0].pos != 0 {
 		t.Errorf("yellow: got pos=%v, want 0", stops[0].pos)
 	}
@@ -69,7 +71,7 @@ func TestParseLinearGradient_DegenerateRepeating(t *testing.T) {
 	if !repeating {
 		t.Fatalf("expected repeating=true")
 	}
-	resolveStopPositions(stops, 100)
+	resolveStopPositions(stops, 100, css.NewStyle())
 	if stops[0].pos != stops[1].pos {
 		t.Fatalf("stops should coincide after resolution: %v vs %v", stops[0].pos, stops[1].pos)
 	}
@@ -124,7 +126,7 @@ func TestResolveLhRlhInGradient_PixelSubstitution(t *testing.T) {
 // ellipse + farthest-corner + center per CSS Images 3 §3.4.
 func TestParseRadialGradient_DefaultsCenteredFarthestCorner(t *testing.T) {
 	cx, cy, rx, ry, stops, ok, repeating := parseRadialGradient(
-		"radial-gradient(blue, red)", 100, 100)
+		"radial-gradient(blue, red)", 100, 100, css.NewStyle())
 	if !ok || repeating || len(stops) != 2 {
 		t.Fatalf("parse failed: ok=%v repeating=%v len(stops)=%d", ok, repeating, len(stops))
 	}
@@ -142,7 +144,7 @@ func TestParseRadialGradient_DefaultsCenteredFarthestCorner(t *testing.T) {
 // preamble parses correctly.
 func TestParseConicGradient_FromAndAt(t *testing.T) {
 	cx, cy, fromDeg, stops, ok, _ := parseConicGradient(
-		"conic-gradient(from 45deg at 100px 50px, green 25%, transparent 0)", 200, 200)
+		"conic-gradient(from 45deg at 100px 50px, green 25%, transparent 0)", 200, 200, css.NewStyle())
 	if !ok || len(stops) < 2 {
 		t.Fatalf("parse failed: ok=%v len(stops)=%d", ok, len(stops))
 	}
@@ -158,7 +160,7 @@ func TestParseConicGradient_FromAndAt(t *testing.T) {
 // repeating-conic-gradient prefix is accepted.
 func TestParseConicGradient_RepeatingPrefix(t *testing.T) {
 	_, _, _, stops, ok, repeating := parseConicGradient(
-		"repeating-conic-gradient(black 0 25%, white 25% 50%)", 200, 200)
+		"repeating-conic-gradient(black 0 25%, white 25% 50%)", 200, 200, css.NewStyle())
 	if !ok {
 		t.Fatalf("parse failed")
 	}

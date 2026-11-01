@@ -4433,9 +4433,8 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 			// Range syntax: resolution > calc(...) etc.
 			// Parse the value to ensure it evaluates without error.
 			// We always return True in the static renderer (96dpi ≈ 1dppx is the baseline).
-			ctx := calcContext{fontSize: 16, chScale: 0.5}
 			if IsMathFunction(cond.Value) {
-				_, ok := EvalMathFunction(cond.Value, ctx)
+				_, ok := EvalMathFunction(cond.Value, initialConversionData())
 				if !ok {
 					return MediaQueryUnknown
 				}
@@ -4500,8 +4499,7 @@ func evaluateMediaCondition(cond ConditionNode, viewportWidth, viewportHeight fl
 		// If the value is a calc() expression, evaluate it numerically.
 		// Otherwise, compare the string form against "0".
 		if IsMathFunction(cond.Value) {
-			ctx := calcContext{fontSize: 16, chScale: 0.5}
-			numVal, ok := EvalMathFunction(cond.Value, ctx)
+			numVal, ok := EvalMathFunction(cond.Value, initialConversionData())
 			if !ok {
 				return MediaQueryUnknown
 			}
@@ -4654,7 +4652,7 @@ func parseRatio(val string) (num, den float64, ok bool) {
 	}
 
 	// Parse numerator (may be calc()).
-	ctx := calcContext{fontSize: 16, chScale: 0.5}
+	ctx := initialConversionData()
 	if IsMathFunction(numStr) {
 		n, ok := EvalMathFunction(numStr, ctx)
 		if !ok || n < 0 {
@@ -4695,11 +4693,9 @@ func parseRatio(val string) (num, den float64, ok bool) {
 func parseMediaLength(val string) (float64, string) {
 	val = strings.TrimSpace(val)
 
-	// Handle calc() expressions
-	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
-		inner := val[5 : len(val)-1]
-		// 16px for font-size (media queries use initial font size, not element font-size)
-		if result, ok := EvalCalcWithPercent(inner, initialFontSize, 0); ok {
+	// Math functions resolve against the initial style, not an element's.
+	if IsMathFunction(val) {
+		if result, ok := EvalMathFunction(val, initialConversionData()); ok {
 			return result, "px"
 		}
 	}

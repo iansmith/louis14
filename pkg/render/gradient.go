@@ -340,7 +340,11 @@ func splitGradientArgs(s string) []string {
 }
 
 // resolveStopPositions fills in unspecified stop positions by interpolation.
-func resolveStopPositions(stops []gradientStop, lineLen float64) {
+// Math-function stops resolve through style's (non-nil) conversion data, as
+// Blink resolves gradient lengths with the element's
+// CSSToLengthConversionData (core/css/css_to_length_conversion_data.cc:
+// 117-126 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func resolveStopPositions(stops []gradientStop, lineLen float64, style *css.Style) {
 	n := len(stops)
 	if n == 0 {
 		return
@@ -352,7 +356,7 @@ func resolveStopPositions(stops []gradientStop, lineLen float64) {
 			continue
 		}
 		if stops[i].calcExpr != "" {
-			if v, ok := css.EvalMathFunctionWithPercent(stops[i].calcExpr, 0, lineLen); ok {
+			if v, ok := style.EvalMathWithBase(stops[i].calcExpr, lineLen); ok {
 				stops[i].pos = v
 			} else {
 				stops[i].pos = 0
@@ -520,7 +524,7 @@ func computeCornerAngle(cornerType string, w, h float64) float64 {
 
 // drawLinearGradient renders a linear-gradient onto the target RGBA image
 // within the box bounds [x, y, w, h].
-func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
+func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64, style *css.Style) {
 	direction, stops, ok, repeating := parseLinearGradient(gradVal)
 	if !ok {
 		return
@@ -559,7 +563,7 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 	var repeatLen float64
 	if repeating {
 		// Resolve percentage stops against the full lineLen first.
-		resolveStopPositions(stops, lineLen)
+		resolveStopPositions(stops, lineLen, style)
 		repeatLen = stops[len(stops)-1].pos - stops[0].pos
 		if repeatLen <= 0 {
 			// Degenerate: all stops collapsed to a single position.
@@ -574,7 +578,7 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 	}
 
 	if !repeating {
-		resolveStopPositions(stops, lineLen)
+		resolveStopPositions(stops, lineLen, style)
 	}
 
 	x0 := int(math.Round(x))
@@ -894,15 +898,18 @@ func numericPrefixEnd(s string) int {
 // because each type's geometry (line, radii, angle) doesn't share enough
 // structure to warrant a single Draw().
 func (r *Renderer) drawGradient(gradVal string, x, y, w, h float64, style *css.Style) {
+	if style == nil {
+		style = css.NewStyle() // no element: the initial style
+	}
 	resolved := resolveLhRlhInGradient(gradVal, style)
 	lower := strings.ToLower(strings.TrimSpace(resolved))
 	switch {
 	case strings.HasPrefix(lower, "linear-gradient(") || strings.HasPrefix(lower, "repeating-linear-gradient("):
-		r.drawLinearGradient(resolved, x, y, w, h)
+		r.drawLinearGradient(resolved, x, y, w, h, style)
 	case strings.HasPrefix(lower, "radial-gradient(") || strings.HasPrefix(lower, "repeating-radial-gradient("):
-		r.drawRadialGradient(resolved, x, y, w, h)
+		r.drawRadialGradient(resolved, x, y, w, h, style)
 	case strings.HasPrefix(lower, "conic-gradient(") || strings.HasPrefix(lower, "repeating-conic-gradient("):
-		r.drawConicGradient(resolved, x, y, w, h)
+		r.drawConicGradient(resolved, x, y, w, h, style)
 	}
 }
 
@@ -973,7 +980,7 @@ func normalizeStops(stops []gradientStop, lineLen float64) {
 // Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
 // (Chromium @ 4883d11fef) — `CSSGradientValue` for radial parses shape, size,
 // position keyword, and stop list separately; we mirror that split.
-func parseRadialGradient(val string, boxW, boxH float64) (cx, cy, rx, ry float64, stops []gradientStop, ok bool, repeating bool) {
+func parseRadialGradient(val string, boxW, boxH float64, style *css.Style) (cx, cy, rx, ry float64, stops []gradientStop, ok bool, repeating bool) {
 	lower := strings.ToLower(strings.TrimSpace(val))
 	var prefixLen int
 	if strings.HasPrefix(lower, "repeating-radial-gradient(") {
@@ -1017,7 +1024,7 @@ func parseRadialGradient(val string, boxW, boxH float64) (cx, cy, rx, ry float64
 		}
 	}
 	if posPart != "" {
-		parseRadialPositionPart(posPart, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx)
+		parseRadialPositionPart(posPart, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx, style)
 		parsedConfig = true
 	}
 	if parsedConfig {
@@ -1194,7 +1201,7 @@ func parseRadialLength(s string) float64 {
 // the fraction-form (cxFrac/cyFrac) for percentages or keywords. The
 // disambiguation between "px-form" and "fraction-form" is the same one used
 // by Blink's GradientPosition resolution.
-func parseRadialPositionPart(pos string, boxW, boxH float64, cxFrac, cyFrac *float64, cxPx, cyPx *float64) {
+func parseRadialPositionPart(pos string, boxW, boxH float64, cxFrac, cyFrac *float64, cxPx, cyPx *float64, style *css.Style) {
 	// splitStopPositionTokens keeps a paren-balanced math call together as
 	// one token so `calc(50px + 50%) calc(100% - 30px)` parses as two
 	// tokens, not five.
@@ -1226,7 +1233,7 @@ func parseRadialPositionPart(pos string, boxW, boxH float64, cxFrac, cyFrac *flo
 				if !isX {
 					axis = boxH
 				}
-				if v, ok := css.EvalMathFunctionWithPercent(tok, 0, axis); ok {
+				if v, ok := style.EvalMathWithBase(tok, axis); ok {
 					if isX {
 						*cxPx = v
 					} else {
@@ -1355,8 +1362,8 @@ func ellipseRadius(x, y, sideX, sideY float64) (rx, ry float64) {
 // at the box (x, y, w, h). Stop positions resolve against the gradient line
 // length, which is the principal radius rx (Blink's choice for ellipse
 // gradients @ 4883d11fef).
-func (r *Renderer) drawRadialGradient(gradVal string, x, y, w, h float64) {
-	cx, cy, rx, ry, stops, ok, repeating := parseRadialGradient(gradVal, w, h)
+func (r *Renderer) drawRadialGradient(gradVal string, x, y, w, h float64, style *css.Style) {
+	cx, cy, rx, ry, stops, ok, repeating := parseRadialGradient(gradVal, w, h, style)
 	if !ok {
 		return
 	}
@@ -1454,7 +1461,7 @@ func (r *Renderer) drawRadialGradient(gradVal string, x, y, w, h float64) {
 // Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
 // (Chromium @ 4883d11fef) — `CSSGradientValue` conic parsing handles
 // "[from <angle>]? [at <position>]?, <color-stop-list>".
-func parseConicGradient(val string, boxW, boxH float64) (cx, cy, fromDeg float64, stops []gradientStop, ok bool, repeating bool) {
+func parseConicGradient(val string, boxW, boxH float64, style *css.Style) (cx, cy, fromDeg float64, stops []gradientStop, ok bool, repeating bool) {
 	lower := strings.ToLower(strings.TrimSpace(val))
 	var prefixLen int
 	if strings.HasPrefix(lower, "repeating-conic-gradient(") {
@@ -1503,9 +1510,9 @@ func parseConicGradient(val string, boxW, boxH float64) (cx, cy, fromDeg float64
 		}
 		if strings.HasPrefix(remaining, "at ") {
 			remaining = strings.TrimSpace(remaining[3:])
-			parseRadialPositionPart(remaining, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx)
+			parseRadialPositionPart(remaining, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx, style)
 		} else if remaining != "" {
-			parseRadialPositionPart(remaining, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx)
+			parseRadialPositionPart(remaining, boxW, boxH, &cxFrac, &cyFrac, &cxPx, &cyPx, style)
 		}
 		stopsStart = 1
 	}
@@ -1640,8 +1647,8 @@ func parseAngleDegRender(s string) (float64, bool) {
 // (Chromium @ 4883d11fef) — `GradientGeneratedImage::Draw` dispatches the
 // conic-case inside the base class; the painter walks each pixel computing
 // atan2 and interpolating.
-func (r *Renderer) drawConicGradient(gradVal string, x, y, w, h float64) {
-	cx, cy, fromDeg, stops, ok, repeating := parseConicGradient(gradVal, w, h)
+func (r *Renderer) drawConicGradient(gradVal string, x, y, w, h float64, style *css.Style) {
+	cx, cy, fromDeg, stops, ok, repeating := parseConicGradient(gradVal, w, h, style)
 	if !ok {
 		return
 	}
