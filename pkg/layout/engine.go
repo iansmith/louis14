@@ -142,7 +142,29 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rootRelative := NewConverter(rootWDM, PhysicalSize{}).ToPhysicalOffset(
 		ComputeRelativeOffsetForBoxFragment(result.Fragment, rootWDM, geomLogicalToOld(rootSpace.PercentageResolutionSize)), PhysicalSize{})
-	rootBox := fragmentToBox(result.Fragment, nil, rootOffset.X+rootRelative.X, rootOffset.Y+rootRelative.Y)
+	rootPlacement := PhysicalOffset{X: rootOffset.X + rootRelative.X, Y: rootOffset.Y + rootRelative.Y}
+	// The LayoutView scrolls the document: its scrollable area clamps the
+	// requested viewport scroll offset (kept on the Document node, the
+	// LayoutView's node), and the scrolled content offset translates the
+	// view's scrolling contents (the ScrollTranslation paint property node
+	// of the view, FragmentPaintPropertyTreeBuilder::UpdateScrollTranslation,
+	// paint/paint_property_tree_builder.cc:3556 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The view's box carries
+	// the scroll state for the scroll bindings (NodeBoxes).
+	viewBox := &Box{Node: doc.Root, Width: le.viewport.width, Height: le.viewport.height}
+	view := newLayoutViewScrollableArea(le.viewport.width, le.viewport.height,
+		layoutViewScrollableOverflow(result.Fragment, rootPlacement, rootWDM, le.viewport.width, le.viewport.height))
+	scrollDX, scrollDY := view.applyTo(viewBox, doc.Root.ScrollOffset)
+	rootBox := fragmentToBox(result.Fragment, nil, rootPlacement.X-scrollDX, rootPlacement.Y-scrollDY)
+	if (scrollDX != 0 || scrollDY != 0) && !layoutRoot.IsFixedContainer() {
+		// A fixed-position box the view contains is not in its scrolling
+		// contents (louis14 hangs it off the root fragment).
+		for _, child := range rootBox.Children {
+			if child.Position == css.PositionFixed {
+				shiftBox(child, scrollDX, scrollDY)
+			}
+		}
+	}
 
 	// Phase 8: Apply sticky offsets. Louis14 is a static renderer (scroll=0);
 	// sticky elements that are above their top/left inset threshold are pushed
@@ -153,6 +175,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 	le.lastStyles = computedStyles
 	le.lastNodeBoxes = buildNodeBoxIndex([]*Box{rootBox})
+	le.lastNodeBoxes[doc.Root] = viewBox
 
 	return []*Box{rootBox}
 }

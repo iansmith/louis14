@@ -16,9 +16,9 @@ import (
 // point where the root's effects (filter / mask / blend isolation buffers)
 // are active but its transform is not yet applied — Blink paints it in the
 // root element's LocalBorderBoxProperties with the transform replaced by
-// its PreTransform (view_painter.cc:183-201). Nested documents (iframes)
-// have no view of their own yet, so their document element keeps painting
-// its own background.
+// its PreTransform (view_painter.cc:183-201). Each document has a view: a
+// nested (iframe) document's root layer switches the renderer to its own
+// view while it paints (enterFrameView).
 type ViewPainter struct {
 	// rootLayer is the paint layer of the document element; its box is
 	// the view's positioning box (BoxBackgroundPaintContext::
@@ -32,7 +32,7 @@ type ViewPainter struct {
 	style css.ViewportStyle
 	// backgroundRect is the view's background rect in document space
 	// (ViewPainter::BackgroundRect, view_painter.cc:454-459): the canvas,
-	// or the embedder's viewport rect.
+	// the embedder's viewport rect, or a nested document's frame viewport.
 	backgroundRect geometry.PhysicalRect
 }
 
@@ -55,7 +55,17 @@ func newViewPainter(r *Renderer, rootBox *layout.Box, rootLayer *PaintLayer) *Vi
 		body = nil
 	}
 	rect := geometry.PhysicalRectFromRect(r.target.Bounds())
-	if r.embeddedViewport.W > 0 && r.embeddedViewport.H > 0 {
+	if frame := rootBox.Parent; frame != nil {
+		// A nested document's view is the frame's viewport, the embedding
+		// LayoutIFrame's content box (LayoutView::BackgroundRect is its
+		// OverflowClipRect, layout/layout_view.h:296-299 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		rect = toLayoutRect(
+			frame.X+frame.Border.Left+frame.Padding.Left,
+			frame.Y+frame.Border.Top+frame.Padding.Top,
+			max(0, frame.Width-frame.Border.Left-frame.Border.Right-frame.Padding.Left-frame.Padding.Right),
+			max(0, frame.Height-frame.Border.Top-frame.Border.Bottom-frame.Padding.Top-frame.Padding.Bottom))
+	} else if r.embeddedViewport.W > 0 && r.embeddedViewport.H > 0 {
 		rect = toLayoutRect(0, 0, r.embeddedViewport.W, r.embeddedViewport.H)
 	}
 	return &ViewPainter{
@@ -76,6 +86,26 @@ func (r *Renderer) backgroundTransfersToView(layer *PaintLayer) bool {
 	}
 	n := layer.Box.LayoutNode
 	return n == r.view.rootLayer.Box.LayoutNode || n == r.view.transferringBody
+}
+
+// enterFrameView makes the view of a nested document current when layer
+// is that document's root layer: the embedding frame paints the child
+// frame's LayoutView (FramePainter::Paint, paint/frame_painter.cc:24-82 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, from EmbeddedContentPainter),
+// so the nested root and its body leave their backgrounds to that view.
+// Returns the view to restore when the layer is done, and whether it
+// switched.
+func (r *Renderer) enterFrameView(layer *PaintLayer) (outer *ViewPainter, entered bool) {
+	box := layer.Box
+	if box == nil || box.Parent == nil || box.LayoutNode == nil || !box.LayoutNode.IsDocumentElement() {
+		return nil, false
+	}
+	if r.view != nil && layer == r.view.rootLayer {
+		return nil, false
+	}
+	outer = r.view
+	r.view = newViewPainter(r, box, layer)
+	return outer, true
 }
 
 // paintViewBackground paints the view background when layer is the

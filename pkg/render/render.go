@@ -832,6 +832,9 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
+	if outer, ok := r.enterFrameView(layer); ok {
+		defer func() { r.view = outer }()
+	}
 	// Pre-computed visibility and opacity.
 	if !layer.Visible {
 		// Filter Effects 1 §3.3: when a filtered element has

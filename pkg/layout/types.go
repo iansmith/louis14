@@ -174,6 +174,14 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.LayoutNode == nil && b.Text != "" {
 		return false
 	}
+	// The document element forces a stacking context, its document's root
+	// one — a nested (iframe) document's too, so the frame's content
+	// paints atomically (StyleAdjuster::AdjustComputedStyle,
+	// style_adjuster.cc:1263-1269 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if b.LayoutNode != nil && b.LayoutNode.IsDocumentElement() {
+		return true
+	}
 	// Positioned + explicit z-index.
 	if b.Position != css.PositionStatic && b.Style.HasExplicitZIndex() {
 		return true
