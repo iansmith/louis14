@@ -512,13 +512,15 @@ func TestBlockLayout_DeeplyNested(t *testing.T) {
 	}
 }
 
-// TestBlockLayout_PaintIsolationInhibitsCollapseThrough proves that a zero-
-// sized child with `filter` (or other paint-isolation property) is NOT
-// dropped via margin collapse-through, so its fragment remains in the
-// parent's children and reaches the paint walk. Regression guard for the
-// WPT filter-effects/empty-element-with-filter-{002,004} tests, where a
-// 0x0 div with `filter:url(#flood)` must still paint flood pixels.
-func TestBlockLayout_PaintIsolationInhibitsCollapseThrough(t *testing.T) {
+// TestBlockLayout_PaintIsolatedEmptyChildKeepsFragment proves that a zero-
+// sized child with `filter` (or other paint-isolation property) keeps its
+// fragment in the parent's children, so it reaches the paint walk.
+// Regression guard for the WPT filter-effects/empty-element-with-filter-
+// {002,004} tests, where a 0x0 div with `filter:url(#flood)` must still
+// paint flood pixels. Blink adds every in-flow child, self-collapsing or not
+// (FinishInflow → AddResult, block_layout_algorithm.cc:2732-2736 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBlockLayout_PaintIsolatedEmptyChildKeepsFragment(t *testing.T) {
 	flooded := makeNode("div")
 	sibling := makeNode("div")
 	parent := makeNode("div", flooded, sibling)
@@ -540,18 +542,19 @@ func TestBlockLayout_PaintIsolationInhibitsCollapseThrough(t *testing.T) {
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	// The filtered child must remain in the fragment tree even though
-	// its own block size is zero — paint isolation inhibits collapse-
-	// through. Without this guard, the paint walk has no way to reach
-	// the layer and the filter never runs.
+	// its own block size is zero. Without it, the paint walk has no way
+	// to reach the layer and the filter never runs.
 	if len(result.Fragment.Children) != 2 {
-		t.Fatalf("filtered 0x0 child dropped by collapse-through: got %d children, want 2", len(result.Fragment.Children))
+		t.Fatalf("filtered 0x0 child dropped: got %d children, want 2", len(result.Fragment.Children))
 	}
 }
 
-// TestBlockLayout_EmptyDivStillCollapsesThrough proves the negative — an
-// element with no paint-isolation property still collapses through, so
-// the new guard is narrowly targeted and doesn't perturb the baseline
-// CSS 2.1 §8.3.1 behavior.
+// TestBlockLayout_EmptyDivStillCollapsesThrough proves that a plain empty
+// 0x0 div self-collapses (CSS 2.1 §8.3.1): its fragment is kept, as Blink
+// adds every in-flow child (FinishInflow → AddResult,
+// block_layout_algorithm.cc:2732-2736 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), marked self-collapsing, and
+// the sibling after it is not moved.
 func TestBlockLayout_EmptyDivStillCollapsesThrough(t *testing.T) {
 	empty := makeNode("div")
 	sibling := makeNode("div")
@@ -573,12 +576,17 @@ func TestBlockLayout_EmptyDivStillCollapsesThrough(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// CSS 2.1 §8.3.1 collapse-through: the empty 0x0 div with no
-	// paint-isolation property must still be dropped from the
-	// fragment tree (existing behavior; ensures the new guard is
-	// not a blanket "always emit").
-	if len(result.Fragment.Children) != 1 {
-		t.Fatalf("plain empty 0x0 child unexpectedly kept: got %d children, want 1", len(result.Fragment.Children))
+	if len(result.Fragment.Children) != 2 {
+		t.Fatalf("got %d children, want 2 (empty div kept, then sibling)", len(result.Fragment.Children))
+	}
+	if !result.Fragment.Children[0].Fragment.IsSelfCollapsing {
+		t.Errorf("plain empty 0x0 child not marked self-collapsing")
+	}
+	if got := result.Fragment.Children[1].Offset.Top.Float64(); got != 0 {
+		t.Errorf("sibling top = %v, want 0", got)
+	}
+	if got := result.Fragment.Size.HeightF64(); got != 10 {
+		t.Errorf("parent height = %v, want 10", got)
 	}
 }
 

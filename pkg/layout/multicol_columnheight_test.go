@@ -18,8 +18,8 @@ package layout
 //
 //   Bug C — Missing addMainGap call on row-wrap: Blink calls
 //   gap_accumulator_->AddMainGap(line_offset - row_gap_size_) inside
-//   LayoutLine when has_wrapped=true (cla.cc:1263-1268). Louis14 never
-//   records this gap, causing column rules to span wrong block extents.
+//   LayoutLine when has_wrapped=true (cla.cc:1263-1268). Louis14 used to
+//   skip this gap, causing column rules to span wrong block extents.
 //   Affects: column-height-009.
 
 import (
@@ -270,7 +270,7 @@ func TestColumnHeight_PhaseC_RowWrapMainGapRecorded(t *testing.T) {
 		// With 320px content, 3 columns, column-height:40px → 320/3 ≈ 107px per
 		// column → ceil(107/40) = 3 rows minimum. Each wrap boundary must add a
 		// MainGap entry (Blink cla.cc:1263-1268 has_wrapped path).
-		// Bug C: MainGaps is empty (no row-wrap gap recorded).
+		// Bug C guard: MainGaps must not be empty.
 		if len(gg.MainGaps) == 0 {
 			t.Errorf("Bug C: GapGeometry.MainGaps is empty — row-wrap boundary gaps not recorded")
 		}

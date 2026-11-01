@@ -513,13 +513,13 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 	// resolved block-size rides along so spanner percentage block-sizes can
 	// resolve (Blink: SetAvailableBlockSize(ChildAvailableSize().block_size),
 	// cla.cc:544).
-	spanners := measureSpannersMinMax(node, ctx, space, resolveNodeBlockSizeForPercent(node, space))
+	spanners := ComputeSpannersMinMaxSizes(node, ctx, space, resolveNodeBlockSizeForPercent(node, space))
 	result.MinContent = math.Max(result.MinContent, spanners.MinContent)
 	result.MaxContent = math.Max(result.MaxContent, spanners.MaxContent)
 	return result
 }
 
-// measureSpannersMinMax recursively walks a multicol container's descendants
+// ComputeSpannersMinMaxSizes recursively walks a multicol container's descendants
 // and returns the largest column-span:all contribution (margin-box min/max).
 // Mirrors ColumnLayoutAlgorithm::ComputeSpannersMinMaxSizes
 // (column_layout_algorithm.cc:523-549 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
@@ -535,7 +535,7 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 // nodeBlockSize is the multicol's resolved content block-size (or Indefinite)
 // for spanner percentage block-size resolution — Blink's
 // SetAvailableBlockSize(ChildAvailableSize().block_size) at cla.cc:544.
-func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, nodeBlockSize float64) MinMaxSizes {
+func ComputeSpannersMinMaxSizes(searchParent *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace, nodeBlockSize float64) MinMaxSizes {
 	var result MinMaxSizes
 	for _, child := range searchParent.Children() {
 		if child.IsText() {
@@ -568,7 +568,7 @@ func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, sp
 			if shouldPreventColumnSpannerDescendants(child) {
 				continue
 			}
-			childResult = measureSpannersMinMax(child, ctx, space, nodeBlockSize)
+			childResult = ComputeSpannersMinMaxSizes(child, ctx, space, nodeBlockSize)
 		}
 		result.MinContent = math.Max(result.MinContent, childResult.MinContent)
 		result.MaxContent = math.Max(result.MaxContent, childResult.MaxContent)

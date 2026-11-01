@@ -251,12 +251,10 @@ func MinPositiveSpaceShortage(a, b float64) float64 {
 // a9f50e522efa).
 //
 // An inline child — a line of the inline formatting context — carries no
-// break-before of its own, only what its result propagated (:133-136).
-//
-// Blink returns auto for a child whose fragment is not first-for-node
-// (:143-153); here the block callers (BlockLayoutAlgorithm and the multicol
-// spanner site) only reach BreakBeforeChildIfNeeded for a first-for-node
-// child. Paginated page names are not ported.
+// break-before of its own, only what its result propagated (:133-136). A
+// child whose fragment resumes its node after a break is no longer *before*
+// the node, so its values are ignored (:144-157). Paginated page names are
+// not ported.
 func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResult, builder *BoxFragmentBuilder) string {
 	if child.IsInline() {
 		initialBreakBefore := "auto"
@@ -264,6 +262,10 @@ func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResu
 			initialBreakBefore = layoutResult.InitialBreakBefore
 		}
 		return builder.JoinedBreakBetweenValue(initialBreakBefore)
+	}
+	if layoutResult != nil && layoutResult.Status == LayoutResultSuccess &&
+		!layoutResult.Fragment.IsFirstForNode() {
+		return "auto"
 	}
 	childBreakBefore := "auto"
 	if s := child.Style(); s != nil {
@@ -639,11 +641,17 @@ func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *La
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the builder keeps the minimum
 // positive value. space is the builder's constraint space (Blink reads
 // builder->GetConstraintSpace(); not every louis14 builder carries one).
+// Blink's block_size_override parameter has no louis14 caller.
 func PropagateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
 	if space.BlockFragmentationType != FragmentColumn {
 		return
 	}
-	builder.PropagateSpaceShortage(CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize))
+	// Only a positive shortage can stretch the columns; this drops an
+	// aborted layout's Indefinite, as Blink does here (:1008-1013) on top of
+	// the builder's own <= 0 filter (UpdateMinimalSpaceShortage, :1058).
+	if spaceShortage := CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize); spaceShortage > 0 {
+		builder.PropagateSpaceShortage(spaceShortage)
+	}
 }
 
 // BlockSizeForFragmentation is the block-size a parent attributes to a
@@ -682,12 +690,16 @@ func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutRes
 // without fitting, so a whole-child figure is impossible or pointless),
 // otherwise the child's block-size for fragmentation past the fragmentainer
 // end. Mirrors Blink's CalculateSpaceShortage (fragmentation_utils.cc:1021-1053
-// @ a9f50e522efa); the trusted child report is :1046-1051. Blink's
-// block_size_override and aborted-layout (kIndefiniteSize) cases have no
-// louis14 caller.
+// @ a9f50e522efa); the trusted child report is :1046-1051. When layout
+// aborted (no fragment) and the child reported nothing, nothing can be
+// calculated: Indefinite, Blink's kIndefiniteSize (:1037-1040). Blink's
+// block_size_override case has no louis14 caller.
 func CalculateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, fragmentainerBlockOffset, fragmentainerBlockSize float64) float64 {
 	if layoutResult.MinSpaceShortage > 0 {
 		return layoutResult.MinSpaceShortage
+	}
+	if layoutResult.Status != LayoutResultSuccess {
+		return Indefinite
 	}
 	return fragmentainerBlockOffset + BlockSizeForFragmentation(space.WritingDirection, layoutResult) - fragmentainerBlockSize
 }
