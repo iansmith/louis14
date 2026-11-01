@@ -1,8 +1,6 @@
 package layout
 
 import (
-	"fmt"
-	"math"
 	"strings"
 
 	"louis14/pkg/css"
@@ -208,55 +206,17 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if availableForCols < 0 {
 		availableForCols = 0
 	}
-	// In border-collapse mode, resolve border conflicts and adjust cell styles
-	// BEFORE computing column widths and laying out cells.
-	// CSS 2.1 §17.6.2.1: each shared edge uses half the winning border's width.
-	var collapsedStyles map[string]*css.Style
-	var collapsedOutward map[string]collapsedBorderOutwardExtension
+	// In border-collapse mode, resolve the collapsed borders BEFORE
+	// computing column widths and laying out cells: Blink computes
+	// TableBorders up front and threads each cell's share through its
+	// constraint space (TableBorders::ComputeTableBorders /
+	// TableBorders::CellBorder, table_borders.cc:115-248, :400-410 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	var tableBorders *TableBorders
 	if borderCollapse {
-		grid := newCellBorderGrid(rows, numCols)
-		// Collect row and row-group styles for element-type precedence.
-		rowStyles := make([]*css.Style, len(rows))
-		groupStyles := make([]*css.Style, len(rows))
-		for i, row := range rows {
-			rowStyles[i] = row.style
-			groupStyles[i] = row.groupStyle
-		}
-		// Build per-column style slices for col/colgroup border resolution.
-		colStyles := make([]*css.Style, numCols)
-		colGroupStyles := make([]*css.Style, numCols)
-		for _, cs := range colStyleSpecs {
-			for i := 0; i < cs.span; i++ {
-				idx := cs.colIndex + i
-				if idx >= numCols {
-					break
-				}
-				if cs.isGroup {
-					if colGroupStyles[idx] == nil {
-						colGroupStyles[idx] = cs.style
-					}
-				} else {
-					if colStyles[idx] == nil {
-						colStyles[idx] = cs.style
-					}
-				}
-			}
-		}
-		collapsedStyles, collapsedOutward = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, colStyles, colGroupStyles, tla.style)
-
-		// Swap cell node styles to the collapsed versions so that
-		// column width computation and cell layout use half-border widths.
-		for rowIdx, row := range rows {
-			for cellIdx := range row.cells {
-				key := fmt.Sprintf("%d,%d", rowIdx, row.cells[cellIdx].colIndex)
-				if cloned, ok := collapsedStyles[key]; ok {
-					rows[rowIdx].cells[cellIdx].style = cloned
-					if rows[rowIdx].cells[cellIdx].node != nil {
-						rows[rowIdx].cells[cellIdx].node.style = cloned
-					}
-				}
-			}
-		}
+		restoreCollapsedCellSourceStyles(rows)
+		tableBorders = ComputeTableBorders(rows, colStyleSpecs, tla.style, wdm, numCols)
+		applyCollapsedCellBorders(rows, tableBorders, numCols, wdm)
 	}
 
 	// Choose column width algorithm: fixed (CSS 2.1 §17.5.2.1) or auto (§17.5.2.2).
@@ -832,7 +792,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	lastRowBaseline := 0.0    // max cell baseline in last VISIBLE row
 	lastRowBlockOffset := 0.0 // block offset of last VISIBLE row
 	emittedRows := 0          // count of visible (non-collapsed) rows emitted
+	// rowStarts[i] is row i's block offset in the content box (a collapsed
+	// row starts, and ends, where the next row starts), rowStarts[len(rows)]
+	// the end of the last row: the collapsed-borders row geometry.
+	rowStarts := make([]float64, len(rows)+1)
 	for rowIdx, row := range rows {
+		rowStarts[rowIdx] = blockOffset
 		// CSS Tables 3 §3.5 (visibility:collapse): a collapsed row is
 		// removed from layout. Skip it entirely — no row fragment,
 		// no inter-row spacing, no blockOffset advance, no cells
@@ -915,12 +880,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellFrag := cl.result.Fragment
 			contentBlockSize := cl.contentBlockSize
 
-			// Propagate per-cell collapsed-border outward paint extensions
-			// onto the cell fragment so the renderer can paint the
-			// outside half of a missing-neighbor collapsed border per
-			// CSS 2.1 §17.6.3. Zero on all sides for cells whose every
-			// neighbor exists (the common case).
-			applyCollapsedOutward(cellFrag, collapsedOutward, rowIdx, cl.cell.colIndex)
+			cellFrag.HasCollapsedBorders = borderCollapse
 
 			// §17.5.4: stretch the cell fragment to the final row
 			// block-size and apply vertical-align. For anon-cell wrappers
@@ -1100,6 +1060,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Close any still-open positioned section at the bottom of the
 	// last emitted row.
 	flushSection(blockOffset)
+	rowStarts[len(rows)] = blockOffset
 
 	// --- Phase 3b: place rowspan cells across spanned rows ---
 	//
@@ -1144,10 +1105,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		cellFrag := cl.result.Fragment
-		// Propagate per-cell collapsed-border outward paint extensions
-		// onto the rowspan cell fragment (parallel to the non-rowspan
-		// path above; CSS 2.1 §17.6.3).
-		applyCollapsedOutward(cellFrag, collapsedOutward, rowIdx, cl.cell.colIndex)
+		cellFrag.HasCollapsedBorders = borderCollapse
 		cellLogical := NewLogicalFragment(wdm, cellFrag)
 		contentBlockSize := cellLogical.BlockSize()
 
@@ -1296,6 +1254,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	result := builder.Build()
+	result.Fragment.HasCollapsedBorders = borderCollapse
+	if tableBorders != nil && tableBorders.EdgeCount() > 0 {
+		result.Fragment.TableCollapsedBorders = tableBorders
+		result.Fragment.TableCollapsedBordersGeometry = collapsedTableBordersGeometry(
+			tableBorders, wdm, geom, colWidths, rowStarts)
+	}
 
 	if len(propagatedOOF) > 0 {
 		result.PropagatedOOFCandidates = propagatedOOF
@@ -1347,6 +1311,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 				colWidths = append(colWidths, spec)
 			}
 			// Collect style for border-collapse resolution (CSS 2.1 §17.6.2.1).
+			groupSpecIdx := len(colStyleSpecs)
 			colStyleSpecs = append(colStyleSpecs, tableColStyle{
 				colIndex: colIdx,
 				span:     span,
@@ -1383,6 +1348,10 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					colChildIdx += colChildSpan
 				}
 				if colChildIdx > colIdx {
+					// A colgroup with col children spans exactly them
+					// (VisitLayoutTableColumn, layout_table_column_visitor.h
+					// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+					colStyleSpecs[groupSpecIdx].span = colChildIdx - colIdx
 					colIdx = colChildIdx
 					continue
 				}
@@ -2236,576 +2205,6 @@ func (tla *TableLayoutAlgorithm) logicalBorderSpacing() (inlineSpacing, blockSpa
 		blockSpacing = inlineSpacing // single value applies to both
 	}
 	return
-}
-
-// borderEdgeInfo holds a single border edge's resolved properties.
-type borderEdgeInfo struct {
-	width float64
-	style css.BorderStyle
-	color css.Color
-}
-
-// collapsedBorderOutwardExtension holds, for a single border-collapse table
-// cell, the per-physical-side outward paint extension (px). When a cell has
-// no neighbor on a given side (the neighbor cell was removed from the grid,
-// or the cell sits at the table's outer edge with no element-level border
-// to share), the collapsed border paints centered on the cell-edge grid
-// line — half inside the cell's border-box (handled by the cell's normal
-// drawBorders), half outside it. The "outside half" width per side is
-// captured here for the paint pipeline to consume.
-//
-// Spec: CSS 2.1 §17.6.3 + CSS Tables 3 §4.2.
-// Blink reference: TablePainter::PaintCollapsedBorders paint rect spans
-// grid_line ± edge.BorderWidth()/2 regardless of whether the neighbor cell
-// exists (table_painters.cc:356-362 @ Chromium SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Where louis14 differs from
-// Blink — Blink paints collapsed borders at the table level, walking a
-// per-edge grid; louis14 paints them per cell — we recover spec-correct
-// extent by piping the missing-neighbor outward half through to the cell's
-// paint layer as an additive outward strip.
-//
-// Zero default = no outward extension on any side (the common case: every
-// neighbor exists).
-type collapsedBorderOutwardExtension struct {
-	top    float64
-	right  float64
-	bottom float64
-	left   float64
-}
-
-// applyCollapsedOutward copies the outward-extension entry for cell
-// (rowIdx, colIdx) — produced by resolveCollapsedBorders — onto the cell's
-// PhysicalFragment so paint can consume it. No-op when outward is nil
-// (border-collapse:separate or no missing neighbors) or when no entry
-// exists for the cell (every side has a real neighbor).
-//
-// Used by both the non-rowspan and rowspan branches of TableLayoutAlgorithm.Layout
-// — same lookup, same assignment, kept as one helper per CLAUDE.md §5
-// (one definition per value).
-func applyCollapsedOutward(cellFrag *PhysicalFragment, outward map[string]collapsedBorderOutwardExtension, rowIdx, colIdx int) {
-	if outward == nil || cellFrag == nil {
-		return
-	}
-	ext, ok := outward[fmt.Sprintf("%d,%d", rowIdx, colIdx)]
-	if !ok {
-		return
-	}
-	cellFrag.CollapsedBorderOutwardExtension = [4]float64{ext.top, ext.right, ext.bottom, ext.left}
-}
-
-// physicalSideNames maps logical edges to physical CSS property side names
-// based on writing mode and direction.
-// Returns (inlineStart, inlineEnd, blockStart, blockEnd) as "top"/"right"/"bottom"/"left".
-func physicalSideNames(wdm WritingDirectionMode) (inlineStart, inlineEnd, blockStart, blockEnd string) {
-	switch wdm.WM {
-	case WritingModeHorizontalTB:
-		if wdm.Dir == DirectionLTR {
-			return "left", "right", "top", "bottom"
-		}
-		return "right", "left", "top", "bottom"
-	case WritingModeVerticalLR, WritingModeSidewaysLR:
-		if wdm.Dir == DirectionLTR {
-			return "top", "bottom", "left", "right"
-		}
-		return "bottom", "top", "left", "right"
-	case WritingModeVerticalRL, WritingModeSidewaysRL:
-		if wdm.Dir == DirectionLTR {
-			return "top", "bottom", "right", "left"
-		}
-		return "bottom", "top", "right", "left"
-	}
-	return "left", "right", "top", "bottom"
-}
-
-// readBorderEdge reads a border edge (width, style, color) from a CSS style
-// for a given physical side ("top", "right", "bottom", "left").
-func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
-	if s == nil {
-		return borderEdgeInfo{}
-	}
-	styleProp := "border-" + side + "-style"
-	widthProp := "border-" + side + "-width"
-	colorProp := "border-" + side + "-color"
-
-	var info borderEdgeInfo
-	info.style = css.BorderStyleNone
-	if sv, ok := s.Get(styleProp); ok {
-		switch sv {
-		case "solid":
-			info.style = css.BorderStyleSolid
-		case "double":
-			info.style = css.BorderStyleDouble
-		case "dashed":
-			info.style = css.BorderStyleDashed
-		case "dotted":
-			info.style = css.BorderStyleDotted
-		case "none", "hidden", "outset", "inset", "ridge", "groove":
-			// Preserve the literal style string for CSS 2.1 §17.6.2.1
-			// border-conflict precedence. borderStylePrecedence() decodes
-			// the full nine-style ordering; collapsing outset/inset/ridge/
-			// groove to "solid" here would lose precedence information and
-			// cause cell borders to incorrectly tie/win against table borders.
-			info.style = css.BorderStyle(sv)
-		default:
-			info.style = css.BorderStyleSolid
-		}
-	}
-
-	if info.style == css.BorderStyleNone || info.style == css.BorderStyleHidden {
-		info.width = 0
-	} else if wv, ok := s.Get(widthProp); ok {
-		if v, ok := s.GetLengthForVal(wv); ok {
-			// Per CSS Tables 3 + Blink's collapsed-border model
-			// (table_borders.h BorderWidth → LayoutUnit(int
-			// BorderTopWidth()) at Chromium SHA
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), collapsed-border
-			// widths are taken as integer-floored pixels. Floor here so
-			// the conflict resolver and downstream cell sizing both use
-			// the same value regardless of which source (cell, row,
-			// group, col, table) contributed it. Required by WPT
-			// subpixel-collapsed-borders-003: cell border-box width
-			// must match for cell-wins-tiebreaker (5px) and
-			// table-wins-by-width (5.95→5px) scenarios.
-			info.width = math.Floor(v)
-		}
-	}
-
-	info.color = s.VisitedDependentColor(colorProp)
-
-	return info
-}
-
-// borderStylePrecedence returns a numeric precedence for border style
-// per CSS 2.1 §17.6.2.1: double > solid > dashed > dotted > ridge > outset > groove > inset > none.
-func borderStylePrecedence(s css.BorderStyle) int {
-	switch s {
-	case css.BorderStyleHidden:
-		return 100 // hidden always wins
-	case css.BorderStyleDouble:
-		return 9
-	case css.BorderStyleSolid:
-		return 8
-	case css.BorderStyleDashed:
-		return 7
-	case css.BorderStyleDotted:
-		return 6
-	case "ridge":
-		return 5
-	case "outset":
-		return 4
-	case "groove":
-		return 3
-	case "inset":
-		return 2
-	case css.BorderStyleNone:
-		return 0
-	}
-	return 1
-}
-
-// resolveBorderConflict applies CSS 2.1 §17.6.2.1 to determine which border wins.
-// startCellWins is true if cellA is the inline-start or block-start cell.
-// Returns the winning border.
-func resolveBorderConflict(a, b borderEdgeInfo, startCellWins bool) borderEdgeInfo {
-	// Rule 1: hidden wins (becomes no border).
-	if a.style == css.BorderStyleHidden || b.style == css.BorderStyleHidden {
-		return borderEdgeInfo{style: css.BorderStyleNone, width: 0}
-	}
-
-	// Rule 2: none loses.
-	aIsNone := a.style == css.BorderStyleNone || a.width == 0
-	bIsNone := b.style == css.BorderStyleNone || b.width == 0
-	if aIsNone && bIsNone {
-		return borderEdgeInfo{style: css.BorderStyleNone, width: 0}
-	}
-	if aIsNone {
-		return b
-	}
-	if bIsNone {
-		return a
-	}
-
-	// Rule 3: wider wins. Compare floor-to-integer-pixel widths so subpixel
-	// border widths only beat smaller integer widths (CSS Tables 3 conflict
-	// resolution + WPT subpixel-collapsed-borders-001/003). E.g. table 5.95px
-	// vs cell 5px both floor to 5 and tie; cell then wins by Rule 5.
-	aFloor := math.Floor(a.width)
-	bFloor := math.Floor(b.width)
-	if aFloor > bFloor {
-		return a
-	}
-	if bFloor > aFloor {
-		return b
-	}
-
-	// Rule 4: style precedence (same width).
-	aPrecedence := borderStylePrecedence(a.style)
-	bPrecedence := borderStylePrecedence(b.style)
-	if aPrecedence > bPrecedence {
-		return a
-	}
-	if bPrecedence > aPrecedence {
-		return b
-	}
-
-	// Rule 5: same type — start cell wins.
-	// (We only handle cell-to-cell conflicts; no row/column/table precedence yet.)
-	if startCellWins {
-		return a
-	}
-	return b
-}
-
-// cellBorderGrid stores border info for each cell in the grid for conflict resolution.
-type cellBorderGrid struct {
-	numRows int
-	numCols int
-	// grid[row][col] stores the cell's style at its originating slot, or
-	// nil if no cell originates there. A rowspan/colspan cell appears in
-	// styles[r0][c0] only; the slots it occupies in subsequent rows or
-	// columns leave styles[r][c] == nil.
-	styles [][]*css.Style
-	// occupied[row][col] is true if the slot is covered by a
-	// rowspan/colspan cell that originates elsewhere. Used by
-	// resolveCollapsedBorders to distinguish a true grid hole (no cell at
-	// all — the C56 outward-extension case) from a slot covered by a
-	// spanning cell (whose border is one continuous edge, no hole).
-	occupied [][]bool
-}
-
-func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
-	g := &cellBorderGrid{
-		numRows:  len(rows),
-		numCols:  numCols,
-		styles:   make([][]*css.Style, len(rows)),
-		occupied: make([][]bool, len(rows)),
-	}
-	for rowIdx := range rows {
-		g.styles[rowIdx] = make([]*css.Style, numCols)
-		g.occupied[rowIdx] = make([]bool, numCols)
-	}
-	for rowIdx, row := range rows {
-		for _, cell := range row.cells {
-			if cell.colIndex >= numCols {
-				continue
-			}
-			g.styles[rowIdx][cell.colIndex] = cell.style
-			// Mark every slot covered by the cell's row- and column-span
-			// (excluding the origin) as occupied. CSS Tables 3 / HTML
-			// §4.9.11: a rowspan/colspan cell visually fills every
-			// slot it spans; there is no border-grid hole inside its
-			// extent. Without this, C56's missing-neighbor outward
-			// strip incorrectly fires on the spanning cell's interior
-			// edges (regression: rowspan-cell-border-after-color.html).
-			rs := cell.rowSpan
-			if rs < 1 {
-				rs = 1
-			}
-			cs := cell.colSpan
-			if cs < 1 {
-				cs = 1
-			}
-			for r := rowIdx; r < rowIdx+rs && r < g.numRows; r++ {
-				for c := cell.colIndex; c < cell.colIndex+cs && c < numCols; c++ {
-					if r == rowIdx && c == cell.colIndex {
-						continue
-					}
-					g.occupied[r][c] = true
-				}
-			}
-		}
-	}
-	return g
-}
-
-// resolveCollapsedBorders computes half-border widths and winning colors for
-// all cells in the grid. Returns:
-//   - styles: map from "row,col" to a cloned style with adjusted (halved)
-//     border properties. Only cells with modified borders are included.
-//   - outward: map from "row,col" to per-side outward paint extensions for
-//     cells whose neighbor on that side is missing (cell removed from grid,
-//     so the full collapsed border's outside half has nowhere to live
-//     except as an additive outward strip on the live cell's paint). CSS
-//     2.1 §17.6.3 / CSS Tables 3 §4.2.
-//
-// CSS 2.1 §17.6.2.1 precedence (highest first): cell > row > row-group > col > col-group > table.
-func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles, colStyles, colGroupStyles []*css.Style, tableStyle *css.Style) (map[string]*css.Style, map[string]collapsedBorderOutwardExtension) {
-	iStart, iEnd, bStart, bEnd := physicalSideNames(wdm)
-	result := make(map[string]*css.Style)
-	outward := make(map[string]collapsedBorderOutwardExtension)
-
-	// setOutward records an outward paint extension for cell (row, col) on
-	// the given physical side. Used when the cell's neighbor on that side
-	// is absent from the grid; the collapsed border's outside half has no
-	// neighbor to paint it, so the live cell carries the extension.
-	setOutward := func(row, col int, side string, width float64) {
-		key := fmt.Sprintf("%d,%d", row, col)
-		ext := outward[key]
-		switch side {
-		case "top":
-			ext.top = width
-		case "right":
-			ext.right = width
-		case "bottom":
-			ext.bottom = width
-		case "left":
-			ext.left = width
-		}
-		outward[key] = ext
-	}
-
-	// Helper to ensure a cloned style exists for a cell.
-	getClone := func(row, col int) *css.Style {
-		key := fmt.Sprintf("%d,%d", row, col)
-		if s, ok := result[key]; ok {
-			return s
-		}
-		orig := g.styles[row][col]
-		if orig == nil {
-			return nil
-		}
-		clone := orig.Clone()
-		result[key] = clone
-		return clone
-	}
-
-	// Resolve inline-direction edges (between cells in the same row).
-	for row := 0; row < g.numRows; row++ {
-		for col := 0; col < g.numCols-1; col++ {
-			sA := g.styles[row][col]
-			sB := g.styles[row][col+1]
-			if sA == nil && sB == nil {
-				continue
-			}
-
-			// Cell A's inline-end border vs Cell B's inline-start border.
-			edgeA := readBorderEdge(sA, iEnd)
-			edgeB := readBorderEdge(sB, iStart)
-
-			if edgeA.width == 0 && edgeB.width == 0 {
-				continue
-			}
-
-			// CSS Writing Modes 3 §6.2 + CSS 2.1 §17.6.2.1: the inline-start
-			// cell always wins the tiebreaker. For LTR the tiebreaker is
-			// "line-left" and for RTL it's "line-right"; in both cases,
-			// inline-start is where cell A (lower index) lives.
-			aIsStart := true
-
-			winner := resolveBorderConflict(edgeA, edgeB, aIsStart)
-			halfWidth := winner.width / 2
-
-			// Apply to cell A's inline-end.
-			if sA != nil {
-				clone := getClone(row, col)
-				if clone != nil {
-					setBorderEdge(clone, iEnd, halfWidth, winner.style, winner.color)
-				}
-				// If A's inline-end neighbor is missing, A's normal
-				// drawBorders paints only the inside half (halfWidth);
-				// the spec-mandated outside half must be painted by the
-				// live cell as an outward strip. CSS 2.1 §17.6.3 /
-				// table_painters.cc:356-362 @ SHA 4883d11fef.
-				//
-				// A slot "occupied" by a rowspan/colspan cell originating
-				// elsewhere is NOT a hole — the spanning cell's border is
-				// continuous through it — so suppress outward extension.
-				if sB == nil && !g.occupied[row][col+1] && winner.width > 0 && winner.style != css.BorderStyleNone {
-					setOutward(row, col, iEnd, halfWidth)
-				}
-			}
-			// Apply to cell B's inline-start.
-			if sB != nil {
-				clone := getClone(row, col+1)
-				if clone != nil {
-					setBorderEdge(clone, iStart, halfWidth, winner.style, winner.color)
-				}
-				if sA == nil && !g.occupied[row][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
-					setOutward(row, col+1, iStart, halfWidth)
-				}
-			}
-		}
-	}
-
-	// Resolve block-direction edges (between cells in adjacent rows).
-	for row := 0; row < g.numRows-1; row++ {
-		for col := 0; col < g.numCols; col++ {
-			sA := g.styles[row][col]
-			sB := g.styles[row+1][col]
-			if sA == nil && sB == nil {
-				continue
-			}
-
-			// Cell A's block-end border vs Cell B's block-start border.
-			edgeA := readBorderEdge(sA, bEnd)
-			edgeB := readBorderEdge(sB, bStart)
-
-			if edgeA.width == 0 && edgeB.width == 0 {
-				continue
-			}
-
-			// CSS 2.1 §17.6.2.1: block-start cell always wins the tiebreaker.
-			// "Further to the top" in horizontal-tb maps to "further to block-start"
-			// in all writing modes. A (lower row index) is block-start.
-			winner := resolveBorderConflict(edgeA, edgeB, true)
-			halfWidth := winner.width / 2
-
-			if sA != nil {
-				clone := getClone(row, col)
-				if clone != nil {
-					setBorderEdge(clone, bEnd, halfWidth, winner.style, winner.color)
-				}
-				// Suppress outward extension when the missing neighbor is
-				// actually a rowspan/colspan-covered slot — not a hole.
-				if sB == nil && !g.occupied[row+1][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
-					setOutward(row, col, bEnd, halfWidth)
-				}
-			}
-			if sB != nil {
-				clone := getClone(row+1, col)
-				if clone != nil {
-					setBorderEdge(clone, bStart, halfWidth, winner.style, winner.color)
-				}
-				if sA == nil && !g.occupied[row][col] && winner.width > 0 && winner.style != css.BorderStyleNone {
-					setOutward(row+1, col, bStart, halfWidth)
-				}
-			}
-		}
-	}
-
-	// Outer edges (edges at the table boundary) keep their full width —
-	// they have no adjacent cell to share with. Only the border color
-	// needs to be set on the clone (the width stays as-is from the
-	// original computed style). No halving is needed for outer borders.
-
-	// CSS 2.1 §17.6.2.1 element-type precedence: merge borders from
-	// parent elements (table → rowgroup → row) into cell borders.
-	// Processed in reverse precedence order; cell borders were written
-	// first, so they win ties via "first writer wins" in the conflict
-	// resolver (startCellWins=true means the existing cell border wins).
-	allSides := [4]string{iStart, iEnd, bStart, bEnd}
-
-	// mergeElementBorder resolves a single edge of a cell against an
-	// element (row/rowgroup/table) border. The cell's existing border
-	// wins on equal width+style (higher CSS precedence).
-	mergeElementBorder := func(row, col int, side string, elemEdge borderEdgeInfo) {
-		if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-			return
-		}
-		cellStyle := g.styles[row][col]
-		if cellStyle == nil {
-			return
-		}
-		// Read the cell's current (possibly already resolved) border.
-		clone := getClone(row, col)
-		if clone == nil {
-			return
-		}
-		cellEdge := readBorderEdge(clone, side)
-
-		// Cell (A) wins ties; element (B) only wins if strictly wider
-		// or more prominent style.
-		winner := resolveBorderConflict(cellEdge, elemEdge, true)
-
-		// Only update if the element border actually won.
-		if winner.color != cellEdge.color || winner.width != cellEdge.width || winner.style != cellEdge.style {
-			// For outer edges, keep full width; for inner edges, the width
-			// was already halved during cell-to-cell resolution.
-			setBorderEdge(clone, side, winner.width, winner.style, winner.color)
-		}
-	}
-
-	// 1. Merge row (tr) borders — lower precedence than cell.
-	for row := 0; row < g.numRows; row++ {
-		rs := rowStyles[row]
-		if rs == nil {
-			continue
-		}
-		for _, side := range allSides {
-			elemEdge := readBorderEdge(rs, side)
-			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-				continue
-			}
-			for col := 0; col < g.numCols; col++ {
-				mergeElementBorder(row, col, side, elemEdge)
-			}
-		}
-	}
-
-	// 2. Merge row group (thead/tbody/tfoot) borders — lower than row.
-	for row := 0; row < g.numRows; row++ {
-		gs := groupStyles[row]
-		if gs == nil {
-			continue
-		}
-		for _, side := range allSides {
-			elemEdge := readBorderEdge(gs, side)
-			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-				continue
-			}
-			for col := 0; col < g.numCols; col++ {
-				mergeElementBorder(row, col, side, elemEdge)
-			}
-		}
-	}
-
-	// 3. Merge column (col) borders — lower precedence than row-group.
-	for col := 0; col < g.numCols; col++ {
-		cs := colStyles[col]
-		if cs == nil {
-			continue
-		}
-		for _, side := range allSides {
-			elemEdge := readBorderEdge(cs, side)
-			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-				continue
-			}
-			for row := 0; row < g.numRows; row++ {
-				mergeElementBorder(row, col, side, elemEdge)
-			}
-		}
-	}
-
-	// 4. Merge column-group (colgroup) borders — lower precedence than col.
-	for col := 0; col < g.numCols; col++ {
-		cgs := colGroupStyles[col]
-		if cgs == nil {
-			continue
-		}
-		for _, side := range allSides {
-			elemEdge := readBorderEdge(cgs, side)
-			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-				continue
-			}
-			for row := 0; row < g.numRows; row++ {
-				mergeElementBorder(row, col, side, elemEdge)
-			}
-		}
-	}
-
-	// 5. Merge table borders — lowest precedence.
-	if tableStyle != nil {
-		for _, side := range allSides {
-			elemEdge := readBorderEdge(tableStyle, side)
-			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
-				continue
-			}
-			for row := 0; row < g.numRows; row++ {
-				for col := 0; col < g.numCols; col++ {
-					mergeElementBorder(row, col, side, elemEdge)
-				}
-			}
-		}
-	}
-
-	return result, outward
-}
-
-// setBorderEdge sets a specific physical border edge on a cloned style.
-func setBorderEdge(s *css.Style, side string, width float64, style css.BorderStyle, color css.Color) {
-	s.Properties["border-"+side+"-width"] = fmt.Sprintf("%.6gpx", width)
-	s.Properties["border-"+side+"-style"] = string(style)
-	s.Properties["border-"+side+"-color"] = fmt.Sprintf("rgb(%d,%d,%d)", color.R, color.G, color.B)
 }
 
 // parseIntAttr parses an integer from an HTML attribute value.

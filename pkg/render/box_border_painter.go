@@ -1061,6 +1061,16 @@ func (r *Renderer) fillQuad(pts [4]geometry.PointF, c css.Color) {
 	r.dc.Fill()
 }
 
+// DrawBoxSide paints one straight border side filling snappedEdgeRect.
+// Mirrors BoxBorderPainter::DrawBoxSide (box_border_painter.cc:2497-2509 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) DrawBoxSide(snappedEdgeRect intRect, side BoxSide, c css.Color, style css.BorderStyle) {
+	if style == css.BorderStyleNone || style == css.BorderStyleHidden {
+		return
+	}
+	r.drawLineForBoxSide(snappedEdgeRect.x, snappedEdgeRect.y, snappedEdgeRect.right(), snappedEdgeRect.bottom(), side, c, style, 0, 0)
+}
+
 // drawLineForBoxSide paints one straight side in the rect (x1,y1)-(x2,y2);
 // adjacentWidth1/2 are the neighbouring sides' widths when that end needs
 // a drawn miter, else 0 (DrawLineForBoxSide, box_border_painter.cc:921-980
