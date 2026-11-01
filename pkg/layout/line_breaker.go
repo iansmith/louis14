@@ -161,6 +161,9 @@ type LineBreaker struct {
 	fonts          text.FontConfig
 	mode           LineBreakerMode
 	availableWidth float64
+	// disallowAutoWrap keeps every item on one line (Blink's
+	// disallow_auto_wrap_): set on ruby sub-line breakers.
+	disallowAutoWrap bool
 
 	// Current position in the item list.
 	currentItemIndex int
@@ -263,6 +266,15 @@ func NewLineBreaker(
 		mode:           mode,
 		availableWidth: availableWidth,
 	}
+}
+
+// canAutoWrap reports whether the breaker may wrap at a soft break
+// opportunity: never at max-content, nor when auto-wrap is disallowed.
+// Mirrors the disallow_auto_wrap_ gate of LineBreaker::ShouldAutoWrap
+// (inline/line_breaker.cc:419-424 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) canAutoWrap() bool {
+	return lb.mode != LineBreakerMaxContent && !lb.disallowAutoWrap
 }
 
 // startsAfterBreakOpportunity reports whether there IS a valid line-break
@@ -561,7 +573,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// Check if it fits.
 	remaining := lb.availableWidth - lb.position
-	if fullWidth <= remaining || lb.mode == LineBreakerMaxContent {
+	if fullWidth <= remaining || !lb.canAutoWrap() {
 		// Fits — add the full text.
 		line.Results = append(line.Results, InlineItemResult{
 			Item:       item,
@@ -1740,7 +1752,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	// In LineBreakerMinContent mode: break at every opportunity so each atom
 	// contributes independently to the min-content width.
 	// In LineBreakerMaxContent mode: never break (place everything on one line).
-	if totalInlineSize > remaining && line.HasContent && lb.mode != LineBreakerMaxContent {
+	if totalInlineSize > remaining && line.HasContent && lb.canAutoWrap() {
 		// Doesn't fit and line has content — end the line. An inside
 		// marker trailing the line must wrap with the atomic (same
 		// no-break contract as the text path in breakTextAtWord).
