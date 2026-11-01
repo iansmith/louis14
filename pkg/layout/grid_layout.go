@@ -1169,9 +1169,9 @@ func buildGridChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 			result = append(result, child)
 			continue
 		}
-		// <br> joins surrounding text (LayoutBR is a LayoutText subclass in
-		// Blink), so the contiguous run wrapping picks it up.
-		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+		// <br> and anonymous inlines join surrounding text (joinsTextRun),
+		// so the contiguous run wrapping picks them up.
+		if joinsTextRun(child) {
 			textRun = append(textRun, child)
 			continue
 		}

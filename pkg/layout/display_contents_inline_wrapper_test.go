@@ -113,3 +113,38 @@ func TestFirstLineSkipsDisplayContentsInlineWrapper(t *testing.T) {
 		}
 	}
 }
+
+// TestDisplayContentsWrapperItemsSkipFirstLineMeasuring (LOU-567): the line
+// breaker measures items in the anonymous wrapper with their own style, the
+// same rule applyFirstLineStyles follows, and the flag survives the bidi
+// level split that runs before line breaking.
+func TestDisplayContentsWrapperItemsSkipFirstLineMeasuring(t *testing.T) {
+	tree, _ := displayContentsFirstLine002Tree()
+	data := CollectInlines(tree)
+	ResolveBidiLevels(data, DirectionLTR)
+	SplitItemsAtLevelBoundaries(data)
+
+	lb := &LineBreaker{useFirstLineStyle: true, firstLineStyle: makeStyle("color", "red")}
+	sawWrapped := false
+	for _, item := range data.Items {
+		if item.Type != InlineItemText {
+			continue
+		}
+		txt := data.TextContent[item.StartOffset:item.EndOffset]
+		got, _ := lb.measuringStyle(item).Get("color")
+		switch txt {
+		case "P":
+			sawWrapped = true
+			if !item.inAnonymousInline || got != "green" {
+				t.Errorf("text P: inAnonymousInline=%v measuring color %q, want true and green", item.inAnonymousInline, got)
+			}
+		case "ASS":
+			if item.inAnonymousInline || got != "red" {
+				t.Errorf("text ASS: inAnonymousInline=%v measuring color %q, want false and the unblocked ::first-line red", item.inAnonymousInline, got)
+			}
+		}
+	}
+	if !sawWrapped {
+		t.Fatalf("no text item for P in %q", data.TextContent)
+	}
+}

@@ -419,7 +419,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 				// Elements that cannot unbox already computed to
 				// display:none (css.AdjustStyleForHTMLElement /
 				// AdjustStyleForSvgElement).
-				rawChildren = append(rawChildren, b.expandContentsChildren(child)...)
+				rawChildren = append(rawChildren, b.expandContentsChildren(child, style)...)
 				continue
 			}
 			rawChildren = append(rawChildren, b.buildNode(child))
@@ -589,7 +589,13 @@ func unboxPseudoIfContents(pseudo *LayoutInputNode) []*LayoutInputNode {
 // third_party/blink/renderer/core/dom/layout_tree_builder.cc and
 // third_party/blink/renderer/core/dom/element.cc::LayoutObjectIsNeeded
 // at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*LayoutInputNode {
+//
+// layoutParentStyle is the style of the box the expanded children attach
+// to (Blink's AttachContext::parent): the nearest ancestor that is not
+// display:contents. Text children whose contents-element style differs
+// from it in an inherited property get an anonymous inline wrapper; see
+// createTextLayoutObjectForDisplayContents.
+func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node, layoutParentStyle *css.Style) []*LayoutInputNode {
 	contentsStyle := b.styles[contents]
 	var out []*LayoutInputNode
 
@@ -611,10 +617,7 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 	for _, child := range contents.Children {
 		switch child.Type {
 		case html.TextNode:
-			out = append(out, &LayoutInputNode{
-				DOMNode: child,
-				style:   contentsStyle, // text inherits contents element's style
-			})
+			out = append(out, createTextLayoutObjectForDisplayContents(child, contentsStyle, layoutParentStyle))
 		case html.ElementNode:
 			childStyle := b.styles[child]
 			if childStyle == nil {
@@ -627,7 +630,7 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 				// Elements that cannot unbox already computed to
 				// display:none (css.AdjustStyleForHTMLElement /
 				// AdjustStyleForSvgElement).
-				out = append(out, b.expandContentsChildren(child)...)
+				out = append(out, b.expandContentsChildren(child, layoutParentStyle)...)
 				continue
 			}
 			out = append(out, b.buildNode(child))
@@ -643,6 +646,60 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 	}
 
 	return out
+}
+
+// createTextLayoutObjectForDisplayContents returns the layout node for a
+// text child of a display:contents element. The text takes the contents
+// element's style (its DOM parent's). When that style differs from the
+// layout parent's in an inherited property, the text is wrapped in an
+// anonymous inline box carrying the contents element's inherited
+// properties, and the text takes the wrapper's style: "the layout code
+// expects the LayoutObject parent of text nodes to have the same inherited
+// properties". Mirrors Blink's LayoutTreeBuilderForText::CreateLayoutObject
+// with CreateInlineWrapperStyleForDisplayContentsIfNeeded and
+// CreateInlineWrapperForDisplayContentsIfNeeded
+// (core/dom/layout_tree_builder.cc:151-203 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// Collapsible-whitespace-only text is left unwrapped. Blink creates no
+// layout object at all for most such text (Text::TextLayoutObjectIsNeeded,
+// core/dom/text.cc:294-323 @ a9f50e52), but louis14 keeps it for
+// whitespace collapsing later and cannot evaluate that function's
+// previous-in-flow test here. Leaving it bare keeps the flex/grid/table
+// whitespace-dropping rules, which look for text nodes, working. The text
+// still carries the contents element's style; only ::first-line on such a
+// space differs from Blink.
+func createTextLayoutObjectForDisplayContents(textNode *html.Node, contentsStyle, layoutParentStyle *css.Style) *LayoutInputNode {
+	text := &LayoutInputNode{DOMNode: textNode, style: contentsStyle}
+	if contentsStyle == nil || layoutParentStyle == nil || isCSSWhitespaceOnly(textNode.Text) {
+		return text
+	}
+	wrapperStyle := css.CreateInheritedDisplayContentsStyleIfNeeded(contentsStyle, layoutParentStyle)
+	if wrapperStyle == nil {
+		return text
+	}
+	text.style = wrapperStyle
+	return &LayoutInputNode{
+		style:       wrapperStyle,
+		children:    []*LayoutInputNode{text},
+		isAnonymous: true,
+	}
+}
+
+// joinsTextRun reports whether a non-text child of a flex or grid
+// container joins the surrounding run of text in one anonymous block item:
+// a <br> (Blink's LayoutBR is a LayoutText subclass) or an anonymous inline
+// box such as the display:contents text wrapper. Every other element child
+// was blockified by css.AdjustStyleForDisplay. Mirrors Blink's
+// LayoutBlock::AddChild, which puts any inline child of a block with block
+// children into the preceding anonymous block flow or a new one
+// (core/layout/layout_block.cc:210-227 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func joinsTextRun(child *LayoutInputNode) bool {
+	if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+		return true
+	}
+	return child.IsAnonymous() && child.Style() != nil && child.Style().GetDisplay() == css.DisplayInline
 }
 
 // isProperTableChild reports whether a child is a proper table child per

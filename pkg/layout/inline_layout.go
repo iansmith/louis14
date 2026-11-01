@@ -2030,7 +2030,10 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle, containerStyle *css.St
 
 	for i := range line.Results {
 		r := &line.Results[i]
-		if r.Item == nil || r.Item.Style == nil {
+		if r.Item == nil || r.Item.Style == nil || r.Item.inAnonymousInline {
+			// Items in an anonymous inline take no ::first-line style (see
+			// InlineItem.inAnonymousInline). Its Open/CloseTag pair is
+			// skipped together, so the frame stack stays balanced.
 			continue
 		}
 		// An open tag pushes its frame FIRST so the element's own item (and

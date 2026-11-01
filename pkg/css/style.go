@@ -7484,6 +7484,43 @@ func CreateAnonymousStyleWithDisplay(parent *Style, display string) *Style {
 	return s
 }
 
+// InheritedEqual reports whether s and other agree on every inherited
+// property. Custom properties are excluded, as in Blink, where inherited
+// variables are compared separately by
+// InheritedEqualIncludingInheritedVariables. Applied text decorations are
+// excluded too: Blink keeps BaseTextDecorationData in the non-inherited
+// "visual" field group (core/style/computed_style_extra_fields.json5:516-524
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Inherited values are copied
+// into every computed style by ApplyInheritedProperties, so comparing the
+// Properties entries compares computed values. Mirrors Blink's
+// ComputedStyle::InheritedEqual (core/style/computed_style.cc:722-725 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) InheritedEqual(other *Style) bool {
+	for prop := range inheritableProperties {
+		v, ok := s.Properties[prop]
+		ov, ook := other.Properties[prop]
+		if ok != ook || v != ov {
+			return false
+		}
+	}
+	return true
+}
+
+// CreateInheritedDisplayContentsStyleIfNeeded returns the style of the
+// anonymous inline that wraps a text child of a display:contents element, or
+// nil when no wrapper is needed because the contents element (parentStyle)
+// changes no inherited property relative to the text's layout parent
+// (layoutParentStyle). Mirrors Blink's
+// StyleResolver::CreateInheritedDisplayContentsStyleIfNeeded
+// (core/css/resolver/style_resolver.cc:3351-3358 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func CreateInheritedDisplayContentsStyleIfNeeded(parentStyle, layoutParentStyle *Style) *Style {
+	if parentStyle.InheritedEqual(layoutParentStyle) {
+		return nil
+	}
+	return CreateAnonymousStyleWithDisplay(parentStyle, string(DisplayInline))
+}
+
 // MarkerShouldBeInside reports whether this list item's ::marker box is
 // placed inside (as the first in-flow inline child) rather than through the
 // outside carry/claim protocol. Mirrors Blink's
