@@ -76,14 +76,6 @@ type BlockBreakToken struct {
 	// See https://www.w3.org/TR/css-break-3/#parallel-flows.
 	IsAtBlockEnd bool
 
-	// IsInParallelFlow means this break-token belongs to a child whose
-	// parent's break-token has IsAtBlockEnd=true. A parallel-flow child
-	// resumes in the same fragmentainer as the parent's final fragment
-	// rather than at child-local block-offset 0 in a fresh parent
-	// continuation. Mirrors Blink's BlockBreakToken parallel-flow
-	// signaling (block_break_token.h:~287).
-	IsInParallelFlow bool
-
 	// MonolithicOverflow is how far monolithic content overflowed the
 	// fragmentainer; later fragments steer clear of it. Mirrors Blink's
 	// BlockBreakToken::MonolithicOverflow (block_break_token.h:101-111 @
