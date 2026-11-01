@@ -3,6 +3,8 @@ package layout
 import (
 	"testing"
 
+	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 )
 
@@ -131,4 +133,56 @@ func TestOOFsParticipateInColumnBalancing(t *testing.T) {
 			"sp": {{0, 100, 100, 0}},
 		})
 	})
+}
+
+// TestOOFsInsideColumnSpanner pins Blink's handling of OOFs inside a column
+// spanner (plan probe pD): the spanner is laid out by the multicol and added
+// with AddResult (column_layout_algorithm.cc:1427 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which propagates its OOF
+// descendants to the multicol (fragment_builder.cc:357-405). Searching for a
+// containing block jumps from a spanner straight to the multicol
+// (FindColumnSpannerContainer, layout_object.cc:166-202), so the
+// position:relative ancestor inside the multicol is not the containing
+// block: `a` is placed against the ICB and `s` at its static position, the
+// spanner's content-box start. Chrome 155 getClientRects.
+func TestOOFsInsideColumnSpanner(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0"><div style="height:30px"></div>`+
+		`<div style="columns:3;column-gap:0;width:300px;margin-left:20px">`+
+		`<div style="position:relative;margin-top:7px"><div style="column-span:all;height:50px">`+
+		`<div id=a style="position:absolute;top:5px;left:5px;width:10px;height:10px"></div>`+
+		`<div id=s style="position:absolute;width:10px;height:10px"></div>`+
+		`</div></div></div>`)
+	checkRects(t, got, map[string][]fragRect{
+		"a": {{5, 5, 10, 10}},
+		"s": {{20, 37, 10, 10}},
+	})
+}
+
+// TestSpannerTagsFragmentainerDescendants pins the column-spanner tag on a
+// fragmentainer descendant propagated out of a spanner: Blink's
+// PropagateOOFFragmentainerDescendants sets is_inside_column_spanner when
+// the propagating fragment is a column spanner (fragment_builder.cc:974-975
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the inner multicol's
+// pending-OOF layout leaves the descendant to the next fragmentation context
+// (LayoutOOFsInMulticol, out_of_flow_layout_part.cc:1440-1449).
+func TestSpannerTagsFragmentainerDescendants(t *testing.T) {
+	spanner := makeNode("div")
+	styles := map[*html.Node]*css.Style{spanner: makeStyle("display", "block", "column-span", "all")}
+	spannerNode := buildTestTree(spanner, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	spannerFragment := &PhysicalFragment{
+		Node:       spanner,
+		Style:      spannerNode.Style(),
+		LayoutNode: spannerNode,
+		FragmentedOofData: &FragmentedOofData{
+			OofPositionedFragmentainerDescendants: []LogicalOofNodeForFragmentation{{}},
+		},
+	}
+	builder := NewBoxFragmentBuilder(wdm)
+	builder.PropagateOOFFragmentainerDescendants(spannerFragment, LogicalOffset{}, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, nil)
+	var got []LogicalOofNodeForFragmentation
+	builder.SwapOutOfFlowFragmentainerDescendants(&got)
+	if len(got) != 1 || !got[0].ContainingBlock.IsInsideColumnSpanner {
+		t.Errorf("descendants %+v, want one with ContainingBlock.IsInsideColumnSpanner", got)
+	}
 }

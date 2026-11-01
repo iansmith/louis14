@@ -30,7 +30,7 @@ func TestShouldPropagateChildBreakValues_DedicatedBit(t *testing.T) {
 
 	// The column (fragmentainer) space sets the bit.
 	mla := &MulticolLayoutAlgorithm{remainingContentBlockSize: Indefinite}
-	col := mla.createConstraintSpaceForColumn(wdm, 100, 50, Indefinite, nil, false, true, BreakAppealLastResort)
+	col := mla.createConstraintSpaceForColumn(wdm, 100, 50, Indefinite, nil, false, BreakAppealLastResort)
 	if !col.ShouldPropagateChildBreakValues() {
 		t.Errorf("createConstraintSpaceForColumn: ShouldPropagateChildBreakValues() = false, want true")
 	}

@@ -153,3 +153,29 @@ func TestFinishFragmentationForFragmentainerKeepsSpannerParentWithOOFs_LOU478(t 
 		})
 	}
 }
+
+// TestColumnSpaceHasNoBlockSizeOverride_LOU484: a column box's space is
+// Blink's CreateConstraintSpaceForFragmentainer (fragmentation_utils.cc:
+// 1377-1411 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which sets the
+// fragmentainer block-size and available size but neither IsFixedBlockSize
+// nor a block-size override; FinishFragmentationForFragmentainer sizes the
+// fragment instead.
+func TestColumnSpaceHasNoBlockSizeOverride_LOU484(t *testing.T) {
+	mc := makeNode("div")
+	styles := map[*html.Node]*css.Style{
+		mc: makeStyle("display", "block", "column-count", "2"),
+	}
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		Build()
+	mla := NewMulticolLayoutAlgorithm(testContext(), buildTestTree(mc, styles), space)
+	colSpace := mla.createConstraintSpaceForColumn(wdm, 50, 100, Indefinite, nil, true, BreakAppealLastResort)
+	if colSpace.IsFixedBlockSize || colSpace.IsBlockSizeOverride {
+		t.Errorf("column space IsFixedBlockSize=%v IsBlockSizeOverride=%v, want neither", colSpace.IsFixedBlockSize, colSpace.IsBlockSizeOverride)
+	}
+	if got := colSpace.FragmentainerBlockSize; got != 100 {
+		t.Errorf("column space fragmentainer block-size = %v, want 100", got)
+	}
+}

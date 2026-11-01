@@ -45,7 +45,11 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentB
 			// always backfills CB.Fragment. Skip defensively.
 			continue
 		}
-		if innerMcNode := mla.findInnerMulticolForCB(builder, d.ContainingBlock.Fragment, pendingMulticols); innerMcNode != nil {
+		// A descendant whose containing block is inside a column spanner is
+		// not laid out in the inner multicol (LayoutOOFsInMulticol,
+		// out_of_flow_layout_part.cc:1440-1449 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if innerMcNode := mla.findInnerMulticolForCB(builder, d.ContainingBlock.Fragment, pendingMulticols); innerMcNode != nil && !d.ContainingBlock.IsInsideColumnSpanner {
 			mla.layoutFragmentainerDescendant(builder, d, innerMcNode)
 			continue
 		}
