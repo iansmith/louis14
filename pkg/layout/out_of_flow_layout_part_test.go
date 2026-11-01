@@ -2,9 +2,9 @@ package layout
 
 import "testing"
 
-// derivedFromBlink labels expected values derived from the cited Blink
-// algorithm rather than probed in Chrome.
-const derivedFromBlink = "derived from the cited Blink algorithm, not a Chrome probe"
+// chrome152 labels expected values probed with getClientRects in Chrome 152
+// (the Claude desktop app's browser pane, Chrome/152.0.7977.167).
+const chrome152 = "Chrome 152 getClientRects"
 
 // TestFixedContainerFlexGridTable pins flex, grid and table containers as
 // containing blocks of their fixed-position descendants when they are fixed
@@ -24,7 +24,7 @@ func TestFixedContainerFlexGridTable(t *testing.T) {
 				`<div id=f style="position:fixed;top:10px;left:5px;width:10px;height:10px"></div></div>`)
 			checkRectsFrom(t, got, map[string][]fragRect{
 				"f": {{35, 30, 10, 10}},
-			}, derivedFromBlink)
+			}, chrome152)
 		})
 	}
 }
@@ -56,7 +56,7 @@ func TestOOFStaticPositionCarriesChildRelativeOffset(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font-size:0">`+tc.body)
-			checkRectsFrom(t, got, map[string][]fragRect{"f": {tc.want}}, derivedFromBlink)
+			checkRectsFrom(t, got, map[string][]fragRect{"f": {tc.want}}, chrome152)
 		})
 	}
 }
@@ -72,5 +72,64 @@ func TestPositionedFlexInMulticolDefersAbspos(t *testing.T) {
 	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0"><div style="`+oofProbeMulticol+`width:200px;height:100px">`+
 		`<div style="display:flex;position:relative;height:150px">`+
 		`<div id=a style="position:absolute;top:120px;left:0;width:10px;height:10px"></div></div></div>`)
-	checkRectsFrom(t, got, map[string][]fragRect{"a": {{100, 20, 10, 10}}}, derivedFromBlink)
+	checkRectsFrom(t, got, map[string][]fragRect{"a": {{100, 20, 10, 10}}}, chrome152)
+}
+
+// fixedContainerInMulticolProbe is a multicol (2 x 100px columns at (30,20))
+// holding a transformed block `t`, a fixed container that breaks into both
+// columns. inner is placed in t after a 120px block, so in t's second
+// fragment.
+func fixedContainerInMulticolProbe(inner string) string {
+	return `<!DOCTYPE html><body style="margin:0;font-size:0"><div style="height:20px"></div>` +
+		`<div style="` + oofProbeMulticol + `width:200px;height:100px;margin-left:30px">` +
+		`<div id=t style="transform:translateX(0);padding-top:4px"><div style="height:120px"></div>` + inner + `</div></div>`
+}
+
+// fixedInAbs is an abspos holding a fixed box with insets (`fx`, top:110px
+// against t's stitched padding box: 10px into column 2) and one at its
+// static position (`fs`).
+const fixedInAbs = `<div id=abs style="position:absolute;width:20px;height:20px">` +
+	`<div id=fx style="position:fixed;top:110px;left:5px;width:10px;height:10px"></div>` +
+	`<div id=fs style="position:fixed;width:10px;height:10px"></div></div>`
+
+// TestFixedContainerInsideFragmentationContext pins the fixedpos containing
+// block of a fixed box inside a fragmentainer descendant: the fixed
+// container `t` inside the multicol, found while the abspos's fragmentainer
+// descendant data propagates out of it (FragmentBuilder::
+// AdjustFixedposContainerInfo, fragment_builder.cc:1108-1143; the fixedpos
+// branch of PropagateOOFPositionedInfo, :783-816; LayoutOOFsInFragmentainer
+// passing it on, out_of_flow_layout_part.cc:3057-3087 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `fx` is laid out against t's
+// stitched padding box, in column 2; louis14 put it against the viewport.
+func TestFixedContainerInsideFragmentationContext(t *testing.T) {
+	got := oofPageRects(t, fixedContainerInMulticolProbe(
+		`<div id=rel style="position:relative;height:40px"><div style="height:30px"></div>`+
+			`<div style="position:absolute;top:10px;width:20px;height:20px">`+
+			`<div id=fx style="position:fixed;top:110px;left:5px;width:10px;height:10px"></div>`+
+			`<div id=fs style="position:fixed;width:10px;height:10px"></div></div></div>`))
+	checkRectsFrom(t, got, map[string][]fragRect{
+		"fx": {{135, 30, 10, 10}},
+		"fs": {{130, 54, 10, 10}},
+	}, chrome152)
+}
+
+// TestFixedContainerBetweenNestedMulticols pins the fixedpos containing
+// block of a fixed box inside an inner multicol's pending OOF when the fixed
+// container `t` is inside the outer multicol but outside the inner one: the
+// pending multicol entry records t as its fixedpos containing block as it
+// propagates out of t, with the multicol offset kept relative to t and made
+// stitched by AdjustFixedposContainingBlockForInnerMulticols
+// (fragment_builder.cc:842-917, :1108-1143; box_fragment_builder.cc:823-845),
+// and TransferOutOfFlowCandidates makes the fixed a fragmentainer descendant
+// contained by t (fragment_builder.cc:682-710 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFixedContainerBetweenNestedMulticols(t *testing.T) {
+	got := oofPageRects(t, fixedContainerInMulticolProbe(
+		`<div style="`+oofProbeMulticol+`width:100px;height:60px">`+
+			`<div id=rel style="position:relative"><div style="height:30px"></div>`+fixedInAbs+`</div></div>`))
+	checkRectsFrom(t, got, map[string][]fragRect{
+		"abs": {{130, 74, 20, 20}},
+		"fx":  {{135, 30, 10, 10}},
+		"fs":  {{130, 74, 10, 10}},
+	}, chrome152)
 }

@@ -12,6 +12,7 @@ import (
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 	"louis14/pkg/text"
+	stdnet "louis14/std/net"
 	"mazarin/textshape"
 )
 
@@ -193,7 +194,7 @@ func (r *Louis14Renderer) buildFetchers() (html.CSSFetcher, images.ImageFetcher)
 
 	var imageFetcher images.ImageFetcher
 	if r.fetcher != nil {
-		imageFetcher = func(uri string) ([]byte, error) {
+		imageFetcher = stdnet.RequestResource(func(uri string) ([]byte, error) {
 			if df, ok := r.fetcher.(*DefaultFetcher); ok {
 				return df.FetchImage(uri)
 			}
@@ -202,7 +203,7 @@ func (r *Louis14Renderer) buildFetchers() (html.CSSFetcher, images.ImageFetcher)
 				return nil, err
 			}
 			return body, nil
-		}
+		})
 	}
 
 	return cssFetcher, imageFetcher
@@ -228,13 +229,13 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 
 	// Create registry and fetch fonts
 	registry := text.NewFontRegistry()
-	fontFetcher := func(uri string) ([]byte, error) {
+	fontFetcher := stdnet.RequestResource(func(uri string) ([]byte, error) {
 		body, _, err := r.fetcher.Fetch(uri)
 		if err != nil {
 			return nil, err
 		}
 		return body, nil
-	}
+	})
 
 	registry.AddUserFontFaceRules(allFaces, fontFetcher)
 

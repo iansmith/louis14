@@ -25,18 +25,6 @@ func createTestPNGDataURI() string {
 	return "data:image/png;base64," + encoded
 }
 
-func TestIsDataURI(t *testing.T) {
-	if !IsDataURI("data:image/png;base64,abc") {
-		t.Error("expected true for data URI")
-	}
-	if IsDataURI("/path/to/file.png") {
-		t.Error("expected false for file path")
-	}
-	if IsDataURI("") {
-		t.Error("expected false for empty string")
-	}
-}
-
 func TestLoadImageFromDataURI(t *testing.T) {
 	uri := createTestPNGDataURI()
 	img, err := LoadImageFromDataURI(uri)

@@ -23,6 +23,16 @@ type Engine struct {
 	layoutStyles map[*html.Node]*css.Style
 	layoutBoxes  map[*html.Node]*layout.Box
 
+	// updateLayout lays the document out again and returns the node→box
+	// index, for the bindings that read or write layout state mid-script
+	// (Element.scrollLeft/scrollTop). Mirrors Document::
+	// UpdateStyleAndLayoutForNode, which Element::scrollLeft/setScrollLeft
+	// call first (dom/element.cc:2724-2760, 2811-2866 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Set via SetLayoutUpdater
+	// before Execute; nil leaves those bindings without layout (the
+	// requested offset is stored and read back unclamped).
+	updateLayout func() map[*html.Node]*layout.Box
+
 	// doc is the document most recently passed to Execute, retained so
 	// CurrentSelection() can read doc.Selection after scripts finish
 	// running (e.g. from a test, without the caller needing to thread the
@@ -199,6 +209,12 @@ func (e *Engine) SetLayoutSnapshot(styles map[*html.Node]*css.Style, boxes map[*
 	e.layoutBoxes = boxes
 }
 
+// SetLayoutUpdater installs the function that re-runs layout on the
+// current DOM and returns its node→box index (see Engine.updateLayout).
+func (e *Engine) SetLayoutUpdater(update func() map[*html.Node]*layout.Box) {
+	e.updateLayout = update
+}
+
 // Execute runs all scripts from the document against the DOM.
 // Scripts are executed in order. Any JS errors are returned but
 // callers may choose to log and continue rather than fail.
@@ -215,6 +231,7 @@ func (e *Engine) Execute(doc *html.Document) error {
 	ctx.engine = e
 	ctx.layoutStyles = e.layoutStyles
 	ctx.layoutBoxes = e.layoutBoxes
+	ctx.updateLayout = e.updateLayout
 
 	// Execute each script in document order
 	for i, script := range doc.Scripts {

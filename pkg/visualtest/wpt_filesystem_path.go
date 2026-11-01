@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	urlpkg "louis14/pkg/url"
+	stdnet "louis14/std/net"
 )
 
 // findWPTRoot returns the WPT doc root for a document in dir: dir itself or
@@ -110,6 +111,13 @@ func (r wptResourceResolver) filesystemPath(uri string) (string, error) {
 		return "", fmt.Errorf("unsupported URI scheme: %s", uri)
 	}
 	return filepath.Join(r.basePath, uri), nil
+}
+
+// fetch is the resource fetcher image and @font-face loads go through:
+// data: URLs are static data (stdnet.RequestResource), everything else is
+// read from the corpus.
+func (r wptResourceResolver) fetch(uri string) ([]byte, error) {
+	return stdnet.RequestResource(r.readFile)(uri)
 }
 
 // readFile reads the corpus file that serves uri.

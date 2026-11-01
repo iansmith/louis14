@@ -7,6 +7,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	"louis14/pkg/text"
 	urlpkg "louis14/pkg/url"
 	"mazarin/textshape"
 )
@@ -270,15 +271,27 @@ type PaintLayer struct {
 	// CSS font-variant-caps (small-caps, all-small-caps, etc.):
 	FontVariantCaps string
 
-	// CSS font-feature-settings: OpenType feature tags parsed into tag/value pairs.
-	// Populated from CSS like "kern" 1, "liga" 0. Empty when "normal".
+	// FontFeatures is the face-independent OpenType feature list the text is
+	// shaped with — Blink's Font::GetFontFeatures() plus the font-variant-caps
+	// overlay: font-variant-caps, font-kerning, font-variant-ligatures,
+	// -east-asian, -numeric, then font-feature-settings (see newPaintLayer).
+	// Shaping prepends the face's ResolvedFeatures (Renderer.shapeFeatures).
 	FontFeatures []textshape.FontFeature
 
-	// FontFeatureSettings is the font-feature-settings property alone (the
-	// leading entries of FontFeatures, before the font-variant-* features):
-	// Blink's FontDescription::FeatureSettings(), which decides which
-	// @font-face descriptor features survive (withFontFaceFeatures).
+	// FontFeatureSettings is the font-feature-settings property alone, a
+	// list of its own (FontFeatures holds a copy): Blink's
+	// FontDescription::FeatureSettings(), which decides which @font-face
+	// descriptor features survive (Renderer.resolveFontFeatures).
 	FontFeatureSettings []textshape.FontFeature
+
+	// FontVariantAlternates is the font-variant-alternates features, the
+	// leading part of every face's ResolvedFeatures (Renderer.resolveFontFeatures).
+	//
+	// FontFeatures, FontFeatureSettings and FontVariantAlternates are built
+	// once by newPaintLayer and never modified afterwards (a copy of the
+	// layer may share them): Renderer.shapeFeatures memoizes by their
+	// identity.
+	FontVariantAlternates []textshape.FontFeature
 
 	// Text emphasis marks (small marks above/below each character):
 	TextEmphasisMark  string    // resolved mark character ("●", "•", etc.); "" = none
@@ -950,8 +963,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// outer clip path is enabled only when the SVG actually has
 		// `overflow-clip-margin` set — see the `isSVGRootNode` block
 		// above for the rationale.
-		isScrollContainer := overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || overflowX == css.OverflowHidden ||
-			overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || overflowY == css.OverflowHidden
+		isScrollContainer := box.IsScrollContainer()
 		if isSVGRootNode {
 			isScrollContainer = false
 		}
@@ -1313,11 +1325,26 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextShadows = s.GetTextShadow()
 	layer.FontVariantCaps = s.GetFontVariantCaps()
 
-	// CSS font-feature-settings.
-	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "normal" && ffs != "" {
-		layer.FontFeatures = parseFontFeatureSettings(ffs)
-		layer.FontFeatureSettings = layer.FontFeatures
+	// font-feature-settings, the property alone: Blink's
+	// FontDescription::FeatureSettings(). It is its own input — the
+	// descriptor resolution (Renderer.resolveFontFeatures) needs it apart from
+	// the shaping list — and is appended to FontFeatures last, below.
+	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "" {
+		layer.FontFeatureSettings, _ = text.ParseFontFeatureSettings(ffs)
 	}
+
+	// FontFeatures is assembled in the order Blink shapes with
+	// (all @ 5992657f556bcd9d207a4aca187488462f027cab): the font-variant-caps
+	// features CapsFeatureSettingsScopedOverlay prepends
+	// (platform/fonts/shaping/harfbuzz_shaper.cc:823-857), then
+	// FontFeatureRange::FromFontDescription's font-kerning,
+	// font-variant-ligatures, -east-asian, -numeric and finally
+	// font-feature-settings (platform/fonts/shaping/font_features.cc:33-235).
+	// HarfBuzz lets a later setting of a tag win, so the low-level property
+	// overrides the font-variant-* shorthands (CSS Fonts 4 §7.2). The
+	// face-dependent features — font-variant-alternates and the @font-face
+	// descriptor — are the face's ResolvedFeatures, inserted before all of
+	// these at shaping time (Renderer.shapeFeatures).
 
 	// CSS Fonts 4 §6.7 font-variant-caps: emit the corresponding OpenType
 	// feature tags so a font carrying native small-caps / petite-caps /
@@ -1330,9 +1357,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which is constructed
 	// from FontDescription::VariantCaps() alone; synthesis is consulted only
 	// at the synth-font selection site (OpenTypeCapsSupport::
-	// SyntheticSmallCapsAllowed), never at feature emission. Appended AFTER
-	// font-feature-settings so the high-level property wins per CSS Fonts 4
-	// §7 "Resolution of font feature values".
+	// SyntheticSmallCapsAllowed), never at feature emission.
 	switch layer.FontVariantCaps {
 	case "small-caps":
 		layer.FontFeatures = append(layer.FontFeatures,
@@ -1362,10 +1387,22 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		)
 	}
 
+	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
+	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
+	// (HarfBuzz enables kern for horizontal text by default). When `none`,
+	// push `kern=0` (and `vkrn=0` for vertical writing modes). Mirrors Blink's
+	// HarfBuzzShaper SetFontFeatures path
+	// (third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc)
+	// where FontDescription::Kerning()==kNoneKerning emits kern=0/vkrn=0.
+	if s.GetFontKerning() == css.FontKerningNone {
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'k', 'e', 'r', 'n'}, Value: 0},
+			textshape.FontFeature{Tag: [4]byte{'v', 'k', 'r', 'n'}, Value: 0},
+		)
+	}
+
 	// CSS Fonts 4 §6.4 font-variant-ligatures: each sub-property keyword
-	// toggles a fixed OpenType feature tag (CSS Fonts 4 §6.4 table). Emitted
-	// AFTER font-feature-settings so the high-level property wins per CSS
-	// Fonts 4 §7 "Resolution of font feature values". Mirrors Blink's
+	// toggles a fixed OpenType feature tag (CSS Fonts 4 §6.4 table). Mirrors Blink's
 	// FontDescription::SetVariantLigatures →
 	// FontDescription::FeatureSettings path in
 	// third_party/blink/renderer/platform/fonts/font_description.cc at
@@ -1391,27 +1428,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			fontVariantLigatureFeatures(ligs)...)
 	}
 
-	// CSS Fonts 4 §6.4 font-variant-numeric: keyword → OpenType tag table.
-	// Same emission-order rules as ligatures above. Mirrors
-	// FontDescription::SetVariantNumeric() in font_description.cc at
-	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	//
-	//   normal             -- HarfBuzz defaults (no emit needed).
-	//   lining-nums        -- lnum=1.
-	//   oldstyle-nums      -- onum=1.
-	//   proportional-nums  -- pnum=1.
-	//   tabular-nums       -- tnum=1.
-	//   diagonal-fractions -- frac=1.
-	//   stacked-fractions  -- afrc=1.
-	//   ordinal            -- ordn=1.
-	//   slashed-zero       -- zero=1.
-	if num := s.GetFontVariantNumeric(); num != "" && num != "normal" {
-		layer.FontFeatures = append(layer.FontFeatures,
-			fontVariantNumericFeatures(num)...)
-	}
-
 	// CSS Fonts 4 §6.5 font-variant-east-asian: keyword → OpenType tag table.
-	// Same emission-order rules as ligatures/numeric above. Mirrors Blink's
+	// Emission order: see the FontFeatures order block above. Mirrors Blink's
 	// FontDescription::SetVariantEastAsian() in font_description.cc at
 	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	//
@@ -1429,33 +1447,40 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			fontVariantEastAsianFeatures(ea)...)
 	}
 
+	// CSS Fonts 4 §6.4 font-variant-numeric: keyword → OpenType tag table.
+	// Emission order: see the FontFeatures order block above. Mirrors
+	// FontDescription::SetVariantNumeric() in font_description.cc at
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	//   normal             -- HarfBuzz defaults (no emit needed).
+	//   lining-nums        -- lnum=1.
+	//   oldstyle-nums      -- onum=1.
+	//   proportional-nums  -- pnum=1.
+	//   tabular-nums       -- tnum=1.
+	//   diagonal-fractions -- frac=1.
+	//   stacked-fractions  -- afrc=1.
+	//   ordinal            -- ordn=1.
+	//   slashed-zero       -- zero=1.
+	if num := s.GetFontVariantNumeric(); num != "" && num != "normal" {
+		layer.FontFeatures = append(layer.FontFeatures,
+			fontVariantNumericFeatures(num)...)
+	}
+
+	layer.FontFeatures = append(layer.FontFeatures, layer.FontFeatureSettings...)
+
 	// CSS Fonts 4 §6.6 font-variant-alternates: keyword + functional notation
 	// → OpenType tag table. Functional values (stylistic/styleset/
 	// character-variant/swash/ornaments/annotation) carry @font-feature-values
 	// names that resolve to a per-family index list at paint time. Mirrors
 	// Blink's FontDescription::SetVariantAlternates() in font_description.cc
 	// at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	// Kept apart from FontFeatures: Blink folds the alternates into the
+	// face's ResolvedFeatures ahead of the @font-face descriptor
+	// (FontDescription::ResolveFontFeatures, platform/fonts/
+	// font_description.cc:549-568 @ 5992657f556bcd9d207a4aca187488462f027cab).
 	if alt := s.GetFontVariantAlternates(); alt != "" && alt != "normal" {
 		family, _ := s.Get("font-family")
-		layer.FontFeatures = append(layer.FontFeatures,
-			fontVariantAlternatesFeatures(alt, family, s.FontFeatureValues)...)
-	}
-
-	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
-	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
-	// (HarfBuzz enables kern for horizontal text by default). When `none`,
-	// push `kern=0` (and `vkrn=0` for vertical writing modes) AFTER any
-	// font-feature-settings entries so the explicit property wins per §7
-	// "Resolution of font feature values" (font-* properties override
-	// font-feature-settings). Mirrors Blink's
-	// HarfBuzzShaper SetFontFeatures path
-	// (third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc)
-	// where FontDescription::Kerning()==kNoneKerning emits kern=0/vkrn=0.
-	if s.GetFontKerning() == css.FontKerningNone {
-		layer.FontFeatures = append(layer.FontFeatures,
-			textshape.FontFeature{Tag: [4]byte{'k', 'e', 'r', 'n'}, Value: 0},
-			textshape.FontFeature{Tag: [4]byte{'v', 'k', 'r', 'n'}, Value: 0},
-		)
+		layer.FontVariantAlternates = fontVariantAlternatesFeatures(alt, family, s.FontFeatureValues)
 	}
 
 	// Text emphasis marks.
@@ -2570,57 +2595,6 @@ func firstFontFamily(family string) string {
 		}
 	}
 	return ""
-}
-
-// parseFontFeatureSettings parses a CSS font-feature-settings value like
-// `"kern" 1, "liga" 0` into a slice of FontFeature.
-// CSS syntax: each entry is a 4-character tag in quotes, optionally followed by
-// an integer value (default 1) or "on"/"off".
-func parseFontFeatureSettings(value string) []textshape.FontFeature {
-	var features []textshape.FontFeature
-	for _, part := range strings.Split(value, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" || part == "normal" {
-			continue
-		}
-		// Split into tag and optional value.
-		fields := strings.Fields(part)
-		if len(fields) == 0 {
-			continue
-		}
-		// Extract tag: must be a quoted 4-character string.
-		tag := fields[0]
-		tag = strings.Trim(tag, `"'`)
-		if len(tag) != 4 {
-			continue
-		}
-		// Parse value: default is 1 (on).
-		val := uint32(1)
-		if len(fields) > 1 {
-			switch strings.ToLower(fields[1]) {
-			case "on":
-				val = 1
-			case "off":
-				val = 0
-			default:
-				// Parse integer.
-				n := 0
-				for _, c := range fields[1] {
-					if c >= '0' && c <= '9' {
-						n = n*10 + int(c-'0')
-					} else {
-						break
-					}
-				}
-				val = uint32(n)
-			}
-		}
-		features = append(features, textshape.FontFeature{
-			Tag:   [4]byte{tag[0], tag[1], tag[2], tag[3]},
-			Value: val,
-		})
-	}
-	return features
 }
 
 // blockUnderDirection returns the physical direction that is "toward block-end"

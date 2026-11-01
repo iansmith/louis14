@@ -60,7 +60,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher
 	if basePath != "" {
-		fetcher = resolver.readFile
+		fetcher = resolver.fetch
 		engine.SetImageFetcher(fetcher)
 		engine.SetDocumentFetcher(createFileDocumentFetcher(resolver))
 	}
@@ -69,24 +69,35 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 
 	// Execute JavaScript if the document has scripts, then re-layout.
 	if len(doc.Scripts) > 0 {
+		// newPostScriptEngine builds a layout engine for the DOM as scripts
+		// leave it: the mid-script layouts scroll bindings force and the
+		// final pass below.
+		newPostScriptEngine := func() *layout.LayoutEngine {
+			e := layout.NewLayoutEngine(float64(width), float64(height))
+			// CSS Transitions: the post-script pass compares against the
+			// first pass's computed styles (before-change styles).
+			e.SetPreviousStyles(engine.ComputedStyles())
+			e.SetFontConfig(fontConfig)
+			if fetcher != nil {
+				e.SetImageFetcher(fetcher)
+			}
+			if basePath != "" {
+				e.SetDocumentFetcher(createFileDocumentFetcher(resolver))
+			}
+			return e
+		}
 		jsEng := js.New()
 		jsEng.SetLayoutSnapshot(engine.ComputedStyles(), engine.NodeBoxes())
+		jsEng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+			e := newPostScriptEngine()
+			e.Layout(doc)
+			return e.NodeBoxes()
+		})
 		if err := jsEng.Execute(doc); err != nil {
 			log.Printf("js: %v", err)
 		}
 		// Second layout pass to pick up DOM mutations made by JS.
-		engine2 := layout.NewLayoutEngine(float64(width), float64(height))
-		// CSS Transitions: the post-script pass compares against the first
-		// pass's computed styles (before-change styles).
-		engine2.SetPreviousStyles(engine.ComputedStyles())
-		engine2.SetFontConfig(fontConfig)
-		if fetcher != nil {
-			engine2.SetImageFetcher(fetcher)
-		}
-		if basePath != "" {
-			engine2.SetDocumentFetcher(createFileDocumentFetcher(resolver))
-		}
-		boxes = engine2.Layout(doc)
+		boxes = newPostScriptEngine().Layout(doc)
 	}
 
 	// Collect @counter-style rules from document stylesheets.
@@ -165,7 +176,7 @@ func buildFontConfig(doc *html.Document, resolver wptResourceResolver) (text.Fon
 	}
 
 	registry := text.NewFontRegistry()
-	registry.AddUserFontFaceRules(allFaces, resolver.readFile)
+	registry.AddUserFontFaceRules(allFaces, resolver.fetch)
 
 	fc := text.DefaultFontConfig()
 	fc.Registry = registry
@@ -198,8 +209,8 @@ func createFileDocumentFetcher(resolver wptResourceResolver) layout.DocumentFetc
 }
 
 // createExternalSVGFetcher creates an ExternalSVGFetcher closure for
-// `filter: url(doc#id)` references. data: URLs decode inline via
-// stdnet.DecodeDataURL and file:// URLs read the named file; everything
+// `filter: url(doc#id)` references. data: URLs are static data
+// (stdnet.RequestResource) and file:// URLs read the named file; everything
 // else loads from the WPT corpus through resolver.
 //
 // LOU-138 phase 5 eliminated the previous cssDirs fallback: external
@@ -208,21 +219,16 @@ func createFileDocumentFetcher(resolver wptResourceResolver) layout.DocumentFetc
 // location. The fetcher receives the already-rooted URI on first try.
 // LOU-130 Phase 2 wiring.
 func createExternalSVGFetcher(resolver wptResourceResolver) func(uri string) ([]byte, error) {
-	return func(uri string) ([]byte, error) {
-		switch {
-		case stdnet.IsDataURL(uri):
-			body, _, err := stdnet.DecodeDataURL(uri)
-			return body, err
-		case stdnet.IsFileURL(uri):
-			p, err := stdnet.FileURLToPath(uri)
-			if err != nil {
-				return nil, err
-			}
-			return os.ReadFile(p)
-		default:
+	return stdnet.RequestResource(func(uri string) ([]byte, error) {
+		if !stdnet.IsFileURL(uri) {
 			return resolver.readFile(uri)
 		}
-	}
+		p, err := stdnet.FileURLToPath(uri)
+		if err != nil {
+			return nil, err
+		}
+		return os.ReadFile(p)
+	})
 }
 
 // RenderHTMLFile renders an HTML file to a PNG file
