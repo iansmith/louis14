@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 )
 
 func TestCreateElement(t *testing.T) {
@@ -396,6 +397,46 @@ func TestIframeContentWindow(t *testing.T) {
 			throw new Error("contentWindow without a content frame should be null");
 	`)
 	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIframeContentWindowStableAcrossLayout pins that contentWindow /
+// contentDocument identity survives a forced layout: the owner keeps one
+// content frame, which later layouts re-use rather than reload
+// (HTMLFrameElementBase::AttachLayoutTree,
+// core/html/html_frame_element_base.cc:198-203;
+// HTMLPlugInElement::AttachLayoutTree, core/html/html_plugin_element.cc:209-237
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the documentProxies /
+// windowProxies caches (keyed by *html.Document) hand back the same
+// objects. getClientRects forces the layout, as the visualtest harness's
+// layout updater does with a fresh engine.
+func TestIframeContentWindowStableAcrossLayout(t *testing.T) {
+	doc := parseHTML(t, `<html><body><iframe id="frame" src="child.html"></iframe><object id="obj" data="child.html"></object></body></html>`)
+	layoutPass := func() map[*html.Node]*layout.Box {
+		e := layout.NewLayoutEngine(400, 400)
+		e.SetDocumentFetcher(func(uri string) (string, error) {
+			return `<div id="inner">x</div>`, nil
+		})
+		e.Layout(doc)
+		return e.NodeBoxes()
+	}
+	layoutPass()
+	eng := New()
+	eng.SetLayoutUpdater(layoutPass)
+	doc.Scripts = append(doc.Scripts, `
+		["frame", "obj"].forEach(function (id) {
+			var el = document.getElementById(id);
+			var win = el.contentWindow, cd = el.contentDocument;
+			if (!win) throw new Error(id + ": contentWindow is null");
+			cd.getElementById("inner").id = "mutated";
+			el.getClientRects();
+			if (el.contentWindow !== win) throw new Error(id + ": contentWindow changed across layout");
+			if (el.contentDocument !== cd) throw new Error(id + ": contentDocument changed across layout");
+			if (el.contentDocument.getElementById("mutated") === null) throw new Error(id + ": content document mutation lost across layout");
+		});
+	`)
+	if err := eng.Execute(doc); err != nil {
 		t.Fatal(err)
 	}
 }
