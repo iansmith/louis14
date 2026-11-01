@@ -1100,9 +1100,7 @@ func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, fragmentsT
 //
 // louis14 differences: the builder is not monolithic by default, so the
 // monolithic bit is only set here, never cleared (a monolithic node is
-// tagged by its algorithm); ConstraintSpace has no IsAnonymous, and a
-// column box (the only anonymous fragmentation space) stands in; there are
-// no tables, sequence numbers on the builder, or
+// tagged by its algorithm); there are no tables, sequence numbers on the builder, or
 // UpdateBorderPaddingForClonedBoxDecorations — the cloned edges of earlier
 // fragments go into the block-size probe (maxBlockSizeForFragment); and
 // ShouldPreventBreakBeforeBlockEndDecorations is
@@ -1112,8 +1110,7 @@ func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, fragmentsT
 // block-start decorations (clone_box_start_decorations), decided from the
 // full edges.
 func SetupFragmentBuilderForFragmentation(space ConstraintSpace, node *LayoutInputNode, previousBreakToken *BlockBreakToken, builder *BoxFragmentBuilder) bool {
-	isAnonymous := builder.GetBoxType() == BoxTypeColumn
-	if !isAnonymous && space.IsBlockFragmentationForcedOff && !previousBreakToken.IsBreakInside() {
+	if !space.IsAnonymous && space.IsBlockFragmentationForcedOff && !previousBreakToken.IsBreakInside() {
 		builder.SetIsMonolithic(true)
 	}
 	builder.SetIsFirstForNode(!previousBreakToken.IsBreakInside())
@@ -1122,7 +1119,7 @@ func SetupFragmentBuilderForFragmentation(space ConstraintSpace, node *LayoutInp
 	cloneBoxStartDecorations := ShouldCloneBlockStartBorderPadding(builder)
 	cloneBoxEndDecorations := cloneBoxStartDecorations
 
-	if space.HasBlockFragmentation && !isAnonymous && !space.IsInitialColumnBalancingPass {
+	if space.HasBlockFragmentation && !space.IsAnonymous && !space.IsInitialColumnBalancingPass {
 		requiresContentBeforeBreaking := space.RequiresContentBeforeBreaking
 		// Probe the block-size with an "infinite" intrinsic block-size: if
 		// the content does not affect it, how much more space the node needs

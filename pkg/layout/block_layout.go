@@ -121,13 +121,14 @@ func (bla *BlockLayoutAlgorithm) SetBoxType(t BoxType) {
 // through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
 // height:% etc.) reaches the real containing block. Mirrors Blink's
 // PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
-// A column box's own block-size is the fragmentainer's, not the containing
-// block's CSS height: its children resolve percentages against the
-// dedicated PercentageResolutionSize the multicol passes in (Blink's
-// CreateConstraintSpaceForFragmentainer percentage_resolution_size,
-// fragmentation_utils.cc:1388-1389 @ a9f50e522efa).
+// An anonymous space (a column box, whose own block-size is the
+// fragmentainer's, not the containing block's CSS height) passes its own
+// percentage-resolution block-size to its children: the dedicated one the
+// multicol passes in (CalculateChildPercentageSize, length_utils.cc:
+// 1810-1818; CreateConstraintSpaceForFragmentainer, fragmentation_utils.cc:
+// 1388, :1393 @ a9f50e522efa).
 func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
-	if bla.boxType == BoxTypeColumn {
+	if bla.space.IsAnonymous {
 		return bla.space.PercentageResolutionSize.BlockSize.Float64()
 	}
 	if hasExplicitBlock {
@@ -315,9 +316,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// (LOU-337 / css-pseudo marker-content-012's `::before{display:inline-block;
 				// width:0;content:url(32px)}` reference).
 				//
-				// The fill is left untouched ONLY when it collapsed to 0 because the
-				// containing block's inline size is indefinite (a max-content/min-content
-				// measurement pass) and no block constraint transfers: forcing the intrinsic
+				// The fill is left untouched ONLY when the available inline-size collapsed
+				// to 0 because the containing block's inline size is indefinite (a
+				// max-content/min-content measurement pass) and no block constraint
+				// transfers. The test reads the space's available size, not the
+				// geometry's: a fit-content space shrinks an element with no intrinsic
+				// size (an <svg> with only attribute sizes) to 0 even when space is
+				// available (LOU-504, css-transforms skew-test1). Forcing the intrinsic
 				// there would make an auto-sized replaced element wrongly contribute its
 				// natural width to its container's intrinsic size (css-sizing
 				// svg-intrinsic-size-005: `<div width:max-content><svg width:100%>` stays 0,
@@ -328,7 +333,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
 					blockConstraintTransfers := replacedBlockConstraintTransfersToInline(
 						bla.ctx, bla.node, bla.style, wdm, bla.space, geom)
-					if contentInlineSize > 0 || blockFixed || blockConstraintTransfers {
+					hasAvailableInline := bla.space.AvailableSize.InlineSize.Float64()-geom.InlineBorderPadding() > 0
+					if hasAvailableInline || blockFixed || blockConstraintTransfers {
 						contentInlineSize = inlineSize
 					}
 				}
@@ -461,11 +467,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		childAvailableBlock = explicitBlockSize
 	}
-	// A fragmentainer's space is anonymous: its children get its available
-	// block-size (CalculateChildAvailableSize, length_utils.cc:1781-1785 @
-	// a9f50e522efa; CreateConstraintSpaceForFragmentainer sets IsAnonymous,
-	// fragmentation_utils.cc:1393).
-	if bla.boxType == BoxTypeColumn {
+	// An anonymous space (a fragmentainer's) gives its children its
+	// available block-size (CalculateChildAvailableSize, length_utils.cc:
+	// 1781-1785 @ a9f50e522efa; CreateConstraintSpaceForFragmentainer sets
+	// IsAnonymous, fragmentation_utils.cc:1393).
+	if bla.space.IsAnonymous {
 		childAvailableBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 	// The builder's child available size, against which AddChild resolves
@@ -1172,6 +1178,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{
 						InlineSize: contentInlineSize,
 						BlockSize:  Indefinite,

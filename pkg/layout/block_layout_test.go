@@ -72,6 +72,10 @@ func TestBlockLayout_AutoInlineSize(t *testing.T) {
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
+		// A block container stretches its auto-width child
+		// (CreateConstraintSpaceForChild, block_layout_algorithm.cc:3444-3448
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		Build()
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()

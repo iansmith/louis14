@@ -1605,7 +1605,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 // BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 builds the outgoing
 // break token after Build, so the algorithms call this once result carries
-// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart.
+// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart;
+// IsFragmentainerBoxType is a column box type here (louis14 has no pages).
 func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
 	space := b.space
 	if space == nil || result.BreakToken == nil || result.BreakToken.IsAtBlockEnd ||

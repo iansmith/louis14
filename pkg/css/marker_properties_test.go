@@ -83,9 +83,12 @@ func TestMarkerInheritedProperties_InheritFromParent(t *testing.T) {
 	parentStyle.Set("tab-size", "1")
 	parentStyle.Set("word-break", "break-all")
 	parentStyle.Set("text-shadow", "#0f0 1px 2px 3px")
-	parentStyle.Set("text-emphasis", "circle green")
-	parentStyle.Set("text-emphasis-style", "circle")
-	parentStyle.Set("text-emphasis-color", "green")
+	// A shorthand is never a computed property: the cascade stores
+	// `text-emphasis: circle green` as its two longhands, which are what
+	// inherit (css_properties.json5 text-emphasis-style :7865 /
+	// text-emphasis-color :7830 `inherited: true` @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	expandShorthand(parentStyle, "text-emphasis", "circle green")
 	parentStyle.Set("text-emphasis-position", "under right")
 	parentStyle.Set("line-break", "anywhere")
 
@@ -101,9 +104,8 @@ func TestMarkerInheritedProperties_InheritFromParent(t *testing.T) {
 		{"marker-tab-size.html/inherit", "tab-size", "1"},
 		{"marker-word-break.html/inherit", "word-break", "break-all"},
 		{"marker-text-shadow.html/inherit", "text-shadow", "#0f0 1px 2px 3px"},
-		{"marker-text-emphasis.html/inherit/shorthand", "text-emphasis", "circle green"},
-		{"marker-text-emphasis.html/inherit/style", "text-emphasis-style", "circle"},
-		{"marker-text-emphasis.html/inherit/color", "text-emphasis-color", "green"},
+		{"marker-text-emphasis.html/inherit/shorthand/style", "text-emphasis-style", "circle"},
+		{"marker-text-emphasis.html/inherit/shorthand/color", "text-emphasis-color", "green"},
 		{"marker-text-emphasis.html/inherit/position", "text-emphasis-position", "under right"},
 		// LOU-358: CSS Text 3 §5.5 line-break is inherited.
 		{"marker-line-break.html/inherit", "line-break", "anywhere"},

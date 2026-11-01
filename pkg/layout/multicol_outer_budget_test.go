@@ -213,6 +213,8 @@ func TestMulticolNested_OverflowInBalancedColumnsPropagatesShortage(t *testing.T
 		SetFragmentainerOffset(20).
 		SetBlockFragmentationType(FragmentColumn).
 		SetIsInsideBalancedColumns(true).
+		// The outer column's block container stretches the inner multicol.
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		Build()
 	result := NewMulticolLayoutAlgorithm(ctx, buildTestTree(innerMC, styles), space).Layout()
 	if result == nil || result.MinSpaceShortage <= 0 {

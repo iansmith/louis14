@@ -2324,6 +2324,8 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 			// CreateConstraintSpaceForBalancing sets it
 			// (column_layout_algorithm.cc:1852 @ a9f50e522efa).
 			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+			// column_layout_algorithm.cc:1854 @ a9f50e522efa.
+			SetIsAnonymous(true).
 			SetIsContentSuggestionLayout(true)
 		// SetShouldPropagateChildBreakValues: column_layout_algorithm.cc:1850
 		// @ a9f50e522efa.
@@ -2555,8 +2557,6 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 		b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(spannerWDM, mla.ctx))
 	} else if ShouldBlockContainerChildStretchAutoInlineSize(spanner) {
 		b.SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit)
-	} else {
-		b.SetInlineAutoBehavior(AutoSizeBehaviorFitContent)
 	}
 	b.SetAvailableSize(childAvailableSize).
 		SetPercentageResolutionSize(childAvailableSize).
@@ -2609,6 +2609,8 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		// CreateConstraintSpaceForFragmentainer sets it
 		// (fragmentation_utils.cc:1389 @ a9f50e522efa).
 		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+		// fragmentation_utils.cc:1393 @ a9f50e522efa.
+		SetIsAnonymous(true).
 		SetHasBlockFragmentation(true).
 		// CreateConstraintSpaceForFragmentainer sets the bit
 		// (fragmentation_utils.cc:1391 @ a9f50e522efa).
