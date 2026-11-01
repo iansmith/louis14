@@ -92,3 +92,18 @@ func TestBackgroundGeometry_GradientHonorsRoundedClip(t *testing.T) {
 	wantRGB(t, img, 14, 14, 255, 255, 255, "outside the rounded content-box clip")
 	wantRGB(t, img, 150, 100, 0, 255, 0, "inside the content box")
 }
+
+// A background on a transformed box away from the origin: the composed
+// tile buffer must be drawn once at its dest offset, not offset twice by
+// the transformed DrawImage path (transform-background-001..004
+// regression). rotate(180deg) about the center swaps the image halves.
+func TestBackgroundGeometry_TransformedBoxImageNotDoubleOffset(t *testing.T) {
+	blue := color.RGBA{0, 0, 255, 255}
+	orange := color.RGBA{255, 165, 0, 255}
+	uri := splitPNGDataURI(t, 40, 40, blue, orange)
+	src := `<!DOCTYPE html><body style="margin:0">
+<div style="margin-left:100px; margin-top:20px; width:40px; height:40px; background:url(` + uri + `); transform:rotate(180deg)"></div>`
+	img := renderColumnRuleHTML(t, src, 300, 100)
+	wantRGB(t, img, 110, 40, 255, 165, 0, "rotated: orange half now on the left")
+	wantRGB(t, img, 130, 40, 0, 0, 255, "rotated: blue half now on the right")
+}

@@ -3995,7 +3995,10 @@ func (r *Renderer) drawTiledBackground(g *BackgroundImageGeometry, tileImage fun
 	// Assemble the visible tiles into one dest-sized buffer, then draw it
 	// once through the context so its clip (a rounded background clip
 	// mask) and transform are applied once per layer, not once per tile.
-	buf := image.NewRGBA(destPx)
+	// Zero-origin buffer: the context's transformed DrawImage path maps
+	// source coordinates from (0,0), so a buffer whose bounds start at
+	// destPx.Min would be offset twice under a transform.
+	buf := image.NewRGBA(image.Rect(0, 0, destPx.Dx(), destPx.Dy()))
 	var tiles [4]struct {
 		size image.Point
 		img  image.Image
@@ -4034,7 +4037,8 @@ func (r *Renderer) drawTiledBackground(g *BackgroundImageGeometry, tileImage fun
 			}
 			tileRect := image.Rect(x0, y0, x1, y1)
 			tile := tileFor(tileRect.Size())
-			draw.Draw(buf, tileRect.Intersect(destPx), tile, tile.Bounds().Min.Add(tileRect.Intersect(destPx).Min.Sub(tileRect.Min)), draw.Src)
+			vis := tileRect.Intersect(destPx)
+			draw.Draw(buf, vis.Sub(destPx.Min), tile, tile.Bounds().Min.Add(vis.Min.Sub(tileRect.Min)), draw.Src)
 		}
 	}
 	r.dc.DrawImage(buf, destPx.Min.X, destPx.Min.Y)
