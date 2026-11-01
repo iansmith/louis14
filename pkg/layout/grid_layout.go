@@ -2,6 +2,7 @@ package layout
 
 import (
 	"math"
+	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -86,6 +87,9 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	gridChildren := buildGridChildren(gla.node, gla.style)
 
 	var items []*gridItem
+	// oofChildren are the out-of-flow children, placed once the grid's
+	// geometry is known (PlaceOutOfFlowItems).
+	var oofChildren []*LayoutInputNode
 	for _, child := range gridChildren {
 		// Anonymous wrappers created by buildGridChildren have a style,
 		// but original children that lost theirs (e.g. broken DOM) are
@@ -96,11 +100,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		pos := childStyle.GetPosition()
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			// Register OOF candidate.
-			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-				Node:            child,
-				IsFixedPosition: pos == css.PositionFixed,
-			})
+			oofChildren = append(oofChildren, child)
 			continue
 		}
 		if childStyle.GetDisplay() == css.DisplayNone {
@@ -524,17 +524,43 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		Scrollbar: physScrollbar,
 	})
 
+	// The padding box, in content-box coordinates; the containing block of
+	// the out-of-flow descendants this grid contains unless they are placed
+	// within a grid area.
+	paddingBox := gridArea{
+		offset: LogicalOffset{InlineOffset: -geom.Padding.InlineStart, BlockOffset: -geom.Padding.BlockStart},
+		size: LogicalSize{
+			InlineSize: contentInlineSize + geom.Padding.InlineSum(),
+			BlockSize:  finalBlockSize + geom.Padding.BlockSum(),
+		},
+	}
+	tracks := gridTrackGeometry{
+		colOffsets: colOffsets, colSizes: colSizes,
+		rowOffsets: rowOffsets, rowSizes: rowSizes,
+		colLineNames: colLineNames, rowLineNames: rowLineNames,
+		namedAreas: namedAreas,
+	}
+	gla.PlaceOutOfFlowItems(builder, oofChildren, tracks, paddingBox)
+
 	// Lay out the out-of-flow children. Mirrors the OutOfFlowLayoutPart
 	// run of Blink's BoxFragmentBuilder::HandleOofsAndSpecialDescendants
 	// (box_fragment_builder.cc:660-671, called at the end of
-	// GridLayoutAlgorithm::Layout @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	// louis14 resolves them against the content box (Blink: the grid area,
-	// GridLayoutAlgorithm::PlaceOutOfFlowItems, not ported).
+	// GridLayoutAlgorithm::Layout @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// with a candidate placed within a grid area contained by that area
+	// (GetContainingBlockInfo, out_of_flow_layout_part.cc:798-834, :902-906).
 	var propagatedOOF []OutOfFlowCandidate
 	if builder.NeedsOutOfFlowLayoutPart() {
-		propagatedOOF = NewOutOfFlowLayoutPart(gla.ctx, builder, gla.space,
-			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
-			previousConsumedContentBlockSize(gla.space, geom.BorderBoxPadding().BlockStart)).Run()
+		part := NewOutOfFlowLayoutPart(gla.ctx, builder, gla.space, paddingBox.size, geom.Padding,
+			previousConsumedContentBlockSize(gla.space, geom.BorderBoxPadding().BlockStart))
+		part.gridAreaContainingBlock = func(candidate OutOfFlowCandidate) (LogicalSize, LogicalOffset, bool) {
+			style := candidate.Node.Style()
+			if !isPlacedWithinGridArea(style) {
+				return LogicalSize{}, LogicalOffset{}, false
+			}
+			area := tracks.ComputeOutOfFlowItemContainingRect(style, paddingBox)
+			return area.size, area.offset, true
+		}
+		propagatedOOF = part.Run()
 	}
 
 	result := builder.Build()
@@ -1327,4 +1353,193 @@ func (gla *GridLayoutAlgorithm) alignOffset(itemSize, available float64, align s
 	default:
 		return 0
 	}
+}
+
+// gridArea is a rectangle in the grid container's content-box coordinates.
+type gridArea struct {
+	offset LogicalOffset
+	size   LogicalSize
+}
+
+// gridTrackGeometry is the laid-out grid: each track's offset (content-box
+// relative) and size, per axis, and the names that resolve grid lines.
+// Stands in for the GridLayoutData + GridPlacementData that Blink's
+// ComputeOutOfFlowItemContainingRect reads.
+type gridTrackGeometry struct {
+	colOffsets, colSizes []float64
+	rowOffsets, rowSizes []float64
+	colLineNames         map[string]int
+	rowLineNames         map[string]int
+	namedAreas           map[string]css.GridAreaInfo
+}
+
+// isPlacedWithinGridArea reports whether an out-of-flow box has a
+// non-auto grid placement, so its containing block (when it is the grid) is
+// the grid area. Mirrors IsPlacedWithinGridOrGridLanesArea
+// (out_of_flow_layout_part.cc:798-807 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isPlacedWithinGridArea(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	for _, property := range []string{"grid-area", "grid-column", "grid-row",
+		"grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end"} {
+		v, ok := style.Get(property)
+		if !ok {
+			continue
+		}
+		for _, part := range strings.Split(v, "/") {
+			if p := strings.TrimSpace(part); p != "" && p != "auto" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// outOfFlowLines resolves an out-of-flow box's grid lines in one axis to
+// 0-based line indices; -1 is an auto line, which for an out-of-flow box is
+// the padding edge (CSS Grid 1 §9.1). A start line with a span gives the end
+// line; a line past the grid is treated as auto. Mirrors
+// GridItemData::ComputeOutOfFlowItemPlacement (grid_item.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the explicit-line cases
+// louis14's placement parser exposes.
+func outOfFlowLines(p *css.GridPlacement, endIsAuto bool, trackCount int) (start, end int) {
+	start, end = -1, -1
+	if p == nil {
+		return start, end
+	}
+	if p.Start > 0 {
+		start = p.Start - 1
+	}
+	if endIsAuto && p.SpanCount == 0 {
+		// css.GridPlacement gives an in-flow item's implied span-1 end; an
+		// out-of-flow box's auto end is the padding edge.
+	} else if p.End > 0 {
+		end = p.End - 1
+	} else if start >= 0 && p.SpanCount > 0 {
+		end = start + p.SpanCount
+	}
+	if start > trackCount {
+		start = -1
+	}
+	if end > trackCount || end <= start && start >= 0 {
+		end = -1
+	}
+	return start, end
+}
+
+// trackStartOffset is the offset of grid line `line` used as a start edge:
+// the start of the track after it. trackEndOffset is the line used as an
+// end edge: the end of the track before it. Mirror Blink's TrackStartOffset
+// / TrackEndOffset (grid_layout_algorithm.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func trackStartOffset(offsets, sizes []float64, line int) float64 {
+	if line < len(offsets) {
+		return offsets[line]
+	}
+	return trackEndOffset(offsets, sizes, line)
+}
+
+func trackEndOffset(offsets, sizes []float64, line int) float64 {
+	if line == 0 {
+		return offsets[0]
+	}
+	size := 0.0
+	if line-1 < len(sizes) {
+		size = sizes[line-1]
+	}
+	return offsets[line-1] + size
+}
+
+// ComputeOutOfFlowItemContainingRect returns the grid area an out-of-flow
+// box is placed in: the padding box with each non-auto grid line's edge
+// moved to that line. Mirrors GridLayoutAlgorithm::
+// ComputeOutOfFlowItemContainingRect (grid_layout_algorithm.cc:2742-2791 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (g gridTrackGeometry) ComputeOutOfFlowItemContainingRect(style *css.Style, paddingBox gridArea) gridArea {
+	colStart, colEnd, rowStart, rowEnd := -1, -1, -1, -1
+	if info, ok := g.namedAreas[style.GetGridArea()]; ok && style.GetGridArea() != "" {
+		colStart, colEnd, rowStart, rowEnd = info.ColStart-1, info.ColEnd-1, info.RowStart-1, info.RowEnd-1
+	} else {
+		colStart, colEnd = outOfFlowLines(style.GetGridColumnWithNames(g.colLineNames),
+			gridEndLineIsAuto(style, "grid-column-end", "grid-column"), len(g.colOffsets))
+		rowStart, rowEnd = outOfFlowLines(style.GetGridRowWithNames(g.rowLineNames),
+			gridEndLineIsAuto(style, "grid-row-end", "grid-row"), len(g.rowOffsets))
+	}
+	inlineStart, inlineEnd := paddingBox.offset.InlineOffset, paddingBox.offset.InlineOffset+paddingBox.size.InlineSize
+	blockStart, blockEnd := paddingBox.offset.BlockOffset, paddingBox.offset.BlockOffset+paddingBox.size.BlockSize
+	if len(g.colOffsets) > 0 {
+		if colStart >= 0 {
+			inlineStart = trackStartOffset(g.colOffsets, g.colSizes, colStart)
+		}
+		if colEnd >= 0 {
+			inlineEnd = trackEndOffset(g.colOffsets, g.colSizes, colEnd)
+		}
+	}
+	if len(g.rowOffsets) > 0 {
+		if rowStart >= 0 {
+			blockStart = trackStartOffset(g.rowOffsets, g.rowSizes, rowStart)
+		}
+		if rowEnd >= 0 {
+			blockEnd = trackEndOffset(g.rowOffsets, g.rowSizes, rowEnd)
+		}
+	}
+	return gridArea{
+		offset: LogicalOffset{InlineOffset: inlineStart, BlockOffset: blockStart},
+		size:   LogicalSize{InlineSize: max(0, inlineEnd-inlineStart), BlockSize: max(0, blockEnd-blockStart)},
+	}
+}
+
+// PlaceOutOfFlowItems adds the grid's out-of-flow children as candidates.
+// When the grid is their containing block the static position is the start
+// of their grid area (the padding box when not placed); otherwise it is the
+// content-box start. Mirrors GridLayoutAlgorithm::PlaceOutOfFlowItems
+// (grid_layout_algorithm.cc:2602-2681 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), including its use of
+// IsAbsoluteContainer for fixed-position children too (:2621). Not ported:
+// AlignmentOffsetForOutOfFlow (justify-self / align-self on the static
+// position) and the fragmentation deferral of a static position in a later
+// fragment (louis14 grids do not fragment).
+func (gla *GridLayoutAlgorithm) PlaceOutOfFlowItems(builder *BoxFragmentBuilder, oofChildren []*LayoutInputNode, tracks gridTrackGeometry, paddingBox gridArea) {
+	isAbsoluteContainer := gla.node.IsAbsoluteContainer()
+	isFixedContainer := gla.node.IsAbsoluteContainer()
+	for _, child := range oofChildren {
+		isFixed := child.Style().GetPosition() == css.PositionFixed
+		var staticPosition LogicalStaticPosition
+		if (isAbsoluteContainer && !isFixed) || (isFixedContainer && isFixed) {
+			staticPosition.Offset = tracks.ComputeOutOfFlowItemContainingRect(child.Style(), paddingBox).offset
+		}
+		builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+			Node:            child,
+			StaticPosition:  staticPosition,
+			IsFixedPosition: isFixed,
+		})
+	}
+}
+
+// gridEndLineIsAuto reports whether the end line of a grid placement is
+// auto: the longhand's value, else the shorthand's second value, which,
+// when omitted, copies a <custom-ident> start and is auto otherwise (CSS
+// Grid 1 §8.4).
+func gridEndLineIsAuto(style *css.Style, endLonghand, shorthand string) bool {
+	if v, ok := style.Get(endLonghand); ok {
+		return strings.TrimSpace(v) == "auto"
+	}
+	v, ok := style.Get(shorthand)
+	if !ok {
+		return true
+	}
+	parts := strings.Split(v, "/")
+	if len(parts) >= 2 {
+		return strings.TrimSpace(parts[1]) == "auto"
+	}
+	start := strings.Fields(parts[0])
+	if len(start) != 1 {
+		return true
+	}
+	if _, err := strconv.Atoi(start[0]); err == nil || start[0] == "auto" {
+		return true
+	}
+	return false
 }
