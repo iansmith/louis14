@@ -3365,31 +3365,12 @@ func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii css.Elliptical
 // buildRoundedRectPathReverse traces a rounded rectangle path in reverse (CCW)
 // for use with even-odd fill rule to cut out inner regions.
 func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii css.EllipticalRadii) {
-	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
-	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-	r.dc.MoveTo(x+tl.Rx, y)
-	// top-left (reverse: CW to CCW)
-	r.dc.CubicTo(x+tl.Rx-tl.Rx*k, y, x, y+tl.Ry-tl.Ry*k, x, y+tl.Ry)
-	r.dc.LineTo(x, y+h-bl.Ry)
-	// bottom-left (reverse)
-	r.dc.CubicTo(x, y+h-bl.Ry+bl.Ry*k, x+bl.Rx-bl.Rx*k, y+h, x+bl.Rx, y+h)
-	r.dc.LineTo(x+w-br.Rx, y+h)
-	// bottom-right (reverse)
-	r.dc.CubicTo(x+w-br.Rx+br.Rx*k, y+h, x+w, y+h-br.Ry+br.Ry*k, x+w, y+h-br.Ry)
-	r.dc.LineTo(x+w, y+tr.Ry)
-	// top-right (reverse)
-	r.dc.CubicTo(x+w, y+tr.Ry-tr.Ry*k, x+w-tr.Rx+tr.Rx*k, y, x+w-tr.Rx, y)
-	r.dc.ClosePath()
+	buildRoundedRectPathReverseDC(r.dc, x, y, w, h, radii)
 }
 
 // buildRoundedRectPathOnDC traces an elliptical rounded rectangle path on any DrawContext.
 // This is the single source of truth for rounded-rect path construction.
-func buildRoundedRectPathOnDC(dc interface {
-	MoveTo(x, y float64)
-	LineTo(x, y float64)
-	CubicTo(x1, y1, x2, y2, x3, y3 float64)
-	ClosePath()
-}, x, y, w, h float64, radii css.EllipticalRadii) {
+func buildRoundedRectPathOnDC(dc pathBuilder, x, y, w, h float64, radii css.EllipticalRadii) {
 	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
 
@@ -3411,12 +3392,7 @@ func buildRoundedRectPathOnDC(dc interface {
 
 // buildRoundedRectPathReverseDC traces a rounded rectangle path in reverse (CCW)
 // on any DrawContext. Used with even-odd fill rule to cut out inner regions.
-func buildRoundedRectPathReverseDC(dc interface {
-	MoveTo(x, y float64)
-	LineTo(x, y float64)
-	CubicTo(x1, y1, x2, y2, x3, y3 float64)
-	ClosePath()
-}, x, y, w, h float64, radii css.EllipticalRadii) {
+func buildRoundedRectPathReverseDC(dc pathBuilder, x, y, w, h float64, radii css.EllipticalRadii) {
 	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
 	dc.MoveTo(x+tl.Rx, y)
@@ -3546,13 +3522,13 @@ func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 		isClippedWithLocalScrolling(layer, bottomLayerAttachment(layer)))
 }
 
-// backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
-// Uses Blink's Inset operation: shrink Rx by horizontal inset, Ry by vertical,
-// then constrains the result so it fits inside the inset rect (Skia/Blink's
-// SkRRect::setRectRadii auto-scales any radii pair exceeding half a side).
-// Without the constrain step, e.g. border-radius:100% on an outer box shrunk
-// by border+padding can produce inset radii larger than the content box,
-// which the path generator emits as a backward LineTo and a malformed shape.
+// backgroundClipRadiiForClip returns the border radii inset to a
+// background-clip box: Blink's Radii inset (shrink Rx by the horizontal
+// inset, Ry by the vertical), NOT re-constrained to the inset rect — only
+// the outer border radii are constrained (PixelSnappedContouredBorderWithOutsets
+// / PixelSnappedContouredInnerBorder, contoured_border_geometry.cc:207-255 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Radii that overlap in the inset
+// rect are clipped corner by corner (clipRoundedInnerRect).
 func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType) css.EllipticalRadii {
 	radii := layer.BorderRadius
 	box := layer.Box
@@ -3568,10 +3544,7 @@ func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, cli
 	default: // border-box
 		return radii
 	}
-	inset := radii.Inset(top, right, bottom, left)
-	innerW := rect.Size.Width - left - right
-	innerH := rect.Size.Height - top - bottom
-	return inset.ConstrainRadii(innerW, innerH)
+	return radii.Inset(top, right, bottom, left)
 }
 
 // bodyOverflowPropagatesToViewport reports whether a <body> element's overflow
@@ -3766,10 +3739,8 @@ func (r *Renderer) paintFillLayerColor(layer *PaintLayer, rect layout.PhysicalRe
 		return
 	}
 	local := isClippedWithLocalScrolling(layer, bottomLayerAttachment(layer))
-	if local {
-		r.dc.Push()
-		defer r.dc.Pop()
-	}
+	r.dc.Push()
+	defer r.dc.Pop()
 	r.fillLayerClipPath(layer, rect, effectiveBackgroundClip(layer), local)
 	r.setColor(layer.BackgroundColor)
 	r.dc.Fill()
@@ -3811,7 +3782,17 @@ func (r *Renderer) fillLayerClipPath(layer *PaintLayer, rect layout.PhysicalRect
 	}
 	if radii := backgroundClipRadiiForClip(layer, rect, clip); !radii.IsZero() {
 		x, y, w, h := r.backgroundPaintRectForLayer(layer, rect, clip)
-		r.buildRoundedRectPath(x, y, w, h, radii)
+		rr := FloatRoundedRect{Rect: geometry.NewRectF(x, y, w, h), Radii: radii}
+		if rr.IsRenderable() {
+			rr.addPath(r.dc)
+		} else {
+			// Non-renderable rrect: corner-wise clip, then the plain rect
+			// (PaintFastBottomLayer / PaintFillLayer's
+			// RoundedInnerRectClipper, box_painter_base.cc:1101-1108,
+			// :1503-1505 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			r.clipRoundedInnerRect(geometry.NewRectF(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height), rr)
+			r.dc.DrawRectangle(x, y, w, h)
+		}
 	} else {
 		r.dc.DrawRectangle(r.backgroundPaintRectForLayer(layer, scrolledPaintRect, clip))
 	}
@@ -4428,269 +4409,18 @@ func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer, rect layo
 	}
 }
 
-// drawBorders draws all four borders of the layer's box (pre-computed styles/colors).
+// drawBorders paints the layer's borders in rect, its border box: the
+// border image when one is set and loads, else BoxBorderPainter
+// (BoxPainterBase::PaintBorder, box_painter_base.cc:1745-1780 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) drawBorders(layer *PaintLayer, rect layout.PhysicalRect) {
-	// Border-image replaces regular border drawing when a source is set.
 	if layer.BorderImageSource != nil || layer.BorderImageGenerated != "" {
 		if r.paintNinePieceImage(layer, rect) {
-			return // border-image painted successfully
-		}
-		// Fall through to regular borders if image failed to load.
-	}
-
-	box := layer.Box
-	bw := box.Border
-	if bw.Top == 0 && bw.Right == 0 && bw.Bottom == 0 && bw.Left == 0 {
-		return
-	}
-
-	// Rounded borders: delegate to specialized method.
-	if hasBorderRadius(layer) {
-		r.drawRoundedBorders(layer, rect)
-		return
-	}
-
-	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
-	outerLeft, outerTop := x, y
-	outerRight, outerBottom := x+w, y+h
-
-	// Border thickness is snapped via SnapSizeToPixel against the unsnapped
-	// origin of each side: left/top use the unsnapped box origin; right/bottom
-	// use (unsnapped outer right/bottom - bw), which is where the right/bottom
-	// border thickness begins. The thin-line clause inside SnapSizeToPixel
-	// preserves sub-pixel borders (border-width: 0.1px–0.5px) that ad-hoc
-	// math.Round of the snapped outer + bw would collapse to 0. Mirrors
-	// Blink's PhysicalRect::PixelSnappedWidth/Height pattern from
-	// core/layout/geometry/physical_rect.h.
-	luBoxX := layoutunit.FromFloat64Round(rect.Offset.X)
-	luBoxY := layoutunit.FromFloat64Round(rect.Offset.Y)
-	luBoxXW := layoutunit.FromFloat64Round(rect.Offset.X + rect.Size.Width)
-	luBoxYH := layoutunit.FromFloat64Round(rect.Offset.Y + rect.Size.Height)
-	luBwL := layoutunit.FromFloat64Round(bw.Left)
-	luBwT := layoutunit.FromFloat64Round(bw.Top)
-	luBwR := layoutunit.FromFloat64Round(bw.Right)
-	luBwB := layoutunit.FromFloat64Round(bw.Bottom)
-	innerLeft := outerLeft + float64(layoutunit.SnapSizeToPixel(luBwL, luBoxX))
-	innerTop := outerTop + float64(layoutunit.SnapSizeToPixel(luBwT, luBoxY))
-	innerRight := outerRight - float64(layoutunit.SnapSizeToPixel(luBwR, luBoxXW.Sub(luBwR)))
-	innerBottom := outerBottom - float64(layoutunit.SnapSizeToPixel(luBwB, luBoxYH.Sub(luBwB)))
-
-	// Top border (index 0).
-	if bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
-		if c := layer.BorderColors[0]; c.A > 0 {
-			r.setColor(c)
-			switch layer.BorderStyles[0] {
-			case css.BorderStyleDashed:
-				midY := (outerTop + innerTop) / 2
-				r.drawDashedLine(outerLeft, midY, outerRight, midY, bw.Top)
-			case css.BorderStyleDotted:
-				midY := (outerTop + innerTop) / 2
-				r.drawDottedLine(outerLeft, midY, outerRight, midY, bw.Top)
-			case css.BorderStyleDouble:
-				midY := (outerTop + innerTop) / 2
-				r.drawDoubleLine(outerLeft, midY, outerRight, midY, bw.Top)
-			default: // Solid, Hidden, Groove, Ridge, Inset, Outset — trapezoid
-				r.dc.MoveTo(outerLeft, outerTop)
-				r.dc.LineTo(outerRight, outerTop)
-				r.dc.LineTo(innerRight, innerTop)
-				r.dc.LineTo(innerLeft, innerTop)
-				r.dc.ClosePath()
-				r.dc.Fill()
-			}
-		}
-	}
-	// Right border (index 1).
-	if bw.Right > 0 && layer.BorderStyles[1] != css.BorderStyleNone {
-		if c := layer.BorderColors[1]; c.A > 0 {
-			r.setColor(c)
-			switch layer.BorderStyles[1] {
-			case css.BorderStyleDashed:
-				midX := (outerRight + innerRight) / 2
-				r.drawDashedLine(midX, outerTop, midX, outerBottom, bw.Right)
-			case css.BorderStyleDotted:
-				midX := (outerRight + innerRight) / 2
-				r.drawDottedLine(midX, outerTop, midX, outerBottom, bw.Right)
-			case css.BorderStyleDouble:
-				midX := (outerRight + innerRight) / 2
-				r.drawDoubleLine(midX, outerTop, midX, outerBottom, bw.Right)
-			default:
-				r.dc.MoveTo(outerRight, outerTop)
-				r.dc.LineTo(outerRight, outerBottom)
-				r.dc.LineTo(innerRight, innerBottom)
-				r.dc.LineTo(innerRight, innerTop)
-				r.dc.ClosePath()
-				r.dc.Fill()
-			}
-		}
-	}
-	// Bottom border (index 2).
-	if bw.Bottom > 0 && layer.BorderStyles[2] != css.BorderStyleNone {
-		if c := layer.BorderColors[2]; c.A > 0 {
-			r.setColor(c)
-			switch layer.BorderStyles[2] {
-			case css.BorderStyleDashed:
-				midY := (outerBottom + innerBottom) / 2
-				r.drawDashedLine(outerLeft, midY, outerRight, midY, bw.Bottom)
-			case css.BorderStyleDotted:
-				midY := (outerBottom + innerBottom) / 2
-				r.drawDottedLine(outerLeft, midY, outerRight, midY, bw.Bottom)
-			case css.BorderStyleDouble:
-				midY := (outerBottom + innerBottom) / 2
-				r.drawDoubleLine(outerLeft, midY, outerRight, midY, bw.Bottom)
-			default:
-				r.dc.MoveTo(outerLeft, outerBottom)
-				r.dc.LineTo(innerLeft, innerBottom)
-				r.dc.LineTo(innerRight, innerBottom)
-				r.dc.LineTo(outerRight, outerBottom)
-				r.dc.ClosePath()
-				r.dc.Fill()
-			}
-		}
-	}
-	// Left border (index 3).
-	if bw.Left > 0 && layer.BorderStyles[3] != css.BorderStyleNone {
-		if c := layer.BorderColors[3]; c.A > 0 {
-			r.setColor(c)
-			switch layer.BorderStyles[3] {
-			case css.BorderStyleDashed:
-				midX := (outerLeft + innerLeft) / 2
-				r.drawDashedLine(midX, outerTop, midX, outerBottom, bw.Left)
-			case css.BorderStyleDotted:
-				midX := (outerLeft + innerLeft) / 2
-				r.drawDottedLine(midX, outerTop, midX, outerBottom, bw.Left)
-			case css.BorderStyleDouble:
-				midX := (outerLeft + innerLeft) / 2
-				r.drawDoubleLine(midX, outerTop, midX, outerBottom, bw.Left)
-			default:
-				r.dc.MoveTo(outerLeft, outerTop)
-				r.dc.LineTo(innerLeft, innerTop)
-				r.dc.LineTo(innerLeft, innerBottom)
-				r.dc.LineTo(outerLeft, outerBottom)
-				r.dc.ClosePath()
-				r.dc.Fill()
-			}
-		}
-	}
-}
-
-// drawRoundedBorders draws borders for a box with border-radius.
-func (r *Renderer) drawRoundedBorders(layer *PaintLayer, rect layout.PhysicalRect) {
-	box := layer.Box
-	bw := box.Border
-	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
-
-	// Check if all sides have the same width, style, and color (uniform case).
-	uniform := bw.Top == bw.Right && bw.Right == bw.Bottom && bw.Bottom == bw.Left &&
-		layer.BorderStyles[0] == layer.BorderStyles[1] &&
-		layer.BorderStyles[1] == layer.BorderStyles[2] &&
-		layer.BorderStyles[2] == layer.BorderStyles[3] &&
-		layer.BorderColors[0] == layer.BorderColors[1] &&
-		layer.BorderColors[1] == layer.BorderColors[2] &&
-		layer.BorderColors[2] == layer.BorderColors[3]
-
-	if uniform && bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
-		// Simple case: draw a single stroked rounded rect at the midline.
-		// However, this only works when the midline radii faithfully represent
-		// the outer shape. When border-width/2 exceeds any outer radius, the
-		// midline radius goes to 0 (sharp corner) while the outer edge should
-		// still be rounded. Fall through to the ring approach in that case.
-		hw := bw.Top / 2
-		midRadii := layer.BorderRadius.Inset(hw, hw, hw, hw)
-		midOk := true
-		for i := 0; i < 4; i++ {
-			if !layer.BorderRadius[i].IsZero() && midRadii[i].IsZero() {
-				midOk = false
-				break
-			}
-		}
-		if midOk {
-			r.setColor(layer.BorderColors[0])
-			r.dc.SetLineWidth(bw.Top)
-			r.buildRoundedRectPath(x+hw, y+hw, w-bw.Top, h-bw.Top, midRadii)
-			r.dc.Stroke()
 			return
 		}
+		// Fall through to regular borders if the image failed to load.
 	}
-
-	// Non-uniform borders with radius: draw each side using even-odd fill
-	// between outer and inner rounded rects, clipped to each side's region.
-	outerRadii := layer.BorderRadius
-
-	// Inner rounded rect (border-box inset by border widths) — Blink's Inset,
-	// then Skia/Blink's auto-constrain so the inner radii fit inside the inner
-	// rect. Without the constrain, e.g. border-radius:100% with a thick border
-	// produces inner radii larger than the inner rect and the path-reverse
-	// pass emits a backward LineTo, leaking a wedge of the BR corner area.
-	ix := x + bw.Left
-	iy := y + bw.Top
-	iw := w - bw.Left - bw.Right
-	ih := h - bw.Top - bw.Bottom
-	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left).
-		ConstrainRadii(iw, ih)
-
-	type borderSide struct {
-		width                      float64
-		style                      css.BorderStyle
-		color                      css.Color
-		clipX, clipY, clipW, clipH float64
-	}
-
-	// For clip region calculations, use the maximum of Rx and Ry per corner.
-	or := [4]float64{
-		math.Max(outerRadii[0].Rx, outerRadii[0].Ry),
-		math.Max(outerRadii[1].Rx, outerRadii[1].Ry),
-		math.Max(outerRadii[2].Rx, outerRadii[2].Ry),
-		math.Max(outerRadii[3].Rx, outerRadii[3].Ry),
-	}
-
-	// Compute clip regions for each side.
-	sides := [4]borderSide{
-		{ // Top
-			width: bw.Top, style: layer.BorderStyles[0], color: layer.BorderColors[0],
-			clipX: x, clipY: y,
-			clipW: w,
-			clipH: math.Max(bw.Top, math.Max(or[0], or[1])),
-		},
-		{ // Right
-			width: bw.Right, style: layer.BorderStyles[1], color: layer.BorderColors[1],
-			clipX: x + w - math.Max(bw.Right, math.Max(or[1], or[2])),
-			clipY: y,
-			clipW: math.Max(bw.Right, math.Max(or[1], or[2])),
-			clipH: h,
-		},
-		{ // Bottom
-			width: bw.Bottom, style: layer.BorderStyles[2], color: layer.BorderColors[2],
-			clipX: x,
-			clipY: y + h - math.Max(bw.Bottom, math.Max(or[2], or[3])),
-			clipW: w,
-			clipH: math.Max(bw.Bottom, math.Max(or[2], or[3])),
-		},
-		{ // Left
-			width: bw.Left, style: layer.BorderStyles[3], color: layer.BorderColors[3],
-			clipX: x, clipY: y,
-			clipW: math.Max(bw.Left, math.Max(or[0], or[3])),
-			clipH: h,
-		},
-	}
-
-	for _, side := range sides {
-		if side.width <= 0 || side.style == css.BorderStyleNone || side.color.A <= 0 {
-			continue
-		}
-		r.dc.Push()
-		r.dc.DrawRectangle(side.clipX, side.clipY, side.clipW, side.clipH)
-		r.dc.Clip()
-		r.setColor(side.color)
-		// Outer path (CW) + inner path (CCW) with even-odd fill.
-		r.buildRoundedRectPath(x, y, w, h, outerRadii)
-		if iw > 0 && ih > 0 {
-			r.buildRoundedRectPathReverse(ix, iy, iw, ih, innerRadii)
-		}
-		r.dc.SetFillRule(textshape.FillRuleEvenOdd)
-		r.dc.Fill()
-		r.dc.SetFillRule(textshape.FillRuleWinding)
-		r.dc.Pop()
-	}
+	r.PaintBorder(layer, toLayoutRect(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height))
 }
 
 // clampLineWidth snaps a computed line width (column-rule-width) to whole
@@ -4855,16 +4585,14 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
 		}
 	case "dashed", "dotted", "double":
-		// Paint non-solid outline styles with the same per-side geometry the
-		// border painter (drawBorders) uses: each side's run spans the full
-		// outer-rect edge, with its centerline half a band-width inside the
-		// outer edge. This is the louis14 analog of Blink painting
-		// single-rect non-auto outlines through the border painter
+		// Paint non-solid outline styles per side: each side's run spans the
+		// full outer-rect edge, with its centerline half a band-width inside
+		// the outer edge. Stand-in for Blink painting single-rect non-auto
+		// outlines through the border painter
 		// (BoxBorderPainter::PaintSingleRectOutline, outline_painter.cc:1022
-		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f); the WPT references
-		// for these styles are literal borders, so the dash/dot/double runs
-		// must rasterize identically to drawBorders' (same span ⇒ same
-		// pattern phase and corner coverage).
+		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), which is not ported:
+		// borders now paint through BoxBorderPainter (box_border_painter.go)
+		// while outlines keep this pre-port geometry.
 		draw := r.drawDashedLine
 		switch style {
 		case "dotted":
@@ -8553,36 +8281,20 @@ func (r *Renderer) drawOutsetShadowBuffer(
 	lsx, lsy := sx-minX, sy-minY
 	lbx, lby := bx-minX, by-minY
 
-	if !shadowRadii.IsZero() || !borderRadii.IsZero() {
-		// When rounded corners are involved, use even-odd fill in a single
-		// rasterization pass. This ensures the outer and inner boundaries
-		// share identical sub-pixel coverage decisions, preventing
-		// anti-aliasing gaps at rounded corners.
-		if !shadowRadii.IsZero() {
-			buildRoundedRectPathOnDC(childDC, lsx, lsy, sw, sh, shadowRadii)
-		} else {
-			childDC.DrawRectangle(lsx, lsy, sw, sh)
-		}
-		if !borderRadii.IsZero() {
-			buildRoundedRectPathReverseDC(childDC, lbx, lby, bw, bh, borderRadii)
-		} else {
-			childDC.MoveTo(lbx, lby)
-			childDC.LineTo(lbx, lby+bh)
-			childDC.LineTo(lbx+bw, lby+bh)
-			childDC.LineTo(lbx+bw, lby)
-			childDC.ClosePath()
-		}
-		childDC.SetFillRule(textshape.FillRuleEvenOdd)
-		childDC.Fill()
-		childDC.SetFillRule(textshape.FillRuleWinding)
+	// Fill the shadow shape, then clip out the border box
+	// (GraphicsContext::ClipOut(border rrect) in BoxPainterBase::
+	// PaintNormalBoxShadow, box_painter_base.cc @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Clearing every pixel the
+	// border box touches gives the same pixel partition as the border
+	// painter's clip-out (paintClippedOut): the box's own background and
+	// borders own their rounded edge pixels.
+	if !shadowRadii.IsZero() {
+		buildRoundedRectPathOnDC(childDC, lsx, lsy, sw, sh, shadowRadii)
 	} else {
-		// For purely rectangular shadows, use the two-pass approach:
-		// fill the outer shape, then clear the inner hole via mask.
 		childDC.DrawRectangle(lsx, lsy, sw, sh)
-		childDC.Fill()
-
-		r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
 	}
+	childDC.Fill()
+	r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
 
 	// Apply box blur if needed.
 	if shadow.Blur > 0 {

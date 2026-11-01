@@ -129,13 +129,11 @@ func (c *BoxBackgroundPaintContext) OffsetInBackground(fl *css.FillLayer) geomet
 }
 
 // innerBorderRect returns the pixel-snapped inner border rect of
-// positioning_area: the snapped border box inset by the border widths.
-// Stand-in for ContouredBorderGeometry::PixelSnappedContouredInnerBorder(
-// style, positioning_area).Rect() (contoured_border_geometry.cc @ a9f50e52)
-// — only its rect is consumed here.
+// positioning_area: ContouredBorderGeometry::PixelSnappedContouredInnerBorder(
+// style, positioning_area).Rect() (contoured_border_geometry.cc:207-217 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); only its rect is consumed.
 func (c *BoxBackgroundPaintContext) innerBorderRect(positioningArea geometry.PhysicalRect) geometry.PhysicalRect {
-	outer := geometry.PhysicalRectFromRect(geometry.ToPixelSnappedRect(positioningArea))
-	return outer.Contract(c.borderOutsets)
+	return geometry.PhysicalRectEnclosingRect(PixelSnappedContouredInnerBorder(css.EllipticalRadii{}, positioningArea, c.borderOutsets).Rect)
 }
 
 // InnerBorderOutsets mirrors box_background_paint_context.cc:248-263.
