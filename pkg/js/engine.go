@@ -249,7 +249,21 @@ func (e *Engine) Execute(doc *html.Document) error {
 	ctx.engine = e
 	ctx.layoutStyles = e.layoutStyles
 	ctx.layoutBoxes = e.layoutBoxes
-	ctx.updateLayout = e.updateLayout
+	// Script mutations of <style>/<link> elements (insert, remove, text
+	// change) must reach the derived doc.Stylesheets before anything reads
+	// the cascade: before each layout flush a script forces, and once more
+	// when Execute returns (on every path, including a script error) for
+	// the caller's post-script layout. Mirrors Document::
+	// UpdateStyleAndLayoutTree → StyleEngine::UpdateActiveStyleSheets
+	// (core/css/style_engine.cc:674 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	defer doc.UpdateActiveStyleSheets()
+	if update := e.updateLayout; update != nil {
+		ctx.updateLayout = func() map[*html.Node]*layout.Box {
+			doc.UpdateActiveStyleSheets()
+			return update()
+		}
+	}
 
 	// Execute each script in document order
 	for i, script := range doc.Scripts {

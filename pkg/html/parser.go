@@ -25,7 +25,7 @@ type Parser struct {
 	stack            []*Node       // Phase 2: Stack for tracking nested elements
 	cssFetcher       CSSFetcher    // Optional fetcher for external stylesheets
 	scriptFetcher    ScriptFetcher // Optional fetcher for external <script src> content
-	fragmentMode     bool          // When true, <script>/<style> become DOM nodes
+	fragmentMode     bool          // When true, <script> becomes a DOM node
 	commentSeenInPre bool          // True when a comment has been seen inside a <pre> element
 	isXML            bool          // True for XML/XHTML documents (governs <style> content rules)
 }
@@ -53,33 +53,9 @@ func (p *Parser) Parse() (*Document, error) {
 
 		switch token.Type {
 		case TokenStartTag:
-			// Special handling for <style>/<script> tags in normal mode:
-			// extract raw content. In fragment mode, treat them as DOM nodes.
+			// Special handling for <script> tags in normal mode: extract
+			// raw content. In fragment mode, treat them as DOM nodes.
 			if !p.fragmentMode {
-				if token.TagName == "style" {
-					content := p.tokenizer.ReadRawUntil("style")
-					if p.isXML {
-						// In XML/XHTML, <style> content is element text, so the
-						// XML processor strips whole comments — delimiters AND
-						// the prose inside them — before the CSS parser ever
-						// sees it. (In HTML, <style> is rawtext and only the
-						// CDO/CDC `<!--`/`-->` delimiters are stripped by the
-						// CSS tokenizer, leaving any prose between them.) Mirror
-						// the XML processor so a `<!-- note -->` between two
-						// rules can't contaminate the following selector.
-						content = stripXMLComments(content)
-					}
-					content = stripCDATA(content)
-					if strings.TrimSpace(content) != "" {
-						// Inline <style> block — BaseDir derives from doc.BaseDir
-						// at CSS parse time, so leave Href empty. @import (if
-						// any) resolves at CSS-parse time via pkg/css.
-						p.doc.Stylesheets = append(p.doc.Stylesheets, StylesheetSource{
-							Text: content,
-						})
-					}
-					continue
-				}
 				if token.TagName == "script" {
 					content := p.tokenizer.ReadRawUntil("script")
 					// HTML §4.12.1: only `type=""`, `type="text/javascript"`,
@@ -231,6 +207,36 @@ func (p *Parser) Parse() (*Document, error) {
 
 			insertElement(node, parent)
 
+			if token.TagName == "style" {
+				// <style> is a raw-text element (HTML §13.2.6.4.4 "in
+				// head": generic raw text element parsing algorithm): its
+				// content is one Text child, never tokenized as markup,
+				// and the end tag is consumed with it, so the element is
+				// never pushed. It stays in the DOM as an HTMLStyleElement
+				// (placed above as head content, see isHeadElement) and
+				// the author sheet is derived from it by
+				// Document.UpdateActiveStyleSheets at the end of Parse —
+				// Blink HTMLStyleElement::InsertedInto →
+				// StyleElement::ProcessStyleSheet (core/html/
+				// html_style_element.cc:71-82 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				styleText := p.tokenizer.ReadRawUntil("style")
+				if p.isXML {
+					// In XML/XHTML, <style> content is element text, so the
+					// XML processor strips whole comments — delimiters AND
+					// the prose inside them — before the CSS parser ever
+					// sees it. (In HTML, <style> is rawtext and only the
+					// CDO/CDC `<!--`/`-->` delimiters are stripped by the
+					// CSS tokenizer, leaving any prose between them.) Mirror
+					// the XML processor so a `<!-- note -->` between two
+					// rules can't contaminate the following selector.
+					styleText = stripXMLComments(styleText)
+				}
+				styleText = stripCDATA(styleText)
+				node.AppendTextWithRaw(styleText, styleText)
+				continue
+			}
+
 			// Handle <meta name="viewport" content="width=...">
 			if token.TagName == "meta" {
 				if name, ok := token.Attributes["name"]; ok && strings.EqualFold(name, "viewport") {
@@ -251,11 +257,14 @@ func (p *Parser) Parse() (*Document, error) {
 								// against the (possibly later-set)
 								// doc.BaseDir, so url() refs inside resolve
 								// against the sheet's own location rather
-								// than the document's.
-								p.doc.Stylesheets = append(p.doc.Stylesheets, StylesheetSource{
+								// than the document's. The sheet hangs off
+								// the element (HTMLLinkElement's LinkStyle)
+								// and joins doc.Stylesheets in tree order
+								// via UpdateActiveStyleSheets.
+								node.LinkStyle = &StylesheetSource{
 									Text: css,
 									Href: href,
-								})
+								}
 							}
 						}
 					}
@@ -328,6 +337,7 @@ func (p *Parser) Parse() (*Document, error) {
 	// backgrounds) can apply to a real root element.
 	if !p.fragmentMode {
 		p.ensureFinalHTML()
+		p.doc.UpdateActiveStyleSheets()
 	}
 
 	return p.doc, nil
@@ -536,7 +546,7 @@ func (p *Parser) adoptOrphanedChildren(htmlNode *Node) {
 // isHeadElement returns true for elements that belong in <head>.
 func isHeadElement(tagName string) bool {
 	switch tagName {
-	case "meta", "title", "link", "base", "noscript":
+	case "meta", "title", "link", "base", "noscript", "style":
 		return true
 	}
 	return false
@@ -976,8 +986,8 @@ func ParseWithScriptFetcher(htmlContent string, cssFetcher CSSFetcher, scriptFet
 }
 
 // ParseFragment parses an HTML fragment string and returns detached child nodes.
-// Unlike Parse, <script> and <style> tags become DOM nodes instead of being
-// extracted into Document.Scripts/Stylesheets.
+// Unlike Parse, <script> tags become DOM nodes instead of being extracted
+// into Document.Scripts (<style> is a DOM node in both modes).
 //
 // The full-document parser auto-wraps bare text and body-level elements in
 // synthetic <html><body>…</body></html> per HTML5 §12.2.6.4. For fragments
