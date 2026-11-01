@@ -593,29 +593,25 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Pending outgoing-break state, populated by the children fragmentation
-	// loop when overflow / IFC zero-progress / forced-break is detected and
-	// consumed by the post-loop FinishFragmentation analogue (option-b
-	// step6_option_b_plan.md §3.2). Mirrors Blink's container_builder_
+	// Pending outgoing-break state, populated by the children loop when a
+	// child breaks (inside, or before it) and consumed by the post-loop
+	// FinishFragmentation analogue. Mirrors Blink's container_builder_
 	// break fields (HasInflowChildBreakInside, ShouldBreakInside,
-	// ChildBreakTokens, AtBlockEnd, MinSpaceShortage, BreakAppeal,
-	// HasForcedBreak). Unused until sub-steps 6.2 / 6.3 / 6.4 wire them in.
+	// ChildBreakTokens, MinSpaceShortage, HasForcedBreak); the break appeal
+	// lives on the builder (ClampBreakAppeal / SetBreakAppeal).
 	var (
 		pendingHasInflowChildBreakInside bool
 		pendingShouldBreakInside         bool
 		pendingChildBreakTokens          []*BlockBreakToken
 		pendingHasSeenAllChildren        bool
 		pendingMinSpaceShortage          float64
-		pendingBreakAppeal               BreakAppeal
 		pendingHasForcedBreak            bool
-		pendingDropAtBlockOffset         float64
-		pendingDropAtBlockOffsetEnabled  bool
 		pendingIntrinsicAtBreak          float64
 		pendingHaveIntrinsicAtBreak      bool
 		// pendingParallelFlowChildTokens collects break tokens of children
 		// that finished their own box (at-block-end / parallel flow) while
-		// their CONTENT continues in later fragmentainers, when the walk
-		// itself never hit a fragmentainer boundary. Promoted into the
+		// their CONTENT continues in later fragmentainers; such a break
+		// does not stop the walk. Promoted into the
 		// unified outgoing-token reader after Gates A/B so the parent's
 		// natural-path margin handling is preserved (the parent's own flow
 		// IS complete). LOU-365; mirrors Blink FinishFragmentation building
@@ -623,18 +619,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// (fragmentation_utils.cc:677-815 @ a9f50e522efa).
 		pendingParallelFlowChildTokens []*BlockBreakToken
 	)
-	pendingDropAtBlockOffset = -1
-	pendingBreakAppeal = BreakAppealPerfect
-	_ = pendingShouldBreakInside
-	_ = pendingChildBreakTokens
-	_ = pendingHasSeenAllChildren
-	_ = pendingMinSpaceShortage
-	_ = pendingBreakAppeal
-	_ = pendingHasForcedBreak
-	_ = pendingDropAtBlockOffset
-	_ = pendingDropAtBlockOffsetEnabled
-	_ = pendingIntrinsicAtBreak
-	_ = pendingHaveIntrinsicAtBreak
 
 	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
 	// When a block has no block-start border/padding and isn't a new BFC,
@@ -1625,12 +1609,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				builder.PropagateBreakInfo(child, childResult)
 			}
 
-			// The break-after recorded before this child, which the
-			// break-between check below joins with this child's break-before
-			// (Blink computes it in BreakBeforeChildIfNeeded, before AddResult
-			// propagates this child's values, fragmentation_utils.cc:908-916
-			// @ a9f50e522efa).
-			breakAfterBeforeChild := builder.PreviousBreakAfter()
 			// Propagate this child's break values: the first child's
 			// break-before becomes ours, and its break-after is joined with
 			// the next sibling's break-before. Mirrors Blink's
@@ -1721,330 +1699,49 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			prevMarginStrut = childResult.EndMarginStrut
 			prevMarginStrut.Append(childMargins.BlockEnd)
 
-			// The child was interrupted by a column spanner inside it, so it
-			// broke inside in this flow: finish this fragment and lay out no
-			// more siblings (Blink BlockLayoutAlgorithm::Layout,
-			// block_layout_algorithm.cc:1108-1115 @ a9f50e522efa;
-			// PropagateBreakInfo sets has_inflow_child_break_inside_,
-			// box_fragment_builder.cc:567-570, which :598-599 DCHECKs for a
-			// spanner path). The post-loop finishFragmentation sizes the
-			// fragment through its FoundColumnSpanner branch
-			// (fragmentation_utils.cc:601-628) and the token reader derives
-			// IsCausedByColumnSpanner. Only this case stops here; the general
-			// stop on any in-flow child break waits for the louis14-only
-			// boundary gates to go (ledger L43).
-			if inColumnBfc && childResult.ColumnSpannerPath != nil {
-				// A child that broke inside before its block end applies no
-				// trailing margin (ComputeInflowPosition,
-				// block_layout_algorithm.cc:3014-3031).
-				if childResult.BreakToken != nil && !childResult.BreakToken.IsAtBlockEnd {
-					prevMarginStrut = MarginStrut{}
-				}
-				pendingShouldBreakInside = true
-				pendingHasInflowChildBreakInside = true
-				pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
-				pendingIntrinsicAtBreak = blockCursor
-				pendingHaveIntrinsicAtBreak = true
-				break
-			}
-
-			// Fragmentation: check if we've overflowed the fragmentainer.
+			// Under block fragmentation, take over the child's break (Blink
+			// AddResult → PropagateBreakInfo, box_fragment_builder.cc:500-576
+			// @ a9f50e522efa): a child that broke inside records its break
+			// token and clamps this box's break appeal to the appeal of
+			// breaking inside it (:572-576); a forced break inside it is
+			// ours (:582-583), any other space shortage it reported
+			// propagates (:584-586). A child break in the same flow — not
+			// at the child's block end, or forced into this flow by a
+			// column spanner path (:507-510) — means this box breaks
+			// inside: finish the fragment and lay out no more siblings
+			// (block_layout_algorithm.cc:1108-1115). A child that broke
+			// only in a parallel flow (its box ended, its content goes on)
+			// leaves the walk going; its token is still carried out. A
+			// child that did not break is never stopped here: whether it
+			// or the next sibling fits was BreakBeforeChildIfNeeded's call.
 			if bla.space.HasBlockFragmentation {
-				fragSize := bla.fragmentainerCapacityForChildren()
-				// blockCursor is content-relative, so the boundary is measured
-				// from the content edge's fragmentainer offset.
-				fragEnd := fragSize - bla.fragmentainerOffsetForChildren
-				// Stop when blockCursor overflows OR when blockCursor exactly
-				// reaches the fragmentainer boundary AND the child still has
-				// remaining content (its BreakToken signals it didn't fully fit).
-				// Without the second condition, a child that exactly fills the
-				// column would let the loop continue to the next sibling (e.g. a
-				// column-span:all spanner), causing the child's remaining content
-				// to be discarded and only one column to be populated.
-				childHasBreak := childResult.BreakToken != nil
-				// LOU-365: ALSO stop when the child broke inside but its slice
-				// ends SHORT of the boundary (line-granular breaking leaves the
-				// last partial line's space unused: cursor < fragEnd). The
-				// fragmentainer is still consumed — falling through used to
-				// silently DROP the child's break token (losing its remaining
-				// content) and its space shortage. Blink treats any inside
-				// break as consuming the fragmentainer unless the token is
-				// at-block-end / a parallel flow (MovePastBreakpoint,
-				// fragmentation_utils.cc:1178-1186 @ a9f50e522efa). Zero-
-				// progress slices keep their dedicated branch below.
-				childBrokeShortOfBoundary := childHasBreak && blockCursor < fragEnd &&
-					childBlockSize > 0 &&
-					!IsInParallelFlow(childResult)
-				if fragSize != Indefinite && (blockCursor > fragEnd ||
-					(blockCursor == fragEnd && childHasBreak) ||
-					childBrokeShortOfBoundary) {
-					// Content overflowed (or exactly filled with break).
-					//
-					// Option-b step 6.4.b: record pending state and break.
-					// The post-loop frag-overflow reader (added in this
-					// same step, sitting before the 6.2 forced-break
-					// reader) builds the outgoing LayoutResult from the
-					// pending-* fields below. This is a verbatim port of
-					// the pre-6.4.b inline body — every read/write maps
-					// 1:1 per plan §3.3.0 / §3.3.1. Step 6.4.c will
-					// migrate this onto the unified §3.6 reader.
-					shortage := blockCursor - fragEnd
-					if shortage < 0 {
-						shortage = 0
-					}
-					// LOU-365: if space shortage was reported inside the
-					// child, use that. The boundary arithmetic above is zero
-					// when the child's slice ends exactly at the fragmentainer
-					// boundary, which would starve the multicol stretch loop
-					// of its grow-by amount. Blink trusts every child report
-					// (CalculateSpaceShortage, fragmentation_utils.cc:
-					// 1046-1051 @ a9f50e522efa).
-					if childResult.MinSpaceShortage > 0 {
-						shortage = childResult.MinSpaceShortage
-					}
-					pendingShouldBreakInside = true
-					pendingHasInflowChildBreakInside = true
-					pendingIntrinsicAtBreak = blockCursor
-					pendingHaveIntrinsicAtBreak = true
-					pendingMinSpaceShortage = shortage
-
-					// Whether this box is at its block end, the broken child
-					// continuing in a parallel flow, is FinishFragmentation's
-					// call (fragmentation_utils.cc:717-760 @ a9f50e522efa).
-
-					// Child-break dispatch tree. Verbatim from pre-6.4.b
-					// lines 1196-1299 — every `outToken.ChildBreakTokens
-					// = append(...)` rewritten as `pendingChildBreakTokens
-					// = append(...)`, every `outToken.HasSeenAllChildren
-					// = true` as `pendingHasSeenAllChildren = true`.
-					// Decision tree unchanged.
-					if childResult.BreakToken != nil {
-						pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
-					} else if childResult.Fragment != nil && childResult.Fragment.IsMonolithic {
-						// LOU-365: a monolithic child is moved past the break
-						// point AS A UNIT — it overflows the fragmentainer and
-						// is DONE; never emit a consumed-progress resume token
-						// for it (fragmentation_utils.cc:329-339 @
-						// a9f50e522efa). The leaf-slicing branch below would
-						// emit one, but the space gate (correctly) refuses to
-						// slice the child on resume, so that token can never
-						// finish — an infinite fragmentainer loop
-						// (multicol-nested-011 watchdog hang). The parent's
-						// own continuation resumes at the next sibling.
-						if childIdx+1 < len(children) {
-							pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-								Node:          children[childIdx+1],
-								IsBreakBefore: true,
-							})
-						} else {
-							pendingHasSeenAllChildren = true
-						}
-					} else if len(child.Children()) == 0 && !hasOnlyInlineChildren(child) {
-						// Leaf block: child completed but its declared size overflowed.
-						childConsumed := fragEnd - actualChildBlockOff
-						if childConsumed == 0 && (fragSize > 0 || bla.boxType != BoxTypeColumn) {
-							// Child starts exactly at fragEnd. Fresh start
-							// next fragmentainer (also covers the balance-
-							// estimate fragSize==0 path).
-							pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-								Node:          child,
-								IsBreakBefore: true,
-							})
-						} else if bla.boxType == BoxTypeColumn {
-							// Inner column context: the leaf returned no break
-							// token, so it is complete — it fit, or is
-							// unbreakable and overflows the column whole.
-							// Resume at the next sibling (Blink moves past a
-							// child that has no break inside,
-							// fragmentation_utils.cc:1141-1240 @ a9f50e522efa).
-							if childIdx+1 < len(children) {
-								pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-									Node:          children[childIdx+1],
-									IsBreakBefore: true,
-								})
-							} else {
-								pendingHasSeenAllChildren = true
-							}
-						} else {
-							// Non-column context: parallel-flow vs legacy
-							// monolithic-leaf fallback.
-							parentBoxSatisfied := hasExplicitBlock &&
-								actualChildBlockOff+childBlockSize > explicitBlockSize
-							if parentBoxSatisfied {
-								totalConsumed := childConsumed
-								if tok := resumeChildTokens[child]; tok != nil {
-									totalConsumed += tok.ConsumedBlockSize.Float64()
-								}
-								pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-									Node:              child,
-									ConsumedBlockSize: layoutunit.FromFloat64Round(totalConsumed),
-									IsInParallelFlow:  true,
-								})
-							} else if childIdx+1 < len(children) {
-								nextChild := children[childIdx+1]
-								pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-									Node:          nextChild,
-									IsBreakBefore: true,
-								})
-							} else {
-								pendingHasSeenAllChildren = true
-							}
-						}
-					} else {
-						// Child completed; resume at next sibling.
-						if childIdx+1 < len(children) {
-							nextChild := children[childIdx+1]
-							pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-								Node:          nextChild,
-								IsBreakBefore: true,
-							})
-						} else {
-							pendingHasSeenAllChildren = true
-						}
-					}
-
-					// Phase 12g BreakAppeal demotion. Verbatim from
-					// pre-6.4.b lines 1367-1427, swapping `worstAppeal`
-					// for `pendingBreakAppeal` (initialized to
-					// BreakAppealPerfect at function entry).
-					if childResult != nil && childResult.BreakAppeal < pendingBreakAppeal {
-						pendingBreakAppeal = childResult.BreakAppeal
-					}
-					isInsideCurrent := childResult != nil && childResult.BreakToken != nil
-					if !isInsideCurrent && len(child.Children()) == 0 &&
-						!hasOnlyInlineChildren(child) && bla.boxType == BoxTypeColumn {
-						if fragEnd-actualChildBlockOff > 0 {
-							isInsideCurrent = true
-						}
-					}
-					if isInsideCurrent && childStyle != nil {
-						if IsAvoidBreakValue(bla.space, childStyle.GetBreakInside()) &&
-							pendingBreakAppeal > BreakAppealViolatingBreakAvoid {
-							pendingBreakAppeal = BreakAppealViolatingBreakAvoid
-						}
-					}
-					isBreakBeforeCurrent := !isInsideCurrent &&
-						len(child.Children()) == 0 &&
-						!hasOnlyInlineChildren(child) &&
-						fragEnd-actualChildBlockOff == 0
-					if isBreakBeforeCurrent && childStyle != nil {
-						breakBetween := JoinFragmentainerBreakValues(
-							breakAfterBeforeChild, childStyle.GetBreakBefore())
-						if IsAvoidBreakValue(bla.space, breakBetween) &&
-							pendingBreakAppeal > BreakAppealViolatingBreakAvoid {
-							pendingBreakAppeal = BreakAppealViolatingBreakAvoid
-						}
-					}
-					deferredNextSibling := childIdx+1 < len(children)
-					if !isInsideCurrent && !isBreakBeforeCurrent && deferredNextSibling {
-						nextChild := children[childIdx+1]
-						var curAfter, nextBefore string
-						if childStyle != nil {
-							curAfter = childStyle.GetBreakAfter()
-						}
-						if s := nextChild.Style(); s != nil {
-							nextBefore = s.GetBreakBefore()
-						}
-						between := JoinFragmentainerBreakValues(curAfter, nextBefore)
-						if IsAvoidBreakValue(bla.space, between) &&
-							pendingBreakAppeal > BreakAppealViolatingBreakAvoid {
-							pendingBreakAppeal = BreakAppealViolatingBreakAvoid
-						}
-					}
-
-					// LOU-110: drop placed children at-or-past the boundary
-					// (paint dedup vs the next fragmentainer's IsBreakBefore
-					// entries). Gated on fragSize > 0 to skip the balance-
-					// estimate path.
-					if fragSize > 0 {
-						pendingDropAtBlockOffsetEnabled = true
-						pendingDropAtBlockOffset = fragEnd
-					}
-
-					// childResult.HasForcedBreak passthrough (frag-overflow
-					// intersecting a forced break — preserve original
-					// result.HasForcedBreak signal).
-					if childResult != nil && childResult.HasForcedBreak {
-						pendingHasForcedBreak = true
-					}
-
-					break
-				} else if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
-					!isPureParallelFlowResume(childResult, incomingBreakToken, childIdx < resumeLastTokenIdx) &&
-					!bla.space.IsInitialColumnBalancingPass {
-					// IFC broke before making any forward progress (zero-height
-					// fragment + break token). The fragmentainer is full from
-					// the parent's perspective even though blockCursor did not
-					// advance.
-					//
-					// LOU-365 (CodeRabbit 3514362231 follow-on): pure
-					// parallel-flow continuations are NOT zero progress and
-					// must not stop the walk — see isPureParallelFlowResume;
-					// they are collected by the parallel-flow carry instead.
-					//
-
-					// Option-b step 6.3 (plan §3.4 + step6_3_ifc_zero_progress.md):
-					// structurally a subset of 6.4 — only the
-					// `childResult.BreakToken != nil` dispatch branch fires, no
-					// Fab D, no DropChildren, no BreakAppeal demotion, no
-					// MinSpaceShortage, no HasForcedBreak. The unified §3.6
-					// post-loop reader handles the build + outToken + return.
-					pendingShouldBreakInside = true
-					pendingHasInflowChildBreakInside = true
-					pendingIntrinsicAtBreak = blockCursor
-					pendingHaveIntrinsicAtBreak = true
-					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
-					break
-				}
-
-				// Forced column break inside a child (break-before/after:column).
-				// Fires even when blockCursor < fragEnd (column isn't full yet).
-				// Also fires during IsInitialColumnBalancingPass (fragSize=Indefinite) so the
-				// ContentRuns measure loop records one run per forced-break segment.
-				//
-				// Option-b step 6.2: record pending state and break out of the
-				// children loop. The post-loop forced-break reader (added in
-				// this same step, immediately after the loop close) constructs
-				// the outgoing LayoutResult from the pending state — a verbatim
-				// move of the original inline body. Step 6.4 will subsume this
-				// reader into the unified FinishFragmentation analogue.
-				//
-				// A forced break inside the child always leaves its break
-				// token; a child's break-after reaches the next sibling
-				// through FinalBreakAfter and CalculateBreakBetweenValue
-				// instead (box_fragment_builder.cc:651-653,
-				// fragmentation_utils.cc:131-160 @ a9f50e522efa).
-				if (fragSize != Indefinite || bla.space.IsInitialColumnBalancingPass) && childResult.HasForcedBreak && childResult.BreakToken != nil {
-					pendingShouldBreakInside = true
-					pendingHasInflowChildBreakInside = true
+				if childResult.HasForcedBreak {
 					pendingHasForcedBreak = true
-					pendingIntrinsicAtBreak = blockCursor
-					pendingHaveIntrinsicAtBreak = true
-					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
-					break
+				} else if !bla.space.IsInitialColumnBalancingPass {
+					builder.PropagateSpaceShortage(childResult.MinSpaceShortage)
 				}
-
-				// LOU-365: no boundary branch fired — the child was accepted
-				// and the walk continues. If the child nevertheless carries a
-				// parallel-flow continuation (its box is at block-end but its
-				// content goes on), collect the token; dropping it here loses
-				// the continuation entirely (fixed-size-child-with-overflow:
-				// content rendered in column 1 only). Promoted into the
-				// outgoing token after the walk.
-				if fragSize != Indefinite && IsInParallelFlow(childResult) {
-					pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, childResult.BreakToken)
+				if token := childResult.BreakToken; token.IsBreakInside() {
+					builder.ClampBreakAppeal(CalculateBreakAppealInside(bla.space, childResult))
+					// A child that broke inside before its block end applies
+					// no trailing margin (ComputeInflowPosition,
+					// block_layout_algorithm.cc:3014-3031).
+					if !token.IsAtBlockEnd {
+						prevMarginStrut = MarginStrut{}
+					}
+					if IsInParallelFlow(childResult) {
+						pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, token)
+					} else {
+						pendingShouldBreakInside = true
+						pendingHasInflowChildBreakInside = true
+						pendingChildBreakTokens = append(pendingChildBreakTokens, token)
+						pendingIntrinsicAtBreak = blockCursor
+						pendingHaveIntrinsicAtBreak = true
+						break
+					}
 				}
 			}
 		}
 	}
-
-	// Option-b step 6.4.c: the two ad-hoc post-loop readers (6.2
-	// forced-break + 6.4.b frag-overflow) are removed here. The broken
-	// path now flows through the natural post-loop — margin propagation
-	// and float clearance are already suppressed by Gates A + B (6.4.a);
-	// the Fab D override below preserves the column-spanner clamp until
-	// 6.5.C deletes it; DropChildren and the unified §3.6 outToken
-	// construction sit before/after `builder.Build()` further down.
 
 	// CSS 2.1 §8.3.1: The bottom margin of an in-flow block box with a
 	// 'height' of 'auto' collapses with its last child's bottom margin if
@@ -2055,16 +1752,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		!hasExplicitBlock &&
 		geom.Border.BlockEnd == 0 && geom.Padding.BlockEnd == 0
 
-	// Gate A (option-b step 6.4.a, plan §3.3.3): trailing-margin
-	// propagation is suppressed on the broken path. Pre-restructure,
-	// the frag-overflow / forced-break early-returns bypassed this
-	// block; post-restructure, `pendingShouldBreakInside` flags the
-	// broken path and the natural-path margin propagation must not
-	// extend the broken fragment by trailing margin. Currently
-	// dormant: the only setter of `pendingShouldBreakInside` is the
-	// 6.2 forced-break path, which returns before reaching here.
-	// 6.4.c activates the gate when frag-overflow flows through the
-	// natural post-loop.
+	// Gate A: a fragment that breaks inside adds no trailing margin.
 	// A fragment interrupted by a spanner keeps its trailing margins and
 	// float clearance, as any finished fragment does (Blink's FinishLayout
 	// adds the end margin strut whether or not the box breaks,
@@ -2449,13 +2137,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Option-b step 6.4.c: apply DropChildren for the broken path,
-	// just before Build(). Recorded by the frag-overflow record-phase
-	// (pendingDropAtBlockOffsetEnabled gated on `fragSize > 0`).
-	if pendingDropAtBlockOffsetEnabled {
-		builder.DropChildrenAtOrPastBlockOffset(pendingDropAtBlockOffset)
-	}
-
 	result := builder.Build()
 
 	// Option-b step 6.4.c: unified outgoing-break-token construction
@@ -2536,9 +2217,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, selfBreakShortage)
 		}
 		if pendingShouldBreakInside {
-			if pendingBreakAppeal < BreakAppealPerfect {
-				result.BreakAppeal = pendingBreakAppeal
-			}
 			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, pendingMinSpaceShortage)
 			if pendingHasForcedBreak {
 				result.HasForcedBreak = true
@@ -3150,28 +2828,6 @@ func resumeSkipsChild(
 	// before any token.
 	return childIdx <= resumeLastTokenIdx ||
 		(incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren)
-}
-
-// isPureParallelFlowResume reports whether a zero-height inside-broken child
-// is a PURE parallel-flow continuation that must not be treated as
-// zero-progress: at-block-end (its box is done, content continues), no
-// column-spanner involvement (the spanner protocol owns those stops), and
-// the container has seen all children or a later sibling still has an
-// incoming token (so continuing reaches tokened siblings first, never lays a
-// fresh one into a column owed to this continuation; LOU-405: a forced break
-// before a deferred spanner is such a token).
-// Mirrors Blink's MovePastBreakpoint must_break_before (checks
-// GetColumnSpannerPath() first, then !IsAtBlockEnd —
-// fragmentation_utils.cc:1178-1186 @ a9f50e522efa) combined with
-// BlockChildIterator's seen-all iteration (block_child_iterator.cc:80-95).
-// Driver for the seen-all narrowing: the pre-spanner columnization of
-// multicol-span-all-children-height-012's zero-height wrapper relies on
-// stopping when unseen siblings are still pending.
-func isPureParallelFlowResume(childResult *LayoutResult, incomingBreakToken *BlockBreakToken, laterSiblingHasToken bool) bool {
-	return IsInParallelFlow(childResult) &&
-		!childResult.BreakToken.IsCausedByColumnSpanner &&
-		childResult.ColumnSpannerPath == nil &&
-		incomingBreakToken != nil && (incomingBreakToken.HasSeenAllChildren || laterSiblingHasToken)
 }
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a

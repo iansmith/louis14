@@ -104,24 +104,13 @@ func CalculateUnbreakableBlockSize(
 	return blockSize
 }
 
-// IsParallelFlowContinuation reports whether an outgoing child break token
-// represents a parallel flow: the child's own box is at block-end (or
-// explicitly tagged in-parallel-flow) while content inside it resumes in
-// later fragmentainers. Such a token does NOT mean the fragmentainer is
-// full — mirrors the `!break_token->IsAtBlockEnd()` escape in Blink's
-// MovePastBreakpoint (fragmentation_utils.cc:1178-1186 @ a9f50e522efa).
-func IsParallelFlowContinuation(tok *BlockBreakToken) bool {
-	return tok != nil && (tok.IsAtBlockEnd || tok.IsInParallelFlow)
-}
-
 // IsInParallelFlow reports whether a child result's break continues in a
-// parallel flow: the child is at its block end (or explicitly in a parallel
-// flow) and does not contain a column spanner, which forces its breaks into
-// the parent's flow. Mirrors child_is_in_same_flow in Blink's
+// parallel flow: the child is at its block end and does not contain a
+// column spanner, which forces its breaks into the parent's flow. Mirrors child_is_in_same_flow in Blink's
 // BoxFragmentBuilder::PropagateBreakInfo (box_fragment_builder.cc:503-510 @
 // a9f50e522efa).
 func IsInParallelFlow(childResult *LayoutResult) bool {
-	return IsParallelFlowContinuation(childResult.BreakToken) &&
+	return childResult.BreakToken != nil && childResult.BreakToken.IsAtBlockEnd &&
 		!childResult.ShouldForceSameFragmentationFlow
 }
 
