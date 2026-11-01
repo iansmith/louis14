@@ -555,8 +555,9 @@ func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult
 // AddResult calls before PropagateChildBreakValues (:227-232). Only that
 // block is ported here; the rest of Blink's PropagateBreakInfo lives at the
 // BlockLayoutAlgorithm call sites (PropagateChildBlockSizeForFragmentation,
-// PropagateTallestUnbreakableBlockSize, the local
-// pendingHasInflowChildBreakInside, the appeal clamp in MovePastBreakpoint).
+// PropagateTallestUnbreakableBlockSize, and the in-flow child break block
+// after placement: the break token, appeal clamp, forced break, space
+// shortage and has_inflow_child_break_inside).
 // Blink gates the block on IsInColumnBfc inside; the builder holds no
 // ConstraintSpace, so the caller gates it. A louis14 path omits Blink's head
 // Node(): a result's path starts at the child, so {Box: child, Child: path}
@@ -894,28 +895,6 @@ func (b *BoxFragmentBuilder) ShiftLineBoxChildrenBlockOffset(delta float64) {
 			b.children[i].offset.BlockOffset += delta
 		}
 	}
-}
-
-// DropChildrenAtOrPastBlockOffset removes accumulated child entries whose
-// logical block-offset is at or past the given offset. Used by the BLA
-// overflow handler to drop children that were placed at or past the
-// fragmentainer boundary; those children are deferred to the next
-// fragmentainer via the outgoing break token and must not also appear in
-// this partial fragment (otherwise paint would render them twice — once
-// here past the boundary and once in the next fragmentainer at offset 0).
-//
-// Blink avoids this case structurally: BreakBeforeChildIfNeeded fires
-// before placement, so a child that doesn't fit is never added to the
-// fragment in the first place. Louis14's BLA places-then-detects-overflow,
-// so the equivalent invariant has to be restored after the fact.
-func (b *BoxFragmentBuilder) DropChildrenAtOrPastBlockOffset(blockOffset float64) {
-	filtered := b.children[:0]
-	for _, ch := range b.children {
-		if ch.offset.BlockOffset < blockOffset {
-			filtered = append(filtered, ch)
-		}
-	}
-	b.children = filtered
 }
 
 // SetHasColumnSpanner records whether a column spanner was found inside this
