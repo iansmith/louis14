@@ -618,8 +618,29 @@ func (g *BackgroundImageGeometry) ComputePhase() geometry.PhysicalOffset {
 	}
 }
 
-// naturalSizingInfoForSVG returns the natural sizing info of an SVG image.
-// LOU-556 RED stub.
+// naturalSizingInfoForSVG returns the natural sizing info of an SVG image
+// from its root <svg>: width / height when absolute (percentages are not
+// natural), the ratio from a non-empty size or else the viewBox. Mirrors
+// LayoutSVGRoot::UnscaledNaturalSizingInfo (layout_svg_root.cc:74-103 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) plus SVGImage::
+// GetNaturalDimensions (svg_image.cc:238-264), which drops everything for a
+// partially sized image with preserveAspectRatio="none" (the
+// SvgSizingWithPreserveAspectRatioNone flag that removes that is
+// "experimental", runtime_enabled_features.json5:6045-6046).
 func naturalSizingInfoForSVG(svg images.SVGSizingInfo) NaturalSizingInfo {
-	return NaturalSizingInfo{}
+	n := NaturalSizingInfo{
+		Width: svg.ExplicitWidth, Height: svg.ExplicitHeight,
+		HasWidth: svg.HasExplicitWidth, HasHeight: svg.HasExplicitHeight,
+	}
+	if (!n.HasWidth || !n.HasHeight) && svg.PreserveAspectRatioNone {
+		return NaturalSizingInfo{}
+	}
+	switch {
+	case n.Width > 0 && n.Height > 0:
+		n.RatioW, n.RatioH = n.Width, n.Height
+	case svg.HasViewBox && svg.ViewBoxWidth > 0 && svg.ViewBoxHeight > 0:
+		// The viewBox can only yield a natural ratio, not a natural size.
+		n.RatioW, n.RatioH = svg.ViewBoxWidth, svg.ViewBoxHeight
+	}
+	return n
 }
