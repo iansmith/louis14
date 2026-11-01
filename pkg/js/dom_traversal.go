@@ -96,7 +96,18 @@ func (e *elementAccessor) previousElementSibling() goja.Value {
 	return goja.Null()
 }
 
-// registerDocumentProperties adds document.body, document.head, document.documentElement.
+// documentElement returns doc's <html> element child, or nil.
+func documentElement(doc *html.Document) *html.Node {
+	for _, child := range doc.Root.Children {
+		if child.Type == html.ElementNode && child.TagName == "html" {
+			return child
+		}
+	}
+	return nil
+}
+
+// registerDocumentProperties adds document.body, document.head,
+// document.documentElement and document.scrollingElement.
 func registerDocumentProperties(ctx *domContext, docObj *goja.Object, doc *html.Document) {
 	// Define getter-like properties by setting them as values that are
 	// looked up dynamically. Since goja doesn't support defineProperty on
@@ -104,21 +115,18 @@ func registerDocumentProperties(ctx *domContext, docObj *goja.Object, doc *html.
 	// However, document.body etc. are properties, not functions.
 	// We use the Go-side to set them when accessed.
 
-	// Find <html>, <head>, <body> in the document tree
+	// Find <head> or <body> among the root's children, then the document
+	// element's.
 	findElement := func(tag string) *html.Node {
-		// Search direct children of root for <html>
 		for _, child := range doc.Root.Children {
 			if child.Type == html.ElementNode && child.TagName == tag {
 				return child
 			}
 		}
-		// Search inside <html> for <head> and <body>
-		for _, child := range doc.Root.Children {
-			if child.Type == html.ElementNode && child.TagName == "html" {
-				for _, grandchild := range child.Children {
-					if grandchild.Type == html.ElementNode && grandchild.TagName == tag {
-						return grandchild
-					}
+		if htmlNode := documentElement(doc); htmlNode != nil {
+			for _, child := range htmlNode.Children {
+				if child.Type == html.ElementNode && child.TagName == tag {
+					return child
 				}
 			}
 		}
@@ -139,12 +147,17 @@ func registerDocumentProperties(ctx *domContext, docObj *goja.Object, doc *html.
 		};
 	`)
 
-	// Set document.documentElement
-	htmlNode := findElement("html")
+	// Set document.documentElement, and document.scrollingElement — the
+	// document element, louis14 having no quirks mode (Document::
+	// ScrollingElementNoLayout, dom/document.cc:2051-2066 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	htmlNode := documentElement(doc)
 	if htmlNode != nil {
 		docObj.Set("documentElement", ctx.elementProxy(htmlNode))
+		docObj.Set("scrollingElement", ctx.elementProxy(htmlNode))
 	} else {
 		docObj.Set("documentElement", goja.Null())
+		docObj.Set("scrollingElement", goja.Null())
 	}
 
 	// Set document.head

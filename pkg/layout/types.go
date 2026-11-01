@@ -174,6 +174,19 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.LayoutNode == nil && b.Text != "" {
 		return false
 	}
+	// The document element forces a stacking context, its document's root
+	// one (StyleAdjuster::AdjustComputedStyle, style_adjuster.cc:1263-1269
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a nested (iframe)
+	// document's content paints atomically. The top-level document
+	// element is the paint tree's root layer, the root stacking context
+	// already; it is not reported here because the paint tree's z-order
+	// re-homing (reparentZList) would then lift negative/positive-z
+	// descendants out of non-stacking scroll containers whose clip louis14
+	// applies by layer nesting (Blink clips them through the clip property
+	// tree instead).
+	if b.Parent != nil && b.LayoutNode != nil && b.LayoutNode.IsDocumentElement() {
+		return true
+	}
 	// Positioned + explicit z-index.
 	if b.Position != css.PositionStatic && b.Style.HasExplicitZIndex() {
 		return true

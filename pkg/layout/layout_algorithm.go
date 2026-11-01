@@ -35,7 +35,7 @@ type LayoutContext struct {
 	// are completed against it where they are used, as Document::CompleteURL
 	// (document.cc:7553) does: <img src> against Style.BaseDir
 	// (getImgIntrinsicInfo) and iframe/object src against it
-	// (openFrameOwnerURL), before they reach the document-agnostic
+	// (frameOwnerSource), before they reach the document-agnostic
 	// ImageFetcher and DocumentFetcher. Empty for a top-level document.
 	BaseDir string
 

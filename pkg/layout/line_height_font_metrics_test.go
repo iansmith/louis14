@@ -59,7 +59,11 @@ func TestLayout_LineHeightFontMetricUnitsUseCascadeFont(t *testing.T) {
 // layoutNestedDocument selector: passing nil there gives 10 / 10.
 func TestLayoutNestedDocument_LineHeightFontMetricUnitsUseCascadeFont(t *testing.T) {
 	ctx := &LayoutContext{ViewportWidth: 800, ViewportHeight: 600, FontConfig: text.DefaultFontConfig()}
-	res := layoutNestedDocument(ctx, `<style>html, body { margin: 0; } div { font: 10px Ahem; line-height: 2ex; }</style><div>x</div>`, 300, 150, "")
+	doc, err := html.Parse(`<style>html, body { margin: 0; } div { font: 10px Ahem; line-height: 2ex; }</style><div>x</div>`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res := layoutNestedDocument(ctx, doc, 300, 150)
 	if res == nil || res.Result == nil || res.Result.Fragment == nil {
 		t.Fatal("layoutNestedDocument returned no fragment")
 	}

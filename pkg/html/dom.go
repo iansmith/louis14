@@ -15,8 +15,10 @@ type Node struct {
 	Children   []*Node
 	Parent     *Node // Phase 2: Support proper tree structure
 
-	// NestedDocument is set on <iframe> and <object> nodes after layout to
-	// retain the parsed sub-document. This allows JS to access iframe.contentDocument.
+	// NestedDocument is the content document of an <iframe> / <object>
+	// (HTMLFrameOwnerElement's content frame, exposed as contentDocument /
+	// contentWindow). Loaded once and re-used across layout passes; see
+	// pkg/layout openFrameOwnerURL.
 	NestedDocument *Document
 
 	// LinkStyle is the sheet a <link rel=stylesheet> loaded, or nil (not a
@@ -186,12 +188,25 @@ const (
 //
 // Per-sheet BaseDir is NOT computed at HTML-parse time because
 // doc.BaseDir is set after parsing for iframe documents (see
-// layoutNestedDocument). The pkg/css cascade computes it via
+// openFrameOwnerURL). The pkg/css cascade computes it via
 // `url.URLDir(url.CompleteURL(Href, doc.BaseDir))` when each
 // StyleSheetContents is built.
 type StylesheetSource struct {
 	Text string
 	Href string // empty for <style> blocks; the link's href for external sheets
+}
+
+// FrameSource identifies the document a frame owner loads: its completed
+// src / data URL, or (URL empty) its srcdoc text. Blink keeps the
+// location as HTMLFrameElementBase::url_ (SetLocation,
+// core/html/html_frame_element_base.cc:205-210 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and reloads when a src /
+// srcdoc change resets it (ParseAttribute, :90-118); louis14 has no
+// attribute-change hook, so layout compares the current source against the
+// loaded one instead.
+type FrameSource struct {
+	URL    string
+	Srcdoc string
 }
 
 type Document struct {
@@ -217,6 +232,10 @@ type Document struct {
 	// third_party/blink/renderer/core/dom/document.cc:7553 @
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	BaseDir string
+
+	// Source is what a frame owner loaded this nested document from; zero
+	// for a top-level document.
+	Source FrameSource
 
 	// ParsedStylesheetsCache holds the per-document parse cache populated
 	// lazily by css.ParseDocumentStylesheets. Each entry wraps a

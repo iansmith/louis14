@@ -24,9 +24,15 @@ import (
 // applied while fragments become the absolutely positioned box tree, which
 // precedes sticky offsetting and paint.
 //
-// Not ported: scrollbars as widgets, snapping, scroll anchoring, the
-// LayoutView (viewport scrolling) and the root scroller.
+// The LayoutView's area (newLayoutViewScrollableArea) has no fragment:
+// louis14 builds no view fragment, so the view's scrollable overflow and
+// client size are given, and its scroll offset is kept on the Document
+// node (html.Document.Root), the LayoutView's node.
+//
+// Not ported: scrollbars as widgets (including the viewport's), snapping,
+// scroll anchoring and the root scroller.
 type PaintLayerScrollableArea struct {
+	// fragment is the scroll container's fragment; nil for the LayoutView.
 	fragment *PhysicalFragment
 	// overflowRect is overflow_rect_: the scrollable overflow in border-box
 	// space, grown to at least the client size.
@@ -72,14 +78,32 @@ func (a *PaintLayerScrollableArea) updateScrollDimensions() {
 	// 653-667 @ a9f50e522efa.
 	a.clientWidth = max(0, size.WidthF64()-border.Left-border.Right-scrollbar.Left-scrollbar.Right)
 	a.clientHeight = max(0, size.HeightF64()-border.Top-border.Bottom-scrollbar.Top-scrollbar.Bottom)
+	a.setScrollableOverflow(a.fragment.ScrollableOverflow(), border, scrollbar)
+}
 
-	overflow := a.fragment.ScrollableOverflow()
+// setScrollableOverflow is the tail of UpdateScrollDimensions: the overflow
+// rect is overflow united with the client size at the overflow's offset,
+// then the scroll origin follows from it.
+func (a *PaintLayerScrollableArea) setScrollableOverflow(overflow geometry.PhysicalRect, border, scrollbar PhysicalEdges) {
 	client := geometry.PhysicalRect{
 		Offset: overflow.Offset,
 		Size:   geometry.PhysicalSizeFromF64Round(a.clientWidth, a.clientHeight),
 	}
 	a.overflowRect = overflow.UniteEvenIfEmpty(client)
 	a.updateScrollOrigin(border, scrollbar)
+}
+
+// newLayoutViewScrollableArea returns the LayoutView's scrollable area: a
+// viewport of width x height (the view has no border, and louis14 paints
+// no viewport scrollbars) over the view's scrollable overflow — louis14's
+// stand-in for UpdateScrollDimensions on the view's own fragment
+// (paint_layer_scrollable_area.cc:940-954 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose ScrollableOverflowRect
+// is LayoutView::DocumentRect (layout/layout_view.cc:801-804).
+func newLayoutViewScrollableArea(width, height float64, overflow geometry.PhysicalRect) *PaintLayerScrollableArea {
+	a := &PaintLayerScrollableArea{clientWidth: width, clientHeight: height}
+	a.setScrollableOverflow(overflow, PhysicalEdges{}, PhysicalEdges{})
+	return a
 }
 
 // updateScrollOrigin mirrors PaintLayerScrollableArea::UpdateScrollOrigin
@@ -97,8 +121,13 @@ func (a *PaintLayerScrollableArea) updateScrollOrigin(border, scrollbar Physical
 
 // scrollableAxes mirrors PaintLayerScrollableArea::ScrollableAxes
 // (paint_layer_scrollable_area.cc:2484-2508 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a non-view box.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the LayoutView always
+// scrolls both axes; another box scrolls an axis whose overflow value is
+// scrollable.
 func (a *PaintLayerScrollableArea) scrollableAxes() (horizontal, vertical bool) {
+	if a.fragment == nil {
+		return true, true
+	}
 	return a.fragment.Style.IsOverflowValueScrollableX(), a.fragment.Style.IsOverflowValueScrollableY()
 }
 
@@ -177,17 +206,23 @@ func applyScrollableArea(fragment *PhysicalFragment, box *Box) (dx, dy float64) 
 	if area == nil {
 		return 0, 0
 	}
-	box.ScrollSize = PhysicalSize{
-		Width:  area.overflowRect.Size.WidthF64(),
-		Height: area.overflowRect.Size.HeightF64(),
-	}
-	box.MinimumScrollOffset = area.MinimumScrollOffset()
-	box.MaximumScrollOffset = area.MaximumScrollOffset()
+	var requested html.ScrollOffset
 	if fragment.Node != nil {
-		box.ScrollOffset = area.ClampScrollOffset(fragment.Node.ScrollOffset)
-	} else {
-		box.ScrollOffset = area.ClampScrollOffset(html.ScrollOffset{})
+		requested = fragment.Node.ScrollOffset
 	}
+	return area.applyTo(box, requested)
+}
+
+// applyTo records the area's scroll range on box with the requested offset
+// clamped into it, and returns the scrolled content offset.
+func (a *PaintLayerScrollableArea) applyTo(box *Box, requested html.ScrollOffset) (dx, dy float64) {
+	box.ScrollSize = PhysicalSize{
+		Width:  a.overflowRect.Size.WidthF64(),
+		Height: a.overflowRect.Size.HeightF64(),
+	}
+	box.MinimumScrollOffset = a.MinimumScrollOffset()
+	box.MaximumScrollOffset = a.MaximumScrollOffset()
+	box.ScrollOffset = a.ClampScrollOffset(requested)
 	return scrolledContentOffset(box.ScrollOffset)
 }
 

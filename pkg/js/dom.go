@@ -854,9 +854,10 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "scrollLeft", "scrollTop":
 		// Element.scrollLeft / scrollTop getters (Element::scrollLeft,
 		// dom/element.cc:2724-2760 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-		// the offset as clamped by an up-to-date layout. With no layout
-		// updater the requested offset reads back as stored.
-		offset := e.node.ScrollOffset
+		// the offset as clamped by an up-to-date layout — the viewport's
+		// (window.scrollX / scrollY) for the scrolling element. With no
+		// layout updater the requested offset reads back as stored.
+		offset := e.scrollNode().ScrollOffset
 		if e.ctx.updateLayout != nil {
 			offset = html.ScrollOffset{} // a box-less element reads 0
 			if box, ok := e.layoutBoxForScrolling(); ok {
@@ -867,6 +868,25 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return vm.ToValue(offset.X)
 		}
 		return vm.ToValue(offset.Y)
+
+	case "scrollWidth", "scrollHeight":
+		// Element.scrollWidth / scrollHeight for the scrolling element: the
+		// layout viewport's contents size (Element::scrollWidth,
+		// dom/element.cc:2926-2972 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, ScrollableArea::
+		// ContentsSize: the pixel-snapped overflow rect). Other elements'
+		// (LayoutBox::ScrollWidth) are not modelled and read as undefined.
+		if !e.isScrollingElement() {
+			return goja.Undefined()
+		}
+		box, ok := e.layoutBoxForScrolling()
+		if !ok {
+			return vm.ToValue(0)
+		}
+		if key == "scrollWidth" {
+			return vm.ToValue(math.Round(box.ScrollSize.Width))
+		}
+		return vm.ToValue(math.Round(box.ScrollSize.Height))
 
 	case "scrollTo":
 		// Element.scrollTo(x, y) and scrollTo(options) (Element::scrollTo,
@@ -1138,8 +1158,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		// Element.setScrollLeft / setScrollTop (dom/element.cc:2811-2925 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): replace one axis of
 		// the scroll offset, keeping the other. The document's scrolling
-		// element scrolls the viewport instead, which louis14 does not model,
-		// so assignments to it are dropped.
+		// element scrolls the viewport instead (window.scrollTo).
 		v := val.ToFloat()
 		if key == "scrollLeft" {
 			e.scrollLayoutBoxTo(&v, nil)
@@ -1178,7 +1197,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"onload",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
-		"scrollLeft", "scrollTop", "scrollTo",
+		"scrollLeft", "scrollTop", "scrollTo", "scrollWidth", "scrollHeight",
 		"getBoundingClientRect", "getClientRects",
 		"animate":
 		return true
@@ -1736,38 +1755,56 @@ func normalizeNonFiniteScroll(v float64) float64 {
 // 2811-2925, 3029-3046, 3110-3175 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Non-finite values scroll to
 // 0. The document's scrolling element scrolls the viewport instead
-// (ScrollFrameTo), which louis14 does not model, so it is dropped.
+// (ScrollFrameTo, window.scrollTo).
 func (e *elementAccessor) scrollLayoutBoxTo(left, top *float64) {
-	if e.node.TagName == "html" {
-		return
-	}
-	previous := e.node.ScrollOffset
+	node := e.scrollNode()
+	previous := node.ScrollOffset
 	if left != nil {
-		e.node.ScrollOffset.X = normalizeNonFiniteScroll(*left)
+		node.ScrollOffset.X = normalizeNonFiniteScroll(*left)
 	}
 	if top != nil {
-		e.node.ScrollOffset.Y = normalizeNonFiniteScroll(*top)
+		node.ScrollOffset.Y = normalizeNonFiniteScroll(*top)
 	}
 	if e.ctx.updateLayout != nil {
 		// SetProgrammaticScrollOffset stores the clamped offset: keep
 		// what layout clamped the request to. A box-less element has no
 		// scrollable area, so the call is a no-op.
 		if box, ok := e.layoutBoxForScrolling(); ok {
-			e.node.ScrollOffset = box.ScrollOffset
+			node.ScrollOffset = box.ScrollOffset
 		} else {
-			e.node.ScrollOffset = previous
+			node.ScrollOffset = previous
 		}
 	}
 }
 
-// layoutBoxForScrolling brings layout up to date and returns the element's
-// box (Element::GetLayoutBoxForScrolling after UpdateStyleAndLayoutForNode).
-// ok is false with no layout updater or when the element has no box.
+// isScrollingElement reports whether the element is the document's
+// scrolling element: the document element, louis14 having no quirks mode
+// (Document::ScrollingElementNoLayout, dom/document.cc:2051-2066 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (e *elementAccessor) isScrollingElement() bool {
+	return e.node == documentElement(e.ctx.doc)
+}
+
+// scrollNode is the node whose scrollable area the element's scroll
+// bindings act on: the Document node — the LayoutView's, whose scrollable
+// area is the layout viewport — for the scrolling element, else the
+// element.
+func (e *elementAccessor) scrollNode() *html.Node {
+	if e.isScrollingElement() {
+		return e.ctx.doc.Root
+	}
+	return e.node
+}
+
+// layoutBoxForScrolling brings layout up to date and returns the box of
+// scrollNode (Element::GetLayoutBoxForScrolling after
+// UpdateStyleAndLayoutForNode; the LayoutView's for the scrolling element).
+// ok is false with no layout updater or when there is no box.
 func (e *elementAccessor) layoutBoxForScrolling() (*layout.Box, bool) {
 	if e.ctx.updateLayout == nil {
 		return nil, false
 	}
-	box := e.ctx.updateLayout()[e.node]
+	box := e.ctx.updateLayout()[e.scrollNode()]
 	return box, box != nil
 }
 
@@ -1807,8 +1844,10 @@ func newDOMRect(vm *goja.Runtime, x, y, width, height float64) *goja.Object {
 // and item(). An element with a box reports its border box in page
 // coordinates; one without (display:none / display:contents, or no layout
 // updater) reports an empty list. louis14 indexes one box per node, so an
-// inline split across lines reports only its principal box, and the
-// viewport is never scrolled, so no scroll adjustment applies.
+// inline split across lines reports only its principal box. Boxes are
+// placed with the viewport's scroll offset already applied (the
+// LayoutView's scroll translation), so page coordinates are client
+// coordinates.
 func (e *elementAccessor) getClientRectsFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		vm := e.ctx.vm

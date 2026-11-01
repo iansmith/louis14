@@ -91,3 +91,34 @@ func TestRootOverflowDoesNotClipRootBox(t *testing.T) {
 		t.Errorf("content below the root box at (25,90) = %v, want %v", got, want)
 	}
 }
+
+// TestViewBackgroundNestedDocument: an iframe's document has a view of its
+// own, which paints the root's background over the whole frame viewport
+// (the iframe's content box) even where the root's margin leaves it
+// uncovered — FramePainter::Paint paints the child frame's LayoutView
+// (paint/frame_painter.cc:24-82 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose ViewPainter background
+// rect is the view's overflow clip rect (LayoutView::BackgroundRect,
+// layout/layout_view.h:296-299). A child frame paints no base background
+// color (LocalFrameView::ShouldPaintBaseBackgroundColor,
+// frame/local_frame_view.cc:1755-1758), so outside the frame the embedder
+// shows through.
+func TestViewBackgroundNestedDocument(t *testing.T) {
+	const src = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<iframe style="border:0;width:100px;height:80px;margin:10px" srcdoc="` +
+		`<html style='background:green;margin:30px;height:10px'><body style='margin:0'></body></html>` +
+		`"></iframe></body></html>`
+	img := renderView(t, src)
+	if got, want := rgbAt(img, 15, 15), (color.RGBA{0, 128, 0, 255}); got != want {
+		t.Errorf("frame viewport at (15,15), outside the nested root's border box = %v, want %v", got, want)
+	}
+	if got, want := rgbAt(img, 105, 85), (color.RGBA{0, 128, 0, 255}); got != want {
+		t.Errorf("frame viewport bottom-right corner (105,85) = %v, want %v", got, want)
+	}
+	if got, want := rgbAt(img, 5, 5), (color.RGBA{255, 255, 255, 255}); got != want {
+		t.Errorf("embedder at (5,5) = %v, want %v (white)", got, want)
+	}
+	if got, want := rgbAt(img, 115, 50), (color.RGBA{255, 255, 255, 255}); got != want {
+		t.Errorf("embedder right of the frame (115,50) = %v, want %v", got, want)
+	}
+}

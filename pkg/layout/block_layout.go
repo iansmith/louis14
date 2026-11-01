@@ -2316,14 +2316,16 @@ type nestedDocFragment struct {
 }
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
-// document source. If so, fetches + lays out the nested document and returns
-// the root fragment and its offset within the iframe viewport. Returns nil if not applicable.
+// content document (openFrameOwnerURL loads it once and re-uses it on later
+// passes). If so, lays out that document in the frame's content box and
+// returns the root fragment and its offset within the frame viewport.
+// Returns nil if not applicable.
 func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *nestedDocFragment {
 	if bla.node.DOMNode == nil {
 		return nil
 	}
-	htmlContent, baseDir, ok := openFrameOwnerURL(bla.ctx, bla.node.DOMNode)
-	if !ok {
+	doc := openFrameOwnerURL(bla.ctx, bla.node.DOMNode)
+	if doc == nil {
 		return nil
 	}
 
@@ -2333,7 +2335,7 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  max(0, geom.BorderBoxSize.BlockSize-geom.BlockBorderPadding()),
 	}, wdm.WM)
 
-	nested := layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
+	nested := layoutNestedDocument(bla.ctx, doc, physSize.Width, physSize.Height)
 	if nested == nil {
 		return nil
 	}

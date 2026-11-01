@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/geometry"
+)
 
 // layoutRootInView lays out the document root node in a vpWidth x vpHeight
 // viewport (buildRootConstraintSpace) and places its border box in the view
@@ -299,4 +302,30 @@ func resolvePositionedRootOffset(
 		BlockOffset:  insetStartB + marginStartB,
 	}, geomSizeToOld(fragment.Size))
 	return phys.X, phys.Y
+}
+
+// layoutViewScrollableOverflow returns the LayoutView's scrollable
+// overflow (LayoutView::DocumentRect, layout/layout_view.cc:801-804 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the view's vpWidth x vpHeight
+// padding rect united with the overflow its root fragment, placed at
+// rootOffset, propagates — clamped to the view's scroll origin, as for any
+// scroll container, with the view in the root's writing direction rootWDM
+// (StyleResolver::PropagateStyleToViewport). The view itself is a
+// scroll container with no border, scrollbars or padding.
+//
+// Not ported: is_view_ — Blink's view leaves its fixed-position children
+// out (scrollable_overflow_calculator.cc @ a9f50e522efa); louis14's lie
+// inside the root fragment and count through it.
+func layoutViewScrollableOverflow(root *PhysicalFragment, rootOffset PhysicalOffset, rootWDM WritingDirectionMode, vpWidth, vpHeight float64) geometry.PhysicalRect {
+	view := geometry.PhysicalRect{Size: geometry.PhysicalSizeFromF64Round(vpWidth, vpHeight)}
+	c := ScrollableOverflowCalculator{
+		writingDirection:   rootWDM,
+		isScrollContainer:  true,
+		hasLeftOverflow:    hasLeftOverflow(rootWDM),
+		hasTopOverflow:     hasTopOverflow(rootWDM),
+		paddingRect:        view,
+		scrollableOverflow: view,
+	}
+	c.AddChild(root, geometry.PhysicalOffsetFromF64Round(rootOffset.X, rootOffset.Y))
+	return c.Result()
 }

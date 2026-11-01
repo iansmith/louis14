@@ -530,6 +530,46 @@ func TestHasScriptWork(t *testing.T) {
 	}
 }
 
+// TestScrollingElementScrollsViewport pins the document's scrolling
+// element: the document element in standards mode (Document::
+// ScrollingElementNoLayout, dom/document.cc:2051-2066 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b — louis14 has no quirks mode),
+// whose scrollLeft / scrollTop / scrollWidth / scrollHeight act on the
+// layout viewport instead of its own box (Element::scrollLeft,
+// setScrollLeft, scrollWidth, scrollHeight, dom/element.cc:2724-2975 @
+// a9f50e522efa): the setter scrolls the window (stored on the Document
+// node, the LayoutView's node), layout clamps it, and scrollWidth /
+// scrollHeight report the viewport's contents size.
+func TestScrollingElementScrollsViewport(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><html><body></body></html>`)
+	eng := New()
+	eng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+		// Stand-in layout: a 1072x600 document in an 800x600 viewport.
+		off := doc.Root.ScrollOffset
+		off.X = max(0, min(off.X, 272))
+		off.Y = 0
+		return map[*html.Node]*layout.Box{doc.Root: {
+			ScrollOffset: off,
+			ScrollSize:   layout.PhysicalSize{Width: 1072, Height: 600},
+		}}
+	})
+	doc.Scripts = append(doc.Scripts, `
+		var se = document.scrollingElement;
+		if (se !== document.documentElement) throw new Error("scrollingElement is not the document element");
+		if (se.scrollWidth !== 1072 || se.scrollHeight !== 600) throw new Error("scroll size = " + se.scrollWidth + "x" + se.scrollHeight);
+		se.scrollLeft = se.scrollWidth;
+		if (se.scrollLeft !== 272) throw new Error("scrollLeft = " + se.scrollLeft);
+		se.scrollTop = 50;
+		if (se.scrollTop !== 0) throw new Error("scrollTop = " + se.scrollTop);
+	`)
+	if err := eng.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if want := (html.ScrollOffset{X: 272}); doc.Root.ScrollOffset != want {
+		t.Errorf("Document ScrollOffset = %+v, want %+v", doc.Root.ScrollOffset, want)
+	}
+}
+
 // TestElementGetClientRects pins Element::getClientRects
 // (core/dom/element.cc:3455-3487 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
 // element.idl:147): it brings layout up to date first
