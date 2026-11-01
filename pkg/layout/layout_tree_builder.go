@@ -2332,7 +2332,13 @@ func isInlineBox(node *LayoutInputNode) bool {
 		return false
 	}
 	s := node.Style()
-	return s != nil && s.GetDisplay() == css.DisplayInline
+	if s == nil {
+		return false
+	}
+	// A `display: inline list-item` box is a LayoutInline too
+	// (LayoutInlineListItem, layout_inline_list_item.h @ a9f50e522efa).
+	d := s.GetDisplay()
+	return d == css.DisplayInline || (d == css.DisplayInlineListItem && s.IsInlineBoxListItem())
 }
 
 // wrapBlockInInlineChildren gives every inline box among children (and,
