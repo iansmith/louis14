@@ -213,6 +213,12 @@ type Style struct {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Read through
 	// IsInBlockifyingDisplay / BlockifiesChildren.
 	isInBlockifyingDisplay bool
+
+	// originalDisplay is ComputedStyle::OriginalDisplay: the display value
+	// before StyleAdjuster's adjustments, recorded by AdjustComputedStyle.
+	// Empty for styles that never went through it (anonymous boxes); read
+	// through OriginalDisplay.
+	originalDisplay DisplayType
 }
 
 func NewStyle() *Style {
@@ -235,6 +241,7 @@ func (s *Style) Clone() *Style {
 	dst.CascadedProps = s.CascadedProps       // shared by reference; never mutated post-cascade
 	dst.UAShadowHostData = s.UAShadowHostData // shared by reference; never mutated after AdjustHostStyle
 	dst.isInBlockifyingDisplay = s.isInBlockifyingDisplay
+	dst.originalDisplay = s.originalDisplay
 	return dst
 }
 

@@ -22,6 +22,33 @@ func (s *Style) IsDisplayMath() bool {
 	return d == DisplayMath || d == DisplayBlockMath
 }
 
+// OriginalDisplay mirrors ComputedStyle::OriginalDisplay: the display
+// before StyleAdjuster blockified or otherwise adjusted it. A style that
+// never went through AdjustComputedStyle reports its current display.
+func (s *Style) OriginalDisplay() DisplayType {
+	if s.originalDisplay != "" {
+		return s.originalDisplay
+	}
+	return s.GetDisplay()
+}
+
+// IsOriginalDisplayInlineType mirrors ComputedStyle::
+// IsOriginalDisplayInlineType: IsDisplayInlineType (core/style/
+// computed_style.h:2756-2759 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// applied to OriginalDisplay:
+// an out-of-flow box that was inline-level before blockification takes
+// its static position beside the inline cursor
+// (inline_layout_algorithm.cc:807, block_layout_algorithm.cc:1663).
+func (s *Style) IsOriginalDisplayInlineType() bool {
+	switch s.OriginalDisplay() {
+	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex, DisplayInlineGrid,
+		DisplayInlineTable, DisplayInlineListItem, DisplayRuby, DisplayRubyText,
+		DisplayMath:
+		return true
+	}
+	return false
+}
+
 // BlockifiesChildren mirrors ComputedStyle::BlockifiesChildren
 // (core/style/computed_style.h:1798-1803 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): flex, grid and math containers,
@@ -79,6 +106,7 @@ func LayoutParentStyle(parent *html.Node, styles map[*html.Node]*Style) *Style {
 //  5. AdjustStyleForSvgElement, or display:contents → none on MathML
 //     elements (:1316-1325).
 func AdjustComputedStyle(element *html.Node, style, layoutParentStyle *Style) {
+	style.originalDisplay = style.GetDisplay()
 	ns := ""
 	if element != nil {
 		ns = element.NamespaceURI()

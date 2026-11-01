@@ -834,7 +834,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// exclusion space for the line's inline-start when placing the
 				// hypothetical inline-level OOF.
 				staticInlineOffset := 0.0
-				if exclusionSpace := bla.containerBuilder.GetExclusionSpace(); isInlineLevelDisplay(childStyle.GetDisplay()) && exclusionSpace != nil {
+				if exclusionSpace := bla.containerBuilder.GetExclusionSpace(); childStyle.IsOriginalDisplayInlineType() && exclusionSpace != nil {
 					// FindLocalFloatOffsets returns inline-start offset in the
 					// same coordinate system the enclosing block uses when
 					// placing in-flow inline content (mirrors inline_layout.go

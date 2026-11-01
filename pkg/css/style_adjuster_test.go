@@ -62,6 +62,14 @@ func TestAdjustComputedStyle_Display(t *testing.T) {
 			t.Errorf("#%s display = %q, want %q", c.id, got, c.want)
 		}
 	}
+	// OriginalDisplay keeps the pre-adjustment value: an out-of-flow box
+	// that was inline-level takes an inline static position.
+	if abs := styleByID(t, styles, "abs"); abs.OriginalDisplay() != DisplayInline || !abs.IsOriginalDisplayInlineType() {
+		t.Errorf("#abs OriginalDisplay = %q, want inline", abs.OriginalDisplay())
+	}
+	if styleByID(t, styles, "if").IsOriginalDisplayInlineType() != true {
+		t.Errorf("#if (inline-flex flex item) IsOriginalDisplayInlineType = false, want true")
+	}
 	if !styleByID(t, styles, "c1").IsInBlockifyingDisplay() {
 		t.Errorf("#c1 (display:contents flex child) IsInBlockifyingDisplay = false, want true")
 	}
