@@ -899,7 +899,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			SequenceNumber:     sequenceNumberAfter(mla.space.BreakToken),
 			IsAtBlockEnd:       nestedFinish.IsAtBlockEnd,
 			MonolithicOverflow: nestedFinish.MonolithicOverflow,
-			ChildBreakTokens:   mla.outBuilder.Children(),
+			ChildBreakTokens:   mla.outBuilder.ChildBreakTokens(),
 			MulticolData:       mla.outgoingMulticolData,
 			HasSeenAllChildren: mla.outBuilder.IsEmpty(),
 		}
