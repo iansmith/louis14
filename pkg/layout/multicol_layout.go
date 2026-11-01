@@ -759,11 +759,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			mla.style.GetColumnCount(), mla.style.GetColumnCount() == 0)
 	}
 
-	// Phase 12e: max-height as a column-height constraint when the multicol's
-	// own block-size is auto. With column-fill:auto and an auto multicol height,
-	// max-height bounds each column box's height (Blink behavior; CSS Multi-
-	// column L1 §7.1 "fill columns sequentially"; WPT columnfill-auto-max-height-*
-	// + multicol-fill-auto-block-children-003).
+	// The resolved max-block-size when the multicol's own block-size is auto:
+	// constrainColumnBlockSize clamps the content-based column block-size by
+	// it (Blink ResolveInitialMaxBlockLength in ConstrainColumnBlockSize,
+	// cla.cc:1774 @ a9f50e522efa; WPT columnfill-auto-max-height-* +
+	// multicol-fill-auto-block-children-003).
 	//
 	// We only consult max-height when hasExplicitBlock is false. When the
 	// multicol HAS an explicit (resolved) height, that height is already clamped
@@ -924,7 +924,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = math.Max(0, nestedFinish.FragmentBlockSize-geom.BlockBorderPadding())
 	}
 
-	// Phase 12e: max-height caps the multicol's content block-size when no
+	// max-height caps the multicol's content block-size when no
 	// explicit height is set. fragment_geometry already applies max-height to
 	// BorderBoxSize when the block-size is definite, so this only affects the
 	// auto-height case (hasExplicitBlock == false).
@@ -1325,9 +1325,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			needsRowAdvance = true
 		}
 		if needsRowAdvance {
-			if mla.hasRowHeight() {
-				lineOffset += mla.offsetToNextRow(lineOffset)
-			}
+			lineOffset += mla.offsetToNextRow(lineOffset)
 			// Blink cla.cc:741-746: only after a wrapped row.
 			if mla.isConstrainedByOuterFragmentation() && !isFirstRow && mla.hasRowHeight() &&
 				mla.rowHeight() > mla.spaceLeftForContent()-lineOffset {
@@ -1386,11 +1384,14 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			// Phase 12f (Blink cla.cc:776-777): row-wrap — when wrap is in
 			// effect and a column row exited with content still pending,
 			// continue the same column-run by starting another row below
-			// the one we just placed. Driver: column-height-001.html.
+			// the one we just placed. Not gated on hasRowHeight: forced
+			// breaks wrap content-sized rows too, the next row starting a
+			// row gap below (OffsetToNextRow, cla.cc:1944-1955). Drivers:
+			// column-height-001.html, column-wrap-no-constraints-002.html.
 			// AddNextColumnBreakToken installs the line's token as the next
 			// walker entry (mirrors Blink's
 			// MulticolPartWalker::AddNextColumnBreakToken).
-			if line.breakToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
+			if line.breakToken != nil && mla.shouldWrapColumns() {
 				walker.AddNextColumnBreakToken(line.breakToken)
 				isFirstRow = false
 				nextColumnToken = line.breakToken
@@ -1847,26 +1848,26 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// Phase 12f (Blink cla.cc:806-809): otherwise a non-auto column-height
 	// fixes the column block-size to the row's remaining height at this line
 	// offset. This is the hard upper bound on a single row of columns.
-	// Phase 12e (Blink behaviour): column-fill:auto + max-height on an auto-
-	// height multicol uses max-height as the column block-size so columns fill
-	// sequentially up to that height. Otherwise an unconstrained line's
-	// column block-size is content-based (has_content_based_block_size).
+	// Otherwise an auto-height line (remaining_content_block_size_ is
+	// indefinite, cla.cc:320-321) has a content-based column block-size
+	// unless an outer fragmentation context constrains it
+	// (has_content_based_block_size, cla.cc:849-856); max-height never
+	// becomes the column block-size, it only clamps the content-based one
+	// in constrainColumnBlockSize (ConstrainColumnBlockSize, cla.cc:1774,
+	// :1812).
 	var colBlockSize float64
 	shrinkToFitColumnBlockSize := false
 	switch {
 	case balanceColumns:
 		colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
-	case !mla.hasAutoColumnHeight():
+	case !mla.hasAutoColumnHeight() || mla.hasExplicitBlock():
+		// initialColBlockSize is definite: not content-based.
 		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
-	case mla.hasExplicitBlock():
-		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
-	case mla.effectiveMaxBlockSize != Indefinite:
-		colBlockSize = mla.constrainColumnBlockSize(mla.effectiveMaxBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 	default:
 		if mla.isConstrainedByOuterFragmentation() {
 			// Blink cla.cc:857-872 @ a9f50e522efa: when an auto-height
-			// multicol with column-fill:auto has no explicit/max height
+			// multicol with column-fill:auto has no explicit height
 			// but is constrained by an outer fragmentainer, use the outer
 			// remaining space as the column block-size, not a
 			// content-based one (has_content_based_block_size requires
