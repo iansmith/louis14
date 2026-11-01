@@ -2,16 +2,49 @@ package layout
 
 import "louis14/pkg/css"
 
+// layoutRootInView lays out the document root node in a vpWidth x vpHeight
+// viewport (buildRootConstraintSpace) and places its border box in the view
+// (placeRootInView). Shared by the top-level and nested-document layouts.
+func layoutRootInView(ctx *LayoutContext, root *LayoutInputNode, vpWidth, vpHeight float64) (*LayoutResult, ConstraintSpace, PhysicalOffset) {
+	rootStyle := root.Style()
+	rootWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	if rootStyle != nil {
+		rootWDM = NewWritingDirectionMode(rootStyle)
+	}
+	space := buildRootConstraintSpace(rootStyle, rootWDM, vpWidth, vpHeight)
+	result := layoutElement(ctx, root, space)
+	if result == nil || result.Fragment == nil {
+		return result, space, PhysicalOffset{}
+	}
+	return result, space, placeRootInView(rootStyle, rootWDM, vpWidth, vpHeight, result.Fragment)
+}
+
+// rootIsOutOfFlow reports whether the root is `position:absolute` /
+// `position:fixed`: the view lays it out as an out-of-flow child against the
+// ICB rather than as its in-flow block child.
+func rootIsOutOfFlow(rootStyle *css.Style) bool {
+	if rootStyle == nil {
+		return false
+	}
+	pos := rootStyle.GetPosition()
+	return pos == css.PositionAbsolute || pos == css.PositionFixed
+}
+
 // buildRootConstraintSpace builds the constraint space for the document root
-// element given the viewport size. Returns the space plus a flag indicating
-// that the root is `position:absolute` / `position:fixed` with at least one
-// pair of insets resolved — in that case callers must use
-// resolvePositionedRootOffset to place the root within the viewport.
+// element given the viewport size.
 //
-// For in-flow roots the behavior matches the classic top-level path: available
-// size equals the viewport in the root's logical coordinates, with a forced
-// minimum block-size for horizontal writing modes so backgrounds extend to
-// the bottom even when content is short.
+// An in-flow root is laid out as the LayoutView's block layout lays out its
+// single block child: the view is fixed at the initial containing block size
+// (LayoutView::LayoutRoot, layout_view.cc:848-909 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the root's available and
+// percentage-resolution sizes are the ICB, its auto inline-size stretches to
+// the ICB less its margins, and its auto block-size is its content's — the
+// root establishes a new formatting context (LayoutBlockFlow::
+// CreatesNewFormattingContext's IsDocumentElement, layout_block_flow_hot.cc:
+// 18-21), so nothing collapses through it. louis14 children take a
+// margin-free available inline-size (BlockLayoutAlgorithm's child space), so
+// the root's non-auto inline margins are taken off here. rootOffsetInView
+// places it.
 //
 // For positioned roots the viewport IS the containing block (ICB), and the
 // root runs through the same IMCB sizing logic used by OutOfFlowLayoutPart:
@@ -24,7 +57,7 @@ func buildRootConstraintSpace(
 	rootStyle *css.Style,
 	rootWDM WritingDirectionMode,
 	vpWidth, vpHeight float64,
-) (ConstraintSpace, bool) {
+) ConstraintSpace {
 	var rootInlineSize, rootBlockSize float64
 	if rootWDM.IsHorizontal() {
 		rootInlineSize = vpWidth
@@ -34,23 +67,13 @@ func buildRootConstraintSpace(
 		rootBlockSize = vpWidth
 	}
 
-	pos := css.PositionStatic
-	if rootStyle != nil {
-		pos = rootStyle.GetPosition()
-	}
-	rootIsOOF := pos == css.PositionAbsolute || pos == css.PositionFixed
-
-	if !rootIsOOF {
-		var rootMinBlock float64
-		if rootWDM.IsHorizontal() {
-			rootMinBlock = vpHeight
-		}
+	if !rootIsOutOfFlow(rootStyle) {
+		margins := ResolveMargins(rootStyle, rootWDM, rootInlineSize)
 		return NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
 			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-			SetForcedMinBlockSize(rootMinBlock).
 			SetIsRootElement(true).
 			SetAvailableSize(LogicalSize{
-				InlineSize: rootInlineSize,
+				InlineSize: max(0, rootInlineSize-margins.InlineSum()),
 				BlockSize:  rootBlockSize,
 			}).
 			SetPercentageResolutionSize(LogicalSize{
@@ -58,7 +81,7 @@ func buildRootConstraintSpace(
 				BlockSize:  rootBlockSize,
 			}).
 			SetPercentageResolutionInlineSize(rootInlineSize).
-			Build(), false
+			Build()
 	}
 
 	cbLogical := LogicalSize{InlineSize: rootInlineSize, BlockSize: rootBlockSize}
@@ -78,7 +101,39 @@ func buildRootConstraintSpace(
 	if useFixedBlock {
 		csb.SetIsFixedBlockSize(true)
 	}
-	return csb.Build(), true
+	return csb.Build()
+}
+
+// rootOffsetInView returns the logical offset of an in-flow root's border
+// box within the LayoutView (the ICB, icb in the root's writing mode), given
+// the root's laid-out border-box inline-size: its block-start margin, and its
+// inline-start margin with `auto` inline margins resolved against the ICB.
+// The view's BlockLayoutAlgorithm places its single new-formatting-context
+// child this way (LayoutNewFormattingContext → ResolveInlineAutoMargins,
+// block_layout_algorithm.cc:2063, :2209-2213, length_utils.cc:1551-1570 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the view has no border or
+// padding, and the root is its first child, so no margin collapses into
+// the view.
+func rootOffsetInView(rootStyle *css.Style, rootWDM WritingDirectionMode, icb LogicalSize, borderBoxInlineSize float64) LogicalOffset {
+	margins := resolveInlineAutoMargins(rootStyle, rootWDM, icb.InlineSize, borderBoxInlineSize,
+		ResolveMargins(rootStyle, rootWDM, icb.InlineSize))
+	return LogicalOffset{InlineOffset: margins.InlineStart, BlockOffset: margins.BlockStart}
+}
+
+// placeRootInView returns the physical offset of the root's border box in
+// the vpWidth x vpHeight viewport after layout produced fragment: by the
+// IMCB math for a positioned root (resolvePositionedRootOffset), otherwise
+// at rootOffsetInView converted against the ICB — so a vertical-rl root
+// sits at the ICB's right (block-start) edge.
+func placeRootInView(rootStyle *css.Style, rootWDM WritingDirectionMode, vpWidth, vpHeight float64, fragment *PhysicalFragment) PhysicalOffset {
+	if rootIsOutOfFlow(rootStyle) {
+		x, y := resolvePositionedRootOffset(rootStyle, rootWDM, vpWidth, vpHeight, fragment)
+		return PhysicalOffset{X: x, Y: y}
+	}
+	icbPhys := PhysicalSize{Width: vpWidth, Height: vpHeight}
+	offset := rootOffsetInView(rootStyle, rootWDM, ToLogicalSize(icbPhys, rootWDM.WM),
+		NewLogicalFragment(rootWDM, fragment).InlineSize())
+	return NewConverter(rootWDM, icbPhys).ToPhysicalOffset(offset, geomSizeToOld(fragment.Size))
 }
 
 // computePositionedRootIMCB runs the IMCB sizing step for a positioned root
