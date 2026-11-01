@@ -90,7 +90,7 @@ func TestBlockLayout_SpannerParentState_LOU403(t *testing.T) {
 	resumed := NewBlockLayoutAlgorithm(ctx, wrapperNode, columnSpace(&BlockBreakToken{
 		Node:                    wrapperNode,
 		IsCausedByColumnSpanner: true,
-		ChildBreakTokens:        []*BlockBreakToken{CreateBreakBefore(children[1], true)},
+		ChildBreakTokens:        []BreakToken{CreateBreakBefore(children[1], true)},
 	})).Layout()
 	if resumed.ColumnSpannerPath == nil || resumed.ColumnSpannerPath.Box != children[1] {
 		t.Fatalf("resumed wrapper: spanner path = %+v, want spanner2", resumed.ColumnSpannerPath)
@@ -131,10 +131,10 @@ func TestBlockLayout_NestedSpannerParentState_LOU403(t *testing.T) {
 		SetBreakToken(&BlockBreakToken{
 			Node:                    outerNode,
 			IsCausedByColumnSpanner: true,
-			ChildBreakTokens: []*BlockBreakToken{{
+			ChildBreakTokens: []BreakToken{&BlockBreakToken{
 				Node:                    innerNode,
 				IsCausedByColumnSpanner: true,
-				ChildBreakTokens:        []*BlockBreakToken{CreateBreakBefore(spanner2Node, true)},
+				ChildBreakTokens:        []BreakToken{CreateBreakBefore(spanner2Node, true)},
 			}},
 		}).
 		Build()

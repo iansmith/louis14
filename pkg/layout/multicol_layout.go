@@ -116,12 +116,6 @@ type MulticolLayoutAlgorithm struct {
 	// --- Per-layout invariants, resolved once in Layout() before
 	// LayoutChildren runs and read by the methods it calls. ---
 
-	// contentNode is the anonymous column-content node wrapping the
-	// multicol's children (Blink lays columns out on the multicol node
-	// itself, column_layout_algorithm.cc:944-945 @ a9f50e522efa). It is
-	// read from mla.node.contentNodeCache so its pointer is stable across
-	// Layout() calls (break tokens resume by node identity).
-	contentNode *LayoutInputNode
 	// contentInlineSize is the multicol's content-box inline size
 	// (Blink ChildAvailableSize().inline_size).
 	contentInlineSize float64
@@ -737,43 +731,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	mla.cloneBoxStartDecorations = SetupFragmentBuilderForFragmentation(mla.space, mla.node, mla.space.BreakToken, mla.containerBuilder)
 
-	// Anonymous content node wrapping all multicol children. Using an anonymous
-	// style (no borders/padding/explicit dimensions) so block layout computes
-	// the column content area from the column constraint space, not from the
-	// multicol container's own CSS dimensions.
-	// Mirrors Blink: BlockLayoutAlgorithm runs on a kColumnBox synthetic node.
-	//
-	// Group consecutive inline-level and text children into anonymous block
-	// nodes so the block layout algorithm's BFC path routes them to IFC.
-	// Without this, mixed inline+block content (e.g. spans + h4 + text) would
-	// have each span processed as a separate block child, preventing them from
-	// forming a shared IFC. Mirrors CSS 2.1 §9.2.1.1 anonymous block generation.
-	// Use cached grouped children so that anonymous block wrappers have the
-	// same pointer identity across multiple Layout() calls on the same node.
-	// Break tokens store node pointers for resume; without this cache a fresh
-	// groupInlineChildrenForMulticol call would create new anonymous wrappers
-	// whose pointers don't match the stored ones, causing resumeChildIdx=-1.
-	if mla.node.groupedChildrenCache == nil {
-		mla.node.groupedChildrenCache = groupInlineChildrenForMulticol(mla.node.Children(), mla.style)
-	}
-	// Phase 16.e+18 v2 B0 (contentNode pointer stability — Step 0 finding):
-	// MulticolPartWalker dispatches by `child.Node == multicolContainer`
-	// pointer equality. Allocating a fresh anonymous wrapper on each
-	// Layout() call breaks resume from outer-column 2 onward — every
-	// column-content child token references the previous outer column's
-	// pointer, and the walker mis-dispatches it as a spanner. Caching
-	// contentNode on mla.node mirrors the LayoutObject pointer stability
-	// Blink's column-box assumes.
-	if mla.node.contentNodeCache == nil {
-		mla.node.contentNodeCache = &LayoutInputNode{
-			style:       css.CreateAnonymousStyleWithDisplay(mla.style, string(css.DisplayBlock)),
-			children:    mla.node.groupedChildrenCache,
-			isAnonymous: true,
-		}
-		mla.node.contentNodeCache.adoptChildren()
-	}
-	mla.contentNode = mla.node.contentNodeCache
-
 	mla.blockCursor = 0
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
@@ -877,7 +834,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.HandleOofFragmentation(false)
 
 	// Candidates whose containing block is an inline in the column content
-	// (the anonymous column content propagates them unresolved) resolve
+	// (the column boxes propagate them unresolved) resolve
 	// here against the inline's fragments in the columns. Blink computes the
 	// inline's geometry across fragmentainers
 	// (ComputeInlineContainingBlocksForFragmentainer,
@@ -942,7 +899,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			SequenceNumber:     sequenceNumberAfter(mla.space.BreakToken),
 			IsAtBlockEnd:       nestedFinish.IsAtBlockEnd,
 			MonolithicOverflow: nestedFinish.MonolithicOverflow,
-			ChildBreakTokens:   mla.outBuilder.Children(),
+			ChildBreakTokens:   mla.outBuilder.ChildBreakTokens(),
 			MulticolData:       mla.outgoingMulticolData,
 			HasSeenAllChildren: mla.outBuilder.IsEmpty(),
 		}
@@ -1048,7 +1005,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren() BreakStatus {
 	// BreakToken carries the resume point) or a spanner (DescendantNode ==
 	// the leaf spanner; BreakToken carries its resume info if it broke
 	// inside). Blink's walker is a LayoutChildren local too (cla.cc:562).
-	walker := NewMulticolPartWalker(mla.contentNode, mla.space.BreakToken)
+	walker := NewMulticolPartWalker(mla.node, mla.space.BreakToken)
 
 	// marginStrut collapses adjacent spanner block margins and lets a
 	// spanner's trailing margin collapse through an empty column line.
@@ -1135,7 +1092,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren() BreakStatus {
 		// this multicol take up the remaining space (cla.cc:662-666).
 		mla.flushWalker(walker)
 		for _, tok := range mla.outBuilder.Children() {
-			if tok.Node == mla.contentNode || !tok.IsAtBlockEnd {
+			if tok.Node == mla.node || !tok.IsAtBlockEnd {
 				mla.hasInflowChildBreakInside = true
 			}
 		}
@@ -1665,13 +1622,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	shrinkToFitColumnBlockSize := false
 	switch {
 	case balanceColumns:
-		colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
+		colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
 	case initialColBlockSize == Indefinite && !mla.isConstrainedByOuterFragmentation():
 		// An unconstrained column-fill:auto line still gets a
 		// content-based column block-size, unbalanced
 		// (has_content_based_block_size, cla.cc:845-856 @ a9f50e522efa).
-		colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, false)
+		colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, false)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
 	default:
 		// Not content-based: the initial column block-size (column-height,
@@ -1757,7 +1714,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				colMinBreakAppeal = minBreakAppeal
 			}
 			colSpace := mla.createConstraintSpaceForColumn(wdm, mla.usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, colMinBreakAppeal)
-			columnAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, mla.contentNode, colSpace)
+			columnAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, mla.node, colSpace)
 			columnAlgorithm.SetBoxType(BoxTypeColumn)
 			result := columnAlgorithm.Layout()
 			if result == nil || result.Fragment == nil {
@@ -1886,7 +1843,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		if !balanceColumns {
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
-				colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
+				colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
 				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
 				continue
 			}
@@ -1900,14 +1857,21 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// the stretch decision. Mirrors Blink cla.cc:1087-1129 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (has_oof_fragmentainer_
 		// descendants is set only while balancing, cla.cc:973-978). The
-		// containing-block adjustment Blink passes is not needed: louis14
-		// finds a containing block's first fragment in the line's columns
-		// (plan WI-3).
+		// containing-block offsets are made relative to the line, as Blink's
+		// are.
 		// As before a spanner, descendants whose containing block continues
 		// past this line wait (out_of_flow_layout_part.cc:1611-1621).
+		// The containing-block offsets are made relative to this line's
+		// first column: less what the columns before it hold
+		// (containing_block_adjustment = -TotalColumnBlockSize(),
+		// cla.cc:1093-1098).
+		var lineConsumed layoutunit.LayoutUnit
+		if nextColumnToken != nil {
+			lineConsumed = nextColumnToken.ConsumedBlockSize
+		}
 		var lineDescendants []LogicalOofNodeForFragmentation
 		for _, c := range columns {
-			mla.containerBuilder.PropagateOOFFragmentainerDescendants(c.fragment, c.offset, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, &lineDescendants)
+			mla.containerBuilder.PropagateOOFFragmentainerDescendants(c.fragment, c.offset, LogicalOffset{}, layoutunit.LayoutUnit{}.Sub(lineConsumed), nil, nil, &lineDescendants)
 		}
 		if balanceColumns && len(lineDescendants) > 0 {
 			lineColumns := make([]logicalChildLink, 0, len(columns))
@@ -2029,7 +1993,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Phase 16.e+18 v2 B3: ClipBlockAxisOnly setter removed. Phase 12h F2
 		// partial added it as a workaround for monolithic content overflow in
 		// nested-multicol scenarios, before 16.d.1's per-fragment clamp + B0's
-		// contentNode pointer cache + B2's TallestUnbreakableBlockSize carrier
+		// break-token node identity + B2's TallestUnbreakableBlockSize carrier
 		// closed the upstream gap. Blink has no per-column paint clip
 		// (third_party/blink/renderer/core/paint/box_fragment_painter.cc:1080-
 		// 1114; see findings.md § "Phase 16.d Blink research"). The field is
@@ -2195,7 +2159,6 @@ func tallestContentBlockSize(runs []contentRun) float64 {
 }
 
 func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
-	contentNode *LayoutInputNode,
 	wdm WritingDirectionMode,
 	colWidth float64,
 	numCols int,
@@ -2267,7 +2230,7 @@ measure:
 
 	const maxIterations = 1000 // safety valve against non-advancing break-token bugs
 	for i := 0; i < maxIterations; i++ {
-		balancingAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, contentNode, buildSpace(breakToken))
+		balancingAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, mla.node, buildSpace(breakToken))
 		balancingAlgorithm.SetBoxType(BoxTypeColumn)
 		result := balancingAlgorithm.Layout()
 		if result == nil {
@@ -2563,7 +2526,7 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 // getSpannerFromPath traverses a ColumnSpannerPath linked list and returns
 // the Box at the leaf (where Child == nil) — the actual column-span:all
 // element, which may be a grandchild or deeper descendant of the multicol
-// flow thread. Mirrors Blink's GetSpannerFromPath
+// container. Mirrors Blink's GetSpannerFromPath
 // (column_layout_algorithm.cc:224-229 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func getSpannerFromPath(path *ColumnSpannerPath) *LayoutInputNode {
@@ -2645,127 +2608,4 @@ func (mla *MulticolLayoutAlgorithm) positionAnyUnclaimedListMarker(
 	}
 	marker.AddToBoxWithoutLineBoxes(mla.ctx, markerResult, mla.containerBuilder, intrinsicBlockSize)
 	mla.containerBuilder.ClearUnpositionedListMarker()
-}
-
-// groupInlineChildrenForMulticol wraps consecutive inline-level and text
-// children into anonymous block nodes so that block_layout's BFC path can
-// route inline runs to an IFC. Without this, a node with mixed inline+block
-// children (e.g. <span>, <span>, <h4 column-span:all>, text) would process
-// each span as a separate block child, breaking column fragmentation.
-//
-// Mirrors CSS 2.1 §9.2.1.1 anonymous block box generation. Block-level
-// children (including column-span:all spanners) pass through unchanged.
-// Out-of-flow children are grouped with the inline run they appear in; a
-// float joins only a run already open (see the float case below).
-func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *css.Style) []*LayoutInputNode {
-	if len(children) == 0 {
-		return nil
-	}
-
-	// Fast path: check whether any block-level non-spanner child exists.
-	// If all children are inline or text, no grouping is needed.
-	needsGrouping := false
-	for _, child := range children {
-		if child.IsText() {
-			continue
-		}
-		s := child.Style()
-		if s == nil {
-			needsGrouping = true
-			break
-		}
-		pos := s.GetPosition()
-		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			continue
-		}
-		if s.GetFloat() != css.FloatNone {
-			continue
-		}
-		d := s.GetDisplay()
-		if d != css.DisplayInline && d != css.DisplayInlineBlock &&
-			d != css.DisplayInlineFlex && d != css.DisplayInlineGrid &&
-			d != css.DisplayInlineTable {
-			needsGrouping = true
-			break
-		}
-	}
-	if !needsGrouping {
-		return children
-	}
-
-	var result []*LayoutInputNode
-	var inlineRun []*LayoutInputNode
-
-	flushRun := func() {
-		if len(inlineRun) == 0 {
-			return
-		}
-		// Drop whitespace-only runs: they have no visual effect in a block
-		// container (CSS white-space:normal collapses inter-element whitespace)
-		// and anonymous wrappers for them cause break-token pointer instability
-		// during multicol fragmentation resume. Floats and out-of-flow boxes
-		// in such a run stay direct children, unwrapped: an anonymous block
-		// holding only them would be an extra in-flow child, and so an extra
-		// breakpoint, that Blink does not have (whitespace after a non-inline
-		// sibling gets no LayoutText, Text::TextLayoutObjectIsNeeded,
-		// core/dom/text.cc:279-323 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as
-		// maybeWrapAnonymousBlocks already does (CSS 2.1 §9.2.2.1).
-		if isWhitespaceOnly(inlineRun) {
-			result = appendOutOfFlowAndFloats(result, inlineRun)
-			inlineRun = nil
-			return
-		}
-		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-		wrapper := &LayoutInputNode{
-			style:       anonStyle,
-			children:    inlineRun,
-			isAnonymous: true,
-		}
-		wrapper.adoptChildren()
-		result = append(result, wrapper)
-		inlineRun = nil
-	}
-
-	for _, child := range children {
-		if child.IsText() {
-			inlineRun = append(inlineRun, child)
-			continue
-		}
-		s := child.Style()
-		if s == nil {
-			flushRun()
-			result = append(result, child)
-			continue
-		}
-		pos := s.GetPosition()
-		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			inlineRun = append(inlineRun, child)
-			continue
-		}
-		if s.GetFloat() != css.FloatNone {
-			// A float joins an inline run already open; otherwise it stays
-			// a block-level sibling, so it fragments through the block
-			// path (LOU-497). Blink's anonymous-block generation includes
-			// no float in front of the first inline of a run
-			// (layout_block_flow.cc GetInlineRun); the layout tree builder
-			// does the same (maybeWrapAnonymousBlocks).
-			if len(inlineRun) > 0 {
-				inlineRun = append(inlineRun, child)
-			} else {
-				result = append(result, child)
-			}
-			continue
-		}
-		d := s.GetDisplay()
-		if d == css.DisplayInline || d == css.DisplayInlineBlock ||
-			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid ||
-			d == css.DisplayInlineTable {
-			inlineRun = append(inlineRun, child)
-		} else {
-			flushRun()
-			result = append(result, child)
-		}
-	}
-	flushRun()
-	return result
 }

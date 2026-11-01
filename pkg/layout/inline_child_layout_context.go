@@ -10,22 +10,37 @@ package layout
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the block adds them as
 // parallel-flow child break tokens (block_layout_algorithm.cc:2666-2672).
 //
-// Blink wraps each float token in an InlineBreakToken
-// (CreateForParallelBlockFlow, keyed by the float's item index); louis14
-// keeps the float's own BlockBreakToken, keyed by its node, which resumes
-// the same float.
+// Each float token is wrapped in an InlineBreakToken in a parallel block
+// flow, keyed by the float's item index (CreateForParallelBlockFlow).
 type InlineChildLayoutContext struct {
-	parallelFlowBreakTokens []*BlockBreakToken
+	parallelFlowBreakTokens []*InlineBreakToken
+	// lineFloats are the floats positioned for the line being laid out,
+	// added to the block (commitLineFloats) once the line is kept, or
+	// dropped with it when it is broken before: Blink adds a line's floats
+	// with its line box, after BreakBeforeChildIfNeeded
+	// (block_layout_algorithm.cc:2634-2736 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lineFloats []lineFloat
+}
+
+// lineFloat is a float positioned for the line being laid out, not yet
+// added to the block.
+type lineFloat struct {
+	node *LayoutInputNode
+	// start is where the float resumes when it breaks: its item in the
+	// block's inline formatting context.
+	start      InlineItemTextIndex
+	positioned PositionedFloat
 }
 
 // ParallelFlowBreakTokens returns the float break tokens propagated so far.
-func (c *InlineChildLayoutContext) ParallelFlowBreakTokens() []*BlockBreakToken {
+func (c *InlineChildLayoutContext) ParallelFlowBreakTokens() []*InlineBreakToken {
 	return c.parallelFlowBreakTokens
 }
 
-// PropagateParallelFlowBreakToken records the break token of a float that
-// broke before or inside.
-func (c *InlineChildLayoutContext) PropagateParallelFlowBreakToken(token *BlockBreakToken) {
+// PropagateParallelFlowBreakToken records the inline break token of a float
+// that broke before or inside.
+func (c *InlineChildLayoutContext) PropagateParallelFlowBreakToken(token *InlineBreakToken) {
 	c.parallelFlowBreakTokens = append(c.parallelFlowBreakTokens, token)
 }
 

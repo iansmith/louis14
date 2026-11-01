@@ -256,8 +256,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	startTextOffset int,
 	segment inlineSegment,
 	context *InlineChildLayoutContext,
-) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *BlockBreakToken) {
+) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *InlineBreakToken) {
 	itemsData, baseDir, isPlaintext := bla.prepareInlineItems(wdm)
+	// The node of this inline formatting context's break tokens: the run of
+	// lines, or the block whose children are all inline (louis14 has no
+	// InlineNode).
+	inlineNode := segment.node
+	if inlineNode == nil {
+		inlineNode = bla.node
+	}
 	if len(itemsData.Items) == 0 {
 		return segment.blockStart, exclusionSpace, 0, 0, nil
 	}
@@ -299,7 +306,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			floatOriginBFC -= initialLetterAdjust
 		}
 		pf.unpositioned.OriginBfcBlockOffset = floatOriginBFC
-		return bla.placeInlineFloat(pf.item, pf.unpositioned, es, bfcBlockOrigin, bfcInlineOrigin, context)
+		return bla.placeInlineFloat(pf.item, pf.itemIndex, pf.unpositioned, es, bfcBlockOrigin, bfcInlineOrigin, context)
 	}
 
 	// Phase 2: Create line breaker.
@@ -523,6 +530,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	lineStartBlockOffset := blockOffset
 
 	for {
+		// Floats positioned in the previous iteration are kept: the floats
+		// of a kept line, and leading floats that pushed the line being
+		// re-broken below them, which stay in this fragmentainer when that
+		// line is broken before (widows-orphans-020).
+		bla.commitLineFloats(context, bfcBlockOrigin, bfcInlineOrigin)
 		// Save item index and text offset at the start of this line iteration,
 		// before NextLine advances the line breaker. Both are needed for inline
 		// break tokens so the next column resumes at exactly this line's start
@@ -531,17 +543,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineStartTextOffset := lb.currentTextOffset
 		// A line that breaks before takes the floats placed with it along:
 		// they are re-encountered when the line is laid out again in the
-		// next fragmentainer. In Blink they are children of the discarded
-		// line box, whose exclusion space is not committed
-		// (block_layout_algorithm.cc:2646-2678 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		lineStartChildCount := len(bla.containerBuilder.children)
+		// next fragmentainer. In Blink they belong to the discarded line,
+		// whose exclusion space is not committed and whose floats are not
+		// added (block_layout_algorithm.cc:2634-2736 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); their fragments and
+		// break info wait in context.lineFloats until the line is kept.
 		lineStartExclusionSpace := exclusionSpace
-		lineStartParallelFlowTokenCount := len(context.parallelFlowBreakTokens)
-		breakBeforeLine := func(token *BlockBreakToken) {
-			bla.containerBuilder.children = bla.containerBuilder.children[:lineStartChildCount]
+		breakBeforeLine := func(token *InlineBreakToken) {
 			exclusionSpace = lineStartExclusionSpace
-			context.parallelFlowBreakTokens = context.parallelFlowBreakTokens[:lineStartParallelFlowTokenCount]
+			context.lineFloats = context.lineFloats[:0]
 			inlineBreakToken = token
 		}
 
@@ -1074,7 +1084,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// a9f50e522efa).
 		if bla.space.HasBlockFragmentation && !isEmptyLineBox && hasBreakOpportunityBeforeNextChild &&
 			IsForcedBreakValue(bla.space, breakBetween) {
-			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
+			breakBeforeLine(createInlineBreakToken(inlineNode, lineStartIdx, lineStartTextOffset))
 			inlineBreakToken.IsForcedBreak = true
 			break
 		}
@@ -1094,7 +1104,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if bla.space.HasKnownFragmentainerBlockSize() &&
 			bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder, nil) {
 			bla.containerBuilder.ClampBreakAppeal(bla.earlyBreak.GetBreakAppeal())
-			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
+			breakBeforeLine(createInlineBreakToken(inlineNode, lineStartIdx, lineStartTextOffset))
 			break
 		}
 
@@ -1112,7 +1122,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			bla.containerBuilder.SetBreakAppeal(CalculateBreakAppealBeforeWithStatus(
 				bla.space, lineStatus, breakBetween, hasContainerSeparation,
 				IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode())))
-			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
+			breakBeforeLine(createInlineBreakToken(inlineNode, lineStartIdx, lineStartTextOffset))
 			break
 		}
 
@@ -1160,7 +1170,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					if bla.space.BlockFragmentationType == FragmentColumn {
 						bla.containerBuilder.PropagateSpaceShortage(shortage)
 					}
-					breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
+					breakBeforeLine(createInlineBreakToken(inlineNode, lineStartIdx, lineStartTextOffset))
 					break
 				}
 			} else if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
@@ -1198,6 +1208,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
 		}
+		// The line is kept: its floats go in with it, before it.
+		bla.commitLineFloats(context, bfcBlockOrigin, bfcInlineOrigin)
 		bla.containerBuilder.AddChild(lineFragment, lineOffset)
 		if bla.space.HasBlockFragmentation && !isEmptyLineBox {
 			// Count the line for orphans / widows unless it is empty.
@@ -1258,6 +1270,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		blockOffset += lineHeight + clearanceAfterLine
 		lineStartBlockOffset = blockOffset
 	}
+	// Floats of the last iteration that broke no line (a line of
+	// out-of-flow content only, the end of the content) are kept.
+	bla.commitLineFloats(context, bfcBlockOrigin, bfcInlineOrigin)
 
 	if firstLineAscent < 0 {
 		firstLineAscent = 0
@@ -1311,9 +1326,9 @@ func (bla *BlockLayoutAlgorithm) newInlineUnpositionedFloat(
 }
 
 // placeInlineFloat positions a float of this block's inline formatting
-// context through PositionFloat and adds it unless it breaks before; a
-// float that breaks before or inside leaves a parallel-flow break token in
-// context. Returns the new exclusion-space pointer and whether the float
+// context through PositionFloat into the exclusion space, and keeps it in
+// context for its line: commitLineFloats adds it to the block once the line
+// is kept. Returns the new exclusion-space pointer and whether the float
 // was placed (it was not when it broke before). Mirrors the
 // positioning half of LineBreaker::HandleFloat and InlineLayoutAlgorithm::
 // PlaceFloatingObjects (inline/line_breaker.cc:3815-3839, inline/
@@ -1321,22 +1336,40 @@ func (bla *BlockLayoutAlgorithm) newInlineUnpositionedFloat(
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (bla *BlockLayoutAlgorithm) placeInlineFloat(
 	item *InlineItem,
+	itemIndex int,
 	uf *UnpositionedFloat,
 	es *ExclusionSpace,
 	bfcBlockOrigin, bfcInlineOrigin float64,
 	context *InlineChildLayoutContext,
 ) (*ExclusionSpace, bool) {
-	es, positioned, breakToken := bla.addPositionedFloat(uf, es, bfcBlockOrigin, bfcInlineOrigin)
+	positioned := PositionFloat(uf, &es)
 	if positioned.BreakBeforeToken == nil {
 		// A float paints inside the opacity group of its nearest enclosing
 		// group inline (Blink: LayoutObject::PaintingLayer returns the
 		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
 		positioned.LayoutResult.Fragment.PaintGroup = item.EnclosingPaintGroup
 	}
-	if breakToken != nil {
-		context.PropagateParallelFlowBreakToken(breakToken)
-	}
+	context.lineFloats = append(context.lineFloats, lineFloat{
+		node:       uf.Node,
+		start:      InlineItemTextIndex{ItemIndex: itemIndex, TextOffset: item.StartOffset},
+		positioned: positioned,
+	})
 	return es, positioned.BreakBeforeToken == nil
+}
+
+// commitLineFloats adds the floats positioned for the kept line to the
+// block; a float that breaks before or inside leaves in context its break
+// token wrapped in an inline break token at its item, to resume there in a
+// parallel flow (InlineBreakToken::CreateForParallelBlockFlow, from
+// LineBreaker::HandleFloat, inline/line_breaker.cc:3815-3839 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) commitLineFloats(context *InlineChildLayoutContext, bfcBlockOrigin, bfcInlineOrigin float64) {
+	for _, f := range context.lineFloats {
+		if token := bla.commitPositionedFloat(f.node, f.positioned, bfcBlockOrigin, bfcInlineOrigin); token != nil {
+			context.PropagateParallelFlowBreakToken(CreateInlineBreakTokenForParallelBlockFlow(bla.node, f.start, token))
+		}
+	}
+	context.lineFloats = context.lineFloats[:0]
 }
 
 // resumeInlineFloats resumes, first in this fragment, each float of this
@@ -1357,9 +1390,17 @@ func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
 		return es
 	}
 	itemsData, _, _ := bla.prepareInlineItems(wdm)
-	for _, tok := range incoming.ChildBreakTokens {
-		idx := inlineItemIndex(itemsData.Items, InlineItemFloat, tok.Node)
-		if idx < 0 {
+	for _, t := range incoming.ChildBreakTokens {
+		// A float continuation is an inline break token in a parallel
+		// block flow, at the float's item.
+		ibt, ok := t.(*InlineBreakToken)
+		if !ok || !ibt.IsInParallelBlockFlow || ibt.Node != bla.node {
+			continue
+		}
+		idx := ibt.Start.ItemIndex
+		tok := ibt.GetBlockBreakToken()
+		if idx < 0 || idx >= len(itemsData.Items) || tok == nil ||
+			itemsData.Items[idx].Type != InlineItemFloat || itemsData.Items[idx].LayoutNode != tok.Node {
 			continue
 		}
 		if es == nil {
@@ -1367,8 +1408,10 @@ func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
 		}
 		uf := bla.newInlineUnpositionedFloat(tok.Node, tok, contentInlineSize, bfcBlockOffset,
 			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
-		es, _ = bla.placeInlineFloat(itemsData.Items[idx], uf, es, bfcBlockOrigin, bfcInlineOrigin, context)
+		es, _ = bla.placeInlineFloat(itemsData.Items[idx], idx, uf, es, bfcBlockOrigin, bfcInlineOrigin, context)
 	}
+	// The resumed floats belong to no line.
+	bla.commitLineFloats(context, bfcBlockOrigin, bfcInlineOrigin)
 	return es
 }
 
@@ -1410,6 +1453,7 @@ type blockInInlineItem struct {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type pendingFloat struct {
 	item                *InlineItem
+	itemIndex           int
 	unpositioned        *UnpositionedFloat
 	marginBoxInlineSize float64
 	isInitialLetter     bool
@@ -1463,7 +1507,7 @@ func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin,
 	if bla.style != nil {
 		paraLineHeight = bla.style.GetLineHeight()
 	}
-	for _, item := range c.data.Items {
+	for itemIndex, item := range c.data.Items {
 		if item.Type != InlineItemFloat || item.LayoutNode == nil || item.Style == nil {
 			continue
 		}
@@ -1473,6 +1517,7 @@ func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin,
 			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
 		c.floats[item] = &pendingFloat{
 			item:                item,
+			itemIndex:           itemIndex,
 			unpositioned:        uf,
 			marginBoxInlineSize: ComputeMarginBoxInlineSizeForUnpositionedFloat(uf),
 			isInitialLetter:     il.Set,
@@ -1597,23 +1642,13 @@ func rebuildOpenInlineStack(items []*InlineItem) []*InlineItem {
 }
 
 // createInlineBreakToken returns the break token for breaking before the
-// line that starts at item lineStartIdx / text offset lineStartTextOffset,
-// blockOffset into this block's content.
-func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lineStartIdx, lineStartTextOffset int) *BlockBreakToken {
-	token := &BlockBreakToken{
-		Node: bla.node,
-		// Consumed is what this block laid out (its content up to the
-		// break), like the block-child token; the container's fragmentainer
-		// offset is not part of it.
-		ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
-		InlineItemStartIndex: lineStartIdx,
-		InlineTextOffset:     lineStartTextOffset,
-		SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
-	}
-	if bla.space.BreakToken != nil {
-		token.ConsumedBlockSize = token.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
-	}
-	return token
+// line that starts at item lineStartIdx / text offset lineStartTextOffset
+// of the inline formatting context node. Mirrors InlineBreakToken::Create
+// (inline/inline_break_token.cc:39-59 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as InlineLayoutAlgorithm
+// creates it for the line after the last one placed.
+func createInlineBreakToken(node *LayoutInputNode, lineStartIdx, lineStartTextOffset int) *InlineBreakToken {
+	return &InlineBreakToken{Node: node, Start: InlineItemTextIndex{ItemIndex: lineStartIdx, TextOffset: lineStartTextOffset}}
 }
 
 // breakBeforeLine decides, for a line box that does not fit and may be

@@ -21,9 +21,10 @@ package layout
 //     resume token from the most recent LayoutLine result).
 //  4. isFinished when all three are exhausted.
 type MulticolPartWalker struct {
-	// multicolContainer is the anonymous content node that wraps multicol
-	// children. ChildBreakToken entries with Node == multicolContainer are
-	// column-content resume points.
+	// multicolContainer is the multicol node; columns are laid out on it,
+	// so ChildBreakToken entries with Node == multicolContainer are
+	// column-content resume points (column_layout_algorithm.cc:164-170 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	multicolContainer *LayoutInputNode
 
 	// parentBreakToken is the incoming break token (may be nil at start
@@ -62,7 +63,7 @@ type MulticolPartWalkerEntry struct {
 }
 
 // NewMulticolPartWalker constructs a walker for the given multicol
-// container content node, seeded by an incoming parent break token (may
+// container, seeded by an incoming parent break token (may
 // be nil at start of fresh layout).
 func NewMulticolPartWalker(container *LayoutInputNode, parentToken *BlockBreakToken) *MulticolPartWalker {
 	w := &MulticolPartWalker{
@@ -128,7 +129,8 @@ func (w *MulticolPartWalker) AddNextColumnBreakToken(token *BlockBreakToken) {
 func (w *MulticolPartWalker) updateCurrent() {
 	if w.parentBreakToken != nil &&
 		w.childTokenIdx < len(w.parentBreakToken.ChildBreakTokens) {
-		child := w.parentBreakToken.ChildBreakTokens[w.childTokenIdx]
+		// A multicol's child break tokens are all block break tokens.
+		child, _ := w.parentBreakToken.ChildBreakTokens[w.childTokenIdx].(*BlockBreakToken)
 		// Node == multicolContainer → column content. Otherwise the
 		// entry's Node is a spanner (or fragmented OOF, not yet
 		// handled here).
@@ -218,6 +220,19 @@ func (b *MulticolBreakTokenBuilder) AddBreakBeforeChild(node *LayoutInputNode, i
 // Children returns the accumulated child break tokens in document order.
 func (b *MulticolBreakTokenBuilder) Children() []*BlockBreakToken {
 	return b.children
+}
+
+// ChildBreakTokens returns the accumulated tokens as a break token's child
+// break tokens.
+func (b *MulticolBreakTokenBuilder) ChildBreakTokens() []BreakToken {
+	if len(b.children) == 0 {
+		return nil
+	}
+	tokens := make([]BreakToken, len(b.children))
+	for i, t := range b.children {
+		tokens[i] = t
+	}
+	return tokens
 }
 
 // IsEmpty reports whether any child break tokens have been accumulated.

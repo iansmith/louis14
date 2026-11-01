@@ -40,8 +40,8 @@ func TestSpannerRowSnapPushedToNextOuterFragmentainer_LOU404(t *testing.T) {
 		t.Fatal("no break token: the spanner and the content after it are lost")
 	}
 	pushed := false
-	for _, tok := range result.BreakToken.ChildBreakTokens {
-		if tok.Node != nil && tok.Node.DOMNode == spanner && tok.IsBreakBefore {
+	for _, t := range result.BreakToken.ChildBreakTokens {
+		if tok, ok := t.(*BlockBreakToken); ok && tok.Node != nil && tok.Node.DOMNode == spanner && tok.IsBreakBefore {
 			pushed = true
 		}
 	}

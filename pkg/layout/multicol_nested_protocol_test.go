@@ -183,7 +183,8 @@ func findChildBreakToken(tok *BlockBreakToken, node *html.Node) *BlockBreakToken
 	if tok.Node != nil && tok.Node.DOMNode == node {
 		return tok
 	}
-	for _, c := range tok.ChildBreakTokens {
+	for _, t := range tok.ChildBreakTokens {
+		c, _ := t.(*BlockBreakToken)
 		if found := findChildBreakToken(c, node); found != nil {
 			return found
 		}
