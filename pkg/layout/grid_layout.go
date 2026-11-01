@@ -528,53 +528,17 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		Scrollbar: physScrollbar,
 	})
 
-	// Layout OOF children.
+	// Lay out the out-of-flow children. Mirrors the OutOfFlowLayoutPart
+	// run of Blink's BoxFragmentBuilder::HandleOofsAndSpecialDescendants
+	// (box_fragment_builder.cc:660-671, called at the end of
+	// GridLayoutAlgorithm::Layout @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// louis14 resolves them against the content box (Blink: the grid area,
+	// GridLayoutAlgorithm::PlaceOutOfFlowItems, not ported).
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		isPositioned := gla.style != nil && gla.style.GetPosition() != css.PositionStatic
-		isContainmentCB := gla.style != nil && (gla.style.ShouldApplyLayoutContainment() || gla.style.ShouldApplyPaintContainment())
-		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
-		// CB triggers) makes this grid container a CB for abs-pos descendants
-		// but not for fixed (the abspos-only half of LayoutInputNode.IsAbsoluteContainer).
-		isWillChangeAbsposCB := false
-		if gla.style != nil && !isContainmentCB && !isPositioned {
-			if gla.style.WillChangeEstablishesContainingBlock(false) {
-				isWillChangeAbsposCB = true
-			}
-		}
-		if isContainmentCB {
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 gla.ctx,
-				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-				geom:                geom,
-				resolvesFixed:       true,
-			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
-		} else if isPositioned || isWillChangeAbsposCB {
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range builder.outOfFlowCandidates {
-				if cand.IsFixedPosition {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
-			}
-			if len(absoluteCandidates) > 0 {
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                 gla.ctx,
-					containingBlockWDM:  wdm,
-					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-					geom:                geom,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = fixedCandidates
-		} else {
-			propagatedOOF = builder.outOfFlowCandidates
-		}
+		propagatedOOF = NewOutOfFlowLayoutPart(gla.ctx, builder, gla.space,
+			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
+			previousConsumedContentBlockSize(gla.space, geom)).Run()
 	}
 
 	result := builder.Build()

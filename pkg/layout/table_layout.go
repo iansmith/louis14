@@ -21,41 +21,14 @@ type TableLayoutAlgorithm struct {
 	space ConstraintSpace
 }
 
-// rowOrSectionEstablishesFixedCB reports whether a table row or row-group
-// (tbody/thead/tfoot) establishes a containing block for ALL positioned
-// descendants — including fixed — by virtue of a transform, filter,
-// backdrop-filter, will-change of a CB-establishing property, preserve-3d
-// transform-style, or backface-visibility:hidden.
-//
-// Mirrors Blink's LayoutObject::ComputeIsFixedContainer /
-// CanContainFixedPositionObjects (layout_object.cc ~1888/~2150) folding in
-// HasTransformRelatedProperty (computed_style.h:2266), pinned to Chromium SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. It is LayoutInputNode.IsFixedContainer
-// without containment (rows and sections are not eligible for layout/paint
-// containment).
-func rowOrSectionEstablishesFixedCB(style *css.Style) bool {
-	if style == nil {
-		return false
-	}
-	if len(style.GetTransforms()) > 0 {
-		return true
-	}
-	if len(style.GetFilter()) > 0 {
-		return true
-	}
-	if len(style.GetBackdropFilter()) > 0 {
-		return true
-	}
-	if style.WillChangeEstablishesContainingBlock(true) {
-		return true
-	}
-	if style.GetTransformStyle() == css.TransformStylePreserve3D {
-		return true
-	}
-	if style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
-		return true
-	}
-	return false
+// tableInternalOOFSpace is the constraint space the OutOfFlowLayoutPart of
+// a table row or section runs in: louis14 lays table rows and sections out
+// unfragmented, so their out-of-flow descendants are never deferred to a
+// fragmentation context root. No Blink analog: Blink's
+// TableRowLayoutAlgorithm / TableSectionLayoutAlgorithm run it in their own
+// (possibly fragmented) space.
+func tableInternalOOFSpace(wdm WritingDirectionMode) ConstraintSpace {
+	return ConstraintSpace{WritingDirection: wdm}
 }
 
 // NewTableLayoutAlgorithm creates a table layout algorithm.
@@ -809,11 +782,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	var sectionBuilder *BoxFragmentBuilder
 	var sectionStartBlock float64
 	var lastGroupNode *LayoutInputNode
-	// sectionIsFixedCB tracks whether the currently-open section establishes
-	// a containing block for fixed-position descendants (transform/filter/
-	// perspective/will-change), so flushSection resolves fixed candidates
-	// against the section rather than bubbling them to the table.
-	var sectionIsFixedCB bool
 	flushSection := func(endBlock float64) {
 		if sectionBuilder == nil {
 			return
@@ -827,46 +795,25 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockSize:  sectionBlockSize,
 		})
 
-		// Section is a positioned CB (sectionBuilder is created for
-		// position:relative/sticky groups AND for transform/filter/etc
-		// groups that establish a fixed CB, see the row loop below).
-		// Absolute OOF candidates that bubbled out of non-positioned rows
-		// always resolve against the section's content box. Fixed candidates
-		// resolve here only when the section is a FIXED CB (transform/etc);
-		// otherwise they propagate to the table. Mirrors Blink's
-		// NGOutOfFlowLayoutPart::Run at the end of
-		// TableSectionLayoutAlgorithm for positioned sections.
+		// The section is an absolute container (sectionBuilder is created
+		// for position:relative/sticky groups AND for transform/filter/etc
+		// groups that are fixed containers, see the row loop below): its
+		// OutOfFlowLayoutPart resolves the candidates it contains against
+		// its padding box and the rest propagate to the table. Mirrors
+		// Blink's OutOfFlowLayoutPart::Run at the end of
+		// TableSectionLayoutAlgorithm (BoxFragmentBuilder::
+		// HandleOofsAndSpecialDescendants, box_fragment_builder.cc:660-671 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if len(sectionBuilder.outOfFlowCandidates) > 0 {
-			var resolveSecOOFs, fixedSecOOFs []OutOfFlowCandidate
-			for _, c := range sectionBuilder.outOfFlowCandidates {
-				if c.IsFixedPosition && !sectionIsFixedCB {
-					fixedSecOOFs = append(fixedSecOOFs, c)
-				} else {
-					resolveSecOOFs = append(resolveSecOOFs, c)
-				}
+			secGeom := FragmentGeometry{}
+			if lastGroupNode != nil && lastGroupNode.Style() != nil {
+				secGeom = ComputeFragmentGeometry(lastGroupNode.Style(), wdm)
 			}
-			sectionBuilder.outOfFlowCandidates = nil
-			if len(resolveSecOOFs) > 0 {
-				secGeom := FragmentGeometry{}
-				if lastGroupNode != nil && lastGroupNode.Style() != nil {
-					secGeom = ComputeFragmentGeometry(lastGroupNode.Style(), wdm)
-				}
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                    tla.ctx,
-					containingBlockWDM:     wdm,
-					containingBlockSize:    LogicalSize{InlineSize: totalInlineForRows, BlockSize: sectionBlockSize},
-					containingBlockPadding: secGeom.Padding,
-					geom:                   secGeom,
-					resolvesFixed:          sectionIsFixedCB,
-				}
-				if extra := oofPart.LayoutCandidates(resolveSecOOFs, sectionBuilder); len(extra) > 0 {
-					fixedSecOOFs = append(fixedSecOOFs, extra...)
-				}
-			}
-			// Bubble remaining (fixed, plus any extras) to the table.
-			// Section block-origin within table content-box is
-			// sectionStartBlock; inline-origin is 0.
-			for _, c := range fixedSecOOFs {
+			propagated := NewOutOfFlowLayoutPart(tla.ctx, sectionBuilder, tableInternalOOFSpace(wdm),
+				LogicalSize{InlineSize: totalInlineForRows, BlockSize: sectionBlockSize}, secGeom.Padding, 0).Run()
+			// Bubble the rest to the table. Section block-origin within
+			// table content-box is sectionStartBlock; inline-origin is 0.
+			for _, c := range propagated {
 				c.StaticPosition.Offset.BlockOffset += sectionStartBlock
 				builder.AddOutOfFlowCandidate(c)
 			}
@@ -878,7 +825,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockOffset:  sectionStartBlock,
 		})
 		sectionBuilder = nil
-		sectionIsFixedCB = false
 	}
 
 	firstRowHeight := 0.0
@@ -916,26 +862,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			blockOffset += blockSpacing
 		}
 
-		// Entering a row group whose computed position is relative
-		// or sticky, OR that establishes a fixed containing block via
-		// transform/filter/perspective/will-change: open a section
-		// BoxFragmentBuilder to hold the group's rows. The section's
-		// relative offset is applied by the main table builder's
-		// AddChild when flushSection emits the section fragment.
-		// Non-positioned groups continue to flatten into the table
-		// builder (legacy behaviour). A transform group is a fixed CB
-		// (CSS Transforms §2.1), so its fixed descendants resolve
-		// against the section and are wrapped in the section's transform
-		// at paint — mirroring Blink's ComputeIsFixedContainer at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		if isGroupBoundary && row.groupStyle != nil {
-			pos := row.groupStyle.GetPosition()
-			groupIsFixedCB := rowOrSectionEstablishesFixedCB(row.groupStyle)
-			if pos == css.PositionRelative || pos == css.PositionSticky || groupIsFixedCB {
+		// Entering a row group that is an absolute container (relative or
+		// sticky position, or a fixed container: transform, filter,
+		// will-change...): open a section BoxFragmentBuilder to hold the
+		// group's rows. The section's relative offset is applied by the
+		// main table builder's AddChild when flushSection emits the section
+		// fragment. Other groups continue to flatten into the table builder
+		// (legacy behaviour). A fixed-container group's fixed descendants
+		// resolve against the section and are wrapped in the section's
+		// transform at paint (LayoutObject::ComputeIsFixedContainer,
+		// layout_object.cc:1849-1900 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if isGroupBoundary && row.groupNode != nil {
+			if row.groupNode.IsAbsoluteContainer() {
 				sectionBuilder = NewBoxFragmentBuilder(wdm)
 				sectionBuilder.SetLayoutNode(row.groupNode)
 				sectionStartBlock = blockOffset
-				sectionIsFixedCB = groupIsFixedCB
 				// Nested position:relative/sticky children inside the
 				// section resolve percentages against the section's
 				// content area. Match the table-level convention of
@@ -1107,61 +1048,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			})
 		}
 
-		// Route cell OOFs to their containing block. A position:relative
-		// or position:sticky row establishes a CB for absolute descendants
-		// (CSS 2.1 §10.1, §9.4.3); otherwise the OOFs bubble to a positioned
-		// section or to the table for the table-level OOF pass to resolve.
-		// Mirrors Blink's NGOutOfFlowLayoutPart::Run invoked at the end of
-		// TableRowLayoutAlgorithm / TableSectionLayoutAlgorithm when the row
-		// or section is the CB. Restricted to relative/sticky to mirror the
-		// existing positioned-row handling (the row relative offset and
-		// line ~718 for section-builder creation).
-		rowPos := css.PositionStatic
-		if row.style != nil {
-			rowPos = row.style.GetPosition()
-		}
-		// A transform/filter/perspective/will-change row establishes a
-		// containing block for ALL positioned descendants, including fixed
-		// (CSS Transforms §2.1 / Filter Effects §"The filter property" /
-		// Will Change §2.2) — exactly as a transformed <div> does. When it
-		// does, fixed candidates resolve against the row box and are absorbed
-		// into the row fragment, so the layer paint wraps them in the row's
-		// transform. Mirrors Blink's ComputeIsFixedContainer at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		rowIsFixedCB := row.style != nil && rowOrSectionEstablishesFixedCB(row.style)
-		rowIsPositioned := rowIsFixedCB || rowPos == css.PositionRelative || rowPos == css.PositionSticky
+		// Route cell OOFs to their containing block. A row that is an
+		// absolute container (CSS 2.1 §10.1, §9.4.3; a fixed container
+		// contains fixed descendants too) runs its OutOfFlowLayoutPart;
+		// the rest bubble to a positioned section or to the table. Mirrors
+		// Blink's OutOfFlowLayoutPart::Run at the end of
+		// TableRowLayoutAlgorithm (box_fragment_builder.cc:660-671 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		bubbleOOFs := rowOOFs
-		if rowIsPositioned && len(rowOOFs) > 0 {
-			// Split candidates. Absolute always resolves here (row CB).
-			// Fixed resolves here only when the row is a FIXED CB
-			// (transform/etc); for a merely relative/sticky row, fixed
-			// bubbles toward the ICB regardless of intervening CBs.
-			var resolveRowOOFs, fixedRowOOFs []OutOfFlowCandidate
-			for _, c := range rowOOFs {
-				if c.IsFixedPosition && !rowIsFixedCB {
-					fixedRowOOFs = append(fixedRowOOFs, c)
-				} else {
-					resolveRowOOFs = append(resolveRowOOFs, c)
-				}
-			}
-			if len(resolveRowOOFs) > 0 {
-				// Row CB: padding-box. Row's geometry has been applied
-				// to rowBuilder via SetBoxData above; CB inline/block
-				// size includes row padding.
-				rowGeom := ComputeFragmentGeometry(row.style, wdm)
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                    tla.ctx,
-					containingBlockWDM:     wdm,
-					containingBlockSize:    LogicalSize{InlineSize: totalInline, BlockSize: rowHeight},
-					containingBlockPadding: rowGeom.Padding,
-					geom:                   rowGeom,
-					resolvesFixed:          rowIsFixedCB,
-				}
-				if extra := oofPart.LayoutCandidates(resolveRowOOFs, rowBuilder); len(extra) > 0 {
-					fixedRowOOFs = append(fixedRowOOFs, extra...)
-				}
-			}
-			bubbleOOFs = fixedRowOOFs
+		if row.node.IsAbsoluteContainer() && len(rowOOFs) > 0 {
+			// Row CB: padding-box. Row's geometry has been applied to
+			// rowBuilder via SetBoxData above; CB inline/block size
+			// includes row padding.
+			rowBuilder.outOfFlowCandidates = rowOOFs
+			bubbleOOFs = NewOutOfFlowLayoutPart(tla.ctx, rowBuilder, tableInternalOOFSpace(wdm),
+				LogicalSize{InlineSize: totalInline, BlockSize: rowHeight}, ComputeFragmentGeometry(row.style, wdm).Padding, 0).Run()
 		}
 		// Bubble remaining OOFs to enclosing CB (section if open, else
 		// table). Translate row-content-box coords to the enclosing
@@ -1415,37 +1316,16 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		Scrollbar: physScrollbar,
 	})
 
-	// Mirrors Blink's single NGOutOfFlowLayoutPart::Run() at the end of
-	// NGTableLayoutAlgorithm::Layout(). Positioned tables resolve absolute
-	// candidates but propagate fixed candidates toward the ICB.
+	// Mirrors Blink's single OutOfFlowLayoutPart::Run() at the end of
+	// TableLayoutAlgorithm::Layout (BoxFragmentBuilder::
+	// HandleOofsAndSpecialDescendants, box_fragment_builder.cc:660-671 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 resolves them
+	// against the content box.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		isPositioned := tla.style != nil && tla.style.GetPosition() != css.PositionStatic
-
-		if isPositioned {
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range builder.outOfFlowCandidates {
-				if cand.IsFixedPosition {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
-			}
-			if len(absoluteCandidates) > 0 {
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                 tla.ctx,
-					containingBlockWDM:  wdm,
-					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-					geom:                geom,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = fixedCandidates
-		} else {
-			propagatedOOF = builder.outOfFlowCandidates
-		}
+		propagatedOOF = NewOutOfFlowLayoutPart(tla.ctx, builder, tla.space,
+			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
+			previousConsumedContentBlockSize(tla.space, geom)).Run()
 	}
 
 	result := builder.Build()

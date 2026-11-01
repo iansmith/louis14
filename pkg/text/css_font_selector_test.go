@@ -232,7 +232,7 @@ func TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("fallback uses the exact size, not the rounded cache key", func(t *testing.T) {
+	t.Run("fallback uses the exact size, not the rounded size", func(t *testing.T) {
 		sel := NewCSSFontSelector(configWithRegistry(fr))
 		for _, tc := range []struct {
 			size string
@@ -306,7 +306,7 @@ func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 // is the "0" glyph's vmtx advance scaled by size / unitsPerEm at the font's
 // exact size. ChTestShortZero.woff (WPT css-values resource, the font of
 // ch-unit-017) has upem 1024 and a "0" vmtx advance of 256, so 0.25em: 20 at
-// 80px and 20.1 at 80.4px (not the rounded cache key's 20). Mirrors
+// 80px and 20.1 at 80.4px (not the rounded size's 20). Mirrors
 // SimpleFontData::ZeroInlineSize (platform/fonts/simple_font_data.cc:572-576)
 // and HarfBuzzFontData's size_per_unit_ = platform_data.size() / upem
 // (platform/fonts/shaping/harfbuzz_font_data.h:77) @
@@ -340,5 +340,114 @@ func TestCSSFontSelector_FontSizeAdjustChWidthNoZeroGlyph(t *testing.T) {
 	f := createFontFor(fr, "20px", "LOU425-Adjust-ExTest", "ch-width 0.25")
 	if f.AdjustedSize != 10 || f.ZeroWidth != 5 {
 		t.Errorf("(AdjustedSize, ZeroWidth) = (%v, %v), want (10, 5)", f.AdjustedSize, f.ZeroWidth)
+	}
+}
+
+// TestCSSFontSelector_FontSizeAdjustIcNoWaterGlyph (LOU-453): font-size-adjust
+// ic-width / ic-height read the U+0020 primary font's optional 水 advance and
+// take aspect 1.0 when the font has no 水 glyph, rather than measuring the
+// .notdef glyph shaping substitutes. Mirrors Blink's AspectValue kIcWidth /
+// kIcHeight (core/css/font_size_functions.cc:148-160 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which reads
+// SimpleFontData::IdeographicAdvanceWidth / IdeographicAdvanceHeight
+// (platform/fonts/simple_font_data.cc:437-459 @ the same SHA) and keeps
+// aspect_value = 1.0 (:136) when the optional is empty. The builtin serif
+// (LiberationSerif) has no 水; its .notdef is narrower than 1em and its
+// FontMetrics height taller, so the old measurement moved the used size.
+// Ahem has 水 (1em advance) and no vmtx, so ic-height reads the FontMetrics
+// Height fallback, 1em — the font-size-adjust-ic-height fallback case.
+func TestCSSFontSelector_FontSizeAdjustIcNoWaterGlyph(t *testing.T) {
+	sel := NewCSSFontSelector(DefaultFontConfig())
+	if createFontWith(sel, "20px", "serif").HasIdeographicInlineSize {
+		t.Fatal("fixture: the builtin serif must have no 水 glyph")
+	}
+	for _, tc := range []struct {
+		family, adjust string
+		want           float64
+	}{
+		{"serif", "ic-width 1.5", 30},
+		{"serif", "ic-height 1.5", 30},
+		{"serif", "ic-width 0.75", 15},
+		{"serif", "ic-height 0.75", 15},
+		{"Ahem", "ic-width 0.5", 10},
+		{"Ahem", "ic-height 0.5", 10},
+	} {
+		f := createFontWith(sel, "20px", tc.family, "font-size-adjust", tc.adjust)
+		if f.AdjustedSize != tc.want {
+			t.Errorf("%s / %s: AdjustedSize = %v, want %v", tc.family, tc.adjust, f.AdjustedSize, tc.want)
+		}
+	}
+}
+
+// TestFirstFontAspectRatio_MissingMetricFallback (LOU-453): a primary font
+// with no usable cap-height or x-height has aspect 1.0, as Blink's
+// AspectValue keeps aspect_value = 1.0 unless CapHeight() > 0 (kCapHeight)
+// or HasXHeight() — has_x_height_ && x_height_ > 0 — (kExHeight)
+// (core/css/font_size_functions.cc:136-166 and platform/fonts/
+// font_metrics.h:107 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func TestFirstFontAspectRatio_MissingMetricFallback(t *testing.T) {
+	d := simpleFontData{platformData: fontPlatformData{size: 20}, ideographic: new(ideographicAdvance)}
+	for _, metric := range []css.FontSizeAdjustMetric{css.FontSizeAdjustCapHeight, css.FontSizeAdjustExHeight} {
+		if got := firstFontAspectRatio(metric, d); got != 1 {
+			t.Errorf("metric %v: aspect = %v, want 1", metric, got)
+		}
+	}
+}
+
+// TestCSSFontSelector_FontSizeAdjustZeroAspectUnadjusted (LOU-453): when the
+// primary font's metric is present but measures 0 (a 水 or "0" glyph with a
+// zero advance), the aspect is 0 and the used size stays the computed size.
+// Mirrors FontSizeFunctions::MetricsMultiplierAdjustedFontSize, which returns
+// nullopt for !aspect_value (core/css/font_size_functions.cc:292-295 @
+// 5992657f556bcd9d207a4aca187488462f027cab), so FontBuilder::
+// UpdateAdjustedSize keeps SetAdjustedSize(computed_size)
+// (core/css/resolver/font_builder.cc:393/:413-416 @ the same SHA).
+// IcTestZeroWidth's 水 and ChTestZeroWidthZero's "0" have zero advances
+// (WPT css-values resources).
+func TestCSSFontSelector_FontSizeAdjustZeroAspectUnadjusted(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU453-IcZero", "IcTestZeroWidth.woff2", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU453-ChZero", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
+	for _, tc := range []struct{ family, adjust string }{
+		{"LOU453-IcZero", "ic-width 0.5"},
+		{"LOU453-ChZero", "ch-width 0.5"},
+	} {
+		if f := createFontFor(fr, "20px", tc.family, tc.adjust); f.AdjustedSize != 20 {
+			t.Errorf("%s / %s: AdjustedSize = %v, want 20 (unadjusted)", tc.family, tc.adjust, f.AdjustedSize)
+		}
+	}
+}
+
+// TestCSSFontSelector_FontSizeAdjustIcHeightVmtx (LOU-453): the ic-height
+// aspect of a font with the 水 glyph and a vmtx table is 水's vmtx advance
+// over the size, not its horizontal advance or the FontMetrics Height
+// fallback. Mirrors AspectValue kIcHeight → SimpleFontData::
+// IdeographicAdvanceHeight → OpenTypeVerticalData::AdvanceHeight
+// (core/css/font_size_functions.cc:154-160 and platform/fonts/
+// simple_font_data.cc:449-459 @ 5992657f556bcd9d207a4aca187488462f027cab).
+// adobe-fonts/CSSHWOrientationTest.otf (the font of Blink's
+// FontTest.IdeographicFullWidthUprightCjkVmtx): 水 is 500 of 1000 units wide
+// and 1000 units tall in vmtx, so ic-width aspect 0.5, ic-height aspect 1.
+// At 20.4px the Height fallback (lroundf(ascent) + lroundf(descent) = 20)
+// would give aspect 20/20.4, so the size tells the vmtx path apart.
+func TestCSSFontSelector_FontSizeAdjustIcHeightVmtx(t *testing.T) {
+	fr := NewFontRegistry()
+	p := registerTestFace(t, fr, "LOU453-HWOrientation", "CSSHWOrientationTest.otf", fetchAdobeTestFont)
+	if !typefaceForPath(p).vertical.HasVerticalMetrics() {
+		t.Fatal("fixture: CSSHWOrientationTest.otf must have vhea/vmtx")
+	}
+	// ic-width at an integer size: louis14 shapes at the rounded size
+	// (textshape opens fonts at integer sizes), so a fractional size would
+	// test that limitation, not the aspect.
+	for _, tc := range []struct {
+		size, adjust string
+		want         float64
+	}{
+		{"20.4px", "ic-height 0.5", 10.2},
+		{"20px", "ic-width 0.5", 20},
+	} {
+		if f := createFontFor(fr, tc.size, "LOU453-HWOrientation", tc.adjust); f.AdjustedSize != tc.want {
+			t.Errorf("%s at %s: AdjustedSize = %v, want %v", tc.adjust, tc.size, f.AdjustedSize, tc.want)
+		}
 	}
 }
