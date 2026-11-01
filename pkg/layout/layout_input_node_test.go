@@ -8,12 +8,16 @@ import (
 )
 
 // requireParentLinks fails unless every node under n is the parent of its
-// children, i.e. the parent links agree with the children lists.
+// children, i.e. the parent links and sibling indices agree with the
+// children lists.
 func requireParentLinks(t *testing.T, n *LayoutInputNode) {
 	t.Helper()
 	for i, c := range n.Children() {
 		if c.parent != n {
 			t.Fatalf("child %d (%q) of %q: parent = %p, want %p", i, c.TagName(), n.TagName(), c.parent, n)
+		}
+		if c.siblingIndex != i {
+			t.Fatalf("child %d (%q) of %q: siblingIndex = %d, want %d", i, c.TagName(), n.TagName(), c.siblingIndex, i)
 		}
 		requireParentLinks(t, c)
 	}
