@@ -2344,6 +2344,11 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 			}
 		}
 
+		// ParseBackgroundSize gate (see parseDeclarations).
+		if property == "background-size" && !isValidBackgroundSizeValue(value) {
+			continue
+		}
+
 		// Phase 2: Expand shorthand properties
 		expandShorthand(style, property, value)
 	}
@@ -2391,7 +2396,7 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set(property, value)
 			return
 		}
-		// For "background", let expandBackgroundProperty handle it (has its own var() check)
+		// For "background", expandBackgroundProperty (css_parsing_utils.go) defers var() itself
 	}
 	// CSS Values 5 §11.5: if value contains a typed attr() function, defer
 	// shorthand expansion. attr() is resolved at cascade time via
@@ -4349,279 +4354,6 @@ func expandFontProperty(style *Style, value string) {
 		family := strings.Join(parts[i:], " ")
 		style.Set("font-family", family)
 	}
-}
-
-// expandBackgroundProperty expands the background shorthand.
-// Handles comma-separated layers: each layer parsed independently, longhands
-// stored as comma-joined strings.
-func expandBackgroundProperty(style *Style, value string) {
-	// If value contains var(), defer expansion (case-insensitive per CSS
-	// Syntax §4.3.10).
-	if containsVarFunction(value) {
-		style.Set("background-color", value)
-		return
-	}
-	// If value contains attr(), defer expansion. resolveAttrReferences will
-	// substitute the attribute value at cascade time (CSS Values 5 §11.5).
-	if containsAttrFunction(value) {
-		style.Set("background-color", value)
-		return
-	}
-
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "none" {
-		style.Set("background-color", "transparent")
-		style.Set("background-image", "none")
-		return
-	}
-	// Split into comma-separated layers (depth-aware).
-	layers := splitCommaSeparated(trimmed)
-
-	// Per-layer accumulators for each longhand.
-	images := make([]string, len(layers))
-	repeats := make([]string, len(layers))
-	positions := make([]string, len(layers))
-	sizes := make([]string, len(layers))
-	origins := make([]string, len(layers))
-	clips := make([]string, len(layers))
-	bgColor := ""
-
-	for li, layerStr := range layers {
-		layerStr = strings.TrimSpace(layerStr)
-		remaining := layerStr
-
-		// Extract image-set() first
-		lowerRemaining := strings.ToLower(remaining)
-		if strings.Contains(lowerRemaining, "image-set(") {
-			setIdx := strings.Index(lowerRemaining, "image-set(")
-			prefixStart := setIdx
-			if setIdx >= 8 && lowerRemaining[setIdx-8:setIdx] == "-webkit-" {
-				prefixStart = setIdx - 8
-			}
-			depth := 1
-			setEnd := setIdx + len("image-set(")
-			for setEnd < len(remaining) && depth > 0 {
-				switch remaining[setEnd] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-				}
-				if depth > 0 {
-					setEnd++
-				}
-			}
-			setEnd++
-			imageSetExpr := remaining[prefixStart:setEnd]
-			if url, ok := extractImageSetFirstURL(imageSetExpr); ok {
-				images[li] = "url(\"" + url + "\")"
-				remaining = remaining[:prefixStart] + remaining[setEnd:]
-			}
-		}
-
-		// Extract url()
-		if images[li] == "" {
-			if urlStart := strings.Index(remaining, "url("); urlStart >= 0 {
-				depth := 0
-				urlEnd := -1
-				for i := urlStart + 4; i < len(remaining); i++ {
-					if remaining[i] == '(' {
-						depth++
-					} else if remaining[i] == ')' {
-						if depth == 0 {
-							urlEnd = i + 1
-							break
-						}
-						depth--
-					}
-				}
-				if urlEnd > urlStart {
-					images[li] = remaining[urlStart:urlEnd]
-					remaining = remaining[:urlStart] + remaining[urlEnd:]
-				}
-			}
-		}
-
-		// Extract gradient function
-		if images[li] == "" {
-			for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "repeating-conic-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
-				if idx := strings.Index(remaining, gradPrefix); idx >= 0 {
-					depth := 0
-					gradEnd := -1
-					for i := idx + len(gradPrefix) - 1; i < len(remaining); i++ {
-						if remaining[i] == '(' {
-							depth++
-						} else if remaining[i] == ')' {
-							depth--
-							if depth == 0 {
-								gradEnd = i + 1
-								break
-							}
-						}
-					}
-					if gradEnd > idx {
-						images[li] = remaining[idx:gradEnd]
-						remaining = remaining[:idx] + remaining[gradEnd:]
-					}
-					break
-				}
-			}
-		}
-
-		// Extract color functions before field-splitting
-		colorFound := false
-		colorValue := ""
-		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "contrast-color(", "color("} {
-			if idx := strings.Index(remaining, prefix); idx >= 0 {
-				depth := 0
-				end := -1
-				for j := idx; j < len(remaining); j++ {
-					switch remaining[j] {
-					case '(':
-						depth++
-					case ')':
-						depth--
-						if depth == 0 {
-							end = j
-						}
-					}
-					if end >= 0 {
-						break
-					}
-				}
-				if end >= 0 {
-					colorFunc := remaining[idx : end+1]
-					if _, ok := ParseColor(colorFunc); ok {
-						colorFound = true
-						colorValue = colorFunc
-						remaining = remaining[:idx] + remaining[end+1:]
-					}
-				}
-				break
-			}
-		}
-
-		// Tokenize remaining with parenthesis awareness so that
-		// calc() expressions aren't broken by whitespace splitting.
-		parts := splitBackgroundPositionTokens(remaining)
-		var positionTokens []string
-		var boxValues []string
-		// Per CSS Backgrounds 3 §3.10 shorthand, <repeat-style> may be one
-		// or two axis keywords. Collect consecutive repeat keywords and
-		// join them so longhand parsing sees the full per-layer value.
-		var repeatTokens []string
-		for _, part := range parts {
-			if isAxisRepeatToken(part) || part == "repeat-x" || part == "repeat-y" {
-				repeatTokens = append(repeatTokens, part)
-			} else if part == "border-box" || part == "padding-box" || part == "content-box" {
-				boxValues = append(boxValues, part)
-			} else if _, ok := ParseColor(part); ok {
-				if !colorFound {
-					colorFound = true
-					colorValue = part
-				}
-			} else if strings.EqualFold(part, "currentcolor") {
-				// CSS Color 4 §4.4 currentcolor is a valid <color> token in
-				// the background shorthand. ParseColor returns false for
-				// currentcolor (it's resolved late at paint time against
-				// the element's `color` value), so accept it here so the
-				// shorthand doesn't drop to background-color: transparent.
-				// Mirrors Blink's `CSSParserFastPaths::IsValidColor` which
-				// admits `currentcolor` as a system-color analogue
-				// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-				if !colorFound {
-					colorFound = true
-					colorValue = "currentcolor"
-				}
-			} else if part == "transparent" {
-				if !colorFound {
-					colorFound = true
-					colorValue = "transparent"
-				}
-			} else if _, ok := ParseLength(part); ok {
-				positionTokens = append(positionTokens, part)
-			} else if strings.HasPrefix(part, "calc(") {
-				positionTokens = append(positionTokens, part)
-			} else if strings.HasSuffix(part, "%") {
-				positionTokens = append(positionTokens, part)
-			} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
-				positionTokens = append(positionTokens, part)
-			} else if part == "fixed" || part == "scroll" || part == "local" {
-				style.Set("background-attachment", part)
-			}
-		}
-
-		// Up to two axis keywords form a <repeat-style>; the "repeat-x" /
-		// "repeat-y" shorthand tokens are single-token only.
-		if len(repeatTokens) > 0 {
-			n := len(repeatTokens)
-			if n > 2 {
-				n = 2
-			}
-			repeats[li] = strings.Join(repeatTokens[:n], " ")
-		}
-
-		if len(boxValues) >= 1 {
-			origins[li] = boxValues[0]
-			if len(boxValues) >= 2 {
-				clips[li] = boxValues[1]
-			} else {
-				clips[li] = boxValues[0]
-			}
-		}
-
-		// CSS spec: background-color only in the last (bottommost) layer
-		if colorFound {
-			if li == len(layers)-1 {
-				bgColor = colorValue
-			}
-		}
-
-		if len(positionTokens) > 0 {
-			positions[li] = strings.Join(positionTokens, " ")
-		}
-
-		if images[li] == "" {
-			images[li] = "none"
-		}
-	}
-
-	// Store longhands as comma-joined strings.
-	style.Set("background-image", strings.Join(images, ", "))
-	if joinNonEmpty(repeats) != "" {
-		style.Set("background-repeat", joinNonEmpty(repeats))
-	}
-	if joinNonEmpty(positions) != "" {
-		style.Set("background-position", joinNonEmpty(positions))
-	}
-	if joinNonEmpty(sizes) != "" {
-		style.Set("background-size", joinNonEmpty(sizes))
-	}
-	if joinNonEmpty(origins) != "" {
-		style.Set("background-origin", joinNonEmpty(origins))
-	}
-	if joinNonEmpty(clips) != "" {
-		style.Set("background-clip", joinNonEmpty(clips))
-	}
-	if bgColor != "" {
-		style.Set("background-color", bgColor)
-	}
-}
-
-// joinNonEmpty joins strings with commas, skipping empty entries.
-// Returns empty string if all entries are empty.
-func joinNonEmpty(parts []string) string {
-	hasNonEmpty := false
-	for _, p := range parts {
-		if p != "" {
-			hasNonEmpty = true
-			break
-		}
-	}
-	if !hasNonEmpty {
-		return ""
-	}
-	return strings.Join(parts, ", ")
 }
 
 // Phase 19: Enhanced color with alpha channel
@@ -11290,14 +11022,6 @@ func ExpandRepeatShorthand(val string) BackgroundRepeat {
 	return BackgroundRepeat{X: first, Y: second}
 }
 
-// isAxisRepeatToken returns true if val is one of the per-axis repeat
-// keywords (repeat / no-repeat / space / round). Used by the background
-// shorthand tokenizer.
-func isAxisRepeatToken(val string) bool {
-	_, ok := parseAxisRepeatKeyword(val)
-	return ok
-}
-
 // parseAxisRepeatKeyword parses a single per-axis repeat keyword.
 // Accepts repeat / no-repeat / space / round (not the repeat-x / repeat-y
 // shorthand tokens — those are expanded by ExpandRepeatShorthand).
@@ -11486,81 +11210,49 @@ func (s *Style) GetBackgroundPosition() BackgroundPosition {
 	return parseBackgroundPosition(val, s.cssToLengthConversionData())
 }
 
-// splitBackgroundPositionTokens splits a background-position value into
-// tokens, respecting parenthesized expressions like calc(100% - 278px).
-func splitBackgroundPositionTokens(val string) []string {
-	val = strings.TrimSpace(val)
-	var tokens []string
-	i := 0
-	for i < len(val) {
-		// Skip whitespace.
-		for i < len(val) && (val[i] == ' ' || val[i] == '\t') {
-			i++
-		}
-		if i >= len(val) {
-			break
-		}
-		start := i
-		// If we're at a function call (e.g., calc(...)), consume the whole thing.
-		if j := strings.IndexByte(val[i:], '('); j >= 0 && !strings.ContainsAny(val[i:i+j], " \t") {
-			// Found opening paren without intervening space → function token.
-			i += j + 1 // skip past '('
-			depth := 1
-			for i < len(val) && depth > 0 {
-				if val[i] == '(' {
-					depth++
-				} else if val[i] == ')' {
-					depth--
-				}
-				i++
-			}
-		} else {
-			// Regular token: consume until whitespace.
-			for i < len(val) && val[i] != ' ' && val[i] != '\t' {
-				i++
-			}
-		}
-		tokens = append(tokens, val[start:i])
-	}
-	return tokens
-}
-
+// parseBackgroundPosition builds a BackgroundPosition from one layer of a
+// background-position value. The components are consumed by consumePosition
+// (Blink's ConsumePosition, css_parsing_utils.cc:2649 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so keyword order ("top right")
+// and the three/four-value edge-offset forms ("right 25px top 75%") resolve
+// per PositionFromTwoValues / PositionFromThreeOrFourValues. The longhand is
+// not validated at declaration time, so this read is lenient: unitless
+// numbers are accepted (UnitlessQuirk::kAllow) and an unparseable value is
+// the initial 0% 0%.
 func parseBackgroundPosition(val string, ctx calcContext) BackgroundPosition {
-	parts := splitBackgroundPositionTokens(val)
 	pos := BackgroundPosition{}
-	if len(parts) == 1 {
-		// Single keyword: CSS 2.1 §14.2.1 — vertical keywords set Y, horizontal set X
-		switch parts[0] {
-		case "top":
-			pos.X = -50 // center
-			pos.Y = 0   // top
-		case "bottom":
-			pos.X = -50  // center
-			pos.Y = -100 // bottom
-		case "left":
-			pos.X = 0   // left
-			pos.Y = -50 // center
-		case "right":
-			pos.X = -100 // right
-			pos.Y = -50  // center
-		case "center":
-			pos.X = -50 // center
-			pos.Y = -50 // center
-		default:
-			rx := parsePositionComponent(parts[0], ctx)
-			pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
-			pos.Y = -50 // center
-		}
-	} else if len(parts) >= 2 {
-		rx := parsePositionComponent(parts[0], ctx)
-		ry := parsePositionComponent(parts[1], ctx)
-		pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
-		pos.Y, pos.YIsPixel, pos.YOffset, pos.YExpr = ry.value, ry.isPixel, ry.offset, ry.expr
+	x, y, ok := consumePosition(newComponentStream(val), true)
+	if !ok {
+		return pos
 	}
+	rx, ry := x.resolve(ctx), y.resolve(ctx)
+	pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
+	pos.Y, pos.YIsPixel, pos.YOffset, pos.YExpr = ry.value, ry.isPixel, ry.offset, ry.expr
 	if pos.XExpr != "" || pos.YExpr != "" {
 		pos.conversionData = &ctx
 	}
 	return pos
+}
+
+// resolve converts a positionAxis to louis14's percent-negative /
+// pixel-offset axis encoding. An offset from the far edge (right / bottom)
+// becomes 100% minus the offset, as Blink's BackgroundImageGeometry resolves
+// a right/bottom origin (FillLayer::BackgroundXOrigin) — px offsets go into
+// offset, percentages into the stored percentage. A math-function offset from
+// the far edge is not representable here and resolves from the near edge.
+func (a positionAxis) resolve(ctx calcContext) positionComponentResult {
+	if a.offset == "" {
+		return parsePositionComponent(a.edge, ctx)
+	}
+	r := parsePositionComponent(a.offset, ctx)
+	if (a.edge != "right" && a.edge != "bottom") || r.expr != "" {
+		return r
+	}
+	if r.isPixel {
+		return positionComponentResult{value: -100, offset: -r.value}
+	}
+	// r.value is -pct; 100% - pct is stored as -(100 - pct).
+	return positionComponentResult{value: -(100 + r.value), offset: -r.offset}
 }
 
 // positionComponentResult holds the parsed result of a position component.
