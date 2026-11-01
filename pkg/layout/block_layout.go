@@ -1267,6 +1267,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// (Layout() entry above), so the parent-side floor propagation
 			// in BreakBeforeChildIfNeeded fires.
 			childIsMonolithic := child.IsMonolithic(wdm.WM != childWDM.WM)
+			// An anonymous block, or a parallel child the block container
+			// stretches, stretches an auto inline-size; any other child
+			// (replaced, table, form control) is fit-content. Mirrors Blink's
+			// CreateConstraintSpaceForChild (block_layout_algorithm.cc:
+			// 3428-3449 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+			// justify-self (:3430-3443) is not ported — louis14 does not align
+			// block children by justify-self.
+			childInlineAutoBehavior := AutoSizeBehaviorFitContent
+			if child.IsAnonymous() || (!isOrthogonal && ShouldBlockContainerChildStretchAutoInlineSize(child)) {
+				childInlineAutoBehavior = AutoSizeBehaviorStretchImplicit
+			}
 			newChildSpaceBuilder := func(borderEdgeOff float64) *ConstraintSpaceBuilder {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
@@ -1285,6 +1296,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					SetExclusionSpace(exclusionSpace)
+
+				b.SetInlineAutoBehavior(childInlineAutoBehavior)
 
 				// For non-BFC children, propagate the BFC block and inline
 				// offsets so they can correctly query the exclusion space in
