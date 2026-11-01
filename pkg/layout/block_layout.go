@@ -1499,27 +1499,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// it has no height, no border, no padding, does not establish
 			// a new block formatting context, does not contain a line box,
 			// and all of its in-flow children's margins (if any) are collapsed.
-			// We approximate this by checking that the element has no fragment
-			// children (no content).
-			//
-			// Paint-isolation properties (filter, opacity<1, transform, mask,
-			// clip-path, mix-blend-mode, isolation, backdrop-filter) produce
-			// visible output independently of the box's content — e.g. a
-			// 0x0 box with `filter:url(#flood)` paints flood pixels via the
-			// SVG filter's own region. Such boxes must NOT collapse through
-			// because louis14's collapse-through path drops the fragment
-			// entirely (the `if collapseThrough { ... continue }` branch
-			// below), which would hide the box from the paint walk.
-			// The same applies to a visible outline: a 0x0 box with
-			// `outline: solid green 50px` paints a 100x100 ring (Blink keeps
-			// empty rects for normal outlines — outline_painter.cc:960
-			// "Keep empty rect for normal outline").
-			// Mirrors Blink's effective behavior where the fragment is
-			// always emitted regardless of self-collapse — LayoutNG's
-			// `BlockLayoutAlgorithm::Layout` adds every child fragment via
-			// `AddChild`, and self-collapse only affects margin resolution,
-			// not fragment-tree membership. Blink @
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			// We approximate this by checking that the element holds no
+			// fragment other than self-collapsing ones. A self-collapsing
+			// child is still placed, broken before and added like any
+			// in-flow child; it only passes the margin strut through
+			// (Blink FinishInflow / ComputeInflowPosition,
+			// block_layout_algorithm.cc:2622-2653, :2732-2736, :2894-2898 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
@@ -1527,16 +1513,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// it never self-collapses (Blink is_resuming_,
 			// block_layout_algorithm.cc:888-898 @ a9f50e522efa): the 0px
 			// fragment of a spanner parent after its spanner is kept.
-			collapseThrough := childBlockSize == 0 &&
+			isSelfCollapsing := childBlockSize == 0 &&
 				!resumeChildTokens[child].IsBreakInside() &&
 				childResult.BreakToken == nil &&
 				childResult.BlockSizeForFragmentation == 0 &&
-				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
 				!isChildNewFC &&
-				!hasPaintIsolation(childStyle) &&
-				(childStyle == nil || childStyle.GetOutlineWidth() == 0)
+				hasOnlySelfCollapsingChildren(childResult.Fragment)
+			if isSelfCollapsing {
+				childResult.Fragment.IsSelfCollapsing = true
+				// The margins collapsing through the child's content join
+				// the strut now, before the child is positioned and broken
+				// before: Blink passes the strut into the child and positions
+				// it by the EndMarginStrut it reads back
+				// (PositionSelfCollapsingChildWithParentBfc,
+				// block_layout_algorithm.cc:3066-3081 @ a9f50e522efa).
+				prevMarginStrut.AppendStrut(childResult.EndMarginStrut)
+			}
 
 			// Step 4: Position child in the inline direction.
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist.
@@ -1545,8 +1539,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// shorten around floats instead.
 			// CSS 2.1 §10.3.3: If both margin-inline-start and margin-inline-end are auto,
 			// and the element has a definite inline-size, center it.
-			// NOTE: computed before collapse-through check so it can be used for OOF
-			// propagation even when the element collapses through.
 			childInlineOffset := childMargins.InlineStart
 			if isChildNewFC {
 				// CSS 2.1 §9.5 / Blink LayoutNewFormattingContext: a new-FC box's
@@ -1554,30 +1546,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// its border box into a line-left float's margin area. A negative
 				// margin is clamped; floatStartOff is not simply added (LOU-327).
 				childInlineOffset = newFCInlineOffsetBesideFloats(childMargins.InlineStart, floatStartOff)
-			}
-
-			if collapseThrough {
-				// Margins collapse through: append block-end margin and continue
-				// without resolving or advancing the cursor.
-				// Pick up any propagated OOF candidates before continuing.
-				if len(childResult.PropagatedOOFCandidates) > 0 ||
-					(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
-					approxBlock := blockCursor + prevMarginStrut.Resolve()
-					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-						childInlineOffset, approxBlock)
-					// A containing block of fragmentainer descendants keeps
-					// its fragment, as Blink keeps every child's: the
-					// fragmentation context root finds the containing block
-					// in its fragmentainers (GetContainingBlockInfo). Blink
-					// adds a self-collapsing child too (FinishInflow,
-					// block_layout_algorithm.cc:2733 @
-					// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-					if childResult.Fragment.FragmentedOofData != nil {
-						bla.containerBuilder.AddChild(childResult.Fragment, LogicalOffset{InlineOffset: childInlineOffset, BlockOffset: approxBlock})
-					}
-				}
-				prevMarginStrut.Append(childMargins.BlockEnd)
-				continue
 			}
 
 			// Phase 12d: forced-break / break-appeal dispatch in column context.
@@ -1680,39 +1648,37 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Step 5: Handle parent-child top margin collapsing.
 			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
 			// child has no clearance (a `clear` value, or a float drop).
+			// Step 6: Normal margin resolution: the child's border edge
+			// (Blink LogicalFromBfcOffsets of child_bfc_offset,
+			// block_layout_algorithm.cc:2016-2018 @ a9f50e522efa). A child
+			// adjoining this block's block-start (whose BFC block-offset
+			// Blink has not resolved yet) sits at 0 (CalculateLogicalOffset,
+			// :571-592) and propagates the strut upward (the margin moves
+			// outside the parent). A self-collapsing child sits where the
+			// margins collapsed up to it resolve
+			// (PositionSelfCollapsingChildWithParentBfc, :3066-3081),
+			// propagates nothing and leaves the cursor where it was
+			// (ComputeInflowPosition, :2894-2898).
 			var actualChildBlockOff float64
 			if isAdjoiningBlockStart() {
-				// Propagate the accumulated margin strut upward.
-				propagatedTopMargin = prevMarginStrut
-				actualChildBlockOff = 0
-				// Position child at offset 0 (margin moves outside parent).
-				childOffset := LogicalOffset{
-					InlineOffset: childInlineOffset,
-					BlockOffset:  0,
+				if !isSelfCollapsing {
+					propagatedTopMargin = prevMarginStrut
 				}
-				bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
-				// Under block fragmentation, max-merge this in-flow child's
-				// block-end for fragmentation (offset + its
-				// BlockSizeForFragmentation) into the builder, mirroring
-				// Blink AddResult -> PropagateBreakInfo
-				// (box_fragment_builder.cc:227-229, :479-489 @
-				// a9f50e522efa).
-				bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
-				blockCursor = childBlockSize
 			} else {
-				// Step 6: Normal margin resolution.
-				// The child's border edge (Blink LogicalFromBfcOffsets of
-				// child_bfc_offset, block_layout_algorithm.cc:2016-2018 @
-				// a9f50e522efa).
 				actualChildBlockOff = borderEdgeAt(prevMarginStrut)
-				childOffset := LogicalOffset{
-					InlineOffset: childInlineOffset,
-					BlockOffset:  actualChildBlockOff,
-				}
-				bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
-				// Max-merge the child's block-end for fragmentation. See
-				// note above.
-				bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
+			}
+			childOffset := LogicalOffset{
+				InlineOffset: childInlineOffset,
+				BlockOffset:  actualChildBlockOff,
+			}
+			bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
+			// Under block fragmentation, max-merge this in-flow child's
+			// block-end for fragmentation (offset + its
+			// BlockSizeForFragmentation) into the builder, mirroring Blink
+			// AddResult -> PropagateBreakInfo (box_fragment_builder.cc:
+			// 227-229, :479-489 @ a9f50e522efa).
+			bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
+			if !isSelfCollapsing {
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
 
@@ -1747,7 +1713,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				bla.containerBuilder.PropagateChildBreakValues(childResult)
 			}
 
-			firstNonEmptyChild = false
+			if !isSelfCollapsing {
+				firstNonEmptyChild = false
+			}
 			// A child resumed in a parallel flow leaves no breakpoint before
 			// the next sibling, so a forced break-before on that sibling does
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
@@ -1824,8 +1792,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
-			// Reset margin strut to the child's block-end margin.
-			prevMarginStrut = childResult.EndMarginStrut
+			// Reset margin strut to the child's block-end margin; a
+			// self-collapsing child passes the strut through
+			// (ComputeInflowPosition, block_layout_algorithm.cc:2894-2898 @
+			// a9f50e522efa).
+			if !isSelfCollapsing {
+				prevMarginStrut = childResult.EndMarginStrut
+			}
 			prevMarginStrut.Append(childMargins.BlockEnd)
 
 			// Under block fragmentation, take over the child's break (Blink
@@ -2928,48 +2901,16 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	return false
 }
 
-// hasPaintIsolation returns true if the style has any property that produces
-// visible paint output independently of the box's content — filter,
-// opacity<1, transform, mask, clip-path, mix-blend-mode, isolation:isolate,
-// backdrop-filter. Such boxes must NOT be dropped by margin collapse-through
-// (the `collapseThrough` branch in BlockLayoutAlgorithm.Layout, which
-// `continue`s without appending the child fragment) because their paint
-// depends only on the box itself, not its descendants.
-//
-// Mirrors the property set tested in Blink's
-// `ComputedStyle::HasPropertyThatCreatesStackingContext` (computed_style.cc
-// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), restricted to those that
-// produce pixels (z-index, will-change auto-layer creation, etc. are
-// excluded — they create a stacking context but don't paint independently).
-func hasPaintIsolation(style *css.Style) bool {
-	if style == nil {
-		return false
+// hasOnlySelfCollapsingChildren reports whether every child fragment of f
+// is self-collapsing (vacuously true for none): margins collapse through f's
+// content (CSS 2.1 §8.3.1).
+func hasOnlySelfCollapsingChildren(f *PhysicalFragment) bool {
+	for _, ch := range f.Children {
+		if !ch.Fragment.IsSelfCollapsing {
+			return false
+		}
 	}
-	if len(style.GetFilter()) > 0 {
-		return true
-	}
-	if len(style.GetBackdropFilter()) > 0 {
-		return true
-	}
-	if style.GetOpacity() < 1.0 {
-		return true
-	}
-	if len(style.GetTransforms()) > 0 {
-		return true
-	}
-	if cp := style.GetClipPath(); cp != nil && cp.Type != css.ClipPathNone {
-		return true
-	}
-	if m := style.GetMaskImage(); m != "" && m != "none" {
-		return true
-	}
-	if bm := style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
-		return true
-	}
-	if iso, ok := style.Get("isolation"); ok && iso == "isolate" {
-		return true
-	}
-	return false
+	return true
 }
 
 // isColumnSpannerChild reports whether child is a column spanner laid out by
