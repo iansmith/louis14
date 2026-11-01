@@ -268,94 +268,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Replaced elements (img, etc.) with auto inline/block size: derive from
-	// intrinsic dimensions and aspect ratio.
-	// CSS 2.1 §10.3.2 (replaced inline): inline-size = intrinsic width.
-	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
-	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
-	hasSizeContain := bla.style != nil && bla.style.ShouldApplySizeContainment()
-	isReplaced := bla.node.DOMNode != nil && IsReplacedElement(bla.node.DOMNode)
-	if isReplaced {
-		if hasSizeContain {
-			// CSS Contain 1 §4.2: under size containment, a replaced element's
-			// intrinsic dimensions are treated as 0. ComputeFragmentGeometry
-			// already collapses intrinsic-keyword widths (`min-content` /
-			// `max-content` / `fit-content`) to 0 via the ComputeMinMaxSizes
-			// short-circuit at min_max_sizing.go:99 (and applies `min-width`
-			// afterward). The only case still landing on parent-fill here is
-			// `width: auto`, which the geometry pass at fragment_geometry.go:666
-			// fills with the available size. Override that branch to 0; leave
-			// the geometry-resolved value alone for explicit / intrinsic-keyword
-			// widths so `min-width` / `max-width` clamps survive.
-			//
-			// Mirrors Blink's `LayoutReplaced::ComputeNaturalSizingInfo` contract
-			// (layout_replaced.cc, `DCHECK(!ShouldApplySizeContainment())` at
-			// SHA 4883d11fef): callers must short-circuit before computing
-			// natural dimensions when size containment applies.
-			widthIsAuto := isAutoOrUnsetInline(bla.style, wdm)
-			if widthIsAuto && !bla.space.IsFixedInlineSize {
-				contentInlineSize = 0
-				// Re-apply min-width if set, since the auto branch in
-				// ComputeFragmentGeometry chose available-size before any
-				// min-inline clamp.
-				minInline := ResolveMinInlineSize(bla.style, wdm, bla.space, geom).Float64()
-				if contentInlineSize < minInline {
-					contentInlineSize = minInline
-				}
-			}
-			if !hasExplicitBlock {
-				explicitBlockSize = 0
-				hasExplicitBlock = true
-			}
-		} else {
-			// Check if inline-size is explicitly set. ResolveInlineSize returns false
-			// for auto/unset, which is when we should use the intrinsic inline-size.
-			_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
-			if !explicitInlineOK && !bla.space.IsFixedInlineSize {
-				// CSS 2.1 §10.3.2 / CSS Sizing 4 §6.3: a replaced element with auto
-				// inline-size uses its intrinsic width as the USED width (computed by
-				// ComputeReplacedSize, which already applies §10.4 min/max and any
-				// aspect-ratio block->inline transfer). It OVERFLOWS its container rather
-				// than clamping to fit, so the geometry pass's available-fill value must
-				// be overridden whenever there is a real (positive) fill: a positive-but-
-				// too-small fill must not win, or an over-wide replaced element in a narrow
-				// (e.g. width:0) inline-block shrinks to a sliver instead of overflowing
-				// (LOU-337 / css-pseudo marker-content-012's `::before{display:inline-block;
-				// width:0;content:url(32px)}` reference).
-				//
-				// The fill is left untouched ONLY when the available inline-size collapsed
-				// to 0 because the containing block's inline size is indefinite (a
-				// max-content/min-content measurement pass) and no block constraint
-				// transfers. The test reads the space's available size, not the
-				// geometry's: a fit-content space shrinks an element with no intrinsic
-				// size (an <svg> with only attribute sizes) to 0 even when space is
-				// available (LOU-504, css-transforms skew-test1). Forcing the intrinsic
-				// there would make an auto-sized replaced element wrongly contribute its
-				// natural width to its container's intrinsic size (css-sizing
-				// svg-intrinsic-size-005: `<div width:max-content><svg width:100%>` stays 0,
-				// not 300). Mirrors Blink LayoutReplaced::ComputeReplacedLogicalWidth (SHA
-				// 4883d11fef).
-				inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-				if inlineSize > 0 {
-					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
-					blockConstraintTransfers := replacedBlockConstraintTransfersToInline(
-						bla.ctx, bla.node, bla.style, wdm, bla.space, geom)
-					hasAvailableInline := bla.space.AvailableSize.InlineSize.Float64()-geom.InlineBorderPadding() > 0
-					if hasAvailableInline || blockFixed || blockConstraintTransfers {
-						contentInlineSize = inlineSize
-					}
-				}
-			}
-			if !hasExplicitBlock {
-				_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-				if blockSize > 0 {
-					explicitBlockSize = blockSize
-					hasExplicitBlock = true
-				}
-			}
-		}
-	}
-
 	// fragmentsBorderPadding is the block border/padding of all fragments
 	// up to this one: cloned decorations repeat in every fragment, so the
 	// box's stitched block-size includes each copy. Mirrors Blink's
@@ -1142,7 +1054,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist;
 			// only their line boxes shorten around floats. So only BFC children
 			// have their available inline-size reduced by float exclusions.
-			childInlineForSpace := childAvailableInline - childMargins.InlineSum()
+			// A replaced child resolves its own margins out of the
+			// available inline-size, as Blink's every child does
+			// (ResolveInlineLengthInternal's kStretch, length_utils.cc:46-65
+			// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's other
+			// children take a margin-free available inline-size.
+			spaceMarginInlineSum := childMargins.InlineSum()
+			if child.IsReplaced() {
+				spaceMarginInlineSum = 0
+			}
+			childInlineForSpace := childAvailableInline - spaceMarginInlineSum
 			if isChildNewFC {
 				childInlineForSpace -= floatStartOff + floatEndOff
 			}
@@ -1189,7 +1110,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin+childBlockOffset, 0,
-								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
+								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, spaceMarginInlineSum)
 						}
 					}
 				}
@@ -1388,7 +1309,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							isPushedByFloats = true
 							floatStartOff, floatEndOff, childInlineForSpace = reQueryFloatsAfterDrop(
 								bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin+childBlockOffset, bfcBlockExtent,
-								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, childMargins.InlineSum())
+								bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, spaceMarginInlineSum)
 							// Re-layout at the opportunity with the new
 							// available size.
 							childSpace = newChildSpaceBuilder(childBlockOffset).Build()
@@ -1874,6 +1795,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			return bla.relayoutWithoutFragmentation()
 		}
 		finalBlockSize = max(0, finish.FragmentBlockSize-geom.BlockBorderPadding())
+	} else if bla.node.IsReplaced() {
+		// A replaced box's block-size is the one ComputeReplacedSize
+		// resolved, min/max constraints included: Blink lays it out at its
+		// initial fragment geometry (ComputeReplacedSizeInternal,
+		// length_utils.cc:1012-1229 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+		// so its content never resolves a min/max-content keyword again.
+		finalBlockSize = explicitBlockSize
+		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
 	} else {
 		finalBlockSize = intrinsicBlockSize
 		if hasExplicitBlock {
@@ -2042,7 +1971,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A replaced element is not
 	// laid out by Blink's block algorithm and never self-collapses.
 	result.IsSelfCollapsing = !bla.space.IsNewFormattingContext && !bla.space.BreakToken.IsBreakInside() &&
-		!isReplaced && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
+		!bla.node.IsReplaced() && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
 		!bla.containerBuilder.FoundColumnSpanner()
 
 	// The outgoing break token, built from the builder's break state
@@ -2348,6 +2277,12 @@ func (bla *BlockLayoutAlgorithm) addPositionedFloat(
 	return es, positioned, result.BreakToken
 }
 
+// nestedDocFragment wraps the result of laying out an embedded document.
+type nestedDocFragment struct {
+	fragment    *PhysicalFragment
+	rootOffsetX float64 // physical X offset of root within the iframe viewport
+}
+
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
 // document source. If so, fetches + lays out the nested document and returns
 // the root fragment and its X offset within the iframe viewport. Returns nil if not applicable.
@@ -2361,10 +2296,9 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	}
 
 	// Compute the content-box physical size for the nested viewport.
-	_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
 	physSize := ToPhysicalSize(LogicalSize{
 		InlineSize: contentInlineSize,
-		BlockSize:  blockSize,
+		BlockSize:  max(0, geom.BorderBoxSize.BlockSize-geom.BlockBorderPadding()),
 	}, wdm.WM)
 
 	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
@@ -2743,10 +2677,7 @@ func (bla *BlockLayoutAlgorithm) positionListMarkerWithoutLineBoxes(
 
 // isAutoOrUnsetInline reports whether the style's inline-size property
 // (`width` in horizontal writing modes, `height` in vertical) is `auto`,
-// the empty string, or genuinely unset. Used by the size-containment
-// path to distinguish "fill parent" (auto) from intrinsic-keyword or
-// explicit-length cases, where the geometry pass already produced the
-// correct value before this code re-evaluates it.
+// the empty string, or genuinely unset.
 func isAutoOrUnsetInline(style *css.Style, wdm WritingDirectionMode) bool {
 	if style == nil {
 		return true

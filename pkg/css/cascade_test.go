@@ -456,7 +456,11 @@ func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
 // values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
 // "Infinity", so without the math.IsInf guard width="Infinity" would become the
 // bogus CSS length "+Infpx" (CodeRabbit, PR #142); NaN and negatives are rejected
-// by the n >= 0 test, and unit/percent values are left for the intrinsic path.
+// by the n >= 0 test. Unit and percentage values map as the SVG <length> they
+// are (Blink's SVGSVGElement presentation-attribute mapping; Chrome 152 lays
+// out <svg width="100%" height="100%"> in a 50px-high max-content div at
+// 300x50, exactly as style="width:100%;height:100%" — css-sizing
+// svg-intrinsic-size-005 and its reference).
 func TestSVGLengthAttrToCSS(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -473,8 +477,11 @@ func TestSVGLengthAttrToCSS(t *testing.T) {
 		{"NaN", "", false},
 		{"1e400", "", false}, // overflows to +Inf via ErrRange
 		{"abc", "", false},
-		{"50%", "", false},
-		{"100px", "", false},
+		{"50%", "50%", true},
+		{"100px", "100px", true},
+		{"10em", "10em", true},
+		{"-5%", "", false},
+		{"%", "", false},
 	}
 	for _, c := range cases {
 		got, ok := svgLengthAttrToCSS(c.in)

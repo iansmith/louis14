@@ -232,7 +232,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
-			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+			SetInlineAutoBehavior(gridItemInlineAutoBehavior(stretchInline)).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
 			SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
@@ -360,7 +360,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// fragment uses the natural inline-size, but on the re-layout pass a
 			// now-definite block-size (e.g. a fixed row track + percentage height)
 			// must transfer through the intrinsic aspect ratio to the inline-size
-			// via block_layout's ComputeReplacedSize. Reusing the first-pass
+			// via ComputeReplacedSize in CalculateInitialFragmentGeometry. Reusing the first-pass
 			// natural width here (with IsFixedInlineSize=true) would defeat that —
 			// e.g. a 200×200 img with height:100% in a 100px grid area would stay
 			// 200px wide instead of becoming a 100px square (grid-in-table-cell-with-img).
@@ -378,7 +378,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+				SetInlineAutoBehavior(gridItemInlineAutoBehavior(stretchInline)).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
 				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{InlineSize: reLayoutInline, BlockSize: reLayoutBlock}).
@@ -1271,6 +1271,18 @@ func (gla *GridLayoutAlgorithm) getJustifySelf(itemStyle *css.Style) string {
 		return v
 	}
 	return "normal"
+}
+
+// gridItemInlineAutoBehavior is the behaviour of a grid item's auto
+// size along the grid's inline axis: stretch when its justify-self
+// stretches it, fit-content otherwise (a replaced item under `normal`
+// included). Mirrors the auto_behavior AxisEdgeFromItemPosition sets
+// (grid_item.cc:48, :120-141 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func gridItemInlineAutoBehavior(stretchInline bool) AutoSizeBehavior {
+	if stretchInline {
+		return AutoSizeBehaviorStretchImplicit
+	}
+	return AutoSizeBehaviorFitContent
 }
 
 // shouldStretchInline returns true when the grid item should be stretched
