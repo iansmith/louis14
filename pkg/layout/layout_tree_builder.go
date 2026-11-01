@@ -1041,8 +1041,8 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 		// background.
 		//
 		// Do NOT propagate position:relative/sticky to this anon block: the
-		// inline continuation's own fragments already carry the offset (see
-		// inline_layout.go RelativeOffset handling). Copying it here would
+		// inline continuation's own fragments are already shifted (see
+		// inline_layout.go ComputeRelativeOffsetForInline). Copying it here would
 		// double-offset the inline paint position (CSS 2.1 §9.4.3). Also skip
 		// background-color for positioned inlines — their span background
 		// fragment renders the inline-width background; copying here would

@@ -161,6 +161,14 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			rootOffsetX = le.viewport.width - rootWidth
 		}
 	}
+	// A position:relative root is shifted by the LayoutView when it adds the
+	// root against the initial containing block, as any parent does
+	// (BoxFragmentBuilder::AddChild, box_fragment_builder.cc:255-267 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	rootRelative := NewConverter(rootWDM, PhysicalSize{}).ToPhysicalOffset(
+		ComputeRelativeOffsetForBoxFragment(result.Fragment, rootWDM, geomLogicalToOld(rootSpace.AvailableSize)), PhysicalSize{})
+	rootOffsetX += rootRelative.X
+	rootOffsetY += rootRelative.Y
 	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, rootOffsetY)
 
 	// Phase 8: Apply sticky offsets. Louis14 is a static renderer (scroll=0);
@@ -551,15 +559,6 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		box.DOMIndex = lin.DOMIndex
 		lin.Box = box
 		// Propagate ::marker style and resolved content from layout input to box.
-	}
-
-	// CSS 2.1 §9.4.3: Apply position:relative offset from the fragment.
-	// The offset was computed during layout and stored on the fragment.
-	if !frag.RelativeOffset.Left.IsZero() || !frag.RelativeOffset.Top.IsZero() {
-		box.X += frag.RelativeOffset.LeftF64()
-		box.Y += frag.RelativeOffset.TopF64()
-		absX = box.X
-		absY = box.Y
 	}
 
 	// Content area origin = border-box + border + padding.

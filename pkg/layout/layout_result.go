@@ -546,12 +546,6 @@ type PhysicalFragment struct {
 	// 0 = LTR, 1 = RTL. Used by the renderer to draw RTL text in visual order.
 	BidiLevel int
 
-	// RelativeOffset is the CSS position:relative offset for this fragment.
-	// Computed during layout, applied at paint time (not baked into
-	// fragment tree positions). Zero for non-relative elements.
-	// Mirrors Blink's approach where relative offsets are paint properties.
-	RelativeOffset geometry.PhysicalOffset
-
 	// ClipContentToBorderBox forces the renderer to clip this fragment's
 	// children to its border-box, independent of the CSS `overflow`
 	// property. Set by the table layout algorithm on rowspan cells that

@@ -800,8 +800,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Section fragment state. When a row group (thead/tbody/tfoot) has
 	// position:relative or position:sticky its rows are wrapped in a
-	// section PhysicalBoxFragment so the group's RelativeOffset can
-	// attach to something at paint time. Non-positioned groups still
+	// section PhysicalBoxFragment so the group's relative offset can
+	// shift its rows together. Non-positioned groups still
 	// flatten into the table builder (unchanged behaviour).
 	//
 	// Mirrors Blink's NGTableSectionLayoutAlgorithm output — sections
@@ -920,7 +920,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// or sticky, OR that establishes a fixed containing block via
 		// transform/filter/perspective/will-change: open a section
 		// BoxFragmentBuilder to hold the group's rows. The section's
-		// RelativeOffset is computed by the main table builder's
+		// relative offset is applied by the main table builder's
 		// AddChild when flushSection emits the section fragment.
 		// Non-positioned groups continue to flatten into the table
 		// builder (legacy behaviour). A transform group is a fixed CB
@@ -1050,11 +1050,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellFrag.updateScrollableOverflow()
 			}
 
-			relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows)
-			rowBuilder.AddChild(cellFrag, LogicalOffset{
+			rowBuilder.AddChildWithRelativeOffset(cellFrag, LogicalOffset{
 				InlineOffset: cl.inlineOffset,
 				BlockOffset:  cl.cellBlockOffset,
-			})
+			}, relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows))
 
 			// Collect cell-OOF candidates in row-content-box coords.
 			// Inline axis: cell.inlineOffset is already row-relative.
@@ -1115,7 +1114,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// Mirrors Blink's NGOutOfFlowLayoutPart::Run invoked at the end of
 		// TableRowLayoutAlgorithm / TableSectionLayoutAlgorithm when the row
 		// or section is the CB. Restricted to relative/sticky to mirror the
-		// existing positioned-row handling (line ~868 for RelativeOffset and
+		// existing positioned-row handling (the row relative offset and
 		// line ~718 for section-builder creation).
 		rowPos := css.PositionStatic
 		if row.style != nil {
@@ -1183,31 +1182,29 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// CSS Tables + chromium bug 1227884: percent insets on a
 		// position:relative table-row resolve against the row GROUP's
 		// SPECIFIED block-size (tbody/thead/tfoot height), not the
-		// used/distributed size. Pre-compute the row's RelativeOffset
-		// here so the default AddChild auto-compute (which would use
-		// the table's available block-size) is skipped. Mirrors
-		// Blink's table_section_layout path for position:relative rows.
-		if row.style != nil && row.style.GetPosition() == css.PositionRelative && rowResult.Fragment.RelativeOffset == (geometry.PhysicalOffset{}) {
-			rowResult.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(row.style, wdm, LogicalSize{
-				InlineSize: totalInlineForRows,
-				BlockSize:  specifiedBlockSize(row.groupStyle, wdm),
-			})
-		}
+		// used/distributed size. Resolve the row's relative offset here
+		// instead of with the AddChild default (which would use the
+		// table's available block-size). Mirrors Blink's
+		// table_section_layout path for position:relative rows.
+		rowRelativeOffset := ComputeRelativeOffset(row.style, wdm, LogicalSize{
+			InlineSize: totalInlineForRows,
+			BlockSize:  specifiedBlockSize(row.groupStyle, wdm),
+		})
 
 		if sectionBuilder != nil {
 			// Row is inside a positioned row group: attach to the
 			// section with offset relative to the section's origin.
 			// The section fragment itself is added to the main table
 			// builder by flushSection, carrying its own block-offset.
-			sectionBuilder.AddChild(rowResult.Fragment, LogicalOffset{
+			sectionBuilder.AddChildWithRelativeOffset(rowResult.Fragment, LogicalOffset{
 				InlineOffset: 0,
 				BlockOffset:  blockOffset - sectionStartBlock,
-			})
+			}, rowRelativeOffset)
 		} else {
-			builder.AddChild(rowResult.Fragment, LogicalOffset{
+			builder.AddChildWithRelativeOffset(rowResult.Fragment, LogicalOffset{
 				InlineOffset: 0,
 				BlockOffset:  blockOffset,
-			})
+			}, rowRelativeOffset)
 		}
 
 		rowBaseline := measured[rowIdx].baseline
@@ -1316,14 +1313,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		// Attach directly to the table builder at the originating
 		// row's block-offset. Its relative offset still resolves against
-		// the originating row, the row Blink adds it through; addChildInternal
-		// keeps the table's child available size from re-resolving a zero
-		// (auto) result.
-		relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
-		builder.addChildInternal(cellFrag, LogicalOffset{
+		// the originating row, the row Blink adds it through, not the
+		// table's child available size.
+		builder.AddChildWithRelativeOffset(cellFrag, LogicalOffset{
 			InlineOffset: cl.inlineOffset,
 			BlockOffset:  p.blockOffset + cl.cellBlockOffset,
-		})
+		}, relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows))
 
 		// OOF candidates from rowspan cell content reference the
 		// originating row's final block-offset (same convention as
@@ -1814,23 +1809,27 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 	return Indefinite
 }
 
-// relativeCellOffset sets a position:relative authored cell's RelativeOffset
-// against its row: the row's inline size and specified block size (chromium
-// bug 1227884, WPT css-position/position-relative-010/013), overriding the
-// value the cell's own layout resolved against its Indefinite percentage
-// base. Mirrors Blink, where TableRowLayoutAlgorithm adds each cell
-// (table_row_layout_algorithm.cc:167) and BoxFragmentBuilder::AddResult
-// resolves the offset against the row's child_available_size
-// (box_fragment_builder.cc:262-267); the section gives the row an indefinite
-// available block size (table_section_layout_algorithm.cc:38-39, :76-77), all
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520. An anonymous unwrapped cell is
-// skipped: its node stands in for the anonymous cell's child, whose
-// containing block is that cell's indefinite block size.
-func relativeCellOffset(cellFrag *PhysicalFragment, cell tableCell, rowStyle *css.Style, wdm WritingDirectionMode, rowInlineSize float64) {
-	if cell.isAnonymous || cell.style == nil || cell.style.GetPosition() != css.PositionRelative {
-		return
+// relativeCellOffset returns a table cell's relative offset in the table's
+// logical coordinates. An authored cell resolves against its row: the
+// row's inline size and specified block size (chromium bug 1227884, WPT
+// css-position/position-relative-010/013). Mirrors Blink, where
+// TableRowLayoutAlgorithm adds each cell (table_row_layout_algorithm.cc:167)
+// and BoxFragmentBuilder::AddChild resolves the offset against the row's
+// child_available_size (box_fragment_builder.cc:262-267); the section gives
+// the row an indefinite available block size
+// (table_section_layout_algorithm.cc:38-39, :76-77), all @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520. An anonymous unwrapped cell's
+// node stands in for the anonymous cell's child, whose containing block is
+// that cell: its inline size and indefinite block size (the percentage
+// resolution size the cell's constraint space gives it).
+func relativeCellOffset(cellFrag *PhysicalFragment, cell tableCell, rowStyle *css.Style, wdm WritingDirectionMode, rowInlineSize float64) LogicalOffset {
+	if cell.isAnonymous {
+		return ComputeRelativeOffset(cellFrag.Style, wdm, LogicalSize{
+			InlineSize: NewLogicalFragment(wdm, cellFrag).InlineSize(),
+			BlockSize:  Indefinite,
+		})
 	}
-	cellFrag.RelativeOffset = computeRelativeOffsetForBoxFragment(cell.style, wdm, LogicalSize{
+	return ComputeRelativeOffset(cell.style, wdm, LogicalSize{
 		InlineSize: rowInlineSize,
 		BlockSize:  specifiedBlockSize(rowStyle, wdm),
 	})
@@ -2349,8 +2348,9 @@ func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDire
 //
 // The offset is relative to the table's content box, so captions sit inside
 // the table's border and padding; Blink places them in the table wrapper,
-// outside the table border. The caption's position:relative offset is applied
-// separately and is not folded into this offset.
+// outside the table border. AddChild shifts the caption by its
+// position:relative offset (box_fragment_builder.cc:255-267 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (tla *TableLayoutAlgorithm) addCaptionResult(builder *BoxFragmentBuilder, wdm WritingDirectionMode, cr captionResult, blockOffset *float64) {
 	*blockOffset += cr.margins.BlockStart
 	builder.AddChild(cr.result.Fragment, LogicalOffset{
