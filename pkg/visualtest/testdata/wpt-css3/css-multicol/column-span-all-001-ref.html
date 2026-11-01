@@ -5,21 +5,26 @@
   <meta charset="utf-8">
   <style>
     body { margin: 0; }
-    /* Reference layout matching column-span:all result:
-       - green block in col 1 (200px wide), 50px tall
-       - blue spanning bar (400px wide), 20px tall below green
-       - red block in col 1 (200px wide), 50px tall below blue */
-    .container { position: relative; width: 400px; height: 120px; }
-    .green { position: absolute; left: 0; top: 0; width: 200px; height: 50px; background: green; }
-    .blue  { position: absolute; left: 0; top: 50px; width: 400px; height: 20px; background: blue; }
-    .red   { position: absolute; left: 0; top: 70px; width: 200px; height: 50px; background: red; }
+    /* Local (non-upstream) reference. Geometry measured in Chrome 159
+       (getClientRects): each 50px column-content block before/after the
+       spanner is balanced across both 200px columns as 25px fragments;
+       the spanner sits between the two column rows; multicol is 70px tall. */
+    .container { position: relative; width: 400px; height: 70px; }
+    .container > div { position: absolute; }
+    .green { top: 0; height: 25px; width: 200px; background: green; }
+    .blue  { left: 0; top: 25px; width: 400px; height: 20px; background: blue; }
+    .red   { top: 45px; height: 25px; width: 200px; background: red; }
+    .c1 { left: 0; }
+    .c2 { left: 200px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="green"></div>
+    <div class="green c1"></div>
+    <div class="green c2"></div>
     <div class="blue"></div>
-    <div class="red"></div>
+    <div class="red c1"></div>
+    <div class="red c2"></div>
   </div>
 </body>
 </html>
