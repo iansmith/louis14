@@ -58,7 +58,12 @@ func sfntFaceAscenderDescender(hhea, os2 []byte) (ascender, descender int) {
 // UpdateFallbackMetricsAndScale takes (no overrides, no subpixel ascent/
 // descent, harfbuzz_font_data.h:62-65 @ the same SHA):
 // SkScalarRoundToScalar of the SkFont metrics, the face ascender/descender
-// scaled by size / unitsPerEm. Not ported: the VDMX table (read only under
+// scaled by size / unitsPerEm. Skia scales by FreeType's raw units_per_EM
+// (SkTypeface_FreeType::GetUnitsPerEm, src/ports/SkFontHost_FreeType.cpp:
+// 855-867, Skia @ c0c46ee9f938fa32c086bea666199686ad7cf26e), not HarfBuzz's
+// clamped get_upem; the two agree because t is only read when it loaded,
+// and FreeType refuses a unitsPerEm outside the range HarfBuzz clamps
+// (typeface.loaded). Not ported: the VDMX table (read only under
 // full/normal hinting, which louis14 does not do), the Linux subpixel-
 // positioning descent borrow, and the Mac Times/Helvetica/Courier ascent hack.
 func ascentDescentWithHacks(t *typeface, size float64) (ascent, descent float64) {

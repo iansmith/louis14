@@ -45,14 +45,25 @@ func (h harfBuzzFace) UnitsPerEmFromHeadTable() int {
 //     (FontAscentFromFont/FontDescentFromFont), whose source differs
 //     (Liberation Serif 20px: 18 there, 22 here and in Chrome).
 //
+// A typeface that did not load (typeface.loaded: its tables do not parse,
+// or FreeType would refuse it) has no usable tables, but Blink always has a
+// font's FontMetrics there, so the fallback is louis14's FontMetrics height,
+// lround(ascent) + lround(descent) of the font as louis14 lays it out, with
+// no vertical metrics.
+//
 // Blink re-scales one shared OpenTypeVerticalData in place; louis14 returns a
 // scaled copy whose advance slices are shared read-only, so concurrent
 // callers at different sizes cannot race.
 func (h harfBuzzFace) VerticalData() openTypeVerticalData {
 	p := h.platformData
 	t := typefaceForPath(p.fontPath)
+	if !t.loaded {
+		var v openTypeVerticalData
+		v.SetScaleAndFallbackMetrics(0, int(FontAscentFromFont(p.size, p.fontPath, nil)+FontDescentFromFont(p.size, p.fontPath, nil)))
+		return v
+	}
 	v := *t.vertical
 	ascent, descent := ascentDescentWithHacks(t, p.size)
-	v.SetScaleAndFallbackMetrics(p.size/float64(h.UnitsPerEmFromHeadTable()), int(ascent+descent))
+	v.SetScaleAndFallbackMetrics(p.size/float64(t.upem), int(ascent+descent))
 	return v
 }
