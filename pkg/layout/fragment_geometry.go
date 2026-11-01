@@ -665,6 +665,16 @@ func CalculateInitialFragmentGeometry(
 	// PercentageResolutionInlineSize which is never axis-swapped for
 	// orthogonal children (unlike PercentageResolutionSize which gets
 	// swapped and may put the CB's inline-size into the BlockSize field).
+	// An anonymous fragment (a column box, laid out on the multicol node
+	// itself) has no borders, padding or scrollbars (ComputeBorders,
+	// ComputePadding, ComputeScrollbars, length_utils.cc:1487, :1518,
+	// :1717), its inline-size is the available size (:606) and its
+	// block-size is intrinsic (ComputeBlockSizeForFragment, :921 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): none of the node's own
+	// sizing properties apply.
+	if space.IsAnonymous {
+		return FragmentGeometry{BorderBoxSize: LogicalSize{InlineSize: space.AvailableSize.InlineSize.Float64(), BlockSize: Indefinite}}
+	}
 	pctBase := space.PercentageResolutionInlineSize
 	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
@@ -687,11 +697,10 @@ func CalculateInitialFragmentGeometry(
 	}
 	inlineVal, _ := style.Get(inlineProp)
 
-	if space.IsFixedInlineSize || space.IsAnonymous {
-		// Parent (e.g. flex) predetermined the size, or the fragment is
-		// anonymous (a column): AvailableSize is the border-box
-		// (ComputeInlineSizeForFragment, length_utils.cc:606-608 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if space.IsFixedInlineSize {
+		// Parent (e.g. flex) predetermined the size: AvailableSize is the
+		// border-box (ComputeInlineSizeForFragment, length_utils.cc:606-608
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		borderBoxInline = space.AvailableSize.InlineSize.Float64()
 	} else if IsIntrinsicKeyword(inlineVal) {
 		minMax := ComputeMinMaxSizes(ctx, node, space)

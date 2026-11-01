@@ -310,6 +310,14 @@ func (b *BoxFragmentBuilder) GetBoxType() BoxType {
 	return BoxTypeNormal
 }
 
+// IsFragmentainerBoxType reports whether the fragment is a fragmentainer
+// (a column box; louis14 has no pages). Mirrors Blink's
+// FragmentBuilder::IsFragmentainerBoxType (fragment_builder.h:93-97 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) IsFragmentainerBoxType() bool {
+	return b.GetBoxType() == BoxTypeColumn
+}
+
 // SetBoxType sets the type of box the fragment is. Mirrors Blink's
 // FragmentBuilder::SetBoxType.
 func (b *BoxFragmentBuilder) SetBoxType(t BoxType) {
@@ -1065,9 +1073,13 @@ func (b *BoxFragmentBuilder) isFixedContainer() bool {
 // (fragment_builder.cc:1108-1143 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for box fragments; louis14
 // inline boxes are not fragments that carry OOF data, so the
-// inline-container branches are not ported.
+// inline-container branches are not ported. A column box, which carries
+// the multicol's node, is skipped: Blink records it (its layout object is
+// the multicol), but louis14 resolves a fixedpos containing block through
+// that node's own fragments (GetContainingBlockInfo), which a column box
+// is not one of, so the multicol fragment is recorded one level up.
 func (b *BoxFragmentBuilder) AdjustFixedposContainerInfo(boxFragment *PhysicalFragment, fixedposContainingBlockFragment **PhysicalFragment) {
-	if boxFragment == nil || *fixedposContainingBlockFragment != nil || boxFragment.LayoutNode == nil {
+	if boxFragment == nil || *fixedposContainingBlockFragment != nil || boxFragment.LayoutNode == nil || boxFragment.IsFragmentainerBox() {
 		return
 	}
 	if boxFragment.LayoutNode.IsFixedContainer() {
@@ -1554,7 +1566,7 @@ func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 			bsff += border.BlockStart + padding.BlockStart
 		}
 	}
-	if b.boxType == BoxTypeColumn {
+	if b.IsFragmentainerBoxType() {
 		return bsff
 	}
 	if clipsBlockAxisOverflow(b.style, b.node, b.wdm) || b.isBlockSizeForFragmentationClamped {
@@ -1700,12 +1712,11 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 // BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 builds the outgoing
 // break token after Build, so the algorithms call this once result carries
-// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart;
-// IsFragmentainerBoxType is a column box type here (louis14 has no pages).
+// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart.
 func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
 	space := b.space
 	if space == nil || result.BreakToken == nil || result.BreakToken.IsAtBlockEnd ||
-		!space.IsInsideBalancedColumns || b.GetBoxType() == BoxTypeColumn || b.style == nil ||
+		!space.IsInsideBalancedColumns || b.IsFragmentainerBoxType() || b.style == nil ||
 		!IsAvoidBreakValue(*space, b.style.GetBreakInside()) || space.IsInsideBreakAvoid ||
 		!space.HasKnownFragmentainerBlockSize() {
 		return

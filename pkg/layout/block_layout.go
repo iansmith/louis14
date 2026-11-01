@@ -206,9 +206,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// (positionOrPropagateListMarker), or top-aligned when the list item
 	// produced no line boxes (positionListMarkerWithoutLineBoxes). Skipped for
 	// inside markers (ListMarkerOccupiesWholeLine) — those flow through the
-	// inline path as ordinary inline-level boxes.
+	// inline path as ordinary inline-level boxes. A column box (anonymous
+	// space) is laid out on a multicol list item itself; the multicol places
+	// the marker, not its columns (ShouldPlaceUnpositionedListMarker,
+	// block_layout_algorithm.h:470-482 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if markerNode := bla.node.ListMarkerBlockNodeIfListItem(); markerNode != nil &&
-		!markerNode.ListMarkerOccupiesWholeLine() {
+		!bla.space.IsAnonymous && !markerNode.ListMarkerOccupiesWholeLine() {
 		incoming := bla.space.BreakToken
 		if incoming == nil || incoming.HasUnpositionedListMarker {
 			bla.containerBuilder.SetUnpositionedListMarker(&UnpositionedListMarker{
@@ -245,7 +249,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// still laid out unfragmented via the parent's gate (which compares
 	// full writing modes) but its fragment goes untagged, so it
 	// contributes no balancing floor.
-	if bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
+	// A column box (anonymous space) is never monolithic, though it is
+	// laid out on the multicol node (fragmentation_utils.cc:422-423).
+	if !bla.space.IsAnonymous && bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
 		bla.containerBuilder.SetIsMonolithic(true)
 	}
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
@@ -1284,8 +1290,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// would block — so descendants at any depth see the flag.
 				// Mirrors Blink's ShouldPreventColumnSpannerDescendants walk in
 				// DoesAncestryAllowColumnSpanner (layout_box.cc:2987-3001).
+				// The multicol itself (the column box's node) is not one of
+				// those ancestors.
 				if bla.space.ColumnSpannerDescendantsBlocked ||
-					shouldPreventColumnSpannerDescendants(bla.node) {
+					(!bla.containerBuilder.IsFragmentainerBoxType() && shouldPreventColumnSpannerDescendants(bla.node)) {
 					b.SetColumnSpannerDescendantsBlocked(true)
 				}
 
@@ -2570,13 +2578,16 @@ func hasOnlySelfCollapsingChildren(f *PhysicalFragment) bool {
 // the enclosing multicol: column-span:all on a valid spanner inside a column
 // fragmentation context whose ancestry allows spanners. Mirrors Blink's
 // IsColumnSpanAll() && IsInColumnBfc() && HasBlockFragmentation()
-// (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa).
+// (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa). A column box is
+// laid out on the multicol node itself, whose own formatting context does
+// not block its spanners: Blink checks only the ancestors between the
+// spanner and the multicol (LayoutBox::IsValidColumnSpannerInTree).
 func (bla *BlockLayoutAlgorithm) isColumnSpannerChild(child *LayoutInputNode) bool {
 	return bla.space.HasBlockFragmentation &&
 		bla.space.BlockFragmentationType == FragmentColumn &&
 		isColumnSpanAll(child) &&
 		!bla.space.ColumnSpannerDescendantsBlocked &&
-		!shouldPreventColumnSpannerDescendants(bla.node)
+		(bla.containerBuilder.IsFragmentainerBoxType() || !shouldPreventColumnSpannerDescendants(bla.node))
 }
 
 // isColumnSpanAll reports whether n is a column-span:all box that may span

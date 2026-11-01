@@ -199,8 +199,12 @@ func (p *OutOfFlowLayoutPart) Run() []OutOfFlowCandidate {
 // OutOfFlowLayoutPart::IsContainingBlockForCandidate
 // (out_of_flow_layout_part.cc:2746-2791 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an inline containing block is
-// handled by LayoutCandidates, and fragmentainers never construct one.
+// handled by LayoutCandidates. A column box carries the multicol's node but
+// is never a containing block (:2757-2759).
 func (p *OutOfFlowLayoutPart) IsContainingBlockForCandidate(candidate OutOfFlowCandidate) bool {
+	if p.containerBuilder.IsFragmentainerBoxType() {
+		return false
+	}
 	if candidate.IsFixedPosition {
 		return p.isFixedContainer
 	}
@@ -852,7 +856,7 @@ func (p *fragmentationContextOOFPart) multicolFragments(pending map[*LayoutInput
 			if ch.Fragment == nil {
 				continue
 			}
-			if n := ch.Fragment.LayoutNode; n != nil && pending[n] != nil {
+			if n := ch.Fragment.LayoutNode; n != nil && pending[n] != nil && ch.Fragment.isFragmentOf(n) {
 				i, ok := index[n]
 				if !ok {
 					i = len(multicols)
@@ -1110,7 +1114,7 @@ func walkFragmentsForNode(frag *PhysicalFragment, node *LayoutInputNode, parentO
 			InlineOffset: parentOffset.InlineOffset + ch.Offset.LeftF64(),
 			BlockOffset:  parentOffset.BlockOffset + ch.Offset.TopF64(),
 		}
-		if ch.Fragment.LayoutNode == node {
+		if ch.Fragment.isFragmentOf(node) {
 			visit(ch.Fragment, off)
 			continue
 		}
