@@ -391,18 +391,6 @@ func ClampedToValidFragmentainerCapacityForBuilder(builder *BoxFragmentBuilder, 
 	return ClampedToValidFragmentainerCapacity(length)
 }
 
-// shouldCloneBoxEndDecorations reports whether a box repeats its block-end
-// border/padding in this fragment: cloned block-start decorations make the
-// block-end ones cloned too, unless the fragment is known to be the box's
-// last (known to fit), and only when it is fragmented outside the initial
-// column-balancing pass. Mirrors SetupFragmentBuilderForFragmentation
-// (fragmentation_utils.cc:440-443, :450-451, :484-495 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func shouldCloneBoxEndDecorations(space ConstraintSpace, cloneBoxStartDecorations, isKnownToFitInFragmentainer bool) bool {
-	return space.HasBlockFragmentation && !space.IsInitialColumnBalancingPass &&
-		cloneBoxStartDecorations && !isKnownToFitInFragmentainer
-}
-
 // hasCloneBoxDecorationBreak reports whether style has
 // box-decoration-break:clone (Blink: Style().BoxDecorationBreak() ==
 // EBoxDecorationBreak::kClone); a builder without a style slices.
@@ -1097,6 +1085,116 @@ func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, fragmentsT
 	return out
 }
 
-// SetupFragmentBuilderForFragmentation: RED stub (LOU-511).
-func SetupFragmentBuilderForFragmentation(space ConstraintSpace, node *LayoutInputNode, previousBreakToken *BlockBreakToken, builder *BoxFragmentBuilder) {
+// SetupFragmentBuilderForFragmentation prepares the builder of a node laid
+// out in a fragmentation context, or resumed after a break inside it:
+// whether its fragment is monolithic (fragmentation forced off at its first
+// fragment) and the first for the node; whether it clones its box
+// decorations; whether what is left of it is known to fit in the
+// fragmentainer — then a first fragment must stay, and requires content
+// before breaking, and the block-end decorations are not cloned; whether a
+// resumed slice fragment drops its block-start edge; and, in the initial
+// column balancing pass, its block edges as unbreakable floors. Mirrors
+// Blink's SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:
+// 399-520 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which every
+// LayoutAlgorithm runs from its constructor (layout_algorithm.h:91-95).
+//
+// louis14 differences: the builder is not monolithic by default, so the
+// monolithic bit is only set here, never cleared (a monolithic node is
+// tagged by its algorithm); ConstraintSpace has no IsAnonymous, and a
+// column box (the only anonymous fragmentation space) stands in; there are
+// no tables, sequence numbers on the builder, or
+// UpdateBorderPaddingForClonedBoxDecorations — the cloned edges of earlier
+// fragments go into the block-size probe (maxBlockSizeForFragment); and
+// ShouldPreventBreakBeforeBlockEndDecorations is
+// ShouldCloneBoxEndDecorations at its reader (FinishFragmentation).
+// node is unused (Blink reads it for IsTable and the probe) and kept for
+// the shared signature. It returns whether the fragment clones its
+// block-start decorations (clone_box_start_decorations), decided from the
+// full edges.
+func SetupFragmentBuilderForFragmentation(space ConstraintSpace, node *LayoutInputNode, previousBreakToken *BlockBreakToken, builder *BoxFragmentBuilder) bool {
+	isAnonymous := builder.GetBoxType() == BoxTypeColumn
+	if !isAnonymous && space.IsBlockFragmentationForcedOff && !previousBreakToken.IsBreakInside() {
+		builder.SetIsMonolithic(true)
+	}
+	builder.SetIsFirstForNode(!previousBreakToken.IsBreakInside())
+
+	spaceLeft := FragmentainerSpaceLeft(builder, false)
+	cloneBoxStartDecorations := ShouldCloneBlockStartBorderPadding(builder)
+	cloneBoxEndDecorations := cloneBoxStartDecorations
+
+	if space.HasBlockFragmentation && !isAnonymous && !space.IsInitialColumnBalancingPass {
+		requiresContentBeforeBreaking := space.RequiresContentBeforeBreaking
+		// Probe the block-size with an "infinite" intrinsic block-size: if
+		// the content does not affect it, how much more space the node needs
+		// is known before layout (:455-490).
+		if geom := builder.InitialFragmentGeometry(); geom != nil && geom.BorderBoxSize.InlineSize != Indefinite &&
+			space.HasKnownFragmentainerBlockSize() {
+			maxBlockSize := maxBlockSizeForFragment(space, builder, cloneBoxStartDecorations)
+			if maxBlockSize != Indefinite &&
+				maxBlockSize-previouslyConsumedBlockSize(previousBreakToken) <= spaceLeft {
+				builder.SetIsKnownToFitInFragmentainer(true)
+				cloneBoxEndDecorations = false
+				if builder.MustStayInCurrentFragmentainer() {
+					requiresContentBeforeBreaking = true
+				}
+			}
+		}
+		if cloneBoxEndDecorations {
+			builder.SetShouldCloneBoxEndDecorations(true)
+		}
+		builder.SetRequiresContentBeforeBreaking(requiresContentBeforeBreaking)
+	}
+
+	// A resumed slice fragment omits its block-start border and padding
+	// (:504-513).
+	if previousBreakToken.IsBreakInside() && !cloneBoxStartDecorations {
+		builder.ClearBorderScrollbarPaddingBlockStart()
+	}
+
+	if space.IsInitialColumnBalancingPass {
+		unbreakable := builder.BorderScrollbarPadding()
+		builder.PropagateTallestUnbreakableBlockSize(unbreakable.BlockStart)
+		builder.PropagateTallestUnbreakableBlockSize(unbreakable.BlockEnd)
+	}
+	return cloneBoxStartDecorations
+}
+
+// clonedEdgesOfPreviousFragments is the block border and padding that the
+// fragments before the one resuming previousBreakToken repeated under
+// box-decoration-break:clone, each carrying borderPadding. Mirrors the
+// accumulation of Blink's UpdateBorderPaddingForClonedBoxDecorations
+// (box_fragment_builder.cc:88-99 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func clonedEdgesOfPreviousFragments(previousBreakToken *BlockBreakToken, borderPadding float64) float64 {
+	if !previousBreakToken.IsBreakInside() {
+		return 0
+	}
+	return float64(previousBreakToken.SequenceNumber+1) * borderPadding
+}
+
+// maxBlockSizeForFragment is the border-box block-size of all the node's
+// fragments resolved with an "infinite" intrinsic block-size: its definite
+// block-size, else max(max-block-size, min-block-size) plus its block
+// border and padding; Indefinite when only content could size it. With
+// cloned decorations the edges of every earlier fragment count too. Mirrors
+// the ComputeBlockSizeForFragment(space, node, builder->BorderPadding(),
+// LayoutUnit::Max(), ...) probe of SetupFragmentBuilderForFragmentation
+// (fragmentation_utils.cc:466-468 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with the edges of
+// UpdateBorderPaddingForClonedBoxDecorations (:444-449).
+func maxBlockSizeForFragment(space ConstraintSpace, builder *BoxFragmentBuilder, cloneBoxStartDecorations bool) float64 {
+	geom := *builder.InitialFragmentGeometry()
+	borderPadding := geom.BlockBorderPadding()
+	clonedEdges := 0.0
+	if cloneBoxStartDecorations {
+		clonedEdges = clonedEdgesOfPreviousFragments(builder.PreviousBreakToken(), borderPadding)
+	}
+	if geom.BorderBoxSize.BlockSize != Indefinite {
+		return geom.BorderBoxSize.BlockSize + clonedEdges
+	}
+	maxBlock, ok := ResolveMaxBlockSize(builder.Style(), space.WritingDirection, space, geom)
+	if !ok {
+		return Indefinite
+	}
+	minBlock := ResolveMinBlockSize(builder.Style(), space.WritingDirection, space, geom)
+	return max(maxBlock.Float64(), minBlock.Float64()) + borderPadding + clonedEdges
 }

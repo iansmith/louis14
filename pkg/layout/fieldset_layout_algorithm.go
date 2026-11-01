@@ -153,11 +153,10 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 	fla.containerBuilder.SetConstraintSpace(&fla.space)
 	fla.containerBuilder.SetInitialFragmentGeometry(&builderGeom)
 	fla.containerBuilder.PropagateSpaceShortage(fla.relayoutSpaceShortage)
-	fla.containerBuilder.SetIsFirstForNode(!fla.space.BreakToken.IsBreakInside())
-	includeBlockStart := ShouldIncludeBlockStartBorderPadding(fla.containerBuilder)
-	if !includeBlockStart {
-		fla.containerBuilder.ClearBorderScrollbarPaddingBlockStart()
-	}
+	// LayoutAlgorithm constructor → SetupFragmentBuilderForFragmentation
+	// (layout_algorithm.h:91-95 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	cloneBoxStartDecorations := SetupFragmentBuilderForFragmentation(fla.space, fla.node, fla.space.BreakToken, fla.containerBuilder)
+	includeBlockStart := !fla.space.BreakToken.IsBreakInside() || cloneBoxStartDecorations
 	fla.borders = builderGeom.Border
 	fla.fragmentainerOffsetFor = FragmentainerOffset(fla.containerBuilder, true)
 	if fla.node.IsMonolithic(fla.space.IsOrthogonalWritingModeRoot) {

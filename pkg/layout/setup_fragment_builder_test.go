@@ -119,8 +119,8 @@ func TestSetupFragmentBuilderForFragmentation_InheritsRequiresContent(t *testing
 
 // TestSetupFragmentBuilderForFragmentation_InitialBalancingPass: the
 // initial column balancing pass knows no fragmentainer block-size, so
-// nothing is known to fit (:452), and the box's block edges are unbreakable
-// floors for the column block-size (:512-516).
+// nothing is known to fit (:451-452), and the box's block edges are unbreakable
+// floors for the column block-size (:515-519).
 func TestSetupFragmentBuilderForFragmentation_InitialBalancingPass(t *testing.T) {
 	space, node, builder := setupFragmentBuilderFixture(t, 0, nil, func(b *ConstraintSpaceBuilder) {
 		b.SetIsInitialColumnBalancingPass(true)
