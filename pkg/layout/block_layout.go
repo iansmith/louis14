@@ -2306,14 +2306,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// fragments has the geometry — resolve here when this block is
 		// non-anonymous (anonymous blocks pass through to the parent which
 		// walks transparently into them via ComputeInlineContainerGeometry).
-		var inlineCBCandidates, regularCandidates []OutOfFlowCandidate
-		for _, c := range builder.outOfFlowCandidates {
-			if c.InlineContainer != nil {
-				inlineCBCandidates = append(inlineCBCandidates, c)
-			} else {
-				regularCandidates = append(regularCandidates, c)
-			}
-		}
+		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
 
 		if len(inlineCBCandidates) > 0 {
 			if bla.node.IsAnonymous() {
@@ -2322,45 +2315,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// (including a block-in-inline split's sibling anon blocks).
 				propagatedOOF = append(propagatedOOF, inlineCBCandidates...)
 			} else {
-				blockContentPhys := ToPhysicalSize(LogicalSize{
-					InlineSize: contentInlineSize,
-					BlockSize:  finalBlockSize,
-				}, wdm.WM)
-				for _, cand := range inlineCBCandidates {
-					inlineGeom := ComputeInlineContainerGeometry(
-						builder.children,
-						cand.InlineContainer,
-						wdm,
-						blockContentPhys,
-					)
-					if inlineGeom == nil {
-						// Inline produced no line-box fragments in this block.
-						// CSS 2.1 §9.4.2 suppresses a line box whose only content
-						// is OOF items (e.g. <span pos:relative><div pos:abs/></span>
-						// with no text). In that case the inline has no geometry
-						// to derive a CB from, so fall through to normal
-						// non-inline CB handling: clear InlineContainer and
-						// propagate as a regular candidate so an enclosing
-						// positioned ancestor (or the ICB) can resolve it
-						// against its own content box.
-						cand.InlineContainer = nil
-						regularCandidates = append(regularCandidates, cand)
-						continue
-					}
-					cbSize, cbOriginLogical := inlineGeom.InlineCBLogical(wdm, blockContentPhys)
-					oofPart := &OutOfFlowLayoutPart{
-						ctx:                    bla.ctx,
-						containingBlockWDM:     wdm,
-						containingBlockSize:    cbSize,
-						containingBlockPadding: LogicalEdges{},
-						geom:                   geom,
-						resolvesFixed:          false,
-						cbOriginInBuilder:      cbOriginLogical,
-					}
-					if extra := oofPart.LayoutCandidates([]OutOfFlowCandidate{cand}, builder); len(extra) > 0 {
-						propagatedOOF = append(propagatedOOF, extra...)
-					}
-				}
+				unresolved, extra := layoutInlineContainingBlockCandidates(bla.ctx, builder, wdm,
+					LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, geom, inlineCBCandidates)
+				regularCandidates = append(regularCandidates, unresolved...)
+				propagatedOOF = append(propagatedOOF, extra...)
 			}
 		}
 
@@ -2936,6 +2894,60 @@ func PropagateOOFCandidates(
 			nil,
 		)
 	}
+}
+
+// splitInlineContainingBlockCandidates splits candidates into those whose
+// containing block is an inline and the others.
+func splitInlineContainingBlockCandidates(candidates []OutOfFlowCandidate) (inlineCB, regular []OutOfFlowCandidate) {
+	for _, c := range candidates {
+		if c.InlineContainer != nil {
+			inlineCB = append(inlineCB, c)
+		} else {
+			regular = append(regular, c)
+		}
+	}
+	return inlineCB, regular
+}
+
+// layoutInlineContainingBlockCandidates lays out the candidates whose
+// containing block is an inline (CSS 2.1 §10.1.4) against the inline's
+// first/last-line fragment union rect, found in the builder's children. It
+// returns the candidates whose inline produced no line-box fragments here
+// (their InlineContainer cleared, to resolve as regular candidates) and the
+// fixed descendants the laid-out ones surfaced. Mirrors the inline branch
+// of Blink's IsContainingBlockForCandidate (out_of_flow_layout_part.cc:
+// 2780-2788) with ComputeInlineContainingBlocks (:916-941) @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func layoutInlineContainingBlockCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder, wdm WritingDirectionMode, contentSize LogicalSize, geom FragmentGeometry, candidates []OutOfFlowCandidate) (unresolved, propagated []OutOfFlowCandidate) {
+	blockContentPhys := ToPhysicalSize(contentSize, wdm.WM)
+	for _, cand := range candidates {
+		inlineGeom := ComputeInlineContainerGeometry(builder.children, cand.InlineContainer, wdm, blockContentPhys)
+		if inlineGeom == nil {
+			// Inline produced no line-box fragments in this block. CSS 2.1
+			// §9.4.2 suppresses a line box whose only content is OOF items
+			// (e.g. <span pos:relative><div pos:abs/></span> with no text).
+			// In that case the inline has no geometry to derive a CB from, so
+			// fall through to normal non-inline CB handling: clear
+			// InlineContainer and propagate as a regular candidate so an
+			// enclosing positioned ancestor (or the ICB) can resolve it
+			// against its own content box.
+			cand.InlineContainer = nil
+			unresolved = append(unresolved, cand)
+			continue
+		}
+		cbSize, cbOriginLogical := inlineGeom.InlineCBLogical(wdm, blockContentPhys)
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                    ctx,
+			containingBlockWDM:     wdm,
+			containingBlockSize:    cbSize,
+			containingBlockPadding: LogicalEdges{},
+			geom:                   geom,
+			resolvesFixed:          false,
+			cbOriginInBuilder:      cbOriginLogical,
+		}
+		propagated = append(propagated, oofPart.LayoutCandidates([]OutOfFlowCandidate{cand}, builder)...)
+	}
+	return unresolved, propagated
 }
 
 // layoutFloat handles layout and positioning of a float child within the
