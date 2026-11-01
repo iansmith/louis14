@@ -822,15 +822,13 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 			lvl := itemsData.RuneLevels[r]
 			if lvl != currentLevel {
 				newItems = append(newItems, &InlineItem{
-					Type:            InlineItemText,
-					StartOffset:     byteAtRune[runStart],
-					EndOffset:       byteAtRune[r],
-					Node:            item.Node,
-					Style:           item.Style,
-					BidiLevel:       currentLevel,
-					ParagraphLevel:  item.ParagraphLevel,
-					IsFirstFragment: item.IsFirstFragment,
-					IsLastFragment:  item.IsLastFragment,
+					Type:           InlineItemText,
+					StartOffset:    byteAtRune[runStart],
+					EndOffset:      byteAtRune[r],
+					Node:           item.Node,
+					Style:          item.Style,
+					BidiLevel:      currentLevel,
+					ParagraphLevel: item.ParagraphLevel,
 
 					EnclosingPaintGroup: item.EnclosingPaintGroup,
 				})
@@ -840,15 +838,13 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 		}
 
 		newItems = append(newItems, &InlineItem{
-			Type:            InlineItemText,
-			StartOffset:     byteAtRune[runStart],
-			EndOffset:       byteAtRune[endRune],
-			Node:            item.Node,
-			Style:           item.Style,
-			BidiLevel:       currentLevel,
-			ParagraphLevel:  item.ParagraphLevel,
-			IsFirstFragment: item.IsFirstFragment,
-			IsLastFragment:  item.IsLastFragment,
+			Type:           InlineItemText,
+			StartOffset:    byteAtRune[runStart],
+			EndOffset:      byteAtRune[endRune],
+			Node:           item.Node,
+			Style:          item.Style,
+			BidiLevel:      currentLevel,
+			ParagraphLevel: item.ParagraphLevel,
 
 			EnclosingPaintGroup: item.EnclosingPaintGroup,
 		})

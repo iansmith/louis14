@@ -673,7 +673,19 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
 	var line LineInfo
+	// The max-content of each block-in-inline, measured with its min.
+	blockInInlineMax := map[*InlineItem]float64{}
 	for minLB.NextLine(&line) {
+		if line.IsBlockInInline {
+			// A block-in-inline line contributes the block's own
+			// min-content (LineBreaker::HandleBlockInInline →
+			// ComputeMinMaxContentSizeForBlockChild, inline/
+			// line_breaker.cc:3293-3296 @ a9f50e522efa).
+			min, max := childInlineContribution(ctx, line.Results[0].Item.LayoutNode, space, blockForPct, false)
+			blockInInlineMax[line.Results[0].Item] = max
+			minContent = math.Max(minContent, min)
+			continue
+		}
 		if line.Width > minContent {
 			minContent = line.Width
 		}
@@ -700,6 +712,10 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	for maxLB.NextLine(&line) {
+		if line.IsBlockInInline {
+			maxContent = math.Max(maxContent, blockInInlineMax[line.Results[0].Item])
+			continue
+		}
 		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, blockForPct), line.Width, maxContent)
 	}
 

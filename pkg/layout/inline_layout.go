@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -251,63 +252,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	bfcContainerInlineSize float64,
 	startItemIndex int,
 	startTextOffset int,
+	segment inlineSegment,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *BlockBreakToken) {
-	// Phase 1: Collect inline items from the layout subtree.
-	itemsData := CollectInlines(bla.node)
-
+	itemsData, baseDir, isPlaintext := bla.prepareInlineItems(wdm)
 	if len(itemsData.Items) == 0 {
-		return 0, exclusionSpace, 0, 0, nil
+		return segment.blockStart, exclusionSpace, 0, 0, nil
 	}
-
-	// Phase 1a: (removed) ::marker pseudo-element for inside markers is now
-	// handled as a proper layout node child of the list item — the marker
-	// text flows through the normal inline pipeline via the ::marker inline
-	// element child created in LayoutTreeBuilder.createMarkerPseudoElement.
-
-	// Phase 1b: Block-level bidi control injection.
-	// CSS Writing Modes §2.2: When a block container has unicode-bidi set
-	// to embed, isolate, bidi-override, isolate-override, or plaintext,
-	// the corresponding Unicode bidi control characters must be injected
-	// around its inline content so the UAX#9 algorithm resolves levels
-	// correctly. This mirrors Blink's InlineItemsBuilder which checks the
-	// block container's own unicode-bidi before processing children.
-	//
-	// The inline-level injection (in collectInlinesRecursive via
-	// injectBidiControlChars) only handles inline elements. Block
-	// containers need their own injection here.
-	injectBlockBidiControls(bla.style, itemsData)
-
-	// Phase 1b: Bidi pipeline (mirrors Blink's BidiParagraph + SegmentText).
-	// Uses a pure-Go UAX#9 resolver (the Go bidi package has a neutral
-	// resolution bug), then strips control chars and splits at level
-	// boundaries for correct L2 reordering.
-	//
-	// Per CSS Writing Modes §2.2, when the block container has
-	// unicode-bidi: plaintext, each bidi paragraph (separated by forced
-	// breaks) independently determines its base direction from the first
-	// strong character (UAX#9 P2/P3). This mirrors Blink's NGBidiParagraph
-	// which calls ICU with UBIDI_DEFAULT_LTR per paragraph for plaintext.
-	baseDir := wdm.Dir
-	isPlaintext := false
-	if bla.style != nil {
-		if bidi, ok := bla.style.Get("unicode-bidi"); ok && bidi == "plaintext" {
-			isPlaintext = true
-		}
-	}
-	if isPlaintext {
-		ResolveBidiLevelsPlaintext(itemsData)
-		// Compute overall baseDir for fallback (first paragraph's direction).
-		runes := []rune(itemsData.TextContent)
-		if determineFSIDirection(runes) == 1 {
-			baseDir = DirectionRTL
-		} else {
-			baseDir = DirectionLTR
-		}
-	} else {
-		ResolveBidiLevels(itemsData, baseDir)
-	}
-	StripBidiControls(itemsData)
-	SplitItemsAtLevelBoundaries(itemsData)
 
 	// Phase 1d: Map each OOF item to its innermost positioned-inline
 	// ancestor (DOM node), so the OOF candidate can carry the inline CB
@@ -413,6 +363,25 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// adds the float fragment as a child of the containing block. Returns the
 	// new exclusion-space pointer.
 	placeFloat := func(pf *pendingFloat, floatOriginBFC float64, es *ExclusionSpace) *ExclusionSpace {
+		// In a fragmented inline formatting context with block-in-inline
+		// items, a float is positioned through the block's float path, which
+		// can break it into a parallel flow (LineBreaker::HandleFloat →
+		// PositionFloat with the fragmentation space, inline/
+		// line_breaker.cc:3727 @ a9f50e522efa). Its break token is
+		// carried out by the caller.
+		if segment.node != nil && bla.space.HasBlockFragmentation && !pf.isInitialLetter {
+			childCount := len(bla.containerBuilder.children)
+			es, token, forced := bla.handleFloat(pf.item.LayoutNode, nil, bla.space.BreakToken,
+				floatOriginBFC, es, contentInlineSize, Indefinite, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+			if len(bla.containerBuilder.children) > childCount {
+				bla.containerBuilder.children[childCount].fragment.PaintGroup = pf.item.EnclosingPaintGroup
+			}
+			if token != nil {
+				bla.inlineFloatBreakTokens = append(bla.inlineFloatBreakTokens, token)
+			}
+			bla.inlineFloatHasForcedBreak = bla.inlineFloatHasForcedBreak || forced
+			return es
+		}
 		childStyle := pf.item.Style
 		// The initial-letter float is exempt from the block-start shift: the
 		// surrounding text is pushed down by initialLetterAdjust (blockOffset
@@ -589,6 +558,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// gating on `startItemIndex > 0` alone loses the resume point and
 	// makes each subsequent column re-start at the beginning.
 	// See findings §F4.
+	after := segment.after()
+	if after != nil && startItemIndex == 0 && startTextOffset == 0 {
+		// The run starts right after its block-in-inline item.
+		startItemIndex = blockInInlineItemIndex(itemsData.Items, after) + 1
+		if startItemIndex == 0 || startItemIndex >= len(itemsData.Items) {
+			return segment.blockStart, exclusionSpace, 0, 0, nil
+		}
+	}
 	if (startItemIndex > 0 || startTextOffset > 0) && startItemIndex < len(itemsData.Items) {
 		lb.currentItemIndex = startItemIndex
 		if startTextOffset > itemsData.Items[startItemIndex].StartOffset {
@@ -630,23 +607,35 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// Phase 3: Break into lines and create line box fragments.
 	// blockOffset starts at initialLetterAdjust so the paragraph text is shifted
 	// down past a raised initial letter (LOU-289 part 3); 0 in the common case.
-	blockOffset := initialLetterAdjust
+	// A raised initial letter shifts only the inline formatting context's
+	// first run of lines.
+	blockOffset := segment.blockStart
+	if after == nil {
+		blockOffset += initialLetterAdjust
+	}
 	var line LineInfo
-	isFirstLine := true
+	// The first formatted line is the first line of the inline formatting
+	// context, never one after a block-in-inline.
+	isFirstLine := after == nil
 	firstLineAscent = -1.0 // -1 means not yet set
-	// Whether a line placed so far left a breakpoint before the next line,
-	// giving it container separation. The lines are this block's only
-	// in-flow children, so this is the block's own flag (Blink
+	// Whether an in-flow child placed so far left a breakpoint before the
+	// next line, giving it container separation (Blink
 	// BlockLayoutAlgorithm::has_break_opportunity_before_next_child_,
 	// block_layout_algorithm.cc:311, :2767-2772 @ a9f50e522efa).
-	hasBreakOpportunityBeforeNextChild := false
+	hasBreakOpportunityBeforeNextChild := segment.hasBreakOpportunityBefore
+	// The inline child the lines are, as the block's child for break
+	// decisions (Blink's InlineNode).
+	inlineChild := segment.node
+	if inlineChild == nil {
+		inlineChild = &LayoutInputNode{isInlineSegment: true}
+	}
 
 	// openInlineStack tracks inline spans opened on prior lines that are
 	// still open at the start of the current line. Passed into createLineBoxEx
 	// so spans that wrap multiple lines emit a fragment per line, and updated
 	// from the residual returned after each line. Mirrors Blink's persistent
 	// InlineLayoutStateStack across NGInlineLayoutAlgorithm iterations.
-	var openInlineStack []*InlineItem
+	openInlineStack := rebuildOpenInlineStack(itemsData.Items[:lb.currentItemIndex])
 
 	// lineStartBlockOffset is where the line being laid out started, before
 	// any float pushed it down (Blink's child BFC block-offset, vs the line
@@ -740,6 +729,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if !lb.NextLine(&line) {
 			break
 		}
+		// A block-in-inline line ends this run of lines: the block is the
+		// containing block's next in-flow child (see blockInInlineChildren).
+		if line.IsBlockInInline {
+			break
+		}
 
 		// CSS 2.1 §9.4.2: a line box that contains only out-of-flow
 		// candidates (and possibly collapsible whitespace that contributes
@@ -747,7 +741,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// OOF candidates at the current block offset and continue without
 		// advancing. This matches Blink's behavior where a trailing line
 		// after a <br> containing only positioned content collapses away.
-		if lineHasOnlyOutOfFlow(&line, itemsData) {
+		if lineHasOnlyOutOfFlow(&line, itemsData, wdm) {
 			for _, r := range line.Results {
 				if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
@@ -1145,6 +1139,20 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// in for PhysicalLineBoxFragment::IsEmptyLineBox.
 		isEmptyLineBox := lineHeight == 0
 
+		// A forced break between the previous in-flow child (a
+		// block-in-inline, whose break-after the builder holds) and this
+		// line breaks before the line, given container separation. Mirrors
+		// BreakBeforeChildIfNeeded's forced-break branch for an inline child
+		// (block_layout_algorithm.cc:3144-3170 with
+		// CalculateBreakBetweenValue, fragmentation_utils.cc:133-136 @
+		// a9f50e522efa).
+		if bla.space.HasBlockFragmentation && !isEmptyLineBox && hasBreakOpportunityBeforeNextChild &&
+			IsForcedBreakValue(bla.space, CalculateBreakBetweenValue(inlineChild, nil, bla.containerBuilder)) {
+			inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0)
+			inlineBreakToken.IsForcedBreak = true
+			break
+		}
+
 		// Block fragmentation: check if this line fits in the current fragmentainer.
 		// Mirrors Blink's BlockLayoutAlgorithm::BreakBeforeChildIfNeeded for a
 		// line box child (block_layout_algorithm.cc:3144-3289 @ a9f50e522efa).
@@ -1191,9 +1199,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// BreakBeforeChildIfNeeded → CalculateBreakAppealBefore,
 				// whose break-between for an inline child is the joined
 				// value (fragmentation_utils.cc:133-136, :235-266), recorded
-				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A louis14
-				// line carries no break-before of its own (no block in
-				// inline), so its initial break-before is auto.
+				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A line
+				// carries no break-before of its own; a block-in-inline's
+				// arrives through the builder's previous break-after.
 				// A line pushed down by floats is separated from the
 				// container (Blink HandleInflow, block_layout_algorithm.cc:
 				// 2616-2626 @ a9f50e522efa). Not ported: the container's own
@@ -1201,7 +1209,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				isLineBoxPushedByFloats := blockOffset > lineStartBlockOffset
 				appealBefore := CalculateBreakAppealBeforeWithStatus(
 					bla.space, LayoutResultSuccess,
-					bla.containerBuilder.JoinedBreakBetweenValue("auto"),
+					CalculateBreakBetweenValue(inlineChild, nil, bla.containerBuilder),
 					hasBreakOpportunityBeforeNextChild || isLineBoxPushedByFloats,
 					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
 				if bla.breakBeforeLine(&appealBefore, shortage, isEmptyLineBox) {
@@ -1274,8 +1282,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// During the initial column-balancing pass, a line box is an
 		// unbreakable piece of content: line boxes are monolithic
 		// (PhysicalFragment::IsMonolithic, physical_fragment.cc:586-596 @
-		// a9f50e522efa; louis14's continuation split puts no block in a
-		// line, so no line is Blink's breakable block-in-inline line), so
+		// a9f50e522efa; a block-in-inline is the block's own in-flow child
+		// here, never inside a line), so
 		// ShouldAvoidBreakInside holds and BreakBeforeChildIfNeeded floors
 		// the column block-size at the line's block-size
 		// (fragmentation_utils.cc:1110-1118, CalculateUnbreakableBlockSize
@@ -1293,6 +1301,142 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		firstLineAscent = 0
 	}
 	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset, inlineBreakToken
+}
+
+// inlineItems is the prepared inline formatting context of a
+// BlockLayoutAlgorithm: collected once per layout and shared by every run of
+// lines and block-in-inline child (Blink keeps it on the InlineNode,
+// InlineNode::ItemsData).
+type inlineItems struct {
+	data        *InlineItemsData
+	baseDir     Direction
+	isPlaintext bool
+}
+
+// prepareInlineItems collects this block's inline items and resolves their
+// bidi levels, once per layout.
+func (bla *BlockLayoutAlgorithm) prepareInlineItems(wdm WritingDirectionMode) (*InlineItemsData, Direction, bool) {
+	if c := bla.inlineItemsCache; c != nil {
+		return c.data, c.baseDir, c.isPlaintext
+	}
+	itemsData, baseDir, isPlaintext := bla.collectInlineItems(wdm)
+	bla.inlineItemsCache = &inlineItems{data: itemsData, baseDir: baseDir, isPlaintext: isPlaintext}
+	return itemsData, baseDir, isPlaintext
+}
+
+func (bla *BlockLayoutAlgorithm) collectInlineItems(wdm WritingDirectionMode) (*InlineItemsData, Direction, bool) {
+	// Phase 1: Collect inline items from the layout subtree.
+	itemsData := CollectInlines(bla.node)
+
+	if len(itemsData.Items) == 0 {
+		return itemsData, wdm.Dir, false
+	}
+
+	// Phase 1a: (removed) ::marker pseudo-element for inside markers is now
+	// handled as a proper layout node child of the list item — the marker
+	// text flows through the normal inline pipeline via the ::marker inline
+	// element child created in LayoutTreeBuilder.createMarkerPseudoElement.
+
+	// Phase 1b: Block-level bidi control injection.
+	// CSS Writing Modes §2.2: When a block container has unicode-bidi set
+	// to embed, isolate, bidi-override, isolate-override, or plaintext,
+	// the corresponding Unicode bidi control characters must be injected
+	// around its inline content so the UAX#9 algorithm resolves levels
+	// correctly. This mirrors Blink's InlineItemsBuilder which checks the
+	// block container's own unicode-bidi before processing children.
+	//
+	// The inline-level injection (in collectInlinesRecursive via
+	// injectBidiControlChars) only handles inline elements. Block
+	// containers need their own injection here.
+	injectBlockBidiControls(bla.style, itemsData)
+
+	// Phase 1b: Bidi pipeline (mirrors Blink's BidiParagraph + SegmentText).
+	// Uses a pure-Go UAX#9 resolver (the Go bidi package has a neutral
+	// resolution bug), then strips control chars and splits at level
+	// boundaries for correct L2 reordering.
+	//
+	// Per CSS Writing Modes §2.2, when the block container has
+	// unicode-bidi: plaintext, each bidi paragraph (separated by forced
+	// breaks) independently determines its base direction from the first
+	// strong character (UAX#9 P2/P3). This mirrors Blink's NGBidiParagraph
+	// which calls ICU with UBIDI_DEFAULT_LTR per paragraph for plaintext.
+	baseDir := wdm.Dir
+	isPlaintext := false
+	if bla.style != nil {
+		if bidi, ok := bla.style.Get("unicode-bidi"); ok && bidi == "plaintext" {
+			isPlaintext = true
+		}
+	}
+	if isPlaintext {
+		ResolveBidiLevelsPlaintext(itemsData)
+		// Compute overall baseDir for fallback (first paragraph's direction).
+		runes := []rune(itemsData.TextContent)
+		if determineFSIDirection(runes) == 1 {
+			baseDir = DirectionRTL
+		} else {
+			baseDir = DirectionLTR
+		}
+	} else {
+		ResolveBidiLevels(itemsData, baseDir)
+	}
+	StripBidiControls(itemsData)
+	SplitItemsAtLevelBoundaries(itemsData)
+	return itemsData, baseDir, isPlaintext
+}
+
+// inlineSegment selects the run of lines layoutInlineChildren lays out: in
+// an inline formatting context with block-in-inline items, the lines
+// between two of them. no Blink analog: Blink's BlockLayoutAlgorithm lays
+// out an inline formatting context one line at a time as in-flow children
+// (HandleInflow on the InlineNode); louis14 lays out the lines up to the
+// next block-in-inline in one call.
+type inlineSegment struct {
+	// blockStart is the content-box block offset of the first line.
+	blockStart float64
+	// hasBreakOpportunityBefore: an in-flow child before the run left a
+	// breakpoint before the first line.
+	hasBreakOpportunityBefore bool
+	// node is the run's pseudo-child (blockInInlineChildren); nil when the
+	// inline formatting context has no block-in-inline.
+	node *LayoutInputNode
+}
+
+// after returns the block-in-inline wrapper the run follows; nil for the
+// run that starts the inline formatting context.
+func (s inlineSegment) after() *LayoutInputNode {
+	if s.node == nil {
+		return nil
+	}
+	return s.node.inlineSegmentAfter
+}
+
+// blockInInlineItemIndex returns the index of wrapper's block-in-inline
+// item in items, or -1.
+func blockInInlineItemIndex(items []*InlineItem, wrapper *LayoutInputNode) int {
+	return slices.IndexFunc(items, func(item *InlineItem) bool {
+		return item.Type == InlineItemBlockInInline && item.LayoutNode == wrapper
+	})
+}
+
+// rebuildOpenInlineStack returns the inline boxes still open after items,
+// outermost first: the boxes a line starting after items continues. Mirrors
+// InlineLayoutStateStack rebuilding its box states from the items before
+// the line (InlineLayoutStateStack::RebuildBoxStates called from
+// InlineLayoutAlgorithm, inline/inline_layout_algorithm.cc:300 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func rebuildOpenInlineStack(items []*InlineItem) []*InlineItem {
+	var stack []*InlineItem
+	for _, item := range items {
+		switch item.Type {
+		case InlineItemOpenTag:
+			stack = append(stack, item)
+		case InlineItemCloseTag:
+			if n := len(stack); n > 0 {
+				stack = stack[:n-1]
+			}
+		}
+	}
+	return stack
 }
 
 // createInlineBreakToken returns the break token for breaking before the
@@ -1326,7 +1470,8 @@ func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lin
 // 3187-3279 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); AttemptSoftBreak
 // (:3281-3285) always succeeds: an inline formatting context records no
 // earlier breakpoint while laying out its lines (UpdateEarlyBreakBetweenLines
-// runs once they are all laid out; louis14 has no block-in-inline). Not
+// runs once they are all laid out; a block-in-inline is laid out by the
+// block's child walk, not among the lines). Not
 // ported: the BR clear=all status check and text-box-trim's
 // fragmentainer-end exception.
 func (bla *BlockLayoutAlgorithm) breakBeforeLine(appealBefore *BreakAppeal, shortage float64, isEmptyLineBox bool) bool {
@@ -2036,9 +2181,11 @@ func createLineBoxEx(
 	// These are added FIRST so they paint behind content (CSS 2.1 Appendix E).
 	// Inline backgrounds may extend outside the line box (border/padding bleed).
 	//
-	// CSS 2.1 §9.2.1.1: for a split inline element (block-in-inline), the
-	// inline-start border/padding appears only on the first fragment and the
-	// inline-end border/padding appears only on the last fragment.
+	// The inline-start border/padding appears only on the line with the
+	// inline's OpenTag and the inline-end border/padding only on the line
+	// with its CloseTag (Blink BoxData has_line_left_edge /
+	// has_line_right_edge, inline/inline_box_state.cc:560-585, :1057-1058 @
+	// a9f50e522efa).
 	//
 	// A span that wraps multiple lines produces one fragment per line: the
 	// first line carries IS border/padding, the last line carries IE border/
@@ -2248,8 +2395,8 @@ func createLineBoxEx(
 						style:            effStyle,
 						node:             r.Item.Node,
 						borderStart:      trackPos + r.Margins.InlineStart,
-						isFirstFragment:  r.Item.IsFirstFragment,
-						isLastFragment:   r.Item.IsLastFragment,
+						isFirstFragment:  true,
+						isLastFragment:   false, // set by its CloseTag
 						cumulativeVAOffs: parentCum + effStyle.GetVerticalAlignOffset(),
 						openSeq:          openSeqCounter,
 					})
@@ -2259,11 +2406,10 @@ func createLineBoxEx(
 				if len(spanStack) > 0 && effStyle != nil {
 					span := spanStack[len(spanStack)-1]
 					spanStack = spanStack[:len(spanStack)-1]
-					// The closing fragment carries inline-end border/padding
-					// only if the InlineItem is the last split fragment. A
-					// prior-line pre-populated entry inherits this from the
-					// InlineItem being closed now.
-					span.isLastFragment = r.Item.IsLastFragment
+					// The closing fragment carries the inline-end
+					// border/padding, also for a span entering from a prior
+					// line.
+					span.isLastFragment = true
 					emit(span, trackPos)
 				}
 			case InlineItemAtomicInline:
@@ -3236,8 +3382,13 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 // propagation (CSS 2.1 §10.8.1) — would incorrectly shift the "last in-flow
 // line box" to a trailing empty line. Mirrors Blink's suppression of trailing
 // line boxes that contain only positioned content after a forced break.
-func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData) bool {
-	if line.HasForcedBreak || line.Width > 0 {
+func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm WritingDirectionMode) bool {
+	// A forced break by itself does not create a line box: a <br> or
+	// preserved newline does (its InlineItemControl below), the forced break
+	// before a block-in-inline does not (LineBreaker::HandleBlockInInline →
+	// HandleForcedLineBreak(nullptr), inline/line_breaker.cc:3226-3231 @
+	// a9f50e522efa).
+	if line.Width > 0 {
 		return false
 	}
 	for _, r := range line.Results {
@@ -3252,12 +3403,14 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData) bool {
 				}
 			}
 		case InlineItemOpenTag, InlineItemCloseTag:
-			// CSS 2.1 §9.2.1.1 + §9.4.2: an inline element with visible paint
-			// (background, border, or non-zero padding/margin) still generates
-			// a line box even when empty — its box decorations must render.
-			// Empty span with padding/border is the canonical case
-			// (wpt-css2/linebox/empty-inline-002).
-			if r.Item.Style != nil && hasVisibleInlineBoxDecoration(r.Item.Style) {
+			// An inline box edge with inline-axis border, padding or margin
+			// creates the line box; one without does not, whatever its
+			// background (LineBreaker::HandleOpenTag / HandleCloseTag
+			// should_create_line_box from InlineItem::IsEmptyItem,
+			// inline/line_breaker.cc:3947-4030, inline/inline_item.cc:
+			// 32-67, :128-139 @ a9f50e522efa). Empty span with padding/
+			// border is the canonical case (wpt-css2/linebox/empty-inline-002).
+			if r.Item.Style != nil && !isInlineBoxEdgeEmpty(r.Item.Style, wdm, line.AvailableWidth, r.Item.Type == InlineItemOpenTag) {
 				return false
 			}
 		}
@@ -3265,22 +3418,16 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData) bool {
 	return true
 }
 
-// hasVisibleInlineBoxDecoration returns true if the inline element has
-// any box decoration that must paint: visible background/border, or any
-// non-zero padding/margin that affects the inline-box extent. Ported
-// from Blink's ComputedStyle::HasBoxDecorationBackground semantics for
-// inline boxes.
-func hasVisibleInlineBoxDecoration(style *css.Style) bool {
-	if hasVisibleInlinePaint(style) {
-		return true
+// isInlineBoxEdgeEmpty reports whether an inline box's start (or end) edge
+// has no inline-axis border, padding or margin. Mirrors Blink's
+// IsInlineBoxStartEmpty / IsInlineBoxEndEmpty (inline/inline_item.cc:32-67
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no line-height
+// quirks mode, so a margin always counts.
+func isInlineBoxEdgeEmpty(style *css.Style, wdm WritingDirectionMode, percentageBase float64, isStart bool) bool {
+	geom := ComputeFragmentGeometry(style, wdm)
+	margins := ResolveMargins(style, wdm, percentageBase)
+	if isStart {
+		return geom.Border.InlineStart == 0 && geom.Padding.InlineStart == 0 && margins.InlineStart == 0
 	}
-	pad := style.GetPadding()
-	if pad.Top > 0 || pad.Right > 0 || pad.Bottom > 0 || pad.Left > 0 {
-		return true
-	}
-	m := style.GetMargin()
-	if m.Top > 0 || m.Right > 0 || m.Bottom > 0 || m.Left > 0 {
-		return true
-	}
-	return false
+	return geom.Border.InlineEnd == 0 && geom.Padding.InlineEnd == 0 && margins.InlineEnd == 0
 }

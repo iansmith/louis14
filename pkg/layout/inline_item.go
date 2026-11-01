@@ -51,6 +51,12 @@ const (
 	// construction. Ported from Blink's InlineItem::kRubyLinePlaceholder
 	// (`core/layout/inline/inline_items_builder.cc:1550-1595`).
 	InlineItemRubyLinePlaceholder
+	// InlineItemBlockInInline is the anonymous block-in-inline wrapper of an
+	// inline box's block children (LayoutInputNode.IsBlockInInline). The
+	// line breaker gives it a line of its own. Ported from Blink's
+	// InlineItem::kBlockInInline (inline/inline_item.h:36 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	InlineItemBlockInInline
 )
 
 // InlineItem is a segment of inline content within a formatting context.
@@ -80,13 +86,6 @@ type InlineItem struct {
 	// 1 = RTL). For unicode-bidi: plaintext, paragraphs separated by
 	// forced breaks may have different base levels (UAX#9 P2/P3).
 	ParagraphLevel int
-
-	// IsFirstFragment / IsLastFragment track which visual fragment of an inline
-	// element this item represents. Used to suppress inline-start/inline-end
-	// borders for split inline elements (CSS 2.1 §9.2.1.1 block-in-inline).
-	// Both are true for regular (non-split) inlines.
-	IsFirstFragment bool
-	IsLastFragment  bool
 
 	// EnclosingPaintGroup points to the OpenTag item of the nearest enclosing
 	// non-atomic inline whose opacity requires group compositing (see
@@ -227,6 +226,11 @@ func collectInlinesRecursive(
 
 		childStyle := child.Style()
 		if childStyle == nil {
+			continue
+		}
+
+		if child.IsBlockInInline() {
+			appendBlockInInline(child, data, text)
 			continue
 		}
 
@@ -384,13 +388,11 @@ func collectInlinesRecursive(
 
 		openOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
-			Type:            InlineItemOpenTag,
-			StartOffset:     openOffset,
-			EndOffset:       openOffset,
-			Node:            child.DOMNode,
-			Style:           childStyle,
-			IsFirstFragment: child.IsFirstFragment(),
-			IsLastFragment:  child.IsLastFragment(),
+			Type:        InlineItemOpenTag,
+			StartOffset: openOffset,
+			EndOffset:   openOffset,
+			Node:        child.DOMNode,
+			Style:       childStyle,
 		})
 
 		// CSS Ruby — `<rb>`/`<rbc>`/`<rtc>` are plain inlines per
@@ -453,13 +455,11 @@ func collectInlinesRecursive(
 
 		closeOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
-			Type:            InlineItemCloseTag,
-			StartOffset:     closeOffset,
-			EndOffset:       closeOffset,
-			Node:            child.DOMNode,
-			Style:           childStyle,
-			IsFirstFragment: child.IsFirstFragment(),
-			IsLastFragment:  child.IsLastFragment(),
+			Type:        InlineItemCloseTag,
+			StartOffset: closeOffset,
+			EndOffset:   closeOffset,
+			Node:        child.DOMNode,
+			Style:       childStyle,
 		})
 
 		// CloseTag emits before the column close so the `<rt>`/`<ruby>`
@@ -487,6 +487,71 @@ func collectInlinesRecursive(
 		injectBidiControlChars(childStyle, text, false /* isOpen */)
 
 		continue
+	}
+}
+
+// lastNonEmptyItemIsBlockInInline reports whether the last item with text
+// content is a block-in-inline.
+func lastNonEmptyItemIsBlockInInline(data *InlineItemsData) bool {
+	for i := len(data.Items) - 1; i >= 0; i-- {
+		if item := data.Items[i]; item.StartOffset != item.EndOffset {
+			return item.Type == InlineItemBlockInInline
+		}
+	}
+	return false
+}
+
+// appendBlockInInline appends the block-in-inline item for wrapper. Before
+// and after it is like around a forced break: a collapsible space ending
+// the preceding text is removed, and one starting the following text
+// collapses (collectTextNode). The item reads as U+FFFC in the text
+// content. Mirrors InlineItemsBuilder::AppendBlockInInline
+// (inline/inline_items_builder.cc:1307-1330 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func appendBlockInInline(wrapper *LayoutInputNode, data *InlineItemsData, text *strings.Builder) {
+	removeTrailingCollapsibleSpace(data, text)
+	offset := text.Len()
+	text.WriteRune('\uFFFC')
+	data.Items = append(data.Items, &InlineItem{
+		Type:        InlineItemBlockInInline,
+		StartOffset: offset,
+		EndOffset:   text.Len(),
+		LayoutNode:  wrapper,
+		Style:       wrapper.Style(),
+	})
+}
+
+// removeTrailingCollapsibleSpace drops a collapsible space that ends the
+// last text item (InlineItemsBuilder::RemoveTrailingCollapsibleSpace,
+// inline/inline_items_builder.cc:1395-1425 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Only a space ending the text
+// content can qualify: items with zero length (tags, floats, out-of-flow)
+// between it and here do not stop the search, others do.
+func removeTrailingCollapsibleSpace(data *InlineItemsData, text *strings.Builder) {
+	s := text.String()
+	if len(s) == 0 || s[len(s)-1] != ' ' {
+		return
+	}
+	for i := len(data.Items) - 1; i >= 0; i-- {
+		item := data.Items[i]
+		if item.EndOffset != len(s) || item.Type != InlineItemText {
+			if item.StartOffset == item.EndOffset {
+				continue
+			}
+			return
+		}
+		if item.Style != nil && whiteSpacePreservesWhitespace(item.Style.GetWhiteSpace()) {
+			return
+		}
+		text.Reset()
+		text.WriteString(s[:len(s)-1])
+		item.EndOffset--
+		// Later zero-length items sat at the removed offset.
+		for _, later := range data.Items[i+1:] {
+			later.StartOffset--
+			later.EndOffset--
+		}
+		return
 	}
 }
 
@@ -666,10 +731,15 @@ func collectTextNode(
 		// - Sequences of spaces/tabs collapse to a single space.
 		// - Newlines collapse to a space (unless preserve-newlines).
 		prevSpace := false
-		// Check if the text so far ends with a space.
+		// Check if the text so far ends with a space. After a
+		// block-in-inline is like after a forced break: a leading space
+		// collapses (InlineItemsBuilder::AppendBlockInInline sets the
+		// item's end collapse type to collapsible,
+		// inline/inline_items_builder.cc:1314-1316 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if text.Len() > 0 {
 			s := text.String()
-			prevSpace = s[len(s)-1] == ' '
+			prevSpace = s[len(s)-1] == ' ' || lastNonEmptyItemIsBlockInInline(data)
 		}
 
 		for _, r := range content {
