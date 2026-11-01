@@ -15,24 +15,24 @@ import "louis14/pkg/css"
 
 // HandleOofFragmentation is the entry point Blink's OutOfFlowLayoutPart::Run
 // calls before LayoutCandidates. Drains pending fragmentainer descendants and
-// MulticolsWithPendingOOFs entries on `builder` when it is the block
+// MulticolsWithPendingOOFs entries on `mla.containerBuilder` when it is the block
 // fragmentation context root. No-op otherwise. isContainingBlockUnfinished
 // (nil once layout is complete) reports a containing block that continues
 // past this point; its descendants are delayed (see
 // fragmentationContextOOFPart).
-func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentBuilder, isContainingBlockUnfinished func(*LayoutInputNode) bool) {
-	if !builder.IsBlockFragmentationContextRoot() {
+func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(isContainingBlockUnfinished func(*LayoutInputNode) bool) {
+	if !mla.containerBuilder.IsBlockFragmentationContextRoot() {
 		return
 	}
-	if !builder.HasOutOfFlowFragmentainerDescendants() &&
-		!builder.HasMulticolsWithPendingOOFs() {
+	if !mla.containerBuilder.HasOutOfFlowFragmentainerDescendants() &&
+		!mla.containerBuilder.HasMulticolsWithPendingOOFs() {
 		return
 	}
 
 	var descendants []LogicalOofNodeForFragmentation
-	builder.SwapOutOfFlowFragmentainerDescendants(&descendants)
+	mla.containerBuilder.SwapOutOfFlowFragmentainerDescendants(&descendants)
 	var pendingMulticols map[*LayoutInputNode]*MulticolWithPendingOOFs
-	builder.SwapMulticolsWithPendingOOFs(&pendingMulticols)
+	mla.containerBuilder.SwapMulticolsWithPendingOOFs(&pendingMulticols)
 
 	// A descendant whose containing block is inside a nested inner multicol
 	// goes through the inner-multicol branch (plan WI-7 ports Blink's
@@ -49,8 +49,8 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentB
 		// not laid out in the inner multicol (LayoutOOFsInMulticol,
 		// out_of_flow_layout_part.cc:1440-1449 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if innerMcNode := mla.findInnerMulticolForCB(builder, d.ContainingBlock.Fragment, pendingMulticols); innerMcNode != nil && !d.ContainingBlock.IsInsideColumnSpanner {
-			mla.layoutFragmentainerDescendant(builder, d, innerMcNode)
+		if innerMcNode := mla.findInnerMulticolForCB(d.ContainingBlock.Fragment, pendingMulticols); innerMcNode != nil && !d.ContainingBlock.IsInsideColumnSpanner {
+			mla.layoutFragmentainerDescendant(d, innerMcNode)
 			continue
 		}
 		outer = append(outer, d)
@@ -58,17 +58,17 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentB
 	if len(outer) == 0 {
 		return
 	}
-	part := mla.newFragmentationContextOOFPart(builder)
+	part := mla.newFragmentationContextOOFPart()
 	part.isContainingBlockUnfinished = isContainingBlockUnfinished
 	part.HandleFragmentation(outer, mla.fragmentainerProgression())
 }
 
 // newFragmentationContextOOFPart returns the OutOfFlowLayoutPart that lays
 // out fragmentainer descendants in this multicol's columns.
-func (mla *MulticolLayoutAlgorithm) newFragmentationContextOOFPart(builder *BoxFragmentBuilder) *fragmentationContextOOFPart {
+func (mla *MulticolLayoutAlgorithm) newFragmentationContextOOFPart() *fragmentationContextOOFPart {
 	return &fragmentationContextOOFPart{
 		OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containingBlockWDM: mla.space.WritingDirection},
-		containerBuilder:    builder,
+		containerBuilder:    mla.containerBuilder,
 	}
 }
 
@@ -85,11 +85,10 @@ func (mla *MulticolLayoutAlgorithm) fragmentainerProgression() LogicalOffset {
 // slicing an explicit-size OOF across the inner multicol's columns as
 // synthesized pieces (louis14 heuristic; plan WI-7).
 func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendant(
-	builder *BoxFragmentBuilder,
 	d LogicalOofNodeForFragmentation,
 	innerMcNode *LayoutInputNode,
 ) {
-	innerCols := mla.findInnerColumnFragmentainers(builder, innerMcNode)
+	innerCols := mla.findInnerColumnFragmentainers(innerMcNode)
 	if len(innerCols) == 0 {
 		return
 	}
@@ -183,7 +182,7 @@ func (mla *MulticolLayoutAlgorithm) layoutFragmentainerDescendant(
 			InlineOffset: col.OuterContentBoxOffset.InlineOffset + startInline,
 			BlockOffset:  col.OuterContentBoxOffset.BlockOffset + pieceBlockStart,
 		}
-		builder.AddChild(piece, piecePos)
+		mla.containerBuilder.AddChild(piece, piecePos)
 
 		remaining -= pieceBlock
 		pieceBlockStart = 0
@@ -197,14 +196,14 @@ type innerColumnFragmentainer struct {
 	Size                  LogicalSize
 }
 
-// findInnerColumnFragmentainers walks `builder.children` (the outer
+// findInnerColumnFragmentainers walks `mla.containerBuilder.children` (the outer
 // multicol's column fragments) recursively to find every column-box child
 // of `innerMcNode`. Returns them in fragmentation order. HTB-only.
 func (mla *MulticolLayoutAlgorithm) findInnerColumnFragmentainers(
-	builder *BoxFragmentBuilder, innerMcNode *LayoutInputNode,
+	innerMcNode *LayoutInputNode,
 ) []innerColumnFragmentainer {
 	var result []innerColumnFragmentainer
-	for _, outerCol := range builder.children {
+	for _, outerCol := range mla.containerBuilder.children {
 		walkForInnerColumns(outerCol.fragment, outerCol.offset, innerMcNode, &result)
 	}
 	return result
@@ -254,7 +253,6 @@ func walkForInnerColumns(
 // just returns the only entry; for multi-pending cases it walks each
 // candidate's subtree looking for the CB fragment.
 func (mla *MulticolLayoutAlgorithm) findInnerMulticolForCB(
-	builder *BoxFragmentBuilder,
 	cbFragment *PhysicalFragment,
 	pendingMulticols map[*LayoutInputNode]*MulticolWithPendingOOFs,
 ) *LayoutInputNode {
@@ -267,7 +265,7 @@ func (mla *MulticolLayoutAlgorithm) findInnerMulticolForCB(
 		}
 	}
 	for n := range pendingMulticols {
-		for _, outerCol := range builder.children {
+		for _, outerCol := range mla.containerBuilder.children {
 			if subtreeContainsFragment(outerCol.fragment, n, cbFragment) {
 				return n
 			}
