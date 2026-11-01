@@ -3,7 +3,8 @@ package layout
 // InlineChildLayoutContext carries what the layout of an inline formatting
 // context hands back to its block container besides the line boxes: the
 // break tokens of floats that broke before or inside, to be resumed in
-// parallel flows in the next fragmentainer. Mirrors Blink's
+// parallel flows in the next fragmentainer. A forced break inside a float
+// goes to the block's builder directly (PropagateBreakInfo). Mirrors Blink's
 // InlineChildLayoutContext parallel-flow token list
 // (inline/inline_child_layout_context.h:64-68, .cc:86-93 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the block adds them as
@@ -15,9 +16,6 @@ package layout
 // the same float.
 type InlineChildLayoutContext struct {
 	parallelFlowBreakTokens []*BlockBreakToken
-	// hasForcedBreak: a float found a forced break inside it (the line box
-	// propagates it to the block, FragmentBuilder::PropagateBreakInfo).
-	hasForcedBreak bool
 }
 
 // ParallelFlowBreakTokens returns the float break tokens propagated so far.
@@ -31,9 +29,11 @@ func (c *InlineChildLayoutContext) PropagateParallelFlowBreakToken(token *BlockB
 	c.parallelFlowBreakTokens = append(c.parallelFlowBreakTokens, token)
 }
 
-// propagateTo hands the parallel-flow break tokens and the forced-break bit
-// to the block's pending outgoing break state.
-func (c *InlineChildLayoutContext) propagateTo(tokens *[]*BlockBreakToken, hasForcedBreak *bool) {
-	*tokens = append(*tokens, c.parallelFlowBreakTokens...)
-	*hasForcedBreak = *hasForcedBreak || c.hasForcedBreak
+// propagateTo adds the parallel-flow break tokens to the block's builder
+// (block_layout_algorithm.cc:2666-2672 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (c *InlineChildLayoutContext) propagateTo(builder *BoxFragmentBuilder) {
+	for _, token := range c.parallelFlowBreakTokens {
+		builder.AddBreakToken(token, true)
+	}
 }

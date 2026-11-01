@@ -101,16 +101,6 @@ func CalculateUnbreakableBlockSize(
 	return blockSize
 }
 
-// IsInParallelFlow reports whether a child result's break continues in a
-// parallel flow: the child is at its block end and does not contain a
-// column spanner, which forces its breaks into the parent's flow. Mirrors child_is_in_same_flow in Blink's
-// BoxFragmentBuilder::PropagateBreakInfo (box_fragment_builder.cc:503-510 @
-// a9f50e522efa).
-func IsInParallelFlow(childResult *LayoutResult) bool {
-	return childResult.BreakToken != nil && childResult.BreakToken.IsAtBlockEnd &&
-		!childResult.ShouldForceSameFragmentationFlow
-}
-
 // AdjustMarginsForFragmentation truncates the block margins of a child that
 // resumes with breakToken. A leading margin belongs in front of the first
 // fragment only, and is truncated after an unforced break too (floats never
@@ -760,6 +750,15 @@ func BreakBeforeChildIfNeeded(
 	if layoutResult != nil && layoutResult.Status != LayoutResultSuccess {
 		builder.SetBreakAppeal(appealBefore)
 		return BreakStatusBrokeBefore, false
+	}
+
+	// Child-overload MovePastBreakpoint pre-check: a resumed child is
+	// never broken before; once it has found room for its first fragment it
+	// cannot skip fragmentainers, or its layout would restart from scratch
+	// (fragmentation_utils.cc:1086-1100 @ a9f50e522efa). Every louis14
+	// caller passes a block child.
+	if layoutResult != nil && !layoutResult.Fragment.IsFirstForNode() {
+		return BreakStatusContinue, false
 	}
 
 	// Clearance past a float that continues in the next fragmentainer

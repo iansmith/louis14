@@ -350,6 +350,19 @@ func (n *LayoutInputNode) IsElement() bool {
 	return n.DOMNode != nil && n.DOMNode.Type == html.ElementNode
 }
 
+// IsFloatingOrOutOfFlowPositioned reports whether the node is a float or an
+// absolutely / fixed positioned box. Mirrors Blink's
+// LayoutInputNode::IsFloatingOrOutOfFlowPositioned (layout_input_node.h:
+// 70-76 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsFloatingOrOutOfFlowPositioned() bool {
+	style := n.Style()
+	if style == nil {
+		return false
+	}
+	pos := style.GetPosition()
+	return style.GetFloat() != css.FloatNone || pos == css.PositionAbsolute || pos == css.PositionFixed
+}
+
 // IsText returns true for text nodes.
 func (n *LayoutInputNode) IsText() bool {
 	return n.DOMNode != nil && n.DOMNode.Type == html.TextNode

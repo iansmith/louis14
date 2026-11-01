@@ -248,6 +248,23 @@ type BoxFragmentBuilder struct {
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
 	shouldForceSameFragmentationFlow bool
 
+	// childBreakTokens are the break tokens of the children that broke
+	// before or inside, in the order they were added; they become the child
+	// break tokens of this fragment's outgoing break token.
+	// hasInflowChildBreakInside: one of them broke in this box's own flow
+	// (not a float, an out-of-flow box or a child past its block end), so
+	// this box breaks inside and lays out no further siblings.
+	// hasForcedBreak: a forced break was inserted, here or inside a child.
+	// hasSeenAllChildren: every child has been started or finished. Mirrors
+	// Blink's FragmentBuilder::child_break_tokens_ (fragment_builder.h:628)
+	// and BoxFragmentBuilder::has_inflow_child_break_inside_,
+	// has_forced_break_ and has_seen_all_children_ (box_fragment_builder.h:
+	// 794-796 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	childBreakTokens          []*BlockBreakToken
+	hasInflowChildBreakInside bool
+	hasForcedBreak            bool
+	hasSeenAllChildren        bool
+
 	// space is the constraint space the fragment is laid out in, when the
 	// algorithm sets it: BlockSizeForFragmentation is accumulated and
 	// recorded only when it has block fragmentation. Mirrors Blink's
@@ -693,29 +710,174 @@ func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult
 	b.SetPreviousBreakAfter(JoinFragmentainerBreakValues(childResult.FinalBreakAfter, breakAfter))
 }
 
-// PropagateBreakInfo takes over the column spanner found inside an in-flow
-// child: it wraps the child's spanner path and copies the child's
-// empty-spanner-parent bit, so the multicol reaches the spanner through this
-// box. Mirrors the spanner block of Blink's BoxFragmentBuilder::
-// PropagateBreakInfo (box_fragment_builder.cc:594-608 @ a9f50e522efa), which
-// AddResult calls before PropagateChildBreakValues (:227-232). Only that
-// block is ported here; the rest of Blink's PropagateBreakInfo lives at the
-// BlockLayoutAlgorithm call sites (PropagateChildBlockSizeForFragmentation,
-// PropagateTallestUnbreakableBlockSize, and the in-flow child break block
-// after placement: the break token, appeal clamp, forced break, space
-// shortage and has_inflow_child_break_inside).
-// Blink gates the block on IsInColumnBfc inside; the builder holds no
-// ConstraintSpace, so the caller gates it. A louis14 path omits Blink's head
+// AddResult adds a child's fragment at offset (shifted by relativeOffset)
+// and takes over what its layout result carries for this box: under block
+// fragmentation its break token and break info (PropagateBreakInfo), and,
+// when the space asks for it, its break values. Mirrors Blink's
+// BoxFragmentBuilder::AddResult (box_fragment_builder.cc:180-233 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the child's break token is
+// collected as AddChild → PropagateFromFragment does (fragment_builder.cc:
+// 455-464). louis14 resolves margins and the relative offset at the call
+// site and has no block-in-inline line result to unwrap (:189-210).
+func (b *BoxFragmentBuilder) AddResult(child *LayoutInputNode, childResult *LayoutResult, offset, relativeOffset LogicalOffset) {
+	b.AddChildWithRelativeOffset(childResult.Fragment, offset, relativeOffset)
+	if b.space == nil {
+		return
+	}
+	if b.space.HasBlockFragmentation {
+		if token := childResult.BreakToken; token != nil && !childResult.Fragment.IsFragmentainerBox() {
+			b.childBreakTokens = append(b.childBreakTokens, token)
+		}
+		b.PropagateBreakInfo(child, childResult, offset)
+	}
+	if b.space.ShouldPropagateChildBreakValues() {
+		b.PropagateChildBreakValues(childResult)
+	}
+}
+
+// PropagateBreakInfo takes over the fragmentation info of a child laid out
+// at offset: its block-end for fragmentation; a break inside it, which in
+// this box's own flow means this box breaks inside, and lowers the appeal
+// of breaking inside this box to that of breaking inside the child; its
+// tallest unbreakable block-size in the initial column balancing pass; a
+// forced break inside it, or else its space shortage; and a column spanner
+// found inside it, whose path this box wraps so that the multicol reaches
+// the spanner through it. Mirrors Blink's BoxFragmentBuilder::
+// PropagateBreakInfo (box_fragment_builder.cc:479-617 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the annotation
+// (ruby) block-offset adjustment (:486-487), paginated monolithic overflow
+// (:512-564, louis14 does not paginate) and the out-of-flow-in-fragmentainer
+// subtree bit (:610-615). IsInColumnBfc has no louis14 flag; a column
+// fragmentation space stands in. A louis14 spanner path omits Blink's head
 // Node(): a result's path starts at the child, so {Box: child, Child: path}
 // is Blink's ColumnSpannerPath(Node(), child_path), and the space-side
 // follow checks path.Box == child.
-func (b *BoxFragmentBuilder) PropagateBreakInfo(child *LayoutInputNode, childResult *LayoutResult) {
-	if childResult == nil || childResult.ColumnSpannerPath == nil {
+func (b *BoxFragmentBuilder) PropagateBreakInfo(child *LayoutInputNode, childResult *LayoutResult, offset LogicalOffset) {
+	if childResult == nil || childResult.Fragment == nil {
 		return
 	}
-	b.SetColumnSpannerPath(&ColumnSpannerPath{Box: child, Child: childResult.ColumnSpannerPath})
-	b.SetIsEmptySpannerParent(childResult.IsEmptySpannerParent)
+	space := b.space
+	b.PropagateChildBlockSizeForFragmentation(childResult, offset)
+
+	token := childResult.BreakToken
+	// A break inside an out-of-flow box, a float, or a child past its
+	// block end (a parallel flow) is not in this box's flow — unless the
+	// child holds a column spanner, which forces its breaks into this flow
+	// (:504-510).
+	isInSameFlow := ((!token.IsBreakInside() || !token.IsAtBlockEnd) &&
+		!child.IsFloatingOrOutOfFlowPositioned()) ||
+		childResult.ShouldForceSameFragmentationFlow
+	if token.IsBreakInside() {
+		if isInSameFlow {
+			b.hasInflowChildBreakInside = true
+		}
+		b.ClampBreakAppeal(CalculateBreakAppealInside(*space, childResult))
+	}
+	if space.IsInitialColumnBalancingPass {
+		b.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+	}
+	if childResult.HasForcedBreak {
+		b.SetHasForcedBreak()
+	} else if !space.IsInitialColumnBalancingPass {
+		b.PropagateSpaceShortage(childResult.MinSpaceShortage)
+	}
+
+	if childResult.Fragment.Type != FragmentBox {
+		return
+	}
+	if space.BlockFragmentationType == FragmentColumn && childResult.ColumnSpannerPath != nil {
+		b.SetColumnSpannerPath(&ColumnSpannerPath{Box: child, Child: childResult.ColumnSpannerPath})
+		b.SetIsEmptySpannerParent(childResult.IsEmptySpannerParent)
+	}
 }
+
+// AddBreakBeforeChild breaks before child: its break-before token joins the
+// child break tokens, and unless child is a float or an out-of-flow box,
+// this box breaks inside in its own flow. A forced break sets the
+// forced-break flag; otherwise appeal, when given, lowers the break appeal.
+// Mirrors Blink's BoxFragmentBuilder::AddBreakBeforeChild
+// (box_fragment_builder.cc:121-178 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the inline-node branch
+// (:142-175), which keeps the last inline break token, is not ported: a
+// louis14 line break hands its own token to AddBreakToken.
+func (b *BoxFragmentBuilder) AddBreakBeforeChild(child *LayoutInputNode, appeal *BreakAppeal, isForcedBreak bool) {
+	if isForcedBreak {
+		b.SetHasForcedBreak()
+	} else if appeal != nil {
+		b.ClampBreakAppeal(*appeal)
+	}
+	if !b.hasInflowChildBreakInside {
+		b.hasInflowChildBreakInside = !child.IsFloatingOrOutOfFlowPositioned()
+	}
+	b.childBreakTokens = append(b.childBreakTokens, CreateBreakBefore(child, isForcedBreak))
+}
+
+// AddBreakToken adds a child break token that a child's layout result does
+// not carry (a line break, a float resumed in a parallel flow). Unless it
+// is in a parallel flow, this box breaks inside. Mirrors Blink's
+// BoxFragmentBuilder::AddBreakToken (box_fragment_builder.cc:381-389 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) AddBreakToken(token *BlockBreakToken, isInParallelFlow bool) {
+	b.childBreakTokens = append(b.childBreakTokens, token)
+	b.hasInflowChildBreakInside = b.hasInflowChildBreakInside || !isInParallelFlow
+}
+
+// ChildBreakTokens returns the child break tokens added so far.
+func (b *BoxFragmentBuilder) ChildBreakTokens() []*BlockBreakToken { return b.childBreakTokens }
+
+// LastChildBreakToken returns the child break token added last. Mirrors
+// BoxFragmentBuilder::LastChildBreakToken (box_fragment_builder.h:741-744 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) LastChildBreakToken() *BlockBreakToken {
+	return b.childBreakTokens[len(b.childBreakTokens)-1]
+}
+
+// HasInsertedChildBreak reports whether a child break was inserted, in
+// this box's flow or a parallel one. Mirrors BoxFragmentBuilder::
+// HasInsertedChildBreak (box_fragment_builder.h:466-479 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no repeated
+// content, so every token counts.
+func (b *BoxFragmentBuilder) HasInsertedChildBreak() bool { return len(b.childBreakTokens) > 0 }
+
+// ShouldBreakInside reports whether this box needs a break token for its
+// children, the way things look at the end of layout. Mirrors
+// BoxFragmentBuilder::ShouldBreakInside (box_fragment_builder.h:485-505 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for its HasInsertedChildBreak
+// term: a louis14 line break is a child break token (no
+// last_inline_break_token_), monolithic overflow is decided by
+// FinishFragmentation at the call site, and has_subsequent_children_ (grid,
+// fragmentainer OOF layout) is not ported.
+func (b *BoxFragmentBuilder) ShouldBreakInside() bool { return b.HasInsertedChildBreak() }
+
+// HasInflowChildBreakInside reports whether a child broke before or inside
+// in this box's own flow, so this box breaks inside. Mirrors
+// BoxFragmentBuilder::HasInflowChildBreakInside (box_fragment_builder.h:
+// 507-512 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) HasInflowChildBreakInside() bool { return b.hasInflowChildBreakInside }
+
+// SetHasForcedBreak records a forced break; a space shortage is meaningless
+// past one, so the minimal space shortage is dropped. Mirrors
+// BoxFragmentBuilder::SetHasForcedBreak (box_fragment_builder.h:734-737 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetHasForcedBreak() {
+	b.hasForcedBreak = true
+	b.minimalSpaceShortage = 0
+	b.hasMinimalSpaceShortage = false
+}
+
+// HasForcedBreak mirrors BoxFragmentBuilder::HasForcedBreak
+// (box_fragment_builder.h:739).
+func (b *BoxFragmentBuilder) HasForcedBreak() bool { return b.hasForcedBreak }
+
+// SetHasSeenAllChildren records that every child has been started or
+// finished, so a continuation lays out none from scratch. Mirrors
+// BoxFragmentBuilder::SetHasSeenAllChildren (box_fragment_builder.h:547 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetHasSeenAllChildren() { b.hasSeenAllChildren = true }
+
+// HasSeenAllChildren mirrors BoxFragmentBuilder::HasSeenAllChildren
+// (box_fragment_builder.h:548).
+func (b *BoxFragmentBuilder) HasSeenAllChildren() bool { return b.hasSeenAllChildren }
 
 // SetPreviousBreakAfter records the break-after value of the most recently
 // added in-flow child (PropagateChildBreakValues), or resets it (the
@@ -1328,6 +1490,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
 	}
+	result.HasForcedBreak = b.hasForcedBreak
 	if b.space != nil && b.space.HasBlockFragmentation {
 		result.BlockSizeForFragmentation = b.finalBlockSizeForFragmentation()
 		result.HasBlockSizeForFragmentation = true
