@@ -169,16 +169,14 @@ func classicScrollbarWidth(style *css.Style) float64 {
 }
 
 // placeVerticalScrollbarOnLeft mirrors Blink's
-// LayoutBox::ShouldPlaceVerticalScrollbarOnLeft. Vertical scrollbars go on the
-// physical-left edge for RTL horizontal-tb and for vertical-rl writing modes.
+// LayoutBox::ShouldPlaceVerticalScrollbarOnLeft →
+// ComputedStyle::ShouldPlaceBlockDirectionScrollbarOnLogicalLeft
+// (core/style/computed_style.h:2369-2371 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the vertical scrollbar goes on
+// the physical left only for an RTL horizontal writing mode — vertical-rl
+// keeps it on the right.
 func placeVerticalScrollbarOnLeft(wdm WritingDirectionMode) bool {
-	if wdm.IsFlippedBlocks() {
-		return true
-	}
-	if !wdm.IsVertical() && wdm.IsRTL() {
-		return true
-	}
-	return false
+	return wdm.IsRTL() && !wdm.IsVertical()
 }
 
 // IsIntrinsicKeyword returns true if val is a CSS intrinsic sizing keyword:
