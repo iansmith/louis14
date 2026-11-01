@@ -111,6 +111,12 @@ type Box struct {
 	// default OverflowClipRect for non-scroll containers.
 	IsMulticolContainer bool
 
+	// OverflowClipAxes forwards PhysicalFragment.GetOverflowClipAxes: the
+	// axes along which this box clips its overflow, as layout decided it.
+	// Mirrors Blink's painters reading LayoutObject::GetOverflowClipAxes
+	// (layout_object.h:2058-2069 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	OverflowClipAxes OverflowClipAxes
+
 	// IsFieldsetContainer / IsRenderedLegend forward PhysicalFragment.
 	// IsFieldsetContainer and IsRenderedLegend for the fieldset painter
 	// (legend cutout in the border) and the overflow-clip decision (a
