@@ -136,10 +136,8 @@ func TestMulticolNested_InnerEmitsBreakTokenWhenContentExceedsOuterCol(t *testin
 	innerMCNode := buildTestTree(innerMC, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 
-	// Outer-column fragmentainer: 50w x 50h. The OUTER mc's contentNode BLA
-	// builds the inner mc's constraint space WITHOUT IsBlockSizeOverride
-	// (it's not the inner mc that the outer is forcing; the outer forces only
-	// its anonymous contentNode wrapper).
+	// Outer-column fragmentainer: 50w x 50h, as the OUTER mc's column box
+	// builds the inner mc's constraint space.
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 50, BlockSize: 50}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 50, BlockSize: 50}).

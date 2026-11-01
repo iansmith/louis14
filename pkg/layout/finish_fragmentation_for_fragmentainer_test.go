@@ -171,7 +171,7 @@ func TestColumnSpaceHasNoBlockSizeOverride_LOU484(t *testing.T) {
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
 		Build()
 	mla := NewMulticolLayoutAlgorithm(testContext(), buildTestTree(mc, styles), space)
-	colSpace := mla.createConstraintSpaceForColumn(wdm, 50, 100, Indefinite, nil, true, true, BreakAppealLastResort)
+	colSpace := mla.createConstraintSpaceForColumn(wdm, 50, 100, Indefinite, nil, true, BreakAppealLastResort)
 	if colSpace.IsFixedBlockSize || colSpace.IsBlockSizeOverride {
 		t.Errorf("column space IsFixedBlockSize=%v IsBlockSizeOverride=%v, want neither", colSpace.IsFixedBlockSize, colSpace.IsBlockSizeOverride)
 	}

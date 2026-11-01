@@ -18,7 +18,8 @@ import (
 // holding a 1000px child and a spanner (margin-top:-100px), followed by ten
 // 50px inline-blocks, in a 10-column, 100px-wide multicol. Chrome 155: the
 // 1000px child fills all ten columns (row 100), the spanner sits at y=0, and
-// every inline-block is at y=50 after it; the multicol is 100px tall.
+// every inline-block is at y=50 after it; the multicol is 100px tall. The
+// test's orphans:1 / widows:1 let each 10px column hold one 50px line.
 func TestSpannerPathKeepsLaterContentAfterSpanner_LOU406(t *testing.T) {
 	tall := makeNode("div")
 	spanner := makeNode("div")
@@ -37,7 +38,7 @@ func TestSpannerPathKeepsLaterContentAfterSpanner_LOU406(t *testing.T) {
 		styles[ib] = makeStyle("display", "inline-block", "vertical-align", "top", "width", "100%", "height", "50px")
 	}
 	mc := makeNode("div", kids...)
-	styles[mc] = makeStyle("display", "block", "width", "100px", "column-count", "10", "column-gap", "0")
+	styles[mc] = makeStyle("display", "block", "width", "100px", "column-count", "10", "column-gap", "0", "orphans", "1", "widows", "1")
 	result := layoutMulticolForTest(t, mc, styles)
 
 	spanners := spannerChildren(result)
