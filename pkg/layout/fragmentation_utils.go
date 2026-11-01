@@ -401,6 +401,18 @@ func ClampedToValidFragmentainerCapacityForBuilder(builder *BoxFragmentBuilder, 
 	return ClampedToValidFragmentainerCapacity(length)
 }
 
+// shouldCloneBoxEndDecorations reports whether a box repeats its block-end
+// border/padding in this fragment: cloned block-start decorations make the
+// block-end ones cloned too, unless the fragment is known to be the box's
+// last (known to fit), and only when it is fragmented outside the initial
+// column-balancing pass. Mirrors SetupFragmentBuilderForFragmentation
+// (fragmentation_utils.cc:440-443, :450-451, :484-495 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func shouldCloneBoxEndDecorations(space ConstraintSpace, cloneBoxStartDecorations, isKnownToFitInFragmentainer bool) bool {
+	return space.HasBlockFragmentation && !space.IsInitialColumnBalancingPass &&
+		cloneBoxStartDecorations && !isKnownToFitInFragmentainer
+}
+
 // hasCloneBoxDecorationBreak reports whether style has
 // box-decoration-break:clone (Blink: Style().BoxDecorationBreak() ==
 // EBoxDecorationBreak::kClone); a builder without a style slices.
