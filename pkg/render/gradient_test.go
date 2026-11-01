@@ -171,3 +171,13 @@ func TestParseConicGradient_RepeatingPrefix(t *testing.T) {
 		t.Errorf("multi-position expansion should yield 4 stops, got %d", len(stops))
 	}
 }
+
+// TestParseConicGradient_SingleStopTwoPositions: "green 0 0" is one color
+// stop with two positions, i.e. the two stops the grammar requires (CSS
+// Images 4 §3.4; border-image-021 / -outset-004 use conic-gradient(green 0 0)).
+func TestParseConicGradient_SingleStopTwoPositions(t *testing.T) {
+	_, _, _, stops, ok, _ := parseConicGradient("conic-gradient(green 0 0)", 100, 100, css.NewStyle())
+	if !ok || len(stops) != 2 {
+		t.Fatalf("parse: ok=%v len(stops)=%d, want ok with 2 stops", ok, len(stops))
+	}
+}

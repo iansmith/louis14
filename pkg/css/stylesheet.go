@@ -5091,6 +5091,14 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
+		// Reject negative / unitless `background-size` (Blink
+		// ParseBackgroundSize → ConsumeBackgroundSize, kNonNegative,
+		// css_parsing_utils.cc:5182 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		// Required by WPT background-size-with-negative-value.
+		if property == "background-size" && !isValidBackgroundSizeValue(value) {
+			continue
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {

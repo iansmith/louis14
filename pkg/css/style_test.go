@@ -508,7 +508,7 @@ func TestGetTextEmphasisLineLogicalOver_BlinkCollapseTable(t *testing.T) {
 	}
 }
 
-// TestGetBorderImageOutset verifies the border-image-outset parser per CSS
+// TestGetBorderImageOutset verifies (via NinePieceImage.ImageOutsets) the border-image-outset parser per CSS
 // Backgrounds 3 §6.2. Values can be <length-percentage>{1,4} or <number>{1,4};
 // numbers are multipliers of the corresponding border-width.
 func TestGetBorderImageOutset(t *testing.T) {
@@ -562,7 +562,7 @@ func TestGetBorderImageOutset(t *testing.T) {
 			if c.raw != "" {
 				s.Set("border-image-outset", c.raw)
 			}
-			got := s.GetBorderImageOutset(c.borderWidths)
+			got := s.GetBorderImage().ImageOutsets(c.borderWidths)
 			if got != c.want {
 				t.Errorf("GetBorderImageOutset(%q) = %v, want %v", c.raw, got, c.want)
 			}

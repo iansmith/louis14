@@ -266,7 +266,7 @@ type BoxFragmentBuilder struct {
 	// and BoxFragmentBuilder::has_inflow_child_break_inside_,
 	// has_forced_break_ and has_seen_all_children_ (box_fragment_builder.h:
 	// 794-796 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	childBreakTokens          []*BlockBreakToken
+	childBreakTokens          []BreakToken
 	hasInflowChildBreakInside bool
 	hasForcedBreak            bool
 	hasSeenAllChildren        bool
@@ -866,18 +866,18 @@ func (b *BoxFragmentBuilder) AddBreakBeforeChild(child *LayoutInputNode, appeal 
 // is in a parallel flow, this box breaks inside. Mirrors Blink's
 // BoxFragmentBuilder::AddBreakToken (box_fragment_builder.cc:381-389 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (b *BoxFragmentBuilder) AddBreakToken(token *BlockBreakToken, isInParallelFlow bool) {
+func (b *BoxFragmentBuilder) AddBreakToken(token BreakToken, isInParallelFlow bool) {
 	b.childBreakTokens = append(b.childBreakTokens, token)
 	b.hasInflowChildBreakInside = b.hasInflowChildBreakInside || !isInParallelFlow
 }
 
 // ChildBreakTokens returns the child break tokens added so far.
-func (b *BoxFragmentBuilder) ChildBreakTokens() []*BlockBreakToken { return b.childBreakTokens }
+func (b *BoxFragmentBuilder) ChildBreakTokens() []BreakToken { return b.childBreakTokens }
 
 // LastChildBreakToken returns the child break token added last. Mirrors
 // BoxFragmentBuilder::LastChildBreakToken (box_fragment_builder.h:741-744 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (b *BoxFragmentBuilder) LastChildBreakToken() *BlockBreakToken {
+func (b *BoxFragmentBuilder) LastChildBreakToken() BreakToken {
 	return b.childBreakTokens[len(b.childBreakTokens)-1]
 }
 

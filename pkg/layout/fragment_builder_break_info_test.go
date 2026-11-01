@@ -69,7 +69,7 @@ func TestBoxFragmentBuilder_AddBreakBeforeChild(t *testing.T) {
 	if len(tokens) != 3 {
 		t.Fatalf("ChildBreakTokens = %d, want 3", len(tokens))
 	}
-	if last := builder.LastChildBreakToken(); last.Node != inflow || !last.IsBreakBefore || last.IsForcedBreak {
+	if last := builder.LastChildBreakToken().(*BlockBreakToken); last.Node != inflow || !last.IsBreakBefore || last.IsForcedBreak {
 		t.Errorf("LastChildBreakToken = %+v, want an unforced break-before for the in-flow child", last)
 	}
 	if got := builder.Build().MinSpaceShortage; got != 30 {
@@ -80,7 +80,7 @@ func TestBoxFragmentBuilder_AddBreakBeforeChild(t *testing.T) {
 	if !builder.HasForcedBreak() {
 		t.Error("forced break: HasForcedBreak = false")
 	}
-	if !builder.LastChildBreakToken().IsForcedBreak {
+	if !builder.LastChildBreakToken().(*BlockBreakToken).IsForcedBreak {
 		t.Error("forced break: the break-before token is not forced")
 	}
 	result := builder.Build()
@@ -112,7 +112,7 @@ func TestBoxFragmentBuilder_AddBreakToken(t *testing.T) {
 	if !builder.HasInflowChildBreakInside() {
 		t.Error("same-flow token: HasInflowChildBreakInside = false")
 	}
-	if got := builder.ChildBreakTokens(); !slices.Equal(got, []*BlockBreakToken{floatToken, inflowToken}) {
+	if got := builder.ChildBreakTokens(); !slices.Equal(got, []BreakToken{floatToken, inflowToken}) {
 		t.Errorf("ChildBreakTokens = %v, want the tokens in the order added", got)
 	}
 }

@@ -273,8 +273,8 @@ func TestNestedSpannerParentStopsChildLoop_LOU410(t *testing.T) {
 		if !tok.IsCausedByColumnSpanner {
 			t.Error("outer token is not caused by a column spanner")
 		}
-		if len(tok.ChildBreakTokens) != 1 || tok.ChildBreakTokens[0].Node != containerNode ||
-			!tok.ChildBreakTokens[0].IsBreakInside() {
+		if len(tok.ChildBreakTokens) != 1 || tok.ChildBreakTokens[0].InputNode() != containerNode ||
+			!tok.ChildBreakTokens[0].(*BlockBreakToken).IsBreakInside() {
 			t.Errorf("outer child tokens = %+v, want one break inside container", tok.ChildBreakTokens)
 		}
 		path := res.ColumnSpannerPath
@@ -327,8 +327,8 @@ func TestNestedSpannerParentStopsChildLoop_LOU410(t *testing.T) {
 			if !tok.IsCausedByColumnSpanner {
 				t.Error("column token is not caused by a column spanner")
 			}
-			if len(tok.ChildBreakTokens) != 1 || tok.ChildBreakTokens[0].Node != wNode ||
-				tok.ChildBreakTokens[0].IsBreakBefore {
+			if len(tok.ChildBreakTokens) != 1 || tok.ChildBreakTokens[0].InputNode() != wNode ||
+				tok.ChildBreakTokens[0].(*BlockBreakToken).IsBreakBefore {
 				t.Errorf("column child tokens = %+v, want w's own token", tok.ChildBreakTokens)
 			}
 			path := res.ColumnSpannerPath
