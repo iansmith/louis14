@@ -1912,20 +1912,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, resumeChildTokens[child])
 			}
 
-			// For a <fieldset>, the first/last baseline comes from the
-			// anonymous content block, not the <legend>. Mirrors Blink's
-			// FieldsetLayoutAlgorithm, which exports the content fragment's
-			// baselines (fieldset_layout_algorithm.cc:409-419).
-			isLegendOfFieldset := bla.node.DOMNode != nil &&
-				bla.node.DOMNode.TagName == "fieldset" &&
-				child.DOMNode != nil && child.DOMNode.TagName == "legend"
-
 			// CSS Inline §4.2: propagate the first in-flow block child's
 			// first baseline as this container's first baseline.
 			// CSS Align §9.1: orthogonal children don't contribute baselines
 			// in the parent's writing mode, so skip them.
 			// Shared guard: capture first baseline in layout order (mirrors Blink).
-			if !isLegendOfFieldset && !isOrthogonal && !hasFirstChildBaseline && childResult.HasBaseline {
+			if !isOrthogonal && !hasFirstChildBaseline && childResult.HasBaseline {
 				firstChildBaseline = childResult.Baseline
 				firstChildBlockOffset = actualChildBlockOff
 				hasFirstChildBaseline = true
@@ -1964,7 +1956,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Flex/grid containers that don't set LastBaseline fall back to
 			// Baseline (first baseline): they export content-derived baseline
 			// regardless of overflow per CSS Align §4.3.
-			if !isLegendOfFieldset && !isOrthogonal {
+			if !isOrthogonal {
 				childLastBL := childResult.LastBaseline
 				if childLastBL == 0 && childStyle != nil {
 					d := childStyle.GetDisplay()
@@ -2316,132 +2308,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	//
 	// A positioned element resolves absolute candidates but must propagate
 	// fixed candidates upward. The root resolves ALL candidates.
-	var propagatedOOF []OutOfFlowCandidate
-	if len(bla.containerBuilder.outOfFlowCandidates) > 0 {
-		// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
-		// to an inline element is sized against the inline's first/last-line
-		// fragment union rect. The block that owns the inline's line
-		// fragments — its inline formatting context root — has the geometry.
-		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(bla.containerBuilder.outOfFlowCandidates)
-
-		if len(inlineCBCandidates) > 0 {
-			unresolved, extra := layoutInlineContainingBlockCandidates(bla.ctx, bla.containerBuilder, wdm,
-				LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, geom, inlineCBCandidates)
-			regularCandidates = append(regularCandidates, unresolved...)
-			propagatedOOF = append(propagatedOOF, extra...)
-		}
-
-		// Blink's IsFixedContainer / IsAbsoluteContainer
-		// (layout_object.cc:1849-1912 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): containment, transforms,
-		// filters and the will-change of one contain all positioned
-		// descendants; a non-static position or an abspos-only will-change
-		// contains absolute ones only.
-		isFixedContainer := bla.node.IsFixedContainer()
-		isAbsoluteContainer := bla.node.IsAbsoluteContainer()
-		isRoot := bla.space.IsRootElement
-
-		if isRoot {
-			// Root element: resolve ALL OOF candidates (both absolute and fixed)
-			// with ICB (viewport) dimensions.
-			var icbInline, icbBlock float64
-			if wdm.IsHorizontal() {
-				icbInline = bla.ctx.ViewportWidth
-				icbBlock = bla.ctx.ViewportHeight
-			} else {
-				icbInline = bla.ctx.ViewportHeight
-				icbBlock = bla.ctx.ViewportWidth
-			}
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                bla.ctx,
-				containingBlockWDM: wdm,
-				// ICB is the viewport: no border or padding, so padding-box == content-box.
-				containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
-				containingBlockPadding: LogicalEdges{},
-				geom:                   geom,
-				resolvesFixed:          true,
-			}
-			oofPart.LayoutCandidates(regularCandidates, bla.containerBuilder)
-		} else if isFixedContainer {
-			// CSS Containment / CSS Transforms: containment, transforms, filters,
-			// and will-change:transform/perspective/filter make this element a
-			// containing block for ALL positioned descendants, including fixed.
-			//
-			// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
-			// CB size = padding-box = content + padding (borders excluded).
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                bla.ctx,
-				containingBlockWDM: wdm,
-				containingBlockSize: LogicalSize{
-					InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
-					BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
-				},
-				containingBlockPadding: geom.Padding,
-				geom:                   geom,
-				resolvesFixed:          true,
-			}
-			oofPart.LayoutCandidates(regularCandidates, bla.containerBuilder)
-		} else if isAbsoluteContainer {
-			// Positioned element OR will-change:position-like CB: resolve
-			// absolute candidates here, but propagate fixed candidates
-			// upward toward the ICB. (Will Change §2.2: abspos-only CB
-			// triggers mimic position:relative — fixed still escapes.)
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range regularCandidates {
-				if cand.IsFixedPosition {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
-			}
-			// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
-			// context (a column flow, paged context, etc.), abspos descendants
-			// can't be resolved here — their layout must wait until we reach the
-			// outer fragmentation root, which will lay them out per fragmentainer
-			// (per column). Promote each absolute candidate to a fragmentainer
-			// descendant so the descendant payload bubbles up via
-			// FragmentedOofData. Mirrors Blink's
-			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
-			// `out_of_flow_layout_part.cc:1190-1200 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
-			// `should_add_outer_fragmentainer_children_` branch). The static
-			// position arrives fragment-local in this CB's content-box coords
-			// (it accumulated upward via PropagateOOFCandidates);
-			// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
-			// outgoing fragment isn't yet built, so leave Fragment=nil — the
-			// parent's PropagateOOFFragmentainerDescendants will fill it in.
-			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
-				previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
-				for _, cand := range absoluteCandidates {
-					d := LogicalOofNodeForFragmentation{Candidate: cand}
-					bla.containerBuilder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
-					bla.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
-				}
-				absoluteCandidates = nil
-			}
-			if len(absoluteCandidates) > 0 {
-				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
-				// CB size = padding-box = content + padding (borders excluded).
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                bla.ctx,
-					containingBlockWDM: wdm,
-					containingBlockSize: LogicalSize{
-						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
-						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
-					},
-					containingBlockPadding: geom.Padding,
-					geom:                   geom,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, bla.containerBuilder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = append(propagatedOOF, fixedCandidates...)
-		} else {
-			// Not positioned, not root: propagate ALL candidates upward.
-			propagatedOOF = append(propagatedOOF, regularCandidates...)
-		}
-	}
+	propagatedOOF := resolveOutOfFlowCandidates(bla.ctx, bla.containerBuilder, bla.node, bla.space, geom,
+		LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, previouslyConsumed, declaredBlockStart)
 
 	// LOU-365: promote collected parallel-flow continuations into the
 	// unified reader. Placed AFTER Gates A/B on purpose: the parent's own
@@ -2570,6 +2438,148 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	return result
+}
+
+// resolveOutOfFlowCandidates lays out the out-of-flow candidates collected on
+// builder that node contains, and returns those it must propagate to an
+// ancestor containing block. contentSize is the content-box size of node's
+// fragment; previouslyConsumed is the block-size earlier fragments consumed
+// and declaredBlockStart the declared block-start border+padding. Shared by
+// BlockLayoutAlgorithm and FieldsetLayoutAlgorithm, standing in for the
+// OutOfFlowLayoutPart run of Blink's
+// BoxFragmentBuilder::HandleOofsAndSpecialDescendants
+// (box_fragment_builder.cc, called from block_layout_algorithm.cc and
+// fieldset_layout_algorithm.cc:147 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder, node *LayoutInputNode, space ConstraintSpace, geom FragmentGeometry, contentSize LogicalSize, previouslyConsumed, declaredBlockStart float64) []OutOfFlowCandidate {
+	if len(builder.outOfFlowCandidates) == 0 {
+		return nil
+	}
+	wdm := space.WritingDirection
+	var propagatedOOF []OutOfFlowCandidate
+	// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
+	// to an inline element is sized against the inline's first/last-line
+	// fragment union rect. The block that owns the inline's line
+	// fragments — its inline formatting context root — has the geometry.
+	inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
+
+	if len(inlineCBCandidates) > 0 {
+		unresolved, extra := layoutInlineContainingBlockCandidates(ctx, builder, wdm,
+			contentSize, geom, inlineCBCandidates)
+		regularCandidates = append(regularCandidates, unresolved...)
+		propagatedOOF = append(propagatedOOF, extra...)
+	}
+
+	// Blink's IsFixedContainer / IsAbsoluteContainer
+	// (layout_object.cc:1849-1912 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): containment, transforms,
+	// filters and the will-change of one contain all positioned
+	// descendants; a non-static position or an abspos-only will-change
+	// contains absolute ones only.
+	isFixedContainer := node.IsFixedContainer()
+	isAbsoluteContainer := node.IsAbsoluteContainer()
+	isRoot := space.IsRootElement
+
+	if isRoot {
+		// Root element: resolve ALL OOF candidates (both absolute and fixed)
+		// with ICB (viewport) dimensions.
+		var icbInline, icbBlock float64
+		if wdm.IsHorizontal() {
+			icbInline = ctx.ViewportWidth
+			icbBlock = ctx.ViewportHeight
+		} else {
+			icbInline = ctx.ViewportHeight
+			icbBlock = ctx.ViewportWidth
+		}
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                ctx,
+			containingBlockWDM: wdm,
+			// ICB is the viewport: no border or padding, so padding-box == content-box.
+			containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
+			containingBlockPadding: LogicalEdges{},
+			geom:                   geom,
+			resolvesFixed:          true,
+		}
+		oofPart.LayoutCandidates(regularCandidates, builder)
+	} else if isFixedContainer {
+		// CSS Containment / CSS Transforms: containment, transforms, filters,
+		// and will-change:transform/perspective/filter make this element a
+		// containing block for ALL positioned descendants, including fixed.
+		//
+		// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+		// CB size = padding-box = content + padding (borders excluded).
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                ctx,
+			containingBlockWDM: wdm,
+			containingBlockSize: LogicalSize{
+				InlineSize: contentSize.InlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+				BlockSize:  contentSize.BlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+			},
+			containingBlockPadding: geom.Padding,
+			geom:                   geom,
+			resolvesFixed:          true,
+		}
+		oofPart.LayoutCandidates(regularCandidates, builder)
+	} else if isAbsoluteContainer {
+		// Positioned element OR will-change:position-like CB: resolve
+		// absolute candidates here, but propagate fixed candidates
+		// upward toward the ICB. (Will Change §2.2: abspos-only CB
+		// triggers mimic position:relative — fixed still escapes.)
+		var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
+		for _, cand := range regularCandidates {
+			if cand.IsFixedPosition {
+				fixedCandidates = append(fixedCandidates, cand)
+			} else {
+				absoluteCandidates = append(absoluteCandidates, cand)
+			}
+		}
+		// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
+		// context (a column flow, paged context, etc.), abspos descendants
+		// can't be resolved here — their layout must wait until we reach the
+		// outer fragmentation root, which will lay them out per fragmentainer
+		// (per column). Promote each absolute candidate to a fragmentainer
+		// descendant so the descendant payload bubbles up via
+		// FragmentedOofData. Mirrors Blink's
+		// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
+		// `out_of_flow_layout_part.cc:1190-1200 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
+		// `should_add_outer_fragmentainer_children_` branch). The static
+		// position arrives fragment-local in this CB's content-box coords
+		// (it accumulated upward via PropagateOOFCandidates);
+		// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
+		// outgoing fragment isn't yet built, so leave Fragment=nil — the
+		// parent's PropagateOOFFragmentainerDescendants will fill it in.
+		if space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+			previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
+			for _, cand := range absoluteCandidates {
+				d := LogicalOofNodeForFragmentation{Candidate: cand}
+				builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+				builder.AddOutOfFlowFragmentainerDescendant(d)
+			}
+			absoluteCandidates = nil
+		}
+		if len(absoluteCandidates) > 0 {
+			// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+			// CB size = padding-box = content + padding (borders excluded).
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                ctx,
+				containingBlockWDM: wdm,
+				containingBlockSize: LogicalSize{
+					InlineSize: contentSize.InlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+					BlockSize:  contentSize.BlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+				},
+				containingBlockPadding: geom.Padding,
+				geom:                   geom,
+			}
+			if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
+				fixedCandidates = append(fixedCandidates, extra...)
+			}
+		}
+		propagatedOOF = append(propagatedOOF, fixedCandidates...)
+	} else {
+		// Not positioned, not root: propagate ALL candidates upward.
+		propagatedOOF = append(propagatedOOF, regularCandidates...)
+	}
+	return propagatedOOF
 }
 
 // inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
@@ -2972,6 +2982,14 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 
 	display := style.GetDisplay()
 
+	// A fieldset container is laid out by FieldsetLayoutAlgorithm whatever
+	// its display; its anonymous content box carries the display type and
+	// multicol. Mirrors DetermineAlgorithmAndRun's box.IsFieldset() branch
+	// (block_node.cc:177-178 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if node.IsFieldsetContainer() {
+		return NewFieldsetLayoutAlgorithm(ctx, node, space).Layout()
+	}
+
 	switch display {
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
@@ -3080,6 +3098,13 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	// DisplayListItem, losing the flow-root bit), inline-block, table /
 	// inline-table, table-cell, table-caption, flex/grid.
 	if style.EstablishesNewFormattingContext() {
+		return true
+	}
+
+	// A fieldset container always establishes a new formatting context
+	// (LayoutFieldset::CreatesNewFormattingContext, forms/layout_fieldset.h:
+	// 25-28 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if len(nodes) > 0 && nodes[0].IsFieldsetContainer() {
 		return true
 	}
 

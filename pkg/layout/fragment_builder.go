@@ -266,6 +266,20 @@ func (b *BoxFragmentBuilder) SetConstraintSpace(space *ConstraintSpace) {
 	b.space = space
 }
 
+// GetBoxType is the fragment's box type: the one set, else computed from
+// the node. Mirrors Blink's FragmentBuilder::GetBoxType
+// (fragment_builder.cc:81-96 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// only the rendered-legend inference is ported.
+func (b *BoxFragmentBuilder) GetBoxType() BoxType {
+	if b.boxType != BoxTypeNormal {
+		return b.boxType
+	}
+	if b.layoutNode.IsRenderedLegend() {
+		return BoxTypeRenderedLegend
+	}
+	return BoxTypeNormal
+}
+
 // SetBoxType sets the type of box the fragment is. Mirrors Blink's
 // FragmentBuilder::SetBoxType.
 func (b *BoxFragmentBuilder) SetBoxType(t BoxType) {
@@ -1219,7 +1233,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		IsMonolithic:               b.isMonolithic,
 		IsFragmentationContextRoot: b.isBlockFragmentationContextRoot,
 		notFirstForNode:            b.notFirstForNode,
-		BoxType:                    b.boxType,
+		BoxType:                    b.GetBoxType(),
 	}
 
 	fragment.updateScrollableOverflow()

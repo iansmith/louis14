@@ -252,8 +252,13 @@ func AllowsColumns(node *html.Node) bool {
 // LayoutBlockFlow::UpdateForMulticol's ShouldBeMulticol
 // (layout_block_flow.cc:650-653 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 // Anonymous boxes (no DOM node) allow columns.
+//
+// Multicol on a fieldset is applied to its anonymous content box, not the
+// fieldset itself (layout_block_flow.cc:657-662 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func shouldBeMulticol(node *LayoutInputNode, style *css.Style) bool {
-	return isMulticolContainer(style) && (node.DOMNode == nil || AllowsColumns(node.DOMNode))
+	return isMulticolContainer(style) && !node.IsFieldsetContainer() &&
+		(node.DOMNode == nil || AllowsColumns(node.DOMNode))
 }
 
 // resolveColumnCount implements CSS Multicol §3.4 — the pseudo-algorithm

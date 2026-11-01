@@ -429,7 +429,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// CSS 2.1 §9.2.1.1: If a block container has both inline-level and
 	// block-level children, generate anonymous block boxes around consecutive
 	// runs of inline-level children.
-	lin.children = b.maybeWrapAnonymousBlocks(rawChildren, style)
+	// A fieldset container holds its rendered legend and an anonymous
+	// fieldset content box with the rest (LayoutFieldset::AddChild,
+	// layout_fieldset.cc:32-56 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if IsFieldsetContainerElement(node, style) {
+		lin.children = b.buildFieldsetChildren(lin, rawChildren)
+	} else {
+		lin.children = b.maybeWrapAnonymousBlocks(rawChildren, style)
+	}
 
 	// CSS Pseudo 4 §3.2: a ::first-line pseudo-element on an ancestor block
 	// applies to the first formatted line of that block, even when the actual

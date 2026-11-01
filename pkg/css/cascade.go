@@ -527,6 +527,24 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("list-style-type", "decimal")
 	case "li":
 		style.Set("display", "list-item")
+
+	// HTML §15.3.13 fieldset / legend UA rules. Mirrors Blink html.css:396-408
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+	//   fieldset { display: block; margin-inline: 2px;
+	//              border: groove 2px ThreeDFace;
+	//              padding-block: 0.35em 0.625em; padding-inline: 0.75em;
+	//              min-inline-size: min-content; }
+	//   legend { display: block; padding-inline: 2px; }
+	case "fieldset":
+		style.Set("display", "block")
+		expandShorthand(style, "margin-inline", "2px")
+		setFormBorder(style, "2px", "groove", "ThreeDFace")
+		expandShorthand(style, "padding-block", "0.35em 0.625em")
+		expandShorthand(style, "padding-inline", "0.75em")
+		expandShorthand(style, "min-inline-size", "min-content")
+	case "legend":
+		style.Set("display", "block")
+		expandShorthand(style, "padding-inline", "2px")
 	}
 }
 
