@@ -11947,6 +11947,9 @@ const (
 	ClipPathCircle  ClipPathType = "circle"
 	ClipPathEllipse ClipPathType = "ellipse"
 	ClipPathPolygon ClipPathType = "polygon"
+	// ClipPathInset is the inset() basic shape. Mirrors Blink's
+	// BasicShapeInset (core/style/basic_shapes.h).
+	ClipPathInset ClipPathType = "inset"
 	// ClipPathReference is the `url(#id)` variant. Carries a
 	// document-fragment id resolved at paint time against the SVG
 	// resource registry. Mirrors Blink's ReferenceClipPathOperation
@@ -11971,6 +11974,18 @@ type ClipPath struct {
 	CxPct     float64 // center x as percentage (-1 = not set)
 	CyPct     float64 // center y as percentage (-1 = not set)
 	PointsPct []bool  // per-coordinate: true = percentage, false = px
+
+	// inset() offsets from the reference box edges, order top, right,
+	// bottom, left (BasicShapeInset top_/right_/bottom_/left_). InsetsPct
+	// marks a percentage (0-100): top/bottom resolve against the box
+	// height, right/left against its width.
+	Insets    [4]float64
+	InsetsPct [4]bool
+	// inset() `round` corner radii, order TL, TR, BR, BL
+	// (BasicShapeInset *_radius_). InsetRadiiPct[i] = {Rx is %, Ry is %}:
+	// Rx resolves against the box width, Ry against its height.
+	InsetRadii    EllipticalRadii
+	InsetRadiiPct [4][2]bool
 
 	// ReferenceID is the fragment id of a `url(#id)` clip-path
 	// reference (without the leading `#`). Populated only when Type
