@@ -147,3 +147,37 @@ func TestSyntheticImageInheritsDirection(t *testing.T) {
 		t.Errorf("synthetic img display = %q, want \"inline\"", got)
 	}
 }
+
+// LOU-484: an atomic inline lays out with its parent line's whole
+// percentage resolution size, so width:100% on an inline-block resolves
+// against the containing block's inline-size even when the containing
+// block's block-size is indefinite (auto height). Mirrors Blink's
+// BlockNode::LayoutAtomicInline (block_node.cc:1477-1481 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which copies the parent
+// space's PercentageResolutionSize unconditionally. The bug copied it only
+// when its block-size was positive, leaving the inline component 0, so a
+// width:100% inline-block in an auto-height block collapsed to width 0 (a
+// multicol column hid this only while its space carried a fixed block-size).
+func TestInlineBlockPercentWidthInAutoHeightBlock_LOU484(t *testing.T) {
+	ib := makeNode("span")
+	block := makeNode("div", ib)
+	styles := map[*html.Node]*css.Style{
+		block: makeStyle("display", "block", "width", "100px"),
+		ib:    makeStyle("display", "inline-block", "width", "100%", "height", "10px"),
+	}
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: Indefinite}).
+		Build()
+
+	result := NewBlockLayoutAlgorithm(testContext(), buildTestTree(block, styles), space).Layout()
+
+	ibFrag := findFragmentByNode(result.Fragment, ib)
+	if ibFrag == nil {
+		t.Fatal("inline-block fragment not found")
+	}
+	if got := ibFrag.Size.WidthF64(); got != 100 {
+		t.Errorf("inline-block width: got %.1f, want 100 (width:100%% of the 100px containing block)", got)
+	}
+}
