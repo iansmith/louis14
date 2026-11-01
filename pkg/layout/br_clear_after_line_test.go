@@ -16,7 +16,7 @@ import (
 // aborted with LayoutResultOutOfFragmentainerSpace and the block breaks
 // before it (:1501-1503); the line breaker first ends the line before such
 // a BR when anything precedes it on the line (LineBreaker::
-// HandleForcedLineBreak, inline/line_breaker.cc:2867-2903).
+// HandleForcedLineBreak, inline/line_breaker.cc:2866-2903).
 
 // brClearTestStyles styles p as 10px Ahem lines and br as a BR clearing
 // clearType.

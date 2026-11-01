@@ -208,13 +208,11 @@ type LayoutResult struct {
 // Blink's names with the owning class as prefix (LayoutResult::kSuccess →
 // LayoutResultSuccess), as InlineItem::Type values are InlineItem*.
 //
-// louis14 produces only LayoutResultSuccess today. Blink's sole producer of
-// LayoutResultOutOfFragmentainerSpace is InlineLayoutAlgorithm aborting a
-// line whose <br clear> needs clearance past the fragmentainer
-// (inline_layout_algorithm.cc:1501-1503, AddAnyClearanceAfterLine
-// :1058-1061 @ a9f50e522efa); louis14 has no
-// ExclusionSpace::NeedsClearancePastFragmentainer and does not route line
-// boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak is
+// louis14 produces LayoutResultSuccess and, like Blink's sole producer,
+// LayoutResultOutOfFragmentainerSpace for a line whose <br clear> needs
+// clearance past the fragmentainer (inline_layout_algorithm.cc:1501-1503,
+// AddAnyClearanceAfterLine :1058-1061 @ a9f50e522efa), as a per-line value
+// of addAnyClearanceAfterLine. LayoutResultNeedsEarlierBreak is
 // never returned: where Blink aborts with it and the same algorithm's
 // HandleNonsuccessfulLayoutResult relays out (block_layout_algorithm.cc:
 // 617-626), louis14's BlockLayoutAlgorithm calls relayoutAndBreakEarlier
