@@ -747,10 +747,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
-		// no Blink analog: Blink decides per line box (non-zero height,
-		// fragmentation_utils.cc:885-892 @ a9f50e522efa); louis14 places
-		// inline content as one unit.
-		hasBreakOpportunityBeforeNextChild = true
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -1504,17 +1500,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// consumed size while its column height is unknown).
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					// CSS Fragmentation §3.4.2: a non-last fragment's background
-					// extends to the fragmentainer boundary — here only inside
-					// balanced columns and when content was actually placed
-					// (blockCursor > 0): extending an empty fragment (e.g.
-					// break-inside:avoid on the first child) would confuse the
-					// balance loop. Blink stretches unconditionally
-					// (ConsumeRemainingFragmentainerSpace, :3167, moving the
-					// inflow position, :3084-3095); the gate is louis14's.
-					if blockCursor > 0 && bla.space.IsInsideBalancedColumns {
-						blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
-					}
+					// The breaking fragment occupies the rest of the
+					// fragmentainer, on every break-before (forced :3167, soft
+					// :3287, block_layout_algorithm.cc @ a9f50e522efa). While
+					// the column height is unknown (the initial balancing
+					// pass) this is a no-op, so the balance loop measures the
+					// content alone.
+					blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 					// Phase 12g: a soft break before the child reports its
 					// space shortage so the multicol balancing loop can stretch
 					// (Blink BreakBeforeChild → PropagateSpaceShortage,
@@ -1633,7 +1625,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
 			// 2767-2772 @ a9f50e522efa).
 			if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
-				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(resumeChildTokens[child])
+				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, resumeChildTokens[child])
 			}
 
 			// For a <fieldset>, the first/last baseline comes from the
@@ -2558,10 +2550,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// pending state takes precedence — consumed = pendingIntrinsicAtBreak
 	// preserves the pre-6.4.c frag-overflow reader's emitted value.
 	if pendingShouldBreakInside || didBreakSelf {
-		seqNum := 0
-		if incomingBreakToken != nil {
-			seqNum = incomingBreakToken.SequenceNumber + 1
-		}
 		var childBreakTokens []*BlockBreakToken
 		var hasSeenAllChildren bool
 		var isAtBlockEnd bool
@@ -2620,7 +2608,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			Node:                    bla.node,
 			IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
 			ConsumedBlockSize:       layoutunit.FromFloat64Round(consumedBlockSize),
-			SequenceNumber:          seqNum,
+			SequenceNumber:          sequenceNumberAfter(incomingBreakToken),
 			ChildBreakTokens:        childBreakTokens,
 			HasSeenAllChildren:      hasSeenAllChildren,
 			IsAtBlockEnd:            isAtBlockEnd,

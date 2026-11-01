@@ -160,16 +160,21 @@ func ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBr
 	return previousBreakToken == nil || !previousBreakToken.IsAtBlockEnd
 }
 
-// HasBreakOpportunityBeforeNextChild reports whether placing a block child
-// leaves a class A breakpoint before its next sibling, giving that sibling
-// container separation: it does unless the child resumed at its block end,
-// i.e. sits in a parallel flow that must not affect this flow. Mirrors the
-// box-fragment branch of Blink's HasBreakOpportunityBeforeNextChild
-// (fragmentation_utils.cc:870-883 @ a9f50e522efa); the line-box branch
-// (:885-892) has no louis14 caller, since inline content is placed as one
-// unit rather than line by line.
-func HasBreakOpportunityBeforeNextChild(incomingChildBreakToken *BlockBreakToken) bool {
-	return incomingChildBreakToken == nil || !incomingChildBreakToken.IsAtBlockEnd
+// HasBreakOpportunityBeforeNextChild reports whether placing a child leaves
+// a class A breakpoint before its next sibling, giving that sibling
+// container separation. A box does unless it resumed at its block end, i.e.
+// sits in a parallel flow that must not affect this flow; a line box does
+// only when it has non-zero block-size (the zero-height lines around a
+// block-in-inline do not count). Mirrors Blink's
+// HasBreakOpportunityBeforeNextChild (fragmentation_utils.cc:870-892 @
+// a9f50e522efa). Blink reads the line box's writing direction off its
+// style; louis14 line boxes carry none, so wdm is the container's, which a
+// line box shares.
+func HasBreakOpportunityBeforeNextChild(wdm WritingDirectionMode, childFragment *PhysicalFragment, incomingChildBreakToken *BlockBreakToken) bool {
+	if childFragment.Type != FragmentLineBox {
+		return incomingChildBreakToken == nil || !incomingChildBreakToken.IsAtBlockEnd
+	}
+	return NewLogicalFragment(wdm, childFragment).BlockSize() != 0
 }
 
 // ShouldIncludeBlockStartBorderPadding reports whether this fragment carries
