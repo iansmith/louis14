@@ -9,7 +9,7 @@ import (
 
 // layoutSelfCollapsingProbe lays out a block styled with props holding the
 // given children (each with its own style), in a 200px-wide block flow.
-func layoutSelfCollapsingProbe(t *testing.T, token *BlockBreakToken, props []string, kids ...[]string) *LayoutResult {
+func layoutSelfCollapsingProbe(t *testing.T, token *BlockBreakToken, newFC bool, props []string, kids ...[]string) *LayoutResult {
 	t.Helper()
 	styles := map[*html.Node]*css.Style{}
 	var kidNodes []*html.Node
@@ -21,7 +21,7 @@ func layoutSelfCollapsingProbe(t *testing.T, token *BlockBreakToken, props []str
 	el := makeNode("div", kidNodes...)
 	styles[el] = makeStyle(append([]string{"display", "block"}, props...)...)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	b := NewConstraintSpaceBuilder(wdm, wdm, false).
+	b := NewConstraintSpaceBuilder(wdm, wdm, newFC).
 		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite})
 	if token != nil {
@@ -34,7 +34,7 @@ func layoutSelfCollapsingProbe(t *testing.T, token *BlockBreakToken, props []str
 // algorithm reports it self-collapsing when its BFC block-offset is still
 // unresolved at the end of layout: no block-start or block-end border or
 // padding, nothing that resolves it (a non-self-collapsing child, a line
-// box), a zero block-size, not resumed after a break, not a new formatting
+// box), a zero block-size, not resumed after a break inside, not a new formatting
 // context. A float alone does not resolve it (an adjoining float). Mirrors
 // BlockLayoutAlgorithm::FinishLayout → SetIsSelfCollapsing
 // (block_layout_algorithm.cc:1406-1420, :1455-1462 @
@@ -44,23 +44,25 @@ func TestBlockLayout_IsSelfCollapsingDecidedByTheBlock(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		token *BlockBreakToken
+		newFC bool
 		props []string
 		kids  [][]string
 		want  bool
 	}{
-		{"empty", nil, nil, nil, true},
-		{"empty child", nil, nil, [][]string{block}, true},
-		{"only a float", nil, nil, [][]string{{"display", "block", "float", "left", "width", "10px", "height", "10px"}}, true},
-		{"block-size", nil, []string{"height", "10px"}, nil, false},
-		{"min-block-size", nil, []string{"min-height", "1px"}, nil, false},
-		{"block-start border", nil, []string{"border-top-width", "1px", "border-top-style", "solid"}, nil, false},
-		{"block-end padding", nil, []string{"padding-bottom", "1px"}, nil, false},
-		{"non-empty child", nil, nil, [][]string{{"display", "block", "height", "1px"}}, false},
-		{"new formatting context", nil, []string{"display", "flow-root"}, nil, false},
-		{"resumed", &BlockBreakToken{}, nil, nil, false},
+		{"empty", nil, false, nil, nil, true},
+		{"empty child", nil, false, nil, [][]string{block}, true},
+		{"only a float", nil, false, nil, [][]string{{"display", "block", "float", "left", "width", "10px", "height", "10px"}}, true},
+		{"block-size", nil, false, []string{"height", "10px"}, nil, false},
+		{"min-block-size", nil, false, []string{"min-height", "1px"}, nil, false},
+		{"block-start border", nil, false, []string{"border-top-width", "1px", "border-top-style", "solid"}, nil, false},
+		{"block-end padding", nil, false, []string{"padding-bottom", "1px"}, nil, false},
+		{"non-empty child", nil, false, nil, [][]string{{"display", "block", "height", "1px"}}, false},
+		{"new formatting context", nil, true, []string{"display", "flow-root"}, nil, false},
+		{"resumed", &BlockBreakToken{}, false, nil, nil, false},
+		{"after a break before it", &BlockBreakToken{IsBreakBefore: true}, false, nil, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := layoutSelfCollapsingProbe(t, tc.token, tc.props, tc.kids...).IsSelfCollapsing; got != tc.want {
+			if got := layoutSelfCollapsingProbe(t, tc.token, tc.newFC, tc.props, tc.kids...).IsSelfCollapsing; got != tc.want {
 				t.Errorf("IsSelfCollapsing = %v, want %v", got, tc.want)
 			}
 		})

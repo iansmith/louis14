@@ -726,7 +726,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBaseline = lastBaselineOff
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
-		firstNonEmptyChild = false // inline content is "content"
+		// A line box is content: it resolves this block's BFC block-offset
+		// (an inline formatting context that produced none does not).
+		if slices.ContainsFunc(bla.containerBuilder.children, func(c logicalChildLink) bool {
+			return c.fragment != nil && c.fragment.Type == FragmentLineBox
+		}) {
+			firstNonEmptyChild = false
+		}
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -1402,34 +1408,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			prevMarginStrut = collapsedWithChild(childResult.PropagatedTopMargin)
 
 			// Step 3: Check if margins collapse through this element.
-			// CSS 2.1 §8.3.1: An element's margins collapse through it if
-			// it has no height, no border, no padding, does not establish
-			// a new block formatting context, does not contain a line box,
-			// and all of its in-flow children's margins (if any) are collapsed.
-			// We approximate this by checking that the element holds no
-			// fragment other than self-collapsing ones. A self-collapsing
-			// child is still placed, broken before and added like any
-			// in-flow child; it only passes the margin strut through
+			// CSS 2.1 §8.3.1: margins collapse through a self-collapsing
+			// child, which its own algorithm reports (LayoutResult::
+			// IsSelfCollapsing). It is still placed, broken before and added
+			// like any in-flow child; it only passes the margin strut through
 			// (Blink FinishInflow / ComputeInflowPosition,
-			// block_layout_algorithm.cc:2622-2653, :2732-2736, :2894-2898 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			// block_layout_algorithm.cc:2388, :2622-2653, :2732-2736,
+			// :2894-2898 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-			// A resumed child resolves its BFC block-offset at its start, so
-			// it never self-collapses (Blink is_resuming_,
-			// block_layout_algorithm.cc:888-898 @ a9f50e522efa): the 0px
-			// fragment of a spanner parent after its spanner is kept.
-			isSelfCollapsing := childBlockSize == 0 &&
-				!entry.Token.IsBreakInside() &&
-				childResult.BreakToken == nil &&
-				childResult.BlockSizeForFragmentation == 0 &&
-				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
-				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
-				!isChildNewFC &&
-				hasOnlySelfCollapsingChildren(childResult.Fragment)
+			isSelfCollapsing := childResult.IsSelfCollapsing
 			if isSelfCollapsing {
-				childResult.Fragment.IsSelfCollapsing = true
 				// The margins collapsing through the child's content join
 				// the strut now, before the child is positioned and broken
 				// before: Blink passes the strut into the child and positions
@@ -2037,6 +2026,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	result := bla.containerBuilder.Build()
 
+	// Self-collapsing: this block's BFC block-offset is still unresolved at
+	// the end of layout — a new formatting context or a fragment resumed
+	// after a break inside resolves it at the start (a break-before token
+	// only says where the box starts), a non-self-collapsing child, a line box or
+	// clearance when placed, a non-zero border-box block-size (block-start
+	// or block-end border/padding included) or a column spanner at the end.
+	// Mirrors BlockLayoutAlgorithm::FinishLayout → SetIsSelfCollapsing
+	// (block_layout_algorithm.cc:1406-1420, :1455-1462 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A replaced element is not
+	// laid out by Blink's block algorithm and never self-collapses.
+	result.IsSelfCollapsing = !bla.space.IsNewFormattingContext && !bla.space.BreakToken.IsBreakInside() &&
+		!isReplaced && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
+		!bla.containerBuilder.FoundColumnSpanner()
+
 	// The outgoing break token, built from the builder's break state
 	// (Blink BoxFragmentBuilder::ToBoxFragment → BlockBreakToken::Create,
 	// box_fragment_builder.cc:707-711 @ a9f50e522efa), when a child broke
@@ -2554,18 +2557,6 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	}
 
 	return false
-}
-
-// hasOnlySelfCollapsingChildren reports whether every child fragment of f
-// is self-collapsing (vacuously true for none): margins collapse through f's
-// content (CSS 2.1 §8.3.1).
-func hasOnlySelfCollapsingChildren(f *PhysicalFragment) bool {
-	for _, ch := range f.Children {
-		if !ch.Fragment.IsSelfCollapsing {
-			return false
-		}
-	}
-	return true
 }
 
 // isColumnSpannerChild reports whether child is a column spanner laid out by
