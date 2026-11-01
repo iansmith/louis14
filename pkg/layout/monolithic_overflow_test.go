@@ -38,12 +38,8 @@ func TestShouldCloneBlockStartBorderPaddingAfterMonolithicOverflow_LOU420(t *tes
 					MonolithicOverflow: tc.monolithicOverflow,
 				},
 			}
-			box := FragmentainerBox{
-				Space:                   &space,
-				BorderScrollbarPadding:  LogicalEdges{BlockStart: 5, BlockEnd: 5},
-				HasClonedBoxDecorations: true,
-			}
-			if got := ShouldCloneBlockStartBorderPadding(box); got != tc.want {
+			builder := newFragmentationTestBuilder(&space, LogicalEdges{BlockStart: 5, BlockEnd: 5}, true)
+			if got := ShouldCloneBlockStartBorderPadding(builder); got != tc.want {
 				t.Errorf("ShouldCloneBlockStartBorderPadding = %v, want %v", got, tc.want)
 			}
 		})

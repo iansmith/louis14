@@ -13,6 +13,7 @@ func TestSetupSpaceBuilderForFragmentation_IsAtFragmentainerStart(t *testing.T) 
 		FragmentainerBlockSize: 100,
 		BlockFragmentationType: FragmentColumn,
 	}}
+	bla.containerBuilder = newFragmentationTestBuilder(&bla.space, LogicalEdges{}, false)
 	for _, tc := range []struct {
 		offset float64
 		want   bool

@@ -126,9 +126,9 @@ func TestMulticolFragmentainerSpaceForChildren_Clone(t *testing.T) {
 				FragmentainerBlockSize: 100,
 				FragmentainerOffset:    20,
 			},
-			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
-			hasClonedBoxDecorations: tc.cloned,
 		}
+		mla.containerBuilder = newFragmentationTestBuilder(&mla.space, LogicalEdges{BlockStart: 10, BlockEnd: 5}, tc.cloned)
+		mla.containerBuilder.SetShouldCloneBoxEndDecorations(tc.cloned)
 		if got := mla.fragmentainerCapacityForChildren(); got != tc.wantCapacity {
 			t.Errorf("cloned=%v: capacity = %v, want %v", tc.cloned, got, tc.wantCapacity)
 		}

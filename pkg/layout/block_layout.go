@@ -44,12 +44,15 @@ type BlockLayoutAlgorithm struct {
 	// the fragmentainer start.
 	fragmentainerOffsetForChildren float64
 
-	// fragmentainerBox is what Blink's FragmentainerCapacity /
-	// FragmentainerOffset / FragmentainerSpaceLeft read off this block's
-	// fragment builder (fragmentation_utils.h:164-257 @ a9f50e522efa),
-	// less the space, which fragmentainerBuilder() supplies. Set in
-	// Layout(); ShouldCloneBoxEndDecorations is filled in once known.
-	fragmentainerBox FragmentainerBox
+	// containerBuilder is the builder of the fragment being laid out,
+	// created in Layout(). Mirrors Blink's LayoutAlgorithm::
+	// container_builder_ (layout_algorithm.h:299 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which Blink's
+	// FragmentainerCapacity / FragmentainerOffset / FragmentainerSpaceLeft
+	// read (fragmentation_utils.h:153-257). Layout still hands it to its
+	// helpers as a parameter too; only the fragmentainer reads go through
+	// the field so far.
+	containerBuilder *BoxFragmentBuilder
 
 	// boxType is the type of fragment this algorithm produces. A column box
 	// (fragmentainer) is sized by its multicol, not by FinishFragmentation.
@@ -143,12 +146,12 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 //
 // LOU-370: the consumed-size subtraction is gated on break-INSIDE, as Blink
 // guards it with `!previous_break_token->IsBreakBefore()`.
-func desiredBlockSizeAtBlockEnd(space ConstraintSpace, borderBoxBlockSize float64, incomingBreakToken *BlockBreakToken) bool {
+func desiredBlockSizeAtBlockEnd(builder *BoxFragmentBuilder, borderBoxBlockSize float64) bool {
 	// FragmentainerSpaceLeft(builder, is_for_children=false)
 	// (fragmentation_utils.cc:433-434): ShouldCloneBoxEndDecorations is not
-	// known yet here, so the floor is the plain 1px.
-	spaceLeft := FragmentainerSpaceLeft(FragmentainerBox{Space: &space}, false)
-	return borderBoxBlockSize-previouslyConsumedBlockSize(incomingBreakToken) <= spaceLeft
+	// set yet here, so the floor is the plain 1px.
+	spaceLeft := FragmentainerSpaceLeft(builder, false)
+	return borderBoxBlockSize-previouslyConsumedBlockSize(builder.PreviousBreakToken()) <= spaceLeft
 }
 
 // previouslyConsumedBlockSize is the border-box block-size earlier fragments
@@ -169,7 +172,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// edges, whatever this fragment carries.
 	declaredBlockBorderPadding := geom.BlockBorderPadding()
 	declaredBlockStart := geom.BorderBoxPadding().BlockStart
-	hasClonedBoxDecorations := bla.style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone
+	builder := NewBoxFragmentBuilder(wdm)
+	bla.containerBuilder = builder
+	builder.SetLayoutNode(bla.node)
+	builder.SetConstraintSpace(&bla.space)
+	builder.SetInitialFragmentGeometry(&geom)
+	builder.SetBoxType(bla.boxType)
 	// A slice-mode continuation carries no block-start border/scrollbar/
 	// padding: it is sized, painted and its children placed without the
 	// edge, and it has consumed nothing before its first child. Mirrors
@@ -180,24 +188,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink decides clone_box_start_decorations once, from the full edges
 	// (fragmentation_utils.cc:440-442 @ a9f50e522efa), before any is
 	// cleared; shouldCloneBlockStart is that decision.
-	blockStartBox := FragmentainerBox{
-		Space:                   &bla.space,
-		BorderScrollbarPadding:  geom.BorderBoxPadding(),
-		HasClonedBoxDecorations: hasClonedBoxDecorations,
+	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(builder)
+	if !ShouldIncludeBlockStartBorderPadding(builder) {
+		builder.ClearBorderScrollbarPaddingBlockStart()
 	}
-	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(blockStartBox)
-	if !ShouldIncludeBlockStartBorderPadding(blockStartBox) {
-		geom.ClearBorderScrollbarPaddingBlockStart()
-	}
-	bla.fragmentainerBox = FragmentainerBox{
-		BorderScrollbarPadding:  geom.BorderBoxPadding(),
-		HasClonedBoxDecorations: hasClonedBoxDecorations,
-	}
-	bla.fragmentainerOffsetForChildren = FragmentainerOffset(bla.fragmentainerBuilder(), true) + geom.BorderBoxPadding().BlockStart
-	builder := NewBoxFragmentBuilder(wdm)
-	builder.SetLayoutNode(bla.node)
-	builder.SetConstraintSpace(&bla.space)
-	builder.SetBoxType(bla.boxType)
+	bla.fragmentainerOffsetForChildren = FragmentainerOffset(builder, true) + geom.BorderBoxPadding().BlockStart
 	builder.PropagateSpaceShortage(bla.relayoutSpaceShortage)
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
 	// @ a9f50e522efa): resuming after a break inside this node.
@@ -395,18 +390,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	isKnownToFitInFragmentainer := bla.space.HasKnownFragmentainerBlockSize() && hasExplicitBlock &&
 		!bla.space.IsBlockSizeOverride &&
-		desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize+fragmentsBorderPadding, bla.space.BreakToken)
+		desiredBlockSizeAtBlockEnd(builder, explicitBlockSize+fragmentsBorderPadding)
 	shouldCloneBoxEndDecorations := bla.space.HasBlockFragmentation &&
 		!bla.space.IsInitialColumnBalancingPass &&
 		shouldCloneBlockStart && !isKnownToFitInFragmentainer
-	bla.fragmentainerBox.ShouldCloneBoxEndDecorations = shouldCloneBoxEndDecorations
+	builder.SetShouldCloneBoxEndDecorations(shouldCloneBoxEndDecorations)
 	// clearBlockEndIfExcluded clears an excluded block-end edge from geom,
 	// so it neither sizes nor paints the fragment.
 	clearBlockEndIfExcluded := func(shouldBreakInside, hasInflowChildBreakInside bool) {
 		if !ShouldIncludeBlockEndBorderPadding(bla.space.BreakToken, shouldBreakInside,
 			isKnownToFitInFragmentainer, shouldCloneBoxEndDecorations,
 			bla.space.IsNewFormattingContext, hasInflowChildBreakInside) {
-			geom.ClearBorderScrollbarPaddingBlockEnd()
+			builder.ClearBorderScrollbarPaddingBlockEnd()
 		}
 	}
 	// consumeRemainingFragmentainerSpace stretches a breaking fragment's
@@ -444,7 +439,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// and, its space being anonymous, ComputeBlockSizeForFragment
 			// returns the intrinsic size (length_utils.cc:921-922 @
 			// a9f50e522efa).
-			return FinishFragmentationForFragmentainer(builder, bla.fragmentainerBuilder(), intrinsic)
+			return FinishFragmentationForFragmentainer(builder, intrinsic)
 		}
 		var total float64
 		switch {
@@ -465,11 +460,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// decorations always has room for them plus 1px of content.
 		spaceLeft := Indefinite
 		if !bla.space.IsInitialColumnBalancingPass {
-			spaceLeft = FragmentainerSpaceLeft(bla.fragmentainerBuilder(), false)
+			spaceLeft = FragmentainerSpaceLeft(builder, false)
 		}
 		res := FinishFragmentation(FinishFragmentationInput{
 			SpaceLeft:                             spaceLeft,
-			FragmentainerCapacity:                 FragmentainerCapacity(bla.fragmentainerBuilder(), false),
+			FragmentainerCapacity:                 FragmentainerCapacity(builder, false),
 			HasBlockFragmentation:                 bla.space.HasBlockFragmentation,
 			IsColumnFragmentation:                 bla.space.BlockFragmentationType == FragmentColumn,
 			IsInitialColumnBalancingPass:          bla.space.IsInitialColumnBalancingPass,
@@ -486,7 +481,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
 		})
 		if !res.IncludeBlockEnd {
-			geom.ClearBorderScrollbarPaddingBlockEnd()
+			builder.ClearBorderScrollbarPaddingBlockEnd()
 		}
 		if res.ClampAppealToLastResort {
 			builder.ClampBreakAppeal(BreakAppealLastResort)
@@ -3440,15 +3435,7 @@ func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *Constraint
 // LayoutAlgorithm::FragmentainerCapacityForChildren() (layout_algorithm.h:
 // 160-162 @ a9f50e522efa).
 func (bla *BlockLayoutAlgorithm) fragmentainerCapacityForChildren() float64 {
-	return FragmentainerCapacity(bla.fragmentainerBuilder(), true)
-}
-
-// fragmentainerBuilder is this block's FragmentainerBox over its own
-// constraint space.
-func (bla *BlockLayoutAlgorithm) fragmentainerBuilder() FragmentainerBox {
-	box := bla.fragmentainerBox
-	box.Space = &bla.space
-	return box
+	return FragmentainerCapacity(bla.containerBuilder, true)
 }
 
 // isFloatAtFragmentainerStart reports whether a float whose border edge sits
