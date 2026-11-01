@@ -16,6 +16,20 @@ package layout
 // the same float.
 type InlineChildLayoutContext struct {
 	parallelFlowBreakTokens []*BlockBreakToken
+	// lineFloats are the floats positioned for the line being laid out,
+	// added to the block (commitLineFloats) once the line is kept, or
+	// dropped with it when it is broken before: Blink adds a line's floats
+	// with its line box, after BreakBeforeChildIfNeeded
+	// (block_layout_algorithm.cc:2634-2736 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lineFloats []lineFloat
+}
+
+// lineFloat is a float positioned for the line being laid out, not yet
+// added to the block.
+type lineFloat struct {
+	node       *LayoutInputNode
+	positioned PositionedFloat
 }
 
 // ParallelFlowBreakTokens returns the float break tokens propagated so far.
