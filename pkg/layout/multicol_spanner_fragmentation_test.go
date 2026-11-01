@@ -73,3 +73,29 @@ func TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass(t *testing.T
 		"c":     {{200, 20, 100, 60}, {300, 20, 100, 60}},
 	})
 }
+
+// TestLayoutSpanner_BreakTokenInOuterBalancingPass: the spanner's own break
+// token is collected whenever the multicol takes part in block
+// fragmentation (FragmentBuilder::PropagateFromFragment,
+// fragment_builder.cc:455-464), also in the outer multicol's initial
+// balancing pass. The forced break inside the spanner then splits the outer
+// content into two runs and nothing is lost: the outer columns are 60px
+// (10 + 50 before the break, 50 + 10 after it).
+func TestLayoutSpanner_BreakTokenInOuterBalancingPass(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+		`<div id=outer style="columns:2;width:400px;gap:0">`+
+		`<div id=inner style="columns:2;gap:0">`+
+		`<div id=a style="height:20px"></div>`+
+		`<div id=s style="column-span:all"><div id=s1 style="height:30px"></div><div id=s2 style="break-before:column;height:50px"></div></div>`+
+		`<div id=c style="height:20px"></div>`+
+		`</div></div>`)
+	checkRects(t, got, map[string][]fragRect{
+		"outer": {{0, 0, 400, 60}},
+		"inner": {{0, 0, 200, 60}, {200, 0, 200, 60}},
+		"a":     {{0, 0, 100, 10}, {100, 0, 100, 10}},
+		"s":     {{0, 10, 200, 50}, {200, 0, 200, 50}},
+		"s1":    {{0, 10, 200, 30}},
+		"s2":    {{200, 0, 200, 50}},
+		"c":     {{200, 50, 100, 10}, {300, 50, 100, 10}},
+	})
+}
