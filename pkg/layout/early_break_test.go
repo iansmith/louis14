@@ -103,6 +103,32 @@ func TestEarlyBreakBeforeAvoidInsideChild_LOU487(t *testing.T) {
 	})
 }
 
+// break-between-avoid-012: whitespace around a float between blocks of a
+// multicol is not an in-flow child (Blink creates no LayoutText for
+// whitespace after a non-inline sibling, Text::TextLayoutObjectIsNeeded),
+// so the float is no breakpoint: the early break goes before B and B, the
+// float and D all move to column 2. LOU-500 (re-landed from LOU-487 now
+// that floats fragment, LOU-497).
+func TestEarlyBreakSkipsFloat_LOU500(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">
+<div style="columns:2; gap:0; column-fill:auto; width:100px; height:150px;">
+  <div id=a style="height:100px;"></div>
+  <div id=b style="height:30px;"></div>
+  <div id=fl style="float:left; width:50%;">
+    <div style="height:10px; contain:size;"></div>
+    <div style="height:10px; contain:size;"></div>
+  </div>
+  <div id=d style="break-before:avoid; break-inside:avoid;">
+    <div style="margin-left:auto; width:50%; height:20px;"></div>
+    <div style="height:50px;"></div>
+  </div>
+</div>`)
+	wantRects(t, got, map[string][]fragRect{
+		"a": {{0, 0, 50, 100}}, "b": {{50, 0, 50, 30}},
+		"fl": {{50, 30, 25, 20}}, "d": {{50, 30, 50, 70}},
+	})
+}
+
 // UpdateEarlyBreakBetweenLines (block_layout_algorithm.cc:3291-3325 @
 // a9f50e522efa): four 30px lines fit a 160px column, a break-before:avoid
 // square after them does not; the early break between the lines
