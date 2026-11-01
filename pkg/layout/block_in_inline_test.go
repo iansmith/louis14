@@ -184,3 +184,56 @@ func TestBlockInInline_BreakAfterForcesBreakBeforeNextLine(t *testing.T) {
 		}
 	}
 }
+
+// LOU-510 item 5: a relative inline's percentage offsets resolve against
+// the block's content-box size, the IFC's available size (Blink
+// ComputeRelativeOffsetForInline reads the space's AvailableSize, the
+// block's child available size; relative_utils.cc:100-124 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), on lines and around a
+// block-in-inline alike.
+func TestRelativeInlinePercentageAgainstContentBox(t *testing.T) {
+	for _, withBlock := range []bool{false, true} {
+		kids := []*html.Node{makeTextNode("x")}
+		var p *html.Node
+		if withBlock {
+			p = makeNode("p")
+			kids = append(kids, p)
+		}
+		span := makeNode("span", kids...)
+		root := makeNode("div", span)
+		styles := map[*html.Node]*css.Style{
+			root: makeStyle("display", "block", "height", "100px", "font-family", "Ahem", "font-size", "10px"),
+			span: makeStyle("display", "inline", "position", "relative", "top", "50%",
+				"font-family", "Ahem", "font-size", "10px"),
+		}
+		if p != nil {
+			styles[p] = makeStyle("display", "block", "height", "10px")
+		}
+		wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+		space := NewConstraintSpaceBuilder(wdm, wdm, true).
+			SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
+			Build()
+		result := NewBlockLayoutAlgorithm(testContext(), buildTestTree(root, styles), space).Layout()
+		var line *PhysicalFragment
+		var lineTop float64
+		for _, ch := range result.Fragment.Children {
+			if ch.Fragment.Type == FragmentLineBox && ch.Fragment.Size.HeightF64() > 0 {
+				line, lineTop = ch.Fragment, ch.Offset.TopF64()
+				break
+			}
+		}
+		if line == nil {
+			t.Fatalf("withBlock=%v: no line", withBlock)
+		}
+		spans := fragmentsOfNode(line, span)
+		if len(spans) == 0 {
+			t.Fatalf("withBlock=%v: no span fragment on the line", withBlock)
+		}
+		spanTop := spans[0].Offset.TopF64()
+		if spanTop < 50 || spanTop > 60 {
+			t.Errorf("withBlock=%v: span top in line = %v (line at %v), want 50 plus its baseline offset (50%% of the 100px content box)",
+				withBlock, spanTop, lineTop)
+		}
+	}
+}
