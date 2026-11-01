@@ -13,6 +13,9 @@ import (
 //
 // Ported from Blink's LayoutResult (layout_result.h).
 type LayoutResult struct {
+	// IsSelfCollapsing: RED stub (LOU-508).
+	IsSelfCollapsing bool
+
 	// Fragment is the physical fragment produced by layout.
 	// Contains the box's physical size and positioned children.
 	Fragment *PhysicalFragment
