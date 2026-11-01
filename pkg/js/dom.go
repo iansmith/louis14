@@ -1,6 +1,7 @@
 package js
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -26,6 +27,8 @@ type domContext struct {
 	// did not populate layout state (e.g. pure DOM-manipulation tests).
 	layoutStyles map[*html.Node]*css.Style
 	layoutBoxes  map[*html.Node]*layout.Box
+	// updateLayout is Engine.updateLayout; may be nil.
+	updateLayout func() map[*html.Node]*layout.Box
 
 	// docEventListeners holds document.addEventListener callbacks keyed by
 	// event type. Louis14 is a static one-shot renderer, so only events the
@@ -853,6 +856,23 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return rect
 		})
 
+	case "scrollLeft", "scrollTop":
+		// Element.scrollLeft / scrollTop getters (Element::scrollLeft,
+		// dom/element.cc:2724-2760 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+		// the offset as clamped by an up-to-date layout. With no layout
+		// updater the requested offset reads back as stored.
+		offset := e.node.ScrollOffset
+		if e.ctx.updateLayout != nil {
+			offset = html.ScrollOffset{} // a box-less element reads 0
+			if box, ok := e.layoutBoxForScrolling(); ok {
+				offset = box.ScrollOffset
+			}
+		}
+		if key == "scrollLeft" {
+			return vm.ToValue(offset.X)
+		}
+		return vm.ToValue(offset.Y)
+
 	case "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
 		// Layout-flush idiom: scripts access these to force a synchronous layout.
 		// We return 0; the actual value is not used by tests that call these.
@@ -1090,6 +1110,33 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["dir"] = val.String()
 		return true
+	case "scrollLeft", "scrollTop":
+		// Element.setScrollLeft / setScrollTop (dom/element.cc:2811-2925 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): replace one axis of
+		// the scroll offset, keeping the other. The document's scrolling
+		// element scrolls the viewport instead, which louis14 does not model,
+		// so assignments to it are dropped.
+		if e.node.TagName == "html" {
+			return true
+		}
+		v := normalizeNonFiniteScroll(val.ToFloat())
+		previous := e.node.ScrollOffset
+		if key == "scrollLeft" {
+			e.node.ScrollOffset.X = v
+		} else {
+			e.node.ScrollOffset.Y = v
+		}
+		if e.ctx.updateLayout != nil {
+			// SetProgrammaticScrollOffset stores the clamped offset: keep
+			// what layout clamped the request to. A box-less element has no
+			// scrollable area, so the assignment is a no-op.
+			if box, ok := e.layoutBoxForScrolling(); ok {
+				e.node.ScrollOffset = box.ScrollOffset
+			} else {
+				e.node.ScrollOffset = previous
+			}
+		}
+		return true
 	case "onload":
 		// Store element-level onload callback so the engine can fire it after
 		// iframes (and other resources) have been loaded during layout.
@@ -1121,6 +1168,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"onload",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
+		"scrollLeft", "scrollTop",
 		"animate":
 		return true
 	}
@@ -1625,4 +1673,25 @@ func (a *animationAccessor) applyAtTime(ms float64) {
 		// Other pseudo-element targets (::before, ::after, highlight
 		// pseudos) are not yet plumbed into style resolution.
 	}
+}
+
+// normalizeNonFiniteScroll maps a non-finite scroll coordinate to 0.
+// Mirrors ScrollableArea::NormalizeNonFiniteScroll (scroll/
+// scrollable_area.h:114-116 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func normalizeNonFiniteScroll(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
+}
+
+// layoutBoxForScrolling brings layout up to date and returns the element's
+// box (Element::GetLayoutBoxForScrolling after UpdateStyleAndLayoutForNode).
+// ok is false with no layout updater or when the element has no box.
+func (e *elementAccessor) layoutBoxForScrolling() (*layout.Box, bool) {
+	if e.ctx.updateLayout == nil {
+		return nil, false
+	}
+	box := e.ctx.updateLayout()[e.node]
+	return box, box != nil
 }

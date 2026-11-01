@@ -92,6 +92,17 @@ type Box struct {
 	// Nil for non-multicol fragments or when no gap rules apply.
 	GapGeometry *GapGeometry
 
+	// ScrollOffset is a scroll container's scroll offset, clamped to
+	// [MinimumScrollOffset, MaximumScrollOffset]; its contents are already
+	// translated by it. Forwarded by fragmentToBox from
+	// PaintLayerScrollableArea; all zero for other boxes. The scrollbar
+	// painter reads them to position the thumb (Blink's Scrollbar::
+	// CurrentPos / Maximum, which are the offset and maximum relative to
+	// the minimum).
+	ScrollOffset        html.ScrollOffset
+	MinimumScrollOffset html.ScrollOffset
+	MaximumScrollOffset html.ScrollOffset
+
 	// IsColumnBox marks this Box as a multicol column fragmentainer
 	// (forwarded from PhysicalFragment.BoxType == BoxTypeColumn).
 	// Mirrors Blink PhysicalFragment::IsColumnBox. Read by the

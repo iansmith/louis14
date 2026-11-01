@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 )
 
 func parseHTML(t *testing.T, s string) *html.Document {
@@ -411,4 +412,70 @@ func TestParseSerializeInlineStyle(t *testing.T) {
 func containsDecl(style, prop, val string) bool {
 	m := parseInlineStyle(style)
 	return m[prop] == val
+}
+
+// TestElementScrollOffsetSetters pins Element.scrollLeft / scrollTop as
+// writers of the element's scroll offset (Element::setScrollLeft /
+// setScrollTop, dom/element.cc:2811-2925 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each setter replaces one axis
+// and keeps the other, and the getters read it back. Clamping is layout's
+// job (see html.Node.ScrollOffset).
+func TestElementScrollOffsetSetters(t *testing.T) {
+	doc := parseHTML(t, `<div id="s" style="overflow:hidden"></div>`)
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("s");
+		s.scrollTop = 100;
+		s.scrollLeft = 30;
+		s.scrollTop = 120.5;
+		if (s.scrollLeft !== 30) throw new Error("scrollLeft = " + s.scrollLeft);
+		if (s.scrollTop !== 120.5) throw new Error("scrollTop = " + s.scrollTop);
+	`)
+	if err := New().Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	s := getElementById(doc.Root, "s")
+	if s.ScrollOffset != (html.ScrollOffset{X: 30, Y: 120.5}) {
+		t.Errorf("ScrollOffset = %+v, want {30 120.5}", s.ScrollOffset)
+	}
+}
+
+// TestElementScrollOffsetClampedByLayout pins that the scroll bindings
+// bring layout up to date first (Document::UpdateStyleAndLayoutForNode in
+// Element::scrollTop / setScrollTop, dom/element.cc:2724-2925 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the setter keeps the offset
+// layout clamped the request to, the getter reads it, and a box-less
+// element neither scrolls nor reports an offset.
+func TestElementScrollOffsetClampedByLayout(t *testing.T) {
+	doc := parseHTML(t, `<div id="s"></div><div id="n"></div>`)
+	s := getElementById(doc.Root, "s")
+	n := getElementById(doc.Root, "n")
+	layouts := 0
+	eng := New()
+	eng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+		layouts++
+		// Stand-in layout: clamps #s's requested offset to [0, 50].
+		off := s.ScrollOffset
+		off.Y = max(0, min(off.Y, 50))
+		return map[*html.Node]*layout.Box{s: {Node: s, ScrollOffset: off}}
+	})
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("s");
+		s.scrollTop = 100;
+		if (s.scrollTop !== 50) throw new Error("scrollTop = " + s.scrollTop);
+		var n = document.getElementById("n");
+		n.scrollTop = 10;
+		if (n.scrollTop !== 0) throw new Error("box-less scrollTop = " + n.scrollTop);
+	`)
+	if err := eng.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if s.ScrollOffset != (html.ScrollOffset{Y: 50}) {
+		t.Errorf("s.ScrollOffset = %+v, want {0 50}", s.ScrollOffset)
+	}
+	if n.ScrollOffset != (html.ScrollOffset{}) {
+		t.Errorf("n.ScrollOffset = %+v, want zero", n.ScrollOffset)
+	}
+	if layouts == 0 {
+		t.Error("scroll bindings never updated layout")
+	}
 }

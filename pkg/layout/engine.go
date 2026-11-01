@@ -565,9 +565,11 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		// Propagate ::marker style and resolved content from layout input to box.
 	}
 
-	// Content area origin = border-box + border + padding.
-	contentX := absX + box.Border.Left + box.Padding.Left
-	contentY := absY + box.Border.Top + box.Padding.Top
+	// Content area origin = border-box + border + padding, moved by the
+	// scroll translation when this is a scrolled scroll container.
+	scrollDX, scrollDY := applyScrollableArea(frag, box)
+	contentX := absX + box.Border.Left + box.Padding.Left - scrollDX
+	contentY := absY + box.Border.Top + box.Padding.Top - scrollDY
 
 	// Convert children. Child offsets are relative to the content area.
 	for _, childLink := range frag.Children {
@@ -584,19 +586,6 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 // At scroll=0, the scrollport top-left is (0,0) for any scroll container.
 type stickyScrollport struct {
 	x, y, width, height float64
-}
-
-// isScrollContainer returns true if the box establishes a scroll container,
-// i.e., has overflow: auto or overflow: scroll on either axis.
-// Per CSS Overflow 3, only auto/scroll create scroll containers; hidden/clip do not.
-func isScrollContainer(box *Box) bool {
-	if box.Style == nil {
-		return false
-	}
-	isScroll := func(o css.OverflowType) bool {
-		return o == css.OverflowAuto || o == css.OverflowScroll
-	}
-	return isScroll(box.Style.GetOverflowX()) || isScroll(box.Style.GetOverflowY())
 }
 
 // stickyContainingBlock returns the bounds of the element's sticky containing
@@ -735,7 +724,7 @@ func applyStickyOffsetsWithScrollport(box *Box, scrollport stickyScrollport) {
 	// Determine scrollport for children. If this box is a scroll container,
 	// the children's sticky scrollport is this box's content area (at scroll=0).
 	childScrollport := scrollport
-	if isScrollContainer(box) {
+	if box.IsScrollContainer() {
 		// Content area: border-box minus border and padding.
 		childScrollport = stickyScrollport{
 			x:      box.X + box.Border.Left + box.Padding.Left,

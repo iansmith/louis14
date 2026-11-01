@@ -3484,23 +3484,6 @@ func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, rect layout.Ph
 	return backgroundClipRectForClip(layer.Box, rect, clip)
 }
 
-// isScrollContainer reports whether the given style declares an overflow
-// value that establishes a scroll container (hidden, scroll, auto, clip).
-// Per CSS Overflow Level 3 §3, these values create a scrolling area; with
-// background-attachment: local the background is positioned relative to
-// (and clipped against) that area's padding-box.
-func isScrollContainer(s *css.Style) bool {
-	if s == nil {
-		return false
-	}
-	x := s.GetOverflowX()
-	y := s.GetOverflowY()
-	if x == css.OverflowVisible && y == css.OverflowVisible {
-		return false
-	}
-	return true
-}
-
 // effectiveBackgroundClip returns the clip type for the bottom-most fill
 // layer's background-color paint. Mirrors Blink's
 // FillLayerInfo::is_clipped_with_local_scrolling: when the element is a
@@ -3530,7 +3513,7 @@ func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 	// Read attachment from the bottom layer when one exists; otherwise
 	// fall back to the element's style (covers the no-fill-layer case where
 	// only background-color + background-attachment are declared).
-	if layer.Box != nil && isScrollContainer(layer.Box.Style) {
+	if layer.Box != nil && layer.Box.IsScrollContainer() {
 		var bottomAttachment css.BackgroundAttachmentType
 		if bottom != nil {
 			bottomAttachment = bottom.Attachment
@@ -3597,13 +3580,14 @@ func backgroundClipRadii(layer *PaintLayer, rect layout.PhysicalRect) css.Ellipt
 // the reserved gutter of a scroll container. Layout reserves the gutter as
 // box.Scrollbar insets (ComputeScrollbarLogicalEdges, CSS Overflow §3); the
 // vertical bar is on the physical right by default or the physical left for
-// vertical-rl / RTL (placeVerticalScrollbarOnLeft), the horizontal bar on the
+// horizontal RTL (placeVerticalScrollbarOnLeft), the horizontal bar on the
 // physical bottom. The vertical bar spans the full padding-box height and owns
 // the corner; the horizontal bar fills the remaining width beside it.
 //
 // scrollbar-color maps the thumb and track colours (CSS Scrollbars 1); auto
-// uses the engine's default classic colours. The thumb is the leading half of
-// the track, matching the louis14 classic-scrollbar reference geometry.
+// uses the engine's default classic colours. The thumb is half the track,
+// matching the louis14 classic-scrollbar reference geometry, placed along it
+// by the scroll position (thumbPosition).
 //
 // Blink analog: ScrollableAreaPainter::PaintScrollbar /
 // ScrollbarThemeAura::PaintThumb+PaintTrackBackground
@@ -3680,7 +3664,7 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 			vx = px
 		}
 		fill(vx, py, vWidth, ph, trackColor)
-		fill(vx, py, vWidth, ph*0.5, thumbColor)
+		fill(vx, py+thumbPosition(ph, box.ScrollOffset.Y, box.MinimumScrollOffset.Y, box.MaximumScrollOffset.Y), vWidth, ph*0.5, thumbColor)
 	}
 	// Horizontal bar: remaining width beside the vertical bar.
 	if hHeight > 0 {
@@ -3691,8 +3675,23 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 		hw := pw - vWidth
 		hy := py + ph - hHeight
 		fill(hx, hy, hw, hHeight, trackColor)
-		fill(hx, hy, hw*0.5, hHeight, thumbColor)
+		fill(hx+thumbPosition(hw, box.ScrollOffset.X, box.MinimumScrollOffset.X, box.MaximumScrollOffset.X), hy, hw*0.5, hHeight, thumbColor)
 	}
+}
+
+// thumbPosition returns the thumb's offset along a track of trackLength
+// whose thumb is half the track: the scroll position (offset relative to
+// the minimum, Scrollbar::CurrentPos) scaled from the scroll range
+// (Scrollbar::Maximum, scroll/scrollbar.cc:147-154) onto the free track.
+// Mirrors ScrollbarTheme::ThumbPosition (scroll/scrollbar_theme.cc:195-208
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with louis14's fixed
+// half-track thumb length.
+func thumbPosition(trackLength, offset, minimum, maximum float64) float64 {
+	size := maximum - minimum
+	if size <= 0 {
+		return 0
+	}
+	return max(0, offset-minimum) * (trackLength - trackLength*0.5) / size
 }
 
 // drawBackground paints the layer's background color and image layers (pre-computed).
