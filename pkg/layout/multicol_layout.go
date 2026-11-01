@@ -1787,42 +1787,16 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		colBreakToken := nextColumnToken
 		inlineOffset := 0.0
 
-		// CSS Multicol L2 §4.2.6 `column-wrap:nowrap` mode (including the
-		// `auto` resolution to `nowrap`): columns may extend past
-		// `column-count` along the inline axis (overflowing the multicol
-		// box) because no row-wrap is allowed. The inner per-column loop
-		// must continue placing columns until content is consumed
-		// (break-token goes nil). Each column must have a definite
-		// block-size so layout makes progress per column; otherwise the
-		// classic L1 balance algorithm constrains content into `column-
-		// count` columns and the cap remains. Mirrors Blink's behavior at
-		// `4883d11fef` where `ColumnLayoutAlgorithm::LayoutLine` does not
-		// cap by `used_column_count` when `!ShouldWrapColumns()` and each
-		// column has a known block-size.
-		// Balanced columns (column-fill:balance, also under column-height,
-		// or an outer balancing pass) are sized by the balancer, so they
-		// never take the no-wrap path; Blink passes the same balance_columns
-		// to CreateConstraintSpaceForFragmentainer (cla.cc:840-856, :929-933
-		// @ a9f50e522efa).
-		// Blink ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @
-		// a9f50e522efa): under an outer fragmentation context, nowrap
-		// columns overflow inline only when the column is known to fit the
-		// outer fragmentainer; when content may instead resume in the next
-		// outer fragmentainer (mayHaveMoreSpace), the column-count cap
-		// applies even with column-wrap:nowrap. Without the cap, a resumed
-		// column that pushes its first child whole (breakable at start of a
-		// resumed container) never advances the token, and the guard below
-		// would drop that content instead of handing it to the outer.
-		noWrapMode := !mla.shouldWrapColumns() && !balanceColumns && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
-		// The column-count cap is off — the column loop runs on the break
-		// token alone — under no-wrap mode or inline overflow
-		// (cla.cc:1022-1025).
-		capOff := noWrapMode || overflowInline
 
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
-		// when inline overflow is not permitted (cla.cc:1022-1025).
-		for col := 0; col < mla.usedColumnCount || capOff; col++ {
+		// when inline overflow is not permitted (cla.cc:1012-1025 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With column-wrap:nowrap
+		// under an outer fragmentation context, that is unless the column is
+		// known to fit the outer fragmentainer (ColumnsOverflowInInlineDirection,
+		// cla.cc:1823-1842): otherwise the remaining content resumes in the
+		// next outer fragmentainer's line.
+		for col := 0; col < mla.usedColumnCount || overflowInline; col++ {
 			// IsInsideBalancedColumns is set when the line is balanced (also
 			// under column-height; Blink passes balance_columns, cla.cc:929-935
 			// @ a9f50e522efa).
@@ -1919,7 +1893,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			lastInnerResult = result
 			// Blink cla.cc:1022-1025: the row ends at column-count when
 			// content remains and inline overflow is not permitted.
-			rowCapped := colBreakToken != nil && !noWrapMode && !overflowInline && col+1 >= mla.usedColumnCount
+			rowCapped := colBreakToken != nil && !overflowInline && col+1 >= mla.usedColumnCount
 			// Blink cla.cc:1027-1037: track the worst break appeal across
 			// columns when the outer fragmentainer may have more space. Blink
 			// leaves the column loop on the cap before folding the appeal in,
@@ -1962,8 +1936,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 					inlineOffset += mla.usedColWidth + mla.columnGapSize
 					// Emit empty trailing columns only up to column-count: the
 					// break token is nil, so all in-flow content is placed and
-					// there is nothing left to overflow. overflowInline /
-					// noWrapMode govern overflow of REMAINING CONTENT
+					// there is nothing left to overflow. overflowInline
+					// governs overflow of REMAINING CONTENT
 					// (cla.cc:1022-1025), not these OOF-drain padding columns —
 					// bounding this branch only by them let the loop emit
 					// unbounded empty columns forever
@@ -2044,11 +2018,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Accept when no violations, column count within limit, and either
 		// content fully fits (no remaining break token) or a spanner was hit
 		// (in which case this row is done regardless).
-		// In nowrap mode, the column-count cap does not apply (CSS Multicol
-		// L2 §4.2.6) — columns extend inline as needed.
 		lastHasSpanner := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
 		if !hasViolatingBreak &&
-			(noWrapMode || actualColumnCount <= mla.usedColumnCount) &&
+			actualColumnCount <= mla.usedColumnCount &&
 			(colBreakToken == nil || lastHasSpanner) {
 			break
 		}
