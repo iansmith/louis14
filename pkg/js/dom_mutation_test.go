@@ -298,3 +298,104 @@ func TestParseFragmentKeepsScripts(t *testing.T) {
 		t.Errorf("second node should be script, got %s", nodes[1].TagName)
 	}
 }
+
+// TestCreateDocumentFragment pins Document::createDocumentFragment
+// (core/dom/document.cc:1571 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+// document.idl:54): a DocumentFragment node (nodeType 11, nodeName
+// "#document-fragment") that accepts children through ParentNode.append.
+func TestCreateDocumentFragment(t *testing.T) {
+	doc := parseHTML(t, `<div id="root"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var frag = document.createDocumentFragment();
+		if (frag.nodeType !== 11) throw new Error("nodeType: " + frag.nodeType);
+		if (frag.nodeName !== "#document-fragment") throw new Error("nodeName: " + frag.nodeName);
+		frag.append(document.createElement("a"), "t");
+		if (frag.childNodes.length !== 2) throw new Error("fragment children: " + frag.childNodes.length);
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestInsertDocumentFragmentMovesChildren pins that inserting a
+// DocumentFragment inserts its children, in order, and leaves the
+// fragment empty — CollectChildrenAndRemoveFromOldParent
+// (core/dom/container_node.cc:168-184 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) behind appendChild (:1199)
+// and insertBefore (:515), and Node::ConvertNodeUnionsIntoNodes
+// (core/dom/node.cc:915-997 @ the same SHA) behind append / prepend /
+// replaceChildren.
+func TestInsertDocumentFragmentMovesChildren(t *testing.T) {
+	doc := parseHTML(t, `<div id="a"></div><div id="b"><i id="ref"></i></div><div id="c"></div><div id="d"><s></s></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		function frag() {
+			var f = document.createDocumentFragment();
+			var x = document.createElement("x"); x.id = "x";
+			var y = document.createElement("y"); y.id = "y";
+			f.append(x, y);
+			return f;
+		}
+		function tags(el) {
+			var s = [];
+			for (var i = 0; i < el.childNodes.length; i++) s.push(el.childNodes[i].nodeName);
+			return s.join(",");
+		}
+		var f = frag();
+		var r = document.getElementById("a").appendChild(f);
+		if (r !== f) throw new Error("appendChild should return the fragment");
+		if (f.childNodes.length !== 0) throw new Error("fragment not emptied");
+		if (tags(document.getElementById("a")) !== "X,Y") throw new Error("appendChild: " + tags(document.getElementById("a")));
+
+		var b = document.getElementById("b");
+		b.insertBefore(frag(), document.getElementById("ref"));
+		if (tags(b) !== "X,Y,I") throw new Error("insertBefore: " + tags(b));
+
+		var c = document.getElementById("c");
+		c.append("t", frag());
+		if (tags(c) !== "#text,X,Y") throw new Error("append: " + tags(c));
+
+		var d = document.getElementById("d");
+		d.replaceChildren(frag());
+		if (tags(d) !== "X,Y") throw new Error("replaceChildren: " + tags(d));
+		if (d.firstChild.parentNode !== d) throw new Error("moved child has wrong parent");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIframeContentWindow pins HTMLFrameOwnerElement::contentWindow
+// (core/html/html_frame_owner_element.cc:402 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; html_iframe_element.idl:37,
+// html_object_element.idl:41): the content frame's window, whose
+// .document is the same object contentDocument returns; null when the
+// element has no content frame.
+func TestIframeContentWindow(t *testing.T) {
+	doc := parseHTML(t, `<html><body><iframe id="frame"></iframe><object id="obj"></object><iframe id="empty"></iframe></body></html>`)
+	for _, id := range []string{"frame", "obj"} {
+		nested, err := html.Parse(`<html><body><div id="inner">x</div></body></html>`)
+		if err != nil {
+			t.Fatalf("nested parse: %v", err)
+		}
+		getElementById(doc.Root, id).NestedDocument = nested
+	}
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		["frame", "obj"].forEach(function (id) {
+			var el = document.getElementById(id);
+			var win = el.contentWindow;
+			if (!win) throw new Error(id + ": contentWindow is null");
+			if (win.document !== el.contentDocument) throw new Error(id + ": contentWindow.document !== contentDocument");
+			if (el.contentWindow !== win) throw new Error(id + ": contentWindow not [SameObject]");
+			if (win.document.getElementById("inner") === null) throw new Error(id + ": nested lookup failed");
+			if (typeof win.document.createDocumentFragment !== "function") throw new Error(id + ": no createDocumentFragment");
+		});
+		if (document.getElementById("empty").contentWindow !== null)
+			throw new Error("contentWindow without a content frame should be null");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
