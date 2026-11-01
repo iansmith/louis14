@@ -42,7 +42,7 @@ type gradientDirection struct {
 // parseLinearGradient parses a linear-gradient(...) value.
 // Returns a gradientDirection (either a fixed angle or a corner keyword),
 // and the list of color stops.
-func parseLinearGradient(val string) (direction gradientDirection, stops []gradientStop, ok bool, repeating bool) {
+func parseLinearGradient(val string, style *css.Style) (direction gradientDirection, stops []gradientStop, ok bool, repeating bool) {
 	lower := strings.ToLower(strings.TrimSpace(val))
 	var prefixLen int
 	if strings.HasPrefix(lower, "repeating-linear-gradient(") {
@@ -115,7 +115,7 @@ func parseLinearGradient(val string) (direction gradientDirection, stops []gradi
 		if arg == "" {
 			continue
 		}
-		expanded := parseColorStops(arg)
+		expanded := parseColorStops(arg, style)
 		stops = append(stops, expanded...)
 	}
 
@@ -123,6 +123,28 @@ func parseLinearGradient(val string) (direction gradientDirection, stops []gradi
 		return gradientDirection{}, nil, false, false
 	}
 	return direction, stops, true, repeating
+}
+
+// resolveStopColor resolves a color stop's <color> into a stop carrying that
+// color (position unset). currentcolor — bare, or referenced inside a color
+// function such as color-mix() — resolves against the element's
+// visited-dependent computed color (louis14 applies :visited-matched color
+// declarations straight into the element's style). Mirrors Blink's
+// ResolveStopColor
+// (core/css/css_gradient_value.cc:394-409 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which resolves the stop's
+// StyleColor against style.VisitedDependentColor(color).
+func resolveStopColor(colorStr string, style *css.Style) (gradientStop, bool) {
+	c, ok := css.ParseColorWithCurrentColor(colorStr, style.VisitedDependentColor("color"))
+	if !ok {
+		return gradientStop{}, false
+	}
+	return gradientStop{
+		r: float64(c.R) / 255.0,
+		g: float64(c.G) / 255.0,
+		b: float64(c.B) / 255.0,
+		a: c.A,
+	}, true
 }
 
 // parseColorStops parses a color stop token, returning one or two
@@ -133,21 +155,12 @@ func parseLinearGradient(val string) (direction gradientDirection, stops []gradi
 // Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
 // (Chromium @ 4883d11fef) — `CSSGradientValue::AddStops` emits a second
 // CSSGradientColorStop when the parser supplies a second position.
-func parseColorStops(s string) []gradientStop {
-	s = strings.TrimSpace(s)
-	colorStr, posStr := splitColorAndPosition(s)
-	colorStr = strings.TrimSpace(colorStr)
-	posStr = strings.TrimSpace(posStr)
+func parseColorStops(s string, style *css.Style) []gradientStop {
+	colorStr, posStr := css.SplitGradientColorStop(s)
 
-	c, colorOk := css.ParseColor(colorStr)
+	base, colorOk := resolveStopColor(colorStr, style)
 	if !colorOk {
 		return nil
-	}
-	base := gradientStop{
-		r: float64(c.R) / 255.0,
-		g: float64(c.G) / 255.0,
-		b: float64(c.B) / 255.0,
-		a: c.A,
 	}
 	if posStr == "" {
 		return []gradientStop{base}
@@ -237,63 +250,12 @@ func singleStopFromToken(base gradientStop, tok string) (gradientStop, bool) {
 // "#ff0000". Multi-position stops ("blue 0% 50%") are handled by the plural
 // parseColorStops; this single-stop helper is retained for backwards
 // compatibility with call sites that don't yet handle stop expansion.
-func parseColorStop(s string) (gradientStop, bool) {
-	stops := parseColorStops(s)
+func parseColorStop(s string, style *css.Style) (gradientStop, bool) {
+	stops := parseColorStops(s, style)
 	if len(stops) == 0 {
 		return gradientStop{}, false
 	}
 	return stops[0], true
-}
-
-// splitColorAndPosition splits "green 25px" into ("green", "25px").
-// A `(` at the head of the string is treated as part of the color only when
-// the preceding identifier is a known color function (rgb/rgba/hsl/hsla/
-// hwb/lab/lch/oklab/oklch/color/color-mix). Otherwise the `(` belongs to
-// a position-side function like calc()/min()/max()/clamp() and the split
-// falls back to the named-color path.
-func splitColorAndPosition(s string) (colorStr, posStr string) {
-	s = strings.TrimSpace(s)
-
-	if parenIdx := strings.Index(s, "("); parenIdx >= 0 {
-		head := strings.ToLower(strings.TrimSpace(s[:parenIdx]))
-		if isColorFunctionHead(head) {
-			depth := 0
-			closeIdx := -1
-			for i := parenIdx; i < len(s); i++ {
-				if s[i] == '(' {
-					depth++
-				} else if s[i] == ')' {
-					depth--
-					if depth == 0 {
-						closeIdx = i
-						break
-					}
-				}
-			}
-			if closeIdx >= 0 {
-				return s[:closeIdx+1], strings.TrimSpace(s[closeIdx+1:])
-			}
-		}
-	}
-
-	// Named color or hex: split on first space (color has no spaces).
-	if idx := strings.Index(s, " "); idx >= 0 {
-		return s[:idx], strings.TrimSpace(s[idx+1:])
-	}
-	return s, ""
-}
-
-// isColorFunctionHead reports whether the given lowercased identifier is the
-// head of a CSS color function. The list mirrors the CSS Color 4 function
-// set recognized by css.ParseColor.
-func isColorFunctionHead(head string) bool {
-	switch head {
-	case "rgb", "rgba", "hsl", "hsla", "hwb",
-		"lab", "lch", "oklab", "oklch",
-		"color", "color-mix", "device-cmyk":
-		return true
-	}
-	return false
 }
 
 // parseStopPosition parses "25px", "50%", "0" as a stop position.
@@ -525,7 +487,7 @@ func computeCornerAngle(cornerType string, w, h float64) float64 {
 // drawLinearGradient renders a linear-gradient onto the target RGBA image
 // within the box bounds [x, y, w, h].
 func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64, style *css.Style) {
-	direction, stops, ok, repeating := parseLinearGradient(gradVal)
+	direction, stops, ok, repeating := parseLinearGradient(gradVal, style)
 	if !ok {
 		return
 	}
@@ -1038,7 +1000,7 @@ func parseRadialGradient(val string, boxW, boxH float64, style *css.Style) (cx, 
 		if a == "" {
 			continue
 		}
-		expanded := parseColorStops(a)
+		expanded := parseColorStops(a, style)
 		stops = append(stops, expanded...)
 	}
 	if len(stops) < 2 {
@@ -1529,7 +1491,7 @@ func parseConicGradient(val string, boxW, boxH float64, style *css.Style) (cx, c
 		if a == "" {
 			continue
 		}
-		expanded := parseConicColorStops(a)
+		expanded := parseConicColorStops(a, style)
 		stops = append(stops, expanded...)
 	}
 	if len(stops) < 2 {
@@ -1555,20 +1517,11 @@ func parseConicGradient(val string, boxW, boxH float64, style *css.Style) (cx, c
 // deg/grad/rad/turn. The returned stops carry their position in
 // fraction-of-turn (0..1 nominal, can go outside for extrapolation), with
 // isPercent=false because we've already converted to a uniform unit.
-func parseConicColorStops(s string) []gradientStop {
-	s = strings.TrimSpace(s)
-	colorStr, posStr := splitColorAndPosition(s)
-	colorStr = strings.TrimSpace(colorStr)
-	posStr = strings.TrimSpace(posStr)
-	c, colorOk := css.ParseColor(colorStr)
+func parseConicColorStops(s string, style *css.Style) []gradientStop {
+	colorStr, posStr := css.SplitGradientColorStop(s)
+	base, colorOk := resolveStopColor(colorStr, style)
 	if !colorOk {
 		return nil
-	}
-	base := gradientStop{
-		r: float64(c.R) / 255.0,
-		g: float64(c.G) / 255.0,
-		b: float64(c.B) / 255.0,
-		a: c.A,
 	}
 	if posStr == "" {
 		return []gradientStop{base}

@@ -2068,12 +2068,19 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
+	// HasBackground: a non-transparent background-color (currentcolor
+	// resolved against the element's color) or any layer with an image —
+	// gradients included. ComputedStyle::HasBackground
+	// (core/style/computed_style.cc:2486-2504 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), reached from
+	// LayoutInline::ComputeInitialShouldCreateBoxFragment
+	// (core/layout/layout_inline.cc:179-193 @ same SHA).
 	if bg, ok := style.Get("background-color"); ok && bg != "" && bg != "transparent" {
-		if c, ok := css.ParseColor(bg); ok && c.A > 0 {
+		if c, ok := style.ResolvedColor(bg); ok && c.A > 0 {
 			return true
 		}
 	}
-	if _, ok := style.GetBackgroundImage(); ok {
+	if style.GetBackgroundLayers().AnyLayerHasImage() {
 		return true
 	}
 	bw := style.GetBorderWidth()
