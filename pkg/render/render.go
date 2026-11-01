@@ -3469,23 +3469,6 @@ func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, clip css.Backg
 	return backgroundClipRectForClip(layer.Box, clip)
 }
 
-// isScrollContainer reports whether the given style declares an overflow
-// value that establishes a scroll container (hidden, scroll, auto, clip).
-// Per CSS Overflow Level 3 §3, these values create a scrolling area; with
-// background-attachment: local the background is positioned relative to
-// (and clipped against) that area's padding-box.
-func isScrollContainer(s *css.Style) bool {
-	if s == nil {
-		return false
-	}
-	x := s.GetOverflowX()
-	y := s.GetOverflowY()
-	if x == css.OverflowVisible && y == css.OverflowVisible {
-		return false
-	}
-	return true
-}
-
 // effectiveBackgroundClip returns the clip type for the bottom-most fill
 // layer's background-color paint. Mirrors Blink's
 // FillLayerInfo::is_clipped_with_local_scrolling: when the element is a
@@ -3515,7 +3498,7 @@ func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 	// Read attachment from the bottom layer when one exists; otherwise
 	// fall back to the element's style (covers the no-fill-layer case where
 	// only background-color + background-attachment are declared).
-	if layer.Box != nil && isScrollContainer(layer.Box.Style) {
+	if layer.Box != nil && layer.Box.IsScrollContainer() {
 		var bottomAttachment css.BackgroundAttachmentType
 		if bottom != nil {
 			bottomAttachment = bottom.Attachment
