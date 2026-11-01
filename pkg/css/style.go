@@ -4440,9 +4440,31 @@ func expandBorderSideProperty(style *Style, property, value string) {
 	}
 }
 
+// fontShorthandLonghands are the longhands of the `font` shorthand. Mirrors
+// Blink's css_properties.json5 "font" entry (:9642-9650 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var fontShorthandLonghands = []string{
+	"font-style", "font-variant-ligatures", "font-variant-caps",
+	"font-variant-numeric", "font-variant-east-asian", "font-variant-alternates",
+	"font-variant-position", "font-variant-emoji", "font-weight", "font-stretch",
+	"font-size", "line-height", "font-family", "font-optical-sizing",
+	"font-size-adjust", "font-kerning", "font-feature-settings",
+	"font-variation-settings", "font-language-override",
+}
+
 // expandFontProperty expands the font shorthand.
 // Format: [style] [variant] [weight] size[/line-height] family[, family...]
 func expandFontProperty(style *Style, value string) {
+	// A CSS-wide keyword applies to every longhand, as for `background`
+	// (expandBackgroundProperty). Without this `font: inherit` has a single
+	// token and was dropped, leaving a less specific `font` in force.
+	switch kw := strings.ToLower(strings.TrimSpace(value)); kw {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		for _, lh := range fontShorthandLonghands {
+			style.Set(lh, kw)
+		}
+		return
+	}
 	parts := strings.Fields(value)
 	if len(parts) < 2 {
 		return
