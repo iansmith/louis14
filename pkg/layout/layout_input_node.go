@@ -1,7 +1,6 @@
 package layout
 
 import (
-	"slices"
 	"strings"
 
 	"louis14/pkg/css"
@@ -53,13 +52,17 @@ type LayoutInputNode struct {
 	// flex/grid/table layout). Mirrors LayoutObject::parent_
 	// (layout_object.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	// Written only by adoptChildren, so parent's children list always
-	// holds this node; siblings are derived from that list rather than
-	// stored. The link is one-directional across the multicol flow-thread
-	// re-parenting: the multicol's first layout makes its content node
-	// (contentNodeCache) the parent of its children, as Blink's
-	// LayoutMultiColumnFlowThread is, while the multicol's own children
-	// list still names them.
+	// holds this node, at siblingIndex. The link is one-directional
+	// across the multicol flow-thread re-parenting: the multicol's first
+	// layout makes its content node (contentNodeCache) the parent of its
+	// children, as Blink's LayoutMultiColumnFlowThread is, while the
+	// multicol's own children list still names them.
 	parent *LayoutInputNode
+	// siblingIndex is this node's index in parent's children list, written
+	// with parent by adoptChildren, so NextSibling starts at the node
+	// instead of searching for it, as Blink's LayoutObject::next_ link
+	// does.
+	siblingIndex int
 
 	// isAnonymous is true for generated anonymous boxes (CSS 2.1 §9.2.1.1).
 	isAnonymous bool
@@ -187,8 +190,9 @@ func (n *LayoutInputNode) Children() []*LayoutInputNode {
 // adoptChildren makes n the layout parent of each of its children. Call it
 // wherever a persistent children list is finalized.
 func (n *LayoutInputNode) adoptChildren() {
-	for _, c := range n.children {
+	for i, c := range n.children {
 		c.parent = n
+		c.siblingIndex = i
 	}
 }
 
@@ -201,12 +205,7 @@ func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
 	if n.parent == nil {
 		return nil
 	}
-	siblings := n.parent.children
-	i := slices.Index(siblings, n)
-	if i < 0 {
-		return nil
-	}
-	for _, next := range siblings[i+1:] {
+	for _, next := range n.parent.children[n.siblingIndex+1:] {
 		if !next.IsText() {
 			return next
 		}
