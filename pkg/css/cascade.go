@@ -3888,20 +3888,31 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 }
 
 // svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
-// to a CSS length string. A bare number is an SVG user unit, equivalent to CSS
-// px (so "0" -> "0px", "120" -> "120px"). Negative, non-finite, or non-numeric
-// values are rejected (a negative or infinite width/height is an SVG error → the
-// box falls back to its default sizing). strconv.ParseFloat accepts "Inf"/
-// "Infinity", so an explicit math.IsInf guard is needed to keep "Infinity" from
-// becoming "+Infpx" (NaN is already excluded by the n >= 0 test). This
-// intentionally mirrors the bare-number scope of getInlineSVGIntrinsicInfo;
-// unit-bearing values (e.g. "50%") stay on the existing intrinsic path unchanged.
+// to a CSS length string: an SVG <length> or <percentage>, a bare number being
+// a user unit, equivalent to CSS px (so "0" -> "0px", "120" -> "120px",
+// "100%" -> "100%"). Mirrors SVGSVGElement::CollectStyleForPresentationAttribute
+// mapping the attribute's SVGLength to the CSS width/height
+// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative,
+// non-finite, or non-numeric values are rejected (a negative or infinite
+// width/height is an SVG error → the box falls back to its default sizing).
+// strconv.ParseFloat accepts "Inf"/"Infinity" and "NaN", so explicit
+// math.IsInf / math.IsNaN guards keep them from becoming "+Infpx" / "NaNpx".
 func svgLengthAttrToCSS(val string) (string, bool) {
 	s := strings.TrimSpace(val)
-	if n, err := strconv.ParseFloat(s, 64); err == nil && n >= 0 && !math.IsInf(n, 0) {
+	if n, err := strconv.ParseFloat(s, 64); err == nil {
+		if n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+			return "", false
+		}
 		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
 	}
-	return "", false
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(s, "-") || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
+		return "", false
+	}
+	if v, ok := validateCSSLength(s); ok {
+		return v, true
+	}
+	return validateCSSPercentage(s)
 }
 
 // fontSizeFromHTMLSize converts HTML <font size="N"> to CSS font-size.
