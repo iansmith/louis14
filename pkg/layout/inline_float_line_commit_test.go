@@ -16,18 +16,18 @@ import (
 // the line (HandleInflow → AddResult, block_layout_algorithm.cc:2634-2736 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
-// 30px Ahem lines at 0, 30, 60 fit a 100px column; the fourth, at 90, does
-// not, and is broken before together with the 40px float placed on it.
+// One 20px Ahem word per 30px line in a 30px-wide block: lines at 0, 30, 60
+// fit a 100px column; the fourth, at 90, does not, and is broken before
+// together with the 10px-wide float that fits beside its word — a 15px
+// break-inside:avoid float, which would report a shortage of 5 here.
 func TestInlineFloatCommittedOnlyWithItsLine(t *testing.T) {
 	fl := makeNode("div")
-	block := makeNode("div",
-		&html.Node{Type: html.TextNode, Text: "a a a"},
-		fl,
-		&html.Node{Type: html.TextNode, Text: " a"})
+	block := makeNode("div", &html.Node{Type: html.TextNode, Text: "a a a a"}, fl)
 	styles := map[*html.Node]*css.Style{
-		block: makeStyle("display", "block", "width", "20px", "font-family", "Ahem",
+		block: makeStyle("display", "block", "width", "30px", "font-family", "Ahem",
 			"font-size", "20px", "line-height", "30px", "orphans", "1", "widows", "1"),
-		fl: makeStyle("display", "block", "float", "left", "width", "10px", "height", "40px"),
+		fl: makeStyle("display", "block", "float", "left", "width", "10px", "height", "15px",
+			"break-inside", "avoid"),
 	}
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, false).
@@ -54,6 +54,9 @@ func TestInlineFloatCommittedOnlyWithItsLine(t *testing.T) {
 		t.Fatalf("lines = %d, want 3", lines)
 	}
 	if result.BlockSizeForFragmentation != 100 {
-		t.Errorf("BlockSizeForFragmentation = %v, want 100 (the float's 130 block-end went with its line)", result.BlockSizeForFragmentation)
+		t.Errorf("BlockSizeForFragmentation = %v, want 100", result.BlockSizeForFragmentation)
+	}
+	if result.MinSpaceShortage != 20 {
+		t.Errorf("MinSpaceShortage = %v, want the line's 90+30-100 = 20 (the float's 5 went with the line)", result.MinSpaceShortage)
 	}
 }
