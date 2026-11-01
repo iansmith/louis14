@@ -1798,50 +1798,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		Scrollbar: physScrollbar,
 	})
 
-	// Layout OOF children. Same fixed/absolute split as block layout:
-	// positioned flex containers resolve absolute but propagate fixed.
+	// Lay out the out-of-flow children against the padding box. Mirrors
+	// the OutOfFlowLayoutPart run of Blink's
+	// BoxFragmentBuilder::HandleOofsAndSpecialDescendants
+	// (box_fragment_builder.cc:660-671, called at the end of
+	// FlexLayoutAlgorithm::Layout @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		isPositioned := fla.style != nil && fla.style.GetPosition() != css.PositionStatic
-		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
-		// CB triggers) makes this flex container a CB for abs-pos descendants
-		// but not for fixed (the abspos-only half of LayoutInputNode.IsAbsoluteContainer).
-		isWillChangeAbsposCB := false
-		if fla.style != nil && !isPositioned {
-			if fla.style.WillChangeEstablishesContainingBlock(false) {
-				isWillChangeAbsposCB = true
-			}
-		}
-		if isPositioned || isWillChangeAbsposCB {
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range builder.outOfFlowCandidates {
-				if cand.IsFixedPosition {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
-			}
-			if len(absoluteCandidates) > 0 {
-				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
-				// CB size = padding-box = content + padding (borders excluded).
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                fla.ctx,
-					containingBlockWDM: wdm,
-					containingBlockSize: LogicalSize{
-						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
-						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
-					},
-					containingBlockPadding: geom.Padding,
-					geom:                   geom,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = fixedCandidates
-		} else {
-			propagatedOOF = builder.outOfFlowCandidates
-		}
+		propagatedOOF = NewOutOfFlowLayoutPart(fla.ctx, builder, fla.space, LogicalSize{
+			InlineSize: contentInlineSize + geom.Padding.InlineSum(),
+			BlockSize:  finalBlockSize + geom.Padding.BlockSum(),
+		}, geom.Padding, previousConsumedContentBlockSize(fla.space, geom)).Run()
 	}
 
 	result := builder.Build()
