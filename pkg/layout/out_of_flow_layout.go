@@ -2,6 +2,7 @@ package layout
 
 import (
 	"math"
+	"slices"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -711,15 +712,15 @@ type NodeToLayout struct {
 }
 
 // containingBlockInfo is a fragmentainer descendant's containing block,
-// stitched across the fragmentainers: its padding-box size (block-size from
-// the total of its fragments, Blink's BoxTotalBlockSize), its padding, and its
+// stitched across the fragmentainers: its padding-box size (BoxInlineSize,
+// BoxTotalBlockSize), its padding, and its
 // content-box offset in stacked-fragmentainer coordinates (as if every
 // fragmentainer were stacked in the block direction). Mirrors the fragmentation branch of Blink's
 // OutOfFlowLayoutPart::GetContainingBlockInfo (out_of_flow_layout_part.cc:
 // 842-899 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with
-// layout_box_utils.h:15-19 BoxTotalBlockSize. louis14 has no per-box
-// fragment list (plan G20), so the CB's fragments are found by walking the
-// fragmentainers' fragment trees.
+// layout_box_utils.h:15-19. The offset of the CB's first fragment is found
+// by walking the fragmentainers' fragment trees until plan WI-3 carries it
+// on the descendant.
 type containingBlockInfo struct {
 	size                 LogicalSize
 	padding              LogicalEdges
@@ -742,11 +743,12 @@ type fragmentationContextOOFPart struct {
 	// columnBalancingInfo, when set, makes this a column-balancing dry run
 	// over childFragmentStorage (Blink's column_balancing_info_).
 	columnBalancingInfo *ColumnBalancingInfo
-	// isContainingBlockUnfinished reports whether a containing block's last
-	// fragment so far has a break token, so its fragmentainer descendants
-	// wait (Blink's delayed_descendants_, out_of_flow_layout_part.cc:
-	// 1611-1621). Nil when every containing block has finished.
-	isContainingBlockUnfinished func(*LayoutInputNode) bool
+	// delayUnfinishedContainingBlocks makes the fragmentainer descendants
+	// whose containing block's last fragment so far has a break token
+	// (hasUnfinishedLayout) wait (Blink's delayed_descendants_,
+	// out_of_flow_layout_part.cc:1611-1621). False once every containing
+	// block has finished.
+	delayUnfinishedContainingBlocks bool
 	// delayedDescendants are the descendants that waited.
 	delayedDescendants []LogicalOofNodeForFragmentation
 }
@@ -837,39 +839,21 @@ func (p *fragmentationContextOOFPart) HandleMulticolsWithPendingOOFs() {
 	}
 }
 
-// multicolFragments returns the multicols of pending, in the order their
-// first fragment appears in this fragmentation context's fragment tree, with
-// each one's fragments in order: Blink's LayoutBox::PhysicalFragments, which
-// louis14 lacks (plan G20), found in one walk. No Blink analog for the
-// ordering, which keeps HandleMulticolsWithPendingOOFs deterministic.
+// multicolFragments returns the multicols of pending in tree order, with
+// each one's fragments (LayoutBox::PhysicalFragments). No Blink analog for
+// the ordering (Blink iterates a hash map); tree order keeps
+// HandleMulticolsWithPendingOOFs deterministic.
 func (p *fragmentationContextOOFPart) multicolFragments(pending map[*LayoutInputNode]*MulticolWithPendingOOFs) ([]*LayoutInputNode, [][]*PhysicalFragment) {
-	var multicols []*LayoutInputNode
-	var fragments [][]*PhysicalFragment
-	index := map[*LayoutInputNode]int{}
-	var walk func(*PhysicalFragment)
-	walk = func(f *PhysicalFragment) {
-		for _, ch := range f.Children {
-			if ch.Fragment == nil {
-				continue
-			}
-			if n := ch.Fragment.LayoutNode; n != nil && pending[n] != nil {
-				i, ok := index[n]
-				if !ok {
-					i = len(multicols)
-					index[n] = i
-					multicols = append(multicols, n)
-					fragments = append(fragments, nil)
-				}
-				fragments[i] = append(fragments[i], ch.Fragment)
-			}
-			walk(ch.Fragment)
+	multicols := make([]*LayoutInputNode, 0, len(pending))
+	for m := range pending {
+		if len(m.GetLayoutResults()) > 0 {
+			multicols = append(multicols, m)
 		}
 	}
-	for _, ch := range *p.fragmentationContextChildren() {
-		walk(ch.fragment)
-	}
+	slices.SortStableFunc(multicols, func(a, b *LayoutInputNode) int { return a.DOMIndex - b.DOMIndex })
+	fragments := make([][]*PhysicalFragment, len(multicols))
 	for i, m := range multicols {
-		checkPhysicalFragmentsMatch("multicolFragments", m, fragments[i])
+		fragments[i] = m.PhysicalFragments()
 	}
 	return multicols, fragments
 }
@@ -978,8 +962,8 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 	for len(*descendants) > 0 {
 		var descendantsToLayout [][]NodeToLayout
 		for _, d := range *descendants {
-			if p.isContainingBlockUnfinished != nil && d.ContainingBlock.Fragment != nil &&
-				p.isContainingBlockUnfinished(d.ContainingBlock.Fragment.LayoutNode) {
+			if p.delayUnfinishedContainingBlocks && d.ContainingBlock.Fragment != nil &&
+				hasUnfinishedLayout(d.ContainingBlock.Fragment.LayoutNode) {
 				p.delayedDescendants = append(p.delayedDescendants, d)
 				continue
 			}
@@ -1059,42 +1043,35 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 		return containingBlockInfo{}, false
 	}
 	cbNode := cbFragment.LayoutNode
-	type cbFragmentInFragmentainer struct {
-		fragment      *PhysicalFragment
-		offsetInFrag  LogicalOffset
-		stackedOffset float64 // the fragmentainer's stacked block offset
-	}
-	var found []cbFragmentInFragmentainer
+	// The stacked offset of the containing block's first fragment, found
+	// in the fragmentainers (plan WI-3 replaces this walk with the
+	// descendant's stacked containing-block offset).
+	var first *PhysicalFragment
+	var firstOffset LogicalOffset
 	stacked := 0.0
 	for _, ch := range *p.fragmentationContextChildren() {
 		if !ch.fragment.IsFragmentainerBox() {
 			continue
 		}
 		walkFragmentsForNode(ch.fragment, cbNode, LogicalOffset{}, func(f *PhysicalFragment, off LogicalOffset) {
-			found = append(found, cbFragmentInFragmentainer{f, off, stacked})
+			if first == nil {
+				first = f
+				firstOffset = LogicalOffset{InlineOffset: off.InlineOffset, BlockOffset: stacked + off.BlockOffset}
+			}
 		})
+		if first != nil {
+			break
+		}
 		stacked += ClampedToValidFragmentainerCapacity(NewLogicalFragment(p.containingBlockWDM, ch.fragment).BlockSize())
 	}
-	if len(found) == 0 {
+	if first == nil {
 		return containingBlockInfo{}, false
 	}
-	if checkPhysicalFragments {
-		walked := make([]*PhysicalFragment, len(found))
-		for i, f := range found {
-			walked[i] = f.fragment
-		}
-		checkPhysicalFragmentsMatch("GetContainingBlockInfo", cbNode, walked)
-	}
-	first := found[0]
-	totalBlockSize := 0.0
-	for _, f := range found {
-		totalBlockSize += NewLogicalFragment(p.containingBlockWDM, f.fragment).BlockSize()
-	}
+	inlineSize, totalBlockSize := BoxInlineSize(cbNode), BoxTotalBlockSize(cbNode)
 	// The padding box: borders and scrollbars contracted
 	// (out_of_flow_layout_part.cc:870-878).
 	cbGeom := ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM)
 	bsp := cbGeom.BorderBoxPadding()
-	inlineSize := NewLogicalFragment(p.containingBlockWDM, first.fragment).InlineSize()
 	return containingBlockInfo{
 		size: LogicalSize{
 			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),
@@ -1102,8 +1079,8 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 		},
 		padding: cbGeom.Padding,
 		contentStackedOffset: LogicalOffset{
-			InlineOffset: first.offsetInFrag.InlineOffset + bsp.InlineStart,
-			BlockOffset:  first.stackedOffset + first.offsetInFrag.BlockOffset + bsp.BlockStart,
+			InlineOffset: firstOffset.InlineOffset + bsp.InlineStart,
+			BlockOffset:  firstOffset.BlockOffset + bsp.BlockStart,
 		},
 	}, true
 }
