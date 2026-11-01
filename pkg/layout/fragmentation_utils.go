@@ -19,7 +19,8 @@ import (
 //   - BreakBeforeChild + AttemptSoftBreak helpers
 //
 // Out of scope (deferred):
-//   - EarlyBreak storage / RelayoutAndBreakEarlier retry → Phase 12g
+//   - Block-level EarlyBreak storage / RelayoutAndBreakEarlier retry (the
+//     line variant, for orphans / widows, is in early_break.go)
 //   - Paginated PageName interaction → not multicol
 //   - FlexColumnBreakInfo per-column flex info → not multicol
 //   - The soft-break half of LayoutResult.InitialBreakBefore /
@@ -354,15 +355,6 @@ func CalculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResul
 	return appeal
 }
 
-// ClampedToValidFragmentainerCapacity floors a fragmentainer capacity at 1px:
-// to ensure content progression a fragmentainer must accept at least 1px of
-// content (css-break-3 §4.4). Mirrors Blink's
-// ClampedToValidFragmentainerCapacity(LayoutUnit)
-// (fragmentation_utils.h:153-158 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func ClampedToValidFragmentainerCapacity(length float64) float64 {
-	return max(length, 1)
-}
-
 // FragmentainerBox is the part of a box's fragment builder that Blink's
 // FragmentainerCapacity / FragmentainerOffset / FragmentainerSpaceLeft read:
 // the box's constraint space (whose BreakToken is the previous break token),
@@ -378,8 +370,11 @@ type FragmentainerBox struct {
 	ShouldCloneBoxEndDecorations bool
 }
 
-// clampedToValidFragmentainerCapacity is the builder overload of
-// ClampedToValidFragmentainerCapacity: for the fragment itself
+// clampedToValidFragmentainerCapacity floors a fragmentainer capacity at 1px:
+// to ensure content progression a fragmentainer must accept at least 1px of
+// content (css-break-3 §4.4; Blink's ClampedToValidFragmentainerCapacity
+// (LayoutUnit), fragmentation_utils.h:153-158 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For the fragment itself
 // (isForChildren false) a box that clones its block-end decorations must also
 // fit its repeated border/padding, so it always makes 1px of content
 // progress between the cloned edges. Mirrors Blink's
@@ -833,5 +828,35 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 
 	// The end of the block fits in the current fragmentainer.
 	out.IsAtBlockEnd = true
+	return out
+}
+
+// FinishFragmentationForFragmentainer sizes a fragmentainer (column box)
+// fragment. With a known fragmentainer block-size the fragment takes it,
+// whatever its content, and the consumed block-size advances by the
+// fragmentainer capacity, so a break token is never produced by sizing alone;
+// otherwise (initial column balancing) the fragment takes its content-based
+// fragmentsTotalBlockSize, which for a fragmentainer has no previously
+// consumed block-size baked in. Only FragmentBlockSize and ConsumedBlockSize
+// are set: a fragmentainer is never at its block end and never breaks
+// itself. Mirrors Blink's
+// FinishFragmentationForFragmentainer (fragmentation_utils.cc:823-866 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the monolithic
+// overflow reservation (:844-852; louis14 never sets
+// BlockBreakToken.MonolithicOverflow).
+func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, box FragmentainerBox, fragmentsTotalBlockSize float64) FinishFragmentationResult {
+	space := box.Space
+	consumedBlockSize := previouslyConsumedBlockSize(space.BreakToken)
+	var out FinishFragmentationResult
+	if space.HasKnownFragmentainerBlockSize() {
+		out.FragmentBlockSize = space.FragmentainerBlockSize
+		out.ConsumedBlockSize = consumedBlockSize + FragmentainerCapacity(box, false)
+	} else {
+		out.FragmentBlockSize = fragmentsTotalBlockSize
+		out.ConsumedBlockSize = consumedBlockSize + fragmentsTotalBlockSize
+	}
+	if builder.IsEmptySpannerParent() && builder.HasOutOfFlowFragmentainerDescendants() {
+		builder.SetIsEmptySpannerParent(false)
+	}
 	return out
 }
