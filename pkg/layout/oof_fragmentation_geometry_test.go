@@ -58,3 +58,40 @@ func TestOOFStaticPositionIsFragmentLocal(t *testing.T) {
 		`</div></div>`)
 	checkRects(t, got, map[string][]fragRect{"a": {{50, 20, 50, 80}}})
 }
+
+// TestLayoutFragmentainerDescendants pins Blink's layout of fragmentainer
+// descendants at the fragmentation context root (plan probe pB): the
+// containing block `rel` (200px of in-flow content) is fragmented across
+// both columns of a 50x100 multicol, and its abspos descendants are laid
+// out per column by OutOfFlowLayoutPart::LayoutFragmentainerDescendants
+// (out_of_flow_layout_part.cc:1559-1784 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//   - a1 (auto height, 200px content, static position at stitched 200)
+//     starts past the last column, so new columns are created for it
+//     (LayoutOOFsInFragmentainer → ColumnLayoutAlgorithm::CreateEmptyColumn,
+//     out_of_flow_layout_part.cc:2955-2973, column_layout_algorithm.cc:500-519)
+//     and it is really laid out, fragmented, in them (GenerateFragment,
+//     :2793-2902);
+//   - fx, a fixed child of a1, is a regular candidate whose static position
+//     is the end of a1's last fragment (AddOOFToFragmentainer, :3028-3152);
+//   - a2 (top:150, 100 tall) starts in column 2 and continues in a new one
+//     (ComputeStartFragmentIndexAndRelativeOffset, :3183-3250);
+//   - a3 (bottom:0) is resolved against the stitched CB block-size.
+//
+// Chrome 155 getClientRects.
+func TestLayoutFragmentainerDescendants(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+		`<div style="`+oofProbeMulticol+`width:50px;height:100px">`+
+		`<div style="position:relative"><div style="height:200px"></div>`+
+		`<div id=a1 style="position:absolute;width:25px"><div style="height:200px"></div>`+
+		`<div id=fx style="position:fixed;width:10px;height:10px"></div></div>`+
+		`<div id=a2 style="position:absolute;top:150px;left:0;width:10px;height:100px"></div>`+
+		`<div id=a3 style="position:absolute;bottom:0;left:0;width:10px;height:50px"></div>`+
+		`</div></div>`)
+	checkRects(t, got, map[string][]fragRect{
+		"a1": {{50, 0, 25, 100}, {75, 0, 25, 100}},
+		"fx": {{75, 100, 10, 10}},
+		"a2": {{25, 50, 10, 50}, {50, 0, 10, 50}},
+		"a3": {{25, 50, 10, 50}},
+	})
+}

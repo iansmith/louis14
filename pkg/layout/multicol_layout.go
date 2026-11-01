@@ -343,6 +343,25 @@ func (mla *MulticolLayoutAlgorithm) spaceLeftForContent() float64 {
 	return spaceLeft - mla.blockStartBorderPadding()
 }
 
+// CreateEmptyColumn creates an empty column fragmentainer after
+// previousColumn, of the same size, for out-of-flow content that runs past
+// the last column. Mirrors Blink's ColumnLayoutAlgorithm::CreateEmptyColumn
+// (column_layout_algorithm.cc:500-519 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which resumes the column
+// content from previousColumn's break token in a SimplifiedOofLayoutAlgorithm
+// that produces no in-flow children; louis14 builds that empty fragment
+// directly.
+func CreateEmptyColumn(wdm WritingDirectionMode, previousColumn *PhysicalFragment) *PhysicalFragment {
+	builder := NewBoxFragmentBuilder(wdm)
+	builder.SetBoxType(BoxTypeColumn)
+	builder.SetNode(previousColumn.Node)
+	builder.SetStyle(previousColumn.Style)
+	builder.SetLayoutNode(previousColumn.LayoutNode)
+	builder.SetIsFirstForNode(false)
+	builder.SetSize(ToLogicalSize(geomSizeToOld(previousColumn.Size), wdm.WM))
+	return builder.Build().Fragment
+}
+
 // blockStartBorderPadding is this fragment's block-start border +
 // scrollbar + padding, zero once Layout has cleared it for a continuation
 // (ShouldIncludeBlockStartBorderPadding): Blink's initial
@@ -849,6 +868,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		builder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
 	}
 
+	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
+	// MulticolsWithPendingOOFs at the outermost fragmentation context root,
+	// before the candidates: OutOfFlowLayoutPart::Run calls
+	// HandleFragmentation before LayoutCandidates
+	// (out_of_flow_layout_part.cc:615-687 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the candidates the
+	// laid-out OOFs surface (a fixed child of a fragmented abspos) are
+	// handled with the others. No-op when this builder is not the root or
+	// has no pending entries.
+	mla.HandleOofFragmentation(builder)
+
 	// Handle out-of-flow candidates. When nestedDeferredOOFs is set the
 	// complete-path LayoutCandidates is skipped — the outer fragmentation
 	// root resolves them per fragmentainer in Cmt-3.
@@ -927,13 +957,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// GapGeometry (Track A): build and attach gap geometry before Build().
 	// Mirrors Blink cla.cc:420–485.
 	mla.buildGapGeometry(builder, mla.contentInlineSize, finalBlockSize, mla.geom)
-
-	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
-	// MulticolsWithPendingOOFs at the outermost fragmentation context root.
-	// Mirrors Blink's `OutOfFlowLayoutPart::HandleFragmentation` invoked by
-	// `OutOfFlowLayoutPart::Run` (out_of_flow_layout_part.cc:589-695).
-	// No-op when this builder is not the root or has no pending entries.
-	mla.HandleOofFragmentation(builder)
 
 	result := builder.Build()
 

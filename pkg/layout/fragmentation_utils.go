@@ -380,22 +380,26 @@ type FragmentainerBox struct {
 	ShouldCloneBoxEndDecorations bool
 }
 
-// clampedToValidFragmentainerCapacity floors a fragmentainer capacity at 1px:
-// to ensure content progression a fragmentainer must accept at least 1px of
-// content (css-break-3 §4.4; Blink's ClampedToValidFragmentainerCapacity
-// (LayoutUnit), fragmentation_utils.h:153-158 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For the fragment itself
-// (isForChildren false) a box that clones its block-end decorations must also
-// fit its repeated border/padding, so it always makes 1px of content
-// progress between the cloned edges. Mirrors Blink's
+// ClampedToValidFragmentainerCapacity floors a fragmentainer capacity at
+// 1px: to ensure content progression a fragmentainer must accept at least
+// 1px of content (css-break-3 §4.4). Mirrors Blink's
+// ClampedToValidFragmentainerCapacity(LayoutUnit)
+// (fragmentation_utils.h:153-158 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ClampedToValidFragmentainerCapacity(length float64) float64 {
+	return max(length, 1)
+}
+
+// clampedToValidFragmentainerCapacity is the box variant: for the fragment
+// itself (isForChildren false) a box that clones its block-end decorations
+// must also fit its repeated border/padding, so it always makes 1px of
+// content progress between the cloned edges. Mirrors Blink's
 // ClampedToValidFragmentainerCapacity(builder, length, is_for_children)
 // (fragmentation_utils.h:159-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (box FragmentainerBox) clampedToValidFragmentainerCapacity(length float64, isForChildren bool) float64 {
-	minimum := 1.0
 	if box.ShouldCloneBoxEndDecorations && !isForChildren {
-		minimum += box.BorderScrollbarPadding.BlockSum()
+		return max(length, 1+box.BorderScrollbarPadding.BlockSum())
 	}
-	return max(length, minimum)
+	return ClampedToValidFragmentainerCapacity(length)
 }
 
 // FragmentainerCapacity is the fragmentainer block-size to use during layout,
