@@ -140,12 +140,9 @@ type PaintLayer struct {
 	BorderRadius css.EllipticalRadii // TopLeft, TopRight, BottomRight, BottomLeft (elliptical)
 
 	// Border image (9-slice): replaces regular border drawing when source is set.
-	BorderImageSource    *css.CSSImageValue   // url() value; nil = none (LOU-138 phase 7.3)
-	BorderImageSlice     css.BorderImageSlice // 4 slice values + fill flag
-	BorderImageWidth     [4]float64           // top, right, bottom, left (px)
-	BorderImageWidthAuto [4]bool              // true for sides where 'auto' was specified (resolved at paint time per CSS Backgrounds 3 §6.3)
-	BorderImageRepeat    [2]string            // [horizontal, vertical]: stretch/repeat/round/space
-	BorderImageOutset    [4]float64           // top, right, bottom, left (px); extends paint area outside border box
+	BorderImageSource    *css.CSSImageValue // url() source; nil = none or generated (LOU-138 phase 7.3)
+	BorderImageGenerated string             // gradient source (Blink StyleGeneratedImage); "" = none or url()
+	BorderImage          css.NinePieceImage // slices, widths, outsets, repeat rules (Blink NinePieceImage)
 
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
@@ -1191,28 +1188,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.BorderRadius = s.GetBorderRadiiResolved(box.Width, box.Height).
 		ConstrainRadii(box.Width, box.Height)
 
-	// Border image (9-slice). Only the url() form is supported in
-	// rendering today; gradient values still pass through Style but
-	// load-time path can't fetch them as images and they fall through
-	// to regular borders. Phase 7.3 of LOU-138 typed the url() form;
-	// gradient support would need a parallel typed field.
+	// Border image (9-slice): a url() or a generated (gradient) source,
+	// plus the NinePieceImage geometry. Mirrors ComputedStyle::BorderImage
+	// (StyleImage + NinePieceImage, core/style/nine_piece_image.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if biSrc := s.GetBorderImageSource(); biSrc != "" && biSrc != "none" {
 		if url, ok := css.ParseURLValue(biSrc); ok {
 			layer.BorderImageSource = &css.CSSImageValue{Data: css.URLData{Relative: url, Absolute: url}}
-			layer.BorderImageSlice = s.GetBorderImageSlice()
-			bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
-			layer.BorderImageOutset = s.GetBorderImageOutset(bwArr)
-			// Per CSS Backgrounds 3 §6.3, border-image-width <percentage>
-			// resolves against the border image area's relevant dimension
-			// (top/bottom against height, left/right against width). The
-			// border image area is the border-box extended outward by
-			// border-image-outset on each side. Mirrors Blink's
-			// BorderImageLength::ResolveAsLength at SHA
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-			areaW := box.Width + layer.BorderImageOutset[1] + layer.BorderImageOutset[3]
-			areaH := box.Height + layer.BorderImageOutset[0] + layer.BorderImageOutset[2]
-			layer.BorderImageWidth, layer.BorderImageWidthAuto = s.GetBorderImageWidth(bwArr, areaW, areaH)
-			layer.BorderImageRepeat = s.GetBorderImageRepeat()
+		} else if isGradientValue(biSrc) {
+			layer.BorderImageGenerated = biSrc
+		}
+		if layer.BorderImageSource != nil || layer.BorderImageGenerated != "" {
+			layer.BorderImage = s.GetBorderImage()
 		}
 	}
 

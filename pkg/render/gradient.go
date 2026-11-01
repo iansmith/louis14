@@ -1477,8 +1477,11 @@ func parseConicGradient(val string, boxW, boxH float64, style *css.Style) (cx, c
 		inner = inner[:idx]
 	}
 	inner = strings.TrimSpace(inner)
+	// A single color stop with two positions ("green 0 0") already yields
+	// the two stops the grammar requires, so the stop count is checked after
+	// expansion below, not on the raw argument count.
 	args := splitGradientArgs(inner)
-	if len(args) < 2 {
+	if len(args) == 0 {
 		return 0, 0, 0, nil, false, false
 	}
 

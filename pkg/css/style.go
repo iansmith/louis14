@@ -3943,19 +3943,18 @@ func expandBorderRadiusProperty(style *Style, value string) {
 
 // expandFourValues expands 1-4 CSS values to exactly 4 using the standard
 // TL TR BR BL pattern (same as margin/padding).
-func expandFourValues(parts []string) [4]string {
+func expandFourValues[T any](parts []T) [4]T {
 	switch len(parts) {
 	case 1:
-		return [4]string{parts[0], parts[0], parts[0], parts[0]}
+		return [4]T{parts[0], parts[0], parts[0], parts[0]}
 	case 2:
-		return [4]string{parts[0], parts[1], parts[0], parts[1]}
+		return [4]T{parts[0], parts[1], parts[0], parts[1]}
 	case 3:
-		return [4]string{parts[0], parts[1], parts[2], parts[1]}
+		return [4]T{parts[0], parts[1], parts[2], parts[1]}
 	case 4:
-		return [4]string{parts[0], parts[1], parts[2], parts[3]}
-	default:
-		return [4]string{}
+		return [4]T{parts[0], parts[1], parts[2], parts[3]}
 	}
+	return [4]T{}
 }
 
 // splitOnSlashOutsideParens splits a CSS shorthand at the first `/` that is
@@ -13139,183 +13138,6 @@ func (s *Style) GetBorderImageSource() string {
 		return strings.TrimSpace(v)
 	}
 	return ""
-}
-
-// BorderImageSlice holds the 4 slice values and fill flag.
-type BorderImageSlice struct {
-	Top, Right, Bottom, Left float64 // percentage (0-100) or pixel values
-	IsPercent                bool
-	Fill                     bool
-}
-
-// GetBorderImageSlice parses border-image-slice.
-func (s *Style) GetBorderImageSlice() BorderImageSlice {
-	v, ok := s.Get("border-image-slice")
-	if !ok || strings.TrimSpace(v) == "" {
-		return BorderImageSlice{Top: 100, Right: 100, Bottom: 100, Left: 100, IsPercent: true}
-	}
-	v = strings.TrimSpace(v)
-	fill := false
-	if strings.HasSuffix(v, " fill") {
-		fill = true
-		v = strings.TrimSuffix(v, " fill")
-	}
-	isPercent := strings.Contains(v, "%")
-	parts := strings.Fields(v)
-	var vals [4]float64
-	for i, p := range parts {
-		if i >= 4 {
-			break
-		}
-		p = strings.TrimSuffix(p, "%")
-		p = strings.TrimSuffix(p, "px")
-		f, _ := strconv.ParseFloat(p, 64)
-		vals[i] = f
-	}
-	// Fill missing values per CSS shorthand rules
-	switch len(parts) {
-	case 1:
-		vals[1] = vals[0]
-		vals[2] = vals[0]
-		vals[3] = vals[0]
-	case 2:
-		vals[2] = vals[0]
-		vals[3] = vals[1]
-	case 3:
-		vals[3] = vals[1]
-	}
-	return BorderImageSlice{Top: vals[0], Right: vals[1], Bottom: vals[2], Left: vals[3], IsPercent: isPercent, Fill: fill}
-}
-
-// GetBorderImageWidth returns the 4 border-image-width values in pixels.
-// Values can be <number> (multiplier of border-width), <length>,
-// <percentage>, or auto.
-//
-// borderWidths is [top, right, bottom, left] in pixels (used for <number>
-// and 'auto'). borderBoxW/borderBoxH are the border-box dimensions used to
-// resolve <percentage> values, per CSS Backgrounds 3 §6.3: "Percentages
-// refer to the size of the border image area: the width of the area for
-// horizontal offsets, the height for vertical offsets." Top and bottom
-// (index 0, 2) are vertical offsets → percentage of height; left and right
-// (index 1, 3) are horizontal offsets → percentage of width. Mirrors
-// Blink's ResolveAsLength in nine_piece_image_grid.cc at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-//
-// Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
-// expanded into the 4-value form, and only then is each number multiplied
-// by the corresponding border-width. The previous in-place expansion
-// (multiply then copy vals[0]) silently dropped the per-side multiplier
-// when border widths differed.
-func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderBoxH float64) (vals [4]float64, isAuto [4]bool) {
-	v, ok := s.Get("border-image-width")
-	if !ok || strings.TrimSpace(v) == "" {
-		return borderWidths, [4]bool{} // default = border-width values
-	}
-	parts := strings.Fields(strings.TrimSpace(v))
-	if len(parts) == 0 {
-		return borderWidths, [4]bool{}
-	}
-	if len(parts) > 4 {
-		parts = parts[:4]
-	}
-	// Expand to 4 values per CSS shorthand expansion rules.
-	var four [4]string
-	switch len(parts) {
-	case 1:
-		four = [4]string{parts[0], parts[0], parts[0], parts[0]}
-	case 2:
-		four = [4]string{parts[0], parts[1], parts[0], parts[1]}
-	case 3:
-		four = [4]string{parts[0], parts[1], parts[2], parts[1]}
-	case 4:
-		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
-	}
-	// Reference axis size for percentage resolution: [top, right, bottom, left].
-	refDim := [4]float64{borderBoxH, borderBoxW, borderBoxH, borderBoxW}
-	for i, p := range four {
-		switch {
-		case p == "auto":
-			// Per CSS Backgrounds 3 §6.3: 'auto' uses the intrinsic dimension
-			// of the corresponding image slice. Caller resolves this at paint
-			// time once the image is loaded; we set a placeholder equal to the
-			// corresponding border-width as the fallback for "image lacks the
-			// required intrinsic dimension" per spec.
-			vals[i] = borderWidths[i]
-			isAuto[i] = true
-		case strings.HasSuffix(p, "px"):
-			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
-			vals[i] = f
-		case strings.HasSuffix(p, "%"):
-			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "%"), 64)
-			vals[i] = f * refDim[i] / 100
-		default:
-			// number = multiplier of corresponding border-width
-			f, _ := strconv.ParseFloat(p, 64)
-			vals[i] = f * borderWidths[i]
-		}
-	}
-	return vals, isAuto
-}
-
-// GetBorderImageOutset returns the 4 border-image-outset values in pixels.
-// Per CSS Backgrounds 3 §6.2: values can be <length> (px) or <number>
-// (multiplier of the corresponding border-width). The painted area is
-// extended outward by these amounts; the layout box is not affected.
-// borderWidths is [top, right, bottom, left] in pixels.
-//
-// Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
-// expanded into the 4-value form (so a single number maps to all four
-// sides), and only then is each number multiplied by the corresponding
-// border-width.
-func (s *Style) GetBorderImageOutset(borderWidths [4]float64) [4]float64 {
-	v, ok := s.Get("border-image-outset")
-	if !ok || strings.TrimSpace(v) == "" {
-		return [4]float64{} // initial: 0 on all sides
-	}
-	parts := strings.Fields(strings.TrimSpace(v))
-	if len(parts) == 0 {
-		return [4]float64{}
-	}
-	if len(parts) > 4 {
-		parts = parts[:4]
-	}
-	// Expand to 4 values per CSS shorthand expansion rules.
-	var four [4]string
-	switch len(parts) {
-	case 1:
-		four = [4]string{parts[0], parts[0], parts[0], parts[0]}
-	case 2:
-		four = [4]string{parts[0], parts[1], parts[0], parts[1]}
-	case 3:
-		four = [4]string{parts[0], parts[1], parts[2], parts[1]}
-	case 4:
-		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
-	}
-	var vals [4]float64
-	for i, p := range four {
-		if strings.HasSuffix(p, "px") {
-			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
-			vals[i] = f
-		} else {
-			// Unit-less number = multiplier of corresponding border-width.
-			f, _ := strconv.ParseFloat(p, 64)
-			vals[i] = f * borderWidths[i]
-		}
-	}
-	return vals
-}
-
-// GetBorderImageRepeat returns the repeat keywords [horizontal, vertical].
-func (s *Style) GetBorderImageRepeat() [2]string {
-	v, ok := s.Get("border-image-repeat")
-	if !ok || strings.TrimSpace(v) == "" {
-		return [2]string{"stretch", "stretch"}
-	}
-	parts := strings.Fields(strings.TrimSpace(v))
-	if len(parts) == 1 {
-		return [2]string{parts[0], parts[0]}
-	}
-	return [2]string{parts[0], parts[1]}
 }
 
 // GetIsolation returns the isolation property value (default: "auto")
