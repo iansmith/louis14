@@ -107,3 +107,31 @@ func TestRegisterFontFace_DataURLGoesThroughFetcher(t *testing.T) {
 		t.Errorf("fetcher saw %q, want the data: URL", requested)
 	}
 }
+
+// TestAddUserFontFaceRules_DescriptorEscapes: CSS escapes in the
+// descriptor's tag strings resolve before the tag is checked, as Blink's
+// tokenizer resolves them inside a <string> token before
+// ConsumeFontSettingsTagAndValue sees it (core/css/parser/
+// css_tokenizer.cc:393-432 ConsumeStringTokenUntil @
+// 5992657f556bcd9d207a4aca187488462f027cab) — and as louis14 already does
+// for property values (unescapeCSS on every declaration value).
+func TestAddUserFontFaceRules_DescriptorEscapes(t *testing.T) {
+	ss, err := css.ParseStylesheet(`@font-face {
+		font-family: "LOU465-Escapes";
+		src: url(Ahem.ttf);
+		font-feature-settings: "\6C iga" 0, '\73 mcp';
+	}`, css.NewParserContext(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := NewFontRegistry()
+	fr.AddUserFontFaceRules(ss.FontFaces, fetchTestFont)
+	path := fr.Lookup("LOU465-Escapes", false, false)
+	if path == "" {
+		t.Fatal("face not registered")
+	}
+	want := []textshape.FontFeature{ff("liga", 0), ff("smcp", 1)}
+	if got := fr.FontFeatureSettingsForPath(path); !reflect.DeepEqual(got, want) {
+		t.Errorf("descriptor with escaped tags = %v, want %v", got, want)
+	}
+}

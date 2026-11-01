@@ -143,3 +143,28 @@ func TestPaintLayer_FontFeatureSettingsIsItsOwnInput(t *testing.T) {
 		t.Errorf("FontFeatureSettings aliases FontFeatures: now %v", layer.FontFeatureSettings)
 	}
 }
+
+// TestShapeFeatures_ResolvedOncePerFace: the face-resolved feature list is
+// built once per (face, description), as Blink resolves it once into the
+// face's FontPlatformData, not per glyph — repeated shaping calls for the
+// same font ID and layer (the letter-spacing / emphasis / small-caps / tab
+// loops call measureTextStr and drawTextStr per character) allocate
+// nothing.
+func TestShapeFeatures_ResolvedOncePerFace(t *testing.T) {
+	r := descriptorTestRenderer(t, `"smcp" 1, "liga" 0`)
+	layer := layerWithStyle(map[string]string{
+		"font-family":             "LOU465-FFS",
+		"font-feature-settings":   `"liga" 1`,
+		"font-variant-alternates": "historical-forms",
+	})
+	fontID := r.fontIDForLayer(layer)
+	want := r.shapeFeatures(fontID, layer.featureInputs())
+	if allocs := testing.AllocsPerRun(100, func() {
+		r.shapeFeatures(fontID, layer.featureInputs())
+	}); allocs != 0 {
+		t.Errorf("shapeFeatures allocates %v times per call for the same face and layer, want 0", allocs)
+	}
+	if got := r.shapeFeatures(fontID, layer.featureInputs()); !reflect.DeepEqual(got, want) {
+		t.Errorf("repeated shapeFeatures = %v, want %v", got, want)
+	}
+}
