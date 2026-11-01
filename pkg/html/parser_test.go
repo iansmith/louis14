@@ -1,6 +1,9 @@
 package html
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // bodyOf returns the <body> element from a document's implicit <html>/<body>
 // structure. HTML5 §8.2.6: block-level elements at the document root trigger
@@ -373,5 +376,181 @@ func TestParse_ScriptDataBlockNamespaceURI(t *testing.T) {
 		if got := scripts[i].NamespaceURI(); got != want {
 			t.Errorf("<script>#%d: NamespaceURI() = %q, want %q", i, got, want)
 		}
+	}
+}
+
+// treeShape serializes the element structure under n as a compact
+// s-expression: elements as `tag(children...)`, non-whitespace text as
+// `"text"`. Whitespace-only text is dropped so markup indentation does not
+// affect the assertion.
+func treeShape(n *Node) string {
+	var b strings.Builder
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n.Type == TextNode {
+			if s := strings.TrimSpace(n.Text); s != "" {
+				b.WriteString(`"` + s + `"`)
+			}
+			return
+		}
+		b.WriteString(n.TagName)
+		if id := n.Attributes["id"]; id != "" {
+			b.WriteString("#" + id)
+		}
+		var kids []*Node
+		for _, c := range n.Children {
+			if c.Type != TextNode || strings.TrimSpace(c.Text) != "" {
+				kids = append(kids, c)
+			}
+		}
+		if len(kids) == 0 {
+			return
+		}
+		b.WriteString("(")
+		first := true
+		for _, c := range kids {
+			if !first {
+				b.WriteString(" ")
+			}
+			first = false
+			walk(c)
+		}
+		b.WriteString(")")
+	}
+	walk(n)
+	return b.String()
+}
+
+// firstTable returns the first <table> under n in document order.
+func firstTable(n *Node) *Node {
+	if n.Type == ElementNode && n.TagName == "table" {
+		return n
+	}
+	for _, c := range n.Children {
+		if t := firstTable(c); t != nil {
+			return t
+		}
+	}
+	return nil
+}
+
+// TestParser_TableInsertionModes asserts the HTML-spec / Blink
+// HTMLTreeBuilder tree for unclosed table structure: "in row" and "in
+// cell" insertion modes close an open cell/row (CloseTheCell,
+// ProcessTrEndTagForInRow), and "in table" / "in table body" insert the
+// implied <tbody> / <tr> (html_tree_builder.cc:1342-1347, :1525-1530 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Expected trees match
+// Chrome's DOM for the same markup.
+func TestParser_TableInsertionModes(t *testing.T) {
+	cases := []struct {
+		name, markup, want string
+	}{
+		{
+			// css-backgrounds/reference/border-image-006-ref.html
+			name: "border-image-006-ref unclosed td/tr",
+			markup: `<!DOCTYPE html><p>x<table>
+    <tr><td class="green-square"><td><td class="green-square">
+    <tr><td><td id="blue-square"><td>
+    <tr><td class="green-square"><td><td class="green-square">
+  </table>`,
+			want: `table(tbody(tr(td td td) tr(td td#blue-square td) tr(td td td)))`,
+		},
+		{
+			// css-backgrounds/box-shadow-table-border-collapse-001.html
+			name: "box-shadow-table-border-collapse-001 unclosed td/tr",
+			markup: `<!DOCTYPE html><table>
+    <tr id="top-row"><td>1<td>2
+    <tr id="bottom-row"><td>3<td>4
+  </table>`,
+			want: `table(tbody(tr#top-row(td("1") td("2")) tr#bottom-row(td("3") td("4"))))`,
+		},
+		{
+			name:   "td directly in table gets implied tbody and tr",
+			markup: `<table><td>a<td>b</table>`,
+			want:   `table(tbody(tr(td("a") td("b"))))`,
+		},
+		{
+			name:   "th closes an open td",
+			markup: `<table><tr><td>a<th>b</table>`,
+			want:   `table(tbody(tr(td("a") th("b"))))`,
+		},
+		{
+			name:   "new cell closes elements open inside the cell",
+			markup: `<table><tr><td><div><span>a<td>b</table>`,
+			want:   `table(tbody(tr(td(div(span("a"))) td("b"))))`,
+		},
+		{
+			name:   "tbody start tag closes open cell, row and row group",
+			markup: `<table><tbody><tr><td>a<tbody><tr><td>b</table>`,
+			want:   `table(tbody(tr(td("a"))) tbody(tr(td("b"))))`,
+		},
+		{
+			name:   "thead after open cell",
+			markup: `<table><thead><tr><th>h<tbody><tr><td>b</table>`,
+			want:   `table(thead(tr(th("h"))) tbody(tr(td("b"))))`,
+		},
+		{
+			name:   "nested table: inner cells do not close outer cell",
+			markup: `<table><tr><td><table><tr><td>in<td>in2</table>after<td>2</table>`,
+			want:   `table(tbody(tr(td(table(tbody(tr(td("in") td("in2")))) "after") td("2"))))`,
+		},
+		{
+			name:   "explicitly closed table unchanged apart from tbody",
+			markup: `<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>`,
+			want:   `table(tbody(tr(td("a") td("b")) tr(td("c"))))`,
+		},
+		{
+			name:   "col gets implied colgroup, closed by tr",
+			markup: `<table><col><tr><td>a</table>`,
+			want:   `table(colgroup(col) tbody(tr(td("a"))))`,
+		},
+		{
+			name:   "tr closes an open caption",
+			markup: `<table><caption>c<tr><td>a</table>`,
+			want:   `table(caption("c") tbody(tr(td("a"))))`,
+		},
+		{
+			name:   "end tag of an element outside the cell is ignored",
+			markup: `<div><table><tr><td>a</div>b</table></div>`,
+			want:   `table(tbody(tr(td("a" "b"))))`,
+		},
+		{
+			name:   "end tag for a cell outside table scope is ignored",
+			markup: `<table><tr><td><table><tr><td>x</td></tr></td></table>z</td></tr></table>`,
+			want:   `table(tbody(tr(td(table(tbody(tr(td("x")))) "z"))))`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := Parse(tc.markup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tbl := firstTable(doc.Root)
+			if tbl == nil {
+				t.Fatal("no <table> in parsed document")
+			}
+			if got := treeShape(tbl); got != tc.want {
+				t.Errorf("tree mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParser_XHTMLTableNoImpliedTbody: XML documents are not parsed by
+// the HTML tree builder, so no implied <tbody> appears (Chrome's DOM for
+// an .xht table has <tr> directly under <table>).
+func TestParser_XHTMLTableNoImpliedTbody(t *testing.T) {
+	doc, err := Parse(`<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><table><tr><td>a</td></tr></table></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbl := firstTable(doc.Root)
+	if tbl == nil {
+		t.Fatal("no <table>")
+	}
+	if got, want := treeShape(tbl), `table(tr(td("a")))`; got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
