@@ -41,10 +41,12 @@ type Node struct {
 	// PaintLayerScrollableArea::scroll_offset_ (paint/
 	// paint_layer_scrollable_area.h @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which outlives relayout.
-	// Stored unclamped: layout clamps it to the element's scroll range
-	// (pkg/layout PaintLayerScrollableArea.ClampScrollOffset) when it
-	// applies the scroll translation, as Blink re-clamps after an overflow
-	// change (ClampScrollOffsetAfterOverflowChange).
+	// The scroll bindings store the offset layout clamped the request to
+	// when they can run layout (js.Engine.SetLayoutUpdater), the request
+	// otherwise; layout clamps it again to the element's current scroll
+	// range (pkg/layout PaintLayerScrollableArea.ClampScrollOffset) when
+	// it applies the scroll translation, as Blink re-clamps after an
+	// overflow change (ClampScrollOffsetAfterOverflowChange).
 	ScrollOffset ScrollOffset
 
 	// MarkerAnimatedStyle holds property values a Web Animation targeting

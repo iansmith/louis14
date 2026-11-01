@@ -116,3 +116,28 @@ func TestScrollOffsetIgnoredOnNonScrollContainer(t *testing.T) {
 		})
 	}
 }
+
+// TestVerticalRLScrollbarGutterIsOnTheRight pins Blink's vertical
+// scrollbar placement (ComputedStyle::
+// ShouldPlaceBlockDirectionScrollbarOnLogicalLeft, core/style/
+// computed_style.h:2369-2371 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// only a horizontal RTL box puts it on the left. In vertical-rl the right
+// gutter is the block-start edge, so the first child sits left of it; in
+// horizontal RTL the left gutter is inline-end and the child stays flush
+// right.
+func TestVerticalRLScrollbarGutterIsOnTheRight(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+		`<div id=v style="width:200px;height:200px;overflow:scroll;writing-mode:vertical-rl">`+
+		`<div id=vc style="width:80px;height:180px"></div></div>`+
+		`<div id=r style="width:200px;height:200px;overflow:scroll;direction:rtl">`+
+		`<div id=rc style="width:80px;height:180px"></div></div>`)
+	if v := got["v"]; len(v) != 1 {
+		t.Fatalf("v rects = %+v", v)
+	}
+	if vc := got["vc"]; len(vc) != 1 || vc[0].x != 200-17-80 {
+		t.Errorf("vertical-rl child rects = %+v, want x=%v", vc, 200-17-80)
+	}
+	if rc := got["rc"]; len(rc) != 1 || rc[0].x != 200-80 {
+		t.Errorf("rtl child rects = %+v, want x=%v", rc, 200-80)
+	}
+}

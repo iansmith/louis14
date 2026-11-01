@@ -69,24 +69,35 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 
 	// Execute JavaScript if the document has scripts, then re-layout.
 	if len(doc.Scripts) > 0 {
+		// newPostScriptEngine builds a layout engine for the DOM as scripts
+		// leave it: the mid-script layouts scroll bindings force and the
+		// final pass below.
+		newPostScriptEngine := func() *layout.LayoutEngine {
+			e := layout.NewLayoutEngine(float64(width), float64(height))
+			// CSS Transitions: the post-script pass compares against the
+			// first pass's computed styles (before-change styles).
+			e.SetPreviousStyles(engine.ComputedStyles())
+			e.SetFontConfig(fontConfig)
+			if fetcher != nil {
+				e.SetImageFetcher(fetcher)
+			}
+			if basePath != "" {
+				e.SetDocumentFetcher(createFileDocumentFetcher(resolver))
+			}
+			return e
+		}
 		jsEng := js.New()
 		jsEng.SetLayoutSnapshot(engine.ComputedStyles(), engine.NodeBoxes())
+		jsEng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+			e := newPostScriptEngine()
+			e.Layout(doc)
+			return e.NodeBoxes()
+		})
 		if err := jsEng.Execute(doc); err != nil {
 			log.Printf("js: %v", err)
 		}
 		// Second layout pass to pick up DOM mutations made by JS.
-		engine2 := layout.NewLayoutEngine(float64(width), float64(height))
-		// CSS Transitions: the post-script pass compares against the first
-		// pass's computed styles (before-change styles).
-		engine2.SetPreviousStyles(engine.ComputedStyles())
-		engine2.SetFontConfig(fontConfig)
-		if fetcher != nil {
-			engine2.SetImageFetcher(fetcher)
-		}
-		if basePath != "" {
-			engine2.SetDocumentFetcher(createFileDocumentFetcher(resolver))
-		}
-		boxes = engine2.Layout(doc)
+		boxes = newPostScriptEngine().Layout(doc)
 	}
 
 	// Collect @counter-style rules from document stylesheets.
