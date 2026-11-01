@@ -66,7 +66,7 @@ func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
 	}
 	tree := b.buildNode(root)
 	b.normalizeTableSubtrees(tree)
-	b.normalizeRubySubtrees(tree)
+	b.normalizeRubySubtrees(tree, false)
 	assignDOMIndices(tree)
 	linkLayoutParents(tree)
 	return tree
@@ -123,42 +123,51 @@ func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 //     `EquivalentBlockDisplay` / `EquivalentInlineDisplay` pair at
 //     `core/css/resolver/style_adjuster.cc:247-356`.
 //  2. Inlinification (`#anon-gen-inlinize`): when a node's layout
-//     parent is a `display: ruby` or `display: ruby-text` box, set
-//     each in-flow child's used display to its
-//     `EquivalentInlineDisplay` and force `float: none`. Mirrors
-//     Blink `AdjustStyleForDisplay` at
-//     `core/css/resolver/style_adjuster.cc:788-805`. The rule is
-//     recursive (csswg-drafts #1341) — a block inside a block inside
-//     a ruby is still inlinified.
-func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode) {
+//     parent inlinifies its children (inlinifiesChildren), set each
+//     in-flow child's used display to its `EquivalentInlineDisplay` and
+//     force `float: none`. Mirrors Blink `AdjustStyleForDisplay` at
+//     `core/css/resolver/style_adjuster.cc:789-806 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b`. The rule recurses only
+//     through inlinified inline boxes (css-display-4 #inlinify): a block
+//     inside an inline inside a ruby becomes an inline-block, but the
+//     inline-block does not inlinify its own children.
+//
+// inInlinifyingDisplay is Blink's ComputedStyle::IsInInlinifyingDisplay
+// for node: true when node itself was adjusted under an inlinifying
+// layout parent.
+func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode, inInlinifyingDisplay bool) {
 	if node == nil {
 		return
 	}
-	if s := node.Style(); s != nil {
-		switch s.GetDisplay() {
-		case css.DisplayBlockRuby:
-			b.wrapBlockRubyAsTwoBox(node)
-			// The principal box's only child is now an anonymous
-			// inline `display:ruby` box; recurse into it so its
-			// in-flow children get inlinified.
-			for _, c := range node.children {
-				b.normalizeRubySubtrees(c)
-			}
-			return
-		case css.DisplayRuby, css.DisplayRubyText:
-			// Inlinify in-flow children, then recurse so descendants
-			// (which are themselves inside a ruby/ruby-text layout
-			// parent after inlinification) also get processed.
-			b.inlinifyRubyChildren(node)
-			for _, c := range node.children {
-				b.normalizeRubySubtrees(c)
-			}
-			return
-		}
+	s := node.Style()
+	if s != nil && s.GetDisplay() == css.DisplayBlockRuby {
+		// The principal box's only child is now an anonymous inline
+		// `display:ruby` box, which inlinifies its children.
+		b.wrapBlockRubyAsTwoBox(node)
 	}
+	inlinifies := s != nil && inlinifiesChildren(s, inInlinifyingDisplay)
 	for _, c := range node.children {
-		b.normalizeRubySubtrees(c)
+		b.normalizeRubySubtrees(c, inlinifies && inlinifyChild(c))
 	}
+}
+
+// inlinifiesChildren reports whether a box with style s inlinifies its
+// in-flow children: a ruby or ruby-text box always does, and an inline
+// box (or display:contents, or an inline list item) does when it was
+// itself inlinified. Mirrors ComputedStyle::InlinifiesChildren
+// (style/computed_style.h:1805-1817 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). kBlockRuby is handled by
+// the anonymous `display: ruby` child wrapBlockRubyAsTwoBox creates.
+func inlinifiesChildren(s *css.Style, inInlinifyingDisplay bool) bool {
+	switch d := s.GetDisplay(); d {
+	case css.DisplayRuby, css.DisplayRubyText:
+		return true
+	case css.DisplayInline, css.DisplayContents:
+		return inInlinifyingDisplay
+	case css.DisplayInlineListItem:
+		return inInlinifyingDisplay && s.IsInlineBoxListItem()
+	}
+	return false
 }
 
 // wrapBlockRubyAsTwoBox rewrites a `display: block ruby` node into
@@ -194,45 +203,37 @@ func (b *LayoutTreeBuilder) wrapBlockRubyAsTwoBox(node *LayoutInputNode) {
 	node.children = []*LayoutInputNode{anon}
 }
 
-// inlinifyRubyChildren applies the CSS Ruby §2.2 `#anon-gen-inlinize`
-// rule to the direct children of a `display:ruby` or `display:ruby-text`
-// node: each in-flow child has its used display rewritten to its
-// EquivalentInlineDisplay and any float is dropped. OOF (absolute /
-// fixed) children are left alone per Blink
-// `style_adjuster.cc:788-805` (`!builder.HasOutOfFlowPosition()`).
-//
-// Recursion into descendants happens in normalizeRubySubtrees: after
-// inlinification, the child's layout parent in the recursive call is
-// the same ruby/ruby-text, so the rule fires again at each level.
-func (b *LayoutTreeBuilder) inlinifyRubyChildren(node *LayoutInputNode) {
-	if node == nil {
-		return
+// inlinifyChild applies the `#anon-gen-inlinize` rule to child, an
+// in-flow child of an inlinifying layout parent: its used display becomes
+// its EquivalentInlineDisplay and any float is dropped. Out-of-flow
+// (absolute / fixed) children are exempt. Returns whether child was
+// inlinified (Blink's SetIsInInlinifyingDisplay). Mirrors
+// StyleAdjuster::AdjustStyleForDisplay (style_adjuster.cc:789-806 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func inlinifyChild(child *LayoutInputNode) bool {
+	if child == nil || child.style == nil {
+		return false
 	}
-	for _, child := range node.children {
-		if child == nil || child.style == nil {
-			continue
-		}
-		// OOF children are exempt from inlinification.
-		pos := child.style.GetPosition()
-		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			continue
-		}
-		d := child.style.GetDisplay()
-		eq := css.EquivalentInlineDisplay(d)
-		isFloated := child.style.GetFloat() != css.FloatNone
-		if eq == d && !isFloated {
-			continue
-		}
-		// Mutate via a clone so we don't disturb shared style cells.
-		clone := child.style.Clone()
-		if eq != d {
-			clone.Set("display", string(eq))
-		}
-		if isFloated {
-			clone.Set("float", "none")
-		}
-		child.style = clone
+	pos := child.style.GetPosition()
+	if pos == css.PositionAbsolute || pos == css.PositionFixed {
+		return false
 	}
+	d := child.style.GetDisplay()
+	eq := css.EquivalentInlineDisplay(d)
+	isFloated := child.style.GetFloat() != css.FloatNone
+	if eq == d && !isFloated {
+		return true
+	}
+	// Mutate via a clone so we don't disturb shared style cells.
+	clone := child.style.Clone()
+	if eq != d {
+		clone.Set("display", string(eq))
+	}
+	if isFloated {
+		clone.Set("float", "none")
+	}
+	child.style = clone
+	return true
 }
 
 // assignDOMIndices assigns a monotonically increasing pre-order index to each
