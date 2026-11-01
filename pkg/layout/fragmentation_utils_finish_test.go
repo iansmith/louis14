@@ -59,6 +59,18 @@ func TestFinishFragmentation(t *testing.T) {
 			in.ShouldBreakInside, in.HasInflowChildBreakInside, in.IsKnownToFitInFragmentainer = true, true, true
 			return in
 		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 100, IsAtBlockEnd: true, IncludeBlockEnd: true}},
+		{"block-overflow clipping box at its end with a child broken inside: disable fragmentation (LOU-501)", func(in FinishFragmentationInput) FinishFragmentationInput {
+			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 80, 80
+			in.ShouldBreakInside, in.HasInflowChildBreakInside, in.IsKnownToFitInFragmentainer = true, true, true
+			in.HasNonVisibleBlockOverflow = true
+			return in
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80, IncludeBlockEnd: true, DisableFragmentation: true}},
+		{"block-overflow clipping box not at its end: keeps fragmenting (LOU-501)", func(in FinishFragmentationInput) FinishFragmentationInput {
+			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = 100, 80, 80
+			in.ShouldBreakInside, in.HasInflowChildBreakInside = true, true
+			in.HasNonVisibleBlockOverflow = true
+			return in
+		}, FinishFragmentationResult{FragmentBlockSize: 80, IntrinsicBlockSize: 80, ConsumedBlockSize: 80}},
 		{"unknown space (balancing pass): at block end unless broken by a child", func(in FinishFragmentationInput) FinishFragmentationInput {
 			in.SpaceLeft, in.FragmentsTotalBlockSize, in.IntrinsicBlockSize = Indefinite, 300, 300
 			return in

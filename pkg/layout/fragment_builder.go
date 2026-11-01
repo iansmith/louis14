@@ -184,6 +184,21 @@ type BoxFragmentBuilder struct {
 	// (box_fragment_builder.h:791 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	shouldCloneBoxEndDecorations bool
 
+	// requiresContentBeforeBreaking: no child content added yet, and the
+	// node must place some here before it may break (the space requires it,
+	// or the node must stay in the current fragmentainer). Mirrors Blink's
+	// FragmentBuilder::requires_content_before_breaking_ (fragment_builder.h:
+	// 459-468, :677 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	requiresContentBeforeBreaking bool
+
+	// isBlockSizeForFragmentationClamped: a child that did not fit was kept
+	// in this fragmentainer because content was required, so child overflow
+	// is ignored for the block-size for fragmentation. Mirrors Blink's
+	// BoxFragmentBuilder::is_block_size_for_fragmentation_clamped_
+	// (box_fragment_builder.h:397-399, :788 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isBlockSizeForFragmentationClamped bool
+
 	// previousBreakAfter is the break-after value of the most recently added
 	// in-flow child, joined with the value that child propagated
 	// (PropagateChildBreakValues). JoinedBreakBetweenValue joins it with the
@@ -413,6 +428,29 @@ func (b *BoxFragmentBuilder) ClearBorderScrollbarPaddingBlockEnd() {
 	b.initialFragmentGeometry.ClearBorderScrollbarPaddingBlockEnd()
 }
 
+// SetRequiresContentBeforeBreaking sets whether some child content must be
+// placed before this node may break. Mirrors Blink's
+// FragmentBuilder::SetRequiresContentBeforeBreaking (fragment_builder.h:
+// 463-465 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetRequiresContentBeforeBreaking(v bool) {
+	b.requiresContentBeforeBreaking = v
+}
+
+// RequiresContentBeforeBreaking mirrors Blink's
+// FragmentBuilder::RequiresContentBeforeBreaking (fragment_builder.h:466-468
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) RequiresContentBeforeBreaking() bool {
+	return b.requiresContentBeforeBreaking
+}
+
+// SetIsBlockSizeForFragmentationClamped records that a child was forced to
+// stay in this fragmentainer although it did not fit. Mirrors Blink's
+// BoxFragmentBuilder::SetIsBlockSizeForFragmentationClamped
+// (box_fragment_builder.h:397-399 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetIsBlockSizeForFragmentationClamped() {
+	b.isBlockSizeForFragmentationClamped = true
+}
+
 // ShouldCloneBoxEndDecorations reports whether this fragment repeats its
 // block-end border/padding. Mirrors Blink's BoxFragmentBuilder::
 // ShouldCloneBoxEndDecorations (box_fragment_builder.h:418-420 @
@@ -558,6 +596,11 @@ func (b *BoxFragmentBuilder) PropagateChildBlockSizeForFragmentation(
 	if !b.hasBlockSizeForFragmentation || blockEnd > b.blockSizeForFragmentation {
 		b.blockSizeForFragmentation = blockEnd
 		b.hasBlockSizeForFragmentation = true
+	}
+	// A child clamped while content was required here clamps this node too
+	// (box_fragment_builder.cc:493-496 @ a9f50e522efa).
+	if b.space.RequiresContentBeforeBreaking && child.IsBlockSizeForFragmentationClamped {
+		b.isBlockSizeForFragmentationClamped = true
 	}
 }
 
@@ -1014,6 +1057,9 @@ func (b *BoxFragmentBuilder) AddChildWithRelativeOffset(fragment *PhysicalFragme
 		},
 		fragment: fragment,
 	})
+	// Some content is here now, so normal breaking rules apply from now on
+	// (box_fragment_builder.cc:376-377 @ a9f50e522efa).
+	b.requiresContentBeforeBreaking = false
 }
 
 // ShiftChildBlockOffset adds delta to the block offset of the most recently
@@ -1102,8 +1148,9 @@ func (b *BoxFragmentBuilder) IsEmptySpannerParent() bool {
 // it); for a box other than a fragmentainer at least its own block-size, or
 // only its own block-size when it clips block-axis overflow. A fragmentainer
 // (column) keeps the children-only value. Mirrors BoxFragmentBuilder::
-// ToBoxFragment (box_fragment_builder.cc:743-761 @ a9f50e522efa); the
-// clamped condition (:750-751) is not ported.
+// ToBoxFragment (box_fragment_builder.cc:743-761 @ a9f50e522efa), which
+// also ignores child overflow when the block-size for fragmentation was
+// clamped (:750-751).
 func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 	bsff := 0.0
 	if b.hasBlockSizeForFragmentation {
@@ -1117,7 +1164,7 @@ func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 	if b.boxType == BoxTypeColumn {
 		return bsff
 	}
-	if clipsBlockAxisOverflow(b.style, b.node, b.wdm) {
+	if clipsBlockAxisOverflow(b.style, b.node, b.wdm) || b.isBlockSizeForFragmentationClamped {
 		return b.size.BlockSize
 	}
 	return max(bsff, b.size.BlockSize)
@@ -1237,6 +1284,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	if b.space != nil && b.space.HasBlockFragmentation {
 		result.BlockSizeForFragmentation = b.finalBlockSizeForFragmentation()
 		result.HasBlockSizeForFragmentation = true
+		result.IsBlockSizeForFragmentationClamped = b.isBlockSizeForFragmentationClamped
 	}
 	if b.hasTallestUnbreakableBlockSize {
 		result.TallestUnbreakableBlockSize = b.tallestUnbreakableBlockSize

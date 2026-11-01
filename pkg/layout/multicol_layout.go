@@ -2552,7 +2552,7 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 		b = b.SetBreakToken(breakToken)
 	}
 	if mla.space.HasBlockFragmentation && !spanner.IsMonolithic(wdm.WM != spannerWDM.WM) {
-		SetupSpaceBuilderForFragmentation(mla.space, mla.fragmentainerOffsetForChildren()+blockOffset,
+		SetupSpaceBuilderForFragmentationFromBuilder(mla.containerBuilder, mla.fragmentainerOffsetForChildren()+blockOffset,
 			mla.fragmentainerCapacityForChildren(), b)
 	}
 	return b.Build()

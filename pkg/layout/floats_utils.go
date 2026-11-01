@@ -28,7 +28,8 @@ func createConstraintSpaceForFloat(uf *UnpositionedFloat, isFragmentable, isMono
 		b.SetBreakToken(uf.Token)
 	}
 	if isFragmentable && !isMonolithic {
-		SetupSpaceBuilderForFragmentation(parentSpace, fragmentainerOffset, uf.FragmentainerBlockSize, b)
+		SetupSpaceBuilderForFragmentation(parentSpace, fragmentainerOffset, uf.FragmentainerBlockSize,
+			/*requiresContentBeforeBreaking=*/ false, b) // floats_utils.cc:86
 		if isFloatAtFragmentainerStart(fragmentainerOffset, margins.BlockStart) {
 			b.SetIsAtFragmentainerStart(true)
 		}

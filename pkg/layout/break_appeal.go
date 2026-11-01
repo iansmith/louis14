@@ -30,8 +30,11 @@ const (
 	// breakpoint was found; the caller should re-layout with that earlier
 	// break. Used by the EarlyBreak retry path (Phase 12g).
 	BreakStatusNeedsEarlierBreak
-	// BreakStatusDisableFragmentation indicates fragmentation should be
-	// disabled for this subtree (e.g. monolithic content). Reserved.
+	// BreakStatusDisableFragmentation means a block-axis overflow-clipping
+	// box reached its end with content still breaking inside it, so it is
+	// to be laid out again without fragmentation (Blink fragmentation_utils.
+	// cc:748-758 @ a9f50e522efa). louis14's FinishFragmentation reports it
+	// as FinishFragmentationResult.DisableFragmentation.
 	BreakStatusDisableFragmentation
 )
 

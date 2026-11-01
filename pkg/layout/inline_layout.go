@@ -1431,6 +1431,20 @@ func (bla *BlockLayoutAlgorithm) relayoutAndBreakEarlier(earlyBreak *EarlyBreak)
 	return relayout.Layout()
 }
 
+// relayoutWithoutFragmentation lays this block out again with block
+// fragmentation disabled, letting clipped child content overflow past the
+// fragmentation line instead of breaking: a block-axis clipping box reached
+// its end with content still breaking inside it. Mirrors Blink's
+// LayoutAlgorithm::RelayoutWithoutFragmentation (layout_algorithm.h:283-291
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) → Relayout (:227-265): a fresh
+// algorithm over ConstraintSpace::CloneWithoutFragmentation, with the same
+// break token, box type and early break (which rides on the space).
+func (bla *BlockLayoutAlgorithm) relayoutWithoutFragmentation() *LayoutResult {
+	relayout := NewBlockLayoutAlgorithm(bla.ctx, bla.node, bla.space.CloneWithoutFragmentation())
+	relayout.SetBoxType(bla.boxType)
+	return relayout.Layout()
+}
+
 // firstLineAllowedProperties lists the CSS properties that ::first-line is
 // allowed to override. Per CSS Pseudo-Elements Level 4 §3.2.1 the spec
 // allow-list covers font/color/background/decoration/spacing/transform/
