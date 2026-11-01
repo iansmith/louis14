@@ -710,15 +710,12 @@ type NodeToLayout struct {
 }
 
 // containingBlockInfo is a fragmentainer descendant's containing block,
-// stitched across the fragmentainers: its padding-box size (BoxInlineSize,
-// BoxTotalBlockSize), its padding, and its
-// content-box offset in stacked-fragmentainer coordinates (as if every
-// fragmentainer were stacked in the block direction). Mirrors the fragmentation branch of Blink's
+// stitched across the fragmentainers: its padding-box size (BoxTotalBlockSize
+// for the block-size), its padding, and its content-box offset in
+// stacked-fragmentainer coordinates (as if every fragmentainer were stacked
+// in the block direction). Mirrors the fragmentation branch of Blink's
 // OutOfFlowLayoutPart::GetContainingBlockInfo (out_of_flow_layout_part.cc:
-// 842-899 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with
-// layout_box_utils.h:15-19. The offset of the CB's first fragment is found
-// by walking the fragmentainers' fragment trees until plan WI-3 carries it
-// on the descendant.
+// 842-899 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type containingBlockInfo struct {
 	size                 LogicalSize
 	padding              LogicalEdges
@@ -1032,80 +1029,32 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 }
 
 // GetContainingBlockInfo builds the stitched containing-block info for a
-// fragmentainer descendant (see containingBlockInfo). ok is false when none
-// of the containing block's fragments is inside a fragmentainer (e.g. it is
-// inside a column spanner, plan WI-6).
+// fragmentainer descendant (see containingBlockInfo): the padding box of its
+// containing block, from the containing block's fragment (inline-size) and
+// all its fragments (BoxTotalBlockSize), at the descendant's
+// stacked-fragmentainer containing-block offset. ok is false for a
+// descendant without a containing-block fragment. Mirrors the fragmentation
+// branch of Blink's OutOfFlowLayoutPart::GetContainingBlockInfo
+// (out_of_flow_layout_part.cc:842-899 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeForFragmentation) (containingBlockInfo, bool) {
 	cbFragment := d.ContainingBlock.Fragment
-	if cbFragment == nil || cbFragment.LayoutNode == nil || cbFragment.Style == nil {
+	if cbFragment == nil || cbFragment.LayoutNode == nil || cbFragment.Style == nil || len(cbFragment.LayoutNode.GetLayoutResults()) == 0 {
 		return containingBlockInfo{}, false
 	}
-	cbNode := cbFragment.LayoutNode
-	// The stacked offset of the containing block's first fragment, found
-	// in the fragmentainers (plan WI-3 replaces this walk with the
-	// descendant's stacked containing-block offset).
-	var first *PhysicalFragment
-	var firstOffset LogicalOffset
-	stacked := 0.0
-	for _, ch := range *p.fragmentationContextChildren() {
-		if !ch.fragment.IsFragmentainerBox() {
-			continue
-		}
-		walkFragmentsForNode(ch.fragment, cbNode, LogicalOffset{}, func(f *PhysicalFragment, off LogicalOffset) {
-			if first == nil {
-				first = f
-				firstOffset = LogicalOffset{InlineOffset: off.InlineOffset, BlockOffset: stacked + off.BlockOffset}
-			}
-		})
-		if first != nil {
-			break
-		}
-		stacked += ClampedToValidFragmentainerCapacity(NewLogicalFragment(p.containingBlockWDM, ch.fragment).BlockSize())
-	}
-	if first == nil {
-		return containingBlockInfo{}, false
-	}
-	inlineSize, totalBlockSize := BoxInlineSize(cbNode), BoxTotalBlockSize(cbNode)
+	inlineSize := NewLogicalFragment(p.containingBlockWDM, cbFragment).InlineSize()
+	totalBlockSize := BoxTotalBlockSize(cbFragment.LayoutNode)
 	// The padding box: borders and scrollbars contracted
 	// (out_of_flow_layout_part.cc:870-878).
 	cbGeom := ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM)
-	bsp := cbGeom.BorderBoxPadding()
-	checkStackedOffset(d, LogicalOffset{InlineOffset: firstOffset.InlineOffset + bsp.InlineStart, BlockOffset: firstOffset.BlockOffset + bsp.BlockStart})
 	return containingBlockInfo{
 		size: LogicalSize{
 			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),
 			BlockSize:  max(0, totalBlockSize-cbGeom.Border.BlockStart-cbGeom.Border.BlockEnd-cbGeom.Scrollbar.BlockStart-cbGeom.Scrollbar.BlockEnd),
 		},
-		padding: cbGeom.Padding,
-		contentStackedOffset: LogicalOffset{
-			InlineOffset: firstOffset.InlineOffset + bsp.InlineStart,
-			BlockOffset:  firstOffset.BlockOffset + bsp.BlockStart,
-		},
+		padding:              cbGeom.Padding,
+		contentStackedOffset: d.ContainingBlock.Offset,
 	}, true
-}
-
-// walkFragmentsForNode calls visit for every fragment of node under frag,
-// with its offset in frag's content box. Horizontal-tb only, like the rest
-// of louis14's OOF fragmentation (plan RC-8).
-func walkFragmentsForNode(frag *PhysicalFragment, node *LayoutInputNode, parentOffset LogicalOffset, visit func(*PhysicalFragment, LogicalOffset)) {
-	for _, ch := range frag.Children {
-		if ch.Fragment == nil {
-			continue
-		}
-		off := LogicalOffset{
-			InlineOffset: parentOffset.InlineOffset + ch.Offset.LeftF64(),
-			BlockOffset:  parentOffset.BlockOffset + ch.Offset.TopF64(),
-		}
-		if ch.Fragment.LayoutNode == node {
-			visit(ch.Fragment, off)
-			continue
-		}
-		if bd := ch.Fragment.BoxData; bd != nil {
-			off.InlineOffset += bd.Border.Left + bd.Padding.Left
-			off.BlockOffset += bd.Border.Top + bd.Padding.Top
-		}
-		walkFragmentsForNode(ch.Fragment, node, off, visit)
-	}
 }
 
 // ComputeStartFragmentIndexAndRelativeOffset returns the index of the
@@ -1215,9 +1164,7 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeTo
 // OutOfFlowLayoutPart::AddOOFToFragmentainer (out_of_flow_layout_part.cc:
 // 3028-3152 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Reports whether
 // the OOF broke. Blink's single PropagateOOFPositionedInfo call is split in
-// two here (regular candidates, fragmentainer descendants); the
-// containing-block adjustment and fixedpos containing block it passes are
-// not ported (plan WI-3).
+// two here (regular candidates, fragmentainer descendants).
 func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fragmentainer *PhysicalFragment, fragmentainerBlockSize float64, fragmentainerOffset LogicalOffset, fragmentainerStackedBlockOffset float64, fragmentedDescendants *[]NodeToLayout) bool {
 	result := p.GenerateFragment(n, fragmentainerBlockSize)
 	if result == nil || result.Fragment == nil {

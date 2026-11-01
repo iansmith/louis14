@@ -140,3 +140,28 @@ func TestDisableLayoutSideEffects(t *testing.T) {
 		t.Errorf("a layout stored %d results (first is the result: %v), want 1, true", len(got), len(got) > 0 && got[0] == result)
 	}
 }
+
+// walkFragmentsForNode calls visit for every fragment of node under frag (a
+// test oracle for the boxes' stored fragments),
+// with its offset in frag's content box. Horizontal-tb only, like the rest
+// of louis14's OOF fragmentation (plan RC-8).
+func walkFragmentsForNode(frag *PhysicalFragment, node *LayoutInputNode, parentOffset LogicalOffset, visit func(*PhysicalFragment, LogicalOffset)) {
+	for _, ch := range frag.Children {
+		if ch.Fragment == nil {
+			continue
+		}
+		off := LogicalOffset{
+			InlineOffset: parentOffset.InlineOffset + ch.Offset.LeftF64(),
+			BlockOffset:  parentOffset.BlockOffset + ch.Offset.TopF64(),
+		}
+		if ch.Fragment.LayoutNode == node {
+			visit(ch.Fragment, off)
+			continue
+		}
+		if bd := ch.Fragment.BoxData; bd != nil {
+			off.InlineOffset += bd.Border.Left + bd.Padding.Left
+			off.BlockOffset += bd.Border.Top + bd.Padding.Top
+		}
+		walkFragmentsForNode(ch.Fragment, node, off, visit)
+	}
+}
