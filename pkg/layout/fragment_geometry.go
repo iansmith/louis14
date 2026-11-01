@@ -720,7 +720,14 @@ func CalculateInitialFragmentGeometry(
 		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
 		inlineSizeIsAuto = true
 	} else if needsShrinkToFit(style) || space.IsInsideFlexibleBox ||
-		space.InlineAutoBehavior == AutoSizeBehaviorFitContent {
+		(space.InlineAutoBehavior == AutoSizeBehaviorFitContent && !isNonStretchableDisplay(style)) {
+		// A table's auto inline-size is not the space's to decide: Blink
+		// returns TableNode::ComputeTableInlineSize for it before reading
+		// the auto behaviour (ComputeInlineSizeForFragment, length_utils.cc:
+		// 610-612 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+		// louis14's TableLayoutAlgorithm sizes an auto-width table itself
+		// from the available size this function leaves it.
+		//
 		// Shrink-to-fit: floats, abs-pos, inline-block (including orthogonal
 		// ones), flex items, and any child whose parent's space does not
 		// stretch an auto inline-size (fit-content, length_utils.cc:556-569 @
