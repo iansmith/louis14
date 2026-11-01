@@ -1358,7 +1358,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 	// balancing pass — examine the breakpoint before the spanner like any
 	// block child (BreakBeforeChildIfNeeded). A resumed spanner is never
 	// broken before (MovePastBreakpoint's IsFirstForNode check,
-	// fragmentation_utils.cc:1095-1096 @ a9f50e522efa).
+	// fragmentation_utils.cc:1099-1100 @ a9f50e522efa).
 	if mla.space.HasBlockFragmentation && fullResult != nil && breakToken.IsFirstForNode() {
 		// Blink cla.cc:1402-1403: FragmentainerOffsetForChildren() +
 		// block_offset.
