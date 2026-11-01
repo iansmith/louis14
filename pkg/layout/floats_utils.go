@@ -217,7 +217,7 @@ func PositionFloat(uf *UnpositionedFloat, exclusionSpace **ExclusionSpace) Posit
 			pastEverything.InlineOffset = uf.BfcContainerInlineSize
 		}
 		es = es.Add(pastEverything).SetHasBreakBeforeFloat(exclusionSide)
-		positioned.BreakBeforeToken = &BlockBreakToken{Node: uf.Node, IsBreakBefore: true}
+		positioned.BreakBeforeToken = CreateBreakBefore(uf.Node, false)
 	} else {
 		// The float's inline position. float:left/right are physical;
 		// placement works in inline-start/end, swapped in RTL.

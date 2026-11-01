@@ -421,7 +421,7 @@ func (fla *FieldsetLayoutAlgorithm) layoutFieldsetContent(content *LayoutInputNo
 	if fla.earlyBreak != nil {
 		if IsEarlyBreakTarget(fla.earlyBreak, fla.containerBuilder, content) {
 			fla.contentBrokeBefore = true
-			fla.contentBreakToken = &BlockBreakToken{Node: content, IsBreakBefore: true}
+			fla.contentBreakToken = CreateBreakBefore(content, false)
 			fla.containerBuilder.SetBreakAppeal(BreakAppealPerfect)
 			fla.consumeRemainingFragmentainerSpace()
 			return BreakStatusContinue
@@ -495,7 +495,7 @@ func (fla *FieldsetLayoutAlgorithm) layoutFieldsetContent(content *LayoutInputNo
 		fla.hasSeenAllChildren = true
 	case BreakStatusBrokeBefore:
 		fla.contentBrokeBefore = true
-		fla.contentBreakToken = &BlockBreakToken{Node: content, IsBreakBefore: true}
+		fla.contentBreakToken = CreateBreakBefore(content, false)
 		fla.consumeRemainingFragmentainerSpace()
 	}
 	return status

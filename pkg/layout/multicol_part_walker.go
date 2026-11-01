@@ -212,11 +212,7 @@ func (b *MulticolBreakTokenBuilder) AddBreakBeforeChild(node *LayoutInputNode, i
 	if node == nil {
 		return
 	}
-	b.children = append(b.children, &BlockBreakToken{
-		Node:          node,
-		IsBreakBefore: true,
-		IsForcedBreak: isForcedBreak,
-	})
+	b.children = append(b.children, CreateBreakBefore(node, isForcedBreak))
 }
 
 // Children returns the accumulated child break tokens in document order.
