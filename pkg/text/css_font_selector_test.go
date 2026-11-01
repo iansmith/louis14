@@ -232,7 +232,7 @@ func TestSimpleFontData_ZeroInlineSizeNoZeroGlyphFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("fallback uses the exact size, not the rounded cache key", func(t *testing.T) {
+	t.Run("fallback uses the exact size, not the rounded size", func(t *testing.T) {
 		sel := NewCSSFontSelector(configWithRegistry(fr))
 		for _, tc := range []struct {
 			size string
@@ -306,7 +306,7 @@ func TestSimpleFontData_ZeroInlineSizeOrientation(t *testing.T) {
 // is the "0" glyph's vmtx advance scaled by size / unitsPerEm at the font's
 // exact size. ChTestShortZero.woff (WPT css-values resource, the font of
 // ch-unit-017) has upem 1024 and a "0" vmtx advance of 256, so 0.25em: 20 at
-// 80px and 20.1 at 80.4px (not the rounded cache key's 20). Mirrors
+// 80px and 20.1 at 80.4px (not the rounded size's 20). Mirrors
 // SimpleFontData::ZeroInlineSize (platform/fonts/simple_font_data.cc:572-576)
 // and HarfBuzzFontData's size_per_unit_ = platform_data.size() / upem
 // (platform/fonts/shaping/harfbuzz_font_data.h:77) @

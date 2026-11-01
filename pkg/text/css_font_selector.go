@@ -1,8 +1,6 @@
 package text
 
 import (
-	"math"
-
 	"louis14/pkg/css"
 )
 
@@ -12,25 +10,21 @@ import (
 // (core/css/css_font_selector.h:45 @ 5992657f556bcd9d207a4aca187488462f027cab),
 // the document's font lookup over its @font-face cache (GetFontFaceCache
 // :64 — louis14's FontConfig.Registry). Each font's glyph presence and
-// measurements are cached per (font, rounded size), the analog of
-// SimpleFontData computing them once per font. One selector serves one
-// cascade; it is not safe for concurrent use.
+// measurements are cached per fontPlatformData (font, exact size,
+// orientation), as Blink's FontCache keeps one SimpleFontData per
+// FontPlatformData (FontCache::FontDataFromFontPlatformData,
+// platform/fonts/font_cache.cc:193-196, into FontDataCache::Get keyed by the
+// platform data, font_data_cache.cc:47-61, @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+// One selector serves one cascade; it is not safe for concurrent use.
 type CSSFontSelector struct {
 	fc    FontConfig
-	cache map[fontKey]simpleFontData
-}
-
-// fontKey keys the simpleFontData cache. Sub-pixel size jitter is rare;
-// rounding the size stabilises the cache for documents rendering many
-// elements at one size (openFont rounds it the same way).
-type fontKey struct {
-	path     string
-	fontSize int32
+	cache map[fontPlatformData]simpleFontData
 }
 
 // NewCSSFontSelector returns a selector over fc with an empty metric cache.
 func NewCSSFontSelector(fc FontConfig) *CSSFontSelector {
-	return &CSSFontSelector{fc: fc, cache: make(map[fontKey]simpleFontData)}
+	return &CSSFontSelector{fc: fc, cache: make(map[fontPlatformData]simpleFontData)}
 }
 
 // CreateFont selects s's per-probe primary fonts from its font properties
@@ -79,17 +73,13 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	usedSize := specifiedSize
 	adjust := s.GetFontSizeAdjust()
 	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseData)
-		if actualRatio > 0 {
-			usedSize = specifiedSize * adjust.Value / actualRatio
-		} else {
-			// A present metric that measures 0: louis14 clamps the used size
-			// to 0, hiding the glyphs. Not ported: Blink's
-			// FontSizeFunctions::MetricsMultiplierAdjustedFontSize returns
-			// nullopt and leaves the size unadjusted
-			// (core/css/font_size_functions.cc:292-295 @
-			// 5992657f556bcd9d207a4aca187488462f027cab).
-			usedSize = 0
+		// A zero aspect (a present metric that measures 0) leaves the size
+		// unadjusted: FontSizeFunctions::MetricsMultiplierAdjustedFontSize
+		// returns nullopt for !aspect_value
+		// (core/css/font_size_functions.cc:292-296 @
+		// 5992657f556bcd9d207a4aca187488462f027cab).
+		if aspect := firstFontAspectRatio(adjust.Metric, baseData); aspect != 0 {
+			usedSize = specifiedSize * adjust.Value / aspect
 		}
 	}
 
@@ -110,26 +100,24 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 }
 
 // simpleFontData returns the font at fontPath instantiated at fontSize and
-// orientation o. Glyph presence and measurements are cached per (font,
-// rounded size) — safe because every measurement shapes the font opened at
-// the rounded size (openFont), so sizes in one bucket measure identically;
-// the 水 advance is filled lazily, on first IdeographicAdvanceWidth. The exact
-// size and the orientation are stamped on each returned copy, so
-// ZeroInlineSize's fallback scales with the exact size, as Blink's reads
-// font_.getSize().
+// orientation o, cached per that fontPlatformData; the 水 advances are filled
+// lazily, on first use. Measurements that shape (the "0" and 水 advances, and
+// the x-height and cap-height textshape reports) come from the font opened at
+// the rounded size (openFont: textshape opens fonts at integer sizes), where
+// Blink's SimpleFontData measures at the exact size.
 func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o css.FontOrientation) simpleFontData {
-	k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
-	d, ok := fs.cache[k]
+	p := fontPlatformData{fontPath: fontPath, size: fontSize, orientation: o}
+	d, ok := fs.cache[p]
 	if !ok {
 		d = simpleFontData{
-			xHeight:   FontXHeightFromFont(fontSize, fontPath),
-			capHeight: FontCapHeightFromFont(fontSize, fontPath),
+			platformData: p,
+			xHeight:      FontXHeightFromFont(fontSize, fontPath),
+			capHeight:    FontCapHeightFromFont(fontSize, fontPath),
+			ideographic:  new(ideographicAdvance),
 		}
 		d.zeroGlyph, d.zeroAdvance = glyphAdvance(fontPath, fontSize, kDigitZero)
-		d.ideographic = new(ideographicAdvance)
-		fs.cache[k] = d
+		fs.cache[p] = d
 	}
-	d.platformData = fontPlatformData{fontPath: fontPath, size: fontSize, orientation: o}
 	return d
 }
 
@@ -142,13 +130,11 @@ func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o c
 // the one AspectValue divides by (PlatformData().size(), :128), and a metric
 // the font lacks keeps the aspect at 1.0 (:136, csswg-drafts#6384): no 水
 // glyph for ic-width / ic-height (IdeographicAdvanceWidth / Height empty,
-// :148-160), cap-height <= 0 (:140-142), x-height <= 0 (HasXHeight, :163).
-// ch-width reads ZeroInlineSize, so a font with no "0" glyph has aspect 0.5,
-// as Blink's kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145).
-// Returns 0 only for a zero size or a present metric that measures 0 (a 水
-// or "0" glyph with a zero advance). Not ported: Blink's HasXHeight is also
-// false for a font with no OS/2 x-height (simple_font_data.cc:164-167 @ the
-// same SHA); louis14's xHeight has no presence flag.
+// :148-160), cap-height <= 0 (:140-142), !HasXHeight (:163). ch-width reads
+// ZeroInlineSize, so a font with no "0" glyph has aspect 0.5, as Blink's
+// kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145). Returns 0 only
+// for a zero size or a present metric that measures 0 (a 水 or "0" glyph with
+// a zero advance).
 func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData) float64 {
 	fontSize := d.platformData.size
 	if fontSize <= 0 {
@@ -172,7 +158,7 @@ func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData) flo
 		}
 	default:
 		// ex-height (default)
-		if d.xHeight > 0 {
+		if d.HasXHeight() {
 			aspect = d.xHeight / fontSize
 		}
 	}
