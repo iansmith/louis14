@@ -575,6 +575,10 @@ type highlightColors struct {
 	decorationLine       css.TextDecoration
 	hasOwnTextShadow     bool
 	textShadows          []css.TextShadow
+	// backgroundIsCurrentColor: background-color is the currentColor
+	// keyword, resolved against the layer's current color in
+	// highlightLayerStackColors.
+	backgroundIsCurrentColor bool
 }
 
 // resolveHighlightColors reads the color/background-color/text-decoration*/
@@ -592,22 +596,13 @@ func resolveHighlightColors(pseudoStyle *css.Style) highlightColors {
 		return highlightColors{}
 	}
 	var hc highlightColors
-	// A literal `background-color: currentColor` is NOT resolved here
-	// against this layer's own color (unlike every other currentColor use
-	// in this function, which IS same-element/same-property resolution) —
-	// per CSS Pseudo-4's highlight-overlay-stack, `background-color:
-	// currentColor` on a highlight pseudo-element instead falls through to
-	// the layer immediately BELOW's already-resolved background-color, the
-	// same property one layer down (confirmed against highlight-painting-
-	// currentcolor-002/002a/002b.html's WPT references: `::selection {
-	// background-color: currentColor }` paints the custom highlight's OWN
-	// background-color — blue — not ::selection's own resolved `color`,
-	// even when `color` is itself an explicit non-currentColor value like
-	// green in 002b). Leaving hc.background nil here lets
-	// highlightLayerStackColors' existing "background unset → copy the
-	// layer below's background" fallthrough handle it uniformly with a
-	// genuinely-unset background-color.
-	if bg, ok := pseudoStyle.Get("background-color"); ok && !strings.EqualFold(bg, "currentColor") {
+	// A literal `background-color: currentColor` is NOT resolved here: it
+	// resolves against this layer's current color, which may itself come
+	// from the layer below, so highlightLayerStackColors resolves it once
+	// the layer's foreground is known (backgroundIsCurrentColor).
+	if bg, ok := pseudoStyle.Get("background-color"); ok && strings.EqualFold(bg, "currentColor") {
+		hc.backgroundIsCurrentColor = true
+	} else if ok {
 		if c, ok := pseudoStyle.ResolvedColor(bg); ok {
 			hc.background = &c
 		}
@@ -827,7 +822,14 @@ func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []hig
 				hc.decoration = resolved.decoration
 			}
 		}
-		if hc.background == nil || hc.background.A == 0 {
+		if hc.backgroundIsCurrentColor {
+			// HighlightBackgroundColor → ResolveColor(current_layer_color):
+			// currentColor is this layer's resolved current color, or the
+			// originating element's color when no layer has one
+			// (core/highlight/highlight_style_utils.cc:255-271, 341-381 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			hc.background = r.layerCurrentColor(originating, hc.foreground)
+		} else if hc.background == nil || hc.background.A == 0 {
 			hc.background = resolved.background
 		}
 		if !hc.hasOwnDecorationLine {
@@ -851,34 +853,9 @@ func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []hig
 			// with whichever currentColor this layer ultimately resolved
 			// to: its own hc.foreground when set, else the layer-below's
 			// (falling through the same way foreground/decoration do).
-			fg := hc.foreground
-			if fg == nil {
-				fg = resolved.foreground
-			}
-			if fg == nil {
-				// No layer in the stack (nor any layer below it) has a
-				// resolved foreground — unlike hc.foreground/resolved.foreground
-				// above (which stay nil on purpose to defer to the fragment's
-				// own per-fragment TextColor at paint time, see this
-				// function's doc comment), a text-shadow color is resolved
-				// and baked into hc.textShadows HERE, not deferred, so it
-				// cannot fall back to "nil = defer". Use the originating
-				// element's own resolved color instead: Blink's highlight-
-				// overlay-stack always has a concrete color at layer 0 (the
-				// originating element), so this is the correct fallback
-				// value, not an arbitrary black default (CodeRabbit,
-				// LOU-354 PR #150 — a bottom-most highlight layer with
-				// `text-shadow: currentColor` and no explicit `color`
-				// anywhere in the stack previously baked in synthetic
-				// black instead).
-				if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
-					c := box.Style.GetColor()
-					fg = &c
-				} else {
-					black := css.Color{R: 0, G: 0, B: 0, A: 1.0}
-					fg = &black
-				}
-			}
+			// hc.foreground already carries resolved.foreground when this
+			// layer's own color is unset/currentColor (above).
+			fg := r.layerCurrentColor(originating, hc.foreground)
 			// Prepend this layer's OWN shadows onto resolved.textShadows
 			// (the layer(s) below's already-resolved shadows) rather than
 			// replacing them outright — per CSS Text Decor 4's
@@ -899,6 +876,29 @@ func (r *Renderer) highlightLayerStackColors(originating *html.Node, stack []hig
 		resolved = hc
 	}
 	return resolved
+}
+
+// layerCurrentColor returns a highlight layer's concrete current color: fg
+// (the layer's resolved foreground, already falling through to the layers
+// below) when set, else the originating element's own color. Unlike the
+// deferred nil foreground (see highlightLayerStackColors' doc comment),
+// colors baked into a layer — a currentColor text-shadow or
+// background-color — cannot defer, and Blink's highlight-overlay-stack
+// always has a concrete color at layer 0, the originating element
+// (HighlightStyleUtils::ResolveColor falls back to
+// originating_style.VisitedDependentColor(color),
+// core/highlight/highlight_style_utils.cc:255-271 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — not an arbitrary black
+// default (CodeRabbit, LOU-354 PR #150).
+func (r *Renderer) layerCurrentColor(originating *html.Node, fg *css.Color) *css.Color {
+	if fg != nil {
+		return fg
+	}
+	c := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+	if box, ok := r.nodeBoxIndex[originating]; ok && box.Style != nil {
+		c = box.Style.VisitedDependentColor("color")
+	}
+	return &c
 }
 
 // resolveLayerPseudoStyle resolves one highlightLayerName's

@@ -37,7 +37,7 @@ func TestResolveStopPositions_ClampsMonotonically(t *testing.T) {
 // with two positions ("blue 0% 50%") expands to two adjacent stops with the
 // same color, at the first and second positions respectively.
 func TestParseColorStop_MultiPosition(t *testing.T) {
-	stops := parseColorStops("blue 0% 50%")
+	stops := parseColorStops("blue 0% 50%", css.NewStyle())
 	if len(stops) != 2 {
 		t.Fatalf("multi-position stop should expand to 2 stops, got %d", len(stops))
 	}
@@ -64,7 +64,7 @@ func TestParseColorStop_MultiPosition(t *testing.T) {
 // We assert the gradient parses cleanly and that the painter recognises the
 // degenerate condition (asserted via repeatLen detection in drawLinearGradient).
 func TestParseLinearGradient_DegenerateRepeating(t *testing.T) {
-	_, stops, ok, repeating := parseLinearGradient("repeating-linear-gradient(orange 50%, blue 50%)")
+	_, stops, ok, repeating := parseLinearGradient("repeating-linear-gradient(orange 50%, blue 50%)", css.NewStyle())
 	if !ok {
 		t.Fatalf("parseLinearGradient failed")
 	}
