@@ -71,7 +71,7 @@ func TestIframeContentDocumentCrossDocAppendChild(t *testing.T) {
 	// re-cascade. The DOM string stays verbatim.
 	doc := parseHTML(t, `<html><body><iframe id="frame"></iframe></body></html>`)
 
-	// Build the nested document the way layoutNestedDocument would: the
+	// Build the nested document the way openFrameOwnerURL would: the
 	// inline style carries the ORIGINAL relative URL — no pre-baking.
 	nested, err := html.Parse(`<html><body><div id="inner" style="filter: url(support/hueRotate.svg#f)">moved</div></body></html>`)
 	if err != nil {
