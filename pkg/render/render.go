@@ -3950,24 +3950,10 @@ func (r *Renderer) paintFillLayerImage(layer *PaintLayer, ctx *BoxBackgroundPain
 		}
 	} else {
 		tileImage = func(w, h int) image.Image {
-			return r.paintGradientTile(bg.Gradient, w, h, layer.Box.Style)
+			return r.renderGeneratedImage(bg.Gradient, w, h, layer.Box.Style)
 		}
 	}
 	r.drawTiledBackground(&g, tileImage)
-}
-
-// paintGradientTile rasterizes a gradient into a fresh w×h tile, the
-// GradientGeneratedImage louis14 draws as a background image (Blink sizes
-// the generated image to the geometry's TileSize(),
-// box_painter_base.cc:1420-1440 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (r *Renderer) paintGradientTile(gradient string, w, h int, style *css.Style) image.Image {
-	buf := image.NewRGBA(image.Rect(0, 0, w, h))
-	origDC, origTarget := r.dc, r.target
-	r.dc = origDC.NewChildContext(buf)
-	r.target = buf
-	r.drawGradient(gradient, 0, 0, float64(w), float64(h), style)
-	r.dc, r.target = origDC, origTarget
-	return buf
 }
 
 // drawTiledBackground paints the tile grid the geometry describes into its
