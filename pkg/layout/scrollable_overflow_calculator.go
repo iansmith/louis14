@@ -96,9 +96,9 @@ func (c *ScrollableOverflowCalculator) AddChild(child *PhysicalFragment, offset 
 
 // addLineBoxItems adds a line box placed at offset: its own rect (not
 // adjusted for the scroll origin), then each run in it — text by its rect,
-// boxes by their propagated overflow — at its position in this fragment,
-// moved by its relative offset. Mirrors ScrollableOverflowCalculator::
-// AddItemsInternal (scrollable_overflow_calculator.cc:126-182 @
+// boxes by their propagated overflow — at its position in this fragment.
+// Mirrors ScrollableOverflowCalculator::AddItemsInternal
+// (scrollable_overflow_calculator.cc:126-182 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose items carry container-
 // relative offsets with relative positioning applied.
 func (c *ScrollableOverflowCalculator) addLineBoxItems(line *PhysicalFragment, offset geometry.PhysicalOffset) {
@@ -109,7 +109,7 @@ func (c *ScrollableOverflowCalculator) addLineBoxItems(line *PhysicalFragment, o
 		if item.Fragment == nil {
 			continue
 		}
-		c.AddChild(item.Fragment, offset.Add(item.Offset).Add(item.Fragment.RelativeOffset))
+		c.AddChild(item.Fragment, offset.Add(item.Offset))
 	}
 }
 
@@ -260,9 +260,9 @@ func hasLeftOverflow(wdm WritingDirectionMode) bool {
 // box or run) that is not replaced content (BoxFragmentBuilder::
 // ShouldCalculateScrollableOverflow, box_fragment_builder.h:749-757 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; louis14 has no paginated
-// root). louis14 child offsets are content-box relative and exclude
-// relative positioning; Blink's are border-box relative with it applied
-// (box_fragment_builder.cc:262-267 @ a9f50e522efa), so both are added back.
+// root). louis14 child offsets are content-box relative where Blink's are
+// border-box relative, so the content origin is added back; both have the
+// relative offset applied (box_fragment_builder.cc:372-375 @ a9f50e522efa).
 // Mirrors PhysicalBoxFragment::Create (physical_box_fragment.cc:213-240 @
 // a9f50e522efa). Table layout calls it again after resizing a cell and
 // shifting its content for vertical-align once built (no Blink analog:
@@ -281,7 +281,7 @@ func (f *PhysicalFragment) updateScrollableOverflow() {
 		if child.Fragment == nil {
 			continue
 		}
-		calculator.AddChild(child.Fragment, contentOrigin.Add(child.Offset).Add(child.Fragment.RelativeOffset))
+		calculator.AddChild(child.Fragment, contentOrigin.Add(child.Offset))
 	}
 	f.setScrollableOverflow(calculator.Result())
 }

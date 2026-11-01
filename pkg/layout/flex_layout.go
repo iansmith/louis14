@@ -594,6 +594,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	geom := CalculateInitialFragmentGeometry(fla.ctx, fla.node, fla.style, wdm, fla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(fla.node)
+	builder.SetChildAvailableSize(CalculateChildAvailableSize(fla.space, fla.node, geom))
 
 	// §9.1 — Determine flex direction and whether main axis == inline axis.
 	flexDir := fla.getFlexDirection()
@@ -1846,13 +1847,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	result := builder.Build()
 	if len(propagatedOOF) > 0 {
 		result.PropagatedOOFCandidates = propagatedOOF
-	}
-
-	// CSS position:relative — "start wins over end" in logical coordinates.
-	// Sticky is scroll-time, not layout-time; leave RelativeOffset zero here.
-	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
-		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
-			fla.style, wdm, geomLogicalToOld(fla.space.AvailableSize))
 	}
 
 	return result

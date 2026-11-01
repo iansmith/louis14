@@ -554,12 +554,12 @@ func isAutoSizeInDirection(childStyle interface {
 type NodeToLayout struct {
 	descendant LogicalOofNodeForFragmentation
 	offsetInfo OffsetInfo
-	// offset is relative to the fragmentainer the node starts or resumes in.
-	offset LogicalOffset
-	// containingBlockRelativeOffset is the containing block's
-	// position:relative offset (Blink's base_container_info.relative_offset).
-	containingBlockRelativeOffset LogicalOffset
-	breakToken                    *BlockBreakToken
+	// offset is relative to the fragmentainer the node starts or resumes
+	// in. It includes the containing block's position:relative offset
+	// (Blink's base_container_info.relative_offset): the containing block's
+	// fragments are found at link offsets with relative positioning applied.
+	offset     LogicalOffset
+	breakToken *BlockBreakToken
 }
 
 // containingBlockInfo is a fragmentainer descendant's containing block,
@@ -576,7 +576,6 @@ type containingBlockInfo struct {
 	size                 LogicalSize
 	padding              LogicalEdges
 	contentStackedOffset LogicalOffset
-	relativeOffset       LogicalOffset
 }
 
 // fragmentationContextOOFPart is the OutOfFlowLayoutPart of a block
@@ -714,10 +713,9 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 				descendantsToLayout = append(descendantsToLayout, nil)
 			}
 			descendantsToLayout[startIndex] = append(descendantsToLayout[startIndex], NodeToLayout{
-				descendant:                    d,
-				offsetInfo:                    offsetInfo,
-				offset:                        offset,
-				containingBlockRelativeOffset: cbInfo.relativeOffset,
+				descendant: d,
+				offsetInfo: offsetInfo,
+				offset:     offset,
 			})
 		}
 
@@ -789,7 +787,6 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	cbGeom := ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM)
 	bsp := cbGeom.BorderBoxPadding()
 	inlineSize := NewLogicalFragment(p.containingBlockWDM, first.fragment).InlineSize()
-	rel := first.fragment.RelativeOffset
 	return containingBlockInfo{
 		size: LogicalSize{
 			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),
@@ -800,7 +797,6 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 			InlineOffset: first.offsetInFrag.InlineOffset + bsp.InlineStart,
 			BlockOffset:  first.stackedOffset + first.offsetInFrag.BlockOffset + bsp.BlockStart,
 		},
-		relativeOffset: LogicalOffset{InlineOffset: rel.Left.Float64(), BlockOffset: rel.Top.Float64()},
 	}, true
 }
 
@@ -958,10 +954,7 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 		return brokeInside
 	}
 
-	offset := LogicalOffset{
-		InlineOffset: n.offset.InlineOffset + n.containingBlockRelativeOffset.InlineOffset,
-		BlockOffset:  n.offset.BlockOffset + n.containingBlockRelativeOffset.BlockOffset,
-	}
+	offset := n.offset
 	conv := NewConverter(p.containingBlockWDM, geomSizeToOld(fragmentainer.Size))
 	physOff := conv.ToPhysicalOffset(offset, geomSizeToOld(result.Fragment.Size))
 	fragmentainer.Children = append(fragmentainer.Children, ChildLink{

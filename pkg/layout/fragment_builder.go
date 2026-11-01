@@ -102,10 +102,11 @@ type BoxFragmentBuilder struct {
 	isBlockFragmentationContextRoot bool
 
 	// childAvailableSize is the content-box size of this fragment — the
-	// containing block for children's position:relative/sticky percentage
-	// resolution. Mirrors Blink's FragmentBuilder::child_available_size_.
+	// containing block for children's position:relative percentage
+	// resolution. Mirrors Blink's BoxFragmentBuilder::child_available_size_.
 	// Set by the enclosing layout algorithm via SetChildAvailableSize before
-	// adding children; consumed by AddChild to compute a child's RelativeOffset.
+	// adding children; consumed by AddChild to compute a child's relative
+	// offset.
 	childAvailableSize    LogicalSize
 	hasChildAvailableSize bool
 
@@ -893,50 +894,59 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 }
 
 // SetChildAvailableSize records the content-box size that serves as the
-// containing block for children's position:relative/sticky percentage
-// resolution. Layout algorithms call this once before adding children.
-// Mirrors Blink's FragmentBuilder::SetAvailableSize.
+// containing block for children's position:relative percentage resolution.
+// Layout algorithms call this once before adding children. Mirrors Blink's
+// BoxFragmentBuilder::child_available_size_, which its constructor sets from
+// CalculateChildAvailableSize (box_fragment_builder.h:93-95 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
 	b.childAvailableSize = size
 	b.hasChildAvailableSize = true
 }
 
-// AddChild adds a child fragment at the given logical offset.
-// The offset is relative to this fragment's content box origin.
-//
-// CSS 2.1 §9.4.3: if the child is position:relative and its RelativeOffset
-// has not already been computed by the layout algorithm, compute it here
-// from the child's style and the parent's childAvailableSize. Mirrors
-// Blink's BoxFragmentBuilder::AddResult, which unconditionally calls
-// ComputeRelativeOffsetForBoxFragment at add-time
-// (box_fragment_builder.cc:262-267 @ d4ecdfed88f962439247c2ad36b8fe47805b1520;
-// louis14's computeRelativeOffsetForBoxFragment); the RelativeOffset == 0
-// guard lets existing per-algorithm tail blocks short-circuit the work.
+// AddChild adds a child fragment at the given logical offset (relative to
+// this fragment's content box), applying the child's position:relative
+// offset: a CSS box child (not a line box, text run or fragmentainer) with
+// position:relative is shifted by ComputeRelativeOffsetForBoxFragment
+// against this builder's child available size. Mirrors Blink's
+// BoxFragmentBuilder::AddChild with no relative_offset supplied
+// (box_fragment_builder.cc:255-267, :372-375 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A builder whose algorithm never
+// sets its child available size (a louis14 line box, whose inline-level
+// children are shifted by the inline layout, as Blink's line items are by
+// InlineLayoutStateStack::ApplyRelativePositioning) applies no offset.
 //
 // position:sticky emits zero layout-time offset — per Blink, the sticky
 // offset is a scroll-time update via StickyPositionScrollingConstraints,
-// not baked into layout fragments. Scroll-time wiring is deferred until
-// scroll-based sticky tests arrive.
+// not baked into layout fragments.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
-	if fragment != nil && fragment.Style != nil && fragment.RelativeOffset == (geometry.PhysicalOffset{}) && b.hasChildAvailableSize {
-		if fragment.Style.GetPosition() == css.PositionRelative {
-			fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(fragment.Style, b.wdm, b.childAvailableSize)
-		}
-	}
-	b.addChildInternal(fragment, offset)
+	b.AddChildWithRelativeOffset(fragment, offset, b.relativeOffsetFor(fragment))
 }
 
-// addChildInternal appends a child without resolving its relative offset.
-// Callers that already set fragment.RelativeOffset against a containing block
-// other than this builder's childAvailableSize use it directly, so a zero
-// result is not re-resolved. Mirrors Blink's FragmentBuilder::AddChildInternal
-// (fragment_builder.h:560 @ d4ecdfed88f962439247c2ad36b8fe47805b1520), reached
-// from BoxFragmentBuilder::AddChild with a supplied relative_offset, which
-// skips ComputeRelativeOffsetForBoxFragment (box_fragment_builder.cc:255-267
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
-func (b *BoxFragmentBuilder) addChildInternal(fragment *PhysicalFragment, offset LogicalOffset) {
+// relativeOffsetFor returns the relative offset AddChild applies to
+// fragment, in this builder's logical coordinates (box_fragment_builder.cc:
+// 255-267 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) relativeOffsetFor(fragment *PhysicalFragment) LogicalOffset {
+	if !b.hasChildAvailableSize || fragment == nil || !fragment.IsCSSBox() {
+		return LogicalOffset{}
+	}
+	return ComputeRelativeOffsetForBoxFragment(fragment, b.wdm, b.childAvailableSize)
+}
+
+// AddChildWithRelativeOffset adds a child at offset shifted by a relative
+// offset the caller resolved itself — against a containing block other than
+// this builder's child available size (a grid area, a table row) or, for
+// inline-level content, in line-logical coordinates. Mirrors Blink's
+// BoxFragmentBuilder::AddChild with a supplied relative_offset, which skips
+// ComputeRelativeOffsetForBoxFragment and calls AddChildInternal(&child,
+// child_offset + *relative_offset) (box_fragment_builder.cc:255, :372-375 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) AddChildWithRelativeOffset(fragment *PhysicalFragment, offset, relativeOffset LogicalOffset) {
 	b.children = append(b.children, logicalChildLink{
-		offset:   offset,
+		offset: LogicalOffset{
+			InlineOffset: offset.InlineOffset + relativeOffset.InlineOffset,
+			BlockOffset:  offset.BlockOffset + relativeOffset.BlockOffset,
+		},
 		fragment: fragment,
 	})
 }

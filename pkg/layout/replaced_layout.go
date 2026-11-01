@@ -430,6 +430,7 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 		BlockSize:  contentBlock + geom.BlockBorderPadding(),
 	})
 	builder.SetIntrinsicBlockSize(contentBlock)
+	builder.SetChildAvailableSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock})
 
 	// Set box data for the renderer (margins, borders, padding).
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
