@@ -169,7 +169,7 @@ func TestResumedChildPushedPastMonolithicOverflow_LOU485(t *testing.T) {
 					Node:               rootNode,
 					ConsumedBlockSize:  layoutunit.FromFloat64Round(100),
 					MonolithicOverflow: tc.parentOverflow,
-					ChildBreakTokens: []*BlockBreakToken{{
+					ChildBreakTokens: []BreakToken{&BlockBreakToken{
 						Node:               childNode,
 						ConsumedBlockSize:  layoutunit.FromFloat64Round(0),
 						MonolithicOverflow: 30,
@@ -225,7 +225,7 @@ func TestMonolithicOverflowGivesContainerSeparation_LOU485(t *testing.T) {
 				Build()
 			res := NewBlockLayoutAlgorithm(testContext(), rootNode, space).Layout()
 			gotBreak := res.BreakToken != nil && len(res.BreakToken.ChildBreakTokens) == 1 &&
-				res.BreakToken.ChildBreakTokens[0].IsBreakBefore
+				res.BreakToken.ChildBreakTokens[0].(*BlockBreakToken).IsBreakBefore
 			if gotBreak != tc.wantBreak {
 				t.Errorf("forced break before the first child = %v, want %v (token %+v)", gotBreak, tc.wantBreak, res.BreakToken)
 			}

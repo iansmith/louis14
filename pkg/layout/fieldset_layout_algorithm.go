@@ -255,9 +255,9 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	if InvolvedInBlockFragmentation(fla.space) && (shouldBreakInside || finish.DidBreakSelf || finish.MonolithicOverflow > 0) {
-		var childTokens []*BlockBreakToken
+		var childTokens []BreakToken
 		if fla.contentBreakToken != nil {
-			childTokens = []*BlockBreakToken{fla.contentBreakToken}
+			childTokens = []BreakToken{fla.contentBreakToken}
 		}
 		consumed := finish.ConsumedBlockSize
 		if !fla.space.HasBlockFragmentation {

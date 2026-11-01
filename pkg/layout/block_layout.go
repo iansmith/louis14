@@ -552,33 +552,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bla.containerBuilder.AddChild(nested.fragment, offset)
 	} else if isInlineFormattingContext && !hasBlockInInline {
 		// Inline formatting context: text nodes and inline-level children.
-		// When resuming from a column break, start the line breaker at the
-		// saved item index + text offset from the incoming break token.
-		// Mirror Blink's `InlineBreakToken.start_` which carries both the
-		// item-index AND the text-offset (cla.cc path, cf. findings §F4).
-		// Resume when EITHER is non-zero — a single-text-item IFC (e.g.
-		// `<div>xx xx<br/>xx xx<br/>xx xx</div>`) advances only the text
-		// offset while the item index stays 0, so gating on
-		// `InlineItemStartIndex > 0` alone would re-start at idx=0 and the
-		// next column re-lays the same prefix.
-		// The inline state on the break token is only meaningful when the
-		// token refers to THIS block's own IFC (Node == bla.node); when a
-		// mixed block+inline multicol forwards a break token whose inline
-		// state belongs to a sibling block's IFC, this block must ignore
-		// those fields to avoid resuming with the wrong cursor.
+		// Resuming after a line break, the line breaker starts at the
+		// incoming token's inline break token for this block's inline
+		// formatting context (its item index and text offset: a
+		// single-text-item IFC advances only the text offset), Blink's
+		// InlineBreakToken::Start (inline/inline_break_token.h @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		inlineStartIdx := 0
 		inlineStartTextOffset := 0
-		// Honor the inline resume state on the incoming break token.
-		// Mirrors Blink's `InlineBreakToken.start_` which carries both
-		// item-index AND text-offset — single-text-item IFCs advance only
-		// the text offset across columns, so gating on
-		// `InlineItemStartIndex > 0` alone re-starts at idx=0 and loses
-		// the resume point (findings §F4).
-		if incomingBreakToken != nil &&
-			(incomingBreakToken.InlineItemStartIndex > 0 ||
-				incomingBreakToken.InlineTextOffset > 0) {
-			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
-			inlineStartTextOffset = incomingBreakToken.InlineTextOffset
+		if incomingBreakToken != nil {
+			if tok := inlineLineBreakToken(incomingBreakToken.ChildBreakTokens); tok != nil && tok.Node == bla.node {
+				inlineStartIdx, inlineStartTextOffset = tok.Start.ItemIndex, tok.Start.TextOffset
+			}
 		}
 		// HasSeenAllChildren on the incoming token: a previous fragment of
 		// this block self-fragmented (didBreakSelf) AFTER the IFC fully placed
@@ -598,7 +583,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bla.containerBuilder.SetExclusionSpace(bla.resumeInlineFloats(wdm, contentInlineSize, prevES,
 			bfcBlockOrigin+blockCursor, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, &inlineContext))
 		var inlineAscent, lastBaselineOff float64
-		var inlineBreakToken *BlockBreakToken
+		var inlineBreakToken *InlineBreakToken
 		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
@@ -674,10 +659,26 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// 1485-1486, :652-654 @ a9f50e522efa).
 				return bla.relayoutWithoutFragmentation()
 			}
+			// This block's break token: its floats continuing in parallel
+			// flows, then the inline break token of the next line, last as
+			// in Blink (box_fragment_builder.cc:156-160, :707-711 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 keeps a
+			// forced line break on the block token too: a resumed block
+			// keeps its leading margins after one.
+			blockBreakToken := &BlockBreakToken{
+				Node:              bla.node,
+				ConsumedBlockSize: layoutunit.FromFloat64Round(previouslyConsumed + blockCursor),
+				SequenceNumber:    sequenceNumberAfter(incomingBreakToken),
+				IsForcedBreak:     inlineBreakToken.IsForcedBreak,
+			}
+			for _, tok := range inlineContext.ParallelFlowBreakTokens() {
+				blockBreakToken.ChildBreakTokens = append(blockBreakToken.ChildBreakTokens, tok)
+			}
+			blockBreakToken.ChildBreakTokens = append(blockBreakToken.ChildBreakTokens, inlineBreakToken)
 			if bla.space.HasBlockFragmentation {
-				inlineBreakToken.ConsumedBlockSize = layoutunit.FromFloat64Round(finish.ConsumedBlockSize)
-				inlineBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
-				inlineBreakToken.MonolithicOverflow = finish.MonolithicOverflow
+				blockBreakToken.ConsumedBlockSize = layoutunit.FromFloat64Round(finish.ConsumedBlockSize)
+				blockBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
+				blockBreakToken.MonolithicOverflow = finish.MonolithicOverflow
 			}
 			bla.containerBuilder.SetIntrinsicBlockSize(blockCursor)
 			bla.containerBuilder.SetNode(bla.node.DOMNode)
@@ -688,9 +689,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				Padding:   ToPhysicalEdges(geom.Padding, wdm),
 				Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 			})
-			inlineBreakToken.ChildBreakTokens = slices.Concat(inlineContext.ParallelFlowBreakTokens(), inlineBreakToken.ChildBreakTokens)
 			result := bla.containerBuilder.Build()
-			result.BreakToken = inlineBreakToken
+			result.BreakToken = blockBreakToken
 			bla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(bla.ctx, result)
 			result.PropagatedOOFCandidates = bla.containerBuilder.outOfFlowCandidates
 			return result
@@ -749,8 +749,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			if child.isInlineSegment {
 				startIdx, startTextOffset := 0, 0
-				if tok := entry.Token; tok != nil && !tok.IsBreakBefore {
-					startIdx, startTextOffset = tok.InlineItemStartIndex, tok.InlineTextOffset
+				// A run resumed after a line break inside it starts at its
+				// inline break token; one broken before starts afresh.
+				if tok, ok := entry.Token.(*InlineBreakToken); ok {
+					startIdx, startTextOffset = tok.Start.ItemIndex, tok.Start.TextOffset
 				}
 				adjoining := firstNonEmptyChild && canPropagateTop
 				lineTop := blockCursor
@@ -792,7 +794,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 				}
 				if lineBreakToken != nil {
-					lineBreakToken.Node = child
 					bla.containerBuilder.AddBreakToken(lineBreakToken, false)
 					if lineBreakToken.IsForcedBreak {
 						bla.containerBuilder.SetHasForcedBreak()
@@ -865,7 +866,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// floats (CSS 2.1 §10.6.7); hasOwnFloats is already true for
 			// BFC roots (initialized from IsNewFormattingContext).
 			if childStyle.GetFloat() != css.FloatNone {
-				bla.handleFloat(child, entry.Token, incomingBreakToken,
+				bla.handleFloat(child, entry.BlockToken(), incomingBreakToken,
 					bfcBlockOrigin+blockCursor+prevMarginStrut.Resolve(),
 					contentInlineSize, childAvailableBlock, bfcBlockOrigin, bfcInlineOrigin,
 					bfcContainerInlineSize)
@@ -934,7 +935,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// A resumed child's margins are truncated at the break, except
 			// after a forced break. Mirrors Blink ComputeChildData (block_layout_algorithm.cc:
 			// 2836-2847 @ a9f50e522efa).
-			if childToken := entry.Token; childToken != nil {
+			if childToken := entry.BlockToken(); childToken != nil {
 				AdjustMarginsForFragmentation(childToken, &childMargins)
 				if childToken.IsForcedBreak {
 					prevMarginStrut = MarginStrut{}
@@ -1201,7 +1202,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// space fragments, so a box relaid out with fragmentation
 				// forced off still resumes its children (LayoutBlockChild,
 				// block_layout_algorithm.cc:109-122 @ a9f50e522efa).
-				if tok := entry.Token; tok != nil {
+				if tok := entry.BlockToken(); tok != nil {
 					b.SetBreakToken(tok)
 				}
 				// The early break inside the child, if the relayout breaks
@@ -1574,7 +1575,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
 			// 2767-2772 @ a9f50e522efa).
 			if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
-				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, entry.Token)
+				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, entry.BlockToken())
 			}
 
 			// CSS Inline §4.2: propagate the first in-flow block child's
@@ -1987,7 +1988,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// consumed block-size of an in-flow child break is the content extent
 	// where the walk stopped.
 	if shouldBreakInside || didBreakSelf || finish.MonolithicOverflow > 0 {
-		var childBreakTokens []*BlockBreakToken
+		var childBreakTokens []BreakToken
 		var hasSeenAllChildren bool
 		consumed := finalBlockSize
 		if shouldBreakInside {

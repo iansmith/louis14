@@ -40,8 +40,15 @@ type BlockChildIterator struct {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type BlockChildIteratorEntry struct {
 	Node  *LayoutInputNode
-	Token *BlockBreakToken
+	Token BreakToken
 	Index int
+}
+
+// BlockToken is the entry's break token when it is a block one (a block
+// child resumed or broken before), else nil.
+func (e BlockChildIteratorEntry) BlockToken() *BlockBreakToken {
+	t, _ := e.Token.(*BlockBreakToken)
+	return t
 }
 
 // AtEnd reports whether the iteration is over (Entry::AtEnd).
@@ -114,9 +121,9 @@ func (it *BlockChildIterator) NextChild() BlockChildIteratorEntry {
 		for it.childTokenIdx < len(tokens) {
 			token := tokens[it.childTokenIdx]
 			it.childTokenIdx++
-			if idx := slices.Index(it.children, token.Node); idx >= 0 {
+			if idx := slices.Index(it.children, token.InputNode()); idx >= 0 {
 				it.lastResumedChild = idx
-				return BlockChildIteratorEntry{Node: token.Node, Token: token, Index: idx}
+				return BlockChildIteratorEntry{Node: token.InputNode(), Token: token, Index: idx}
 			}
 		}
 		// Only tokens for nodes that are not children remained.

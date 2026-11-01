@@ -44,8 +44,10 @@ type BlockBreakToken struct {
 	// document-order; each entry's Node identifies its role to the
 	// MulticolPartWalker (column-content vs spanner vs OOF). Other
 	// callers continue treating it as a list of direct-child resume
-	// tokens dispatched by Node identity.
-	ChildBreakTokens []*BlockBreakToken
+	// tokens dispatched by Node identity. An inline formatting context
+	// resumes through InlineBreakTokens: the next line's start, and its
+	// floats continuing in parallel flows.
+	ChildBreakTokens []BreakToken
 
 	// IsBreakBefore means the node hasn't started yet — it should
 	// begin fresh in the next fragmentainer.
@@ -83,18 +85,6 @@ type BlockBreakToken struct {
 	// (box_fragment_builder.cc:532-565), is gated on page fragmentation,
 	// which louis14 lacks, so outside hand-built tokens it stays 0.
 	MonolithicOverflow float64
-
-	// InlineItemStartIndex is the index into InlineItemsData.Items at which
-	// inline layout should resume in the next column. Non-zero only for break
-	// tokens produced by inline-content fragmentation. Mirrors Blink's
-	// approach of recording the line-box boundary as a resume point.
-	InlineItemStartIndex int
-
-	// InlineTextOffset is the byte offset within the text buffer at which to
-	// resume inline layout in the next column. Paired with InlineItemStartIndex
-	// to correctly resume when a break occurred mid-text-item (a single text
-	// item may span multiple lines if it contains multiple words).
-	InlineTextOffset int
 
 	// HasUnpositionedListMarker signals that the list-item's ::marker was not
 	// placed during layout and should be seeded again when this break token is
@@ -182,12 +172,14 @@ func (t *BlockBreakToken) IsFirstForNode() bool {
 	return !t.IsBreakInside()
 }
 
-// InputBreakToken returns the first child break token for resumption, or nil.
+// InputBreakToken returns the first child break token for resumption, as a
+// block break token, or nil.
 func (t *BlockBreakToken) InputBreakToken() *BlockBreakToken {
 	if t == nil || len(t.ChildBreakTokens) == 0 {
 		return nil
 	}
-	return t.ChildBreakTokens[0]
+	tok, _ := t.ChildBreakTokens[0].(*BlockBreakToken)
+	return tok
 }
 
 // sequenceNumberAfter is the sequence number of the fragment that resumes
