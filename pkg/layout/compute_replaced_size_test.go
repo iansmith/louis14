@@ -56,6 +56,15 @@ func TestComputeReplacedSizeInInitialFragmentGeometry_LOU504(t *testing.T) {
 			html:  `<div style="display:inline-block;width:100px;height:100px"><svg id="t" viewBox="0 0 100 100" style="margin:5px;border:10px solid grey;box-sizing:border-box"></svg></div>`,
 			width: 90, height: 90,
 		},
+		{
+			// A block-level ratio-only svg stretches to its containing
+			// block less its margins, once (StretchFit, length_utils.cc:
+			// 1165-1182): the block container passes the margin-inclusive
+			// available inline-size.
+			name:  "block-level ratio-only svg stretches less its margins",
+			html:  `<div style="width:200px"><svg id="t" viewBox="0 0 2 1" style="display:block;margin:0 10px"></svg></div>`,
+			width: 180, height: 90,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

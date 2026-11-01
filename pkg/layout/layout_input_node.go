@@ -340,6 +340,14 @@ func (n *LayoutInputNode) IsButtonOrInputButton() bool {
 	return false
 }
 
+// IsReplaced reports whether the node is laid out as a replaced box (its
+// element is replaced, html.IsReplacedElement). Mirrors Blink's
+// LayoutInputNode::IsReplaced (layout_input_node.h:77 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsReplaced() bool {
+	return n != nil && n.DOMNode != nil && IsReplacedElement(n.DOMNode)
+}
+
 // IsAnonymous returns true for generated anonymous boxes.
 func (n *LayoutInputNode) IsAnonymous() bool {
 	return n.isAnonymous

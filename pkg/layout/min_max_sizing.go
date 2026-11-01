@@ -68,14 +68,16 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 		return result
 	}
 
+	// A replaced box contributes its replaced size, which accounts for its
+	// lengths, aspect ratio and size containment itself
+	// (ComputeMinAndMaxContentContribution, length_utils.cc:468-469 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if node.IsReplaced() {
+		return ComputeMinAndMaxContentContributionForReplaced(ctx, node, space)
+	}
+
 	// If the node has an explicit inline-size, min = max = that size (content-box).
-	// Skip this fast-path for replaced elements: their inline-size may be
-	// overridden by the CSS 2.1 §10.3.2 constraint resolution when a
-	// percentage block-size resolves to a definite value and an aspect ratio
-	// transfers it to the inline dimension. ComputeReplacedSize handles
-	// this correctly, so replaced elements always go through that path below.
-	//
-	// Also skip the fast path when the inline-size is a percentage: per CSS
+	// Skip the fast path when the inline-size is a percentage: per CSS
 	// Sizing 3 §5.1, percentage sizes are treated as auto when computing
 	// intrinsic sizes — the percentage cannot resolve circularly against a
 	// not-yet-determined container size, so the element contributes its
@@ -87,8 +89,6 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	// min/max intrinsic sizes to evaluate correctly, which the fast path bypasses.
 	fitContentMinMaxNeedsContent := fitContentMinMaxRequiresContentSizes(style, wdm)
 
-	isReplaced := node.DOMNode != nil && IsReplacedElement(node.DOMNode)
-
 	// Fast path with fit-content() min/max: when the element has an explicit
 	// inline-size (width) AND min-width or max-width uses fit-content(<L>), we
 	// need content-based intrinsic sizes to evaluate the formula, but the base
@@ -96,7 +96,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	//
 	// CSS Sizing 3 §5.1.5: for a box with fit-content() on min/max-size, the
 	// contribution is max(min_constraint, min(max_constraint, explicit_width)).
-	if !isReplaced && !hasPercentLogicalWidth(style, wdm) && fitContentMinMaxNeedsContent {
+	if !hasPercentLogicalWidth(style, wdm) && fitContentMinMaxNeedsContent {
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
@@ -129,7 +129,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 		// handles fit-content() constraints using the measured content min/max.
 	}
 
-	if !isReplaced && !hasPercentLogicalWidth(style, wdm) && !fitContentMinMaxNeedsContent {
+	if !hasPercentLogicalWidth(style, wdm) && !fitContentMinMaxNeedsContent {
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
@@ -162,27 +162,6 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	isGrid := disp == css.DisplayGrid || disp == css.DisplayInlineGrid
 	if !isGrid && (style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()) {
 		return MinMaxSizes{}
-	}
-
-	// Replaced elements (img, canvas, etc.): compute intrinsic inline-size without
-	// block-axis min/max constraints transferring through aspect ratio.
-	// CSS Sizing 3 §5.1: intrinsic sizes are based on content, not block constraints.
-	//
-	// Form controls like <button> are tagged "replaced" by louis14's
-	// IsReplacedElementTag (for text-decoration / atomic-inline boundary
-	// purposes), but they have no intrinsic size and no aspect ratio — their
-	// inline-size is determined by their child content (and the UA-supplied
-	// inline-flex layout), not by a default 300×150 from ComputeReplacedSize.
-	// Skip the replaced fast-path for these "content-sized replaced" cases
-	// (intrinsics 0×0 with no ratio) so the content measurement below runs.
-	// Mirrors Blink, where <button> is LayoutFlexibleBox, not LayoutReplaced.
-	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
-		info := GetIntrinsicSizingInfo(ctx, node)
-		hasIntrinsicDims := info.IntrinsicWidth > 0 || info.IntrinsicHeight > 0
-		if hasIntrinsicDims || info.HasAspectRatio {
-			inlineSize := ComputeReplacedIntrinsicInlineSize(ctx, node, style, space)
-			return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
-		}
 	}
 
 	// Compute intrinsic sizes based on children (content-box).
@@ -804,6 +783,17 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	wdm := space.WritingDirection
 	geom := ComputeFragmentGeometry(style, wdm)
 
+	if node.IsReplaced() {
+		// A replaced box's own min/max-content size is its intrinsic
+		// fragment geometry's inline-size, size containment included (BlockNode::ComputeMinMaxSizes,
+		// block_node.cc:1020-1027; CalculateInitialFragmentGeometry with
+		// is_intrinsic, length_utils.cc:1702-1706 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		bp := replacedFragmentGeometry(style, wdm, space).BorderBoxPadding()
+		inlineSize := ComputeReplacedSize(ctx, node, space, ReplacedSizeModeIgnoreInlineLengths).InlineSize - bp.InlineSum()
+		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
+	}
+
 	// CSS Contain 1 §4.2: size containment treats the element as if it had
 	// no in-flow content, so the content-based min/max contributions used by
 	// flex §4.5's automatic minimum size collapse to 0 — `min-width` /
@@ -830,12 +820,6 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 			}
 		}
 		return result
-	}
-
-	// Replaced elements use ComputeReplacedSize for content-based sizing.
-	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
-		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)
-		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
 
 	result := measureNodeContentMinMax(node, ctx, style, wdm, space, false)
