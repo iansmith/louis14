@@ -194,6 +194,13 @@ type BoxFragmentBuilder struct {
 	breakAppeal    BreakAppeal
 	hasBreakAppeal bool
 
+	// lineCount is the number of non-empty line boxes added to the builder,
+	// counted only under block fragmentation (orphans / widows). Mirrors
+	// Blink's FragmentBuilder::line_count_ (fragment_builder.h:654-656,
+	// incremented in PropagateFromFragment, fragment_builder.cc:466-494 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lineCount int
+
 	// columnSpannerPath is the path to a column spanner found inside this
 	// box; hasColumnSpanner is set with it, or alone when a spanner was
 	// found but is not to be laid out yet (a parallel flow broke before it).
@@ -392,8 +399,9 @@ func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
 
 // AddOutOfFlowCandidate records an absolutely/fixed positioned child
 // for deferred layout by OutOfFlowLayoutPart.
-// PropagateSpaceShortage records a minimum space shortage reported by an
-// inner nested multicol whose balancing pass gave up. The outer balancing
+// PropagateSpaceShortage records a minimum space shortage: a line or child
+// that did not fit, or an inner nested multicol whose balancing pass gave
+// up. The outer balancing
 // loop consumes LayoutResult.MinSpaceShortage to decide its next stretch.
 // Mirrors Blink's FragmentBuilder::PropagateSpaceShortage (cla.cc:1241).
 func (b *BoxFragmentBuilder) PropagateSpaceShortage(shortage float64) {
@@ -587,6 +595,14 @@ func (b *BoxFragmentBuilder) SetBreakAppeal(appeal BreakAppeal) {
 	b.breakAppeal = appeal
 	b.hasBreakAppeal = true
 }
+
+// LineCount mirrors Blink's BoxFragmentBuilder::LineCount
+// (box_fragment_builder.h:541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) LineCount() int { return b.lineCount }
+
+// SetLineCount mirrors Blink's BoxFragmentBuilder::SetLineCount
+// (box_fragment_builder.h:542 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetLineCount(lineCount int) { b.lineCount = lineCount }
 
 // ClampBreakAppeal lowers the recorded break appeal to `appeal` when that is
 // worse than what is recorded (an unset appeal counts as Perfect). Used to

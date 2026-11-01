@@ -147,3 +147,29 @@ func TestNestedMulticolPushedByOrphans_LOU480(t *testing.T) {
 		}
 	}
 }
+
+// The relayout that breaks earlier for widows does not run out of space
+// itself, so it repeats the shortage the first pass found (line 2 at 60px
+// needs 20px more than the 70px column), letting column balancing stretch.
+// Mirrors LayoutAlgorithm::SetupRelayoutData (layout_algorithm.h:210-216 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestWidowsRelayoutRepeatsSpaceShortage_LOU480(t *testing.T) {
+	n, styles := linesBlock(3, "orphans", "1", "widows", "2")
+	res := layoutBlockInFragmentainer(t, n, styles, 70, 0)
+	if got := res.MinSpaceShortage; got != 20 {
+		t.Errorf("MinSpaceShortage = %v, want 20 (from the first pass)", got)
+	}
+}
+
+// Violating only orphans / widows is more appealing than violating a break
+// avoid* value (break_appeal.h:11-31 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); multicol-nested-019/-020 keep
+// a break-before:avoid by ignoring orphans inside the inner multicol.
+func TestBreakAppealOrdering_LOU480(t *testing.T) {
+	if !(BreakAppealLastResort < BreakAppealViolatingBreakAvoid &&
+		BreakAppealViolatingBreakAvoid < BreakAppealViolatingOrphansAndWidows &&
+		BreakAppealViolatingOrphansAndWidows < BreakAppealPerfect) {
+		t.Errorf("BreakAppeal order = LastResort %d, BreakAvoid %d, OrphansAndWidows %d, Perfect %d; want ascending",
+			BreakAppealLastResort, BreakAppealViolatingBreakAvoid, BreakAppealViolatingOrphansAndWidows, BreakAppealPerfect)
+	}
+}

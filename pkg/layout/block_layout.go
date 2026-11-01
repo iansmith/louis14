@@ -56,6 +56,34 @@ type BlockLayoutAlgorithm struct {
 	// Mirrors Blink's LayoutAlgorithm::SetBoxType (column_layout_algorithm.cc:
 	// 945, :1639 @ a9f50e522efa).
 	boxType BoxType
+
+	// earlyBreak, when set, is the line to break before: this algorithm
+	// is the relayout of an inline formatting context that found a better
+	// breakpoint (orphans / widows) than where it ran out of space. Mirrors
+	// Blink's LayoutAlgorithm::early_break_ (layout_algorithm.h:295-297 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	earlyBreak *EarlyBreak
+
+	// relayoutSpaceShortage is the space shortage the pass that found
+	// earlyBreak detected. Breaking earlier, the relayout does not run out
+	// of space, so it repeats that shortage. Mirrors LayoutAlgorithm::
+	// SetupRelayoutData's kRelayoutForEarlyBreak branch (layout_algorithm.h:
+	// 210-216 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	relayoutSpaceShortage float64
+
+	// firstOverflowingLine is the line box index at which the inline
+	// content ran out of fragmentainer space (0: none yet). That is where
+	// the break goes, unless widows require an earlier one. Mirrors Blink's
+	// BlockLayoutAlgorithm::first_overflowing_line_ (block_layout_algorithm.h:
+	// 550-553 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	firstOverflowingLine int
+
+	// fitAllLines is set when as many lines as fit are to stay in this
+	// fragment (no earlier break for widows): there are enough widows for
+	// the next fragment, or the orphans / widows request cannot be met.
+	// Mirrors Blink's BlockLayoutAlgorithm::fit_all_lines_
+	// (block_layout_algorithm.h:555-559).
+	fitAllLines bool
 }
 
 // NewBlockLayoutAlgorithm creates a block layout algorithm for the given
@@ -169,6 +197,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetLayoutNode(bla.node)
 	builder.SetConstraintSpace(&bla.space)
 	builder.SetBoxType(bla.boxType)
+	builder.PropagateSpaceShortage(bla.relayoutSpaceShortage)
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
 	// @ a9f50e522efa): resuming after a break inside this node.
 	builder.SetIsFirstForNode(!bla.space.BreakToken.IsBreakInside())
@@ -731,6 +760,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
 			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+			// Widows moved the break earlier than where the lines ran out
+			// of space: lay out again and break there
+			// (FinalizeForFragmentation → kNeedsEarlierBreak →
+			// RelayoutAndBreakEarlier, block_layout_algorithm.cc:3106-3127,
+			// :617-626 @ a9f50e522efa).
+			if earlyBreak := bla.lineEarlyBreak(builder); earlyBreak != nil {
+				return bla.relayoutAndBreakEarlier(earlyBreak, builder)
+			}
 		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
@@ -814,8 +851,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			// The per-break-point line shortage: the only producer
-			// (layoutInlineChildren) breaks only when it is positive.
+			// The per-break-point line shortage: positive when the line
+			// ran out of space, 0 for a predetermined early break (which
+			// propagates none).
 			shortage := inlineBreakToken.InlineShortage
 			// A line break breaks this block inside, as an in-flow child
 			// break (Blink AddBreakBeforeChild on the inline node,
