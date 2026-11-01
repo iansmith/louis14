@@ -157,9 +157,15 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 	}
 	if space.IsRootElement {
 		// InitialContainingBlockFixedSize (:531-540): the viewport, with no
-		// border or padding.
+		// border or padding. Its origin is the LayoutView's, outside the
+		// root's border, scrollbar and padding — the root's own
+		// candidates are offset in its content box, so the ICB origin lies
+		// at minus those edges there (louis14 places the root at the view
+		// origin).
 		p.containingBlockSize = ToLogicalSize(PhysicalSize{Width: ctx.ViewportWidth, Height: ctx.ViewportHeight}, space.WritingDirection.WM)
 		p.containingBlockPadding = LogicalEdges{}
+		rootEdges := builder.BorderScrollbarPadding()
+		p.cbOriginInBuilder = LogicalOffset{InlineOffset: -rootEdges.InlineStart, BlockOffset: -rootEdges.BlockStart}
 		p.isAbsoluteContainer, p.isFixedContainer = true, true
 		return p
 	}
