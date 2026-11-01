@@ -30,7 +30,7 @@ func TestTallOutsideMarkerPushesLaterLinesBeforeTheirBreakCheck(t *testing.T) {
 		li: makeStyle(
 			"display", "list-item",
 			"list-style-position", "outside",
-			"list-style-image", "url(green.png)",
+			"list-style-image", "url(lou507-marker.png)", // unique: images are cached by URL across tests
 			"font-family", "Ahem", "font-size", "20px", "line-height", "20px",
 			"width", "20px", "orphans", "1", "widows", "1",
 		),

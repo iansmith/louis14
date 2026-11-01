@@ -1474,25 +1474,6 @@ func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, d
 	}
 }
 
-// ShiftLineBoxChildrenBlockOffset adds delta to the block offset of every
-// line-box child already added to the builder from index fromChild on (the
-// run of lines that holds the first line). This is the INLINE-content
-// analogue of ShiftChildBlockOffset: a list item whose own content is inline
-// has no single content child to re-offset, so when an OUTSIDE marker's ascent
-// is taller than the first line's, the whole inline formatting context (all of
-// its line boxes) is pushed down by the content-push delta. Floats and the
-// marker box are FragmentBox children and keep their position — only
-// FragmentLineBox children move. Mirrors Blink's content-adjust being applied
-// to the inline content's block offset in
-// BlockLayoutAlgorithm::PositionOrPropagateListMarker.
-func (b *BoxFragmentBuilder) ShiftLineBoxChildrenBlockOffset(fromChild int, delta float64) {
-	for i := fromChild; i < len(b.children); i++ {
-		if b.children[i].fragment != nil && b.children[i].fragment.Type == FragmentLineBox {
-			b.children[i].offset.BlockOffset += delta
-		}
-	}
-}
-
 // SetHasColumnSpanner records whether a column spanner was found inside this
 // box. Mirrors Blink's FragmentBuilder::SetHasColumnSpanner
 // (fragment_builder.h:435-437 @ a9f50e522efa).

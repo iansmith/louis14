@@ -734,31 +734,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// (block_layout_algorithm.cc:2983 @ a9f50e522efa).
 		prevMarginStrut = MarginStrut{}
 
-		// CSS Lists §3 / Blink PositionOrPropagateListMarker: a list item with
-		// inline content places its OUTSIDE marker against the first line box's
-		// baseline. The first line box sits at content-relative block offset 0
-		// and its baseline is firstLineAscent. The marker fragment is added as
-		// a content-relative child of the list-item builder, with a negative
-		// inline offset (InlineMarginsForOutside) placing it left of the
-		// content-box start.
-		if firstLineAscent > 0 {
-			if contentPush := bla.placeListMarkerAtFirstLine(firstLineAscent, 0, 0, inlineBreakToken); contentPush > 0 {
-				blockCursor += contentPush
-				firstLineAscent += contentPush
-				if hasLastChildBaseline {
-					lastChildBlockOffset += contentPush
-				}
-			}
-		}
-
 		// Inline fragmentation: if the inline layout stopped mid-content due to
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			// The per-break-point line shortage: positive when the line
-			// ran out of space, 0 for a predetermined early break (which
-			// propagates none).
-			shortage := inlineBreakToken.InlineShortage
 			// A line break breaks this block inside, as an in-flow child
 			// break (Blink AddBreakBeforeChild on the inline node,
 			// box_fragment_builder.cc:121-143 @ a9f50e522efa); the fragment
@@ -787,9 +766,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineBreakToken.ChildBreakTokens = slices.Concat(inlineContext.ParallelFlowBreakTokens(), inlineBreakToken.ChildBreakTokens)
 			result := bla.containerBuilder.Build()
 			result.BreakToken = inlineBreakToken
-			// Min-merge with a shortage an earlier, moved-past line already
-			// propagated (BoxFragmentBuilder::PropagateSpaceShortage).
-			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
 			bla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(bla.ctx, result)
 			result.PropagatedOOFCandidates = bla.containerBuilder.outOfFlowCandidates
 			return result
@@ -858,7 +834,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				prevES := bla.containerBuilder.GetExclusionSpace()
 				var inlineContext InlineChildLayoutContext
-				runFirstChild := len(bla.containerBuilder.children)
 				end, es, ascent, lastBaselineOff, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, prevES, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
 					blockStart:                lineTop,
 					hasBreakOpportunityBefore: hasBreakOpportunityBeforeNextChild,
@@ -884,11 +859,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						firstChildBaseline = ascent
 						firstChildBlockOffset = lineTop
 						hasFirstChildBaseline = true
-						if contentPush := bla.placeListMarkerAtFirstLine(ascent, lineTop, runFirstChild, lineBreakToken); contentPush > 0 {
-							blockCursor += contentPush
-							firstChildBlockOffset += contentPush
-							lastBaselineOff += contentPush
-						}
 					}
 					if lastBaselineOff > 0 {
 						lastChildBaseline = lastBaselineOff
@@ -899,7 +869,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if lineBreakToken != nil {
 					lineBreakToken.Node = child
 					bla.containerBuilder.AddBreakToken(lineBreakToken, false)
-					bla.containerBuilder.PropagateSpaceShortage(lineBreakToken.InlineShortage)
 					if lineBreakToken.IsForcedBreak {
 						bla.containerBuilder.SetHasForcedBreak()
 					}
@@ -2279,18 +2248,17 @@ func (bla *BlockLayoutAlgorithm) handleFloat(
 }
 
 // placeListMarkerAtFirstLine places the unpositioned outside list marker,
-// if any, against the first line box, at firstLineTop with ascent
-// firstLineAscent. When the marker's ascent is taller than the line's (an
-// image marker on a text line) the content goes down instead: the line
-// boxes from child index firstLineChild on move down by the returned push,
-// as does a break token taken before it (its consumed block-size and
-// shortage); the caller grows its content and baselines by it. LOU-337 /
-// css-pseudo marker-content-012. Mirrors BlockLayoutAlgorithm::
+// if any, against the first line box, whose top is at firstLineTop and whose
+// ascent is firstLineAscent, and returns by how much the line must go down:
+// when the marker's ascent is taller than the line's (an image marker on a
+// text line) the content is pushed instead of the marker. The inline layout
+// adds the push to the first line's offset, and so to every later line's.
+// LOU-337 / css-pseudo marker-content-012. Mirrors BlockLayoutAlgorithm::
 // PositionOrPropagateListMarker applying UnpositionedListMarker::AddToBox's
 // content adjust to the child's offset (block_layout_algorithm.cc:
-// 2023-2027, unpositioned_list_marker.cc:81-123 @
+// 2720-2724, :3878-3920; unpositioned_list_marker.cc:81-123 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, firstLineTop float64, firstLineChild int, breakToken *BlockBreakToken) float64 {
+func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, firstLineTop float64) float64 {
 	marker := bla.containerBuilder.GetUnpositionedListMarker()
 	if !marker.IsValid() {
 		return 0
@@ -2301,13 +2269,6 @@ func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, fir
 	}
 	contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, firstLineTop, bla.containerBuilder)
 	bla.containerBuilder.ClearUnpositionedListMarker()
-	if contentPush > 0 {
-		bla.containerBuilder.ShiftLineBoxChildrenBlockOffset(firstLineChild, contentPush)
-		if breakToken != nil {
-			breakToken.ConsumedBlockSize = breakToken.ConsumedBlockSize.Add(layoutunit.FromFloat64Round(contentPush))
-			breakToken.InlineShortage += contentPush
-		}
-	}
 	return contentPush
 }
 
