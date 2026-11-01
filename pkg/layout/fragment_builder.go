@@ -191,6 +191,12 @@ type BoxFragmentBuilder struct {
 	// 459-468, :677 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	requiresContentBeforeBreaking bool
 
+	// isKnownToFitInFragmentainer: what is left of the node is known, before
+	// layout, to fit in the current fragmentainer. Mirrors Blink's
+	// BoxFragmentBuilder::is_known_to_fit_in_fragmentainer_
+	// (box_fragment_builder.h:787 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isKnownToFitInFragmentainer bool
+
 	// isBlockSizeForFragmentationClamped: a child that did not fit was kept
 	// in this fragmentainer because content was required, so child overflow
 	// is ignored for the block-size for fragmentation. Mirrors Blink's
@@ -472,6 +478,27 @@ func (b *BoxFragmentBuilder) SetRequiresContentBeforeBreaking(v bool) {
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *BoxFragmentBuilder) RequiresContentBeforeBreaking() bool {
 	return b.requiresContentBeforeBreaking
+}
+
+// SetIsKnownToFitInFragmentainer records whether the rest of the node is
+// known to fit in the current fragmentainer. Mirrors BoxFragmentBuilder::
+// SetIsKnownToFitInFragmentainer (box_fragment_builder.h:390-392 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetIsKnownToFitInFragmentainer(v bool) {
+	b.isKnownToFitInFragmentainer = v
+}
+
+// IsKnownToFitInFragmentainer mirrors BoxFragmentBuilder::
+// IsKnownToFitInFragmentainer (box_fragment_builder.h:393-395).
+func (b *BoxFragmentBuilder) IsKnownToFitInFragmentainer() bool { return b.isKnownToFitInFragmentainer }
+
+// MustStayInCurrentFragmentainer reports whether the node, known to fit,
+// must keep its first fragment (and its first piece of content) in the
+// current fragmentainer. Mirrors BoxFragmentBuilder::
+// MustStayInCurrentFragmentainer (box_fragment_builder.h:401-413 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) MustStayInCurrentFragmentainer() bool {
+	return b.isKnownToFitInFragmentainer && !b.notFirstForNode
 }
 
 // SetIsBlockSizeForFragmentationClamped records that a child was forced to
@@ -1568,4 +1595,35 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		result.BreakAppeal = b.breakAppeal
 	}
 	return result
+}
+
+// AdjustSpaceShortageForBreakAvoidRoot replaces the space shortage of a
+// break-inside:avoid root that broke inside before its block end during
+// column balancing: what its content propagated would only stretch the
+// columns a little at a time, so it is dropped, and the root's first
+// fragment reports instead by how much its unbroken block-size, from a
+// layout without fragmentation, exceeds the space left. Mirrors
+// BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 builds the outgoing
+// break token after Build, so the algorithms call this once result carries
+// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart;
+// IsFragmentainerBoxType is a column box type here (louis14 has no pages).
+func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
+	space := b.space
+	if space == nil || result.BreakToken == nil || result.BreakToken.IsAtBlockEnd ||
+		!space.IsInsideBalancedColumns || b.GetBoxType() == BoxTypeColumn || b.style == nil ||
+		!IsAvoidBreakValue(*space, b.style.GetBreakInside()) || space.IsInsideBreakAvoid ||
+		!space.HasKnownFragmentainerBlockSize() {
+		return
+	}
+	result.MinSpaceShortage = 0
+	if b.PreviousBreakToken().IsBreakInside() {
+		return
+	}
+	measure := layoutElement(ctx, b.layoutNode, space.CloneWithoutFragmentation())
+	if measure == nil || measure.Status != LayoutResultSuccess || measure.Fragment == nil {
+		return
+	}
+	shortage := NewLogicalFragment(space.WritingDirection, measure.Fragment).BlockSize() - FragmentainerSpaceLeft(b, false)
+	result.MinSpaceShortage = max(shortage, 0)
 }

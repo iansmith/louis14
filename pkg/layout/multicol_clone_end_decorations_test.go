@@ -64,7 +64,7 @@ func TestMulticolCloneEndDecorationsGating_LOU474(t *testing.T) {
 			if got := mla.containerBuilder.ShouldCloneBoxEndDecorations(); got != tc.wantClone {
 				t.Errorf("ShouldCloneBoxEndDecorations = %v, want %v", got, tc.wantClone)
 			}
-			if got := mla.isKnownToFitInFragmentainer; got != tc.wantFits {
+			if got := mla.containerBuilder.IsKnownToFitInFragmentainer(); got != tc.wantFits {
 				t.Errorf("isKnownToFitInFragmentainer = %v, want %v", got, tc.wantFits)
 			}
 		})
