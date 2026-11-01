@@ -739,7 +739,11 @@ func (b *BoxFragmentBuilder) SetIsBlockFragmentationContextRoot() {
 //     Assign `childFragment` as the CB. Mirrors fb.cc:952-954.
 //
 // Pending-multicol entries are forwarded as well so the outer fragmentation
-// root sees both the OOFs and the multicols that need revisiting.
+// root sees both the OOFs and the multicols that need revisiting. When out
+// is non-nil the descendants go there instead of this builder, and pending
+// multicols are not forwarded (Blink's
+// out_list, used by column balancing, fragment_builder.cc:925-1106 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 	childFragment *PhysicalFragment,
 	offset LogicalOffset,
@@ -747,7 +751,12 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 	cbAdjustment layoutunit.LayoutUnit,
 	containingBlock *LogicalOofContainingBlock,
 	fixedposCB *LogicalOofContainingBlock,
+	out *[]LogicalOofNodeForFragmentation,
 ) {
+	toBuilder := out == nil
+	if toBuilder {
+		out = &b.oofPositionedFragmentainerDescendants
+	}
 	if childFragment == nil || childFragment.FragmentedOofData == nil {
 		return
 	}
@@ -776,10 +785,13 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 			d.ContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
 			d.FixedposContainingBlock.Offset.InlineOffset += totalInline
 			d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
-			b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
+			*out = append(*out, d)
 		}
 	}
 
+	if !toBuilder {
+		return
+	}
 	for node, info := range data.MulticolsWithPendingOOFs {
 		// Translate the inner multicol's offset into this builder's frame so
 		// the outer drain site can position OOFs against the right column flow.

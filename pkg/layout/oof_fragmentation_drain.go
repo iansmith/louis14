@@ -16,8 +16,11 @@ import "louis14/pkg/css"
 // HandleOofFragmentation is the entry point Blink's OutOfFlowLayoutPart::Run
 // calls before LayoutCandidates. Drains pending fragmentainer descendants and
 // MulticolsWithPendingOOFs entries on `builder` when it is the block
-// fragmentation context root. No-op otherwise.
-func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentBuilder) {
+// fragmentation context root. No-op otherwise. isContainingBlockUnfinished
+// (nil once layout is complete) reports a containing block that continues
+// past this point; its descendants are delayed (see
+// fragmentationContextOOFPart).
+func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentBuilder, isContainingBlockUnfinished func(*LayoutInputNode) bool) {
 	if !builder.IsBlockFragmentationContextRoot() {
 		return
 	}
@@ -48,16 +51,29 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(builder *BoxFragmentB
 		}
 		outer = append(outer, d)
 	}
-	if len(outer) > 0 {
-		part := &fragmentationContextOOFPart{
-			OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containingBlockWDM: mla.space.WritingDirection},
-			containerBuilder:    builder,
-		}
-		// GetFragmentainerProgression (fragmentation_utils.cc:310-319 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the column inline
-		// progression.
-		part.LayoutFragmentainerDescendants(&outer, LogicalOffset{InlineOffset: mla.usedColWidth + mla.columnGapSize})
+	if len(outer) == 0 {
+		return
 	}
+	part := mla.newFragmentationContextOOFPart(builder)
+	part.isContainingBlockUnfinished = isContainingBlockUnfinished
+	part.HandleFragmentation(outer, mla.fragmentainerProgression())
+}
+
+// newFragmentationContextOOFPart returns the OutOfFlowLayoutPart that lays
+// out fragmentainer descendants in this multicol's columns.
+func (mla *MulticolLayoutAlgorithm) newFragmentationContextOOFPart(builder *BoxFragmentBuilder) *fragmentationContextOOFPart {
+	return &fragmentationContextOOFPart{
+		OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containingBlockWDM: mla.space.WritingDirection},
+		containerBuilder:    builder,
+	}
+}
+
+// fragmentainerProgression is the offset from one column to the next.
+// Mirrors Blink's GetFragmentainerProgression for kFragmentColumn
+// (fragmentation_utils.cc:310-319 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mla *MulticolLayoutAlgorithm) fragmentainerProgression() LogicalOffset {
+	return LogicalOffset{InlineOffset: mla.usedColWidth + mla.columnGapSize}
 }
 
 // layoutFragmentainerDescendant lays out a single deferred OOF descendant

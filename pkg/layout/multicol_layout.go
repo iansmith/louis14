@@ -343,6 +343,29 @@ func (mla *MulticolLayoutAlgorithm) spaceLeftForContent() float64 {
 	return spaceLeft - mla.blockStartBorderPadding()
 }
 
+// breakTokenTreeContainsNode reports whether node resumes somewhere in the
+// break-token tree rooted at token (a break inside it, not a break before
+// it): its last fragment so far has a break token. no Blink analog: Blink
+// reads the box's last physical fragment's break token
+// (PhysicalFragments().back().GetBreakToken(),
+// out_of_flow_layout_part.cc:1617 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 fragments carry no
+// break token (plan G20).
+func breakTokenTreeContainsNode(token *BlockBreakToken, node *LayoutInputNode) bool {
+	if token == nil {
+		return false
+	}
+	if token.Node == node && !token.IsBreakBefore {
+		return true
+	}
+	for _, child := range token.ChildBreakTokens {
+		if breakTokenTreeContainsNode(child, node) {
+			return true
+		}
+	}
+	return false
+}
+
 // CreateEmptyColumn creates an empty column fragmentainer after
 // previousColumn, of the same size, for out-of-flow content that runs past
 // the last column. Mirrors Blink's ColumnLayoutAlgorithm::CreateEmptyColumn
@@ -877,7 +900,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// laid-out OOFs surface (a fixed child of a fragmented abspos) are
 	// handled with the others. No-op when this builder is not the root or
 	// has no pending entries.
-	mla.HandleOofFragmentation(builder)
+	mla.HandleOofFragmentation(builder, nil)
 
 	// Handle out-of-flow candidates. When nestedDeferredOOFs is set the
 	// complete-path LayoutCandidates is skipped — the outer fragmentation
@@ -1076,7 +1099,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren(builder *BoxFragmentBuilder) 
 			continue
 		}
 
-		// A spanner (Blink cla.cc:627-659).
+		// A spanner (Blink cla.cc:627-659). Handle the fragmentainer
+		// descendants found before it in the columns before it (cla.cc:
+		// 640-643 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); those whose
+		// containing block continues after the spanner wait.
+		mla.HandleOofFragmentation(builder, func(cb *LayoutInputNode) bool {
+			return breakTokenTreeContainsNode(walker.nextColumnToken, cb)
+		})
 		status := mla.LayoutSpanner(entry.DescendantNode, entry.BreakToken, &marginStrut, builder)
 
 		// Advance the walker past this spanner entry (Blink cla.cc:651).
@@ -2010,6 +2039,45 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			break
 		}
 
+		// The line's OOFs get laid out once all columns complete layout, but
+		// they affect column balancing: lay the columns' fragmentainer
+		// descendants out in a dry run over these columns and fold the new
+		// columns, space shortage and violating breaks they would cause into
+		// the stretch decision. Mirrors Blink cla.cc:1087-1129 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (has_oof_fragmentainer_
+		// descendants is set only while balancing, cla.cc:973-978). The
+		// containing-block adjustment Blink passes is not needed: louis14
+		// finds containing blocks in the line's columns (plan G20).
+		// As before a spanner, descendants whose containing block continues
+		// past this line wait (out_of_flow_layout_part.cc:1611-1621).
+		var lineDescendants []LogicalOofNodeForFragmentation
+		for _, c := range columns {
+			builder.PropagateOOFFragmentainerDescendants(c.fragment, c.offset, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, &lineDescendants)
+		}
+		if balanceColumns && len(lineDescendants) > 0 {
+			lineColumns := make([]logicalChildLink, 0, len(columns))
+			for _, c := range columns {
+				lineColumns = append(lineColumns, logicalChildLink{offset: c.offset, fragment: c.fragment})
+			}
+			var columnBalancingInfo ColumnBalancingInfo
+			part := mla.newFragmentationContextOOFPart(builder)
+			part.childFragmentStorage = &lineColumns
+			part.columnBalancingInfo = &columnBalancingInfo
+			// The line's last column's outgoing token (colBreakToken is not
+			// advanced past a column that ends at a spanner).
+			lineBreakToken := columns[len(columns)-1].result.BreakToken
+			part.isContainingBlockUnfinished = func(cb *LayoutInputNode) bool {
+				return breakTokenTreeContainsNode(lineBreakToken, cb)
+			}
+			part.HandleFragmentation(lineDescendants, mla.fragmentainerProgression())
+			actualColumnCount += columnBalancingInfo.NumNewColumns
+			if columnBalancingInfo.MinimalSpaceShortage > 0 {
+				minSpaceShortage = min(minSpaceShortage, columnBalancingInfo.MinimalSpaceShortage)
+				hasShortage = true
+			}
+			hasViolatingBreak = hasViolatingBreak || columnBalancingInfo.HasViolatingBreak
+		}
+
 		// Acceptance condition (Blink cla.cc:1034–1037):
 		// Accept when no violations, column count within limit, and either
 		// content fully fits (no remaining break token) or a spanner was hit
@@ -2179,6 +2247,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				col.offset,
 				LogicalOffset{},
 				layoutunit.LayoutUnit{},
+				nil,
 				nil,
 				nil,
 			)

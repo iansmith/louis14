@@ -589,6 +589,75 @@ type containingBlockInfo struct {
 type fragmentationContextOOFPart struct {
 	OutOfFlowLayoutPart
 	containerBuilder *BoxFragmentBuilder
+	// childFragmentStorage, when set, holds the fragmentainers instead of
+	// the container builder's children (Blink's child_fragment_storage_).
+	childFragmentStorage *[]logicalChildLink
+	// columnBalancingInfo, when set, makes this a column-balancing dry run
+	// over childFragmentStorage (Blink's column_balancing_info_).
+	columnBalancingInfo *ColumnBalancingInfo
+	// isContainingBlockUnfinished reports whether a containing block's last
+	// fragment so far has a break token, so its fragmentainer descendants
+	// wait (Blink's delayed_descendants_, out_of_flow_layout_part.cc:
+	// 1611-1621). Nil when every containing block has finished.
+	isContainingBlockUnfinished func(*LayoutInputNode) bool
+	// delayedDescendants are the descendants that waited.
+	delayedDescendants []LogicalOofNodeForFragmentation
+}
+
+// ColumnBalancingInfo collects what laying out a column line's
+// fragmentainer descendants would need — new columns, the minimal space
+// shortage, whether a monolithic OOF overflowed — without adding their
+// results, so that OOFs affect column balancing. Mirrors Blink's
+// OutOfFlowLayoutPart::ColumnBalancingInfo (out_of_flow_layout_part.h:47-84
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// louis14 passes the line's descendants to HandleFragmentation directly
+// rather than storing them here (Blink's
+// out_of_flow_fragmentainer_descendants).
+type ColumnBalancingInfo struct {
+	// MinimalSpaceShortage is the smallest positive space shortage found
+	// laying them out in the line's columns (0: none).
+	MinimalSpaceShortage float64
+	// NumNewColumns is the number of columns they need past the line's.
+	NumNewColumns int
+	// HasViolatingBreak is set when a monolithic OOF had to overflow.
+	HasViolatingBreak bool
+}
+
+// PropagateSpaceShortage records a space shortage. Mirrors Blink's
+// ColumnBalancingInfo::PropagateSpaceShortage
+// (out_of_flow_layout_part.cc:3291-3294 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (info *ColumnBalancingInfo) PropagateSpaceShortage(spaceShortage float64) {
+	info.MinimalSpaceShortage = MinPositiveSpaceShortage(info.MinimalSpaceShortage, spaceShortage)
+}
+
+// fragmentationContextChildren returns the fragmentainers (and spanners)
+// being laid out into. Mirrors Blink's
+// OutOfFlowLayoutPart::FragmentationContextChildren.
+func (p *fragmentationContextOOFPart) fragmentationContextChildren() *[]logicalChildLink {
+	if p.childFragmentStorage != nil {
+		return p.childFragmentStorage
+	}
+	return &p.containerBuilder.children
+}
+
+// HandleFragmentation lays out the fragmentainer descendants (in a dry run
+// when this part has column balancing info) until none remain, then hands
+// the delayed ones back to the container builder.
+// Mirrors Blink's OutOfFlowLayoutPart::HandleFragmentation
+// (out_of_flow_layout_part.cc:707-788 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), without the pending-multicol
+// half (plan WI-7), which MulticolLayoutAlgorithm.HandleOofFragmentation
+// still runs.
+func (p *fragmentationContextOOFPart) HandleFragmentation(descendants []LogicalOofNodeForFragmentation, fragmentainerProgression LogicalOffset) {
+	if len(descendants) > 0 {
+		p.LayoutFragmentainerDescendants(&descendants, fragmentainerProgression)
+	}
+	if p.columnBalancingInfo == nil {
+		for _, d := range p.delayedDescendants {
+			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
+		}
+	}
 }
 
 // maxOOFFragmentainers bounds the fragmentainers one OOF layout round may
@@ -611,6 +680,11 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 	for len(*descendants) > 0 {
 		var descendantsToLayout [][]NodeToLayout
 		for _, d := range *descendants {
+			if p.isContainingBlockUnfinished != nil && d.ContainingBlock.Fragment != nil &&
+				p.isContainingBlockUnfinished(d.ContainingBlock.Fragment.LayoutNode) {
+				p.delayedDescendants = append(p.delayedDescendants, d)
+				continue
+			}
 			cbInfo, ok := p.GetContainingBlockInfo(d)
 			if !ok {
 				continue
@@ -649,7 +723,10 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 
 		var fragmentedDescendants []NodeToLayout
 		for index := 0; index < len(descendantsToLayout) && index < maxOOFFragmentainers; index++ {
-			children := p.containerBuilder.children
+			children := *p.fragmentationContextChildren()
+			if index >= len(children) && p.columnBalancingInfo != nil {
+				p.columnBalancingInfo.NumNewColumns++
+			}
 			lastHasBreakInside := false
 			// Skip over any column spanners.
 			if index >= len(children) || children[index].fragment.IsFragmentainerBox() {
@@ -658,15 +735,18 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 			// Extend descendantsToLayout when an OOF fragments into a
 			// fragmentainer past the last one listed (:1730-1735).
 			if index == len(descendantsToLayout)-1 &&
-				(lastHasBreakInside || (len(fragmentedDescendants) > 0 && index+1 < len(p.containerBuilder.children))) {
+				(lastHasBreakInside || (len(fragmentedDescendants) > 0 && index+1 < len(*p.fragmentationContextChildren()))) {
 				descendantsToLayout = append(descendantsToLayout, nil)
 			}
 		}
 
 		// Sweep the fragmentainer descendants the laid-out OOFs bubbled up
-		// to the container builder (nested abspos) (:1771-1773).
+		// to the container builder (nested abspos) — not in a column
+		// balancing dry run, which propagates none (:1771-1773).
 		*descendants = nil
-		p.containerBuilder.SwapOutOfFlowFragmentainerDescendants(descendants)
+		if p.columnBalancingInfo == nil {
+			p.containerBuilder.SwapOutOfFlowFragmentainerDescendants(descendants)
+		}
 	}
 }
 
@@ -687,7 +767,7 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	}
 	var found []cbFragmentInFragmentainer
 	stacked := 0.0
-	for _, ch := range p.containerBuilder.children {
+	for _, ch := range *p.fragmentationContextChildren() {
 		if !ch.fragment.IsFragmentainerBox() {
 			continue
 		}
@@ -758,7 +838,7 @@ func walkFragmentsForNode(frag *PhysicalFragment, node *LayoutInputNode, parentO
 // is paginated-only and not ported.
 func (p *fragmentationContextOOFPart) ComputeStartFragmentIndexAndRelativeOffset(blockEstimate float64, offset *LogicalOffset) int {
 	usedBlockSize, currentMaxBlockSize, fragmentainerBlockSize := 0.0, 0.0, 0.0
-	children := p.containerBuilder.children
+	children := *p.fragmentationContextChildren()
 	childIndex := 0
 	for ; childIndex < len(children); childIndex++ {
 		child := children[childIndex].fragment
@@ -795,7 +875,8 @@ func (p *fragmentationContextOOFPart) ComputeStartFragmentIndexAndRelativeOffset
 // (out_of_flow_layout_part.cc:2904-3026 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeToLayout, index int, fragmentainerProgression LogicalOffset, fragmentedDescendants *[]NodeToLayout) bool {
-	numChildren := len(p.containerBuilder.children)
+	childrenPtr := p.fragmentationContextChildren()
+	numChildren := len(*childrenPtr)
 	isNewFragment := index >= numChildren
 	continued := *fragmentedDescendants
 	*fragmentedDescendants = nil
@@ -805,17 +886,17 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeTo
 
 	// Find a non-spanner fragmentainer as a basis.
 	lastFragmentainerIndex := min(index, numChildren-1)
-	for lastFragmentainerIndex > 0 && !p.containerBuilder.children[lastFragmentainerIndex].fragment.IsFragmentainerBox() {
+	for lastFragmentainerIndex > 0 && !(*childrenPtr)[lastFragmentainerIndex].fragment.IsFragmentainerBox() {
 		lastFragmentainerIndex--
 	}
-	fragmentainerOffset := p.containerBuilder.children[lastFragmentainerIndex].offset
+	fragmentainerOffset := (*childrenPtr)[lastFragmentainerIndex].offset
 	if isNewFragment {
-		previous := p.containerBuilder.children[lastFragmentainerIndex].fragment
+		previous := (*childrenPtr)[lastFragmentainerIndex].fragment
 		fragmentainerOffset.InlineOffset += fragmentainerProgression.InlineOffset
 		fragmentainerOffset.BlockOffset += fragmentainerProgression.BlockOffset
-		p.containerBuilder.addChildInternal(CreateEmptyColumn(p.containingBlockWDM, previous), fragmentainerOffset)
+		*childrenPtr = append(*childrenPtr, logicalChildLink{offset: fragmentainerOffset, fragment: CreateEmptyColumn(p.containingBlockWDM, previous)})
 	}
-	fragmentainer := p.containerBuilder.children[index].fragment
+	fragmentainer := (*childrenPtr)[index].fragment
 	fragmentainerSize := NewLogicalFragment(p.containingBlockWDM, fragmentainer)
 
 	hasActualBreakInside := false
@@ -826,7 +907,10 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeTo
 			}
 		}
 	}
-	fragmentainer.updateScrollableOverflow()
+	// Don't update the fragmentainer when performing column balancing.
+	if p.columnBalancingInfo == nil {
+		fragmentainer.updateScrollableOverflow()
+	}
 	return hasActualBreakInside
 }
 
@@ -850,17 +934,6 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 	if result == nil || result.Fragment == nil {
 		return false
 	}
-	offset := LogicalOffset{
-		InlineOffset: n.offset.InlineOffset + n.containingBlockRelativeOffset.InlineOffset,
-		BlockOffset:  n.offset.BlockOffset + n.containingBlockRelativeOffset.BlockOffset,
-	}
-	conv := NewConverter(p.containingBlockWDM, geomSizeToOld(fragmentainer.Size))
-	physOff := conv.ToPhysicalOffset(offset, geomSizeToOld(result.Fragment.Size))
-	fragmentainer.Children = append(fragmentainer.Children, ChildLink{
-		Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X, physOff.Y),
-		Fragment: result.Fragment,
-	})
-
 	brokeInside := false
 	if result.BreakToken != nil {
 		continuation := *n
@@ -872,6 +945,30 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 		brokeInside = true
 	}
 
+	// In a column balancing dry run, only note how the OOF affects
+	// balancing (:3108-3130). OOFs ignore break rules, but a monolithic one
+	// that does not fit overflows instead of moving to the next
+	// fragmentainer: that is a violating break.
+	if info := p.columnBalancingInfo; info != nil {
+		spaceShortage := CalculateSpaceShortage(p.fragmentainerSpace(), result, n.offset.BlockOffset, fragmentainerBlockSize)
+		info.PropagateSpaceShortage(spaceShortage)
+		if spaceShortage > 0 && result.BreakToken == nil {
+			info.HasViolatingBreak = true
+		}
+		return brokeInside
+	}
+
+	offset := LogicalOffset{
+		InlineOffset: n.offset.InlineOffset + n.containingBlockRelativeOffset.InlineOffset,
+		BlockOffset:  n.offset.BlockOffset + n.containingBlockRelativeOffset.BlockOffset,
+	}
+	conv := NewConverter(p.containingBlockWDM, geomSizeToOld(fragmentainer.Size))
+	physOff := conv.ToPhysicalOffset(offset, geomSizeToOld(result.Fragment.Size))
+	fragmentainer.Children = append(fragmentainer.Children, ChildLink{
+		Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X, physOff.Y),
+		Fragment: result.Fragment,
+	})
+
 	inRoot := LogicalOffset{
 		InlineOffset: fragmentainerOffset.InlineOffset + offset.InlineOffset,
 		BlockOffset:  fragmentainerOffset.BlockOffset + offset.BlockOffset,
@@ -879,7 +976,7 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 	for _, cand := range p.propagatedDescendants(result, n.offsetInfo, inRoot) {
 		p.containerBuilder.AddOutOfFlowCandidate(cand)
 	}
-	p.containerBuilder.PropagateOOFFragmentainerDescendants(result.Fragment, inRoot, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil)
+	p.containerBuilder.PropagateOOFFragmentainerDescendants(result.Fragment, inRoot, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, nil)
 	return brokeInside
 }
 
@@ -899,11 +996,21 @@ func (p *fragmentationContextOOFPart) GenerateFragment(n *NodeToLayout, fragment
 	usedInline := NewLogicalFragment(p.containingBlockWDM, info.result.Fragment).InlineSize()
 	csb.SetAvailableSize(LogicalSize{InlineSize: usedInline, BlockSize: info.availableSize.BlockSize}).
 		SetIsFixedInlineSize(true)
-	fragmentainerSpace := ConstraintSpace{
+	SetupSpaceBuilderForFragmentation(p.fragmentainerSpace(), n.offset.BlockOffset, fragmentainerBlockSize, &csb)
+	csb.SetBreakToken(n.breakToken)
+	return layoutElement(p.ctx, n.descendant.Candidate.Node, csb.Build())
+}
+
+// fragmentainerSpace is the part of a fragmentainer's constraint space the
+// OOFs laid out in it read: a column, with kBreakAppealLastResort (OOFs
+// never break and resume in a subsequent outer fragmentainer). Mirrors the
+// space of Blink's GetFragmentainerConstraintSpace
+// (out_of_flow_layout_part.cc:3154-3181 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (p *fragmentationContextOOFPart) fragmentainerSpace() ConstraintSpace {
+	return ConstraintSpace{
+		WritingDirection:       p.containingBlockWDM,
 		BlockFragmentationType: FragmentColumn,
 		MinBreakAppeal:         BreakAppealLastResort,
 	}
-	SetupSpaceBuilderForFragmentation(fragmentainerSpace, n.offset.BlockOffset, fragmentainerBlockSize, &csb)
-	csb.SetBreakToken(n.breakToken)
-	return layoutElement(p.ctx, n.descendant.Candidate.Node, csb.Build())
 }
