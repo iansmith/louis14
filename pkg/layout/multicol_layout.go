@@ -975,36 +975,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	result.PropagatedOOFCandidates = propagatedOOF
 	if result.Fragment != nil {
-		// Phase 20 P20.5: tag the multicol container so the paint layer
-		// can apply Blink's structural overflow clip. Mirrors the
-		// HasNonVisibleOverflow()=true condition that Blink's
-		// LayoutBox sets for any multicol fragmentation context — the
-		// paint-property tree then installs an OverflowClip at
-		// LayoutBox::OverflowClipRect, which for a non-scroll
-		// container is border-box contracted by border outsets, i.e.
-		// the padding-box (verified against blink/renderer/core/
-		// layout/layout_box.cc::OverflowClipRect).
-		//
-		// Replaces the 3389efe7 broad ClipContentToBorderBox flag.
-		// The structural change is twofold:
-		//   1. Rect choice: padding-box (P20.5 painter) instead of
-		//      border-box (3389efe7).
-		//   2. Layered model: multicol clip is no longer a special
-		//      flag piggybacked on table-cell semantics; multicol
-		//      and CSS Tables 3 §5.4.1 cell clipping live on
-		//      separate flags with separate rect choices.
-		//
-		// Gate retained at finalBlockSize > 0 so zero-height multicol
-		// containers (multicol-zero-height-002 — content is explicitly
-		// expected to overflow visibly) don't get clipped. Closing
-		// remaining content-overflow regressions (inline-block-and-
-		// column-span-all etc.) is the job of the line-box
-		// TallestUnbreakable floor (layoutInlineChildren), which makes
-		// the multicol grow to its real content extent so the clip stops
-		// cutting legitimate content.
-		if finalBlockSize > 0 {
-			result.Fragment.IsMulticolContainer = true
-		}
+		// Every fragment of a multicol container is one: paint reads it
+		// as Blink's painters read LayoutObject::IsMulticolContainer
+		// (layout_object.h:3438-3441 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		result.Fragment.IsMulticolContainer = true
 	}
 	// v2 Path X (Blink cla.cc:1706-1712): nested column balancing — when
 	// our outer fragmentation context is in its initial balancing pass,
