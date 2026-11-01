@@ -122,9 +122,9 @@ func (r *Renderer) acquireNinePieceImageSource(layer *PaintLayer, areaW, areaH i
 }
 
 // renderGeneratedImage rasterises a gradient (StyleGeneratedImage →
-// GradientGeneratedImage) into a w×h offscreen image.
-// NOTE for coordinator: a generic gradient-to-image helper; lane LOU-531 may
-// grow an equivalent for background tiling — reconcile into one.
+// GradientGeneratedImage) into a w×h offscreen image. Shared by border-image
+// and background tiling (paintFillLayerImage sizes it to the geometry's
+// tile, box_painter_base.cc:1420-1440 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) renderGeneratedImage(gradVal string, w, h int, style *css.Style) *image.RGBA {
 	buf := image.NewRGBA(image.Rect(0, 0, w, h))
 	origDC, origTarget := r.dc, r.target
