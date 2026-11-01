@@ -16,6 +16,12 @@ type LogicalOffset struct {
 	BlockOffset  float64
 }
 
+// Add is componentwise, as geometry.LogicalOffset's (Blink's LogicalOffset
+// operator+).
+func (o LogicalOffset) Add(b LogicalOffset) LogicalOffset {
+	return LogicalOffset{InlineOffset: o.InlineOffset + b.InlineOffset, BlockOffset: o.BlockOffset + b.BlockOffset}
+}
+
 // LogicalEdges represents four logical edges.
 // Used for margins, borders, and padding in logical coordinates.
 type LogicalEdges struct {

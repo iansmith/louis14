@@ -112,20 +112,20 @@ type Box struct {
 	// time fragmentainer behaviour. Default false on all other boxes.
 	IsColumnBox bool
 
-	// IsMulticolContainer marks this Box as a multicol container
-	// (forwarded from PhysicalFragment.IsMulticolContainer). Mirrors
-	// the structural condition that makes Blink's
-	// LayoutBox::HasNonVisibleOverflow() return true for multicol —
-	// the fragmentation context establishes an overflow clip even
-	// with computed `overflow: visible`. Consumed by the paint layer
-	// (P20.5) to apply a padding-box overflow clip mirroring Blink's
-	// default OverflowClipRect for non-scroll containers.
+	// IsMulticolContainer forwards PhysicalFragment.IsMulticolContainer
+	// (Blink's LayoutObject::IsMulticolContainer): the paint layer paints
+	// column rules for it.
 	IsMulticolContainer bool
+
+	// OverflowClipAxes forwards PhysicalFragment.GetOverflowClipAxes: the
+	// axes along which this box clips its overflow, as layout decided it.
+	// Mirrors Blink's painters reading LayoutObject::GetOverflowClipAxes
+	// (layout_object.h:2058-2069 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	OverflowClipAxes OverflowClipAxes
 
 	// IsFieldsetContainer / IsRenderedLegend forward PhysicalFragment.
 	// IsFieldsetContainer and IsRenderedLegend for the fieldset painter
-	// (legend cutout in the border) and the overflow-clip decision (a
-	// fieldset container never clips).
+	// (legend cutout in the border).
 	IsFieldsetContainer bool
 	IsRenderedLegend    bool
 
