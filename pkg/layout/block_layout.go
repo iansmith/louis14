@@ -157,7 +157,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's ClearBorderScrollbarPaddingBlockStart in
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:504-510
 	// @ a9f50e522efa).
-	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) {
+	//
+	// Blink decides clone_box_start_decorations once, from the full edges
+	// (fragmentation_utils.cc:440-442 @ a9f50e522efa), before any is
+	// cleared; shouldCloneBlockStart is that decision.
+	blockStartBox := FragmentainerBox{
+		Space:                   &bla.space,
+		BorderScrollbarPadding:  geom.BorderBoxPadding(),
+		HasClonedBoxDecorations: hasClonedBoxDecorations,
+	}
+	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(blockStartBox)
+	if !ShouldIncludeBlockStartBorderPadding(blockStartBox) {
 		geom.ClearBorderScrollbarPaddingBlockStart()
 	}
 	bla.fragmentainerBox = FragmentainerBox{
@@ -360,8 +370,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// UpdateBorderPaddingForClonedBoxDecorations (box_fragment_builder.cc:
 	// 88-99 @ a9f50e522efa).
 	fragmentsBorderPadding := declaredBlockBorderPadding
-	if ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) &&
-		bla.space.BreakToken.IsBreakInside() {
+	if shouldCloneBlockStart && bla.space.BreakToken.IsBreakInside() {
 		fragmentsBorderPadding *= float64(bla.space.BreakToken.SequenceNumber + 2)
 	}
 	isKnownToFitInFragmentainer := bla.space.HasKnownFragmentainerBlockSize() && hasExplicitBlock &&
@@ -369,8 +378,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize+fragmentsBorderPadding, bla.space.BreakToken)
 	shouldCloneBoxEndDecorations := bla.space.HasBlockFragmentation &&
 		!bla.space.IsInitialColumnBalancingPass &&
-		ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) &&
-		!isKnownToFitInFragmentainer
+		shouldCloneBlockStart && !isKnownToFitInFragmentainer
 	bla.fragmentainerBox.ShouldCloneBoxEndDecorations = shouldCloneBoxEndDecorations
 	// clearBlockEndIfExcluded clears an excluded block-end edge from geom,
 	// so it neither sizes nor paints the fragment.

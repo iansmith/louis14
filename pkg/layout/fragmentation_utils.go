@@ -151,13 +151,17 @@ func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *Logical
 // its block-start border/padding: box-decoration-break:clone, unless the
 // fragment is past the box's block end. Mirrors Blink's
 // ShouldCloneBlockStartBorderPadding (fragmentation_utils.cc:61-78 @
-// a9f50e522efa); its MonolithicOverflow clause is omitted because louis14
-// never sets BlockBreakToken.MonolithicOverflow.
-func ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
-	if !hasClonedBoxDecorations {
+// a9f50e522efa), which takes the builder; box is its louis14 stand-in (the
+// constraint space carries the previous break token).
+func ShouldCloneBlockStartBorderPadding(box FragmentainerBox) bool {
+	if !box.HasClonedBoxDecorations {
 		return false
 	}
-	return previousBreakToken == nil || !previousBreakToken.IsAtBlockEnd
+	previousBreakToken := box.Space.BreakToken
+	if previousBreakToken == nil {
+		return true
+	}
+	return !previousBreakToken.IsAtBlockEnd
 }
 
 // HasBreakOpportunityBeforeNextChild reports whether placing a child leaves
@@ -181,9 +185,8 @@ func HasBreakOpportunityBeforeNextChild(wdm WritingDirectionMode, childFragment 
 // its block-start border/padding: the first fragment does, a resumed one
 // only when cloned. Mirrors Blink fragmentation_utils.cc:522-525 @
 // a9f50e522efa.
-func ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
-	return !previousBreakToken.IsBreakInside() ||
-		ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, previousBreakToken)
+func ShouldIncludeBlockStartBorderPadding(box FragmentainerBox) bool {
+	return !box.Space.BreakToken.IsBreakInside() || ShouldCloneBlockStartBorderPadding(box)
 }
 
 // ShouldIncludeBlockEndBorderPadding reports whether this fragment carries

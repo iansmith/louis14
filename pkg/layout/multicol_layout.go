@@ -699,7 +699,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Mirrors Blink's ClearBorderScrollbarPaddingBlockStart in
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:504-510
 	// @ a9f50e522efa), as BlockLayoutAlgorithm.Layout does.
-	if !ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) {
+	if !ShouldIncludeBlockStartBorderPadding(mla.fragmentainerBuilder()) {
 		mla.geom.ClearBorderScrollbarPaddingBlockStart()
 	}
 
