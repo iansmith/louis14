@@ -865,7 +865,9 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 	if result.BreakToken != nil {
 		continuation := *n
 		continuation.breakToken = result.BreakToken
-		continuation.offset.BlockOffset = 0
+		// Resume at the block-start of the next fragmentainer, past any
+		// monolithic overflow (:3092-3106).
+		continuation.offset.BlockOffset = result.BreakToken.MonolithicOverflow
 		*fragmentedDescendants = append(*fragmentedDescendants, continuation)
 		brokeInside = true
 	}
