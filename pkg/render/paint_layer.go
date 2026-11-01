@@ -861,8 +861,17 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// (LayoutObject::GetOverflowClipAxes, layout_object.h:2058-2061 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): none for a box that does
 	// not respect overflow (a non-atomic inline, a fieldset container).
+	//
+	// The document element never clips its own overflow either: when its
+	// overflow is not visible it is the viewport-defining element, whose
+	// overflow the viewport applies, and a viewport-defining element does
+	// not respect CSS overflow (LayoutBlock::RespectsCSSOverflow,
+	// layout_block.cc:166-170; Document::ViewportDefiningElement,
+	// document.cc:4147-4180 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+	// otherwise its overflow is visible and it has no containment. The
+	// viewport's own clip is the paint target's bounds.
 	axes := box.OverflowClipAxes
-	if IsViewportDefiningBody(box) {
+	if IsViewportDefiningBody(box) || (box.LayoutNode != nil && box.LayoutNode.IsDocumentElement()) {
 		overflowX = css.OverflowVisible
 		overflowY = css.OverflowVisible
 		axes = layout.NoOverflowClip

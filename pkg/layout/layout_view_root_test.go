@@ -110,3 +110,20 @@ func TestLayoutView_AbsposInICBWithRootMargins(t *testing.T) {
 		}
 	}
 }
+
+// The ICB origin lies outside the root's margin, border and padding
+// (Chrome 152: #x at (0, 0)).
+func TestLayoutView_AbsposInICBWithRootMarginBorderPadding(t *testing.T) {
+	root := layoutRootTestHTML(t, `<!doctype html><style>html{margin:50px;border:5px solid;padding:7px}</style>`+
+		`<div id=x style="position:absolute;top:0;left:0;width:10px;height:10px"></div>`)
+	b := findBoxByID(root, "x")
+	if b == nil {
+		t.Fatal("no box for #x")
+	}
+	if b.X != 0 || b.Y != 0 {
+		t.Errorf("#x at (%v, %v), want (0, 0)", b.X, b.Y)
+	}
+	if root.X != 50 || root.Y != 50 {
+		t.Errorf("root at (%v, %v), want (50, 50)", root.X, root.Y)
+	}
+}

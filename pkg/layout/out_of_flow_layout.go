@@ -160,23 +160,24 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 		// border or padding. Its origin is the LayoutView's, outside the
 		// root's border, scrollbar and padding — the root's own
 		// candidates are offset in its content box, so the ICB origin lies
-		// at minus those edges there (louis14 places the root at the view
-		// origin).
+		// at minus those edges there — and, for an in-flow root, outside
+		// the root's margin too: the view places it at rootOffsetInView. A
+		// positioned root is placed by the IMCB math, its margin not
+		// counted here.
 		p.containingBlockSize = ToLogicalSize(PhysicalSize{Width: ctx.ViewportWidth, Height: ctx.ViewportHeight}, space.WritingDirection.WM)
 		p.containingBlockPadding = LogicalEdges{}
 		rootEdges := builder.BorderScrollbarPadding()
-		p.cbOriginInBuilder = LogicalOffset{InlineOffset: -rootEdges.InlineStart, BlockOffset: -rootEdges.BlockStart}
-		p.isAbsoluteContainer, p.isFixedContainer = true, true
-		// An in-flow root sits in the view at rootOffsetInView, so the ICB's
-		// start corner lies that far before the root's (louis14 resolves the
-		// root's candidates in its own builder). A positioned root keeps the
-		// ICB at its content box.
+		var inView LogicalOffset
 		if node := builder.layoutNode; node != nil && node.Style() != nil && !rootIsOutOfFlow(node.Style()) {
 			style, wdm := node.Style(), space.WritingDirection
-			inView := rootOffsetInView(style, wdm, p.containingBlockSize,
+			inView = rootOffsetInView(style, wdm, p.containingBlockSize,
 				paddingBoxSize.InlineSize+ComputeFragmentGeometry(style, wdm).Border.InlineSum())
-			p.cbOriginInBuilder = LogicalOffset{InlineOffset: -inView.InlineOffset, BlockOffset: -inView.BlockOffset}
 		}
+		p.cbOriginInBuilder = LogicalOffset{
+			InlineOffset: -rootEdges.InlineStart - inView.InlineOffset,
+			BlockOffset:  -rootEdges.BlockStart - inView.BlockOffset,
+		}
+		p.isAbsoluteContainer, p.isFixedContainer = true, true
 		return p
 	}
 	if node := builder.layoutNode; node != nil {
