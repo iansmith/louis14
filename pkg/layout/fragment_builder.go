@@ -461,6 +461,13 @@ func (b *BoxFragmentBuilder) SetExclusionSpace(es *ExclusionSpace) {
 	b.exclusionSpace = es
 }
 
+// GetExclusionSpace returns the float exclusion state last set. Mirrors
+// Blink's BoxFragmentBuilder::GetExclusionSpace (box_fragment_builder.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) GetExclusionSpace() *ExclusionSpace {
+	return b.exclusionSpace
+}
+
 // SetNode sets the DOM node that produced this fragment.
 func (b *BoxFragmentBuilder) SetNode(node *html.Node) {
 	b.node = node
@@ -1229,6 +1236,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 	if b.space != nil && b.space.HasBlockFragmentation {
 		result.BlockSizeForFragmentation = b.finalBlockSizeForFragmentation()
+		result.HasBlockSizeForFragmentation = true
 	}
 	if b.hasTallestUnbreakableBlockSize {
 		result.TallestUnbreakableBlockSize = b.tallestUnbreakableBlockSize

@@ -72,15 +72,34 @@ func (e Exclusion) BlockEnd() float64 {
 // The space is treated as immutable — Add returns a new ExclusionSpace.
 type ExclusionSpace struct {
 	exclusions []Exclusion
+
+	// hasBreakBeforeFloat records, per side, a float that needs to start
+	// in the next fragmentainer (pushed there whole); hasBreakInsideFloat
+	// one added here that resumes in the next fragmentainer. Indexed by
+	// ExclusionSide. Mirrors Blink's has_break_before_{left,right}_float_
+	// and has_break_inside_{left,right}_float_ (exclusion_space.h:440-450
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), kept per logical side
+	// as louis14's exclusions are.
+	hasBreakBeforeFloat [2]bool
+	hasBreakInsideFloat [2]bool
+}
+
+// clone returns a copy of es (an empty space for nil) whose exclusions can
+// be appended to without aliasing es.
+func (es *ExclusionSpace) clone(extraCapacity int) *ExclusionSpace {
+	newES := &ExclusionSpace{}
+	if es != nil {
+		newES.exclusions = make([]Exclusion, len(es.exclusions), len(es.exclusions)+extraCapacity)
+		copy(newES.exclusions, es.exclusions)
+		newES.hasBreakBeforeFloat = es.hasBreakBeforeFloat
+		newES.hasBreakInsideFloat = es.hasBreakInsideFloat
+	}
+	return newES
 }
 
 // Add returns a new ExclusionSpace with the given exclusion appended.
 func (es *ExclusionSpace) Add(e Exclusion) *ExclusionSpace {
-	newES := &ExclusionSpace{}
-	if es != nil {
-		newES.exclusions = make([]Exclusion, len(es.exclusions), len(es.exclusions)+1)
-		copy(newES.exclusions, es.exclusions)
-	}
+	newES := es.clone(1)
 	newES.exclusions = append(newES.exclusions, e)
 	return newES
 }
@@ -273,12 +292,80 @@ func (es *ExclusionSpace) OffsetBlockPosition(delta float64) *ExclusionSpace {
 	if es == nil || delta == 0 {
 		return es
 	}
-	newES := &ExclusionSpace{
-		exclusions: make([]Exclusion, len(es.exclusions)),
-	}
-	for i, e := range es.exclusions {
-		e.BlockOffset -= delta
-		newES.exclusions[i] = e
+	newES := es.clone(0)
+	for i := range newES.exclusions {
+		newES.exclusions[i].BlockOffset -= delta
 	}
 	return newES
+}
+
+// SetHasBreakBeforeFloat returns a copy recording that a float on side
+// needs to start in the next fragmentainer: no later float may be placed in
+// this one (a float cannot start above a preceding float), and clearance
+// past it is clearance past the fragmentainer. Mirrors Blink's
+// ExclusionSpace::SetHasBreakBeforeFloat (exclusion_space.h:135-146 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) SetHasBreakBeforeFloat(side ExclusionSide) *ExclusionSpace {
+	newES := es.clone(0)
+	newES.hasBreakBeforeFloat[side] = true
+	return newES
+}
+
+// SetHasBreakInsideFloat returns a copy recording that a float on side broke
+// inside and takes up layout space in the next fragmentainer too, so
+// content that clears it cannot fit here. Mirrors Blink's
+// ExclusionSpace::SetHasBreakInsideFloat (exclusion_space.h:148-159 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) SetHasBreakInsideFloat(side ExclusionSide) *ExclusionSpace {
+	newES := es.clone(0)
+	newES.hasBreakInsideFloat[side] = true
+	return newES
+}
+
+// NeedsClearancePastFragmentainer reports whether clearType clears past a
+// float that broke before or inside, i.e. past the fragmentainer end.
+// clear:left/right are physical; they map to the side float:left/right
+// takes in wdm. Mirrors Blink's
+// ExclusionSpace::NeedsClearancePastFragmentainer (exclusion_space.h:
+// 161-181 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) NeedsClearancePastFragmentainer(clearType css.ClearType, wdm WritingDirectionMode) bool {
+	if es == nil {
+		return false
+	}
+	brokeOn := func(physical css.FloatType) bool {
+		side := PhysicalFloatToExclusionSide(physical, wdm)
+		return es.hasBreakInsideFloat[side] || es.hasBreakBeforeFloat[side]
+	}
+	switch clearType {
+	case css.ClearLeft:
+		return brokeOn(css.FloatLeft)
+	case css.ClearRight:
+		return brokeOn(css.FloatRight)
+	case css.ClearBoth:
+		return brokeOn(css.FloatLeft) || brokeOn(css.FloatRight)
+	}
+	return false
+}
+
+// NeedsBreakBeforeFloat reports whether a float with clearType must break
+// before: floats cannot start above any preceding float, so once a float
+// has been pushed to the next fragmentainer every later one follows; so
+// does one that clears a float continuing there. Mirrors Blink's
+// ExclusionSpace::NeedsBreakBeforeFloat (exclusion_space.h:183-189 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) NeedsBreakBeforeFloat(clearType css.ClearType, wdm WritingDirectionMode) bool {
+	if es == nil {
+		return false
+	}
+	if es.hasBreakBeforeFloat[ExclusionInlineStart] || es.hasBreakBeforeFloat[ExclusionInlineEnd] {
+		return true
+	}
+	return es.NeedsClearancePastFragmentainer(clearType, wdm)
+}
+
+// HasFragmentainerBreak reports whether any float broke before or inside.
+// Mirrors Blink's ExclusionSpace::HasFragmentainerBreak
+// (exclusion_space.h:191-193 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) HasFragmentainerBreak() bool {
+	return es != nil && (es.hasBreakBeforeFloat != [2]bool{} || es.hasBreakInsideFloat != [2]bool{})
 }
