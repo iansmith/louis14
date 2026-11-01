@@ -276,9 +276,7 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 // (column_layout_algorithm.cc:311-318 @ a9f50e522efa). The measurement pass is
 // excluded because it has no committed fragmentainer geometry to cap against.
 func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
-	return mla.space.HasBlockFragmentation &&
-		mla.space.FragmentainerBlockSize != Indefinite &&
-		!mla.space.IsInitialColumnBalancingPass
+	return mla.space.HasKnownFragmentainerBlockSize()
 }
 
 // fragmentainerBuilder is this multicol's FragmentainerBox: louis14 clones
@@ -643,10 +641,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.remainingContentBlockSize = Indefinite
 	if mla.hasExplicitBlock {
 		mla.remainingContentBlockSize = mla.explicitBlockSize
-		if mla.space.BreakToken != nil &&
-			mla.space.HasBlockFragmentation &&
-			mla.space.FragmentainerBlockSize != Indefinite &&
-			!mla.space.IsInitialColumnBalancingPass {
+		if mla.space.BreakToken != nil && mla.space.HasKnownFragmentainerBlockSize() {
 			mla.remainingContentBlockSize -= mla.previouslyConsumedContentBlockSize()
 			if mla.remainingContentBlockSize < 0 {
 				mla.remainingContentBlockSize = 0
