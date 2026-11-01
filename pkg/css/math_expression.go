@@ -53,9 +53,8 @@ func IsMathFunction(val string) bool {
 }
 
 // IsMathFunctionWithPercent reports whether val is a math function whose
-// inner expression contains a percentage term. Mirrors IsCalcWithPercent's
-// role for the calc()-only path: callers use this to decide whether to
-// thread the layout-time percent base into evaluation.
+// inner expression contains a percentage term: callers use this to decide
+// whether to thread the layout-time percent base into evaluation.
 func IsMathFunctionWithPercent(val string) bool {
 	if !IsMathFunction(val) {
 		return false
@@ -92,20 +91,8 @@ func EvalMathFunction(val string, ctx calcContext) (float64, bool) {
 	return 0, false
 }
 
-// EvalMathFunctionWithPercent is a convenience wrapper around EvalMathFunction
-// that constructs a calcContext from (fontSize, percentBase) — the same shape
-// fragment_geometry's resolvers already use for calc-with-percent. Mirrors
-// EvalCalcWithPercent for the broader math-function family.
-func EvalMathFunctionWithPercent(val string, fontSize, percentBase float64) (float64, bool) {
-	return EvalMathFunction(val, calcContext{
-		fontSize:    fontSize,
-		percentBase: percentBase,
-		chScale:     0.5,
-	})
-}
-
 // parseMathArgCtx evaluates a single comma-separated argument to a math
-// function. Unlike the legacy parseMathArg (style.go), this routes through
+// function. It routes through
 // parseLengthFullWithCh — which means percentages, nested math functions,
 // and the full set of length units all resolve against the supplied ctx.
 //

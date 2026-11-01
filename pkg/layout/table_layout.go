@@ -2212,22 +2212,21 @@ func (tla *TableLayoutAlgorithm) addCaptionResult(builder *BoxFragmentBuilder, w
 // Per CSS Writing Modes 3 §7.2, the first value maps to the inline dimension and
 // the second to the block dimension across all writing modes.
 //
-// We resolve em/rem units using the table's computed font-size rather than
-// relying on GetBorderSpacing() which uses a default 16px.
+// Lengths resolve through the table style's conversion data (its font for
+// em / ch / ex, etc.).
 func (tla *TableLayoutAlgorithm) logicalBorderSpacing() (inlineSpacing, blockSpacing float64) {
 	val, ok := tla.style.Get("border-spacing")
 	if !ok {
 		return 0, 0
 	}
-	fontSize := tla.style.GetFontSize()
 	parts := strings.Fields(val)
 	if len(parts) >= 1 {
-		if v, ok := css.ParseLengthWithFontSize(parts[0], fontSize); ok {
+		if v, ok := tla.style.GetLengthForVal(parts[0]); ok {
 			inlineSpacing = v
 		}
 	}
 	if len(parts) >= 2 {
-		if v, ok := css.ParseLengthWithFontSize(parts[1], fontSize); ok {
+		if v, ok := tla.style.GetLengthForVal(parts[1]); ok {
 			blockSpacing = v
 		}
 	} else {
@@ -2352,7 +2351,7 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 	if info.style == css.BorderStyleNone || info.style == "hidden" {
 		info.width = 0
 	} else if wv, ok := s.Get(widthProp); ok {
-		if v, ok := css.ParseLengthWithFontSize(wv, s.GetFontSize()); ok {
+		if v, ok := s.GetLengthForVal(wv); ok {
 			// Per CSS Tables 3 + Blink's collapsed-border model
 			// (table_borders.h BorderWidth → LayoutUnit(int
 			// BorderTopWidth()) at Chromium SHA

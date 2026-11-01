@@ -4115,8 +4115,11 @@ func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (fl
 // fontSizeConversionData returns the context s's font-size resolves against:
 // the parent's font for em / ex / ch / ic / cap and percentages, the parent's
 // line-height for lh, the parent's root font-size for rem, and s's viewport.
-// With no parent (the root element) it is the initial font with no root, so
-// the root's own rem is the initial size. Mirrors
+// With no parent (the root element) the parent is the initial style, whose
+// font s's font selector builds, and there is no root, so the root's own rem
+// is the initial size — StyleResolver sets InitialStyleForElement() as the
+// parent style when there is none (core/css/resolver/style_resolver.cc:
+// 1995-2000 @ 5992657f556bcd9d207a4aca187488462f027cab). Mirrors
 // StyleResolverState::FontSizeConversionData →
 // UnzoomedLengthConversionData(ParentStyle()->GetFontSizeStyle())
 // (core/css/resolver/style_resolver_state.cc:264-266, :242-262) and the root
@@ -4126,13 +4129,7 @@ func computedLineHeightPx(s *Style, v string, isMath bool, parentLh float64) (fl
 // 5992657f556bcd9d207a4aca187488462f027cab.
 func fontSizeConversionData(s, parent *Style) calcContext {
 	if parent == nil {
-		return calcContext{
-			fontSize:       initialFontSize,
-			percentBase:    initialFontSize,
-			viewportWidth:  s.ViewportWidth,
-			viewportHeight: s.ViewportHeight,
-			chScale:        0.5,
-		}
+		parent = initialStyleForElement(s.fontSelector)
 	}
 	ctx := parent.cssToLengthConversionData()
 	ctx.lhSize = parent.GetLineHeight()

@@ -1233,7 +1233,7 @@ func (bla *BlockLayoutAlgorithm) placeInlineFloat(
 	bfcBlockOrigin, bfcInlineOrigin float64,
 	context *InlineChildLayoutContext,
 ) (*ExclusionSpace, bool) {
-	es, positioned, breakToken, hasForcedBreak := bla.addPositionedFloat(uf, es, bfcBlockOrigin, bfcInlineOrigin)
+	es, positioned, breakToken := bla.addPositionedFloat(uf, es, bfcBlockOrigin, bfcInlineOrigin)
 	if positioned.BreakBeforeToken == nil {
 		// A float paints inside the opacity group of its nearest enclosing
 		// group inline (Blink: LayoutObject::PaintingLayer returns the
@@ -1243,7 +1243,6 @@ func (bla *BlockLayoutAlgorithm) placeInlineFloat(
 	if breakToken != nil {
 		context.PropagateParallelFlowBreakToken(breakToken)
 	}
-	context.hasForcedBreak = context.hasForcedBreak || hasForcedBreak
 	return es, positioned.BreakBeforeToken == nil
 }
 

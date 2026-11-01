@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"os"
 	"testing"
 
 	"louis14/pkg/css"
@@ -69,7 +70,8 @@ func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	// 2048 → 18 + 4, so 5 glyphs end 10px past 5em.
 	const height = 22.0
 	fontID := r.fontIDForLayer(layer)
-	r.drawVerticalTextDecoration(layer, box.Text, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
+	advances := uprightVerticalAdvances(layer, box.Text, r.fontPathForLayer(layer))
+	r.drawVerticalTextDecoration(layer, box.Text, advances, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
 
 	rowHasRed := func(y int) bool {
 		for x := 0; x < target.Bounds().Dx(); x++ {
@@ -85,5 +87,34 @@ func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	}
 	if rowHasRed(end + 2) {
 		t.Errorf("line-through at y=%d, past the run's 5 x Height extent (%d); it should end there, not at 5em (%d)", end+2, end, y0+5*int(size))
+	}
+}
+
+// TestUprightVerticalAdvance_PaintSumMatchesLayout (LOU-466 item 5): paint
+// and layout read the same upright advances and round the same way, as
+// Blink paints the glyph advances of the ShapeResult layout measured
+// (ShapeResult::ComputeGlyphPositions stores each glyph's unrounded advance,
+// platform/fonts/shaping/shape_result.cc:1715-1764; layout snaps the run
+// width once, ShapeResult::SnappedWidth) — all @
+// 5992657f556bcd9d207a4aca187488462f027cab. ChTestShortZero's "0" has a
+// 0.25em vmtx advance, 20.1px at 80.4px, off the 1/64px grid: five of them
+// paint 100.5px, which layout's once-snapped advance also is. Snapping each
+// rune's advance up to 1/64px paints 5 x 20.109375 = 100.546875.
+func TestUprightVerticalAdvance_PaintSumMatchesLayout(t *testing.T) {
+	const size = 80.4
+	fontPath, err := text.NewFontRegistry().RegisterFontFace("LOU466-PaintSum", "ChTestShortZero.woff", "", "normal", "normal",
+		func(url string) ([]byte, error) {
+			return os.ReadFile("../visualtest/testdata/wpt-css3/css-values/resources/" + url)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := &PaintLayer{FontSize: size, IsVerticalText: true}
+	inline, _ := text.MeasureTextVerticalFromFont("00000", size, fontPath)
+	if inline.Float64() != 100.5 {
+		t.Fatalf("fixture: layout advance = %v, want 100.5 (5 x 0.25em at 80.4px)", inline.Float64())
+	}
+	if got := measureUprightVerticalSegmentAdvance("00000", layer, fontPath, true); got != inline.Float64() {
+		t.Errorf("paint advance of 5 upright \"0\"s = %v, want layout's %v", got, inline.Float64())
 	}
 }
