@@ -638,7 +638,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBaseline = lastBaselineOff
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
-		firstNonEmptyChild = false // inline content is "content"
+		// A line box is content: it resolves this block's BFC block-offset
+		// (an inline formatting context that produced none does not).
+		if slices.ContainsFunc(bla.containerBuilder.children, func(c logicalChildLink) bool {
+			return c.fragment != nil && c.fragment.Type == FragmentLineBox
+		}) {
+			firstNonEmptyChild = false
+		}
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -646,31 +652,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// (block_layout_algorithm.cc:2983 @ a9f50e522efa).
 		prevMarginStrut = MarginStrut{}
 
-		// CSS Lists §3 / Blink PositionOrPropagateListMarker: a list item with
-		// inline content places its OUTSIDE marker against the first line box's
-		// baseline. The first line box sits at content-relative block offset 0
-		// and its baseline is firstLineAscent. The marker fragment is added as
-		// a content-relative child of the list-item builder, with a negative
-		// inline offset (InlineMarginsForOutside) placing it left of the
-		// content-box start.
-		if firstLineAscent > 0 {
-			if contentPush := bla.placeListMarkerAtFirstLine(firstLineAscent, 0, 0, inlineBreakToken); contentPush > 0 {
-				blockCursor += contentPush
-				firstLineAscent += contentPush
-				if hasLastChildBaseline {
-					lastChildBlockOffset += contentPush
-				}
-			}
-		}
-
 		// Inline fragmentation: if the inline layout stopped mid-content due to
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			// The per-break-point line shortage: positive when the line
-			// ran out of space, 0 for a predetermined early break (which
-			// propagates none).
-			shortage := inlineBreakToken.InlineShortage
 			// A line break breaks this block inside, as an in-flow child
 			// break (Blink AddBreakBeforeChild on the inline node,
 			// box_fragment_builder.cc:121-143 @ a9f50e522efa); the fragment
@@ -699,9 +684,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineBreakToken.ChildBreakTokens = slices.Concat(inlineContext.ParallelFlowBreakTokens(), inlineBreakToken.ChildBreakTokens)
 			result := bla.containerBuilder.Build()
 			result.BreakToken = inlineBreakToken
-			// Min-merge with a shortage an earlier, moved-past line already
-			// propagated (BoxFragmentBuilder::PropagateSpaceShortage).
-			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
 			bla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(bla.ctx, result)
 			result.PropagatedOOFCandidates = bla.containerBuilder.outOfFlowCandidates
 			return result
@@ -770,7 +752,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				prevES := bla.containerBuilder.GetExclusionSpace()
 				var inlineContext InlineChildLayoutContext
-				runFirstChild := len(bla.containerBuilder.children)
 				end, es, ascent, lastBaselineOff, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, prevES, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
 					blockStart:                lineTop,
 					hasBreakOpportunityBefore: hasBreakOpportunityBeforeNextChild,
@@ -796,11 +777,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						firstChildBaseline = ascent
 						firstChildBlockOffset = lineTop
 						hasFirstChildBaseline = true
-						if contentPush := bla.placeListMarkerAtFirstLine(ascent, lineTop, runFirstChild, lineBreakToken); contentPush > 0 {
-							blockCursor += contentPush
-							firstChildBlockOffset += contentPush
-							lastBaselineOff += contentPush
-						}
 					}
 					if lastBaselineOff > 0 {
 						lastChildBaseline = lastBaselineOff
@@ -811,7 +787,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if lineBreakToken != nil {
 					lineBreakToken.Node = child
 					bla.containerBuilder.AddBreakToken(lineBreakToken, false)
-					bla.containerBuilder.PropagateSpaceShortage(lineBreakToken.InlineShortage)
 					if lineBreakToken.IsForcedBreak {
 						bla.containerBuilder.SetHasForcedBreak()
 					}
@@ -1354,34 +1329,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			prevMarginStrut = collapsedWithChild(childResult.PropagatedTopMargin)
 
 			// Step 3: Check if margins collapse through this element.
-			// CSS 2.1 §8.3.1: An element's margins collapse through it if
-			// it has no height, no border, no padding, does not establish
-			// a new block formatting context, does not contain a line box,
-			// and all of its in-flow children's margins (if any) are collapsed.
-			// We approximate this by checking that the element holds no
-			// fragment other than self-collapsing ones. A self-collapsing
-			// child is still placed, broken before and added like any
-			// in-flow child; it only passes the margin strut through
+			// CSS 2.1 §8.3.1: margins collapse through a self-collapsing
+			// child, which its own algorithm reports (LayoutResult::
+			// IsSelfCollapsing). It is still placed, broken before and added
+			// like any in-flow child; it only passes the margin strut through
 			// (Blink FinishInflow / ComputeInflowPosition,
-			// block_layout_algorithm.cc:2622-2653, :2732-2736, :2894-2898 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			// block_layout_algorithm.cc:2388, :2622-2653, :2732-2736,
+			// :2894-2898 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-			// A resumed child resolves its BFC block-offset at its start, so
-			// it never self-collapses (Blink is_resuming_,
-			// block_layout_algorithm.cc:888-898 @ a9f50e522efa): the 0px
-			// fragment of a spanner parent after its spanner is kept.
-			isSelfCollapsing := childBlockSize == 0 &&
-				!entry.Token.IsBreakInside() &&
-				childResult.BreakToken == nil &&
-				childResult.BlockSizeForFragmentation == 0 &&
-				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
-				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
-				!isChildNewFC &&
-				hasOnlySelfCollapsingChildren(childResult.Fragment)
+			isSelfCollapsing := childResult.IsSelfCollapsing
 			if isSelfCollapsing {
-				childResult.Fragment.IsSelfCollapsing = true
 				// The margins collapsing through the child's content join
 				// the strut now, before the child is positioned and broken
 				// before: Blink passes the strut into the child and positions
@@ -1997,6 +1955,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	result := bla.containerBuilder.Build()
 
+	// Self-collapsing: this block's BFC block-offset is still unresolved at
+	// the end of layout — a new formatting context or a fragment resumed
+	// after a break inside resolves it at the start (a break-before token
+	// only says where the box starts), a non-self-collapsing child, a line box or
+	// clearance when placed, a non-zero border-box block-size (block-start
+	// or block-end border/padding included) or a column spanner at the end.
+	// Mirrors BlockLayoutAlgorithm::FinishLayout → SetIsSelfCollapsing
+	// (block_layout_algorithm.cc:1406-1420, :1455-1462 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A replaced element is not
+	// laid out by Blink's block algorithm and never self-collapses.
+	result.IsSelfCollapsing = !bla.space.IsNewFormattingContext && !bla.space.BreakToken.IsBreakInside() &&
+		!isReplaced && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
+		!bla.containerBuilder.FoundColumnSpanner()
+
 	// The outgoing break token, built from the builder's break state
 	// (Blink BoxFragmentBuilder::ToBoxFragment → BlockBreakToken::Create,
 	// box_fragment_builder.cc:707-711 @ a9f50e522efa), when a child broke
@@ -2148,9 +2120,7 @@ func (bla *BlockLayoutAlgorithm) adoptBlockInInlineResult(wdm WritingDirectionMo
 	}
 	var offset LogicalOffset
 	for _, open := range bii.openInlineStack {
-		rel := ComputeRelativeOffsetForInline(wdm, bla.containerBuilder.ChildAvailableSize(), open.Style)
-		offset.InlineOffset += rel.InlineOffset
-		offset.BlockOffset += rel.BlockOffset
+		offset = offset.Add(ComputeRelativeOffsetForInline(wdm, bla.containerBuilder.ChildAvailableSize(), open.Style))
 	}
 	return offset
 }
@@ -2208,18 +2178,17 @@ func (bla *BlockLayoutAlgorithm) handleFloat(
 }
 
 // placeListMarkerAtFirstLine places the unpositioned outside list marker,
-// if any, against the first line box, at firstLineTop with ascent
-// firstLineAscent. When the marker's ascent is taller than the line's (an
-// image marker on a text line) the content goes down instead: the line
-// boxes from child index firstLineChild on move down by the returned push,
-// as does a break token taken before it (its consumed block-size and
-// shortage); the caller grows its content and baselines by it. LOU-337 /
-// css-pseudo marker-content-012. Mirrors BlockLayoutAlgorithm::
+// if any, against the first line box, whose top is at firstLineTop and whose
+// ascent is firstLineAscent, and returns by how much the line must go down:
+// when the marker's ascent is taller than the line's (an image marker on a
+// text line) the content is pushed instead of the marker. The inline layout
+// adds the push to the first line's offset, and so to every later line's.
+// LOU-337 / css-pseudo marker-content-012. Mirrors BlockLayoutAlgorithm::
 // PositionOrPropagateListMarker applying UnpositionedListMarker::AddToBox's
 // content adjust to the child's offset (block_layout_algorithm.cc:
-// 2023-2027, unpositioned_list_marker.cc:81-123 @
+// 2720-2724, :3878-3920; unpositioned_list_marker.cc:81-123 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, firstLineTop float64, firstLineChild int, breakToken *BlockBreakToken) float64 {
+func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, firstLineTop float64) float64 {
 	marker := bla.containerBuilder.GetUnpositionedListMarker()
 	if !marker.IsValid() {
 		return 0
@@ -2230,13 +2199,6 @@ func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, fir
 	}
 	contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, firstLineTop, bla.containerBuilder)
 	bla.containerBuilder.ClearUnpositionedListMarker()
-	if contentPush > 0 {
-		bla.containerBuilder.ShiftLineBoxChildrenBlockOffset(firstLineChild, contentPush)
-		if breakToken != nil {
-			breakToken.ConsumedBlockSize = breakToken.ConsumedBlockSize.Add(layoutunit.FromFloat64Round(contentPush))
-			breakToken.InlineShortage += contentPush
-		}
-	}
 	return contentPush
 }
 
@@ -2337,9 +2299,24 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
 }
 
-// layoutElement dispatches to the appropriate layout algorithm based on
-// the element's display type.
+// layoutElement lays node out in space with the layout algorithm for its
+// display type and records the result on the node. Mirrors BlockNode::Layout
+// (block_node.cc:405-666) → DetermineAlgorithmAndRun, then FinishLayout's
+// StoreResultInLayoutBox (:837-875, :916-937 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A box without style or with
+// display:none generates no fragment and stores nothing.
 func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
+	result := determineAlgorithmAndRun(ctx, node, space)
+	if style := node.Style(); style != nil && style.GetDisplay() != css.DisplayNone {
+		StoreResultInLayoutBox(ctx, node, result, space.BreakToken)
+	}
+	return result
+}
+
+// determineAlgorithmAndRun dispatches to the layout algorithm for the
+// element's display type. Mirrors DetermineAlgorithmAndRun
+// (block_node.cc:156-188 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func determineAlgorithmAndRun(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
 	style := node.Style()
 	if style == nil {
 		return emptyResult(space.WritingDirection)
@@ -2527,18 +2504,6 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	}
 
 	return false
-}
-
-// hasOnlySelfCollapsingChildren reports whether every child fragment of f
-// is self-collapsing (vacuously true for none): margins collapse through f's
-// content (CSS 2.1 §8.3.1).
-func hasOnlySelfCollapsingChildren(f *PhysicalFragment) bool {
-	for _, ch := range f.Children {
-		if !ch.Fragment.IsSelfCollapsing {
-			return false
-		}
-	}
-	return true
 }
 
 // isColumnSpannerChild reports whether child is a column spanner laid out by

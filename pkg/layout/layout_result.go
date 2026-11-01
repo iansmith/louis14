@@ -13,6 +13,14 @@ import (
 //
 // Ported from Blink's LayoutResult (layout_result.h).
 type LayoutResult struct {
+	// IsSelfCollapsing: the block's BFC block-offset stayed unresolved, so
+	// its parent collapses margins through it (zero block-size, no
+	// block-start/-end border or padding, no content that resolves it).
+	// Set by the block's own algorithm. Mirrors Blink's
+	// LayoutResult::IsSelfCollapsing (layout_result.h:429 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsSelfCollapsing bool
+
 	// Fragment is the physical fragment produced by layout.
 	// Contains the box's physical size and positioned children.
 	Fragment *PhysicalFragment
@@ -208,13 +216,11 @@ type LayoutResult struct {
 // Blink's names with the owning class as prefix (LayoutResult::kSuccess →
 // LayoutResultSuccess), as InlineItem::Type values are InlineItem*.
 //
-// louis14 produces only LayoutResultSuccess today. Blink's sole producer of
-// LayoutResultOutOfFragmentainerSpace is InlineLayoutAlgorithm aborting a
-// line whose <br clear> needs clearance past the fragmentainer
-// (inline_layout_algorithm.cc:1501-1503, AddAnyClearanceAfterLine
-// :1058-1061 @ a9f50e522efa); louis14 has no
-// ExclusionSpace::NeedsClearancePastFragmentainer and does not route line
-// boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak is
+// louis14 produces LayoutResultSuccess and, like Blink's sole producer,
+// LayoutResultOutOfFragmentainerSpace for a line whose <br clear> needs
+// clearance past the fragmentainer (inline_layout_algorithm.cc:1501-1503,
+// AddAnyClearanceAfterLine :1058-1061 @ a9f50e522efa), as a per-line value
+// of addAnyClearanceAfterLine. LayoutResultNeedsEarlierBreak is
 // never returned: where Blink aborts with it and the same algorithm's
 // HandleNonsuccessfulLayoutResult relays out (block_layout_algorithm.cc:
 // 617-626), louis14's BlockLayoutAlgorithm calls relayoutAndBreakEarlier
@@ -598,28 +604,12 @@ type PhysicalFragment struct {
 	// normal overflow semantics apply.
 	ClipContentToBorderBox bool
 
-	// IsSelfCollapsing marks a block fragment whose margins its parent
-	// collapsed through: zero block-size, no block-start/-end border or
-	// padding, no in-flow content. Mirrors Blink's
-	// LayoutResult::IsSelfCollapsing (layout_result.h:429 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which the child's own
-	// algorithm sets when its BFC block-offset stays unresolved; louis14
-	// decides it in the parent (BlockLayoutAlgorithm.Layout), so it lives on
-	// the fragment, where a grandparent can see that a child holds only
-	// self-collapsing fragments.
-	IsSelfCollapsing bool
-
-	// IsMulticolContainer marks this fragment as a multicol container
-	// (CSS Multicol L1 §2). Mirrors the structural condition that makes
-	// Blink's LayoutBox::HasNonVisibleOverflow() return true for
-	// multicol — the fragmentation context establishes an overflow clip
-	// even when the computed `overflow` is `visible`. Consumed by the
-	// paint layer (P20.5) to set up an overflow clip with rect =
-	// padding-box (Blink LayoutBox::OverflowClipRect default for
-	// non-scroll-container: border-box contracted by border outsets).
-	// Replaces the ad-hoc 3389efe7 mechanism that repurposed
-	// ClipContentToBorderBox for multicol; that flag now retains its
-	// CSS-Tables-3 §5.4.1 semantics only.
+	// IsMulticolContainer marks a fragment of a multicol container
+	// (CSS Multicol L1 §2), set by MulticolLayoutAlgorithm. Mirrors
+	// LayoutObject::IsMulticolContainer (layout_object.h:3438-3441 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): structural, decided by
+	// layout (a fieldset's columns go to its content box, an <img>
+	// fallback never has them), not by the column properties.
 	IsMulticolContainer bool
 
 	// IsFieldsetContainer marks the fragment of a fieldset container: its

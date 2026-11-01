@@ -870,21 +870,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// clip). Mirrors Blink's `Document::ViewportDefiningElement()` query
 	// consumed by `ViewPainter::PaintRootElementGroup` at chromium
 	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// Otherwise the box clips along the axes layout decided
+	// (LayoutObject::GetOverflowClipAxes, layout_object.h:2058-2061 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): none for a box that does
+	// not respect overflow (a non-atomic inline, a fieldset container).
+	axes := box.OverflowClipAxes
 	if IsViewportDefiningBody(box) {
 		overflowX = css.OverflowVisible
 		overflowY = css.OverflowVisible
+		axes = layout.NoOverflowClip
 	}
-	hasPaintContain := s.ShouldApplyPaintContainment()
-	isClippedAxis := func(o css.OverflowType) bool {
-		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
-	}
-	clipX := isClippedAxis(overflowX) || hasPaintContain
-	clipY := isClippedAxis(overflowY) || hasPaintContain
-	// A fieldset container does not respect CSS overflow (see
-	// hasOverflowClipping); its anonymous content box carries the clip.
-	if box.IsFieldsetContainer {
-		clipX, clipY = false, false
-	}
+	clipX := axes&layout.OverflowClipX != 0
+	clipY := axes&layout.OverflowClipY != 0
 
 	// CSS Tables 3 §5.4.1: rowspan cells whose span overlaps a
 	// visibility:collapse row must clip content to their border-box,
@@ -970,6 +968,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		applyMargin := false
 		marginBox := css.OverflowClipMarginPaddingBox
 		var marginLength float64
+		hasPaintContain := s.ShouldApplyPaintContainment()
 		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain || isSVGRootNode) {
 			if m, ok := s.GetOverflowClipMargin(); ok {
 				applyMargin = true
@@ -1629,23 +1628,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.IsBackdropRoot = true
 	}
 
-	// Column rules for multicol containers.
-	// Guards:
-	//   - !IsColumnBox: per-column fragmentainers are tagged BoxTypeColumn
-	//     and should never paint rules. Mirrors Blink, where only the multicol
-	//     container's fragment carries GapGeometry (PaintGapDecorations),
-	//     never kColumnBox fragmentainers.
-	//   - Text == "": text fragments inherit Style from their parent element
-	//     (inline_layout.go:1639 r.Item.Style), which for direct text
-	//     children of a multicol container carries column-count > 0; without
-	//     this guard each text run would paint its parent's rules at the
-	//     text-run box origin, producing phantom rules inside columns
-	//     (multicol-rule-solid-000.xht and siblings).
-	//   - AllowsColumns: an <img> (alt-text fallback) never becomes a
-	//     multicol container (layout.AllowsColumns).
-	if !box.IsColumnBox && box.Text == "" && !box.IsFieldsetContainer &&
-		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) &&
-		(box.Node == nil || layout.AllowsColumns(box.Node)) {
+	// Column rules for multicol containers: layout decides which boxes are
+	// (IsMulticolContainer) — not column boxes, not text runs carrying
+	// their parent's column style, not an <img> fallback, not a fieldset
+	// whose columns its content box takes.
+	if box.IsMulticolContainer {
 		layer.IsMulticol = true
 		layer.ColumnRuleWidth = clampLineWidth(s.GetColumnRuleWidth())
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
@@ -2220,16 +2207,10 @@ func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4
 		// Overflow 3 §3.3 keeps the other axis visible when paired with
 		// `visible`), extend the unclipped axis to a large range so the
 		// rectangle effectively clips only the active axis. Mirrors the
-		// large-extent encoding in newPaintLayer (paint_layer.go:572-579).
-		ancStyle := ancestor.Style
-		overflowX := ancStyle.GetOverflowX()
-		overflowY := ancStyle.GetOverflowY()
-		clipAxisActive := func(o css.OverflowType) bool {
-			return o == css.OverflowHidden || o == css.OverflowScroll ||
-				o == css.OverflowAuto || o == css.OverflowClip
-		}
-		axisClipX := clipAxisActive(overflowX) || ancStyle.ShouldApplyPaintContainment()
-		axisClipY := clipAxisActive(overflowY) || ancStyle.ShouldApplyPaintContainment()
+		// large-extent encoding in newPaintLayer. The axes are layout's
+		// (LayoutObject::GetOverflowClipAxes).
+		axisClipX := ancestor.OverflowClipAxes&layout.OverflowClipX != 0
+		axisClipY := ancestor.OverflowClipAxes&layout.OverflowClipY != 0
 		const largeExtent = 1e7
 		if !axisClipX {
 			clipX = -largeExtent / 2

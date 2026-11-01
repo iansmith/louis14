@@ -33,6 +33,10 @@ import (
 //   - The downstream paint-tree type is Box (types.go); the Box pointer
 //     on this struct is the layout-tree → paint-tree link.
 type LayoutInputNode struct {
+	// layoutResults are the results of the box's last layout, one per
+	// fragment (LayoutBox::layout_results_; layout_box.go).
+	layoutResults []*LayoutResult
+
 	// DOMNode is the underlying DOM node, or nil for anonymous boxes.
 	DOMNode *html.Node
 

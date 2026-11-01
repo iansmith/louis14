@@ -1488,25 +1488,6 @@ func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, d
 	}
 }
 
-// ShiftLineBoxChildrenBlockOffset adds delta to the block offset of every
-// line-box child already added to the builder from index fromChild on (the
-// run of lines that holds the first line). This is the INLINE-content
-// analogue of ShiftChildBlockOffset: a list item whose own content is inline
-// has no single content child to re-offset, so when an OUTSIDE marker's ascent
-// is taller than the first line's, the whole inline formatting context (all of
-// its line boxes) is pushed down by the content-push delta. Floats and the
-// marker box are FragmentBox children and keep their position — only
-// FragmentLineBox children move. Mirrors Blink's content-adjust being applied
-// to the inline content's block offset in
-// BlockLayoutAlgorithm::PositionOrPropagateListMarker.
-func (b *BoxFragmentBuilder) ShiftLineBoxChildrenBlockOffset(fromChild int, delta float64) {
-	for i := fromChild; i < len(b.children); i++ {
-		if b.children[i].fragment != nil && b.children[i].fragment.Type == FragmentLineBox {
-			b.children[i].offset.BlockOffset += delta
-		}
-	}
-}
-
 // SetHasColumnSpanner records whether a column spanner was found inside this
 // box. Mirrors Blink's FragmentBuilder::SetHasColumnSpanner
 // (fragment_builder.h:435-437 @ a9f50e522efa).
@@ -1719,8 +1700,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 // BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 builds the outgoing
 // break token after Build, so the algorithms call this once result carries
-// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart;
-// IsFragmentainerBoxType is a column box type here (louis14 has no pages).
+// it. IsFragmentainerBoxType is a column box type here (louis14 has no
+// pages).
 func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
 	space := b.space
 	if space == nil || result.BreakToken == nil || result.BreakToken.IsAtBlockEnd ||
@@ -1733,7 +1714,9 @@ func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutCon
 	if b.PreviousBreakToken().IsBreakInside() {
 		return
 	}
+	enableSideEffects := ctx.DisableLayoutSideEffects()
 	measure := layoutElement(ctx, b.layoutNode, space.CloneWithoutFragmentation())
+	enableSideEffects()
 	if measure == nil || measure.Status != LayoutResultSuccess || measure.Fragment == nil {
 		return
 	}
