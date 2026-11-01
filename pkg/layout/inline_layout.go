@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -240,7 +241,8 @@ func computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInline
 
 // layoutInlineChildren handles inline formatting context for a block container.
 // It collects inline content, breaks it into lines, and adds line box fragments
-// to the builder.
+// to the builder. Break tokens of floats that broke before or inside go to
+// context (parallel flows the block resumes in the next fragmentainer).
 //
 // Ported from Blink's InlineLayoutAlgorithm (inline_layout_algorithm.h).
 func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
@@ -253,6 +255,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	startItemIndex int,
 	startTextOffset int,
 	segment inlineSegment,
+	context *InlineChildLayoutContext,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *BlockBreakToken) {
 	itemsData, baseDir, isPlaintext := bla.prepareInlineItems(wdm)
 	if len(itemsData.Items) == 0 {
@@ -265,7 +268,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// up front because the line-breaker emits OpenTag/CloseTag once per
 	// inline item — not per line a span spans across — so a per-line
 	// stack would miss spans that wrap across multiple lines.
-	positionedInlineMap, atomicInlineContainers := BuildPositionedInlineMap(itemsData.Items)
+	positionedInlineMap, atomicInlineContainers := bla.inlineItemsCache.positionedInlineMap, bla.inlineItemsCache.atomicInlineContainers
 
 	// Phase 1c: Lay out inline floats (compute their size only). Positioning
 	// is deferred until line breaking so that floats declared after a forced
@@ -279,110 +282,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	if exclusionSpace == nil {
 		exclusionSpace = &ExclusionSpace{}
 	}
-	type pendingFloat struct {
-		item            *InlineItem
-		margins         LogicalEdges
-		childLogical    LogicalFragment
-		result          *LayoutResult
-		isInitialLetter bool
-	}
-	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
-	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
-	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
-	// stays at the block's visual top. Detected in the float pass below and
-	// consumed at blockOffset init and in placeFloat. Mirrors Blink
-	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
-	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
-	initialLetterAdjust := 0.0
-	paraLineHeight := 0.0
-	if bla.style != nil {
-		paraLineHeight = bla.style.GetLineHeight()
-	}
+	// The floats not yet positioned, measured once per layout (cached on
+	// the prepared inline items, LOU-510).
+	floats, initialLetterAdjust := bla.inlineFloats(contentInlineSize, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+	pendingFloats := maps.Clone(floats)
 
-	pendingFloats := map[*InlineItem]*pendingFloat{}
-	for _, item := range itemsData.Items {
-		if item.Type != InlineItemFloat || item.LayoutNode == nil {
-			continue
-		}
-		childStyle := item.Style
-		if childStyle == nil {
-			continue
-		}
-		il := childStyle.GetInitialLetter()
-		if shift := initialLetterTextShift(il, paraLineHeight); shift > initialLetterAdjust {
-			initialLetterAdjust = shift
-		}
-		childWDM := NewWritingDirectionMode(childStyle)
-		childMargins := ResolveMargins(childStyle, wdm, contentInlineSize)
-		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
-			SetOrthogonalFallbackInlineSize(
-				orthogonalFallbackSize(childWDM, bla.ctx)).
-			SetOrthogonalFallbackBlockSize(
-				bla.space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(LogicalSize{
-				InlineSize: contentInlineSize,
-				BlockSize:  Indefinite,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: contentInlineSize,
-				BlockSize:  0,
-			}).
-			SetPercentageResolutionInlineSize(contentInlineSize).
-			Build()
-		childResult := layoutElement(bla.ctx, item.LayoutNode, childSpace)
-		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
-		// A float paints inside the opacity group of its nearest enclosing
-		// group inline (Blink: LayoutObject::PaintingLayer returns the
-		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
-		childResult.Fragment.PaintGroup = item.EnclosingPaintGroup
-		childResult.Fragment.IsFloating = true
-		pendingFloats[item] = &pendingFloat{
-			item:            item,
-			margins:         childMargins,
-			childLogical:    childLogical,
-			result:          childResult,
-			isInitialLetter: il.Set,
-		}
-		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
-		// (or otherwise monolithic) within an IFC contribute their block-size
-		// as TallestUnbreakable during the multicol initial column-balancing
-		// pass. Mirrors Blink fragmentation_utils.cc:1105-1113 — any
-		// ShouldAvoidBreakInside child propagates its block-extent so the
-		// multicol's column auto-block-size grows to fit. Without this,
-		// a float with break-inside:avoid larger than the natural column
-		// estimate gets cropped by P20.5's container OverflowClip.
-		if bla.space.IsInitialColumnBalancingPass &&
-			childResult != nil &&
-			ShouldAvoidBreakInside(bla.space, childResult) {
-			bla.containerBuilder.PropagateTallestUnbreakableBlockSize(childLogical.BlockSize() + childMargins.BlockSum())
-		}
-	}
-
-	// placeFloat positions a single pending float at the given BFC block
-	// origin (the top of the current line), updates the exclusion space, and
-	// adds the float fragment as a child of the containing block. Returns the
-	// new exclusion-space pointer.
-	placeFloat := func(pf *pendingFloat, floatOriginBFC float64, es *ExclusionSpace) *ExclusionSpace {
-		// In a fragmented inline formatting context with block-in-inline
-		// items, a float is positioned through the block's float path, which
-		// can break it into a parallel flow (LineBreaker::HandleFloat →
-		// PositionFloat with the fragmentation space, inline/
-		// line_breaker.cc:3727 @ a9f50e522efa). Its break token is
-		// carried out by the caller.
-		if segment.node != nil && bla.space.HasBlockFragmentation && !pf.isInitialLetter {
-			childCount := len(bla.containerBuilder.children)
-			es, token, forced := bla.handleFloat(pf.item.LayoutNode, nil, bla.space.BreakToken,
-				floatOriginBFC, es, contentInlineSize, Indefinite, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
-			if len(bla.containerBuilder.children) > childCount {
-				bla.containerBuilder.children[childCount].fragment.PaintGroup = pf.item.EnclosingPaintGroup
-			}
-			if token != nil {
-				bla.inlineFloatBreakTokens = append(bla.inlineFloatBreakTokens, token)
-			}
-			bla.inlineFloatHasForcedBreak = bla.inlineFloatHasForcedBreak || forced
-			return es
-		}
-		childStyle := pf.item.Style
+	// placeFloat positions a pending float at the top of the current line
+	// (floatOriginBFC). Returns the new exclusion-space pointer and whether
+	// the float was placed here (it was not when it broke before).
+	placeFloat := func(pf *pendingFloat, floatOriginBFC float64, es *ExclusionSpace) (*ExclusionSpace, bool) {
 		// The initial-letter float is exempt from the block-start shift: the
 		// surrounding text is pushed down by initialLetterAdjust (blockOffset
 		// starts there) but the letter stays at the unshifted visual top.
@@ -390,44 +298,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if pf.isInitialLetter {
 			floatOriginBFC -= initialLetterAdjust
 		}
-		floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
-		floatBlockSize := pf.margins.BlockSum() + pf.childLogical.BlockSize()
-		floatSide := childStyle.GetFloat()
-		logicalSide := floatSide
-		if wdm.Dir == DirectionRTL {
-			if floatSide == css.FloatLeft {
-				logicalSide = css.FloatRight
-			} else {
-				logicalSide = css.FloatLeft
-			}
-		}
-		floatBlockOffset := es.FindFloatPositionLocal(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, floatOriginBFC, bfcInlineOrigin, bfcContainerInlineSize)
-		var floatInlineBFC float64
-		localStartOff, localEndOff := es.FindLocalFloatOffsets(floatBlockOffset, floatBlockSize, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize)
-		if logicalSide == css.FloatLeft {
-			floatInlineBFC = bfcInlineOrigin + localStartOff + pf.margins.InlineStart
-		} else {
-			containerEnd := bfcInlineOrigin + contentInlineSize
-			floatInlineBFC = containerEnd - localEndOff - pf.margins.InlineEnd - pf.childLogical.InlineSize()
-		}
-		localFloatBlock := floatBlockOffset - bfcBlockOrigin
-		floatOffset := LogicalOffset{
-			InlineOffset: floatInlineBFC - bfcInlineOrigin,
-			BlockOffset:  localFloatBlock + pf.margins.BlockStart,
-		}
-		bla.containerBuilder.AddChild(pf.result.Fragment, floatOffset)
-		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
-		// 227-229, :479-489 @ a9f50e522efa): the float laid out without
-		// fragmentation counts its margins too (BlockSizeForFragmentation,
-		// fragmentation_utils.cc:1562-1570).
-		bla.containerBuilder.PropagateChildBlockSizeForFragmentation(pf.result, floatOffset)
-		return es.Add(Exclusion{
-			InlineOffset: floatInlineBFC - pf.margins.InlineStart,
-			BlockOffset:  floatBlockOffset,
-			InlineSize:   floatInlineSize,
-			BlockSize:    floatBlockSize,
-			Side:         PhysicalFloatToExclusionSide(floatSide, wdm),
-		})
+		pf.unpositioned.OriginBfcBlockOffset = floatOriginBFC
+		return bla.placeInlineFloat(pf.item, pf.unpositioned, es, bfcBlockOrigin, bfcInlineOrigin, context)
 	}
 
 	// Phase 2: Create line breaker.
@@ -561,8 +433,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	after := segment.after()
 	if after != nil && startItemIndex == 0 && startTextOffset == 0 {
 		// The run starts right after its block-in-inline item.
-		startItemIndex = blockInInlineItemIndex(itemsData.Items, after) + 1
-		if startItemIndex == 0 || startItemIndex >= len(itemsData.Items) {
+		bii, ok := bla.inlineItemsCache.blockInInline[after]
+		startItemIndex = bii.index + 1
+		if !ok || startItemIndex >= len(itemsData.Items) {
 			return segment.blockStart, exclusionSpace, 0, 0, nil
 		}
 	}
@@ -651,6 +524,21 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// (item index alone is insufficient when a text item spans multiple lines).
 		lineStartIdx := lb.currentItemIndex
 		lineStartTextOffset := lb.currentTextOffset
+		// A line that breaks before takes the floats placed with it along:
+		// they are re-encountered when the line is laid out again in the
+		// next fragmentainer. In Blink they are children of the discarded
+		// line box, whose exclusion space is not committed
+		// (block_layout_algorithm.cc:2646-2678 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		lineStartChildCount := len(bla.containerBuilder.children)
+		lineStartExclusionSpace := exclusionSpace
+		lineStartParallelFlowTokenCount := len(context.parallelFlowBreakTokens)
+		breakBeforeLine := func(token *BlockBreakToken) {
+			bla.containerBuilder.children = bla.containerBuilder.children[:lineStartChildCount]
+			exclusionSpace = lineStartExclusionSpace
+			context.parallelFlowBreakTokens = context.parallelFlowBreakTokens[:lineStartParallelFlowTokenCount]
+			inlineBreakToken = token
+		}
 
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
 		// FindAvailableInlineSize returns the space consumed by left/right floats
@@ -751,7 +639,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					))
 				} else if r.Item.Type == InlineItemFloat {
 					if pf, ok := pendingFloats[r.Item]; ok {
-						exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+						exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
 						delete(pendingFloats, r.Item)
 					}
 				}
@@ -800,7 +688,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						continue
 					}
 					if pf, ok := pendingFloats[r.Item]; ok {
-						pendingFloatInline += pf.margins.InlineSum() + pf.childLogical.InlineSize()
+						pendingFloatInline += pf.marginBoxInlineSize
 					}
 				}
 
@@ -829,20 +717,30 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				}
 
 				if hasContentAfterFloat && contentAfterFloatWidth > shortenedAvail {
+					placedAny := false
 					for i := 0; i <= lastPendingFloatIdx; i++ {
 						r := &line.Results[i]
 						if r.Item.Type != InlineItemFloat {
 							continue
 						}
 						if pf, ok := pendingFloats[r.Item]; ok {
-							exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+							var placed bool
+							exclusionSpace, placed = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+							placedAny = placedAny || placed
 							delete(pendingFloats, r.Item)
 						}
 					}
 
-					clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
-					if clearedBfc > bfcBlockOrigin+blockOffset {
-						blockOffset = clearedBfc - bfcBlockOrigin
+					// Past the floats placed here; a float that broke
+					// before takes no space in this fragmentainer, so the
+					// line stays where it is (LineBreaker::HandleFloat
+					// returns before UpdateLineOpportunity, inline/
+					// line_breaker.cc:3834-3836 @ a9f50e522efa).
+					if placedAny {
+						clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
+						if clearedBfc > bfcBlockOrigin+blockOffset {
+							blockOffset = clearedBfc - bfcBlockOrigin
+						}
 					}
 
 					lastFloatItemIdx := line.Results[lastPendingFloatIdx].ItemIndex
@@ -982,23 +880,24 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				}
 			} else if r.Item.Type == InlineItemFloat {
 				if pf, ok := pendingFloats[r.Item]; ok {
-					floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
-					// Defer this float if placing it would displace committed inline
-					// content that fits beside the previously-placed floats. Condition:
-					//   (a) committed content fits beside this float alone (fitsAlone), and
-					//   (b) available after placing this float < committed content.
-					// This mirrors Blink's InlineLayoutAlgorithm float placement which
-					// detects that a second float would evict already-committed text.
-					// fitsAlone ensures we don't defer a float when the text doesn't
-					// fit beside it even in isolation (in that case the existing
-					// push-down code moves the text past the float, not the float).
+					floatInlineSize := pf.marginBoxInlineSize
+					// Push the float after this line when it does not fit
+					// beside the content committed before it, or clearance
+					// would move it down. Mirrors Blink's LineBreaker::
+					// ShouldPushFloatAfterLine (inline/line_breaker.cc:
+					// 3673-3712 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+					// Not ported: the retry without the trailing collapsible
+					// space, and the block-start edge alignment test
+					// (louis14's exclusion space keeps no LastFloatBlockStart).
+					// With nothing before it the float is at the line start,
+					// where pushing it after the line would not move it.
 					if committedBeforeFloat > 0 {
-						availableAfterFloat := trackAvail - floatInlineSize
-						if availableAfterFloat < 0 {
-							availableAfterFloat = 0
-						}
-						fitsAlone := committedBeforeFloat <= contentInlineSize-floatInlineSize
-						if fitsAlone && availableAfterFloat < committedBeforeFloat {
+						lineTopBFC := bfcBlockOrigin + blockOffset
+						canFitFloat := committedBeforeFloat+floatInlineSize <= trackAvail
+						clearType := pf.unpositioned.ClearType()
+						isMovedByClearance := clearType != css.ClearNone &&
+							exclusionSpace.ClearanceOffset(clearType, layoutunit.FromFloat64Round(lineTopBFC), wdm).Float64() > lineTopBFC
+						if !canFitFloat || isMovedByClearance {
 							// Defer this float and everything after it to the next line.
 							lineResultsTruncateAt = i
 							lb.currentItemIndex = r.ItemIndex
@@ -1009,7 +908,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 							break
 						}
 					}
-					exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+					exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
 					delete(pendingFloats, r.Item)
 					floatsPlacedOnLine = true
 					trackAvail -= floatInlineSize
@@ -1107,13 +1006,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			centralBaseline = false
 		}
 		// The available size inline-level relative offsets resolve against:
-		// the block's (ComputeRelativeOffsetForInline reads
-		// space.AvailableSize, relative_utils.cc:100-124 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		relativeAvailableSize := LogicalSize{
-			InlineSize: contentInlineSize,
-			BlockSize:  bla.space.AvailableSize.BlockSize.Float64(),
-		}
+		// the inline formatting context's, the block's child available size
+		// (ComputeRelativeOffsetForInline reads space.AvailableSize,
+		// relative_utils.cc:100-124 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+		// as for a block-in-inline (adoptBlockInInlineResult).
+		relativeAvailableSize := bla.containerBuilder.ChildAvailableSize()
 		// CSS Pseudo 4 §3.2.1: the ::first-line generated box "behaves similar to
 		// that of an inline-level element" (the WPT first-line-line-height
 		// reftests model it as a `<span class="fl">` inside an unchanged block).
@@ -1148,7 +1045,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// a9f50e522efa).
 		if bla.space.HasBlockFragmentation && !isEmptyLineBox && hasBreakOpportunityBeforeNextChild &&
 			IsForcedBreakValue(bla.space, CalculateBreakBetweenValue(inlineChild, nil, bla.containerBuilder)) {
-			inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0)
+			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0))
 			inlineBreakToken.IsForcedBreak = true
 			break
 		}
@@ -1168,7 +1065,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// setBreakingSize). No space shortage is propagated.
 			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder, nil) {
 				bla.containerBuilder.ClampBreakAppeal(bla.earlyBreak.GetBreakAppeal())
-				inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0)
+				breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0))
 				break
 			}
 			// blockOffset is content-relative: measure the boundary and the
@@ -1214,7 +1111,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
 				if bla.breakBeforeLine(&appealBefore, shortage, isEmptyLineBox) {
 					bla.containerBuilder.SetBreakAppeal(appealBefore)
-					inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, shortage)
+					breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, shortage))
 					break
 				}
 			} else if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
@@ -1303,14 +1200,127 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset, inlineBreakToken
 }
 
+// newInlineUnpositionedFloat returns the UnpositionedFloat for a float of
+// this block's inline formatting context, with its origin at the line's
+// BFC block offset originBfcBlockOffset: the content box inline-size is its
+// available and percentage resolution inline-size, with an indefinite
+// available block-size (LineBreaker::HandleFloat, inline/
+// line_breaker.cc:3787-3796 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) newInlineUnpositionedFloat(
+	node *LayoutInputNode,
+	token *BlockBreakToken,
+	contentInlineSize, originBfcBlockOffset, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64,
+) *UnpositionedFloat {
+	return bla.newUnpositionedFloat(node, token,
+		LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+		LogicalSize{InlineSize: contentInlineSize, BlockSize: 0},
+		bfcInlineOrigin, originBfcBlockOffset, bfcBlockOrigin, bfcContainerInlineSize)
+}
+
+// placeInlineFloat positions a float of this block's inline formatting
+// context through PositionFloat and adds it unless it breaks before; a
+// float that breaks before or inside leaves a parallel-flow break token in
+// context. Returns the new exclusion-space pointer and whether the float
+// was placed (it was not when it broke before). Mirrors the
+// positioning half of LineBreaker::HandleFloat and InlineLayoutAlgorithm::
+// PlaceFloatingObjects (inline/line_breaker.cc:3815-3839, inline/
+// inline_layout_algorithm.cc:875-903 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) placeInlineFloat(
+	item *InlineItem,
+	uf *UnpositionedFloat,
+	es *ExclusionSpace,
+	bfcBlockOrigin, bfcInlineOrigin float64,
+	context *InlineChildLayoutContext,
+) (*ExclusionSpace, bool) {
+	es, positioned, breakToken, hasForcedBreak := bla.addPositionedFloat(uf, es, bfcBlockOrigin, bfcInlineOrigin)
+	if positioned.BreakBeforeToken == nil {
+		// A float paints inside the opacity group of its nearest enclosing
+		// group inline (Blink: LayoutObject::PaintingLayer returns the
+		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
+		positioned.LayoutResult.Fragment.PaintGroup = item.EnclosingPaintGroup
+	}
+	if breakToken != nil {
+		context.PropagateParallelFlowBreakToken(breakToken)
+	}
+	context.hasForcedBreak = context.hasForcedBreak || hasForcedBreak
+	return es, positioned.BreakBeforeToken == nil
+}
+
+// resumeInlineFloats resumes, first in this fragment, each float of this
+// block's inline formatting context that broke before or inside in the
+// previous fragmentainer, in its parallel flow at bfcBlockOffset. Mirrors
+// LineBreaker::NextLine on an IsInParallelBlockFlow break token, which
+// handles the float with its break token on an empty line (inline/
+// line_breaker.cc:893-912 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
+	wdm WritingDirectionMode,
+	contentInlineSize float64,
+	es *ExclusionSpace,
+	bfcBlockOffset, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64,
+	context *InlineChildLayoutContext,
+) *ExclusionSpace {
+	incoming := bla.space.BreakToken
+	if incoming == nil || len(incoming.ChildBreakTokens) == 0 {
+		return es
+	}
+	itemsData, _, _ := bla.prepareInlineItems(wdm)
+	for _, tok := range incoming.ChildBreakTokens {
+		idx := inlineItemIndex(itemsData.Items, InlineItemFloat, tok.Node)
+		if idx < 0 {
+			continue
+		}
+		if es == nil {
+			es = &ExclusionSpace{}
+		}
+		uf := bla.newInlineUnpositionedFloat(tok.Node, tok, contentInlineSize, bfcBlockOffset,
+			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+		es, _ = bla.placeInlineFloat(itemsData.Items[idx], uf, es, bfcBlockOrigin, bfcInlineOrigin, context)
+	}
+	return es
+}
+
 // inlineItems is the prepared inline formatting context of a
 // BlockLayoutAlgorithm: collected once per layout and shared by every run of
 // lines and block-in-inline child (Blink keeps it on the InlineNode,
-// InlineNode::ItemsData).
+// InlineNode::ItemsData), with what the runs and wrappers derive from the
+// whole item list, so none of them rescans it (LOU-510).
 type inlineItems struct {
 	data        *InlineItemsData
 	baseDir     Direction
 	isPlaintext bool
+
+	// positionedInlineMap and atomicInlineContainers: BuildPositionedInlineMap
+	// over all items (an item's entry depends only on the items before it).
+	positionedInlineMap    map[*InlineItem]*html.Node
+	atomicInlineContainers map[*InlineItem]AtomicInlineContainers
+	// blockInInline maps each block-in-inline wrapper to its item.
+	blockInInline map[*LayoutInputNode]blockInInlineItem
+
+	// floats are the measured floats (inlineFloats, built on first use).
+	floats              map[*InlineItem]*pendingFloat
+	initialLetterAdjust float64
+}
+
+// blockInInlineItem is a block-in-inline wrapper's item index and the
+// inline boxes open around it, outermost first (rebuildOpenInlineStack of
+// the items before it).
+type blockInInlineItem struct {
+	index           int
+	openInlineStack []*InlineItem
+}
+
+// pendingFloat is a float of the inline formatting context, measured (laid
+// out without fragmentation) for its inline-size; positioning lays it out
+// again with the fragmentainer when fragmented (LineBreaker::HandleFloat's
+// UnpositionedFloat and ComputeMarginBoxInlineSizeForUnpositionedFloat,
+// inline/line_breaker.cc:3787-3800, :3673-3684 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type pendingFloat struct {
+	item                *InlineItem
+	unpositioned        *UnpositionedFloat
+	marginBoxInlineSize float64
+	isInitialLetter     bool
 }
 
 // prepareInlineItems collects this block's inline items and resolves their
@@ -1320,8 +1330,63 @@ func (bla *BlockLayoutAlgorithm) prepareInlineItems(wdm WritingDirectionMode) (*
 		return c.data, c.baseDir, c.isPlaintext
 	}
 	itemsData, baseDir, isPlaintext := bla.collectInlineItems(wdm)
-	bla.inlineItemsCache = &inlineItems{data: itemsData, baseDir: baseDir, isPlaintext: isPlaintext}
+	c := &inlineItems{data: itemsData, baseDir: baseDir, isPlaintext: isPlaintext}
+	c.positionedInlineMap, c.atomicInlineContainers = BuildPositionedInlineMap(itemsData.Items)
+	var open []*InlineItem
+	for i, item := range itemsData.Items {
+		switch item.Type {
+		case InlineItemOpenTag:
+			open = append(open, item)
+		case InlineItemCloseTag:
+			if n := len(open); n > 0 {
+				open = open[:n-1]
+			}
+		case InlineItemBlockInInline:
+			if c.blockInInline == nil {
+				c.blockInInline = map[*LayoutInputNode]blockInInlineItem{}
+			}
+			c.blockInInline[item.LayoutNode] = blockInInlineItem{index: i, openInlineStack: slices.Clone(open)}
+		}
+	}
+	bla.inlineItemsCache = c
 	return itemsData, baseDir, isPlaintext
+}
+
+// inlineFloats returns the floats of this block's inline formatting
+// context, measured on first use, and the block-start shift of the text
+// for a raised initial letter. LOU-289 part 3: an initial-letter
+// ::first-letter float (CSS Inline 3 §7.3) with `raise` / explicit-sink
+// shifts the surrounding paragraph text DOWN by block_start_adjust =
+// lineHeight*(size-sink), while the letter box itself stays at the block's
+// visual top. Mirrors Blink LineInfo::SetInitialLetterBlockStartAdjustment
+// (initial_letter_utils.cc:270-300 @ 4883d11fef). The drop case
+// (sink==size) yields 0 → no shift. prepareInlineItems must have run.
+func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64) (map[*InlineItem]*pendingFloat, float64) {
+	c := bla.inlineItemsCache
+	if c.floats != nil {
+		return c.floats, c.initialLetterAdjust
+	}
+	c.floats = map[*InlineItem]*pendingFloat{}
+	paraLineHeight := 0.0
+	if bla.style != nil {
+		paraLineHeight = bla.style.GetLineHeight()
+	}
+	for _, item := range c.data.Items {
+		if item.Type != InlineItemFloat || item.LayoutNode == nil || item.Style == nil {
+			continue
+		}
+		il := item.Style.GetInitialLetter()
+		c.initialLetterAdjust = max(c.initialLetterAdjust, initialLetterTextShift(il, paraLineHeight))
+		uf := bla.newInlineUnpositionedFloat(item.LayoutNode, nil, contentInlineSize, 0,
+			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+		c.floats[item] = &pendingFloat{
+			item:                item,
+			unpositioned:        uf,
+			marginBoxInlineSize: ComputeMarginBoxInlineSizeForUnpositionedFloat(uf),
+			isInitialLetter:     il.Set,
+		}
+	}
+	return c.floats, c.initialLetterAdjust
 }
 
 func (bla *BlockLayoutAlgorithm) collectInlineItems(wdm WritingDirectionMode) (*InlineItemsData, Direction, bool) {
@@ -1410,11 +1475,11 @@ func (s inlineSegment) after() *LayoutInputNode {
 	return s.node.inlineSegmentAfter
 }
 
-// blockInInlineItemIndex returns the index of wrapper's block-in-inline
-// item in items, or -1.
-func blockInInlineItemIndex(items []*InlineItem, wrapper *LayoutInputNode) int {
+// inlineItemIndex returns the index of the item of type typ generated by
+// node, or -1.
+func inlineItemIndex(items []*InlineItem, typ InlineItemType, node *LayoutInputNode) int {
 	return slices.IndexFunc(items, func(item *InlineItem) bool {
-		return item.Type == InlineItemBlockInInline && item.LayoutNode == wrapper
+		return item.Type == typ && item.LayoutNode == node
 	})
 }
 
