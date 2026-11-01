@@ -68,6 +68,15 @@ type ConstraintSpace struct {
 	// on the first layout pass before the cross-size is determined.
 	IsInsideFlexibleBox bool
 
+	// InlineAutoBehavior is the behaviour of an auto inline-size: stretch to
+	// the available space or fit-content. Mirrors Blink's
+	// ConstraintSpace::InlineAutoBehavior (constraint_space.h:462-465 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's BlockAutoBehavior
+	// (:466-468) is not ported. CalculateInitialFragmentGeometry reads it only
+	// where louis14 has no style-derived shrink-to-fit rule (needsShrinkToFit,
+	// IsInsideFlexibleBox, orthogonal roots).
+	InlineAutoBehavior AutoSizeBehavior
+
 	// IsFixedBlockSizeIndefinite is true when IsFixedBlockSize is true but the
 	// block-size comes from the first-pass flex layout rather than a real definite size.
 	// Children should treat percentage block-sizes as auto (resolve to 0) on this pass.
@@ -266,6 +275,26 @@ type ConstraintSpace struct {
 	TableSectionIndex int
 }
 
+// AutoSizeBehavior is the behaviour of the 'auto' keyword on a main size.
+// Mirrors Blink's AutoSizeBehavior (constraint_space.h:69-81 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), in Blink's order: the zero
+// value is fit-content, so a ConstraintSpace struct literal is fit-content
+// while NewConstraintSpaceBuilder defaults to stretch (see there).
+type AutoSizeBehavior uint8
+
+const (
+	// AutoSizeBehaviorFitContent shrinks to fit within the available space
+	// (kFitContent).
+	AutoSizeBehaviorFitContent AutoSizeBehavior = iota
+	// AutoSizeBehaviorStretchImplicit stretches to the available space — a
+	// "weak" stretch an aspect-ratio with a definite opposite size may
+	// override (kStretchImplicit).
+	AutoSizeBehaviorStretchImplicit
+	// AutoSizeBehaviorStretchExplicit always stretches to the available
+	// space, even with an aspect-ratio (kStretchExplicit).
+	AutoSizeBehaviorStretchExplicit
+)
+
 // FragmentationType distinguishes types of block fragmentation.
 type FragmentationType int
 
@@ -358,6 +387,14 @@ func NewConstraintSpaceBuilder(parentWDM, childWDM WritingDirectionMode, isNewFC
 	b.space.PercentageResolutionSize = geometry.LogicalSize{
 		BlockSize: layoutunit.IndefiniteSize,
 	}
+	// louis14 transitional default: kStretchImplicit, where Blink's builder
+	// starts at kFitContent (constraint_space.h:1619-1621 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and every stretching parent
+	// sets it. Block containers, column fragmentainers and spanners set it as
+	// Blink does; the remaining parents (inline, flex, grid, table, OOF)
+	// still rely on the style-derived shrink-to-fit rules, so they keep
+	// today's stretch default until they set it themselves.
+	b.space.InlineAutoBehavior = AutoSizeBehaviorStretchImplicit
 	// Default to "not inside a table section". Table layout calls
 	// SetTableSectionIndex explicitly when threading sizing data.
 	b.space.TableSectionIndex = -1
@@ -461,6 +498,20 @@ func (b *ConstraintSpaceBuilder) SetBfcContainerInlineSize(v layoutunit.LayoutUn
 // SetIsInsideFlexibleBox marks the child as a direct flex item.
 func (b *ConstraintSpaceBuilder) SetIsInsideFlexibleBox(v bool) *ConstraintSpaceBuilder {
 	b.space.IsInsideFlexibleBox = v
+	return b
+}
+
+// SetInlineAutoBehavior sets the behaviour of the child's auto inline-size.
+// Mirrors Blink's ConstraintSpaceBuilder::SetInlineAutoBehavior
+// (constraint_space_builder.h:272-280 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which writes the block-axis
+// behaviour for an orthogonal child; louis14 has no BlockAutoBehavior, so an
+// orthogonal child's value is dropped (its auto inline-size is decided by
+// the orthogonal-root rules in CalculateInitialFragmentGeometry).
+func (b *ConstraintSpaceBuilder) SetInlineAutoBehavior(v AutoSizeBehavior) *ConstraintSpaceBuilder {
+	if b.parallel {
+		b.space.InlineAutoBehavior = v
+	}
 	return b
 }
 

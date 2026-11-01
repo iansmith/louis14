@@ -568,8 +568,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
 		PercentageResolutionInlineSize: contentInlineSize,
 		WritingDirection:               wdm,
-		ExclusionSpace:                 exclusionSpace,
-		OrthogonalFallbackInlineSize:   bla.space.OrthogonalFallbackInlineSize,
+		// An inline child in a parallel flow stretches (Blink's
+		// CreateConstraintSpaceForChild, block_layout_algorithm.cc:
+		// 3422-3425 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		InlineAutoBehavior:           AutoSizeBehaviorStretchImplicit,
+		ExclusionSpace:               exclusionSpace,
+		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,
 		OrthogonalFallbackBlockSize: computeOrthogonalFallbackBlockForChildren(
 			bla.style, wdm, bla.space, geomForPct, bla.ctx,
 			hasExplicitBlock, explicitBlockSize),
