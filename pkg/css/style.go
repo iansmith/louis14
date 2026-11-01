@@ -14024,44 +14024,47 @@ func ResolveLogicalProperties(node *html.Node, style *Style) {
 	}
 
 	// Remap inline-size / block-size for both explicit and inherited
-	// writing-mode — louis14 lays out natively in logical space.
+	// writing-mode — louis14 lays out natively in logical space. sideways-*
+	// are vertical writing modes too (Blink IsHorizontalWritingMode,
+	// platform/text/writing_mode.h:56-58 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if val, ok := style.Get("_inline-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("height", val)
 		} else {
 			style.Set("width", val) // htb+rtl: width is still inline size
 		}
 	}
 	if val, ok := style.Get("_block-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("width", val)
 		} else {
 			style.Set("height", val)
 		}
 	}
 	if val, ok := style.Get("_min-inline-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("min-height", val)
 		} else {
 			style.Set("min-width", val)
 		}
 	}
 	if val, ok := style.Get("_min-block-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("min-width", val)
 		} else {
 			style.Set("min-height", val)
 		}
 	}
 	if val, ok := style.Get("_max-inline-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("max-height", val)
 		} else {
 			style.Set("max-width", val)
 		}
 	}
 	if val, ok := style.Get("_max-block-size"); ok {
-		if isVertical {
+		if isVertical || isSideways {
 			style.Set("max-width", val)
 		} else {
 			style.Set("max-height", val)
