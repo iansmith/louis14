@@ -3831,18 +3831,19 @@ func (s *Style) GetOutlineWidth() float64 {
 			return 5
 		}
 		if px, ok2 := s.GetLengthForVal(val); ok2 {
-			return clampLineWidth(px)
+			return ClampLineWidth(px)
 		}
 	}
 	return 3 // default medium = 3px
 }
 
-// clampLineWidth rounds a computed line width to its used integer value:
+// ClampLineWidth rounds a computed line width to its used integer value:
 // widths strictly between 0 and 1 round up to 1 so thin lines stay visible;
 // all other widths round down. Mirrors Blink's
-// StyleBuilderConverter::ClampLineWidth (style_builder_converter.cc:1959 @
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func clampLineWidth(w float64) float64 {
+// StyleBuilderConverter::ClampLineWidth (style_builder_converter.cc:1964-1971 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which border, outline and
+// column-rule widths reach through ConvertBorderWidth.
+func ClampLineWidth(w float64) float64 {
 	if w <= 0 {
 		return 0
 	}
