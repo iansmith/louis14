@@ -459,7 +459,7 @@ func FragmentainerSpaceLeft(box FragmentainerBox, isForChildren bool) float64 {
 // context into a child's constraint-space builder: the fragmentainer
 // block-size and the child's offset in the fragmentainer (with
 // IsAtFragmentainerStart for an offset at or before its start), the
-// fragmentation type, the column-balancing flags and MinBreakAppeal, so a
+// fragmentation type, the propagate-child-break-values bit (:346), the column-balancing flags and MinBreakAppeal, so a
 // container that is breakable at the start of a resumed fragment stays
 // breakable through its descendants. Mirrors Blink's
 // SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:321-372 @
@@ -472,6 +472,7 @@ func SetupSpaceBuilderForFragmentation(parentSpace ConstraintSpace, fragmentaine
 		SetFragmentainerBlockSize(fragmentainerBlockSize).
 		SetFragmentainerOffset(fragmentainerOffset).
 		SetBlockFragmentationType(parentSpace.BlockFragmentationType).
+		SetShouldPropagateChildBreakValues(true).
 		SetIsInitialColumnBalancingPass(parentSpace.IsInitialColumnBalancingPass).
 		SetIsInsideBalancedColumns(parentSpace.IsInsideBalancedColumns).
 		SetMinBreakAppeal(parentSpace.MinBreakAppeal).

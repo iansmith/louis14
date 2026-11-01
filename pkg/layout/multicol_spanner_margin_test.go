@@ -29,7 +29,10 @@ func layoutMulticolInFragmentainer(t *testing.T, mc *html.Node, styles map[*html
 		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite})
 	if fragBlockSize != Indefinite {
+		// A fragmentation space carries the propagate-child-break-values
+		// bit (fragmentation_utils.cc:346 @ a9f50e522efa).
 		b = b.SetHasBlockFragmentation(true).
+			SetShouldPropagateChildBreakValues(true).
 			SetFragmentainerBlockSize(fragBlockSize).
 			SetFragmentainerOffset(fragOffset).
 			SetIsAtFragmentainerStart(fragOffset <= 0).

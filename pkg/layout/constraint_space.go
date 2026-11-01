@@ -157,6 +157,13 @@ type ConstraintSpace struct {
 	// BlockFragmentationType distinguishes column vs page fragmentation.
 	BlockFragmentationType FragmentationType
 
+	// PropagateChildBreakValues is the bit read by
+	// ShouldPropagateChildBreakValues. Mirrors Blink's
+	// ConstraintSpace::RareData::propagate_child_break_values
+	// (constraint_space.h:918 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// set through ConstraintSpaceBuilder::SetShouldPropagateChildBreakValues.
+	PropagateChildBreakValues bool
+
 	// RequiresContentBeforeBreaking prevents empty fragmentainers.
 	RequiresContentBeforeBreaking bool
 
@@ -267,17 +274,13 @@ func (cs ConstraintSpace) HasKnownFragmentainerBlockSize() bool {
 // space propagates its children's break-before / break-after values up
 // through LayoutResult.InitialBreakBefore / FinalBreakAfter. Mirrors Blink's
 // ConstraintSpace::ShouldPropagateChildBreakValues (constraint_space.h:618-620
-// @ a9f50e522efa).
-//
-// No Blink analog for the derivation: Blink sets a dedicated bit in
-// SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:346, cleared for
-// monolithic children at :336-338), CreateConstraintSpaceForFragmentainer
-// (:1391) and the column-balancing space (column_layout_algorithm.cc:1850).
-// louis14 only fragments columns, gives a monolithic child no block
-// fragmentation, and gives the balancing space block fragmentation, so
-// HasBlockFragmentation answers the same question (ledger L32).
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a dedicated bit, set in
+// SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:346; left unset
+// for monolithic children, :336-338), CreateConstraintSpaceForFragmentainer
+// (:1391; louis14 createConstraintSpaceForColumn) and the column-balancing
+// space (column_layout_algorithm.cc:1850).
 func (cs ConstraintSpace) ShouldPropagateChildBreakValues() bool {
-	return cs.HasBlockFragmentation
+	return cs.PropagateChildBreakValues
 }
 
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
@@ -484,6 +487,19 @@ func (b *ConstraintSpaceBuilder) SetIsRootElement(v bool) *ConstraintSpaceBuilde
 // SetHasBlockFragmentation enables block fragmentation for this child.
 func (b *ConstraintSpaceBuilder) SetHasBlockFragmentation(v bool) *ConstraintSpaceBuilder {
 	b.space.HasBlockFragmentation = v
+	return b
+}
+
+// SetShouldPropagateChildBreakValues sets the bit read by
+// ConstraintSpace.ShouldPropagateChildBreakValues. Mirrors Blink's
+// ConstraintSpaceBuilder::SetShouldPropagateChildBreakValues
+// (constraint_space_builder.h:348-357 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: Blink's
+// parent-space constructor also inherits the bit from the parent space
+// (:57-58); louis14's NewConstraintSpaceBuilder takes no parent space, so
+// every fragmentation site sets it explicitly.
+func (b *ConstraintSpaceBuilder) SetShouldPropagateChildBreakValues(v bool) *ConstraintSpaceBuilder {
+	b.space.PropagateChildBreakValues = v
 	return b
 }
 

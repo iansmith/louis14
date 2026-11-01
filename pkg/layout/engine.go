@@ -471,7 +471,6 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		Height:                          frag.Size.HeightF64(),
 		Parent:                          parent,
 		ClipContentToBorderBox:          frag.ClipContentToBorderBox,
-		RenderedColumnCount:             frag.RenderedColumnCount,
 		GapGeometry:                     frag.GapGeometry,
 		IsColumnBox:                     frag.IsColumnBox(),
 		IsMulticolContainer:             frag.IsMulticolContainer,
