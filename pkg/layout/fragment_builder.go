@@ -1062,6 +1062,31 @@ func (b *BoxFragmentBuilder) AddChildWithRelativeOffset(fragment *PhysicalFragme
 	b.requiresContentBeforeBreaking = false
 }
 
+// MoveChildrenInBlockDirection moves every child, the first and last
+// baselines and the out-of-flow candidates' static positions by offset in
+// the block direction. Mirrors BoxFragmentBuilder::MoveChildrenInDirection
+// with is_block_direction (box_fragment_builder.cc:396-477 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no inflow bounds
+// or fragment items builder to move, and fragmentainer descendants are not
+// moved.
+func (b *BoxFragmentBuilder) MoveChildrenInBlockDirection(offset float64) {
+	if offset == 0 {
+		return
+	}
+	if b.hasBaseline {
+		b.baseline += offset
+	}
+	if b.lastBaseline != 0 {
+		b.lastBaseline += offset
+	}
+	for i := range b.children {
+		b.children[i].offset.BlockOffset += offset
+	}
+	for i := range b.outOfFlowCandidates {
+		b.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset += offset
+	}
+}
+
 // ShiftChildBlockOffset adds delta to the block offset of the most recently
 // added child link whose fragment pointer matches. Used by the list-item
 // block layout to push content down when an OUTSIDE marker's ascent is taller

@@ -2,9 +2,11 @@ package layout
 
 import (
 	"slices"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/html"
 )
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
@@ -2109,6 +2111,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	intrinsicBlockSize := blockCursor
 	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
 	// when no explicit block-size is set (see contain_utils.go).
+	// The content block-size before containment clamps it: what
+	// AlignBlockContent aligns (Blink's unconstrained_intrinsic_block_size,
+	// block_layout_algorithm.cc:1504 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	unconstrainedIntrinsicBlockSize := intrinsicBlockSize
 	intrinsicBlockSize = sizeContainedIntrinsicBlockSize(bla.style, hasExplicitBlock, intrinsicBlockSize)
 
 	// CSS Lists §3 / Blink PositionListMarkerWithoutLineBoxes: if a list item
@@ -2256,6 +2262,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	bla.containerBuilder.SetEndMarginStrut(prevMarginStrut)
 	bla.containerBuilder.SetExclusionSpace(exclusionSpace)
+
+	// Block-axis content alignment (align-content, the internal button
+	// centering) for block containers other than table cells, after sizing
+	// and before out-of-flow layout. Mirrors BlockLayoutAlgorithm::
+	// FinishLayout's AlignBlockContent call (block_layout_algorithm.cc:
+	// 1500-1506 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); Blink moves
+	// children only for a new formatting context (MoveChildrenInDirection
+	// DCHECKs is_new_fc_).
+	if bla.space.IsNewFormattingContext && bla.space.TableSectionData == nil {
+		includeBlockEnd := !InvolvedInBlockFragmentation(bla.space) || finish.IncludeBlockEnd
+		AlignBlockContent(bla.style, bla.node, bla.space.BreakToken, finalBlockSize,
+			unconstrainedIntrinsicBlockSize, includeBlockEnd, bla.containerBuilder)
+	}
 
 	// CSS 2.1 §17.5.4 — table-cell vertical-align within the cell's own
 	// block-size. Mirrors Blink FinalizeTableCellLayout
@@ -3108,6 +3127,19 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 
 	// CSS Containment: layout and paint containment establish a BFC.
 	if style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() {
+		return true
+	}
+
+	// align-content other than normal forces an independent formatting
+	// context (CSS Align 3 §5.4), and a replaced element or form control
+	// (a <button> block flow) always establishes one. Mirrors
+	// LayoutBlockFlow::CreatesNewFormattingContext
+	// (layout_block_flow_hot.cc:39-53 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if len(nodes) > 0 && nodes[0] != nil && html.IsReplacedOrFormControl(nodes[0].DOMNode) {
+		return true
+	}
+	if v, ok := style.Properties["align-content"]; ok && strings.TrimSpace(v) != "normal" {
 		return true
 	}
 

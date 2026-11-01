@@ -706,10 +706,16 @@ func isVoidElement(tag string) bool {
 // Single source of truth for the replaced tag list. A caller that has the
 // element should ask IsReplacedElement instead, which also accounts for an
 // <img> showing fallback content.
+//
+// <button> is not replaced: Blink lays it out as a LayoutBlockFlow (or a
+// flex / grid container for those displays) holding its content
+// (HTMLButtonElement::CreateLayoutObject, html_button_element.cc:59-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It stays a semi-replaced
+// form control (IsSemiReplacedElementTag).
 func IsReplacedElementTag(tag string) bool {
 	switch tag {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
-		"input", "textarea", "select", "button":
+		"input", "textarea", "select":
 		return true
 	}
 	return false
@@ -751,4 +757,15 @@ func IsSemiReplacedElementTag(tag string) bool {
 		return true
 	}
 	return false
+}
+
+// IsReplacedOrFormControl reports whether n is a replaced element or a
+// semi-replaced form control. Either kind is an atomic inline-level box
+// whatever its display, never stretches an auto inline-size in a block
+// container, and establishes a new formatting context. <button> is the one
+// form control louis14 does not also lay out as replaced (it is a
+// LayoutBlockFlow, html_button_element.cc:59-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func IsReplacedOrFormControl(n *Node) bool {
+	return n != nil && n.Type == ElementNode && (IsReplacedElement(n) || IsSemiReplacedElementTag(n.TagName))
 }

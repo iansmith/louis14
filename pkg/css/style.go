@@ -8699,6 +8699,20 @@ const (
 	AlignContentSpaceEvenly  AlignContent = "space-evenly"
 )
 
+// InternalAlignContentBlockProperty is the UA-only
+// -internal-align-content-block property: "center" centers a block
+// container's content in the block axis (buttons). Mirrors Blink's
+// -internal-align-content-block (css_properties.json5, name_for_methods
+// AlignContentBlockCenter @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const InternalAlignContentBlockProperty = "-internal-align-content-block"
+
+// AlignContentBlockCenter reports -internal-align-content-block: center.
+// Mirrors ComputedStyle::AlignContentBlockCenter.
+func (s *Style) AlignContentBlockCenter() bool {
+	v, ok := s.Properties[InternalAlignContentBlockProperty]
+	return ok && v == "center"
+}
+
 // GetAlignContent returns the align-content value (default: normal, which acts as stretch in flex).
 // Strips any "safe"/"unsafe" prefix; use IsSafeAlignContent to check the safe flag.
 func (s *Style) GetAlignContent() AlignContent {
