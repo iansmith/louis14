@@ -67,6 +67,12 @@ type Renderer struct {
 	// the lock so shapeFeatures' common case (no descriptor face open)
 	// skips the mutex.
 	hasFaceFeatureSettings atomic.Bool
+	// shapeFeaturesMemo caches shapeFeatures results for the most recent
+	// (font ID, description) pairs, so the per-glyph measure/draw loops
+	// resolve a face's features once rather than per call — Blink resolves
+	// them once into the face's FontPlatformData. Copy-on-write, read
+	// without a lock.
+	shapeFeaturesMemo atomic.Pointer[[]shapeFeaturesMemoEntry]
 
 	// tempFontIDs collects fontIDs returned by openFont during the
 	// current Render call. Each public Render entry point resets this
@@ -417,17 +423,58 @@ func (layer *PaintLayer) featureInputs() fontFeatureInputs {
 // features are keyed to the face that shapes the run (fontID), so a
 // fallback face gets its own.
 func (r *Renderer) shapeFeatures(fontID int32, in fontFeatureInputs) []textshape.FontFeature {
+	hasDescriptors := r.hasFaceFeatureSettings.Load()
+	if !hasDescriptors && len(in.alternates) == 0 {
+		return in.features
+	}
+	var memo []shapeFeaturesMemoEntry
+	if p := r.shapeFeaturesMemo.Load(); p != nil {
+		memo = *p
+	}
+	for i := range memo {
+		if memo[i].fontID == fontID && memo[i].in.sameAs(in) {
+			return memo[i].result
+		}
+	}
 	var descriptor []textshape.FontFeature
-	if r.hasFaceFeatureSettings.Load() {
+	if hasDescriptors {
 		r.fontCacheMu.Lock()
 		descriptor = r.faceFeatureSettings[fontID]
 		r.fontCacheMu.Unlock()
 	}
-	if len(descriptor) == 0 && len(in.alternates) == 0 {
-		return in.features
+	result := in.features
+	if resolved := resolveFontFeatures(descriptor, in.settings, in.alternates); len(resolved) > 0 {
+		result = append(resolved, in.features...) // resolved never aliases an input
 	}
-	resolved := resolveFontFeatures(descriptor, in.settings, in.alternates)
-	return append(resolved, in.features...) // resolved never aliases an input
+	next := make([]shapeFeaturesMemoEntry, 0, shapeFeaturesMemoSize)
+	next = append(next, shapeFeaturesMemoEntry{fontID: fontID, in: in, result: result})
+	next = append(next, memo[:min(len(memo), shapeFeaturesMemoSize-1)]...)
+	r.shapeFeaturesMemo.Store(&next)
+	return result
+}
+
+// shapeFeaturesMemoSize bounds shapeFeaturesMemo: enough for a run's font
+// IDs (primary, small-caps, emphasis) across the layers being painted.
+const shapeFeaturesMemoSize = 8
+
+// shapeFeaturesMemoEntry is one memoized shapeFeatures result.
+type shapeFeaturesMemoEntry struct {
+	fontID int32
+	in     fontFeatureInputs
+	result []textshape.FontFeature
+}
+
+// sameAs reports whether in and o are the same description inputs: the
+// same slices (a PaintLayer's feature lists are built once and never
+// modified), compared by identity.
+func (in fontFeatureInputs) sameAs(o fontFeatureInputs) bool {
+	return sameFeatureSlice(in.features, o.features) &&
+		sameFeatureSlice(in.settings, o.settings) &&
+		sameFeatureSlice(in.alternates, o.alternates)
+}
+
+func sameFeatureSlice(a, b []textshape.FontFeature) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
 
 // resolveFontFeatures is a face's ResolvedFeatures: the
@@ -470,6 +517,7 @@ func (r *Renderer) closeTempFonts() {
 	}
 	r.faceFeatureSettings = nil
 	r.hasFaceFeatureSettings.Store(false)
+	r.shapeFeaturesMemo.Store(nil)
 }
 
 // Render paints the box tree onto the image. Clears the entire underlying

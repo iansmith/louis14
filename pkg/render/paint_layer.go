@@ -281,11 +281,16 @@ type PaintLayer struct {
 	// FontFeatureSettings is the font-feature-settings property alone, a
 	// list of its own (FontFeatures holds a copy): Blink's
 	// FontDescription::FeatureSettings(), which decides which @font-face
-	// descriptor features survive (Renderer.openFontForLayer).
+	// descriptor features survive (Renderer.resolveFontFeatures).
 	FontFeatureSettings []textshape.FontFeature
 
 	// FontVariantAlternates is the font-variant-alternates features, the
-	// leading part of every face's ResolvedFeatures (Renderer.openFontForLayer).
+	// leading part of every face's ResolvedFeatures (Renderer.resolveFontFeatures).
+	//
+	// FontFeatures, FontFeatureSettings and FontVariantAlternates are built
+	// once by newPaintLayer and never modified afterwards (a copy of the
+	// layer may share them): Renderer.shapeFeatures memoizes by their
+	// identity.
 	FontVariantAlternates []textshape.FontFeature
 
 	// Text emphasis marks (small marks above/below each character):
@@ -1323,7 +1328,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// font-feature-settings, the property alone: Blink's
 	// FontDescription::FeatureSettings(). It is its own input — the
-	// descriptor resolution (Renderer.openFontForLayer) needs it apart from
+	// descriptor resolution (Renderer.resolveFontFeatures) needs it apart from
 	// the shaping list — and is appended to FontFeatures last, below.
 	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "" {
 		layer.FontFeatureSettings, _ = text.ParseFontFeatureSettings(ffs)
