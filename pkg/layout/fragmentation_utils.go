@@ -690,7 +690,11 @@ type FinishFragmentationInput struct {
 	// SpaceLeft is FragmentainerSpaceLeft(builder, is_for_children=false):
 	// the space left from this box's border edge, or Indefinite when the
 	// fragmentainer block-size is unknown (initial column balancing pass).
-	SpaceLeft             float64
+	SpaceLeft float64
+	// FragmentainerCapacity is FragmentainerCapacity(builder,
+	// is_for_children=false), read to steer clear of incoming monolithic
+	// overflow.
+	FragmentainerCapacity float64
 	HasBlockFragmentation bool
 	// IsColumnFragmentation and IsInitialColumnBalancingPass gate the space
 	// shortage report (only multicol balancing consumes it).
@@ -732,6 +736,13 @@ type FinishFragmentationResult struct {
 	// SpaceShortage > 0 is the amount reported via PropagateSpaceShortage.
 	SpaceShortage           float64
 	ClampAppealToLastResort bool
+	// MonolithicOverflow > 0 is the space reserved with
+	// ReserveSpaceForMonolithicOverflow (box_fragment_builder.h:439-442 @
+	// a9f50e522efa): incoming monolithic overflow still to steer clear of in
+	// the next fragmentainer. The outgoing break token carries it
+	// (block_break_token.cc:77), and it makes the box break inside
+	// (BoxFragmentBuilder::ShouldBreakInside, box_fragment_builder.h:494-497).
+	MonolithicOverflow float64
 }
 
 // FinishFragmentation decides this fragment's block-size and whether the box

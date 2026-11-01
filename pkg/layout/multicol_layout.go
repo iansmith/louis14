@@ -398,6 +398,7 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 	desired := math.Max(0, total-previouslyConsumed)
 	return FinishFragmentation(FinishFragmentationInput{
 		SpaceLeft:                             spaceLeft,
+		FragmentainerCapacity:                 FragmentainerCapacity(mla.fragmentainerBuilder(), false),
 		HasBlockFragmentation:                 mla.space.HasBlockFragmentation,
 		IsColumnFragmentation:                 mla.space.BlockFragmentationType == FragmentColumn,
 		IsInitialColumnBalancingPass:          mla.space.IsInitialColumnBalancingPass,

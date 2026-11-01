@@ -449,6 +449,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		res := FinishFragmentation(FinishFragmentationInput{
 			SpaceLeft:                             spaceLeft,
+			FragmentainerCapacity:                 FragmentainerCapacity(bla.fragmentainerBuilder(), false),
 			HasBlockFragmentation:                 bla.space.HasBlockFragmentation,
 			IsColumnFragmentation:                 bla.space.BlockFragmentationType == FragmentColumn,
 			IsInitialColumnBalancingPass:          bla.space.IsInitialColumnBalancingPass,
