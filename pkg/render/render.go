@@ -3407,32 +3407,6 @@ func (r *Renderer) newBoxBackgroundPaintContext(layer *PaintLayer) *BoxBackgroun
 	return ctx
 }
 
-// rootBorderBoxRect returns the root element's border box as Blink lays it
-// out, the rect the view's background positioning area is derived from
-// (view_painter.cc:346-347, box_background_paint_context.cc:112 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-//
-// no Blink analog: louis14 lays an in-flow root out as the ICB-filling
-// view box — at the ICB origin, stretched across its own margins (inline)
-// and to at least the ICB block size — so the Blink border box is
-// recovered by insetting the root box by its margins. The block-size
-// stretch is not undone here (the unstretched size is not recorded); see
-// the LOU-531 follow-up on root layout. An out-of-flow root is placed by
-// the IMCB math with its margins already applied, so it is used as is.
-func rootBorderBoxRect(root *layout.Box) geometry.PhysicalRect {
-	x, y, w, h := root.X, root.Y, root.Width, root.Height
-	outOfFlow := false
-	if root.Style != nil {
-		pos := root.Style.GetPosition()
-		outOfFlow = pos == css.PositionAbsolute || pos == css.PositionFixed
-	}
-	if !outOfFlow {
-		m := root.Margin
-		x, y, w, h = x+m.Left, y+m.Top, w-m.Left-m.Right, h-m.Top-m.Bottom
-	}
-	return toLayoutRect(x, y, w, h)
-}
-
 // paintFillLayerImage paints one fill layer's image through the shared
 // BackgroundImageGeometry: img is the fetched url() image, or none to paint
 // the layer's gradient — a generated image with no natural size, painted

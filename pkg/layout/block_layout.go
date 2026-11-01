@@ -547,10 +547,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if isInlineSVGRoot {
 		// No children added — see doc comment above.
 	} else if nested := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nested != nil {
-		// For vertical-rl/sideways-rl nested roots, the root is anchored to the
-		// right edge of the iframe viewport. Apply the X offset as an inline offset.
-		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
-		bla.containerBuilder.AddChild(nested.fragment, offset)
+		bla.containerBuilder.AddChild(nested.fragment, nested.rootOffset)
 	} else if isInlineFormattingContext && !hasBlockInInline {
 		// Inline formatting context: text nodes and inline-level children.
 		// Resuming after a line break, the line breaker starts at the
@@ -1849,10 +1846,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Intrinsic keywords (min-content / max-content / fit-content) resolve
 		// against intrinsicBlockSize — the natural content height we just computed.
 		minBlock := ResolveMinBlockSizeWithIntrinsic(bla.style, wdm, bla.space, geom, intrinsicBlockSize)
-		// The root element must fill at least the ICB block-size (ForcedMinBlockSize).
-		if bla.space.ForcedMinBlockSize > minBlock {
-			minBlock = bla.space.ForcedMinBlockSize
-		}
 		if maxBlock, hasMax := ResolveMaxBlockSizeWithIntrinsic(bla.style, wdm, bla.space, geom, intrinsicBlockSize); hasMax {
 			if finalBlockSize > maxBlock {
 				finalBlockSize = maxBlock
@@ -2315,13 +2308,16 @@ func (bla *BlockLayoutAlgorithm) commitPositionedFloat(node *LayoutInputNode, po
 
 // nestedDocFragment wraps the result of laying out an embedded document.
 type nestedDocFragment struct {
-	fragment    *PhysicalFragment
-	rootOffsetX float64 // physical X offset of root within the iframe viewport
+	fragment *PhysicalFragment
+	// rootOffset is where the nested view places the root
+	// (placeRootInView), in the frame's content box, in the frame's logical
+	// coordinates.
+	rootOffset LogicalOffset
 }
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
 // document source. If so, fetches + lays out the nested document and returns
-// the root fragment and its X offset within the iframe viewport. Returns nil if not applicable.
+// the root fragment and its offset within the iframe viewport. Returns nil if not applicable.
 func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *nestedDocFragment {
 	if bla.node.DOMNode == nil {
 		return nil
@@ -2337,7 +2333,14 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  max(0, geom.BorderBoxSize.BlockSize-geom.BlockBorderPadding()),
 	}, wdm.WM)
 
-	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
+	nested := layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
+	if nested == nil {
+		return nil
+	}
+	return &nestedDocFragment{
+		fragment:   nested.Result.Fragment,
+		rootOffset: NewConverter(wdm, physSize).ToLogicalOffset(nested.RootOffset, geomSizeToOld(nested.Result.Fragment.Size)),
+	}
 }
 
 // layoutElement lays node out in space with the layout algorithm for its
