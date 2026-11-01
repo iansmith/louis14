@@ -117,6 +117,19 @@ type OutOfFlowLayoutPart struct {
 	// AddChild offset by this amount to land it in the block's coordinate
 	// space. Zero for normal block CBs (CB == this builder's content box).
 	cbOriginInBuilder LogicalOffset
+
+	// contentSize is the container's content-box size, in which the inline
+	// containing blocks' line boxes are found (the root's too, whose
+	// containing block is the viewport).
+	contentSize LogicalSize
+
+	// gridAreaContainingBlock, set by a grid container, returns the grid
+	// area that contains a candidate placed within one (its size and its
+	// offset in the content box); ok is false for other candidates. The
+	// grid branch of Blink's GetContainingBlockInfo
+	// (out_of_flow_layout_part.cc:798-834, :902-906 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	gridAreaContainingBlock func(OutOfFlowCandidate) (size LogicalSize, offset LogicalOffset, ok bool)
 }
 
 // NewOutOfFlowLayoutPart returns the OutOfFlowLayoutPart of the container
@@ -137,6 +150,10 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 		containingBlockWDM:     space.WritingDirection,
 		containingBlockSize:    paddingBoxSize,
 		containingBlockPadding: padding,
+		contentSize: LogicalSize{
+			InlineSize: max(0, paddingBoxSize.InlineSize-padding.InlineSum()),
+			BlockSize:  max(0, paddingBoxSize.BlockSize-padding.BlockSum()),
+		},
 	}
 	if space.IsRootElement {
 		// InitialContainingBlockFixedSize (:531-540): the viewport, with no
@@ -230,7 +247,16 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
 			continue
 		}
-		propagated = append(propagated, p.LayoutCandidates(p.layoutCandidate(candidate))...)
+		cbPart := p
+		if p.gridAreaContainingBlock != nil {
+			if size, offset, ok := p.gridAreaContainingBlock(candidate); ok {
+				gridPart := *p
+				gridPart.containingBlockSize, gridPart.cbOriginInBuilder = size, offset
+				gridPart.containingBlockPadding = LogicalEdges{}
+				cbPart = &gridPart
+			}
+		}
+		propagated = append(propagated, p.LayoutCandidates(cbPart.layoutCandidate(candidate))...)
 	}
 	return propagated
 }
@@ -240,11 +266,7 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 // container builder, or nil when inline produced none here.
 func (p *OutOfFlowLayoutPart) inlineContainingBlockPart(inline *html.Node) *OutOfFlowLayoutPart {
 	wdm := p.containingBlockWDM
-	contentSize := LogicalSize{
-		InlineSize: max(0, p.containingBlockSize.InlineSize-p.containingBlockPadding.InlineSum()),
-		BlockSize:  max(0, p.containingBlockSize.BlockSize-p.containingBlockPadding.BlockSum()),
-	}
-	blockContentPhys := ToPhysicalSize(contentSize, wdm.WM)
+	blockContentPhys := ToPhysicalSize(p.contentSize, wdm.WM)
 	inlineGeom := ComputeInlineContainerGeometry(p.containerBuilder.children, inline, wdm, blockContentPhys)
 	if inlineGeom == nil {
 		return nil

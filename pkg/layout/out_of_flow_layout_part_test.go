@@ -133,3 +133,75 @@ func TestFixedContainerBetweenNestedMulticols(t *testing.T) {
 		"fs":  {{130, 74, 10, 10}},
 	}, chrome152)
 }
+
+// TestContainedOOFContainingBlockIsPaddingBox pins the padding box as the
+// containing block of the out-of-flow boxes a positioned multicol and table
+// contain (Blink's default_containing_block_, out_of_flow_layout_part.cc:
+// 562-596 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): top:0;left:0 lands
+// inside the 5px border, not inside the 10px padding.
+func TestContainedOOFContainingBlockIsPaddingBox(t *testing.T) {
+	const box = `position:relative;padding:10px;border:5px solid;width:100px;height:50px;`
+	const oofs = `<div id=s style="position:absolute;top:0;left:0;width:6px;height:6px"></div>` +
+		`<div id=e style="position:absolute;bottom:0;right:0;width:6px;height:6px"></div>`
+	for _, tc := range []struct {
+		name, body string
+		want       map[string][]fragRect
+	}{
+		{"multicol", `<div style="columns:2;column-fill:auto;` + box + `">` + oofs + `</div>`,
+			map[string][]fragRect{"s": {{5, 5, 6, 6}}, "e": {{119, 69, 6, 6}}}},
+		{"table", `<table style="border-spacing:0;` + box + `"><tr><td>` + oofs + `</td></tr></table>`,
+			map[string][]fragRect{"s": {{5, 5, 6, 6}}, "e": {{89, 39, 6, 6}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font-size:0">`+tc.body)
+			checkRectsFrom(t, got, tc.want, chrome152)
+		})
+	}
+}
+
+// TestGridAreaContainingBlock pins a positioned grid's out-of-flow
+// children: one placed within a grid area is contained by the area, the
+// padding edge standing in for an auto line (GetContainingBlockInfo,
+// out_of_flow_layout_part.cc:798-834, :902-906;
+// GridLayoutAlgorithm::ComputeOutOfFlowItemContainingRect,
+// grid/grid_layout_algorithm.cc:2742-2791), and the static position is the
+// area's start, the padding box's when not placed (PlaceOutOfFlowItems,
+// :2602-2681, all @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The grid is
+// at (0,0) with a 5px border and 10px padding; columns 30px 40px, rows 20px
+// 50px.
+func TestGridAreaContainingBlock(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font-size:0">`+
+		`<div style="display:grid;position:relative;padding:10px;border:5px solid;width:100px;height:100px;grid-template-columns:30px 40px;grid-template-rows:20px 50px">`+
+		`<div id=a style="position:absolute;width:6px;height:6px"></div>`+
+		`<div id=b style="position:absolute;grid-column:2;grid-row:2;top:0;left:0;width:100%;height:4px"></div>`+
+		`<div id=c style="position:absolute;grid-column:2/3;right:0;width:10px;height:10px"></div>`+
+		`<div id=d style="position:absolute;top:0;left:0;width:7px;height:7px"></div>`+
+		`<div id=e style="position:absolute;grid-column:2;grid-row:2;width:8px;height:8px"></div>`+
+		`<div id=f style="position:absolute;grid-row:1/3;bottom:0;left:0;width:5px;height:50%"></div>`+
+		`</div>`)
+	checkRectsFrom(t, got, map[string][]fragRect{
+		"a": {{5, 5, 6, 6}},
+		"b": {{45, 35, 80, 4}},
+		"c": {{75, 5, 10, 10}},
+		"d": {{5, 5, 7, 7}},
+		"e": {{45, 35, 8, 8}},
+		"f": {{5, 50, 5, 35}},
+	}, chrome152)
+}
+
+// TestRootOutOfFlowLayoutPartContentSize pins the content size the root's
+// OutOfFlowLayoutPart finds inline containing blocks' line boxes in: the
+// root's own content box, not the viewport its containing block is.
+func TestRootOutOfFlowLayoutPartContentSize(t *testing.T) {
+	ctx := &LayoutContext{ViewportWidth: 800, ViewportHeight: 600}
+	wdm := WritingDirectionMode{WM: WritingModeHorizontalTB, Dir: DirectionLTR}
+	space := ConstraintSpace{WritingDirection: wdm, IsRootElement: true}
+	padding := LogicalEdges{InlineStart: 5, InlineEnd: 5, BlockStart: 2, BlockEnd: 2}
+	p := NewOutOfFlowLayoutPart(ctx, NewBoxFragmentBuilder(wdm), space, LogicalSize{InlineSize: 310, BlockSize: 204}, padding, 0)
+	if want := (LogicalSize{InlineSize: 300, BlockSize: 200}); p.contentSize != want {
+		t.Errorf("content size = %v, want %v (the root's content box)", p.contentSize, want)
+	}
+	if want := (LogicalSize{InlineSize: 800, BlockSize: 600}); p.containingBlockSize != want {
+		t.Errorf("containing block size = %v, want the viewport %v", p.containingBlockSize, want)
+	}
+}
