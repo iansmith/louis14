@@ -393,3 +393,61 @@ func TestFirstFontAspectRatio_MissingMetricFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestCSSFontSelector_FontSizeAdjustZeroAspectUnadjusted (LOU-453): when the
+// primary font's metric is present but measures 0 (a 水 or "0" glyph with a
+// zero advance), the aspect is 0 and the used size stays the computed size.
+// Mirrors FontSizeFunctions::MetricsMultiplierAdjustedFontSize, which returns
+// nullopt for !aspect_value (core/css/font_size_functions.cc:292-295 @
+// 5992657f556bcd9d207a4aca187488462f027cab), so FontBuilder::
+// UpdateAdjustedSize keeps SetAdjustedSize(computed_size)
+// (core/css/resolver/font_builder.cc:393/:413-416 @ the same SHA).
+// IcTestZeroWidth's 水 and ChTestZeroWidthZero's "0" have zero advances
+// (WPT css-values resources).
+func TestCSSFontSelector_FontSizeAdjustZeroAspectUnadjusted(t *testing.T) {
+	fr := NewFontRegistry()
+	registerTestFace(t, fr, "LOU453-IcZero", "IcTestZeroWidth.woff2", fetchCSSValuesResource)
+	registerTestFace(t, fr, "LOU453-ChZero", "ChTestZeroWidthZero.woff", fetchCSSValuesResource)
+	for _, tc := range []struct{ family, adjust string }{
+		{"LOU453-IcZero", "ic-width 0.5"},
+		{"LOU453-ChZero", "ch-width 0.5"},
+	} {
+		if f := createFontFor(fr, "20px", tc.family, tc.adjust); f.AdjustedSize != 20 {
+			t.Errorf("%s / %s: AdjustedSize = %v, want 20 (unadjusted)", tc.family, tc.adjust, f.AdjustedSize)
+		}
+	}
+}
+
+// TestCSSFontSelector_FontSizeAdjustIcHeightVmtx (LOU-453): the ic-height
+// aspect of a font with the 水 glyph and a vmtx table is 水's vmtx advance
+// over the size, not its horizontal advance or the FontMetrics Height
+// fallback. Mirrors AspectValue kIcHeight → SimpleFontData::
+// IdeographicAdvanceHeight → OpenTypeVerticalData::AdvanceHeight
+// (core/css/font_size_functions.cc:154-160 and platform/fonts/
+// simple_font_data.cc:449-459 @ 5992657f556bcd9d207a4aca187488462f027cab).
+// adobe-fonts/CSSHWOrientationTest.otf (the font of Blink's
+// FontTest.IdeographicFullWidthUprightCjkVmtx): 水 is 500 of 1000 units wide
+// and 1000 units tall in vmtx, so ic-width aspect 0.5, ic-height aspect 1.
+// At 20.4px the Height fallback (lroundf(ascent) + lroundf(descent) = 20)
+// would give aspect 20/20.4, so the size tells the vmtx path apart.
+func TestCSSFontSelector_FontSizeAdjustIcHeightVmtx(t *testing.T) {
+	fr := NewFontRegistry()
+	p := registerTestFace(t, fr, "LOU453-HWOrientation", "CSSHWOrientationTest.otf", fetchAdobeTestFont)
+	if !typefaceForPath(p).vertical.HasVerticalMetrics() {
+		t.Fatal("fixture: CSSHWOrientationTest.otf must have vhea/vmtx")
+	}
+	// ic-width at an integer size: louis14 shapes at the rounded size
+	// (textshape opens fonts at integer sizes), so a fractional size would
+	// test that limitation, not the aspect.
+	for _, tc := range []struct {
+		size, adjust string
+		want         float64
+	}{
+		{"20.4px", "ic-height 0.5", 10.2},
+		{"20px", "ic-width 0.5", 20},
+	} {
+		if f := createFontFor(fr, tc.size, "LOU453-HWOrientation", tc.adjust); f.AdjustedSize != tc.want {
+			t.Errorf("%s at %s: AdjustedSize = %v, want %v", tc.adjust, tc.size, f.AdjustedSize, tc.want)
+		}
+	}
+}
