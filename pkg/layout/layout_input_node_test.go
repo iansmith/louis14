@@ -71,11 +71,14 @@ func TestNextSibling(t *testing.T) {
 	}
 }
 
-// TestMulticol_ContentNodeAdoptsChildren: the multicol's anonymous content
-// node (louis14's LayoutMultiColumnFlowThread analog) becomes the parent of
-// the multicol's children, so a spanner directly inside the multicol finds
-// its sibling spanners through the content node's children list.
-func TestMulticol_ContentNodeAdoptsChildren(t *testing.T) {
+// TestMulticol_LayoutKeepsParentLinks: multicol layout leaves the
+// multicol the parent of its children, so a spanner finds its sibling
+// spanners through the multicol's own children list. Blink has no flow
+// thread at a9f50e522efa9005e6ec765a9a785c74f5c2c86b: ColumnLayoutAlgorithm
+// lays column content out on the multicol node itself
+// (column_layout_algorithm.cc:940-945) and walks spanners with
+// NextSibling (:207-209), so nothing re-parents the children.
+func TestMulticol_LayoutKeepsParentLinks(t *testing.T) {
 	styles := map[*html.Node]*css.Style{}
 	s1 := makeNode("div")
 	styles[s1] = makeStyle("display", "block", "column-span", "all", "height", "10px")
@@ -92,12 +95,5 @@ func TestMulticol_ContentNodeAdoptsChildren(t *testing.T) {
 		Build()
 	NewMulticolLayoutAlgorithm(testContext(), mcNode, space).Layout()
 
-	content := mcNode.contentNodeCache
-	if content == nil {
-		t.Fatal("multicol layout built no content node")
-	}
-	requireParentLinks(t, content)
-	if content.parent != nil {
-		t.Errorf("content node parent = %p, want nil (it is not in the multicol's children list)", content.parent)
-	}
+	requireParentLinks(t, mcNode)
 }

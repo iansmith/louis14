@@ -198,8 +198,12 @@ func (p *OutOfFlowLayoutPart) Run() []OutOfFlowCandidate {
 // OutOfFlowLayoutPart::IsContainingBlockForCandidate
 // (out_of_flow_layout_part.cc:2746-2791 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an inline containing block is
-// handled by LayoutCandidates, and fragmentainers never construct one.
+// handled by LayoutCandidates. A column box carries the multicol's node but
+// is never a containing block (:2757-2759).
 func (p *OutOfFlowLayoutPart) IsContainingBlockForCandidate(candidate OutOfFlowCandidate) bool {
+	if p.containerBuilder.IsFragmentainerBoxType() {
+		return false
+	}
 	if candidate.IsFixedPosition {
 		return p.isFixedContainer
 	}

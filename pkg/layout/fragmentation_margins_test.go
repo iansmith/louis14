@@ -104,7 +104,9 @@ func checkRectsFrom(t *testing.T, got, want map[string][]fragRect, source string
 func walkFragmentsByID(frag *PhysicalFragment, ids map[*html.Node]string, visit func(id string, x, y float64, f *PhysicalFragment)) {
 	var walk func(f *PhysicalFragment, x, y float64)
 	walk = func(f *PhysicalFragment, x, y float64) {
-		if id, ok := ids[f.Node]; ok {
+		// A column box carries the multicol's node but is no box of it
+		// (IsCSSBox; getClientRects lists the multicol's own fragments).
+		if id, ok := ids[f.Node]; ok && !f.IsFragmentainerBox() {
 			visit(id, x, y, f)
 		}
 		if f.BoxData != nil {

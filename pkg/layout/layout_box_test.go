@@ -154,7 +154,7 @@ func walkFragmentsForNode(frag *PhysicalFragment, node *LayoutInputNode, parentO
 			InlineOffset: parentOffset.InlineOffset + ch.Offset.LeftF64(),
 			BlockOffset:  parentOffset.BlockOffset + ch.Offset.TopF64(),
 		}
-		if ch.Fragment.LayoutNode == node {
+		if ch.Fragment.isFragmentOf(node) {
 			visit(ch.Fragment, off)
 			continue
 		}
