@@ -689,8 +689,11 @@ func CalculateInitialFragmentGeometry(
 	}
 	inlineVal, _ := style.Get(inlineProp)
 
-	if space.IsFixedInlineSize {
-		// Parent (e.g. flex) predetermined the size. AvailableSize is border-box.
+	if space.IsFixedInlineSize || space.IsAnonymous {
+		// Parent (e.g. flex) predetermined the size, or the fragment is
+		// anonymous (a column): AvailableSize is the border-box
+		// (ComputeInlineSizeForFragment, length_utils.cc:606-608 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		borderBoxInline = space.AvailableSize.InlineSize.Float64()
 	} else if IsIntrinsicKeyword(inlineVal) {
 		minMax := ComputeMinMaxSizes(ctx, node, space)
@@ -719,22 +722,21 @@ func CalculateInitialFragmentGeometry(
 		}
 		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
 		inlineSizeIsAuto = true
-	} else if needsShrinkToFit(style) || space.IsInsideFlexibleBox ||
-		(space.InlineAutoBehavior == AutoSizeBehaviorFitContent && !isNonStretchableDisplay(style)) {
+	} else if space.InlineAutoBehavior == AutoSizeBehaviorFitContent && !isNonStretchableDisplay(style) {
+		// The parent's space decides an auto inline-size: fit-content
+		// shrinks to fit (floats, out-of-flow and atomic inline boxes, flex
+		// items and the children a block container does not stretch), a
+		// stretch fills the available space (ComputeInlineSizeForFragment-
+		// Internal, length_utils.cc:556-569 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An aspect-ratio that
+		// may apply (may_apply_aspect_ratio, :535-551) turns a
+		// kStretchImplicit into a transfer from the block-size, below.
+		//
 		// A table's auto inline-size is not the space's to decide: Blink
 		// returns TableNode::ComputeTableInlineSize for it before reading
-		// the auto behaviour (ComputeInlineSizeForFragment, length_utils.cc:
-		// 610-612 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+		// the auto behaviour (ComputeInlineSizeForFragment, :610-612), and
 		// louis14's TableLayoutAlgorithm sizes an auto-width table itself
 		// from the available size this function leaves it.
-		//
-		// Shrink-to-fit: floats, abs-pos, inline-block (including orthogonal
-		// ones), flex items, and any child whose parent's space does not
-		// stretch an auto inline-size (fit-content, length_utils.cc:556-569 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: that
-		// function's may_apply_aspect_ratio rule, under which an aspect-ratio
-		// with a definite block-size turns kStretchImplicit into fit-content;
-		// louis14 treats both stretch behaviours alike.
 		minMax := ComputeMinMaxSizes(ctx, node, space)
 		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
@@ -915,7 +917,7 @@ func CalculateInitialFragmentGeometry(
 				resolvedBlock = contentBlock + geom.BlockBorderPadding()
 			}
 			borderBoxBlock = resolvedBlock
-		} else if inlineSizeIsAuto && borderBoxBlock != Indefinite {
+		} else if inlineSizeIsAuto && mayTransferAspectRatioToInline(blockVal, space) {
 			// CSS Sizing 4 §5.1: reverse direction — derive inline from block
 			// when inline-size is auto and block-size is definite.
 			if style.GetBoxSizing() == "border-box" {
@@ -962,6 +964,29 @@ func CalculateInitialFragmentGeometry(
 
 	geom.BorderBoxSize = LogicalSize{InlineSize: borderBoxInline, BlockSize: borderBoxBlock}
 	return geom
+}
+
+// mayTransferAspectRatioToInline reports whether an auto inline-size takes
+// its size from the aspect-ratio and the (definite) border-box block-size.
+// A fit-content inline-size does: its min/max-content sizes are the
+// transferred size (Blink's ComputeMinMaxSizes over the aspect-ratio). A
+// stretching one does only when may_apply_aspect_ratio holds: the
+// block-size is not auto, or the space stretches an auto block-size
+// explicitly; kStretchExplicit always stretches. Mirrors
+// ComputeInlineSizeForFragmentInternal (length_utils.cc:535-569 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// blockVal is the style's block-size value.
+func mayTransferAspectRatioToInline(blockVal string, space ConstraintSpace) bool {
+	switch space.InlineAutoBehavior {
+	case AutoSizeBehaviorFitContent:
+		return true
+	case AutoSizeBehaviorStretchExplicit:
+		return false
+	}
+	if blockVal == "" || blockVal == "auto" {
+		return space.BlockAutoBehavior == AutoSizeBehaviorStretchExplicit
+	}
+	return true
 }
 
 // computeContentMinMaxOnce lazily computes content-based MinMaxSizes (bypassing

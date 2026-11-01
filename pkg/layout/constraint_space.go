@@ -68,14 +68,25 @@ type ConstraintSpace struct {
 	// on the first layout pass before the cross-size is determined.
 	IsInsideFlexibleBox bool
 
-	// InlineAutoBehavior is the behaviour of an auto inline-size: stretch to
-	// the available space or fit-content. Mirrors Blink's
-	// ConstraintSpace::InlineAutoBehavior (constraint_space.h:462-465 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's BlockAutoBehavior
-	// (:466-468) is not ported. CalculateInitialFragmentGeometry reads it only
-	// where louis14 has no style-derived shrink-to-fit rule (needsShrinkToFit,
-	// IsInsideFlexibleBox, orthogonal roots).
+	// InlineAutoBehavior and BlockAutoBehavior are the behaviours of an
+	// auto inline-size and block-size: stretch to the available space or
+	// fit-content. The parent decides them; both start at fit-content.
+	// Mirrors Blink's ConstraintSpace::InlineAutoBehavior / BlockAutoBehavior
+	// (constraint_space.h:462-468 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// CalculateInitialFragmentGeometry reads InlineAutoBehavior for a
+	// parallel box and BlockAutoBehavior for may_apply_aspect_ratio only;
+	// an auto block-size is not stretched from it (parents fix the
+	// block-size instead).
 	InlineAutoBehavior AutoSizeBehavior
+	BlockAutoBehavior  AutoSizeBehavior
+
+	// IsAnonymous marks a space whose fragment is anonymous, such as a
+	// column of a multicol: its inline-size is the available inline-size,
+	// its block-size is its content's, and its children see its available
+	// and percentage-resolution block-sizes. Mirrors Blink's
+	// ConstraintSpace::IsAnonymous (constraint_space.h:398-401 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsAnonymous bool
 
 	// IsFixedBlockSizeIndefinite is true when IsFixedBlockSize is true but the
 	// block-size comes from the first-pass flex layout rather than a real definite size.
@@ -387,14 +398,10 @@ func NewConstraintSpaceBuilder(parentWDM, childWDM WritingDirectionMode, isNewFC
 	b.space.PercentageResolutionSize = geometry.LogicalSize{
 		BlockSize: layoutunit.IndefiniteSize,
 	}
-	// louis14 transitional default: kStretchImplicit, where Blink's builder
-	// starts at kFitContent (constraint_space.h:1619-1621 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and every stretching parent
-	// sets it. Block containers, column fragmentainers and spanners set it as
-	// Blink does; the remaining parents (inline, flex, grid, table, OOF)
-	// still rely on the style-derived shrink-to-fit rules, so they keep
-	// today's stretch default until they set it themselves.
-	b.space.InlineAutoBehavior = AutoSizeBehaviorStretchImplicit
+	// InlineAutoBehavior and BlockAutoBehavior keep their zero value,
+	// fit-content, as Blink's builder does (constraint_space.h:1619-1621 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a stretching parent sets
+	// them.
 	// Default to "not inside a table section". Table layout calls
 	// SetTableSectionIndex explicitly when threading sizing data.
 	b.space.TableSectionIndex = -1
@@ -501,17 +508,39 @@ func (b *ConstraintSpaceBuilder) SetIsInsideFlexibleBox(v bool) *ConstraintSpace
 	return b
 }
 
-// SetInlineAutoBehavior sets the behaviour of the child's auto inline-size.
-// Mirrors Blink's ConstraintSpaceBuilder::SetInlineAutoBehavior
+// SetInlineAutoBehavior sets the behaviour of an auto size along the
+// parent's inline axis: the child's inline axis, or its block axis when it
+// is orthogonal. Mirrors Blink's ConstraintSpaceBuilder::SetInlineAutoBehavior
 // (constraint_space_builder.h:272-280 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which writes the block-axis
-// behaviour for an orthogonal child; louis14 has no BlockAutoBehavior, so an
-// orthogonal child's value is dropped (its auto inline-size is decided by
-// the orthogonal-root rules in CalculateInitialFragmentGeometry).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *ConstraintSpaceBuilder) SetInlineAutoBehavior(v AutoSizeBehavior) *ConstraintSpaceBuilder {
 	if b.parallel {
 		b.space.InlineAutoBehavior = v
+	} else {
+		b.space.BlockAutoBehavior = v
 	}
+	return b
+}
+
+// SetBlockAutoBehavior sets the behaviour of an auto size along the
+// parent's block axis. Mirrors Blink's
+// ConstraintSpaceBuilder::SetBlockAutoBehavior
+// (constraint_space_builder.h:282-290 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetBlockAutoBehavior(v AutoSizeBehavior) *ConstraintSpaceBuilder {
+	if b.parallel {
+		b.space.BlockAutoBehavior = v
+	} else {
+		b.space.InlineAutoBehavior = v
+	}
+	return b
+}
+
+// SetIsAnonymous marks the space anonymous. Mirrors Blink's
+// ConstraintSpaceBuilder::SetIsAnonymous (constraint_space_builder.h:377 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetIsAnonymous(v bool) *ConstraintSpaceBuilder {
+	b.space.IsAnonymous = v
 	return b
 }
 

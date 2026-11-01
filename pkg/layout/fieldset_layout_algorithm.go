@@ -525,7 +525,6 @@ func (fla *FieldsetLayoutAlgorithm) createConstraintSpaceForLegend(legend *Layou
 		SetAvailableSize(available).
 		SetPercentageResolutionSize(available).
 		SetPercentageResolutionInlineSize(available.InlineSize).
-		SetInlineAutoBehavior(AutoSizeBehaviorFitContent).
 		Build()
 }
 

@@ -666,6 +666,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		minAvailBlock = blockForPct
 	}
 	minBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetAvailableSize(LogicalSize{InlineSize: minAvailable, BlockSize: minAvailBlock}).
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
 	if blockForPct != Indefinite {
@@ -705,6 +706,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 
 	// Max-content: never wrap.
 	maxBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: minAvailBlock}).
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
 	if blockForPct != Indefinite {
@@ -954,6 +956,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 
 		childWDM := NewWritingDirectionMode(childStyle)
 		csb := NewConstraintSpaceBuilder(wdm, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
@@ -1013,6 +1016,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				crossContent = 0
 			}
 			childSpace = NewConstraintSpaceBuilder(wdm, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{
@@ -1228,6 +1232,7 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 	childBP := childGeom.InlineBorderPadding()
 	margins := ResolveMargins(cs, childWDM, 0)
 	childSpace := NewConstraintSpaceBuilder(containerWDM, childWDM, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
@@ -1593,6 +1598,7 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 // Shared by measureBlockMinMax and the multicol spanner walk.
 func buildParallelChildMinMaxSpace(space ConstraintSpace, childWDM WritingDirectionMode, ctx *LayoutContext, nodeBlockSize float64, isNewFC bool) ConstraintSpace {
 	csBuilder := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, isNewFC).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
@@ -1845,6 +1851,7 @@ func measureOrthogonalChild(
 	// pass parent {InlineSize:Indefinite, BlockSize:childInline}.
 	newChildSpace := func(childInline float64) ConstraintSpace {
 		return NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetOrthogonalFallbackInlineSize(fallback).
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: childInline}).
