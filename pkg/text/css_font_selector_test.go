@@ -342,3 +342,54 @@ func TestCSSFontSelector_FontSizeAdjustChWidthNoZeroGlyph(t *testing.T) {
 		t.Errorf("(AdjustedSize, ZeroWidth) = (%v, %v), want (10, 5)", f.AdjustedSize, f.ZeroWidth)
 	}
 }
+
+// TestCSSFontSelector_FontSizeAdjustIcNoWaterGlyph (LOU-453): font-size-adjust
+// ic-width / ic-height read the U+0020 primary font's optional 水 advance and
+// take aspect 1.0 when the font has no 水 glyph, rather than measuring the
+// .notdef glyph shaping substitutes. Mirrors Blink's AspectValue kIcWidth /
+// kIcHeight (core/css/font_size_functions.cc:148-160 @
+// 5992657f556bcd9d207a4aca187488462f027cab), which reads
+// SimpleFontData::IdeographicAdvanceWidth / IdeographicAdvanceHeight
+// (platform/fonts/simple_font_data.cc:437-459 @ the same SHA) and keeps
+// aspect_value = 1.0 (:136) when the optional is empty. The builtin serif
+// (LiberationSerif) has no 水; its .notdef is narrower than 1em and its
+// FontMetrics height taller, so the old measurement moved the used size.
+// Ahem has 水 (1em advance) and no vmtx, so ic-height reads the FontMetrics
+// Height fallback, 1em — the font-size-adjust-ic-height fallback case.
+func TestCSSFontSelector_FontSizeAdjustIcNoWaterGlyph(t *testing.T) {
+	sel := NewCSSFontSelector(DefaultFontConfig())
+	if createFontWith(sel, "20px", "serif").HasIdeographicInlineSize {
+		t.Fatal("fixture: the builtin serif must have no 水 glyph")
+	}
+	for _, tc := range []struct {
+		family, adjust string
+		want           float64
+	}{
+		{"serif", "ic-width 1.5", 30},
+		{"serif", "ic-height 1.5", 30},
+		{"serif", "ic-width 0.75", 15},
+		{"serif", "ic-height 0.75", 15},
+		{"Ahem", "ic-width 0.5", 10},
+		{"Ahem", "ic-height 0.5", 10},
+	} {
+		f := createFontWith(sel, "20px", tc.family, "font-size-adjust", tc.adjust)
+		if f.AdjustedSize != tc.want {
+			t.Errorf("%s / %s: AdjustedSize = %v, want %v", tc.family, tc.adjust, f.AdjustedSize, tc.want)
+		}
+	}
+}
+
+// TestFirstFontAspectRatio_MissingMetricFallback (LOU-453): a primary font
+// with no usable cap-height or x-height has aspect 1.0, as Blink's
+// AspectValue keeps aspect_value = 1.0 unless CapHeight() > 0 (kCapHeight)
+// or HasXHeight() — has_x_height_ && x_height_ > 0 — (kExHeight)
+// (core/css/font_size_functions.cc:136-166 and platform/fonts/
+// font_metrics.h:107 @ 5992657f556bcd9d207a4aca187488462f027cab).
+func TestFirstFontAspectRatio_MissingMetricFallback(t *testing.T) {
+	d := simpleFontData{platformData: fontPlatformData{size: 20}, ideographic: new(ideographicAdvance)}
+	for _, metric := range []css.FontSizeAdjustMetric{css.FontSizeAdjustCapHeight, css.FontSizeAdjustExHeight} {
+		if got := firstFontAspectRatio(metric, d, ""); got != 1 {
+			t.Errorf("metric %v: aspect = %v, want 1", metric, got)
+		}
+	}
+}
