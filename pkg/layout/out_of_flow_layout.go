@@ -868,6 +868,9 @@ func (p *fragmentationContextOOFPart) multicolFragments(pending map[*LayoutInput
 	for _, ch := range *p.fragmentationContextChildren() {
 		walk(ch.fragment)
 	}
+	for i, m := range multicols {
+		checkPhysicalFragmentsMatch("multicolFragments", m, fragments[i])
+	}
 	return multicols, fragments
 }
 
@@ -1074,6 +1077,13 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	}
 	if len(found) == 0 {
 		return containingBlockInfo{}, false
+	}
+	if checkPhysicalFragments {
+		walked := make([]*PhysicalFragment, len(found))
+		for i, f := range found {
+			walked[i] = f.fragment
+		}
+		checkPhysicalFragmentsMatch("GetContainingBlockInfo", cbNode, walked)
 	}
 	first := found[0]
 	totalBlockSize := 0.0

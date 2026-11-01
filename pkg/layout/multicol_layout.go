@@ -1100,7 +1100,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutChildren() BreakStatus {
 		// 640-643 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); those whose
 		// containing block continues after the spanner wait.
 		mla.HandleOofFragmentation(func(cb *LayoutInputNode) bool {
-			return breakTokenTreeContainsNode(walker.nextColumnToken, cb)
+			unfinished := breakTokenTreeContainsNode(walker.nextColumnToken, cb)
+			checkUnfinishedMatch("spanner", cb, unfinished)
+			return unfinished
 		})
 		status := mla.LayoutSpanner(entry.DescendantNode, entry.BreakToken, &marginStrut)
 
@@ -1939,7 +1941,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			// advanced past a column that ends at a spanner).
 			lineBreakToken := columns[len(columns)-1].result.BreakToken
 			part.isContainingBlockUnfinished = func(cb *LayoutInputNode) bool {
-				return breakTokenTreeContainsNode(lineBreakToken, cb)
+				unfinished := breakTokenTreeContainsNode(lineBreakToken, cb)
+				checkUnfinishedMatch("balancing", cb, unfinished)
+				return unfinished
 			}
 			part.LayoutFragmentainerDescendants(&lineDescendants, mla.fragmentainerProgression())
 			actualColumnCount += columnBalancingInfo.NumNewColumns
