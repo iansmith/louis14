@@ -867,6 +867,23 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// complete-path LayoutCandidates is skipped — the outer fragmentation
 	// root resolves them per fragmentainer in Cmt-3.
 	var propagatedOOF []OutOfFlowCandidate
+	// Candidates whose containing block is an inline in the column content
+	// (the anonymous column content propagates them unresolved) resolve
+	// here against the inline's fragments in the columns. Blink computes the
+	// inline's geometry across fragmentainers
+	// (ComputeInlineContainingBlocksForFragmentainer,
+	// out_of_flow_layout_part.cc:943-1011 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 unions the inline's
+	// fragments as placed in the columns, which matches for an inline
+	// within one column.
+	if len(builder.outOfFlowCandidates) > 0 {
+		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
+		if len(inlineCBCandidates) > 0 {
+			unresolved, extra := layoutInlineContainingBlockCandidates(mla.ctx, builder, wdm,
+				LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize}, mla.geom, inlineCBCandidates)
+			builder.outOfFlowCandidates = append(append(regularCandidates, unresolved...), extra...)
+		}
+	}
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := mla.style != nil && mla.style.GetPosition() != css.PositionStatic
 		if isPositioned && !nestedDeferredOOFs {

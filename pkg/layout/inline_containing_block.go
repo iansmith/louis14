@@ -234,7 +234,9 @@ func (g *InlineContainingBlockGeometry) InlineCBLogical(
 
 // BuildPositionedInlineMap walks the inline item stream and returns a map
 // from each OOF item to its innermost positioned-inline ancestor's DOM node
-// (or absent if no positioned-inline ancestor exists).
+// (or absent if no positioned-inline ancestor exists), and a map from each
+// atomic inline inside one to its propagated OOFs' inline containers (see
+// below).
 //
 // A "positioned inline" here is an inline element whose computed `position`
 // is non-static (relative or sticky — absolute/fixed inlines are themselves
@@ -253,9 +255,18 @@ func (g *InlineContainingBlockGeometry) InlineCBLogical(
 //
 // Mirrors Blink's stack of positioned inline ancestors maintained during
 // inline layout, used to set NGOutOfFlowPositionedNode::inline_container.
-func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
+//
+// The second map gives, for each atomic inline (an inline-block) inside a
+// containing-block inline, the inline containers of its propagated OOF
+// descendants: Blink propagates an atomic inline's OOF descendants into the
+// enclosing inline box fragments, the innermost of which that can contain a
+// descendant tags it (InlineLayoutStateStack::BoxData::CreateBoxFragment,
+// inline/inline_box_state.cc:1066-1091; IsInlineContainerForNode /
+// MoveOutOfFlowDescendantCandidatesToDescendants, fragment_builder.cc:27-32,
+// :712-733 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func BuildPositionedInlineMap(items []*InlineItem) (map[*InlineItem]*html.Node, map[*InlineItem]AtomicInlineContainers) {
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Each stack entry records the inline ancestor node and whether it also
 	// contains fixed-position descendants. A non-static inline contains only
@@ -267,7 +278,21 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 		containsFixed bool
 	}
 	var stack []inlineCB
+	// container returns the innermost inline on the stack that contains an
+	// absolute (isFixed false) or fixed descendant, or nil. Fixed
+	// descendants are only contained by a filtered inline, not by a merely
+	// position:relative one, so an inner non-CB-for-fixed inline can sit
+	// above an outer filtered inline that IS a valid CB for fixed.
+	container := func(isFixed bool) *html.Node {
+		for idx := len(stack) - 1; idx >= 0; idx-- {
+			if !isFixed || stack[idx].containsFixed {
+				return stack[idx].node
+			}
+		}
+		return nil
+	}
 	out := make(map[*InlineItem]*html.Node)
+	var atomic map[*InlineItem]AtomicInlineContainers
 	for _, item := range items {
 		switch item.Type {
 		case InlineItemOpenTag:
@@ -289,28 +314,35 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 				}
 			}
 		case InlineItemOutOfFlow:
-			if len(stack) == 0 {
-				continue
-			}
-			// Fixed descendants are only contained by a filtered inline, not by
-			// a merely position:relative one. Walk the stack from the top to
-			// the innermost entry that satisfies the requirement — an inner
-			// non-CB-for-fixed inline (e.g. position:relative) can sit above an
-			// outer filtered inline that IS a valid CB for fixed.
 			isFixed := item.Style != nil && item.Style.GetPosition() == css.PositionFixed
-			idx := len(stack) - 1
-			if isFixed {
-				for idx >= 0 && !stack[idx].containsFixed {
-					idx--
-				}
-				if idx < 0 {
-					continue
-				}
+			if node := container(isFixed); node != nil {
+				out[item] = node
 			}
-			out[item] = stack[idx].node
+		case InlineItemAtomicInline:
+			if len(stack) > 0 {
+				if atomic == nil {
+					atomic = make(map[*InlineItem]AtomicInlineContainers)
+				}
+				atomic[item] = AtomicInlineContainers{Absolute: container(false), Fixed: container(true)}
+			}
 		}
 	}
-	return out
+	return out, atomic
+}
+
+// AtomicInlineContainers are the inline containers of an atomic inline's
+// propagated absolute and fixed descendants (nil: none).
+type AtomicInlineContainers struct {
+	Absolute, Fixed *html.Node
+}
+
+// For returns the inline container of a propagated candidate that has none
+// yet.
+func (c AtomicInlineContainers) For(cand OutOfFlowCandidate) *html.Node {
+	if cand.IsFixedPosition {
+		return c.Fixed
+	}
+	return c.Absolute
 }
 
 // inlineEstablishesContainingBlock reports whether an inline-level element

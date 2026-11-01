@@ -316,7 +316,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// up front because the line-breaker emits OpenTag/CloseTag once per
 	// inline item — not per line a span spans across — so a per-line
 	// stack would miss spans that wrap across multiple lines.
-	positionedInlineMap := BuildPositionedInlineMap(itemsData.Items)
+	positionedInlineMap, atomicInlineContainers := BuildPositionedInlineMap(itemsData.Items)
 
 	// Phase 1c: Lay out inline floats (compute their size only). Positioning
 	// is deferred until line breaking so that floats declared after a forced
@@ -1129,7 +1129,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers,
 		)
 		openInlineStack = residualStack
 		// no Blink analog for the line box type: a zero-height line stands
@@ -1726,7 +1726,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true)
+	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true, nil)
 	return frag, h, a
 }
 
@@ -1755,6 +1755,7 @@ func createLineBoxEx(
 	enteringSpanStack []*InlineItem,
 	firstLineStyle *css.Style,
 	isFirstLine bool,
+	atomicInlineContainers map[*InlineItem]AtomicInlineContainers,
 ) (*PhysicalFragment, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, residualSpanStack, oofCandidates)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
@@ -2688,6 +2689,9 @@ func createLineBoxEx(
 					blockBP := childGeom.Border.BlockStart + childGeom.Padding.BlockStart
 					for _, cand := range r.LayoutResult.PropagatedOOFCandidates {
 						adj := cand
+						if adj.InlineContainer == nil {
+							adj.InlineContainer = atomicInlineContainers[r.Item].For(adj)
+						}
 						adj.StaticPosition.Offset.InlineOffset += inlinePos + inlineBP
 						adj.StaticPosition.Offset.BlockOffset += blockPos + blockBP
 						lineOOFCandidates = append(lineOOFCandidates, adj)
