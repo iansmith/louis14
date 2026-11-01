@@ -1405,8 +1405,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
 		spanResult = fullResult
 		// The spanner's own break token resumes it in the next outer
-		// fragmentainer (Blink container_builder_.AddBreakToken).
-		if mla.isConstrainedByOuterFragmentation() && fullResult.BreakToken != nil {
+		// fragmentainer: AddResult collects a child's break token whenever
+		// the multicol takes part in block fragmentation
+		// (FragmentBuilder::PropagateFromFragment, fragment_builder.cc:
+		// 455-464 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if mla.space.HasBlockFragmentation && fullResult.BreakToken != nil {
 			// A box that fits with only overflowing content left (its
 			// token at block end) continues in a parallel flow; that is
 			// not an in-flow break inside (Blink
