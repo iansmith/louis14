@@ -1386,6 +1386,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		fragOff := mla.fragmentainerOffsetForChildren() + blockOffset
 		status, isForced := BreakBeforeChildIfNeeded(mla.space, spanner, fullResult,
 			fragOff, mla.fragmentainerCapacityForChildren(), mla.hasProcessedFirstChild, mla.containerBuilder)
+		// The multicol keeps no early breaks yet: Blink's LayoutChildren
+		// returns kNeedsEarlierBreak for a better breakpoint before an
+		// earlier spanner and relays out (cla.cc:338-343, :635-637, :653-655
+		// @ a9f50e522efa), which needs the BreakStatus return shape and a
+		// relayout louis14's multicol lacks (ledger L60). Dropping the
+		// breakpoint keeps AttemptSoftBreak breaking before this spanner.
+		mla.containerBuilder.SetEarlyBreak(nil)
 		if status == BreakStatusBrokeBefore {
 			// BreakBeforeChild (fragmentation_utils.cc:943-976 @
 			// a9f50e522efa): report the space shortage so a balancing outer

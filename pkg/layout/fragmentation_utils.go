@@ -18,17 +18,14 @@ import (
 //     delegates to)
 //   - BreakBeforeChild + AttemptSoftBreak helpers
 //
+// Early breaks (LOU-487): UpdateEarlyBreakAtBlockChild, AttemptSoftBreak
+// and FinishFragmentation's kNeedsEarlierBreak; the EarlyBreak type and
+// EnterEarlyBreakInChild / IsEarlyBreakTarget are in early_break.go, the
+// relayout in BlockLayoutAlgorithm.relayoutAndBreakEarlier.
+//
 // Out of scope (deferred):
-//   - Block-level EarlyBreak storage / RelayoutAndBreakEarlier retry (the
-//     line variant, for orphans / widows, is in early_break.go)
 //   - Paginated PageName interaction → not multicol
 //   - FlexColumnBreakInfo per-column flex info → not multicol
-//   - The soft-break half of LayoutResult.InitialBreakBefore /
-//     FinalBreakAfter propagation: Blink's BreakBeforeChild propagates the
-//     pushed child's break values when the break is not forced
-//     (fragmentation_utils.cc:970-972 @ a9f50e522efa); louis14 does not
-//     (ledger L37). Propagation from added children is ported
-//     (BoxFragmentBuilder.PropagateChildBreakValues, LOU-400).
 //   - Flex/grid row-item break propagation → not multicol
 
 // ShouldAvoidBreakInside returns true if the layout result should not be
@@ -336,12 +333,27 @@ func CalculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResul
 	if layoutResult == nil {
 		return BreakAppealPerfect
 	}
+	considerInsideAvoid := layoutResult.BreakToken != nil &&
+		!layoutResult.BreakToken.IsBreakBefore
+	return calculateBreakAppealInside(space, layoutResult, layoutResult.BreakAppeal, considerInsideAvoid)
+}
+
+// CalculateBreakAppealInsideWithHypotheticalAppeal is the appeal of breaking
+// inside a child that did not break, at a breakpoint of hypotheticalAppeal
+// found inside it (its early break): break-inside:avoid on the child always
+// applies. Blink's CalculateBreakAppealInside with hypothetical_appeal set
+// (fragmentation_utils.cc:274-294 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// Go has no optional parameters.
+func CalculateBreakAppealInsideWithHypotheticalAppeal(space ConstraintSpace, layoutResult *LayoutResult, hypotheticalAppeal BreakAppeal) BreakAppeal {
+	return calculateBreakAppealInside(space, layoutResult, hypotheticalAppeal, true)
+}
+
+// calculateBreakAppealInside is the shared body of the two
+// CalculateBreakAppealInside forms (fragmentation_utils.cc:278-313).
+func calculateBreakAppealInside(space ConstraintSpace, layoutResult *LayoutResult, appeal BreakAppeal, considerInsideAvoid bool) BreakAppeal {
 	if layoutResult.HasForcedBreak {
 		return BreakAppealPerfect
 	}
-	appeal := layoutResult.BreakAppeal
-	considerInsideAvoid := layoutResult.BreakToken != nil &&
-		!layoutResult.BreakToken.IsBreakBefore
 	if considerInsideAvoid && appeal > BreakAppealViolatingBreakAvoid {
 		breakInside := "auto"
 		if f := layoutResult.Fragment; f != nil && f.Style != nil {
@@ -496,9 +508,9 @@ func IsBreakableAtStartOfResumedContainerWithFirstForNode(space ConstraintSpace,
 // MovePastBreakpoint decides whether the laid-out child can stay in the
 // current fragmentainer (true), or whether a break must be inserted before it
 // (false). Mirrors Blink's MovePastBreakpoint (fragmentation_utils.cc:1141-1240
-// @ a9f50e522efa); the child-overload pre-checks (:1068-1139) live in
+// @ a9f50e522efa); the child-overload pre-checks (:1068-1139) and its
+// UpdateEarlyBreakAtBlockChild call (:1126-1135) live in
 // BreakBeforeChildIfNeeded and at its block_layout.go call site. Not ported:
-// early breaks (no EarlyBreak / RelayoutAndBreakEarlier yet) and
 // SetIsBlockSizeForFragmentationClamped. builder may be nil, as Blink's
 // PositionFloat passes (floats_utils.cc:377-380): breaking before is then
 // refused only at the fragmentainer start, and nothing is propagated.
@@ -550,9 +562,11 @@ func MovePastBreakpoint(
 	case blockSize <= spaceLeft:
 		// The child fits. If it broke inside (here or in an inner
 		// fragmentation context), or its inside-appeal is sub-perfect, keep
-		// that break only if it is at least as appealing as breaking before.
+		// that break only if it is at least as appealing as breaking before
+		// it or at the best earlier breakpoint (:1202-1220).
 		brokeOrSubPerfect := breakToken.IsBreakInside() || appealInside < BreakAppealPerfect
-		return !brokeOrSubPerfect || appealInside >= appealBefore
+		return !brokeOrSubPerfect || (appealInside >= appealBefore &&
+			(builder == nil || !builder.HasEarlyBreak() || appealInside >= builder.GetEarlyBreak().GetBreakAppeal()))
 	case appealBefore == BreakAppealLastResort && builder != nil && space.RequiresContentBeforeBreaking:
 		// Doesn't fit, but content is required here.
 		propagateSpaceShortageIfOverflowing(space, layoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
@@ -635,8 +649,9 @@ func CalculateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, f
 // BreakBeforeChildIfNeeded is the master fragmentation entry point a per-child
 // loop calls right after laying out a child. Returns:
 //   - status: Continue (keep this child + keep going), BrokeBefore (insert a
-//     break before this child), or NeedsEarlierBreak (re-layout with an
-//     earlier break — 12g, never returned today).
+//     break before this child), or NeedsEarlierBreak (an earlier sibling
+//     breakpoint is more appealing: re-lay out and break there, the
+//     builder's EarlyBreak).
 //   - isForced: true when the break was forced by break-before/after value
 //     (column/page/etc.); false when it was a soft break driven by fit /
 //     break-avoid violation.
@@ -703,10 +718,71 @@ func BreakBeforeChildIfNeeded(
 	}
 
 	if MovePastBreakpoint(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize, appealBefore, builder) {
+		// Not breaking before this child, but breaking there may be the
+		// best breakpoint yet: keep it in mind (fragmentation_utils.cc:
+		// 1126-1135 @ a9f50e522efa). Every louis14 caller passes a block
+		// child, never a row item.
+		UpdateEarlyBreakAtBlockChild(space, child, layoutResult, appealBefore, builder)
 		return BreakStatusContinue, false
 	}
-	builder.SetBreakAppeal(appealBefore)
+	// Out of space, and breaking inside the child is not appealing: break
+	// before it, or before an earlier sibling if a more appealing
+	// breakpoint was found there (:927-936).
+	if !AttemptSoftBreak(space, layoutResult, appealBefore, builder) {
+		return BreakStatusNeedsEarlierBreak, false
+	}
 	return BreakStatusBrokeBefore, false
+}
+
+// UpdateEarlyBreakAtBlockChild records the breakpoint before child, or the
+// best one inside it, as the builder's early break when it is at least as
+// appealing as the one already found. A breakpoint inside the child
+// (layoutResult.EarlyBreak, from a child that did not break) wins over the
+// one before it at equal appeal: whatever takes us further wins. Mirrors
+// Blink's UpdateEarlyBreakAtBlockChild (fragmentation_utils.cc:1249-1314 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); FlexColumnBreakInfo has no
+// louis14 caller.
+func UpdateEarlyBreakAtBlockChild(space ConstraintSpace, child *LayoutInputNode, layoutResult *LayoutResult, appealBefore BreakAppeal, builder *BoxFragmentBuilder) {
+	appealInside := BreakAppealLastResort
+	if breakpoint := layoutResult.EarlyBreak; breakpoint != nil {
+		appealInside = CalculateBreakAppealInsideWithHypotheticalAppeal(space, layoutResult, breakpoint.GetBreakAppeal())
+		if !builder.HasEarlyBreak() || builder.GetEarlyBreak().GetBreakAppeal() <= breakpoint.GetBreakAppeal() {
+			// A good breakpoint inside the child: chain the child to it.
+			builder.SetEarlyBreak(NewBlockEarlyBreak(child, appealInside, breakpoint))
+		}
+	}
+	// Breaking before the child is no better if it is less appealing than
+	// what was found already, or as appealing as the breakpoint inside it.
+	if appealBefore <= appealInside {
+		return
+	}
+	if builder.HasEarlyBreak() && builder.GetEarlyBreak().GetBreakAppeal() > appealBefore {
+		return
+	}
+	builder.SetEarlyBreak(NewBlockEarlyBreak(child, appealBefore, nil))
+}
+
+// AttemptSoftBreak breaks before the child (returning true), unless the
+// builder holds an earlier breakpoint more appealing than breaking here, in
+// which case it returns false: lay out again and break there. Mirrors
+// Blink's AttemptSoftBreak (fragmentation_utils.cc:1316-1353 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with BreakBeforeChild's
+// builder updates (:944-973): the appeal (AddBreakBeforeChild's) and, the
+// break not being forced, the pushed child's break values. Blink reports
+// the space shortage here (:1337-1339, :962-966); louis14's
+// BlockLayoutAlgorithm reports it at its call site, from where it would
+// actually break.
+func AttemptSoftBreak(space ConstraintSpace, layoutResult *LayoutResult, appealBefore BreakAppeal, builder *BoxFragmentBuilder) bool {
+	if builder.HasEarlyBreak() && builder.GetEarlyBreak().GetBreakAppeal() > appealBefore {
+		return false
+	}
+	// Break before the child. A better break further up (not known yet)
+	// may replace this one.
+	builder.SetBreakAppeal(appealBefore)
+	if space.ShouldPropagateChildBreakValues() {
+		builder.PropagateChildBreakValues(layoutResult)
+	}
+	return true
 }
 
 // FinishFragmentationInput is the builder state Blink's FinishFragmentation
@@ -748,6 +824,9 @@ type FinishFragmentationInput struct {
 	HasInflowChildBreakInside    bool
 	IsKnownToFitInFragmentainer  bool
 	ShouldCloneBoxEndDecorations bool
+	// HasEarlyBreak: the builder holds a breakpoint found earlier in this
+	// fragment (BoxFragmentBuilder::HasEarlyBreak).
+	HasEarlyBreak bool
 }
 
 // FinishFragmentationResult is what Blink's FinishFragmentation writes to the
@@ -762,6 +841,10 @@ type FinishFragmentationResult struct {
 	// SpaceShortage > 0 is the amount reported via PropagateSpaceShortage.
 	SpaceShortage           float64
 	ClampAppealToLastResort bool
+	// NeedsEarlierBreak: the only breakpoint left is inside or right
+	// before the block-end edge, and an earlier one was found; lay out
+	// again and break there (BreakStatus::kNeedsEarlierBreak, :811-812).
+	NeedsEarlierBreak bool
 	// MonolithicOverflow > 0 is the space reserved with
 	// ReserveSpaceForMonolithicOverflow (box_fragment_builder.h:439-442 @
 	// a9f50e522efa): incoming monolithic overflow still to steer clear of in
@@ -775,7 +858,7 @@ type FinishFragmentationResult struct {
 // breaks, is at its block end, and which block edges it carries. Mirrors
 // Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
 // a9f50e522efa). Not ported: kDisableFragmentation for
-// block-overflow-clipping boxes, and early breaks (kNeedsEarlierBreak).
+// block-overflow-clipping boxes.
 func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
 	spaceLeft := in.SpaceLeft
 	previous := in.PreviousBreakToken
@@ -877,7 +960,13 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 			out.SpaceShortage = desiredBlockSize - spaceLeft
 		}
 		if desiredBlockSize <= desiredIntrinsic {
-			// Breaking here is inside or right before the block-end edge.
+			// Breaking here is inside or right before the block-end edge:
+			// break at the better early break if there is one, else mark
+			// the break as unappealing.
+			if in.HasEarlyBreak {
+				out.NeedsEarlierBreak = true
+				return out
+			}
 			out.ClampAppealToLastResort = true
 		}
 		return out

@@ -116,6 +116,12 @@ type BoxFragmentBuilder struct {
 	minimalSpaceShortage    float64
 	hasMinimalSpaceShortage bool
 
+	// earlyBreak is the most appealing unforced breakpoint found so far in
+	// this fragment, to go back to if layout later runs out of space at a
+	// less appealing place. Mirrors Blink's FragmentBuilder::early_break_
+	// (fragment_builder.h:641 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	earlyBreak *EarlyBreak
+
 	// blockSizeForFragmentation is the furthest block-end of the in-flow
 	// children propagated through PropagateChildBlockSizeForFragmentation,
 	// in this builder's content-relative logical coordinates: the extent
@@ -679,6 +685,18 @@ func (b *BoxFragmentBuilder) SetBreakAppeal(appeal BreakAppeal) {
 	b.breakAppeal = appeal
 	b.hasBreakAppeal = true
 }
+
+// SetEarlyBreak mirrors Blink's BoxFragmentBuilder::SetEarlyBreak
+// (box_fragment_builder.h:573-575 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetEarlyBreak(breakpoint *EarlyBreak) { b.earlyBreak = breakpoint }
+
+// HasEarlyBreak mirrors BoxFragmentBuilder::HasEarlyBreak
+// (box_fragment_builder.h:576).
+func (b *BoxFragmentBuilder) HasEarlyBreak() bool { return b.earlyBreak != nil }
+
+// GetEarlyBreak mirrors BoxFragmentBuilder::GetEarlyBreak
+// (box_fragment_builder.h:577-580).
+func (b *BoxFragmentBuilder) GetEarlyBreak() *EarlyBreak { return b.earlyBreak }
 
 // LineCount mirrors Blink's BoxFragmentBuilder::LineCount
 // (box_fragment_builder.h:541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).

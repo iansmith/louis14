@@ -152,6 +152,13 @@ type LayoutResult struct {
 	// (column_spanner_path.h) and LayoutResult::GetColumnSpannerPath().
 	ColumnSpannerPath *ColumnSpannerPath
 
+	// EarlyBreak is the best breakpoint found inside a fragment that did
+	// not break, for the parent to consider (UpdateEarlyBreakAtBlockChild).
+	// Mirrors Blink's LayoutResult::GetEarlyBreak (layout_result.h:223-228,
+	// set at layout_result.cc:265-274 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	EarlyBreak *EarlyBreak
+
 	// IsEmptySpannerParent is set when nothing in this fragment precedes the
 	// spanner on ColumnSpannerPath (the spanner's parent resumed with no
 	// children placed), so the column line holding it counts as empty and a
@@ -199,9 +206,11 @@ type LayoutResult struct {
 // (inline_layout_algorithm.cc:1501-1503, AddAnyClearanceAfterLine
 // :1058-1061 @ a9f50e522efa); louis14 has no
 // ExclusionSpace::NeedsClearancePastFragmentainer and does not route line
-// boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak
-// needs block-level early breaks, not ported (an inline formatting
-// context's line early break relays out directly, relayoutAndBreakEarlier).
+// boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak is
+// never returned: where Blink aborts with it and the same algorithm's
+// HandleNonsuccessfulLayoutResult relays out (block_layout_algorithm.cc:
+// 617-626), louis14's BlockLayoutAlgorithm calls relayoutAndBreakEarlier
+// directly.
 // The consumers of a non-success status (BreakBeforeChildIfNeeded,
 // CalculateBreakAppealBefore) are ported so a producer can be added.
 type EStatus int

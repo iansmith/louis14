@@ -58,9 +58,11 @@ type BlockLayoutAlgorithm struct {
 	// 945, :1639 @ a9f50e522efa).
 	boxType BoxType
 
-	// earlyBreak, when set, is the line to break before: this algorithm
-	// is the relayout of an inline formatting context that found a better
-	// breakpoint (orphans / widows) than where it ran out of space. Mirrors
+	// earlyBreak, when set, is where to break: this algorithm is the
+	// relayout of a block that found a better breakpoint than where it ran
+	// out of space (a line for orphans / widows, or a child block, before
+	// or inside it), or this block's parent is such a relayout and the
+	// breakpoint is inside this block (ConstraintSpace.EarlyBreak). Mirrors
 	// Blink's LayoutAlgorithm::early_break_ (layout_algorithm.h:295-297 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	earlyBreak *EarlyBreak
@@ -91,10 +93,11 @@ type BlockLayoutAlgorithm struct {
 // layout node with the given constraint space.
 func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *BlockLayoutAlgorithm {
 	return &BlockLayoutAlgorithm{
-		ctx:   ctx,
-		node:  node,
-		style: node.Style(),
-		space: space,
+		ctx:        ctx,
+		node:       node,
+		style:      node.Style(),
+		space:      space,
+		earlyBreak: space.EarlyBreak,
 	}
 }
 
@@ -476,6 +479,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			HasInflowChildBreakInside:             hasInflowChildBreakInside,
 			IsKnownToFitInFragmentainer:           isKnownToFitInFragmentainer,
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
+			HasEarlyBreak:                         bla.containerBuilder.HasEarlyBreak(),
 		})
 		if !res.IncludeBlockEnd {
 			bla.containerBuilder.ClearBorderScrollbarPaddingBlockEnd()
@@ -738,6 +742,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if earlyBreak := bla.lineEarlyBreak(); earlyBreak != nil {
 				return bla.relayoutAndBreakEarlier(earlyBreak)
 			}
+			// Everything fit, but depending on what comes after, the best
+			// place to break may be between two of the lines
+			// (block_layout_algorithm.cc:3128-3134 @ a9f50e522efa).
+			if bla.earlyBreak == nil && bla.space.HasBlockFragmentation &&
+				inlineBreakToken == nil && bla.firstOverflowingLine == 0 {
+				bla.UpdateEarlyBreakBetweenLines()
+			}
 		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
@@ -861,6 +872,35 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		} else if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
 			// All children were seen in a previous fragment; nothing to lay out.
 			resumeChildIdx = len(children)
+		}
+
+		// addBreakBeforeChild breaks before child without placing it, and
+		// the caller stops the child loop to finish this fragment through
+		// the single post-loop exit. Mirrors Blink's AddBreakBeforeChild
+		// (box_fragment_builder.cc:121-143 @ a9f50e522efa): the child's
+		// break-before token, a forced break, and
+		// has_inflow_child_break_inside_, so this block breaks inside; then
+		// ConsumeRemainingFragmentainerSpace (block_layout_algorithm.cc:
+		// 3084-3095): the breaking fragment occupies the rest of the
+		// fragmentainer, on every break-before (forced :3167, soft :3287,
+		// early :1088). While the column height is unknown (the initial
+		// balancing pass) that is a no-op, so the balance loop measures the
+		// content alone.
+		addBreakBeforeChild := func(child *LayoutInputNode, isForced bool) {
+			pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
+				Node:          child,
+				IsBreakBefore: true,
+				IsForcedBreak: isForced,
+			})
+			pendingShouldBreakInside = true
+			pendingHasInflowChildBreakInside = true
+			if isForced {
+				pendingHasForcedBreak = true
+			}
+			// The content placed before the break.
+			pendingIntrinsicAtBreak = blockCursor
+			pendingHaveIntrinsicAtBreak = true
+			blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 		}
 
 		for childIdx, child := range children {
@@ -1000,6 +1040,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					pendingHasSeenAllChildren = false
 					break
 				}
+				break
+			}
+
+			// The child this relayout determined to break before: break
+			// now and finish the fragment, as a soft break with perfect
+			// appeal. Mirrors Blink BlockLayoutAlgorithm::Layout
+			// (block_layout_algorithm.cc:1074-1090 @ a9f50e522efa). Not
+			// ported: the abort to resolve the BFC block-offset first
+			// (:1078-1084); louis14 places the break at the
+			// margin-collapsed cursor.
+			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder, child) {
+				bla.containerBuilder.ClampBreakAppeal(BreakAppealPerfect)
+				addBreakBeforeChild(child, false)
 				break
 			}
 
@@ -1282,6 +1335,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if tok, ok := resumeChildTokens[child]; ok {
 					b.SetBreakToken(tok)
 				}
+				// The early break inside the child, if the relayout breaks
+				// there (LayoutBlockChild → EnterEarlyBreakInChild,
+				// block_layout_algorithm.cc:109-122 @ a9f50e522efa).
+				b.SetEarlyBreak(EnterEarlyBreakInChild(child, bla.earlyBreak))
 				return b
 			}
 
@@ -1505,40 +1562,41 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					fragOff, bla.fragmentainerCapacityForChildren(),
 					hasContainerSeparation, bla.containerBuilder)
 
+				if status == BreakStatusNeedsEarlierBreak {
+					// A more appealing breakpoint was passed: report the
+					// space shortage from where we would break here
+					// (AttemptSoftBreak, fragmentation_utils.cc:1334-1340
+					// @ a9f50e522efa), then lay out again and break there
+					// (HandleInflow → kNeedsEarlierBreak → Abort →
+					// HandleNonsuccessfulLayoutResult →
+					// RelayoutAndBreakEarlier, block_layout_algorithm.cc:
+					// 2004-2006, :1102-1105, :617-626).
+					if bla.space.HasKnownFragmentainerBlockSize() {
+						PropagateSpaceShortage(bla.space, childResult, fragOff, bla.fragmentainerCapacityForChildren(), bla.containerBuilder)
+					}
+					if bla.earlyBreak == nil {
+						return bla.relayoutAndBreakEarlier(bla.containerBuilder.GetEarlyBreak())
+					}
+					// A relayout breaks at its target before running out of
+					// space, so it never gets here (Blink DCHECKs
+					// !early_break_, layout_algorithm.h:276); should it, break
+					// before this child rather than relayout again.
+					status = BreakStatusBrokeBefore
+				}
+
 				if status == BreakStatusBrokeBefore {
 					// Break before this child without placing it, and finish
 					// this fragment through the single post-loop exit, as
 					// Blink's HandleInflow returns kSuccess on kBrokeBefore
 					// (block_layout_algorithm.cc:2646-2659 @ a9f50e522efa) and
 					// the child loop then stops (:1108-1115).
-					// BreakBeforeChild → AddBreakBeforeChild records the
-					// child's break-before token, a forced break, and
-					// has_inflow_child_break_inside_ (box_fragment_builder.cc:
-					// 121-143), so this block breaks inside: in slice mode it
-					// carries no block-end edge, and FinishFragmentation
-					// decides its size, consumed block-size and whether it is
-					// at its block end, the pushed child then continuing in a
-					// parallel flow (fragmentation_utils.cc:717-777).
-					pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-						Node:          child,
-						IsBreakBefore: true,
-						IsForcedBreak: isForced,
-					})
-					pendingShouldBreakInside = true
-					pendingHasInflowChildBreakInside = true
-					if isForced {
-						pendingHasForcedBreak = true
-					}
-					// The content placed before the break.
-					pendingIntrinsicAtBreak = blockCursor
-					pendingHaveIntrinsicAtBreak = true
-					// The breaking fragment occupies the rest of the
-					// fragmentainer, on every break-before (forced :3167, soft
-					// :3287, block_layout_algorithm.cc @ a9f50e522efa). While
-					// the column height is unknown (the initial balancing
-					// pass) this is a no-op, so the balance loop measures the
-					// content alone.
-					blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
+					// BreakBeforeChild → AddBreakBeforeChild: this block
+					// breaks inside, so in slice mode it carries no block-end
+					// edge, and FinishFragmentation decides its size, consumed
+					// block-size and whether it is at its block end, the
+					// pushed child then continuing in a parallel flow
+					// (fragmentation_utils.cc:717-777).
+					addBreakBeforeChild(child, isForced)
 					// Phase 12g: a soft break before the child reports its
 					// space shortage so the multicol balancing loop can stretch
 					// (Blink BreakBeforeChild → PropagateSpaceShortage,
@@ -1868,6 +1926,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		wasBrokenByChild := pendingHasInflowChildBreakInside ||
 			(bla.space.IsNewFormattingContext && exclusionSpace.HasFragmentainerBreak())
 		finish = finishFragmentation(intrinsicBlockSize, shouldBreakInside, wasBrokenByChild)
+		// The only breakpoint left is in the block-end edge, and a better
+		// one was found earlier: lay out again and break there
+		// (FinalizeForFragmentation → kNeedsEarlierBreak,
+		// block_layout_algorithm.cc:1479-1484, :617-626 @ a9f50e522efa).
+		// FinishFragmentation reported this box's space shortage to the
+		// builder first (fragmentation_utils.cc:798-800), so the relayout
+		// repeats it.
+		if finish.NeedsEarlierBreak && bla.earlyBreak == nil {
+			bla.containerBuilder.PropagateSpaceShortage(finish.SpaceShortage)
+			return bla.relayoutAndBreakEarlier(bla.containerBuilder.GetEarlyBreak())
+		}
 		finalBlockSize = max(0, finish.FragmentBlockSize-geom.BlockBorderPadding())
 	} else {
 		finalBlockSize = intrinsicBlockSize
@@ -2258,6 +2327,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				result.BlockSizeForFragmentation = pendingIntrinsicAtBreak
 			}
 		}
+	}
+
+	// A fragment that did not break offers the best breakpoint found
+	// inside it to its parent (UpdateEarlyBreakAtBlockChild), unless it is
+	// known to fit: then any break inside it is a parallel flow, which
+	// cannot help honor break avoidance after it. Mirrors LayoutResult's
+	// constructor (layout_result.cc:265-274) and BoxFragmentBuilder::Build
+	// (box_fragment_builder.cc:764-769 @ a9f50e522efa).
+	if result.BreakToken == nil && bla.space.HasBlockFragmentation && !isKnownToFitInFragmentainer {
+		result.EarlyBreak = bla.containerBuilder.GetEarlyBreak()
 	}
 
 	// Attach propagated OOF candidates for the parent to resolve.
