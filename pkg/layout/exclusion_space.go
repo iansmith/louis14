@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
+	"math"
 )
 
 // ExclusionSide indicates which logical side of the inline axis a float
@@ -59,6 +60,10 @@ type Exclusion struct {
 	BlockSize float64
 	// Side indicates whether this is an inline-start or inline-end float.
 	Side ExclusionSide
+	// IsInitialLetter: the exclusion of an initial-letter box, which later
+	// floats on its side clear (Blink ExclusionArea::kInitialLetterBox,
+	// exclusion_space.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsInitialLetter bool
 }
 
 // BlockEnd returns the block-end position of this exclusion.
@@ -102,6 +107,25 @@ func (es *ExclusionSpace) Add(e Exclusion) *ExclusionSpace {
 	newES := es.clone(1)
 	newES.exclusions = append(newES.exclusions, e)
 	return newES
+}
+
+// InitialLetterClearanceOffset returns the block-end of the initial-letter
+// boxes on the side of a float of physicalSide (-Inf when there are none,
+// Blink's LayoutUnit::Min()): a float clears them. Mirrors Blink's ExclusionSpace::
+// InitialLetterClearanceOffset(EFloat) (exclusion_space.h:128-133, kept by
+// Add, exclusion_space.cc:268-275 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (es *ExclusionSpace) InitialLetterClearanceOffset(physicalSide css.FloatType, wdm WritingDirectionMode) float64 {
+	offset := math.Inf(-1)
+	if es == nil {
+		return offset
+	}
+	side := PhysicalFloatToExclusionSide(physicalSide, wdm)
+	for _, e := range es.exclusions {
+		if e.IsInitialLetter && e.Side == side {
+			offset = max(offset, e.BlockEnd())
+		}
+	}
+	return offset
 }
 
 // FindAvailableInlineSize returns the inline offsets consumed by floats

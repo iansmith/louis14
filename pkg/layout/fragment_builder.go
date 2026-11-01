@@ -1026,6 +1026,13 @@ func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
 	b.hasChildAvailableSize = true
 }
 
+// ChildAvailableSize returns the content-box size set by
+// SetChildAvailableSize (Blink's BoxFragmentBuilder::ChildAvailableSize,
+// box_fragment_builder.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) ChildAvailableSize() LogicalSize {
+	return b.childAvailableSize
+}
+
 // AddChild adds a child fragment at the given logical offset (relative to
 // this fragment's content box), applying the child's position:relative
 // offset: a CSS box child (not a line box, text run or fragmentainer) with
@@ -1117,7 +1124,8 @@ func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, d
 }
 
 // ShiftLineBoxChildrenBlockOffset adds delta to the block offset of every
-// line-box child already added to the builder. This is the INLINE-content
+// line-box child already added to the builder from index fromChild on (the
+// run of lines that holds the first line). This is the INLINE-content
 // analogue of ShiftChildBlockOffset: a list item whose own content is inline
 // has no single content child to re-offset, so when an OUTSIDE marker's ascent
 // is taller than the first line's, the whole inline formatting context (all of
@@ -1126,8 +1134,8 @@ func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, d
 // FragmentLineBox children move. Mirrors Blink's content-adjust being applied
 // to the inline content's block offset in
 // BlockLayoutAlgorithm::PositionOrPropagateListMarker.
-func (b *BoxFragmentBuilder) ShiftLineBoxChildrenBlockOffset(delta float64) {
-	for i := range b.children {
+func (b *BoxFragmentBuilder) ShiftLineBoxChildrenBlockOffset(fromChild int, delta float64) {
+	for i := fromChild; i < len(b.children); i++ {
 		if b.children[i].fragment != nil && b.children[i].fragment.Type == FragmentLineBox {
 			b.children[i].offset.BlockOffset += delta
 		}
