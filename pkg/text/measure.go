@@ -992,30 +992,75 @@ func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float
 	return cum, true
 }
 
+// UprightVerticalAdvances returns the vertical advance, in unsnapped pixels,
+// of each rune of upright text in a vertical writing mode: the per-character
+// advances of the text's top-to-bottom shape result. Blink shapes upright
+// text with HB_DIRECTION_TTB (HarfBuzzShaper's RangeContext::
+// HarfBuzzDirection, platform/fonts/shaping/harfbuzz_shaper.cc:253-262) and
+// HarfBuzz asks HarfBuzzGetGlyphVerticalAdvance for each shaped glyph's
+// advance — OpenTypeVerticalData::AdvanceHeight, the vmtx advance or, with
+// no vmtx, the FontMetrics Height fallback (platform/fonts/shaping/
+// harfbuzz_face.cc:359-372); ShapeResult keeps each glyph's unrounded
+// advance against its character (ShapeResult::ComputeGlyphPositions,
+// platform/fonts/shaping/shape_result.cc:1715-1764), all @
+// 5992657f556bcd9d207a4aca187488462f027cab. Layout (MeasureTextVerticalFromFont)
+// and paint both read these advances, so they cannot drift apart.
+//
+// louis14 shapes the text once top-to-bottom through the layout that owns
+// the font's FontID, then reads AdvanceHeight for each shaped glyph — the
+// v_advance callback mazzy's shaper does not let louis14 install — and adds
+// it to the rune the glyph's cluster names (mazzy's ShapedGlyph.Cluster is a
+// rune index: its shaper adds the text as runes). A font with no vmtx
+// advances every glyph by the height fallback, so it needs no shaping. Not
+// mirrored: the 16.16 fixed-point rounding of each advance
+// (SkiaScalarToHarfBuzzPosition), GPOS vertical adjustments, and font
+// fallback for characters the font lacks — louis14 has no fallback font list
+// for a run, so a missing character shapes to the font's .notdef, which is
+// what Blink commits once its last font cannot shape it either.
+func UprightVerticalAdvances(text string, fontSize float64, fontPath string) []float64 {
+	return uprightVerticalAdvances(text, fontSize, fontPath, openFont(fontPath, fontSize))
+}
+
+// uprightVerticalAdvances is UprightVerticalAdvances for the font m that
+// openFont already returned for fontPath at fontSize.
+func uprightVerticalAdvances(text string, fontSize float64, fontPath string, m textshape.FontMetrics) []float64 {
+	vd := fontPlatformData{fontPath: fontPath, size: fontSize}.GetHarfBuzzFace().VerticalData()
+	advances := make([]float64, utf8.RuneCountInString(text))
+	var glyphs []textshape.ShapedGlyph
+	if vd.HasVerticalMetrics() && m.FontID >= 0 {
+		if run, err := getLayout().ShapeText(textshape.ShapingParams{Text: text, FontID: m.FontID, Direction: textshape.TTB}); err == nil {
+			glyphs = run.Glyphs
+		}
+	}
+	if glyphs == nil {
+		// No vmtx (every glyph advances by the height fallback), or the
+		// font cannot shape (every character is the .notdef glyph).
+		for i := range advances {
+			advances[i] = vd.AdvanceHeight(0)
+		}
+		return advances
+	}
+	for _, g := range glyphs {
+		if c := int(g.Cluster); c < len(advances) {
+			advances[c] += vd.AdvanceHeight(Glyph(g.GID))
+		}
+	}
+	return advances
+}
+
 // MeasureTextVerticalFromFont returns the inline advance of upright text in a
-// vertical writing mode using the given font path: the sum of each glyph's
-// vertical advance, OpenTypeVerticalData::AdvanceHeight — the vmtx advance,
-// or the FontMetrics Height fallback when the font has no vmtx. Mirrors the
-// advance Blink's top-to-bottom HarfBuzz shaping of upright text reads,
-// HarfBuzzGetGlyphVerticalAdvance (platform/fonts/shaping/harfbuzz_face.cc:
-// 359-372 @ 5992657f556bcd9d207a4aca187488462f027cab), so N ch (ZeroInlineSize)
-// and N upright "0"s agree. louis14 sums per character rather than per shaped
-// glyph, so vertical alternates, ligatures and marks are not seen. Returns
-// LayoutUnit values snapped via CEIL at this boundary — same Blink-parity
+// vertical writing mode using the given font path: the sum of its
+// UprightVerticalAdvances, so N ch (ZeroInlineSize) and N upright "0"s agree
+// where the "0" shapes to its nominal glyph. Returns LayoutUnit values
+// snapped via CEIL at this boundary — same Blink-parity
 // ShapeResult::SnappedWidth discipline as MeasureText.
 func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance layoutunit.LayoutUnit) {
-	vd := fontPlatformData{fontPath: fontPath, size: fontSize}.GetHarfBuzzFace().VerticalData()
+	m := openFont(fontPath, fontSize)
 	var advance float64
-	if vd.HasVerticalMetrics() {
-		for _, r := range text {
-			advance += vd.AdvanceHeight(glyphForCharacter(fontPath, fontSize, r))
-		}
-	} else {
-		// Every glyph advances by the height fallback; no glyph lookup needed.
-		advance = float64(utf8.RuneCountInString(text)) * vd.AdvanceHeight(0)
+	for _, a := range uprightVerticalAdvances(text, fontSize, fontPath, m) {
+		advance += a
 	}
 	inlineAdvance = layoutunit.FromFloat64Ceil(advance)
-	m := openFont(fontPath, fontSize)
 	if m.FontID >= 0 && m.Height > 0 {
 		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(float64(m.Height) / 64.0))
 	} else {
