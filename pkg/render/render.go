@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"math"
 	"os"
@@ -3477,9 +3478,8 @@ func backgroundClipRectForClip(box *layout.Box, rect layout.PhysicalRect, clip c
 // @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType) (float64, float64, float64, float64) {
 	if layer.PaintsCanvasBackground {
-		bounds := r.target.Bounds()
-		return float64(bounds.Min.X), float64(bounds.Min.Y),
-			float64(bounds.Dx()), float64(bounds.Dy())
+		b := r.target.Bounds()
+		return float64(b.Min.X), float64(b.Min.Y), float64(b.Dx()), float64(b.Dy())
 	}
 	return backgroundClipRectForClip(layer.Box, rect, clip)
 }
@@ -3741,6 +3741,12 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 		return
 	}
 
+	// The paint context is per box, shared by all its fill layers
+	// (BoxBackgroundPaintContext, box_background_paint_context.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	paintRect := r.backgroundPaintRect(layer, rect)
+	ctx := r.newBoxBackgroundPaintContext(layer, paintRect)
+
 	// Paint from bottom to top.
 	fl.IterateReverse(func(bg *css.FillLayer) {
 		// Background-color only on bottom layer (uses bottom layer's clip, already in sx/sy/sw/sh).
@@ -3757,614 +3763,295 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 			}
 		}
 
-		// Per-layer clip rect and radii for gradient/image content.
-		// For canvas-bg layers (root element promoted), the painting area
-		// extends to the canvas per CSS Backgrounds 3 §2.11.2.
+		// Per-layer image content (url() image or gradient), clipped to
+		// the layer's background-clip area — rounded when the box has
+		// border radii. For canvas-bg layers (root element promoted) the
+		// painting area extends to the canvas per CSS Backgrounds 3
+		// §2.11.2. Mirrors BoxPainterBase::PaintFillLayer's clip push
+		// (box_painter_base.cc:1474-1477, :1533-1551 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		// data: URIs decode inline and need no fetcher.
+		var img image.Image
+		if bg.Image != nil && (r.imageFetcher != nil || stdnet.IsDataURL(bg.Image.Data.Absolute)) {
+			img, _ = images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
+		}
+		if bg.Gradient == "" && img == nil {
+			return
+		}
 		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, rect, bg.Clip)
 		lRadii := backgroundClipRadiiForClip(layer, rect, bg.Clip)
-		lHasRadius := !lRadii.IsZero()
-
-		// Paint gradient.
+		r.dc.Push()
+		if !lRadii.IsZero() {
+			r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
+		} else {
+			r.dc.DrawRectangle(lx, ly, lw, lh)
+		}
+		r.dc.Clip()
 		if bg.Gradient != "" {
-			// CSS Backgrounds 3 §3.5: gradients with per-axis repeat space
-			// or round (or repeat with an explicit background-size) must
-			// be tiled at the resolved tile size with per-axis placement.
-			// The plain "repeat repeat" + auto background-size case keeps
-			// the legacy fill-the-box behavior (which is also spec-correct
-			// for a gradient that has no intrinsic size — it stretches to
-			// the positioning area).
-			//
-			// drawTiledGradient handles the case where the per-axis
-			// computation degenerates to a single tile (the N == 1
-			// fallback for space, no-repeat, or round with no scaling): it
-			// delegates back to the regular drawLinearGradient with the
-			// layer-clip rect so the result matches the legacy no-repeat
-			// path bit-for-bit.
-			hasExplicitSize := bg.Size.Width != 0 || bg.Size.Height != 0 || bg.Size.Cover || bg.Size.Contain
-			usesAxisTile := bg.Repeat.X == css.BackgroundRepeatSpace ||
-				bg.Repeat.X == css.BackgroundRepeatRound ||
-				bg.Repeat.Y == css.BackgroundRepeatSpace ||
-				bg.Repeat.Y == css.BackgroundRepeatRound ||
-				(hasExplicitSize && (bg.Repeat.X == css.BackgroundRepeatRepeat || bg.Repeat.Y == css.BackgroundRepeatRepeat))
-			if usesAxisTile {
-				if lHasRadius {
-					r.dc.Push()
-					r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
-					r.dc.Clip()
-					r.drawTiledGradient(layer, rect, bg)
-					r.dc.Pop()
-				} else {
-					r.drawTiledGradient(layer, rect, bg)
-				}
-			} else {
-				// For fixed attachment, draw the gradient over the viewport
-				// but clip to the element's background-clip area. Per CSS
-				// Transforms 1 §6, a non-canvas layer with any ancestor
-				// transform paint context degrades fixed to scroll.
-				gradX, gradY, gradW, gradH := lx, ly, lw, lh
-				gradFixed := bg.Attachment == css.BackgroundAttachmentFixed &&
-					(layer.PaintsCanvasBackground || r.transformDepth == 0)
-				if gradFixed {
-					bounds := r.target.Bounds()
-					gradX = float64(bounds.Min.X)
-					gradY = float64(bounds.Min.Y)
-					gradW = float64(bounds.Dx())
-					gradH = float64(bounds.Dy())
-					r.dc.Push()
-					if lHasRadius {
-						r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
-					} else {
-						r.dc.DrawRectangle(lx, ly, lw, lh)
-					}
-					r.dc.Clip()
-					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
-					r.dc.Pop()
-				} else if lHasRadius {
-					r.dc.Push()
-					r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
-					r.dc.Clip()
-					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
-					r.dc.Pop()
-				} else {
-					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
-				}
-			}
+			r.paintFillLayerImage(layer, ctx, paintRect, bg, nil)
 		}
-
-		// Paint image.
-		// data: URIs decode inline and need no fetcher.
-		if bg.Image != nil && (r.imageFetcher != nil || stdnet.IsDataURL(bg.Image.Data.Absolute)) {
-			if lHasRadius {
-				r.dc.Push()
-				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
-				r.dc.Clip()
-				r.drawBackgroundImageLayer(layer, rect, bg)
-				r.dc.Pop()
-			} else {
-				r.drawBackgroundImageLayer(layer, rect, bg)
-			}
+		if img != nil {
+			r.paintFillLayerImage(layer, ctx, paintRect, bg, img)
 		}
+		r.dc.Pop()
 	})
 }
 
-// drawBackgroundImageLayer tiles a single background layer's image onto the layer's box.
-// Reads image URL, origin, size, position, repeat from the FillLayer.
-// Tiles are manually clipped to the box bounds because DrawImage bypasses
-// the DrawContext clip mask (fast-path pixel blit ignores clipMask).
-// All arithmetic is integer-based to avoid fractional pixel misalignment.
-func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, rect layout.PhysicalRect, bg *css.FillLayer) {
-	box := layer.Box
-	img, err := images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
-	if err != nil {
-		return
+// toLayoutRect converts a float rect to LayoutUnits (round-to-nearest
+// 1/64 px).
+func toLayoutRect(x, y, w, h float64) geometry.PhysicalRect {
+	return geometry.PhysicalRect{
+		Offset: geometry.PhysicalOffsetFromF64Round(x, y),
+		Size:   geometry.PhysicalSizeFromF64Round(w, h),
 	}
-	imgWI := img.Bounds().Dx()
-	imgHI := img.Bounds().Dy()
-	if imgWI == 0 || imgHI == 0 {
-		return
-	}
-	imgW := float64(imgWI)
-	imgH := float64(imgHI)
+}
 
-	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
-	// For background-attachment:fixed, the positioning area is the viewport
-	// (CSS3 Backgrounds §3.5), not the element's box.
-	//
-	// CSS 2.1 §14.2 / CSS Backgrounds Level 3 §2.11.2:
-	// When PaintsCanvasBackground is set, the painting area extends to the
-	// canvas, but the positioning area depends on the element:
-	// - Root element: positioning area = root's own box (per background-origin)
-	// - Body (promoted to canvas): positioning area = root element's padding box
-	//   (§2.11.2: "the background positioning area of the root is the
-	//   background positioning area that would be used if the background
-	//   were specified on the body element" — but since it's promoted to
-	//   the root, the positioning area is the root's, not body's)
-	// - Any element with attachment:fixed → positioning area = viewport
-	//
-	// CSS Transforms 1 §6 fallback: for a non-canvas layer, when the layer
-	// itself or any of its ancestors has a transform paint context, the
-	// `fixed` value is treated as `scroll` (positioning area = element's
-	// own box). The transformDepth counter includes the current layer's
-	// transform (paintLayer increments BEFORE calling paintLayerContent).
-	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
-	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
-		isFixed = false
+// toLayoutStrut converts a css.BoxEdge to a LayoutUnit PhysicalBoxStrut.
+func toLayoutStrut(e css.BoxEdge) geometry.PhysicalBoxStrut {
+	return geometry.PhysicalBoxStrut{
+		Top:    layoutunit.FromFloat64Round(e.Top),
+		Right:  layoutunit.FromFloat64Round(e.Right),
+		Bottom: layoutunit.FromFloat64Round(e.Bottom),
+		Left:   layoutunit.FromFloat64Round(e.Left),
 	}
-	// For promoted body backgrounds, use the root element's box for positioning.
-	posBox, posRect := box, rect
-	if layer.CanvasBackgroundRootBox != nil {
-		posBox = layer.CanvasBackgroundRootBox
-		posRect = borderBoxRect(posBox)
-	}
-	var originX, originY, originW, originH float64
-	if isFixed {
-		bounds := r.target.Bounds()
-		originX = float64(bounds.Min.X)
-		originY = float64(bounds.Min.Y)
-		originW = float64(bounds.Dx())
-		originH = float64(bounds.Dy())
-	} else {
-		switch bg.Origin {
-		case css.BackgroundOriginBorderBox:
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X, posRect.Offset.Y, posRect.Size.Width, posRect.Size.Height)
-		case css.BackgroundOriginContentBox:
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X+posBox.Border.Left+posBox.Padding.Left,
-				posRect.Offset.Y+posBox.Border.Top+posBox.Padding.Top,
-				posRect.Size.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posRect.Size.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
-		default: // padding-box
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X+posBox.Border.Left,
-				posRect.Offset.Y+posBox.Border.Top,
-				posRect.Size.Width-posBox.Border.Left-posBox.Border.Right,
-				posRect.Size.Height-posBox.Border.Top-posBox.Border.Bottom)
-		}
-	}
-	if originW < 0 {
-		originW = 0
-	}
-	if originH < 0 {
-		originH = 0
-	}
+}
 
-	// CSS3 Backgrounds §3.9: Resolve background-size.
-	// Track whether each axis was auto-sized — round must rescale auto axes
-	// proportionally per §3.5 ("If background-size is auto on the other
-	// dimension, that other dimension is also scaled proportionally").
-	bgSize := bg.Size
-	autoW := !(bgSize.Cover || bgSize.Contain || bgSize.Width != 0)
-	autoH := !(bgSize.Cover || bgSize.Contain || bgSize.Height != 0)
-	if bgSize.Cover || bgSize.Contain {
-		if originW > 0 && originH > 0 && imgW > 0 && imgH > 0 {
-			scaleX := originW / imgW
-			scaleY := originH / imgH
-			var scale float64
-			if bgSize.Cover {
-				scale = math.Max(scaleX, scaleY)
-			} else {
-				scale = math.Min(scaleX, scaleY)
-			}
-			imgW = math.Round(imgW * scale)
-			imgH = math.Round(imgH * scale)
-		}
-	} else if bgSize.Width != 0 || bgSize.Height != 0 {
-		newW := imgW
-		newH := imgH
-		if bgSize.Width != 0 {
-			if bgSize.Width < 0 {
-				newW = math.Round(originW * (-bgSize.Width) / 100)
-			} else {
-				newW = math.Round(bgSize.Width)
-			}
-		}
-		if bgSize.Height != 0 {
-			if bgSize.Height < 0 {
-				newH = math.Round(originH * (-bgSize.Height) / 100)
-			} else {
-				newH = math.Round(bgSize.Height)
-			}
-		}
-		if bgSize.Width != 0 && bgSize.Height == 0 && imgW > 0 {
-			newH = math.Round(imgH * newW / imgW)
-		} else if bgSize.Width == 0 && bgSize.Height != 0 && imgH > 0 {
-			newW = math.Round(imgW * newH / imgH)
-		}
-		imgW = newW
-		imgH = newH
-	}
-
-	// CSS Backgrounds 3 §3.5 round: rescale the tile so an integer number
-	// of tiles fits in the positioning area. When the other axis is auto,
-	// scale it proportionally by the same factor. Mirrors Blink's handling
-	// in BackgroundImageGeometry::UseFixedAttachment for the kRoundFill case
-	// (third_party/blink/renderer/core/paint/background_image_geometry.cc
-	// @ 4883d11fef).
-	if bg.Repeat.X == css.BackgroundRepeatRound && imgW > 0 && originW > 0 {
-		n := math.Round(originW / imgW)
-		if n < 1 {
-			n = 1
-		}
-		newW := originW / n
-		if autoH && imgW > 0 {
-			imgH = imgH * newW / imgW
-		}
-		imgW = newW
-	}
-	if bg.Repeat.Y == css.BackgroundRepeatRound && imgH > 0 && originH > 0 {
-		n := math.Round(originH / imgH)
-		if n < 1 {
-			n = 1
-		}
-		newH := originH / n
-		if autoW && imgH > 0 {
-			imgW = imgW * newH / imgH
-		}
-		imgH = newH
-	}
-
-	// Snap final tile dimensions to integer pixels and rescale the source
-	// image once we know the final tile size.
-	imgWI = int(math.Round(imgW))
-	imgHI = int(math.Round(imgH))
-	if imgWI <= 0 || imgHI <= 0 {
-		return
-	}
-	if imgWI != img.Bounds().Dx() || imgHI != img.Bounds().Dy() {
-		img = scaleImage(img, img.Bounds().Dx(), img.Bounds().Dy(), imgWI, imgHI, layer.ImageRendering)
-	}
-	imgW = float64(imgWI)
-	imgH = float64(imgHI)
-
-	pos := bg.Position
-	startX := originX + pos.ResolveX(originW, imgW)
-	startY := originY + pos.ResolveY(originH, imgH)
-
-	// Clip bounds: normally the border box, but for the root element's
-	// background CSS 2.1 §14.2 says the background paints the entire canvas.
-	var boxX0, boxY0, boxX1, boxY1 int
+// backgroundPaintRect returns Blink's paint_rect for a fill layer: the
+// canvas for a canvas-background layer (ViewPainter::PaintRootElementGroup
+// paints the root background over the whole document rect,
+// view_painter.cc:325, :441-443 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// else the box's border-box paint rect.
+func (r *Renderer) backgroundPaintRect(layer *PaintLayer, rect layout.PhysicalRect) geometry.PhysicalRect {
 	if layer.PaintsCanvasBackground {
-		bounds := r.target.Bounds()
-		boxX0 = bounds.Min.X
-		boxY0 = bounds.Min.Y
-		boxX1 = bounds.Max.X
-		boxY1 = bounds.Max.Y
+		return geometry.PhysicalRectFromRect(r.target.Bounds())
+	}
+	return toLayoutRect(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
+}
+
+// newBoxBackgroundPaintContext builds the BoxBackgroundPaintContext for a
+// layer's fill layers.
+//
+//   - Canvas-background layers use the view constructor
+//     (box_background_paint_context.cc:92-115 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b): positioning_box_ is the
+//     root box, the positioning area is the root's border-box size
+//     (positioning_size_override_ = RootBox().StitchedSize()), and the
+//     element positioning offset maps the canvas paint rect onto the root's
+//     border box (view_painter.cc:346-347: −root paint offset + paint rect
+//     origin). A promoted body background positions against the root box
+//     too (CSS Backgrounds 3 §2.11.2).
+//   - Every other layer uses the LayoutBoxModelObject constructor
+//     (:117-119, :176-187), positioning_box_ = the box itself.
+//
+// louis14's has_background_fixed_to_viewport_ (HasBackgroundFixedToViewport,
+// :342-364: no transformed ancestor) is the transform-depth rule CSS
+// Transforms 1 §6 states; a canvas background is always fixed to the
+// viewport. The fixed positioning area is the target viewport
+// (FixedAttachmentPositioningArea, :366-389).
+func (r *Renderer) newBoxBackgroundPaintContext(layer *PaintLayer, paintRect geometry.PhysicalRect) *BoxBackgroundPaintContext {
+	ctx := &BoxBackgroundPaintContext{
+		fixedAttachmentPositioningArea: geometry.PhysicalRectFromRect(r.target.Bounds()),
+	}
+	box := layer.Box
+	if layer.PaintsCanvasBackground {
+		root := box
+		if layer.CanvasBackgroundRootBox != nil {
+			root = layer.CanvasBackgroundRootBox
+		}
+		rootRect := rootBorderBoxRect(root)
+		ctx.paintingView = true
+		ctx.hasBackgroundFixedToViewport = true
+		ctx.positioningSizeOverride = rootRect.Size
+		ctx.elementPositioningAreaOffset = paintRect.Offset.Sub(rootRect.Offset)
+		ctx.borderOutsets = toLayoutStrut(root.Border)
+		ctx.paddingOutsets = toLayoutStrut(root.Padding)
+		return ctx
+	}
+	ctx.hasBackgroundFixedToViewport = r.transformDepth == 0
+	ctx.borderOutsets = toLayoutStrut(box.Border)
+	ctx.paddingOutsets = toLayoutStrut(box.Padding)
+	widths := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
+	for side := range 4 {
+		// BorderEdge::ObscuresBackground (core/style/border_edge.cc:56-67 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a double border
+		// narrower than 3px paints as solid (BorderEdge::EffectiveStyle,
+		// :23-30).
+		style := layer.BorderStyles[side]
+		if style == css.BorderStyleDouble && widths[side] < 3 {
+			style = css.BorderStyleSolid
+		}
+		present := widths[side] > 0 && style != css.BorderStyleNone && style != "hidden"
+		ctx.obscuringEdges[side] = present && layer.BorderColors[side].A >= 1 &&
+			style != css.BorderStyleDotted && style != css.BorderStyleDashed && style != css.BorderStyleDouble
+	}
+	ctx.hasBorderImageOrCollapse = layer.BorderImageSource != nil ||
+		(box.Style != nil && box.Style.GetBorderCollapse() == css.BorderCollapseCollapse)
+	return ctx
+}
+
+// rootBorderBoxRect returns the root element's border box as Blink lays it
+// out, the rect the view's background positioning area is derived from
+// (view_painter.cc:346-347, box_background_paint_context.cc:112 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// no Blink analog: louis14 lays an in-flow root out as the ICB-filling
+// view box — at the ICB origin, stretched across its own margins (inline)
+// and to at least the ICB block size — so the Blink border box is
+// recovered by insetting the root box by its margins. The block-size
+// stretch is not undone here (the unstretched size is not recorded); see
+// the LOU-531 follow-up on root layout. An out-of-flow root is placed by
+// the IMCB math with its margins already applied, so it is used as is.
+func rootBorderBoxRect(root *layout.Box) geometry.PhysicalRect {
+	x, y, w, h := root.X, root.Y, root.Width, root.Height
+	outOfFlow := false
+	if root.Style != nil {
+		pos := root.Style.GetPosition()
+		outOfFlow = pos == css.PositionAbsolute || pos == css.PositionFixed
+	}
+	if !outOfFlow {
+		m := root.Margin
+		x, y, w, h = x+m.Left, y+m.Top, w-m.Left-m.Right, h-m.Top-m.Bottom
+	}
+	return toLayoutRect(x, y, w, h)
+}
+
+// paintFillLayerImage paints one fill layer's image through the shared
+// BackgroundImageGeometry: img is the decoded raster image, or nil to paint
+// the layer's gradient — a generated image with no natural size, painted
+// through exactly the same geometry and tiling (StyleGeneratedImage →
+// GradientGeneratedImage sized to TileSize()). Mirrors the image branch of
+// BoxPainterBase::PaintFillLayer (box_painter_base.cc:1349-1570 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) → BackgroundImageGeometry::
+// Calculate → PaintFillLayerBackground (:1250-1298) → DrawTiledBackground.
+func (r *Renderer) paintFillLayerImage(layer *PaintLayer, ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, bg *css.FillLayer, img image.Image) {
+	var info NaturalSizingInfo
+	if img != nil {
+		info = naturalSizingInfoForRaster(img.Bounds().Dx(), img.Bounds().Dy())
+		if info.Width == 0 || info.Height == 0 {
+			return
+		}
+	}
+	var g BackgroundImageGeometry
+	g.Calculate(bg, ctx, paintRect, info)
+	// PaintFillLayerBackground skips an empty dest rect or tile
+	// (box_painter_base.cc:1277-1278).
+	if g.SnappedDestRect().IsEmpty() || g.TileSize().Width.LessEqual(layoutunit.Zero) ||
+		g.TileSize().Height.LessEqual(layoutunit.Zero) {
+		return
+	}
+	var tileImage func(w, h int) image.Image
+	if img != nil {
+		srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
+		tileImage = func(w, h int) image.Image {
+			if w == srcW && h == srcH {
+				return img
+			}
+			return scaleImage(img, srcW, srcH, w, h, layer.ImageRendering)
+		}
 	} else {
-		boxX0 = int(math.Round(rect.Offset.X))
-		boxY0 = int(math.Round(rect.Offset.Y))
-		boxX1 = int(math.Round(rect.Offset.X + rect.Size.Width))
-		boxY1 = int(math.Round(rect.Offset.Y + rect.Size.Height))
+		tileImage = func(w, h int) image.Image {
+			return r.paintGradientTile(bg.Gradient, w, h, layer.Box.Style)
+		}
+	}
+	r.drawTiledBackground(&g, tileImage)
+}
+
+// paintGradientTile rasterizes a gradient into a fresh w×h tile, the
+// GradientGeneratedImage louis14 draws as a background image (Blink sizes
+// the generated image to the geometry's TileSize(),
+// box_painter_base.cc:1420-1440 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) paintGradientTile(gradient string, w, h int, style *css.Style) image.Image {
+	buf := image.NewRGBA(image.Rect(0, 0, w, h))
+	origDC, origTarget := r.dc, r.target
+	r.dc = origDC.NewChildContext(buf)
+	r.target = buf
+	r.drawGradient(gradient, 0, 0, float64(w), float64(h), style)
+	r.dc, r.target = origDC, origTarget
+	return buf
+}
+
+// drawTiledBackground paints the tile grid the geometry describes into its
+// snapped dest rect: tiles of TileSize() separated by SpaceSize(), the first
+// at SnappedDestRect().offset + ComputePhase(). Each tile is drawn at its
+// pixel-snapped extent through the draw context, so the active clip
+// (including a rounded background clip mask) and transform apply to every
+// pixel. Mirrors DrawTiledBackground (box_painter_base.cc:814-890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), including its rule that a tile
+// within 0.5px of the dest size takes the dest size (no lone repeated row
+// or column, :862-874). tileImage returns the image scaled to a w×h tile.
+func (r *Renderer) drawTiledBackground(g *BackgroundImageGeometry, tileImage func(w, h int) image.Image) {
+	dest := g.SnappedDestRect()
+	destPx := geometry.ToPixelSnappedRect(dest)
+	tileW, tileH := g.TileSize().Width.Float64(), g.TileSize().Height.Float64()
+	if math.Abs(tileW-dest.Size.Width.Float64()) <= 0.5 {
+		tileW = dest.Size.Width.Float64()
+	}
+	if math.Abs(tileH-dest.Size.Height.Float64()) <= 0.5 {
+		tileH = dest.Size.Height.Float64()
+	}
+	stepW := tileW + g.SpaceSize().Width.Float64()
+	stepH := tileH + g.SpaceSize().Height.Float64()
+	if stepW <= 0 || stepH <= 0 {
+		return
+	}
+	phase := g.ComputePhase()
+	originX := dest.Offset.Left.Float64() + phase.Left.Float64()
+	originY := dest.Offset.Top.Float64() + phase.Top.Float64()
+	// The pattern extends in both directions. ComputePhase keeps the phase
+	// within one step, so at most one step back reaches the near edge.
+	if originX > float64(destPx.Min.X) {
+		originX -= stepW
+	}
+	if originY > float64(destPx.Min.Y) {
+		originY -= stepH
 	}
 
-	// Compute per-axis tile positions. Each entry is the top-left of one
-	// tile; tiles always have size imgWI × imgHI after the resolution above.
-	// The clip extent (box*) is used only by the regular `repeat` case to
-	// extend tiles beyond the positioning area; space/round place tiles
-	// strictly within the positioning area.
-	xs := tilePositions(bg.Repeat.X, originX, originW, startX, imgW, float64(boxX0), float64(boxX1))
-	ys := tilePositions(bg.Repeat.Y, originY, originH, startY, imgH, float64(boxY0), float64(boxY1))
-
-	subImager, _ := img.(interface {
-		SubImage(image.Rectangle) image.Image
-	})
-
-	for _, ty := range ys {
-		for _, tx := range xs {
-			dstX0 := tx
-			if dstX0 < boxX0 {
-				dstX0 = boxX0
+	// Assemble the visible tiles into one dest-sized buffer, then draw it
+	// once through the context so its clip (a rounded background clip
+	// mask) and transform are applied once per layer, not once per tile.
+	buf := image.NewRGBA(destPx)
+	var tiles [4]struct {
+		size image.Point
+		img  image.Image
+	}
+	nTiles := 0
+	tileFor := func(size image.Point) image.Image {
+		for i := range nTiles {
+			if tiles[i].size == size {
+				return tiles[i].img
 			}
-			dstX1 := tx + imgWI
-			if dstX1 > boxX1 {
-				dstX1 = boxX1
+		}
+		img := tileImage(size.X, size.Y)
+		if nTiles < len(tiles) {
+			tiles[nTiles].size, tiles[nTiles].img = size, img
+			nTiles++
+		}
+		return img
+	}
+	for j := 0; ; j++ {
+		ty := originY + float64(j)*stepH
+		if ty >= float64(destPx.Max.Y) {
+			break
+		}
+		y0, y1 := int(math.Round(ty)), int(math.Round(ty+tileH))
+		if y1 <= destPx.Min.Y || y1 <= y0 {
+			continue
+		}
+		for i := 0; ; i++ {
+			tx := originX + float64(i)*stepW
+			if tx >= float64(destPx.Max.X) {
+				break
 			}
-			dstY0 := ty
-			if dstY0 < boxY0 {
-				dstY0 = boxY0
-			}
-			dstY1 := ty + imgHI
-			if dstY1 > boxY1 {
-				dstY1 = boxY1
-			}
-			if dstX1 <= dstX0 || dstY1 <= dstY0 {
+			x0, x1 := int(math.Round(tx)), int(math.Round(tx+tileW))
+			if x1 <= destPx.Min.X || x1 <= x0 {
 				continue
 			}
-
-			srcX0 := dstX0 - tx
-			srcY0 := dstY0 - ty
-			srcX1 := dstX1 - tx
-			srcY1 := dstY1 - ty
-
-			if subImager != nil {
-				sub := subImager.SubImage(image.Rect(srcX0, srcY0, srcX1, srcY1))
-				r.dc.DrawImage(sub, dstX0, dstY0)
-			} else {
-				r.dc.DrawImage(img, dstX0, dstY0)
-			}
+			tileRect := image.Rect(x0, y0, x1, y1)
+			tile := tileFor(tileRect.Size())
+			draw.Draw(buf, tileRect.Intersect(destPx), tile, tile.Bounds().Min.Add(tileRect.Intersect(destPx).Min.Sub(tileRect.Min)), draw.Src)
 		}
 	}
-}
-
-// tilePositions returns the integer top-left positions for tiles along one
-// axis, given the per-axis repeat value, positioning area extent
-// (originStart..originStart+originLen), the natural tile start (after
-// background-position), tile size, and the clip extent
-// (coverStart..coverEnd) — used by the regular `repeat` case to extend
-// tiles beyond the positioning area to fill the clip. All positions are
-// pixel-snapped integers; the caller clips each tile against the clip rect.
-//
-// Spec: CSS Backgrounds 3 §3.5. Mirrors Blink's per-axis logic in
-// BackgroundImageGeometry::UseFixedAttachment for kRepeatFill / kSpaceFill /
-// kRoundFill / kNoRepeatFill cases @ 4883d11fef.
-func tilePositions(repeat css.BackgroundRepeatType, originStart, originLen, tileStart, tileSize, coverStart, coverEnd float64) []int {
-	if tileSize <= 0 {
-		return []int{int(math.Round(tileStart))}
-	}
-	switch repeat {
-	case css.BackgroundRepeatNoRepeat:
-		return []int{int(math.Round(tileStart))}
-
-	case css.BackgroundRepeatSpace:
-		// §3.5 space: place N = floor(area / tile) tiles, with the first
-		// and last flush against the positioning area edges and equal gaps
-		// between. When only one tile fits (N == 1) or none (tile larger
-		// than area), fall back to no-repeat at the background-position.
-		if tileSize > originLen {
-			return []int{int(math.Round(tileStart))}
-		}
-		n := int(math.Floor(originLen / tileSize))
-		if n <= 1 {
-			return []int{int(math.Round(tileStart))}
-		}
-		// N tiles: first at originStart, last at originStart+originLen-tile,
-		// remaining N-2 evenly spaced in between.
-		positions := make([]int, n)
-		gap := (originLen - float64(n)*tileSize) / float64(n-1)
-		for i := 0; i < n; i++ {
-			p := originStart + float64(i)*(tileSize+gap)
-			positions[i] = int(math.Round(p))
-		}
-		return positions
-
-	case css.BackgroundRepeatRound:
-		// After the caller's tile-size adjustment, round behaves like
-		// repeat: tiles cover the positioning area at the adjusted size,
-		// with background-position determining the phase. Mirrors Blink's
-		// kRoundFill handling once the size is settled.
-		if tileSize > originLen {
-			return []int{int(math.Round(originStart))}
-		}
-		size := int(math.Round(tileSize))
-		if size <= 0 {
-			return []int{int(math.Round(tileStart))}
-		}
-		startPx := int(math.Round(tileStart))
-		near := int(math.Round(originStart))
-		far := int(math.Round(originStart + originLen))
-		for startPx > near {
-			startPx -= size
-		}
-		var positions []int
-		for p := startPx; p < far; p += size {
-			positions = append(positions, p)
-		}
-		if len(positions) == 0 {
-			positions = append(positions, startPx)
-		}
-		return positions
-
-	default: // BackgroundRepeatRepeat (also: any unexpected value)
-		// Walk back from tileStart to cover the clip's near edge, then
-		// forward until the clip's far edge.
-		size := int(math.Round(tileSize))
-		if size <= 0 {
-			return []int{int(math.Round(tileStart))}
-		}
-		startPx := int(math.Round(tileStart))
-		near := int(math.Round(coverStart))
-		far := int(math.Round(coverEnd))
-		for startPx > near {
-			startPx -= size
-		}
-		var positions []int
-		for p := startPx; p < far; p += size {
-			positions = append(positions, p)
-		}
-		if len(positions) == 0 {
-			positions = append(positions, startPx)
-		}
-		return positions
-	}
-}
-
-// drawTiledGradient paints a gradient layer that has per-axis repeat = space
-// or round. The gradient is drawn once per tile position at the resolved
-// tile size; tile positions are computed by tilePositions().
-//
-// Gradients have no intrinsic dimensions per CSS Images 3, so an `auto`
-// background-size value resolves to the positioning area's dimension on
-// that axis. The round adjustment then mirrors the image path's round
-// behavior (rescale tile so an integer number fits; with auto on the
-// other axis the auto dim scales proportionally to keep one tile a square
-// when the gradient is asked to be square in the original auto cases).
-func (r *Renderer) drawTiledGradient(layer *PaintLayer, rect layout.PhysicalRect, bg *css.FillLayer) {
-	box := layer.Box
-
-	// Per CSS Transforms 1 §6, a non-canvas layer with any ancestor
-	// transform paint context degrades `fixed` to `scroll`.
-	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
-	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
-		isFixed = false
-	}
-	posBox, posRect := box, rect
-	if layer.CanvasBackgroundRootBox != nil {
-		posBox = layer.CanvasBackgroundRootBox
-		posRect = borderBoxRect(posBox)
-	}
-	var originX, originY, originW, originH float64
-	if isFixed {
-		bounds := r.target.Bounds()
-		originX = float64(bounds.Min.X)
-		originY = float64(bounds.Min.Y)
-		originW = float64(bounds.Dx())
-		originH = float64(bounds.Dy())
-	} else {
-		// For canvas-bg (root element), the positioning area is the root's
-		// padding-box per CSS Backgrounds 3 §2.11.2. Louis14's layout
-		// records the root box at the ICB origin (0,0) with margins stored
-		// separately, so the padding-box position includes margin.left/top
-		// as an offset and the dimensions are reduced by the margins.
-		mt, mr, mb, ml := 0.0, 0.0, 0.0, 0.0
-		if layer.PaintsCanvasBackground {
-			mt, mr, mb, ml = posBox.Margin.Top, posBox.Margin.Right, posBox.Margin.Bottom, posBox.Margin.Left
-		}
-		switch bg.Origin {
-		case css.BackgroundOriginBorderBox:
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X+ml, posRect.Offset.Y+mt,
-				posRect.Size.Width-ml-mr, posRect.Size.Height-mt-mb)
-		case css.BackgroundOriginContentBox:
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X+ml+posBox.Border.Left+posBox.Padding.Left,
-				posRect.Offset.Y+mt+posBox.Border.Top+posBox.Padding.Top,
-				posRect.Size.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posRect.Size.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
-		default: // padding-box
-			originX, originY, originW, originH = pixelSnap(
-				posRect.Offset.X+ml+posBox.Border.Left,
-				posRect.Offset.Y+mt+posBox.Border.Top,
-				posRect.Size.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
-				posRect.Size.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
-		}
-	}
-	if originW <= 0 || originH <= 0 {
-		return
-	}
-
-	// Gradient tile size from background-size. Gradients have no intrinsic
-	// size, so `auto` resolves to the positioning-area dimension.
-	bgSize := bg.Size
-	tileW := originW
-	tileH := originH
-	autoW := true
-	autoH := true
-	if bgSize.Cover || bgSize.Contain {
-		// Cover/contain on a gradient just fills the area; no intrinsic
-		// ratio constrains it.
-		tileW = originW
-		tileH = originH
-		autoW = false
-		autoH = false
-	} else {
-		if bgSize.Width != 0 {
-			if bgSize.Width < 0 {
-				tileW = originW * (-bgSize.Width) / 100
-			} else {
-				tileW = bgSize.Width
-			}
-			autoW = false
-		}
-		if bgSize.Height != 0 {
-			if bgSize.Height < 0 {
-				tileH = originH * (-bgSize.Height) / 100
-			} else {
-				tileH = bgSize.Height
-			}
-			autoH = false
-		}
-	}
-
-	// Round adjustments: §3.5. When the other axis is auto, scale the auto
-	// dim proportionally with the round factor on the explicit axis.
-	if bg.Repeat.X == css.BackgroundRepeatRound && tileW > 0 {
-		n := math.Round(originW / tileW)
-		if n < 1 {
-			n = 1
-		}
-		newW := originW / n
-		if autoH && tileW > 0 {
-			tileH = tileH * newW / tileW
-		}
-		tileW = newW
-	}
-	if bg.Repeat.Y == css.BackgroundRepeatRound && tileH > 0 {
-		n := math.Round(originH / tileH)
-		if n < 1 {
-			n = 1
-		}
-		newH := originH / n
-		if autoW && tileH > 0 {
-			tileW = tileW * newH / tileH
-		}
-		tileH = newH
-	}
-	if tileW <= 0 || tileH <= 0 {
-		return
-	}
-
-	pos := bg.Position
-	startX := originX + pos.ResolveX(originW, tileW)
-	startY := originY + pos.ResolveY(originH, tileH)
-
-	// Clip extent — for gradients we don't extend beyond the positioning
-	// area because space/round always stay within it (the only case using
-	// drawTiledGradient).
-	var boxX0, boxY0, boxX1, boxY1 float64
-	if layer.PaintsCanvasBackground {
-		bounds := r.target.Bounds()
-		boxX0 = float64(bounds.Min.X)
-		boxY0 = float64(bounds.Min.Y)
-		boxX1 = float64(bounds.Max.X)
-		boxY1 = float64(bounds.Max.Y)
-	} else {
-		boxX0 = rect.Offset.X
-		boxY0 = rect.Offset.Y
-		boxX1 = rect.Offset.X + rect.Size.Width
-		boxY1 = rect.Offset.Y + rect.Size.Height
-	}
-
-	xs := tilePositions(bg.Repeat.X, originX, originW, startX, tileW, boxX0, boxX1)
-	ys := tilePositions(bg.Repeat.Y, originY, originH, startY, tileH, boxY0, boxY1)
-
-	// When both axes degenerate to a single tile (the N == 1 / no-room
-	// fallback for space, or round with no rescale needed), delegate to
-	// the regular full-box gradient path so the result matches the
-	// no-repeat code bit-for-bit. drawLinearGradient receives the layer
-	// clip rect rather than the resolved tile rect; that mirrors how
-	// no-repeat-with-explicit-background-size already renders gradients
-	// elsewhere in the renderer.
-	if len(xs) == 1 && len(ys) == 1 &&
-		(bg.Repeat.X == css.BackgroundRepeatSpace ||
-			bg.Repeat.X == css.BackgroundRepeatNoRepeat) &&
-		(bg.Repeat.Y == css.BackgroundRepeatSpace ||
-			bg.Repeat.Y == css.BackgroundRepeatNoRepeat) {
-		lx, ly, lw, lh := backgroundClipRectForClip(box, rect, bg.Clip)
-		r.drawGradient(bg.Gradient, lx, ly, lw, lh, layer.Box.Style)
-		return
-	}
-
-	// Tighten the active clip to the background-clip area so tiles
-	// overflowing the layer-clip area don't paint past the box edges.
-	// Image tiling already clips per-tile via the dst* bounds; gradient
-	// tiling lacks that fast-path, so we push a real clip on mazzy for the
-	// duration of the tile loop. drawGradient reads r.dc.ClipBounds()
-	// for its direct-pixel write bounds and picks up the tighter region
-	// automatically.
-	//
-	// For canvas-bg layers (root element promoted), the painting area
-	// extends to the canvas per CSS Backgrounds 3 §2.11.2, so the clip
-	// is the target bounds rather than the root box's background-clip.
-	lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, rect, bg.Clip)
-	r.dc.Push()
-	r.dc.DrawRectangle(lx, ly, lw, lh)
-	r.dc.Clip()
-	for _, ty := range ys {
-		for _, tx := range xs {
-			r.drawGradient(bg.Gradient, float64(tx), float64(ty), tileW, tileH, layer.Box.Style)
-		}
-	}
-	r.dc.Pop()
+	r.dc.DrawImage(buf, destPx.Min.X, destPx.Min.Y)
 }
 
 // drawImage paints an <img> element with object-fit and object-position support.
