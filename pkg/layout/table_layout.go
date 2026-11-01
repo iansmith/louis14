@@ -1285,12 +1285,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Mirrors Blink's single OutOfFlowLayoutPart::Run() at the end of
 	// TableLayoutAlgorithm::Layout (BoxFragmentBuilder::
 	// HandleOofsAndSpecialDescendants, box_fragment_builder.cc:660-671 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 resolves them
-	// against the content box.
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), against the padding box.
 	var propagatedOOF []OutOfFlowCandidate
 	if builder.NeedsOutOfFlowLayoutPart() {
-		propagatedOOF = NewOutOfFlowLayoutPart(tla.ctx, builder, tla.space,
-			LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
+		propagatedOOF = NewOutOfFlowLayoutPart(tla.ctx, builder, tla.space, LogicalSize{
+			InlineSize: contentInlineSize + geom.Padding.InlineSum(),
+			BlockSize:  finalBlockSize + geom.Padding.BlockSum(),
+		}, geom.Padding,
 			previousConsumedContentBlockSize(tla.space, geom.BorderBoxPadding().BlockStart)).Run()
 	}
 

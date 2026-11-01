@@ -905,9 +905,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// out in the outer columns.
 	var propagatedOOF []OutOfFlowCandidate
 	if mla.containerBuilder.NeedsOutOfFlowLayoutPart() {
-		propagatedOOF = NewOutOfFlowLayoutPart(mla.ctx, mla.containerBuilder, mla.space,
-			LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
-			mla.previouslyConsumedContentBlockSize()).Run()
+		propagatedOOF = NewOutOfFlowLayoutPart(mla.ctx, mla.containerBuilder, mla.space, LogicalSize{
+			InlineSize: mla.contentInlineSize + geom.Padding.InlineSum(),
+			BlockSize:  finalBlockSize + geom.Padding.BlockSum(),
+		}, geom.Padding, mla.previouslyConsumedContentBlockSize()).Run()
 	}
 
 	if mla.isConstrainedByOuterFragmentation() {
