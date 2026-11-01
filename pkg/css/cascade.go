@@ -1532,6 +1532,8 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			"text-emphasis-color", "text-emphasis-position",
 			// CSS UI 4 §7.1: accent-color is inherited.
 			"accent-color",
+			// CSS Fragmentation 3 §4.4: orphans and widows are inherited.
+			"orphans", "widows",
 			// CSS Color Adjustment 1 §2.1: color-scheme is inherited. A
 			// highlight pseudo-element's light-dark() resolution (see the
 			// resolveLightDarkValues call below) needs the originating
@@ -2701,6 +2703,10 @@ var inheritableProperties = map[string]bool{
 	// CSS Text 3 inherited properties:
 	"word-break": true, "overflow-wrap": true, "hyphens": true,
 	"line-break": true, "tab-size": true,
+	// CSS Fragmentation 3 §4.4: orphans and widows are inherited
+	// (css_properties.json5 `inherited: true` @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	"orphans": true, "widows": true,
 	// CSS Text Decor 4: skip-spaces is inherited (unlike the other
 	// text-decoration-* longhands which accumulate via
 	// AppliedTextDecorations). See

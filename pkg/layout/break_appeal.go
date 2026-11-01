@@ -1,15 +1,16 @@
 package layout
 
 // BreakAppeal scores how desirable a break point is. Mirrors Blink's
-// BreakAppeal enum (third_party/blink/renderer/core/layout/break_appeal.h).
-// Ordering low→high: LastResort < ViolatingOrphansAndWidows <
-// ViolatingBreakAvoid < Perfect.
+// BreakAppeal enum (third_party/blink/renderer/core/layout/break_appeal.h:
+// 11-31 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Ordering low→high:
+// LastResort < ViolatingBreakAvoid < ViolatingOrphansAndWidows < Perfect —
+// violating only orphans / widows beats violating a break avoid* value.
 type BreakAppeal int
 
 const (
 	BreakAppealLastResort BreakAppeal = iota
-	BreakAppealViolatingOrphansAndWidows
 	BreakAppealViolatingBreakAvoid
+	BreakAppealViolatingOrphansAndWidows
 	BreakAppealPerfect
 )
 
