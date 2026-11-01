@@ -207,8 +207,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// produced no line boxes (positionListMarkerWithoutLineBoxes). Skipped for
 	// inside markers (ListMarkerOccupiesWholeLine) — those flow through the
 	// inline path as ordinary inline-level boxes.
+	// A column box (an anonymous space) leaves the marker to its multicol
+	// container (ShouldPlaceUnpositionedListMarker, block_layout_algorithm.h:
+	// 470-483 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 seeds
+	// the marker only here and never propagates it, so the readers need no
+	// gate of their own.
 	if markerNode := bla.node.ListMarkerBlockNodeIfListItem(); markerNode != nil &&
-		!markerNode.ListMarkerOccupiesWholeLine() {
+		!bla.space.IsAnonymous && !markerNode.ListMarkerOccupiesWholeLine() {
 		incoming := bla.space.BreakToken
 		if incoming == nil || incoming.HasUnpositionedListMarker {
 			bla.containerBuilder.SetUnpositionedListMarker(&UnpositionedListMarker{
