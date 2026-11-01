@@ -99,6 +99,16 @@ type InlineItem struct {
 	// item-collection time and stamped onto fragments
 	// (PhysicalFragment.PaintGroup).
 	EnclosingPaintGroup *InlineItem
+
+	// inAnonymousInline marks the items of an anonymous inline box (the
+	// display:contents text wrapper, block ruby's inline ruby) and of its
+	// contents. They take no ::first-line style: Blink's
+	// LayoutObject::FirstLineStyleWithoutFallback returns null for an
+	// anonymous LayoutInline (layout_object.cc:4384 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and descendants inherit that
+	// null via Parent() (:4324-4328, :4398-4400). Set at collection time;
+	// the flat item list loses the layout-tree parent chain.
+	inAnonymousInline bool
 }
 
 // IsInlinePaintGroup reports whether an inline element with the given style
@@ -391,13 +401,14 @@ func collectInlinesRecursive(
 		}
 
 		openOffset := text.Len()
-		data.Items = append(data.Items, &InlineItem{
+		openTag := &InlineItem{
 			Type:        InlineItemOpenTag,
 			StartOffset: openOffset,
 			EndOffset:   openOffset,
 			Node:        child.DOMNode,
 			Style:       childStyle,
-		})
+		}
+		data.Items = append(data.Items, openTag)
 
 		// CSS Ruby — `<rb>`/`<rbc>`/`<rtc>` are plain inlines per
 		// Phase 1's UA stylesheet and stay transparent here;
@@ -465,6 +476,17 @@ func collectInlinesRecursive(
 			Node:        child.DOMNode,
 			Style:       childStyle,
 		})
+		if child.IsAnonymous() {
+			// Walk back to this box's OpenTag by identity: collectTextNode
+			// may have dropped earlier items, so an index taken before the
+			// recursion is not stable.
+			for i := len(data.Items) - 1; i >= 0; i-- {
+				data.Items[i].inAnonymousInline = true
+				if data.Items[i] == openTag {
+					break
+				}
+			}
+		}
 
 		// CloseTag emits before the column close so the `<rt>`/`<ruby>`
 		// CloseTag belongs to the closing column (mirrors Blink

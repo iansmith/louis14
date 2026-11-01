@@ -1874,15 +1874,14 @@ func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 			result = append(result, child)
 			continue
 		}
-		// <br> joins the surrounding text run. In Blink, LayoutBR is a
-		// LayoutText subclass, so the "contiguous run of text" wrapping
-		// rule (CSS Flexbox 1 §4) groups it with adjacent text into a
-		// single anonymous block-level flex item. Other elements (e.g.
-		// <i>, <span>) were blockified at computed-style time
-		// (css.AdjustStyleForDisplay, style_adjuster.cc:765-772 @
+		// <br> and anonymous inlines join the surrounding text run
+		// (joinsTextRun) into a single anonymous block-level flex item
+		// (CSS Flexbox 1 §4). Other elements (e.g. <i>, <span>) were
+		// blockified at computed-style time (css.AdjustStyleForDisplay,
+		// style_adjuster.cc:765-772 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and become their own
 		// flex items.
-		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+		if joinsTextRun(child) {
 			textRun = append(textRun, child)
 			continue
 		}

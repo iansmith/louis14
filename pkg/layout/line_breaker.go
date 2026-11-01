@@ -199,15 +199,18 @@ type LineBreaker struct {
 	firstLineMergeCache map[*css.Style]*css.Style
 }
 
-// measuringStyle returns the style the breaker should measure text with for an
-// item carrying itemStyle. On the first formatted line (useFirstLineStyle set)
-// it returns the ::first-line-merged style — the same merge that
-// inline_layout.go applies to the line's metrics and paint, so breaking,
-// metrics, and paint all agree on the first-line font. On every other line it
-// returns the base item style unchanged. Mirrors Blink routing all first-line
-// measurement through `items_data_(&node.ItemsData(use_first_line_style_))`.
-func (lb *LineBreaker) measuringStyle(itemStyle *css.Style) *css.Style {
-	if !lb.useFirstLineStyle || lb.firstLineStyle == nil {
+// measuringStyle returns the style the breaker should measure item with. On
+// the first formatted line (useFirstLineStyle set) it returns the
+// ::first-line-merged style — the same merge that inline_layout.go applies to
+// the line's metrics and paint, so breaking, metrics, and paint all agree on
+// the first-line font. On every other line, and for an item inside an
+// anonymous inline (which takes no ::first-line style, see
+// InlineItem.inAnonymousInline), it returns the base item style unchanged.
+// Mirrors Blink routing all first-line measurement through
+// `items_data_(&node.ItemsData(use_first_line_style_))`.
+func (lb *LineBreaker) measuringStyle(item *InlineItem) *css.Style {
+	itemStyle := item.Style
+	if !lb.useFirstLineStyle || lb.firstLineStyle == nil || item.inAnonymousInline {
 		return itemStyle
 	}
 	if cached, ok := lb.firstLineMergeCache[itemStyle]; ok {
@@ -499,7 +502,15 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of a line.
 	// Skipped for white-space: pre / pre-wrap which preserve all whitespace.
-	if lb.position == 0 && len(line.Results) == 0 && !cssPreservesWhitespace(item.Style) {
+	// The line is still "leading" until text or an atomic inline lands on it
+	// (line.HasContent): open tags, floats and text-indent do not end it, so a
+	// space just inside an inline box that starts the line is skipped too.
+	// Mirrors Blink's LineBreaker::HandleText skipping leading spaces while
+	// trailing_whitespace_ == WhitespaceState::kLeading
+	// (inline/line_breaker.cc:1336-1351 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); HandleOpenTag (:3947-3998)
+	// leaves that state alone.
+	if !line.HasContent && !cssPreservesWhitespace(item.Style) {
 		trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 		if len(trimmed) < len(content) {
 			textStart += len(content) - len(trimmed)
@@ -514,7 +525,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	// Get font properties from style. On the first formatted line this is the
 	// ::first-line-merged style so the line breaks at the first-line font's
 	// glyph advances (WI-1).
-	measureStyle := lb.measuringStyle(item.Style)
+	measureStyle := lb.measuringStyle(item)
 	fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 	fontPath := resolveFontPath(measureStyle, lb.fonts)
 	features := text.GetFontFeatures(measureStyle)
@@ -748,7 +759,7 @@ func (lb *LineBreaker) breakTextAtWord(
 
 	// CSS 2.1 §16.4: letter-spacing. Use the ::first-line-merged style on the
 	// first formatted line so spacing matches the breaking font (WI-1).
-	measureStyle := lb.measuringStyle(item.Style)
+	measureStyle := lb.measuringStyle(item)
 	letterSpacing := 0.0
 	if measureStyle != nil {
 		letterSpacing = measureStyle.GetLetterSpacing()
@@ -1419,7 +1430,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	// Use the ::first-line-merged style on the first formatted line so spacing
 	// matches the breaking font (WI-1).
 	letterSpacing := 0.0
-	if measureStyle := lb.measuringStyle(item.Style); measureStyle != nil {
+	if measureStyle := lb.measuringStyle(item); measureStyle != nil {
 		letterSpacing = measureStyle.GetLetterSpacing()
 	}
 
@@ -1825,7 +1836,7 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				// Re-measure with the same font handleText used for the
 				// initial InlineSize so the width delta stays consistent —
 				// the ::first-line-merged font on the first line (WI-1).
-				measureStyle := lb.measuringStyle(r.Item.Style)
+				measureStyle := lb.measuringStyle(r.Item)
 				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 				fontPath := resolveFontPath(measureStyle, lb.fonts)
 				features := text.GetFontFeatures(measureStyle)
@@ -1869,7 +1880,7 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				// Re-measure with the same font handleText used for the
 				// initial InlineSize so the width delta stays consistent —
 				// the ::first-line-merged font on the first line (WI-1).
-				measureStyle := lb.measuringStyle(r.Item.Style)
+				measureStyle := lb.measuringStyle(r.Item)
 				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 				fontPath := resolveFontPath(measureStyle, lb.fonts)
 				features := text.GetFontFeatures(measureStyle)
@@ -2022,7 +2033,7 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		// CSS letter-spacing / word-spacing are included — matching the
 		// measurement handleText performed for the original item.
 		trimmed := content[:opStart]
-		measureStyle := lb.measuringStyle(r.Item.Style)
+		measureStyle := lb.measuringStyle(r.Item)
 		isVertical := lb.isVerticalMeasurement(r.Item.Style)
 		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 		fontPath := resolveFontPath(measureStyle, lb.fonts)
@@ -2149,7 +2160,7 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 		// Re-shape with the same font handleText measured with so the merged-
 		// shape slices match the per-item widths — the ::first-line-merged
 		// font on the first formatted line (WI-1).
-		firstMeasureStyle := lb.measuringStyle(first.Item.Style)
+		firstMeasureStyle := lb.measuringStyle(first.Item)
 		fontSize, _, _, _, _ := fontPropsFromStyle(firstMeasureStyle)
 		fontPath := resolveFontPath(firstMeasureStyle, lb.fonts)
 		features := text.GetFontFeatures(firstMeasureStyle)

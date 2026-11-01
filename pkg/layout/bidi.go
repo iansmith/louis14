@@ -821,36 +821,27 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 		for r := startRune + 1; r < endRune && r < len(itemsData.RuneLevels); r++ {
 			lvl := itemsData.RuneLevels[r]
 			if lvl != currentLevel {
-				newItems = append(newItems, &InlineItem{
-					Type:           InlineItemText,
-					StartOffset:    byteAtRune[runStart],
-					EndOffset:      byteAtRune[r],
-					Node:           item.Node,
-					Style:          item.Style,
-					BidiLevel:      currentLevel,
-					ParagraphLevel: item.ParagraphLevel,
-
-					EnclosingPaintGroup: item.EnclosingPaintGroup,
-				})
+				newItems = append(newItems, splitTextItem(item, byteAtRune[runStart], byteAtRune[r], currentLevel))
 				currentLevel = lvl
 				runStart = r
 			}
 		}
 
-		newItems = append(newItems, &InlineItem{
-			Type:           InlineItemText,
-			StartOffset:    byteAtRune[runStart],
-			EndOffset:      byteAtRune[endRune],
-			Node:           item.Node,
-			Style:          item.Style,
-			BidiLevel:      currentLevel,
-			ParagraphLevel: item.ParagraphLevel,
-
-			EnclosingPaintGroup: item.EnclosingPaintGroup,
-		})
+		newItems = append(newItems, splitTextItem(item, byteAtRune[runStart], byteAtRune[endRune], currentLevel))
 	}
 
 	itemsData.Items = newItems
+}
+
+// splitTextItem returns a copy of the text item covering [start, end) at
+// bidi level. Copying the whole struct carries every collection-time
+// annotation (EnclosingPaintGroup, inAnonymousInline, ...) to the pieces.
+func splitTextItem(item *InlineItem, start, end, level int) *InlineItem {
+	piece := *item
+	piece.StartOffset = start
+	piece.EndOffset = end
+	piece.BidiLevel = level
+	return &piece
 }
 
 // ReorderLineVisual reorders a line's InlineItemResults from logical order
