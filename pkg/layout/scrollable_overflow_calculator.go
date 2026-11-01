@@ -268,7 +268,9 @@ func hasLeftOverflow(wdm WritingDirectionMode) bool {
 // shifting its content for vertical-align once built (no Blink analog:
 // Blink's cell algorithm builds the final geometry once).
 func (f *PhysicalFragment) updateScrollableOverflow() {
-	if f.LayoutNode == nil || (f.Node != nil && IsReplacedElement(f.Node)) {
+	// Only a box fragment records its own scrollable overflow (a line box's
+	// is gathered by its container through addLineBoxItems).
+	if f.Type != FragmentBox || f.LayoutNode == nil || (f.Node != nil && IsReplacedElement(f.Node)) {
 		return
 	}
 	var borders, padding, scrollbar PhysicalEdges

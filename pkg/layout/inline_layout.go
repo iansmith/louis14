@@ -2160,7 +2160,7 @@ func createLineBoxEx(
 	// which maps correctly via the parent block's ToPhysicalOffset.
 	lineWDM := wdm
 	lineWDM.Dir = DirectionLTR
-	lineBuilder := NewBoxFragmentBuilder(lineWDM)
+	lineBuilder := NewLineBoxFragmentBuilder(lineWDM)
 	lineBuilder.SetSize(LogicalSize{
 		InlineSize: availableInline,
 		BlockSize:  lineHeight,
@@ -2980,7 +2980,6 @@ func createLineBoxEx(
 	}
 
 	result := lineBuilder.Build()
-	result.Fragment.Type = FragmentLineBox
 	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates
 }
 

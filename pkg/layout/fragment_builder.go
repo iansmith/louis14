@@ -281,6 +281,13 @@ type BoxFragmentBuilder struct {
 	// fragmentainer), copied to PhysicalFragment.BoxType at Build. Mirrors
 	// Blink's FragmentBuilder::box_type_ (SetBoxType).
 	boxType BoxType
+
+	// fragmentType is the type of fragment Build creates: FragmentBox, or
+	// FragmentLineBox for a NewLineBoxFragmentBuilder. Blink picks it by
+	// the builder class (PhysicalLineBoxFragment is created with
+	// kFragmentLineBox, inline/physical_line_box_fragment.cc:41-46 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	fragmentType FragmentType
 }
 
 // SetConstraintSpace records the space the fragment is laid out in. Mirrors
@@ -317,6 +324,13 @@ type logicalChildLink struct {
 // NewBoxFragmentBuilder creates a builder for the given writing direction.
 func NewBoxFragmentBuilder(wdm WritingDirectionMode) *BoxFragmentBuilder {
 	return &BoxFragmentBuilder{wdm: wdm}
+}
+
+// NewLineBoxFragmentBuilder creates a builder for a line box. Mirrors
+// Blink's LineBoxFragmentBuilder (inline/line_box_fragment_builder.h:27-39
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func NewLineBoxFragmentBuilder(wdm WritingDirectionMode) *BoxFragmentBuilder {
+	return &BoxFragmentBuilder{wdm: wdm, fragmentType: FragmentLineBox}
 }
 
 // SetInlineSize sets the fragment's inline-size.
@@ -1607,6 +1621,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 
 	fragment := &PhysicalFragment{
+		Type:                       b.fragmentType,
 		Size:                       oldSizeToGeom(physSize),
 		Children:                   physChildren,
 		WritingDirection:           b.wdm,
