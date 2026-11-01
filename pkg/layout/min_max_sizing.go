@@ -546,7 +546,7 @@ func measureSpannersMinMax(searchParent *LayoutInputNode, ctx *LayoutContext, sp
 			continue
 		}
 		var childResult MinMaxSizes
-		if childStyle.GetColumnSpan() == "all" && isSelfValidColumnSpanner(childStyle) {
+		if isColumnSpanAll(child) {
 			// The spanner's contribution is its margin-box min/max — the
 			// ComputeMinAndMaxContentContribution call at cla.cc:543-546,
 			// with a new-FC space (spanners establish formatting contexts).
@@ -1635,8 +1635,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 		// Valid column-span:all children of a multicol container are not
 		// column content (block_layout_algorithm.cc:418-419, see doc comment).
-		if isInColumnBfc && childStyle.GetColumnSpan() == "all" &&
-			isSelfValidColumnSpanner(childStyle) {
+		if isInColumnBfc && isColumnSpanAll(child) {
 			continue
 		}
 

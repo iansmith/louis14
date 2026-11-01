@@ -415,3 +415,67 @@ func TestBreakBeforeLeaf_AppealJoinsPreviousSiblingBreakAfter(t *testing.T) {
 		})
 	}
 }
+
+// TestMulticol_SpannerBreakAfterPropagatesAsFinalBreakAfter_LOU471: inside an
+// outer fragmentainer, a spanner's break-after:column never breaks the outer
+// fragmentainer by itself. Blink records it through AddResult →
+// PropagateChildBreakValues (column_layout_algorithm.cc:1427;
+// box_fragment_builder.cc:651-653 @ a9f50e522efa): following column content
+// resets it (column_layout_algorithm.cc:1233-1235), and a last spanner's value
+// becomes the multicol's FinalBreakAfter, which the parent joins with the next
+// sibling's break-before (CalculateBreakBetweenValue,
+// fragmentation_utils.cc:131-160). Neither case sets HasForcedBreak or emits a
+// break token. The content fits the 300px fragmentainer, so any break is the
+// break-after's.
+func TestMulticol_SpannerBreakAfterPropagatesAsFinalBreakAfter_LOU471(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		spannerFirst bool
+		want         string
+	}{
+		{"column content after the spanner: no break", true, "auto"},
+		{"last spanner: FinalBreakAfter, no break", false, "column"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			styles := map[*html.Node]*css.Style{}
+			s := makeNode("div")
+			styles[s] = makeStyle("display", "block", "column-span", "all", "break-after", "column", "height", "50px")
+			c := makeNode("div")
+			styles[c] = makeStyle("display", "block", "height", "100px")
+			kids := []*html.Node{s, c}
+			if !tc.spannerFirst {
+				kids = []*html.Node{c, s}
+			}
+			mc := makeNode("div", kids...)
+			styles[mc] = makeStyle("display", "block", "column-count", "2", "column-gap", "0")
+			res := layoutMulticolInFragmentainer(t, mc, styles, 300, 50)
+			if res.BreakToken != nil {
+				t.Errorf("BreakToken = %+v, want nil", res.BreakToken)
+			}
+			if res.HasForcedBreak {
+				t.Error("HasForcedBreak = true, want false")
+			}
+			if res.FinalBreakAfter != tc.want {
+				t.Errorf("FinalBreakAfter = %q, want %q", res.FinalBreakAfter, tc.want)
+			}
+		})
+	}
+}
+
+// TestBreakPropagation_LastSpannerBreakAfterBreaksBeforeNextSibling_LOU471:
+// a nested multicol ending in a break-after:column spanner makes its parent
+// break before the multicol's next sibling, through FinalBreakAfter and
+// CalculateBreakBetweenValue (fragmentation_utils.cc:131-160, :908-916 @
+// a9f50e522efa) rather than through HasForcedBreak.
+func TestBreakPropagation_LastSpannerBreakAfterBreaksBeforeNextSibling_LOU471(t *testing.T) {
+	h := func(v string, more ...string) []string { return append([]string{"height", v}, more...) }
+	tree := ms("R", nil,
+		ms("I", props("column-count", "2", "column-gap", "0"),
+			ms("A", h("10px")), ms("S", h("20px", "column-span", "all", "break-after", "column"))),
+		ms("D", h("20px")))
+	frag, ids := layoutTwoColumnSpec(t, tree, false)
+	checkRects(t, borderBoxRectsByID(frag, ids), map[string][]fragRect{
+		"S": {{0, 5, 50, 20}},
+		"D": {{50, 0, 50, 20}},
+	})
+}
