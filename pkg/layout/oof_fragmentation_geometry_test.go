@@ -207,3 +207,36 @@ func TestTransformedMulticolIsFixedContainer(t *testing.T) {
 		"fs": {{80, 70, 10, 10}},
 	})
 }
+
+// TestInlineContainingBlockThroughAtomicInline pins Blink's inline
+// containing block for an OOF reached through an inline-block (plan probe
+// pF, multicol-oof-inline-cb-001): the inline-block's OOF descendants are
+// propagated into the enclosing position:relative <span>'s box fragment,
+// which tags the ones it contains with itself as the inline container
+// (InlineLayoutStateStack::BoxData::CreateBoxFragment,
+// inline/inline_box_state.cc:1066-1091; MoveOutOfFlowDescendantCandidatesToDescendants
+// / IsInlineContainerForNode, fragment_builder.cc:27-32, :712-733, all @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So `top:0; left:0` puts the
+// abspos at the span's first fragment's origin, in a plain block and in a
+// multicol. Chrome 155: a = cb's first rect origin ((10,10) and (10,110)).
+func TestInlineContainingBlockThroughAtomicInline(t *testing.T) {
+	ib := `<span style="display:inline-block;width:10px;height:10px"></span>`
+	section := func(style, cb, a string) string {
+		return `<div style="width:300px;height:100px;` + style + `">` + ib +
+			`<span id=` + cb + ` style="position:relative">` + ib + `<br>` +
+			`<span style="display:inline-block;width:20px;height:20px">` +
+			`<span id=` + a + ` style="position:absolute;top:0;left:0;width:10px;height:10px"></span>` +
+			`</span></span></div>`
+	}
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font-size:0">`+
+		section("", "cb", "a")+section("column-width:100px;column-fill:auto", "cb2", "a2"))
+	for _, ids := range [][2]string{{"cb", "a"}, {"cb2", "a2"}} {
+		cb, a := got[ids[0]], got[ids[1]]
+		if len(cb) == 0 || len(a) != 1 {
+			t.Fatalf("%s fragments %v, %s fragments %v", ids[0], cb, ids[1], a)
+		}
+		if a[0].x != cb[0].x || a[0].y != cb[0].y {
+			t.Errorf("%s at (%v,%v), want %s's first fragment origin (%v,%v) (Chrome 155)", ids[1], a[0].x, a[0].y, ids[0], cb[0].x, cb[0].y)
+		}
+	}
+}
