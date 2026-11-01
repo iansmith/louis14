@@ -412,3 +412,28 @@ func containsDecl(style, prop, val string) bool {
 	m := parseInlineStyle(style)
 	return m[prop] == val
 }
+
+// TestElementScrollOffsetSetters pins Element.scrollLeft / scrollTop as
+// writers of the element's scroll offset (Element::setScrollLeft /
+// setScrollTop, dom/element.cc:2811-2925 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each setter replaces one axis
+// and keeps the other, and the getters read it back. Clamping is layout's
+// job (see html.Node.ScrollOffset).
+func TestElementScrollOffsetSetters(t *testing.T) {
+	doc := parseHTML(t, `<div id="s" style="overflow:hidden"></div>`)
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("s");
+		s.scrollTop = 100;
+		s.scrollLeft = 30;
+		s.scrollTop = 120.5;
+		if (s.scrollLeft !== 30) throw new Error("scrollLeft = " + s.scrollLeft);
+		if (s.scrollTop !== 120.5) throw new Error("scrollTop = " + s.scrollTop);
+	`)
+	if err := New().Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	s := getElementById(doc.Root, "s")
+	if s.ScrollOffset != (html.ScrollOffset{X: 30, Y: 120.5}) {
+		t.Errorf("ScrollOffset = %+v, want {30 120.5}", s.ScrollOffset)
+	}
+}
