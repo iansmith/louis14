@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"louis14/pkg/css"
-	"louis14/pkg/images"
+	stdnet "louis14/std/net"
 	"mazarin/textshape"
 )
 
@@ -82,8 +82,9 @@ type FontRegistry struct {
 	// is found, after extracting the family from the font path.
 	overridesByFamily map[string]MetricsOverride
 	// featureSettingsByPath maps a synthetic font path to its @font-face
-	// font-feature-settings descriptor value (see FontFeatureSettingsForPath).
-	featureSettingsByPath map[string]string
+	// font-feature-settings descriptor, parsed once at registration (see
+	// FontFeatureSettingsForPath).
+	featureSettingsByPath map[string][]textshape.FontFeature
 }
 
 // NewFontRegistry creates a new FontRegistry.
@@ -112,16 +113,11 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	fr.declaredFamilies[strings.ToLower(family)] = struct{}{}
 	fr.mu.Unlock()
 
-	// A data: URL is decoded in place, never fetched — Blink's
-	// ResourceFetcher::CreateResourceForStaticData (platform/loader/fetch/
-	// resource_fetcher.cc:1061-1063 @ 5992657f556bcd9d207a4aca187488462f027cab).
-	fetch := fetcher
-	if images.IsDataURI(srcURL) {
-		fetch = images.DecodeDataURI
-	}
-	data, err := fetch(srcURL)
+	// A data: src is the fetcher's to serve (stdnet.RequestResource), as
+	// every resource type's is in Blink's ResourceFetcher.
+	data, err := fetcher(srcURL)
 	if err != nil {
-		return "", fmt.Errorf("fetching font %s: %w", images.DataURIForDisplay(srcURL), err)
+		return "", fmt.Errorf("fetching font %s: %w", stdnet.DataURLForDisplay(srcURL), err)
 	}
 
 	if data, err = decodeWebFont(data); err != nil {
@@ -195,32 +191,47 @@ func (fr *FontRegistry) AddUserFontFaceRules(faces []css.FontFaceRule, fetcher F
 		}
 		fr.SetUnicodeRanges(path, face.UnicodeRanges)
 		fr.SetFontFaceOverride(path, mo)
-		fr.SetFontFeatureSettings(path, face.FeatureSettings)
+		fr.SetFontFeatureSettings(path, parseFontFeatureSettingsDescriptor(face))
 	}
 }
 
-// SetFontFeatureSettings records the font-feature-settings descriptor of the
-// @font-face that registered path; "" is a no-op.
-func (fr *FontRegistry) SetFontFeatureSettings(path, settings string) {
-	if settings == "" {
+// parseFontFeatureSettingsDescriptor parses face's font-feature-settings
+// descriptor; a malformed one is dropped (logged), as Blink's CSS parser
+// drops an invalid @font-face descriptor, leaving the face without one.
+func parseFontFeatureSettingsDescriptor(face css.FontFaceRule) []textshape.FontFeature {
+	if face.FeatureSettings == "" {
+		return nil
+	}
+	settings, ok := ParseFontFeatureSettings(face.FeatureSettings)
+	if !ok {
+		log.Printf("font-face %s: invalid font-feature-settings descriptor %q", face.Family, face.FeatureSettings)
+	}
+	return settings
+}
+
+// SetFontFeatureSettings records the parsed font-feature-settings descriptor
+// of the @font-face that registered path; an empty list is a no-op.
+func (fr *FontRegistry) SetFontFeatureSettings(path string, settings []textshape.FontFeature) {
+	if len(settings) == 0 {
 		return
 	}
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	if fr.featureSettingsByPath == nil {
-		fr.featureSettingsByPath = make(map[string]string)
+		fr.featureSettingsByPath = make(map[string][]textshape.FontFeature)
 	}
 	fr.featureSettingsByPath[path] = settings
 }
 
-// FontFeatureSettingsForPath returns the font-feature-settings descriptor of
-// the @font-face that registered path, "" for none — the value Blink's
-// CSSFontFace::GetFontData merges into the face's FontDescription
-// (core/css/css_font_face.cc:149-151 @
-// 5992657f556bcd9d207a4aca187488462f027cab).
-func (fr *FontRegistry) FontFeatureSettingsForPath(path string) string {
+// FontFeatureSettingsForPath returns the parsed font-feature-settings
+// descriptor of the @font-face that registered path, nil for none — Blink's
+// FontFace::GetFontFeatureSettings, which CSSFontFace::GetFontData merges
+// into the face's FontDescription (core/css/font_face.cc:1122-1129,
+// core/css/css_font_face.cc:149-151 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Callers must not modify it.
+func (fr *FontRegistry) FontFeatureSettingsForPath(path string) []textshape.FontFeature {
 	if fr == nil {
-		return ""
+		return nil
 	}
 	fr.mu.Lock()
 	defer fr.mu.Unlock()

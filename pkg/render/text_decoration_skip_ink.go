@@ -3,8 +3,6 @@ package render
 import (
 	"sort"
 	"unicode"
-
-	"mazarin/textshape"
 )
 
 // glyphExtent describes one glyph's inline extent in the same frame as the
@@ -147,7 +145,7 @@ func buildGlyphExtentsVertical(text string, fontSize, startY, letterSpacing floa
 // a superset of the ink extent (in particular for italic / kerning), so
 // the approximation is conservative: it may skip slightly more than the
 // minimum required.
-func (r *Renderer) buildGlyphExtentsHorizontal(text string, fontID int32, features []textshape.FontFeature, startX, letterSpacing, wordSpacing float64) []glyphExtent {
+func (r *Renderer) buildGlyphExtentsHorizontal(text string, fontID int32, features fontFeatureInputs, startX, letterSpacing, wordSpacing float64) []glyphExtent {
 	if text == "" {
 		return nil
 	}
