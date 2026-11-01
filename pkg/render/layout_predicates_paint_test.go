@@ -93,7 +93,15 @@ func TestPaint_MulticolContainerFromLayout(t *testing.T) {
 	if !mc.IsMulticolContainer {
 		t.Error("zero-height multicol box IsMulticolContainer = false, want true")
 	}
-	if !newPaintLayer(mc).IsMulticol {
+	l := newPaintLayer(mc)
+	if !l.IsMulticol {
 		t.Error("multicol paint layer IsMulticol = false, want true")
+	}
+	// Being a multicol container does not make a box clip: Blink's
+	// HasNonVisibleOverflow depends on overflow and paint containment only
+	// (LayoutBox::UpdateFromStyle, layout_box.cc:956-966 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if mc.OverflowClipAxes != layout.NoOverflowClip || l.HasClip {
+		t.Errorf("overflow:visible multicol clips (axes %v, HasClip %v), want no clip", mc.OverflowClipAxes, l.HasClip)
 	}
 }

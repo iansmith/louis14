@@ -1325,7 +1325,7 @@ func (r *Renderer) paintLayerCanvasBackground(layer *PaintLayer) {
 	if layer.PaintsCanvasBackground {
 		// Mark before painting so drawBackground (called from paintSelfDecorations
 		// nested below paintLayerContent) skips the in-transform repaint.
-		r.drawBackground(layer)
+		r.drawBackground(layer, borderBoxRect(layer.Box))
 		r.canvasBgPaintedLayer = layer
 	}
 	// Hoist any descendant canvas-bg layer's paint out of this layer's
@@ -1372,7 +1372,7 @@ func (r *Renderer) paintDescendantCanvasBackground(layer *PaintLayer) {
 		if !hasStyleBackground(child.Box.Style) {
 			return
 		}
-		r.drawBackground(child)
+		r.drawBackground(child, borderBoxRect(child.Box))
 		// Don't set r.canvasBgPaintedLayer here — we want drawBackground
 		// to also skip the in-transform repaint when paintDescendantPhase
 		// eventually reaches this child. Use the descendant-tracking flag
@@ -2946,19 +2946,20 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 	if layer.Box != nil && layer.Box.IsFieldsetContainer {
 		r.paintFieldsetBoxDecorationBackground(layer)
 	} else if !layer.EmptyCellHide {
+		rect := borderBoxRect(layer.Box)
 		if len(layer.BoxShadows) > 0 {
-			r.drawOutsetBoxShadows(layer)
+			r.drawOutsetBoxShadows(layer, rect)
 		}
-		r.drawBackground(layer)
+		r.drawBackground(layer, rect)
 		// Collapsed table cell borders paint in their own phase AFTER
 		// descendants (see paintCollapsedBordersAfterDescendants). The
 		// background and box shadows still belong here so descendants
 		// paint above them in the normal way.
 		if !layer.IsCollapsedBorderCell {
-			r.drawBorders(layer)
+			r.drawBorders(layer, rect)
 		}
 		if len(layer.BoxShadows) > 0 {
-			r.drawInsetBoxShadows(layer)
+			r.drawInsetBoxShadows(layer, rect)
 		}
 	}
 
@@ -3432,23 +3433,37 @@ func buildRoundedRectPathReverseDC(dc interface {
 	dc.ClosePath()
 }
 
+// borderBoxRect returns box's border-box rect: the rect Blink's box
+// decoration painters take (BoxPainterBase::PaintFillLayers,
+// BoxBorderPainter::PaintBorder, PaintNormalBoxShadow), which a fieldset
+// contracts for its legend (paint/fieldset_painter.cc:75-84 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func borderBoxRect(box *layout.Box) layout.PhysicalRect {
+	return rectXYWH(box.X, box.Y, box.Width, box.Height)
+}
+
+// rectXYWH builds a PhysicalRect from its origin and size.
+func rectXYWH(x, y, w, h float64) layout.PhysicalRect {
+	return layout.PhysicalRect{Offset: layout.PhysicalOffset{X: x, Y: y}, Size: layout.PhysicalSize{Width: w, Height: h}}
+}
+
 // backgroundClipRectForClip computes the background painting area based on
 // a background-clip value (border-box, padding-box, content-box).
-func backgroundClipRectForClip(box *layout.Box, clip css.BackgroundClipType) (float64, float64, float64, float64) {
+func backgroundClipRectForClip(box *layout.Box, rect layout.PhysicalRect, clip css.BackgroundClipType) (float64, float64, float64, float64) {
 	switch clip {
 	case css.BackgroundClipPaddingBox:
 		return pixelSnap(
-			box.X+box.Border.Left, box.Y+box.Border.Top,
-			box.Width-box.Border.Left-box.Border.Right,
-			box.Height-box.Border.Top-box.Border.Bottom)
+			rect.Offset.X+box.Border.Left, rect.Offset.Y+box.Border.Top,
+			rect.Size.Width-box.Border.Left-box.Border.Right,
+			rect.Size.Height-box.Border.Top-box.Border.Bottom)
 	case css.BackgroundClipContentBox:
 		return pixelSnap(
-			box.X+box.Border.Left+box.Padding.Left,
-			box.Y+box.Border.Top+box.Padding.Top,
-			box.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
-			box.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom)
+			rect.Offset.X+box.Border.Left+box.Padding.Left,
+			rect.Offset.Y+box.Border.Top+box.Padding.Top,
+			rect.Size.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
+			rect.Size.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom)
 	default: // border-box
-		return pixelSnap(box.X, box.Y, box.Width, box.Height)
+		return pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 	}
 }
 
@@ -3460,13 +3475,13 @@ func backgroundClipRectForClip(box *layout.Box, clip css.BackgroundClipType) (fl
 //
 // Mirrors Blink's ViewPainter::PaintRootGroup canvas extension at chromium
 // @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, clip css.BackgroundClipType) (float64, float64, float64, float64) {
+func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType) (float64, float64, float64, float64) {
 	if layer.PaintsCanvasBackground {
 		bounds := r.target.Bounds()
 		return float64(bounds.Min.X), float64(bounds.Min.Y),
 			float64(bounds.Dx()), float64(bounds.Dy())
 	}
-	return backgroundClipRectForClip(layer.Box, clip)
+	return backgroundClipRectForClip(layer.Box, rect, clip)
 }
 
 // isScrollContainer reports whether the given style declares an overflow
@@ -3531,9 +3546,9 @@ func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
 
 // backgroundClipRect returns the clip rect for background-color.
 // Per CSS spec, background-color is clipped by the bottom-most layer's clip.
-func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+func (r *Renderer) backgroundClipRect(layer *PaintLayer, rect layout.PhysicalRect) (float64, float64, float64, float64) {
 	clip := effectiveBackgroundClip(layer)
-	return backgroundClipRectForClip(layer.Box, clip)
+	return backgroundClipRectForClip(layer.Box, rect, clip)
 }
 
 // backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
@@ -3543,7 +3558,7 @@ func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, floa
 // Without the constrain step, e.g. border-radius:100% on an outer box shrunk
 // by border+padding can produce inset radii larger than the content box,
 // which the path generator emits as a backward LineTo and a malformed shape.
-func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) css.EllipticalRadii {
+func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType) css.EllipticalRadii {
 	radii := layer.BorderRadius
 	box := layer.Box
 	var top, right, bottom, left float64
@@ -3559,16 +3574,16 @@ func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) 
 		return radii
 	}
 	inset := radii.Inset(top, right, bottom, left)
-	innerW := box.Width - left - right
-	innerH := box.Height - top - bottom
+	innerW := rect.Size.Width - left - right
+	innerH := rect.Size.Height - top - bottom
 	return inset.ConstrainRadii(innerW, innerH)
 }
 
 // backgroundClipRadii returns radii for background-color's clip area.
 // Mirrors backgroundClipRect's local-attachment override so the rounded
 // corner inset matches the rectangular clip inset.
-func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
-	return backgroundClipRadiiForClip(layer, effectiveBackgroundClip(layer))
+func backgroundClipRadii(layer *PaintLayer, rect layout.PhysicalRect) css.EllipticalRadii {
+	return backgroundClipRadiiForClip(layer, rect, effectiveBackgroundClip(layer))
 }
 
 // bodyOverflowPropagatesToViewport reports whether a <body> element's overflow
@@ -3688,7 +3703,7 @@ func (r *Renderer) paintScrollbars(layer *PaintLayer) {
 // painted this layer's bg outside the layer's transform (per CSS Transforms
 // 1 §6), skip the in-transform repaint so the bg isn't rotated/scaled with
 // the body/root element.
-func (r *Renderer) drawBackground(layer *PaintLayer) {
+func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 	if layer.PaintsCanvasBackground {
 		if r.canvasBgPaintedLayer == layer {
 			// paintLayerCanvasBackground already painted this layer's bg
@@ -3706,8 +3721,8 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 			return
 		}
 	}
-	sx, sy, sw, sh := r.backgroundClipRect(layer)
-	radii := backgroundClipRadii(layer)
+	sx, sy, sw, sh := r.backgroundClipRect(layer, rect)
+	radii := backgroundClipRadii(layer, rect)
 	hasRadius := !radii.IsZero()
 
 	fl := layer.BackgroundLayers
@@ -3746,8 +3761,8 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		// Per-layer clip rect and radii for gradient/image content.
 		// For canvas-bg layers (root element promoted), the painting area
 		// extends to the canvas per CSS Backgrounds 3 §2.11.2.
-		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
-		lRadii := backgroundClipRadiiForClip(layer, bg.Clip)
+		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, rect, bg.Clip)
+		lRadii := backgroundClipRadiiForClip(layer, rect, bg.Clip)
 		lHasRadius := !lRadii.IsZero()
 
 		// Paint gradient.
@@ -3777,10 +3792,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 					r.dc.Push()
 					r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 					r.dc.Clip()
-					r.drawTiledGradient(layer, bg)
+					r.drawTiledGradient(layer, rect, bg)
 					r.dc.Pop()
 				} else {
-					r.drawTiledGradient(layer, bg)
+					r.drawTiledGradient(layer, rect, bg)
 				}
 			} else {
 				// For fixed attachment, draw the gradient over the viewport
@@ -3824,10 +3839,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 				r.dc.Push()
 				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 				r.dc.Clip()
-				r.drawBackgroundImageLayer(layer, bg)
+				r.drawBackgroundImageLayer(layer, rect, bg)
 				r.dc.Pop()
 			} else {
-				r.drawBackgroundImageLayer(layer, bg)
+				r.drawBackgroundImageLayer(layer, rect, bg)
 			}
 		}
 	})
@@ -3838,7 +3853,7 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 // Tiles are manually clipped to the box bounds because DrawImage bypasses
 // the DrawContext clip mask (fast-path pixel blit ignores clipMask).
 // All arithmetic is integer-based to avoid fractional pixel misalignment.
-func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer) {
+func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, rect layout.PhysicalRect, bg *css.FillLayer) {
 	box := layer.Box
 	img, err := images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
 	if err != nil {
@@ -3877,9 +3892,10 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 		isFixed = false
 	}
 	// For promoted body backgrounds, use the root element's box for positioning.
-	posBox := box
+	posBox, posRect := box, rect
 	if layer.CanvasBackgroundRootBox != nil {
 		posBox = layer.CanvasBackgroundRootBox
+		posRect = borderBoxRect(posBox)
 	}
 	var originX, originY, originW, originH float64
 	if isFixed {
@@ -3892,19 +3908,19 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X, posBox.Y, posBox.Width, posBox.Height)
+				posRect.Offset.X, posRect.Offset.Y, posRect.Size.Width, posRect.Size.Height)
 		case css.BackgroundOriginContentBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left+posBox.Padding.Left,
-				posBox.Y+posBox.Border.Top+posBox.Padding.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+				posRect.Offset.X+posBox.Border.Left+posBox.Padding.Left,
+				posRect.Offset.Y+posBox.Border.Top+posBox.Padding.Top,
+				posRect.Size.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posRect.Size.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
 		default: // padding-box
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+posBox.Border.Left,
-				posBox.Y+posBox.Border.Top,
-				posBox.Width-posBox.Border.Left-posBox.Border.Right,
-				posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
+				posRect.Offset.X+posBox.Border.Left,
+				posRect.Offset.Y+posBox.Border.Top,
+				posRect.Size.Width-posBox.Border.Left-posBox.Border.Right,
+				posRect.Size.Height-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW < 0 {
@@ -4016,10 +4032,10 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 		boxX1 = bounds.Max.X
 		boxY1 = bounds.Max.Y
 	} else {
-		boxX0 = int(math.Round(box.X))
-		boxY0 = int(math.Round(box.Y))
-		boxX1 = int(math.Round(box.X + box.Width))
-		boxY1 = int(math.Round(box.Y + box.Height))
+		boxX0 = int(math.Round(rect.Offset.X))
+		boxY0 = int(math.Round(rect.Offset.Y))
+		boxX1 = int(math.Round(rect.Offset.X + rect.Size.Width))
+		boxY1 = int(math.Round(rect.Offset.Y + rect.Size.Height))
 	}
 
 	// Compute per-axis tile positions. Each entry is the top-left of one
@@ -4173,7 +4189,7 @@ func tilePositions(repeat css.BackgroundRepeatType, originStart, originLen, tile
 // behavior (rescale tile so an integer number fits; with auto on the
 // other axis the auto dim scales proportionally to keep one tile a square
 // when the gradient is asked to be square in the original auto cases).
-func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
+func (r *Renderer) drawTiledGradient(layer *PaintLayer, rect layout.PhysicalRect, bg *css.FillLayer) {
 	box := layer.Box
 
 	// Per CSS Transforms 1 §6, a non-canvas layer with any ancestor
@@ -4182,9 +4198,10 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
 		isFixed = false
 	}
-	posBox := box
+	posBox, posRect := box, rect
 	if layer.CanvasBackgroundRootBox != nil {
 		posBox = layer.CanvasBackgroundRootBox
+		posRect = borderBoxRect(posBox)
 	}
 	var originX, originY, originW, originH float64
 	if isFixed {
@@ -4206,20 +4223,20 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+ml, posBox.Y+mt,
-				posBox.Width-ml-mr, posBox.Height-mt-mb)
+				posRect.Offset.X+ml, posRect.Offset.Y+mt,
+				posRect.Size.Width-ml-mr, posRect.Size.Height-mt-mb)
 		case css.BackgroundOriginContentBox:
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+ml+posBox.Border.Left+posBox.Padding.Left,
-				posBox.Y+mt+posBox.Border.Top+posBox.Padding.Top,
-				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
-				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+				posRect.Offset.X+ml+posBox.Border.Left+posBox.Padding.Left,
+				posRect.Offset.Y+mt+posBox.Border.Top+posBox.Padding.Top,
+				posRect.Size.Width-ml-mr-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posRect.Size.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
 		default: // padding-box
 			originX, originY, originW, originH = pixelSnap(
-				posBox.X+ml+posBox.Border.Left,
-				posBox.Y+mt+posBox.Border.Top,
-				posBox.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
-				posBox.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
+				posRect.Offset.X+ml+posBox.Border.Left,
+				posRect.Offset.Y+mt+posBox.Border.Top,
+				posRect.Size.Width-ml-mr-posBox.Border.Left-posBox.Border.Right,
+				posRect.Size.Height-mt-mb-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW <= 0 || originH <= 0 {
@@ -4302,10 +4319,10 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		boxX1 = float64(bounds.Max.X)
 		boxY1 = float64(bounds.Max.Y)
 	} else {
-		boxX0 = box.X
-		boxY0 = box.Y
-		boxX1 = box.X + box.Width
-		boxY1 = box.Y + box.Height
+		boxX0 = rect.Offset.X
+		boxY0 = rect.Offset.Y
+		boxX1 = rect.Offset.X + rect.Size.Width
+		boxY1 = rect.Offset.Y + rect.Size.Height
 	}
 
 	xs := tilePositions(bg.Repeat.X, originX, originW, startX, tileW, boxX0, boxX1)
@@ -4323,7 +4340,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 			bg.Repeat.X == css.BackgroundRepeatNoRepeat) &&
 		(bg.Repeat.Y == css.BackgroundRepeatSpace ||
 			bg.Repeat.Y == css.BackgroundRepeatNoRepeat) {
-		lx, ly, lw, lh := backgroundClipRectForClip(box, bg.Clip)
+		lx, ly, lw, lh := backgroundClipRectForClip(box, rect, bg.Clip)
 		r.drawGradient(bg.Gradient, lx, ly, lw, lh, layer.Box.Style)
 		return
 	}
@@ -4339,7 +4356,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	// For canvas-bg layers (root element promoted), the painting area
 	// extends to the canvas per CSS Backgrounds 3 §2.11.2, so the clip
 	// is the target bounds rather than the root box's background-clip.
-	lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, bg.Clip)
+	lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, rect, bg.Clip)
 	r.dc.Push()
 	r.dc.DrawRectangle(lx, ly, lw, lh)
 	r.dc.Clip()
@@ -4599,7 +4616,7 @@ func scaleImage(src image.Image, srcW, srcH, dstW, dstH int, imageRendering stri
 //	+-------+-------------------+-------+
 //
 // Mirrors Blink's NinePieceImagePainter.
-func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
+func (r *Renderer) drawBorderImage(layer *PaintLayer, rect layout.PhysicalRect) bool {
 	// PaintLayer.BorderImageSource is *CSSImageValue post-LOU-138 phase 7.3;
 	// the url() inner was extracted by cascade-time wrapping in paint_layer.go.
 	src := layer.BorderImageSource.Data.Absolute
@@ -4618,8 +4635,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 		return false
 	}
 
-	box := layer.Box
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 
 	// Border-image-outset extends the painted area outside the border box
 	// per CSS Backgrounds 3 §6.2. Layout box is unchanged; only the area
@@ -5222,8 +5238,9 @@ func (r *Renderer) paintCollapsedTableCellBorder(layer *PaintLayer) {
 	if !layer.IsCollapsedBorderCell || layer.EmptyCellHide {
 		return
 	}
-	r.drawBorders(layer)
-	r.drawCollapsedBorderOutwardStrips(layer)
+	rect := borderBoxRect(layer.Box)
+	r.drawBorders(layer, rect)
+	r.drawCollapsedBorderOutwardStrips(layer, rect)
 }
 
 // drawCollapsedBorderOutwardStrips paints the per-side outward strips for
@@ -5249,7 +5266,7 @@ func (r *Renderer) paintCollapsedTableCellBorder(layer *PaintLayer) {
 // to match drawBorders. The strip's color and style mirror the cell's
 // own border on the same side — both sides of the grid line carry the
 // same winning style/color from resolveBorderConflict.
-func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer) {
+func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer, rect layout.PhysicalRect) {
 	if !layer.IsCollapsedBorderCell {
 		return
 	}
@@ -5265,7 +5282,7 @@ func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer) {
 	// Pixel-snapped cell border-box outer corners — same convention as
 	// drawBorders so the strip aligns precisely with the cell's painted
 	// inside half.
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 	outerLeft, outerTop := x, y
 	outerRight, outerBottom := x+w, y+h
 
@@ -5320,10 +5337,10 @@ func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer) {
 }
 
 // drawBorders draws all four borders of the layer's box (pre-computed styles/colors).
-func (r *Renderer) drawBorders(layer *PaintLayer) {
+func (r *Renderer) drawBorders(layer *PaintLayer, rect layout.PhysicalRect) {
 	// Border-image replaces regular border drawing when a source is set.
 	if layer.BorderImageSource != nil {
-		if r.drawBorderImage(layer) {
+		if r.drawBorderImage(layer, rect) {
 			return // border-image painted successfully
 		}
 		// Fall through to regular borders if image failed to load.
@@ -5337,11 +5354,11 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 
 	// Rounded borders: delegate to specialized method.
 	if hasBorderRadius(layer) {
-		r.drawRoundedBorders(layer)
+		r.drawRoundedBorders(layer, rect)
 		return
 	}
 
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 	outerLeft, outerTop := x, y
 	outerRight, outerBottom := x+w, y+h
 
@@ -5353,10 +5370,10 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 	// math.Round of the snapped outer + bw would collapse to 0. Mirrors
 	// Blink's PhysicalRect::PixelSnappedWidth/Height pattern from
 	// core/layout/geometry/physical_rect.h.
-	luBoxX := layoutunit.FromFloat64Round(box.X)
-	luBoxY := layoutunit.FromFloat64Round(box.Y)
-	luBoxXW := layoutunit.FromFloat64Round(box.X + box.Width)
-	luBoxYH := layoutunit.FromFloat64Round(box.Y + box.Height)
+	luBoxX := layoutunit.FromFloat64Round(rect.Offset.X)
+	luBoxY := layoutunit.FromFloat64Round(rect.Offset.Y)
+	luBoxXW := layoutunit.FromFloat64Round(rect.Offset.X + rect.Size.Width)
+	luBoxYH := layoutunit.FromFloat64Round(rect.Offset.Y + rect.Size.Height)
 	luBwL := layoutunit.FromFloat64Round(bw.Left)
 	luBwT := layoutunit.FromFloat64Round(bw.Top)
 	luBwR := layoutunit.FromFloat64Round(bw.Right)
@@ -5465,10 +5482,10 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 }
 
 // drawRoundedBorders draws borders for a box with border-radius.
-func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
+func (r *Renderer) drawRoundedBorders(layer *PaintLayer, rect layout.PhysicalRect) {
 	box := layer.Box
 	bw := box.Border
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 
 	// Check if all sides have the same width, style, and color (uniform case).
 	uniform := bw.Top == bw.Right && bw.Right == bw.Bottom && bw.Bottom == bw.Left &&
@@ -9332,23 +9349,12 @@ func (r *Renderer) SavePNG(filename string) error {
 	return png.Encode(f, r.target)
 }
 
-// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto/clip
-// on either axis, or paint containment (which also clips and contains positioned descendants).
+// hasOverflowClipping reports whether the box clips its overflow along
+// either axis (overflow or paint containment), as layout decided it.
+// Mirrors LayoutObject::ShouldClipOverflowAlongEitherAxis
+// (layout_object.h:2062-2065 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func hasOverflowClipping(box *layout.Box) bool {
-	// A fieldset container does not respect CSS overflow; its anonymous
-	// content box clips (LayoutFieldset::RespectsCSSOverflow,
-	// forms/layout_fieldset.h:61-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if box.Style == nil || box.IsFieldsetContainer {
-		return false
-	}
-	clipping := func(o css.OverflowType) bool {
-		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
-	}
-	if clipping(box.Style.GetOverflowX()) || clipping(box.Style.GetOverflowY()) {
-		return true
-	}
-	// CSS Containment: paint containment clips content and contains descendants.
-	return box.Style.ShouldApplyPaintContainment()
+	return box.OverflowClipAxes != layout.NoOverflowClip
 }
 
 // isContainedByOverflow returns true if the child is clipped by the parent's
@@ -9396,9 +9402,8 @@ func applySpreadToShadowShape(radii css.EllipticalRadii, spread, w, h, outW, out
 
 // drawOutsetBoxShadows paints outset box shadows behind the element.
 // Shadows are painted in reverse declaration order (last = behind).
-func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
-	box := layer.Box
-	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer, rect layout.PhysicalRect) {
+	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
 
 	for i := len(layer.BoxShadows) - 1; i >= 0; i-- {
 		shadow := layer.BoxShadows[i]
@@ -9564,13 +9569,13 @@ func (r *Renderer) clearHoleFromBuffer(buf *image.RGBA, x, y, w, h float64, radi
 // after background and borders. Per CSS spec, inset shadows are drawn
 // inside the padding box, creating a "donut" between the box edge and
 // the shadow inner rect.
-func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
+func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer, rect layout.PhysicalRect) {
 	box := layer.Box
 	// Inset shadows paint inside the padding box.
-	px := box.X + box.Border.Left
-	py := box.Y + box.Border.Top
-	pw := box.Width - box.Border.Left - box.Border.Right
-	ph := box.Height - box.Border.Top - box.Border.Bottom
+	px := rect.Offset.X + box.Border.Left
+	py := rect.Offset.Y + box.Border.Top
+	pw := rect.Size.Width - box.Border.Left - box.Border.Right
+	ph := rect.Size.Height - box.Border.Top - box.Border.Bottom
 	px, py, pw, ph = pixelSnap(px, py, pw, ph)
 
 	if pw <= 0 || ph <= 0 {

@@ -601,17 +601,12 @@ type PhysicalFragment struct {
 	// self-collapsing fragments.
 	IsSelfCollapsing bool
 
-	// IsMulticolContainer marks this fragment as a multicol container
-	// (CSS Multicol L1 §2). Mirrors the structural condition that makes
-	// Blink's LayoutBox::HasNonVisibleOverflow() return true for
-	// multicol — the fragmentation context establishes an overflow clip
-	// even when the computed `overflow` is `visible`. Consumed by the
-	// paint layer (P20.5) to set up an overflow clip with rect =
-	// padding-box (Blink LayoutBox::OverflowClipRect default for
-	// non-scroll-container: border-box contracted by border outsets).
-	// Replaces the ad-hoc 3389efe7 mechanism that repurposed
-	// ClipContentToBorderBox for multicol; that flag now retains its
-	// CSS-Tables-3 §5.4.1 semantics only.
+	// IsMulticolContainer marks a fragment of a multicol container
+	// (CSS Multicol L1 §2), set by MulticolLayoutAlgorithm. Mirrors
+	// LayoutObject::IsMulticolContainer (layout_object.h:3438-3441 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): structural, decided by
+	// layout (a fieldset's columns go to its content box, an <img>
+	// fallback never has them), not by the column properties.
 	IsMulticolContainer bool
 
 	// IsFieldsetContainer marks the fragment of a fieldset container: its
