@@ -177,6 +177,10 @@ func applyScrollableArea(fragment *PhysicalFragment, box *Box) (dx, dy float64) 
 	if area == nil {
 		return 0, 0
 	}
+	box.ScrollSize = PhysicalSize{
+		Width:  area.overflowRect.Size.WidthF64(),
+		Height: area.overflowRect.Size.HeightF64(),
+	}
 	box.MinimumScrollOffset = area.MinimumScrollOffset()
 	box.MaximumScrollOffset = area.MaximumScrollOffset()
 	if fragment.Node != nil {
@@ -185,4 +189,19 @@ func applyScrollableArea(fragment *PhysicalFragment, box *Box) (dx, dy float64) 
 		box.ScrollOffset = area.ClampScrollOffset(html.ScrollOffset{})
 	}
 	return scrolledContentOffset(box.ScrollOffset)
+}
+
+// ScrollPosition mirrors ScrollableArea::ScrollPosition
+// (ScrollOffsetToPosition, scroll/scrollable_area.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the scroll offset measured
+// from the overflow rect's left/top edge, ScrollOffset + ScrollOrigin.
+// MinimumScrollOffset is −ScrollOrigin on every scrollable axis, and a
+// scroll container never has a non-scrollable (overflow:clip) axis, so
+// this is ScrollOffset − MinimumScrollOffset. Zero for a box that is not
+// a scroll container.
+func (b *Box) ScrollPosition() html.ScrollOffset {
+	return html.ScrollOffset{
+		X: b.ScrollOffset.X - b.MinimumScrollOffset.X,
+		Y: b.ScrollOffset.Y - b.MinimumScrollOffset.Y,
+	}
 }

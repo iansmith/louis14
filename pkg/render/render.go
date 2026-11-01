@@ -3484,54 +3484,66 @@ func (r *Renderer) backgroundPaintRectForLayer(layer *PaintLayer, rect layout.Ph
 	return backgroundClipRectForClip(layer.Box, rect, clip)
 }
 
-// effectiveBackgroundClip returns the clip type for the bottom-most fill
-// layer's background-color paint. Mirrors Blink's
-// FillLayerInfo::is_clipped_with_local_scrolling: when the element is a
-// scroll container and the bottom fill layer is `background-attachment:
-// local`, the clip is forced to padding-box regardless of the declared
-// background-clip (CSS Backgrounds 3 §3.5).
-func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
-	// Trust the pre-computed background-color clip (Style.GetBackgroundColorClip),
-	// which already selects the bottom-most CSS layer's clip with the proper
-	// layer-count cycling. The BackgroundLayers list must NOT be used to
-	// re-derive it: CullEmptyLayers drops empty trailing layers and always
-	// keeps the head, so its tail is the topmost surviving layer rather than
-	// the CSS bottom-most layer (e.g. `background-image: none, none` collapses
-	// to the head's clip). We still walk the list to find the bottom surviving
-	// layer purely for the local-attachment override below.
-	clip := layer.BackgroundClip
-	var bottom *css.FillLayer
-	if fl := layer.BackgroundLayers; fl != nil {
-		for cur := fl; cur != nil; cur = cur.Next {
-			if cur.Next == nil {
-				bottom = cur
-			}
-		}
-	}
-	// Local-attachment scroll-container clip override (CSS Backgrounds 3
-	// §3.5 / Blink FillLayerInfo::is_clipped_with_local_scrolling).
-	// Read attachment from the bottom layer when one exists; otherwise
-	// fall back to the element's style (covers the no-fill-layer case where
-	// only background-color + background-attachment are declared).
-	if layer.Box != nil && layer.Box.IsScrollContainer() {
-		var bottomAttachment css.BackgroundAttachmentType
-		if bottom != nil {
-			bottomAttachment = bottom.Attachment
-		} else if layer.Box.Style != nil {
-			bottomAttachment = layer.Box.Style.GetBackgroundAttachment()
-		}
-		if bottomAttachment == css.BackgroundAttachmentLocal {
-			return css.BackgroundClipPaddingBox
-		}
+// isClippedWithLocalScrolling mirrors FillLayerInfo::
+// is_clipped_with_local_scrolling (box_painter_base.cc:639-641 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), fed PhysicalBoxFragment::
+// IsScrollContainer by BoxFragmentPainter::GetFillLayerInfo
+// (box_fragment_painter.cc:2345-2358): a fill layer with
+// background-attachment: local on a scroll container paints in the
+// scrolled contents' coordinate space. A canvas background is painted by
+// the view (ViewPainter), never through this box path.
+func isClippedWithLocalScrolling(layer *PaintLayer, attachment css.BackgroundAttachmentType) bool {
+	return !layer.PaintsCanvasBackground && layer.Box != nil && layer.Box.IsScrollContainer() &&
+		attachment == css.BackgroundAttachmentLocal
+}
+
+// contouredBorderClip returns the box ContouredBorderRectForClip
+// (box_painter_base.cc:1236-1246 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) clips a rounded fill to:
+// content-box first, then the padding box for padding-box or a
+// local-scrolling layer (its inner border), else the declared clip.
+func contouredBorderClip(clip css.BackgroundClipType, local bool) css.BackgroundClipType {
+	switch {
+	case clip == css.BackgroundClipContentBox:
+		return clip
+	case clip == css.BackgroundClipPaddingBox || local:
+		return css.BackgroundClipPaddingBox
 	}
 	return clip
 }
 
-// backgroundClipRect returns the clip rect for background-color.
-// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
-func (r *Renderer) backgroundClipRect(layer *PaintLayer, rect layout.PhysicalRect) (float64, float64, float64, float64) {
-	clip := effectiveBackgroundClip(layer)
-	return backgroundClipRectForClip(layer.Box, rect, clip)
+// bottomLayerAttachment returns the background-attachment of the bottom
+// surviving fill layer, or the element's style when it has no fill layers
+// (only background-color + background-attachment are declared).
+func bottomLayerAttachment(layer *PaintLayer) css.BackgroundAttachmentType {
+	var bottom *css.FillLayer
+	for cur := layer.BackgroundLayers; cur != nil; cur = cur.Next {
+		bottom = cur
+	}
+	if bottom != nil {
+		return bottom.Attachment
+	}
+	if layer.Box != nil && layer.Box.Style != nil {
+		return layer.Box.Style.GetBackgroundAttachment()
+	}
+	return ""
+}
+
+// effectiveBackgroundClip returns the box the background color's rounded
+// clip uses: the bottom-most CSS layer's declared clip resolved through
+// ContouredBorderRectForClip (contouredBorderClip) with the bottom layer's
+// local scrolling.
+//
+// The declared clip is the pre-computed background-color clip
+// (Style.GetBackgroundColorClip), which already selects the bottom-most
+// CSS layer's clip with the proper layer-count cycling. The
+// BackgroundLayers list must NOT be used to re-derive it: CullEmptyLayers
+// drops empty trailing layers and always keeps the head, so its tail is
+// the topmost surviving layer rather than the CSS bottom-most layer (e.g.
+// `background-image: none, none` collapses to the head's clip).
+func effectiveBackgroundClip(layer *PaintLayer) css.BackgroundClipType {
+	return contouredBorderClip(layer.BackgroundClip,
+		isClippedWithLocalScrolling(layer, bottomLayerAttachment(layer)))
 }
 
 // backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
@@ -3560,13 +3572,6 @@ func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, cli
 	innerW := rect.Size.Width - left - right
 	innerH := rect.Size.Height - top - bottom
 	return inset.ConstrainRadii(innerW, innerH)
-}
-
-// backgroundClipRadii returns radii for background-color's clip area.
-// Mirrors backgroundClipRect's local-attachment override so the rounded
-// corner inset matches the rectangular clip inset.
-func backgroundClipRadii(layer *PaintLayer, rect layout.PhysicalRect) css.EllipticalRadii {
-	return backgroundClipRadiiForClip(layer, rect, effectiveBackgroundClip(layer))
 }
 
 // bodyOverflowPropagatesToViewport reports whether a <body> element's overflow
@@ -3720,24 +3725,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 			return
 		}
 	}
-	sx, sy, sw, sh := r.backgroundClipRect(layer, rect)
-	radii := backgroundClipRadii(layer, rect)
-	hasRadius := !radii.IsZero()
-
 	fl := layer.BackgroundLayers
-
 	if fl == nil {
-		// No layers — just paint background-color.
-		if c := layer.BackgroundColor; c.A > 0 {
-			r.setColor(c)
-			if hasRadius {
-				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-				r.dc.Fill()
-			} else {
-				r.dc.DrawRectangle(sx, sy, sw, sh)
-				r.dc.Fill()
-			}
-		}
+		// No fill layers: only the background color.
+		r.paintFillLayerColor(layer, rect)
 		return
 	}
 
@@ -3749,52 +3740,102 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 
 	// Paint from bottom to top.
 	fl.IterateReverse(func(bg *css.FillLayer) {
-		// Background-color only on bottom layer (uses bottom layer's clip, already in sx/sy/sw/sh).
+		// Background-color only on the bottom layer.
 		if bg.IsBottomLayer() {
-			if c := layer.BackgroundColor; c.A > 0 {
-				r.setColor(c)
-				if hasRadius {
-					r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-					r.dc.Fill()
-				} else {
-					r.dc.DrawRectangle(sx, sy, sw, sh)
-					r.dc.Fill()
-				}
-			}
+			r.paintFillLayerColor(layer, rect)
 		}
-
-		// Per-layer image content (url() image or gradient), clipped to
-		// the layer's background-clip area — rounded when the box has
-		// border radii. For canvas-bg layers (root element promoted) the
-		// painting area extends to the canvas per CSS Backgrounds 3
-		// §2.11.2. Mirrors BoxPainterBase::PaintFillLayer's clip push
-		// (box_painter_base.cc:1474-1477, :1533-1551 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		// data: URIs decode inline and need no fetcher.
 		var img image.Image
 		if bg.Image != nil && (r.imageFetcher != nil || stdnet.IsDataURL(bg.Image.Data.Absolute)) {
 			img, _ = images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
 		}
-		if bg.Gradient == "" && img == nil {
-			return
+		if bg.Gradient != "" || img != nil {
+			r.paintFillLayer(layer, ctx, rect, paintRect, bg, img)
 		}
-		lx, ly, lw, lh := r.backgroundPaintRectForLayer(layer, rect, bg.Clip)
-		lRadii := backgroundClipRadiiForClip(layer, rect, bg.Clip)
-		r.dc.Push()
-		if !lRadii.IsZero() {
-			r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
-		} else {
-			r.dc.DrawRectangle(lx, ly, lw, lh)
-		}
-		r.dc.Clip()
-		if bg.Gradient != "" {
-			r.paintFillLayerImage(layer, ctx, paintRect, bg, nil)
-		}
-		if img != nil {
-			r.paintFillLayerImage(layer, ctx, paintRect, bg, img)
-		}
-		r.dc.Pop()
 	})
+}
+
+// paintFillLayerColor paints the background color under the bottom-most
+// CSS layer's clip (effectiveBackgroundClip) — the color branch of
+// BoxPainterBase::PaintFillLayer for the bottom layer
+// (PaintFillLayerBackground, box_painter_base.cc:1264-1275 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): it fills the layer's clip
+// area, within the scrolled contents for a local-scrolling bottom layer.
+func (r *Renderer) paintFillLayerColor(layer *PaintLayer, rect layout.PhysicalRect) {
+	if layer.BackgroundColor.A == 0 {
+		return
+	}
+	local := isClippedWithLocalScrolling(layer, bottomLayerAttachment(layer))
+	if local {
+		r.dc.Push()
+		defer r.dc.Pop()
+	}
+	r.fillLayerClipPath(layer, rect, effectiveBackgroundClip(layer), local)
+	r.setColor(layer.BackgroundColor)
+	r.dc.Fill()
+}
+
+// paintFillLayer paints one fill layer's image content (url() image img,
+// or the layer's gradient when img is nil) clipped to its background-clip
+// area. Mirrors the image branch of BoxPainterBase::PaintFillLayer
+// (box_painter_base.cc:1349-1570 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a local-scrolling layer is
+// positioned in the scrolled paint rect (:1378-1386, :1424-1425).
+func (r *Renderer) paintFillLayer(layer *PaintLayer, ctx *BoxBackgroundPaintContext, rect layout.PhysicalRect, paintRect geometry.PhysicalRect, bg *css.FillLayer, img image.Image) {
+	local := isClippedWithLocalScrolling(layer, bg.Attachment)
+	r.dc.Push()
+	defer r.dc.Pop()
+	scrolledPaintRect := r.fillLayerClipPath(layer, rect, contouredBorderClip(bg.Clip, local), local)
+	r.dc.Clip()
+	if local {
+		paintRect = r.backgroundPaintRect(layer, scrolledPaintRect)
+	}
+	r.paintFillLayerImage(layer, ctx, paintRect, bg, img)
+}
+
+// fillLayerClipPath builds the path of a fill layer's clip area and
+// returns its scrolled paint rect. clip is already resolved by
+// contouredBorderClip. A local-scrolling layer first clips the context to
+// the overflow clip rect (AdjustRectForScrolledContent; the caller holds
+// the state save), so a padding-box clip of the scrolled rect equals
+// Blink's unclipped border-box one there. The rounded fill clips against
+// the unscrolled rect (ContouredBorderRectForClip, box_painter_base.cc:
+// 1474-1477 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the non-rounded
+// padding/content clip contracts the scrolled one (:1533-1551). For
+// canvas-bg layers (root element promoted) the painting area extends to
+// the canvas per CSS Backgrounds 3 §2.11.2.
+func (r *Renderer) fillLayerClipPath(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType, local bool) layout.PhysicalRect {
+	scrolledPaintRect := rect
+	if local {
+		scrolledPaintRect = r.adjustRectForScrolledContent(layer.Box, rect)
+	}
+	if radii := backgroundClipRadiiForClip(layer, rect, clip); !radii.IsZero() {
+		x, y, w, h := r.backgroundPaintRectForLayer(layer, rect, clip)
+		r.buildRoundedRectPath(x, y, w, h, radii)
+	} else {
+		r.dc.DrawRectangle(r.backgroundPaintRectForLayer(layer, scrolledPaintRect, clip))
+	}
+	return scrolledPaintRect
+}
+
+// adjustRectForScrolledContent mirrors BoxFragmentPainter::
+// AdjustRectForScrolledContent (box_fragment_painter.cc:2321-2343 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): it clips the context to the
+// overflow clip rect (LayoutBox::OverflowClipRect, layout_box.cc:2364-2416:
+// the padding box minus the scrollbars) and returns the paint rect of the
+// scrolled contents with the borders at its ends — offset by the floored
+// −ScrollPosition and sized to ScrollSize plus the borders snapped to
+// whole pixels (ComputeSnappedBorders, box_painter_base.cc:1340-1345).
+func (r *Renderer) adjustRectForScrolledContent(box *layout.Box, rect layout.PhysicalRect) layout.PhysicalRect {
+	b, sb := box.Border, box.Scrollbar
+	x, y, w, h := backgroundClipRectForClip(box, rect, css.BackgroundClipPaddingBox)
+	r.dc.DrawRectangle(x+sb.Left, y+sb.Top, w-sb.Left-sb.Right, h-sb.Top-sb.Bottom)
+	r.dc.Clip()
+	pos := box.ScrollPosition()
+	return rectXYWH(
+		rect.Offset.X-math.Floor(pos.X), rect.Offset.Y-math.Floor(pos.Y),
+		box.ScrollSize.Width+math.Trunc(b.Left)+math.Trunc(b.Right),
+		box.ScrollSize.Height+math.Trunc(b.Top)+math.Trunc(b.Bottom))
 }
 
 // toLayoutRect converts a float rect to LayoutUnits (round-to-nearest

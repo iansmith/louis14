@@ -873,6 +873,35 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		}
 		return vm.ToValue(offset.Y)
 
+	case "scrollTo":
+		// Element.scrollTo(x, y) and scrollTo(options) (Element::scrollTo,
+		// dom/element.cc:3011-3046 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the two-number
+		// overload is scrollTo({left: x, top: y}); an option left out
+		// keeps that axis. Blink returns a promise; louis14 scrolls
+		// synchronously and returns undefined.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			var left, top *float64
+			if len(call.Arguments) >= 2 {
+				x, y := call.Argument(0).ToFloat(), call.Argument(1).ToFloat()
+				left, top = &x, &y
+			} else if arg := call.Argument(0); !goja.IsUndefined(arg) && !goja.IsNull(arg) {
+				// ScrollToOptions: a member is present unless undefined.
+				opts := arg.ToObject(vm)
+				member := func(name string) *float64 {
+					v := opts.Get(name)
+					if v == nil || goja.IsUndefined(v) {
+						return nil
+					}
+					f := v.ToFloat()
+					return &f
+				}
+				left, top = member("left"), member("top")
+			}
+			e.scrollLayoutBoxTo(left, top)
+			return goja.Undefined()
+		})
+
 	case "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
 		// Layout-flush idiom: scripts access these to force a synchronous layout.
 		// We return 0; the actual value is not used by tests that call these.
@@ -1116,25 +1145,11 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		// the scroll offset, keeping the other. The document's scrolling
 		// element scrolls the viewport instead, which louis14 does not model,
 		// so assignments to it are dropped.
-		if e.node.TagName == "html" {
-			return true
-		}
-		v := normalizeNonFiniteScroll(val.ToFloat())
-		previous := e.node.ScrollOffset
+		v := val.ToFloat()
 		if key == "scrollLeft" {
-			e.node.ScrollOffset.X = v
+			e.scrollLayoutBoxTo(&v, nil)
 		} else {
-			e.node.ScrollOffset.Y = v
-		}
-		if e.ctx.updateLayout != nil {
-			// SetProgrammaticScrollOffset stores the clamped offset: keep
-			// what layout clamped the request to. A box-less element has no
-			// scrollable area, so the assignment is a no-op.
-			if box, ok := e.layoutBoxForScrolling(); ok {
-				e.node.ScrollOffset = box.ScrollOffset
-			} else {
-				e.node.ScrollOffset = previous
-			}
+			e.scrollLayoutBoxTo(nil, &v)
 		}
 		return true
 	case "onload":
@@ -1168,7 +1183,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"onload",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
-		"scrollLeft", "scrollTop",
+		"scrollLeft", "scrollTop", "scrollTo",
 		"animate":
 		return true
 	}
@@ -1683,6 +1698,36 @@ func normalizeNonFiniteScroll(v float64) float64 {
 		return 0
 	}
 	return v
+}
+
+// scrollLayoutBoxTo sets the element's scroll offset on the axes given
+// (nil keeps that axis), the shared body of Element::setScrollLeft /
+// setScrollTop and Element::ScrollTo → ScrollLayoutBoxTo (dom/element.cc:
+// 2811-2925, 3029-3046, 3110-3175 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Non-finite values scroll to
+// 0. The document's scrolling element scrolls the viewport instead
+// (ScrollFrameTo), which louis14 does not model, so it is dropped.
+func (e *elementAccessor) scrollLayoutBoxTo(left, top *float64) {
+	if e.node.TagName == "html" {
+		return
+	}
+	previous := e.node.ScrollOffset
+	if left != nil {
+		e.node.ScrollOffset.X = normalizeNonFiniteScroll(*left)
+	}
+	if top != nil {
+		e.node.ScrollOffset.Y = normalizeNonFiniteScroll(*top)
+	}
+	if e.ctx.updateLayout != nil {
+		// SetProgrammaticScrollOffset stores the clamped offset: keep
+		// what layout clamped the request to. A box-less element has no
+		// scrollable area, so the call is a no-op.
+		if box, ok := e.layoutBoxForScrolling(); ok {
+			e.node.ScrollOffset = box.ScrollOffset
+		} else {
+			e.node.ScrollOffset = previous
+		}
+	}
 }
 
 // layoutBoxForScrolling brings layout up to date and returns the element's
