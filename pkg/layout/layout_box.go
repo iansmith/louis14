@@ -81,3 +81,14 @@ func (ctx *LayoutContext) DisableLayoutSideEffects() func() {
 func (ctx *LayoutContext) LayoutSideEffectsDisabled() bool {
 	return ctx.layoutSideEffectsDisabled > 0
 }
+
+// PhysicalFragments returns the fragments of the box's layout results, in
+// fragment order. Mirrors LayoutBox::PhysicalFragments (layout_box.h:613-616
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) PhysicalFragments() []*PhysicalFragment {
+	fragments := make([]*PhysicalFragment, len(n.layoutResults))
+	for i, r := range n.layoutResults {
+		fragments[i] = r.Fragment
+	}
+	return fragments
+}
