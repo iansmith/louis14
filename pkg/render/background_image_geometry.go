@@ -4,6 +4,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/images"
 )
 
 // This file ports Blink's BackgroundImageGeometry
@@ -615,4 +616,10 @@ func (g *BackgroundImageGeometry) ComputePhase() geometry.PhysicalOffset {
 		Left: intMod(neg(g.phase.Left), stepW),
 		Top:  intMod(neg(g.phase.Top), stepH),
 	}
+}
+
+// naturalSizingInfoForSVG returns the natural sizing info of an SVG image.
+// LOU-556 RED stub.
+func naturalSizingInfoForSVG(svg images.SVGSizingInfo) NaturalSizingInfo {
+	return NaturalSizingInfo{}
 }
