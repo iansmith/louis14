@@ -2107,15 +2107,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		mla.gapAccumulator.AddMainGap(lineOffset-mla.rowGapSize, SpannerGapNone)
 	}
 	// gapColumnCount is the number of this line's columns Blink would have
-	// created (new_columns.size()). no Blink analog: louis14 can append
-	// columns Blink never creates — empty OOF-drain columns after the column
-	// that consumed the in-flow content (its break token is nil), and an
-	// empty spanner-detection column after full columns (the phantom column
-	// of multicol-span-all-006/007/008) — which must not get cross gaps.
-	// The OOF-drain columns come only from the rowHasDeferredOOFs branch of
-	// the column loop above. Columns added later by CreateEmptyColumn
-	// (OutOfFlowLayoutPart) never reach the accumulator, as in Blink, where
-	// only LayoutLine records columns.
+	// created (new_columns.size()). no Blink analog: louis14's column loop
+	// can append empty OOF-drain columns after the column that consumed the
+	// in-flow content (its break token is nil) — the rowHasDeferredOOFs
+	// branch above, which Blink does not have — and those must not get cross
+	// gaps. Columns added later by CreateEmptyColumn (OutOfFlowLayoutPart)
+	// never reach the accumulator, as in Blink, where only LayoutLine records
+	// columns. TODO(LOU-493): drop this once the OOF-drain columns go.
 	gapColumnCount := 0
 	if mla.gapAccumulator != nil {
 		gapColumnCount = len(finalColumns)
@@ -2123,12 +2121,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			if col.result != nil && col.result.BreakToken == nil && col.result.ColumnSpannerPath == nil {
 				gapColumnCount = i + 1
 				break
-			}
-		}
-		if gapColumnCount > 1 && gapColumnCount == len(finalColumns) &&
-			lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-			if detector := finalColumns[gapColumnCount-1]; len(detector.fragment.Children) == 0 || detector.result.IsEmptySpannerParent {
-				gapColumnCount--
 			}
 		}
 	}
