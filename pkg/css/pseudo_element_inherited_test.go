@@ -89,3 +89,56 @@ func TestInheritedSetFollowsBlink(t *testing.T) {
 		}
 	}
 }
+
+// TestInitialOnNewlyInheritedProperty pins that `initial` on a property that
+// became inherited with the Blink inherited set computes the property's
+// initial value rather than re-inheriting the parent's (the
+// delete-then-inherit hazard nonDefaultInitialValues documents). WPT
+// css-pseudo/marker-text-align-001's reference sets `li { text-align-last:
+// end }` and `li > div { text-align-last: initial }`; the div must align its
+// last line by text-align (start), not end.
+func TestInitialOnNewlyInheritedProperty(t *testing.T) {
+	parentVals := map[string]string{
+		"caption-side":            "bottom",
+		"fill":                    "red",
+		"fill-rule":               "evenodd",
+		"stroke":                  "blue",
+		"stroke-dasharray":        "2 3",
+		"stroke-dashoffset":       "5",
+		"stroke-linecap":          "round",
+		"stroke-linejoin":         "bevel",
+		"stroke-miterlimit":       "9",
+		"stroke-width":            "4px",
+		"image-rendering":         "pixelated",
+		"scrollbar-color":         "red blue",
+		"text-align-last":         "end",
+		"text-underline-offset":   "3px",
+		"text-underline-position": "under",
+		"font-optical-sizing":     "none",
+		"font-size-adjust":        "0.5",
+		"font-variant-caps":       "small-caps",
+		"text-wrap":               "balance",
+		"word-wrap":               "break-word",
+	}
+	parentDecls, childDecls := "", ""
+	for prop, val := range parentVals {
+		parentDecls += prop + ": " + val + "; "
+		childDecls += prop + ": initial; "
+	}
+	doc, _ := html.Parse(`<style>.parent { ` + parentDecls + ` } .child { ` + childDecls + ` }</style><body><div class="parent"><div class="child"></div></div></body>`)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	var child *Style
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			child = style
+		}
+	}
+	if child == nil {
+		t.Fatal("child not styled")
+	}
+	for prop, parentVal := range parentVals {
+		if got, _ := child.Get(prop); got == parentVal {
+			t.Errorf("child %s: initial = %q, the parent's value; want the initial value", prop, got)
+		}
+	}
+}
