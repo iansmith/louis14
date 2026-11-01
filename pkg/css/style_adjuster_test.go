@@ -98,3 +98,25 @@ func TestGetDisplay_Math(t *testing.T) {
 		t.Errorf("@supports (display: math) = false, want true")
 	}
 }
+
+// TestAdjustComputedStyle_IsInBlockifyingDisplayComputedFresh: Blink computes
+// IsInBlockifyingDisplay per style; a style cloned from a blockified one and
+// adjusted under a non-blockifying layout parent must not keep it.
+func TestAdjustComputedStyle_IsInBlockifyingDisplayComputedFresh(t *testing.T) {
+	flex := NewStyle()
+	flex.Set("display", "flex")
+	s := NewStyle()
+	s.Set("display", "contents")
+	AdjustComputedStyle(nil, s, flex)
+	if !s.IsInBlockifyingDisplay() {
+		t.Fatalf("contents child of flex: IsInBlockifyingDisplay = false, want true")
+	}
+	clone := s.Clone()
+	block := NewStyle()
+	block.Set("display", "block")
+	AdjustComputedStyle(nil, clone, block)
+	if clone.IsInBlockifyingDisplay() || clone.BlockifiesChildren() {
+		t.Errorf("clone under block parent: IsInBlockifyingDisplay=%v BlockifiesChildren=%v, want false/false",
+			clone.IsInBlockifyingDisplay(), clone.BlockifiesChildren())
+	}
+}
