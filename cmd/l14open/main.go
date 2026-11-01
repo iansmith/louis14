@@ -70,7 +70,7 @@ func main() {
 	renderer.Render(boxes)
 
 	// Execute JavaScript if there are scripts
-	if len(doc.Scripts) > 0 {
+	if js.HasScriptWork(doc) {
 		engine := js.New()
 		engine.SetLayoutSnapshot(layoutEngine.ComputedStyles(), layoutEngine.NodeBoxes())
 		if err := engine.Execute(doc); err != nil {

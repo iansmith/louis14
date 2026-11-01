@@ -141,3 +141,110 @@ func TestVerticalRLScrollbarGutterIsOnTheRight(t *testing.T) {
 		t.Errorf("rtl child rects = %+v, want x=%v", rc, 200-80)
 	}
 }
+
+// TestScrollSizeAndScrollPosition pins the scroll state local-attachment
+// backgrounds paint from: Box.ScrollSize is PaintLayerScrollableArea::
+// ScrollWidth/ScrollHeight, the overflow rect's size (paint_layer_
+// scrollable_area.cc:884-890 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// and Box.ScrollPosition is ScrollableArea::ScrollPosition, the offset
+// measured from the scroll origin (ScrollOffset − MinimumScrollOffset).
+func TestScrollSizeAndScrollPosition(t *testing.T) {
+	const ltr = `<!DOCTYPE html><body style="margin:0">` +
+		`<div id=s style="overflow:hidden;width:100px;height:100px;border:5px solid">` +
+		`<div style="width:300px;height:400px"></div></div>`
+	const vrl = `<!DOCTYPE html><body style="margin:0">` +
+		`<div id=s style="overflow:hidden;writing-mode:vertical-rl;width:200px;height:100px">` +
+		`<div style="width:500px;height:50px"></div></div>`
+	cases := []struct {
+		name     string
+		src      string
+		offset   html.ScrollOffset
+		wantSize PhysicalSize
+		wantPos  html.ScrollOffset
+	}{
+		{"ltr zero", ltr, html.ScrollOffset{}, PhysicalSize{Width: 300, Height: 400}, html.ScrollOffset{}},
+		{"ltr scrolled", ltr, html.ScrollOffset{X: 30, Y: 100}, PhysicalSize{Width: 300, Height: 400}, html.ScrollOffset{X: 30, Y: 100}},
+		// ScrollOrigin.x = 300: the initial offset 0 is 300px from the
+		// overflow's left edge.
+		{"vertical-rl initial", vrl, html.ScrollOffset{}, PhysicalSize{Width: 500, Height: 100}, html.ScrollOffset{X: 300}},
+		{"vertical-rl scrolled", vrl, html.ScrollOffset{X: -100}, PhysicalSize{Width: 500, Height: 100}, html.ScrollOffset{X: 200}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := html.Parse(tc.src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var s *Box
+			var walk func(b *Box)
+			walk = func(b *Box) {
+				if b.Node != nil {
+					if id, ok := b.Node.GetAttribute("id"); ok && id == "s" {
+						s = b
+					}
+				}
+				for _, c := range b.Children {
+					walk(c)
+				}
+			}
+			var find func(n *html.Node)
+			find = func(n *html.Node) {
+				if id, ok := n.GetAttribute("id"); ok && id == "s" {
+					n.ScrollOffset = tc.offset
+				}
+				for _, c := range n.Children {
+					find(c)
+				}
+			}
+			find(doc.Root)
+			for _, b := range NewLayoutEngine(800, 600).Layout(doc) {
+				walk(b)
+			}
+			if s == nil {
+				t.Fatal("no #s box")
+			}
+			if s.ScrollSize != tc.wantSize {
+				t.Errorf("ScrollSize = %+v, want %+v", s.ScrollSize, tc.wantSize)
+			}
+			if got := s.ScrollPosition(); got != tc.wantPos {
+				t.Errorf("ScrollPosition = %+v, want %+v", got, tc.wantPos)
+			}
+		})
+	}
+}
+
+// TestReverseFlexScrollsFromTheEnd pins LayoutFlexibleBox::HasLeftOverflow
+// / HasTopOverflow (flex/layout_flexible_box.cc:17-54 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a row-reverse (or
+// column-reverse) flex scroll container overflows toward the main-start
+// side, so that overflow is scrollable, the scroll origin sits at the
+// far edge and a negative offset reveals it. rtl + row-reverse overflows
+// rightward again.
+func TestReverseFlexScrollsFromTheEnd(t *testing.T) {
+	row := func(style string) string {
+		return `<!DOCTYPE html><body style="margin:0"><div id=s style="width:100px;height:100px;overflow:auto;display:flex;` +
+			style + `"><div id=a style="width:100px;height:20px;flex-shrink:0"></div>` +
+			`<div id=b style="width:100px;height:20px;flex-shrink:0"></div></div>`
+	}
+	col := `<!DOCTYPE html><body style="margin:0"><div id=s style="width:100px;height:100px;overflow:auto;display:flex;` +
+		`flex-direction:column-reverse"><div id=a style="width:20px;height:100px;flex-shrink:0"></div>` +
+		`<div id=b style="width:20px;height:100px;flex-shrink:0"></div></div>`
+	for _, tc := range []struct {
+		name           string
+		src            string
+		offset         html.ScrollOffset
+		wantAX, wantAY float64
+	}{
+		{"row-reverse initial", row("flex-direction:row-reverse"), html.ScrollOffset{}, 0, 0},
+		{"row-reverse scrolled", row("flex-direction:row-reverse"), html.ScrollOffset{X: -100}, 100, 0},
+		{"column-reverse scrolled", col, html.ScrollOffset{Y: -100}, 0, 100},
+		{"rtl row-reverse", row("flex-direction:row-reverse;direction:rtl"), html.ScrollOffset{X: 100}, -100, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := scrolledRects(t, tc.src, tc.offset)["a"]
+			if len(a) != 1 || a[0].x != tc.wantAX || a[0].y != tc.wantAY {
+				t.Errorf("first item rects = %+v, want one at (%v,%v)", a, tc.wantAX, tc.wantAY)
+			}
+		})
+	}
+}

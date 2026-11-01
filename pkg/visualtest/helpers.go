@@ -68,7 +68,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	boxes := engine.Layout(doc)
 
 	// Execute JavaScript if the document has scripts, then re-layout.
-	if len(doc.Scripts) > 0 {
+	if js.HasScriptWork(doc) {
 		// newPostScriptEngine builds a layout engine for the DOM as scripts
 		// leave it: the mid-script layouts scroll bindings force and the
 		// final pass below.

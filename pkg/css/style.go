@@ -1560,29 +1560,49 @@ func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64
 	return math.Max(0, v)
 }
 
-// GetBorderWidth returns the border width for all four sides
+// GetBorderWidth returns the used border width for all four sides: each
+// side's border-*-width (initial medium), or 0 when that side's border-style
+// is none or hidden. Mirrors ComputedStyle::Border{Top,Right,Bottom,Left}Width
+// → BorderWidth(style, width) (core/style/computed_style.h:585-617 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (s *Style) GetBorderWidth() BoxEdge {
 	styles := s.GetBorderStyle()
-	edge := BoxEdge{
-		Top:    s.getLengthOrZero("border-top-width"),
-		Right:  s.getLengthOrZero("border-right-width"),
-		Bottom: s.getLengthOrZero("border-bottom-width"),
-		Left:   s.getLengthOrZero("border-left-width"),
+	return BoxEdge{
+		Top:    s.borderWidth(styles.Top, "border-top-width"),
+		Right:  s.borderWidth(styles.Right, "border-right-width"),
+		Bottom: s.borderWidth(styles.Bottom, "border-bottom-width"),
+		Left:   s.borderWidth(styles.Left, "border-left-width"),
 	}
-	// CSS 2.1 §8.5.1: border-style:none computes border-width to 0
-	if styles.Top == BorderStyleNone {
-		edge.Top = 0
+}
+
+// initialBorderWidth is border-*-width's initial value, medium. Mirrors the
+// default_value "3" of border-top-width (core/css/css_properties.json5:2841 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const initialBorderWidth = 3.0
+
+// borderWidth returns the used width of a border side: 0 when its style is
+// none or hidden (ComputedStyle::BorderWidth, core/style/computed_style.h:585-590
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), else the side's computed
+// border-*-width, initialBorderWidth when unset or initial/unset
+// (ComputedStyle::BorderTopWidthInternal, computed_style.h:607 @ same SHA).
+func (s *Style) borderWidth(style BorderStyle, property string) float64 {
+	if style == BorderStyleNone || style == BorderStyleHidden {
+		return 0
 	}
-	if styles.Right == BorderStyleNone {
-		edge.Right = 0
+	v, ok := s.Get(property)
+	if !ok || isInitialValueKeyword(v) {
+		return initialBorderWidth
 	}
-	if styles.Bottom == BorderStyleNone {
-		edge.Bottom = 0
-	}
-	if styles.Left == BorderStyleNone {
-		edge.Left = 0
-	}
-	return edge
+	w, _ := s.GetLengthForVal(v)
+	return w
+}
+
+// isInitialValueKeyword reports whether a non-inherited property's stored
+// value is a CSS-wide keyword meaning its initial value (initial, or unset
+// on a non-inherited property — Style.Get leaves both in place).
+func isInitialValueKeyword(v string) bool {
+	kw, _ := cssWideKeyword(v)
+	return kw == "initial" || kw == "unset"
 }
 
 // getLengthOrZero returns the length value or 0 if not found
@@ -1612,6 +1632,7 @@ type BorderStyle string
 
 const (
 	BorderStyleNone   BorderStyle = "none"
+	BorderStyleHidden BorderStyle = "hidden"
 	BorderStyleSolid  BorderStyle = "solid"
 	BorderStyleDashed BorderStyle = "dashed"
 	BorderStyleDotted BorderStyle = "dotted"
@@ -1636,21 +1657,21 @@ func (s *Style) GetBorderStyle() BorderStyleEdge {
 	}
 }
 
-// getBorderStyleSide returns the border style for a specific side (default: solid)
+// getBorderStyleSide returns the border style for a specific side. Unset
+// takes border-style's initial value, none (default_value "none" of
+// border-top-style, core/css/css_properties.json5:2820 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). groove/ridge/inset/outset have
+// no dedicated painter yet and paint solid (stand-in).
 func (s *Style) getBorderStyleSide(property string) BorderStyle {
-	if style, ok := s.Get(property); ok {
-		switch style {
-		case "none":
-			return BorderStyleNone
-		case "dashed":
-			return BorderStyleDashed
-		case "dotted":
-			return BorderStyleDotted
-		case "double":
-			return BorderStyleDouble
-		}
+	v, ok := s.Get(property)
+	if !ok || isInitialValueKeyword(v) {
+		return BorderStyleNone
 	}
-	return BorderStyleSolid // Default to solid
+	switch bs := BorderStyle(v); bs {
+	case BorderStyleNone, BorderStyleHidden, BorderStyleDashed, BorderStyleDotted, BorderStyleDouble:
+		return bs
+	}
+	return BorderStyleSolid
 }
 
 // EllipticalRadius holds horizontal and vertical radii for a border corner.
@@ -3513,10 +3534,7 @@ func expandColumnRuleShorthand(style *Style, value string) {
 
 	parts := strings.Fields(value)
 	for _, part := range parts {
-		if part == "none" {
-			style.Set("column-rule-style", "none")
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
-			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+		if isLineStyleKeyword(part) {
 			style.Set("column-rule-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("column-rule-width", bw)
@@ -3776,23 +3794,9 @@ func (s *Style) HasColumnRule() bool {
 	return rs != "" && rs != "none"
 }
 
-// GetColumnRuleColor returns the column-rule-color as a Color
+// GetColumnRuleColor returns the used column-rule-color (initial currentcolor).
 func (s *Style) GetColumnRuleColor() Color {
-	if v, ok := s.Get("column-rule-color"); ok {
-		v = strings.TrimSpace(v)
-		if v != "currentcolor" {
-			if c, ok2 := ParseColor(v); ok2 {
-				return c
-			}
-		}
-	}
-	// Default: currentColor (use text color)
-	if v, ok := s.Get("color"); ok {
-		if c, ok2 := ParseColor(v); ok2 {
-			return c
-		}
-	}
-	return Color{R: 0, G: 0, B: 0, A: 1}
+	return s.VisitedDependentColor("column-rule-color")
 }
 
 // GetOutlineStyle returns the outline-style value (default: "none")
@@ -3852,7 +3856,7 @@ func clampLineWidth(w float64) float64 {
 // Per CSS UI 4 §4.4 the initial value is `auto`: when painting the `auto`
 // (focus-ring) outline style it resolves to the element's accent-color if
 // one is set, otherwise — and for non-auto outline styles — to currentcolor
-// (the element's text color), falling back to black. The accent-color rule
+// (the element's computed color). The accent-color rule
 // has no clean Blink analog at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
 // (Blink routes focus-ring color through LayoutTheme::FocusRingColor,
 // layout_theme.cc:843); the contract here is CSS UI 4 §4.4 plus WPT
@@ -3865,26 +3869,23 @@ func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	if strings.EqualFold(colorStr, "auto") {
 		if s.GetOutlineStyle() == "auto" {
 			if ac, ok := s.Get("accent-color"); ok && !strings.EqualFold(strings.TrimSpace(ac), "auto") {
-				if c, ok2 := ParseColorWithCurrentColor(ac, s.GetColor()); ok2 {
+				if c, ok2 := s.ResolvedColor(ac); ok2 {
 					return c.R, c.G, c.B, c.A
 				}
 			}
 		}
 		colorStr = "currentcolor"
 	}
-	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
-		// Use element's text color
-		if textColor, ok := s.Get("color"); ok {
-			if c, ok2 := ParseColor(textColor); ok2 {
-				return c.R, c.G, c.B, c.A
-			}
-		}
-		return 0, 0, 0, 1.0 // default black
+	// currentcolor, and any color function referencing it (color-mix() etc.),
+	// resolve against the element's color at use time, as
+	// VisitedDependentColor(GetCSSPropertyOutlineColor()) does for the outline
+	// painter (core/paint/outline_painter.cc:454 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	c, ok := s.ResolvedColor(colorStr)
+	if !ok {
+		c = s.GetColor()
 	}
-	if c, ok := ParseColor(colorStr); ok {
-		return c.R, c.G, c.B, c.A
-	}
-	return 0, 0, 0, 1.0 // fallback black
+	return c.R, c.G, c.B, c.A
 }
 
 // GetOutlineOffset returns the outline-offset in pixels (default: 0).
@@ -4123,7 +4124,7 @@ func expandBorderProperty(style *Style, value string) {
 			style.Set("border-right-width", part)
 			style.Set("border-bottom-width", part)
 			style.Set("border-left-width", part)
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
+		} else if isLineStyleKeyword(part) {
 			// Style
 			style.Set("border-top-style", part)
 			style.Set("border-right-style", part)
@@ -4235,7 +4236,7 @@ func storeBorderLogicalMarker(style *Style, marker, value string) {
 			width = bw
 		} else if _, ok := ParseLength(part); ok {
 			width = part
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
+		} else if isLineStyleKeyword(part) {
 			borderStyle = part
 		} else {
 			color = part
@@ -4265,7 +4266,7 @@ func expandBorderSideProperty(style *Style, property, value string) {
 			style.Set("border-"+side+"-width", bw)
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("border-"+side+"-width", part)
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
+		} else if isLineStyleKeyword(part) {
 			style.Set("border-"+side+"-style", part)
 		} else {
 			style.Set("border-"+side+"-color", part)
@@ -5787,6 +5788,32 @@ func (s *Style) GetColor() Color {
 	return Color{0, 0, 0, 1.0} // Default to black
 }
 
+// ResolvedColor resolves a <color> value against this style's currentColor
+// (its computed color): currentcolor itself, and color functions that
+// reference it (color-mix(), relative colors, contrast-color(),
+// light-dark()), resolve at use time. Mirrors ComputedStyle::ResolvedColor
+// (core/style/computed_style.cc:2632-2638 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) → StyleColor::Resolve
+// (core/css/style_color.cc:463-493 @ same SHA).
+func (s *Style) ResolvedColor(val string) (Color, bool) {
+	return ParseColorWithCurrentColor(val, s.GetColor())
+}
+
+// VisitedDependentColor returns the used value of a <color> property whose
+// initial value is currentcolor: the property resolved through ResolvedColor,
+// or currentColor when unset or unparseable. Mirrors
+// ComputedStyle::VisitedDependentColor (core/style/computed_style.cc:2506-2514
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no :visited
+// colors, so the unvisited color is always the result.
+func (s *Style) VisitedDependentColor(property string) Color {
+	if v, ok := s.Get(property); ok {
+		if c, ok := s.ResolvedColor(v); ok {
+			return c
+		}
+	}
+	return s.GetColor()
+}
+
 // Phase 5: Float layout helpers
 
 // FloatType represents the float property value
@@ -6376,10 +6403,13 @@ func (s *Style) GetTextDecoration() TextDecoration {
 	return TextDecorationNone
 }
 
-// GetTextDecorationColor returns the text-decoration-color if set
+// GetTextDecorationColor returns the text-decoration-color if set to
+// something other than a bare currentcolor; callers own the currentcolor
+// fallback (the decorating box's color). A color function referencing
+// currentColor (color-mix() etc.) resolves against this element's color.
 func (s *Style) GetTextDecorationColor() (Color, bool) {
-	if val, ok := s.Get("text-decoration-color"); ok {
-		return ParseColor(val)
+	if val, ok := s.Get("text-decoration-color"); ok && !strings.EqualFold(strings.TrimSpace(val), "currentcolor") {
+		return s.ResolvedColor(val)
 	}
 	return Color{}, false
 }
@@ -6915,10 +6945,12 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 		}
 	}
 
+	ctx := s.cssToLengthConversionData()
+	currentColor := s.GetColor()
 	shadows := make([]BoxShadow, 0)
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		shadow := parseBoxShadowValue(part)
+		shadow := convertShadow(part, ctx, currentColor)
 		if shadow != nil {
 			shadows = append(shadows, *shadow)
 		}
@@ -6927,10 +6959,17 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 	return shadows
 }
 
-// parseBoxShadowValue parses a single box-shadow value.
+// convertShadow parses a single box-shadow value and resolves its lengths
+// with the element's conversion data (em, rem, vw, ch, calc). A color that
+// references currentColor inside a color function (color-mix() etc.) is
+// resolved against currentColor; a bare currentcolor or omitted color stays
+// UseCurrentColor. Mirrors StyleBuilderConverter::ConvertShadow
+// (core/css/resolver/style_builder_converter.cc:2697-2735 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which ComputeLength()s x, y,
+// blur and spread against the CSSToLengthConversionData.
 // CSS syntax: [inset?] [<color>]? <offset-x> <offset-y> [<blur>]? [<spread>]? [<color>]? [inset?]
 // The color and inset keyword can appear at either the start or end.
-func parseBoxShadowValue(s string) *BoxShadow {
+func convertShadow(s string, ctx calcContext, currentColor Color) *BoxShadow {
 	s = strings.TrimSpace(s)
 	// Tokenize respecting parenthesized groups like calc(), rgba(), etc.
 	tokens := tokenizeRespectingParens(s)
@@ -6946,15 +6985,15 @@ func parseBoxShadowValue(s string) *BoxShadow {
 
 	// Pre-scan: extract 'inset' and color from either end, leaving only
 	// length tokens for the positional parse.
-	var lengths []string
+	var lengths []float64
 	var colorTokens []string
 	for _, tok := range tokens {
 		if tok == "inset" {
 			shadow.Inset = true
 			continue
 		}
-		if _, ok := ParseLength(tok); ok {
-			lengths = append(lengths, tok)
+		if l, ok := parseLengthFullWithCh(tok, ctx); ok {
+			lengths = append(lengths, l)
 		} else {
 			colorTokens = append(colorTokens, tok)
 		}
@@ -6962,17 +7001,16 @@ func parseBoxShadowValue(s string) *BoxShadow {
 
 	// Parse lengths: offset-x, offset-y, [blur], [spread]
 	if len(lengths) >= 2 {
-		shadow.OffsetX, _ = ParseLength(lengths[0])
-		shadow.OffsetY, _ = ParseLength(lengths[1])
+		shadow.OffsetX, shadow.OffsetY = lengths[0], lengths[1]
 	}
 	if len(lengths) >= 3 {
-		shadow.Blur, _ = ParseLength(lengths[2])
+		shadow.Blur = lengths[2]
 		if shadow.Blur < 0 {
 			return nil // Negative blur radius is invalid per spec
 		}
 	}
 	if len(lengths) >= 4 {
-		shadow.Spread, _ = ParseLength(lengths[3])
+		shadow.Spread = lengths[3]
 	}
 
 	// Parse color from non-length, non-inset tokens.
@@ -6980,7 +7018,7 @@ func parseBoxShadowValue(s string) *BoxShadow {
 		colorStr := strings.Join(colorTokens, " ")
 		if strings.EqualFold(colorStr, "currentcolor") {
 			shadow.UseCurrentColor = true
-		} else if c, ok := ParseColor(colorStr); ok {
+		} else if c, ok := ParseColorWithCurrentColor(colorStr, currentColor); ok {
 			shadow.Color = c
 			shadow.UseCurrentColor = false
 		}
@@ -12923,15 +12961,7 @@ func (s *Style) GetTextEmphasisStyle() string {
 
 // GetTextEmphasisColor returns the text-emphasis color (defaults to currentColor).
 func (s *Style) GetTextEmphasisColor() Color {
-	v, _ := s.Get("text-emphasis-color")
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return s.GetColor() // currentColor
-	}
-	if c, ok := ParseColor(v); ok {
-		return c
-	}
-	return s.GetColor()
+	return s.VisitedDependentColor("text-emphasis-color")
 }
 
 // GetTextEmphasisPosition returns where emphasis marks appear ("over right" by default).

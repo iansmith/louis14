@@ -102,6 +102,12 @@ type Box struct {
 	ScrollOffset        html.ScrollOffset
 	MinimumScrollOffset html.ScrollOffset
 	MaximumScrollOffset html.ScrollOffset
+	// ScrollSize is a scroll container's PhysicalBoxFragment::ScrollSize:
+	// PaintLayerScrollableArea::ScrollWidth/ScrollHeight, the size of the
+	// overflow rect (paint_layer_scrollable_area.cc:884-890 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Zero for other boxes.
+	// Local-attachment backgrounds are sized to it.
+	ScrollSize PhysicalSize
 
 	// IsColumnBox marks this Box as a multicol column fragmentainer
 	// (forwarded from PhysicalFragment.BoxType == BoxTypeColumn).

@@ -215,6 +215,24 @@ func (e *Engine) SetLayoutUpdater(update func() map[*html.Node]*layout.Box) {
 	e.updateLayout = update
 }
 
+// HasScriptWork reports whether Execute has anything to run for doc: its
+// scripts, or a <body onload="..."> handler, which fires on the window's
+// load event even in a document with no <script> (HTML §8.1.8.2 body
+// element event handlers).
+func HasScriptWork(doc *html.Document) bool {
+	return len(doc.Scripts) > 0 || bodyOnloadHandler(doc) != ""
+}
+
+// bodyOnloadHandler returns the source of the <body onload="..."> event
+// handler content attribute, or "" when there is none.
+func bodyOnloadHandler(doc *html.Document) string {
+	if body := findBodyNode(doc.Root); body != nil {
+		onload, _ := body.GetAttribute("onload")
+		return onload
+	}
+	return ""
+}
+
 // Execute runs all scripts from the document against the DOM.
 // Scripts are executed in order. Any JS errors are returned but
 // callers may choose to log and continue rather than fail.
@@ -254,11 +272,9 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// Fire <body onload="..."> HTML attribute if present.
 	// Per HTML spec, the body element's onload attribute is an event handler
 	// for the Window's load event. Many WPT tests use this form directly.
-	if bodyNode := findBodyNode(doc.Root); bodyNode != nil {
-		if onloadAttr, ok := bodyNode.GetAttribute("onload"); ok && onloadAttr != "" {
-			if _, err := e.vm.RunString(onloadAttr); err != nil {
-				return fmt.Errorf("body onload: %w", err)
-			}
+	if onloadAttr := bodyOnloadHandler(doc); onloadAttr != "" {
+		if _, err := e.vm.RunString(onloadAttr); err != nil {
+			return fmt.Errorf("body onload: %w", err)
 		}
 	}
 

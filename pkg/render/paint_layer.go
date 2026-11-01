@@ -1121,7 +1121,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// where the base color is the element's computed `color` value.
 	if box.Text == "" {
 		if bg, ok := s.Get("background-color"); ok {
-			if c, ok := css.ParseColorWithCurrentColor(bg, s.GetColor()); ok {
+			if c, ok := s.ResolvedColor(bg); ok {
 				layer.BackgroundColor = c
 			}
 		}
@@ -1162,22 +1162,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// Border colors: currentColor fallback.
-	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
-	if cv, ok := s.Get("color"); ok {
-		if c, ok := css.ParseColor(cv); ok {
-			currentColor = c
-		}
-	}
+	// Border colors (initial currentcolor).
+	currentColor := s.GetColor()
 	sides := [4]string{"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"}
 	for i, prop := range sides {
-		if val, ok := s.Get(prop); ok {
-			if c, ok := css.ParseColor(val); ok {
-				layer.BorderColors[i] = c
-				continue
-			}
-		}
-		layer.BorderColors[i] = currentColor
+		layer.BorderColors[i] = s.VisitedDependentColor(prop)
 	}
 
 	// Border styles.

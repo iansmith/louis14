@@ -97,7 +97,7 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 	boxes := layoutEngine.Layout(doc)
 
 	// Execute JavaScript if engine is configured
-	if r.jsEngine != nil && len(doc.Scripts) > 0 {
+	if r.jsEngine != nil && js.HasScriptWork(doc) {
 		if err := r.jsEngine.Execute(doc); err != nil {
 			log.Printf("js: %v", err)
 		}
@@ -282,7 +282,7 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 	renderer.Render(boxes)
 
 	// Execute JavaScript if engine is configured
-	if r.jsEngine != nil && len(doc.Scripts) > 0 {
+	if r.jsEngine != nil && js.HasScriptWork(doc) {
 		if err := r.jsEngine.Execute(doc); err != nil {
 			log.Printf("js: %v", err)
 		}
