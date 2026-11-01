@@ -1301,7 +1301,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 
 	var spanFrag *PhysicalFragment
 	var spanHeight float64
-	var spanResult *LayoutResult // for PropagateBaselineFromChild (Track B)
+	var spanResult *LayoutResult // the spanner's result, for Blink's AddResult propagation
 	// Blink cla.cc:1354-1362 @ a9f50e522efa: the layout() step —
 	// block_offset = intrinsic_block_size_ + margin_strut->Sum(), measured
 	// from the border-box edge, then one spanner space
@@ -1386,6 +1386,17 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 			BlockOffset: spannerBlockOffset,
 		}
 		builder.AddChild(spanFrag, spannerOffset)
+		// Blink AddResult (cla.cc:1427) → PropagateFromFragment
+		// (fragment_builder.cc:357-405 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the spanner's OOF
+		// descendants propagate to this multicol. A containing-block search
+		// jumps from a spanner straight to the multicol
+		// (FindColumnSpannerContainer, layout_object.cc:166-202), which
+		// louis14 gets structurally: the spanner is laid out from here, so a
+		// positioned ancestor inside the column content never sees them.
+		if spanResult != nil {
+			PropagateOOFCandidates(spanResult, spannerStyle, wdm, spannerOffset.InlineOffset, spannerOffset.BlockOffset, builder)
+		}
 		// Blink AddResult (cla.cc:1427) → PropagateChildBreakValues
 		// (box_fragment_builder.cc:226-232, :618-657 @ a9f50e522efa): a
 		// leading spanner's break-before becomes this multicol's

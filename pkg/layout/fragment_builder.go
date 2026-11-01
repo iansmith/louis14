@@ -766,7 +766,19 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 		totalInline := offset.InlineOffset + relativeOffset.InlineOffset
 		totalBlock := offset.BlockOffset + relativeOffset.BlockOffset
 		cbAdjBlock := cbAdjustment.Float64()
+		// A descendant propagated out of a column spanner is tagged, so the
+		// inner multicol's pending-OOF layout leaves it to the next
+		// fragmentation context (fragment_builder.cc:974-975 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's
+		// IsColumnSpanAll also requires tree validity; louis14 checks the
+		// style half (isColumnSpanAll), which only matters for a
+		// column-span:all box that is not a real spanner and carries
+		// fragmentainer descendants.
+		isColumnSpanner := childFragment.LayoutNode != nil && isColumnSpanAll(childFragment.LayoutNode)
 		for _, d := range data.OofPositionedFragmentainerDescendants {
+			if isColumnSpanner {
+				d.ContainingBlock.IsInsideColumnSpanner = true
+			}
 			// CB fragment fallback: when missing, the propagating child IS the
 			// CB (descendant was promoted at child's level).
 			if d.ContainingBlock.Fragment == nil {
