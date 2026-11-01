@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -18,14 +19,20 @@ func outOfFragmentainerSpaceFixture() (ConstraintSpace, *LayoutInputNode, *BoxFr
 		childEl: makeStyle("display", "block"),
 	}
 	tree := buildTestTree(root, styles)
+	space := columnFragmentationSpace()
+	return space, tree.Children()[0], NewBoxFragmentBuilder(space.WritingDirection)
+}
+
+// columnFragmentationSpace returns a horizontal-tb column-fragmentation
+// space with 100px fragmentainers and a 100x100 available size.
+func columnFragmentationSpace() ConstraintSpace {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+	return NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 100}).
 		SetHasBlockFragmentation(true).
 		SetBlockFragmentationType(FragmentColumn).
 		SetFragmentainerBlockSize(100).
 		Build()
-	return space, tree.Children()[0], NewBoxFragmentBuilder(wdm)
 }
 
 // TestBreakBeforeChildIfNeeded_OutOfFragmentainerSpaceBreaksBefore (LOU-468):
@@ -147,5 +154,33 @@ func TestIsFirstForNode_ResumedFragmentsAreNotFirst(t *testing.T) {
 				t.Errorf("column 2 fragment: IsFirstForNode = true, want false")
 			}
 		})
+	}
+}
+
+// TestBreakBeforeChildIfNeeded_ResumedChildMovesPast (LOU-492): a block
+// child resumed after a break (its fragment is not the first for its node)
+// is never broken before, even when it does not fit: once it has found room
+// for its first fragment it cannot skip fragmentainers, or its layout would
+// restart from scratch (child-overload MovePastBreakpoint,
+// fragmentation_utils.cc:1086-1100 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// The block algorithm now asks BreakBeforeChildIfNeeded about every child,
+// as Blink's HandleInflow does (block_layout_algorithm.cc:2599-2660).
+func TestBreakBeforeChildIfNeeded_ResumedChildMovesPast(t *testing.T) {
+	space, child, builder := outOfFragmentainerSpaceFixture()
+	resumed := &LayoutResult{Fragment: &PhysicalFragment{
+		Type:            FragmentBox,
+		Size:            geometry.NewPhysicalSize(100, 150),
+		notFirstForNode: true,
+	}}
+	status, isForced := BreakBeforeChildIfNeeded(space, child, resumed,
+		50, space.FragmentainerBlockSize, true, builder)
+	if status != BreakStatusContinue || isForced {
+		t.Fatalf("resumed child: BreakBeforeChildIfNeeded = (%v, forced=%v), want (Continue, false)", status, isForced)
+	}
+
+	first := &LayoutResult{Fragment: &PhysicalFragment{Type: FragmentBox, Size: geometry.NewPhysicalSize(100, 150)}}
+	if status, _ := BreakBeforeChildIfNeeded(space, child, first,
+		50, space.FragmentainerBlockSize, true, builder); status == BreakStatusContinue {
+		t.Error("first fragment of a child that does not fit: BreakBeforeChildIfNeeded = Continue, want a break")
 	}
 }
