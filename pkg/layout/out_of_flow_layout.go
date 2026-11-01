@@ -579,10 +579,11 @@ type containingBlockInfo struct {
 }
 
 // fragmentationContextOOFPart is the OutOfFlowLayoutPart of a block
-// fragmentation context root (louis14: an outermost multicol): it lays out
-// the fragmentainer descendants bubbled up to the root in its
-// fragmentainers. Mirrors the fragmentation half of Blink's
-// OutOfFlowLayoutPart, constructed on the root's container_builder_
+// fragmentation context root (louis14: the outermost multicol, or the
+// limited builder holding an inner multicol's columns in
+// LayoutOOFsInMulticol): it lays out the fragmentainer descendants bubbled
+// up to the root in its fragmentainers. Mirrors the fragmentation half of
+// Blink's OutOfFlowLayoutPart, constructed on the root's container_builder_
 // (out_of_flow_layout_part.cc:542-613 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type fragmentationContextOOFPart struct {
@@ -609,7 +610,7 @@ type fragmentationContextOOFPart struct {
 // results, so that OOFs affect column balancing. Mirrors Blink's
 // OutOfFlowLayoutPart::ColumnBalancingInfo (out_of_flow_layout_part.h:47-84
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// louis14 passes the line's descendants to HandleFragmentation directly
+// louis14 passes the line's descendants to LayoutFragmentainerDescendants
 // rather than storing them here (Blink's
 // out_of_flow_fragmentainer_descendants).
 type ColumnBalancingInfo struct {
@@ -640,22 +641,170 @@ func (p *fragmentationContextOOFPart) fragmentationContextChildren() *[]logicalC
 	return &p.containerBuilder.children
 }
 
-// HandleFragmentation lays out the fragmentainer descendants (in a dry run
-// when this part has column balancing info) until none remain, then hands
-// the delayed ones back to the container builder.
-// Mirrors Blink's OutOfFlowLayoutPart::HandleFragmentation
+// HandleFragmentation lays out the fragmentainer descendants bubbled up to
+// this fragmentation context root, and those of the inner multicols with
+// pending OOFs, until none remain, then hands the delayed ones back to the
+// container builder. Mirrors Blink's OutOfFlowLayoutPart::HandleFragmentation
 // (out_of_flow_layout_part.cc:707-788 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), without the pending-multicol
-// half (plan WI-7), which MulticolLayoutAlgorithm.HandleOofFragmentation
-// still runs.
-func (p *fragmentationContextOOFPart) HandleFragmentation(descendants []LogicalOofNodeForFragmentation, fragmentainerProgression LogicalOffset) {
-	if len(descendants) > 0 {
-		p.LayoutFragmentainerDescendants(&descendants, fragmentainerProgression)
-	}
-	if p.columnBalancingInfo == nil {
-		for _, d := range p.delayedDescendants {
-			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the early return for a nested
+// root is the caller's (MulticolLayoutAlgorithm.HandleOofFragmentation). A
+// column balancing dry run calls LayoutFragmentainerDescendants directly
+// with the line's descendants (Blink's ColumnBalancingInfo branch).
+func (p *fragmentationContextOOFPart) HandleFragmentation(fragmentainerProgression LogicalOffset) {
+	for p.containerBuilder.HasOutOfFlowFragmentainerDescendants() || p.containerBuilder.HasMulticolsWithPendingOOFs() {
+		p.HandleMulticolsWithPendingOOFs()
+		var descendants []LogicalOofNodeForFragmentation
+		p.containerBuilder.SwapOutOfFlowFragmentainerDescendants(&descendants)
+		if len(descendants) > 0 {
+			p.LayoutFragmentainerDescendants(&descendants, fragmentainerProgression)
 		}
+	}
+	for _, d := range p.delayedDescendants {
+		p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
+	}
+}
+
+// HandleMulticolsWithPendingOOFs lays out the OOFs of every inner multicol
+// with pending OOFs, including inner multicols that surface while doing so,
+// each once. Mirrors Blink's OutOfFlowLayoutPart::
+// HandleMulticolsWithPendingOOFs (out_of_flow_layout_part.cc:1293-1322 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The multicols are handled in
+// fragment-tree order (Blink iterates a hash map; louis14 keeps layout
+// deterministic).
+func (p *fragmentationContextOOFPart) HandleMulticolsWithPendingOOFs() {
+	handled := map[*LayoutInputNode]bool{}
+	var pending map[*LayoutInputNode]*MulticolWithPendingOOFs
+	p.containerBuilder.SwapMulticolsWithPendingOOFs(&pending)
+	for len(pending) > 0 {
+		multicols, fragments := p.multicolFragments(pending)
+		for i, multicol := range multicols {
+			p.LayoutOOFsInMulticol(fragments[i], pending[multicol])
+			handled[multicol] = true
+		}
+		// Inner multicols may have been added while handling outer ones.
+		pending = nil
+		p.containerBuilder.SwapMulticolsWithPendingOOFs(&pending)
+		for multicol := range handled {
+			delete(pending, multicol)
+		}
+	}
+}
+
+// multicolFragments returns the multicols of pending, in the order their
+// first fragment appears in this fragmentation context's fragment tree, with
+// each one's fragments in order: Blink's LayoutBox::PhysicalFragments, which
+// louis14 lacks (plan G20), found in one walk. No Blink analog for the
+// ordering, which keeps HandleMulticolsWithPendingOOFs deterministic.
+func (p *fragmentationContextOOFPart) multicolFragments(pending map[*LayoutInputNode]*MulticolWithPendingOOFs) ([]*LayoutInputNode, [][]*PhysicalFragment) {
+	var multicols []*LayoutInputNode
+	var fragments [][]*PhysicalFragment
+	index := map[*LayoutInputNode]int{}
+	var walk func(*PhysicalFragment)
+	walk = func(f *PhysicalFragment) {
+		for _, ch := range f.Children {
+			if ch.Fragment == nil {
+				continue
+			}
+			if n := ch.Fragment.LayoutNode; n != nil && pending[n] != nil {
+				i, ok := index[n]
+				if !ok {
+					i = len(multicols)
+					index[n] = i
+					multicols = append(multicols, n)
+					fragments = append(fragments, nil)
+				}
+				fragments[i] = append(fragments[i], ch.Fragment)
+			}
+			walk(ch.Fragment)
+		}
+	}
+	for _, ch := range *p.fragmentationContextChildren() {
+		walk(ch.fragment)
+	}
+	return multicols, fragments
+}
+
+// LayoutOOFsInMulticol lays out the fragmentainer descendants pending in an
+// inner multicol in its columns: the columns of every fragment of the
+// multicol (multicolFragments, in order) are collected into a limited
+// builder, and the descendants are laid out in them. Columns created for
+// OOFs that run past the last one are appended to the last multicol fragment
+// that has columns, so they overflow in the inline direction (Blink does not
+// put columns into more outer fragmentainers, a documented limitation). The
+// candidates the laid-out OOFs surface (a fixed child of an abspos) and the
+// inner multicols they bring go to this part's container builder, at the
+// multicol's offset. Mirrors Blink's OutOfFlowLayoutPart::LayoutOOFsInMulticol
+// (out_of_flow_layout_part.cc:1324-1557 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The pending fixedpos containing
+// block is not passed on: louis14 does not record one (see
+// TransferOutOfFlowCandidates).
+func (p *fragmentationContextOOFPart) LayoutOOFsInMulticol(multicolFragments []*PhysicalFragment, info *MulticolWithPendingOOFs) {
+	first := multicolFragments[0]
+	wdm := NewWritingDirectionMode(first.Style)
+	limitedBuilder := NewBoxFragmentBuilder(wdm)
+	limitedBuilder.SetLayoutNode(first.LayoutNode)
+	availableInlineSize := NewLogicalFragment(wdm, first).InlineSize() - ComputeFragmentGeometry(first.Style, wdm).InlineBorderPadding()
+	columnInlineProgression := ColumnInlineProgression(first.Style, availableInlineSize)
+
+	var multicolChildren []logicalChildLink
+	var lastFragmentWithFragmentainer *PhysicalFragment
+	var oofNodesToLayout []LogicalOofNodeForFragmentation
+	for _, multicolFragment := range multicolFragments {
+		// Collect the children of the multicol fragments, with the
+		// fragmentainer descendants pending in them. Child offsets are
+		// relative to their multicol fragment's content box (louis14's
+		// child-link convention; horizontal-tb, like the rest of OOF
+		// fragmentation, plan RC-8).
+		for _, child := range multicolFragment.Children {
+			if child.Fragment == nil {
+				continue
+			}
+			offset := LogicalOffset{InlineOffset: child.Offset.LeftF64(), BlockOffset: child.Offset.TopF64()}
+			if child.Fragment.IsFragmentainerBox() {
+				lastFragmentWithFragmentainer = multicolFragment
+			}
+			multicolChildren = append(multicolChildren, logicalChildLink{offset: offset, fragment: child.Fragment})
+			var descendants []LogicalOofNodeForFragmentation
+			limitedBuilder.PropagateOOFFragmentainerDescendants(child.Fragment, offset, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, &descendants)
+			for _, d := range descendants {
+				// A descendant whose containing block is inside a column
+				// spanner is laid out further up the tree.
+				if d.ContainingBlock.Fragment == nil || d.ContainingBlock.IsInsideColumnSpanner {
+					continue
+				}
+				oofNodesToLayout = append(oofNodesToLayout, d)
+			}
+		}
+	}
+	if len(oofNodesToLayout) == 0 {
+		return
+	}
+
+	oldFragmentCount := len(multicolChildren)
+	innerPart := &fragmentationContextOOFPart{
+		OutOfFlowLayoutPart:  OutOfFlowLayoutPart{ctx: p.ctx, containingBlockWDM: wdm},
+		containerBuilder:     limitedBuilder,
+		childFragmentStorage: &multicolChildren,
+	}
+	innerPart.LayoutFragmentainerDescendants(&oofNodesToLayout, LogicalOffset{InlineOffset: columnInlineProgression})
+
+	// Append the columns created for the OOFs to the last multicol fragment
+	// that has columns (:1488-1535).
+	if len(multicolChildren) > oldFragmentCount && lastFragmentWithFragmentainer != nil {
+		for _, child := range multicolChildren[oldFragmentCount:] {
+			lastFragmentWithFragmentainer.Children = append(lastFragmentWithFragmentainer.Children, ChildLink{
+				Offset:   geometry.PhysicalOffsetFromF64Round(child.offset.InlineOffset, child.offset.BlockOffset),
+				Fragment: child.fragment,
+			})
+		}
+		lastFragmentWithFragmentainer.updateScrollableOverflow()
+	}
+
+	limitedBuilder.TransferOutOfFlowCandidates(p.containerBuilder, info.MulticolOffset, info)
+	var multicolsWithPendingOOFs map[*LayoutInputNode]*MulticolWithPendingOOFs
+	limitedBuilder.SwapMulticolsWithPendingOOFs(&multicolsWithPendingOOFs)
+	for node, pending := range multicolsWithPendingOOFs {
+		p.containerBuilder.AddMulticolWithPendingOOFs(node, pending)
 	}
 }
 
@@ -671,10 +820,8 @@ const maxOOFFragmentainers = 1000
 // fragmentainer descendants the laid-out OOFs surface. Mirrors Blink's
 // OutOfFlowLayoutPart::LayoutFragmentainerDescendants
 // (out_of_flow_layout_part.cc:1559-1784 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: delayed
-// descendants (louis14 runs this once, after every containing block has
-// finished), inline containing blocks, anchors and repeated fixedpos
-// (pagination).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: inline
+// containing blocks, anchors and repeated fixedpos (pagination).
 func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants *[]LogicalOofNodeForFragmentation, fragmentainerProgression LogicalOffset) {
 	for len(*descendants) > 0 {
 		var descendantsToLayout [][]NodeToLayout

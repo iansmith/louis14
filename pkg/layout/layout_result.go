@@ -608,6 +608,15 @@ type PhysicalFragment struct {
 	// (oof_positioned_node.h:366-408).
 	FragmentedOofData *FragmentedOofData
 
+	// IsFragmentationContextRoot marks the fragment of a block
+	// fragmentation context root (a multicol container). Its fragmentainer
+	// descendants are not propagated past it: an inner multicol's OOFs are
+	// laid out in its own columns once the outermost root is reached.
+	// Mirrors Blink's PhysicalBoxFragment::IsFragmentationContextRoot
+	// (physical_box_fragment.h:449-451 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsFragmentationContextRoot bool
+
 	// AppliedTextDecorations is an optional per-fragment override of the
 	// style-carried decoration vector. Populated only for FragmentText runs
 	// that participate in a multi-fragment decorating box (LOU-149 Phase 4),
