@@ -1147,7 +1147,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// plus the NinePieceImage geometry. Mirrors ComputedStyle::BorderImage
 	// (StyleImage + NinePieceImage, core/style/nine_piece_image.h @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if biSrc := s.GetBorderImageSource(); biSrc != "" && biSrc != "none" {
+	//
+	// Border image and box shadows are box decorations: Blink paints them
+	// only for box fragments, in BoxFragmentPainter::
+	// PaintBoxDecorationBackgroundWithRectImpl (core/paint/
+	// box_fragment_painter.cc:1649 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+	// shadows at :1663/:1712/:1717). Text runs share their element's style
+	// but are text fragments, so they paint neither (as with the background
+	// and outline guards in this function).
+	if biSrc := s.GetBorderImageSource(); box.Text == "" && biSrc != "" && biSrc != "none" {
 		if url, ok := css.ParseURLValue(biSrc); ok {
 			layer.BorderImageSource = &css.CSSImageValue{Data: css.URLData{Relative: url, Absolute: url}}
 		} else if isGradientValue(biSrc) {
@@ -1158,11 +1166,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// Box shadows. Resolve currentcolor to the element's text color.
-	layer.BoxShadows = s.GetBoxShadow()
-	for i := range layer.BoxShadows {
-		if layer.BoxShadows[i].UseCurrentColor {
-			layer.BoxShadows[i].Color = currentColor
+	// Box shadows (box fragments only; see the border-image note above).
+	// Resolve currentcolor to the element's text color.
+	if box.Text == "" {
+		layer.BoxShadows = s.GetBoxShadow()
+		for i := range layer.BoxShadows {
+			if layer.BoxShadows[i].UseCurrentColor {
+				layer.BoxShadows[i].Color = currentColor
+			}
 		}
 	}
 

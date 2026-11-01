@@ -10973,30 +10973,73 @@ func (fl *FillLayer) IterateReverse(fn func(*FillLayer)) {
 	fn(fl)
 }
 
-// FillUnsetProperties cycles unset properties from the head of the list,
-// mirroring Blink's FillLayer::FillUnsetProperties.
+// FillUnsetProperties repeats each property's specified values over the
+// layers that did not specify it, cycling through the set prefix of the list
+// (CSS Backgrounds 3 §2.2: a shorter longhand list is repeated to match the
+// number of background-image layers). Mirrors Blink's
+// FillLayer::FillUnsetProperties (core/style/fill_layer.cc:209-354 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which runs one such loop per
+// property. A property that no layer sets keeps its initial value; in Blink
+// layers are constructed with those, louis14 assigns them here.
 func (fl *FillLayer) FillUnsetProperties() {
 	if fl == nil {
 		return
 	}
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.PositionSet },
+		func(dst, src *FillLayer) { dst.Position = src.Position })
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.AttachmentSet },
+		func(dst, src *FillLayer) { dst.Attachment = src.Attachment })
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.ClipSet },
+		func(dst, src *FillLayer) { dst.Clip = src.Clip })
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.OriginSet },
+		func(dst, src *FillLayer) { dst.Origin = src.Origin })
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.RepeatSet },
+		func(dst, src *FillLayer) { dst.Repeat = src.Repeat })
+	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.SizeSet },
+		func(dst, src *FillLayer) { dst.Size = src.Size })
+
+	// Properties no layer specified (the head is unset only then): initial
+	// values.
 	for cur := fl; cur != nil; cur = cur.Next {
-		if !cur.RepeatSet {
+		if !fl.RepeatSet {
 			cur.Repeat = BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
 		}
-		if !cur.PositionSet {
+		if !fl.PositionSet {
 			cur.Position = BackgroundPosition{}
 		}
-		if !cur.SizeSet {
+		if !fl.SizeSet {
 			cur.Size = BackgroundSize{}
 		}
-		if !cur.OriginSet {
+		if !fl.OriginSet {
 			cur.Origin = BackgroundOriginPaddingBox
 		}
-		if !cur.ClipSet {
+		if !fl.ClipSet {
 			cur.Clip = BackgroundClipBorderBox
 		}
-		if !cur.AttachmentSet {
+		if !fl.AttachmentSet {
 			cur.Attachment = BackgroundAttachmentScroll
+		}
+	}
+}
+
+// fillUnsetFromPattern is one per-property loop of Blink's
+// FillLayer::FillUnsetProperties (fill_layer.cc:211-228 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): find the first layer without
+// the property set; if it is not the head, copy values into it and every
+// later layer from the set prefix, wrapping to the head on reaching it.
+func (fl *FillLayer) fillUnsetFromPattern(isSet func(*FillLayer) bool, copyValue func(dst, src *FillLayer)) {
+	curr := fl
+	for curr != nil && isSet(curr) {
+		curr = curr.Next
+	}
+	if curr == nil || curr == fl {
+		return
+	}
+	for pattern := fl; curr != nil; curr = curr.Next {
+		copyValue(curr, pattern)
+		pattern = pattern.Next
+		if pattern == curr || pattern == nil {
+			pattern = fl
 		}
 	}
 }

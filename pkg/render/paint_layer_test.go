@@ -270,3 +270,34 @@ func TestFontVariantCaps_EmitsNativeFeatures_RegardlessOfSynthesisGate(t *testin
 		}
 	}
 }
+
+// TestNewPaintLayer_TextRunPaintsNoBoxDecorations pins that a text-run box
+// (box.Text != "") does not pick up the box-shadow or border-image of the
+// element whose style it shares. Blink paints box decorations only for box
+// fragments — BoxFragmentPainter::PaintBoxDecorationBackgroundWithRectImpl
+// (core/paint/box_fragment_painter.cc:1649 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) paints the outset (:1663) and
+// inset (:1712, :1717) shadows and the border image; text fragments go
+// through TextFragmentPainter, which paints neither. LOU-560 (worklist C11):
+// inset-box-shadow-scroll's ref painted #inner's inset shadow behind every
+// line of text.
+func TestNewPaintLayer_TextRunPaintsNoBoxDecorations(t *testing.T) {
+	s := css.NewStyle()
+	s.Set("box-shadow", "10px 10px green inset")
+	s.Set("border-image-source", "linear-gradient(red, red)")
+
+	elem := newPaintLayer(&layout.Box{Style: s, Width: 100, Height: 50})
+	if len(elem.BoxShadows) != 1 || elem.BorderImageGenerated == "" {
+		t.Fatalf("element box: got %d shadows, border-image %q; want 1 shadow and a generated border image",
+			len(elem.BoxShadows), elem.BorderImageGenerated)
+	}
+
+	run := newPaintLayer(&layout.Box{Style: s, Text: "Passes", Width: 40, Height: 16})
+	if len(run.BoxShadows) != 0 {
+		t.Errorf("text run: got %d box shadows, want 0", len(run.BoxShadows))
+	}
+	if run.BorderImageSource != nil || run.BorderImageGenerated != "" {
+		t.Errorf("text run: got border image (source %v, generated %q), want none",
+			run.BorderImageSource, run.BorderImageGenerated)
+	}
+}

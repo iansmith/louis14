@@ -32,3 +32,29 @@ func TestHasVisibleInlinePaint_Background(t *testing.T) {
 		}
 	}
 }
+
+// TestHasVisibleInlinePaint_BoxShadowAndBorderImage (LOU-560): the rest of
+// HasBoxDecorationBackground — a box-shadow (computed_style.h:2436-2439 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) or a border image
+// (HasBorderDecoration, computed_style.h:1446-1448 @ same SHA) — also makes
+// an inline create a box fragment. Text runs no longer paint their element's
+// box decorations, so without the fragment an inline's box-shadow is lost
+// (box-shadow-overlapping-001).
+func TestHasVisibleInlinePaint_BoxShadowAndBorderImage(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		props []string
+		want  bool
+	}{
+		{"box-shadow", []string{"box-shadow", "-3em 0em"}, true},
+		{"box-shadow none", []string{"box-shadow", "none"}, false},
+		{"border-image gradient", []string{"border-image-source", "linear-gradient(red, blue)"}, true},
+		{"border-image url", []string{"border-image-source", `url("x.png")`}, true},
+		{"border-image none", []string{"border-image-source", "none"}, false},
+	} {
+		style := makeStyle(append([]string{"display", "inline"}, tc.props...)...)
+		if got := hasVisibleInlinePaint(style); got != tc.want {
+			t.Errorf("%s: hasVisibleInlinePaint = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

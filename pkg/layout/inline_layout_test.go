@@ -6,6 +6,7 @@ import (
 	"louis14/pkg/html"
 	"louis14/pkg/text"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -824,5 +825,45 @@ func TestInlineLayout_OutlineOnlySpanProducesFragments(t *testing.T) {
 	if spanFragCount == 0 {
 		t.Error("line 0: no span box fragment found — outline-only span must produce " +
 			"a box fragment so the paint layer builder can draw the outline")
+	}
+}
+
+// TestInlineLayout_InlineBoxFragmentInItemOrder (LOU-560): an inline box
+// fragment is added to the line box at its OpenTag's position in item order —
+// after the line's earlier text, before its own — because the line box
+// paints in insertion order and Blink's BoxFragmentPainter::PaintInlineItems
+// paints fragment items in order (core/paint/box_fragment_painter.cc:
+// 1984-2016 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An inline's
+// decorations therefore paint over preceding text they overlap
+// (box-shadow-overlapping-001: a span's -3em shadow covers "PED").
+func TestInlineLayout_InlineBoxFragmentInItemOrder(t *testing.T) {
+	// <div>PED<span bg=green>PNG</span></div>
+	textA := makeTextNode("PED")
+	textB := makeTextNode("PNG")
+	span := makeNode("span", textB)
+	parent := makeNode("div", textA, span)
+	styles := map[*html.Node]*css.Style{
+		parent: makeStyle("display", "block", "font-size", "16px"),
+		span:   makeStyle("display", "inline", "font-size", "16px", "background-color", "green"),
+	}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
+	if len(lineBoxes) != 1 {
+		t.Fatalf("got %d line boxes, want 1", len(lineBoxes))
+	}
+	var order []string
+	for _, child := range lineBoxes[0].Children {
+		f := child.Fragment
+		switch {
+		case f == nil:
+		case f.Type == FragmentBox && f.Style == styles[span]:
+			order = append(order, "span-box")
+		case f.Type == FragmentText:
+			order = append(order, "text:"+f.TextContent)
+		}
+	}
+	want := []string{"text:PED", "span-box", "text:PNG"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Errorf("line box child order = %v, want %v", order, want)
 	}
 }
