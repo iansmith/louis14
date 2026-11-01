@@ -1663,9 +1663,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// offset. This is the hard upper bound on a single row of columns.
 	// Phase 12e (Blink behaviour): column-fill:auto + max-height on an auto-
 	// height multicol uses max-height as the column block-size so columns fill
-	// sequentially up to that height. Otherwise the column block-size is
-	// content-driven (auto), which would collapse the multicol to a single
-	// column of indefinite height.
+	// sequentially up to that height. Otherwise an unconstrained line's
+	// column block-size is content-based (has_content_based_block_size).
 	var colBlockSize float64
 	shrinkToFitColumnBlockSize := false
 	switch {
@@ -1683,9 +1682,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			// Blink cla.cc:857-872 @ a9f50e522efa: when an auto-height
 			// multicol with column-fill:auto has no explicit/max height
 			// but is constrained by an outer fragmentainer, use the outer
-			// remaining space as the column block-size. Without this, the
-			// columns get indefinite height and all content stacks in a
-			// single column, defeating the nested fragmentation protocol.
+			// remaining space as the column block-size, not a
+			// content-based one (has_content_based_block_size requires
+			// !is_constrained_by_outer_fragmentation_context_).
 			colBlockSize = mla.constrainColumnBlockSize(outerRemaining, mla.hasExplicitBlock, mla.explicitBlockSize, mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 			shrinkToFitColumnBlockSize = true
 		} else {
@@ -2689,8 +2688,8 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		b = b.SetFragmentainerBlockSize(colBlockSize).
 			SetFragmentainerOffset(0)
 	} else {
-		// Indefinite fragmentainer size: column-fill:auto with auto column-height
-		// (no max-height constraint). The child still has block fragmentation
+		// Indefinite fragmentainer size: the auto-budget empty-row case above
+		// (a zero column block-size). The child still has block fragmentation
 		// (so spanner detection works), but no fragmentainer boundary to break at.
 		// FragmentainerBlockSize defaults to 0 on the builder; without an explicit
 		// Indefinite set, downstream code (block_layout.go's overflow check at
