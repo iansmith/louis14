@@ -565,7 +565,20 @@ func MovePastBreakpoint(
 // MovePastBreakpoint → PropagateSpaceShortage → CalculateSpaceShortage
 // (fragmentation_utils.cc:995-1053, :1230-1240 @ a9f50e522efa).
 func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *LayoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
-	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
+	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset {
+		return
+	}
+	PropagateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
+}
+
+// PropagateSpaceShortage reports how much more fragmentainer space would have
+// let the child fit, for column balancing (only multicol cares). Mirrors
+// Blink's PropagateSpaceShortage (fragmentation_utils.cc:995-1014 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the builder keeps the minimum
+// positive value. space is the builder's constraint space (Blink reads
+// builder->GetConstraintSpace(); not every louis14 builder carries one).
+func PropagateSpaceShortage(space ConstraintSpace, layoutResult *LayoutResult, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
+	if space.BlockFragmentationType != FragmentColumn {
 		return
 	}
 	builder.PropagateSpaceShortage(CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize))

@@ -1345,36 +1345,54 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 	// from the border-box edge, then one spanner space
 	// (CreateConstraintSpaceForSpanner) and spanner_node.Layout(space,
 	// break_token). A resumed spanner reads its incoming token's
-	// ConsumedBlockSize and ChildBreakTokens itself.
-	blockOffset := mla.blockStartBorderPadding() + mla.blockCursor + pendingMargin
-	// Blink cla.cc:1402-1403 @ a9f50e522efa: FragmentainerOffsetForChildren() +
-	// block_offset.
-	fragOff := mla.fragmentainerOffsetForChildren() + blockOffset
-	fullResult := layoutElement(mla.ctx, spanner, mla.CreateConstraintSpaceForSpanner(spanner, blockOffset, breakToken))
+	// ConsumedBlockSize and ChildBreakTokens itself. Run again after a row
+	// snap, from the snapped offset.
+	var blockOffset float64
+	layout := func() *LayoutResult {
+		blockOffset = mla.blockStartBorderPadding() + mla.blockCursor + pendingMargin
+		return layoutElement(mla.ctx, spanner, mla.CreateConstraintSpaceForSpanner(spanner, blockOffset, breakToken))
+	}
+	fullResult := layout()
 	// Blink cla.cc:1364-1394 @ a9f50e522efa: a spanner that does not fit
 	// (with its pending collapsed margin) in the rest of a wrapping row
-	// moves to the next row; when that row does not fit in the outer
-	// fragmentainer, the spanner (with the row) is pushed to the next
-	// outer fragmentainer.
-	snapsToNextRow := fullResult != nil && fullResult.Fragment != nil &&
+	// moves to the next row — the row gap at the end of the current row is
+	// a main gap — and is laid out again there. When that row does not fit
+	// in the outer fragmentainer, the spanner (with the row) is pushed to
+	// the next outer fragmentainer.
+	if fullResult != nil && fullResult.Fragment != nil &&
 		mla.shouldWrapColumns() && mla.hasRowHeight() && mla.rowHeight() > 0 &&
 		mla.offsetInCurrentRow(mla.blockCursor+pendingMargin) > 0 &&
-		mla.remainingRowHeightAtOffset(mla.blockCursor) < pendingMargin+NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
-	if snapsToNextRow && mla.isConstrainedByOuterFragmentation() &&
-		mla.rowHeight() > mla.spaceLeftForContent()-(mla.blockCursor+mla.offsetToNextRow(mla.blockCursor)) {
-		mla.outBuilder.AddBreakBeforeChild(spanner, false)
-		return layoutSpannerResult{status: BreakStatusBrokeBefore}
+		mla.remainingRowHeightAtOffset(mla.blockCursor) < pendingMargin+NewLogicalFragment(wdm, fullResult.Fragment).BlockSize() {
+		mla.blockCursor += mla.remainingRowHeightAtOffset(mla.blockCursor)
+		if mla.gapAccumulator != nil {
+			mla.gapAccumulator.AddMainGap(mla.blockCursor, SpannerGapNone)
+		}
+		mla.blockCursor += mla.rowGapSize
+		if mla.isConstrainedByOuterFragmentation() && mla.rowHeight() > mla.spaceLeftForContent()-mla.blockCursor {
+			mla.outBuilder.AddBreakBeforeChild(spanner, false)
+			return layoutSpannerResult{status: BreakStatusBrokeBefore}
+		}
+		fullResult = layout()
 	}
-	// Blink LayoutSpanner (cla.cc:1398-1411 @ a9f50e522efa): nested in
-	// another fragmentation context, examine the breakpoint before the
-	// spanner like any block child (BreakBeforeChildIfNeeded); a resumed
-	// spanner is never broken before (MovePastBreakpoint's
-	// IsFirstForNode check, fragmentation_utils.cc:1099-1100 @
-	// a9f50e522efa).
-	if mla.isConstrainedByOuterFragmentation() && fullResult != nil && breakToken.IsFirstForNode() {
+	// Blink LayoutSpanner (cla.cc:1396-1411 @ a9f50e522efa): nested in
+	// another fragmentation context — also in an outer multicol's initial
+	// balancing pass — examine the breakpoint before the spanner like any
+	// block child (BreakBeforeChildIfNeeded). A resumed spanner is never
+	// broken before (MovePastBreakpoint's IsFirstForNode check,
+	// fragmentation_utils.cc:1099-1100 @ a9f50e522efa).
+	if mla.space.HasBlockFragmentation && fullResult != nil && breakToken.IsFirstForNode() {
+		// Blink cla.cc:1402-1403: FragmentainerOffsetForChildren() +
+		// block_offset.
+		fragOff := mla.fragmentainerOffsetForChildren() + blockOffset
 		status, isForced := BreakBeforeChildIfNeeded(mla.space, spanner, fullResult,
 			fragOff, mla.fragmentainerCapacityForChildren(), mla.hasProcessedFirstChild, mla.containerBuilder)
 		if status == BreakStatusBrokeBefore {
+			// BreakBeforeChild (fragmentation_utils.cc:943-976 @
+			// a9f50e522efa): report the space shortage so a balancing outer
+			// multicol can stretch its columns.
+			if mla.space.HasKnownFragmentainerBlockSize() {
+				PropagateSpaceShortage(mla.space, fullResult, fragOff, mla.fragmentainerCapacityForChildren(), mla.containerBuilder)
+			}
 			mla.outBuilder.AddBreakBeforeChild(spanner, isForced)
 			return layoutSpannerResult{status: BreakStatusBrokeBefore, isForcedBreak: isForced}
 		}
@@ -1387,8 +1405,11 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
 		spanResult = fullResult
 		// The spanner's own break token resumes it in the next outer
-		// fragmentainer (Blink container_builder_.AddBreakToken).
-		if mla.isConstrainedByOuterFragmentation() && fullResult.BreakToken != nil {
+		// fragmentainer: AddResult collects a child's break token whenever
+		// the multicol takes part in block fragmentation
+		// (FragmentBuilder::PropagateFromFragment, fragment_builder.cc:
+		// 455-464 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if mla.space.HasBlockFragmentation && fullResult.BreakToken != nil {
 			// A box that fits with only overflowing content left (its
 			// token at block end) continues in a parallel flow; that is
 			// not an in-flow break inside (Blink
@@ -1398,15 +1419,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		}
 	}
 	if spanFrag != nil {
-		// The row snap decided above (cla.cc:1364-1381 @ a9f50e522efa): the
-		// row gap at the end of the current row is a main gap.
-		if snapsToNextRow {
-			mla.blockCursor += mla.remainingRowHeightAtOffset(mla.blockCursor)
-			if mla.gapAccumulator != nil {
-				mla.gapAccumulator.AddMainGap(mla.blockCursor, SpannerGapNone)
-			}
-			mla.blockCursor += mla.rowGapSize
-		}
 		// Blink cla.cc:1354-1356: the spanner's block offset includes the
 		// collapsed strut. cla.cc:1439-1441: the start-spanner gap
 		// boundary is the end of the preceding content — margins live
@@ -1796,42 +1808,15 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		colBreakToken := nextColumnToken
 		inlineOffset := 0.0
 
-		// CSS Multicol L2 §4.2.6 `column-wrap:nowrap` mode (including the
-		// `auto` resolution to `nowrap`): columns may extend past
-		// `column-count` along the inline axis (overflowing the multicol
-		// box) because no row-wrap is allowed. The inner per-column loop
-		// must continue placing columns until content is consumed
-		// (break-token goes nil). Each column must have a definite
-		// block-size so layout makes progress per column; otherwise the
-		// classic L1 balance algorithm constrains content into `column-
-		// count` columns and the cap remains. Mirrors Blink's behavior at
-		// `4883d11fef` where `ColumnLayoutAlgorithm::LayoutLine` does not
-		// cap by `used_column_count` when `!ShouldWrapColumns()` and each
-		// column has a known block-size.
-		// Balanced columns (column-fill:balance, also under column-height,
-		// or an outer balancing pass) are sized by the balancer, so they
-		// never take the no-wrap path; Blink passes the same balance_columns
-		// to CreateConstraintSpaceForFragmentainer (cla.cc:840-856, :929-933
-		// @ a9f50e522efa).
-		// Blink ColumnsOverflowInInlineDirection (cla.cc:1823-1842 @
-		// a9f50e522efa): under an outer fragmentation context, nowrap
-		// columns overflow inline only when the column is known to fit the
-		// outer fragmentainer; when content may instead resume in the next
-		// outer fragmentainer (mayHaveMoreSpace), the column-count cap
-		// applies even with column-wrap:nowrap. Without the cap, a resumed
-		// column that pushes its first child whole (breakable at start of a
-		// resumed container) never advances the token, and the guard below
-		// would drop that content instead of handing it to the outer.
-		noWrapMode := !mla.shouldWrapColumns() && !balanceColumns && !shrinkToFitColumnBlockSize && !mayHaveMoreSpace
-		// The column-count cap is off — the column loop runs on the break
-		// token alone — under no-wrap mode or inline overflow
-		// (cla.cc:1022-1025).
-		capOff := noWrapMode || overflowInline
-
 		// Inner per-column loop. Runs while a break token remains (Blink's
 		// do/while at cla.cc:929-1068); the cap at column-count applies only
-		// when inline overflow is not permitted (cla.cc:1022-1025).
-		for col := 0; col < mla.usedColumnCount || capOff; col++ {
+		// when inline overflow is not permitted (cla.cc:1012-1025 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With column-wrap:nowrap
+		// under an outer fragmentation context, that is unless the column is
+		// known to fit the outer fragmentainer (ColumnsOverflowInInlineDirection,
+		// cla.cc:1823-1842): otherwise the remaining content resumes in the
+		// next outer fragmentainer's line.
+		for col := 0; col < mla.usedColumnCount || overflowInline; col++ {
 			// IsInsideBalancedColumns is set when the line is balanced (also
 			// under column-height; Blink passes balance_columns, cla.cc:929-935
 			// @ a9f50e522efa).
@@ -1928,7 +1913,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			lastInnerResult = result
 			// Blink cla.cc:1022-1025: the row ends at column-count when
 			// content remains and inline overflow is not permitted.
-			rowCapped := colBreakToken != nil && !noWrapMode && !overflowInline && col+1 >= mla.usedColumnCount
+			rowCapped := colBreakToken != nil && !overflowInline && col+1 >= mla.usedColumnCount
 			// Blink cla.cc:1027-1037: track the worst break appeal across
 			// columns when the outer fragmentainer may have more space. Blink
 			// leaves the column loop on the cap before folding the appeal in,
@@ -2025,11 +2010,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Accept when no violations, column count within limit, and either
 		// content fully fits (no remaining break token) or a spanner was hit
 		// (in which case this row is done regardless).
-		// In nowrap mode, the column-count cap does not apply (CSS Multicol
-		// L2 §4.2.6) — columns extend inline as needed.
 		lastHasSpanner := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
 		if !hasViolatingBreak &&
-			(noWrapMode || actualColumnCount <= mla.usedColumnCount) &&
+			actualColumnCount <= mla.usedColumnCount &&
 			(colBreakToken == nil || lastHasSpanner) {
 			break
 		}
@@ -2116,23 +2099,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	if mla.gapAccumulator != nil && hasWrapped && mla.rowGapSize > 0 {
 		mla.gapAccumulator.AddMainGap(lineOffset-mla.rowGapSize, SpannerGapNone)
 	}
-	// gapColumnCount is the number of this line's columns Blink would have
-	// created (new_columns.size()). no Blink analog: louis14 can append a
-	// column Blink never creates — an empty spanner-detection column after
-	// full columns (the phantom column of multicol-span-all-006/007/008) —
-	// which must not get cross gaps. Columns added later by
-	// CreateEmptyColumn (OutOfFlowLayoutPart) never reach the accumulator,
-	// as in Blink, where only LayoutLine records columns.
-	gapColumnCount := 0
-	if mla.gapAccumulator != nil {
-		gapColumnCount = len(finalColumns)
-		if gapColumnCount > 1 && lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-			if detector := finalColumns[gapColumnCount-1]; len(detector.fragment.Children) == 0 || detector.result.IsEmptySpannerParent {
-				gapColumnCount--
-			}
-		}
-	}
-
 	// Commit final columns to the parent builder.
 	seenOOF := map[*LayoutInputNode]bool{}
 	isFirstCol := true
@@ -2166,7 +2132,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Blink cla.cc:1295-1311 @ a9f50e522efa: every column after the
 		// first in a row has a cross gap before it, recorded once per column
 		// position across rows.
-		if columnIndexInRow < gapColumnCount {
+		if mla.gapAccumulator != nil {
 			if columnIndexInRow > 0 && mla.gapAccumulator.ShouldAddCrossGapAt(columnIndexInRow) {
 				mla.gapAccumulator.AddCrossGap(col.offset.InlineOffset)
 			}
@@ -2209,8 +2175,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	}
 	// Blink cla.cc:1316-1319 @ a9f50e522efa.
 	if mla.gapAccumulator != nil {
-		mla.gapAccumulator.UpdateMaxColumnsInRow(gapColumnCount)
-		mla.gapAccumulator.AddNumberOfColumnsForCurrentRow(gapColumnCount)
+		mla.gapAccumulator.UpdateMaxColumnsInRow(len(finalColumns))
+		mla.gapAccumulator.AddNumberOfColumnsForCurrentRow(len(finalColumns))
 	}
 
 	// Blink cla.cc:906, :927, :949-971 @ a9f50e522efa: the line contributes
