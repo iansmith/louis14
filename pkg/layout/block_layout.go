@@ -938,11 +938,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// balancing pass) that is a no-op, so the balance loop measures the
 		// content alone.
 		addBreakBeforeChild := func(child *LayoutInputNode, isForced bool) {
-			pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-				Node:          child,
-				IsBreakBefore: true,
-				IsForcedBreak: isForced,
-			})
+			pendingChildBreakTokens = append(pendingChildBreakTokens, CreateBreakBefore(child, isForced))
 			pendingShouldBreakInside = true
 			pendingHasInflowChildBreakInside = true
 			if isForced {
@@ -1162,11 +1158,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// what comes before the spanner first: break before it
 					// (forced) and note the spanner without a path
 					// (:1025-1040).
-					pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-						Node:          child,
-						IsBreakBefore: true,
-						IsForcedBreak: true,
-					})
+					pendingChildBreakTokens = append(pendingChildBreakTokens, CreateBreakBefore(child, true))
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
 					bla.containerBuilder.SetHasColumnSpanner(true)
@@ -1186,11 +1178,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					if sibling.IsText() || bla.isColumnSpannerChild(sibling) {
 						continue
 					}
-					pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
-						Node:          sibling,
-						IsBreakBefore: true,
-						IsForcedBreak: true,
-					})
+					pendingChildBreakTokens = append(pendingChildBreakTokens, CreateBreakBefore(sibling, true))
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
 					break
@@ -2850,7 +2838,7 @@ func (bla *BlockLayoutAlgorithm) handleFloat(
 		// A forced break after the preceding block breaks before the
 		// float: break-before cannot be specified on floats (:1748-1759).
 		if IsForcedBreakValue(space, bla.containerBuilder.JoinedBreakBetweenValue("auto")) {
-			return es, &BlockBreakToken{Node: child, IsBreakBefore: true, IsForcedBreak: true}, true
+			return es, CreateBreakBefore(child, true), true
 		}
 	}
 

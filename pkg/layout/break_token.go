@@ -135,6 +135,22 @@ type BlockBreakToken struct {
 	OofStartOffset LogicalOffset
 }
 
+// CreateBreakBefore returns a break-before token for node: layout of node
+// is to start in the next fragmentainer. A list item's token records that its
+// outside marker is still unpositioned, so the item's first fragment seeds it
+// (block_layout_algorithm.cc:323-328). Mirrors Blink's
+// BlockBreakToken::CreateBreakBefore (block_break_token.h:40-50 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), minus the oof_start_offset
+// parameter: no louis14 break-before site passes one.
+func CreateBreakBefore(node *LayoutInputNode, isForcedBreak bool) *BlockBreakToken {
+	return &BlockBreakToken{
+		Node:                      node,
+		IsBreakBefore:             true,
+		IsForcedBreak:             isForcedBreak,
+		HasUnpositionedListMarker: node.IsListItem(),
+	}
+}
+
 // HasBreakToken returns true if there is more content to lay out.
 func (t *BlockBreakToken) HasBreakToken() bool {
 	return t != nil

@@ -2,7 +2,6 @@ package layout
 
 import (
 	"louis14/pkg/css"
-	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"testing"
 )
@@ -40,11 +39,7 @@ func TestIsBreakInside_BreakBeforeSizesFresh(t *testing.T) {
 
 	// A break-BEFORE token: the block never started in a previous
 	// fragmentainer (ConsumedBlockSize=0, IsBreakBefore=true).
-	breakBefore := &BlockBreakToken{
-		Node:              layoutRoot,
-		ConsumedBlockSize: layoutunit.FromFloat64Round(0),
-		IsBreakBefore:     true,
-	}
+	breakBefore := CreateBreakBefore(layoutRoot, false)
 
 	// A column fragmentation context (the branch that shrinks to intrinsic is
 	// gated to FragmentColumn).
