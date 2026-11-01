@@ -115,6 +115,13 @@ type BlockBreakToken struct {
 	// (multicol_break_token_data.h).
 	MulticolData *MulticolBreakTokenData
 
+	// FieldsetData is the fieldset container's token data (legend
+	// block-size contribution); nil for other nodes. Mirrors Blink's
+	// BlockBreakToken::TokenData() holding a FieldsetBreakTokenData
+	// (forms/fieldset_break_token_data.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	FieldsetData *FieldsetBreakTokenData
+
 	// OofStartOffset is the resume position of an OOF child that spans
 	// multiple fragmentainers (e.g. an abspos taller than a column).
 	// Carried on the OOF child's OWN BlockBreakToken (not the CB's). Zero

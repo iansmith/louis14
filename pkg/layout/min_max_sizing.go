@@ -421,6 +421,11 @@ func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, res
 // display type's layout algorithm (flex, grid, multicol, block/inline).
 // isInColumnBfc: see computeMinMaxSizesImpl.
 func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, isInColumnBfc bool) MinMaxSizes {
+	// A fieldset container measures its legend and content box
+	// (ComputeMinMaxSizesWithAlgorithm dispatches as layout does).
+	if node.IsFieldsetContainer() {
+		return measureFieldsetMinMax(node, ctx, space)
+	}
 	display := style.GetDisplay()
 	// Multicol containers exist only on block-container displays — mirror
 	// layoutElement's dispatch (block_layout.go), which routes to

@@ -107,6 +107,13 @@ type Box struct {
 	// default OverflowClipRect for non-scroll containers.
 	IsMulticolContainer bool
 
+	// IsFieldsetContainer / IsRenderedLegend forward PhysicalFragment.
+	// IsFieldsetContainer and IsRenderedLegend for the fieldset painter
+	// (legend cutout in the border) and the overflow-clip decision (a
+	// fieldset container never clips).
+	IsFieldsetContainer bool
+	IsRenderedLegend    bool
+
 	// AppliedTextDecorations is an optional per-fragment override of the
 	// style-carried decoration vector (LOU-149 Phase 4). Set only for text
 	// fragments that participate in a multi-fragment decorating box; the

@@ -482,6 +482,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		GapGeometry:                     frag.GapGeometry,
 		IsColumnBox:                     frag.IsColumnBox(),
 		IsMulticolContainer:             frag.IsMulticolContainer,
+		IsFieldsetContainer:             frag.IsFieldsetContainer,
+		IsRenderedLegend:                frag.IsRenderedLegend(),
 		AppliedTextDecorations:          frag.AppliedTextDecorations,
 		CollapsedBorderOutwardExtension: frag.CollapsedBorderOutwardExtension,
 		PaintGroup:                      frag.PaintGroup,
