@@ -499,7 +499,9 @@ func IsBreakableAtStartOfResumedContainerWithFirstForNode(space ConstraintSpace,
 // @ a9f50e522efa); the child-overload pre-checks (:1068-1139) live in
 // BreakBeforeChildIfNeeded and at its block_layout.go call site. Not ported:
 // early breaks (no EarlyBreak / RelayoutAndBreakEarlier yet) and
-// SetIsBlockSizeForFragmentationClamped.
+// SetIsBlockSizeForFragmentationClamped. builder may be nil, as Blink's
+// PositionFloat passes (floats_utils.cc:377-380): breaking before is then
+// refused only at the fragmentainer start, and nothing is propagated.
 func MovePastBreakpoint(
 	space ConstraintSpace,
 	layoutResult *LayoutResult,
@@ -517,7 +519,7 @@ func MovePastBreakpoint(
 	// No space used in the fragmentainer yet: breaking before would make no
 	// progress, unless the container is breakable at its resumed start.
 	refuseBreakBefore := spaceLeft >= fragmentainerBlockSize &&
-		!IsBreakableAtStartOfResumedContainer(space, layoutResult)
+		(builder == nil || !IsBreakableAtStartOfResumedContainer(space, layoutResult))
 
 	// A child that starts past the end (e.g. pushed by its margin) must be
 	// broken before; so must one that starts exactly at the end and broke
@@ -535,7 +537,7 @@ func MovePastBreakpoint(
 	// builder so the multicol stretch loop sees it (a break before
 	// overwrites it via SetBreakAppeal).
 	appealInside := CalculateBreakAppealInside(space, layoutResult)
-	if appealInside < BreakAppealPerfect {
+	if appealInside < BreakAppealPerfect && builder != nil {
 		builder.ClampBreakAppeal(appealInside)
 	}
 
@@ -551,7 +553,7 @@ func MovePastBreakpoint(
 		// that break only if it is at least as appealing as breaking before.
 		brokeOrSubPerfect := breakToken.IsBreakInside() || appealInside < BreakAppealPerfect
 		return !brokeOrSubPerfect || appealInside >= appealBefore
-	case appealBefore == BreakAppealLastResort && space.RequiresContentBeforeBreaking:
+	case appealBefore == BreakAppealLastResort && builder != nil && space.RequiresContentBeforeBreaking:
 		// Doesn't fit, but content is required here.
 		propagateSpaceShortageIfOverflowing(space, layoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
 		return true
@@ -565,7 +567,7 @@ func MovePastBreakpoint(
 // MovePastBreakpoint → PropagateSpaceShortage → CalculateSpaceShortage
 // (fragmentation_utils.cc:995-1053, :1230-1240 @ a9f50e522efa).
 func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *LayoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize float64, builder *BoxFragmentBuilder) {
-	if blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
+	if builder == nil || blockSize <= fragmentainerBlockSize-fragmentainerBlockOffset || space.BlockFragmentationType != FragmentColumn {
 		return
 	}
 	builder.PropagateSpaceShortage(CalculateSpaceShortage(space, layoutResult, fragmentainerBlockOffset, fragmentainerBlockSize))
@@ -582,12 +584,23 @@ func propagateSpaceShortageIfOverflowing(space ConstraintSpace, layoutResult *La
 // box_fragment_builder.cc:758-761), the max equals Blink's value. A
 // fragmentainer (column) records its children only (:743-745), so its value
 // is read as is.
+//
+// A float laid out without block fragmentation (Blink's kIndefiniteSize:
+// monolithic, or not in a fragmentation context) also counts its margins,
+// since margins on floats do not break or truncate (:1562-1570). The
+// margins are the fragment's own (UpdateMarginPaddingInfoIfNeeded,
+// block_node.cc:1504-1520), untruncated.
 func BlockSizeForFragmentation(wdm WritingDirectionMode, layoutResult *LayoutResult) float64 {
 	if layoutResult.Fragment.BoxType == BoxTypeColumn {
 		return layoutResult.BlockSizeForFragmentation
 	}
-	return math.Max(NewLogicalFragment(wdm, layoutResult.Fragment).BlockSize(),
+	blockSize := math.Max(NewLogicalFragment(wdm, layoutResult.Fragment).BlockSize(),
 		layoutResult.BlockSizeForFragmentation)
+	if frag := layoutResult.Fragment; !layoutResult.HasBlockSizeForFragmentation &&
+		frag.IsFloating && frag.BoxData != nil {
+		blockSize += ToLogicalEdges(frag.BoxData.Margin, wdm).BlockSum()
+	}
+	return blockSize
 }
 
 // CalculateSpaceShortage returns how much more fragmentainer space would have
@@ -647,6 +660,16 @@ func BreakBeforeChildIfNeeded(
 	// a9f50e522efa): layout aborted, so no fragment was produced and there
 	// is nothing to move past — break before the child.
 	if layoutResult != nil && layoutResult.Status != LayoutResultSuccess {
+		builder.SetBreakAppeal(appealBefore)
+		return BreakStatusBrokeBefore, false
+	}
+
+	// Clearance past a float that continues in the next fragmentainer
+	// pushes the child there too: retry it in the next fragmentainer
+	// (fragmentation_utils.cc:1102-1107 @ a9f50e522efa). The builder's
+	// exclusion space is the one current at this child.
+	if style := child.Style(); style != nil &&
+		builder.GetExclusionSpace().NeedsClearancePastFragmentainer(style.GetClear(), space.WritingDirection) {
 		builder.SetBreakAppeal(appealBefore)
 		return BreakStatusBrokeBefore, false
 	}

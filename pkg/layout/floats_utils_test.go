@@ -121,10 +121,17 @@ func TestFloatFragmentation_SpannerAfterParallelFlow(t *testing.T) {
 	if spannerTop != 90 {
 		t.Errorf("spanner top = %v, want 90", spannerTop)
 	}
-	// The float resumes at the top of the second column.
-	cols := columnChildren(result)
+	// The float resumes at the top of the second column of the row above
+	// the spanner. (louis14 gives the wrapper's empty remainder after the
+	// spanner a row of its own; that row is not under test here.)
+	var cols []ChildLink
+	for _, col := range columnChildren(result) {
+		if col.Offset.Top.Float64() < spannerTop {
+			cols = append(cols, col)
+		}
+	}
 	if len(cols) != 2 {
-		t.Fatalf("columns = %d, want 2", len(cols))
+		t.Fatalf("columns above the spanner = %d, want 2", len(cols))
 	}
 	for i, col := range cols {
 		frags := fragmentsOfNode(col.Fragment, float)
