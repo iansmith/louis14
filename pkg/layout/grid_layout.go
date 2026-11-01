@@ -52,6 +52,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	geom := CalculateInitialFragmentGeometry(gla.ctx, gla.node, gla.style, wdm, gla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(gla.node)
+	builder.SetChildAvailableSize(CalculateChildAvailableSize(gla.space, gla.node, geom))
 
 	// Resolve container sizes.
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
@@ -432,7 +433,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += gla.alignOffset(fragBlock, availBlock, selfAlign)
 
 		offset := LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset}
-		builder.AddChild(item.result.Fragment, offset)
+		// Grid is special in that %-based offsets resolve against the grid
+		// area, so the relative offset is determined here instead of in the
+		// builder (grid_layout_algorithm.cc:1879-1899 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		relativeOffset := ComputeRelativeOffsetForBoxFragment(item.result.Fragment, wdm,
+			LogicalSize{InlineSize: itemInline, BlockSize: itemBlock})
+		builder.AddChildWithRelativeOffset(item.result.Fragment, offset, relativeOffset)
 
 		// Propagate OOF candidates from children.
 		for _, cand := range item.result.PropagatedOOFCandidates {
@@ -570,12 +577,6 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	result := builder.Build()
 	if len(propagatedOOF) > 0 {
 		result.PropagatedOOFCandidates = propagatedOOF
-	}
-
-	// CSS position:relative offset. Sticky is scroll-time, not layout-time.
-	if gla.style != nil && gla.style.GetPosition() == css.PositionRelative {
-		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
-			gla.style, wdm, geomLogicalToOld(gla.space.AvailableSize))
 	}
 
 	return result

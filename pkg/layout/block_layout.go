@@ -2,7 +2,6 @@ package layout
 
 import (
 	"louis14/pkg/css"
-	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 )
 
@@ -514,6 +513,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.boxType == BoxTypeColumn {
 		childAvailableBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
+	// The builder's child available size, against which AddChild resolves
+	// the children's relative offsets. BLA's own content sizes (replaced
+	// and fragmentainer cases above) stand in for CalculateChildAvailableSize's
+	// border-box shrink; the anonymous-block step is shared.
+	builder.SetChildAvailableSize(LogicalSize{
+		InlineSize: contentInlineSize,
+		BlockSize:  anonymousChildAvailableBlockSize(bla.space, bla.node, childAvailableBlock),
+	})
 
 	// §10.3.2: Compute the available block-size for orthogonal children.
 	// This accounts for the parent's height/min-height/max-height constraints
@@ -2276,170 +2283,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		result.PropagatedTopMargin = propagatedTopMargin
 	}
 
-	// CSS 2.1 §9.4.3: Compute position:relative offset during layout.
-	// Stored on the fragment for paint-time application (not baked into positions).
-	// Percentages resolve against the containing block's PHYSICAL dimensions:
-	// left/right against physical width, top/bottom against physical height.
-	//
-	// The overconstrained resolution rule is "start wins over end" in logical
-	// coordinates, following Blink's ComputeRelativeOffset (relative_utils.cc).
-	//
-	// position:sticky is NOT included — its offset is scroll-time, not
-	// layout-time. At layout we leave RelativeOffset zero (normal-flow
-	// position); the scroll-time path is deferred until scroll-based tests
-	// appear.
-	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
-		// Percentages resolve against the containing block's physical size.
-		// Mirrors Blink's ComputeRelativeOffset, which reads AvailableSize —
-		// but we use PercentageResolutionSize instead so that anonymous
-		// auto-height wraps (e.g. block-in-inline splits) do not collapse the
-		// block-axis CB to zero for their descendants.
-		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
-			bla.style, wdm, geomLogicalToOld(bla.space.PercentageResolutionSize))
-	}
-
 	return result
-}
-
-// computeRelativeOffsetForBoxFragment resolves a position:relative box's
-// insets against available (its containing block's logical size, in the
-// container's writing mode wdm) and returns the physical offset. Mirrors
-// Blink's ComputeRelativeOffsetForBoxFragment
-// (third_party/blink/renderer/core/layout/relative_utils.cc:92
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520). An Indefinite axis resolves
-// percentages against 0; Blink's ComputeRelativeOffset (relative_utils.cc:18,
-// ResolveInset :29-35 @ the same SHA) treats them as auto instead, which
-// differs only when both insets on that axis are set.
-func computeRelativeOffsetForBoxFragment(style *css.Style, wdm WritingDirectionMode, available LogicalSize) geometry.PhysicalOffset {
-	if available.InlineSize == Indefinite {
-		available.InlineSize = 0
-	}
-	if available.BlockSize == Indefinite {
-		available.BlockSize = 0
-	}
-	physCB := ToPhysicalSize(available, wdm.WM)
-	return computeRelativeOffset(style.GetPositionOffsetResolved(physCB.Width, physCB.Height), wdm)
-}
-
-// computeRelativeOffset computes the physical offset for position:relative.
-//
-// CSS Writing Modes §7.1 maps CSS 2.1 §9.4.3's overconstrained rules to
-// logical axes. The "start wins" rule applies in the logical space:
-//   - inline-start wins over inline-end (direction determines start)
-//   - block-start wins over block-end (always)
-//
-// In horizontal writing modes:
-//   - left/right are inline (direction-dependent: LTR→left wins, RTL→right wins)
-//   - top/bottom are block (top = block-start, always wins)
-//
-// In vertical writing modes (vlr, vrl):
-//   - left/right are block (block-start wins: vlr→left, vrl→right, always)
-//   - top/bottom are inline (direction-dependent: LTR→top wins, RTL→bottom wins)
-//
-// In sideways-lr:
-//   - inline direction is inverted (bottom-to-top for LTR)
-//   - left/right are block (left = block-start, always wins)
-//   - top/bottom are inline (LTR→bottom wins, RTL→top wins)
-func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) geometry.PhysicalOffset {
-	var dx, dy float64
-
-	switch wdm.WM {
-	case WritingModeHorizontalTB:
-		// Inline axis = horizontal: direction determines which of left/right wins.
-		if wdm.Dir == DirectionLTR {
-			if offset.HasLeft {
-				dx = offset.Left
-			} else if offset.HasRight {
-				dx = -offset.Right
-			}
-		} else {
-			if offset.HasRight {
-				dx = -offset.Right
-			} else if offset.HasLeft {
-				dx = offset.Left
-			}
-		}
-		// Block axis = vertical: top = block-start, always wins.
-		if offset.HasTop {
-			dy = offset.Top
-		} else if offset.HasBottom {
-			dy = -offset.Bottom
-		}
-
-	case WritingModeVerticalLR:
-		// Block axis = horizontal: left = block-start in vlr, always wins.
-		if offset.HasLeft {
-			dx = offset.Left
-		} else if offset.HasRight {
-			dx = -offset.Right
-		}
-		// Inline axis = vertical: direction determines which of top/bottom wins.
-		if wdm.Dir == DirectionLTR {
-			// LTR: top = inline-start.
-			if offset.HasTop {
-				dy = offset.Top
-			} else if offset.HasBottom {
-				dy = -offset.Bottom
-			}
-		} else {
-			// RTL: bottom = inline-start.
-			if offset.HasBottom {
-				dy = -offset.Bottom
-			} else if offset.HasTop {
-				dy = offset.Top
-			}
-		}
-
-	case WritingModeVerticalRL, WritingModeSidewaysRL:
-		// Block axis = horizontal: right = block-start in vrl, always wins.
-		if offset.HasRight {
-			dx = -offset.Right
-		} else if offset.HasLeft {
-			dx = offset.Left
-		}
-		// Inline axis = vertical: direction determines which of top/bottom wins.
-		if wdm.Dir == DirectionLTR {
-			// LTR: top = inline-start.
-			if offset.HasTop {
-				dy = offset.Top
-			} else if offset.HasBottom {
-				dy = -offset.Bottom
-			}
-		} else {
-			// RTL: bottom = inline-start.
-			if offset.HasBottom {
-				dy = -offset.Bottom
-			} else if offset.HasTop {
-				dy = offset.Top
-			}
-		}
-
-	case WritingModeSidewaysLR:
-		// Block axis = horizontal: left = block-start, always wins.
-		if offset.HasLeft {
-			dx = offset.Left
-		} else if offset.HasRight {
-			dx = -offset.Right
-		}
-		// Inline axis = vertical but inverted (bottom-to-top for LTR).
-		if wdm.Dir == DirectionLTR {
-			// LTR: bottom = inline-start (inverted).
-			if offset.HasBottom {
-				dy = -offset.Bottom
-			} else if offset.HasTop {
-				dy = offset.Top
-			}
-		} else {
-			// RTL: top = inline-start (inverted).
-			if offset.HasTop {
-				dy = offset.Top
-			} else if offset.HasBottom {
-				dy = -offset.Bottom
-			}
-		}
-	}
-
-	return geometry.PhysicalOffsetFromF64Round(dx, dy)
 }
 
 // inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
@@ -2497,19 +2341,15 @@ func PropagateOOFCandidates(
 	physBPEdges := ToPhysicalEdges(childBPLogical, childWDM)
 	parentLogicalBP := ToLogicalEdges(physBPEdges, parentWDM)
 
-	// If the child has a position:relative/sticky RelativeOffset, the child is
-	// visually displaced from its normal-flow position. Propagated OOF
-	// descendants whose CB is the parent or higher (e.g. fixed descendants of a
-	// relative ancestor) anchor at the child's VISUAL position per the
-	// hypothetical-box algorithm. Mirrors Blink's
-	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo accumulating the
-	// container's relative offset into the descendant's static position.
-	relOffPhys := PhysicalOffset{
-		X: childResult.Fragment.RelativeOffset.LeftF64(),
-		Y: childResult.Fragment.RelativeOffset.TopF64(),
-	}
-	relOffsetLog := NewConverter(parentWDM, PhysicalSize{}).
-		ToLogicalOffset(relOffPhys, PhysicalSize{})
+	// A position:relative child is visually displaced from its normal-flow
+	// position by the relative offset the parent applies when it adds it.
+	// Propagated OOF descendants whose CB is the parent or higher (e.g. fixed
+	// descendants of a relative ancestor) anchor at the child's VISUAL
+	// position per the hypothetical-box algorithm. Mirrors Blink's
+	// FragmentBuilder::PropagateOOFPositionedInfo, which adds the child's
+	// relative_offset to the descendants' static positions
+	// (fragment_builder.cc:749-762 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	relOffsetLog := builder.relativeOffsetFor(childResult.Fragment)
 
 	blockAdj := childBlockOff + parentLogicalBP.BlockStart + relOffsetLog.BlockOffset
 	inlineAdj := childInlineOff + parentLogicalBP.InlineStart + relOffsetLog.InlineOffset

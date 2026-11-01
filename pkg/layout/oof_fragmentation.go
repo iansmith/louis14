@@ -36,9 +36,8 @@ type LogicalOofContainingBlock struct {
 	// expressed in the multicol's logical coordinate system.
 	Offset LogicalOffset
 
-	// RelativeOffset is the CSS position:relative offset on the CB itself
-	// (applied at paint time, not baked into Offset). Mirrors Blink's
-	// OofContainingBlock::relative_offset_.
+	// RelativeOffset is the CSS position:relative offset on the CB itself.
+	// Mirrors Blink's OofContainingBlock::relative_offset_.
 	RelativeOffset LogicalOffset
 
 	// Fragment points at the specific PhysicalFragment of the CB this OOF
@@ -77,7 +76,7 @@ type LogicalOofInlineContainer struct {
 	// is stored to match against background fragments at OOF-resolution time.
 	Container *html.Node
 
-	// RelativeOffset is the inline's position:relative offset (paint-time).
+	// RelativeOffset is the inline's position:relative offset.
 	RelativeOffset LogicalOffset
 }
 

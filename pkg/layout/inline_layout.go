@@ -1101,16 +1101,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if centralBaseline && lineIsSidewaysResolved(line.Results) {
 			centralBaseline = false
 		}
-		// Compute containing block physical size for inline relative positioning.
-		// Percentages for top/bottom resolve against CB height, left/right against width.
-		cbBlockSize := bla.space.AvailableSize.BlockSize.Float64()
-		if cbBlockSize == Indefinite {
-			cbBlockSize = 0
-		}
-		cbPhys := ToPhysicalSize(LogicalSize{
+		// The available size inline-level relative offsets resolve against:
+		// the block's (ComputeRelativeOffsetForInline reads
+		// space.AvailableSize, relative_utils.cc:100-124 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		relativeAvailableSize := LogicalSize{
 			InlineSize: contentInlineSize,
-			BlockSize:  cbBlockSize,
-		}, wdm.WM)
+			BlockSize:  bla.space.AvailableSize.BlockSize.Float64(),
+		}
 		// CSS Pseudo 4 §3.2.1: the ::first-line generated box "behaves similar to
 		// that of an inline-level element" (the WPT first-line-line-height
 		// reftests model it as a `<span class="fl">` inside an unchanged block).
@@ -1129,7 +1127,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, relativeAvailableSize, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers,
 		)
 		openInlineStack = residualStack
 		// no Blink analog for the line box type: a zero-height line stands
@@ -1726,7 +1724,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil, true, nil)
+	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), LogicalSize{}, nil, nil, nil, true, nil)
 	return frag, h, a
 }
 
@@ -1750,7 +1748,7 @@ func createLineBoxEx(
 	availableInline float64,
 	fonts text.FontConfig,
 	centralBaseline bool,
-	cbPhysicalSize PhysicalSize,
+	relativeAvailableSize LogicalSize,
 	parentStyle *css.Style,
 	enteringSpanStack []*InlineItem,
 	firstLineStyle *css.Style,
@@ -2018,9 +2016,10 @@ func createLineBoxEx(
 		// backgrounds paint behind descendant ones
 		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		type pendingBgFrag struct {
-			frag   *PhysicalFragment
-			offset LogicalOffset
-			seq    int
+			frag           *PhysicalFragment
+			offset         LogicalOffset
+			relativeOffset LogicalOffset
+			seq            int
 		}
 		var pendingBg []pendingBgFrag
 		emit := func(span spanEntry, endPos float64) {
@@ -2031,8 +2030,7 @@ func createLineBoxEx(
 			// a fragment per line so descendant abspos children can derive
 			// their inline containing block from the union of these rects
 			// (CSS 2.1 §10.1.4 / CSS Position 3 §def-cb). The fragment is
-			// also where RelativeOffset is anchored for paint-time sticky/
-			// relative shifts.
+			// also what the span's relative offset shifts.
 			if !(hasVisibleInlinePaint(span.style) || inlineEstablishesContainingBlock(span.style)) {
 				return
 			}
@@ -2116,13 +2114,6 @@ func createLineBoxEx(
 					bgFrag.PaintGroup = span.item.EnclosingPaintGroup
 				}
 			}
-			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
-			// position:relative. Use the original (non-reset) style.
-			// Sticky is scroll-time, not layout-time — leave zero.
-			if span.style.GetPosition() == css.PositionRelative {
-				offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
-				bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
-			}
 			// Anchor the band's content top at maxAscent − spanAscent — the
 			// same place the text pass puts this span's text fragments
 			// (blockPos = maxAscent − ascent), so band and glyph em boxes
@@ -2145,7 +2136,11 @@ func createLineBoxEx(
 					InlineOffset: fragStart,
 					BlockOffset:  spanBlockOffset,
 				},
-				seq: span.openSeq,
+				// CSS 2.1 §9.4.3: inline span backgrounds also shift with
+				// position:relative. Use the original (non-reset) style.
+				// Sticky is scroll-time, not layout-time — leave zero.
+				relativeOffset: ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, span.style),
+				seq:            span.openSeq,
 			})
 		}
 
@@ -2234,7 +2229,7 @@ func createLineBoxEx(
 			return pendingBg[a].seq < pendingBg[b].seq
 		})
 		for _, p := range pendingBg {
-			lineBuilder.AddChild(p.frag, p.offset)
+			lineBuilder.AddChildWithRelativeOffset(p.frag, p.offset, p.relativeOffset)
 		}
 	}
 
@@ -2420,6 +2415,15 @@ func createLineBoxEx(
 			// fixed inline offset, while Blink mutates per-glyph offsets in
 			// ShapeResult.
 			fontPath := resolveFontPath(rStyle, fonts)
+			// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
+			// text fragments. Only applies when the parent is a true inline element
+			// (display:inline), not a block container. Block containers are
+			// shifted by their own parent — applying it here would
+			// double-offset the text.
+			var textRelativeOffset LogicalOffset
+			if rStyle != nil && (rStyle.GetDisplay() == css.DisplayInline || rStyle.IsInlineBoxListItem()) {
+				textRelativeOffset = ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, rStyle)
+			}
 			emitTextFragment := func(piece string, pieceInline float64, pieceOffset float64) {
 				if len(piece) == 0 {
 					return
@@ -2447,22 +2451,10 @@ func createLineBoxEx(
 					}
 				}
 
-				// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
-				// text fragments. Only applies when the parent is a true inline element
-				// (display:inline), not a block container. Block containers handle their
-				// own position:relative offset in block layout — applying it here would
-				// double-offset the text.
-				if rStyle != nil && (rStyle.GetDisplay() == css.DisplayInline || rStyle.IsInlineBoxListItem()) {
-					pos := rStyle.GetPosition()
-					if pos == css.PositionRelative {
-						offset := rStyle.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
-						frag.RelativeOffset = computeRelativeOffset(offset, wdm)
-					}
-				}
-				lineBuilder.AddChild(frag, LogicalOffset{
+				lineBuilder.AddChildWithRelativeOffset(frag, LogicalOffset{
 					InlineOffset: pieceOffset,
 					BlockOffset:  blockPos,
-				})
+				}, textRelativeOffset)
 			}
 
 			if justifyExpansion > 0 && strings.Contains(content, " ") {
@@ -2660,24 +2652,17 @@ func createLineBoxEx(
 				if blockPos < 0 {
 					blockPos = 0
 				}
-				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
-				// Sticky is scroll-time, not layout-time.
-				if r.Item.Style != nil {
-					pos := r.Item.Style.GetPosition()
-					if pos == css.PositionRelative {
-						offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
-						r.LayoutResult.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
-					}
-				}
 				// Atomic inlines composite inside the opacity group of their
 				// nearest enclosing group inline, like text runs and floats.
 				// On a ::first-line with group opacity, the synthetic first-line
 				// group is that enclosing group (LOU-305).
 				r.LayoutResult.Fragment.PaintGroup = flPaintGroup(r.Item.EnclosingPaintGroup)
-				lineBuilder.AddChild(r.LayoutResult.Fragment, LogicalOffset{
+				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
+				// Sticky is scroll-time, not layout-time.
+				lineBuilder.AddChildWithRelativeOffset(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
-				})
+				}, ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style))
 				// Propagate OOF candidates from atomic inline's subtree.
 				// These are abs/fixed children of the inline-block that need to
 				// reach the nearest positioned ancestor (or the root) for layout.

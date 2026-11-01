@@ -576,6 +576,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
 	builder.SetConstraintSpace(&mla.space)
+	builder.SetChildAvailableSize(CalculateChildAvailableSize(mla.space, mla.node, mla.geom))
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
 	// @ a9f50e522efa): resuming after a break inside this node.
 	builder.SetIsFirstForNode(!mla.space.BreakToken.IsBreakInside())
@@ -1017,22 +1018,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			mla.lastMeasuredTallestUnbreakable)
 	}
 
-	// CSS 2.1 §9.4.3: position:relative offset, stored on the fragment for
-	// paint-time application (engine.go box conversion). No Blink analog
-	// inside column_layout_algorithm.cc — Blink applies relative offsets
-	// generically in the parent (relative_utils.cc ComputeRelativeOffset);
-	// louis14's established pattern is this per-algorithm tail, shared with
-	// BlockLayoutAlgorithm.Layout's through computeRelativeOffsetForBoxFragment
-	// (see the block tail for the PercentageResolutionSize rationale).
-	//
-	// Known coverage limit: only the main (non-fragmented) return path gets
-	// the offset. Fragments returned via buildOuterBreakResult (multicol
-	// nested in an outer fragmentation context) skip it — the same gap the
-	// BLA pattern has for its own break-result returns.
-	if mla.style != nil && mla.style.GetPosition() == css.PositionRelative {
-		result.Fragment.RelativeOffset = computeRelativeOffsetForBoxFragment(
-			mla.style, wdm, geomLogicalToOld(mla.space.PercentageResolutionSize))
-	}
 	return result
 }
 

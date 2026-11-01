@@ -1,0 +1,32 @@
+package layout
+
+// CalculateChildAvailableSize returns the content-box size a box offers its
+// children as available size: its border-box size shrunk by border,
+// scrollbar and padding (an Indefinite block-size stays Indefinite). An
+// anonymous block with an indefinite block-size passes its own available
+// block-size through. Mirrors Blink's CalculateChildAvailableSize
+// (length_utils.cc:1773-1788 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// louis14's constraint space has no IsAnonymous, whose one Blink use (the
+// fragmentainer space) BlockLayoutAlgorithm handles for column boxes.
+func CalculateChildAvailableSize(space ConstraintSpace, node *LayoutInputNode, geom FragmentGeometry) LogicalSize {
+	size := LogicalSize{
+		InlineSize: max(0, geom.BorderBoxSize.InlineSize-geom.InlineBorderPadding()),
+		BlockSize:  Indefinite,
+	}
+	if geom.BorderBoxSize.BlockSize != Indefinite {
+		size.BlockSize = max(0, geom.BorderBoxSize.BlockSize-geom.BlockBorderPadding())
+	}
+	size.BlockSize = anonymousChildAvailableBlockSize(space, node, size.BlockSize)
+	return size
+}
+
+// anonymousChildAvailableBlockSize is CalculateChildAvailableSize's
+// anonymous-block step: an anonymous block whose child available
+// block-size is indefinite passes its own available block-size through
+// (length_utils.cc:1781-1785 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func anonymousChildAvailableBlockSize(space ConstraintSpace, node *LayoutInputNode, blockSize float64) float64 {
+	if node != nil && node.IsAnonymous() && blockSize == Indefinite {
+		return space.AvailableSize.BlockSize.Float64()
+	}
+	return blockSize
+}

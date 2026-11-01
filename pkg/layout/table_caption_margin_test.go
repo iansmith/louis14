@@ -39,10 +39,9 @@ func layoutCaptionTable(t *testing.T, tableProps []string, captionProps ...[]str
 		t.Fatalf("table has %d children, want %d captions", got, len(captionProps))
 	}
 	for i, ch := range result.Fragment.Children {
-		t.Logf("caption[%d] offset=(%v,%v) size=%vx%v rel=(%v,%v)", i,
+		t.Logf("caption[%d] offset=(%v,%v) size=%vx%v", i,
 			ch.Offset.Left.Float64(), ch.Offset.Top.Float64(),
-			ch.Fragment.Size.WidthF64(), ch.Fragment.Size.HeightF64(),
-			ch.Fragment.RelativeOffset.Left.Float64(), ch.Fragment.RelativeOffset.Top.Float64())
+			ch.Fragment.Size.WidthF64(), ch.Fragment.Size.HeightF64())
 	}
 	return result
 }
@@ -60,9 +59,11 @@ func assertNear(t *testing.T, what string, got, want float64) {
 // LogicalOffset(margins.inline_start, block_offset), and advances by the
 // caption block size plus margins.block_end; the table block size is the
 // final child_block_offset clamped to >= 0 (:1592 @ d4ecdfed88f9). Top captions are added
-// at :989-993 and bottom captions at :1585-1589. The position:relative
-// offset is separate and paint-time (ComputeRelativeOffsetForBoxFragment,
-// relative_utils.cc:92 @ d4ecdfed88f9).
+// at :989-993 and bottom captions at :1585-1589. AddResult then shifts the
+// caption by its position:relative offset (BoxFragmentBuilder::AddChild,
+// box_fragment_builder.cc:255-267, :372-375 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a margin-left:200px,
+// left:-200px caption's link offset is 0.
 //
 // Caption: width:100px; height:50px; margin-left:200px; margin-top:10px;
 // margin-bottom:5px; position:relative; left:-200px (the
@@ -81,9 +82,8 @@ func TestTableCaption_Margins_LOU434(t *testing.T) {
 		t.Run(side, func(t *testing.T) {
 			res := layoutCaptionTable(t, table, capProps(side))
 			ch := res.Fragment.Children[0]
-			assertNear(t, "caption offset.left", ch.Offset.Left.Float64(), 200)
+			assertNear(t, "caption offset.left (200 margin - 200 relative)", ch.Offset.Left.Float64(), 0)
 			assertNear(t, "caption offset.top", ch.Offset.Top.Float64(), 10)
-			assertNear(t, "caption RelativeOffset.left", ch.Fragment.RelativeOffset.Left.Float64(), -200)
 			assertNear(t, "table block size", res.Fragment.Size.HeightF64(), 65)
 		})
 	}
@@ -94,7 +94,7 @@ func TestTableCaption_Margins_LOU434(t *testing.T) {
 		assertNear(t, "top caption offset.top", top.Offset.Top.Float64(), 10)
 		// 10 + 50 + 5 (top caption) + 10 (bottom caption margin-top).
 		assertNear(t, "bottom caption offset.top", bottom.Offset.Top.Float64(), 75)
-		assertNear(t, "bottom caption offset.left", bottom.Offset.Left.Float64(), 200)
+		assertNear(t, "bottom caption offset.left (200 margin - 200 relative)", bottom.Offset.Left.Float64(), 0)
 		assertNear(t, "table block size", res.Fragment.Size.HeightF64(), 130)
 	})
 

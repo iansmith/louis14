@@ -1489,6 +1489,13 @@ func hasPercentLogicalWidth(style *css.Style, wdm WritingDirectionMode) bool {
 	if wdm.IsVertical() {
 		prop = "height"
 	}
+	return propertyHasPercent(style, prop)
+}
+
+// propertyHasPercent reports whether style's value for prop is a percentage
+// (including calc() expressions containing a % term). Mirrors Blink's
+// Length::HasPercent.
+func propertyHasPercent(style *css.Style, prop string) bool {
 	val, ok := style.Get(prop)
 	if !ok {
 		return false
