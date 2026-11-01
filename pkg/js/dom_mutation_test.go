@@ -388,6 +388,7 @@ func TestIframeContentWindow(t *testing.T) {
 			var win = el.contentWindow;
 			if (!win) throw new Error(id + ": contentWindow is null");
 			if (win.document !== el.contentDocument) throw new Error(id + ": contentWindow.document !== contentDocument");
+			if (el.contentWindow !== win) throw new Error(id + ": contentWindow not [SameObject]");
 			if (win.document.getElementById("inner") === null) throw new Error(id + ": nested lookup failed");
 			if (typeof win.document.createDocumentFragment !== "function") throw new Error(id + ": no createDocumentFragment");
 		});
