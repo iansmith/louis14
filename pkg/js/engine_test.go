@@ -511,3 +511,21 @@ func TestElementScrollTo(t *testing.T) {
 		t.Errorf("ScrollOffset = %+v, want {50 0}", s.ScrollOffset)
 	}
 }
+
+// TestHasScriptWork pins that a document whose only script is a
+// <body onload="..."> handler still needs Execute: the handler fires on
+// the window's load event with no <script> in the document.
+func TestHasScriptWork(t *testing.T) {
+	for _, tc := range []struct {
+		src  string
+		want bool
+	}{
+		{`<body><p>x</p></body>`, false},
+		{`<body onload="document.body.id='x'"><p>x</p></body>`, true},
+		{`<body><script>var a = 1;</script></body>`, true},
+	} {
+		if got := HasScriptWork(parseHTML(t, tc.src)); got != tc.want {
+			t.Errorf("HasScriptWork(%q) = %v, want %v", tc.src, got, tc.want)
+		}
+	}
+}
