@@ -73,24 +73,41 @@ type OutOfFlowCandidate struct {
 	RequiresContentBeforeBreaking bool
 }
 
-// OutOfFlowLayoutPart handles layout of absolutely and fixed positioned
-// elements. It runs after the containing block's layout is complete,
-// using the containing block's resolved dimensions.
+// OutOfFlowLayoutPart lays out the out-of-flow candidates a container
+// collected once the container's size is known: those it contains are laid
+// out against its padding box (or, in block fragmentation, deferred to the
+// fragmentation context root), the others are handed to an ancestor.
 //
-// Ported from Blink's OutOfFlowLayoutPart.
+// Ported from Blink's OutOfFlowLayoutPart (out_of_flow_layout_part.h,
+// out_of_flow_layout_part.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Every container constructs one from its builder with
+// NewOutOfFlowLayoutPart and calls Run.
 type OutOfFlowLayoutPart struct {
 	ctx                    *LayoutContext
+	containerBuilder       *BoxFragmentBuilder
 	containingBlockWDM     WritingDirectionMode
 	containingBlockSize    LogicalSize  // padding-box of the containing block (CSS spec §10.3.7)
 	containingBlockPadding LogicalEdges // CB's padding, used to adjust child offsets to content-box-relative
-	geom                   FragmentGeometry
 
-	// resolvesFixed controls whether fixed-position descendants discovered
-	// while laying out OOF children are absorbed by this CB (true) or
-	// propagated to the caller for a higher CB to resolve (false).
-	// True at the ICB (root) and at transform/containment CBs.
-	// False at ordinary positioned ancestors which only contain absolute.
-	resolvesFixed bool
+	// isAbsoluteContainer / isFixedContainer are the container node's
+	// IsAbsoluteContainer / IsFixedContainer (Blink's is_absolute_container_
+	// / is_fixed_container_, out_of_flow_layout_part.cc:544-545).
+	isAbsoluteContainer bool
+	isFixedContainer    bool
+
+	// shouldAddOuterFragmentainerChildren defers the candidates the
+	// container contains to the fragmentation context root, because the
+	// container takes part in block fragmentation (Blink's
+	// should_add_outer_fragmentainer_children_, :546-548).
+	shouldAddOuterFragmentainerChildren bool
+	// isInitialColumnBalancingPass lays the contained candidates out here
+	// even then (:1179-1203).
+	isInitialColumnBalancingPass bool
+	// previousConsumedBlockSize / previousConsumedContentBlockSize are what
+	// the container's earlier fragments consumed (border-box and
+	// content-box), for AdjustFragmentainerDescendant.
+	previousConsumedBlockSize        float64
+	previousConsumedContentBlockSize float64
 
 	// cbOriginInBuilder is the offset of the CB's inline-start/block-start
 	// corner within the resolving block's content-box. Non-zero only when
@@ -102,59 +119,158 @@ type OutOfFlowLayoutPart struct {
 	cbOriginInBuilder LogicalOffset
 }
 
-// LayoutCandidates positions all out-of-flow candidates and adds their
-// fragments to the builder. Returns any fixed-position descendants that
-// could not be resolved here and must propagate to a higher CB.
-//
-// Mirrors Blink's OutOfFlowLayoutPart::LayoutOOFNodes worklist pattern:
-// laying out an OOF child can surface further OOF descendants (collected
-// during the child's normal-flow pass), which must themselves be resolved
-// against this CB (or propagated upward).
-func (p *OutOfFlowLayoutPart) LayoutCandidates(
-	candidates []OutOfFlowCandidate,
-	builder *BoxFragmentBuilder,
-) []OutOfFlowCandidate {
+// NewOutOfFlowLayoutPart returns the OutOfFlowLayoutPart of the container
+// builder lays out, laid out in space. paddingBoxSize and padding are the
+// container's padding-box size and padding (the containing block for the
+// candidates it contains); the root element's containing block is the
+// initial containing block (the viewport) instead, and the root contains
+// every candidate. previousConsumedContentBlockSize is the content
+// block-size the container's earlier fragments consumed. Mirrors Blink's
+// OutOfFlowLayoutPart constructor (out_of_flow_layout_part.cc:542-613 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's root element stands
+// in for the LayoutView, and the caller supplies the padding box because
+// louis14 builders do not all have their size and borders set yet.
+func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, space ConstraintSpace, paddingBoxSize LogicalSize, padding LogicalEdges, previousConsumedContentBlockSize float64) *OutOfFlowLayoutPart {
+	p := &OutOfFlowLayoutPart{
+		ctx:                    ctx,
+		containerBuilder:       builder,
+		containingBlockWDM:     space.WritingDirection,
+		containingBlockSize:    paddingBoxSize,
+		containingBlockPadding: padding,
+	}
+	if space.IsRootElement {
+		// InitialContainingBlockFixedSize (:531-540): the viewport, with no
+		// border or padding.
+		p.containingBlockSize = ToLogicalSize(PhysicalSize{Width: ctx.ViewportWidth, Height: ctx.ViewportHeight}, space.WritingDirection.WM)
+		p.containingBlockPadding = LogicalEdges{}
+		p.isAbsoluteContainer, p.isFixedContainer = true, true
+		return p
+	}
+	if node := builder.layoutNode; node != nil {
+		p.isAbsoluteContainer = node.IsAbsoluteContainer()
+		p.isFixedContainer = node.IsFixedContainer()
+	}
+	p.shouldAddOuterFragmentainerChildren = InvolvedInBlockFragmentation(space)
+	p.isInitialColumnBalancingPass = space.IsInitialColumnBalancingPass
+	p.previousConsumedBlockSize = previouslyConsumedBlockSize(space.BreakToken)
+	p.previousConsumedContentBlockSize = previousConsumedContentBlockSize
+	return p
+}
+
+// Run lays out the candidates collected on the container builder that the
+// container contains and returns the others, for an ancestor containing
+// block (Blink's AddOutOfFlowDescendant; louis14 hands them up as the
+// result's PropagatedOOFCandidates). Mirrors Blink's
+// OutOfFlowLayoutPart::Run (out_of_flow_layout_part.cc:615-687 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a multicol runs
+// HandleFragmentation first itself (MulticolLayoutAlgorithm.
+// HandleOofFragmentation).
+func (p *OutOfFlowLayoutPart) Run() []OutOfFlowCandidate {
+	var candidates []OutOfFlowCandidate
+	candidates, p.containerBuilder.outOfFlowCandidates = p.containerBuilder.outOfFlowCandidates, nil
+	return p.LayoutCandidates(candidates)
+}
+
+// IsContainingBlockForCandidate reports whether the container contains
+// candidate: a fixed container contains fixed-position boxes, an absolute
+// container absolutely positioned ones. Mirrors Blink's
+// OutOfFlowLayoutPart::IsContainingBlockForCandidate
+// (out_of_flow_layout_part.cc:2746-2791 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an inline containing block is
+// handled by LayoutCandidates, and fragmentainers never construct one.
+func (p *OutOfFlowLayoutPart) IsContainingBlockForCandidate(candidate OutOfFlowCandidate) bool {
+	if candidate.IsFixedPosition {
+		return p.isFixedContainer
+	}
+	return p.isAbsoluteContainer
+}
+
+// LayoutCandidates lays out, in order, the candidates the container
+// contains — sweeping the candidates each one surfaces (typically fixed
+// descendants it does not contain) before its siblings, to keep tree order
+// — defers them when the container is involved in block fragmentation, and
+// returns the candidates it does not contain. Mirrors Blink's
+// OutOfFlowLayoutPart::LayoutCandidates (out_of_flow_layout_part.cc:
+// 1178-1291 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A candidate whose
+// containing block is an inline is laid out at the first block holding the
+// inline's line boxes, against their union rect (the inline branch of
+// IsContainingBlockForCandidate, :2780-2788, with ComputeInlineContainingBlocks,
+// :916-941); with no line boxes here it is treated as a regular candidate.
+func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) []OutOfFlowCandidate {
 	var propagated []OutOfFlowCandidate
-	worklist := candidates
-	for len(worklist) > 0 {
-		next := worklist
-		worklist = nil
-		descendants := p.layoutCandidatesOnce(next, builder)
-		for _, d := range descendants {
-			if p.resolvesFixed || !d.IsFixedPosition {
-				worklist = append(worklist, d)
-			} else {
-				propagated = append(propagated, d)
+	for _, candidate := range candidates {
+		if candidate.InlineContainer != nil {
+			if inlinePart := p.inlineContainingBlockPart(candidate.InlineContainer); inlinePart != nil {
+				propagated = append(propagated, p.LayoutCandidates(inlinePart.layoutCandidate(candidate))...)
+				continue
 			}
+			// CSS 2.1 §9.4.2 suppresses a line box whose only content is
+			// OOF items (e.g. <span pos:relative><div pos:abs/></span>
+			// with no text), so the inline has no geometry to derive a CB
+			// from: an enclosing containing block resolves it.
+			candidate.InlineContainer = nil
 		}
+		if !p.IsContainingBlockForCandidate(candidate) {
+			propagated = append(propagated, candidate)
+			continue
+		}
+		if p.shouldAddOuterFragmentainerChildren && !p.isInitialColumnBalancingPass {
+			// The static position arrives fragment-local in this CB's
+			// content-box coordinates; AdjustFragmentainerDescendant makes
+			// it CB-stitched. The CB's outgoing fragment isn't built yet, so
+			// the parent's PropagateOOFFragmentainerDescendants fills it in.
+			d := LogicalOofNodeForFragmentation{Candidate: candidate}
+			p.containerBuilder.AdjustFragmentainerDescendant(&d, p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
+			continue
+		}
+		propagated = append(propagated, p.LayoutCandidates(p.layoutCandidate(candidate))...)
 	}
 	return propagated
 }
 
-// layoutCandidatesOnce processes a single batch of candidates, adding their
-// fragments to the builder and returning any OOF descendants the children
-// surfaced via PropagatedOOFCandidates.
-func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
-	candidates []OutOfFlowCandidate,
-	builder *BoxFragmentBuilder,
-) []OutOfFlowCandidate {
-	var descendants []OutOfFlowCandidate
-	for _, candidate := range candidates {
-		info, ok := p.CalculateOffset(candidate)
-		if !ok {
-			continue
-		}
-		// Inline-CB resolutions add cbOriginInBuilder to the offset, so
-		// propagated descendants' static positions land in the resolving
-		// block's content-box coords (not the inline CB's).
-		offset := LogicalOffset{
-			InlineOffset: info.Offset.InlineOffset + p.cbOriginInBuilder.InlineOffset,
-			BlockOffset:  info.Offset.BlockOffset + p.cbOriginInBuilder.BlockOffset,
-		}
-		builder.AddChild(info.result.Fragment, offset)
-		descendants = append(descendants, p.propagatedDescendants(info.result, info, offset)...)
+// inlineContainingBlockPart returns the OutOfFlowLayoutPart that lays out a
+// candidate against the union rect of inline's line-box fragments in the
+// container builder, or nil when inline produced none here.
+func (p *OutOfFlowLayoutPart) inlineContainingBlockPart(inline *html.Node) *OutOfFlowLayoutPart {
+	wdm := p.containingBlockWDM
+	contentSize := LogicalSize{
+		InlineSize: max(0, p.containingBlockSize.InlineSize-p.containingBlockPadding.InlineSum()),
+		BlockSize:  max(0, p.containingBlockSize.BlockSize-p.containingBlockPadding.BlockSum()),
 	}
-	return descendants
+	blockContentPhys := ToPhysicalSize(contentSize, wdm.WM)
+	inlineGeom := ComputeInlineContainerGeometry(p.containerBuilder.children, inline, wdm, blockContentPhys)
+	if inlineGeom == nil {
+		return nil
+	}
+	inlinePart := *p
+	inlinePart.containingBlockSize, inlinePart.cbOriginInBuilder = inlineGeom.InlineCBLogical(wdm, blockContentPhys)
+	inlinePart.containingBlockPadding = LogicalEdges{}
+	return &inlinePart
+}
+
+// layoutCandidate lays candidate out against this containing block, adds
+// its fragment to the container builder and returns the candidates it
+// surfaced, in the container's content-box coordinates. The part of Blink's
+// LayoutCandidates after CalculateOffset (out_of_flow_layout_part.cc:
+// 1205-1283 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (p *OutOfFlowLayoutPart) layoutCandidate(candidate OutOfFlowCandidate) []OutOfFlowCandidate {
+	info, ok := p.CalculateOffset(candidate)
+	if !ok {
+		return nil
+	}
+	// Inline-CB resolutions add cbOriginInBuilder to the offset, so
+	// propagated descendants' static positions land in the resolving
+	// block's content-box coords (not the inline CB's).
+	offset := LogicalOffset{
+		InlineOffset: info.Offset.InlineOffset + p.cbOriginInBuilder.InlineOffset,
+		BlockOffset:  info.Offset.BlockOffset + p.cbOriginInBuilder.BlockOffset,
+	}
+	p.containerBuilder.AddChild(info.result.Fragment, offset)
+	if p.isInitialColumnBalancingPass {
+		p.containerBuilder.PropagateTallestUnbreakableBlockSize(info.result.TallestUnbreakableBlockSize)
+	}
+	return p.propagatedDescendants(info.result, info, offset)
 }
 
 // propagatedDescendants returns the OOF descendants childResult surfaced,
@@ -588,7 +704,6 @@ type containingBlockInfo struct {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type fragmentationContextOOFPart struct {
 	OutOfFlowLayoutPart
-	containerBuilder *BoxFragmentBuilder
 	// childFragmentStorage, when set, holds the fragmentainers instead of
 	// the container builder's children (Blink's child_fragment_storage_).
 	childFragmentStorage *[]logicalChildLink
@@ -782,8 +897,7 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInMulticol(multicolFragments []*
 
 	oldFragmentCount := len(multicolChildren)
 	innerPart := &fragmentationContextOOFPart{
-		OutOfFlowLayoutPart:  OutOfFlowLayoutPart{ctx: p.ctx, containingBlockWDM: wdm},
-		containerBuilder:     limitedBuilder,
+		OutOfFlowLayoutPart:  OutOfFlowLayoutPart{ctx: p.ctx, containerBuilder: limitedBuilder, containingBlockWDM: wdm},
 		childFragmentStorage: &multicolChildren,
 	}
 	innerPart.LayoutFragmentainerDescendants(&oofNodesToLayout, LogicalOffset{InlineOffset: columnInlineProgression})

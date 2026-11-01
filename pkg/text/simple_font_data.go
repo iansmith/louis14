@@ -70,18 +70,20 @@ type fontPlatformData struct {
 	orientation css.FontOrientation
 }
 
-// ideographicAdvance is the lazily filled 水 glyph and advance of one cached
-// font: Blink's ideographic_advance_width_once_ / ideographic_advance_width_
-// pair (platform/fonts/simple_font_data.h:217/:220 @
-// 5992657f556bcd9d207a4aca187488462f027cab), plus the glyph
-// IdeographicAdvanceHeight reads. Copies of a simpleFontData share it, so the
-// probe runs once per cached font, and only when an ic unit (or
-// font-size-adjust ic-*) asks for it.
+// ideographicAdvance is the lazily filled 水 advances of one cached font:
+// Blink's ideographic_advance_width_once_ / ideographic_advance_width_ and
+// ideographic_advance_height_once_ / ideographic_advance_height_
+// (platform/fonts/simple_font_data.h:217-221 @
+// 5992657f556bcd9d207a4aca187488462f027cab), plus the 水 glyph both read.
+// Copies of a simpleFontData share it, so each probe runs once per cached
+// font, and only when an ic unit (or font-size-adjust ic-*) asks for it.
 type ideographicAdvance struct {
-	once  sync.Once
-	glyph Glyph
-	width float64
-	ok    bool
+	widthOnce  sync.Once
+	heightOnce sync.Once
+	glyph      Glyph
+	width      float64
+	height     float64
+	ok         bool // the font has the 水 glyph: both optionals have a value
 }
 
 // simpleFontData is one font at one size: the per-font record the
@@ -89,7 +91,7 @@ type ideographicAdvance struct {
 // (platform/fonts/simple_font_data.h @
 // 5992657f556bcd9d207a4aca187488462f027cab), with zeroGlyph its zero_glyph_
 // (:209) and zeroAdvance standing in for WidthForGlyph(zero_glyph_), and
-// ideographic its std::optional<float> ideographic_advance_width_ (:220).
+// ideographic its ideographic_advance_width_ / _height_ optionals (:220-221).
 // louis14's advances are the shaped, LayoutUnit-ceiled MeasureText of the
 // character, where Blink reads the unshaped float advance — equal for
 // advances on the 1/64 px grid.
@@ -110,7 +112,7 @@ type simpleFontData struct {
 // GlyphForCharacter(kCjkWater) is non-zero.
 func (d simpleFontData) IdeographicAdvanceWidth() (float64, bool) {
 	a := d.ideographic
-	a.once.Do(func() {
+	a.widthOnce.Do(func() {
 		if g, w := glyphAdvance(d.platformData.fontPath, d.platformData.size, kCjkWater); g != 0 {
 			a.glyph, a.width, a.ok = g, w, true
 		}
@@ -123,15 +125,17 @@ func (d simpleFontData) IdeographicAdvanceWidth() (float64, bool) {
 // OpenTypeVerticalData::AdvanceHeight of that glyph, its vmtx advance or, with
 // no vmtx, the FontMetrics Height fallback. Mirrors
 // SimpleFontData::IdeographicAdvanceHeight (platform/fonts/
-// simple_font_data.cc:449-459 @ 5992657f556bcd9d207a4aca187488462f027cab).
-// Blink fills it once per SimpleFontData, which is per exact size; louis14's
-// cache entry is shared across the exact sizes of one rounded size, so the 水
-// glyph is found once (with the width) and the advance is scaled per call.
+// simple_font_data.cc:449-459 @ 5992657f556bcd9d207a4aca187488462f027cab),
+// filled once per font; the 水 glyph comes from IdeographicAdvanceWidth's
+// probe.
 func (d simpleFontData) IdeographicAdvanceHeight() (float64, bool) {
-	if _, ok := d.IdeographicAdvanceWidth(); !ok {
-		return 0, false
-	}
-	return d.platformData.GetHarfBuzzFace().VerticalData().AdvanceHeight(d.ideographic.glyph), true
+	a := d.ideographic
+	a.heightOnce.Do(func() {
+		if _, ok := d.IdeographicAdvanceWidth(); ok {
+			a.height = d.platformData.GetHarfBuzzFace().VerticalData().AdvanceHeight(a.glyph)
+		}
+	})
+	return a.height, a.ok
 }
 
 // IdeographicInlineSize is the optional inline advance of 水, the value the
@@ -139,14 +143,29 @@ func (d simpleFontData) IdeographicAdvanceHeight() (float64, bool) {
 // the orientation is upright. Mirrors SimpleFontData::IdeographicInlineSize
 // (platform/fonts/simple_font_data.cc:461-475 @
 // 5992657f556bcd9d207a4aca187488462f027cab). Not cached, unlike Blink's
-// ideographic_inline_size_once_: louis14's cache entry is shared across
-// orientations.
+// ideographic_inline_size_once_: it only selects one of the two cached
+// advances.
 func (d simpleFontData) IdeographicInlineSize() (float64, bool) {
 	if d.platformData.orientation != css.FontOrientationVerticalUpright {
 		return d.IdeographicAdvanceWidth()
 	}
 	return d.IdeographicAdvanceHeight()
 }
+
+// HasXHeight reports that the font has a usable x-height. Mirrors
+// FontMetrics::HasXHeight, has_x_height_ && x_height_ > 0
+// (platform/fonts/font_metrics.h:107 @
+// 5992657f556bcd9d207a4aca187488462f027cab). Blink clears has_x_height_ only
+// when Skia's fXHeight is 0 (SimpleFontData::PlatformInit,
+// simple_font_data.cc:147-168 @ the same SHA), where it stores
+// ascent * 0.56 instead; louis14 stores the 0, so x_height_ > 0 carries both
+// halves. Not ported: Skia's FreeType port synthesizes fXHeight when the OS/2
+// sxHeight is 0 — the 'x' glyph's bounds, else the ascent
+// (src/ports/SkFontHost_FreeType.cpp:1578-1671 @ Skia
+// c0c46ee9f938fa32c086bea666199686ad7cf26e, Chromium DEPS at the SHA above)
+// — while textshape's x-height falls back to the 'x' glyph only for OS/2
+// version < 2 and never to the ascent.
+func (d simpleFontData) HasXHeight() bool { return d.xHeight > 0 }
 
 // ZeroInlineSize is the inline advance of "0", the font's FontMetrics
 // ZeroWidth. Mirrors SimpleFontData::ZeroInlineSize (platform/fonts/
