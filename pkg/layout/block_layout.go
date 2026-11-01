@@ -1724,8 +1724,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// inside it, deferred for outer-fragmentation-root drain).
 			if len(childResult.PropagatedOOFCandidates) > 0 ||
 				(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
-				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-					childInlineOffset, actualChildBlockOff)
+				bla.containerBuilder.PropagateOOFPositionedInfo(childResult, childStyle,
+					LogicalOffset{InlineOffset: childInlineOffset, BlockOffset: actualChildBlockOff}, relativeOffset)
 			}
 
 			// A self-collapsing child cleared past floats resolves this
@@ -2253,133 +2253,6 @@ func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder,
 		BlockSize:  contentSize.BlockSize + geom.Padding.BlockSum(),
 	}
 	return NewOutOfFlowLayoutPart(ctx, builder, space, paddingBoxSize, geom.Padding, previousConsumedContent).Run()
-}
-
-// inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
-// Converts static positions from the child's content-box coordinates to this
-// element's content-box coordinates.
-func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
-	childResult *LayoutResult,
-	childStyle *css.Style,
-	parentWDM WritingDirectionMode,
-	childInlineOff, childBlockOff float64,
-) {
-	PropagateOOFCandidates(childResult, childStyle, parentWDM, childInlineOff, childBlockOff, bla.containerBuilder)
-}
-
-// PropagateOOFCandidates adjusts and adopts OOF candidates from a child result.
-// Converts static positions from the child's content-box coordinates to the
-// parent's content-box coordinates. Shared by block, table, and other layout algorithms.
-//
-// When the child's writing mode differs from the parent's, the static position
-// is converted from child-logical to physical, then from physical to
-// parent-logical before adding the parent-logical offset adjustments.
-//
-// Mirrors Blink's propagation of OutOfFlowPositionedCandidates through the tree
-// and its cross-writing-mode static position conversion in
-// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
-func PropagateOOFCandidates(
-	childResult *LayoutResult,
-	childStyle *css.Style,
-	parentWDM WritingDirectionMode,
-	childInlineOff, childBlockOff float64,
-	builder *BoxFragmentBuilder,
-) {
-	// Compute the child's WDM first so we can use it for both BP computation
-	// and cross-WM static position conversion.
-	childWDM := NewWritingDirectionMode(childStyle)
-
-	// Compute child's border+padding in the CHILD's logical axes (not parent's),
-	// then convert to physical, then to parent-logical coordinates.
-	//
-	// The bug with using parentWDM here: when child and parent have orthogonal or
-	// parallel-but-different writing modes, interpreting the child's physical borders
-	// using the parent's WDM gives wrong logical edge assignments.
-	//
-	// Mirrors Blink's use of child's own WDM for border/padding in
-	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
-	childGeomBP := ComputeFragmentGeometry(childStyle, childWDM)
-	childBPLogical := LogicalEdges{
-		InlineStart: childGeomBP.Border.InlineStart + childGeomBP.Padding.InlineStart,
-		InlineEnd:   childGeomBP.Border.InlineEnd + childGeomBP.Padding.InlineEnd,
-		BlockStart:  childGeomBP.Border.BlockStart + childGeomBP.Padding.BlockStart,
-		BlockEnd:    childGeomBP.Border.BlockEnd + childGeomBP.Padding.BlockEnd,
-	}
-	// Convert child-logical BP edges to physical, then to parent-logical.
-	physBPEdges := ToPhysicalEdges(childBPLogical, childWDM)
-	parentLogicalBP := ToLogicalEdges(physBPEdges, parentWDM)
-
-	// A position:relative child is visually displaced from its normal-flow
-	// position by the relative offset the parent applies when it adds it.
-	// Propagated OOF descendants whose CB is the parent or higher (e.g. fixed
-	// descendants of a relative ancestor) anchor at the child's VISUAL
-	// position per the hypothetical-box algorithm. Mirrors Blink's
-	// FragmentBuilder::PropagateOOFPositionedInfo, which adds the child's
-	// relative_offset to the descendants' static positions
-	// (fragment_builder.cc:749-762 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	relOffsetLog := builder.relativeOffsetFor(childResult.Fragment)
-
-	blockAdj := childBlockOff + parentLogicalBP.BlockStart + relOffsetLog.BlockOffset
-	inlineAdj := childInlineOff + parentLogicalBP.InlineStart + relOffsetLog.InlineOffset
-
-	// Detect when the child's writing direction differs from the parent's.
-	// This includes both orthogonal writing modes (e.g. HTB inside VRL) and
-	// same-axis writing modes with different directions (e.g. VLR-LTR inside
-	// VLR-RTL, or VLR inside VRL). In all these cases the static position must be re-expressed in
-	// the parent's logical coordinate system via a physical round-trip.
-	needsConversion := childWDM.WM != parentWDM.WM || childWDM.Dir != parentWDM.Dir
-
-	// Pre-compute the child's content-box physical size for coordinate
-	// conversion. The static position is measured within this box.
-	var childContentPhys PhysicalSize
-	if needsConversion {
-		childContentPhys = PhysicalSize{
-			Width:  childResult.Fragment.Size.WidthF64() - physBPEdges.Left - physBPEdges.Right,
-			Height: childResult.Fragment.Size.HeightF64() - physBPEdges.Top - physBPEdges.Bottom,
-		}
-		if childContentPhys.Width < 0 {
-			childContentPhys.Width = 0
-		}
-		if childContentPhys.Height < 0 {
-			childContentPhys.Height = 0
-		}
-	}
-
-	for _, cand := range childResult.PropagatedOOFCandidates {
-		adj := cand
-
-		if needsConversion {
-			// Convert static position: child-logical → physical → parent-logical.
-			// The container for both conversions is the child's content-box
-			// (the space within which the static position was accumulated).
-			physSP := adj.StaticPosition.ConvertToPhysical(childWDM, childContentPhys)
-			adj.StaticPosition = physSP.ConvertToLogical(parentWDM, childContentPhys)
-		}
-
-		adj.StaticPosition.Offset.BlockOffset += blockAdj
-		adj.StaticPosition.Offset.InlineOffset += inlineAdj
-		builder.AddOutOfFlowCandidate(adj)
-	}
-
-	// Phase 25 Cmt-2: also forward any OOF fragmentainer descendants the
-	// child carries on its outgoing fragment (an inner multicol that
-	// deferred its abspos descendants to the outer fragmentation root).
-	// blockAdj/inlineAdj already include the child's offset, border-padding,
-	// and relative offset — pass them as the combined translation. CB
-	// defaults are nil here; descendants entered with their CB resolved at
-	// the deferral site, and the drain pipeline (Cmt-3) supplies defaults
-	// for any that didn't.
-	if childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil {
-		builder.PropagateOOFFragmentainerDescendants(
-			childResult.Fragment,
-			LogicalOffset{InlineOffset: inlineAdj, BlockOffset: blockAdj},
-			LogicalOffset{},
-			layoutunit.LayoutUnit{},
-			nil,
-			nil,
-			nil,
-		)
-	}
 }
 
 // adoptBlockInInlineResult applies to the laid-out block-in-inline wrapper
