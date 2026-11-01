@@ -142,22 +142,14 @@ type Box struct {
 	// when non-nil. Forwarded from PhysicalFragment.AppliedTextDecorations.
 	AppliedTextDecorations []css.AppliedTextDecoration
 
-	// CollapsedBorderOutwardExtension carries the per-physical-side width
-	// (px) of the collapsed-border "outside half" that the live cell must
-	// paint as an additive outward strip — when its neighbor on that side
-	// is missing from the grid (cell removed, table outer edge with no
-	// element border to share). Indexed [top, right, bottom, left].
-	//
-	// Spec: CSS 2.1 §17.6.3 / CSS Tables 3 §4.2. Blink reference:
-	// TablePainter::PaintCollapsedBorders @ table_painters.cc:356-362
-	// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Forwarded
-	// from PhysicalFragment.CollapsedBorderOutwardExtension; consumed by
-	// paint_layer.go and pkg/render/render.go's
-	// paintCollapsedTableCellBorder.
-	//
-	// Zero on all sides for cells whose every neighbor exists (the common
-	// case) and for border-collapse:separate cells.
-	CollapsedBorderOutwardExtension [4]float64
+	// HasCollapsedBorders is forwarded from PhysicalFragment.HasCollapsedBorders.
+	HasCollapsedBorders bool
+
+	// TableCollapsedBorders / TableCollapsedBordersGeometry are a collapsed
+	// table's resolved borders and their grid lines, forwarded from
+	// PhysicalFragment for pkg/render's TablePainter.
+	TableCollapsedBorders         *TableBorders
+	TableCollapsedBordersGeometry *CollapsedTableBordersGeometry
 }
 
 // CreatesStackingContext returns true if this box establishes a new
