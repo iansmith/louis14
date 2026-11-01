@@ -100,11 +100,14 @@ func TestCreateAnonymousStyleWithDisplay_InheritsCustomPropertiesAndVar(t *testi
 	}
 }
 
-// TestNewBlockifiedStyle_InheritsCustomPropertiesBidiAndDecorations
-// (LOU-429): the block-in-inline wrapper is an anonymous block built from the
-// inline's style, so it gets the builder's custom properties, unicode-bidi and
-// applied decorations, plus its own stacking-context copies.
-func TestNewBlockifiedStyle_InheritsCustomPropertiesBidiAndDecorations(t *testing.T) {
+// TestBlockInInlineWrapperStyle_InheritsCustomPropertiesBidiAndDecorations
+// (LOU-429, LOU-503): the block-in-inline wrapper is an anonymous block built
+// from the inline's style (LayoutInline::CreateAnonymousContainerForBlockChildren,
+// layout_inline.cc:347-375 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it
+// gets the builder's custom properties, unicode-bidi and applied decorations,
+// and no non-inherited property such as opacity: the inline's opacity groups
+// the wrapper at paint time instead.
+func TestBlockInInlineWrapperStyle_InheritsCustomPropertiesBidiAndDecorations(t *testing.T) {
 	inline := NewStyle()
 	inline.Set("display", "inline")
 	inline.Set("--w", "10px")
@@ -112,7 +115,7 @@ func TestNewBlockifiedStyle_InheritsCustomPropertiesBidiAndDecorations(t *testin
 	inline.Set("opacity", "0.5")
 	inline.AppliedTextDecorations = []AppliedTextDecoration{{Lines: TextDecorationLineUnderline, Style: "solid"}}
 
-	s := NewBlockifiedStyle(inline)
+	s := CreateAnonymousStyleWithDisplay(inline, string(DisplayBlock))
 	if got := s.GetDisplay(); got != DisplayBlock {
 		t.Errorf("display = %q, want block", got)
 	}
@@ -129,7 +132,7 @@ func TestNewBlockifiedStyle_InheritsCustomPropertiesBidiAndDecorations(t *testin
 	if !reflect.DeepEqual(s.AppliedTextDecorations, inline.AppliedTextDecorations) {
 		t.Errorf("AppliedTextDecorations = %+v, want the inline's %+v", s.AppliedTextDecorations, inline.AppliedTextDecorations)
 	}
-	if got, ok := s.Get("opacity"); !ok || got != "0.5" {
-		t.Errorf("opacity = %q (present %v), want 0.5", got, ok)
+	if got, ok := s.Get("opacity"); ok {
+		t.Errorf("opacity = %q on the wrapper, want it absent", got)
 	}
 }

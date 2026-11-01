@@ -2622,9 +2622,10 @@ func wrapTransformsWithOriginZ(transforms []css.Transform, oz float64) []css.Tra
 // (FragmentPaintPropertyTreeBuilder::UpdateTransform,
 // core/paint/paint_property_tree_builder.cc:1606-1620 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520). Such a box has no DOM node.
-// Box.LayoutNode == nil is too broad a test: fragmentToBox also leaves it
-// nil for the block-in-inline wrapper, which keeps its inline's DOM node
-// and stands for that (non-anonymous) LayoutInline.
+// A block-in-inline wrapper ends the walk: its layout parent is an inline
+// box, which is not transformable, so its used transform-style is flat and
+// the 3D rendering context does not reach past it (the context follows the
+// layout tree, where the LayoutInline is the wrapper's parent).
 //
 // Mirrors Blink's TransformPaintPropertyNode 3D-rendering-context walk
 // in paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
@@ -2633,7 +2634,7 @@ func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
 		return nil
 	}
 	var ancestors []css.Transform
-	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil; ancestor = ancestor.Parent {
+	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil && !ancestor.IsBlockInInline; ancestor = ancestor.Parent {
 		if ancestor.Node == nil && len(ancestor.Style.GetTransforms()) == 0 {
 			continue
 		}

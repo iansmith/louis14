@@ -73,6 +73,10 @@ type Box struct {
 	// used by BuildPaintTree to walk children in DOM tree order.
 	LayoutNode *LayoutInputNode
 
+	// IsBlockInInline marks the anonymous block-in-inline wrapper's box
+	// (LayoutInputNode.IsBlockInInline): its layout parent is an inline box.
+	IsBlockInInline bool
+
 	// DOMIndex is a pre-order index in the DOM tree, used to ensure correct
 	// paint ordering when out-of-flow children propagate to ancestor boxes.
 	DOMIndex int

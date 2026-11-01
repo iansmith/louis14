@@ -250,10 +250,19 @@ func MinPositiveSpaceShortage(a, b float64) float64 {
 // CalculateBreakBetweenValue (fragmentation_utils.cc:131-160 @
 // a9f50e522efa).
 //
-// A child whose fragment resumes its node after a break is no longer
-// *before* the node, so its values are ignored (:144-157). Inline children
-// and paginated page names are not ported.
+// An inline child — a line of the inline formatting context — carries no
+// break-before of its own, only what its result propagated (:133-136). A
+// child whose fragment resumes its node after a break is no longer *before*
+// the node, so its values are ignored (:144-157). Paginated page names are
+// not ported.
 func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResult, builder *BoxFragmentBuilder) string {
+	if child.IsInline() {
+		initialBreakBefore := "auto"
+		if layoutResult != nil {
+			initialBreakBefore = layoutResult.InitialBreakBefore
+		}
+		return builder.JoinedBreakBetweenValue(initialBreakBefore)
+	}
 	if layoutResult != nil && layoutResult.Status == LayoutResultSuccess &&
 		!layoutResult.Fragment.IsFirstForNode() {
 		return "auto"

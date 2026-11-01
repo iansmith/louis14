@@ -2900,32 +2900,12 @@ func ApplyInheritedFrom(child, parent *Style) {
 	}
 }
 
-// NewBlockifiedStyle creates a minimal anonymous block wrapper style for
-// block-in-inline splitting. When all inline continuations are suppressed
-// (whitespace-only), the extracted block children are wrapped in this style
-// so that non-inheritable stacking context properties (opacity, transform,
-// filter) from the inline are preserved. Backgrounds, borders, padding, and
-// margins are NOT copied — they belong only to the inline's own box edges.
-//
-// position:relative/sticky + top/right/bottom/left are also preserved so the
-// blocks inside a positioned inline shift with the inline (CSS 2.1 §9.4.3).
-func NewBlockifiedStyle(inline *Style) *Style {
-	s := CreateAnonymousStyleWithDisplay(inline, string(DisplayBlock))
-	// Preserve stacking-context-creating non-inheritable properties.
-	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change", "position", "top", "right", "bottom", "left"} {
-		if val, ok := inline.Get(prop); ok {
-			s.Set(prop, val)
-		}
-	}
-	return s
-}
-
 // InheritAppliedTextDecorationsFrom copies the parent's accumulated
 // text-decoration vector onto an anonymous box's style. text-decoration is
 // not a CSS-inheritable property — it propagates via the cascade's
 // decorating-box rule (CSS Text Decor 3 §2.1), which
 // ResolveAppliedTextDecorations applies only to DOM-tree nodes during the
-// cascade phase. Anonymous boxes (block-in-inline split, blockification,
+// cascade phase. Anonymous boxes (block-in-inline wrappers, blockification,
 // table wrappers, ruby wrappers, inside ::marker boxes) are created
 // post-cascade by the layout-tree builder, so they never go through that
 // resolver. Without this explicit copy, descendant text inside an anonymous

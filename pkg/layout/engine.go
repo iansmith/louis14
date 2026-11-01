@@ -556,6 +556,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	// Connect LayoutInputNode ↔ Box bidirectional link for DOM-ordered paint.
 	// Only for element nodes: text nodes can produce multiple fragments (split
 	// across lines), and anonymous boxes don't have a stable identity.
+	box.IsBlockInInline = frag.LayoutNode != nil && frag.LayoutNode.IsBlockInInline()
 	if lin := frag.LayoutNode; lin != nil && !lin.IsText() && !lin.IsAnonymous() {
 		box.LayoutNode = lin
 		box.DOMIndex = lin.DOMIndex

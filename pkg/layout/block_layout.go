@@ -89,6 +89,17 @@ type BlockLayoutAlgorithm struct {
 	// Mirrors Blink's BlockLayoutAlgorithm::fit_all_lines_
 	// (block_layout_algorithm.h:555-559).
 	fitAllLines bool
+
+	// inlineItemsCache holds this block's prepared inline items once
+	// prepareInlineItems has run.
+	inlineItemsCache *inlineItems
+
+	// inlineFloatBreakTokens are the break tokens of floats of a fragmented
+	// inline formatting context with block-in-inline items that broke into
+	// a parallel flow; inlineFloatHasForcedBreak records a forced break
+	// among them. The block's child walk carries them out.
+	inlineFloatBreakTokens    []*BlockBreakToken
+	inlineFloatHasForcedBreak bool
 }
 
 // NewBlockLayoutAlgorithm creates a block layout algorithm for the given
@@ -700,6 +711,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// f53f8184c42dcf29c57c84f832fd84773d38b9cf) — this mirrors that by
 	// simply adding no children to the fragment, leaving the outer
 	// sizing computed above untouched.
+	// An inline formatting context lays out through the inline path,
+	// unless it holds block-in-inline items: then its runs of lines and
+	// block-in-inline wrappers are in-flow children of the block walk.
+	isInlineFormattingContext := hasOnlyInlineChildren(bla.node)
+	hasBlockInInline := isInlineFormattingContext && containsBlockInInline(bla.node)
 	isInlineSVGRoot := bla.node.DOMNode != nil && bla.node.DOMNode.TagName == "svg" && IsInlineSVG(bla.node)
 
 	// Iframe/object with a document source: lay out the nested document
@@ -711,7 +727,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// right edge of the iframe viewport. Apply the X offset as an inline offset.
 		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
 		bla.containerBuilder.AddChild(nested.fragment, offset)
-	} else if hasOnlyInlineChildren(bla.node) {
+	} else if isInlineFormattingContext && !hasBlockInInline {
 		// Inline formatting context: text nodes and inline-level children.
 		// When resuming from a column break, start the line breaker at the
 		// saved item index + text offset from the incoming break token.
@@ -758,7 +774,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
-			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset, inlineSegment{})
 			// Widows moved the break earlier than where the lines ran out
 			// of space: lay out again and break there
 			// (FinalizeForFragmentation → kNeedsEarlierBreak →
@@ -891,8 +907,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			return result
 		}
 	} else {
-		// Block formatting context: block-level children.
+		// Block formatting context: block-level children. An inline
+		// formatting context with block-in-inline items lays out its runs of
+		// lines and its block-in-inline wrappers as in-flow children.
 		children := bla.node.Children()
+		if hasBlockInInline {
+			children = bla.node.blockInInlineChildren()
+		}
 
 		// When resuming from break tokens, find the first and last tokened
 		// children (BlockChildIterator semantics,
@@ -933,6 +954,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 		}
 
+		// A float of the inline formatting context that broke in the
+		// previous fragmentainer resumes first, in its parallel flow (Blink
+		// LineBreaker::NextLine on an IsInParallelBlockFlow break token,
+		// inline/line_breaker.cc:893-912 @ a9f50e522efa).
+		if hasBlockInInline && incomingBreakToken != nil {
+			for _, tok := range incomingBreakToken.ChildBreakTokens {
+				if tok.Node == nil || slices.Contains(children, tok.Node) || tok.Node.Style() == nil ||
+					tok.Node.Style().GetFloat() == css.FloatNone {
+					continue
+				}
+				var floatBreakToken *BlockBreakToken
+				var floatHasForcedBreak bool
+				exclusionSpace, floatBreakToken, floatHasForcedBreak = bla.handleFloat(
+					tok.Node, tok, incomingBreakToken, bfcBlockOrigin+blockCursor, exclusionSpace,
+					contentInlineSize, childAvailableBlock, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+				if floatBreakToken != nil {
+					pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, floatBreakToken)
+				}
+				if floatHasForcedBreak {
+					pendingHasForcedBreak = true
+				}
+			}
+		}
+
 		for childIdx, child := range children {
 			// When resuming, skip children completed in previous fragments
 			// (and, between/before tokened children, those without their own
@@ -944,6 +989,86 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Skip text nodes (handled by inline layout in anonymous blocks).
 			if child.IsText() {
+				continue
+			}
+
+			// A run of lines of the inline formatting context, up to the
+			// next block-in-inline. The lines are in-flow content: they end
+			// the margins pending before them, unless they adjoin this
+			// block's block-start, where those margins stay with the block;
+			// a run that places no line box leaves the margins collapsing
+			// through. A line break inside the run breaks this block inside,
+			// as an in-flow child break (Blink HandleInflow on the
+			// InlineNode, block_layout_algorithm.cc:2597-2772 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if child.isInlineSegment {
+				startIdx, startTextOffset := 0, 0
+				if tok := resumeChildTokens[child]; tok != nil && !tok.IsBreakBefore {
+					startIdx, startTextOffset = tok.InlineItemStartIndex, tok.InlineTextOffset
+				}
+				adjoining := firstNonEmptyChild && canPropagateTop
+				lineTop := blockCursor
+				if !adjoining {
+					lineTop += prevMarginStrut.Resolve()
+				}
+				prevES := exclusionSpace
+				end, es, ascent, lastBaselineOff, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
+					blockStart:                lineTop,
+					hasBreakOpportunityBefore: hasBreakOpportunityBeforeNextChild,
+					node:                      child,
+				})
+				exclusionSpace = es
+				if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
+					hasOwnFloats = true
+				}
+				pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, bla.inlineFloatBreakTokens...)
+				bla.inlineFloatBreakTokens = nil
+				if bla.inlineFloatHasForcedBreak {
+					pendingHasForcedBreak = true
+					bla.inlineFloatHasForcedBreak = false
+				}
+				if earlyBreak := bla.lineEarlyBreak(); earlyBreak != nil {
+					return bla.relayoutAndBreakEarlier(earlyBreak)
+				}
+				if end > lineTop || lineBreakToken != nil {
+					if adjoining {
+						propagatedTopMargin = prevMarginStrut
+					}
+					prevMarginStrut = MarginStrut{}
+					firstNonEmptyChild = false
+					blockCursor = end
+					hasBreakOpportunityBeforeNextChild = true
+					if !hasFirstChildBaseline && ascent > 0 {
+						firstChildBaseline = ascent
+						firstChildBlockOffset = lineTop
+						hasFirstChildBaseline = true
+						if marker := bla.containerBuilder.GetUnpositionedListMarker(); marker.IsValid() {
+							if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
+								marker.AddToBox(bla.ctx, markerResult, ascent, lineTop, bla.containerBuilder)
+								bla.containerBuilder.ClearUnpositionedListMarker()
+							}
+						}
+					}
+					if lastBaselineOff > 0 {
+						lastChildBaseline = lastBaselineOff
+						lastChildBlockOffset = 0
+						hasLastChildBaseline = true
+					}
+				}
+				if lineBreakToken != nil {
+					lineBreakToken.Node = child
+					if lineBreakToken.IsForcedBreak {
+						pendingHasForcedBreak = true
+					}
+					pendingShouldBreakInside = true
+					pendingHasInflowChildBreakInside = true
+					pendingChildBreakTokens = append(pendingChildBreakTokens, lineBreakToken)
+					pendingIntrinsicAtBreak = blockCursor
+					pendingHaveIntrinsicAtBreak = true
+					pendingMinSpaceShortage = MinPositiveSpaceShortage(pendingMinSpaceShortage, lineBreakToken.InlineShortage)
+					blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
+					break
+				}
 				continue
 			}
 
@@ -1494,6 +1619,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// parent BFC. After laying out a non-BFC child, update our
 			// exclusion space so subsequent siblings see the child's floats.
 			// Mirrors Blink's: exclusion_space_ = layout_result->ExclusionSpace()
+			// A block-in-inline sits inside its inline boxes: it moves with
+			// their relative offsets, paints in their opacity group, and its
+			// out-of-flow descendants take an inline box that contains them
+			// as their containing block.
+			var blockInInlineRelativeOffset LogicalOffset
+			if child.IsBlockInInline() {
+				blockInInlineRelativeOffset = bla.adoptBlockInInlineResult(wdm, child, childResult, LogicalSize{
+					InlineSize: contentInlineSize,
+					BlockSize:  childAvailableBlock,
+				})
+			}
+
 			exclusionSpaceBeforeChild := exclusionSpace
 			if !isChildNewFC && childResult.ExclusionSpace != nil {
 				exclusionSpace = childResult.ExclusionSpace
@@ -1675,6 +1812,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
+			// The child's relative offset, plus its inline boxes' for a
+			// block-in-inline.
+			relativeOffset := bla.containerBuilder.relativeOffsetFor(childResult.Fragment)
+			relativeOffset.InlineOffset += blockInInlineRelativeOffset.InlineOffset
+			relativeOffset.BlockOffset += blockInInlineRelativeOffset.BlockOffset
+
 			// Step 5: Handle parent-child top margin collapsing.
 			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
 			// child has no clearance (a `clear` value, or a float drop).
@@ -1701,7 +1844,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				InlineOffset: childInlineOffset,
 				BlockOffset:  actualChildBlockOff,
 			}
-			bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
+			bla.containerBuilder.AddChildWithRelativeOffset(childResult.Fragment, childOffset, relativeOffset)
 			// Under block fragmentation, max-merge this in-flow child's
 			// block-end for fragmentation (offset + its
 			// BlockSizeForFragmentation) into the builder, mirroring Blink
@@ -1755,6 +1898,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			selfCollapsingChildHadClearance = isSelfCollapsing &&
 				(isPushedByFloats || selfCollapsingChildHadClearance)
+			// A block-in-inline line counts toward orphans and widows, as a
+			// line box (FragmentBuilder::PropagateFromFragment,
+			// fragment_builder.cc:487-492 @ a9f50e522efa).
+			if child.IsBlockInInline() && bla.space.HasBlockFragmentation {
+				bla.containerBuilder.SetLineCount(bla.containerBuilder.LineCount() + 1)
+			}
 			// A child resumed in a parallel flow leaves no breakpoint before
 			// the next sibling, so a forced break-before on that sibling does
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
@@ -2307,65 +2456,108 @@ func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder,
 	}
 	wdm := space.WritingDirection
 	var propagatedOOF []OutOfFlowCandidate
-	{
-		// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
-		// to an inline element is sized against the inline's first/last-line
-		// fragment union rect. Only the block that owns the inline's line
-		// fragments has the geometry — resolve here when this block is
-		// non-anonymous (anonymous blocks pass through to the parent which
-		// walks transparently into them via ComputeInlineContainerGeometry).
-		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
+	// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
+	// to an inline element is sized against the inline's first/last-line
+	// fragment union rect. The block that owns the inline's line
+	// fragments — its inline formatting context root — has the geometry.
+	inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
 
-		if len(inlineCBCandidates) > 0 {
-			if node.IsAnonymous() {
-				// Anonymous block — propagate so the nearest non-anon ancestor
-				// can compute the inline CB across its full child set
-				// (including a block-in-inline split's sibling anon blocks).
-				propagatedOOF = append(propagatedOOF, inlineCBCandidates...)
+	if len(inlineCBCandidates) > 0 {
+		unresolved, extra := layoutInlineContainingBlockCandidates(ctx, builder, wdm,
+			contentSize, geom, inlineCBCandidates)
+		regularCandidates = append(regularCandidates, unresolved...)
+		propagatedOOF = append(propagatedOOF, extra...)
+	}
+
+	// Blink's IsFixedContainer / IsAbsoluteContainer
+	// (layout_object.cc:1849-1912 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): containment, transforms,
+	// filters and the will-change of one contain all positioned
+	// descendants; a non-static position or an abspos-only will-change
+	// contains absolute ones only.
+	isFixedContainer := node.IsFixedContainer()
+	isAbsoluteContainer := node.IsAbsoluteContainer()
+	isRoot := space.IsRootElement
+
+	if isRoot {
+		// Root element: resolve ALL OOF candidates (both absolute and fixed)
+		// with ICB (viewport) dimensions.
+		var icbInline, icbBlock float64
+		if wdm.IsHorizontal() {
+			icbInline = ctx.ViewportWidth
+			icbBlock = ctx.ViewportHeight
+		} else {
+			icbInline = ctx.ViewportHeight
+			icbBlock = ctx.ViewportWidth
+		}
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                ctx,
+			containingBlockWDM: wdm,
+			// ICB is the viewport: no border or padding, so padding-box == content-box.
+			containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
+			containingBlockPadding: LogicalEdges{},
+			geom:                   geom,
+			resolvesFixed:          true,
+		}
+		oofPart.LayoutCandidates(regularCandidates, builder)
+	} else if isFixedContainer {
+		// CSS Containment / CSS Transforms: containment, transforms, filters,
+		// and will-change:transform/perspective/filter make this element a
+		// containing block for ALL positioned descendants, including fixed.
+		//
+		// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+		// CB size = padding-box = content + padding (borders excluded).
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                ctx,
+			containingBlockWDM: wdm,
+			containingBlockSize: LogicalSize{
+				InlineSize: contentSize.InlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+				BlockSize:  contentSize.BlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+			},
+			containingBlockPadding: geom.Padding,
+			geom:                   geom,
+			resolvesFixed:          true,
+		}
+		oofPart.LayoutCandidates(regularCandidates, builder)
+	} else if isAbsoluteContainer {
+		// Positioned element OR will-change:position-like CB: resolve
+		// absolute candidates here, but propagate fixed candidates
+		// upward toward the ICB. (Will Change §2.2: abspos-only CB
+		// triggers mimic position:relative — fixed still escapes.)
+		var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
+		for _, cand := range regularCandidates {
+			if cand.IsFixedPosition {
+				fixedCandidates = append(fixedCandidates, cand)
 			} else {
-				unresolved, extra := layoutInlineContainingBlockCandidates(ctx, builder, wdm,
-					contentSize, geom, inlineCBCandidates)
-				regularCandidates = append(regularCandidates, unresolved...)
-				propagatedOOF = append(propagatedOOF, extra...)
+				absoluteCandidates = append(absoluteCandidates, cand)
 			}
 		}
-
-		// Blink's IsFixedContainer / IsAbsoluteContainer
-		// (layout_object.cc:1849-1912 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): containment, transforms,
-		// filters and the will-change of one contain all positioned
-		// descendants; a non-static position or an abspos-only will-change
-		// contains absolute ones only.
-		isFixedContainer := node.IsFixedContainer()
-		isAbsoluteContainer := node.IsAbsoluteContainer()
-		isRoot := space.IsRootElement
-
-		if isRoot {
-			// Root element: resolve ALL OOF candidates (both absolute and fixed)
-			// with ICB (viewport) dimensions.
-			var icbInline, icbBlock float64
-			if wdm.IsHorizontal() {
-				icbInline = ctx.ViewportWidth
-				icbBlock = ctx.ViewportHeight
-			} else {
-				icbInline = ctx.ViewportHeight
-				icbBlock = ctx.ViewportWidth
+		// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
+		// context (a column flow, paged context, etc.), abspos descendants
+		// can't be resolved here — their layout must wait until we reach the
+		// outer fragmentation root, which will lay them out per fragmentainer
+		// (per column). Promote each absolute candidate to a fragmentainer
+		// descendant so the descendant payload bubbles up via
+		// FragmentedOofData. Mirrors Blink's
+		// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
+		// `out_of_flow_layout_part.cc:1190-1200 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
+		// `should_add_outer_fragmentainer_children_` branch). The static
+		// position arrives fragment-local in this CB's content-box coords
+		// (it accumulated upward via PropagateOOFCandidates);
+		// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
+		// outgoing fragment isn't yet built, so leave Fragment=nil — the
+		// parent's PropagateOOFFragmentainerDescendants will fill it in.
+		if space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+			previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
+			for _, cand := range absoluteCandidates {
+				d := LogicalOofNodeForFragmentation{Candidate: cand}
+				builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+				builder.AddOutOfFlowFragmentainerDescendant(d)
 			}
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                ctx,
-				containingBlockWDM: wdm,
-				// ICB is the viewport: no border or padding, so padding-box == content-box.
-				containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
-				containingBlockPadding: LogicalEdges{},
-				geom:                   geom,
-				resolvesFixed:          true,
-			}
-			oofPart.LayoutCandidates(regularCandidates, builder)
-		} else if isFixedContainer {
-			// CSS Containment / CSS Transforms: containment, transforms, filters,
-			// and will-change:transform/perspective/filter make this element a
-			// containing block for ALL positioned descendants, including fixed.
-			//
+			absoluteCandidates = nil
+		}
+		if len(absoluteCandidates) > 0 {
 			// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 			// CB size = padding-box = content + padding (borders excluded).
 			oofPart := &OutOfFlowLayoutPart{
@@ -2377,69 +2569,15 @@ func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder,
 				},
 				containingBlockPadding: geom.Padding,
 				geom:                   geom,
-				resolvesFixed:          true,
 			}
-			oofPart.LayoutCandidates(regularCandidates, builder)
-		} else if isAbsoluteContainer {
-			// Positioned element OR will-change:position-like CB: resolve
-			// absolute candidates here, but propagate fixed candidates
-			// upward toward the ICB. (Will Change §2.2: abspos-only CB
-			// triggers mimic position:relative — fixed still escapes.)
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range regularCandidates {
-				if cand.IsFixedPosition {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
+			if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
+				fixedCandidates = append(fixedCandidates, extra...)
 			}
-			// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
-			// context (a column flow, paged context, etc.), abspos descendants
-			// can't be resolved here — their layout must wait until we reach the
-			// outer fragmentation root, which will lay them out per fragmentainer
-			// (per column). Promote each absolute candidate to a fragmentainer
-			// descendant so the descendant payload bubbles up via
-			// FragmentedOofData. Mirrors Blink's
-			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
-			// `out_of_flow_layout_part.cc:1190-1200 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
-			// `should_add_outer_fragmentainer_children_` branch). The static
-			// position arrives fragment-local in this CB's content-box coords
-			// (it accumulated upward via PropagateOOFCandidates);
-			// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
-			// outgoing fragment isn't yet built, so leave Fragment=nil — the
-			// parent's PropagateOOFFragmentainerDescendants will fill it in.
-			if space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
-				previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
-				for _, cand := range absoluteCandidates {
-					d := LogicalOofNodeForFragmentation{Candidate: cand}
-					builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
-					builder.AddOutOfFlowFragmentainerDescendant(d)
-				}
-				absoluteCandidates = nil
-			}
-			if len(absoluteCandidates) > 0 {
-				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
-				// CB size = padding-box = content + padding (borders excluded).
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                ctx,
-					containingBlockWDM: wdm,
-					containingBlockSize: LogicalSize{
-						InlineSize: contentSize.InlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
-						BlockSize:  contentSize.BlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
-					},
-					containingBlockPadding: geom.Padding,
-					geom:                   geom,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = append(propagatedOOF, fixedCandidates...)
-		} else {
-			// Not positioned, not root: propagate ALL candidates upward.
-			propagatedOOF = append(propagatedOOF, regularCandidates...)
 		}
+		propagatedOOF = append(propagatedOOF, fixedCandidates...)
+	} else {
+		// Not positioned, not root: propagate ALL candidates upward.
+		propagatedOOF = append(propagatedOOF, regularCandidates...)
 	}
 	return propagatedOOF
 }
@@ -2569,6 +2707,40 @@ func PropagateOOFCandidates(
 			nil,
 		)
 	}
+}
+
+// adoptBlockInInlineResult applies to the laid-out block-in-inline wrapper
+// what Blink applies to the block-in-inline item on its line: the inline
+// boxes around it paint it in their opacity group, their relative offsets
+// move it (InlineLayoutStateStack::ApplyRelativePositioning,
+// inline/inline_box_state.cc:940-984), and the innermost of them that
+// contains an out-of-flow descendant becomes its inline containing block
+// (BoxData::CreateBoxFragment propagating the block-in-inline result into
+// the inline box fragment, :1066-1091 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Returns the relative offset.
+func (bla *BlockLayoutAlgorithm) adoptBlockInInlineResult(wdm WritingDirectionMode, wrapper *LayoutInputNode, result *LayoutResult, availableSize LogicalSize) LogicalOffset {
+	itemsData, _, _ := bla.prepareInlineItems(wdm)
+	index := blockInInlineItemIndex(itemsData.Items, wrapper)
+	if index < 0 {
+		return LogicalOffset{}
+	}
+	item := itemsData.Items[index]
+	if result.Fragment != nil {
+		result.Fragment.PaintGroup = item.EnclosingPaintGroup
+	}
+	_, containers := BuildPositionedInlineMap(itemsData.Items[:index+1])
+	for i := range result.PropagatedOOFCandidates {
+		if cand := &result.PropagatedOOFCandidates[i]; cand.InlineContainer == nil {
+			cand.InlineContainer = containers[item].For(*cand)
+		}
+	}
+	var offset LogicalOffset
+	for _, open := range rebuildOpenInlineStack(itemsData.Items[:index]) {
+		rel := ComputeRelativeOffsetForInline(wdm, availableSize, open.Style)
+		offset.InlineOffset += rel.InlineOffset
+		offset.BlockOffset += rel.BlockOffset
+	}
+	return offset
 }
 
 // splitInlineContainingBlockCandidates splits candidates into those whose
