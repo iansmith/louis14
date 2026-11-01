@@ -103,6 +103,14 @@ type LayoutResult struct {
 	// fragmentation (BoxFragmentBuilder.Build records the value only then).
 	HasBlockSizeForFragmentation bool
 
+	// IsBlockSizeForFragmentationClamped: BlockSizeForFragmentation is the
+	// fragment's own block-size, child overflow ignored, because a child
+	// that did not fit was forced to stay. Mirrors Blink's
+	// LayoutResult::IsBlockSizeForFragmentationClamped (layout_result.h:
+	// 358-363, layout_result.cc:81-82 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsBlockSizeForFragmentationClamped bool
+
 	// HasForcedBreak is true if this layout emitted a forced column/page break
 	// (break-before:column, break-after:column, etc.). Mirrors Blink's
 	// LayoutResult::HasForcedBreak() used by ColumnLayoutAlgorithm to count

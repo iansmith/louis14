@@ -1136,7 +1136,8 @@ func (p *fragmentationContextOOFPart) GenerateFragment(n *NodeToLayout, fragment
 	usedInline := NewLogicalFragment(p.containingBlockWDM, info.result.Fragment).InlineSize()
 	csb.SetAvailableSize(LogicalSize{InlineSize: usedInline, BlockSize: info.availableSize.BlockSize}).
 		SetIsFixedInlineSize(true)
-	SetupSpaceBuilderForFragmentation(p.fragmentainerSpace(), n.offset.BlockOffset, fragmentainerBlockSize, &csb)
+	SetupSpaceBuilderForFragmentation(p.fragmentainerSpace(), n.offset.BlockOffset, fragmentainerBlockSize,
+		n.descendant.Candidate.RequiresContentBeforeBreaking, &csb)
 	csb.SetBreakToken(n.breakToken)
 	return layoutElement(p.ctx, n.descendant.Candidate.Node, csb.Build())
 }

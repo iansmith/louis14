@@ -396,6 +396,16 @@ func hasCloneBoxDecorationBreak(style *css.Style) bool {
 	return style != nil && style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone
 }
 
+// InvolvedInBlockFragmentation reports whether a box laid out in space
+// takes part in block fragmentation: the space fragments, or the box resumes
+// after a break inside it (a box relaid out with fragmentation forced off
+// still finishes its last fragment from the consumed block-size). Mirrors
+// Blink's InvolvedInBlockFragmentation (fragmentation_utils.h:75-79 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func InvolvedInBlockFragmentation(space ConstraintSpace) bool {
+	return space.HasBlockFragmentation || space.BreakToken.IsBreakInside()
+}
+
 // FragmentainerCapacity is the fragmentainer block-size to use during layout,
 // or Indefinite when it is unknown (initial column balancing). For children
 // (isForChildren) cloned box decorations shrink the space, as children steer
@@ -455,24 +465,48 @@ func FragmentainerSpaceLeft(builder *BoxFragmentBuilder, isForChildren bool) flo
 // context into a child's constraint-space builder: the fragmentainer
 // block-size and the child's offset in the fragmentainer (with
 // IsAtFragmentainerStart for an offset at or before its start), the
-// fragmentation type, the propagate-child-break-values bit (:346), the column-balancing flags and MinBreakAppeal, so a
-// container that is breakable at the start of a resumed fragment stays
-// breakable through its descendants. Mirrors Blink's
+// fragmentation type, the propagate-child-break-values bit (:346),
+// RequiresContentBeforeBreaking (:347-349), the column-balancing flags,
+// IsInsideBreakAvoid (:353), ShouldIgnoreForcedBreaks (:364-367) and
+// MinBreakAppeal, so a container that is breakable at the start of a resumed
+// fragment stays breakable through its descendants. Mirrors Blink's
 // SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:321-372 @
-// a9f50e522efa). The monolithic-child early return (:336-338) stays with the
-// callers, which then leave fragmentation off. Not ported (no louis14 field
-// or consumer): RequiresContentBeforeBreaking, IsInsideBreakAvoid,
-// ShouldIgnoreForcedBreaks and PageName.
-func SetupSpaceBuilderForFragmentation(parentSpace ConstraintSpace, fragmentainerOffset, fragmentainerBlockSize float64, b *ConstraintSpaceBuilder) {
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The monolithic-child early
+// return (:336-338) stays with the callers, which then leave fragmentation
+// off. Not ported: the out-of-flow child in the initial column balancing
+// pass clause of :364-366 (louis14 lays out no OOF through this function in
+// that pass) and PageName (no paged media).
+func SetupSpaceBuilderForFragmentation(parentSpace ConstraintSpace, fragmentainerOffset, fragmentainerBlockSize float64, requiresContentBeforeBreaking bool, b *ConstraintSpaceBuilder) {
 	b.SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(fragmentainerBlockSize).
 		SetFragmentainerOffset(fragmentainerOffset).
 		SetBlockFragmentationType(parentSpace.BlockFragmentationType).
 		SetShouldPropagateChildBreakValues(true).
+		SetRequiresContentBeforeBreaking(requiresContentBeforeBreaking).
 		SetIsInitialColumnBalancingPass(parentSpace.IsInitialColumnBalancingPass).
 		SetIsInsideBalancedColumns(parentSpace.IsInsideBalancedColumns).
+		SetIsInsideBreakAvoid(parentSpace.IsInsideBreakAvoid).
 		SetMinBreakAppeal(parentSpace.MinBreakAppeal).
 		SetIsAtFragmentainerStart(fragmentainerOffset <= 0)
+	if parentSpace.ShouldIgnoreForcedBreaks {
+		b.SetShouldIgnoreForcedBreaks()
+	}
+}
+
+// SetupSpaceBuilderForFragmentationFromBuilder is Blink's parent-builder
+// overload of SetupSpaceBuilderForFragmentation (fragmentation_utils.cc:
+// 379-397 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; Go has no
+// overloading): the parent builder supplies its RequiresContentBeforeBreaking,
+// and a break-inside:avoid parent puts the child inside break avoidance.
+// The caller supplies the fragmentainer offset and capacity for children.
+func SetupSpaceBuilderForFragmentationFromBuilder(parentBuilder *BoxFragmentBuilder, fragmentainerOffset, fragmentainerBlockSize float64, b *ConstraintSpaceBuilder) {
+	parentSpace := *parentBuilder.GetConstraintSpace()
+	SetupSpaceBuilderForFragmentation(parentSpace, fragmentainerOffset, fragmentainerBlockSize,
+		parentBuilder.RequiresContentBeforeBreaking(), b)
+	if parentStyle := parentBuilder.Style(); parentStyle != nil &&
+		IsAvoidBreakValue(parentSpace, parentStyle.GetBreakInside()) {
+		b.SetIsInsideBreakAvoid(true)
+	}
 }
 
 // IsBreakableAtStartOfResumedContainer reports whether a break is allowed
@@ -510,10 +544,10 @@ func IsBreakableAtStartOfResumedContainerWithFirstForNode(space ConstraintSpace,
 // (false). Mirrors Blink's MovePastBreakpoint (fragmentation_utils.cc:1141-1240
 // @ a9f50e522efa); the child-overload pre-checks (:1068-1139) and its
 // UpdateEarlyBreakAtBlockChild call (:1126-1135) live in
-// BreakBeforeChildIfNeeded and at its block_layout.go call site. Not ported:
-// SetIsBlockSizeForFragmentationClamped. builder may be nil, as Blink's
-// PositionFloat passes (floats_utils.cc:377-380): breaking before is then
-// refused only at the fragmentainer start, and nothing is propagated.
+// BreakBeforeChildIfNeeded and at its block_layout.go call site. builder may
+// be nil, as Blink's PositionFloat passes (floats_utils.cc:377-380): breaking
+// before is then refused only at the fragmentainer start, and nothing is
+// propagated.
 func MovePastBreakpoint(
 	space ConstraintSpace,
 	layoutResult *LayoutResult,
@@ -567,8 +601,10 @@ func MovePastBreakpoint(
 		brokeOrSubPerfect := breakToken.IsBreakInside() || appealInside < BreakAppealPerfect
 		return !brokeOrSubPerfect || (appealInside >= appealBefore &&
 			(builder == nil || !builder.HasEarlyBreak() || appealInside >= builder.GetEarlyBreak().GetBreakAppeal()))
-	case appealBefore == BreakAppealLastResort && builder != nil && space.RequiresContentBeforeBreaking:
-		// Doesn't fit, but content is required here.
+	case appealBefore == BreakAppealLastResort && builder != nil && builder.RequiresContentBeforeBreaking():
+		// Doesn't fit, but content is required here: force it to stay
+		// (:1224-1228).
+		builder.SetIsBlockSizeForFragmentationClamped()
 		propagateSpaceShortageIfOverflowing(space, layoutResult, blockSize, fragmentainerBlockOffset, fragmentainerBlockSize, builder)
 		return true
 	}
@@ -827,6 +863,10 @@ type FinishFragmentationInput struct {
 	// HasEarlyBreak: the builder holds a breakpoint found earlier in this
 	// fragment (BoxFragmentBuilder::HasEarlyBreak).
 	HasEarlyBreak bool
+	// HasNonVisibleBlockOverflow: the box clips overflow along its block
+	// axis (BlockNode::HasNonVisibleBlockOverflow, block_node.cc:1356-1361
+	// @ a9f50e522efa).
+	HasNonVisibleBlockOverflow bool
 }
 
 // FinishFragmentationResult is what Blink's FinishFragmentation writes to the
@@ -852,13 +892,17 @@ type FinishFragmentationResult struct {
 	// (block_break_token.cc:77), and it makes the box break inside
 	// (BoxFragmentBuilder::ShouldBreakInside, box_fragment_builder.h:494-497).
 	MonolithicOverflow float64
+	// DisableFragmentation: a block-overflow-clipping box reached its end
+	// while something still broke inside it; lay it out again without
+	// fragmentation so it generates no further (zero-sized, clipped)
+	// fragments (BreakStatus::kDisableFragmentation, :748-758).
+	DisableFragmentation bool
 }
 
 // FinishFragmentation decides this fragment's block-size and whether the box
 // breaks, is at its block end, and which block edges it carries. Mirrors
 // Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
-// a9f50e522efa). Not ported: kDisableFragmentation for
-// block-overflow-clipping boxes.
+// a9f50e522efa).
 func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
 	spaceLeft := in.SpaceLeft
 	previous := in.PreviousBreakToken
@@ -939,6 +983,13 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 			out.IsAtBlockEnd = true
 		} else if desiredBlockSize <= spaceLeft &&
 			(!in.HasInflowChildBreakInside || in.IsKnownToFitInFragmentainer) {
+			if in.HasNonVisibleBlockOverflow {
+				// The end of a fragmentable box that clips block-axis
+				// overflow, with something broken inside: no more
+				// fragments from it (:748-758).
+				out.DisableFragmentation = true
+				return out
+			}
 			out.IsAtBlockEnd = true
 		}
 		if out.IsAtBlockEnd {
