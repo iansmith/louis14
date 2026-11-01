@@ -1966,7 +1966,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A replaced element is not
 	// laid out by Blink's block algorithm and never self-collapses.
 	result.IsSelfCollapsing = !bla.space.IsNewFormattingContext && !bla.space.BreakToken.IsBreakInside() &&
-		!isReplaced && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
+		!bla.node.IsReplaced() && firstNonEmptyChild && finalBlockSize+geom.BlockBorderPadding() == 0 &&
 		!bla.containerBuilder.FoundColumnSpanner()
 
 	// The outgoing break token, built from the builder's break state
