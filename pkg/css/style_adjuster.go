@@ -107,6 +107,10 @@ func LayoutParentStyle(parent *html.Node, styles map[*html.Node]*Style) *Style {
 //     elements (:1316-1325).
 func AdjustComputedStyle(element *html.Node, style, layoutParentStyle *Style) {
 	style.originalDisplay = style.GetDisplay()
+	// IsInBlockifyingDisplay is computed fresh for every style, as Blink's
+	// builder starts from its initial (false) value; a Clone of a
+	// blockified style must not carry it under a non-blockifying parent.
+	style.isInBlockifyingDisplay = false
 	ns := ""
 	if element != nil {
 		ns = element.NamespaceURI()
