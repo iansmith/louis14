@@ -31,4 +31,11 @@ func TestColorGettersResolveCurrentColorInColorMix(t *testing.T) {
 	if got, ok := s.GetTextDecorationColor(); !ok || got != green {
 		t.Errorf("text-decoration-color = %+v (ok=%v), want %+v", got, ok, green)
 	}
+	if got := s.VisitedDependentColor("border-top-color"); got != green {
+		t.Errorf("unset border-top-color = %+v, want currentColor %+v", got, green)
+	}
+	s.Set("border-top-color", currentColorMix)
+	if got := s.VisitedDependentColor("border-top-color"); got != green {
+		t.Errorf("border-top-color = %+v, want %+v", got, green)
+	}
 }

@@ -37,7 +37,7 @@ func TestBorderStyleHiddenZeroWidth(t *testing.T) {
 		"border-top: 5px hidden red; border-right: 5px hidden red; border-bottom: 5px hidden red; border-left: 5px hidden red",
 	} {
 		s := ParseInlineStyle(decl, nil)
-		if bs := s.GetBorderStyle(); bs.Top != BorderStyle("hidden") {
+		if bs := s.GetBorderStyle(); bs.Top != BorderStyleHidden {
 			t.Errorf("%q: border-top-style = %q, want hidden", decl, bs.Top)
 		}
 		if bw := s.GetBorderWidth(); bw != (BoxEdge{}) {
@@ -48,5 +48,16 @@ func TestBorderStyleHiddenZeroWidth(t *testing.T) {
 				t.Errorf("%q: border-top-color = %q, want red", decl, c)
 			}
 		}
+	}
+}
+
+// TestBorderInitialKeyword: the initial keyword means the initial values
+// (style none, width medium), the same as an unset longhand.
+func TestBorderInitialKeyword(t *testing.T) {
+	if bw := ParseInlineStyle("border-width: 5px; border-style: initial", nil).GetBorderWidth(); bw != (BoxEdge{}) {
+		t.Errorf("border-style:initial used width = %+v, want 0", bw)
+	}
+	if bw := ParseInlineStyle("border-style: solid; border-width: initial", nil).GetBorderWidth(); bw != (BoxEdge{Top: 3, Right: 3, Bottom: 3, Left: 3}) {
+		t.Errorf("border-width:initial used width = %+v, want 3px (medium)", bw)
 	}
 }
