@@ -125,8 +125,9 @@ func TestBlockInInline_LinesAreChildrenOfContainingBlock(t *testing.T) {
 			t.Fatalf("div fragment children: got %v, want %v", kinds, want)
 		}
 	}
-	if got := result.Fragment.Size.HeightF64(); got != 30 {
-		t.Errorf("div height: got %v, want 30 (three 10px lines)", got)
+	lineHeight := result.Fragment.Children[0].Fragment.Size.HeightF64()
+	if got := result.Fragment.Size.HeightF64(); got != 3*lineHeight {
+		t.Errorf("div height: got %v, want %v (three %vpx lines)", got, 3*lineHeight, lineHeight)
 	}
 }
 

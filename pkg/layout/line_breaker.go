@@ -138,6 +138,11 @@ type LineInfo struct {
 	// column's annotation (`<rt>`). Set by LineBreaker.CreateSubLineInfo.
 	// Mirrors Blink's LineInfo::SetIsRubyText.
 	IsRubyText bool
+	// IsBlockInInline is true for the line that holds a block-in-inline
+	// item, alone. Mirrors Blink's LineInfo::IsBlockInInline
+	// (inline/line_info.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsBlockInInline bool
+
 	// RubyColumns is the set of ruby columns on this (top-level) line —
 	// the InlineItemResultRubyColumn payloads emitted by handleRuby for
 	// this line, in order. Consumed by UpdateRubyColumnInlinePositions
@@ -367,6 +372,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.HasContent = false
 	line.IsLastLine = false
 	line.TextAlignLastJustify = false
+	line.IsBlockInInline = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
 	// CSS Ruby Phase 2: reset the ruby-specific fields too so a
 	// LineInfo reused across NextLine calls doesn't carry stale ruby
@@ -402,6 +408,9 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 			}
 		case InlineItemFloat:
 			lb.handleFloat(item, line)
+		case InlineItemBlockInInline:
+			lb.handleBlockInInline(item, line)
+			return true
 		case InlineItemOutOfFlow:
 			// OOF items don't participate in line layout. Record them with
 			// zero advance so their static inline position is captured.
@@ -1506,6 +1515,36 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	return false
 }
 
+// handleBlockInInline gives a block-in-inline item a line of its own: with
+// items already on the line, it ends the line before the item (a forced
+// break); otherwise the line holds only the item and ends after it. The
+// block itself is laid out by the containing BlockLayoutAlgorithm, which
+// places it as an in-flow child, so the result carries no inline size in
+// content mode; in min/max-content mode the caller measures the block.
+// Mirrors LineBreaker::HandleBlockInInline (inline/line_breaker.cc:
+// 3219-3301 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) handleBlockInInline(item *InlineItem, line *LineInfo) {
+	if len(line.Results) > 0 {
+		line.HasForcedBreak = true
+		lb.finishLine(line)
+		return
+	}
+	line.Results = append(line.Results, InlineItemResult{
+		Item:      item,
+		ItemIndex: lb.currentItemIndex,
+		TextStart: item.StartOffset,
+		TextEnd:   item.EndOffset,
+	})
+	line.IsBlockInInline = true
+	line.HasForcedBreak = true
+	lb.currentItemIndex++
+	lb.currentTextOffset = item.EndOffset
+	if lb.currentItemIndex >= len(lb.itemsData.Items) {
+		lb.done = true
+		line.IsLastLine = true
+	}
+}
+
 // handleControl handles control characters (forced line breaks).
 func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
 	line.HasForcedBreak = true
@@ -1533,17 +1572,8 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
-	// CSS 2.1 §9.2.1.1: inline-start border/padding appears only on the first
-	// fragment of a split inline. For non-first continuations, omit it.
-	borderInlineStart := geom.Border.InlineStart
-	paddingInlineStart := geom.Padding.InlineStart
-	if !item.IsFirstFragment {
-		borderInlineStart = 0
-		paddingInlineStart = 0
-	}
-
 	// Add inline-start margin + border + padding.
-	startEdge := margins.InlineStart + borderInlineStart + paddingInlineStart
+	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
 	lb.position += startEdge
 
 	line.Results = append(line.Results, InlineItemResult{
@@ -1564,17 +1594,8 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
-	// CSS 2.1 §9.2.1.1: inline-end border/padding appears only on the last
-	// fragment of a split inline. For non-last continuations, omit it.
-	borderInlineEnd := geom.Border.InlineEnd
-	paddingInlineEnd := geom.Padding.InlineEnd
-	if !item.IsLastFragment {
-		borderInlineEnd = 0
-		paddingInlineEnd = 0
-	}
-
 	// Add inline-end border + padding + margin.
-	endEdge := borderInlineEnd + paddingInlineEnd + margins.InlineEnd
+	endEdge := geom.Border.InlineEnd + geom.Padding.InlineEnd + margins.InlineEnd
 	lb.position += endEdge
 
 	// Update line.Width to reflect the cursor position after the close tag.

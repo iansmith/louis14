@@ -227,12 +227,11 @@ func TestGenerateMissingTableParents_InlineParentGetsInlineTable(t *testing.T) {
 				cell: makeStyle("display", "table-cell"),
 			}
 			root := buildTestTree(div, styles)
-			// The inline-table is inline-level, so the inline parent is not
-			// split by block-in-inline and no anonymous block appears.
+			// The inline-table is inline-level, so it gets no
+			// block-in-inline wrapper and no anonymous block appears.
 			s := requireOnlyChild(t, "div children", root.Children())
-			if s.DOMNode != span || s.isContinuation {
-				t.Fatalf("div child is DOM %q (continuation=%v), want the unsplit %s box",
-					s.TagName(), s.isContinuation, display)
+			if s.DOMNode != span {
+				t.Fatalf("div child is DOM %q, want the %s box", s.TagName(), display)
 			}
 			table := ancestorOf(root, cell, 3)
 			if !slices.Contains(s.Children(), table) {

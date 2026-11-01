@@ -411,14 +411,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	}
 
 	// CSS 2.1 §17.2.1 rule 3: wrap misparented table parts in an anonymous
-	// table before block-in-inline splitting and anonymous-block generation
+	// table before block-in-inline wrapping and anonymous-block generation
 	// classify the children, so they see a block-level table (or an
 	// inline-level inline-table) as Blink's AddChild produces.
 	rawChildren = b.generateMissingTableParents(rawChildren, style)
 
-	// CSS 2.1 §9.2.1.1: If an inline element contains a block-level box,
-	// split the inline around the block (block-in-inline splitting).
-	rawChildren = b.expandInlineWithBlockChildren(rawChildren, style)
+	// A block-level box inside an inline box becomes block-in-inline
+	// (LayoutInline::AddChildAsBlockInInline).
+	b.wrapBlockInInlineChildren(rawChildren, style)
 
 	// CSS 2.1 §12.2: Apply ::first-letter pseudo-element styling.
 	rawChildren = b.applyFirstLetterSplit(rawChildren, node, style)
@@ -1035,29 +1035,6 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 		// plaintext/bidi-override/isolate-override block keeps applying to
 		// each inline-run chunk wrapped here (CSS Writing Modes §2.2).
 		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-		// CSS 2.1 §9.2.1.1: If the inline run contains block-in-inline
-		// continuation nodes, copy background-color from the inline element
-		// so the anonymous block fills the full block width with the inline's
-		// background.
-		//
-		// Do NOT propagate position:relative/sticky to this anon block: the
-		// inline continuation's own fragments are already shifted (see
-		// inline_layout.go ComputeRelativeOffsetForInline). Copying it here would
-		// double-offset the inline paint position (CSS 2.1 §9.4.3). Also skip
-		// background-color for positioned inlines — their span background
-		// fragment renders the inline-width background; copying here would
-		// paint a full block-width bar that the spec doesn't call for.
-		for _, c := range inlineRun {
-			if c.isContinuation {
-				pos := c.Style().GetPosition()
-				if pos != css.PositionRelative && pos != css.PositionSticky {
-					if bg, ok := c.Style().Get("background-color"); ok {
-						anonStyle.Set("background-color", bg)
-					}
-				}
-				break
-			}
-		}
 		anonBlock := &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,
@@ -2348,168 +2325,57 @@ func isWhitespaceOnly(run []*LayoutInputNode) bool {
 	return true
 }
 
-// isInlineWithBlockChildren returns true if the node is display:inline and
-// has at least one block-level direct child.
-func isInlineWithBlockChildren(node *LayoutInputNode) bool {
-	if node.IsText() || node.IsAnonymous() {
+// isInlineBox reports whether node is a non-atomic inline box (Blink's
+// LayoutInline) whose block-level children become block-in-inline.
+func isInlineBox(node *LayoutInputNode) bool {
+	if node.IsText() || node.IsAnonymous() || node.DOMNode == nil || IsReplacedElement(node.DOMNode) {
 		return false
 	}
 	s := node.Style()
-	if s == nil || s.GetDisplay() != css.DisplayInline {
-		return false
-	}
-	for _, child := range node.Children() {
-		if isBlockLevel(child) {
-			return true
-		}
-	}
-	return false
+	return s != nil && s.GetDisplay() == css.DisplayInline
 }
 
-// expandInlineWithBlockChildren performs CSS 2.1 §9.2.1.1 block-in-inline
-// splitting. When a display:inline element directly contains block-level
-// children, it is split into inline continuations separated by the blocks.
-// This pre-pass runs before maybeWrapAnonymousBlocks so the resulting
-// mixed inline/block children trigger anonymous block generation correctly.
-func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
-	children []*LayoutInputNode, parentStyle *css.Style,
-) []*LayoutInputNode {
-	if parentStyle == nil || !isBlockContainerStyle(parentStyle) {
-		return children
+// wrapBlockInInlineChildren gives every inline box among children (and,
+// recursively, among their inline descendants) block-in-inline wrappers
+// for its block-level children. The inline is not split: each run of
+// consecutive block-level children goes into one anonymous block that
+// stays a child of the inline, and any inline-level, floating or
+// out-of-flow child ends the run. The wrapper inherits from the inline,
+// except for its direction, which comes from the containing block.
+// Mirrors LayoutInline::AddChildAsBlockInInline and
+// CreateAnonymousContainerForBlockChildren (layout_inline.cc:320-375 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *LayoutTreeBuilder) wrapBlockInInlineChildren(children []*LayoutInputNode, containingBlockStyle *css.Style) {
+	if containingBlockStyle == nil || !isBlockContainerStyle(containingBlockStyle) {
+		return
 	}
-	// Quick check: any inline-with-block present?
-	needsExpansion := false
 	for _, child := range children {
-		if isInlineWithBlockChildren(child) {
-			needsExpansion = true
-			break
-		}
+		addBlockInInlineWrappers(child, containingBlockStyle)
 	}
-	if !needsExpansion {
-		return children
-	}
+}
 
-	var result []*LayoutInputNode
-	for _, child := range children {
-		if !isInlineWithBlockChildren(child) {
-			result = append(result, child)
+func addBlockInInlineWrappers(inline *LayoutInputNode, containingBlockStyle *css.Style) {
+	if !isInlineBox(inline) {
+		return
+	}
+	var out []*LayoutInputNode
+	var wrapper *LayoutInputNode
+	for _, child := range inline.children {
+		if isBlockLevel(child) {
+			if wrapper == nil {
+				style := css.CreateAnonymousStyleWithDisplay(inline.Style(), string(css.DisplayBlock))
+				style.Set("direction", string(containingBlockStyle.GetDirection()))
+				wrapper = &LayoutInputNode{style: style, isAnonymous: true, isBlockInInline: true}
+				out = append(out, wrapper)
+			}
+			wrapper.children = append(wrapper.children, child)
 			continue
 		}
-		// Split this inline element around its block children.
-		// Each segment of inline children becomes a continuation of the
-		// original inline element (same DOMNode + style).
-		// CSS 2.1 §9.2.1.1: empty/whitespace-only continuations are suppressed
-		// for non-positioned inlines. Positioned inlines (relative/sticky)
-		// emit an empty LEADING continuation when the inline starts with a
-		// block child AND has later in-flow inline content, so the inline
-		// containing block (CSS Position 3 §def-cb) spans from the span's
-		// start position rather than from the first text after the block.
-		// Without this, abspos descendants that anchor to the CB's start
-		// would land on the post-block segment instead of the pre-block
-		// (empty) segment. When the inline has ONLY block children and no
-		// trailing inline content, fall through to the !hasCont &&
-		// len(blockParts)>0 blockified-wrapper path below, which preserves
-		// the span's stacking-context/visual-properties around the blocks.
-		isPositionedInline := child.Style() != nil &&
-			child.Style().GetPosition() != css.PositionStatic
-		hasTrailingInlineContent := false
-		if isPositionedInline {
-			seenFirstBlock := false
-			for _, gc := range child.Children() {
-				if isBlockLevel(gc) {
-					seenFirstBlock = true
-					continue
-				}
-				if seenFirstBlock && !isWhitespaceOnly([]*LayoutInputNode{gc}) {
-					hasTrailingInlineContent = true
-					break
-				}
-			}
-		}
-		var segment []*LayoutInputNode
-		var blockParts []*LayoutInputNode
-		// continuations tracks all continuation nodes in order so we can
-		// mark the first and last after collecting them all.
-		var continuations []*LayoutInputNode
-		hasCont := false
-		for _, grandchild := range child.Children() {
-			if isBlockLevel(grandchild) {
-				// Flush the inline segment as a continuation (skip if whitespace-only,
-				// unless this is an empty LEADING segment for a positioned inline).
-				hasSegment := len(segment) > 0 && !isWhitespaceOnly(segment)
-				emitEmptyLeading := isPositionedInline && hasTrailingInlineContent && !hasCont && !hasSegment
-				if hasSegment || emitEmptyLeading {
-					cont := &LayoutInputNode{
-						DOMNode:        child.DOMNode,
-						style:          child.Style(),
-						children:       segment,
-						isContinuation: true,
-					}
-					result = append(result, cont)
-					continuations = append(continuations, cont)
-					hasCont = true
-				}
-				segment = nil
-				blockParts = append(blockParts, grandchild)
-				// CSS 2.1 §9.2.1.1: If the parent inline has position:relative,
-				// wrap the block part in a transparent anonymous positioned block
-				// so the block part shifts together with the inline's continuations.
-				blockPart := grandchild
-				if child.Style().GetPosition() == css.PositionRelative || child.Style().GetPosition() == css.PositionSticky {
-					wrapStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-					wrapStyle.Set("position", string(child.Style().GetPosition()))
-					for _, prop := range []string{"top", "left", "right", "bottom"} {
-						if v, ok := child.Style().Get(prop); ok {
-							wrapStyle.Set(prop, v)
-						}
-					}
-					blockPart = &LayoutInputNode{
-						style:       wrapStyle,
-						children:    []*LayoutInputNode{grandchild},
-						isAnonymous: true,
-					}
-				}
-				result = append(result, blockPart)
-			} else {
-				segment = append(segment, grandchild)
-			}
-		}
-		if len(segment) > 0 && !isWhitespaceOnly(segment) {
-			cont := &LayoutInputNode{
-				DOMNode:        child.DOMNode,
-				style:          child.Style(),
-				children:       segment,
-				isContinuation: true,
-			}
-			result = append(result, cont)
-			continuations = append(continuations, cont)
-			hasCont = true
-		}
-		// Mark first and last continuations so the inline layout pipeline can
-		// suppress inline-start/inline-end borders on non-first/non-last fragments.
-		// CSS 2.1 §9.2.1.1: the first fragment gets inline-start border/padding;
-		// the last fragment gets inline-end border/padding.
-		if len(continuations) > 0 {
-			continuations[0].isFirstContinuation = true
-			continuations[len(continuations)-1].isLastContinuation = true
-		}
-		// If the inline had only block children (no non-whitespace inline content),
-		// wrap all blocks in an anonymous block that preserves the inline's visual
-		// properties (e.g. opacity). This keeps the stacking context intact.
-		if !hasCont && len(blockParts) > 0 {
-			// Undo the individual block additions.
-			result = result[:len(result)-len(blockParts)]
-			wrapStyle := css.NewBlockifiedStyle(child.Style())
-			wrapper := &LayoutInputNode{
-				DOMNode:     child.DOMNode,
-				style:       wrapStyle,
-				children:    blockParts,
-				isAnonymous: true,
-			}
-			result = append(result, wrapper)
-		}
+		wrapper = nil
+		addBlockInInlineWrappers(child, containingBlockStyle)
+		out = append(out, child)
 	}
-	return result
+	inline.children = out
 }
 
 // computeFirstLineStyle checks if a block container has matching ::first-line

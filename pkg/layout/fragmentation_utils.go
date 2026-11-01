@@ -250,11 +250,21 @@ func MinPositiveSpaceShortage(a, b float64) float64 {
 // CalculateBreakBetweenValue (fragmentation_utils.cc:131-160 @
 // a9f50e522efa).
 //
+// An inline child — a line of the inline formatting context — carries no
+// break-before of its own, only what its result propagated (:133-136).
+//
 // Blink returns auto for a child whose fragment is not first-for-node
-// (:143-153); here both callers (BlockLayoutAlgorithm and the multicol
+// (:143-153); here the block callers (BlockLayoutAlgorithm and the multicol
 // spanner site) only reach BreakBeforeChildIfNeeded for a first-for-node
-// child. Inline children and paginated page names are not ported.
+// child. Paginated page names are not ported.
 func CalculateBreakBetweenValue(child *LayoutInputNode, layoutResult *LayoutResult, builder *BoxFragmentBuilder) string {
+	if child.IsInline() {
+		initialBreakBefore := "auto"
+		if layoutResult != nil {
+			initialBreakBefore = layoutResult.InitialBreakBefore
+		}
+		return builder.JoinedBreakBetweenValue(initialBreakBefore)
+	}
 	childBreakBefore := "auto"
 	if s := child.Style(); s != nil {
 		childBreakBefore = s.GetBreakBefore()
