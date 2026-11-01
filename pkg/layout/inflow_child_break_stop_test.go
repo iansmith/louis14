@@ -70,3 +70,46 @@ func TestInflowChildBreakStop(t *testing.T) {
 		})
 	})
 }
+
+// TestParallelFlowResumeLaysOutUnseenSiblings pins against Chrome 155 that a
+// resumed child continuing only in a parallel flow (zero-height fragment at
+// its block end) does not stop the walk even when the container has unseen
+// siblings and no later child token: the unseen sibling lays out in the same
+// column. Blink's loop stops on HasInflowChildBreakInside only
+// (block_layout_algorithm.cc:1108-1115 @ a9f50e522efa); BlockChildIterator
+// then advances past the last resumed child to the next unstarted sibling
+// because the container token has not seen all children
+// (block_child_iterator.cc:80-95).
+//
+// W breaks in flow at C2's forced break in column 1; in column 2, C2
+// (height:0, known to fit) is at its block end with C3 overflowing, so W's
+// zero-height fragment is at its block end too, a parallel flow.
+func TestParallelFlowResumeLaysOutUnseenSiblings(t *testing.T) {
+	// <div columns:3; column-fill:auto; height:100px; gap:0; width:300px>
+	//   <div w>
+	//     <div c1 height:20px></div>
+	//     <div c2 break-before:column; height:0><div c3 height:250px></div></div>
+	//   </div>
+	//   <div s height:30px></div>
+	c1 := makeNode("div")
+	c3 := makeNode("div")
+	c2 := makeNode("div", c3)
+	w := makeNode("div", c1, c2)
+	s := makeNode("div")
+	mc := makeNode("div", w, s)
+	styles := map[*html.Node]*css.Style{
+		mc: makeStyle("display", "block", "column-count", "3", "column-gap", "0",
+			"column-fill", "auto", "width", "300px", "height", "100px"),
+		w:  makeStyle("display", "block"),
+		c1: makeStyle("display", "block", "height", "20px"),
+		c2: makeStyle("display", "block", "break-before", "column", "height", "0"),
+		c3: makeStyle("display", "block", "height", "250px"),
+		s:  makeStyle("display", "block", "height", "30px"),
+	}
+	ids := map[*html.Node]string{c3: "c3", s: "s"}
+	got := borderBoxRectsByID(layoutMulticolForTest(t, mc, styles).Fragment, ids)
+	checkRects(t, got, map[string][]fragRect{
+		"c3": {{100, 0, 100, 100}, {200, 0, 100, 100}, {300, 0, 100, 50}},
+		"s":  {{100, 0, 100, 30}},
+	})
+}
