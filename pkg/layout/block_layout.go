@@ -413,9 +413,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	isKnownToFitInFragmentainer := bla.space.HasKnownFragmentainerBlockSize() && hasExplicitBlock &&
 		!bla.space.IsBlockSizeOverride &&
 		desiredBlockSizeAtBlockEnd(bla.containerBuilder, explicitBlockSize+fragmentsBorderPadding)
-	shouldCloneBoxEndDecorations := bla.space.HasBlockFragmentation &&
-		!bla.space.IsInitialColumnBalancingPass &&
-		shouldCloneBlockStart && !isKnownToFitInFragmentainer
+	shouldCloneBoxEndDecorations := shouldCloneBoxEndDecorations(bla.space, shouldCloneBlockStart, isKnownToFitInFragmentainer)
 	bla.containerBuilder.SetShouldCloneBoxEndDecorations(shouldCloneBoxEndDecorations)
 	// Some content must be placed before breaking when the space requires
 	// it, or when the node must stay in the current fragmentainer: it is
