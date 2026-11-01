@@ -2370,14 +2370,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	if layer.HasClip {
 		r.dc.Push()
 		clipping = true
-		ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
-			layer.ClipRect[2], layer.ClipRect[3])
-		if hasBorderRadius(layer) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(layer))
-		} else {
-			r.dc.DrawRectangle(ox, oy, ow, oh)
-		}
-		r.dc.Clip()
+		r.applyOverflowClip(layer)
 	}
 
 	// Step 2: Negative z-index stacking contexts.
@@ -2638,14 +2631,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if child.HasClip {
 		r.dc.Push()
 		clipping = true
-		ox, oy, ow, oh := pixelSnap(child.ClipRect[0], child.ClipRect[1],
-			child.ClipRect[2], child.ClipRect[3])
-		if hasBorderRadius(child) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(child))
-		} else {
-			r.dc.DrawRectangle(ox, oy, ow, oh)
-		}
-		r.dc.Clip()
+		r.applyOverflowClip(child)
 	}
 
 	r.paintDescendantsPhase(child, phase)
@@ -2861,6 +2847,42 @@ func hasBorderRadius(layer *PaintLayer) bool {
 	return !layer.BorderRadius.IsZero()
 }
 
+// applyOverflowClip installs layer's overflow clip on the draw context
+// (the caller has Push()ed):
+//   - overflow-clip-margin: the margin-adjusted rect rounded by
+//     overflowClipRadii (AdjustRoundedClipForOverflowClipMargin).
+//   - a table cell forced to clip to its border box: that rect rounded by
+//     the border-box radii.
+//   - otherwise Blink's two clip nodes: the rectangular OverflowClip
+//     (ClipRect, excluding the scrollbar gutter) and, when the box clips
+//     along both axes, the InnerBorderRadiusClip — the padding box rounded
+//     by the inner border radii, ContouredBorderGeometry::
+//     PixelSnappedContouredInnerBorder (NeedsInnerBorderRadiusClip /
+//     UpdateInnerBorderRadiusClip, paint_property_tree_builder.cc:2816-2976
+//     @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The rect goes first so
+//     the rounded mask folds it in without cloning.
+func (r *Renderer) applyOverflowClip(layer *PaintLayer) {
+	ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
+		layer.ClipRect[2], layer.ClipRect[3])
+	box := layer.Box
+	rounded := hasBorderRadius(layer)
+	switch {
+	case rounded && layer.HasClipMargin:
+		r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(layer))
+	case rounded && box.ClipContentToBorderBox:
+		r.buildRoundedRectPath(ox, oy, ow, oh, layer.BorderRadius)
+	default:
+		r.dc.DrawRectangle(ox, oy, ow, oh)
+		if rounded && layer.ClipX && layer.ClipY {
+			r.dc.Clip()
+			PixelSnappedContouredInnerBorder(layer.BorderRadius,
+				toLayoutRect(box.X, box.Y, box.Width, box.Height),
+				toLayoutStrut(box.Border)).addPath(r.dc)
+		}
+	}
+	r.dc.Clip()
+}
+
 // overflowClipRadii returns the elliptical radii to use when drawing the
 // overflow clip path for `layer`. CSS Overflow 4 §3.2 specifies that the
 // overflow clip edge "is shaped in the corners exactly the same way as an
@@ -2879,12 +2901,8 @@ func hasBorderRadius(layer *PaintLayer) bool {
 // coverage-factor formula as box-shadow spread. The coverage edge is
 // the pre-outset padding-box size.
 //
-// When no clip-margin is active the border-box radii are returned
-// unchanged.
+// Only the overflow-clip-margin path calls it (see applyOverflowClip).
 func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
-	if !layer.HasClipMargin {
-		return layer.BorderRadius
-	}
 	box := layer.Box
 	radii := layer.BorderRadius.Inset(
 		box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left)

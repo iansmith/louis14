@@ -74,7 +74,7 @@ type PaintLayer struct {
 	HasClip  bool
 	ClipX    bool       // true if X axis is clipped (overflow-x != visible)
 	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
-	ClipRect [4]float64 // x, y, w, h of padding box
+	ClipRect [4]float64 // x, y, w, h of the rectangular overflow clip (padding box minus scrollbar gutter by default)
 
 	// AncestorOverflowClips: pre-computed chain of ancestor overflow clip
 	// rectangles (in absolute coordinates) that should be applied before
