@@ -115,3 +115,50 @@ func TestStyleSetPropertyEmptyValueRemoves(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestStyleCSSTextGetterSerializesDeclarationBlock pins the cssText getter
+// (AbstractPropertySetCSSStyleDeclaration::cssText,
+// core/css/abstract_property_set_css_style_declaration.cc:50 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b → CSSPropertyValueSet::AsText):
+// the declarations serialise in source order as "name: value;" joined by
+// a space.
+func TestStyleCSSTextGetterSerializesDeclarationBlock(t *testing.T) {
+	doc := parseHTML(t, `<div id="el" style="color:red;  display : contents"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var el = document.getElementById("el");
+		var got = el.style.cssText;
+		if (got !== "color: red; display: contents;")
+			throw new Error("cssText = " + JSON.stringify(got));
+		if (document.createElement("p").style.cssText !== "")
+			throw new Error("empty block cssText should be the empty string");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStyleCSSTextSetterReplacesDeclarationBlock pins the cssText setter
+// (AbstractPropertySetCSSStyleDeclaration::setCSSText,
+// core/css/abstract_property_set_css_style_declaration.cc:54 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): it re-parses the whole
+// declaration list, replacing every existing declaration, and "" empties
+// the block. It must not create a "css-text" property.
+func TestStyleCSSTextSetterReplacesDeclarationBlock(t *testing.T) {
+	doc := parseHTML(t, `<div id="el" style="color: red; display: contents"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var el = document.getElementById("el");
+		el.style.cssText = "width: 10px";
+		if (el.style.color !== "") throw new Error("color survived cssText: " + el.style.color);
+		if (el.style.width !== "10px") throw new Error("width = " + el.style.width);
+		el.style.cssText = "";
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	el := getElementById(doc.Root, "el")
+	if got := el.Attributes["style"]; got != "" {
+		t.Errorf("style attribute after cssText = \"\" is %q, want empty", got)
+	}
+}
