@@ -211,3 +211,46 @@ func TestConsumePosition_ThreeFourValuesAndKeywordOrder(t *testing.T) {
 		}
 	}
 }
+
+// order-of-images.htm: a background-* longhand list shorter than the
+// background-image list is repeated to cover every layer (CSS Backgrounds 3
+// §2.2 "excess/missing values"), as Blink's FillLayer::FillUnsetProperties
+// does (core/style/fill_layer.cc:209 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each unset layer copies the
+// value from the set prefix, cycling. Layers whose property no layer sets
+// keep the initial value. LOU-560 (worklist C7).
+func TestGetBackgroundLayers_CyclesShortLonghandLists(t *testing.T) {
+	_, layers := bgLayers(t, "background-image: url(a.png), url(b.png), url(c.png); "+
+		"background-repeat: no-repeat; "+
+		"background-size: 10px 10px, 20px 20px; "+
+		"background-clip: padding-box, content-box; "+
+		"background-origin: content-box; "+
+		"background-attachment: fixed")
+	if len(layers) != 3 {
+		t.Fatalf("got %d layers, want 3", len(layers))
+	}
+	noRepeat := BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatNoRepeat}
+	wantSize := []float64{10, 20, 10}
+	wantClip := []BackgroundClipType{BackgroundClipPaddingBox, BackgroundClipContentBox, BackgroundClipPaddingBox}
+	for i, l := range layers {
+		if l.Repeat != noRepeat {
+			t.Errorf("layer %d repeat = %+v, want no-repeat", i, l.Repeat)
+		}
+		if l.Size.Width != wantSize[i] || l.Size.Height != wantSize[i] {
+			t.Errorf("layer %d size = %+v, want %vpx", i, l.Size, wantSize[i])
+		}
+		if l.Clip != wantClip[i] {
+			t.Errorf("layer %d clip = %v, want %v", i, l.Clip, wantClip[i])
+		}
+		if l.Origin != BackgroundOriginContentBox {
+			t.Errorf("layer %d origin = %v, want content-box", i, l.Origin)
+		}
+		if l.Attachment != BackgroundAttachmentFixed {
+			t.Errorf("layer %d attachment = %v, want fixed", i, l.Attachment)
+		}
+		// background-position unset on every layer: initial 0% 0%.
+		if l.Position != (BackgroundPosition{}) {
+			t.Errorf("layer %d position = %+v, want initial", i, l.Position)
+		}
+	}
+}
