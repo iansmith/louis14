@@ -989,8 +989,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// block-size remains for the next outer fragmentainer, all in-flow
 	// children having been seen. Deferred out-of-flow fragmentainer
 	// descendants still resume through the walker, so HasSeenAllChildren
-	// stays false for them (Cmt-5b; multicol-nested-032).
-	if mla.isConstrainedByOuterFragmentation() && nestedFinish.DidBreakSelf {
+	// stays false for them (Cmt-5b; multicol-nested-032). Monolithic
+	// overflow still to steer clear of also needs a token
+	// (ShouldBreakInside, box_fragment_builder.h:494-497 @ a9f50e522efa).
+	if mla.isConstrainedByOuterFragmentation() &&
+		(nestedFinish.DidBreakSelf || nestedFinish.MonolithicOverflow > 0) {
 		result.BreakToken = mla.createBreakToken(nestedFinish)
 		result.BreakToken.HasSeenAllChildren = !builder.HasOutOfFlowFragmentainerDescendants()
 	}
@@ -1586,10 +1589,11 @@ func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, build
 // :65-78 @ a9f50e522efa), which read these fields from the builder.
 func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
 	return &BlockBreakToken{
-		Node:              mla.node,
-		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    sequenceNumberAfter(mla.space.BreakToken),
-		IsAtBlockEnd:      finish.IsAtBlockEnd,
+		Node:               mla.node,
+		ConsumedBlockSize:  layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
+		SequenceNumber:     sequenceNumberAfter(mla.space.BreakToken),
+		IsAtBlockEnd:       finish.IsAtBlockEnd,
+		MonolithicOverflow: finish.MonolithicOverflow,
 	}
 }
 

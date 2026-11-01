@@ -164,7 +164,7 @@ func ShouldCloneBlockStartBorderPadding(box FragmentainerBox) bool {
 	}
 	// Pushed by monolithic overflow into a fragmentainer with no room for
 	// the edges: don't repeat them.
-	if previousBreakToken.MonolithicOverflow != 0 &&
+	if previousBreakToken.HasMonolithicOverflow() &&
 		FragmentainerSpaceLeft(box, false) < box.BorderScrollbarPadding.BlockSum() {
 		return false
 	}
@@ -748,8 +748,7 @@ type FinishFragmentationResult struct {
 // FinishFragmentation decides this fragment's block-size and whether the box
 // breaks, is at its block end, and which block edges it carries. Mirrors
 // Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
-// a9f50e522efa). Not ported: monolithic overflow (louis14 has no
-// BlockBreakToken.MonolithicOverflow), kDisableFragmentation for
+// a9f50e522efa). Not ported: kDisableFragmentation for
 // block-overflow-clipping boxes, and early breaks (kNeedsEarlierBreak).
 func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
 	spaceLeft := in.SpaceLeft
@@ -769,8 +768,12 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 
 	// There is a last-resort breakpoint before the trailing border/padding,
 	// if progress can still be guaranteed.
+	// Incoming monolithic overflow always guarantees progress: layout moves
+	// past it, adding as many fragments as it needs (:577-586).
+	hasIncomingMonolithicOverflow := previous.HasMonolithicOverflow()
 	subtractable := 0.0
-	if !in.PreventBreakBeforeBlockEndDecorations && desiredBlockSize > in.TrailingBorderPadding {
+	if !in.PreventBreakBeforeBlockEndDecorations &&
+		(desiredBlockSize > in.TrailingBorderPadding || hasIncomingMonolithicOverflow) {
 		subtractable = in.TrailingBorderPadding
 	}
 	// Tall unbreakable content may make this fragment take up more space.
@@ -812,8 +815,16 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 		return out
 	}
 
-	if in.ShouldBreakInside {
-		// A break token is needed to resume broken or unstarted children;
+	if out.FragmentBlockSize == 0 && hasIncomingMonolithicOverflow {
+		// Pushed wholly past what this fragmentainer holds of the incoming
+		// overflow: steer clear of the rest in the next one (:704-716).
+		out.MonolithicOverflow = max(0, previous.MonolithicOverflow-in.FragmentainerCapacity)
+	}
+
+	if in.ShouldBreakInside || out.MonolithicOverflow > 0 {
+		// A break token is needed to resume broken or unstarted children,
+		// or to add fragments for monolithic overflow (ShouldBreakInside,
+		// box_fragment_builder.h:494-497);
 		// decide whether this box itself is at its block end.
 		if isPastEnd {
 			out.IsAtBlockEnd = true
@@ -861,16 +872,21 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 // are set: a fragmentainer is never at its block end and never breaks
 // itself. Mirrors Blink's
 // FinishFragmentationForFragmentainer (fragmentation_utils.cc:823-866 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the monolithic
-// overflow reservation (:844-852; louis14 never sets
-// BlockBreakToken.MonolithicOverflow).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With incoming monolithic
+// overflow larger than its capacity it reserves the rest (:844-852), so it
+// breaks and its token carries the remainder.
 func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, box FragmentainerBox, fragmentsTotalBlockSize float64) FinishFragmentationResult {
 	space := box.Space
 	consumedBlockSize := previouslyConsumedBlockSize(space.BreakToken)
 	var out FinishFragmentationResult
 	if space.HasKnownFragmentainerBlockSize() {
+		capacity := FragmentainerCapacity(box, false)
 		out.FragmentBlockSize = space.FragmentainerBlockSize
-		out.ConsumedBlockSize = consumedBlockSize + FragmentainerCapacity(box, false)
+		out.ConsumedBlockSize = consumedBlockSize + capacity
+		if previous := space.BreakToken; previous.HasMonolithicOverflow() {
+			// Add fragmentainers as long as monolithic overflow requires it.
+			out.MonolithicOverflow = max(0, previous.MonolithicOverflow-capacity)
+		}
 	} else {
 		out.FragmentBlockSize = fragmentsTotalBlockSize
 		out.ConsumedBlockSize = consumedBlockSize + fragmentsTotalBlockSize

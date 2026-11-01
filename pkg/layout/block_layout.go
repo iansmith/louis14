@@ -623,10 +623,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// giving it container separation (Blink BlockLayoutAlgorithm::
 	// has_break_opportunity_before_next_child_, block_layout_algorithm.cc:
 	// 311, :2767-2772 @ a9f50e522efa). Unlike firstNonEmptyChild, a child
-	// resumed in a parallel flow does not set it. Blink's MonolithicOverflow
-	// seeding (:868-876) is omitted: louis14 never sets
-	// BlockBreakToken.MonolithicOverflow.
-	hasBreakOpportunityBeforeNextChild := false
+	// resumed in a parallel flow does not set it. A container pushed by
+	// monolithic overflow from an earlier fragmentainer behaves as if there
+	// were a perfect breakpoint before its first child (:868-876).
+	hasBreakOpportunityBeforeNextChild := incomingBreakToken.HasMonolithicOverflow()
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
@@ -810,6 +810,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if bla.space.HasBlockFragmentation {
 				inlineBreakToken.ConsumedBlockSize = layoutunit.FromFloat64Round(finish.ConsumedBlockSize)
 				inlineBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
+				inlineBreakToken.MonolithicOverflow = finish.MonolithicOverflow
 			}
 			builder.SetIntrinsicBlockSize(blockCursor)
 			builder.SetNode(bla.node.DOMNode)
@@ -996,6 +997,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				AdjustMarginsForFragmentation(childToken, &childMargins)
 				if childToken.IsForcedBreak {
 					prevMarginStrut = MarginStrut{}
+				}
+				// Every container pushed past monolithic overflow records it
+				// in its token; only the outermost one is offset here
+				// (block_layout_algorithm.cc:2848-2855). louis14 has no
+				// paginated root, so Blink's IsPaginatedRoot() term is false.
+				if childToken.HasMonolithicOverflow() && !incomingBreakToken.HasMonolithicOverflow() {
+					blockCursor += childToken.MonolithicOverflow
 				}
 			}
 
@@ -2517,7 +2525,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// (didBreakSelf). When both fire (e.g. spanner-3 in 006), the
 	// pending state takes precedence — consumed = pendingIntrinsicAtBreak
 	// preserves the pre-6.4.c frag-overflow reader's emitted value.
-	if pendingShouldBreakInside || didBreakSelf {
+	// Monolithic overflow still to steer clear of also needs a token
+	// (ShouldBreakInside, box_fragment_builder.h:494-497 @ a9f50e522efa).
+	if pendingShouldBreakInside || didBreakSelf || finish.MonolithicOverflow > 0 {
 		var childBreakTokens []*BlockBreakToken
 		var hasSeenAllChildren bool
 		consumed := finalBlockSize
@@ -2541,7 +2551,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Driver: multicol-span-all-children-height-001, where a
 		// one-line block taller than its column would otherwise repeat
 		// its text in the next column.
-		if didBreakSelf && !pendingShouldBreakInside {
+		// So has one breaking only for monolithic overflow.
+		if !pendingShouldBreakInside {
 			hasSeenAllChildren = true
 		}
 		consumedBlockSize := previouslyConsumed + consumed
@@ -2562,6 +2573,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			ChildBreakTokens:        childBreakTokens,
 			HasSeenAllChildren:      hasSeenAllChildren,
 			IsAtBlockEnd:            isAtBlockEnd,
+			MonolithicOverflow:      finish.MonolithicOverflow,
 		}
 		// Carry the unpositioned outside ::marker into the break token: a
 		// continuation that resumes before any baseline-bearing child claims
