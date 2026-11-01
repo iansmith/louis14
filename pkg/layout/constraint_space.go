@@ -141,15 +141,9 @@ type ConstraintSpace struct {
 	// percentage margins/padding always resolve against the CB's inline-size.
 	PercentageResolutionInlineSize float64
 
-	// ForcedMinBlockSize is a minimum block-size forced by the parent.
-	// Used for horizontal-tb root element to ensure it fills at least the ICB block-size.
-	// Not set for vertical writing mode roots (they determine block-size from content).
-	ForcedMinBlockSize float64
-
 	// IsRootElement is true when this constraint space is for the document root element.
 	// Used to identify the root for OOF resolution (absolute/fixed positioning against
-	// the ICB). Separate from ForcedMinBlockSize so the root can shrink-to-fit in
-	// block direction while still serving as the OOF containing block.
+	// the ICB): louis14 has no LayoutView fragment, so the root stands in for it.
 	IsRootElement bool
 
 	// --- Fragmentation ---
@@ -591,13 +585,6 @@ func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackBlockSize(v float64) *Cons
 // orthogonal to the parent.
 func (b *ConstraintSpaceBuilder) SetPercentageResolutionInlineSize(v float64) *ConstraintSpaceBuilder {
 	b.space.PercentageResolutionInlineSize = v
-	return b
-}
-
-// SetForcedMinBlockSize sets a minimum block-size for the child.
-// Used for the root element to ensure it fills at least the ICB.
-func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpaceBuilder {
-	b.space.ForcedMinBlockSize = v
 	return b
 }
 

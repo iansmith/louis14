@@ -135,7 +135,7 @@ func (v *ViewPainter) PaintRootElementGroup(r *Renderer) {
 // the viewport, the view's background rect.
 func (v *ViewPainter) newViewBoxBackgroundPaintContext(paintRect geometry.PhysicalRect) *BoxBackgroundPaintContext {
 	rootBox := v.rootLayer.Box
-	rootRect := rootBorderBoxRect(rootBox)
+	rootRect := backgroundPaintRect(borderBoxRect(rootBox))
 	return &BoxBackgroundPaintContext{
 		paintingView:                   true,
 		hasBackgroundFixedToViewport:   v.style.BackgroundLayers.AnyLayerHasFixedAttachmentImage(),

@@ -161,6 +161,16 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 		p.containingBlockSize = ToLogicalSize(PhysicalSize{Width: ctx.ViewportWidth, Height: ctx.ViewportHeight}, space.WritingDirection.WM)
 		p.containingBlockPadding = LogicalEdges{}
 		p.isAbsoluteContainer, p.isFixedContainer = true, true
+		// An in-flow root sits in the view at rootOffsetInView, so the ICB's
+		// start corner lies that far before the root's (louis14 resolves the
+		// root's candidates in its own builder). A positioned root keeps the
+		// ICB at its content box.
+		if node := builder.layoutNode; node != nil && node.Style() != nil && !rootIsOutOfFlow(node.Style()) {
+			style, wdm := node.Style(), space.WritingDirection
+			inView := rootOffsetInView(style, wdm, p.containingBlockSize,
+				paddingBoxSize.InlineSize+ComputeFragmentGeometry(style, wdm).Border.InlineSum())
+			p.cbOriginInBuilder = LogicalOffset{InlineOffset: -inView.InlineOffset, BlockOffset: -inView.BlockOffset}
+		}
 		return p
 	}
 	if node := builder.layoutNode; node != nil {

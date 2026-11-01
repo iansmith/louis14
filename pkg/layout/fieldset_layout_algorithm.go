@@ -201,9 +201,6 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		total = max(total, ResolveMinBlockSizeWithIntrinsic(fla.style, wdm, fla.space, fla.geom, contentBlock)+borderPaddingBlock)
 	}
-	if fla.space.ForcedMinBlockSize > total {
-		total = fla.space.ForcedMinBlockSize
-	}
 	// The legend may eat from the available content box block size; make
 	// room for it (fieldset_layout_algorithm.cc:109-118). layoutChildren
 	// leaves the minimum at 0 under size containment.
