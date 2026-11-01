@@ -1,21 +1,31 @@
 <!DOCTYPE html>
-<title>CSS display: contents in flex container</title>
+<meta charset="utf-8">
+<title>CSS Test: display: contents inside a flex container</title>
+<link rel="author" title="Emilio Cobos Álvarez" href="mailto:ecobos@igalia.com">
+<link rel="help" href="https://drafts.csswg.org/css-display-3/#valdef-display-contents">
 <link rel="match" href="display-contents-flex-001-ref.html">
 <style>
-  body { margin: 0; }
-  .flex { display: flex; width: 300px; }
-  .contents { display: contents; }
-  .item { width: 100px; height: 100px; }
-  .a { background: green; }
-  .b { background: blue; }
-  .c { background: lime; }
+.flex {
+  display: flex;
+}
+.inline {
+  display: inline;
+}
+.contents {
+  display: contents;
+  border: 1px solid red;
+}
 </style>
-<!-- display:contents makes the wrapper disappear; its children
-     become direct flex items alongside .c -->
+<p>Test passes if you see the word "PASS", with a "0" under the first "S", and no red</p>
 <div class="flex">
+P
   <div class="contents">
-    <div class="item a"></div>
-    <div class="item b"></div>
+    <div>A</div>
   </div>
-  <div class="item c"></div>
+  <div class="contents">
+    <div class="inline">S<div>0</div></div>
+  </div>
+  <div class="contents">
+    S
+  </div>
 </div>

@@ -54,30 +54,6 @@ func isCSSCollapsibleRune(r rune) bool {
 	return r != '\u00A0' && unicode.IsSpace(r)
 }
 
-// isInlineLevelDisplay reports whether a specified display value is
-// inline-level per CSS Display §3. Used to capture the static position of
-// an out-of-flow box in an inline formatting context: an inline-level
-// abspos captures beside the current inline cursor; a block-level abspos
-// captures at the block-end of the current line box (as if it started a
-// new block-flow line). Mirrors Blink's
-// ComputedStyle::IsOriginalDisplayInlineType.
-func isInlineLevelDisplay(d css.DisplayType) bool {
-	switch d {
-	case css.DisplayInline,
-		css.DisplayInlineBlock,
-		css.DisplayInlineFlex,
-		css.DisplayInlineGrid,
-		css.DisplayInlineTable,
-		css.DisplayInlineListItem,
-		css.DisplayRuby,
-		css.DisplayRubyText:
-		// DisplayBlockRuby is block-level (its principal box is a
-		// LayoutBlockFlow); DisplayRubyBase no longer exists.
-		return true
-	}
-	return false
-}
-
 // isAtomicBaselineDisplay returns true iff the display type participates in baseline
 // alignment as an atomic inline. These are the displays that export a baseline (either
 // from contents or synthesized from the margin box) to the parent line's baseline
@@ -223,7 +199,7 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 			// (rb/rt) gets its own per-element block layout, which
 			// is wrong: ruby is a single inline atom that owns its
 			// own inline formatting context (mirrors Blink
-			// `isInlineLevelDisplay` + the inline-IFC entry in
+			// `Style.IsOriginalDisplayInlineType` + the inline-IFC entry in
 			// LayoutBlockFlow). Vetted against Chromium main @
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			display != css.DisplayRuby && display != css.DisplayRubyText {
@@ -907,7 +883,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 				oofStyle := r.Item.Style
-				inlineLevel := oofStyle != nil && isInlineLevelDisplay(oofStyle.GetDisplay())
+				inlineLevel := oofStyle != nil && oofStyle.IsOriginalDisplayInlineType()
 				isFixed := oofStyle != nil && oofStyle.GetPosition() == css.PositionFixed
 				if inlineLevel {
 					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(

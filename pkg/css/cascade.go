@@ -2818,40 +2818,6 @@ func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 	}
 }
 
-// resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
-// If an inline-level box has a different writing-mode axis than its containing
-// block, its display value computes to inline-block. This causes inline spans
-// with orthogonal writing-mode to honor width/height properties.
-func resolveOrthogonalDisplay(node *html.Node, style *Style, styles map[*html.Node]*Style) {
-	if node == nil || node.Parent == nil {
-		return
-	}
-	// Only apply to inline-level elements
-	display, hasDisplay := style.Get("display")
-	if !hasDisplay || display != "inline" {
-		return
-	}
-	// Get this element's writing-mode axis
-	wm, _ := style.Get("writing-mode")
-	isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
-	// Get parent's writing-mode axis
-	parentStyle, ok := styles[node.Parent]
-	if !ok || parentStyle == nil {
-		// No parent style: assume horizontal-tb (the default)
-		// If this element is vertical, it's orthogonal → promote to inline-block
-		if isVertical {
-			style.Set("display", "inline-block")
-		}
-		return
-	}
-	parentWM, _ := parentStyle.Get("writing-mode")
-	parentIsVertical := parentWM == "vertical-rl" || parentWM == "vertical-lr" || parentWM == "sideways-rl" || parentWM == "sideways-lr"
-	// If the axes differ, promote inline to inline-block
-	if isVertical != parentIsVertical {
-		style.Set("display", "inline-block")
-	}
-}
-
 // resolveLogicalSizeProperties remaps logical size properties (inline-size,
 // block-size, and their min/max variants) to the correct physical properties
 // based on the element's computed writing-mode.
@@ -3268,9 +3234,6 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// (css_pending_substitution_value.h @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		reexpandVarShorthands(style)
-		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
-		// than its containing block, its display computes to inline-block.
-		resolveOrthogonalDisplay(node, style, styles)
 		// Resolve logical size properties (inline-size, block-size) based on the
 		// element's computed writing-mode. Must happen after inheritance so that
 		// inherited writing-mode is available.
@@ -3316,6 +3279,13 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		if node.Parent != nil {
 			parentStyle = styles[node.Parent]
 		}
+		// StyleAdjuster's display adjustments (blockification against the
+		// layout parent, float / out-of-flow / root blockification, unboxing
+		// rules, orthogonal inline → inline-block) run once the cascade is
+		// complete, before text decorations are applied: Blink's
+		// AdjustComputedStyle order (style_adjuster.cc:1196-1199 vs :1278 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		AdjustComputedStyle(node, style, LayoutParentStyle(node.Parent, styles))
 		style.ResolveAppliedTextDecorations(parentStyle, node)
 		styles[node] = style
 	}

@@ -2600,7 +2600,15 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 		return
 	}
 
-	if isAtomicInlineForPaint(child) {
+	// An absolutely positioned flow child (kept in DOM-order paint because
+	// an overflow clip contains it) paints as a unit, like the
+	// self-painting PaintLayer Blink gives every stacked (positioned) box
+	// (PaintLayer::ShouldBeSelfPaintingLayer, core/paint/paint_layer.cc:
+	// 2274-2276 → LayoutBox::LayerTypeRequired, layout/layout_box.cc:556-563
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): its background must not
+	// drop to the parent's step-3 background phase and paint under in-flow
+	// text that precedes it in DOM order.
+	if isAtomicInlineForPaint(child) || isOutOfFlowForPaint(child) {
 		if phase == PhaseForeground {
 			r.paintLayer(child)
 		}
@@ -2717,6 +2725,15 @@ func isAtomicInlineForPaint(layer *PaintLayer) bool {
 		}
 	}
 	return false
+}
+
+// isOutOfFlowForPaint reports whether layer's box is absolutely or fixed
+// positioned.
+func isOutOfFlowForPaint(layer *PaintLayer) bool {
+	if layer == nil || layer.Box == nil {
+		return false
+	}
+	return layer.Box.Position == css.PositionAbsolute || layer.Box.Position == css.PositionFixed
 }
 
 // isPureInlineForPaint returns true for display: inline — a

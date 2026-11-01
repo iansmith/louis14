@@ -618,18 +618,23 @@ func TestEquivalentInlineDisplay(t *testing.T) {
 }
 
 // TestEquivalentBlockDisplay covers the blockification mapping. Mirrors Blink
-// `core/css/resolver/style_adjuster.cc:248-301` `EquivalentBlockDisplay`
-// @ 43cee02dc59fdad798675a735737510ecf0c9064: block-level displays (including
-// kListItem, :258-262) are returned unchanged, and kInlineListItem maps to
-// kListItem (:277-278) — list-item-ness survives blockification, so a floated
-// `display: list-item` pseudo keeps generating its ::marker (LOU-358).
+// `core/css/resolver/style_adjuster.cc:248-299` `EquivalentBlockDisplay`
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b: block-level displays (including
+// kListItem and kFlowRoot, :250-261) are returned unchanged, and
+// kInlineListItem maps to kListItem (:277-278) — list-item-ness survives
+// blockification, so a floated `display: list-item` pseudo keeps generating
+// its ::marker (LOU-358). Internal table displays and contents map to kBlock
+// (:284-296).
 func TestEquivalentBlockDisplay(t *testing.T) {
 	cases := []struct {
 		in, want DisplayType
 	}{
 		{DisplayInline, DisplayBlock},
 		{DisplayInlineBlock, DisplayBlock},
-		{DisplayFlowRoot, DisplayBlock},
+		{DisplayTableCell, DisplayBlock},
+		{DisplayTableRow, DisplayBlock},
+		{DisplayContents, DisplayBlock},
+		{DisplayMath, DisplayBlockMath},
 		{DisplayInlineFlex, DisplayFlex},
 		{DisplayInlineGrid, DisplayGrid},
 		{DisplayInlineTable, DisplayTable},
@@ -643,6 +648,8 @@ func TestEquivalentBlockDisplay(t *testing.T) {
 		{DisplayGrid, DisplayGrid},
 		{DisplayListItem, DisplayListItem},
 		{DisplayBlockRuby, DisplayBlockRuby},
+		{DisplayFlowRoot, DisplayFlowRoot},
+		{DisplayBlockMath, DisplayBlockMath},
 	}
 	for _, c := range cases {
 		if got := EquivalentBlockDisplay(c.in); got != c.want {
