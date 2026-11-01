@@ -1045,7 +1045,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// a9f50e522efa).
 		if bla.space.HasBlockFragmentation && !isEmptyLineBox && hasBreakOpportunityBeforeNextChild &&
 			IsForcedBreakValue(bla.space, CalculateBreakBetweenValue(inlineChild, nil, bla.containerBuilder)) {
-			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0))
+			breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
 			inlineBreakToken.IsForcedBreak = true
 			break
 		}
@@ -1065,7 +1065,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// setBreakingSize). No space shortage is propagated.
 			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder, nil) {
 				bla.containerBuilder.ClampBreakAppeal(bla.earlyBreak.GetBreakAppeal())
-				breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0))
+				breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
 				break
 			}
 			// blockOffset is content-relative: measure the boundary and the
@@ -1111,7 +1111,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
 				if bla.breakBeforeLine(&appealBefore, shortage, isEmptyLineBox) {
 					bla.containerBuilder.SetBreakAppeal(appealBefore)
-					breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, shortage))
+					// Breaking before the line reports how much more
+					// space it needed (BreakBeforeChild →
+					// PropagateSpaceShortage, fragmentation_utils.cc:
+					// 944-968 @ a9f50e522efa).
+					if bla.space.BlockFragmentationType == FragmentColumn {
+						bla.containerBuilder.PropagateSpaceShortage(shortage)
+					}
+					breakBeforeLine(bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset))
 					break
 				}
 			} else if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
@@ -1127,8 +1134,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 		}
 
+		// The first line box claims a pending outside list marker; a marker
+		// taller than the line pushes the line, and so every later line,
+		// down. Placed after the line's break check and before it is added,
+		// as Blink's PositionOrPropagateListMarker adjusts the line's
+		// offset after BreakBeforeChildIfNeeded (block_layout_algorithm.cc:
+		// 2634, :2720-2724 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if firstLineAscent < 0 {
-			firstLineAscent = lineAscent
+			var contentPush float64
+			if lineAscent > 0 {
+				contentPush = bla.placeListMarkerAtFirstLine(lineAscent, blockOffset)
+				blockOffset += contentPush
+			}
+			firstLineAscent = lineAscent + contentPush
 		}
 		// Track the last line's baseline offset from the content area start.
 		// This is the block offset of the line + the line's ascent.
@@ -1505,9 +1523,8 @@ func rebuildOpenInlineStack(items []*InlineItem) []*InlineItem {
 
 // createInlineBreakToken returns the break token for breaking before the
 // line that starts at item lineStartIdx / text offset lineStartTextOffset,
-// blockOffset into this block's content. shortage is the space the line
-// lacked (0 for a predetermined early break).
-func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lineStartIdx, lineStartTextOffset int, shortage float64) *BlockBreakToken {
+// blockOffset into this block's content.
+func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lineStartIdx, lineStartTextOffset int) *BlockBreakToken {
 	token := &BlockBreakToken{
 		Node: bla.node,
 		// Consumed is what this block laid out (its content up to the
@@ -1516,7 +1533,6 @@ func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lin
 		ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
 		InlineItemStartIndex: lineStartIdx,
 		InlineTextOffset:     lineStartTextOffset,
-		InlineShortage:       shortage,
 		SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
 	}
 	if bla.space.BreakToken != nil {
@@ -1540,8 +1556,9 @@ func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lin
 // fragmentainer-end exception.
 func (bla *BlockLayoutAlgorithm) breakBeforeLine(appealBefore *BreakAppeal, shortage float64, isEmptyLineBox bool) bool {
 	if bla.firstOverflowingLine == 0 && bla.space.BlockFragmentationType == FragmentColumn {
-		// The first overflowing line's shortage is the one reported, before
-		// knowing whether breaking here violates orphans / widows.
+		// The first overflowing line reports its shortage before knowing
+		// whether breaking here violates orphans / widows; the line finally
+		// broken before reports its own as well (the caller).
 		// PropagateSpaceShortage (fragmentation_utils.cc:995-1014).
 		bla.containerBuilder.PropagateSpaceShortage(shortage)
 	}
