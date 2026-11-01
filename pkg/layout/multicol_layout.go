@@ -948,6 +948,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		result.BreakToken = mla.createBreakToken(nestedFinish)
 		result.BreakToken.HasSeenAllChildren = true
 	}
+	mla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(mla.ctx, result)
 
 	// A fragment that did not break offers the best breakpoint found
 	// inside it (before a spanner) to its parent, unless it is known to
@@ -1576,6 +1577,7 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult() *LayoutResult {
 	if mla.containerBuilder.GetUnpositionedListMarker().IsValid() {
 		result.BreakToken.HasUnpositionedListMarker = true
 	}
+	mla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(mla.ctx, result)
 	if len(mla.containerBuilder.outOfFlowCandidates) > 0 {
 		result.PropagatedOOFCandidates = mla.containerBuilder.outOfFlowCandidates
 	}

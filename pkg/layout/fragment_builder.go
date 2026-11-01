@@ -1532,6 +1532,32 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	return result
 }
 
-// AdjustSpaceShortageForBreakAvoidRoot: RED stub (LOU-505).
+// AdjustSpaceShortageForBreakAvoidRoot replaces the space shortage of a
+// break-inside:avoid root that broke inside before its block end during
+// column balancing: what its content propagated would only stretch the
+// columns a little at a time, so it is dropped, and the root's first
+// fragment reports instead by how much its unbroken block-size, from a
+// layout without fragmentation, exceeds the space left. Mirrors
+// BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 builds the outgoing
+// break token after Build, so the algorithms call this once result carries
+// it. Blink's DisableLayoutSideEffectsScope has no louis14 counterpart.
 func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
+	space := b.space
+	if space == nil || result.BreakToken == nil || result.BreakToken.IsAtBlockEnd ||
+		!space.IsInsideBalancedColumns || b.GetBoxType() == BoxTypeColumn || b.style == nil ||
+		!IsAvoidBreakValue(*space, b.style.GetBreakInside()) || space.IsInsideBreakAvoid ||
+		!space.HasKnownFragmentainerBlockSize() {
+		return
+	}
+	result.MinSpaceShortage = 0
+	if b.PreviousBreakToken().IsBreakInside() {
+		return
+	}
+	measure := layoutElement(ctx, b.layoutNode, space.CloneWithoutFragmentation())
+	if measure == nil || measure.Status != LayoutResultSuccess || measure.Fragment == nil {
+		return
+	}
+	shortage := NewLogicalFragment(space.WritingDirection, measure.Fragment).BlockSize() - FragmentainerSpaceLeft(b, false)
+	result.MinSpaceShortage = max(shortage, 0)
 }

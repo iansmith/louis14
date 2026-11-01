@@ -782,6 +782,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Min-merge with a shortage an earlier, moved-past line already
 			// propagated (BoxFragmentBuilder::PropagateSpaceShortage).
 			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
+			bla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(bla.ctx, result)
 			result.PropagatedOOFCandidates = bla.containerBuilder.outOfFlowCandidates
 			return result
 		}
@@ -2135,6 +2136,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 	}
+
+	bla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(bla.ctx, result)
 
 	// A fragment that did not break offers the best breakpoint found
 	// inside it to its parent (UpdateEarlyBreakAtBlockChild), unless it is

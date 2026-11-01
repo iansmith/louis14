@@ -278,6 +278,7 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, finish.SpaceShortage)
 		}
 	}
+	fla.containerBuilder.AdjustSpaceShortageForBreakAvoidRoot(fla.ctx, result)
 	if result.BreakToken == nil && fla.space.HasBlockFragmentation {
 		result.EarlyBreak = fla.containerBuilder.GetEarlyBreak()
 	}
