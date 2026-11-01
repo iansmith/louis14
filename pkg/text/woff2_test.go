@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	stdnet "louis14/std/net"
 )
 
 // fetchCSSValuesResource is a FontFetcher over the committed WPT
@@ -113,8 +115,8 @@ func TestWOFF2TripletDecode(t *testing.T) {
 }
 
 // TestRegisterFontFace_DataURL: an @font-face src that is a data: URL is
-// decoded in place, never handed to the fetcher. Mirrors Blink's
-// ResourceFetcher::CreateResourceForStaticData, which decodes a data: URL
+// decoded by the fetcher layer in place, never reaching the network fetch.
+// Mirrors Blink's ResourceFetcher::CreateResourceForStaticData, which decodes a data: URL
 // with network_utils::ParseDataURL (platform/loader/fetch/
 // resource_fetcher.cc:1061-1063 @ 5992657f556bcd9d207a4aca187488462f027cab)
 // instead of issuing a network request. WPT css-values/ch-unit-019 loads its
@@ -129,7 +131,7 @@ func TestRegisterFontFace_DataURL(t *testing.T) {
 		return nil, fmt.Errorf("fetcher called for %.30s", url)
 	}
 	fr := NewFontRegistry()
-	path, err := fr.RegisterFontFace("LOU424-data", src, "", "normal", "normal", noFetch)
+	path, err := fr.RegisterFontFace("LOU424-data", src, "", "normal", "normal", stdnet.RequestResource(noFetch))
 	if err != nil {
 		t.Fatalf("RegisterFontFace(data: URL): %v", err)
 	}
