@@ -59,7 +59,7 @@ type LogicalOofContainingBlock struct {
 	// IsInsideColumnSpanner marks OOFs whose CB is inside a column-spanner
 	// descendant (handled differently because spanners interrupt the column
 	// flow). Set by PropagateOOFFragmentainerDescendants when propagating out
-	// of a spanner; read by the inner-multicol drain branch. Mirrors Blink's
+	// of a spanner; read by LayoutOOFsInMulticol. Mirrors Blink's
 	// OofContainingBlock::is_inside_column_spanner_.
 	IsInsideColumnSpanner bool
 }
@@ -114,10 +114,10 @@ type LogicalOofNodeForFragmentation struct {
 
 // MulticolWithPendingOOFs is the entry recorded by an inner multicol's
 // MulticolLayoutAlgorithm.Layout when it finishes fragmentation with OOF
-// fragmentainer descendants still pending. Drained by
-// OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs at the outer
-// fragmentation root, which then walks the inner multicol's physical
-// fragments and lays out the OOFs against the outer's fragmentainer flow.
+// fragmentainer descendants still pending. Handled by
+// HandleMulticolsWithPendingOOFs at the outermost fragmentation root, which
+// collects the inner multicol's columns and lays the OOFs out in them
+// (LayoutOOFsInMulticol).
 //
 // The entry itself does NOT carry the OOF list — the OOFs remain on the inner
 // multicol's outgoing fragments via FragmentedOofData. The entry is just
@@ -125,8 +125,9 @@ type LogicalOofNodeForFragmentation struct {
 // positioning context for fixedpos descendants. Mirrors Blink's
 // `MulticolWithPendingOofs<LogicalOffset>` (oof_positioned_node.h).
 type MulticolWithPendingOOFs struct {
-	// MulticolOffset is the inner multicol's offset within the outer
-	// fragmentation root, expressed in the root's logical coordinate system.
+	// MulticolOffset is the content-box offset of the inner multicol
+	// fragment that registered the entry, within the outer fragmentation
+	// root's content box (louis14's content-box static-position convention).
 	// (Becomes relative to the fixedpos containing block when one applies —
 	// matches Blink's behaviour at oof_positioned_node.h:135.)
 	MulticolOffset LogicalOffset
@@ -163,9 +164,8 @@ type FragmentedOofData struct {
 	OofPositionedFragmentainerDescendants []LogicalOofNodeForFragmentation
 
 	// MulticolsWithPendingOOFs records inner-multicol nodes that have their
-	// OWN deferred OOF descendants. The outer's OutOfFlowLayoutPart walks
-	// the inner's physical fragments to drain those OOFs and lay them out
-	// against the outer's fragmentainer flow.
+	// OWN deferred OOF descendants, laid out in the inner multicol's columns
+	// at the outermost fragmentation root (LayoutOOFsInMulticol).
 	//
 	// Keyed by *LayoutInputNode (louis14's persistent layout-tree identity —
 	// see pkg/layout/layout_input_node.go for the deliberate two-tier
