@@ -95,3 +95,40 @@ func TestLayoutFragmentainerDescendants(t *testing.T) {
 		"a3": {{25, 50, 10, 50}},
 	})
 }
+
+// TestOOFsParticipateInColumnBalancing pins Blink's OOF-aware column
+// balancing: while balancing a column line, the fragmentainer descendants
+// of the new columns are laid out in a dry run (a ColumnBalancingInfo,
+// out_of_flow_layout_part.h:47-84 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) that reports the new columns
+// they would need and their minimal space shortage, so the columns stretch
+// to hold them (column_layout_algorithm.cc:1087-1129 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Before a spanner the
+// fragmentainer descendants found so far are laid out in the line's columns
+// (HandleFragmentation before LayoutSpanner, column_layout_algorithm.cc:
+// 640-643 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not in the columns
+// after the spanner. Chrome 155 getClientRects.
+func TestOOFsParticipateInColumnBalancing(t *testing.T) {
+	t.Run("balanced", func(t *testing.T) {
+		got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+			`<div id=mc style="column-count:2;column-gap:0;width:100px">`+
+			`<div style="position:relative"><div style="height:40px"></div>`+
+			`<div id=a style="position:absolute;width:50px;height:160px;top:0"></div>`+
+			`</div></div>`)
+		checkRects(t, got, map[string][]fragRect{
+			"mc": {{0, 0, 100, 80}},
+			"a":  {{0, 0, 50, 80}, {50, 0, 50, 80}},
+		})
+	})
+	t.Run("before a spanner", func(t *testing.T) {
+		got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+			`<div style="column-count:2;column-fill:auto;column-gap:0;width:100px">`+
+			`<div style="position:relative"><div style="height:100px"></div>`+
+			`<div id=a style="position:absolute;width:50px;height:200px;top:0"></div></div>`+
+			`<div id=sp style="column-span:all"></div><div style="height:100px"></div></div>`)
+		checkRects(t, got, map[string][]fragRect{
+			"a":  {{0, 0, 50, 100}, {50, 0, 50, 100}},
+			"sp": {{0, 100, 100, 0}},
+		})
+	})
+}
