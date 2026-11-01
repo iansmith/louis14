@@ -305,6 +305,14 @@ func (f *PhysicalFragment) IsColumnBox() bool {
 	return f != nil && f.Type == FragmentBox && f.BoxType == BoxTypeColumn
 }
 
+// isFragmentOf reports whether f is one of node's own fragments. A column
+// box carries its multicol's node but is not one of them (Blink's
+// LayoutBox::PhysicalFragments holds only the multicol's own). no Blink
+// analog: louis14 finds a node's fragments by walking the fragment tree.
+func (f *PhysicalFragment) isFragmentOf(node *LayoutInputNode) bool {
+	return f.LayoutNode == node && !f.IsFragmentainerBox()
+}
+
 // IsFirstForNode reports whether this is the first fragment generated for
 // its node; false for a fragment resumed after a break inside the node. A
 // nil fragment (aborted layout) counts as first. Mirrors Blink's
