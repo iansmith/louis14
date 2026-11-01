@@ -265,3 +265,85 @@ func TestBlockSizeForFragmentation_FloatMargins(t *testing.T) {
 		t.Errorf("in-flow box: BlockSizeForFragmentation = %v, want 20", got)
 	}
 }
+
+// LOU-502: a float of an inline formatting context fragments like one in a
+// block flow. LineBreaker::HandleFloat positions it through PositionFloat
+// with the fragmentation space; a float that breaks inside becomes a
+// parallel-flow break token of the inline formatting context
+// (InlineBreakToken::CreateForParallelBlockFlow), resumed first in the next
+// fragmentainer (LineBreaker::NextLine), inline/line_breaker.cc:893-912,
+// :3727-3842 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func inlineFloatMulticolStyles(mc, float *html.Node) map[*html.Node]*css.Style {
+	return map[*html.Node]*css.Style{
+		mc: makeStyle("display", "block", "column-count", "2", "column-gap", "0",
+			"column-fill", "auto", "height", "100px", "font-family", "Ahem", "font-size", "10px",
+			"line-height", "10px", "orphans", "1", "widows", "1"),
+		float: makeStyle("display", "block", "float", "left", "width", "20px", "height", "200px"),
+	}
+}
+
+// One line beside a 200px float: the lines finish in the first column, the
+// float continues in the second.
+func TestFloatFragmentation_InlineFloatSlicedAcrossColumns(t *testing.T) {
+	float := makeNode("div")
+	mc := makeNode("div", float, makeTextNode("x"))
+	result := layoutMulticolForFloatTest(t, mc, inlineFloatMulticolStyles(mc, float))
+	cols := columnChildren(result)
+	if len(cols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(cols))
+	}
+	for i, col := range cols {
+		frags := fragmentsOfNode(col.Fragment, float)
+		if len(frags) != 1 {
+			t.Fatalf("column %d: float fragments = %d, want 1", i, len(frags))
+		}
+		if top, h := frags[0].Offset.Top.Float64(), frags[0].Fragment.Size.HeightF64(); top != 0 || h != 100 {
+			t.Errorf("column %d: float fragment top=%v height=%v, want 0, 100", i, top, h)
+		}
+	}
+}
+
+// Fifteen 10px lines beside a 200px float: both the lines and the float
+// break at the 100px column end; the float resumes at the top of the second
+// column and the remaining lines flow beside it.
+func TestFloatFragmentation_InlineFloatAndLinesBreak(t *testing.T) {
+	float := makeNode("div")
+	kids := []*html.Node{float}
+	for range 15 {
+		kids = append(kids, makeTextNode("x"), makeNode("br"))
+	}
+	mc := makeNode("div", kids...)
+	styles := inlineFloatMulticolStyles(mc, float)
+	for _, k := range kids[1:] {
+		if k.Type != html.TextNode {
+			styles[k] = makeStyle("display", "inline", "font-family", "Ahem", "font-size", "10px",
+				"line-height", "10px")
+		}
+	}
+	result := layoutMulticolForFloatTest(t, mc, styles)
+	cols := columnChildren(result)
+	if len(cols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(cols))
+	}
+	lines := 0
+	for i, col := range cols {
+		frags := fragmentsOfNode(col.Fragment, float)
+		if len(frags) != 1 {
+			t.Fatalf("column %d: float fragments = %d, want 1", i, len(frags))
+		}
+		if top, h := frags[0].Offset.Top.Float64(), frags[0].Fragment.Size.HeightF64(); top != 0 || h != 100 {
+			t.Errorf("column %d: float fragment top=%v height=%v, want 0, 100", i, top, h)
+		}
+		for _, ch := range col.Fragment.Children {
+			if ch.Fragment.Type == FragmentLineBox && ch.Fragment.Size.HeightF64() > 0 {
+				lines++
+				if left := ch.Offset.Left.Float64(); left != 20 {
+					t.Errorf("column %d: line at left %v, want 20 (beside the float)", i, left)
+				}
+			}
+		}
+	}
+	if lines != 15 {
+		t.Errorf("lines = %d, want 15", lines)
+	}
+}
