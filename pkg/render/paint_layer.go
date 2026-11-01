@@ -950,8 +950,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// outer clip path is enabled only when the SVG actually has
 		// `overflow-clip-margin` set — see the `isSVGRootNode` block
 		// above for the rationale.
-		isScrollContainer := overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || overflowX == css.OverflowHidden ||
-			overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || overflowY == css.OverflowHidden
+		isScrollContainer := box.IsScrollContainer()
 		if isSVGRootNode {
 			isScrollContainer = false
 		}

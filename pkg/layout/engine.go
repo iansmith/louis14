@@ -585,19 +585,6 @@ type stickyScrollport struct {
 	x, y, width, height float64
 }
 
-// isScrollContainer returns true if the box establishes a scroll container,
-// i.e., has overflow: auto or overflow: scroll on either axis.
-// Per CSS Overflow 3, only auto/scroll create scroll containers; hidden/clip do not.
-func isScrollContainer(box *Box) bool {
-	if box.Style == nil {
-		return false
-	}
-	isScroll := func(o css.OverflowType) bool {
-		return o == css.OverflowAuto || o == css.OverflowScroll
-	}
-	return isScroll(box.Style.GetOverflowX()) || isScroll(box.Style.GetOverflowY())
-}
-
 // stickyContainingBlock returns the bounds of the element's sticky containing
 // block — the nearest block ancestor that is not the scroll container.
 // Per CSS Position 3 §6.3, the sticky containing block is the padding-box of
@@ -734,7 +721,7 @@ func applyStickyOffsetsWithScrollport(box *Box, scrollport stickyScrollport) {
 	// Determine scrollport for children. If this box is a scroll container,
 	// the children's sticky scrollport is this box's content area (at scroll=0).
 	childScrollport := scrollport
-	if isScrollContainer(box) {
+	if box.IsScrollContainer() {
 		// Content area: border-box minus border and padding.
 		childScrollport = stickyScrollport{
 			x:      box.X + box.Border.Left + box.Padding.Left,
