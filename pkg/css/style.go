@@ -3399,7 +3399,7 @@ var cssLonghandProperties = []string{
 	// Misc
 	"content", "counter-increment", "counter-reset", "quotes",
 	"cursor", "z-index", "will-change", "contain",
-	"break-before", "break-after", "break-inside",
+	"break-before", "break-after", "break-inside", "orphans", "widows",
 	"image-rendering", "object-fit", "object-position",
 	"scrollbar-color", "scrollbar-gutter", "scrollbar-width",
 	"box-decoration-break", "initial-letter",
@@ -8021,12 +8021,7 @@ func (s *Style) GetRubyAlign() RubyAlign {
 
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)
 func (s *Style) GetLineClamp() int {
-	if val, ok := s.Get("-webkit-line-clamp"); ok {
-		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 0
+	return s.getPositiveIntegerOr("-webkit-line-clamp", 0)
 }
 
 // GetBoxOrient returns the -webkit-box-orient value (empty string if not set)
@@ -8331,16 +8326,8 @@ func (s *Style) GetTableLayout() TableLayout {
 
 // GetColumnCount returns the column-count value (0 means "auto"/not set)
 func (s *Style) GetColumnCount() int {
-	if val, ok := s.Get("column-count"); ok {
-		val = strings.TrimSpace(val)
-		if val == "auto" {
-			return 0
-		}
-		if n, err := strconv.Atoi(val); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 0
+	// "auto" is not an integer, so it reads as 0.
+	return s.getPositiveIntegerOr("column-count", 0)
 }
 
 // GetColumnWidth returns the column-width value. 0 means "auto"/not set
@@ -8416,6 +8403,38 @@ func (s *Style) GetBreakInside() string {
 		return strings.TrimSpace(strings.ToLower(v))
 	}
 	return "auto"
+}
+
+// GetOrphans returns the computed `orphans` value: the minimum number of
+// line boxes of a block container left in a fragment before a break
+// (CSS Fragmentation 3 §4.4). Initial value 2. Mirrors Blink's
+// ComputedStyle::Orphans (css_properties.json5 `orphans`, initial 2 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) GetOrphans() int {
+	return s.getPositiveIntegerOr("orphans", 2)
+}
+
+// GetWidows returns the computed `widows` value: the minimum number of line
+// boxes of a block container left in a fragment after a break (CSS
+// Fragmentation 3 §4.4). Initial value 2. Mirrors Blink's
+// ComputedStyle::Widows (css_properties.json5 `widows`, initial 2 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) GetWidows() int {
+	return s.getPositiveIntegerOr("widows", 2)
+}
+
+// getPositiveIntegerOr returns prop as an `<integer [1,∞]>`, or initial when
+// it is unset or not a positive integer.
+func (s *Style) getPositiveIntegerOr(prop string, initial int) int {
+	if s == nil {
+		return initial
+	}
+	if val, ok := s.Get(prop); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return initial
 }
 
 // GetColumnHeight returns the column-height value in CSS pixels.

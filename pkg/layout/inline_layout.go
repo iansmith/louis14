@@ -1132,15 +1132,28 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate,
 		)
 		openInlineStack = residualStack
+		// no Blink analog for the line box type: a zero-height line stands
+		// in for PhysicalLineBoxFragment::IsEmptyLineBox.
+		isEmptyLineBox := lineHeight == 0
 
 		// Block fragmentation: check if this line fits in the current fragmentainer.
-		// Mirrors Blink's InlineLayoutAlgorithm fragmentation at the line-box level.
+		// Mirrors Blink's BlockLayoutAlgorithm::BreakBeforeChildIfNeeded for a
+		// line box child (block_layout_algorithm.cc:3144-3289 @ a9f50e522efa).
 		// Only check when we have a real (non-indefinite) fragmentainer block-size and
 		// this is NOT the initial balancing pass (which runs unconstrained to measure
 		// total content height).
-		if bla.space.HasBlockFragmentation &&
-			bla.space.FragmentainerBlockSize != Indefinite &&
-			!bla.space.IsInitialColumnBalancingPass {
+		if bla.space.HasKnownFragmentainerBlockSize() {
+			// A relayout breaks before the predetermined line. Mirrors the
+			// early-break branch of BlockLayoutAlgorithm::Layout
+			// (block_layout_algorithm.cc:1074-1089 @ a9f50e522efa):
+			// AddBreakBeforeChild with perfect appeal, then
+			// ConsumeRemainingFragmentainerSpace (the caller's
+			// setBreakingSize). No space shortage is propagated.
+			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, builder) {
+				builder.ClampBreakAppeal(bla.earlyBreak.GetBreakAppeal())
+				inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0)
+				break
+			}
 			// blockOffset is content-relative: measure the boundary and the
 			// "no progress yet" guard from the content edge's fragmentainer
 			// offset, so the container's own block-start border/padding both
@@ -1156,27 +1169,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// shortage is how much more space would let this line fit here.
 			shortage := blockOffset + lineHeight - fragEnd
 			if shortage > 0 && bla.fragmentainerOffsetForChildren+blockOffset > 0 {
-				// This line overflows. Stop here and signal the parent to create a
-				// break token so the next column resumes from this line.
-				// blockOffset > 0 guard: never emit an empty column (at least one
-				// line must have been placed, mirroring Blink's RequiresContent guard).
+				// This line overflows: MovePastBreakpoint failed. Before
+				// breaking, honor orphans and widows (or detect violations);
+				// breakBeforeLine reports whether to break before this line
+				// or to keep laying out lines past the fragmentainer end.
 				// Per Blink: shortage is the minimum additional space needed
 				// to fit the overflowing line (per-break-point), not the
 				// cumulative overflow across all fragmentainers.
-				inlineBreakToken = &BlockBreakToken{
-					Node: bla.node,
-					// Consumed is what this block laid out (its content up to
-					// the break), like the block-child token; the container's
-					// fragmentainer offset is not part of it.
-					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
-					InlineItemStartIndex: lineStartIdx,
-					InlineTextOffset:     lineStartTextOffset,
-					InlineShortage:       shortage,
-					SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
-				}
-				if bla.space.BreakToken != nil {
-					inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
-				}
 				// The appeal of breaking before this line: last resort
 				// without container separation, so the parent prefers a
 				// break before this block when it has one. Blink
@@ -1186,22 +1185,25 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A louis14
 				// line carries no break-before of its own (no block in
 				// inline), so its initial break-before is auto.
-				builder.SetBreakAppeal(CalculateBreakAppealBeforeWithStatus(
+				appealBefore := CalculateBreakAppealBeforeWithStatus(
 					bla.space, LayoutResultSuccess,
 					builder.JoinedBreakBetweenValue("auto"),
 					hasBreakOpportunityBeforeNextChild,
-					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode())))
-				break
-			}
-			// A line that does not fit is moved past anyway when breaking
-			// before it would make no progress (the first line in the
-			// fragmentainer). Report the space shortage so column balancing
-			// can stretch to fit the unbreakable line. Mirrors
-			// MovePastBreakpoint's move-past branch → PropagateSpaceShortage
-			// (fragmentation_utils.cc:1232-1243, :995-1014 @ a9f50e522efa),
-			// reached for line boxes through BlockLayoutAlgorithm::
-			// BreakBeforeChildIfNeeded (block_layout_algorithm.cc:3178-3181).
-			if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
+					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
+				if bla.breakBeforeLine(builder, &appealBefore, shortage, isEmptyLineBox) {
+					builder.SetBreakAppeal(appealBefore)
+					inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, shortage)
+					break
+				}
+			} else if shortage > 0 && bla.space.BlockFragmentationType == FragmentColumn {
+				// A line that does not fit is moved past anyway when breaking
+				// before it would make no progress (the first line in the
+				// fragmentainer). Report the space shortage so column balancing
+				// can stretch to fit the unbreakable line. Mirrors
+				// MovePastBreakpoint's move-past branch → PropagateSpaceShortage
+				// (fragmentation_utils.cc:1232-1243, :995-1014 @ a9f50e522efa),
+				// reached for line boxes through BlockLayoutAlgorithm::
+				// BreakBeforeChildIfNeeded (block_layout_algorithm.cc:3178-3181).
 				builder.PropagateSpaceShortage(shortage)
 			}
 		}
@@ -1218,6 +1220,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			BlockOffset:  blockOffset,
 		}
 		builder.AddChild(lineFragment, lineOffset)
+		if bla.space.HasBlockFragmentation && !isEmptyLineBox {
+			// Count the line for orphans / widows unless it is empty.
+			// Mirrors FragmentBuilder::PropagateFromFragment
+			// (fragment_builder.cc:487-492 @ a9f50e522efa).
+			builder.SetLineCount(builder.LineCount() + 1)
+		}
 		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
 		// 227-229, :479-489 @ a9f50e522efa): a line box records no
 		// BlockSizeForFragmentation, so it contributes its own block-size
@@ -1270,6 +1278,113 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		firstLineAscent = 0
 	}
 	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset, inlineBreakToken
+}
+
+// createInlineBreakToken returns the break token for breaking before the
+// line that starts at item lineStartIdx / text offset lineStartTextOffset,
+// blockOffset into this block's content. shortage is the space the line
+// lacked (0 for a predetermined early break).
+func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lineStartIdx, lineStartTextOffset int, shortage float64) *BlockBreakToken {
+	token := &BlockBreakToken{
+		Node: bla.node,
+		// Consumed is what this block laid out (its content up to the
+		// break), like the block-child token; the container's fragmentainer
+		// offset is not part of it.
+		ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset),
+		InlineItemStartIndex: lineStartIdx,
+		InlineTextOffset:     lineStartTextOffset,
+		InlineShortage:       shortage,
+		SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
+	}
+	if bla.space.BreakToken != nil {
+		token.ConsumedBlockSize = token.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
+	}
+	return token
+}
+
+// breakBeforeLine decides, for a line box that does not fit and may be
+// broken before, whether to break before it (true) or to keep laying out
+// lines past the fragmentainer end to find out where widows let the break
+// go (false). It lowers *appealBefore when breaking here leaves too few
+// lines before the break. Mirrors the line-box part of Blink's
+// BlockLayoutAlgorithm::BreakBeforeChildIfNeeded (block_layout_algorithm.cc:
+// 3187-3279 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); AttemptSoftBreak
+// (:3281-3285) always succeeds, as louis14 records no earlier block-level
+// breakpoints (EarlyBreak kBlock is not ported). Not ported: the BR
+// clear=all status check and text-box-trim's fragmentainer-end exception.
+func (bla *BlockLayoutAlgorithm) breakBeforeLine(builder *BoxFragmentBuilder, appealBefore *BreakAppeal, shortage float64, isEmptyLineBox bool) bool {
+	if bla.firstOverflowingLine == 0 && bla.space.BlockFragmentationType == FragmentColumn {
+		// The first overflowing line's shortage is the one reported, before
+		// knowing whether breaking here violates orphans / widows.
+		// PropagateSpaceShortage (fragmentation_utils.cc:995-1014).
+		builder.PropagateSpaceShortage(shortage)
+	}
+	lineCount := builder.LineCount()
+	if lineCount == 0 {
+		return true
+	}
+	if bla.firstOverflowingLine == 0 {
+		bla.firstOverflowingLine = lineCount
+	}
+	// Lines needed before the break: orphans. A resumed fragment has a
+	// break before it too, so its leading lines are also the previous
+	// fragment's widows.
+	minimumLineCount := bla.style.GetOrphans()
+	if isFirstFragment := bla.space.BreakToken == nil; !isFirstFragment {
+		minimumLineCount = max(minimumLineCount, bla.style.GetWidows())
+	}
+	if lineCount < minimumLineCount {
+		// Not enough orphans. Breaking before this block might do better,
+		// which only the parent can tell: permit the break, but mark it.
+		*appealBefore = min(*appealBefore, BreakAppealViolatingOrphansAndWidows)
+	} else {
+		// Enough lines before the break. Keep laying out lines until there
+		// are enough after it for widows (empty lines do not count).
+		widowsFound := lineCount - bla.firstOverflowingLine + 1
+		if widowsFound < bla.style.GetWidows() || isEmptyLineBox {
+			return false
+		}
+	}
+	bla.fitAllLines = true
+	return true
+}
+
+// lineEarlyBreak returns where to break instead, when the inline content
+// overflowed at firstOverflowingLine but more lines were laid out (to
+// honor widows): at the first overflowing line when there are enough widows
+// after it, or else at the line that best balances orphans and widows.
+// Mirrors the inline formatting context part of Blink's
+// BlockLayoutAlgorithm::FinalizeForFragmentation (block_layout_algorithm.cc:
+// 3106-3127 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported:
+// UpdateEarlyBreakBetweenLines (:3133, :3291-3325), whose breakpoint only
+// a block-level early break of an ancestor would consume.
+func (bla *BlockLayoutAlgorithm) lineEarlyBreak(builder *BoxFragmentBuilder) *EarlyBreak {
+	if bla.earlyBreak != nil || !bla.space.HasBlockFragmentation ||
+		bla.firstOverflowingLine == 0 || bla.firstOverflowingLine >= builder.LineCount() {
+		return nil
+	}
+	lineNumber := bla.firstOverflowingLine
+	if !bla.fitAllLines {
+		// All the lines were laid out, so there will not be enough widows
+		// unless the break goes earlier than where space ran out.
+		lineCount := builder.LineCount()
+		lineNumber = max(lineCount-bla.style.GetWidows(), min(lineCount, bla.style.GetOrphans()))
+	}
+	return NewLineEarlyBreak(lineNumber, BreakAppealPerfect)
+}
+
+// relayoutAndBreakEarlier lays this block out again, breaking at
+// earlyBreak. Mirrors Blink's LayoutAlgorithm::RelayoutAndBreakEarlier
+// (layout_algorithm.h:272-281 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// a fresh algorithm with the same input, box type and the early break, which
+// repeats the space shortage this pass's builder found (SetupRelayoutData,
+// :200-224).
+func (bla *BlockLayoutAlgorithm) relayoutAndBreakEarlier(earlyBreak *EarlyBreak, builder *BoxFragmentBuilder) *LayoutResult {
+	relayout := NewBlockLayoutAlgorithm(bla.ctx, bla.node, bla.space)
+	relayout.SetBoxType(bla.boxType)
+	relayout.earlyBreak = earlyBreak
+	relayout.relayoutSpaceShortage = builder.minimalSpaceShortage
+	return relayout.Layout()
 }
 
 // firstLineAllowedProperties lists the CSS properties that ::first-line is

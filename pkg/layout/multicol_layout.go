@@ -276,9 +276,7 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 // (column_layout_algorithm.cc:311-318 @ a9f50e522efa). The measurement pass is
 // excluded because it has no committed fragmentainer geometry to cap against.
 func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
-	return mla.space.HasBlockFragmentation &&
-		mla.space.FragmentainerBlockSize != Indefinite &&
-		!mla.space.IsInitialColumnBalancingPass
+	return mla.space.HasKnownFragmentainerBlockSize()
 }
 
 // fragmentainerBuilder is this multicol's FragmentainerBox: louis14 clones
@@ -419,6 +417,7 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 	desired := math.Max(0, total-previouslyConsumed)
 	return FinishFragmentation(FinishFragmentationInput{
 		SpaceLeft:                             spaceLeft,
+		FragmentainerCapacity:                 FragmentainerCapacity(mla.fragmentainerBuilder(), false),
 		HasBlockFragmentation:                 mla.space.HasBlockFragmentation,
 		IsColumnFragmentation:                 mla.space.BlockFragmentationType == FragmentColumn,
 		IsInitialColumnBalancingPass:          mla.space.IsInitialColumnBalancingPass,
@@ -585,8 +584,7 @@ func (mla *MulticolLayoutAlgorithm) offsetToNextRow(lineOffset float64) float64 
 // Layout performs multi-column layout and returns the result. Mirrors
 // Blink's ColumnLayoutAlgorithm::Layout (column_layout_algorithm.cc:265-431
 // @ a9f50e522efa): resolve the per-layout state, lay the parts out in
-// LayoutChildren (:337), then size and finish the fragment. The Phase 14b
-// defer before LayoutChildren has no Blink analog (deleted by plan WI-7).
+// LayoutChildren (:337), then size and finish the fragment.
 func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := mla.space.WritingDirection
 	mla.geom = CalculateInitialFragmentGeometry(mla.ctx, mla.node, mla.style, wdm, mla.space)
@@ -662,10 +660,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.remainingContentBlockSize = Indefinite
 	if mla.hasExplicitBlock {
 		mla.remainingContentBlockSize = mla.explicitBlockSize
-		if mla.space.BreakToken != nil &&
-			mla.space.HasBlockFragmentation &&
-			mla.space.FragmentainerBlockSize != Indefinite &&
-			!mla.space.IsInitialColumnBalancingPass {
+		if mla.space.BreakToken != nil && mla.space.HasKnownFragmentainerBlockSize() {
 			mla.remainingContentBlockSize -= mla.previouslyConsumedContentBlockSize()
 			if mla.remainingContentBlockSize < 0 {
 				mla.remainingContentBlockSize = 0
@@ -723,7 +718,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Mirrors Blink's ClearBorderScrollbarPaddingBlockStart in
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:504-510
 	// @ a9f50e522efa), as BlockLayoutAlgorithm.Layout does.
-	if !ShouldIncludeBlockStartBorderPadding(mla.hasClonedBoxDecorations, mla.space.BreakToken) {
+	if !ShouldIncludeBlockStartBorderPadding(mla.fragmentainerBuilder()) {
 		mla.geom.ClearBorderScrollbarPaddingBlockStart()
 	}
 
@@ -775,55 +770,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	mla.blockCursor = 0
 	mla.totalColumnsRendered = 0
-
-	// Phase 14b: defer entire multicol when its required column block-size
-	// can't fit in the remaining outer fragmentainer. Under column-fill:auto
-	// + explicit height, the inner column block-size is the explicit height;
-	// if that exceeds the outer remaining space, fragmenting in place would
-	// produce sub-columns much smaller than intended (and leak content into
-	// the outer overflow area — see multicol-nested-010). Returning a 0-height
-	// fragment with BlockSizeForFragmentation=explicitBlockSize makes the
-	// parent's BreakBeforeChildIfNeeded push the entire multicol to the next
-	// outer fragmentainer, where it has full space to lay out at its declared
-	// height. Mirrors Blink's BlockSizeForFragmentation hook for nested
-	// fragmentation. Only fires when starting fresh (no incoming BreakToken),
-	// not balanced, has explicit height, and there is container separation
-	// (the parent's break-before would be meaningful).
-	//
-	// Cmt-5e: also gated on FragmentainerOffset > 0. When the inner-mc starts
-	// at the OUTER fragmentainer's origin (FragmentainerOffset == 0), the
-	// outer column has already supplied a clean fresh starting offset — the
-	// inner-mc should fragment in place rather than be deferred. Without this
-	// narrowing, an inner-mc fresh in outer col-1 with declared > available
-	// would be deferred to col-2 (where it's still fresh and would defer
-	// again, infinitely). Mirrors Blink's behavior for fragmenting nested
-	// multicols where the OUTER context provides the fragmentation boundaries.
-	// Closure flip for `multicol-nested-011/032/033` cluster (combined with
-	// Cmt-5b's chain semantics; visual closure of `-011` further requires
-	// Phase 21 clip ungating).
-	if mla.isConstrainedByOuterFragmentation() && mla.hasExplicitBlock && mla.space.BreakToken == nil &&
-		// Deliberately the raw outer space (pre-LOU-391 formula): this gate
-		// has no Blink analog and is deleted by WI-7.
-		columnFill == "auto" && mla.space.FragmentainerBlockSize-mla.space.FragmentainerOffset < mla.explicitBlockSize &&
-		mla.space.FragmentainerOffset > 0 {
-		builder.SetSize(LogicalSize{
-			InlineSize: mla.contentInlineSize + mla.geom.InlineBorderPadding(),
-			BlockSize:  0,
-		})
-		builder.SetIntrinsicBlockSize(0)
-		builder.SetLayoutNode(mla.node)
-		// Zero-height defer fragment: omit border/padding to
-		// prevent top-border paint leaking into the skipped
-		// fragment. Only margin is needed for outer layout.
-		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-		builder.SetBoxData(&PhysicalBoxData{
-			Margin:    physMargin,
-			Scrollbar: PhysicalEdges{},
-		})
-		result := builder.Build()
-		result.BlockSizeForFragmentation = mla.explicitBlockSize + mla.geom.BlockBorderPadding()
-		return result
-	}
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil
@@ -1018,8 +964,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// block-size remains for the next outer fragmentainer, all in-flow
 	// children having been seen. Deferred out-of-flow fragmentainer
 	// descendants still resume through the walker, so HasSeenAllChildren
-	// stays false for them (Cmt-5b; multicol-nested-032).
-	if mla.isConstrainedByOuterFragmentation() && nestedFinish.DidBreakSelf {
+	// stays false for them (Cmt-5b; multicol-nested-032). Monolithic
+	// overflow still to steer clear of also needs a token
+	// (ShouldBreakInside, box_fragment_builder.h:494-497 @ a9f50e522efa).
+	if mla.isConstrainedByOuterFragmentation() &&
+		(nestedFinish.DidBreakSelf || nestedFinish.MonolithicOverflow > 0) {
 		result.BreakToken = mla.createBreakToken(nestedFinish)
 		result.BreakToken.HasSeenAllChildren = !builder.HasOutOfFlowFragmentainerDescendants()
 	}
@@ -1615,10 +1564,11 @@ func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, build
 // :65-78 @ a9f50e522efa), which read these fields from the builder.
 func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
 	return &BlockBreakToken{
-		Node:              mla.node,
-		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    sequenceNumberAfter(mla.space.BreakToken),
-		IsAtBlockEnd:      finish.IsAtBlockEnd,
+		Node:               mla.node,
+		ConsumedBlockSize:  layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
+		SequenceNumber:     sequenceNumberAfter(mla.space.BreakToken),
+		IsAtBlockEnd:       finish.IsAtBlockEnd,
+		MonolithicOverflow: finish.MonolithicOverflow,
 	}
 }
 
