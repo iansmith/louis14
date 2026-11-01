@@ -1031,9 +1031,12 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// Blink's `AdjustRoundedClipForOverflowClipMargin` flow.
 		layer.ClipMarginVisualBoxInset = visualBoxInset
 		layer.ClipMarginLength = marginLength
-		layer.HasClipMargin = applyMargin && (visualBoxInset[0] != 0 ||
-			visualBoxInset[1] != 0 || visualBoxInset[2] != 0 ||
-			visualBoxInset[3] != 0 || marginLength != 0)
+		// Any applied overflow-clip-margin — border-box 0 included —
+		// takes Blink's AdjustRoundedClipForOverflowClipMargin path
+		// (paint_property_tree_builder.cc:2909-2935 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which outsets the
+		// inner-border rrect whenever ShouldApplyOverflowClipMargin.
+		layer.HasClipMargin = applyMargin
 	}
 
 	// CSS clip: rect() — applies to absolutely positioned elements (CSS 2.1 §11.1.2).
