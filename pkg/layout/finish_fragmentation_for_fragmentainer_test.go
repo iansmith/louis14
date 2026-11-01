@@ -115,3 +115,41 @@ func TestFinishFragmentationForFragmentainer_LOU478(t *testing.T) {
 		}
 	})
 }
+
+// TestFinishFragmentationForFragmentainerKeepsSpannerParentWithOOFs_LOU478:
+// an empty spanner parent that holds out-of-flow fragmentainer descendants is
+// not empty: FinishFragmentationForFragmentainer clears the flag
+// (fragmentation_utils.cc:863-865 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); without such descendants the
+// flag stays.
+func TestFinishFragmentationForFragmentainerKeepsSpannerParentWithOOFs_LOU478(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 100}).
+		SetHasBlockFragmentation(true).
+		SetBlockFragmentationType(FragmentColumn).
+		SetFragmentainerBlockSize(100).
+		Build()
+	for _, tc := range []struct {
+		name    string
+		hasOOFs bool
+		want    bool
+	}{
+		{"oof_descendants_clear_flag", true, false},
+		{"no_oof_descendants_keep_flag", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := NewBoxFragmentBuilder(wdm)
+			builder.SetConstraintSpace(&space)
+			builder.SetBoxType(BoxTypeColumn)
+			builder.SetIsEmptySpannerParent(true)
+			if tc.hasOOFs {
+				builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{})
+			}
+			FinishFragmentationForFragmentainer(builder, FragmentainerBox{Space: &space}, 0)
+			if got := builder.IsEmptySpannerParent(); got != tc.want {
+				t.Errorf("IsEmptySpannerParent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
