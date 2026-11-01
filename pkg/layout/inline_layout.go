@@ -2079,6 +2079,17 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 	if bw.Top > 0 || bw.Right > 0 || bw.Bottom > 0 || bw.Left > 0 {
 		return true
 	}
+	// The rest of HasBoxDecorationBackground: a border image
+	// (HasBorderDecoration, computed_style.h:1446-1448) and a box shadow
+	// (computed_style.h:2436-2439 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// Text runs never paint these (BoxFragmentPainter /
+	// InlineBoxFragmentPainter do), so the inline needs its box fragment.
+	if src := style.GetBorderImageSource(); src != "" && src != "none" {
+		return true
+	}
+	if len(style.GetBoxShadow()) > 0 {
+		return true
+	}
 	// Outline: GetOutlineWidth returns 0 when outline-style is "none", so a
 	// positive width implies a non-none style. The span must emit a fragment
 	// so the renderer can build a PaintLayer and call drawOutline.
@@ -2386,8 +2397,42 @@ func createLineBoxEx(
 	// isLastFragment=false (no IE edges). Mirrors Blink's InlineLayoutStateStack
 	// persistence across NGInlineLayoutAlgorithm iterations.
 	var residualSpanStack []*InlineItem
+	// pendingBg buffers the inline box fragments produced by emit below so
+	// each is added to the line box at its OpenTag's position in item order
+	// (the positioning loop flushes them). The line box paints in insertion
+	// order, as Blink's BoxFragmentPainter::PaintInlineItems paints fragment
+	// items in order (core/paint/box_fragment_painter.cc:1984-2016 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an inline box's decorations
+	// paint after the line's earlier text and before its own content
+	// (InlineBoxFragmentPainter::Paint, own background first, then
+	// descendants). line.Results is in visual order, where an RTL span's
+	// CloseTag precedes its content, so a fragment is placed at its span's
+	// first tag in that order (firstTagIndex) — ahead of all its content, as
+	// Blink's box item precedes its descendant items whatever the bidi
+	// order. CloseTag fires innermost-first, so ties are broken by open
+	// order: ancestor inline backgrounds paint behind descendant ones.
+	type pendingBgFrag struct {
+		frag           *PhysicalFragment
+		offset         LogicalOffset
+		relativeOffset LogicalOffset
+		seq            int
+		itemIndex      int
+	}
+	var pendingBg []pendingBgFrag
+	firstTagIndex := make(map[*html.Node]int)
+	for i := range line.Results {
+		switch it := line.Results[i].Item; it.Type {
+		case InlineItemOpenTag, InlineItemCloseTag:
+			if _, seen := firstTagIndex[it.Node]; !seen {
+				firstTagIndex[it.Node] = i
+			}
+		}
+	}
 	{
 		type spanEntry struct {
+			// itemIndex is the line.Results index the span's fragment is
+			// added at; -1 for a span entering from a prior line.
+			itemIndex        int
 			item             *InlineItem
 			style            *css.Style
 			node             *html.Node
@@ -2420,22 +2465,6 @@ func createLineBoxEx(
 			openSeqCounter++
 			spanStack = append(spanStack, span)
 		}
-		// pendingBg buffers the inline span-background fragments produced by emit
-		// so they can be added to the line box in ancestor-first order. CloseTag
-		// fires innermost-first, which would otherwise place descendant
-		// backgrounds before their ancestors; the line box paints in insertion
-		// order, so an opaque ancestor background would overpaint a descendant's.
-		// Blink's InlineBoxFragmentPainter::Paint paints an inline box's own
-		// background FIRST, then recurses into descendants, so ancestor inline
-		// backgrounds paint behind descendant ones
-		// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-		type pendingBgFrag struct {
-			frag           *PhysicalFragment
-			offset         LogicalOffset
-			relativeOffset LogicalOffset
-			seq            int
-		}
-		var pendingBg []pendingBgFrag
 		emit := func(span spanEntry, endPos float64) {
 			// Emit a fragment when there is something to paint OR when the span
 			// establishes a containing block for positioned descendants.
@@ -2556,6 +2585,7 @@ func createLineBoxEx(
 				// Sticky is scroll-time, not layout-time — leave zero.
 				relativeOffset: span.cumulativeRelativeOffset,
 				seq:            span.openSeq,
+				itemIndex:      span.itemIndex,
 			})
 		}
 
@@ -2567,6 +2597,7 @@ func createLineBoxEx(
 				continue
 			}
 			pushSpan(spanEntry{
+				itemIndex:       -1,
 				item:            item,
 				style:           item.Style,
 				node:            item.Node,
@@ -2588,6 +2619,7 @@ func createLineBoxEx(
 			case InlineItemOpenTag:
 				if effStyle != nil {
 					pushSpan(spanEntry{
+						itemIndex:       firstTagIndex[r.Item.Node],
 						item:            r.Item,
 						style:           effStyle,
 						node:            r.Item.Node,
@@ -2621,14 +2653,21 @@ func createLineBoxEx(
 			residualSpanStack = append(residualSpanStack, span.item)
 		}
 
-		// Add the buffered inline-background fragments in ancestor-first order
-		// (lowest openSeq first), so descendant inline backgrounds paint on top
-		// of their ancestors' (matching Blink's paint-own-background-then-recurse
-		// order). openSeq is unique per push; SliceStable is belt-and-suspenders.
+		// Flush order: item index, then open order (lowest openSeq first,
+		// ancestor-first; openSeq is unique per push).
 		sort.SliceStable(pendingBg, func(a, b int) bool {
+			if pendingBg[a].itemIndex != pendingBg[b].itemIndex {
+				return pendingBg[a].itemIndex < pendingBg[b].itemIndex
+			}
 			return pendingBg[a].seq < pendingBg[b].seq
 		})
-		for _, p := range pendingBg {
+	}
+	// flushInlineBoxFragments adds the buffered inline box fragments whose
+	// item index is at or before line.Results index upTo.
+	flushInlineBoxFragments := func(upTo int) {
+		for len(pendingBg) > 0 && pendingBg[0].itemIndex <= upTo {
+			p := pendingBg[0]
+			pendingBg = pendingBg[1:]
 			lineBuilder.AddChildWithRelativeOffset(p.frag, p.offset, p.relativeOffset)
 		}
 	}
@@ -2713,6 +2752,7 @@ func createLineBoxEx(
 	}
 	inlinePos := alignOffset
 	for i := range line.Results {
+		flushInlineBoxFragments(i)
 		r := &line.Results[i]
 		// CSS Pseudo 4 §3.2: ::first-line style overrides apply to font/
 		// color/vertical-align on this line; consult EffectiveStyle() so a
@@ -3125,6 +3165,7 @@ func createLineBoxEx(
 
 		inlinePos += r.InlineSize
 	}
+	flushInlineBoxFragments(len(line.Results))
 
 	result := lineBuilder.Build()
 	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates
