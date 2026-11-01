@@ -593,15 +593,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// @ a9f50e522efa): resuming after a break inside this node.
 	mla.containerBuilder.SetIsFirstForNode(!mla.space.BreakToken.IsBreakInside())
 
-	// Phase 25 Cmt-3: an outer (non-nested) multicol IS the block-fragmentation
-	// context root. The flag gates `OutOfFlowLayoutPart.HandleFragmentation`'s
-	// drain pass. When this multicol is itself nested in another fragmentation
-	// context (`mla.space.HasBlockFragmentation`), an ANCESTOR multicol is the
-	// root; this builder must not drain. Mirrors Blink's
-	// `column_layout_algorithm.cc:391-414` / `out_of_flow_layout_part.cc:692`.
-	if !mla.space.HasBlockFragmentation {
-		mla.containerBuilder.SetIsBlockFragmentationContextRoot()
-	}
+	// Every multicol establishes a block fragmentation context
+	// (column_layout_algorithm.cc:333 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a nested one leaves its
+	// OOFs to the outermost (HandleOofFragmentation).
+	mla.containerBuilder.SetIsBlockFragmentationContextRoot()
 
 	// Callsite 1: seed the unpositioned list marker from the node + break token.
 	// Mirrors Blink cla.cc:240–253 (constructor body).
@@ -841,39 +837,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = mla.effectiveMaxBlockSize
 	}
 
-	// Phase 25 Cmt-2: when a nested multicol finishes with deferred OOF
-	// fragmentainer descendants, register a pending-multicol entry on its
-	// outgoing fragment so the outer fragmentation root knows to revisit
-	// this multicol via HandleMulticolsWithPendingOOFs. The descendants
-	// themselves stay on builder.oofPositionedFragmentainerDescendants and
-	// are emitted via FragmentedOofData at Build() time. Mirrors Blink's
-	// column_layout_algorithm.cc:391-414 (`InvolvedInBlockFragmentation`
-	// branch).
-	//
-	// Cmt-2 is behaviorally inert: HasOutOfFlowFragmentainerDescendants()
-	// never returns true until Cmt-3 lands the OOF-promotion logic in
-	// OutOfFlowLayoutPart.HandleFragmentation. MulticolOffset is left zero
-	// here; PropagateOOFFragmentainerDescendants accumulates the offset
-	// incrementally as the entry walks up through ancestor BLAs.
-	nestedDeferredOOFs := mla.space.HasBlockFragmentation && mla.containerBuilder.HasOutOfFlowFragmentainerDescendants()
-	if nestedDeferredOOFs {
-		mla.containerBuilder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
-	}
+	mla.addMulticolWithPendingOOFsIfNeeded()
 
-	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
-	// MulticolsWithPendingOOFs at the outermost fragmentation context root,
-	// before the candidates: OutOfFlowLayoutPart::Run calls
+	// Lay out the fragmentainer descendants at the outermost fragmentation
+	// context root before the candidates: OutOfFlowLayoutPart::Run calls
 	// HandleFragmentation before LayoutCandidates
 	// (out_of_flow_layout_part.cc:615-687 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the candidates the
 	// laid-out OOFs surface (a fixed child of a fragmented abspos) are
-	// handled with the others. No-op when this builder is not the root or
-	// has no pending entries.
+	// handled with the others.
 	mla.HandleOofFragmentation(nil)
 
-	// Handle out-of-flow candidates. When nestedDeferredOOFs is set the
-	// complete-path LayoutCandidates is skipped — the outer fragmentation
-	// root resolves them per fragmentainer in Cmt-3.
 	var propagatedOOF []OutOfFlowCandidate
 	// Candidates whose containing block is an inline in the column content
 	// (the anonymous column content propagates them unresolved) resolve
@@ -900,7 +874,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// OutOfFlowLayoutPart, out_of_flow_layout_part.cc:544-545 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		isFixedContainer := mla.node.IsFixedContainer()
-		if mla.node.IsAbsoluteContainer() && !nestedDeferredOOFs {
+		if mla.node.IsAbsoluteContainer() {
 			// absoluteCandidates are the candidates this multicol contains.
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
 			for _, cand := range mla.containerBuilder.outOfFlowCandidates {
@@ -910,13 +884,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					absoluteCandidates = append(absoluteCandidates, cand)
 				}
 			}
-			// Phase 25 Cmt-3: when this positioned multicol is itself nested
-			// inside another fragmentation context, abspos descendants whose
-			// CB is this multicol must wait for the outer drain. Promote them
-			// to fragmentainer descendants. Mirrors Blink's
-			// `out_of_flow_layout_part.cc:1158-1170`. After promotion,
-			// nestedDeferredOOFs becomes true (via HasOutOfFlowFragmentainerDescendants)
-			// so the AddMulticolWithPendingOOFs registration below also fires.
+			// A multicol involved in block fragmentation defers the
+			// candidates it contains to the outermost fragmentation context
+			// root (should_add_outer_fragmentainer_children_,
+			// out_of_flow_layout_part.cc:546-548, :1190-1203 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Their containing
+			// block is this multicol, which is not one of its own columns,
+			// so they bubble past it and are laid out in the outer columns.
 			if mla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
 				previouslyConsumed := previouslyConsumedBlockSize(mla.space.BreakToken)
 				previouslyConsumedContent := mla.previouslyConsumedContentBlockSize()
@@ -926,10 +900,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					mla.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
 				}
 				absoluteCandidates = nil
-				if !nestedDeferredOOFs && mla.containerBuilder.HasOutOfFlowFragmentainerDescendants() {
-					mla.containerBuilder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
-					nestedDeferredOOFs = true
-				}
 			}
 			if len(absoluteCandidates) > 0 {
 				oofPart := &OutOfFlowLayoutPart{
@@ -976,16 +946,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	result := mla.containerBuilder.Build()
 
 	// FinishFragmentation broke this nested multicol itself: declared
-	// block-size remains for the next outer fragmentainer, all in-flow
-	// children having been seen. Deferred out-of-flow fragmentainer
-	// descendants still resume through the walker, so HasSeenAllChildren
-	// stays false for them (Cmt-5b; multicol-nested-032). Monolithic
-	// overflow still to steer clear of also needs a token
-	// (ShouldBreakInside, box_fragment_builder.h:494-497 @ a9f50e522efa).
+	// block-size remains for the next outer fragmentainer, all children
+	// having been seen, so the fragments it resumes in have no columns
+	// (column_layout_algorithm.cc:687-694 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Monolithic overflow still
+	// to steer clear of also needs a token (ShouldBreakInside,
+	// box_fragment_builder.h:494-497 @ a9f50e522efa).
 	if mla.isConstrainedByOuterFragmentation() &&
 		(nestedFinish.DidBreakSelf || nestedFinish.MonolithicOverflow > 0) {
 		result.BreakToken = mla.createBreakToken(nestedFinish)
-		result.BreakToken.HasSeenAllChildren = !mla.containerBuilder.HasOutOfFlowFragmentainerDescendants()
+		result.BreakToken.HasSeenAllChildren = true
 	}
 
 	result.PropagatedOOFCandidates = propagatedOOF
@@ -1034,6 +1004,57 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	return result
+}
+
+// addMulticolWithPendingOOFsIfNeeded registers this nested multicol with
+// the outermost fragmentation context root when it holds fragmentainer
+// descendants: OOFs inside a nested fragmentation context are laid out in
+// its columns once the outermost context is reached (LayoutOOFsInMulticol).
+// Called after the fragment is finished (FinishFragmentation). Mirrors
+// Blink's ColumnLayoutAlgorithm::Layout (column_layout_algorithm.cc:390-400
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mla *MulticolLayoutAlgorithm) addMulticolWithPendingOOFsIfNeeded() {
+	if mla.space.HasBlockFragmentation && mla.containerBuilder.HasOutOfFlowFragmentainerDescendants() {
+		mla.containerBuilder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
+	}
+}
+
+// HandleOofFragmentation lays out the fragmentainer descendants and the
+// pending inner multicols' OOFs when this multicol is the outermost block
+// fragmentation context root; a multicol nested in another fragmentation
+// context leaves them to it. isContainingBlockUnfinished (nil once layout is
+// complete) reports a containing block that continues past this point; its
+// descendants are delayed. Mirrors the head of Blink's
+// OutOfFlowLayoutPart::HandleFragmentation (out_of_flow_layout_part.cc:
+// 717-721, should_add_outer_fragmentainer_children_ :546-548 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), run before LayoutCandidates
+// and before each spanner (column_layout_algorithm.cc:640-643).
+func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(isContainingBlockUnfinished func(*LayoutInputNode) bool) {
+	if mla.space.HasBlockFragmentation ||
+		(!mla.containerBuilder.HasOutOfFlowFragmentainerDescendants() && !mla.containerBuilder.HasMulticolsWithPendingOOFs()) {
+		return
+	}
+	part := mla.newFragmentationContextOOFPart()
+	part.isContainingBlockUnfinished = isContainingBlockUnfinished
+	part.HandleFragmentation(mla.fragmentainerProgression())
+}
+
+// newFragmentationContextOOFPart returns the OutOfFlowLayoutPart that lays
+// out fragmentainer descendants in this multicol's columns.
+func (mla *MulticolLayoutAlgorithm) newFragmentationContextOOFPart() *fragmentationContextOOFPart {
+	return &fragmentationContextOOFPart{
+		OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containingBlockWDM: mla.space.WritingDirection},
+		containerBuilder:    mla.containerBuilder,
+	}
+}
+
+// fragmentainerProgression is the offset from one column to the next.
+// Mirrors Blink's GetFragmentainerProgression for kFragmentColumn
+// (fragmentation_utils.cc:310-319 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which calls
+// ColumnInlineProgression.
+func (mla *MulticolLayoutAlgorithm) fragmentainerProgression() LogicalOffset {
+	return LogicalOffset{InlineOffset: ColumnInlineProgression(mla.style, mla.contentInlineSize)}
 }
 
 // LayoutChildren walks the multicol's parts (column content and spanners) in
@@ -1485,6 +1506,7 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult() *LayoutResult {
 	finish := mla.finishNestedFragment(true, hasInflowChildBreakInside)
 	applyNestedFinish(mla.containerBuilder, finish)
 	mla.clearBlockEndExcludedBy(finish)
+	mla.addMulticolWithPendingOOFsIfNeeded()
 	mla.containerBuilder.SetSize(LogicalSize{
 		InlineSize: mla.contentInlineSize + mla.containerBuilder.InitialFragmentGeometry().InlineBorderPadding(),
 		BlockSize:  finish.FragmentBlockSize,
@@ -1497,23 +1519,11 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult() *LayoutResult {
 	result.BreakToken = mla.createBreakToken(finish)
 	result.BreakToken.ChildBreakTokens = mla.outBuilder.Children()
 	result.BreakToken.MulticolData = mla.outgoingMulticolData
-	// Cmt-5b: when outBuilder is empty AND there are no deferred OOF
-	// fragmentainer descendants, the inner-mc's main loop has exhausted
-	// all in-flow children with no continuation needed, but declared
-	// block-size is not yet satisfied. The emitted BlockBreakToken must signal that all
-	// children are seen — otherwise NewMulticolPartWalker on resume
-	// finds parent token with no BreakToken entry but
-	// HasSeenAllChildren=false and starts iterating in-flow children
-	// from scratch, re-painting content already placed (the
-	// `multicol-nested-011` symptom under Cmt-A). Gated on the OOF
-	// flag so OOF-deferred resume paths in nested OOF tests
-	// (e.g. `multicol-nested-032`) are not short-circuited; OOF
-	// descendants are placed via `FragmentedOofData` propagation,
-	// not the in-flow walker, but their resume timing still depends
-	// on HasSeenAllChildren=false. Mirrors Blink's
-	// `BlockBreakToken::has_seen_all_children_` semantics
-	// (`block_break_token.h:120-160`).
-	if mla.outBuilder.IsEmpty() && !mla.containerBuilder.HasOutOfFlowFragmentainerDescendants() {
+	// No part left to resume: all children have been seen, so the walker
+	// finishes at once in the next fragment instead of laying the content
+	// out again (column_layout_algorithm.cc:66-77, :687-694 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; multicol-nested-011).
+	if mla.outBuilder.IsEmpty() {
 		result.BreakToken.HasSeenAllChildren = true
 	}
 	// Forward unplaced marker to the break token so the resumed fragment
@@ -1788,7 +1798,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		actualColumnCount := 0
 		forcedBreakCount := 0
 		hasViolatingBreak := false
-		rowHasDeferredOOFs := false
 
 		minBreakAppeal = BreakAppealPerfect
 
@@ -1928,35 +1937,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 					}
 				}
 			}
-			// Phase 25 Cmt-5c: track whether any column saw deferred OOF
-			// descendants this row, so we keep emitting empty trailing
-			// columns the outer drain needs as fragmentainers. Mirrors the
-			// flat `limited_multicol_container_builder.Children()` behavior
-			// (out_of_flow_layout_part.cc:1320-1373) — all inner column
-			// fragmentainers must exist regardless of in-flow content,
-			// otherwise OOF pieces past the last content-bearing column are
-			// dropped (multicol-nested-032's GREEN-RED-GREEN-RED stripes).
-			if result.Fragment != nil && result.Fragment.FragmentedOofData != nil {
-				rowHasDeferredOOFs = true
-			}
 			if colBreakToken == nil {
-				if mla.space.HasBlockFragmentation && rowHasDeferredOOFs {
-					inlineOffset += mla.usedColWidth + mla.columnGapSize
-					// Emit empty trailing columns only up to column-count: the
-					// break token is nil, so all in-flow content is placed and
-					// there is nothing left to overflow. overflowInline
-					// governs overflow of REMAINING CONTENT
-					// (cla.cc:1022-1025), not these OOF-drain padding columns —
-					// bounding this branch only by them let the loop emit
-					// unbounded empty columns forever
-					// (fixedpos-static-pos-with-viewport-cb-003 hang). The
-					// flat-fragmentainer requirement needs exactly column-count
-					// columns, so always stop there.
-					if col+1 >= mla.usedColumnCount {
-						break
-					}
-					continue
-				}
 				break // all content fit
 			}
 			inlineOffset += mla.usedColWidth + mla.columnGapSize
@@ -2013,7 +1994,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			part.isContainingBlockUnfinished = func(cb *LayoutInputNode) bool {
 				return breakTokenTreeContainsNode(lineBreakToken, cb)
 			}
-			part.HandleFragmentation(lineDescendants, mla.fragmentainerProgression())
+			part.LayoutFragmentainerDescendants(&lineDescendants, mla.fragmentainerProgression())
 			actualColumnCount += columnBalancingInfo.NumNewColumns
 			if columnBalancingInfo.MinimalSpaceShortage > 0 {
 				minSpaceShortage = min(minSpaceShortage, columnBalancingInfo.MinimalSpaceShortage)
@@ -2115,25 +2096,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	if mla.gapAccumulator != nil && hasWrapped && mla.rowGapSize > 0 {
 		mla.gapAccumulator.AddMainGap(lineOffset-mla.rowGapSize, SpannerGapNone)
 	}
-	// gapColumnCount is the number of this line's columns Blink would have
-	// created (new_columns.size()). no Blink analog: louis14's column loop
-	// can append empty OOF-drain columns after the column that consumed the
-	// in-flow content (its break token is nil) — the rowHasDeferredOOFs
-	// branch above, which Blink does not have — and those must not get cross
-	// gaps. Columns added later by CreateEmptyColumn (OutOfFlowLayoutPart)
-	// never reach the accumulator, as in Blink, where only LayoutLine records
-	// columns. TODO(LOU-493): drop this once the OOF-drain columns go.
-	gapColumnCount := 0
-	if mla.gapAccumulator != nil {
-		gapColumnCount = len(finalColumns)
-		for i, col := range finalColumns {
-			if col.result != nil && col.result.BreakToken == nil && col.result.ColumnSpannerPath == nil {
-				gapColumnCount = i + 1
-				break
-			}
-		}
-	}
-
 	// Commit final columns to the parent builder.
 	seenOOF := map[*LayoutInputNode]bool{}
 	isFirstCol := true
@@ -2167,7 +2129,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// Blink cla.cc:1295-1311 @ a9f50e522efa: every column after the
 		// first in a row has a cross gap before it, recorded once per column
 		// position across rows.
-		if columnIndexInRow < gapColumnCount {
+		if mla.gapAccumulator != nil {
 			if columnIndexInRow > 0 && mla.gapAccumulator.ShouldAddCrossGapAt(columnIndexInRow) {
 				mla.gapAccumulator.AddCrossGap(col.offset.InlineOffset)
 			}
@@ -2210,8 +2172,8 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	}
 	// Blink cla.cc:1316-1319 @ a9f50e522efa.
 	if mla.gapAccumulator != nil {
-		mla.gapAccumulator.UpdateMaxColumnsInRow(gapColumnCount)
-		mla.gapAccumulator.AddNumberOfColumnsForCurrentRow(gapColumnCount)
+		mla.gapAccumulator.UpdateMaxColumnsInRow(len(finalColumns))
+		mla.gapAccumulator.AddNumberOfColumnsForCurrentRow(len(finalColumns))
 	}
 
 	// Blink cla.cc:906, :927, :949-971 @ a9f50e522efa: the line contributes
