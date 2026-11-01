@@ -2901,15 +2901,10 @@ func expandShorthand(style *Style, property, value string) {
 		//   - a CSS-wide keyword applies to every animation-* longhand;
 		//   - an unresolved var() can't be decomposed (doing so would freeze
 		//     the non-name longhands to defaults before var() resolution).
-		switch trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed {
-		case "inherit", "initial", "unset", "revert", "revert-layer":
-			for _, lh := range []string{"animation-name", "animation-duration",
-				"animation-timing-function", "animation-delay",
-				"animation-iteration-count", "animation-direction",
-				"animation-fill-mode", "animation-play-state"} {
-				style.Set(lh, trimmed)
-			}
-		default:
+		if !setLonghandsToCSSWideKeyword(style, value, []string{"animation-name", "animation-duration",
+			"animation-timing-function", "animation-delay",
+			"animation-iteration-count", "animation-direction",
+			"animation-fill-mode", "animation-play-state"}) {
 			if containsVarFunction(value) {
 				style.Set("animation", value)
 			} else {
@@ -3565,12 +3560,7 @@ func expandOutlineShorthand(style *Style, value string) {
 	// the parent's outline-width / outline-style / outline-color (not just the
 	// color). Without this, `outline: inherit` resets width to medium and
 	// style to none, producing no visible outline on the inheriting element.
-	trimmed := strings.ToLower(strings.TrimSpace(value))
-	switch trimmed {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
-		style.Set("outline-width", trimmed)
-		style.Set("outline-style", trimmed)
-		style.Set("outline-color", trimmed)
+	if setLonghandsToCSSWideKeyword(style, value, []string{"outline-width", "outline-style", "outline-color"}) {
 		return
 	}
 
@@ -4440,6 +4430,24 @@ func expandBorderSideProperty(style *Style, property, value string) {
 	}
 }
 
+// setLonghandsToCSSWideKeyword sets every longhand to value when value is a
+// CSS-wide keyword (initial, inherit, unset, revert, revert-layer), the only
+// values a shorthand passes to all its longhands unchanged; the post-cascade
+// resolveInheritValues / resolveCSSWideKeywords passes then resolve them.
+// Reports whether it did.
+func setLonghandsToCSSWideKeyword(style *Style, value string, longhands []string) bool {
+	kw := strings.ToLower(strings.TrimSpace(value))
+	switch kw {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+	default:
+		return false
+	}
+	for _, lh := range longhands {
+		style.Set(lh, kw)
+	}
+	return true
+}
+
 // fontShorthandLonghands are the longhands of the `font` shorthand. Mirrors
 // Blink's css_properties.json5 "font" entry (:9642-9650 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
@@ -4458,11 +4466,7 @@ func expandFontProperty(style *Style, value string) {
 	// A CSS-wide keyword applies to every longhand, as for `background`
 	// (expandBackgroundProperty). Without this `font: inherit` has a single
 	// token and was dropped, leaving a less specific `font` in force.
-	switch kw := strings.ToLower(strings.TrimSpace(value)); kw {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
-		for _, lh := range fontShorthandLonghands {
-			style.Set(lh, kw)
-		}
+	if setLonghandsToCSSWideKeyword(style, value, fontShorthandLonghands) {
 		return
 	}
 	parts := strings.Fields(value)
@@ -4540,15 +4544,11 @@ func expandBackgroundProperty(style *Style, value string) {
 	// and the parent's background never propagates. Mirrors the shorthand
 	// expansion path in `core/css/properties/shorthands/background.cc`
 	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	switch strings.ToLower(trimmed) {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
-		for _, lh := range []string{
-			"background-color", "background-image", "background-repeat",
-			"background-position", "background-size", "background-origin",
-			"background-clip", "background-attachment",
-		} {
-			style.Set(lh, strings.ToLower(trimmed))
-		}
+	if setLonghandsToCSSWideKeyword(style, trimmed, []string{
+		"background-color", "background-image", "background-repeat",
+		"background-position", "background-size", "background-origin",
+		"background-clip", "background-attachment",
+	}) {
 		return
 	}
 
