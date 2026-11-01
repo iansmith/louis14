@@ -479,3 +479,35 @@ func TestElementScrollOffsetClampedByLayout(t *testing.T) {
 		t.Error("scroll bindings never updated layout")
 	}
 }
+
+// TestElementScrollTo pins Element.scrollTo(x, y) and scrollTo({left,
+// top}) (Element::scrollTo → ScrollLayoutBoxTo, dom/element.cc:3011-3046,
+// 3110-3175 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): both set the
+// scroll offset, an option left out keeps that axis, and the result is
+// clamped by layout like scrollLeft/scrollTop.
+func TestElementScrollTo(t *testing.T) {
+	doc := parseHTML(t, `<div id="s"></div>`)
+	s := getElementById(doc.Root, "s")
+	eng := New()
+	eng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+		off := s.ScrollOffset
+		off.X = max(0, min(off.X, 50))
+		off.Y = max(0, min(off.Y, 50))
+		return map[*html.Node]*layout.Box{s: {Node: s, ScrollOffset: off}}
+	})
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("s");
+		s.scrollTo(10, 20);
+		if (s.scrollLeft !== 10 || s.scrollTop !== 20) throw new Error("scrollTo(x,y) = " + s.scrollLeft + "," + s.scrollTop);
+		s.scrollTo({top: 30});
+		if (s.scrollLeft !== 10 || s.scrollTop !== 30) throw new Error("scrollTo({top}) = " + s.scrollLeft + "," + s.scrollTop);
+		s.scrollTo({left: 400, top: -5});
+		if (s.scrollLeft !== 50 || s.scrollTop !== 0) throw new Error("clamped = " + s.scrollLeft + "," + s.scrollTop);
+	`)
+	if err := eng.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if s.ScrollOffset != (html.ScrollOffset{X: 50}) {
+		t.Errorf("ScrollOffset = %+v, want {50 0}", s.ScrollOffset)
+	}
+}
