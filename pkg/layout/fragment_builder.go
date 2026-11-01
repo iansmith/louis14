@@ -319,6 +319,13 @@ func NewBoxFragmentBuilder(wdm WritingDirectionMode) *BoxFragmentBuilder {
 	return &BoxFragmentBuilder{wdm: wdm}
 }
 
+// NewLineBoxFragmentBuilder creates a builder for a line box. Mirrors
+// Blink's LineBoxFragmentBuilder (inline/line_box_fragment_builder.h:27-39
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func NewLineBoxFragmentBuilder(wdm WritingDirectionMode) *BoxFragmentBuilder {
+	return NewBoxFragmentBuilder(wdm)
+}
+
 // SetInlineSize sets the fragment's inline-size.
 func (b *BoxFragmentBuilder) SetInlineSize(v float64) {
 	b.size.InlineSize = v
