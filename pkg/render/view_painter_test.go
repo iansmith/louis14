@@ -57,3 +57,19 @@ func TestViewBackgroundTranslucentRootPaintsOnce(t *testing.T) {
 		t.Errorf("canvas at (100,100) = %v, want ~rgb(128,128,255) opaque", got)
 	}
 }
+
+// TestViewBackgroundPaintsUnderNegativeZChildren: the view background
+// paints before the root's stacking context, so a z-index:-1 child of a
+// body with a perspective (the body's background propagates) paints over
+// it (ViewPainter::PaintBoxDecorationBackground runs in the view's
+// background phase, view_painter.cc:76 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The negative-z patch of
+// css-transforms/perspective-split-by-zero-w-ref.html relies on this.
+func TestViewBackgroundPaintsUnderNegativeZChildren(t *testing.T) {
+	const src = `<!DOCTYPE html><html><body style="margin:0;perspective:500px;background:green">` +
+		`<p style="margin:0;position:absolute;z-index:-1;left:0;top:0;width:50px;height:50px;background:blue"></p></body></html>`
+	img := renderView(t, src)
+	if got, want := rgbAt(img, 25, 25), (color.RGBA{0, 0, 255, 255}); got != want {
+		t.Errorf("negative-z child at (25,25) = %v, want %v", got, want)
+	}
+}
