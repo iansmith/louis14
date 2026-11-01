@@ -1630,18 +1630,11 @@ func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, build
 // HasSeenAllChildren, the unpositioned list marker). Mirrors
 // BlockBreakToken::Create and its constructor (block_break_token.cc:34-42,
 // :65-78 @ a9f50e522efa), which read these fields from the builder.
-// louis14 deviation: the sequence number is the incoming token's plus one
-// for any incoming token; Blink skips the increment after a break-before
-// token (SetupFragmentBuilderForFragmentation, fragmentation_utils.cc:426-430).
 func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
-	seqNum := 0
-	if mla.space.BreakToken != nil {
-		seqNum = mla.space.BreakToken.SequenceNumber + 1
-	}
 	return &BlockBreakToken{
 		Node:              mla.node,
 		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    seqNum,
+		SequenceNumber:    sequenceNumberAfter(mla.space.BreakToken),
 		IsAtBlockEnd:      finish.IsAtBlockEnd,
 	}
 }

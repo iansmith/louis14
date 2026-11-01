@@ -2559,10 +2559,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// pending state takes precedence — consumed = pendingIntrinsicAtBreak
 	// preserves the pre-6.4.c frag-overflow reader's emitted value.
 	if pendingShouldBreakInside || didBreakSelf {
-		seqNum := 0
-		if incomingBreakToken != nil {
-			seqNum = incomingBreakToken.SequenceNumber + 1
-		}
 		var childBreakTokens []*BlockBreakToken
 		var hasSeenAllChildren bool
 		var isAtBlockEnd bool
@@ -2621,7 +2617,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			Node:                    bla.node,
 			IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
 			ConsumedBlockSize:       layoutunit.FromFloat64Round(consumedBlockSize),
-			SequenceNumber:          seqNum,
+			SequenceNumber:          sequenceNumberAfter(incomingBreakToken),
 			ChildBreakTokens:        childBreakTokens,
 			HasSeenAllChildren:      hasSeenAllChildren,
 			IsAtBlockEnd:            isAtBlockEnd,

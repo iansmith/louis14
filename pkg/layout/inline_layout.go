@@ -1172,11 +1172,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					InlineItemStartIndex: lineStartIdx,
 					InlineTextOffset:     lineStartTextOffset,
 					InlineShortage:       shortage,
-					SequenceNumber:       0,
+					SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
 				}
 				if bla.space.BreakToken != nil {
 					inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
-					inlineBreakToken.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
 				}
 				// The appeal of breaking before this line: last resort
 				// without container separation, so the parent prefers a
@@ -1184,13 +1183,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// BreakBeforeChildIfNeeded → CalculateBreakAppealBefore,
 				// whose break-between for an inline child is the joined
 				// value (fragmentation_utils.cc:133-136, :235-266), recorded
-				// by BreakBeforeChild (:944-1014) @ a9f50e522efa.
-				lineResult := &LayoutResult{Fragment: lineFragment}
+				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A louis14
+				// line carries no break-before of its own (no block in
+				// inline), so its initial break-before is auto.
 				builder.SetBreakAppeal(CalculateBreakAppealBeforeWithStatus(
 					bla.space, LayoutResultSuccess,
-					builder.JoinedBreakBetweenValue(lineResult.InitialBreakBefore),
+					builder.JoinedBreakBetweenValue("auto"),
 					hasBreakOpportunityBeforeNextChild,
-					IsBreakableAtStartOfResumedContainer(bla.space, lineResult)))
+					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode())))
 				break
 			}
 			// A line that does not fit is moved past anyway when breaking
