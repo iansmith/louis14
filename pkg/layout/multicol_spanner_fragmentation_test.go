@@ -29,14 +29,12 @@ func TestLayoutSpanner_RelayoutAfterRowSnap(t *testing.T) {
 	})
 }
 
-// TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass: the
-// spanner's breakpoint is examined whenever the multicol takes part in
-// block fragmentation (HasBlockFragmentation, cla.cc:1397), also in the
-// outer multicol's initial balancing pass, where MovePastBreakpoint
-// propagates the break-inside:avoid spanner's unbreakable block-size, its
-// offset included (fragmentation_utils.cc:1110-1118, CalculateUnbreakable
-// BlockSize). The outer columns are 10 + 80 = 90px tall.
-func TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass(t *testing.T) {
+// TestLayoutSpanner_BreakBeforePropagatesSpaceShortage: a break before a
+// spanner reports its space shortage (BreakBeforeChild → PropagateSpaceShortage,
+// fragmentation_utils.cc:943-976, :995-1014), so the balancing outer
+// multicol stretches until the break-inside:avoid spanner fits after the
+// inner line: 50 (balanced estimate) → 80 → 90px.
+func TestLayoutSpanner_BreakBeforePropagatesSpaceShortage(t *testing.T) {
 	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
 		`<div id=outer style="columns:2;width:400px;gap:0">`+
 		`<div id=inner style="columns:2;gap:0">`+
@@ -50,5 +48,28 @@ func TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass(t *testing.T
 		"a":     {{0, 0, 100, 10}, {100, 0, 100, 10}},
 		"s":     {{0, 10, 200, 80}},
 		"c":     {{200, 0, 100, 10}, {300, 0, 100, 10}},
+	})
+}
+
+// TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass: the
+// spanner's breakpoint is examined whenever the multicol takes part in block
+// fragmentation (HasBlockFragmentation, cla.cc:1396-1411), also in the outer
+// multicol's initial balancing pass, where the spanner's forced
+// break-before splits the outer content into two runs (40/2 = 20px, then
+// 20 + 120/2 = 80px), so the outer columns are 80px tall.
+func TestLayoutSpanner_BreakBeforeChildIfNeededInOuterBalancingPass(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+		`<div id=outer style="columns:2;width:400px;gap:0">`+
+		`<div id=inner style="columns:2;gap:0">`+
+		`<div id=a style="height:40px"></div>`+
+		`<div id=s style="column-span:all;break-before:column;height:20px"></div>`+
+		`<div id=c style="height:120px"></div>`+
+		`</div></div>`)
+	checkRects(t, got, map[string][]fragRect{
+		"outer": {{0, 0, 400, 80}},
+		"inner": {{0, 0, 200, 80}, {200, 0, 200, 80}},
+		"a":     {{0, 0, 100, 20}, {100, 0, 100, 20}},
+		"s":     {{200, 0, 200, 20}},
+		"c":     {{200, 20, 100, 60}, {300, 20, 100, 60}},
 	})
 }
