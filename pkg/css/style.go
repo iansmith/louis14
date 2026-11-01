@@ -206,6 +206,13 @@ type Style struct {
 	// from (core/css/css_to_length_conversion_data.cc:84-93 @
 	// 5992657f556bcd9d207a4aca187488462f027cab).
 	remFontSize optionalFloat
+
+	// isInBlockifyingDisplay is ComputedStyle::IsInBlockifyingDisplay: set
+	// by AdjustStyleForDisplay when this style's layout parent blockifies
+	// its children (style_adjuster.cc:765-766 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Read through
+	// IsInBlockifyingDisplay / BlockifiesChildren.
+	isInBlockifyingDisplay bool
 }
 
 func NewStyle() *Style {
@@ -227,6 +234,7 @@ func (s *Style) Clone() *Style {
 	}
 	dst.CascadedProps = s.CascadedProps       // shared by reference; never mutated post-cascade
 	dst.UAShadowHostData = s.UAShadowHostData // shared by reference; never mutated after AdjustHostStyle
+	dst.isInBlockifyingDisplay = s.isInBlockifyingDisplay
 	return dst
 }
 
@@ -7132,6 +7140,14 @@ const (
 	// box that holds all children (`layout_ruby_as_block.{h,cc}`).
 	DisplayBlockRuby   DisplayType = "block ruby"
 	DisplayInlineTable DisplayType = "inline-table"
+	// DisplayMath / DisplayBlockMath are `display: math` (= `inline math`)
+	// and `display: block math`: Blink EDisplay::kMath / kBlockMath
+	// (css_value_id_mappings.h:234-235 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). They only survive the
+	// computed-style pass on MathML elements; AdjustComputedStyle maps them
+	// to inline / block elsewhere.
+	DisplayMath      DisplayType = "math"
+	DisplayBlockMath DisplayType = "block math"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -7214,7 +7230,7 @@ func (s *Style) GetDisplay() DisplayType {
 					hasListItem = true
 				case "inline", "block":
 					outer = f
-				case "flow", "flow-root", "flex", "grid", "table", "ruby":
+				case "flow", "flow-root", "flex", "grid", "table", "ruby", "math":
 					inner = f
 				}
 			}
@@ -7239,6 +7255,10 @@ func (s *Style) GetDisplay() DisplayType {
 				return DisplayRuby
 			case "block ruby":
 				return DisplayBlockRuby
+			case "inline math":
+				return DisplayMath
+			case "block math":
+				return DisplayBlockMath
 			}
 			// Remaining forms collapse to the outer type: `inline flow` →
 			// inline; `block flow` and unrecognized inners → block (via the
@@ -7296,6 +7316,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayRubyText
 		case "inline-table":
 			return DisplayInlineTable
+		case "math":
+			return DisplayMath
 		}
 	}
 	return DisplayBlock
@@ -7327,31 +7349,33 @@ func EquivalentInlineDisplay(d DisplayType) DisplayType {
 	return d
 }
 
-// EquivalentBlockDisplay returns the block-level display value that an
-// inline-level display maps to when its formatting context demands a
-// block child. Mirrors Blink's
-// `core/css/resolver/style_adjuster.cc:248-301` `EquivalentBlockDisplay`
-// @ 43cee02dc59fdad798675a735737510ecf0c9064. Block-level displays —
-// including kListItem (:258-262) — are returned unchanged, so
+// EquivalentBlockDisplay returns the block-level display value an
+// inline-level (or internal table / ruby-text / contents) display maps to
+// when it is blockified. Mirrors Blink's EquivalentBlockDisplay
+// (core/css/resolver/style_adjuster.cc:248-299 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Block-level displays —
+// including kListItem and kFlowRoot (:250-261) — are returned unchanged, so
 // list-item-ness survives blockification (a floated `display: list-item`
-// pseudo still generates its ::marker, LOU-358).
+// pseudo still generates its ::marker, LOU-358). kNone is NOTREACHED in
+// Blink; callers never pass it, and it is returned unchanged here.
 func EquivalentBlockDisplay(d DisplayType) DisplayType {
 	switch d {
-	case DisplayInlineBlock, DisplayInline, DisplayFlowRoot:
-		return DisplayBlock
+	case DisplayInlineTable:
+		return DisplayTable
 	case DisplayInlineFlex:
 		return DisplayFlex
 	case DisplayInlineGrid:
 		return DisplayGrid
-	case DisplayInlineTable:
-		return DisplayTable
+	case DisplayMath:
+		return DisplayBlockMath
 	case DisplayRuby:
 		return DisplayBlockRuby
-	case DisplayRubyText:
-		return DisplayBlock
 	case DisplayInlineListItem:
-		// style_adjuster.cc:277-278 @ 43cee02d: kInlineListItem → kListItem.
 		return DisplayListItem
+	case DisplayContents, DisplayInline, DisplayInlineBlock,
+		DisplayTableRowGroup, DisplayTableHeaderGroup, DisplayTableFooterGroup,
+		DisplayTableRow, DisplayTableCell, DisplayTableCaption, DisplayRubyText:
+		return DisplayBlock
 	}
 	return d
 }

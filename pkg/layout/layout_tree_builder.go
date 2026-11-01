@@ -255,6 +255,19 @@ func assignDOMIndices(root *LayoutInputNode) {
 // buildNode recursively wraps a DOM node and its children.
 func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	style := b.styles[node]
+	// <br> and <wbr> always create a text-like LayoutBR / LayoutWordBreak
+	// whatever their computed display, so a <br> blockified as a flex item
+	// still lays out as a line break inside the surrounding text run.
+	// louis14 picks the layout algorithm from display, so the layout node
+	// gets an inline copy of the style. Mirrors HTMLBRElement::
+	// CreateLayoutObject (core/html/html_br_element.cc:64-68) and
+	// HTMLWBRElement::CreateLayoutObject (html_wbr_element.cc:41-43 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if style != nil && (node.TagName == "br" || node.TagName == "wbr") &&
+		style.GetDisplay() != css.DisplayInline {
+		style = style.Clone()
+		style.Set("display", string(css.DisplayInline))
+	}
 
 	lin := &LayoutInputNode{
 		DOMNode: node,
@@ -385,16 +398,12 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			// ::before/::after on the contents element are also generated;
 			// see expandContentsChildren. Mirrors Blink's
 			// LayoutObjectIsNeeded() returning false for display:contents
-			// (third_party/blink/renderer/core/dom/element.cc @
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			// (core/dom/element.cc:4226-4229 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			if childStyle.GetDisplay() == css.DisplayContents {
-				// CSS Display 3 §3.1 "Unboxing in HTML": replaced /
-				// form-control / SVG-only elements ignore
-				// display:contents and behave as display:none in
-				// louis14's element model.
-				if displayContentsBehavesAsNone(child.TagName) {
-					continue
-				}
+				// Elements that cannot unbox already computed to
+				// display:none (css.AdjustStyleForHTMLElement /
+				// AdjustStyleForSvgElement).
 				rawChildren = append(rawChildren, b.expandContentsChildren(child)...)
 				continue
 			}
@@ -531,38 +540,6 @@ func unboxPseudoIfContents(pseudo *LayoutInputNode) []*LayoutInputNode {
 	return []*LayoutInputNode{pseudo}
 }
 
-// displayContentsBehavesAsNone reports whether an HTML element with
-// `display: contents` should be treated as `display: none` instead of
-// unboxing. Per CSS Display 3 §3.1 "Effect on the box tree" + the
-// "Unboxing in HTML" appendix, certain replaced / form-control / SVG
-// elements ignore `display: contents`; in louis14 (which does not yet
-// host the underlying element-specific renderers) the simplest faithful
-// behavior is to treat the contents value as `display: none` so neither
-// the element nor its children produce boxes.
-//
-// The list mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-// — see `LayoutTreeBuilderTraversal::DisplayContentsAffectsAncestors`
-// callers in `core/html/html_element.cc` and
-// `core/dom/element.cc::LayoutObjectIsNeeded`. Elements that DO unbox
-// (and therefore are NOT in this list) include `<button>`, `<details>`,
-// `<summary>`, `<fieldset>`, `<legend>` — these are tested by
-// display-contents-button.html, -details.html, -fieldset*.html.
-func displayContentsBehavesAsNone(tagName string) bool {
-	switch tagName {
-	case "br", "wbr",
-		"meter", "progress",
-		"canvas",
-		"embed", "object",
-		"audio", "video",
-		"iframe", "frame", "frameset",
-		"img",
-		"input", "textarea", "select",
-		"applet":
-		return true
-	}
-	return false
-}
-
 // expandContentsChildren returns the layout-tree children produced by a
 // `display: contents` element. Per CSS Display 3 §3.2 the contents element
 // itself generates no box; its DOM children participate in layout as if
@@ -632,12 +609,9 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 				continue
 			}
 			if childStyle.GetDisplay() == css.DisplayContents {
-				// CSS Display 3 §3.1 "Unboxing in HTML": certain HTML
-				// elements (replaced + most form controls + SVG-only)
-				// ignore display:contents and behave as display:none.
-				if displayContentsBehavesAsNone(child.TagName) {
-					continue
-				}
+				// Elements that cannot unbox already computed to
+				// display:none (css.AdjustStyleForHTMLElement /
+				// AdjustStyleForSvgElement).
 				out = append(out, b.expandContentsChildren(child)...)
 				continue
 			}
@@ -799,22 +773,6 @@ func isTablePartDisplay(d css.DisplayType) bool {
 	return false
 }
 
-// blockifiesChildren reports whether s blockifies its children (CSS Display
-// 3 §2.7: flex and grid containers). Mirrors Blink
-// ComputedStyle::BlockifiesChildren (core/style/computed_style.h:1790-1795
-// @ d4ecdfed88f962439247c2ad36b8fe47805b1520), which StyleAdjuster uses to
-// turn a table-cell flex/grid item into a block (style_adjuster.cc:765-772).
-func blockifiesChildren(s *css.Style) bool {
-	if s == nil {
-		return false
-	}
-	switch s.GetDisplay() {
-	case css.DisplayFlex, css.DisplayInlineFlex, css.DisplayGrid, css.DisplayInlineGrid:
-		return true
-	}
-	return false
-}
-
 // requiresAnonymousTableWrappers reports whether child is a table part that
 // needs an anonymous table generated around it (CSS 2.1 §17.2.1 rule 3). The
 // caller has already excluded table / row-group / row parents (they place
@@ -877,7 +835,7 @@ func anonymousTableDisplayFor(parent *css.Style) string {
 func (b *LayoutTreeBuilder) generateMissingTableParents(
 	children []*LayoutInputNode, parentStyle *css.Style,
 ) []*LayoutInputNode {
-	if parentStyle == nil || blockifiesChildren(parentStyle) {
+	if parentStyle == nil || parentStyle.BlockifiesChildren() {
 		return children
 	}
 	switch parentStyle.GetDisplay() {
@@ -1112,20 +1070,14 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// can compare ancestry correctly via Parent links). The pseudoNode
 	// is allocated below — defer the call until after pseudoNode exists.
 
-	// CSS 2.1 §9.7 / CSS Display 3 §2.7: blockify floated pseudo-elements.
-	// Blink: "floating elements need block-like outside display" →
-	// EquivalentBlockDisplay (style_adjuster.cc:1172-1178 @
-	// 43cee02dc59fdad798675a735737510ecf0c9064), which preserves
-	// list-item-ness — a floated `display: list-item` ::before/::after still
-	// generates its own ::marker below (WPT css-pseudo/
-	// marker-font-variant-numeric-default/-normal).
-	display := pseudoStyle.GetDisplay()
-	if pseudoStyle.GetFloat() != css.FloatNone {
-		if bd := css.EquivalentBlockDisplay(display); bd != display {
-			pseudoStyle.Set("display", string(bd))
-			display = bd
-		}
-	}
+	// StyleAdjuster runs on pseudo-element styles too, against the
+	// originating element's layout parent (LayoutTreeBuilderTraversal::
+	// LayoutParentElement skips display:contents, element_resolve_context.cc:
+	// 107 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): floats blockify
+	// (keeping list-item-ness, so a floated `display: list-item`
+	// ::before/::after still generates its own ::marker below), flex / grid
+	// items blockify, and math values compute to flow values.
+	css.AdjustComputedStyle(nil, pseudoStyle, css.LayoutParentStyle(node, b.styles))
 
 	// Create a synthetic DOM node for the pseudo-element.
 	pseudoNode := &html.Node{

@@ -3285,6 +3285,7 @@ func isSupportedDeclaration(property, value string) bool {
 			"list-item":   true,
 			"-webkit-box": true, "-webkit-inline-box": true,
 			"-webkit-flex": true, "-webkit-inline-flex": true,
+			"math": true,
 		}
 		return validDisplay[strings.ToLower(value)]
 	case "position":

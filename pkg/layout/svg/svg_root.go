@@ -208,20 +208,56 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 	return root
 }
 
-// layoutObjectIsNeeded reports whether elt gets a node in the SVG paint
-// tree: false when its resolved style has display:none. A nil resolver or
-// nil style (geometry-only callers) counts as displayed. Mirrors Blink
-// SVGElement::LayoutObjectIsNeeded (core/svg/svg_element.cc:873-875 @
+// layoutObjectIsNeeded reports whether elt gets a node of its own in the
+// SVG paint tree: false when its resolved style has display:none or
+// display:contents. A nil resolver or nil style (geometry-only callers)
+// counts as displayed. Mirrors Blink SVGElement::LayoutObjectIsNeeded
+// (core/svg/svg_element.cc:873-875 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), which defers to
-// Element::LayoutObjectIsNeeded (core/dom/element.cc:4211-4214 @ same
-// SHA). Divergence: Blink also skips display:contents; louis14 keeps
-// building those (LOU-438 L4).
+// Element::LayoutObjectIsNeeded (core/dom/element.cc:4226-4229 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The only SVG elements whose
+// display can still be contents here are nested <svg>, <g>, <use> and
+// <tspan> (css.AdjustStyleForSvgElement); see svgDisplayContents.
 func layoutObjectIsNeeded(elt ElementAdapter, styleResolver StyleResolver) bool {
 	if styleResolver == nil {
 		return true
 	}
 	style := styleResolver(elt)
-	return style == nil || style.GetDisplay() != css.DisplayNone
+	if style == nil {
+		return true
+	}
+	d := style.GetDisplay()
+	return d != css.DisplayNone && d != css.DisplayContents
+}
+
+// svgDisplayContents reports whether elt is a display:contents element
+// whose children are hoisted into its parent (css-display "Unboxing in
+// SVG"): it has no layout object of its own, but Blink attaches its
+// children to the nearest layout-parent ancestor
+// (LayoutTreeBuilderTraversal::LayoutParent,
+// core/dom/layout_tree_builder_traversal.cc:65-80 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func svgDisplayContents(elt ElementAdapter, styleResolver StyleResolver) bool {
+	if styleResolver == nil {
+		return false
+	}
+	style := styleResolver(elt)
+	return style != nil && style.GetDisplay() == css.DisplayContents
+}
+
+// buildSVGHoistedChildren builds the children of a display:contents
+// element into a style-less, transform-less SVGContainer, so they paint as
+// if they were children of its parent. No Blink analog: Blink parents the
+// children's layout objects directly; louis14's builder returns one node
+// per element, and a container without style or transform is transparent.
+func buildSVGHoistedChildren(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver, resources *SVGResourceRegistry) SVGNode {
+	container := NewSVGContainer("")
+	for _, child := range elt.SVGChildren() {
+		if c := buildSVGTreeWithResources(child, lengthCtx, styleResolver, resources); c != nil {
+			container.AppendChild(c)
+		}
+	}
+	return container
 }
 
 // buildSVGHiddenContainer walks elt's children only to register the
@@ -301,6 +337,9 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	// LayoutSVGHiddenContainer for display:none,
 	// core/svg/svg_g_element.cc:32-50 @
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+	if svgDisplayContents(elt, styleResolver) {
+		return buildSVGHoistedChildren(elt, lengthCtx, styleResolver, resources)
+	}
 	if !layoutObjectIsNeeded(elt, styleResolver) {
 		if tag == "g" {
 			buildSVGHiddenContainer(elt, lengthCtx, styleResolver, resources)

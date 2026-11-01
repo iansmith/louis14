@@ -107,28 +107,6 @@ func computedLength(s *Style, v string) string {
 	return v
 }
 
-// blockifiedByStyleAdjuster reports whether Blink's StyleAdjuster would have
-// given the host a block-level display before its AdjustStyle callback runs:
-// floats and out-of-flow boxes (style_adjuster.cc:1173-1178) and children of
-// a flex or grid container (:765-769). The element callback runs last
-// (:1436-1438), so AdjustHostStyle sees the blockified display.
-func blockifiedByStyleAdjuster(s *Style, parent *Style) bool {
-	if s.GetFloat() != FloatNone {
-		return true
-	}
-	switch s.GetPosition() {
-	case PositionAbsolute, PositionFixed:
-		return true
-	}
-	if parent != nil {
-		switch parent.GetDisplay() {
-		case DisplayFlex, DisplayInlineFlex, DisplayGrid, DisplayInlineGrid:
-			return true
-		}
-	}
-	return false
-}
-
 // blockFlowDisplay maps a fallback host's display to one louis14 lays out
 // with the block-flow algorithm. No Blink analog: Blink keeps the computed
 // display and instead picks the layout object class — a fallback <img> is
@@ -138,8 +116,8 @@ func blockifiedByStyleAdjuster(s *Style, parent *Style) bool {
 // is an atomic inline when inline-level. louis14 selects the layout
 // algorithm from display, so inline-level displays become inline-block and
 // block-level non-flow displays become block — the same move as the
-// orthogonal-flow inline → inline-block remap (resolveOrthogonalDisplay,
-// mirroring style_adjuster.cc:819-823).
+// orthogonal-flow inline → inline-block remap (AdjustStyleForDisplay,
+// mirroring style_adjuster.cc:819-824).
 func blockFlowDisplay(d DisplayType) DisplayType {
 	switch d {
 	case DisplayInline, DisplayInlineFlex, DisplayInlineGrid, DisplayInlineTable, DisplayRuby:
@@ -166,7 +144,7 @@ func blockFlowDisplay(d DisplayType) DisplayType {
 // ResolveAppliedTextDecorations: a display:inline host is not a
 // text-decoration propagation boundary in Blink, so its decorations are
 // resolved from its pre-remap display.
-func AdjustHostStyle(node *html.Node, s *Style, parent *Style) {
+func AdjustHostStyle(node *html.Node, s *Style) {
 	altText, altSet := node.AltText()
 	altAttr, _ := node.GetAttribute("alt")
 	srcAttr, _ := node.GetAttribute("src")
@@ -191,9 +169,6 @@ func AdjustHostStyle(node *html.Node, s *Style, parent *Style) {
 	if display == DisplayNone || display == DisplayContents {
 		return
 	}
-	if blockifiedByStyleAdjuster(s, parent) {
-		display = EquivalentBlockDisplay(display)
-	}
 	if !treatImageAsReplaced(s.UAShadowHostData) && display == DisplayInline {
 		s.Set("width", "auto")
 		s.Set("height", "auto")
@@ -210,11 +185,7 @@ func AdjustImageFallbackHostStylesInTree(root *html.Node, styles map[*html.Node]
 	if root.Type == html.ElementNode && root.TagName == "img" &&
 		root.LayoutDisposition == html.LayoutDispositionFallbackContent {
 		if s := styles[root]; s != nil {
-			var parent *Style
-			if root.Parent != nil {
-				parent = styles[root.Parent]
-			}
-			AdjustHostStyle(root, s, parent)
+			AdjustHostStyle(root, s)
 		}
 	}
 	for _, c := range root.Children {

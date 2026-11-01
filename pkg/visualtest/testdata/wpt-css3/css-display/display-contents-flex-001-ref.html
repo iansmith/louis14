@@ -1,15 +1,19 @@
 <!DOCTYPE html>
-<title>CSS display: contents flex reference</title>
+<meta charset="utf-8">
+<title>CSS Test Reference</title>
+<link rel="author" title="Emilio Cobos Álvarez" href="mailto:ecobos@igalia.com">
 <style>
-  body { margin: 0; }
-  .flex { display: flex; width: 300px; }
-  .item { width: 100px; height: 100px; }
-  .a { background: green; }
-  .b { background: blue; }
-  .c { background: lime; }
+.flex {
+  display: flex;
+}
+.inline {
+  display: inline;
+}
 </style>
+<p>Test passes if you see the word "PASS", with a "0" under the first "S", and no red</p>
 <div class="flex">
-  <div class="item a"></div>
-  <div class="item b"></div>
-  <div class="item c"></div>
+P
+  <div>A</div>
+  <div class="inline">S<div>0</div></div>
+  S
 </div>
