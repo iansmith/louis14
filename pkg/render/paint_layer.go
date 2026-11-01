@@ -1500,28 +1500,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// TransformPropertyTreeNode. Same suppression pattern as background-color
 	// above (line 594: `if box.Text == ""`).
 	if layout.IsTransformableBox(s, box.Node) && box.Text == "" {
-		// Collect individual transform properties.
-		var individualTransforms []css.Transform
-		if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
-			if txPct {
-				tx = (tx / 100) * box.Width
-			}
-			if tyPct {
-				ty = (ty / 100) * box.Height
-			}
-			individualTransforms = append(individualTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
-		}
-		if deg, ok := s.GetIndividualRotate(); ok {
-			individualTransforms = append(individualTransforms, css.Transform{Type: "rotate", Values: []float64{deg}})
-		}
-		if sx, sy, ok := s.GetIndividualScale(); ok {
-			individualTransforms = append(individualTransforms, css.Transform{Type: "scale", Values: []float64{sx, sy}})
-		}
-
-		// Collect shorthand transforms.
-		transforms := s.GetTransforms()
-
-		if len(individualTransforms) > 0 || len(transforms) > 0 {
+		// Individual transform properties, then the transform list, with
+		// translate percentages resolved against the border box.
+		if transforms := s.ResolvedTransformOperations(box.Width, box.Height); len(transforms) > 0 {
 			layer.HasTransform = true
 			layer.HasTransformPaint = true
 			// ResolveTransformOriginPx handles length, percent, and calc()
@@ -1532,23 +1513,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			// expand the 4×4 composition with T(0,0,oz) * M * T(0,0,-oz) so the
 			// projected 2D affine correctly accounts for the 3D origin shift.
 			layer.TransformOriginZ = s.ResolveTransformOriginZ()
-			// Resolve percentage translate values in shorthand transforms via the
-			// explicit IsPercent flag from the parser.
-			resolved := make([]css.Transform, len(transforms))
-			for i, t := range transforms {
-				resolved[i] = css.Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
-				copy(resolved[i].Values, t.Values)
-				if t.Type == "translate" {
-					if len(resolved[i].Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
-						resolved[i].Values[0] = (resolved[i].Values[0] / 100) * box.Width
-					}
-					if len(resolved[i].Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
-						resolved[i].Values[1] = (resolved[i].Values[1] / 100) * box.Height
-					}
-				}
-			}
-			// Compose: individual properties first, then shorthand.
-			layer.Transforms = append(individualTransforms, resolved...)
+			layer.Transforms = transforms
 		}
 	}
 

@@ -745,6 +745,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			children:    mla.node.groupedChildrenCache,
 			isAnonymous: true,
 		}
+		mla.node.contentNodeCache.adoptChildren()
 	}
 	mla.contentNode = mla.node.contentNodeCache
 
@@ -1291,8 +1292,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		// the line's break token (post-spanner column content, if any) is
 		// stored as the walker's nextColumnToken so it becomes the iteration
 		// AFTER the spanner.
-		spanner, spannerParent := spannerLeafNode(line.columnSpannerPath, mla.contentNode)
-		walker.MoveToSpanner(spanner, spannerParent, line.breakToken)
+		walker.MoveToSpanner(getSpannerFromPath(line.columnSpannerPath), line.breakToken)
 		return nil, false
 	}
 }
@@ -1583,18 +1583,11 @@ func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, build
 // HasSeenAllChildren, the unpositioned list marker). Mirrors
 // BlockBreakToken::Create and its constructor (block_break_token.cc:34-42,
 // :65-78 @ a9f50e522efa), which read these fields from the builder.
-// louis14 deviation: the sequence number is the incoming token's plus one
-// for any incoming token; Blink skips the increment after a break-before
-// token (SetupFragmentBuilderForFragmentation, fragmentation_utils.cc:426-430).
 func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
-	seqNum := 0
-	if mla.space.BreakToken != nil {
-		seqNum = mla.space.BreakToken.SequenceNumber + 1
-	}
 	return &BlockBreakToken{
 		Node:              mla.node,
 		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    seqNum,
+		SequenceNumber:    sequenceNumberAfter(mla.space.BreakToken),
 		IsAtBlockEnd:      finish.IsAtBlockEnd,
 	}
 }
@@ -1970,12 +1963,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				// the line out once more with columns tall enough to
 				// encompass the overflow — whether the taller multicol then
 				// stays is the parent's call (MovePastBreakpoint).
-				// BlockEndScrollableOverflow stand-in: the column's size or
-				// its content's furthest block-end. Unlike scrollable
-				// overflow it ignores relative offsets, transforms,
-				// out-of-flow children and overflow-clip-margin (fails safe:
-				// no regrowth).
-				blockEndOverflow := math.Max(colHeight, FragmentainerBlockSizeForFragmentation(wdm, colFrag))
+				blockEndOverflow := NewLogicalFragment(wdm, colFrag).BlockEndScrollableOverflow()
 				if lineOffset+blockEndOverflow > mla.spaceLeftForContent() {
 					if mla.space.IsInsideBalancedColumns && !mla.space.IsInitialColumnBalancingPass && hasShortage {
 						builder.PropagateSpaceShortage(minSpaceShortage)
@@ -2778,19 +2766,17 @@ func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType Span
 	mla.mainGaps = append(mla.mainGaps, MainGap{GapOffset: blockOffset, SpannerType: gapType})
 }
 
-// spannerLeafNode traverses a ColumnSpannerPath linked list and returns the
-// Box at the leaf (where Child == nil) — the actual column-span:all element,
-// which may be a grandchild or deeper descendant of the multicol flow thread
-// — and the block containing it (root when the spanner is a child of the
-// column content itself). Mirrors Blink's ColumnSpannerPath::SpannerBox()
-// (column_spanner_path.h).
-func spannerLeafNode(path *ColumnSpannerPath, root *LayoutInputNode) (spanner, parent *LayoutInputNode) {
-	parent = root
+// getSpannerFromPath traverses a ColumnSpannerPath linked list and returns
+// the Box at the leaf (where Child == nil) — the actual column-span:all
+// element, which may be a grandchild or deeper descendant of the multicol
+// flow thread. Mirrors Blink's GetSpannerFromPath
+// (column_layout_algorithm.cc:224-229 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func getSpannerFromPath(path *ColumnSpannerPath) *LayoutInputNode {
 	for path.Child != nil {
-		parent = path.Box
 		path = path.Child
 	}
-	return path.Box, parent
+	return path.Box
 }
 
 // addCrossGap records an inter-column gap position in crossGaps.
@@ -3052,11 +3038,13 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			return
 		}
 		anonStyle := css.CreateAnonymousStyleWithDisplay(parentStyle, string(css.DisplayBlock))
-		result = append(result, &LayoutInputNode{
+		wrapper := &LayoutInputNode{
 			style:       anonStyle,
 			children:    inlineRun,
 			isAnonymous: true,
-		})
+		}
+		wrapper.adoptChildren()
+		result = append(result, wrapper)
 		inlineRun = nil
 	}
 

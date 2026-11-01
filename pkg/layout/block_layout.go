@@ -726,10 +726,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
-		// no Blink analog: Blink decides per line box (non-zero height,
-		// fragmentation_utils.cc:885-892 @ a9f50e522efa); louis14 places
-		// inline content as one unit.
-		hasBreakOpportunityBeforeNextChild = true
 		// The inline content ends the margins adjoining this block's
 		// start, so a discarding strut (a resumed block) does not leak out
 		// as its end margin strut. Mirrors Blink ComputeInflowPosition
@@ -1481,17 +1477,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// The content placed before the break.
 					pendingIntrinsicAtBreak = blockCursor
 					pendingHaveIntrinsicAtBreak = true
-					// CSS Fragmentation §3.4.2: a non-last fragment's background
-					// extends to the fragmentainer boundary — here only inside
-					// balanced columns and when content was actually placed
-					// (blockCursor > 0): extending an empty fragment (e.g.
-					// break-inside:avoid on the first child) would confuse the
-					// balance loop. Blink stretches unconditionally
-					// (ConsumeRemainingFragmentainerSpace, :3167, moving the
-					// inflow position, :3084-3095); the gate is louis14's.
-					if blockCursor > 0 && bla.space.IsInsideBalancedColumns {
-						blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
-					}
+					// The breaking fragment occupies the rest of the
+					// fragmentainer, on every break-before (forced :3167, soft
+					// :3287, block_layout_algorithm.cc @ a9f50e522efa). While
+					// the column height is unknown (the initial balancing
+					// pass) this is a no-op, so the balance loop measures the
+					// content alone.
+					blockCursor = consumeRemainingFragmentainerSpace(blockCursor)
 					// Phase 12g: a soft break before the child reports its
 					// space shortage so the multicol balancing loop can stretch
 					// (Blink BreakBeforeChild → PropagateSpaceShortage,
@@ -1610,7 +1602,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
 			// 2767-2772 @ a9f50e522efa).
 			if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
-				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(resumeChildTokens[child])
+				hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, childResult.Fragment, resumeChildTokens[child])
 			}
 
 			// For a <fieldset>, the first/last baseline comes from the
@@ -2517,10 +2509,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// pending state takes precedence — consumed = pendingIntrinsicAtBreak
 	// preserves the pre-6.4.c frag-overflow reader's emitted value.
 	if pendingShouldBreakInside || didBreakSelf {
-		seqNum := 0
-		if incomingBreakToken != nil {
-			seqNum = incomingBreakToken.SequenceNumber + 1
-		}
 		var childBreakTokens []*BlockBreakToken
 		var hasSeenAllChildren bool
 		consumed := finalBlockSize
@@ -2561,7 +2549,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			Node:                    bla.node,
 			IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
 			ConsumedBlockSize:       layoutunit.FromFloat64Round(consumedBlockSize),
-			SequenceNumber:          seqNum,
+			SequenceNumber:          sequenceNumberAfter(incomingBreakToken),
 			ChildBreakTokens:        childBreakTokens,
 			HasSeenAllChildren:      hasSeenAllChildren,
 			IsAtBlockEnd:            isAtBlockEnd,
@@ -3400,13 +3388,21 @@ func hasPaintIsolation(style *css.Style) bool {
 // IsColumnSpanAll() && IsInColumnBfc() && HasBlockFragmentation()
 // (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa).
 func (bla *BlockLayoutAlgorithm) isColumnSpannerChild(child *LayoutInputNode) bool {
-	childStyle := child.Style()
 	return bla.space.HasBlockFragmentation &&
 		bla.space.BlockFragmentationType == FragmentColumn &&
-		childStyle != nil && childStyle.GetColumnSpan() == "all" &&
-		isSelfValidColumnSpanner(childStyle) &&
+		isColumnSpanAll(child) &&
 		!bla.space.ColumnSpannerDescendantsBlocked &&
 		!shouldPreventColumnSpannerDescendants(bla.node)
+}
+
+// isColumnSpanAll reports whether n is a column-span:all box that may span
+// columns on its own account. Mirrors the style half of Blink's
+// LayoutObject::IsColumnSpanAll (layout_object.h:1752-1757 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with isSelfValidColumnSpanner
+// standing in for IsValidColumnSpannerInTree.
+func isColumnSpanAll(n *LayoutInputNode) bool {
+	style := n.Style()
+	return style != nil && style.GetColumnSpan() == "all" && isSelfValidColumnSpanner(style)
 }
 
 // isSelfValidColumnSpanner returns true when an element with column-span:all
