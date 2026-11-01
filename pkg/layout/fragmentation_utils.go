@@ -150,15 +150,26 @@ func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *Logical
 
 // ShouldCloneBlockStartBorderPadding reports whether this fragment repeats
 // its block-start border/padding: box-decoration-break:clone, unless the
-// fragment is past the box's block end. Mirrors Blink's
+// fragment is past the box's block end, or follows monolithic overflow
+// with less space left than its block border+padding. Mirrors Blink's
 // ShouldCloneBlockStartBorderPadding (fragmentation_utils.cc:61-78 @
-// a9f50e522efa); its MonolithicOverflow clause is omitted because louis14
-// never sets BlockBreakToken.MonolithicOverflow.
-func ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
-	if !hasClonedBoxDecorations {
+// a9f50e522efa), which takes the builder; box is its louis14 stand-in (the
+// constraint space carries the previous break token).
+func ShouldCloneBlockStartBorderPadding(box FragmentainerBox) bool {
+	if !box.HasClonedBoxDecorations {
 		return false
 	}
-	return previousBreakToken == nil || !previousBreakToken.IsAtBlockEnd
+	previousBreakToken := box.Space.BreakToken
+	if previousBreakToken == nil {
+		return true
+	}
+	// Pushed by monolithic overflow into a fragmentainer with no room for
+	// the edges: don't repeat them.
+	if previousBreakToken.HasMonolithicOverflow() &&
+		FragmentainerSpaceLeft(box, false) < box.BorderScrollbarPadding.BlockSum() {
+		return false
+	}
+	return !previousBreakToken.IsAtBlockEnd
 }
 
 // HasBreakOpportunityBeforeNextChild reports whether placing a child leaves
@@ -182,9 +193,8 @@ func HasBreakOpportunityBeforeNextChild(wdm WritingDirectionMode, childFragment 
 // its block-start border/padding: the first fragment does, a resumed one
 // only when cloned. Mirrors Blink fragmentation_utils.cc:522-525 @
 // a9f50e522efa.
-func ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations bool, previousBreakToken *BlockBreakToken) bool {
-	return !previousBreakToken.IsBreakInside() ||
-		ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, previousBreakToken)
+func ShouldIncludeBlockStartBorderPadding(box FragmentainerBox) bool {
+	return !box.Space.BreakToken.IsBreakInside() || ShouldCloneBlockStartBorderPadding(box)
 }
 
 // ShouldIncludeBlockEndBorderPadding reports whether this fragment carries
@@ -681,7 +691,11 @@ type FinishFragmentationInput struct {
 	// SpaceLeft is FragmentainerSpaceLeft(builder, is_for_children=false):
 	// the space left from this box's border edge, or Indefinite when the
 	// fragmentainer block-size is unknown (initial column balancing pass).
-	SpaceLeft             float64
+	SpaceLeft float64
+	// FragmentainerCapacity is FragmentainerCapacity(builder,
+	// is_for_children=false), read to steer clear of incoming monolithic
+	// overflow.
+	FragmentainerCapacity float64
 	HasBlockFragmentation bool
 	// IsColumnFragmentation and IsInitialColumnBalancingPass gate the space
 	// shortage report (only multicol balancing consumes it).
@@ -723,13 +737,19 @@ type FinishFragmentationResult struct {
 	// SpaceShortage > 0 is the amount reported via PropagateSpaceShortage.
 	SpaceShortage           float64
 	ClampAppealToLastResort bool
+	// MonolithicOverflow > 0 is the space reserved with
+	// ReserveSpaceForMonolithicOverflow (box_fragment_builder.h:439-442 @
+	// a9f50e522efa): incoming monolithic overflow still to steer clear of in
+	// the next fragmentainer. The outgoing break token carries it
+	// (block_break_token.cc:77), and it makes the box break inside
+	// (BoxFragmentBuilder::ShouldBreakInside, box_fragment_builder.h:494-497).
+	MonolithicOverflow float64
 }
 
 // FinishFragmentation decides this fragment's block-size and whether the box
 // breaks, is at its block end, and which block edges it carries. Mirrors
 // Blink's FinishFragmentation (fragmentation_utils.cc:547-822 @
-// a9f50e522efa). Not ported: monolithic overflow (louis14 has no
-// BlockBreakToken.MonolithicOverflow), kDisableFragmentation for
+// a9f50e522efa). Not ported: kDisableFragmentation for
 // block-overflow-clipping boxes, and early breaks (kNeedsEarlierBreak).
 func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult {
 	spaceLeft := in.SpaceLeft
@@ -749,8 +769,12 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 
 	// There is a last-resort breakpoint before the trailing border/padding,
 	// if progress can still be guaranteed.
+	// Incoming monolithic overflow always guarantees progress: layout moves
+	// past it, adding as many fragments as it needs (:577-586).
+	hasIncomingMonolithicOverflow := previous.HasMonolithicOverflow()
 	subtractable := 0.0
-	if !in.PreventBreakBeforeBlockEndDecorations && desiredBlockSize > in.TrailingBorderPadding {
+	if !in.PreventBreakBeforeBlockEndDecorations &&
+		(desiredBlockSize > in.TrailingBorderPadding || hasIncomingMonolithicOverflow) {
 		subtractable = in.TrailingBorderPadding
 	}
 	// Tall unbreakable content may make this fragment take up more space.
@@ -792,8 +816,16 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 		return out
 	}
 
-	if in.ShouldBreakInside {
-		// A break token is needed to resume broken or unstarted children;
+	if out.FragmentBlockSize == 0 && hasIncomingMonolithicOverflow {
+		// Pushed wholly past what this fragmentainer holds of the incoming
+		// overflow: steer clear of the rest in the next one (:704-716).
+		out.MonolithicOverflow = max(0, previous.MonolithicOverflow-in.FragmentainerCapacity)
+	}
+
+	if in.ShouldBreakInside || out.MonolithicOverflow > 0 {
+		// A break token is needed to resume broken or unstarted children,
+		// or to add fragments for monolithic overflow (ShouldBreakInside,
+		// box_fragment_builder.h:494-497);
 		// decide whether this box itself is at its block end.
 		if isPastEnd {
 			out.IsAtBlockEnd = true
@@ -841,16 +873,21 @@ func FinishFragmentation(in FinishFragmentationInput) FinishFragmentationResult 
 // are set: a fragmentainer is never at its block end and never breaks
 // itself. Mirrors Blink's
 // FinishFragmentationForFragmentainer (fragmentation_utils.cc:823-866 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the monolithic
-// overflow reservation (:844-852; louis14 never sets
-// BlockBreakToken.MonolithicOverflow).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With incoming monolithic
+// overflow larger than its capacity it reserves the rest (:844-852), so it
+// breaks and its token carries the remainder.
 func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, box FragmentainerBox, fragmentsTotalBlockSize float64) FinishFragmentationResult {
 	space := box.Space
 	consumedBlockSize := previouslyConsumedBlockSize(space.BreakToken)
 	var out FinishFragmentationResult
 	if space.HasKnownFragmentainerBlockSize() {
+		capacity := FragmentainerCapacity(box, false)
 		out.FragmentBlockSize = space.FragmentainerBlockSize
-		out.ConsumedBlockSize = consumedBlockSize + FragmentainerCapacity(box, false)
+		out.ConsumedBlockSize = consumedBlockSize + capacity
+		if previous := space.BreakToken; previous.HasMonolithicOverflow() {
+			// Add fragmentainers as long as monolithic overflow requires it.
+			out.MonolithicOverflow = max(0, previous.MonolithicOverflow-capacity)
+		}
 	} else {
 		out.FragmentBlockSize = fragmentsTotalBlockSize
 		out.ConsumedBlockSize = consumedBlockSize + fragmentsTotalBlockSize
