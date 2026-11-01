@@ -4438,43 +4438,24 @@ func clampLineWidth(width float64) float64 {
 	return math.Floor(width)
 }
 
-// drawColumnRuleRect paints one pixel-snapped column-rule segment.
-// horizontalRule is true when the multicol's writing mode is vertical, so
-// the rule runs along the physical horizontal axis (Blink picks the
-// equivalent BoxSide at bfp.cc:1897-1902: kLeft for horizontal writing
-// modes, kTop otherwise). The rule thickness is the rect's cross extent.
-// Collapsed-border-model styles without a dedicated branch (groove, ridge,
-// inset, outset) fall through to a solid fill.
-func (r *Renderer) drawColumnRuleRect(style string, x, y, w, h float64, horizontalRule bool) {
-	switch style {
-	case "dashed", "dotted":
-		x1, y1, x2, y2, thickness := x+w/2, y, x+w/2, y+h, w
-		if horizontalRule {
-			x1, y1, x2, y2, thickness = x, y+h/2, x+w, y+h/2, h
-		}
-		if style == "dashed" {
-			r.drawDashedLine(x1, y1, x2, y2, thickness)
-		} else {
-			r.drawDottedLine(x1, y1, x2, y2, thickness)
-		}
-	case "double":
-		if horizontalRule {
-			third := h / 3
-			r.dc.DrawRectangle(x, y, w, third)
-			r.dc.Fill()
-			r.dc.DrawRectangle(x, y+h-third, w, third)
-			r.dc.Fill()
-		} else {
-			third := w / 3
-			r.dc.DrawRectangle(x, y, third, h)
-			r.dc.Fill()
-			r.dc.DrawRectangle(x+w-third, y, third, h)
-			r.dc.Fill()
-		}
-	default: // solid and collapsed-border-model fallbacks
-		r.dc.DrawRectangle(x, y, w, h)
-		r.dc.Fill()
+// drawColumnRuleRect paints one pixel-snapped column-rule segment through
+// BoxBorderPainter::DrawBoxSide (box_border_painter.cc:2497-2507 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Blink's gap decoration
+// painter does. horizontalRule is true when the multicol's writing mode is
+// vertical, so the rule runs along the physical horizontal axis (Blink
+// picks the equivalent BoxSide at bfp.cc:1897-1902: kLeft for horizontal
+// writing modes, kTop otherwise). Styles css.BorderStyle cannot hold
+// (groove, ridge, inset, outset) paint solid.
+func (r *Renderer) drawColumnRuleRect(style string, c css.Color, x, y, w, h float64, horizontalRule bool) {
+	bs := css.BorderStyle(style)
+	if bs == css.BorderStyleNone || bs == css.BorderStyleHidden {
+		return
 	}
+	side := BoxSideLeft
+	if horizontalRule {
+		side = BoxSideTop
+	}
+	r.drawLineForBoxSide(int(x), int(y), int(x+w), int(y+h), side, c, bs, 0, 0)
 }
 
 // drawOutline draws the CSS outline around the border-box, offset by outline-offset.
@@ -4590,9 +4571,16 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 		// the outer edge. Stand-in for Blink painting single-rect non-auto
 		// outlines through the border painter
 		// (BoxBorderPainter::PaintSingleRectOutline, outline_painter.cc:1022
-		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), which is not ported:
-		// borders now paint through BoxBorderPainter (box_border_painter.go)
-		// while outlines keep this pre-port geometry.
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A double outline goes
+		// through that port (paintSingleRectOutline) unless the CSS UI
+		// minimum-size clamp moved its rect; dashed/dotted keep this
+		// per-side geometry, which matches DrawDashedOrDottedBoxSide's.
+		if style == "double" && outerW > minDim && outerH > minDim {
+			ro, wi := layoutunit.FromFloat64Round(offset), layoutunit.FromFloat64Round(width)
+			r.paintSingleRectOutline(layer.BorderRadius, toLayoutRect(x, y, w, h), int(wi.Round()),
+				geometry.PhysicalBoxStrut{Top: ro, Right: ro, Bottom: ro, Left: ro}, layer.OutlineColor, css.BorderStyleDouble)
+			return
+		}
 		draw := r.drawDashedLine
 		switch style {
 		case "dotted":

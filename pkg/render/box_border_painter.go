@@ -29,7 +29,8 @@ import (
 //     DrawCurvedDashedDottedBoxSide's dashed centerline stroke (:1827-1861).
 //   - No bleed avoidance: louis14 always paints with Blink's
 //     kBackgroundBleedNone, so DrawBleedAdjustedDRRect is a plain FillDRRect.
-//   - PaintSingleRectOutline / PaintBorderArea are not ported.
+//   - PaintSingleRectOutline serves double outlines only (drawOutline keeps
+//     its own solid/dashed/dotted painting); PaintBorderArea is not ported.
 
 // BoxSide names a physical box side. Mirrors Blink's BoxSide
 // (core/layout/geometry/box_sides.h @ a9f50e52); the values index
@@ -369,6 +370,9 @@ type BoxBorderPainter struct {
 	r          *Renderer
 	radii      css.EllipticalRadii
 	borderRect geometry.PhysicalRect
+	// outerOutsets is zero for a border; an outline's outer edge outsets
+	// (outer_outsets_).
+	outerOutsets geometry.PhysicalBoxStrut
 
 	outer, inner FloatRoundedRect
 	edges        [4]BorderEdge
@@ -419,6 +423,32 @@ func newBoxBorderPainter(r *Renderer, layer *PaintLayer, rect geometry.PhysicalR
 
 	p.isRounded = p.outer.IsRounded()
 	return p
+}
+
+// paintSingleRectOutline paints a non-auto outline around rect as a border
+// of width outside rect outset by innerOutsets
+// (BoxBorderPainter::PaintSingleRectOutline and its constructor,
+// box_border_painter.h, box_border_painter.cc:1400-1427 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) paintSingleRectOutline(radii css.EllipticalRadii, rect geometry.PhysicalRect, width int, innerOutsets geometry.PhysicalBoxStrut, c css.Color, style css.BorderStyle) {
+	w := layoutunit.New(width)
+	p := &BoxBorderPainter{
+		r:              r,
+		radii:          radii,
+		borderRect:     rect,
+		outerOutsets:   innerOutsets.Add(geometry.PhysicalBoxStrut{Top: w, Right: w, Bottom: w, Left: w}),
+		isUniformStyle: true,
+		isUniformWidth: true,
+		isUniformColor: true,
+	}
+	for i := range p.edges {
+		p.edges[i] = newBorderEdge(width, c, style, true)
+	}
+	p.computeBorderProperties()
+	p.outer = PixelSnappedContouredBorderWithOutsets(radii, rect, p.outerOutsets)
+	p.isRounded = p.outer.IsRounded()
+	p.inner = PixelSnappedContouredBorderWithOutsets(radii, rect, innerOutsets)
+	p.Paint()
 }
 
 // computeBorderProperties (box_border_painter.cc:1429-1461).
@@ -517,11 +547,11 @@ func (p *BoxBorderPainter) paintBorderFastPath() bool {
 	return false
 }
 
-// doubleStripeOutsets (box_border_painter.cc:2467-2475); outer_outsets_ is
-// zero for PaintBorder.
+// doubleStripeOutsets (box_border_painter.cc:2467-2475).
 func (p *BoxBorderPainter) doubleStripeOutsets(outerStripe bool) geometry.PhysicalBoxStrut {
+	o := [4]layoutunit.LayoutUnit{p.outerOutsets.Top, p.outerOutsets.Right, p.outerOutsets.Bottom, p.outerOutsets.Left}
 	w := func(s BoxSide) layoutunit.LayoutUnit {
-		return layoutunit.New(-p.edges[s].GetDoubleBorderStripeWidth(outerStripe))
+		return o[s].Sub(layoutunit.New(p.edges[s].GetDoubleBorderStripeWidth(outerStripe)))
 	}
 	return geometry.PhysicalBoxStrut{Top: w(BoxSideTop), Right: w(BoxSideRight), Bottom: w(BoxSideBottom), Left: w(BoxSideLeft)}
 }
