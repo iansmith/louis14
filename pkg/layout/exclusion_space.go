@@ -282,3 +282,32 @@ func (es *ExclusionSpace) OffsetBlockPosition(delta float64) *ExclusionSpace {
 	}
 	return newES
 }
+
+// SetHasBreakBeforeFloat returns a copy recording a float on side that
+// breaks before (is pushed to the next fragmentainer).
+func (es *ExclusionSpace) SetHasBreakBeforeFloat(side ExclusionSide) *ExclusionSpace {
+	return es
+}
+
+// SetHasBreakInsideFloat returns a copy recording a float on side that
+// broke inside and resumes in the next fragmentainer.
+func (es *ExclusionSpace) SetHasBreakInsideFloat(side ExclusionSide) *ExclusionSpace {
+	return es
+}
+
+// NeedsClearancePastFragmentainer reports whether clearType clears past a
+// float that continues in the next fragmentainer.
+func (es *ExclusionSpace) NeedsClearancePastFragmentainer(clearType css.ClearType, wdm WritingDirectionMode) bool {
+	return false
+}
+
+// NeedsBreakBeforeFloat reports whether a float with clearType must break
+// before.
+func (es *ExclusionSpace) NeedsBreakBeforeFloat(clearType css.ClearType, wdm WritingDirectionMode) bool {
+	return false
+}
+
+// HasFragmentainerBreak reports whether any float broke before or inside.
+func (es *ExclusionSpace) HasFragmentainerBreak() bool {
+	return false
+}

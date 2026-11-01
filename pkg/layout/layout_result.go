@@ -98,6 +98,11 @@ type LayoutResult struct {
 	// nested-spanner early return).
 	BlockSizeForFragmentation float64
 
+	// HasBlockSizeForFragmentation is false where Blink's value is
+	// kIndefiniteSize: the fragment was not laid out with block
+	// fragmentation (BoxFragmentBuilder.Build records the value only then).
+	HasBlockSizeForFragmentation bool
+
 	// HasForcedBreak is true if this layout emitted a forced column/page break
 	// (break-before:column, break-after:column, etc.). Mirrors Blink's
 	// LayoutResult::HasForcedBreak() used by ColumnLayoutAlgorithm to count
@@ -584,6 +589,12 @@ type PhysicalFragment struct {
 	// (fragmentation_utils.go) for `TallestUnbreakableBlockSize`
 	// propagation during the initial column-balancing pass.
 	IsMonolithic bool
+
+	// IsFloating marks the fragment of a float. Mirrors Blink's
+	// PhysicalFragment::IsFloating (fragment_builder.cc:88 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 tags it at the
+	// float placement sites.
+	IsFloating bool
 
 	// notFirstForNode is set when this box fragment resumes its node after a
 	// break inside it (not its first fragment). Inverted so that every
