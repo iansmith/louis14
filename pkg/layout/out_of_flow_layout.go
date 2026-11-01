@@ -104,10 +104,9 @@ type OutOfFlowLayoutPart struct {
 	// isInitialColumnBalancingPass lays the contained candidates out here
 	// even then (:1179-1203).
 	isInitialColumnBalancingPass bool
-	// previousConsumedBlockSize / previousConsumedContentBlockSize are what
-	// the container's earlier fragments consumed (border-box and
-	// content-box), for AdjustFragmentainerDescendant.
-	previousConsumedBlockSize        float64
+	// previousConsumedContentBlockSize is the content block-size the
+	// container's earlier fragments consumed, for
+	// AdjustFragmentainerDescendant.
 	previousConsumedContentBlockSize float64
 
 	// cbOriginInBuilder is the offset of the CB's inline-start/block-start
@@ -170,7 +169,6 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 	}
 	p.shouldAddOuterFragmentainerChildren = InvolvedInBlockFragmentation(space)
 	p.isInitialColumnBalancingPass = space.IsInitialColumnBalancingPass
-	p.previousConsumedBlockSize = previouslyConsumedBlockSize(space.BreakToken)
 	p.previousConsumedContentBlockSize = previousConsumedContentBlockSize
 	return p
 }
@@ -189,8 +187,8 @@ func (p *OutOfFlowLayoutPart) Run() []OutOfFlowCandidate {
 	if len(candidates) > 0 {
 		return p.LayoutCandidates(candidates)
 	}
-	p.containerBuilder.AdjustFixedposContainingBlockForFragmentainerDescendants(p.previousConsumedBlockSize)
-	p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+	p.containerBuilder.AdjustFixedposContainingBlockForFragmentainerDescendants(p.previousConsumedContentBlockSize)
+	p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedContentBlockSize)
 	return nil
 }
 
@@ -243,8 +241,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 			// it CB-stitched. The CB's outgoing fragment isn't built yet, so
 			// the parent's PropagateOOFFragmentainerDescendants fills it in.
 			d := LogicalOofNodeForFragmentation{Candidate: candidate}
-			p.containerBuilder.AdjustFragmentainerDescendant(&d, false, p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
-			p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+			p.containerBuilder.AdjustFragmentainerDescendant(&d, false, p.previousConsumedContentBlockSize)
+			p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedContentBlockSize)
 			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
 			continue
 		}
@@ -1072,6 +1070,7 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	// (out_of_flow_layout_part.cc:870-878).
 	cbGeom := ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM)
 	bsp := cbGeom.BorderBoxPadding()
+	checkStackedOffset(d, LogicalOffset{InlineOffset: firstOffset.InlineOffset + bsp.InlineStart, BlockOffset: firstOffset.BlockOffset + bsp.BlockStart})
 	return containingBlockInfo{
 		size: LogicalSize{
 			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),
@@ -1179,11 +1178,20 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeTo
 	}
 	fragmentainer := (*childrenPtr)[index].fragment
 	fragmentainerSize := NewLogicalFragment(p.containingBlockWDM, fragmentainer)
+	// The fragmentainer's offset in stacked-fragmentainer coordinates: what
+	// the fragmentainers before it hold (Blink's
+	// fragmentainer_consumed_block_size_).
+	stackedBlockOffset := 0.0
+	for _, ch := range (*childrenPtr)[:index] {
+		if ch.fragment.IsFragmentainerBox() {
+			stackedBlockOffset += ClampedToValidFragmentainerCapacity(NewLogicalFragment(p.containingBlockWDM, ch.fragment).BlockSize())
+		}
+	}
 
 	hasActualBreakInside := false
 	for _, list := range [][]NodeToLayout{continued, pending} {
 		for i := range list {
-			if p.AddOOFToFragmentainer(&list[i], fragmentainer, fragmentainerSize.BlockSize(), fragmentainerOffset, fragmentedDescendants) {
+			if p.AddOOFToFragmentainer(&list[i], fragmentainer, fragmentainerSize.BlockSize(), fragmentainerOffset, stackedBlockOffset, fragmentedDescendants) {
 				hasActualBreakInside = true
 			}
 		}
@@ -1210,7 +1218,7 @@ func (p *fragmentationContextOOFPart) LayoutOOFsInFragmentainer(pending []NodeTo
 // two here (regular candidates, fragmentainer descendants); the
 // containing-block adjustment and fixedpos containing block it passes are
 // not ported (plan WI-3).
-func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fragmentainer *PhysicalFragment, fragmentainerBlockSize float64, fragmentainerOffset LogicalOffset, fragmentedDescendants *[]NodeToLayout) bool {
+func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fragmentainer *PhysicalFragment, fragmentainerBlockSize float64, fragmentainerOffset LogicalOffset, fragmentainerStackedBlockOffset float64, fragmentedDescendants *[]NodeToLayout) bool {
 	result := p.GenerateFragment(n, fragmentainerBlockSize)
 	if result == nil || result.Fragment == nil {
 		return false
@@ -1287,7 +1295,21 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 		}
 		p.containerBuilder.AddOutOfFlowCandidate(cand)
 	}
-	p.containerBuilder.PropagateOOFFragmentainerDescendants(result.Fragment, inRoot, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, nil)
+	// Its fragmentainer descendants' containing-block offsets: the OOF's
+	// content-box offset in the fragmentainer, plus the fragmentainer's
+	// stacked block offset (containing_block_adjustment,
+	// out_of_flow_layout_part.cc:3131-3149).
+	contentOffset := offset
+	if bd := result.Fragment.BoxData; bd != nil {
+		bp := ToLogicalEdges(PhysicalEdges{
+			Top: bd.Border.Top + bd.Padding.Top, Right: bd.Border.Right + bd.Padding.Right,
+			Bottom: bd.Border.Bottom + bd.Padding.Bottom, Left: bd.Border.Left + bd.Padding.Left,
+		}, p.containingBlockWDM)
+		contentOffset.InlineOffset += bp.InlineStart
+		contentOffset.BlockOffset += bp.BlockStart
+	}
+	p.containerBuilder.PropagateOOFFragmentainerDescendants(result.Fragment, contentOffset, LogicalOffset{},
+		layoutunit.FromFloat64Round(fragmentainerStackedBlockOffset), nil, nil, nil)
 	return brokeInside
 }
 
