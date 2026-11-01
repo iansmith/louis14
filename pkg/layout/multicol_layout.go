@@ -944,7 +944,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// handled with the others.
 	mla.HandleOofFragmentation(nil)
 
-	var propagatedOOF []OutOfFlowCandidate
 	// Candidates whose containing block is an inline in the column content
 	// (the anonymous column content propagates them unresolved) resolve
 	// here against the inline's fragments in the columns. Blink computes the
@@ -953,66 +952,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// out_of_flow_layout_part.cc:943-1011 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 unions the inline's
 	// fragments as placed in the columns, which matches for an inline
-	// within one column.
+	// within one column. The candidates the multicol contains are deferred
+	// to the outermost fragmentation context root when it is involved in
+	// block fragmentation; their containing block is this multicol, which
+	// is not one of its own columns, so they bubble past it and are laid
+	// out in the outer columns.
+	var propagatedOOF []OutOfFlowCandidate
 	if len(mla.containerBuilder.outOfFlowCandidates) > 0 {
-		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(mla.containerBuilder.outOfFlowCandidates)
-		if len(inlineCBCandidates) > 0 {
-			unresolved, extra := layoutInlineContainingBlockCandidates(mla.ctx, mla.containerBuilder, wdm,
-				LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize}, geom, inlineCBCandidates)
-			mla.containerBuilder.outOfFlowCandidates = append(append(regularCandidates, unresolved...), extra...)
-		}
-	}
-	if len(mla.containerBuilder.outOfFlowCandidates) > 0 {
-		// The multicol contains its absolute descendants when it is an
-		// absolute container, and its fixed ones too when it is a fixed
-		// container (transform, filter, containment: Blink's
-		// IsAbsoluteContainer / IsFixedContainer, read by the multicol's
-		// OutOfFlowLayoutPart, out_of_flow_layout_part.cc:544-545 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		isFixedContainer := mla.node.IsFixedContainer()
-		if mla.node.IsAbsoluteContainer() {
-			// absoluteCandidates are the candidates this multicol contains.
-			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range mla.containerBuilder.outOfFlowCandidates {
-				if cand.IsFixedPosition && !isFixedContainer {
-					fixedCandidates = append(fixedCandidates, cand)
-				} else {
-					absoluteCandidates = append(absoluteCandidates, cand)
-				}
-			}
-			// A multicol involved in block fragmentation defers the
-			// candidates it contains to the outermost fragmentation context
-			// root (should_add_outer_fragmentainer_children_,
-			// out_of_flow_layout_part.cc:546-548, :1190-1203 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Their containing
-			// block is this multicol, which is not one of its own columns,
-			// so they bubble past it and are laid out in the outer columns.
-			if mla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
-				previouslyConsumed := previouslyConsumedBlockSize(mla.space.BreakToken)
-				previouslyConsumedContent := mla.previouslyConsumedContentBlockSize()
-				for _, cand := range absoluteCandidates {
-					d := LogicalOofNodeForFragmentation{Candidate: cand}
-					mla.containerBuilder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
-					mla.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
-				}
-				absoluteCandidates = nil
-			}
-			if len(absoluteCandidates) > 0 {
-				oofPart := &OutOfFlowLayoutPart{
-					ctx:                 mla.ctx,
-					containingBlockWDM:  wdm,
-					containingBlockSize: LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize},
-					geom:                geom,
-					resolvesFixed:       isFixedContainer,
-				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, mla.containerBuilder); len(extra) > 0 {
-					fixedCandidates = append(fixedCandidates, extra...)
-				}
-			}
-			propagatedOOF = fixedCandidates
-		} else {
-			propagatedOOF = mla.containerBuilder.outOfFlowCandidates
-		}
+		propagatedOOF = NewOutOfFlowLayoutPart(mla.ctx, mla.containerBuilder, mla.space,
+			LogicalSize{InlineSize: mla.contentInlineSize, BlockSize: finalBlockSize}, LogicalEdges{},
+			mla.previouslyConsumedContentBlockSize()).Run()
 	}
 
 	if mla.isConstrainedByOuterFragmentation() {
@@ -1150,8 +1099,7 @@ func (mla *MulticolLayoutAlgorithm) HandleOofFragmentation(isContainingBlockUnfi
 // out fragmentainer descendants in this multicol's columns.
 func (mla *MulticolLayoutAlgorithm) newFragmentationContextOOFPart() *fragmentationContextOOFPart {
 	return &fragmentationContextOOFPart{
-		OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containingBlockWDM: mla.space.WritingDirection},
-		containerBuilder:    mla.containerBuilder,
+		OutOfFlowLayoutPart: OutOfFlowLayoutPart{ctx: mla.ctx, containerBuilder: mla.containerBuilder, containingBlockWDM: mla.space.WritingDirection},
 	}
 }
 

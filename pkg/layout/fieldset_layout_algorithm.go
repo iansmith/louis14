@@ -243,12 +243,11 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 	// HandleOofsAndSpecialDescendants (fieldset_layout_algorithm.cc:147):
 	// the fieldset is the containing block of a legend's out-of-flow
 	// descendants (the content box contains the content's own).
-	previouslyConsumed := previouslyConsumedBlockSize(fla.space.BreakToken)
-	propagatedOOF := resolveOutOfFlowCandidates(fla.ctx, fla.containerBuilder, fla.node, fla.space, builderGeom,
+	propagatedOOF := resolveOutOfFlowCandidates(fla.ctx, fla.containerBuilder, fla.space, builderGeom,
 		LogicalSize{
 			InlineSize: max(0, fla.geom.BorderBoxSize.InlineSize-builderGeom.InlineBorderPadding()),
 			BlockSize:  max(0, fragmentBlockSize-builderGeom.BlockBorderPadding()),
-		}, previouslyConsumed, fla.geom.Border.BlockStart)
+		}, max(0, previouslyConsumedBlockSize(fla.space.BreakToken)-fla.geom.Border.BlockStart))
 
 	result := fla.containerBuilder.Build()
 	result.Fragment.IsFieldsetContainer = true
