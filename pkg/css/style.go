@@ -3,6 +3,7 @@ package css
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -11947,6 +11948,9 @@ const (
 	ClipPathCircle  ClipPathType = "circle"
 	ClipPathEllipse ClipPathType = "ellipse"
 	ClipPathPolygon ClipPathType = "polygon"
+	// ClipPathInset is the inset() basic shape. Mirrors Blink's
+	// BasicShapeInset (core/style/basic_shapes.h).
+	ClipPathInset ClipPathType = "inset"
 	// ClipPathReference is the `url(#id)` variant. Carries a
 	// document-fragment id resolved at paint time against the SVG
 	// resource registry. Mirrors Blink's ReferenceClipPathOperation
@@ -11972,6 +11976,18 @@ type ClipPath struct {
 	CyPct     float64 // center y as percentage (-1 = not set)
 	PointsPct []bool  // per-coordinate: true = percentage, false = px
 
+	// inset() offsets from the reference box edges, order top, right,
+	// bottom, left (BasicShapeInset top_/right_/bottom_/left_). InsetsPct
+	// marks a percentage (0-100): top/bottom resolve against the box
+	// height, right/left against its width.
+	Insets    [4]float64
+	InsetsPct [4]bool
+	// inset() `round` corner radii, order TL, TR, BR, BL
+	// (BasicShapeInset *_radius_). InsetRadiiPct[i] = {Rx is %, Ry is %}:
+	// Rx resolves against the box width, Ry against its height.
+	InsetRadii    EllipticalRadii
+	InsetRadiiPct [4][2]bool
+
 	// ReferenceID is the fragment id of a `url(#id)` clip-path
 	// reference (without the leading `#`). Populated only when Type
 	// is ClipPathReference. Resolved by the SVG resource registry at
@@ -11996,10 +12012,65 @@ func (s *Style) GetClipPath() *ClipPath {
 	if strings.HasPrefix(val, "polygon(") {
 		return parseClipPathPolygon(val)
 	}
+	if strings.HasPrefix(val, "inset(") {
+		return parseClipPathInset(val)
+	}
 	if strings.HasPrefix(val, "url(") {
 		return parseClipPathReference(val)
 	}
 	return nil
+}
+
+// parseClipPathInset parses `inset( <length-percentage>{1,4} [ round
+// <'border-radius'> ]? )` (CSS Shapes 1 §3.1). The insets expand like
+// margin (TRBL) and the radii like the border-radius shorthand, as Blink's
+// ConsumeBasicShapeInset does (core/css/properties/css_parsing_utils.cc).
+// Returns nil when the arguments are invalid, which leaves the property
+// without a clip like any other invalid clip-path value.
+func parseClipPathInset(val string) *ClipPath {
+	parts := splitShorthandParts(extractParens(val, "inset"))
+	var radiusParts []string
+	if i := slices.Index(parts, "round"); i >= 0 {
+		parts, radiusParts = parts[:i], parts[i+1:]
+		if len(radiusParts) == 0 {
+			return nil
+		}
+	}
+	if len(parts) < 1 || len(parts) > 4 {
+		return nil
+	}
+	cp := &ClipPath{Type: ClipPathInset, RadiusPct: -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1}
+	for i, p := range expandFourValues(parts) {
+		v, pct, ok := parseClipPathValue(p)
+		if !ok {
+			return nil
+		}
+		cp.Insets[i], cp.InsetsPct[i] = v, pct
+	}
+	if radiusParts == nil {
+		return cp
+	}
+	// Re-join before splitting on `/`: a glued `10px/5px` survives
+	// splitShorthandParts as a single token.
+	hParts, vParts := radiusParts, radiusParts
+	if hHalf, vHalf, hasSlash := splitOnSlashOutsideParens(strings.Join(radiusParts, " ")); hasSlash {
+		hParts = splitShorthandParts(strings.TrimSpace(hHalf))
+		vParts = splitShorthandParts(strings.TrimSpace(vHalf))
+	}
+	if len(hParts) < 1 || len(hParts) > 4 || len(vParts) < 1 || len(vParts) > 4 {
+		return nil
+	}
+	h, v := expandFourValues(hParts), expandFourValues(vParts)
+	for i := range h {
+		rx, rxPct, okX := parseClipPathValue(h[i])
+		ry, ryPct, okY := parseClipPathValue(v[i])
+		if !okX || !okY || rx < 0 || ry < 0 {
+			return nil
+		}
+		cp.InsetRadii[i] = EllipticalRadius{Rx: rx, Ry: ry}
+		cp.InsetRadiiPct[i] = [2]bool{rxPct, ryPct}
+	}
+	return cp
 }
 
 // parseClipPathReference parses the `url(#id)` clip-path variant.
@@ -12301,6 +12372,28 @@ func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 			resolved.Ry = resolved.RyPct / 100 * boxHeight
 		} else if resolved.Ry < 0 {
 			resolved.Ry = boxHeight / 2
+		}
+	case ClipPathInset:
+		// BasicShapeInset::GetPath (basic_shapes.cc:352-373 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): top/bottom against
+		// the box height, left/right and every Rx against its width, Ry
+		// against its height.
+		for i := range resolved.Insets {
+			if resolved.InsetsPct[i] {
+				ref := boxHeight
+				if i == 1 || i == 3 {
+					ref = boxWidth
+				}
+				resolved.Insets[i] = resolved.Insets[i] / 100 * ref
+			}
+		}
+		for i := range resolved.InsetRadii {
+			if resolved.InsetRadiiPct[i][0] {
+				resolved.InsetRadii[i].Rx = resolved.InsetRadii[i].Rx / 100 * boxWidth
+			}
+			if resolved.InsetRadiiPct[i][1] {
+				resolved.InsetRadii[i].Ry = resolved.InsetRadii[i].Ry / 100 * boxHeight
+			}
 		}
 	case ClipPathPolygon:
 		for i := 0; i < len(resolved.Points)-1; i += 2 {
