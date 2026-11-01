@@ -878,22 +878,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
 				// in-flow position.
 				//
-				// Phase 25 (C38): when the CB is itself fragmented (this BLA is a continuation),
-				// `blockCursor` is fragment-LOCAL (resets to 0 at the start of each fragment).
-				// For the deferred OOF-fragmentation drain at the outer multicol — which slices
-				// the OOF across CB fragments using stitched-CB-relative coords — we need the
-				// static position in CB-STITCHED coords. Add the incoming break token's
-				// ConsumedBlockSize so the captured offset cumulates across CB fragments.
-				// Non-resumed passes (`incomingBreakToken == nil`) contribute 0 — no behavioral
-				// change. Mirrors Blink's static-position capture which uses
-				// stitched coords throughout (block_layout_algorithm.cc).
-				// The consumed block-size is border-box; the static
-				// position is content-relative, so the first fragment's
-				// block-start edge is taken out of it.
+				// The static position is fragment-local: Blink records
+				// previous_inflow_position.logical_block_offset with no
+				// consumed block-size (block_layout_algorithm.cc:1654-1656 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It is made
+				// stitched only for a fragmentainer descendant, at its
+				// containing block (AdjustFragmentainerDescendant).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
-				if previouslyConsumed > 0 {
-					staticBlockOffset += max(0, previouslyConsumed-declaredBlockStart)
-				}
 
 				// Static inline offset: block-level abspos gets inline-start (0).
 				// Inline-level abspos (display:inline/inline-*) in a block FC would
@@ -2469,21 +2460,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// descendant so the descendant payload bubbles up via
 			// FragmentedOofData. Mirrors Blink's
 			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
-			// `out_of_flow_layout_part.cc:1158-1170` (the
+			// `out_of_flow_layout_part.cc:1190-1200 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
 			// `should_add_outer_fragmentainer_children_` branch). The static
-			// position is already in this CB's content-box coords (it accumulated
-			// upward via PropagateOOFCandidates); preserve as-is. The CB's
+			// position arrives fragment-local in this CB's content-box coords
+			// (it accumulated upward via PropagateOOFCandidates);
+			// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
 			// outgoing fragment isn't yet built, so leave Fragment=nil — the
 			// parent's PropagateOOFFragmentainerDescendants will fill it in.
 			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
 				for _, cand := range absoluteCandidates {
-					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
-						Candidate:       cand,
-						ContainingBlock: LogicalOofContainingBlock{
-							// Fragment: nil — assigned by parent's propagator.
-							// Offset: zero — CB origin within its own content-box.
-						},
-					})
+					d := LogicalOofNodeForFragmentation{Candidate: cand}
+					builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+					builder.AddOutOfFlowFragmentainerDescendant(d)
 				}
 				absoluteCandidates = nil
 			}
