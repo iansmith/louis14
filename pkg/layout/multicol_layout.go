@@ -1386,6 +1386,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		fragOff := mla.fragmentainerOffsetForChildren() + blockOffset
 		status, isForced := BreakBeforeChildIfNeeded(mla.space, spanner, fullResult,
 			fragOff, mla.fragmentainerCapacityForChildren(), mla.hasProcessedFirstChild, mla.containerBuilder)
+		// The multicol keeps no early breaks yet: Blink's LayoutChildren
+		// returns kNeedsEarlierBreak for a better breakpoint before an
+		// earlier spanner and relays out (cla.cc:338-343, :635-637, :653-655
+		// @ a9f50e522efa), which needs the BreakStatus return shape and a
+		// relayout louis14's multicol lacks (ledger L60). Dropping the
+		// breakpoint keeps AttemptSoftBreak breaking before this spanner.
+		mla.containerBuilder.SetEarlyBreak(nil)
 		if status == BreakStatusBrokeBefore {
 			// BreakBeforeChild (fragmentation_utils.cc:943-976 @
 			// a9f50e522efa): report the space shortage so a balancing outer
@@ -2429,7 +2436,12 @@ measure:
 	if estimate < 1 {
 		estimate = 1
 	}
-	return estimate
+	// Never shorter than the tallest piece of unbreakable content, which
+	// may be less than the tallest run yet more than its balanced share
+	// (ConstrainColumnBlockSize, cla.cc:1740-1741 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; louis14's
+	// constrainColumnBlockSize holds the caps only).
+	return max(estimate, tallestUnbreakable)
 }
 
 // constrainColumnBlockSize clamps the candidate column height to the
@@ -2751,8 +2763,8 @@ func (mla *MulticolLayoutAlgorithm) positionAnyUnclaimedListMarker(
 //
 // Mirrors CSS 2.1 §9.2.1.1 anonymous block box generation. Block-level
 // children (including column-span:all spanners) pass through unchanged.
-// Out-of-flow and float children are grouped with the inline run they appear
-// in, matching standard anonymous-block generation rules.
+// Out-of-flow children are grouped with the inline run they appear in; a
+// float joins only a run already open (see the float case below).
 func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *css.Style) []*LayoutInputNode {
 	if len(children) == 0 {
 		return nil
@@ -2839,7 +2851,17 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 			continue
 		}
 		if s.GetFloat() != css.FloatNone {
-			inlineRun = append(inlineRun, child)
+			// A float joins an inline run already open; otherwise it stays
+			// a block-level sibling, so it fragments through the block
+			// path (LOU-497). Blink's anonymous-block generation includes
+			// no float in front of the first inline of a run
+			// (layout_block_flow.cc GetInlineRun); the layout tree builder
+			// does the same (maybeWrapAnonymousBlocks).
+			if len(inlineRun) > 0 {
+				inlineRun = append(inlineRun, child)
+			} else {
+				result = append(result, child)
+			}
 			continue
 		}
 		d := s.GetDisplay()
