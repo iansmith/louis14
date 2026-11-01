@@ -4276,10 +4276,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// content-based minimum size. Only applies when overflow is not scrollable.
 	// Per CSSWG resolution (issue #7714) and Blink's IsOverflowValueScrollable(),
 	// only scroll containers disable auto-min. overflow:clip is NOT a scroll container.
-	isScrollable := func(v css.OverflowType) bool {
-		return v != css.OverflowVisible && v != css.OverflowClip
-	}
-	if isScrollable(style.GetOverflowX()) || isScrollable(style.GetOverflowY()) {
+	if style.IsScrollContainer() {
 		return 0
 	}
 

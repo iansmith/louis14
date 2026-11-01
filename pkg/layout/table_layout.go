@@ -1049,6 +1049,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 						cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
 					}
 				}
+				cellFrag.updateScrollableOverflow()
 			}
 
 			relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows)
@@ -1310,6 +1311,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
+		cellFrag.updateScrollableOverflow()
 		if spansCollapsedRow {
 			cellFrag.ClipContentToBorderBox = true
 		}

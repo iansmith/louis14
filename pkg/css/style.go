@@ -7067,6 +7067,16 @@ func (s *Style) GetOverflow() OverflowType {
 	return OverflowVisible
 }
 
+// IsScrollContainer reports whether either axis has a scrollable overflow
+// value (hidden, scroll or auto — neither visible nor clip). Mirrors
+// Blink's ComputedStyle::IsScrollContainer and IsOverflowValueScrollable
+// (core/style/computed_style.h:1984-1987 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) IsScrollContainer() bool {
+	scrollable := func(o OverflowType) bool { return o != OverflowVisible && o != OverflowClip }
+	return scrollable(s.GetOverflowX()) || scrollable(s.GetOverflowY())
+}
+
 // GetOverflowX returns the overflow-x value (default: overflow value).
 //
 // CSS Overflow Level 3 §3.2: "The visible/clip values of overflow compute
@@ -9995,6 +10005,45 @@ func (s *Style) GetTransforms() []Transform {
 		return parseTransforms(val)
 	}
 	return nil
+}
+
+// ResolvedTransformOperations returns the box's transform operations in
+// application order — the individual translate, rotate and scale
+// properties, then the transform list — with translate percentages resolved
+// against the boxW x boxH reference box. Mirrors the operation order of
+// Blink's ComputedStyle::ApplyTransform (translate, rotate, scale, then
+// transform). Nil when the box has none.
+func (s *Style) ResolvedTransformOperations(boxW, boxH float64) []Transform {
+	var ops []Transform
+	if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
+		if txPct {
+			tx = (tx / 100) * boxW
+		}
+		if tyPct {
+			ty = (ty / 100) * boxH
+		}
+		ops = append(ops, Transform{Type: "translate", Values: []float64{tx, ty}})
+	}
+	if deg, ok := s.GetIndividualRotate(); ok {
+		ops = append(ops, Transform{Type: "rotate", Values: []float64{deg}})
+	}
+	if sx, sy, ok := s.GetIndividualScale(); ok {
+		ops = append(ops, Transform{Type: "scale", Values: []float64{sx, sy}})
+	}
+	for _, t := range s.GetTransforms() {
+		resolved := Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
+		copy(resolved.Values, t.Values)
+		if t.Type == "translate" {
+			if len(resolved.Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
+				resolved.Values[0] = (resolved.Values[0] / 100) * boxW
+			}
+			if len(resolved.Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
+				resolved.Values[1] = (resolved.Values[1] / 100) * boxH
+			}
+		}
+		ops = append(ops, resolved)
+	}
+	return ops
 }
 
 // parseTransforms parses transform functions (e.g., "translate(10px, 20px) rotate(45deg)")

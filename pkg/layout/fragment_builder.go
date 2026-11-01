@@ -912,7 +912,7 @@ func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 	if b.boxType == BoxTypeColumn {
 		return bsff
 	}
-	if clipsBlockAxisOverflow(b.style, b.wdm) {
+	if clipsBlockAxisOverflow(b.style, b.node, b.wdm) {
 		return b.size.BlockSize
 	}
 	return max(bsff, b.size.BlockSize)
@@ -968,6 +968,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		notFirstForNode:  b.notFirstForNode,
 		BoxType:          b.boxType,
 	}
+
+	fragment.updateScrollableOverflow()
 
 	// Phase 25 Cmt-2: stash any deferred OOF fragmentainer descendants and
 	// pending-multicol entries on the outgoing fragment so ancestors can
