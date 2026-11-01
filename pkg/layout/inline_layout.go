@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -267,7 +268,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// up front because the line-breaker emits OpenTag/CloseTag once per
 	// inline item — not per line a span spans across — so a per-line
 	// stack would miss spans that wrap across multiple lines.
-	positionedInlineMap, atomicInlineContainers := BuildPositionedInlineMap(itemsData.Items)
+	positionedInlineMap, atomicInlineContainers := bla.inlineItemsCache.positionedInlineMap, bla.inlineItemsCache.atomicInlineContainers
 
 	// Phase 1c: Lay out inline floats (compute their size only). Positioning
 	// is deferred until line breaking so that floats declared after a forced
@@ -281,49 +282,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	if exclusionSpace == nil {
 		exclusionSpace = &ExclusionSpace{}
 	}
-	// pendingFloat is a float of the inline formatting context not yet
-	// positioned, measured (laid out without fragmentation) for its
-	// inline-size; positioning lays it out again with the fragmentainer
-	// when fragmented (LineBreaker::HandleFloat's UnpositionedFloat and
-	// ComputeMarginBoxInlineSizeForUnpositionedFloat, inline/
-	// line_breaker.cc:3787-3800, :3673-3684 @ a9f50e522efa).
-	type pendingFloat struct {
-		item                *InlineItem
-		unpositioned        *UnpositionedFloat
-		marginBoxInlineSize float64
-		isInitialLetter     bool
-	}
-	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
-	// with `raise` / explicit-sink shifts the surrounding paragraph text DOWN by
-	// block_start_adjust = lineHeight*(size-sink), while the letter box itself
-	// stays at the block's visual top. Detected in the float pass below and
-	// consumed at blockOffset init and in placeFloat. Mirrors Blink
-	// LineInfo::SetInitialLetterBlockStartAdjustment (initial_letter_utils.cc
-	// :270-300 @ 4883d11fef). The drop case (sink==size) yields 0 → no shift.
-	initialLetterAdjust := 0.0
-	paraLineHeight := 0.0
-	if bla.style != nil {
-		paraLineHeight = bla.style.GetLineHeight()
-	}
-
-	pendingFloats := map[*InlineItem]*pendingFloat{}
-	for _, item := range itemsData.Items {
-		if item.Type != InlineItemFloat || item.LayoutNode == nil || item.Style == nil {
-			continue
-		}
-		il := item.Style.GetInitialLetter()
-		if shift := initialLetterTextShift(il, paraLineHeight); shift > initialLetterAdjust {
-			initialLetterAdjust = shift
-		}
-		uf := bla.newInlineUnpositionedFloat(item.LayoutNode, nil, contentInlineSize, 0,
-			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
-		pendingFloats[item] = &pendingFloat{
-			item:                item,
-			unpositioned:        uf,
-			marginBoxInlineSize: ComputeMarginBoxInlineSizeForUnpositionedFloat(uf),
-			isInitialLetter:     il.Set,
-		}
-	}
+	// The floats not yet positioned, measured once per layout (cached on
+	// the prepared inline items, LOU-510).
+	floats, initialLetterAdjust := bla.inlineFloats(contentInlineSize, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+	pendingFloats := maps.Clone(floats)
 
 	// placeFloat positions a pending float at the top of the current line
 	// (floatOriginBFC). Returns the new exclusion-space pointer and whether
@@ -471,8 +433,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	after := segment.after()
 	if after != nil && startItemIndex == 0 && startTextOffset == 0 {
 		// The run starts right after its block-in-inline item.
-		startItemIndex = blockInInlineItemIndex(itemsData.Items, after) + 1
-		if startItemIndex == 0 || startItemIndex >= len(itemsData.Items) {
+		bii, ok := bla.inlineItemsCache.blockInInline[after]
+		startItemIndex = bii.index + 1
+		if !ok || startItemIndex >= len(itemsData.Items) {
 			return segment.blockStart, exclusionSpace, 0, 0, nil
 		}
 	}
@@ -1043,13 +1006,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			centralBaseline = false
 		}
 		// The available size inline-level relative offsets resolve against:
-		// the block's (ComputeRelativeOffsetForInline reads
-		// space.AvailableSize, relative_utils.cc:100-124 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		relativeAvailableSize := LogicalSize{
-			InlineSize: contentInlineSize,
-			BlockSize:  bla.space.AvailableSize.BlockSize.Float64(),
-		}
+		// the inline formatting context's, the block's child available size
+		// (ComputeRelativeOffsetForInline reads space.AvailableSize,
+		// relative_utils.cc:100-124 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+		// as for a block-in-inline (adoptBlockInInlineResult).
+		relativeAvailableSize := bla.containerBuilder.ChildAvailableSize()
 		// CSS Pseudo 4 §3.2.1: the ::first-line generated box "behaves similar to
 		// that of an inline-level element" (the WPT first-line-line-height
 		// reftests model it as a `<span class="fl">` inside an unchanged block).
@@ -1322,11 +1283,44 @@ func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
 // inlineItems is the prepared inline formatting context of a
 // BlockLayoutAlgorithm: collected once per layout and shared by every run of
 // lines and block-in-inline child (Blink keeps it on the InlineNode,
-// InlineNode::ItemsData).
+// InlineNode::ItemsData), with what the runs and wrappers derive from the
+// whole item list, so none of them rescans it (LOU-510).
 type inlineItems struct {
 	data        *InlineItemsData
 	baseDir     Direction
 	isPlaintext bool
+
+	// positionedInlineMap and atomicInlineContainers: BuildPositionedInlineMap
+	// over all items (an item's entry depends only on the items before it).
+	positionedInlineMap    map[*InlineItem]*html.Node
+	atomicInlineContainers map[*InlineItem]AtomicInlineContainers
+	// blockInInline maps each block-in-inline wrapper to its item.
+	blockInInline map[*LayoutInputNode]blockInInlineItem
+
+	// floats are the measured floats (inlineFloats, built on first use).
+	floats              map[*InlineItem]*pendingFloat
+	initialLetterAdjust float64
+}
+
+// blockInInlineItem is a block-in-inline wrapper's item index and the
+// inline boxes open around it, outermost first (rebuildOpenInlineStack of
+// the items before it).
+type blockInInlineItem struct {
+	index           int
+	openInlineStack []*InlineItem
+}
+
+// pendingFloat is a float of the inline formatting context, measured (laid
+// out without fragmentation) for its inline-size; positioning lays it out
+// again with the fragmentainer when fragmented (LineBreaker::HandleFloat's
+// UnpositionedFloat and ComputeMarginBoxInlineSizeForUnpositionedFloat,
+// inline/line_breaker.cc:3787-3800, :3673-3684 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type pendingFloat struct {
+	item                *InlineItem
+	unpositioned        *UnpositionedFloat
+	marginBoxInlineSize float64
+	isInitialLetter     bool
 }
 
 // prepareInlineItems collects this block's inline items and resolves their
@@ -1336,8 +1330,63 @@ func (bla *BlockLayoutAlgorithm) prepareInlineItems(wdm WritingDirectionMode) (*
 		return c.data, c.baseDir, c.isPlaintext
 	}
 	itemsData, baseDir, isPlaintext := bla.collectInlineItems(wdm)
-	bla.inlineItemsCache = &inlineItems{data: itemsData, baseDir: baseDir, isPlaintext: isPlaintext}
+	c := &inlineItems{data: itemsData, baseDir: baseDir, isPlaintext: isPlaintext}
+	c.positionedInlineMap, c.atomicInlineContainers = BuildPositionedInlineMap(itemsData.Items)
+	var open []*InlineItem
+	for i, item := range itemsData.Items {
+		switch item.Type {
+		case InlineItemOpenTag:
+			open = append(open, item)
+		case InlineItemCloseTag:
+			if n := len(open); n > 0 {
+				open = open[:n-1]
+			}
+		case InlineItemBlockInInline:
+			if c.blockInInline == nil {
+				c.blockInInline = map[*LayoutInputNode]blockInInlineItem{}
+			}
+			c.blockInInline[item.LayoutNode] = blockInInlineItem{index: i, openInlineStack: slices.Clone(open)}
+		}
+	}
+	bla.inlineItemsCache = c
 	return itemsData, baseDir, isPlaintext
+}
+
+// inlineFloats returns the floats of this block's inline formatting
+// context, measured on first use, and the block-start shift of the text
+// for a raised initial letter. LOU-289 part 3: an initial-letter
+// ::first-letter float (CSS Inline 3 §7.3) with `raise` / explicit-sink
+// shifts the surrounding paragraph text DOWN by block_start_adjust =
+// lineHeight*(size-sink), while the letter box itself stays at the block's
+// visual top. Mirrors Blink LineInfo::SetInitialLetterBlockStartAdjustment
+// (initial_letter_utils.cc:270-300 @ 4883d11fef). The drop case
+// (sink==size) yields 0 → no shift. prepareInlineItems must have run.
+func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64) (map[*InlineItem]*pendingFloat, float64) {
+	c := bla.inlineItemsCache
+	if c.floats != nil {
+		return c.floats, c.initialLetterAdjust
+	}
+	c.floats = map[*InlineItem]*pendingFloat{}
+	paraLineHeight := 0.0
+	if bla.style != nil {
+		paraLineHeight = bla.style.GetLineHeight()
+	}
+	for _, item := range c.data.Items {
+		if item.Type != InlineItemFloat || item.LayoutNode == nil || item.Style == nil {
+			continue
+		}
+		il := item.Style.GetInitialLetter()
+		c.initialLetterAdjust = max(c.initialLetterAdjust, initialLetterTextShift(il, paraLineHeight))
+		uf := bla.newInlineUnpositionedFloat(item.LayoutNode, nil, contentInlineSize, 0,
+			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+		c.floats[item] = &pendingFloat{
+			item:                item,
+			unpositioned:        uf,
+			marginBoxInlineSize: ComputeMarginBoxInlineSizeForUnpositionedFloat(uf),
+			isInitialLetter:     il.Set,
+		}
+	}
+	return c.floats, c.initialLetterAdjust
 }
 
 func (bla *BlockLayoutAlgorithm) collectInlineItems(wdm WritingDirectionMode) (*InlineItemsData, Direction, bool) {
@@ -1424,12 +1473,6 @@ func (s inlineSegment) after() *LayoutInputNode {
 		return nil
 	}
 	return s.node.inlineSegmentAfter
-}
-
-// blockInInlineItemIndex returns the index of wrapper's block-in-inline
-// item in items, or -1.
-func blockInInlineItemIndex(items []*InlineItem, wrapper *LayoutInputNode) int {
-	return inlineItemIndex(items, InlineItemBlockInInline, wrapper)
 }
 
 // inlineItemIndex returns the index of the item of type typ generated by

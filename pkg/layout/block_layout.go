@@ -825,46 +825,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// inline offset (InlineMarginsForOutside) placing it left of the
 		// content-box start.
 		if firstLineAscent > 0 {
-			marker := bla.containerBuilder.GetUnpositionedListMarker()
-			if marker.IsValid() {
-				if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
-					// AddToBox returns the amount the content must be pushed DOWN
-					// when the marker's ascent is TALLER than the first line's
-					// (Blink's content-adjust: an image marker, e.g.
-					// list-style-image / ::marker content:url(), is taller than a
-					// text line). The block-CONTENT path applies this via
-					// positionOrPropagateListMarker; the INLINE-content path must
-					// do the equivalent — there is no single content child, so
-					// shift every line box down, grow the content block size, and
-					// carry the push into the propagated first/last baselines so
-					// the list item's own baseline stays aligned with the marker.
-					// LOU-337 / css-pseudo marker-content-012: without this the
-					// text baseline sat ~4px too high from the outside-image row
-					// down. Mirrors BlockLayoutAlgorithm::
-					// PositionOrPropagateListMarker (block_layout_algorithm.cc /
-					// unpositioned_list_marker.cc:81-123 @ 4883d11f).
-					contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, bla.containerBuilder)
-					bla.containerBuilder.ClearUnpositionedListMarker()
-					if contentPush > 0 {
-						bla.containerBuilder.ShiftLineBoxChildrenBlockOffset(contentPush)
-						blockCursor += contentPush
-						firstLineAscent += contentPush
-						// If the IFC fragmented (an inline-only list item overflowing
-						// a fragmentainer), the break token captured its consumed
-						// height / shortage BEFORE this push. Advance both so the
-						// continuation resumes from the post-push height; otherwise a
-						// fragmented item with a tall outside marker resumes too high
-						// and misplaces later fragments. The early-return below reads
-						// both, so both must move with the content.
-						if inlineBreakToken != nil {
-							inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(
-								layoutunit.FromFloat64Round(contentPush))
-							inlineBreakToken.InlineShortage += contentPush
-						}
-						if hasLastChildBaseline {
-							lastChildBlockOffset += contentPush
-						}
-					}
+			if contentPush := bla.placeListMarkerAtFirstLine(firstLineAscent, 0, 0, inlineBreakToken); contentPush > 0 {
+				blockCursor += contentPush
+				firstLineAscent += contentPush
+				if hasLastChildBaseline {
+					lastChildBlockOffset += contentPush
 				}
 			}
 		}
@@ -1004,6 +969,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				prevES := exclusionSpace
 				var inlineContext InlineChildLayoutContext
+				runFirstChild := len(bla.containerBuilder.children)
 				end, es, ascent, lastBaselineOff, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
 					blockStart:                lineTop,
 					hasBreakOpportunityBefore: hasBreakOpportunityBeforeNextChild,
@@ -1029,11 +995,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						firstChildBaseline = ascent
 						firstChildBlockOffset = lineTop
 						hasFirstChildBaseline = true
-						if marker := bla.containerBuilder.GetUnpositionedListMarker(); marker.IsValid() {
-							if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
-								marker.AddToBox(bla.ctx, markerResult, ascent, lineTop, bla.containerBuilder)
-								bla.containerBuilder.ClearUnpositionedListMarker()
-							}
+						if contentPush := bla.placeListMarkerAtFirstLine(ascent, lineTop, runFirstChild, lineBreakToken); contentPush > 0 {
+							blockCursor += contentPush
+							firstChildBlockOffset += contentPush
+							lastBaselineOff += contentPush
 						}
 					}
 					if lastBaselineOff > 0 {
@@ -1612,10 +1577,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// as their containing block.
 			var blockInInlineRelativeOffset LogicalOffset
 			if child.IsBlockInInline() {
-				blockInInlineRelativeOffset = bla.adoptBlockInInlineResult(wdm, child, childResult, LogicalSize{
-					InlineSize: contentInlineSize,
-					BlockSize:  childAvailableBlock,
-				})
+				blockInInlineRelativeOffset = bla.adoptBlockInInlineResult(wdm, child, childResult)
 			}
 
 			exclusionSpaceBeforeChild := exclusionSpace
@@ -2695,25 +2657,25 @@ func PropagateOOFCandidates(
 // (BoxData::CreateBoxFragment propagating the block-in-inline result into
 // the inline box fragment, :1066-1091 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Returns the relative offset.
-func (bla *BlockLayoutAlgorithm) adoptBlockInInlineResult(wdm WritingDirectionMode, wrapper *LayoutInputNode, result *LayoutResult, availableSize LogicalSize) LogicalOffset {
-	itemsData, _, _ := bla.prepareInlineItems(wdm)
-	index := blockInInlineItemIndex(itemsData.Items, wrapper)
-	if index < 0 {
+func (bla *BlockLayoutAlgorithm) adoptBlockInInlineResult(wdm WritingDirectionMode, wrapper *LayoutInputNode, result *LayoutResult) LogicalOffset {
+	bla.prepareInlineItems(wdm)
+	c := bla.inlineItemsCache
+	bii, ok := c.blockInInline[wrapper]
+	if !ok {
 		return LogicalOffset{}
 	}
-	item := itemsData.Items[index]
+	item := c.data.Items[bii.index]
 	if result.Fragment != nil {
 		result.Fragment.PaintGroup = item.EnclosingPaintGroup
 	}
-	_, containers := BuildPositionedInlineMap(itemsData.Items[:index+1])
 	for i := range result.PropagatedOOFCandidates {
 		if cand := &result.PropagatedOOFCandidates[i]; cand.InlineContainer == nil {
-			cand.InlineContainer = containers[item].For(*cand)
+			cand.InlineContainer = c.atomicInlineContainers[item].For(*cand)
 		}
 	}
 	var offset LogicalOffset
-	for _, open := range rebuildOpenInlineStack(itemsData.Items[:index]) {
-		rel := ComputeRelativeOffsetForInline(wdm, availableSize, open.Style)
+	for _, open := range bii.openInlineStack {
+		rel := ComputeRelativeOffsetForInline(wdm, bla.containerBuilder.ChildAvailableSize(), open.Style)
 		offset.InlineOffset += rel.InlineOffset
 		offset.BlockOffset += rel.BlockOffset
 	}
@@ -2819,6 +2781,39 @@ func (bla *BlockLayoutAlgorithm) handleFloat(
 		originBfcBlockOffset, bfcBlockOrigin, bfcContainerInlineSize)
 	es, _, breakToken, hasForcedBreak := bla.addPositionedFloat(uf, es, bfcBlockOrigin, bfcInlineOrigin)
 	return es, breakToken, hasForcedBreak
+}
+
+// placeListMarkerAtFirstLine places the unpositioned outside list marker,
+// if any, against the first line box, at firstLineTop with ascent
+// firstLineAscent. When the marker's ascent is taller than the line's (an
+// image marker on a text line) the content goes down instead: the line
+// boxes from child index firstLineChild on move down by the returned push,
+// as does a break token taken before it (its consumed block-size and
+// shortage); the caller grows its content and baselines by it. LOU-337 /
+// css-pseudo marker-content-012. Mirrors BlockLayoutAlgorithm::
+// PositionOrPropagateListMarker applying UnpositionedListMarker::AddToBox's
+// content adjust to the child's offset (block_layout_algorithm.cc:
+// 2023-2027, unpositioned_list_marker.cc:81-123 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) placeListMarkerAtFirstLine(firstLineAscent, firstLineTop float64, firstLineChild int, breakToken *BlockBreakToken) float64 {
+	marker := bla.containerBuilder.GetUnpositionedListMarker()
+	if !marker.IsValid() {
+		return 0
+	}
+	markerResult := marker.Layout(bla.ctx, bla.space)
+	if markerResult == nil {
+		return 0
+	}
+	contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, firstLineTop, bla.containerBuilder)
+	bla.containerBuilder.ClearUnpositionedListMarker()
+	if contentPush > 0 {
+		bla.containerBuilder.ShiftLineBoxChildrenBlockOffset(firstLineChild, contentPush)
+		if breakToken != nil {
+			breakToken.ConsumedBlockSize = breakToken.ConsumedBlockSize.Add(layoutunit.FromFloat64Round(contentPush))
+			breakToken.InlineShortage += contentPush
+		}
+	}
+	return contentPush
 }
 
 // newUnpositionedFloat returns the UnpositionedFloat for a float of this
