@@ -2981,7 +2981,61 @@ func createLineBoxEx(
 					marginBoxSize := blockSize + r.Margins.BlockStart + r.Margins.BlockEnd
 					blockPos = (lineHeight-marginBoxSize)/2 + r.Margins.BlockStart
 				default:
-					blockPos = maxAscent - atomicInlineBaselineAscent(r, blockSize, wdm, centralBaseline)
+					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
+					// align inline-block so its baseline sits at the line's maxAscent.
+					// Also handle inline-tables, replaced elements, and other atomic
+					// inlines with baselines.
+					display := css.DisplayBlock
+					if r.Item.Style != nil {
+						display = r.Item.Style.GetDisplay()
+					}
+					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
+					isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
+					// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
+					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
+					// Replaced elements don't propagate baselines from line boxes.
+					// For orthogonal inline-blocks, synthesize baseline at the
+					// block-end edge in the outer writing mode (per Blink, matches
+					// CSS Writing Modes §4.3 "no baseline from orthogonal content").
+					// For scrollable inline-block/inline-table, synthesize from margin edge.
+					atomicBaseline := float64(0)
+					childIsOrthogonal := false
+					if r.Item.Style != nil {
+						childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
+					}
+					if !isReplaced {
+						if childIsOrthogonal || useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+							atomicBaseline = blockSize + r.Margins.BlockEnd
+						} else {
+							atomicBaseline = r.LayoutResult.LastBaseline
+							if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
+								atomicBaseline = r.LayoutResult.Baseline
+							}
+						}
+					}
+					if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
+						var ibAscent float64
+						if atomicBaseline > 0 {
+							ibAscent = atomicBaseline
+						} else if centralBaseline {
+							ibAscent = blockSize / 2
+						} else {
+							// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
+							// with no line boxes, baseline = bottom margin edge.
+							ibAscent = blockSize + r.Margins.BlockEnd
+						}
+						blockPos = maxAscent - ibAscent
+					} else if centralBaseline {
+						// CSS Writing Modes 3 §4.3: In vertical modes with central
+						// baseline, replaced elements and atomic inlines without
+						// explicit baselines are centered on the central baseline.
+						// For tables/inline-tables, center on the content area
+						// (excluding padding), not the padded box.
+						blockPos = maxAscent - blockSize/2
+					} else {
+						// Default: bottom-align to baseline.
+						blockPos = maxAscent - blockSize
+					}
 				}
 				// CSS 2.1 §10.8.1: vertical-align: <length> shifts the atomic
 				// inline up (positive) or down (negative) by its own offset
@@ -3577,64 +3631,4 @@ func isInlineBoxEdgeEmpty(style *css.Style, wdm WritingDirectionMode, percentage
 		return geom.Border.InlineStart == 0 && geom.Padding.InlineStart == 0 && margins.InlineStart == 0
 	}
 	return geom.Border.InlineEnd == 0 && geom.Padding.InlineEnd == 0 && margins.InlineEnd == 0
-}
-
-// atomicInlineBaselineAscent returns the distance from an atomic inline's
-// border-box block-start to the point it aligns with the line's baseline
-// (vertical-align: baseline): its last (inline-block, inline-table) or
-// first (inline-flex, inline-grid) line baseline, else the block-end
-// margin edge, or the center under a central baseline. blockSize is the
-// fragment's logical block size. Mirrors the ascent of
-// LogicalBoxFragment::BaselineMetrics used by
-// LogicalLineBuilder::PlaceLayoutResult (inline/logical_line_builder.cc:
-// 508-525 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func atomicInlineBaselineAscent(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode, centralBaseline bool) float64 {
-	// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-	// align inline-block so its baseline sits at the line's maxAscent.
-	// Also handle inline-tables, replaced elements, and other atomic
-	// inlines with baselines.
-	display := css.DisplayBlock
-	if r.Item.Style != nil {
-		display = r.Item.Style.GetDisplay()
-	}
-	isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-	isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
-	// For inline-flex/inline-grid, use first baseline (CSS Flexbox §4.2, CSS Grid).
-	// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
-	// Replaced elements don't propagate baselines from line boxes.
-	// For orthogonal inline-blocks, synthesize baseline at the
-	// block-end edge in the outer writing mode (per Blink, matches
-	// CSS Writing Modes §4.3 "no baseline from orthogonal content").
-	// For scrollable inline-block/inline-table, synthesize from margin edge.
-	atomicBaseline := float64(0)
-	childIsOrthogonal := false
-	if r.Item.Style != nil {
-		childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
-	}
-	if !isReplaced {
-		if childIsOrthogonal || useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-			atomicBaseline = blockSize + r.Margins.BlockEnd
-		} else {
-			atomicBaseline = r.LayoutResult.LastBaseline
-			if (display == css.DisplayInlineFlex || display == css.DisplayFlex || display == css.DisplayInlineGrid || display == css.DisplayGrid) && r.LayoutResult.Baseline > 0 {
-				atomicBaseline = r.LayoutResult.Baseline
-			}
-		}
-	}
-	if isAtomicForBaseline && atomicBaseline > 0 {
-		return atomicBaseline
-	}
-	if centralBaseline {
-		// CSS Writing Modes 3 §4.3: In vertical modes with central
-		// baseline, replaced elements and atomic inlines without
-		// explicit baselines are centered on the central baseline.
-		return blockSize / 2
-	}
-	if isAtomicForBaseline {
-		// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
-		// with no line boxes, baseline = bottom margin edge.
-		return blockSize + r.Margins.BlockEnd
-	}
-	// Default: bottom-align to baseline.
-	return blockSize
 }

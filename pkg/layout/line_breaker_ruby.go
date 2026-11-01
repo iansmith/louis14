@@ -41,23 +41,21 @@ func resolveRubyAlign(columnOpenItem *InlineItem, baseLine *LineInfo) css.RubyAl
 	return css.RubyAlignSpaceAround
 }
 
-// CreateSubLineInfo runs line breaking over a sub-range of items in the
-// given mode and returns a freshly-built LineInfo for that range. Used by
-// handleRuby to build the base and annotation sub-LineInfos of a ruby
-// column without affecting the outer LineBreaker's state.
+// CreateSubLineInfo runs line breaking over a sub-range of items in
+// LineBreakerMaxContent mode and returns a freshly-built LineInfo for
+// that range. Used by handleRuby to build the base and annotation
+// sub-LineInfos of a ruby column without affecting the outer
+// LineBreaker's state.
 //
 // The sub-range is `items[startIdx:endIdx]`; the same TextContent /
 // RuneLevels / ParagraphLevels are shared (so existing offsets in the
-// items remain valid). The sub-LineBreaker never auto-wraps — ruby columns
-// are unbreakable from the outer line's perspective (no proportional
-// break yet) — and keeps the outer constraint space, so a
-// LineBreakerContent sub-line lays out its atomic inlines as the outer
-// line would.
+// items remain valid). The sub-LineBreaker uses MaxContent mode so
+// sub-lines never wrap — ruby columns are atomic inlines from the
+// outer line's perspective.
 //
-// Mirrors Blink's LineBreaker::CreateSubLineInfo with an indefinite limit
-// (inline/line_breaker.cc:3532-3567 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b: disallow_auto_wrap_).
-func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int, mode LineBreakerMode) *LineInfo {
+// Mirrors Blink's `CreateSubLineInfo` near `LineBreaker::HandleRuby`
+// in `core/layout/inline/line_breaker.cc`.
+func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int) *LineInfo {
 	if startIdx < 0 || endIdx > len(lb.itemsData.Items) || startIdx >= endIdx {
 		return &LineInfo{}
 	}
@@ -67,36 +65,10 @@ func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int, mode LineBreakerM
 		RuneLevels:      lb.itemsData.RuneLevels,
 		ParagraphLevels: lb.itemsData.ParagraphLevels,
 	}
-	subLB := NewLineBreaker(subData, lb.ctx, lb.space, lb.fonts, mode)
-	subLB.disallowAutoWrap = true
+	subLB := NewLineBreaker(subData, lb.ctx, lb.space, lb.fonts, LineBreakerMaxContent)
 	sub := &LineInfo{}
 	subLB.NextLine(sub)
 	return sub
-}
-
-// createRubySubLines builds the base and annotation sub-LineInfos of the
-// ruby column opened by item in the given mode.
-func (lb *LineBreaker) createRubySubLines(item *InlineItem, idx RubyItemIndexes, mode LineBreakerMode) (*LineInfo, []*LineInfo) {
-	// The leading InlineItemRubyLinePlaceholder is silently skipped
-	// by the sub-LineBreaker (no dispatch case = no-op + advance).
-	baseLine := lb.CreateSubLineInfo(idx.ColumnStart+1, idx.BaseEnd, mode)
-	baseLine.IsRubyBase = true
-	var annotationLines []*LineInfo
-	if idx.HasAnnotation() {
-		annoLine := lb.CreateSubLineInfo(idx.AnnotationStart+1, idx.ColumnEnd, mode)
-		annoLine.IsRubyText = true
-		annotationLines = append(annotationLines, annoLine)
-	}
-	// Cap text-combine sub-line widths to 1em in vertical mode.
-	// Mirrors Blink's inline_layout_algorithm.cc:~1270.
-	isVerticalMode := lb.space.WritingDirection.UsesCentralBaseline()
-	if item.Style != nil {
-		capTextCombineSubLineWidth(baseLine, item.Style, isVerticalMode)
-		for _, a := range annotationLines {
-			capTextCombineSubLineWidth(a, item.Style, isVerticalMode)
-		}
-	}
-	return baseLine, annotationLines
 }
 
 // capTextCombineSubLineWidth caps the width of a sub-line to 1em if it
@@ -141,9 +113,28 @@ func capTextCombineSubLineWidth(subLine *LineInfo, columnOpenStyle *css.Style, i
 func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 	idx := ParseRubyInInlineItems(lb.itemsData.Items, lb.currentItemIndex)
 
-	// Measure the base (column-open, base-end) and annotation sub-lines
-	// at max-content.
-	baseLine, annotationLines := lb.createRubySubLines(item, idx, LineBreakerMaxContent)
+	// Build the base sub-LineInfo over (column-open, base-end).
+	// The leading InlineItemRubyLinePlaceholder is silently skipped
+	// by the sub-LineBreaker (no dispatch case = no-op + advance).
+	baseLine := lb.CreateSubLineInfo(idx.ColumnStart+1, idx.BaseEnd)
+	baseLine.IsRubyBase = true
+
+	var annotationLines []*LineInfo
+	if idx.HasAnnotation() {
+		annoLine := lb.CreateSubLineInfo(idx.AnnotationStart+1, idx.ColumnEnd)
+		annoLine.IsRubyText = true
+		annotationLines = append(annotationLines, annoLine)
+	}
+
+	// Cap text-combine sub-line widths to 1em in vertical mode.
+	// Mirrors Blink's inline_layout_algorithm.cc:~1270.
+	isVerticalMode := lb.space.WritingDirection.UsesCentralBaseline()
+	if item.Style != nil {
+		capTextCombineSubLineWidth(baseLine, item.Style, isVerticalMode)
+		for _, a := range annotationLines {
+			capTextCombineSubLineWidth(a, item.Style, isVerticalMode)
+		}
+	}
 
 	// rubySize = max(base.Width, annotations[i].Width...).
 	rubySize := baseLine.Width
@@ -155,20 +146,14 @@ func (lb *LineBreaker) handleRuby(item *InlineItem, line *LineInfo) bool {
 
 	// Check fit and break-before if needed. Mirrors the atomic-inline
 	// fit check in handleAtomicInline. Phase 2 doesn't yet attempt
-	// proportional-break inside the column (Phase 7). A nested column in
-	// a sub-line never breaks (canAutoWrap: disallowAutoWrap).
+	// proportional-break inside the column (Phase 7). The
+	// `mode != LineBreakerMaxContent` guard is for the OUTER mode:
+	// the sub-LineBreakers built by CreateSubLineInfo always run in
+	// MaxContent so they never reach this branch — they're a separate
+	// LineBreaker instance, not this one.
 	remaining := lb.availableWidth - lb.position
-	if rubySize > remaining && len(line.Results) > 0 && lb.canAutoWrap() {
+	if rubySize > remaining && len(line.Results) > 0 && lb.mode != LineBreakerMaxContent {
 		return true
-	}
-
-	// Recreate the sub-lines for layout: max-content sub-lines carry no
-	// layout results for their atomic inlines, so InlineLayoutAlgorithm
-	// can't place them (line_breaker.cc:3381-3394 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The column keeps its
-	// max-content size.
-	if lb.mode == LineBreakerContent {
-		baseLine, annotationLines = lb.createRubySubLines(item, idx, LineBreakerContent)
 	}
 
 	// Resolve ruby-align: check the column-open item style (the <ruby>

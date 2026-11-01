@@ -326,12 +326,10 @@ func emitSubLineTextFragments(
 			boxStack = e.emitInlineBox(boxStack, inlinePos)
 		case InlineItemRubyLinePlaceholder, InlineItemCloseRubyColumn:
 			// Zero-width markers — no glyph contribution, no advance.
-		case InlineItemAtomicInline:
-			inlinePos = e.emitAtomicInline(r, inlinePos)
 		default:
-			// Nested ruby columns / floats / OOFs inside ruby columns aren't
-			// rendered here yet (plan-css-ruby Phase 11/13, Blink
-			// ruby_utils.{h,cc} @ 4883d11fef), but their inline size is
+			// Nested ruby columns / atomic inlines / floats / OOFs inside ruby
+			// columns aren't rendered here yet (plan-css-ruby Phase 11/13,
+			// Blink ruby_utils.{h,cc} @ 4883d11fef), but their inline size is
 			// already in the column width, so advance the cursor to keep later
 			// fragments correctly placed. Inner glyphs are silently dropped
 			// until those phases (was LOU-156 item 2).
@@ -396,27 +394,6 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 	// TODO Phase 5: position:relative offset propagation for sub-line text
 	// fragments (rare in ruby content).
 	return inlinePos + r.InlineSize
-}
-
-// emitAtomicInline places an atomic inline's fragment with its baseline on
-// the sub-line's baseline and returns the advanced inline cursor (past the
-// inline-axis margins). Blink places a ruby column's base and annotation
-// items through the ordinary line path, so an atomic inline there goes
-// through LogicalLineBuilder::PlaceAtomicInline → PlaceLayoutResult
-// (inline/logical_line_builder.cc:466-525, reached from PlaceRubyColumn
-// :550-635 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14's slim
-// sub-line emitter handles vertical-align: baseline only, like its text.
-func (e subLineEmitter) emitAtomicInline(r InlineItemResult, inlinePos float64) float64 {
-	inlinePos += r.Margins.InlineStart
-	if r.LayoutResult != nil {
-		blockSize := NewLogicalFragment(e.wdm, r.LayoutResult.Fragment).BlockSize()
-		r.LayoutResult.Fragment.PaintGroup = r.Item.EnclosingPaintGroup
-		e.lineBuilder.AddChild(r.LayoutResult.Fragment, LogicalOffset{
-			InlineOffset: inlinePos,
-			BlockOffset:  e.blockBaseline - atomicInlineBaselineAscent(&r, blockSize, e.wdm, e.centralBaseline),
-		})
-	}
-	return inlinePos + r.InlineSize + r.Margins.InlineEnd
 }
 
 // emitJustifiedText emits one text run split at spaces, expanding each space by
