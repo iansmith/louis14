@@ -179,3 +179,86 @@ func TestSelfCollapsingChild_ChromeGeometry_LOU445(t *testing.T) {
 		})
 	}
 }
+
+// TestSelfCollapsingChildClearance_ChromeGeometry_LOU445 pins clearance of a
+// self-collapsing child against Chrome 155.0.8059.41. Blink decides it from
+// the child's hypothetical border edge past every margin collapsed up to it,
+// inner margins included (FinishInflow, block_layout_algorithm.cc:2440-2454);
+// with clearance the following content starts at the clearance offset minus
+// the child's own end margin strut (ComputeInflowPosition, :2900-2950), and
+// that strut then stays inside the parent (FinishLayout, :1287-1294 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestSelfCollapsingChildClearance_ChromeGeometry_LOU445(t *testing.T) {
+	float := ms("f", props("float", "left", "width", "100px", "height", "100px"))
+	for _, tc := range []struct {
+		name string
+		kids []marginSpec
+		want map[string][]fragRect
+	}{
+		{
+			// Chrome probe c1.html: the inner 100px margin alone clears the
+			// float, so there is no clearance.
+			name: "C1_inner_margin_reaches_float",
+			kids: []marginSpec{
+				float,
+				ms("c", props("clear", "both"), ms("e", props("margin-bottom", "100px"))),
+				ms("b", props("height", "10px")),
+			},
+			want: map[string][]fragRect{
+				"c": {{0, 100, 200, 0}},
+				"e": {{0, 100, 200, 0}},
+				"b": {{0, 100, 200, 10}},
+			},
+		},
+		{
+			// Chrome probe c2.html: 75px falls short; 25px clearance.
+			name: "C2_inner_margin_short_of_float",
+			kids: []marginSpec{
+				float,
+				ms("c", props("clear", "both"), ms("e", props("margin-bottom", "75px"))),
+				ms("b", props("height", "10px")),
+			},
+			want: map[string][]fragRect{
+				"c": {{0, 100, 200, 0}},
+				"e": {{0, 100, 200, 0}},
+				"b": {{0, 100, 200, 10}},
+			},
+		},
+		{
+			// Chrome probe c3.html: the cleared child's own strut {10, 40}
+			// collapses with the next sibling's 20px margin.
+			name: "C3_cleared_strut_collapses_with_sibling",
+			kids: []marginSpec{
+				float,
+				ms("c", props("clear", "both", "margin-top", "10px"), ms("e", props("margin-bottom", "40px"))),
+				ms("b", props("height", "10px", "margin-top", "20px")),
+			},
+			want: map[string][]fragRect{
+				"c": {{0, 100, 200, 0}},
+				"e": {{0, 100, 200, 0}},
+				"b": {{0, 100, 200, 10}},
+			},
+		},
+		{
+			// Chrome probe c4.html: a trailing cleared self-collapsing child
+			// keeps its end margin strut inside the wrapper.
+			name: "C4_trailing_cleared_child_sizes_parent",
+			kids: []marginSpec{
+				ms("w", nil, float,
+					ms("c", props("clear", "both"), ms("e", props("margin-bottom", "75px")))),
+				ms("b", props("height", "10px", "margin-top", "30px")),
+			},
+			want: map[string][]fragRect{
+				"w": {{0, 0, 200, 100}},
+				"c": {{0, 100, 200, 0}},
+				"e": {{0, 100, 200, 0}},
+				"b": {{0, 130, 200, 10}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frag, ids := layoutInFlowRoot(t, ms("root", nil, tc.kids...))
+			checkRects(t, borderBoxRectsByID(frag, ids), tc.want)
+		})
+	}
+}
