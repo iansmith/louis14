@@ -125,3 +125,49 @@ func TestOutsideTallImageMarkerPushesInlineContentDown(t *testing.T) {
 			lineOff, marker.Fragment.Size.Height.Float64())
 	}
 }
+
+// LOU-510 item 2: the marker push applies to the first line wherever it is,
+// also in a run of lines after a block-in-inline (here an empty block with
+// no baseline), as Blink's PositionOrPropagateListMarker applies the
+// content adjust to whichever in-flow child carries the first baseline
+// (block_layout_algorithm.cc:2023-2027, unpositioned_list_marker.cc:81-123
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestOutsideTallImageMarkerPushesLinesAfterBlockInInline(t *testing.T) {
+	ol := &html.Node{Type: html.ElementNode, TagName: "ol"}
+	empty := makeNode("div")
+	span := makeNode("span", empty, makeTextNode("alpha"))
+	li := makeNode("li", span)
+	ol.Children = []*html.Node{li}
+	styles := map[*html.Node]*css.Style{
+		ol: makeStyle("display", "block", "counter-reset", "list-item 0"),
+		li: makeStyle("display", "list-item", "list-style-position", "outside",
+			"list-style-image", "url(green.png)"),
+		span:  makeStyle("display", "inline"),
+		empty: makeStyle("display", "block"),
+	}
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: 300}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: 300}).
+		Build()
+	result := NewBlockLayoutAlgorithm(imgContextWithIntrinsic(32, 40), buildTestTree(ol, styles), space).Layout()
+	liFrag := findFragmentByNode(result.Fragment, li)
+	if liFrag == nil {
+		t.Fatal("list item fragment not found")
+	}
+	var textLine *ChildLink
+	for i := range liFrag.Children {
+		if ch := liFrag.Children[i]; ch.Fragment.Type == FragmentLineBox && ch.Fragment.Size.HeightF64() > 0 {
+			textLine = &liFrag.Children[i]
+		}
+	}
+	if textLine == nil {
+		t.Fatal("no text line")
+	}
+	if got := textLine.Offset.TopF64(); got <= 0 {
+		t.Errorf("text line block offset = %.1f, want > 0 (pushed down by the tall marker)", got)
+	}
+	if got := liFrag.Size.HeightF64(); got < 40 {
+		t.Errorf("list item block size = %.1f, want >= 40", got)
+	}
+}
