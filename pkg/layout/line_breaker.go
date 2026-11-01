@@ -1669,12 +1669,12 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				InlineSize: lb.availableWidth,
 				BlockSize:  availBlock,
 			}).
-			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
-		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-			csb.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
-		}
-		childSpace := csb.
-			Build()
+			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
+			// The parent line's whole percentage resolution size, whatever
+			// its block-size: BlockNode::LayoutAtomicInline
+			// (block_node.cc:1477-1481 @ a9f50e522efa).
+			SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
+		childSpace := csb.Build()
 
 		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)
 		childLogical := NewLogicalFragment(lb.space.WritingDirection, result.Fragment)

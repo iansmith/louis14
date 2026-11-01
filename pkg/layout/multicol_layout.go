@@ -1607,7 +1607,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// balancing (:1071-1081).
 	columnFill := mla.style.GetColumnFill()
 	balanceColumns := columnFill == "balance" || columnFill == "" ||
-		(mla.space.HasBlockFragmentation && mla.space.FragmentainerBlockSize == Indefinite)
+		(mla.space.HasBlockFragmentation && !mla.space.HasKnownFragmentainerBlockSize())
 
 	// Outer remaining space: cap column height so columns don't exceed what
 	// fits in the current outer fragmentainer. Mirrors Blink's
@@ -1820,7 +1820,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			if mayHaveMoreSpace && col > 0 {
 				colMinBreakAppeal = minBreakAppeal
 			}
-			colSpace := mla.createConstraintSpaceForColumn(wdm, mla.usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, true, colMinBreakAppeal)
+			colSpace := mla.createConstraintSpaceForColumn(wdm, mla.usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, colMinBreakAppeal)
 			columnAlgorithm := NewBlockLayoutAlgorithm(mla.ctx, mla.contentNode, colSpace)
 			columnAlgorithm.SetBoxType(BoxTypeColumn)
 			result := columnAlgorithm.Layout()
@@ -2329,51 +2329,26 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	containerPercentResolutionBlockSize float64,
 	balanceColumns bool,
 ) float64 {
-	// When the multicol container has an explicit height, use it as the
-	// available block-size for the measurement pass so that percentage-height
-	// children (e.g. height:50%) can resolve against the container height.
-	// Without this, AvailableSize=Indefinite causes ResolveBlockSize to return
-	// auto for all percentage heights, making the balance estimate too small.
-	// IsBlockSizeOverride+IsFixedBlockSize activates the CalculateInitialFragmentGeometry
-	// override branch so the anonymous content block gets hasExplicitBlock=true,
-	// making childAvailableBlock definite and enabling !IsBlockSizeIndefinite().
-	// IsContentSuggestionLayout is skipped in this case since IsBlockSizeOverride
-	// must take effect (IsContentSuggestionLayout is checked first in the
-	// geometry function and would suppress the override).
-	// FragmentainerBlockSize stays Indefinite so no actual fragmentation occurs
-	// during measurement — we only want content heights, not column splits.
-
-	hasExplicitContainerHeight := containerPercentResolutionBlockSize >= 0
+	// The balancing space: available block-size indefinite, percentages
+	// against the multicol's content box, no fixed block-size. Mirrors
+	// Blink's CreateConstraintSpaceForBalancing (column_layout_algorithm.cc:
+	// 1844-1863 @ a9f50e522efa). FragmentainerBlockSize stays Indefinite so
+	// no soft break occurs: the pass measures one tall strip.
 
 	// buildSpace constructs a ConstraintSpace for one measure-pass iteration.
 	// Called once per loop iteration with the current break-token.
 	buildSpace := func(breakToken *BlockBreakToken) ConstraintSpace {
-		b := NewConstraintSpaceBuilder(wdm, wdm, true)
-		if hasExplicitContainerHeight {
-			measureAvailBlock := containerPercentResolutionBlockSize
-			b = b.SetAvailableSize(LogicalSize{
-				InlineSize: colWidth,
-				BlockSize:  measureAvailBlock,
-			}).
-				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: colWidth,
-					BlockSize:  containerPercentResolutionBlockSize,
-				}).
-				SetPercentageResolutionInlineSize(colWidth).
-				SetIsFixedBlockSize(true).
-				SetIsBlockSizeOverride(true)
-		} else {
-			b = b.SetAvailableSize(LogicalSize{
+		b := NewConstraintSpaceBuilder(wdm, wdm, true).
+			SetAvailableSize(LogicalSize{
 				InlineSize: colWidth,
 				BlockSize:  Indefinite,
 			}).
-				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: colWidth,
-					BlockSize:  containerPercentResolutionBlockSize,
-				}).
-				SetPercentageResolutionInlineSize(colWidth).
-				SetIsContentSuggestionLayout(true)
-		}
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: colWidth,
+				BlockSize:  containerPercentResolutionBlockSize,
+			}).
+			SetPercentageResolutionInlineSize(colWidth).
+			SetIsContentSuggestionLayout(true)
 		// SetShouldPropagateChildBreakValues: column_layout_algorithm.cc:1850
 		// @ a9f50e522efa.
 		b = b.SetIsInitialColumnBalancingPass(true).
@@ -2420,24 +2395,13 @@ measure:
 		}
 
 		if forcedBreaks < numCols || considerAllColumns {
-			// Use intrinsic content height as the authoritative measure.
-			// IsBlockSizeOverride artificially inflates fragment block-size
-			// to CSS height; IntrinsicBlockSize reflects true content.
-			colBSize := result.IntrinsicBlockSize
-			if colBSize <= 0 {
-				colBSize = result.BlockSizeForFragmentation
-				// The override above sizes the fragment to the container's
-				// height, so it says nothing about the content then.
-				if result.Fragment != nil && !hasExplicitContainerHeight {
-					if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
-						colBSize = fragBSize
-					}
-				}
+			// The run is the strip's BlockSizeForFragmentation, encompassing
+			// the fragment's own block-size (trailing margins). Blink
+			// column_layout_algorithm.cc:1651-1672 @ a9f50e522efa.
+			colBSize := result.BlockSizeForFragmentation
+			if result.Fragment != nil {
+				colBSize = math.Max(colBSize, NewLogicalFragment(wdm, result.Fragment).BlockSize())
 			}
-			// The run encompasses content overflowing its boxes: Blink
-			// measures the column's BlockSizeForFragmentation
-			// (column_layout_algorithm.cc:1652-1672 @ a9f50e522efa).
-			colBSize = math.Max(colBSize, result.BlockSizeForFragmentation)
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}
 
@@ -2625,13 +2589,9 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 // multicol container) is used only for positioning column fragments in the
 // parent builder, not for fragmentation overflow calculations.
 //
-// fixedBlockSize: when true, force the column fragment's block-size to
-// colBlockSize via IsFixedBlockSize+IsBlockSizeOverride. Used for
-// column-fill:balance (columns are balanced to fill the column row height).
-// When false, colBlockSize is only the fragmentainer constraint — content
-// fragments at it but the column box itself is intrinsic-sized. Used for
-// column-fill:auto with auto block-size so the multicol container's intrinsic
-// block-size is content-driven instead of locked to max-height.
+// The space sets neither IsFixedBlockSize nor a block-size override:
+// FinishFragmentationForFragmentainer sizes the column box from the
+// fragmentainer block-size (fragmentation_utils.cc:823-866 @ a9f50e522efa).
 func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	wdm WritingDirectionMode,
 	colWidth float64,
@@ -2639,7 +2599,6 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	containerPercentResolutionBlockSize float64,
 	breakToken *BlockBreakToken,
 	balanceColumns bool,
-	fixedBlockSize bool,
 	minBreakAppeal BreakAppeal,
 ) ConstraintSpace {
 	// A balanced estimate of 0 means the row contains no non-spanner content.
@@ -2664,7 +2623,6 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		!mla.isConstrainedByOuterFragmentation() {
 		availBlock = Indefinite
 	}
-	isFixed := availBlock != Indefinite && fixedBlockSize
 
 	b := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{
@@ -2684,33 +2642,10 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		SetIsInsideBalancedColumns(balanceColumns).
 		SetMinBreakAppeal(minBreakAppeal)
 
-	if isFixed {
-		// IsBlockSizeOverride + IsFixedBlockSize: the column height overrides any
-		// CSS block-size on the content node. FragmentainerOffset=0 because each
-		// column starts fresh at the top of its fragmentainer.
-		b = b.SetIsFixedBlockSize(true).
-			SetIsBlockSizeOverride(true).
-			SetFragmentainerBlockSize(colBlockSize).
-			SetFragmentainerOffset(0)
-	} else if availBlock != Indefinite {
-		// column-fill:auto: still need fragmentainer info so that block_layout
-		// fragments overflowing leaves at the column boundary (Phase 12b leaf
-		// fragmentation), even though we don't force the column fragment size.
-		b = b.SetFragmentainerBlockSize(colBlockSize).
-			SetFragmentainerOffset(0)
-	} else {
-		// Indefinite fragmentainer size: the auto-budget empty-row case above
-		// (a zero column block-size). The child still has block fragmentation
-		// (so spanner detection works), but no fragmentainer boundary to break at.
-		// FragmentainerBlockSize defaults to 0 on the builder; without an explicit
-		// Indefinite set, downstream code (block_layout.go's overflow check at
-		// `blockCursor > fragEnd`) treats fragEnd as 0 and breaks every child past
-		// the first. Mirrors Blink's column_layout_algorithm.cc:1567 setting
-		// fragmentainer_block_size = kIndefiniteSize for the initial column-
-		// balancing pass.
-		b = b.SetFragmentainerBlockSize(Indefinite).
-			SetFragmentainerOffset(0)
-	}
+	// An auto-height row with no content leaves the fragmentainer block-size
+	// Indefinite: fragmentation stays on (spanner detection) with no boundary.
+	b = b.SetFragmentainerBlockSize(availBlock).
+		SetFragmentainerOffset(0)
 
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
