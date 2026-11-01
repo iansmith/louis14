@@ -239,7 +239,10 @@ func TestIsReplacedElementTag(t *testing.T) {
 		{"input", true},
 		{"textarea", true},
 		{"select", true},
-		{"button", true},
+		// <button> is a LayoutBlockFlow, not replaced
+		// (html_button_element.cc:59-74 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		{"button", false},
 		// Non-replaced layout-controlled elements.
 		{"div", false},
 		{"span", false},

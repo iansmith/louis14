@@ -328,8 +328,12 @@ func collectInlinesRecursive(
 			continue
 		}
 
-		// Replaced elements (img, canvas, etc.) are atomic.
-		if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
+		// Replaced elements (img, canvas, etc.) are atomic, and so is a
+		// <button>: Blink creates a LayoutBlockFlow for it whatever its
+		// display (html_button_element.cc:59-74 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which is atomic
+		// inline-level when inline.
+		if html.IsReplacedOrFormControl(child.DOMNode) {
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
 			data.Items = append(data.Items, &InlineItem{
@@ -1038,7 +1042,7 @@ func IsTransformableBox(s *css.Style, node *html.Node) bool {
 	}
 	switch s.GetDisplay() {
 	case css.DisplayInline, css.DisplayRuby, css.DisplayRubyText:
-		if node != nil && IsReplacedElement(node) {
+		if html.IsReplacedOrFormControl(node) {
 			return true
 		}
 		return false

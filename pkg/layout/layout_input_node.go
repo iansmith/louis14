@@ -2,6 +2,7 @@ package layout
 
 import (
 	"slices"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -316,6 +317,27 @@ func (n *LayoutInputNode) blockInInlineChildren() []*LayoutInputNode {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the InlineNode.
 func (n *LayoutInputNode) IsInline() bool {
 	return n.isInlineSegment
+}
+
+// IsButtonOrInputButton reports whether this node is a <button> or a
+// button-type <input>. Mirrors LayoutObject::IsButtonOrInputButton /
+// IsInputButton (layout_object.cc:538-549 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsButtonOrInputButton() bool {
+	if n == nil || n.DOMNode == nil || n.DOMNode.Type != html.ElementNode {
+		return false
+	}
+	switch n.DOMNode.TagName {
+	case "button":
+		return true
+	case "input":
+		t, _ := n.DOMNode.GetAttribute("type")
+		switch strings.ToLower(t) {
+		case "button", "submit", "reset", "image":
+			return true
+		}
+	}
+	return false
 }
 
 // IsAnonymous returns true for generated anonymous boxes.

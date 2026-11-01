@@ -55,9 +55,6 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	case "select":
 		// Select default: ~173×19 border-box; content-box is 167×13.
 		return IntrinsicSizingInfo{167, 13, 0, false}
-	case "button":
-		// Button sizes to content; provide reasonable fallback.
-		return IntrinsicSizingInfo{0, 0, 0, false}
 	default:
 		return IntrinsicSizingInfo{300, 150, 0, false}
 	}

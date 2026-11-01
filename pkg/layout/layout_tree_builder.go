@@ -2343,7 +2343,7 @@ func isWhitespaceOnly(run []*LayoutInputNode) bool {
 // isInlineBox reports whether node is a non-atomic inline box (Blink's
 // LayoutInline) whose block-level children become block-in-inline.
 func isInlineBox(node *LayoutInputNode) bool {
-	if node.IsText() || node.IsAnonymous() || node.DOMNode == nil || IsReplacedElement(node.DOMNode) {
+	if node.IsText() || node.IsAnonymous() || node.DOMNode == nil || html.IsReplacedOrFormControl(node.DOMNode) {
 		return false
 	}
 	s := node.Style()
