@@ -1547,6 +1547,16 @@ func (lb *LineBreaker) handleBlockInInline(item *InlineItem, line *LineInfo) {
 
 // handleControl handles control characters (forced line breaks).
 func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
+	// A <br> that needs clearance past a float continuing in the next
+	// fragmentainer cannot be placed in this one. End the line before it
+	// when anything precedes it, so that content is placed here; the BR
+	// then gets a line of its own, which the inline layout breaks before
+	// until the floats end. Mirrors Blink's LineBreaker::
+	// HandleForcedLineBreak (inline/line_breaker.cc:2866-2903 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if len(line.Results) > 0 && brNeedsClearancePastFragmentainer(lb.space, item) {
+		return
+	}
 	line.HasForcedBreak = true
 	// Include the control item in Results so that computeLineMetricsEx can
 	// use its style (parent element's font) to compute the strut for blank
@@ -1560,6 +1570,24 @@ func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
 	})
 	lb.currentItemIndex++
 	lb.currentTextOffset = item.EndOffset
+}
+
+// brNeedsClearancePastFragmentainer reports whether item is a <br> whose
+// clear needs clearance past the current fragmentainer, given the line's
+// space (its exclusion space is the one at the line): the BR condition of
+// Blink's LineBreaker::HandleForcedLineBreak and InlineLayoutAlgorithm::
+// AddAnyClearanceAfterLine (inline/line_breaker.cc:2895-2898,
+// inline/inline_layout_algorithm.cc:1058-1059 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func brNeedsClearancePastFragmentainer(space ConstraintSpace, item *InlineItem) bool {
+	return space.HasBlockFragmentation && isBRItem(item) &&
+		space.ExclusionSpace.NeedsClearancePastFragmentainer(item.Style.GetClear(), space.WritingDirection)
+}
+
+// isBRItem reports whether item is the forced break of a <br> element
+// (Blink's LayoutObject::IsBR on the item's layout object).
+func isBRItem(item *InlineItem) bool {
+	return item != nil && item.Type == InlineItemControl && item.Node != nil && item.Node.TagName == "br" && item.Style != nil
 }
 
 // handleOpenTag processes the start of an inline element.

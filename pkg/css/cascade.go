@@ -3590,6 +3590,19 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
+	// <br clear> → clear: "all" is "both", any other value is parsed as
+	// the clear keyword. Mirrors Blink's
+	// HTMLBRElement::CollectStyleForPresentationAttribute
+	// (html/html_br_element.cc:41-60 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if val, ok := node.GetAttribute("clear"); ok && node.TagName == "br" {
+		switch val = asciiToLower(val); val {
+		case "all":
+			style.Set("clear", "both")
+		case "none", "left", "right", "both", "inline-start", "inline-end":
+			style.Set("clear", val)
+		}
+	}
+
 	// valign → vertical-align (on td, th, tr)
 	if val, ok := node.GetAttribute("valign"); ok {
 		switch node.TagName {
