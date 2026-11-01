@@ -13,6 +13,14 @@ import (
 //
 // Ported from Blink's LayoutResult (layout_result.h).
 type LayoutResult struct {
+	// IsSelfCollapsing: the block's BFC block-offset stayed unresolved, so
+	// its parent collapses margins through it (zero block-size, no
+	// block-start/-end border or padding, no content that resolves it).
+	// Set by the block's own algorithm. Mirrors Blink's
+	// LayoutResult::IsSelfCollapsing (layout_result.h:429 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsSelfCollapsing bool
+
 	// Fragment is the physical fragment produced by layout.
 	// Contains the box's physical size and positioned children.
 	Fragment *PhysicalFragment
@@ -595,17 +603,6 @@ type PhysicalFragment struct {
 	// content to the table-cell's border-box"). Default is false;
 	// normal overflow semantics apply.
 	ClipContentToBorderBox bool
-
-	// IsSelfCollapsing marks a block fragment whose margins its parent
-	// collapsed through: zero block-size, no block-start/-end border or
-	// padding, no in-flow content. Mirrors Blink's
-	// LayoutResult::IsSelfCollapsing (layout_result.h:429 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which the child's own
-	// algorithm sets when its BFC block-offset stays unresolved; louis14
-	// decides it in the parent (BlockLayoutAlgorithm.Layout), so it lives on
-	// the fragment, where a grandparent can see that a child holds only
-	// self-collapsing fragments.
-	IsSelfCollapsing bool
 
 	// IsMulticolContainer marks a fragment of a multicol container
 	// (CSS Multicol L1 §2), set by MulticolLayoutAlgorithm. Mirrors
