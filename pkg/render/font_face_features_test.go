@@ -96,7 +96,7 @@ func TestShapingFeatures_BlinkOrder(t *testing.T) {
 		feature("dlig", 1),                     // ligatures
 		feature("liga", 0), feature("smcp", 0), // property
 	}
-	if got := r.shapeFeatures(fontID, layer.FontFeatures); !reflect.DeepEqual(got, want) {
+	if got := r.shapeFeatures(fontID, layer.featureInputs()); !reflect.DeepEqual(got, want) {
 		t.Errorf("shaping features = %v\nwant %v", got, want)
 	}
 }
@@ -112,13 +112,13 @@ func TestShapingFeatures_KeyedToFace(t *testing.T) {
 	plain := layerWithStyle(map[string]string{"font-family": "LOU465-Plain", "font-feature-settings": `"liga" 1`})
 
 	idA, idB, idPlain := r.fontIDForLayer(a), r.fontIDForLayer(b), r.fontIDForLayer(plain)
-	if got, want := r.shapeFeatures(idA, a.FontFeatures), []textshape.FontFeature{feature("smcp", 1), feature("liga", 1)}; !reflect.DeepEqual(got, want) {
+	if got, want := r.shapeFeatures(idA, a.featureInputs()), []textshape.FontFeature{feature("smcp", 1), feature("liga", 1)}; !reflect.DeepEqual(got, want) {
 		t.Errorf("descriptor face, property liga 1: %v, want %v", got, want)
 	}
-	if got, want := r.shapeFeatures(idB, b.FontFeatures), []textshape.FontFeature{feature("smcp", 1), feature("liga", 0)}; !reflect.DeepEqual(got, want) {
+	if got, want := r.shapeFeatures(idB, b.featureInputs()), []textshape.FontFeature{feature("smcp", 1), feature("liga", 0)}; !reflect.DeepEqual(got, want) {
 		t.Errorf("descriptor face, no property: %v, want %v", got, want)
 	}
-	if got, want := r.shapeFeatures(idPlain, a.FontFeatures), []textshape.FontFeature{feature("liga", 1)}; !reflect.DeepEqual(got, want) {
+	if got, want := r.shapeFeatures(idPlain, a.featureInputs()), []textshape.FontFeature{feature("liga", 1)}; !reflect.DeepEqual(got, want) {
 		t.Errorf("a's features shaped with the plain face: %v, want %v", got, want)
 	}
 }

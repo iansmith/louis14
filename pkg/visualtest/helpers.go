@@ -60,7 +60,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher
 	if basePath != "" {
-		fetcher = resolver.readFile
+		fetcher = resolver.fetch
 		engine.SetImageFetcher(fetcher)
 		engine.SetDocumentFetcher(createFileDocumentFetcher(resolver))
 	}
@@ -165,7 +165,7 @@ func buildFontConfig(doc *html.Document, resolver wptResourceResolver) (text.Fon
 	}
 
 	registry := text.NewFontRegistry()
-	registry.AddUserFontFaceRules(allFaces, resolver.readFile)
+	registry.AddUserFontFaceRules(allFaces, resolver.fetch)
 
 	fc := text.DefaultFontConfig()
 	fc.Registry = registry
@@ -198,8 +198,8 @@ func createFileDocumentFetcher(resolver wptResourceResolver) layout.DocumentFetc
 }
 
 // createExternalSVGFetcher creates an ExternalSVGFetcher closure for
-// `filter: url(doc#id)` references. data: URLs decode inline via
-// stdnet.DecodeDataURL and file:// URLs read the named file; everything
+// `filter: url(doc#id)` references. data: URLs are static data
+// (stdnet.RequestResource) and file:// URLs read the named file; everything
 // else loads from the WPT corpus through resolver.
 //
 // LOU-138 phase 5 eliminated the previous cssDirs fallback: external
@@ -208,21 +208,16 @@ func createFileDocumentFetcher(resolver wptResourceResolver) layout.DocumentFetc
 // location. The fetcher receives the already-rooted URI on first try.
 // LOU-130 Phase 2 wiring.
 func createExternalSVGFetcher(resolver wptResourceResolver) func(uri string) ([]byte, error) {
-	return func(uri string) ([]byte, error) {
-		switch {
-		case stdnet.IsDataURL(uri):
-			body, _, err := stdnet.DecodeDataURL(uri)
-			return body, err
-		case stdnet.IsFileURL(uri):
-			p, err := stdnet.FileURLToPath(uri)
-			if err != nil {
-				return nil, err
-			}
-			return os.ReadFile(p)
-		default:
+	return stdnet.RequestResource(func(uri string) ([]byte, error) {
+		if !stdnet.IsFileURL(uri) {
 			return resolver.readFile(uri)
 		}
-	}
+		p, err := stdnet.FileURLToPath(uri)
+		if err != nil {
+			return nil, err
+		}
+		return os.ReadFile(p)
+	})
 }
 
 // RenderHTMLFile renders an HTML file to a PNG file

@@ -100,7 +100,7 @@ func (tp *svgTextPainter) paint() {
 			strokeWidth: strokeWidth,
 			shadows:     shadows,
 		})
-		x += r.measureTextStr(segText, fontID, layer.FontFeatures)
+		x += r.measureTextStr(segText, fontID, layer.featureInputs())
 	}
 
 	for _, rs := range resolved {
@@ -144,7 +144,7 @@ func (tp *svgTextPainter) paintSegmentGlyphs(fontID int32, layer *PaintLayer, se
 
 	if fillPaint.Kind != css.SVGPaintNone {
 		setDCColor(dc, fillPaint.Color)
-		r.drawTextStr(segText, fontID, x, baselineY, layer.FontFeatures)
+		r.drawTextStr(segText, fontID, x, baselineY, layer.featureInputs())
 	}
 
 	if strokePaint.Kind == css.SVGPaintNone || strokeWidth <= 0 || !layer.FontAhem {
@@ -187,7 +187,7 @@ func (tp *svgTextPainter) paintSegmentGlyphs(fontID int32, layer *PaintLayer, se
 	for _, ch := range segText {
 		chStr := string(ch)
 		byteOff += len(chStr)
-		end := r.measureTextStr(segText[:byteOff], fontID, layer.FontFeatures)
+		end := r.measureTextStr(segText[:byteOff], fontID, layer.featureInputs())
 		adv := end - prevEnd
 		glyphX := x + prevEnd
 		// A space has an advance but no glyph contour to stroke — Ahem's

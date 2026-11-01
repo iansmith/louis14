@@ -90,7 +90,7 @@ func TestAhemGlyphNoFractionalSeam(t *testing.T) {
 			}
 			r.setColor(css.Color{R: 0, G: 0, B: 0, A: 1})
 
-			r.drawTextStr("A", fontID, 4, baseline, nil)
+			r.drawTextStr("A", fontID, 4, baseline, fontFeatureInputs{})
 
 			// Coverage of the darkest column (glyph interior) per row: 255 for
 			// a fully-black (fully-covered) pixel, 0 for untouched white.

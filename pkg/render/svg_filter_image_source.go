@@ -158,8 +158,9 @@ func (p *svgFilterPrimitiveAdapter) resolveImageHref(href string, target image.R
 	}
 
 	// 3. Any other URI — treat as a raster image (PNG, JPG, GIF, BMP).
-	//    Data URIs for raster images route through this path via
-	//    images.LoadImageFromDataURI inside LoadImageWithFetcher.
+	//    Data URIs for raster images route through this path: the
+	//    fetcher serves them (stdnet.RequestResource), or with no fetcher
+	//    LoadImageWithFetcher decodes them via LoadImage.
 	if p.imageFetcher == nil {
 		// Try loader for absolute paths / data: URIs even without a
 		// fetcher (LoadImageWithFetcher's nil-fetcher path handles
@@ -392,7 +393,7 @@ func rasterizeSVGContainer(svgRoot svg.ElementAdapter, target image.Rectangle) *
 // to short-circuit data-URL detection so a misclassified `data:image/png,...`
 // without a recognisable suffix still routes to the raster decoder.
 // Kept for future tightening of the dispatcher; currently unused (the
-// images.LoadImageFromDataURI path handles base64 PNG payloads).
+// fetcher / LoadImage data: path handles base64 PNG payloads).
 //
 // Returns false for SVG (which is XML and starts with `<?xml` or `<svg`).
 // nolint:deadcode,unused

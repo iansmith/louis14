@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 
@@ -21,6 +22,7 @@ import (
 	"louis14/pkg/layout"
 	"louis14/pkg/layout/svg"
 	"louis14/pkg/text"
+	stdnet "louis14/std/net"
 	"mazarin/textshape"
 )
 
@@ -56,6 +58,15 @@ type Renderer struct {
 	// Font ID cache: (path, size) → fontID
 	fontCache   map[fontCacheKey]int32
 	fontCacheMu sync.Mutex
+	// faceFeatureSettings holds, per font ID openFont returned for a
+	// registered @font-face, that face's font-feature-settings descriptor —
+	// the face-level input shapeFeatures resolves against each run's
+	// description. Guarded by fontCacheMu.
+	faceFeatureSettings map[int32][]textshape.FontFeature
+	// hasFaceFeatureSettings is len(faceFeatureSettings) > 0, read without
+	// the lock so shapeFeatures' common case (no descriptor face open)
+	// skips the mutex.
+	hasFaceFeatureSettings atomic.Bool
 
 	// tempFontIDs collects fontIDs returned by openFont during the
 	// current Render call. Each public Render entry point resets this
@@ -367,7 +378,76 @@ func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 	}
 	r.fontCache[key] = metrics.FontID
 	r.tempFontIDs = append(r.tempFontIDs, metrics.FontID)
+	if settings := r.fonts.Registry.FontFeatureSettingsForPath(fontPath); len(settings) > 0 {
+		if r.faceFeatureSettings == nil {
+			r.faceFeatureSettings = make(map[int32][]textshape.FontFeature)
+		}
+		r.faceFeatureSettings[metrics.FontID] = settings
+		r.hasFaceFeatureSettings.Store(true)
+	}
 	return metrics.FontID
+}
+
+// fontFeatureInputs is the feature state of a text run's font description
+// that shaping needs, each input kept apart: features is Blink's
+// Font::GetFontFeatures() with the font-variant-caps overlay (PaintLayer.
+// FontFeatures), settings is FontDescription::FeatureSettings() (the
+// font-feature-settings property) and alternates is the
+// font-variant-alternates features.
+type fontFeatureInputs struct {
+	features   []textshape.FontFeature
+	settings   []textshape.FontFeature
+	alternates []textshape.FontFeature
+}
+
+// featureInputs returns the layer's fontFeatureInputs.
+func (layer *PaintLayer) featureInputs() fontFeatureInputs {
+	return fontFeatureInputs{
+		features:   layer.FontFeatures,
+		settings:   layer.FontFeatureSettings,
+		alternates: layer.FontVariantAlternates,
+	}
+}
+
+// shapeFeatures is the final feature list a run shaped with fontID uses:
+// the face's ResolvedFeatures, then the run's own features. Mirrors
+// ShapeRange inserting current_font->PlatformData().ResolvedFeatures()
+// before the font's features (platform/fonts/shaping/harfbuzz_shaper.cc:
+// 327-340 @ 5992657f556bcd9d207a4aca187488462f027cab). The resolved
+// features are keyed to the face that shapes the run (fontID), so a
+// fallback face gets its own.
+func (r *Renderer) shapeFeatures(fontID int32, in fontFeatureInputs) []textshape.FontFeature {
+	var descriptor []textshape.FontFeature
+	if r.hasFaceFeatureSettings.Load() {
+		r.fontCacheMu.Lock()
+		descriptor = r.faceFeatureSettings[fontID]
+		r.fontCacheMu.Unlock()
+	}
+	if len(descriptor) == 0 && len(in.alternates) == 0 {
+		return in.features
+	}
+	resolved := resolveFontFeatures(descriptor, in.settings, in.alternates)
+	return append(resolved, in.features...) // resolved never aliases an input
+}
+
+// resolveFontFeatures is a face's ResolvedFeatures: the
+// font-variant-alternates features, then the face's @font-face
+// font-feature-settings descriptor features that neither the
+// font-feature-settings property nor the alternates name. Mirrors
+// CSSFontFace::GetFontData merging the descriptor into the face's
+// FontDescription (core/css/css_font_face.cc:149-151), then
+// FontDescription::MergeFontFeatureSettingsWithDescriptor and
+// ResolveFontFeatures (platform/fonts/font_description.cc:549-576), whose
+// result becomes the face's FontPlatformData::ResolvedFeatures
+// (core/css/binary_data_font_face_source.cc:58), all @
+// 5992657f556bcd9d207a4aca187488462f027cab. The result never aliases its
+// inputs.
+func resolveFontFeatures(descriptor, settings, alternates []textshape.FontFeature) []textshape.FontFeature {
+	resolved := resolveFontFeatureSettingsDescriptor(settings, descriptor)
+	if len(alternates) == 0 {
+		return resolved
+	}
+	return append(slices.Clip(alternates), resolveFontFeatureSettingsDescriptor(alternates, resolved)...)
 }
 
 // closeTempFonts releases every fontID openFont produced during the
@@ -388,6 +468,8 @@ func (r *Renderer) closeTempFonts() {
 	if len(r.fontCache) > 0 {
 		r.fontCache = make(map[fontCacheKey]int32)
 	}
+	r.faceFeatureSettings = nil
+	r.hasFaceFeatureSettings.Store(false)
 }
 
 // Render paints the box tree onto the image. Clears the entire underlying
@@ -3689,7 +3771,7 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 
 		// Paint image.
 		// data: URIs decode inline and need no fetcher.
-		if bg.Image != nil && (r.imageFetcher != nil || images.IsDataURI(bg.Image.Data.Absolute)) {
+		if bg.Image != nil && (r.imageFetcher != nil || stdnet.IsDataURL(bg.Image.Data.Absolute)) {
 			if lHasRadius {
 				r.dc.Push()
 				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
@@ -4223,7 +4305,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 
 // drawImage paints an <img> element with object-fit and object-position support.
 func (r *Renderer) drawImage(layer *PaintLayer) {
-	if layer.ImageSrc == "" || (r.imageFetcher == nil && !images.IsDataURI(layer.ImageSrc)) {
+	if layer.ImageSrc == "" || (r.imageFetcher == nil && !stdnet.IsDataURL(layer.ImageSrc)) {
 		return
 	}
 	box := layer.Box
@@ -4474,7 +4556,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 	// the url() inner was extracted by cascade-time wrapping in paint_layer.go.
 	src := layer.BorderImageSource.Data.Absolute
 
-	if r.imageFetcher == nil && !images.IsDataURI(src) {
+	if r.imageFetcher == nil && !stdnet.IsDataURL(src) {
 		return false
 	}
 
@@ -5916,8 +5998,9 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 // fractional α≈0.804/0.2 seam (previously the floored outline bounds baked the
 // seam into the mask; e.g. multicol-rule-px-001). See
 // TestAhemGlyphNoFractionalSeam for the executable guard.
-func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features []textshape.FontFeature) {
+func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, in fontFeatureInputs) {
 	y = math.Round(y)
+	features := r.shapeFeatures(fontID, in)
 	if len(features) > 0 {
 		r.dc.DrawTextWithFeatures(text, fontID, x, y, features)
 	} else {
@@ -5926,7 +6009,8 @@ func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features
 }
 
 // measureTextStr measures a text string, applying OpenType features if present.
-func (r *Renderer) measureTextStr(text string, fontID int32, features []textshape.FontFeature) float64 {
+func (r *Renderer) measureTextStr(text string, fontID int32, in fontFeatureInputs) float64 {
+	features := r.shapeFeatures(fontID, in)
 	if len(features) > 0 {
 		return r.dc.MeasureTextWithFeatures(text, fontID, features)
 	}
@@ -6140,7 +6224,6 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	if box == nil {
 		return
 	}
-	layer = r.withFontFaceFeatures(layer)
 
 	segs := r.computeSelectionSegments(box, box.Text)
 	if len(segs) == 1 && !segs[0].selected {
@@ -6462,27 +6545,6 @@ func (r *Renderer) fontIDForLayer(layer *PaintLayer) int32 {
 	return r.openFont(r.fontPathForLayer(layer), layer.FontSize)
 }
 
-// withFontFaceFeatures returns layer, or — when the face it draws with has
-// an @font-face font-feature-settings descriptor — a shallow copy whose
-// FontFeatures start with the descriptor features the property does not
-// override. Mirrors Blink's ShapeRange, which inserts the face's
-// FontPlatformData::ResolvedFeatures before the font's features
-// (platform/fonts/shaping/harfbuzz_shaper.cc:327-340 @
-// 5992657f556bcd9d207a4aca187488462f027cab).
-func (r *Renderer) withFontFaceFeatures(layer *PaintLayer) *PaintLayer {
-	descriptor := r.fonts.Registry.FontFeatureSettingsForPath(r.fontPathForLayer(layer))
-	if descriptor == "" {
-		return layer
-	}
-	resolved := resolveFontFeatureSettingsDescriptor(layer.FontFeatureSettings, parseFontFeatureSettings(descriptor))
-	if len(resolved) == 0 {
-		return layer
-	}
-	copied := *layer
-	copied.FontFeatures = append(resolved, layer.FontFeatures...)
-	return &copied
-}
-
 // resolveFontFeatureSettingsDescriptor keeps the descriptor features whose
 // tag the font-feature-settings property does not name. Mirrors Blink's
 // ResolveFontFeatureSettingsDescriptor (platform/fonts/
@@ -6570,13 +6632,13 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 		return measureUprightVerticalSegmentAdvance(text, layer, r.fontPathForLayer(layer), includeTrailing)
 	}
 	if layer.LetterSpacing == 0 && layer.WordSpacing == 0 {
-		return r.measureTextStr(text, fontID, layer.FontFeatures)
+		return r.measureTextStr(text, fontID, layer.featureInputs())
 	}
 	if layer.LetterSpacing != 0 {
 		runes := []rune(text)
 		var total float64
 		for i, ch := range runes {
-			total += r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+			total += r.measureTextStr(string(ch), fontID, layer.featureInputs())
 			if includeTrailing || i < len(runes)-1 {
 				total += layer.LetterSpacing
 				if ch == ' ' {
@@ -6588,11 +6650,11 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 	}
 	// Word-spacing only: mirrors the word-by-word branch.
 	words := strings.Split(text, " ")
-	spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
+	spaceW := r.measureTextStr(" ", fontID, layer.featureInputs())
 	var total float64
 	for i, word := range words {
 		if word != "" {
-			total += r.measureTextStr(word, fontID, layer.FontFeatures)
+			total += r.measureTextStr(word, fontID, layer.featureInputs())
 		}
 		if i < len(words)-1 {
 			total += spaceW + layer.WordSpacing
@@ -6794,7 +6856,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		metrics := r.dc.GetFontMetrics(fontID)
 		descent := float64(metrics.Descent) / 64.0
-		textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
+		textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
 
 		// CSS Text Decor 3 §3.5: for non-CJK upright/mixed vertical text,
 		// `text-underline-position: right` resolves to kOver, which in Blink
@@ -6989,8 +7051,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			childDC.SetColor(premultipliedRGBA(layer.TextColor))
 		}
 
-		if len(layer.FontFeatures) > 0 {
-			childDC.DrawTextWithFeatures(text, fontID, float64(inlineStartExt), ascent+float64(textOff), layer.FontFeatures)
+		if features := r.shapeFeatures(fontID, layer.featureInputs()); len(features) > 0 {
+			childDC.DrawTextWithFeatures(text, fontID, float64(inlineStartExt), ascent+float64(textOff), features)
 		} else {
 			childDC.DrawText(text, fontID, float64(inlineStartExt), ascent+float64(textOff))
 		}
@@ -7145,12 +7207,12 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		advances := uprightVerticalAdvances(layer, text, fontPath)
 		for i, ch := range []rune(text) {
 			charStr := string(ch)
-			charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
+			charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
 			xOffset := (box.Width - charW) / 2
 			if xOffset < 0 {
 				xOffset = 0
 			}
-			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.FontFeatures)
+			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.featureInputs())
 			y += advances[i]
 		}
 		// Paint text decorations for upright vertical text (Strategy B).
@@ -7215,8 +7277,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		if layer.LetterSpacing != 0 {
 			// Character-by-character rendering for letter-spacing.
 			for _, ch := range text {
-				r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
-				charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+				r.drawTextStr(string(ch), fontID, x, baselineY, layer.featureInputs())
+				charW := r.measureTextStr(string(ch), fontID, layer.featureInputs())
 				x += charW + layer.LetterSpacing
 				if ch == ' ' {
 					x += layer.WordSpacing
@@ -7227,11 +7289,11 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			// Drawing words as units avoids sub-pixel accumulation errors
 			// that occur with per-character rendering.
 			words := strings.Split(text, " ")
-			spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
+			spaceW := r.measureTextStr(" ", fontID, layer.featureInputs())
 			for i, word := range words {
 				if word != "" {
-					r.drawTextStr(word, fontID, x, baselineY, layer.FontFeatures)
-					x += r.measureTextStr(word, fontID, layer.FontFeatures)
+					r.drawTextStr(word, fontID, x, baselineY, layer.featureInputs())
+					x += r.measureTextStr(word, fontID, layer.featureInputs())
 				}
 				if i < len(words)-1 {
 					x += spaceW + layer.WordSpacing
@@ -7239,7 +7301,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			}
 		}
 	} else {
-		r.drawTextStr(text, fontID, box.X, box.Y+ascent, layer.FontFeatures)
+		r.drawTextStr(text, fontID, box.X, box.Y+ascent, layer.featureInputs())
 	}
 
 	// Draw text decoration lines: line-through (after text so it paints over glyphs).
@@ -7309,7 +7371,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	x := box.X
 	for _, ch := range text {
 		charStr := string(ch)
-		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
+		charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
 
 		// Skip characters that cannot receive emphasis marks.
 		if canReceiveTextEmphasis(ch) {
@@ -7527,7 +7589,7 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	x := 0.0
 	for _, ch := range text {
 		charStr := string(ch)
-		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
+		charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
 
 		if canReceiveTextEmphasis(ch) {
 			// Annotation's inline origin (in off-screen horizontal frame),
@@ -7598,13 +7660,13 @@ func (r *Renderer) drawTextSmallCaps(layer *PaintLayer, text string, box *layout
 			// Draw uppercase glyph at reduced size, baseline-aligned.
 			// The small font has a smaller ascent; shift down so baselines match.
 			smallBaselineY := baselineY + (ascent - smallAscent)
-			r.drawTextStr(drawStr, smallFontID, x, smallBaselineY, layer.FontFeatures)
-			charW := r.measureTextStr(drawStr, smallFontID, layer.FontFeatures)
+			r.drawTextStr(drawStr, smallFontID, x, smallBaselineY, layer.featureInputs())
+			charW := r.measureTextStr(drawStr, smallFontID, layer.featureInputs())
 			x += charW
 		} else {
 			// Draw at normal size.
-			r.drawTextStr(drawStr, fontID, x, baselineY, layer.FontFeatures)
-			charW := r.measureTextStr(drawStr, fontID, layer.FontFeatures)
+			r.drawTextStr(drawStr, fontID, x, baselineY, layer.featureInputs())
+			charW := r.measureTextStr(drawStr, fontID, layer.featureInputs())
 			x += charW
 		}
 
@@ -7628,7 +7690,7 @@ func (r *Renderer) tabStopIntervalPx(layer *PaintLayer, fontID int32) float64 {
 	if layer.TabSizeIsLength {
 		tabStopPx = tabSizeVal
 	} else {
-		spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
+		spaceW := r.measureTextStr(" ", fontID, layer.featureInputs())
 		if spaceW <= 0 {
 			spaceW = layer.FontSize
 		}
@@ -7715,7 +7777,7 @@ func (r *Renderer) measureTabAwareAdvance(text string, refBox *layout.Box, fontI
 	segments := strings.Split(text, "\t")
 	for i, seg := range segments {
 		if seg != "" {
-			segW := r.measureTextStr(seg, fontID, layer.FontFeatures)
+			segW := r.measureTextStr(seg, fontID, layer.featureInputs())
 			if layer.WordSpacing != 0 {
 				segW += layer.WordSpacing * float64(strings.Count(seg, " "))
 			}
@@ -7748,8 +7810,8 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 		if seg != "" {
 			if layer.LetterSpacing != 0 {
 				for _, ch := range seg {
-					r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
-					charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+					r.drawTextStr(string(ch), fontID, x, baselineY, layer.featureInputs())
+					charW := r.measureTextStr(string(ch), fontID, layer.featureInputs())
 					x += charW + layer.LetterSpacing
 					posFromLineStart += charW + layer.LetterSpacing
 					if ch == ' ' {
@@ -7758,8 +7820,8 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 					}
 				}
 			} else {
-				r.drawTextStr(seg, fontID, x, baselineY, layer.FontFeatures)
-				segW := r.measureTextStr(seg, fontID, layer.FontFeatures)
+				r.drawTextStr(seg, fontID, x, baselineY, layer.featureInputs())
+				segW := r.measureTextStr(seg, fontID, layer.featureInputs())
 				if layer.WordSpacing != 0 {
 					segW += layer.WordSpacing * float64(strings.Count(seg, " "))
 				}
@@ -7900,12 +7962,12 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	ws := layer.WordSpacing
 	measureRunWidth := func(s string) float64 {
 		if ls == 0 && ws == 0 {
-			return r.measureTextStr(s, fontID, layer.FontFeatures)
+			return r.measureTextStr(s, fontID, layer.featureInputs())
 		}
 		total := 0.0
 		runes := []rune(s)
 		for i, ch := range runes {
-			total += r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+			total += r.measureTextStr(string(ch), fontID, layer.featureInputs())
 			if i < len(runes)-1 {
 				total += ls
 			}
@@ -7928,10 +7990,10 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	containerFontID := r.openContainerFont(clipAncestor)
 	var replacementW float64
 	if containerFontID >= 0 {
-		replacementW = r.measureTextStr(replacement, containerFontID, nil)
+		replacementW = r.measureTextStr(replacement, containerFontID, fontFeatureInputs{})
 	} else {
 		// Fallback: measure with inline font.
-		replacementW = r.measureTextStr(replacement, fontID, layer.FontFeatures)
+		replacementW = r.measureTextStr(replacement, fontID, layer.featureInputs())
 	}
 	truncW := availW - replacementW
 
@@ -7951,7 +8013,7 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	leadingX := clipAncestor.X + clipAncestor.Border.Left
 	isLeadingRun := box.X <= leadingX+0.5
 	if len(runes) >= 1 {
-		firstAdvance := r.measureTextStr(string(runes[0]), fontID, layer.FontFeatures)
+		firstAdvance := r.measureTextStr(string(runes[0]), fontID, layer.featureInputs())
 		if isLeadingRun && firstAdvance > availW {
 			// First glyph doesn't fit; preserve it and skip the ellipsis.
 			return string(runes[0]), nil
@@ -7977,7 +8039,7 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 			// Custom <string>: accept text in inline font, clip replacement.
 			textTaken, textW2 := acceptInlineGlyphs(r, layer, fontID, runes, availW, ls, ws)
 			remaining := availW - textW2
-			clipped := clipReplacement(r, replacement, containerFontID, fontID, layer.FontFeatures, remaining)
+			clipped := clipReplacement(r, replacement, containerFontID, fontID, layer.featureInputs(), remaining)
 			if clipped == "" {
 				return textTaken, nil
 			}
@@ -8022,7 +8084,7 @@ func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []ru
 	idx := 0
 	var prevCh rune
 	for i, ch := range runes {
-		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+		cw := r.measureTextStr(string(ch), fontID, layer.featureInputs())
 		// Compute the inline-end if this glyph is accepted: glyphEnd + inter-glyph
 		// spacing from the previous glyph + this glyph's content.
 		nextGlyphEnd := glyphEnd + cw
@@ -8049,12 +8111,12 @@ func acceptInlineGlyphs(r *Renderer, layer *PaintLayer, fontID int32, runes []ru
 // width in the container font is <= `limitW`. The result may be empty
 // when even the first character does not fit, per CSS UI 4 §6.2's
 // "the string can be clipped" allowance.
-func clipReplacement(r *Renderer, replacement string, containerFontID, inlineFontID int32, inlineFeatures []textshape.FontFeature, limitW float64) string {
+func clipReplacement(r *Renderer, replacement string, containerFontID, inlineFontID int32, inlineFeatures fontFeatureInputs, limitW float64) string {
 	if limitW <= 0 {
 		return ""
 	}
 	fid := containerFontID
-	features := []textshape.FontFeature(nil)
+	var features fontFeatureInputs
 	if fid < 0 {
 		fid = inlineFontID
 		features = inlineFeatures
@@ -8162,7 +8224,7 @@ func (r *Renderer) paintTextOverflowEllipsis(layer *PaintLayer, box *layout.Box,
 	// overridden by ::first-line on the first line).
 	containerColor := colorStyle.GetColor()
 	r.setColor(containerColor)
-	r.drawTextStr(ep.str, containerFontID, ep.x, baselineY, nil)
+	r.drawTextStr(ep.str, containerFontID, ep.x, baselineY, fontFeatureInputs{})
 	// Restore the layer's text color so subsequent paint operations
 	// (decorations, emphasis) continue with the inline run's color.
 	r.setColor(layer.TextColor)
@@ -8256,15 +8318,15 @@ func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.B
 				x := box.X + shadow.OffsetX
 				baselineY := box.Y + ascent + shadow.OffsetY
 				for _, ch := range text {
-					r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
-					charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
+					r.drawTextStr(string(ch), fontID, x, baselineY, layer.featureInputs())
+					charW := r.measureTextStr(string(ch), fontID, layer.featureInputs())
 					x += charW + layer.LetterSpacing
 					if ch == ' ' {
 						x += layer.WordSpacing
 					}
 				}
 			} else {
-				r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.FontFeatures)
+				r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.featureInputs())
 			}
 		}
 	}
@@ -8276,7 +8338,7 @@ func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.B
 // by drawing text into an offscreen buffer, applying box blur, then compositing.
 func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, shadow css.TextShadow) {
 	// Measure text to determine buffer size.
-	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
+	textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
 	metrics := r.dc.GetFontMetrics(fontID)
 	textHeight := float64(metrics.Ascent-metrics.Descent) / 64.0
 
@@ -8288,7 +8350,7 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 	if bw <= 0 || bh <= 0 || bw > 2000 || bh > 2000 {
 		// Fallback: draw without blur.
 		r.setColor(shadow.Color)
-		r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.FontFeatures)
+		r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.featureInputs())
 		return
 	}
 
@@ -8296,8 +8358,8 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	childDC := r.dc.NewChildContext(buf)
 	childDC.SetColor(premultipliedRGBA(shadow.Color))
-	if len(layer.FontFeatures) > 0 {
-		childDC.DrawTextWithFeatures(text, fontID, extend, extend+ascent, layer.FontFeatures)
+	if features := r.shapeFeatures(fontID, layer.featureInputs()); len(features) > 0 {
+		childDC.DrawTextWithFeatures(text, fontID, extend, extend+ascent, features)
 	} else {
 		childDC.DrawText(text, fontID, extend, extend+ascent)
 	}
@@ -8434,7 +8496,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
-	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
+	textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
 
 	// CSS Text Decor 4 §"text-decoration-skip-spaces-property": when
 	// `text-decoration-skip-spaces` enables skipping at the start/end of the
@@ -8462,7 +8524,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 			leading := leadingWhitespacePrefix(text)
 			if leading != "" && leading != text {
 				tail := text[len(leading):]
-				tailWidth := r.measureTextStr(tail, fontID, layer.FontFeatures)
+				tailWidth := r.measureTextStr(tail, fontID, layer.featureInputs())
 				skipStartWidth = textWidth - tailWidth
 				if skipStartWidth < 0 {
 					skipStartWidth = 0
@@ -8473,7 +8535,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 			trailing := trailingWhitespaceSuffix(text)
 			if trailing != "" && trailing != text {
 				head := text[:len(text)-len(trailing)]
-				headWidth := r.measureTextStr(head, fontID, layer.FontFeatures)
+				headWidth := r.measureTextStr(head, fontID, layer.featureInputs())
 				skipEndWidth = textWidth - headWidth
 				if skipEndWidth < 0 {
 					skipEndWidth = 0
@@ -8512,7 +8574,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// Blink references on those.
 		var glyphs []glyphExtent
 		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto && layer.FontAhem {
-			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.FontFeatures, box.X, layer.LetterSpacing, layer.WordSpacing)
+			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.featureInputs(), box.X, layer.LetterSpacing, layer.WordSpacing)
 		}
 		for _, td := range layer.AppliedTextDecorations {
 			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs, onlyLineThrough)
