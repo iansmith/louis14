@@ -1504,3 +1504,9 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 	return result
 }
+
+// IsKnownToFitInFragmentainer: RED stub (LOU-511).
+func (b *BoxFragmentBuilder) IsKnownToFitInFragmentainer() bool { return false }
+
+// MustStayInCurrentFragmentainer: RED stub (LOU-511).
+func (b *BoxFragmentBuilder) MustStayInCurrentFragmentainer() bool { return false }

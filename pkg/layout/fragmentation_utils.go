@@ -1096,3 +1096,7 @@ func FinishFragmentationForFragmentainer(builder *BoxFragmentBuilder, fragmentsT
 	}
 	return out
 }
+
+// SetupFragmentBuilderForFragmentation: RED stub (LOU-511).
+func SetupFragmentBuilderForFragmentation(space ConstraintSpace, node *LayoutInputNode, previousBreakToken *BlockBreakToken, builder *BoxFragmentBuilder) {
+}
