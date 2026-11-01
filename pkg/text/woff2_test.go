@@ -36,7 +36,7 @@ func TestRegisterFontFace_WOFF2(t *testing.T) {
 			t.Errorf("%s: RegisterFontFace: %v", tc.file, err)
 			continue
 		}
-		if got, _ := MeasureText("水", 20, path); got.Float64() != tc.want {
+		if got, _ := MeasureText("水", 20, path, nil); got.Float64() != tc.want {
 			t.Errorf("%s: advance of 水 at 20px = %v, want %v", tc.file, got.Float64(), tc.want)
 		}
 	}
@@ -135,7 +135,7 @@ func TestRegisterFontFace_DataURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterFontFace(data: URL): %v", err)
 	}
-	if got, _ := MeasureText("水", 20, path); got.Float64() != 20 {
+	if got, _ := MeasureText("水", 20, path, nil); got.Float64() != 20 {
 		t.Errorf("advance of 水 at 20px = %v, want 20", got.Float64())
 	}
 }

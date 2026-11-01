@@ -1,6 +1,7 @@
 package text
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
@@ -28,11 +29,26 @@ type DirectionRun struct {
 	RTL   bool // false=LTR/auto-detect, true=RTL
 }
 
-// measureCache caches text advance widths keyed on "text\x00fontSize\x00fontPath".
+// measureCache caches text advance widths keyed on
+// "text\x00fontSize\x00fontPath\x00features".
 var measureCache sync.Map
 
-func measureCacheKey(text string, fontSize float64, fontPath string) string {
-	return fmt.Sprintf("%s\x00%.4f\x00%s", text, fontSize, fontPath)
+// measureCacheKey keys a measurement by everything that shapes it. The
+// feature list is part of the key as it is of Blink's ShapeCacheKey
+// (core/layout/inline/inline_node.cc:171-177 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, font.GetFontFeatures()).
+func measureCacheKey(text string, fontSize float64, fontPath string, features []textshape.FontFeature) string {
+	key := fmt.Sprintf("%s\x00%.4f\x00%s\x00", text, fontSize, fontPath)
+	if len(features) == 0 {
+		return key
+	}
+	buf := make([]byte, 0, len(key)+8*len(features))
+	buf = append(buf, key...)
+	for _, f := range features {
+		buf = append(buf, f.Tag[:]...)
+		buf = binary.BigEndian.AppendUint32(buf, f.Value)
+	}
+	return string(buf)
 }
 
 // sharedLayout is the package-level TextLayout used for all measurement.
@@ -507,13 +523,13 @@ func atkinsonMonoPath(dir string, bold, italic bool) string {
 
 // measureWidth returns the advance width of text for a given font path+size,
 // using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
-func measureWidth(text string, fontSize float64, fontPath string) float64 {
+func measureWidth(text string, fontSize float64, fontPath string, features []textshape.FontFeature) float64 {
 	// font-size: 0 — all text has zero advance width.  This is an author
 	// technique to collapse whitespace between inline-block elements.
 	if fontSize == 0 {
 		return 0
 	}
-	key := measureCacheKey(text, fontSize, fontPath)
+	key := measureCacheKey(text, fontSize, fontPath, features)
 	if v, ok := measureCache.Load(key); ok {
 		return v.(float64)
 	}
@@ -524,8 +540,9 @@ func measureWidth(text string, fontSize float64, fontPath string) float64 {
 		return w
 	}
 	adv, err := getLayout().MeasureText(textshape.ShapingParams{
-		Text:   text,
-		FontID: m.FontID,
+		Text:     text,
+		FontID:   m.FontID,
+		Features: features,
 	})
 	var w float64
 	if err != nil {
@@ -559,8 +576,12 @@ func measureWidth(text string, fontSize float64, fontPath string) float64 {
 // holding a float64 accumulator bridge with `.Float64()` (round-trips
 // losslessly for exact-1/64-px values, which is what HarfBuzz produces, and
 // for the math.Round-produced integer height).
-func MeasureText(text string, fontSize float64, fontPath string) (width, height layoutunit.LayoutUnit) {
-	w := measureWidth(text, fontSize, fontPath)
+//
+// features is the OpenType feature list the text is shaped with —
+// GetFontFeatures of its style, nil for HarfBuzz defaults — the same list
+// paint shapes it with.
+func MeasureText(text string, fontSize float64, fontPath string, features []textshape.FontFeature) (width, height layoutunit.LayoutUnit) {
+	w := measureWidth(text, fontSize, fontPath, features)
 	width = shapeWidthSnap(w)
 	m := openFont(fontPath, fontSize)
 	if m.FontID >= 0 && m.Height > 0 {
@@ -780,8 +801,8 @@ func FontCapHeightFromFont(fontSize float64, fontPath string) float64 {
 // handled best-effort by attributing each glyph's advance to its cluster
 // byte offset; offsets between cluster boundaries receive the most recent
 // cluster's cumulative X.
-func ShapeAdvances(textStr string, fontSize float64, fontPath string) (ShapeCumulative, bool) {
-	cum, ok := shapeAdvancesFloat(textStr, fontSize, fontPath)
+func ShapeAdvances(textStr string, fontSize float64, fontPath string, features []textshape.FontFeature) (ShapeCumulative, bool) {
+	cum, ok := shapeAdvancesFloat(textStr, fontSize, fontPath, features)
 	if !ok {
 		return ShapeCumulative{}, false
 	}
@@ -812,7 +833,7 @@ func runeIndexToByteOffsets(s string) []int {
 // shapeAdvancesFloat computes the per-byte cumulative-position float64 slice
 // before snapping. Internal helper: the public ShapeAdvances wraps this with
 // the FLOOR/CEIL snap pair at the boundary.
-func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]float64, bool) {
+func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string, features []textshape.FontFeature) ([]float64, bool) {
 	if textStr == "" {
 		return []float64{0}, true
 	}
@@ -821,8 +842,9 @@ func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]fl
 		return nil, false
 	}
 	run, err := getLayout().ShapeText(textshape.ShapingParams{
-		Text:   textStr,
-		FontID: m.FontID,
+		Text:     textStr,
+		FontID:   m.FontID,
+		Features: features,
 	})
 	if err != nil {
 		return nil, false
@@ -886,8 +908,8 @@ func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]fl
 // Empty `runs` is treated as a single LTR run over the whole text (degenerate
 // case equivalent to ShapeAdvances). Returns the zero ShapeCumulative and
 // false on any shaping failure.
-func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) (ShapeCumulative, bool) {
-	cum, ok := shapeAdvancesMixedFloat(textStr, runs, fontSize, fontPath)
+func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string, features []textshape.FontFeature) (ShapeCumulative, bool) {
+	cum, ok := shapeAdvancesMixedFloat(textStr, runs, fontSize, fontPath, features)
 	if !ok {
 		return ShapeCumulative{}, false
 	}
@@ -896,12 +918,12 @@ func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, f
 
 // shapeAdvancesMixedFloat computes the per-byte cumulative-position float64
 // slice for the bidi-mixed case before snapping.
-func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float64, fontPath string) ([]float64, bool) {
+func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float64, fontPath string, features []textshape.FontFeature) ([]float64, bool) {
 	if textStr == "" {
 		return []float64{0}, true
 	}
 	if len(runs) == 0 {
-		return shapeAdvancesFloat(textStr, fontSize, fontPath)
+		return shapeAdvancesFloat(textStr, fontSize, fontPath, features)
 	}
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
@@ -924,8 +946,9 @@ func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float
 		subText := textStr[r.Start:r.End]
 
 		params := textshape.ShapingParams{
-			Text:   subText,
-			FontID: m.FontID,
+			Text:     subText,
+			FontID:   m.FontID,
+			Features: features,
 		}
 		if r.RTL {
 			params.Direction = textshape.RTL

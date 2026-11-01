@@ -147,10 +147,10 @@ func TestCSSFontSelector_ExCapFromSpacePrimaryFont(t *testing.T) {
 func TestCSSFontSelector_ChFromDigitZeroPrimaryFont(t *testing.T) {
 	fr, noDigits, zeroW := noDigitsThenZeroWidth(t)
 	wantX := FontXHeightFromFont(80, noDigits)
-	if w, _ := MeasureText("0", 80, noDigits); w.Float64() == 0 {
+	if w, _ := MeasureText("0", 80, noDigits, nil); w.Float64() == 0 {
 		t.Fatalf("fixture: the no-digits face must give \"0\" a non-zero advance")
 	}
-	if w, _ := MeasureText("0", 80, zeroW); w.Float64() != 0 {
+	if w, _ := MeasureText("0", 80, zeroW, nil); w.Float64() != 0 {
 		t.Fatalf("fixture: ChTestZeroWidthZero \"0\" advance = %v, want 0", w.Float64())
 	}
 	if FontXHeightFromFont(80, zeroW) == wantX {

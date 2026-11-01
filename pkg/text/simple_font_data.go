@@ -55,7 +55,8 @@ func glyphAdvance(fontPath string, fontSize float64, c rune) (Glyph, float64) {
 	if g == 0 {
 		return 0, 0
 	}
-	w, _ := MeasureText(string(c), fontSize, fontPath)
+	// A font metric: shaped with the face's defaults, no style features.
+	w, _ := MeasureText(string(c), fontSize, fontPath, nil)
 	return g, w.Float64()
 }
 
