@@ -1730,14 +1730,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					if !token.IsAtBlockEnd {
 						prevMarginStrut = MarginStrut{}
 					}
-					// louis14-only (LOU-365, ledger L21): a zero-height
-					// parallel-flow continuation stops the walk unless the
-					// container has seen all children or a later sibling
-					// still has a token.
-					if IsInParallelFlow(childResult) && (childBlockSize > 0 ||
-						bla.space.IsInitialColumnBalancingPass ||
-						bla.fragmentainerCapacityForChildren() == Indefinite ||
-						isPureParallelFlowResume(childResult, incomingBreakToken, childIdx < resumeLastTokenIdx)) {
+					if IsInParallelFlow(childResult) {
 						pendingParallelFlowChildTokens = append(pendingParallelFlowChildTokens, token)
 					} else {
 						pendingShouldBreakInside = true
@@ -2863,28 +2856,6 @@ func resumeSkipsChild(
 	// before any token.
 	return childIdx <= resumeLastTokenIdx ||
 		(incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren)
-}
-
-// isPureParallelFlowResume reports whether a zero-height inside-broken child
-// is a PURE parallel-flow continuation that must not be treated as
-// zero-progress: at-block-end (its box is done, content continues), no
-// column-spanner involvement (the spanner protocol owns those stops), and
-// the container has seen all children or a later sibling still has an
-// incoming token (so continuing reaches tokened siblings first, never lays a
-// fresh one into a column owed to this continuation; LOU-405: a forced break
-// before a deferred spanner is such a token).
-// Mirrors Blink's MovePastBreakpoint must_break_before (checks
-// GetColumnSpannerPath() first, then !IsAtBlockEnd —
-// fragmentation_utils.cc:1178-1186 @ a9f50e522efa) combined with
-// BlockChildIterator's seen-all iteration (block_child_iterator.cc:80-95).
-// Driver for the seen-all narrowing: the pre-spanner columnization of
-// multicol-span-all-children-height-012's zero-height wrapper relies on
-// stopping when unseen siblings are still pending.
-func isPureParallelFlowResume(childResult *LayoutResult, incomingBreakToken *BlockBreakToken, laterSiblingHasToken bool) bool {
-	return IsInParallelFlow(childResult) &&
-		!childResult.BreakToken.IsCausedByColumnSpanner &&
-		childResult.ColumnSpannerPath == nil &&
-		incomingBreakToken != nil && (incomingBreakToken.HasSeenAllChildren || laterSiblingHasToken)
 }
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
