@@ -77,6 +77,12 @@ type ConstraintSpace struct {
 	// IsInsideFlexibleBox, orthogonal roots).
 	InlineAutoBehavior AutoSizeBehavior
 
+	// BlockAutoBehavior is the behaviour of an auto block-size (RED stub).
+	BlockAutoBehavior AutoSizeBehavior
+
+	// IsAnonymous (RED stub).
+	IsAnonymous bool
+
 	// IsFixedBlockSizeIndefinite is true when IsFixedBlockSize is true but the
 	// block-size comes from the first-pass flex layout rather than a real definite size.
 	// Children should treat percentage block-sizes as auto (resolve to 0) on this pass.
@@ -512,6 +518,16 @@ func (b *ConstraintSpaceBuilder) SetInlineAutoBehavior(v AutoSizeBehavior) *Cons
 	if b.parallel {
 		b.space.InlineAutoBehavior = v
 	}
+	return b
+}
+
+// SetBlockAutoBehavior (RED stub).
+func (b *ConstraintSpaceBuilder) SetBlockAutoBehavior(v AutoSizeBehavior) *ConstraintSpaceBuilder {
+	return b
+}
+
+// SetIsAnonymous (RED stub).
+func (b *ConstraintSpaceBuilder) SetIsAnonymous(v bool) *ConstraintSpaceBuilder {
 	return b
 }
 
