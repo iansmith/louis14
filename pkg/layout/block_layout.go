@@ -2362,9 +2362,24 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	return layoutFrameOwnerDocument(bla.ctx, bla.node.DOMNode, htmlContent, baseDir, physSize.Width, physSize.Height)
 }
 
-// layoutElement dispatches to the appropriate layout algorithm based on
-// the element's display type.
+// layoutElement lays node out in space with the layout algorithm for its
+// display type and records the result on the node. Mirrors BlockNode::Layout
+// (block_node.cc:405-666) → DetermineAlgorithmAndRun, then FinishLayout's
+// StoreResultInLayoutBox (:837-875, :916-937 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A box without style or with
+// display:none generates no fragment and stores nothing.
 func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
+	result := determineAlgorithmAndRun(ctx, node, space)
+	if style := node.Style(); style != nil && style.GetDisplay() != css.DisplayNone {
+		StoreResultInLayoutBox(ctx, node, result, space.BreakToken)
+	}
+	return result
+}
+
+// determineAlgorithmAndRun dispatches to the layout algorithm for the
+// element's display type. Mirrors DetermineAlgorithmAndRun
+// (block_node.cc:156-188 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func determineAlgorithmAndRun(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
 	style := node.Style()
 	if style == nil {
 		return emptyResult(space.WritingDirection)

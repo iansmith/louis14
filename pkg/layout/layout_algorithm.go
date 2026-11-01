@@ -54,6 +54,10 @@ type LayoutContext struct {
 	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
 	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
 
+	// layoutSideEffectsDisabled counts the open DisableLayoutSideEffects
+	// scopes (layout_box.go).
+	layoutSideEffectsDisabled int
+
 	// ComputedStyles is the per-DOM-node style map produced by
 	// css.ApplyStylesToDocument and stored on LayoutEngine. SVG
 	// descendants of an inline <svg> are not LayoutInputNodes (they
