@@ -18,3 +18,16 @@ func TestClipPathInset_ClipsToInsetRect(t *testing.T) {
 	sampleColorClose(t, img, 40, 10, 255, 255, 255, 0, "above inset (40,10)")
 	sampleColorClose(t, img, 40, 70, 255, 255, 255, 0, "below inset (40,70)")
 }
+
+// TestClipPathInset_EmptyRectClipsEverything: insets that meet leave a
+// zero-height rect (BasicShapeInset::GetPath clamps the size at 0), so
+// nothing of the box paints.
+func TestClipPathInset_EmptyRectClipsEverything(t *testing.T) {
+	const src = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="width:100px;height:100px;background:red;clip-path:inset(60px 0 60px 0)"></div>` +
+		`</body></html>`
+	img := renderToImage(t, src, 200, 200)
+	for _, y := range []int{1, 50, 59, 60, 99} {
+		sampleColorClose(t, img, 50, y, 255, 255, 255, 0, "zero-height inset")
+	}
+}

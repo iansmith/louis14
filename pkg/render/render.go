@@ -2832,6 +2832,23 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 		}
 		r.dc.ClosePath()
 
+	case css.ClipPathInset:
+		// BasicShapeInset::GetPath (core/style/basic_shapes.cc:349-379 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the reference box
+		// inset by the four offsets (size clamped at 0), corner radii
+		// constrained (FloatRoundedRect::ConstrainRadii) to that rect.
+		// Path::MakeRoundedRect of a radius-free rect is a plain rect
+		// (SkPath::addRRect of a kRect_Type SkRRect), which takes the
+		// draw context's axis-aligned clip fast path.
+		top, right, bottom, left := cp.Insets[0], cp.Insets[1], cp.Insets[2], cp.Insets[3]
+		w := math.Max(bw-left-right, 0)
+		h := math.Max(bh-top-bottom, 0)
+		if radii := cp.InsetRadii.ConstrainRadii(w, h); !radii.IsZero() {
+			buildRoundedRectPathOnDC(r.dc, bx+left, by+top, w, h, radii)
+		} else {
+			r.dc.DrawRectangle(bx+left, by+top, w, h)
+		}
+
 	default:
 		return // Unknown type, no clipping
 	}
