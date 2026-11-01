@@ -1,8 +1,6 @@
 package render
 
 import (
-	"image"
-	"image/color"
 	"math"
 	"sort"
 
@@ -496,8 +494,7 @@ func (p *BoxBorderPainter) Paint() {
 	defer p.r.dc.Pop()
 	p.clipRoundedRect(p.outer)
 	if p.inner.IsRenderable() && !p.inner.IsEmpty() {
-		p.r.paintClippedOut(p.inner, func() { p.paintOpacityGroup(info, 0, 1) })
-		return
+		p.r.clipOutContouredRect(p.inner)
 	}
 	p.paintOpacityGroup(info, 0, 1)
 }
@@ -694,8 +691,7 @@ func (p *BoxBorderPainter) paintOneBorderSide(rect intRect, side, adj1, adj2 Box
 		p.clipBorderSidePolygon(side, m1, m2)
 		if !p.inner.IsRenderable() {
 			if adjusted := calculateAdjustedInnerBorder(p.inner, side); !adjusted.IsEmpty() {
-				p.r.paintClippedOut(adjusted, func() { p.drawCurvedBoxSide(edge.width, side, c, edge.style) })
-				return
+				p.r.clipOutContouredRect(adjusted)
 			}
 		}
 		p.drawCurvedBoxSide(edge.width, side, c, edge.style)
@@ -746,8 +742,10 @@ func (p *BoxBorderPainter) drawCurvedDoubleBoxSide(c css.Color) {
 	p.r.fillIntRect(rect, c)
 	p.r.dc.Pop()
 	// Outer stripe: outside the outer stripe's inner edge.
-	p.r.paintClippedOut(PixelSnappedContouredBorderWithOutsets(p.radii, p.borderRect, p.doubleStripeOutsets(true)),
-		func() { p.r.fillIntRect(rect, c) })
+	p.r.dc.Push()
+	p.r.clipOutContouredRect(PixelSnappedContouredBorderWithOutsets(p.radii, p.borderRect, p.doubleStripeOutsets(true)))
+	p.r.fillIntRect(rect, c)
+	p.r.dc.Pop()
 }
 
 // clipRoundedRect intersects the clip with rr (ClipContouredRect,
@@ -757,76 +755,28 @@ func (p *BoxBorderPainter) clipRoundedRect(rr FloatRoundedRect) {
 	p.r.dc.Clip()
 }
 
-// paintClippedOut runs paint with rr subtracted from the clip
-// (ClipOutContouredRect, box_border_painter.cc:1467-1469 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, and GraphicsContext::
-// FillDRRect's inner hole). louis14 rasterizes without anti-aliasing,
-// claiming every pixel a shape touches, so a clip-out path (a rect with rr
-// wound backwards) would still claim rr's boundary pixels — which the box
-// background, clipped or filled to the same rrect, claims too, and the
-// border painted later would win them. Skia's anti-aliased coverage splits
-// such pixels between the two; the exact pixel partition here is "rr's
-// pixels belong to rr": paint into a transparency layer, then erase every
-// pixel rr touches before compositing the layer.
-func (r *Renderer) paintClippedOut(rr FloatRoundedRect, paint func()) {
-	r.dc.PushGroup()
-	paint()
-	r.eraseRoundedRect(rr)
-	r.dc.PopGroup()
+// clipOutContouredRect subtracts rr from the clip, anti-aliased
+// (BoxBorderPainter::ClipOutContouredRect, box_border_painter.cc:1467-1469,
+// → GraphicsContext::ClipOutContouredRect, graphics_context.cc:931-933,
+// which clips with SkClipOp::kDifference and the kAntiAliased default of
+// ClipContouredRect, graphics_context.h:379-381 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its edge pixels keep exactly
+// the coverage a same-rrect ClipContouredRect leaves out, so a box's
+// background (clipped to rr) and border (clipped out of rr) split them.
+func (r *Renderer) clipOutContouredRect(rr FloatRoundedRect) {
+	rr.addPath(r.dc)
+	r.dc.ClipOut()
 }
 
-// eraseRoundedRect clears the pixels of the current layer that rr touches,
-// rasterizing rr under the context's current (affine) transform. The mask
-// is canvas-sized so rr rasterizes in the same coordinates as the fills it
-// partitions against (the rasterizer's float32 rounding depends on them;
-// a bbox-local mask shifted edge pixels); only rr's device-space bounding
-// box is scanned.
-func (r *Renderer) eraseRoundedRect(rr FloatRoundedRect) {
-	im, ok := r.dc.Image().(*image.RGBA)
-	if !ok || rr.IsEmpty() {
-		return
-	}
-	ox, oy := r.dc.TransformPoint(0, 0)
-	ax, ay := r.dc.TransformPoint(1, 0)
-	bx, by := r.dc.TransformPoint(0, 1)
-	a, b, c, d := ax-ox, ay-oy, bx-ox, by-oy
-	minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
-	for _, pt := range [4][2]float64{{rr.Rect.X(), rr.Rect.Y()}, {rr.Rect.Right(), rr.Rect.Y()}, {rr.Rect.X(), rr.Rect.Bottom()}, {rr.Rect.Right(), rr.Rect.Bottom()}} {
-		x, y := a*pt[0]+c*pt[1]+ox, b*pt[0]+d*pt[1]+oy
-		minX, minY, maxX, maxY = math.Min(minX, x), math.Min(minY, y), math.Max(maxX, x), math.Max(maxY, y)
-	}
-	box := image.Rect(int(math.Floor(minX))-1, int(math.Floor(minY))-1, int(math.Ceil(maxX))+1, int(math.Ceil(maxY))+1).Intersect(im.Bounds())
-	if box.Empty() {
-		return
-	}
-	mask := image.NewRGBA(im.Bounds())
-	child := r.dc.NewChildContext(mask)
-	child.MultiplyMatrix(a, b, c, d, ox, oy)
-	child.SetColor(color.White)
-	rr.addPath(child)
-	child.Fill()
-	for y := box.Min.Y; y < box.Max.Y; y++ {
-		for x := box.Min.X; x < box.Max.X; x++ {
-			if o := im.PixOffset(x, y); mask.Pix[o+3] != 0 {
-				im.Pix[o], im.Pix[o+1], im.Pix[o+2], im.Pix[o+3] = 0, 0, 0, 0
-			}
-		}
-	}
-}
-
-// fillDRRect fills outer minus inner (GraphicsContext::FillDRRect via
-// DrawBleedAdjustedDRRect's default branch, box_border_painter.cc:282-316).
-// A rectangular inner on the pixel grid cuts an exact hole; a rounded one
-// is subtracted pixel-exactly (paintClippedOut).
+// fillDRRect fills outer minus inner (GraphicsContext::FillDRRect,
+// graphics_context.cc:822-854, via DrawBleedAdjustedDRRect's default
+// branch, box_border_painter.cc:282-316 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): Skia's anti-aliased
+// drawDRRect. The inner rrect wound backwards cuts the hole under the
+// nonzero rule, and its anti-aliased edge coverage is subtracted from the
+// outer's.
 func (p *BoxBorderPainter) fillDRRect(outer, inner FloatRoundedRect, c css.Color) {
 	p.r.setColor(c)
-	if inner.IsRounded() && !inner.IsEmpty() {
-		p.r.paintClippedOut(inner, func() {
-			outer.addPath(p.r.dc)
-			p.r.dc.Fill()
-		})
-		return
-	}
 	outer.addPath(p.r.dc)
 	if !inner.IsEmpty() {
 		inner.addReversePath(p.r.dc)
@@ -843,10 +793,18 @@ func addPolygonPath(dc pathBuilder, pts []geometry.PointF) {
 	dc.ClosePath()
 }
 
-// clipPolygon (ClipPolygon, box_border_painter.cc:390-400).
-func (p *BoxBorderPainter) clipPolygon(pts []geometry.PointF) {
-	addPolygonPath(p.r.dc, pts)
-	p.r.dc.Clip()
+// clipPolygon (ClipPolygon, box_border_painter.cc:390-400 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) clips anti-aliased only when
+// antialiased: ClipBorderSidePolygon passes true for soft miters (a color
+// change at the corner) and false for hard miters, so same-colored sides
+// meeting along a miter overlap rather than leave an anti-aliased seam.
+func (p *BoxBorderPainter) clipPolygon(pts []geometry.PointF, antialiased bool) {
+	dc := p.r.dc
+	was := dc.ShouldAntialias()
+	dc.SetShouldAntialias(antialiased)
+	addPolygonPath(dc, pts)
+	dc.Clip()
+	dc.SetShouldAntialias(was)
 }
 
 // findIntersection sets *out to the intersection of the infinite lines
@@ -1022,10 +980,10 @@ func (p *BoxBorderPainter) clipBorderSidePolygon(side BoxSide, firstMiter, secon
 
 	if firstMiter == secondMiter {
 		if pentagon != nil && !p.inner.IsRenderable() {
-			p.clipPolygon(pentagon)
+			p.clipPolygon(pentagon, firstMiter == softMiter)
 			return
 		}
-		p.clipPolygon(q[:])
+		p.clipPolygon(q[:], firstMiter == softMiter)
 		return
 	}
 
@@ -1035,12 +993,12 @@ func (p *BoxBorderPainter) clipBorderSidePolygon(side BoxSide, firstMiter, secon
 	if firstMiter != noMiter {
 		var c1 geometry.PointF
 		findIntersection(q[0], q[1], bound1, bound2, &c1)
-		p.clipPolygon([]geometry.PointF{addPt(q[0], extX, extY), addPt(c1, extX, extY), bound2, q[3]})
+		p.clipPolygon([]geometry.PointF{addPt(q[0], extX, extY), addPt(c1, extX, extY), bound2, q[3]}, firstMiter == softMiter)
 	}
 	if secondMiter != noMiter {
 		var c2 geometry.PointF
 		findIntersection(q[2], q[3], bound1, bound2, &c2)
-		p.clipPolygon([]geometry.PointF{q[0], bound1, addPt(c2, -extX, -extY), addPt(q[3], -extX, -extY)})
+		p.clipPolygon([]geometry.PointF{q[0], bound1, addPt(c2, -extX, -extY), addPt(q[3], -extX, -extY)}, secondMiter == softMiter)
 	}
 }
 
