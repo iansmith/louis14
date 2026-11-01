@@ -42,7 +42,7 @@ func TestIcUnit_MeasuredZeroAdvance(t *testing.T) {
 	if got, _ := ParseLengthFull("10ic", 20, 0, 0); got != 200 {
 		t.Errorf("ParseLengthFull(10ic, 20px) = %v, want 200 (1em fallback)", got)
 	}
-	if got, _ := EvalMathFunctionWithPercent("calc(10ic)", 20, 0); got != 200 {
-		t.Errorf("EvalMathFunctionWithPercent(calc(10ic), 20px) = %v, want 200 (1em fallback)", got)
+	if got, _ := newStyle().EvalMathWithBase("calc(10ic)", 0); got != 200 {
+		t.Errorf("unmeasured EvalMathWithBase(calc(10ic)) at 20px = %v, want 200 (1em fallback)", got)
 	}
 }

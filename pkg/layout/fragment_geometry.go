@@ -987,8 +987,8 @@ func computeContentMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space C
 // Mirrors Blink's length_utils.cc ResolveInlineLengthInternal kFitContent branch
 // @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func resolveFitContentArgInline(argStr string, style *css.Style, cbInlineSize float64) (float64, bool) {
-	// calc() with percentage terms
-	if css.IsCalcWithPercent(argStr) {
+	// A math function (calc / min / max / clamp) with percentage terms
+	if css.IsMathFunctionWithPercent(argStr) {
 		if result, ok := style.EvalMathWithBase(argStr, cbInlineSize); ok {
 			return result, true
 		}

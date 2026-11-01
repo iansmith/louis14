@@ -1527,7 +1527,7 @@ func propertyHasPercent(style *css.Style, prop string) bool {
 			return true
 		}
 	}
-	if css.IsCalcWithPercent(val) {
+	if css.IsMathFunctionWithPercent(val) {
 		return true
 	}
 	return false

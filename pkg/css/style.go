@@ -653,7 +653,7 @@ func initialStyleForElement(fs FontSelector) *Style {
 // font selector: the context for lengths parsed with no element — media
 // queries (Blink's MediaValues reads the LayoutView's initial style,
 // core/css/media_values.cc:236-274 @ 5992657f556bcd9d207a4aca187488462f027cab)
-// and the context-free ParseLengthFull / EvalMathFunctionWithPercent. louis14's
+// and the context-free ParseLengthFull. louis14's
 // media evaluator carries no FontSelector, so its font metrics are unmeasured
 // and ch / ex / cap / ic take their fallbacks. Built once, on first use, and
 // assigned in init: a package-level initializer would form a cycle through
@@ -839,11 +839,6 @@ func ParseLength(val string) (float64, bool) {
 	return ParseLengthFull(val, initialFontSize, 0, 0)
 }
 
-// ParseLengthWithFontSize parses a length value with em and rem support.
-func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
-	return ParseLengthFull(val, fontSize, 0, 0)
-}
-
 // splitCSSFunctionArgs splits comma-separated args respecting nested parens
 func splitCSSFunctionArgs(s string) []string {
 	var parts []string
@@ -899,8 +894,7 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	// shared EvalMathFunction dispatch so nested calls and percent-base
 	// propagation behave the same regardless of the head identifier.
 	// Note: percentBase is left 0 here — callers that have a layout-time
-	// percentage resolution size go through EvalMathFunctionWithPercent
-	// directly from the layout layer (fragment_geometry.Resolve*).
+	// percentage resolution size go through Style.EvalMathWithBase.
 	if IsMathFunction(val) {
 		ctx.percentBase, ctx.percentResolvesToZero = 0, false
 		return EvalMathFunction(val, ctx)
@@ -1198,13 +1192,6 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 		return 0, false
 	}
 	return num, true
-}
-
-// IsCalcWithPercent returns true if the value is a calc() expression containing a % term.
-func IsCalcWithPercent(val string) bool {
-	val = strings.TrimSpace(val)
-	return strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") &&
-		strings.Contains(val, "%")
 }
 
 // IsFitContentFunction returns true if val is fit-content(<length-percentage>),
@@ -1507,33 +1494,15 @@ func (s *Style) GetMargin() BoxEdge {
 	}
 }
 
-// resolveMarginEdge resolves a single margin property, handling percentage values.
-// Per CSS 2.1 §8.3, margin values CAN be negative — no clamp to zero.
+// resolveMarginEdge resolves a single margin property against the containing
+// block's inline-size. Per CSS 2.1 §8.3, margin values CAN be negative — no
+// clamp to zero. A zero containing width is a valid base: a percentage (bare
+// or in any math function) contributes 0 and the length terms survive,
+// matching Blink's MinimumValueForLength(margin, base), where a calc never
+// fails (core/layout/length_utils.cc ComputePhysicalMargins).
 func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 {
-	if val, ok := s.Get(prop); ok {
-		if val == "auto" {
-			return 0
-		}
-		trimmed := strings.TrimSpace(val)
-		if strings.HasSuffix(trimmed, "%") {
-			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
-				return pct / 100.0 * containingWidth
-			}
-		}
-		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
-		// Mirrors padding's resolvePaddingEdge but without the negative-clamp,
-		// since margins are allowed to be negative.
-		// percentResolvesToZero: a zero containing width is a valid base — the
-		// percent term contributes 0 and the length term survives, matching
-		// Blink's MinimumValueForLength(margin, base) where calc never fails
-		// (core/layout/length_utils.cc ComputePhysicalMargins).
-		if IsCalcWithPercent(trimmed) {
-			if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(containingWidth, true)); ok {
-				return v
-			}
-		}
-	}
-	return s.getLengthOrZero(prop)
+	v, _ := s.resolveLengthOrPercent(prop, containingWidth, true)
+	return v
 }
 
 // GetMarginForWidth resolves margin values including percentage values against the given containing block width.
@@ -1583,36 +1552,12 @@ func (s *Style) GetPaddingForWidth(containingWidth float64) BoxEdge {
 	}
 }
 
-// resolvePaddingEdge resolves a single padding property, handling percentage values.
+// resolvePaddingEdge resolves a single padding property against the
+// containing block's inline-size (a zero base is valid, as for margins).
 // Padding cannot be negative (CSS 2.1 §8.4).
 func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64 {
-	if val, ok := s.Get(prop); ok {
-		trimmed := strings.TrimSpace(val)
-		if strings.HasSuffix(trimmed, "%") {
-			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
-				result := pct / 100.0 * containingWidth
-				if result < 0 {
-					return 0
-				}
-				return result
-			}
-		}
-		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
-		// percentResolvesToZero: see resolveMarginEdge — a zero base is valid.
-		if IsCalcWithPercent(trimmed) {
-			if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(containingWidth, true)); ok {
-				if v < 0 {
-					return 0
-				}
-				return v
-			}
-		}
-	}
-	result := s.getLengthOrZero(prop)
-	if result < 0 {
-		return 0
-	}
-	return result
+	v, _ := s.resolveLengthOrPercent(prop, containingWidth, true)
+	return math.Max(0, v)
 }
 
 // GetBorderWidth returns the border width for all four sides
@@ -2019,24 +1964,14 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 	return 0
 }
 
-// parseBorderRadiusComponent parses a single border-radius component (length, percentage, or calc()).
-// Returns a negative value for invalid/negative inputs so callers can detect it.
-// For calc() with %, percent terms resolve against refLen (the relevant box
-// dimension — width for Rx, height for Ry).
+// parseBorderRadiusComponent parses a single border-radius component (length,
+// percentage, or math function). Returns a negative value for invalid/negative
+// inputs so callers can detect it. Percentages (bare or in a math function)
+// resolve against refLen (the relevant box dimension — width for Rx, height
+// for Ry).
 func parseBorderRadiusComponent(val string, ctx calcContext, refLen float64) float64 {
-	val = strings.TrimSpace(val)
-	if pct, ok := ParsePercentage(val); ok {
-		return pct / 100 * refLen
-	}
-	// CSS Values §10.2: calc() with percent resolves against refLen.
-	if IsCalcWithPercent(val) {
-		pctCtx := ctx
-		pctCtx.percentBase = refLen
-		if r, ok := evalCalcFull(val[5:len(val)-1], pctCtx); ok {
-			return r
-		}
-	}
-	if r, ok := parseLengthFullWithCh(val, ctx); ok {
+	ctx.percentBase = refLen
+	if r, ok := computeLengthOrPercentage(strings.TrimSpace(val), ctx); ok {
 		return r
 	}
 	return -1 // unparseable = invalid
@@ -2241,10 +2176,10 @@ func (s *Style) GetPositionOffset() PositionOffset {
 // left/right, percentages resolve against cbWidth.
 func (s *Style) GetPositionOffsetResolved(cbWidth, cbHeight float64) PositionOffset {
 	offset := PositionOffset{}
-	offset.Top, offset.HasTop = s.resolveLengthOrPercent("top", cbHeight)
-	offset.Right, offset.HasRight = s.resolveLengthOrPercent("right", cbWidth)
-	offset.Bottom, offset.HasBottom = s.resolveLengthOrPercent("bottom", cbHeight)
-	offset.Left, offset.HasLeft = s.resolveLengthOrPercent("left", cbWidth)
+	offset.Top, offset.HasTop = s.resolveLengthOrPercent("top", cbHeight, false)
+	offset.Right, offset.HasRight = s.resolveLengthOrPercent("right", cbWidth, false)
+	offset.Bottom, offset.HasBottom = s.resolveLengthOrPercent("bottom", cbHeight, false)
+	offset.Left, offset.HasLeft = s.resolveLengthOrPercent("left", cbWidth, false)
 	return offset
 }
 
@@ -2252,12 +2187,6 @@ func (s *Style) GetPositionOffsetResolved(cbWidth, cbHeight float64) PositionOff
 // the style's full font/viewport context plus the supplied percent base.
 // Returns (result, true) on success, (0, false) on parse/type errors or when
 // val isn't a math function.
-//
-// Use this in preference to the package-level EvalMathFunctionWithPercent
-// when the call site has a Style available — that wrapper sets viewport to 0,
-// which silently zeroes vw/vh terms inside the expression (see
-// css-values/vh-calc-support-pct: width: calc(100vw + 50%)). This method
-// mirrors resolveLengthOrPercent's context construction.
 func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool) {
 	if !IsMathFunction(val) {
 		return 0, false
@@ -2265,14 +2194,17 @@ func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool
 	return EvalMathFunction(val, s.cssToLengthConversionDataWithPercentBase(percentBase, false))
 }
 
-// resolveLengthOrPercent tries to parse a property as a length or percentage.
-// If it's a percentage, it's resolved against the given reference value.
-func (s *Style) resolveLengthOrPercent(property string, reference float64) (float64, bool) {
+// resolveLengthOrPercent resolves property as a <length-percentage> through
+// this style's conversion data, taking percentages (bare, or in calc() /
+// min() / max() / clamp() alike) of reference; false when unset, auto or
+// invalid. percentResolvesToZero lets % terms evaluate against a zero
+// reference.
+func (s *Style) resolveLengthOrPercent(property string, reference float64, percentResolvesToZero bool) (float64, bool) {
 	val, ok := s.Get(property)
 	if !ok || val == "auto" {
 		return 0, false
 	}
-	return computeLengthOrPercentage(val, s.cssToLengthConversionDataWithPercentBase(reference, false))
+	return computeLengthOrPercentage(val, s.cssToLengthConversionDataWithPercentBase(reference, percentResolvesToZero))
 }
 
 // computeLengthOrPercentage resolves a <length-percentage> value against ctx,
@@ -6191,7 +6123,7 @@ func (s *Style) GetFontSize() float64 {
 	if !ok {
 		return initialFontSize
 	}
-	if size, ok := ParseLengthWithFontSize(val, initialFontSize); ok {
+	if size, ok := ParseLength(val); ok {
 		return math.Min(size, maximumAllowedFontSize)
 	}
 	return initialFontSize
@@ -6879,7 +6811,7 @@ func (s *Style) GetTextShadowWithCurrentColor(currentColor Color) []TextShadow {
 		if layer == "" {
 			continue
 		}
-		shadow := parseTextShadowLayer(layer, s.GetFontSize(), currentColor)
+		shadow := parseTextShadowLayer(layer, s.cssToLengthConversionData(), currentColor)
 		if shadow != nil {
 			shadows = append(shadows, *shadow)
 		}
@@ -6888,13 +6820,13 @@ func (s *Style) GetTextShadowWithCurrentColor(currentColor Color) []TextShadow {
 }
 
 // parseTextShadowLayer parses one text-shadow layer: [color?] <x> <y> [blur?] [color?]
-func parseTextShadowLayer(s string, fontSize float64, currentColor Color) *TextShadow {
+func parseTextShadowLayer(s string, ctx calcContext, currentColor Color) *TextShadow {
 	fields := strings.Fields(s)
 	var lengths []float64
 	var shadowColor *Color
 	for i := 0; i < len(fields); {
 		// Try to parse as a length
-		if l, ok := ParseLengthWithFontSize(fields[i], fontSize); ok {
+		if l, ok := parseLengthFullWithCh(fields[i], ctx); ok {
 			lengths = append(lengths, l)
 			i++
 			continue
@@ -6949,7 +6881,7 @@ func (s *Style) GetTextUnderlineOffset() float64 {
 	if v == "" || strings.EqualFold(v, "auto") {
 		return 0
 	}
-	if px, ok := s.resolveLengthOrPercent("text-underline-offset", s.GetFontSize()); ok {
+	if px, ok := s.resolveLengthOrPercent("text-underline-offset", s.GetFontSize(), false); ok {
 		return px
 	}
 	return 0
@@ -7552,57 +7484,24 @@ func (s *Style) GetTextIndent() (float64, bool) {
 }
 
 // ResolveTextIndent resolves text-indent against the containing block's
-// inline-size. Handles length (`5em`), percentage (`50%`), and calc() with
-// percent (`calc(50% - 3px)`). Returns 0 for unset/auto/invalid values.
+// inline-size. Handles length (`5em`), percentage (`50%`), and math functions
+// with percent (`calc(50% - 3px)`, `min(10%, 2ch)`). Returns 0 for
+// unset/auto/invalid values.
 // Mirrors Blink's resolution at use time
 // (third_party/blink/renderer/core/css/properties/longhands/text_indent.cc).
 func (s *Style) ResolveTextIndent(containingWidth float64) float64 {
-	val, ok := s.Get("text-indent")
-	if !ok {
-		return 0
-	}
-	trimmed := strings.TrimSpace(val)
-	if strings.HasSuffix(trimmed, "%") {
-		if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
-			return pct / 100.0 * containingWidth
-		}
-	}
-	// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
-	if IsCalcWithPercent(trimmed) {
-		if v, ok := s.EvalMathWithBase(trimmed, containingWidth); ok {
-			return v
-		}
-	}
-	if length, ok := s.GetLength("text-indent"); ok {
-		return length
-	}
-	return 0
+	v, _ := s.resolveLengthOrPercent("text-indent", containingWidth, false)
+	return v
 }
 
 // ResolveTextIndentIntrinsic resolves text-indent for intrinsic-sizing
-// (min/max-content) contexts. Percent terms (bare or inside calc()) resolve
+// (min/max-content) contexts. Percent terms (bare or in a math function) resolve
 // to 0 since the containing block's inline-size is unknown. Mirrors Blink's
 // InlineNode::ComputeMinMaxSizes which treats HasPercent text-indent as
-// LayoutUnit() (= 0) and adds the non-percent calc() contribution.
+// LayoutUnit() (= 0) and adds the non-percent math-function contribution.
 func (s *Style) ResolveTextIndentIntrinsic() float64 {
-	val, ok := s.Get("text-indent")
-	if !ok {
-		return 0
-	}
-	trimmed := strings.TrimSpace(val)
-	if strings.HasSuffix(trimmed, "%") {
-		return 0 // bare percent → 0 for intrinsic
-	}
-	if IsCalcWithPercent(trimmed) {
-		if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(0, true)); ok {
-			return v
-		}
-		return 0
-	}
-	if length, ok := s.GetLength("text-indent"); ok {
-		return length
-	}
-	return 0
+	v, _ := s.resolveLengthOrPercent("text-indent", 0, true)
+	return v
 }
 
 // GetBoxSizing returns the box-sizing value (default: content-box)
@@ -8804,7 +8703,7 @@ type FlexBasisValue struct {
 	Length     float64 // absolute length in pixels (if not auto and not percentage)
 	Percentage float64 // percentage value (if IsPercent)
 	IsPercent  bool
-	CalcExpr   string // the calc() value (if IsCalc); resolve with the item's Style.EvalMathWithBase
+	CalcExpr   string // the math-function value (if IsCalc); resolve with the item's Style.EvalMathWithBase
 	IsCalc     bool
 }
 
@@ -8820,8 +8719,8 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 	if pct, ok := ParsePercentage(basis); ok {
 		return FlexBasisValue{Percentage: pct, IsPercent: true}
 	}
-	// Handle calc() expressions — defer percentage resolution until container size is known
-	if strings.HasPrefix(basis, "calc(") && strings.HasSuffix(basis, ")") {
+	// Math functions — defer percentage resolution until container size is known
+	if IsMathFunction(basis) {
 		return FlexBasisValue{IsCalc: true, CalcExpr: basis}
 	}
 	if length, ok := s.GetLengthForVal(basis); ok {
@@ -10643,7 +10542,7 @@ func isVerticalKeyword(val string) bool {
 // resolveOriginAxisKeywordOrLength resolves a single transform-origin
 // component to absolute pixels along the given axis. boxLen is the box's
 // extent in this axis. Accepts left/top (= 0), right/bottom (= boxLen),
-// center (= 0.5*boxLen), percent, length, and calc() (including calc with %).
+// center (= 0.5*boxLen), percent, length, and math functions (including %).
 func resolveOriginAxisKeywordOrLength(val string, ctx calcContext, boxLen float64) float64 {
 	val = strings.TrimSpace(val)
 	switch val {
@@ -10654,22 +10553,8 @@ func resolveOriginAxisKeywordOrLength(val string, ctx calcContext, boxLen float6
 	case "right", "bottom":
 		return boxLen
 	}
-	// Percentage
-	if strings.HasSuffix(val, "%") {
-		if percent, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
-			return percent / 100.0 * boxLen
-		}
-	}
-	// CSS Values §10.2: calc() with percent resolves against the axis extent.
-	if IsCalcWithPercent(val) {
-		pctCtx := ctx
-		pctCtx.percentBase = boxLen
-		if r, ok := evalCalcFull(val[5:len(val)-1], pctCtx); ok {
-			return r
-		}
-	}
-	// Plain length / calc() without percent.
-	if length, ok := parseLengthFullWithCh(val, ctx); ok {
+	ctx.percentBase = boxLen
+	if length, ok := computeLengthOrPercentage(val, ctx); ok {
 		return length
 	}
 	return 0.5 * boxLen // Default to center on parse failure
@@ -11594,6 +11479,14 @@ type BackgroundPosition struct {
 	// core/paint/background_image_geometry.cc.
 	XExpr string
 	YExpr string
+	// conversionData is the element's length conversion data, kept (only
+	// when an axis has one) for the font-relative / viewport terms of a
+	// deferred XExpr / YExpr — Blink
+	// absolutizes those when it computes the Length(calc), leaving only the
+	// percentage for BackgroundImageGeometry (core/css/
+	// css_to_length_conversion_data.cc:117-126 @
+	// 5992657f556bcd9d207a4aca187488462f027cab).
+	conversionData *calcContext
 }
 
 // resolveBackgroundAxis resolves one background-position axis to a pixel
@@ -11601,9 +11494,9 @@ type BackgroundPosition struct {
 // negative. A deferred min()/max()/clamp() expr takes precedence; otherwise
 // a pixel value is returned as-is and a percentage (stored negative) resolves
 // against base. Shared by ResolveX/ResolveY so the two axes stay in lockstep.
-func resolveBackgroundAxis(expr string, isPixel bool, val, offset, base float64) float64 {
+func resolveBackgroundAxis(expr string, isPixel bool, val, offset, base float64, ctx *calcContext) float64 {
 	if expr != "" {
-		return resolvePositionExpr(expr, base)
+		return resolvePositionExpr(expr, base, *ctx)
 	}
 	if isPixel {
 		return val
@@ -11616,12 +11509,12 @@ func resolveBackgroundAxis(expr string, isPixel bool, val, offset, base float64)
 
 // ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
-	return resolveBackgroundAxis(p.XExpr, p.XIsPixel, p.X, p.XOffset, containerW-imageW)
+	return resolveBackgroundAxis(p.XExpr, p.XIsPixel, p.X, p.XOffset, containerW-imageW, p.conversionData)
 }
 
 // ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
-	return resolveBackgroundAxis(p.YExpr, p.YIsPixel, p.Y, p.YOffset, containerH-imageH)
+	return resolveBackgroundAxis(p.YExpr, p.YIsPixel, p.Y, p.YOffset, containerH-imageH, p.conversionData)
 }
 
 // resolvePositionExpr resolves a deferred min()/max()/clamp() background-position
@@ -11632,14 +11525,13 @@ func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
 // which resolves percentages against (positioning_area − image_size) before
 // comparing; Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
 // core/paint/background_image_geometry.cc.
-func resolvePositionExpr(expr string, base float64) float64 {
+func resolvePositionExpr(expr string, base float64, ctx calcContext) float64 {
 	resolveArg := func(arg string) float64 {
-		// Font-relative units inside the math function resolve against the
-		// default font size (matching ParseBackgroundPosition's convention);
-		// background-position math args are percentages in practice.
-		r := parsePositionComponentFull(strings.TrimSpace(arg), 16.0)
+		// Font-relative and viewport units resolve through the element's
+		// conversion data ctx.
+		r := parsePositionComponent(strings.TrimSpace(arg), ctx)
 		if r.expr != "" { // nested math function
-			return resolvePositionExpr(r.expr, base)
+			return resolvePositionExpr(r.expr, base, ctx)
 		}
 		if r.isPixel {
 			return r.value + r.offset
@@ -11692,12 +11584,7 @@ func (s *Style) GetBackgroundPosition() BackgroundPosition {
 	if !ok {
 		return BackgroundPosition{}
 	}
-	return parseBackgroundPosition(val, s.GetFontSize())
-}
-
-// ParseBackgroundPosition parses a background-position value string (uses default 16px font-size)
-func ParseBackgroundPosition(val string) BackgroundPosition {
-	return parseBackgroundPosition(val, 16.0)
+	return parseBackgroundPosition(val, s.cssToLengthConversionData())
 }
 
 // splitBackgroundPositionTokens splits a background-position value into
@@ -11739,7 +11626,7 @@ func splitBackgroundPositionTokens(val string) []string {
 	return tokens
 }
 
-func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
+func parseBackgroundPosition(val string, ctx calcContext) BackgroundPosition {
 	parts := splitBackgroundPositionTokens(val)
 	pos := BackgroundPosition{}
 	if len(parts) == 1 {
@@ -11761,15 +11648,18 @@ func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
 			pos.X = -50 // center
 			pos.Y = -50 // center
 		default:
-			rx := parsePositionComponentFull(parts[0], fontSize)
+			rx := parsePositionComponent(parts[0], ctx)
 			pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
 			pos.Y = -50 // center
 		}
 	} else if len(parts) >= 2 {
-		rx := parsePositionComponentFull(parts[0], fontSize)
-		ry := parsePositionComponentFull(parts[1], fontSize)
+		rx := parsePositionComponent(parts[0], ctx)
+		ry := parsePositionComponent(parts[1], ctx)
 		pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
 		pos.Y, pos.YIsPixel, pos.YOffset, pos.YExpr = ry.value, ry.isPixel, ry.offset, ry.expr
+	}
+	if pos.XExpr != "" || pos.YExpr != "" {
+		pos.conversionData = &ctx
 	}
 	return pos
 }
@@ -11786,12 +11676,7 @@ type positionComponentResult struct {
 	expr string
 }
 
-func parsePositionComponent(val string, fontSize float64) (float64, bool) {
-	r := parsePositionComponentFull(val, fontSize)
-	return r.value, r.isPixel
-}
-
-func parsePositionComponentFull(val string, fontSize float64) positionComponentResult {
+func parsePositionComponent(val string, ctx calcContext) positionComponentResult {
 	switch val {
 	case "left", "top":
 		return positionComponentResult{value: 0}
@@ -11803,7 +11688,7 @@ func parsePositionComponentFull(val string, fontSize float64) positionComponentR
 	// Handle calc() expressions.
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		inner := val[5 : len(val)-1]
-		return parseCalcPositionComponent(inner, fontSize)
+		return parseCalcPositionComponent(inner, ctx)
 	}
 	// Handle min()/max()/clamp() (calc() is handled above, so IsMathFunction
 	// only matches these three here). These can't be reduced to a single
@@ -11821,7 +11706,7 @@ func parsePositionComponentFull(val string, fontSize float64) positionComponentR
 			return positionComponentResult{value: -pct} // Store percentage as negative
 		}
 	}
-	if length, ok := ParseLengthWithFontSize(val, fontSize); ok {
+	if length, ok := parseLengthFullWithCh(val, ctx); ok {
 		return positionComponentResult{value: length, isPixel: true}
 	}
 	return positionComponentResult{}
@@ -11829,7 +11714,7 @@ func parsePositionComponentFull(val string, fontSize float64) positionComponentR
 
 // parseCalcPositionComponent parses a calc() inner expression that may combine
 // a percentage and pixel terms, e.g. "100% - 278px".
-func parseCalcPositionComponent(expr string, fontSize float64) positionComponentResult {
+func parseCalcPositionComponent(expr string, ctx calcContext) positionComponentResult {
 	expr = strings.TrimSpace(expr)
 	// Split into terms separated by + or - (respecting parentheses).
 	var pctSum float64
@@ -11870,7 +11755,7 @@ func parseCalcPositionComponent(expr string, fontSize float64) positionComponent
 				pctSum += sign * pct
 				hasPct = true
 			}
-		} else if length, ok := ParseLengthWithFontSize(term, fontSize); ok {
+		} else if length, ok := parseLengthFullWithCh(term, ctx); ok {
 			pxSum += sign * length
 		}
 		sign = 1.0 // reset sign for next term
@@ -12157,7 +12042,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 		attachParts = splitCommaSeparated(v)
 	}
 
-	fontSize := s.GetFontSize()
+	ctx := s.cssToLengthConversionData()
 
 	// Build linked list head→tail (head = topmost CSS layer = first in declaration).
 	var head, prev *FillLayer
@@ -12195,7 +12080,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 
 		// Position
 		if i < len(posParts) {
-			layer.Position = parseBackgroundPosition(posParts[i], fontSize)
+			layer.Position = parseBackgroundPosition(posParts[i], ctx)
 			layer.PositionSet = true
 		}
 
@@ -14980,7 +14865,7 @@ func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
 	// and resolving against `GetUsedFontSize()` at paint time (the post-adjust
 	// size) drifts under CSS Fonts 5 §1.7.3 (test:
 	// text-decoration-thickness-percent-001 with `font-size-adjust: 0.25/1.25`).
-	if l, ok := s.resolveLengthOrPercent("text-decoration-thickness", s.GetFontSize()); ok {
+	if l, ok := s.resolveLengthOrPercent("text-decoration-thickness", s.GetFontSize(), false); ok {
 		return TextDecorationThickness{
 			Kind:  TextDecorationThicknessLength,
 			Value: l,
