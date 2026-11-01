@@ -255,3 +255,89 @@ func TestColumnRule_HiddenStyle_PaintsNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestColumnRule_RowWrap_RuleBreaksAtRowGaps (LOU-486, column-height-009):
+// with column-wrap the column rules are cross gaps intersected by the row
+// gaps (main gaps). Blink's GapDecorationsPainter paints one segment per
+// pair of intersections, inset by half the crossing gap at junctions, so a
+// rule stops at each row gap (gap_decorations_painter.cc:342-477 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a row with fewer columns
+// paints no rule after its last column (kEmptyAfter is invisible under the
+// multicol default rule-visibility-items: between,
+// css_gap_decoration_property_utils.cc:208-246).
+//
+// Layout: 340px wide, 3 columns, 20px gaps -> columns 100px, rules centered
+// at x=110 and x=230 (2px). Rows 40px tall with 20px row gaps: y 0..40,
+// 60..100, 120..160; the third row has two columns.
+func TestColumnRule_RowWrap_RuleBreaksAtRowGaps(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="width:340px; orphans:1; widows:1; line-height:20px;">
+  <div style="columns:3; gap:20px; column-rule:2px solid black; column-height:40px; column-wrap:wrap; background:yellow;">
+    <div style="width:50px; height:320px; background:cyan;"></div>
+  </div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 400, 200)
+
+	isBlack := func(x, y int) bool {
+		r, g, b := rgbAt(img, x, y)
+		return r == 0 && g == 0 && b == 0
+	}
+	for _, tc := range []struct {
+		x, y int
+		want bool
+		what string
+	}{
+		{110, 20, true, "row 1, first rule"},
+		{230, 20, true, "row 1, second rule"},
+		{110, 50, false, "first rule must stop at the row gap"},
+		{230, 50, false, "second rule must stop at the row gap"},
+		{110, 80, true, "row 2, first rule"},
+		{230, 80, true, "row 2, second rule"},
+		{110, 110, false, "first rule must stop at the second row gap"},
+		{110, 140, true, "row 3, first rule (stretched to content end)"},
+		{230, 140, false, "row 3 has two columns: no rule after its last column"},
+	} {
+		if got := isBlack(tc.x, tc.y); got != tc.want {
+			r, g, b := rgbAt(img, tc.x, tc.y)
+			t.Errorf("pixel (%d,%d) = (%d,%d,%d), rule painted = %v, want %v: %s", tc.x, tc.y, r, g, b, got, tc.want, tc.what)
+		}
+	}
+}
+
+// TestColumnRule_NestedFragment_NoRuleAfterLastColumn (LOU-486,
+// multicol-breaking-003): a column-fill:auto multicol broken by an outer
+// multicol paints rules only at the cross gaps its own fragment recorded —
+// one per column boundary inside the fragment (ColumnGapAccumulator,
+// column_layout_algorithm.cc:1295-1319 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Nothing may be painted past its
+// last column, where the outer multicol's rule sits.
+//
+// Layout: outer 800px, 4 columns, 16px gaps -> 188px columns; the outer rule
+// (4px) covers x 194..198. The inner (2 columns, 16px gap) has 86px columns
+// and its own rule at x 93..95 in each outer column.
+func TestColumnRule_NestedFragment_NoRuleAfterLastColumn(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="height:100px; column-fill:auto; width:800px; column-count:4; column-rule:4px solid blue; column-gap:16px;">
+  <div style="height:300px; column-fill:auto; column-count:2; column-rule:2px solid fuchsia; column-gap:16px;">
+    <div style="height:340px"></div>
+  </div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 820, 120)
+
+	for _, tc := range []struct {
+		x       int
+		r, g, b uint8
+		what    string
+	}{
+		{94, 255, 0, 255, "inner rule in the first outer column"},
+		{195, 0, 0, 255, "outer rule, left half"},
+		{196, 0, 0, 255, "outer rule, right half"},
+	} {
+		r, g, b := rgbAt(img, tc.x, 50)
+		if r != tc.r || g != tc.g || b != tc.b {
+			t.Errorf("pixel (%d,50) = (%d,%d,%d), want (%d,%d,%d): %s", tc.x, r, g, b, tc.r, tc.g, tc.b, tc.what)
+		}
+	}
+}
