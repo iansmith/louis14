@@ -1531,3 +1531,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 	return result
 }
+
+// AdjustSpaceShortageForBreakAvoidRoot: RED stub (LOU-505).
+func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutContext, result *LayoutResult) {
+}

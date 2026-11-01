@@ -166,3 +166,40 @@ func TestCreateConstraintSpaceForColumn_ZeroColumnBlockSizeStaysZero(t *testing.
 			col.AvailableSize.BlockSize.Float64(), col.FragmentainerBlockSize)
 	}
 }
+
+// TestAdjustSpaceShortageForBreakAvoidRoot (LOU-505): a break-inside:avoid
+// root that ends up broken during column balancing discards the shortage
+// propagated from inside it; its first fragment reports instead how much
+// its unbroken block-size exceeds the space left, from a layout without
+// fragmentation; a resumed fragment reports none. Not for a root already
+// inside break avoidance, or past its block end. Mirrors
+// BoxFragmentBuilder::ToBoxFragment (box_fragment_builder.cc:712-740 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestAdjustSpaceShortageForBreakAvoidRoot(t *testing.T) {
+	balanced := func(b *ConstraintSpaceBuilder) { b.SetIsInsideBalancedColumns(true) }
+	run := func(token *BlockBreakToken, edit func(*ConstraintSpaceBuilder), outgoing *BlockBreakToken) float64 {
+		_, _, builder := setupFragmentBuilderFixture(t, 0, token, edit,
+			"height", "150px", "break-inside", "avoid")
+		result := &LayoutResult{BreakToken: outgoing, MinSpaceShortage: 5}
+		builder.AdjustSpaceShortageForBreakAvoidRoot(testContext(), result)
+		return result.MinSpaceShortage
+	}
+	if got := run(nil, balanced, &BlockBreakToken{}); got != 50 {
+		t.Errorf("first fragment of a broken avoid root: MinSpaceShortage = %v, want 150-100 = 50", got)
+	}
+	resumed := &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(100)}
+	if got := run(resumed, balanced, &BlockBreakToken{}); got != 0 {
+		t.Errorf("resumed fragment of a broken avoid root: MinSpaceShortage = %v, want none", got)
+	}
+	if got := run(nil, func(b *ConstraintSpaceBuilder) {
+		b.SetIsInsideBalancedColumns(true).SetIsInsideBreakAvoid(true)
+	}, &BlockBreakToken{}); got != 5 {
+		t.Errorf("root inside break avoidance: MinSpaceShortage = %v, want the propagated 5", got)
+	}
+	if got := run(nil, balanced, &BlockBreakToken{IsAtBlockEnd: true}); got != 5 {
+		t.Errorf("past the block end: MinSpaceShortage = %v, want the propagated 5", got)
+	}
+	if got := run(nil, nil, &BlockBreakToken{}); got != 5 {
+		t.Errorf("unbalanced columns: MinSpaceShortage = %v, want the propagated 5", got)
+	}
+}
