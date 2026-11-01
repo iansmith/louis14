@@ -2925,11 +2925,12 @@ func createLineBoxEx(
 					wordSpacing = rStyle.GetWordSpacing()
 				}
 				// Measure once for the space character; Ahem at 16px is 16px.
-				spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
+				features := text.GetFontFeatures(rStyle)
+				spaceWidth := measureTextContent(" ", fontSize, fontPath, features, letterSpacing, 0, false)
 				piecePos := inlinePos
 				pieces := strings.Split(content, " ")
 				for i, piece := range pieces {
-					pieceWidth := measureTextContent(piece, fontSize, fontPath, letterSpacing, 0, false)
+					pieceWidth := measureTextContent(piece, fontSize, fontPath, features, letterSpacing, 0, false)
 					if i > 0 {
 						// Emit a "space" fragment for inter-word painting
 						// continuity (carries any decoration). Empty content

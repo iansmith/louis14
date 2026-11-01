@@ -159,6 +159,13 @@ type NodeType int
 const (
 	ElementNode NodeType = iota
 	TextNode
+	// DocumentFragmentNode is a script-created DocumentFragment
+	// (Document::createDocumentFragment, core/dom/document.cc:1571 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It never enters a
+	// document tree: inserting it inserts its children instead
+	// (CollectChildrenAndRemoveFromOldParent, core/dom/container_node.cc:
+	// 168-184 @ the same SHA).
+	DocumentFragmentNode
 )
 
 // StylesheetSource is one CSS source attached to a Document: either an

@@ -403,7 +403,8 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 	fontPath := resolveFontPath(r.Item.Style, e.fonts)
 	letterSpacing := r.Item.Style.GetLetterSpacing()
 	wordSpacing := r.Item.Style.GetWordSpacing()
-	spaceWidth := measureTextContent(" ", fontSize, fontPath, letterSpacing, 0, false)
+	features := text.GetFontFeatures(r.Item.Style)
+	spaceWidth := measureTextContent(" ", fontSize, fontPath, features, letterSpacing, 0, false)
 	for i, piece := range strings.Split(content, " ") {
 		if i > 0 {
 			e.lineBuilder.AddChild(&PhysicalFragment{
@@ -423,7 +424,7 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 		if len(piece) == 0 {
 			continue
 		}
-		pieceWidth := measureTextContent(piece, fontSize, fontPath, letterSpacing, 0, false)
+		pieceWidth := measureTextContent(piece, fontSize, fontPath, features, letterSpacing, 0, false)
 		e.lineBuilder.AddChild(&PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: pieceWidth,

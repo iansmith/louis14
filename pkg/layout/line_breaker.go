@@ -2,12 +2,15 @@ package layout
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"louis14/pkg/css"
 	"louis14/pkg/text"
+
+	"mazarin/textshape"
 )
 
 // isCSSCollapsibleSpace returns true for whitespace characters that CSS
@@ -454,7 +457,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 
 // measureTextContent measures text width, stripping soft hyphens (U+00AD)
 // which are zero-width when not at a break point.
-func measureTextContent(content string, fontSize float64, fontPath string, letterSpacing, wordSpacing float64, isVertical bool) float64 {
+func measureTextContent(content string, fontSize float64, fontPath string, features []textshape.FontFeature, letterSpacing, wordSpacing float64, isVertical bool) float64 {
 	// Strip soft hyphens for measurement — they are invisible when not breaking.
 	visible := strings.ReplaceAll(content, "\u00AD", "")
 	if len(visible) == 0 {
@@ -465,7 +468,7 @@ func measureTextContent(content string, fontSize float64, fontPath string, lette
 		mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
 		w = mtLU.Float64()
 	} else {
-		mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+		mtLU, _ := text.MeasureText(visible, fontSize, fontPath, features)
 		w = mtLU.Float64()
 	}
 	if letterSpacing != 0 {
@@ -514,6 +517,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	measureStyle := lb.measuringStyle(item.Style)
 	fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 	fontPath := resolveFontPath(measureStyle, lb.fonts)
+	features := text.GetFontFeatures(measureStyle)
 
 	// CSS 2.1 §16.4: letter-spacing adds inter-character space.
 	letterSpacing := 0.0
@@ -536,16 +540,16 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	// Tab stops are at multiples of (tab-size × space-width) or (tab-size px).
 	hasSoftHyphen := strings.Contains(content, "\u00AD")
 	if strings.Contains(content, "\t") && item.Style != nil {
-		fullWidth = lb.measureTextWithTabs(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+		fullWidth = lb.measureTextWithTabs(content, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
 	} else if hasSoftHyphen {
 		// Soft hyphens are zero-width — measure without them.
-		fullWidth = measureTextContent(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+		fullWidth = measureTextContent(content, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
 	} else {
 		if isVertical {
 			mtLU, _ := text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
 			fullWidth = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(content, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(content, fontSize, fontPath, features)
 			fullWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
@@ -585,13 +589,13 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		if len(stripped) < len(content) {
 			var strippedWidth float64
 			if hasSoftHyphen {
-				strippedWidth = measureTextContent(stripped, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+				strippedWidth = measureTextContent(stripped, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
 			} else {
 				if isVertical {
 					mtLU, _ := text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
 					strippedWidth = mtLU.Float64()
 				} else {
-					mtLU, _ := text.MeasureText(stripped, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(stripped, fontSize, fontPath, features)
 					strippedWidth = mtLU.Float64()
 				}
 				if letterSpacing != 0 {
@@ -642,29 +646,29 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		// sizing: treat every character as a potential break point (CSS Text
 		// 3 §4.1, §5.5); break-all does too but keeps non-starters glued.
 		if lineBreak == "anywhere" || overflowWrap == "anywhere" {
-			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0, false)
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, 0, false)
 		}
 		if wordBreak == "break-all" {
-			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0, true)
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, 0, true)
 		}
 		// Break at every word boundary.
-		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0, wordBreak, overflowWrap, hyphens)
+		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, features, line, 0, wordBreak, overflowWrap, hyphens)
 	}
 
 	// line-break:anywhere — break between any two characters, ignoring
 	// UAX#14 prohibitions (kBreakCharacter).
 	if lineBreak == "anywhere" {
-		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
+		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, false)
 	}
 
 	// word-break:break-all — break between any two characters except before
 	// a non-starter (kBreakAll).
 	if wordBreak == "break-all" {
-		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, true)
+		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, true)
 	}
 
 	// Normal mode: find where to break.
-	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, wordBreak, overflowWrap, hyphens)
+	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, wordBreak, overflowWrap, hyphens)
 }
 
 // isInsideMarkerItem reports whether an inline item belongs to an inside
@@ -730,6 +734,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	textStart, textEnd int,
 	fontSize float64,
 	fontPath string,
+	features []textshape.FontFeature,
 	line *LineInfo,
 	remaining float64,
 	wordBreak, overflowWrap, hyphens string,
@@ -813,7 +818,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
 			w = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(visible, fontSize, fontPath, features)
 			w = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
@@ -836,7 +841,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			mtLU, _ := text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
 			hyphenWidth = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText("-", fontSize, fontPath)
+			mtLU, _ := text.MeasureText("-", fontSize, fontPath, features)
 			hyphenWidth = mtLU.Float64()
 		}
 	}
@@ -844,7 +849,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	// CSS Text 3 §5.2: hyphens:auto — find auto-hyphenation break points.
 	// Only attempt when hyphens is "auto" and no soft hyphens are present.
 	if hyphens == "auto" && !hasSoftHyphen && remaining > 0 {
-		if result := lb.tryAutoHyphenation(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, letterSpacing, wordSpacing); result != nil {
+		if result := lb.tryAutoHyphenation(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, letterSpacing, wordSpacing); result != nil {
 			return *result
 		}
 	}
@@ -852,7 +857,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	// If hyphens:manual or hyphens:auto with soft hyphens present,
 	// split at soft-hyphen positions as break opportunities.
 	if hasSoftHyphen && hyphens != "none" {
-		return lb.breakTextAtSoftHyphen(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, hyphenWidth, letterSpacing, wordSpacing, overflowWrap)
+		return lb.breakTextAtSoftHyphen(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, hyphenWidth, letterSpacing, wordSpacing, overflowWrap)
 	}
 
 	for i, word := range words {
@@ -875,7 +880,7 @@ func (lb *LineBreaker) breakTextAtWord(
 		// (LOU-358).
 		if fitted == 0 && !line.HasContent && usedWidth+wordWidth > remaining &&
 			(overflowWrap == "break-word" || overflowWrap == "anywhere") {
-			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, false)
 		}
 
 		// i==0 continuation case: this item's first word has no break
@@ -895,7 +900,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			// min-content-mode anywhere never reach this loop — handleText
 			// dispatches them to breakTextAtCharacter earlier.)
 			if overflowWrap == "anywhere" || overflowWrap == "break-word" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, false)
 			}
 			usedWidth += wordWidth
 			fitted++
@@ -985,6 +990,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 	textStart, textEnd int,
 	fontSize float64,
 	fontPath string,
+	features []textshape.FontFeature,
 	line *LineInfo,
 	remaining float64,
 	hyphenWidth float64,
@@ -1051,7 +1057,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 			mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
 			segWidth = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(visible, fontSize, fontPath, features)
 			segWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
@@ -1084,7 +1090,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 		// with soft hyphens stripped, or overflow-wrap.
 		if len(line.Results) == 0 {
 			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
-				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, false)
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, false)
 			}
 			// Force content onto the line — use the first break point.
 			if len(breaks) > 0 {
@@ -1096,7 +1102,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 					mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
 					segWidth = mtLU.Float64()
 				} else {
-					mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(visible, fontSize, fontPath, features)
 					segWidth = mtLU.Float64()
 				}
 				if letterSpacing != 0 {
@@ -1123,7 +1129,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 				return true
 			}
 			// No break points at all — force entire content.
-			fullWidth := measureTextContent(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+			fullWidth := measureTextContent(content, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
 			line.Results = append(line.Results, InlineItemResult{
 				Item:       item,
 				ItemIndex:  lb.currentItemIndex,
@@ -1192,6 +1198,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 	textStart, textEnd int,
 	fontSize float64,
 	fontPath string,
+	features []textshape.FontFeature,
 	line *LineInfo,
 	remaining float64,
 	letterSpacing, wordSpacing float64,
@@ -1204,7 +1211,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 		mtLU, _ := text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
 		hyphenWidth = mtLU.Float64()
 	} else {
-		mtLU, _ := text.MeasureText("-", fontSize, fontPath)
+		mtLU, _ := text.MeasureText("-", fontSize, fontPath, features)
 		hyphenWidth = mtLU.Float64()
 	}
 
@@ -1224,7 +1231,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 			mtLU, _ := text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
 			w = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(word, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(word, fontSize, fontPath, features)
 			w = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
@@ -1274,7 +1281,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 			mtLU, _ := text.MeasureTextVerticalFromFont(prefix, fontSize, fontPath)
 			prefixWidth = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(prefix, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(prefix, fontSize, fontPath, features)
 			prefixWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
@@ -1400,6 +1407,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 	textStart, textEnd int,
 	fontSize float64,
 	fontPath string,
+	features []textshape.FontFeature,
 	line *LineInfo,
 	remaining float64,
 	prohibitNonStarterBreak bool,
@@ -1439,7 +1447,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 			mtLU, _ := text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
 			charWidth = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(charStr, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(charStr, fontSize, fontPath, features)
 			charWidth = mtLU.Float64()
 		}
 		// Add letter-spacing between characters (not before the first).
@@ -1481,7 +1489,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 				mtLU, _ := text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
 				usedWidth = mtLU.Float64()
 			} else {
-				mtLU, _ := text.MeasureText(charStr, fontSize, fontPath)
+				mtLU, _ := text.MeasureText(charStr, fontSize, fontPath, features)
 				usedWidth = mtLU.Float64()
 			}
 			fitted = 1
@@ -1820,12 +1828,13 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				measureStyle := lb.measuringStyle(r.Item.Style)
 				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 				fontPath := resolveFontPath(measureStyle, lb.fonts)
+				features := text.GetFontFeatures(measureStyle)
 				var newWidth float64
 				if isVertical {
 					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
 					newWidth = mtLU.Float64()
 				} else {
-					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath, features)
 					newWidth = mtLU.Float64()
 				}
 				line.Width -= (r.InlineSize - newWidth)
@@ -1863,12 +1872,13 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				measureStyle := lb.measuringStyle(r.Item.Style)
 				fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 				fontPath := resolveFontPath(measureStyle, lb.fonts)
+				features := text.GetFontFeatures(measureStyle)
 				var newWidth float64
 				if isVertical {
 					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
 					newWidth = mtLU.Float64()
 				} else {
-					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath, features)
 					newWidth = mtLU.Float64()
 				}
 				line.Width -= (r.InlineSize - newWidth)
@@ -2016,12 +2026,13 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		isVertical := lb.isVerticalMeasurement(r.Item.Style)
 		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
 		fontPath := resolveFontPath(measureStyle, lb.fonts)
+		features := text.GetFontFeatures(measureStyle)
 		letterSpacing, wordSpacing := 0.0, 0.0
 		if measureStyle != nil {
 			letterSpacing = measureStyle.GetLetterSpacing()
 			wordSpacing = measureStyle.GetWordSpacing()
 		}
-		newWidth := measureTextContent(trimmed, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+		newWidth := measureTextContent(trimmed, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
 		r.TextEnd = opWordStart
 		r.InlineSize = newWidth
 		// Reset item cursor to r's item so the next NextLine call re-reads
@@ -2044,8 +2055,9 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 // applyCrossSpanKerning re-measures runs of adjacent text items that share
 // the same shaping context as a single concatenated string, then assigns
 // each item its context-aware advance. Items are considered compatible when
-// they use the same font/weight/style/size, letter-spacing, and word-spacing,
-// and are separated only by zero-edge open/close tags.
+// they use the same font/weight/style/size, OpenType features,
+// letter-spacing, and word-spacing, and are separated only by zero-edge
+// open/close tags. The run is shaped with the items' shared feature list.
 //
 // Skipped in vertical writing modes, where measurement is rune-count-based
 // and not affected by horizontal kerning.
@@ -2140,6 +2152,7 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 		firstMeasureStyle := lb.measuringStyle(first.Item.Style)
 		fontSize, _, _, _, _ := fontPropsFromStyle(firstMeasureStyle)
 		fontPath := resolveFontPath(firstMeasureStyle, lb.fonts)
+		features := text.GetFontFeatures(firstMeasureStyle)
 		letterSpacing, wordSpacing := 0.0, 0.0
 		if firstMeasureStyle != nil {
 			letterSpacing = firstMeasureStyle.GetLetterSpacing()
@@ -2175,7 +2188,7 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 			})
 		}
 
-		cum, ok := text.ShapeAdvancesMixed(combined.String(), runs, fontSize, fontPath)
+		cum, ok := text.ShapeAdvancesMixed(combined.String(), runs, fontSize, fontPath, features)
 		if !ok {
 			i = runEnd
 			continue
@@ -2228,7 +2241,8 @@ func isBidiBoundary(style *css.Style) bool {
 // HarfBuzz shaping context and can therefore be measured together as one
 // concatenated run. Items must have:
 //
-//   - matching font (size/weight/style/family/mono/ahem),
+//   - matching font (size/weight/style/family/mono/ahem) and OpenType
+//     feature list (text.GetFontFeatures),
 //   - matching letter-spacing and word-spacing,
 //   - matching CSS direction,
 //   - and **the same resolved bidi level** (not just same parity).
@@ -2253,6 +2267,9 @@ func canMergeShapingContext(a, b *InlineItem) bool {
 	if a.BidiLevel != b.BidiLevel {
 		return false
 	}
+	if a.Style == b.Style {
+		return true
+	}
 	aSize, aBold, aItalic, aMono, aAhem := fontPropsFromStyle(a.Style)
 	bSize, bBold, bItalic, bMono, bAhem := fontPropsFromStyle(b.Style)
 	if aSize != bSize || aBold != bBold || aItalic != bItalic || aMono != bMono || aAhem != bAhem {
@@ -2272,7 +2289,13 @@ func canMergeShapingContext(a, b *InlineItem) bool {
 	if a.Style.GetDirection() != b.Style.GetDirection() {
 		return false
 	}
-	return true
+	// Blink breaks the shape on Font inequality (ShouldBreakShapingBeforeText,
+	// core/layout/inline/inline_node.cc:470-491 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a Font's description
+	// carries its feature state — font-kerning, font-variant-*,
+	// font-feature-settings. Two items shaped with different feature lists
+	// cannot share one HarfBuzz buffer.
+	return slices.Equal(text.GetFontFeatures(a.Style), text.GetFontFeatures(b.Style))
 }
 
 // splitIntoWords splits text into words, preserving spaces attached to
@@ -2432,6 +2455,7 @@ func (lb *LineBreaker) measureTextWithTabs(
 	content string,
 	fontSize float64,
 	fontPath string,
+	features []textshape.FontFeature,
 	letterSpacing, wordSpacing float64,
 	isVertical bool,
 ) float64 {
@@ -2452,7 +2476,7 @@ func (lb *LineBreaker) measureTextWithTabs(
 			mtLU, _ := text.MeasureTextVerticalFromFont(" ", fontSize, fontPath)
 			spaceW = mtLU.Float64()
 		} else {
-			mtLU, _ := text.MeasureText(" ", fontSize, fontPath)
+			mtLU, _ := text.MeasureText(" ", fontSize, fontPath, features)
 			spaceW = mtLU.Float64()
 		}
 		if spaceW <= 0 {
@@ -2475,7 +2499,7 @@ func (lb *LineBreaker) measureTextWithTabs(
 				mtLU, _ := text.MeasureTextVerticalFromFont(seg, fontSize, fontPath)
 				segW = mtLU.Float64()
 			} else {
-				mtLU, _ := text.MeasureText(seg, fontSize, fontPath)
+				mtLU, _ := text.MeasureText(seg, fontSize, fontPath, features)
 				segW = mtLU.Float64()
 			}
 			if letterSpacing != 0 {

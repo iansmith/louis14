@@ -23,6 +23,12 @@ type domContext struct {
 	cache  map[*html.Node]goja.Value
 	engine *Engine // back-reference to register onload callbacks; may be nil
 
+	// documentProxies / windowProxies cache nested-document and
+	// content-window proxies so repeated contentDocument / contentWindow
+	// reads are ===.
+	documentProxies map[*html.Document]goja.Value
+	windowProxies   map[*html.Document]goja.Value
+
 	// Layout snapshot for backing getComputedStyle. May be nil if the caller
 	// did not populate layout state (e.g. pure DOM-manipulation tests).
 	layoutStyles map[*html.Node]*css.Style
@@ -90,6 +96,9 @@ func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
 		vm:    vm,
 		doc:   doc,
 		cache: make(map[*html.Node]goja.Value),
+
+		documentProxies: make(map[*html.Document]goja.Value),
+		windowProxies:   make(map[*html.Document]goja.Value),
 	}
 }
 
@@ -98,79 +107,7 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	ctx := newDOMContext(vm, doc)
 
 	docObj := vm.NewObject()
-	docObj.Set("getElementById", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return goja.Null()
-		}
-		id := call.Arguments[0].String()
-		node := getElementById(doc.Root, id)
-		if node == nil {
-			return goja.Null()
-		}
-		return ctx.elementProxy(node)
-	})
-	docObj.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return ctx.elementArray(nil)
-		}
-		tag := strings.ToLower(call.Arguments[0].String())
-		nodes := getElementsByTagName(doc.Root, tag)
-		return ctx.elementArray(nodes)
-	})
-	docObj.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return ctx.elementArray(nil)
-		}
-		cls := call.Arguments[0].String()
-		nodes := getElementsByClassName(doc.Root, cls)
-		return ctx.elementArray(nodes)
-	})
-
-	// Phase 1: createElement, createTextNode
-	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(vm.NewTypeError("Failed to execute 'createElement' on 'Document': 1 argument required"))
-		}
-		tag := strings.ToLower(call.Arguments[0].String())
-		node := &html.Node{
-			Type:       html.ElementNode,
-			TagName:    tag,
-			Attributes: make(map[string]string),
-			Children:   make([]*html.Node, 0),
-		}
-		return ctx.elementProxy(node)
-	})
-	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
-	// a namespace (html.Node.NamespaceURI), but this binding still ignores
-	// its namespace argument, so the element reports the XHTML namespace;
-	// element identity in the renderer is by lowercase tag name (matching
-	// the tokenizer). The argument is accepted for compatibility with WPT
-	// tests that build SVG nodes via
-	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
-	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 2 {
-			panic(vm.NewTypeError("Failed to execute 'createElementNS' on 'Document': 2 arguments required"))
-		}
-		tag := strings.ToLower(call.Arguments[1].String())
-		node := &html.Node{
-			Type:       html.ElementNode,
-			TagName:    tag,
-			Attributes: make(map[string]string),
-			Children:   make([]*html.Node, 0),
-		}
-		return ctx.elementProxy(node)
-	})
-	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
-		text := ""
-		if len(call.Arguments) > 0 {
-			text = call.Arguments[0].String()
-		}
-		node := &html.Node{
-			Type: html.TextNode,
-			Text: text,
-		}
-		return ctx.elementProxy(node)
-	})
+	registerDocumentNodeMethods(ctx, docObj, doc)
 
 	// document.addEventListener / removeEventListener. Only events the
 	// engine dispatches after scripts run (WPT's "TestRendered") ever fire;
@@ -273,6 +210,83 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	return ctx
 }
 
+// registerDocumentNodeMethods installs the Document lookup and node
+// factory methods shared by the top-level document and nested
+// (contentDocument) documents: getElementById / getElementsByTagName /
+// getElementsByClassName and createElement / createElementNS /
+// createTextNode / createDocumentFragment (core/dom/document.idl @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func registerDocumentNodeMethods(ctx *domContext, docObj *goja.Object, doc *html.Document) {
+	vm := ctx.vm
+	docObj.Set("getElementById", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return goja.Null()
+		}
+		id := call.Arguments[0].String()
+		node := getElementById(doc.Root, id)
+		if node == nil {
+			return goja.Null()
+		}
+		return ctx.elementProxy(node)
+	})
+	docObj.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return ctx.elementArray(nil)
+		}
+		tag := strings.ToLower(call.Arguments[0].String())
+		nodes := getElementsByTagName(doc.Root, tag)
+		return ctx.elementArray(nodes)
+	})
+	docObj.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return ctx.elementArray(nil)
+		}
+		cls := call.Arguments[0].String()
+		nodes := getElementsByClassName(doc.Root, cls)
+		return ctx.elementArray(nodes)
+	})
+
+	newElement := func(tag string) goja.Value {
+		return ctx.elementProxy(&html.Node{
+			Type:       html.ElementNode,
+			TagName:    strings.ToLower(tag),
+			Attributes: make(map[string]string),
+			Children:   make([]*html.Node, 0),
+		})
+	}
+	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(vm.NewTypeError("Failed to execute 'createElement' on 'Document': 1 argument required"))
+		}
+		return newElement(call.Arguments[0].String())
+	})
+	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
+	// a namespace (html.Node.NamespaceURI), but this binding still ignores
+	// its namespace argument, so the element reports the XHTML namespace;
+	// element identity in the renderer is by lowercase tag name (matching
+	// the tokenizer). The argument is accepted for compatibility with WPT
+	// tests that build SVG nodes via
+	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
+	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			panic(vm.NewTypeError("Failed to execute 'createElementNS' on 'Document': 2 arguments required"))
+		}
+		return newElement(call.Arguments[1].String())
+	})
+	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
+		text := ""
+		if len(call.Arguments) > 0 {
+			text = call.Arguments[0].String()
+		}
+		return ctx.elementProxy(&html.Node{Type: html.TextNode, Text: text})
+	})
+	// Document::createDocumentFragment (core/dom/document.cc:1571 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	docObj.Set("createDocumentFragment", func(call goja.FunctionCall) goja.Value {
+		return ctx.elementProxy(&html.Node{Type: html.DocumentFragmentNode})
+	})
+}
+
 // registerNamedElements walks the DOM tree and registers elements with id
 // attributes as global variables, implementing HTML5 named access on Window.
 func registerNamedElements(ctx *domContext, root *html.Node) {
@@ -364,65 +378,35 @@ func (ctx *domContext) elementProxy(node *html.Node) goja.Value {
 // through this proxy (e.g. createTextNode) are discoverable by unwrapNode in
 // the outer context — enabling cross-document DOM operations like appendChild.
 func (ctx *domContext) documentProxy(doc *html.Document) goja.Value {
+	// [SameObject]-style identity: contentDocument and
+	// contentWindow.document return the same object for one document.
+	if v, ok := ctx.documentProxies[doc]; ok {
+		return v
+	}
 	vm := ctx.vm
 	docObj := vm.NewObject()
-
-	docObj.Set("getElementById", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return goja.Null()
-		}
-		id := call.Arguments[0].String()
-		node := getElementById(doc.Root, id)
-		if node == nil {
-			return goja.Null()
-		}
-		return ctx.elementProxy(node)
-	})
-	docObj.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return ctx.elementArray(nil)
-		}
-		tag := strings.ToLower(call.Arguments[0].String())
-		nodes := getElementsByTagName(doc.Root, tag)
-		return ctx.elementArray(nodes)
-	})
-	docObj.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return ctx.elementArray(nil)
-		}
-		cls := call.Arguments[0].String()
-		nodes := getElementsByClassName(doc.Root, cls)
-		return ctx.elementArray(nodes)
-	})
-	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(vm.NewTypeError("Failed to execute 'createElement' on 'Document': 1 argument required"))
-		}
-		tag := strings.ToLower(call.Arguments[0].String())
-		node := &html.Node{
-			Type:       html.ElementNode,
-			TagName:    tag,
-			Attributes: make(map[string]string),
-			Children:   make([]*html.Node, 0),
-		}
-		return ctx.elementProxy(node)
-	})
-	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
-		text := ""
-		if len(call.Arguments) > 0 {
-			text = call.Arguments[0].String()
-		}
-		node := &html.Node{
-			Type: html.TextNode,
-			Text: text,
-		}
-		return ctx.elementProxy(node)
-	})
+	registerDocumentNodeMethods(ctx, docObj, doc)
 	// querySelector/querySelectorAll on the nested document root
 	registerQuerySelectors(ctx, docObj, doc.Root)
 	// body, head, documentElement properties
 	registerDocumentProperties(ctx, docObj, doc)
+	ctx.documentProxies[doc] = docObj
 	return docObj
+}
+
+// windowProxy builds the window-like object HTMLFrameOwnerElement::
+// contentWindow returns for a nested document: its document, and
+// window/self referring back to itself.
+func (ctx *domContext) windowProxy(doc *html.Document) goja.Value {
+	if v, ok := ctx.windowProxies[doc]; ok {
+		return v
+	}
+	win := ctx.vm.NewObject()
+	_ = win.Set("document", ctx.documentProxy(doc))
+	_ = win.Set("window", win)
+	_ = win.Set("self", win)
+	ctx.windowProxies[doc] = win
+	return win
 }
 
 // unwrapNode extracts the *html.Node from a goja value that wraps an elementAccessor.
@@ -455,13 +439,19 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		// Internal: used by unwrapNode as a fallback identifier
 		return vm.ToValue(true)
 	case "nodeType":
-		if e.node.Type == html.TextNode {
+		switch e.node.Type {
+		case html.TextNode:
 			return vm.ToValue(3) // Node.TEXT_NODE
+		case html.DocumentFragmentNode:
+			return vm.ToValue(11) // Node.DOCUMENT_FRAGMENT_NODE
 		}
 		return vm.ToValue(1) // Node.ELEMENT_NODE
 	case "nodeName":
-		if e.node.Type == html.TextNode {
+		switch e.node.Type {
+		case html.TextNode:
 			return vm.ToValue("#text")
+		case html.DocumentFragmentNode:
+			return vm.ToValue("#document-fragment")
 		}
 		return vm.ToValue(strings.ToUpper(e.node.TagName))
 	case "nodeValue":
@@ -470,7 +460,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		}
 		return goja.Null()
 	case "tagName":
-		if e.node.Type == html.TextNode {
+		if e.node.Type != html.ElementNode {
 			return goja.Undefined()
 		}
 		return vm.ToValue(strings.ToUpper(e.node.TagName))
@@ -831,17 +821,24 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		})
 
 	case "contentDocument":
-		// HTMLIFrameElement.contentDocument: return a document-like proxy for
-		// the nested document if one was retained during layout. This allows
-		// cross-document DOM access (e.g. bidi-dynamic-iframe-001 pattern).
-		if e.node.TagName == "iframe" || e.node.TagName == "object" {
-			if e.node.NestedDocument != nil {
-				return e.ctx.documentProxy(e.node.NestedDocument)
-			}
+		// HTMLIFrameElement/HTMLObjectElement.contentDocument: return a
+		// document-like proxy for the nested document if one was retained
+		// during layout. This allows cross-document DOM access (e.g.
+		// bidi-dynamic-iframe-001 pattern).
+		if doc := e.contentFrameDocument(); doc != nil {
+			return e.ctx.documentProxy(doc)
 		}
 		return goja.Null()
 	case "contentWindow":
-		// HTMLIFrameElement.contentWindow: not fully supported; return null.
+		// HTMLFrameOwnerElement::contentWindow (core/html/
+		// html_frame_owner_element.cc:402 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; html_iframe_element.idl:37,
+		// html_object_element.idl:41): the content frame's window, or null
+		// without a content frame. louis14 models the window only as the
+		// holder of its document.
+		if doc := e.contentFrameDocument(); doc != nil {
+			return e.ctx.windowProxy(doc)
+		}
 		return goja.Null()
 	case "getBoundingClientRect":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
@@ -849,12 +846,10 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			// so return zeros. Tests that call this to force layout (e.g. to
 			// flush style changes before reading dimensions) still work correctly
 			// because the two-pass render re-runs layout after JS mutations.
-			rect := vm.NewObject()
-			for _, prop := range []string{"x", "y", "width", "height", "top", "right", "bottom", "left"} {
-				_ = rect.Set(prop, 0)
-			}
-			return rect
+			return newDOMRect(vm, 0, 0, 0, 0)
 		})
+	case "getClientRects":
+		return vm.ToValue(e.getClientRectsFn())
 
 	case "scrollLeft", "scrollTop":
 		// Element.scrollLeft / scrollTop getters (Element::scrollLeft,
@@ -1203,6 +1198,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"contentDocument", "contentWindow",
 		"focus", "blur",
 		"scrollLeft", "scrollTop", "scrollTo", "scrollWidth", "scrollHeight",
+		"getBoundingClientRect", "getClientRects",
 		"animate":
 		return true
 	}
@@ -1233,6 +1229,7 @@ func (e *elementAccessor) Keys() []string {
 		"onload",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
+		"getBoundingClientRect", "getClientRects",
 		"animate",
 	}
 }
@@ -1335,6 +1332,11 @@ func (s *styleAccessor) Get(key string) goja.Value {
 		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			return s.vm.ToValue("")
 		})
+	case "cssText":
+		// AbstractPropertySetCSSStyleDeclaration::cssText (core/css/
+		// abstract_property_set_css_style_declaration.cc:50 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return s.vm.ToValue(cssTextForDeclarations(parseDeclarationList(s.getStyleAttr())))
 	}
 	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
@@ -1345,6 +1347,14 @@ func (s *styleAccessor) Get(key string) goja.Value {
 }
 
 func (s *styleAccessor) Set(key string, val goja.Value) bool {
+	if key == "cssText" {
+		// AbstractPropertySetCSSStyleDeclaration::setCSSText (core/css/
+		// abstract_property_set_css_style_declaration.cc:54-70 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): re-parse the whole
+		// declaration list, replacing every existing declaration.
+		s.setStyleAttr(cssTextForDeclarations(parseDeclarationList(val.String())))
+		return true
+	}
 	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
 	// CSSOM: assigning the empty string removes the declaration
@@ -1393,25 +1403,45 @@ func (s *styleAccessor) setStyleAttr(val string) {
 	s.node.Attributes["style"] = val
 }
 
-// parseInlineStyle parses a CSS inline style string into a map.
-func parseInlineStyle(s string) map[string]string {
-	result := make(map[string]string)
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return result
-	}
+// cssDeclaration is one name: value pair of a declaration block.
+type cssDeclaration struct {
+	name, value string
+}
+
+// parseDeclarationList splits a CSS declaration list into its
+// declarations in source order, skipping ones without a colon.
+func parseDeclarationList(s string) []cssDeclaration {
+	var decls []cssDeclaration
 	for _, decl := range strings.Split(s, ";") {
-		decl = strings.TrimSpace(decl)
-		if decl == "" {
-			continue
-		}
 		idx := strings.IndexByte(decl, ':')
 		if idx < 0 {
 			continue
 		}
-		prop := strings.TrimSpace(decl[:idx])
-		val := strings.TrimSpace(decl[idx+1:])
-		result[prop] = val
+		decls = append(decls, cssDeclaration{
+			name:  strings.TrimSpace(decl[:idx]),
+			value: strings.TrimSpace(decl[idx+1:]),
+		})
+	}
+	return decls
+}
+
+// cssTextForDeclarations serialises a declaration block the way
+// CSSPropertyValueSet::AsText does (core/css/css_property_value_set.cc:699 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): "name: value;" per
+// declaration, separated by a space.
+func cssTextForDeclarations(decls []cssDeclaration) string {
+	parts := make([]string, len(decls))
+	for i, d := range decls {
+		parts[i] = d.name + ": " + d.value + ";"
+	}
+	return strings.Join(parts, " ")
+}
+
+// parseInlineStyle parses a CSS inline style string into a map.
+func parseInlineStyle(s string) map[string]string {
+	result := make(map[string]string)
+	for _, d := range parseDeclarationList(s) {
+		result[d.name] = d.value
 	}
 	return result
 }
@@ -1776,4 +1806,57 @@ func (e *elementAccessor) layoutBoxForScrolling() (*layout.Box, bool) {
 	}
 	box := e.ctx.updateLayout()[e.scrollNode()]
 	return box, box != nil
+}
+
+// contentFrameDocument returns the nested document of an <iframe> or
+// <object> (HTMLFrameOwnerElement's content frame), or nil.
+func (e *elementAccessor) contentFrameDocument() *html.Document {
+	if e.node.TagName == "iframe" || e.node.TagName == "object" {
+		return e.node.NestedDocument
+	}
+	return nil
+}
+
+// newDOMRect builds a DOMRect-like object (core/geometry/dom_rect.idl @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a rect with non-negative
+// width and height.
+func newDOMRect(vm *goja.Runtime, x, y, width, height float64) *goja.Object {
+	rect := vm.NewObject()
+	for _, p := range []struct {
+		name string
+		v    float64
+	}{
+		{"x", x}, {"y", y}, {"width", width}, {"height", height},
+		{"left", x}, {"top", y}, {"right", x + width}, {"bottom", y + height},
+	} {
+		_ = rect.Set(p.name, p.v)
+	}
+	return rect
+}
+
+// getClientRectsFn implements Element.getClientRects (Element::
+// getClientRects → GetClientRectsNoAdjustment → ClientQuads,
+// core/dom/element.cc:3419-3487 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+// element.idl:147). Layout is brought up to date first (Blink
+// EnsurePaintLocationDataValidForNode), so it doubles as the scripted
+// layout flush tests rely on. The result is a DOMRectList
+// (core/geometry/dom_rect_list.idl @ the same SHA): indexed, with length
+// and item(). An element with a box reports its border box in page
+// coordinates; one without (display:none / display:contents, or no layout
+// updater) reports an empty list. louis14 indexes one box per node, so an
+// inline split across lines reports only its principal box. Boxes are
+// placed with the viewport's scroll offset already applied (the
+// LayoutView's scroll translation), so page coordinates are client
+// coordinates.
+func (e *elementAccessor) getClientRectsFn() func(call goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		vm := e.ctx.vm
+		var rects []goja.Value
+		if e.ctx.updateLayout != nil && e.node.Type == html.ElementNode {
+			if box := e.ctx.updateLayout()[e.node]; box != nil {
+				rects = append(rects, newDOMRect(vm, box.X, box.Y, box.Width, box.Height))
+			}
+		}
+		return newIndexedList(vm, rects)
+	}
 }

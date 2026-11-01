@@ -6,6 +6,54 @@ import (
 	"github.com/dop251/goja"
 )
 
+// collectChildrenAndRemoveFromOldParent returns the nodes inserting node
+// stands for: a DocumentFragment's children, detached (leaving the
+// fragment empty), or node itself, which html.Node.InsertBefore detaches
+// from its old parent. Mirrors
+// Blink's CollectChildrenAndRemoveFromOldParent (core/dom/container_node.cc:
+// 168-184 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which
+// ContainerNode::AppendChild / InsertBefore / ReplaceChild call first.
+func collectChildrenAndRemoveFromOldParent(node *html.Node) []*html.Node {
+	if node.Type == html.DocumentFragmentNode {
+		nodes := node.Children
+		for _, child := range nodes {
+			child.Parent = nil
+		}
+		node.Children = nil
+		return nodes
+	}
+	return []*html.Node{node}
+}
+
+// convertNodeUnionsIntoNodes converts ParentNode/ChildNode method arguments
+// into the nodes to insert: strings become text nodes and a
+// DocumentFragment contributes its children. Mirrors Blink's
+// Node::ConvertNodeUnionsIntoNodes (core/dom/node.cc:915-997 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the caller's InsertBefore
+// detaches each node from its old parent.
+func (ctx *domContext) convertNodeUnionsIntoNodes(args []goja.Value) []*html.Node {
+	var nodes []*html.Node
+	for _, arg := range args {
+		node := ctx.unwrapNode(arg)
+		switch {
+		case node == nil:
+			nodes = append(nodes, &html.Node{Type: html.TextNode, Text: arg.String()})
+		case node.Type == html.DocumentFragmentNode:
+			nodes = append(nodes, collectChildrenAndRemoveFromOldParent(node)...)
+		default:
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
+
+// insertNodesBefore inserts nodes, in order, before ref (nil appends).
+func insertNodesBefore(parent *html.Node, nodes []*html.Node, ref *html.Node) {
+	for _, n := range nodes {
+		parent.InsertBefore(n, ref)
+	}
+}
+
 // appendChildFn returns a JS function that implements node.appendChild(child).
 // Cross-document moves take no special action — the next cascade pass
 // re-parses the moved node's inline style against the new owner doc's
@@ -20,11 +68,7 @@ func (e *elementAccessor) appendChildFn() func(call goja.FunctionCall) goja.Valu
 		if child == nil {
 			panic(e.ctx.vm.NewTypeError("Failed to execute 'appendChild': parameter is not a Node"))
 		}
-		// Remove from old parent if already in tree
-		if child.Parent != nil {
-			child.Parent.RemoveChild(child)
-		}
-		e.node.AddChild(child)
+		insertNodesBefore(e.node, collectChildrenAndRemoveFromOldParent(child), nil)
 		return e.ctx.elementProxy(child)
 	}
 }
@@ -66,7 +110,7 @@ func (e *elementAccessor) insertBeforeFn() func(call goja.FunctionCall) goja.Val
 		if len(call.Arguments) > 1 && !goja.IsNull(call.Arguments[1]) && !goja.IsUndefined(call.Arguments[1]) {
 			refChild = e.ctx.unwrapNode(call.Arguments[1])
 		}
-		e.node.InsertBefore(newChild, refChild)
+		insertNodesBefore(e.node, collectChildrenAndRemoveFromOldParent(newChild), refChild)
 		return e.ctx.elementProxy(newChild)
 	}
 }
@@ -100,83 +144,45 @@ func (e *elementAccessor) setInnerHTML(htmlStr string) {
 
 // Convenience mutation methods (Phase 3)
 
-// appendFn returns a JS function for element.append(...nodes).
-// Accepts nodes and strings (strings become text nodes).
+// appendFn returns a JS function for element.append(...nodes) (Node::append,
+// core/dom/node.cc:1020 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (e *elementAccessor) appendFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-				e.node.AddChild(node)
-			} else {
-				// Treat as string -> text node
-				e.node.AppendText(arg.String())
-			}
-		}
+		insertNodesBefore(e.node, e.ctx.convertNodeUnionsIntoNodes(call.Arguments), nil)
 		return goja.Undefined()
 	}
 }
 
-// prependFn returns a JS function for element.prepend(...nodes).
+// prependFn returns a JS function for element.prepend(...nodes)
+// (Node::prepend, core/dom/node.cc:999 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (e *elementAccessor) prependFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
-		// Collect nodes to prepend (in order)
-		var toInsert []*html.Node
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-				toInsert = append(toInsert, node)
-			} else {
-				toInsert = append(toInsert, &html.Node{
-					Type: html.TextNode,
-					Text: arg.String(),
-				})
-			}
-		}
-		// Insert before first child
+		nodes := e.ctx.convertNodeUnionsIntoNodes(call.Arguments)
 		var firstChild *html.Node
 		if len(e.node.Children) > 0 {
 			firstChild = e.node.Children[0]
 		}
-		for _, n := range toInsert {
-			e.node.InsertBefore(n, firstChild)
-		}
+		insertNodesBefore(e.node, nodes, firstChild)
 		return goja.Undefined()
 	}
 }
 
-// beforeFn returns a JS function for element.before(...nodes).
+// beforeFn returns a JS function for element.before(...nodes) (Node::before,
+// core/dom/node.cc:1040 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (e *elementAccessor) beforeFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		if e.node.Parent == nil {
 			return goja.Undefined()
 		}
 		parent := e.node.Parent
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-			} else {
-				node = &html.Node{
-					Type: html.TextNode,
-					Text: arg.String(),
-				}
-			}
-			parent.InsertBefore(node, e.node)
-		}
+		insertNodesBefore(parent, e.ctx.convertNodeUnionsIntoNodes(call.Arguments), e.node)
 		return goja.Undefined()
 	}
 }
 
-// afterFn returns a JS function for element.after(...nodes).
+// afterFn returns a JS function for element.after(...nodes) (Node::after,
+// core/dom/node.cc:1060 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (e *elementAccessor) afterFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		if e.node.Parent == nil {
@@ -189,20 +195,7 @@ func (e *elementAccessor) afterFn() func(call goja.FunctionCall) goja.Value {
 		if idx >= 0 && idx+1 < len(parent.Children) {
 			refNode = parent.Children[idx+1]
 		}
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-			} else {
-				node = &html.Node{
-					Type: html.TextNode,
-					Text: arg.String(),
-				}
-			}
-			parent.InsertBefore(node, refNode)
-		}
+		insertNodesBefore(parent, e.ctx.convertNodeUnionsIntoNodes(call.Arguments), refNode)
 		return goja.Undefined()
 	}
 }
@@ -215,20 +208,7 @@ func (e *elementAccessor) replaceWithFn() func(call goja.FunctionCall) goja.Valu
 		}
 		parent := e.node.Parent
 		// Insert all new nodes before this one
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-			} else {
-				node = &html.Node{
-					Type: html.TextNode,
-					Text: arg.String(),
-				}
-			}
-			parent.InsertBefore(node, e.node)
-		}
+		insertNodesBefore(parent, e.ctx.convertNodeUnionsIntoNodes(call.Arguments), e.node)
 		// Remove this node
 		e.ctx.doc.NotifyNodeDetached(e.node)
 		parent.RemoveChild(e.node)
@@ -247,10 +227,7 @@ func (e *elementAccessor) replaceChildFn() func(call goja.FunctionCall) goja.Val
 		if newChild == nil || oldChild == nil {
 			return goja.Undefined()
 		}
-		if newChild.Parent != nil {
-			newChild.Parent.RemoveChild(newChild)
-		}
-		e.node.InsertBefore(newChild, oldChild)
+		insertNodesBefore(e.node, collectChildrenAndRemoveFromOldParent(newChild), oldChild)
 		e.ctx.doc.NotifyNodeDetached(oldChild)
 		e.node.RemoveChild(oldChild)
 		return e.ctx.elementProxy(oldChild)
@@ -260,25 +237,17 @@ func (e *elementAccessor) replaceChildFn() func(call goja.FunctionCall) goja.Val
 // replaceChildrenFn returns a JS function for element.replaceChildren(...nodes).
 func (e *elementAccessor) replaceChildrenFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
-		// Blur focus if any of the about-to-be-removed children contains it.
+		// Convert first: an argument may be one of the children being
+		// cleared (Node::replaceChildren, core/dom/node.cc:1314 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		nodes := e.ctx.convertNodeUnionsIntoNodes(call.Arguments)
 		for _, c := range e.node.Children {
+			// Blur focus if this about-to-be-removed child contains it.
 			e.ctx.doc.NotifyNodeDetached(c)
+			c.Parent = nil
 		}
-		// Clear all children
 		e.node.Children = nil
-
-		// Append new children
-		for _, arg := range call.Arguments {
-			node := e.ctx.unwrapNode(arg)
-			if node != nil {
-				if node.Parent != nil {
-					node.Parent.RemoveChild(node)
-				}
-				e.node.AddChild(node)
-			} else {
-				e.node.AppendText(arg.String())
-			}
-		}
+		insertNodesBefore(e.node, nodes, nil)
 		return goja.Undefined()
 	}
 }

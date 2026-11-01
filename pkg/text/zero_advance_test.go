@@ -20,16 +20,16 @@ import "testing"
 func TestZeroAdvanceTextMeasuresZero(t *testing.T) {
 	const ahem = "../../fonts/Ahem.ttf"
 
-	if w, _ := MeasureText("​", 16, ahem); w.Float64() != 0 {
+	if w, _ := MeasureText("​", 16, ahem, nil); w.Float64() != 0 {
 		t.Errorf(`MeasureText("​") = %v, want 0 (zero-advance run must not clamp to 1px)`, w.Float64())
 	}
 	// Sanity: a real glyph still measures its full advance (Ahem: 1em).
-	if w, _ := MeasureText("X", 16, ahem); w.Float64() != 16 {
+	if w, _ := MeasureText("X", 16, ahem, nil); w.Float64() != 16 {
 		t.Errorf(`MeasureText("X") = %v, want 16`, w.Float64())
 	}
 	// A zero-advance rune must not change a run's width when appended.
-	base, _ := MeasureText("X. ", 16, ahem)
-	withZWSP, _ := MeasureText("X. ​", 16, ahem)
+	base, _ := MeasureText("X. ", 16, ahem, nil)
+	withZWSP, _ := MeasureText("X. ​", 16, ahem, nil)
 	if base.Raw() != withZWSP.Raw() {
 		t.Errorf(`MeasureText("X. ​") = %v, want %v (ZWSP is zero-advance)`, withZWSP.Float64(), base.Float64())
 	}

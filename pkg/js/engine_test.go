@@ -569,3 +569,43 @@ func TestScrollingElementScrollsViewport(t *testing.T) {
 		t.Errorf("Document ScrollOffset = %+v, want %+v", doc.Root.ScrollOffset, want)
 	}
 }
+
+// TestElementGetClientRects pins Element::getClientRects
+// (core/dom/element.cc:3455-3487 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+// element.idl:147): it brings layout up to date first
+// (GetClientRectsNoAdjustment → EnsurePaintLocationDataValidForNode), so a
+// style change made just before the call is reflected; an element with a
+// box reports its border box as a DOMRectList of one DOMRect; a box-less
+// element (display:contents here) reports an empty list.
+func TestElementGetClientRects(t *testing.T) {
+	doc := parseHTML(t, `<div id="s"></div>`)
+	s := getElementById(doc.Root, "s")
+	layouts := 0
+	eng := New()
+	eng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
+		layouts++
+		// Stand-in layout: display:contents generates no box.
+		if style, _ := s.GetAttribute("style"); style == "display:contents" {
+			return map[*html.Node]*layout.Box{}
+		}
+		return map[*html.Node]*layout.Box{s: {Node: s, X: 10, Y: 20, Width: 30, Height: 40}}
+	})
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("s");
+		var rects = s.getClientRects();
+		if (rects.length !== 1) throw new Error("length = " + rects.length);
+		var r = rects[0];
+		if (rects.item(0) !== r) throw new Error("item(0) !== [0]");
+		if (rects.item(1) !== null) throw new Error("item(1) should be null");
+		var want = {x: 10, y: 20, width: 30, height: 40, left: 10, top: 20, right: 40, bottom: 60};
+		for (var k in want) if (r[k] !== want[k]) throw new Error(k + " = " + r[k]);
+		s.setAttribute("style", "display:contents");
+		if (s.getClientRects().length !== 0) throw new Error("box-less element should have no rects");
+	`)
+	if err := eng.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if layouts != 2 {
+		t.Errorf("getClientRects ran layout %d times, want 2", layouts)
+	}
+}
