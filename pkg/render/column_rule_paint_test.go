@@ -2,16 +2,18 @@ package render
 
 // Column-rule painting parity tests (LOU-366).
 //
-// drawColumnRules mirrors Blink BoxFragmentPainter::PaintColumnRules
-// (box_fragment_painter.cc:1775-1913 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-// per-row rule segments derived from the column fragmentainer children,
-// logical-to-physical conversion through WritingModeConverter, and
-// ToPixelSnappedRect before filling. These tests pin the three behaviors
-// against full HTML->layout->paint pipeline renders.
+// Column rules are painted by paintGapDecorations, a port of Blink's
+// GapDecorationsPainter (gap_decorations_painter.cc:211-478 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; LOU-486 replaced the legacy
+// BoxFragmentPainter::PaintColumnRules port): per-gap segments between
+// intersections, logical-to-physical conversion through
+// WritingModeConverter, and ToPixelSnappedRect before filling. These tests
+// pin those behaviors against full HTML->layout->paint pipeline renders.
 
 import (
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 
 	"louis14/pkg/css"
@@ -184,15 +186,14 @@ func TestColumnRule_FractionalWidth_ClampedLikeBorderWidth(t *testing.T) {
 	}
 }
 
-// TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule: louis14's multicol
-// layout can emit an empty trailing column fragment in a pre-spanner row
-// without recording a cross gap for it (multicol_layout.go; observed in
-// multicol-span-all-006/007/008, where a phantom 6px column appears next to
-// the summary row). Blink's layout never produces such fragments, so its
-// painter has no analog of this situation (no Blink analog: guard against a
-// louis14 layout artifact). GapGeometry.CrossGaps is layout's authoritative
-// record of inter-column gaps: a column pair with no recorded cross gap gets
-// no rule segment; with a recorded gap, the segment paints.
+// TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule: rules come from the
+// multicol fragment's GapGeometry alone, not from its column boxes
+// (GapDecorationsPainter::Paint, gap_decorations_painter.cc:211-478 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14's multicol layout can
+// emit an empty trailing column fragment Blink never creates (the phantom
+// column of multicol-span-all-006/007/008); layout records no cross gap for
+// it, so a column pair without a recorded cross gap gets no rule, and the
+// same column boxes with a recorded cross gap get one.
 func TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule(t *testing.T) {
 	paint := func(gg *layout.GapGeometry) *image.RGBA {
 		target := image.NewRGBA(image.Rect(0, 0, 100, 50))
@@ -213,22 +214,26 @@ func TestColumnRule_EmptyCrossGaps_SuppressesPhantomRule(t *testing.T) {
 			ColumnRuleColor: css.Color{R: 0, G: 0, B: 255, A: 1},
 			GapGeometry:     gg,
 		}
-		r.drawColumnRules(layer)
+		r.paintGapDecorations(layer)
 		return target
+	}
+	geometry := func(crossGaps ...layout.CrossGap) *layout.GapGeometry {
+		gg := layout.NewGapGeometry(layout.GapContainerMulticol)
+		gg.MainDirection = layout.GapForRows
+		gg.CrossGaps = crossGaps
+		gg.SetContentInlineOffsets(0, 100)
+		gg.SetContentBlockOffsets(0, 30)
+		return gg
 	}
 
 	// No recorded cross gaps: the second column box is a layout artifact.
-	img := paint(&layout.GapGeometry{ContainerType: layout.GapContainerMulticol, MainDirection: layout.GapForRows})
+	img := paint(geometry())
 	if c := img.RGBAAt(50, 15); c.A != 0 {
 		t.Errorf("empty CrossGaps: rule painted at (50,15) = %v, want nothing", c)
 	}
 
-	// One recorded cross gap: the same geometry paints its rule segment.
-	img = paint(&layout.GapGeometry{
-		ContainerType: layout.GapContainerMulticol,
-		MainDirection: layout.GapForRows,
-		CrossGaps:     []layout.CrossGap{{GapInlineOffset: 50}},
-	})
+	// One recorded cross gap: the same column boxes get its rule segment.
+	img = paint(geometry(layout.CrossGap{GapOffset: layout.LogicalOffset{InlineOffset: 50}}))
 	if c := img.RGBAAt(50, 15); c.R != 0 || c.G != 0 || c.B != 255 {
 		t.Errorf("recorded CrossGap: pixel (50,15) = %v, want blue rule", c)
 	}
@@ -252,6 +257,57 @@ func TestColumnRule_HiddenStyle_PaintsNothing(t *testing.T) {
 		r, g, b := rgbAt(img, x, y)
 		if !(r == 255 && g == 255 && b == 255) {
 			t.Errorf("pixel (%d,%d) = (%d,%d,%d): want pure white (hidden rule must paint nothing)", x, y, r, g, b)
+		}
+	}
+}
+
+// TestColumnRule_RowWrap_RuleBreaksAtRowGaps (LOU-486, column-height-009):
+// with column-wrap the column rules are cross gaps intersected by the row
+// gaps (main gaps). Blink's GapDecorationsPainter paints one segment per
+// pair of intersections, inset by half the crossing gap at junctions, so a
+// rule stops at each row gap (gap_decorations_painter.cc:342-477 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a row with fewer columns
+// paints no rule after its last column (kEmptyAfter is invisible under the
+// multicol default rule-visibility-items: between,
+// css_gap_decoration_property_utils.cc:208-246).
+//
+// Layout: 340px wide, 3 columns, 20px gaps -> columns 100px, rules centered
+// at x=110 and x=230 (2px). Sixteen unbreakable 20px blocks, two per
+// 40px column (column-fill:auto); rows at y 0..40, 60..100, 120..160
+// (20px row gaps). The last row holds the remaining four blocks in two
+// columns.
+func TestColumnRule_RowWrap_RuleBreaksAtRowGaps(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="width:340px;">
+  <div style="columns:3; column-fill:auto; gap:20px; column-rule:2px solid black; column-height:40px; column-wrap:wrap; background:yellow;">
+    ` + strings.Repeat(`<div style="width:50px; height:20px; background:cyan;"></div>`, 16) + `
+  </div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 400, 200)
+
+	isBlack := func(x, y int) bool {
+		r, g, b := rgbAt(img, x, y)
+		return r == 0 && g == 0 && b == 0
+	}
+	for _, tc := range []struct {
+		x, y int
+		want bool
+		what string
+	}{
+		{110, 20, true, "row 1, first rule"},
+		{230, 20, true, "row 1, second rule"},
+		{110, 50, false, "first rule must stop at the row gap"},
+		{230, 50, false, "second rule must stop at the row gap"},
+		{110, 80, true, "row 2, first rule"},
+		{230, 80, true, "row 2, second rule"},
+		{110, 110, false, "first rule must stop at the second row gap"},
+		{110, 140, true, "row 3, first rule (stretched to content end)"},
+		{230, 140, false, "row 3 has two columns: no rule after its last column"},
+	} {
+		if got := isBlack(tc.x, tc.y); got != tc.want {
+			r, g, b := rgbAt(img, tc.x, tc.y)
+			t.Errorf("pixel (%d,%d) = (%d,%d,%d), rule painted = %v, want %v: %s", tc.x, tc.y, r, g, b, got, tc.want, tc.what)
 		}
 	}
 }

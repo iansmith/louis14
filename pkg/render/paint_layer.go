@@ -426,9 +426,6 @@ type PaintLayer struct {
 
 	// Column rules (for multicol containers):
 	IsMulticol      bool
-	ColumnCount     int     // number of columns actually rendered
-	ColumnWidth     float64 // used column width
-	ColumnGap       float64 // gap between columns
 	ColumnRuleWidth float64 // rule width in px
 	ColumnRuleStyle string  // none, solid, dashed, dotted, etc.
 	ColumnRuleColor css.Color
@@ -1605,10 +1602,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Column rules for multicol containers.
 	// Guards:
 	//   - !IsColumnBox: per-column fragmentainers are tagged BoxTypeColumn
-	//     and should never paint rules. Mirrors Blink, where PaintColumnRules
-	//     is dispatched only from the multicol container's BoxFragmentPainter
-	//     (box_fragment_painter.cc PaintColumnRules call site), never from
-	//     kColumnBox fragmentainers.
+	//     and should never paint rules. Mirrors Blink, where only the multicol
+	//     container's fragment carries GapGeometry (PaintGapDecorations),
+	//     never kColumnBox fragmentainers.
 	//   - Text == "": text fragments inherit Style from their parent element
 	//     (inline_layout.go:1639 r.Item.Style), which for direct text
 	//     children of a multicol container carries column-count > 0; without
@@ -1624,24 +1620,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ColumnRuleWidth = clampLineWidth(s.GetColumnRuleWidth())
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
 		layer.ColumnRuleColor = s.GetColumnRuleColor()
-		layer.ColumnGap = s.GetColumnGapMulticol()
-
-		// Compute used column count and width from the content width.
-		contentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
-		if contentW < 0 {
-			contentW = 0
-		}
-		colCount, colWidth := layout.ResolveColumnCountForPaint(contentW, s.GetColumnCount(), s.GetColumnWidth(), layer.ColumnGap)
-		layer.ColumnCount = colCount
-		layer.ColumnWidth = colWidth
-		// CSS Multicol L1 §5: column rules are only drawn between columns that
-		// both have content. With column-fill:auto a row may render fewer
-		// columns than column-count, in which case multicol layout reports the
-		// actual placed count via Box.RenderedColumnCount. Zero means
-		// non-multicol or pre-12e fallback (paint all CSS-count rules).
-		if box.RenderedColumnCount > 0 && box.RenderedColumnCount < colCount {
-			layer.ColumnCount = box.RenderedColumnCount
-		}
 		// GapGeometry: forwarded from layout when column rules are active.
 		if box.GapGeometry != nil {
 			layer.GapGeometry = box.GapGeometry

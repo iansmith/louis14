@@ -66,38 +66,18 @@ type MulticolLayoutAlgorithm struct {
 	// RemainingRowHeightAtOffset / row-wrap loop (cla.cc:789–836).
 	rowGapSize float64
 
-	// --- Track A: GapGeometry state (Phase 12h.6) ---
-	// Mirrors Blink's ColumnLayoutAlgorithm private fields for gap decoration.
-
-	// crossGaps accumulates one entry per inter-column gap (column-rule position).
-	// Populated by addCrossGap during the per-column layout loop.
-	crossGaps []CrossGap
-
-	// mainGaps accumulates one entry per inter-row gap or spanner boundary.
-	// Populated by addMainGap during spanner commit and (future) row-wrap.
-	mainGaps []MainGap
-
-	// columnsPerRow records the number of columns placed in each row, with
-	// -1 used as a sentinel (kNotFound) for spanner "rows".
-	// Mirrors Blink's optional<Vector<wtf_size_t>> columns_per_row_.
-	columnsPerRow    []int
-	hasColumnsPerRow bool
-
-	// firstColumnOffset is the logical offset of the first column placed,
-	// recorded once. Mirrors Blink's optional<LogicalOffset> first_column_offset_.
-	firstColumnOffset    LogicalOffset
-	firstColumnOffsetSet bool
+	// gapAccumulator accumulates the column-rule gap geometry while lines are
+	// laid out; nil when the style has no gap rule. Mirrors Blink's
+	// ColumnLayoutAlgorithm::gap_accumulator_ (column_layout_algorithm.h:292-294
+	// @ a9f50e522efa).
+	gapAccumulator *ColumnGapAccumulator
 
 	// columnGapSize is the resolved column-gap, resolved once in Layout()
 	// against the content-box inline size.
 	columnGapSize float64
 
-	// maxColumnsInRow is the maximum number of columns placed in any single row
-	// (used when padding cross_gaps_ to the declared column-count).
-	maxColumnsInRow int
-
 	// usedColWidth is the computed per-column inline-size (resolved once in
-	// Layout, stored for use by drawColumnRules when padding cross_gaps_).
+	// Layout; Blink's ColumnInlineSize()).
 	usedColWidth float64
 
 	// lastMeasuredTallestUnbreakable carries the tallest unbreakable
@@ -184,12 +164,6 @@ type MulticolLayoutAlgorithm struct {
 	// fragmentainer. Mirrors Blink's container_builder_.SetBreakTokenData
 	// (column_layout_algorithm.cc:763-774 @ a9f50e522efa).
 	outgoingMulticolData *MulticolBreakTokenData
-	// totalColumnsRendered counts the column fragments with content placed
-	// across all lines (spanners excluded), surfaced as RenderedColumnCount
-	// so the column-rule painter can draw rules only between columns that
-	// both have content (CSS Multicol L1 §5). no Blink analog: Blink's
-	// gap_accumulator_ tracks this itself.
-	totalColumnsRendered int
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -234,12 +208,6 @@ func AllowsColumns(node *html.Node) bool {
 // Anonymous boxes (no DOM node) allow columns.
 func shouldBeMulticol(node *LayoutInputNode, style *css.Style) bool {
 	return isMulticolContainer(style) && (node.DOMNode == nil || AllowsColumns(node.DOMNode))
-}
-
-// ResolveColumnCountForPaint is a public wrapper around resolveColumnCount
-// for use by the paint layer builder.
-func ResolveColumnCountForPaint(availableInline float64, colCount int, colWidth float64, gap float64) (int, float64) {
-	return resolveColumnCount(availableInline, colCount, colWidth, gap)
 }
 
 // resolveColumnCount implements CSS Multicol §3.4 — the pseudo-algorithm
@@ -341,6 +309,25 @@ func (mla *MulticolLayoutAlgorithm) spaceLeftForContent() float64 {
 		return Indefinite
 	}
 	return spaceLeft - mla.blockStartBorderPadding()
+}
+
+// CreateEmptyColumn creates an empty column fragmentainer after
+// previousColumn, of the same size, for out-of-flow content that runs past
+// the last column. Mirrors Blink's ColumnLayoutAlgorithm::CreateEmptyColumn
+// (column_layout_algorithm.cc:500-519 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which resumes the column
+// content from previousColumn's break token in a SimplifiedOofLayoutAlgorithm
+// that produces no in-flow children; louis14 builds that empty fragment
+// directly.
+func CreateEmptyColumn(wdm WritingDirectionMode, previousColumn *PhysicalFragment) *PhysicalFragment {
+	builder := NewBoxFragmentBuilder(wdm)
+	builder.SetBoxType(BoxTypeColumn)
+	builder.SetNode(previousColumn.Node)
+	builder.SetStyle(previousColumn.Style)
+	builder.SetLayoutNode(previousColumn.LayoutNode)
+	builder.SetIsFirstForNode(false)
+	builder.SetSize(ToLogicalSize(geomSizeToOld(previousColumn.Size), wdm.WM))
+	return builder.Build().Fragment
 }
 
 // blockStartBorderPadding is this fragment's block-start border +
@@ -666,6 +653,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// row_gap_ in column_layout_algorithm.cc.
 	mla.rowGapSize = mla.style.GetRowGapMulticol()
 
+	// Blink cla.cc:289-294 @ a9f50e522efa: accumulate gap geometry only when
+	// the style has a gap rule (HasGapRule; louis14 has no row-rule
+	// properties, so that is HasColumnRule). GetColumnCount is 0 for auto.
+	mla.gapAccumulator = nil
+	if mla.style.HasColumnRule() {
+		mla.gapAccumulator = NewColumnGapAccumulator(mla.columnGapSize, mla.rowGapSize,
+			mla.style.GetColumnCount(), mla.style.GetColumnCount() == 0)
+	}
+
 	// Phase 12e: max-height as a column-height constraint when the multicol's
 	// own block-size is auto. With column-fill:auto and an auto multicol height,
 	// max-height bounds each column box's height (Blink behavior; CSS Multi-
@@ -750,7 +746,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.contentNode = mla.node.contentNodeCache
 
 	mla.blockCursor = 0
-	mla.totalColumnsRendered = 0
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil
@@ -849,6 +844,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		builder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
 	}
 
+	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
+	// MulticolsWithPendingOOFs at the outermost fragmentation context root,
+	// before the candidates: OutOfFlowLayoutPart::Run calls
+	// HandleFragmentation before LayoutCandidates
+	// (out_of_flow_layout_part.cc:615-687 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the candidates the
+	// laid-out OOFs surface (a fixed child of a fragmented abspos) are
+	// handled with the others. No-op when this builder is not the root or
+	// has no pending entries.
+	mla.HandleOofFragmentation(builder)
+
 	// Handle out-of-flow candidates. When nestedDeferredOOFs is set the
 	// complete-path LayoutCandidates is skipped — the outer fragmentation
 	// root resolves them per fragmentainer in Cmt-3.
@@ -924,16 +930,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Mirrors Blink cla.cc:383 PositionAnyUnclaimedListMarker() call.
 	mla.positionAnyUnclaimedListMarker(builder, &mla.blockCursor)
 
-	// GapGeometry (Track A): build and attach gap geometry before Build().
-	// Mirrors Blink cla.cc:420–485.
-	mla.buildGapGeometry(builder, mla.contentInlineSize, finalBlockSize, mla.geom)
-
-	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
-	// MulticolsWithPendingOOFs at the outermost fragmentation context root.
-	// Mirrors Blink's `OutOfFlowLayoutPart::HandleFragmentation` invoked by
-	// `OutOfFlowLayoutPart::Run` (out_of_flow_layout_part.cc:589-695).
-	// No-op when this builder is not the root or has no pending entries.
-	mla.HandleOofFragmentation(builder)
+	mla.setGapGeometryIfNeeded(builder)
 
 	result := builder.Build()
 
@@ -952,7 +949,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	result.PropagatedOOFCandidates = propagatedOOF
 	if result.Fragment != nil {
-		result.Fragment.RenderedColumnCount = mla.totalColumnsRendered
 		// Phase 20 P20.5: tag the multicol container so the paint layer
 		// can apply Blink's structural overflow clip. Mirrors the
 		// HasNonVisibleOverflow()=true condition that Blink's
@@ -1126,6 +1122,12 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		// won't even exist).
 		lineOffset := mla.blockCursor + marginStrut.Resolve()
 
+		// Blink cla.cc:726-728 @ a9f50e522efa: a column line after a spanner
+		// ends the spanner's main gap.
+		if mla.gapAccumulator != nil && isFirstRow {
+			mla.gapAccumulator.AddEndSpannerMainGapIfNeeded(lineOffset)
+		}
+
 		// Blink cla.cc:730-739 row-advance guard. Fires whenever
 		// !isFirstRow OR we find ourselves past the start of the current
 		// row (after a spanner that didn't quite align to a row boundary
@@ -1162,7 +1164,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 		}
 
 		rowStart := lineOffset
-		line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, mla.balanceColumns, marginStrut, builder)
+		line := mla.LayoutLine(nextColumnToken, lineOffset, Indefinite, !isFirstRow, mla.balanceColumns, marginStrut, builder)
 		if line == nil {
 			// Blink cla.cc:575-581, :662-685 @ a9f50e522efa: an outer fragmentainer break
 			// was inserted before this line. This multicol takes up the
@@ -1172,7 +1174,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			mla.blockCursor = math.Max(mla.blockCursor, mla.spaceLeftForContent())
 			return mla.breakOuter(walker, builder), false
 		}
-		mla.totalColumnsRendered += line.columnsPlaced
 
 		// column-fill:auto + spanner: once any row encountered a spanner,
 		// subsequent rows must also balance — but ONLY when the multicol has
@@ -1219,13 +1220,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutFragmentationContext(nextColumnToken *
 			// walker entry (mirrors Blink's
 			// MulticolPartWalker::AddNextColumnBreakToken).
 			if line.breakToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
-				// Record the row gap boundary for column-rule painting
-				// (Blink: gap_accumulator_->AddMainGap when has_wrapped &&
-				// row_gap_size_ > LayoutUnit()). blockCursor is the end of the
-				// row just laid out; the gap extends from there by rowGapSize.
-				if mla.rowGapSize > 0 {
-					mla.addMainGap(mla.blockCursor, SpannerGapNone)
-				}
 				walker.AddNextColumnBreakToken(line.breakToken)
 				isFirstRow = false
 				nextColumnToken = line.breakToken
@@ -1366,17 +1360,23 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		}
 	}
 	if spanFrag != nil {
-		// The row snap decided above (cla.cc:1364-1374).
+		// The row snap decided above (cla.cc:1364-1381 @ a9f50e522efa): the
+		// row gap at the end of the current row is a main gap.
 		if snapsToNextRow {
-			mla.blockCursor += mla.offsetToNextRow(mla.blockCursor)
+			mla.blockCursor += mla.remainingRowHeightAtOffset(mla.blockCursor)
+			if mla.gapAccumulator != nil {
+				mla.gapAccumulator.AddMainGap(mla.blockCursor, SpannerGapNone)
+			}
+			mla.blockCursor += mla.rowGapSize
 		}
 		// Blink cla.cc:1354-1356: the spanner's block offset includes the
 		// collapsed strut. cla.cc:1439-1441: the start-spanner gap
 		// boundary is the end of the preceding content — margins live
 		// inside the gap.
 		spannerBlockOffset := mla.blockCursor + pendingMargin
-		mla.addMainGap(mla.blockCursor, SpannerGapStart)
-		mla.addNumberOfColumnsForCurrentRow(-1)
+		if mla.gapAccumulator != nil {
+			mla.gapAccumulator.AddStartSpannerMainGapIfNeeded(mla.blockCursor)
+		}
 		spannerOffset := LogicalOffset{
 			// The offset is content-box relative, so only the resolved
 			// inline-start margin contributes (cla.cc:1424-1426 @
@@ -1415,7 +1415,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 		mla.blockCursor = spannerBlockOffset + spanHeight
 		*marginStrut = MarginStrut{}
 		marginStrut.Append(spannerMargins.BlockEnd)
-		mla.addMainGap(mla.blockCursor+marginStrut.Resolve(), SpannerGapEnd)
 		mla.hasProcessedFirstChild = true
 	}
 
@@ -1456,16 +1455,7 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	builder.SetIntrinsicBlockSize(mla.blockCursor)
 	builder.SetLayoutNode(mla.node)
 	mla.setPhysicalBoxData(builder)
-	// LOU-143: emit gap geometry on every outer-break-result path so the
-	// column-rule painter has accurate cross-gap positions and last-row
-	// stretch info. Without this, broken-out fragments fall through to
-	// drawColumnRules's ad-hoc fallback (render.go L3138), which places
-	// (numCols-1) rules evenly without spanner skips or last-row stretch.
-	// Self-gated: no-op when !HasColumnRule, and emits empty geometry
-	// when no columns were placed (firstColumnOffsetSet=false), which
-	// the painter handles. Mirrors the post-loop call at the bottom of
-	// MulticolLayoutAlgorithm.Layout.
-	mla.buildGapGeometry(builder, mla.contentInlineSize, math.Max(0, finish.FragmentBlockSize-mla.geom.BlockBorderPadding()), mla.geom)
+	mla.setGapGeometryIfNeeded(builder)
 	result := builder.Build()
 	result.BreakToken = mla.createBreakToken(finish)
 	result.BreakToken.ChildBreakTokens = mla.outBuilder.Children()
@@ -1496,9 +1486,6 @@ func (mla *MulticolLayoutAlgorithm) buildOuterBreakResult(builder *BoxFragmentBu
 	}
 	if len(builder.outOfFlowCandidates) > 0 {
 		result.PropagatedOOFCandidates = builder.outOfFlowCandidates
-	}
-	if result.Fragment != nil {
-		result.Fragment.RenderedColumnCount = mla.totalColumnsRendered
 	}
 	return result
 }
@@ -1568,10 +1555,6 @@ func (mla *MulticolLayoutAlgorithm) setPhysicalBoxData(builder *BoxFragmentBuild
 // (column_layout_algorithm.h:109-119 @ a9f50e522efa); louis14 returns the
 // pieces of it the caller reads.
 type layoutLineResult struct {
-	// columnsPlaced counts the line's columns with content. no Blink analog:
-	// it feeds RenderedColumnCount for the CSS Multicol L1 §5 rule painter
-	// (Blink's gap_accumulator_ counts columns itself).
-	columnsPlaced int
 	// columnSpannerPath is the spanner that ended the line, if any: Blink's
 	// result->GetColumnSpannerPath() (column_layout_algorithm.cc:589).
 	columnSpannerPath *ColumnSpannerPath
@@ -1603,6 +1586,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	nextColumnToken *BlockBreakToken,
 	lineOffset float64,
 	minimumColumnBlockSize float64,
+	hasWrapped bool,
 	balanceColumns bool,
 	marginStrut *MarginStrut,
 	builder *BoxFragmentBuilder,
@@ -1721,11 +1705,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 
 	var maxColHeight float64
 	var finalColumns []struct {
-		fragment       *PhysicalFragment
-		offset         LogicalOffset
-		intrinsicBlock float64
-		propagatedOOF  []OutOfFlowCandidate
-		result         *LayoutResult // for PropagateBaselineFromChild
+		fragment      *PhysicalFragment
+		offset        LogicalOffset
+		propagatedOOF []OutOfFlowCandidate
+		result        *LayoutResult // for PropagateBaselineFromChild
 	}
 	var finalColBreakToken *BlockBreakToken
 	var lastInnerResult *LayoutResult
@@ -1752,11 +1735,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.
 	for {
 		var columns []struct {
-			fragment       *PhysicalFragment
-			offset         LogicalOffset
-			intrinsicBlock float64
-			propagatedOOF  []OutOfFlowCandidate
-			result         *LayoutResult // for PropagateBaselineFromChild
+			fragment      *PhysicalFragment
+			offset        LogicalOffset
+			propagatedOOF []OutOfFlowCandidate
+			result        *LayoutResult // for PropagateBaselineFromChild
 		}
 		minSpaceShortage := math.MaxFloat64
 		hasShortage := false
@@ -1841,17 +1823,15 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			// BlockSizeForFragmentation (Phase 16.b.2) so overflow is placed correctly.
 
 			columns = append(columns, struct {
-				fragment       *PhysicalFragment
-				offset         LogicalOffset
-				intrinsicBlock float64
-				propagatedOOF  []OutOfFlowCandidate
-				result         *LayoutResult
+				fragment      *PhysicalFragment
+				offset        LogicalOffset
+				propagatedOOF []OutOfFlowCandidate
+				result        *LayoutResult
 			}{
-				fragment:       colFrag,
-				offset:         LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
-				intrinsicBlock: result.IntrinsicBlockSize,
-				propagatedOOF:  result.PropagatedOOFCandidates,
-				result:         result,
+				fragment:      colFrag,
+				offset:        LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
+				propagatedOOF: result.PropagatedOOFCandidates,
+				result:        result,
 			})
 
 			// Spanner detected: break out immediately (Blink cla.cc:1048).
@@ -1928,7 +1908,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 					// A regrown line never regrows again (Blink recurses at
 					// most once: !minimum_column_block_size).
 					if minimumColumnBlockSize == Indefinite && colBlockSize != Indefinite && blockEndOverflow > colBlockSize {
-						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, balanceColumns, marginStrut, builder)
+						return mla.LayoutLine(nextColumnToken, lineOffset, blockEndOverflow, hasWrapped, balanceColumns, marginStrut, builder)
 					}
 				}
 			}
@@ -2079,14 +2059,44 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		len(finalColumns) == 1 &&
 		(len(finalColumns[0].fragment.Children) == 0 || isEmptySpannerParent)
 
+	// Blink cla.cc:1262-1268 @ a9f50e522efa: right after a column wrap, now
+	// that another line of columns is certain, add the preceding row gap so
+	// a row rule can go there and the previous row's column rules end.
+	if mla.gapAccumulator != nil && hasWrapped && mla.rowGapSize > 0 {
+		mla.gapAccumulator.AddMainGap(lineOffset-mla.rowGapSize, SpannerGapNone)
+	}
+	// gapColumnCount is the number of this line's columns Blink would have
+	// created (new_columns.size()). no Blink analog: louis14 can append
+	// columns Blink never creates — empty OOF-drain columns after the column
+	// that consumed the in-flow content (its break token is nil), and an
+	// empty spanner-detection column after full columns (the phantom column
+	// of multicol-span-all-006/007/008) — which must not get cross gaps.
+	// The OOF-drain columns come only from the rowHasDeferredOOFs branch of
+	// the column loop above. Columns added later by CreateEmptyColumn
+	// (OutOfFlowLayoutPart) never reach the accumulator, as in Blink, where
+	// only LayoutLine records columns.
+	gapColumnCount := 0
+	if mla.gapAccumulator != nil {
+		gapColumnCount = len(finalColumns)
+		for i, col := range finalColumns {
+			if col.result != nil && col.result.BreakToken == nil && col.result.ColumnSpannerPath == nil {
+				gapColumnCount = i + 1
+				break
+			}
+		}
+		if gapColumnCount > 1 && gapColumnCount == len(finalColumns) &&
+			lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
+			if detector := finalColumns[gapColumnCount-1]; len(detector.fragment.Children) == 0 || detector.result.IsEmptySpannerParent {
+				gapColumnCount--
+			}
+		}
+	}
+
 	// Commit final columns to the parent builder.
-	// columnsPlaced reports how many columns actually received content so the
-	// column-rule painter (CSS Multicol L1 §5: rules only between columns that
-	// both have content) can skip painting rules adjacent to empty columns.
 	maxColHeight = 0.0
-	columnsPlaced := 0
 	seenOOF := map[*LayoutInputNode]bool{}
 	isFirstCol := true
+	columnIndexInRow := 0
 	for _, col := range finalColumns {
 		// Phase 16.e+18 v2 B3: ClipBlockAxisOnly setter removed. Phase 12h F2
 		// partial added it as a workaround for monolithic content overflow in
@@ -2122,12 +2132,16 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		if h > maxColHeight {
 			maxColHeight = h
 		}
-		// A column counts as non-empty if it has intrinsic content. A column
-		// fragment takes the fragmentainer block-size even when empty, so
-		// intrinsicBlock is the signal.
-		if col.intrinsicBlock > 0 {
-			columnsPlaced++
+		// Blink cla.cc:1295-1311 @ a9f50e522efa: every column after the
+		// first in a row has a cross gap before it, recorded once per column
+		// position across rows.
+		if columnIndexInRow < gapColumnCount {
+			if columnIndexInRow > 0 && mla.gapAccumulator.ShouldAddCrossGapAt(columnIndexInRow) {
+				mla.gapAccumulator.AddCrossGap(col.offset.InlineOffset)
+			}
+			mla.gapAccumulator.SetFirstColumnOffsetIfNeeded(col.offset)
 		}
+		columnIndexInRow++
 		// Propagate abs/fixed descendants of the per-column BlockLayoutAlgorithm
 		// result out to the multicol's builder. An abspos whose CB is the
 		// multicol (e.g. `multicol { position: relative }` with an abspos child)
@@ -2161,32 +2175,10 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			)
 		}
 	}
-	// GapGeometry (Track A): record first column offset and cross gaps.
-	// Mirrors Blink cla.cc:1650–1665 AddCrossGap / AddNumberOfColumnsForCurrentRow.
-	hasSpannerDetector := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
-	if len(finalColumns) > 0 && !mla.firstColumnOffsetSet {
-		mla.firstColumnOffset = finalColumns[0].offset
-		mla.firstColumnOffsetSet = true
-	}
-	// The last finalColumn is the spanner-detector (empty) when a spanner was hit;
-	// exclude it from cross gaps and from the per-row column count.
-	crossGapEnd := len(finalColumns)
-	if hasSpannerDetector && crossGapEnd > 0 {
-		crossGapEnd--
-	}
-	for i := 1; i < crossGapEnd; i++ {
-		// Only add a cross gap between two adjacent columns that both have content.
-		// CSS spec: column rules are drawn only between columns that both have content.
-		// An empty continuation column (intrinsicBlock==0) must not produce a rule.
-		if finalColumns[i-1].intrinsicBlock > 0 && finalColumns[i].intrinsicBlock > 0 {
-			mla.addCrossGap(finalColumns[i].offset.InlineOffset)
-		}
-	}
-	if crossGapEnd > 0 {
-		mla.addNumberOfColumnsForCurrentRow(crossGapEnd)
-		if crossGapEnd > mla.maxColumnsInRow {
-			mla.maxColumnsInRow = crossGapEnd
-		}
+	// Blink cla.cc:1316-1319 @ a9f50e522efa.
+	if mla.gapAccumulator != nil {
+		mla.gapAccumulator.UpdateMaxColumnsInRow(gapColumnCount)
+		mla.gapAccumulator.AddNumberOfColumnsForCurrentRow(gapColumnCount)
 	}
 
 	// Blink cla.cc:906, :927, :949-971 @ a9f50e522efa: the line contributes
@@ -2221,16 +2213,14 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 
 	// The spanner that ended the line and the column-content token to resume
 	// at.
-	if hasSpannerDetector {
+	if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 		return &layoutLineResult{
-			columnsPlaced:     columnsPlaced,
 			columnSpannerPath: lastInnerResult.ColumnSpannerPath,
 			breakToken:        lastInnerResult.BreakToken,
 		}
 	}
 	return &layoutLineResult{
-		columnsPlaced: columnsPlaced,
-		breakToken:    finalColBreakToken,
+		breakToken: finalColBreakToken,
 	}
 }
 
@@ -2319,8 +2309,11 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 			}).
 			SetPercentageResolutionInlineSize(colWidth).
 			SetIsContentSuggestionLayout(true)
+		// SetShouldPropagateChildBreakValues: column_layout_algorithm.cc:1850
+		// @ a9f50e522efa.
 		b = b.SetIsInitialColumnBalancingPass(true).
 			SetHasBlockFragmentation(true).
+			SetShouldPropagateChildBreakValues(true).
 			SetFragmentainerBlockSize(Indefinite).
 			SetBlockFragmentationType(FragmentColumn).
 			SetColumnSpannerPath(mla.spannerPath)
@@ -2597,6 +2590,9 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		}).
 		SetPercentageResolutionInlineSize(colWidth).
 		SetHasBlockFragmentation(true).
+		// CreateConstraintSpaceForFragmentainer sets the bit
+		// (fragmentation_utils.cc:1391 @ a9f50e522efa).
+		SetShouldPropagateChildBreakValues(true).
 		SetBlockFragmentationType(FragmentColumn).
 		SetIsInsideBalancedColumns(balanceColumns).
 		SetMinBreakAppeal(minBreakAppeal)
@@ -2645,19 +2641,6 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 	builder.SetUseLastBaselineForInlineBaseline()
 }
 
-// --- Track A: GapGeometry helpers (Phase 12h.6) ---
-// These mirror Blink's cla.cc:1640–1763.
-
-// addMainGap records a row-axis gap or spanner boundary in mainGaps.
-// For normal row gaps (SpannerGapNone) the block offset is shifted to mid-gap.
-// Mirrors Blink's ColumnLayoutAlgorithm::AddMainGap (cla.cc:1640).
-func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType SpannerMainGapType) {
-	if gapType == SpannerGapNone {
-		blockOffset += mla.rowGapSize / 2
-	}
-	mla.mainGaps = append(mla.mainGaps, MainGap{GapOffset: blockOffset, SpannerType: gapType})
-}
-
 // getSpannerFromPath traverses a ColumnSpannerPath linked list and returns
 // the Box at the leaf (where Child == nil) — the actual column-span:all
 // element, which may be a grandchild or deeper descendant of the multicol
@@ -2671,143 +2654,29 @@ func getSpannerFromPath(path *ColumnSpannerPath) *LayoutInputNode {
 	return path.Box
 }
 
-// addCrossGap records an inter-column gap position in crossGaps.
-// columnInlineStartOffset is the inline start of the column AFTER the gap.
-// Mirrors Blink's ColumnLayoutAlgorithm::AddCrossGap (cla.cc:1650).
-func (mla *MulticolLayoutAlgorithm) addCrossGap(columnInlineStartOffset float64) {
-	gapCenter := columnInlineStartOffset - (mla.columnGapSize / 2)
-	blockStart := 0.0
-	if mla.firstColumnOffsetSet {
-		blockStart = mla.firstColumnOffset.BlockOffset
-	}
-	mla.crossGaps = append(mla.crossGaps, CrossGap{
-		GapInlineOffset: gapCenter,
-		GapBlockOffset:  blockStart,
-	})
-}
-
-// addNumberOfColumnsForCurrentRow records how many columns were placed in the
-// current row (or -1 for a spanner row).
-// Mirrors Blink's ColumnLayoutAlgorithm::AddNumberOfColumnsForCurrentRow (cla.cc:1659).
-func (mla *MulticolLayoutAlgorithm) addNumberOfColumnsForCurrentRow(colsInRow int) {
-	mla.columnsPerRow = append(mla.columnsPerRow, colsInRow)
-	mla.hasColumnsPerRow = true
-}
-
-// updateCrossGapSegmentStates mutates crossGaps in place to flag segments
-// that are blocked by a spanner (cols_in_row == -1 sentinel).
-// Mirrors Blink's ColumnLayoutAlgorithm::UpdateCrossGapSegmentStates (cla.cc:1714).
-func (mla *MulticolLayoutAlgorithm) updateCrossGapSegmentStates() {
-	if !mla.hasColumnsPerRow {
+// setGapGeometryIfNeeded attaches the accumulated gap geometry, if any, to
+// the fragment. Blink does this once at the end of Layout(), after the
+// fragment is sized (cla.cc:423-428 @ a9f50e522efa); louis14 finishes a
+// fragment on two paths (Layout's tail and buildOuterBreakResult), so both
+// call this after SetSize. The content ends are Blink's FragmentInlineSize()
+// - BorderScrollbarPadding().inline_end and FragmentBlockSize() - the
+// applicable block-end border, scrollbar and padding
+// (column_gap_accumulator.cc:116-131), made relative to the content box like
+// the column offsets (mla.geom already carries only the applicable edges).
+func (mla *MulticolLayoutAlgorithm) setGapGeometryIfNeeded(builder *BoxFragmentBuilder) {
+	if mla.gapAccumulator == nil {
 		return
 	}
-	colCount := mla.style.GetColumnCount()
-	hasAutoColCount := colCount == 0
-
-	for crossIdx := range mla.crossGaps {
-		for _, colsInRow := range mla.columnsPerRow {
-			if colsInRow != -1 && crossIdx+1 < colsInRow {
-				continue
-			}
-			isOutsideSpecified := !hasAutoColCount && crossIdx+1 >= colCount
-			if colsInRow == -1 && !isOutsideSpecified {
-				// Spanner row: block this cross-gap segment.
-				if mla.crossGaps[crossIdx].EdgeState == EdgeNone {
-					mla.crossGaps[crossIdx].EdgeState = EdgeStart
-				} else {
-					mla.crossGaps[crossIdx].EdgeState = EdgeBoth
-				}
-			}
-		}
+	contentStart := LogicalEdges{
+		InlineStart: mla.geom.Border.InlineStart + mla.geom.Padding.InlineStart,
+		BlockStart:  mla.geom.Border.BlockStart + mla.geom.Padding.BlockStart,
 	}
-}
-
-// buildGapGeometry constructs a *GapGeometry from the accumulated gap state
-// and attaches it to the builder. Mirrors Blink cla.cc:420–485.
-// Called at the end of Layout() before builder.Build().
-func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
-	builder *BoxFragmentBuilder,
-	contentInlineSize float64,
-	finalBlockSize float64,
-	geom FragmentGeometry,
-) {
-	if !mla.style.HasColumnRule() {
-		return
+	bsp := mla.geom.BorderBoxPadding()
+	contentInlineEnd := builder.size.InlineSize - bsp.InlineEnd - contentStart.InlineStart
+	contentBlockEnd := builder.size.BlockSize - bsp.BlockEnd - contentStart.BlockStart
+	if gg := mla.gapAccumulator.BuildGapGeometry(contentInlineEnd, contentBlockEnd, mla.usedColWidth); gg != nil {
+		builder.SetGapGeometry(gg)
 	}
-
-	gg := &GapGeometry{
-		ContainerType: GapContainerMulticol,
-		MainDirection: GapForRows,
-	}
-
-	// Only build gap content when columns were actually laid out.
-	// Structural fragments (declared height past the content) have no columns; they carry an empty
-	// GapGeometry so the painter knows there are no rules to draw.
-	if mla.firstColumnOffsetSet {
-		// Pad cross_gaps_ to the declared column count when layout produced fewer.
-		// Mirrors Blink cla.cc:1722-1735.
-		// Only pad when there is at least one actual cross gap: padding extends
-		// existing gaps rightward. If there are no actual cross gaps (all rows had
-		// only one content column, so no inter-column boundaries), padding would
-		// invent gap positions in empty space and paint spurious column rules.
-		// Use usedColWidth (computed column width) as stride so auto-width columns
-		// get correct positions instead of falling back to CSS column-width: auto (0).
-		declaredColCount := mla.style.GetColumnCount()
-		if declaredColCount > 0 && len(mla.crossGaps) > 0 {
-			for i := mla.maxColumnsInRow; i < declaredColCount && len(mla.mainGaps) > 0; i++ {
-				last := mla.crossGaps[len(mla.crossGaps)-1]
-				// Stride = usedColWidth + columnGapSize.
-				inlineOffset := last.GapInlineOffset + mla.columnGapSize/2 + mla.usedColWidth + mla.columnGapSize
-				mla.addCrossGap(inlineOffset)
-			}
-		}
-
-		// Build content inline extents.
-		contentInlineEnd := contentInlineSize + geom.InlineBorderPadding() - geom.Border.InlineEnd - geom.Padding.InlineEnd
-		if len(mla.crossGaps) > 0 {
-			last := mla.crossGaps[len(mla.crossGaps)-1]
-			if last.GapInlineOffset > contentInlineEnd {
-				contentInlineEnd = last.GapInlineOffset
-			}
-			if mla.hasColumnsPerRow {
-				mla.updateCrossGapSegmentStates()
-			}
-			gg.CrossGaps = mla.crossGaps
-			gg.InlineGapSize = mla.columnGapSize
-		}
-
-		// Build content block extents.
-		contentBlockEnd := finalBlockSize + geom.BlockBorderPadding() - geom.Border.BlockEnd - geom.Padding.BlockEnd
-		if len(mla.mainGaps) > 0 {
-			last := mla.mainGaps[len(mla.mainGaps)-1]
-			if last.GapOffset > contentBlockEnd {
-				contentBlockEnd = last.GapOffset
-			}
-			gg.MainGaps = mla.mainGaps
-			gg.BlockGapSize = mla.rowGapSize
-		}
-
-		gg.ContentInlineStart = mla.firstColumnOffset.InlineOffset
-		gg.ContentInlineEnd = contentInlineEnd
-		gg.ContentBlockStart = mla.firstColumnOffset.BlockOffset
-		gg.ContentBlockEnd = contentBlockEnd
-
-		// Compute LastRowCrossGapStart: index of the first CrossGap in
-		// the last row. Mirrors Blink's !items_until_last_row gate in
-		// PaintColumnRules: only the last row's column rules stretch to
-		// the content-box bottom.
-		if len(mla.columnsPerRow) > 1 {
-			for _, cols := range mla.columnsPerRow[:len(mla.columnsPerRow)-1] {
-				if cols > 0 {
-					gg.LastRowCrossGapStart += cols - 1
-				}
-			}
-		}
-		// Scrollbar block-end for PaintColumnRules stretch alignment.
-		gg.ScrollbarBlockEnd = geom.Scrollbar.BlockEnd
-	}
-
-	builder.SetGapGeometry(gg)
 }
 
 // attemptToPositionListMarker tries to align and place any pending list-item
