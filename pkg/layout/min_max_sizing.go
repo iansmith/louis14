@@ -1483,7 +1483,7 @@ func resolveFlexBasisForIntrinsic(
 		return 0, true
 	}
 	if fbv.IsCalc {
-		if resolved, ok := css.EvalCalcWithPercent(fbv.CalcExpr, fbv.FontSize, 0); ok {
+		if resolved, ok := childStyle.EvalMathWithBase(fbv.CalcExpr, 0); ok {
 			if resolved < 0 {
 				resolved = 0
 			}

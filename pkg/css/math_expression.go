@@ -92,16 +92,14 @@ func EvalMathFunction(val string, ctx calcContext) (float64, bool) {
 	return 0, false
 }
 
-// EvalMathFunctionWithPercent is a convenience wrapper around EvalMathFunction
-// that constructs a calcContext from (fontSize, percentBase) — the same shape
-// fragment_geometry's resolvers already use for calc-with-percent. Mirrors
-// EvalCalcWithPercent for the broader math-function family.
+// EvalMathFunctionWithPercent evaluates a math function for a caller with no
+// Style: the initial conversion data (initialConversionData) at fontSize, plus
+// percentBase. A caller holding a Style uses (*Style).EvalMathWithBase, so its
+// own font's metrics and viewport apply.
 func EvalMathFunctionWithPercent(val string, fontSize, percentBase float64) (float64, bool) {
-	return EvalMathFunction(val, calcContext{
-		fontSize:    fontSize,
-		percentBase: percentBase,
-		chScale:     0.5,
-	})
+	ctx := initialConversionData()
+	ctx.fontSize, ctx.percentBase = fontSize, percentBase
+	return EvalMathFunction(val, ctx)
 }
 
 // parseMathArgCtx evaluates a single comma-separated argument to a math

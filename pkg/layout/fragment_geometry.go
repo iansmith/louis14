@@ -989,11 +989,7 @@ func computeContentMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space C
 func resolveFitContentArgInline(argStr string, style *css.Style, cbInlineSize float64) (float64, bool) {
 	// calc() with percentage terms
 	if css.IsCalcWithPercent(argStr) {
-		if result, ok := css.EvalCalcWithPercent(
-			argStr[5:len(argStr)-1], // strip "calc(" and ")"
-			style.GetFontSize(),
-			cbInlineSize,
-		); ok {
+		if result, ok := style.EvalMathWithBase(argStr, cbInlineSize); ok {
 			return result, true
 		}
 		return 0, false

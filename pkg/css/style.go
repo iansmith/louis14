@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"louis14/pkg/html"
@@ -633,6 +634,51 @@ func (s *Style) GetLengthForVal(val string) (float64, bool) {
 	return parseLengthFullWithCh(val, s.cssToLengthConversionData())
 }
 
+// initialStyleForElement returns the initial style with its font built by fs:
+// the parent style the root element's font-size resolves against, and the
+// style MediaValues measures font-relative units from. With a nil fs the font
+// stays unmeasured and the font-relative units take their fallbacks. Mirrors
+// StyleResolver::InitialStyleForElement → InitialStyleBuilderForElement, which
+// builds the document's initial font with FontBuilder::CreateInitialFont
+// (core/css/resolver/style_resolver.cc:2612-2652; set as the root's parent
+// style at :1995-2000; StyleForViewport builds the LayoutView's style from it
+// at :1362-1363) @ 5992657f556bcd9d207a4aca187488462f027cab.
+func initialStyleForElement(fs FontSelector) *Style {
+	s := NewStyle()
+	s.UpdateFont(fs)
+	return s
+}
+
+// initialConversionData is the conversion data of the initial style with no
+// font selector: the context for lengths parsed with no element — media
+// queries (Blink's MediaValues reads the LayoutView's initial style,
+// core/css/media_values.cc:236-274 @ 5992657f556bcd9d207a4aca187488462f027cab)
+// and the context-free ParseLengthFull / EvalMathFunctionWithPercent. louis14's
+// media evaluator carries no FontSelector, so its font metrics are unmeasured
+// and ch / ex / cap / ic take their fallbacks. Built once, on first use, and
+// assigned in init: a package-level initializer would form a cycle through
+// GetFontSize, which itself parses through ParseLengthFull.
+var initialConversionData func() calcContext
+
+func init() {
+	initialConversionData = sync.OnceValue(func() calcContext {
+		return initialStyleForElement(nil).cssToLengthConversionData()
+	})
+}
+
+// cssToLengthConversionDataWithPercentBase is cssToLengthConversionData with a
+// percentage base, the shape every calc-with-percent resolution uses. A
+// percentResolvesToZero context takes % terms as 0 even against a zero base
+// (intrinsic sizing, or a zero containing block). Blink keeps the percentage
+// base out of CSSToLengthConversionData and passes it to
+// Length::Evaluate / FloatValueForLength at use time; louis14's calcContext
+// carries both.
+func (s *Style) cssToLengthConversionDataWithPercentBase(percentBase float64, percentResolvesToZero bool) calcContext {
+	ctx := s.cssToLengthConversionData()
+	ctx.percentBase, ctx.percentResolvesToZero = percentBase, percentResolvesToZero
+	return ctx
+}
+
 // cssToLengthConversionData returns the context this style's own lengths
 // resolve against: its font-size and font metrics, line-height, viewport and
 // the root font-size, with no percentage base. Mirrors
@@ -820,11 +866,18 @@ func splitCSSFunctionArgs(s string) []string {
 	return parts
 }
 
-// ParseLengthFull parses a length value with em, rem, and viewport unit support.
-// Uses a default ch multiplier of 0.5em (horizontal writing mode approximation)
-// and no root element, so rem is the initial font-size.
+// ParseLengthFull parses a length value with em, rem, and viewport unit support
+// for a caller with no Style: the font-relative units take the initial style's
+// font metrics (initialConversionData) scaled to fontSize, and rem is the
+// initial font-size. A caller holding a Style resolves through
+// (*Style).GetLengthForVal instead, so its own font's metrics apply.
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
-	return parseLengthFullWithCh(val, calcContext{fontSize: fontSize, viewportWidth: viewportWidth, viewportHeight: viewportHeight, chScale: 0.5})
+	// Overriding fontSize is sound only because the selectorless initial
+	// style has no absolute-px metrics (xHeight / capHeight / icWidth unset;
+	// chScale is an em ratio), so every font-relative unit scales with it.
+	ctx := initialConversionData()
+	ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight = fontSize, viewportWidth, viewportHeight
+	return parseLengthFullWithCh(val, ctx)
 }
 
 // parseLengthFullWithCh resolves a single <length> (or a math function, with
@@ -1227,12 +1280,6 @@ type calcContext struct {
 	percentResolvesToZero bool
 }
 
-// evalCalcExpr evaluates a CSS calc() expression with proper operator precedence.
-// Supports +, -, *, / operators and px/em/rem/%  values.
-func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
-	return EvalCalcWithPercent(expr, fontSize, 0)
-}
-
 // evalCalcFull evaluates a calc() expression with full context (viewport, ch scale, percent base).
 func evalCalcFull(expr string, ctx calcContext) (float64, bool) {
 	expr = strings.TrimSpace(expr)
@@ -1249,29 +1296,6 @@ func evalCalcFull(expr string, ctx calcContext) (float64, bool) {
 		return 0, false
 	}
 	return result.value, true
-}
-
-// EvalCalcWithPercent evaluates a CSS calc() expression with percent base support.
-// percentBase is the reference size for resolving % values (e.g. containing block width).
-func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, bool) {
-	return evalCalcFull(expr, calcContext{
-		fontSize:    fontSize,
-		percentBase: percentBase,
-		chScale:     0.5,
-	})
-}
-
-// EvalCalcIntrinsic evaluates a calc() expression in an intrinsic-sizing
-// context: percent terms resolve to 0 instead of failing the parse. The
-// length, em, and viewport-unit components contribute normally. Mirrors
-// Blink's treatment of percent text-indent in InlineNode::ComputeMinMaxSizes.
-func EvalCalcIntrinsic(expr string, fontSize float64) (float64, bool) {
-	return evalCalcFull(expr, calcContext{
-		fontSize:              fontSize,
-		percentBase:           0,
-		percentResolvesToZero: true,
-		chScale:               0.5,
-	})
 }
 
 type calcResult struct {
@@ -1504,12 +1528,7 @@ func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 
 		// Blink's MinimumValueForLength(margin, base) where calc never fails
 		// (core/layout/length_utils.cc ComputePhysicalMargins).
 		if IsCalcWithPercent(trimmed) {
-			if v, ok := evalCalcFull(trimmed[5:len(trimmed)-1], calcContext{
-				fontSize:              s.GetFontSize(),
-				percentBase:           containingWidth,
-				percentResolvesToZero: true,
-				chScale:               0.5,
-			}); ok {
+			if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(containingWidth, true)); ok {
 				return v
 			}
 		}
@@ -1581,12 +1600,7 @@ func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64
 		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
 		// percentResolvesToZero: see resolveMarginEdge — a zero base is valid.
 		if IsCalcWithPercent(trimmed) {
-			if v, ok := evalCalcFull(trimmed[5:len(trimmed)-1], calcContext{
-				fontSize:              s.GetFontSize(),
-				percentBase:           containingWidth,
-				percentResolvesToZero: true,
-				chScale:               0.5,
-			}); ok {
+			if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(containingWidth, true)); ok {
 				if v < 0 {
 					return 0
 				}
@@ -2248,9 +2262,7 @@ func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool
 	if !IsMathFunction(val) {
 		return 0, false
 	}
-	ctx := s.cssToLengthConversionData()
-	ctx.percentBase = percentBase
-	return EvalMathFunction(val, ctx)
+	return EvalMathFunction(val, s.cssToLengthConversionDataWithPercentBase(percentBase, false))
 }
 
 // resolveLengthOrPercent tries to parse a property as a length or percentage.
@@ -2260,9 +2272,7 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 	if !ok || val == "auto" {
 		return 0, false
 	}
-	ctx := s.cssToLengthConversionData()
-	ctx.percentBase = reference
-	return computeLengthOrPercentage(val, ctx)
+	return computeLengthOrPercentage(val, s.cssToLengthConversionDataWithPercentBase(reference, false))
 }
 
 // computeLengthOrPercentage resolves a <length-percentage> value against ctx,
@@ -7559,9 +7569,7 @@ func (s *Style) ResolveTextIndent(containingWidth float64) float64 {
 	}
 	// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
 	if IsCalcWithPercent(trimmed) {
-		if v, ok := EvalCalcWithPercent(
-			trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
-		); ok {
+		if v, ok := s.EvalMathWithBase(trimmed, containingWidth); ok {
 			return v
 		}
 	}
@@ -7586,7 +7594,7 @@ func (s *Style) ResolveTextIndentIntrinsic() float64 {
 		return 0 // bare percent → 0 for intrinsic
 	}
 	if IsCalcWithPercent(trimmed) {
-		if v, ok := EvalCalcIntrinsic(trimmed[5:len(trimmed)-1], s.GetFontSize()); ok {
+		if v, ok := EvalMathFunction(trimmed, s.cssToLengthConversionDataWithPercentBase(0, true)); ok {
 			return v
 		}
 		return 0
@@ -8196,9 +8204,7 @@ func (s *Style) GetVerticalAlignOffset() float64 {
 			// Math functions (calc/min/max/clamp): percent base is the
 			// element's own line-height per §10.8.1.
 			if IsMathFunction(align) {
-				ctx := s.cssToLengthConversionData()
-				ctx.percentBase = s.GetLineHeight()
-				if v, ok := EvalMathFunction(align, ctx); ok {
+				if v, ok := s.EvalMathWithBase(align, s.GetLineHeight()); ok {
 					return v
 				}
 				return 0
@@ -8798,8 +8804,7 @@ type FlexBasisValue struct {
 	Length     float64 // absolute length in pixels (if not auto and not percentage)
 	Percentage float64 // percentage value (if IsPercent)
 	IsPercent  bool
-	CalcExpr   string  // raw calc() expression string (if IsCalc); resolve with EvalCalcWithPercent
-	FontSize   float64 // font size at parse time, needed for em units in CalcExpr
+	CalcExpr   string // the calc() value (if IsCalc); resolve with the item's Style.EvalMathWithBase
 	IsCalc     bool
 }
 
@@ -8817,8 +8822,7 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 	}
 	// Handle calc() expressions — defer percentage resolution until container size is known
 	if strings.HasPrefix(basis, "calc(") && strings.HasSuffix(basis, ")") {
-		expr := basis[5 : len(basis)-1]
-		return FlexBasisValue{IsCalc: true, CalcExpr: expr, FontSize: s.GetFontSize()}
+		return FlexBasisValue{IsCalc: true, CalcExpr: basis}
 	}
 	if length, ok := s.GetLengthForVal(basis); ok {
 		// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths
