@@ -1198,16 +1198,28 @@ func (b *BoxFragmentBuilder) PropagateOOFPositionedInfo(childResult *LayoutResul
 		return
 	}
 	parentWDM := b.wdm
-	// The child's border+padding in its own logical axes, converted to
-	// this builder's through physical edges.
+	// The child's border+padding, as laid out (percentages resolved, a
+	// continuation's sliced block-start edge cleared), converted to this
+	// builder's axes; from its style when the fragment carries no box data.
 	childWDM := NewWritingDirectionMode(childStyle)
-	childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-	physBP := ToPhysicalEdges(LogicalEdges{
-		InlineStart: childGeom.Border.InlineStart + childGeom.Padding.InlineStart,
-		InlineEnd:   childGeom.Border.InlineEnd + childGeom.Padding.InlineEnd,
-		BlockStart:  childGeom.Border.BlockStart + childGeom.Padding.BlockStart,
-		BlockEnd:    childGeom.Border.BlockEnd + childGeom.Padding.BlockEnd,
-	}, childWDM)
+	var physBP PhysicalEdges
+	if childResult.Fragment != nil && childResult.Fragment.BoxData != nil {
+		bd := childResult.Fragment.BoxData
+		physBP = PhysicalEdges{
+			Top:    bd.Border.Top + bd.Padding.Top,
+			Right:  bd.Border.Right + bd.Padding.Right,
+			Bottom: bd.Border.Bottom + bd.Padding.Bottom,
+			Left:   bd.Border.Left + bd.Padding.Left,
+		}
+	} else {
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		physBP = ToPhysicalEdges(LogicalEdges{
+			InlineStart: childGeom.Border.InlineStart + childGeom.Padding.InlineStart,
+			InlineEnd:   childGeom.Border.InlineEnd + childGeom.Padding.InlineEnd,
+			BlockStart:  childGeom.Border.BlockStart + childGeom.Padding.BlockStart,
+			BlockEnd:    childGeom.Border.BlockEnd + childGeom.Padding.BlockEnd,
+		}, childWDM)
+	}
 	parentBP := ToLogicalEdges(physBP, parentWDM)
 	// adjusted_offset = offset + relative_offset (fragment_builder.cc:762).
 	adjusted := LogicalOffset{
