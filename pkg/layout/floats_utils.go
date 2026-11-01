@@ -58,6 +58,7 @@ func findLayoutOpportunityForFloat(uf *UnpositionedFloat, es *ExclusionSpace, ma
 		blockStart = max(blockStart,
 			es.ClearanceOffset(clearType, layoutunit.FromFloat64Round(blockStart), wdm).Float64())
 	}
+	blockStart = max(blockStart, es.InitialLetterClearanceOffset(uf.FloatSide(), wdm))
 	return es.FindFloatPositionLocal(uf.FloatSide(),
 		fragment.InlineSize()+margins.InlineSum(), fragment.BlockSize()+margins.BlockSum(),
 		uf.AvailableSize.InlineSize, blockStart, uf.OriginBfcLineOffset, uf.BfcContainerInlineSize)
@@ -236,11 +237,12 @@ func PositionFloat(uf *UnpositionedFloat, exclusionSpace **ExclusionSpace) Posit
 		// fragmentainer too, so nothing clearing it fits here
 		// (:412-424).
 		es = es.Add(Exclusion{
-			InlineOffset: positioned.BfcLineOffset - margins.InlineStart,
-			BlockOffset:  opportunityBlockOffset,
-			InlineSize:   floatInlineSize,
-			BlockSize:    floatBlockSize,
-			Side:         exclusionSide,
+			InlineOffset:    positioned.BfcLineOffset - margins.InlineStart,
+			BlockOffset:     opportunityBlockOffset,
+			InlineSize:      floatInlineSize,
+			BlockSize:       floatBlockSize,
+			Side:            exclusionSide,
+			IsInitialLetter: style.GetInitialLetter().Set,
 		})
 		if breakToken := result.BreakToken; breakToken != nil && !breakToken.IsAtBlockEnd {
 			es = es.SetHasBreakInsideFloat(exclusionSide)

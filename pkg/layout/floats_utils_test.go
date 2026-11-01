@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"math"
 	"testing"
 
 	"louis14/pkg/css"
@@ -397,7 +398,7 @@ func TestExclusionSpace_InitialLetterClearanceOffset(t *testing.T) {
 	if got := es.InitialLetterClearanceOffset(css.FloatLeft, wdm); got != 82 {
 		t.Errorf("left float: initial-letter clearance = %v, want 82", got)
 	}
-	if got := es.InitialLetterClearanceOffset(css.FloatRight, wdm); got != 0 {
-		t.Errorf("right float: initial-letter clearance = %v, want 0 (no right initial letter)", got)
+	if got := es.InitialLetterClearanceOffset(css.FloatRight, wdm); !math.IsInf(got, -1) {
+		t.Errorf("right float: initial-letter clearance = %v, want -Inf (no right initial letter)", got)
 	}
 }
