@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // CalculateChildAvailableSize returns the content-box size a box offers its
 // children as available size: its border-box size shrunk by border,
 // scrollbar and padding (an Indefinite block-size stays Indefinite). An
@@ -29,4 +31,15 @@ func anonymousChildAvailableBlockSize(space ConstraintSpace, node *LayoutInputNo
 		return space.AvailableSize.BlockSize.Float64()
 	}
 	return blockSize
+}
+
+// ColumnInlineProgression is the inline offset from one column of a
+// multicol container with style to the next: the used column inline-size
+// plus the column gap, both resolved against availableSize (the multicol's
+// content inline-size). Mirrors Blink's ColumnInlineProgression
+// (length_utils.cc:1400-1404 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ColumnInlineProgression(style *css.Style, availableSize float64) float64 {
+	gap := style.GetColumnGapMulticolWithBase(availableSize)
+	_, columnInlineSize := resolveColumnCount(availableSize, style.GetColumnCount(), style.GetColumnWidth(), gap)
+	return columnInlineSize + gap
 }

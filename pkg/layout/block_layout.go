@@ -1464,6 +1464,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					approxBlock := blockCursor + prevMarginStrut.Resolve()
 					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 						childInlineOffset, approxBlock)
+					// A containing block of fragmentainer descendants keeps
+					// its fragment, as Blink keeps every child's: the
+					// fragmentation context root finds the containing block
+					// in its fragmentainers (GetContainingBlockInfo). Blink
+					// adds a self-collapsing child too (FinishInflow,
+					// block_layout_algorithm.cc:2733 @
+					// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+					if childResult.Fragment.FragmentedOofData != nil {
+						bla.containerBuilder.AddChild(childResult.Fragment, LogicalOffset{InlineOffset: childInlineOffset, BlockOffset: approxBlock})
+					}
 				}
 				prevMarginStrut.Append(childMargins.BlockEnd)
 				continue
