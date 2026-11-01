@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"math"
 	"slices"
 	"strings"
 
@@ -1161,6 +1162,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if child.IsAnonymous() || (!isOrthogonal && ShouldBlockContainerChildStretchAutoInlineSize(child)) {
 				childInlineAutoBehavior = AutoSizeBehaviorStretchImplicit
 			}
+			// forcedChildBfcBlockOffset, once set, is where a self-collapsing
+			// child's BFC block-offset resolves: it is laid out again there
+			// (Blink's ForcedBfcBlockOffset).
+			forcedChildBfcBlockOffset := math.NaN()
 			newChildSpaceBuilder := func(borderEdgeOff float64) *ConstraintSpaceBuilder {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
@@ -1189,6 +1194,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// The child's tentative BFC offset = parent's BFC origin +
 					// child's local position (blockCursor + pending margin).
 					tentativeChildBfcOff := bfcBlockOrigin + childBfcBlockOff + childMargins.BlockStart
+					if !math.IsNaN(forcedChildBfcBlockOffset) {
+						tentativeChildBfcOff = forcedChildBfcBlockOffset
+					}
 					b.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
 					// The child's BFC inline offset = parent's BFC inline origin +
 					// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
@@ -1375,6 +1383,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						isPushedByFloats = false
 					} else {
 						blockCursor = clearanceOffset - prevMarginStrut.Resolve()
+					}
+				}
+				// Its floats were positioned at its estimated BFC
+				// block-offset, before the margins collapsing through after
+				// them were known. Where it resolves — past every margin
+				// collapsed up to and through it — they belong: lay it out
+				// again there. Mirrors FinishInflow's relayout of a
+				// self-collapsing child with adjoining objects at
+				// PositionSelfCollapsingChildWithParentBfc
+				// (block_layout_algorithm.cc:2472-2489, :2535-2552,
+				// :3066-3081 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+				// with this block's own BFC block-offset unresolved (the
+				// child adjoins its block-start) the floats wait for it.
+				if !isAdjoiningBlockStart() && !child.IsBlockInInline() && hasFloatingDescendant(childResult.Fragment) {
+					resolvedEdge := borderEdgeAt(prevMarginStrut)
+					if resolved := bfcBlockOrigin + resolvedEdge; resolved != bfcBlockOrigin+childBfcBlockOff+childMargins.BlockStart {
+						forcedChildBfcBlockOffset = resolved
+						childSpace = newChildSpaceBuilder(resolvedEdge).Build()
+						childResult = layoutElement(bla.ctx, child, childSpace)
+						childLogical = NewLogicalFragment(wdm, childResult.Fragment)
+						childBlockSize = childLogical.BlockSize()
 					}
 				}
 			}
@@ -2515,6 +2544,23 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
+	return false
+}
+
+// hasFloatingDescendant reports whether a float was laid out inside f (not
+// past a float). For a self-collapsing f every such float is adjoining:
+// Blink's PhysicalFragment::HasAdjoiningObjectDescendants
+// (block_layout_algorithm.cc:2484-2486 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func hasFloatingDescendant(f *PhysicalFragment) bool {
+	for _, c := range f.Children {
+		if c.Fragment == nil {
+			continue
+		}
+		if c.Fragment.IsFloating || hasFloatingDescendant(c.Fragment) {
+			return true
+		}
+	}
 	return false
 }
 
