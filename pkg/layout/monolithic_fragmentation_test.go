@@ -175,7 +175,7 @@ func TestMonolithic_PushedToNextFragmentainerWhenUnfit(t *testing.T) {
 	if len(result.BreakToken.ChildBreakTokens) != 1 {
 		t.Fatalf("child break tokens = %d, want 1", len(result.BreakToken.ChildBreakTokens))
 	}
-	childToken := result.BreakToken.ChildBreakTokens[0]
+	childToken := result.BreakToken.ChildBreakTokens[0].(*BlockBreakToken)
 	if !childToken.IsBreakBefore {
 		t.Error("monolithic child must break BEFORE (pushed whole), not be sliced in-progress")
 	}
@@ -465,14 +465,14 @@ func TestParallelFlow_CompletedParentCarriesChildContinuation(t *testing.T) {
 	if got := len(result.BreakToken.ChildBreakTokens); got != 1 {
 		t.Fatalf("child break tokens = %d, want 1 (mid's continuation)", got)
 	}
-	midToken := result.BreakToken.ChildBreakTokens[0]
+	midToken := result.BreakToken.ChildBreakTokens[0].(*BlockBreakToken)
 	if !midToken.IsAtBlockEnd {
 		t.Error("mid's token must be at-block-end (its box is done; content continues)")
 	}
 	if got := len(midToken.ChildBreakTokens); got != 1 {
 		t.Fatalf("mid child tokens = %d, want 1 (inner's continuation)", got)
 	}
-	if got := midToken.ChildBreakTokens[0].ConsumedBlockSize.Float64(); got != 100 {
+	if got := midToken.ChildBreakTokens[0].(*BlockBreakToken).ConsumedBlockSize.Float64(); got != 100 {
 		t.Errorf("inner consumed = %v, want 100 (one fragmentainer's worth)", got)
 	}
 }
@@ -532,8 +532,8 @@ func TestMonolithic_LeafNeverGetsResumeToken(t *testing.T) {
 	// slice the child on resume, so consumed progress never reaches the
 	// leaf's declared size — an infinite fragmentainer loop).
 	if result.BreakToken != nil {
-		for _, ct := range result.BreakToken.ChildBreakTokens {
-			if ct.Node == node.Children()[0] && !ct.IsBreakBefore {
+		for _, tok := range result.BreakToken.ChildBreakTokens {
+			if ct, ok := tok.(*BlockBreakToken); ok && ct.Node == node.Children()[0] && !ct.IsBreakBefore {
 				t.Errorf("outgoing token carries an in-progress resume for the monolithic leaf (consumed=%v)",
 					ct.ConsumedBlockSize.Float64())
 			}

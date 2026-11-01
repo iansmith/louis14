@@ -128,7 +128,8 @@ func (w *MulticolPartWalker) AddNextColumnBreakToken(token *BlockBreakToken) {
 func (w *MulticolPartWalker) updateCurrent() {
 	if w.parentBreakToken != nil &&
 		w.childTokenIdx < len(w.parentBreakToken.ChildBreakTokens) {
-		child := w.parentBreakToken.ChildBreakTokens[w.childTokenIdx]
+		// A multicol's child break tokens are all block break tokens.
+		child, _ := w.parentBreakToken.ChildBreakTokens[w.childTokenIdx].(*BlockBreakToken)
 		// Node == multicolContainer → column content. Otherwise the
 		// entry's Node is a spanner (or fragmented OOF, not yet
 		// handled here).
@@ -218,6 +219,19 @@ func (b *MulticolBreakTokenBuilder) AddBreakBeforeChild(node *LayoutInputNode, i
 // Children returns the accumulated child break tokens in document order.
 func (b *MulticolBreakTokenBuilder) Children() []*BlockBreakToken {
 	return b.children
+}
+
+// ChildBreakTokens returns the accumulated tokens as a break token's child
+// break tokens.
+func (b *MulticolBreakTokenBuilder) ChildBreakTokens() []BreakToken {
+	if len(b.children) == 0 {
+		return nil
+	}
+	tokens := make([]BreakToken, len(b.children))
+	for i, t := range b.children {
+		tokens[i] = t
+	}
+	return tokens
 }
 
 // IsEmpty reports whether any child break tokens have been accumulated.

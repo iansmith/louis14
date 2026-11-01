@@ -30,7 +30,7 @@ func blockChildIteratorFixture(t *testing.T) []*LayoutInputNode {
 
 type iteratorStep struct {
 	node  *LayoutInputNode
-	token *BlockBreakToken
+	token BreakToken
 	index int
 }
 
@@ -82,7 +82,7 @@ func TestBlockChildIterator_ResumesChildBreakTokens(t *testing.T) {
 	c := blockChildIteratorFixture(t)
 	tb := &BlockBreakToken{Node: c[1]}
 	td := &BlockBreakToken{Node: c[4], IsBreakBefore: true}
-	it := NewBlockChildIterator(c, &BlockBreakToken{ChildBreakTokens: []*BlockBreakToken{tb, td}})
+	it := NewBlockChildIterator(c, &BlockBreakToken{ChildBreakTokens: []BreakToken{tb, td}})
 	checkIteratorSteps(t, drainBlockChildIterator(it), []iteratorStep{
 		{c[1], tb, 1}, {c[4], td, 4}, {c[5], nil, 5},
 	})
@@ -95,7 +95,7 @@ func TestBlockChildIterator_ResumesChildBreakTokens(t *testing.T) {
 func TestBlockChildIterator_HasSeenAllChildren(t *testing.T) {
 	c := blockChildIteratorFixture(t)
 	tb := &BlockBreakToken{Node: c[1]}
-	it := NewBlockChildIterator(c, &BlockBreakToken{ChildBreakTokens: []*BlockBreakToken{tb}, HasSeenAllChildren: true})
+	it := NewBlockChildIterator(c, &BlockBreakToken{ChildBreakTokens: []BreakToken{tb}, HasSeenAllChildren: true})
 	checkIteratorSteps(t, drainBlockChildIterator(it), []iteratorStep{{c[1], tb, 1}})
 
 	it = NewBlockChildIterator(c, &BlockBreakToken{HasSeenAllChildren: true})
