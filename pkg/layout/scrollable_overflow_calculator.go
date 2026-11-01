@@ -23,9 +23,7 @@ import (
 //     the overflow, so Result takes no inflow bounds.
 //   - is_view_ (fixed-position children of the LayoutView): louis14 builds
 //     no view fragment.
-//   - IsOverscrollAreaParent (scrolls_all_directions_), the
-//     LayoutFlexibleBox HasTopOverflow/HasLeftOverflow overrides
-//     (flex/layout_flexible_box.cc:48-54 @ a9f50e522efa), line-box hanging
+//   - IsOverscrollAreaParent (scrolls_all_directions_), line-box hanging
 //     (AdjustOverflowForHanging; louis14 has no hanging-punctuation),
 //     LayoutTextCombine, IsHiddenForPaint, ::view-transition children,
 //     AddTableSelfRect (collapsed borders), and the out-of-flow clip clamp
@@ -52,8 +50,12 @@ func NewScrollableOverflowCalculator(node *LayoutInputNode, isCSSBox bool, borde
 	c := ScrollableOverflowCalculator{writingDirection: writingDirection}
 	if isCSSBox && node != nil {
 		c.isScrollContainer = isScrollContainerBox(node.Style(), node.DOMNode)
-		c.hasLeftOverflow = hasLeftOverflow(writingDirection)
-		c.hasTopOverflow = hasTopOverflow(writingDirection)
+		if d := node.Style().GetDisplay(); d == css.DisplayFlex || d == css.DisplayInlineFlex {
+			c.hasLeftOverflow, c.hasTopOverflow = flexHasLeftTopOverflow(node.Style(), writingDirection)
+		} else {
+			c.hasLeftOverflow = hasLeftOverflow(writingDirection)
+			c.hasTopOverflow = hasTopOverflow(writingDirection)
+		}
 	}
 	left := borders.Left + scrollbar.Left
 	top := borders.Top + scrollbar.Top
@@ -253,6 +255,34 @@ func hasLeftOverflow(wdm WritingDirectionMode) bool {
 		return wdm.IsRTL()
 	}
 	return wdm.IsFlippedBlocks()
+}
+
+// flexHasLeftTopOverflow reports whether a flex container scrolls leftward
+// / upward from its scroll origin: its overflow runs toward the physical
+// sides that the main-start (reversed by *-reverse) and cross-start
+// (reversed by wrap-reverse) map to. Mirrors LayoutFlexibleBox::
+// HasLeftOverflow / HasTopOverflow and GetOverflowConverter
+// (flex/layout_flexible_box.cc:17-54 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A side whose logical edge
+// "overflows" converts to 1 in the physical edges.
+func flexHasLeftTopOverflow(style *css.Style, wdm WritingDirectionMode) (left, top bool) {
+	dir := style.GetFlexDirection()
+	isDirectionReverse := dir == css.FlexDirectionRowReverse || dir == css.FlexDirectionColumnReverse
+	isWrapReverse := style.GetFlexWrap() == css.FlexWrapWrapReverse
+	// Overflow runs toward the logical end unless reversed.
+	edges := LogicalEdges{InlineEnd: 1, BlockEnd: 1}
+	reverseInline, reverseBlock := isDirectionReverse, isWrapReverse
+	if dir == css.FlexDirectionColumn || dir == css.FlexDirectionColumnReverse {
+		reverseInline, reverseBlock = isWrapReverse, isDirectionReverse
+	}
+	if reverseInline {
+		edges.InlineStart, edges.InlineEnd = edges.InlineEnd, edges.InlineStart
+	}
+	if reverseBlock {
+		edges.BlockStart, edges.BlockEnd = edges.BlockEnd, edges.BlockStart
+	}
+	physical := ToPhysicalEdges(edges, wdm)
+	return physical.Left != 0, physical.Top != 0
 }
 
 // updateScrollableOverflow computes and records the fragment's scrollable
