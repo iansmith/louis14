@@ -117,7 +117,7 @@ func (v *ViewPainter) PaintRootElementGroup(r *Renderer) {
 	r.dc.Clip()
 	rootStyle := v.rootLayer.Box.Style
 	v.style.BackgroundLayers.IterateReverse(func(bg *css.FillLayer) {
-		if img := r.loadFillLayerImage(bg); bg.Gradient != "" || img != nil {
+		if img := r.loadFillLayerImage(bg); bg.Gradient != "" || !img.isNone() {
 			r.paintFillLayerImage(ctx, paintRect, bg, img, v.style.ImageRendering, rootStyle)
 		}
 	})

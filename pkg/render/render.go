@@ -3250,21 +3250,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 			r.paintFillLayerColor(layer, rect)
 		}
 		img := r.loadFillLayerImage(bg)
-		if bg.Gradient != "" || img != nil {
+		if bg.Gradient != "" || !img.isNone() {
 			r.paintFillLayer(layer, ctx, rect, paintRect, bg, img)
 		}
 	})
-}
-
-// loadFillLayerImage decodes a fill layer's url() image, or returns nil
-// (no image, no fetcher, or a load failure). data: URIs decode inline and
-// need no fetcher.
-func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) image.Image {
-	if bg.Image == nil || (r.imageFetcher == nil && !stdnet.IsDataURL(bg.Image.Data.Absolute)) {
-		return nil
-	}
-	img, _ := images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
-	return img
 }
 
 // paintFillLayerColor paints the background color under the bottom-most
@@ -3287,13 +3276,40 @@ func (r *Renderer) paintFillLayerColor(layer *PaintLayer, rect layout.PhysicalRe
 	r.dc.Fill()
 }
 
+// fillLayerImage is one fill layer's fetched url() image (StyleFetchedImage):
+// a raster image, or an SVG image drawn at the tile size. Neither set means
+// the layer paints its gradient.
+type fillLayerImage struct {
+	raster image.Image
+	svg    *images.SVGImage
+}
+
+func (f fillLayerImage) isNone() bool { return f.raster == nil && f.svg == nil }
+
+// loadFillLayerImage fetches a fill layer's url() image, keeping an SVG
+// document as an SVGImage (StyleFetchedImage over an SVGImage) so it is
+// sized by its natural sizing info and drawn for its container. None when
+// the layer has no url() image or there is no fetcher (data: URIs decode
+// inline and need none).
+func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) fillLayerImage {
+	if bg.Image == nil || (r.imageFetcher == nil && !stdnet.IsDataURL(bg.Image.Data.Absolute)) {
+		return fillLayerImage{}
+	}
+	url := bg.Image.Data.Absolute
+	if svg := images.LoadSVGImageWithFetcher(url, r.imageFetcher); svg != nil {
+		return fillLayerImage{svg: svg}
+	}
+	img, _ := images.LoadImageWithFetcher(url, r.imageFetcher)
+	return fillLayerImage{raster: img}
+}
+
 // paintFillLayer paints one fill layer's image content (url() image img,
-// or the layer's gradient when img is nil) clipped to its background-clip
+// or the layer's gradient when img is none) clipped to its background-clip
 // area. Mirrors the image branch of BoxPainterBase::PaintFillLayer
 // (box_painter_base.cc:1349-1570 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a local-scrolling layer is
 // positioned in the scrolled paint rect (:1378-1386, :1424-1425).
-func (r *Renderer) paintFillLayer(layer *PaintLayer, ctx *BoxBackgroundPaintContext, rect layout.PhysicalRect, paintRect geometry.PhysicalRect, bg *css.FillLayer, img image.Image) {
+func (r *Renderer) paintFillLayer(layer *PaintLayer, ctx *BoxBackgroundPaintContext, rect layout.PhysicalRect, paintRect geometry.PhysicalRect, bg *css.FillLayer, img fillLayerImage) {
 	local := isClippedWithLocalScrolling(layer, bg.Attachment)
 	r.dc.Push()
 	defer r.dc.Pop()
@@ -3438,20 +3454,48 @@ func rootBorderBoxRect(root *layout.Box) geometry.PhysicalRect {
 }
 
 // paintFillLayerImage paints one fill layer's image through the shared
-// BackgroundImageGeometry: img is the decoded raster image, or nil to paint
+// BackgroundImageGeometry: img is the fetched url() image, or none to paint
 // the layer's gradient — a generated image with no natural size, painted
 // through exactly the same geometry and tiling (StyleGeneratedImage →
-// GradientGeneratedImage sized to TileSize()). Mirrors the image branch of
+// GradientGeneratedImage sized to TileSize()). An SVG image reports its
+// natural sizing info (StyleFetchedImage::GetNaturalSizingInfo,
+// style_fetched_image.cc:163-183) and is drawn laid out in a TileSize()
+// container (StyleFetchedImage::GetImage → SVGImageForContainer,
+// :231-247; box_painter_base.cc:1441-1443). Mirrors the image branch of
 // BoxPainterBase::PaintFillLayer (box_painter_base.cc:1349-1570 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) → BackgroundImageGeometry::
 // Calculate → PaintFillLayerBackground (:1250-1298) → DrawTiledBackground.
-// imageStyle is BoxBackgroundPaintContext::ImageStyle (box_background_paint_context.cc:399-405).
-func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, bg *css.FillLayer, img image.Image, imageRendering string, imageStyle *css.Style) {
+// imageStyle is BoxBackgroundPaintContext::ImageStyle
+// (box_background_paint_context.cc:399-405).
+func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, bg *css.FillLayer, img fillLayerImage, imageRendering string, imageStyle *css.Style) {
 	var info NaturalSizingInfo
-	if img != nil {
-		info = naturalSizingInfoForRaster(img.Bounds().Dx(), img.Bounds().Dy())
-		if info.Width == 0 || info.Height == 0 {
+	var tileImage func(w, h int) image.Image
+	switch {
+	case img.svg != nil:
+		info = naturalSizingInfoForSVG(img.svg.Sizing)
+		tileImage = func(w, h int) image.Image {
+			tile, err := img.svg.DrawForContainer(w, h)
+			if err != nil {
+				return image.Transparent
+			}
+			return tile
+		}
+	case img.raster != nil:
+		src := img.raster
+		srcW, srcH := src.Bounds().Dx(), src.Bounds().Dy()
+		if srcW == 0 || srcH == 0 {
 			return
+		}
+		info = naturalSizingInfoForRaster(srcW, srcH)
+		tileImage = func(w, h int) image.Image {
+			if w == srcW && h == srcH {
+				return src
+			}
+			return scaleImage(src, srcW, srcH, w, h, imageRendering)
+		}
+	default:
+		tileImage = func(w, h int) image.Image {
+			return r.renderGeneratedImage(bg.Gradient, w, h, imageStyle)
 		}
 	}
 	var g BackgroundImageGeometry
@@ -3461,20 +3505,6 @@ func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect
 	if g.SnappedDestRect().IsEmpty() || g.TileSize().Width.LessEqual(layoutunit.Zero) ||
 		g.TileSize().Height.LessEqual(layoutunit.Zero) {
 		return
-	}
-	var tileImage func(w, h int) image.Image
-	if img != nil {
-		srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
-		tileImage = func(w, h int) image.Image {
-			if w == srcW && h == srcH {
-				return img
-			}
-			return scaleImage(img, srcW, srcH, w, h, imageRendering)
-		}
-	} else {
-		tileImage = func(w, h int) image.Image {
-			return r.renderGeneratedImage(bg.Gradient, w, h, imageStyle)
-		}
 	}
 	r.drawTiledBackground(&g, tileImage)
 }
