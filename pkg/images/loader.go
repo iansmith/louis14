@@ -113,7 +113,7 @@ type ImageFetcher func(uri string) ([]byte, error)
 func DecodeImageBytes(data []byte) (image.Image, error) {
 	// Check for SVG content
 	if isSVGData(data) {
-		return rasterizeSVG(data, 0, 0)
+		return rasterizeSVG(data)
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -166,13 +166,12 @@ func preprocessSVGPercentages(data []byte) []byte {
 
 	// Fall back to explicit CSS width/height when no viewBox is present.
 	if baseW <= 0 || baseH <= 0 {
-		for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
-			val, _ := strconv.ParseFloat(m[2], 64)
-			if m[1] == "width" && baseW <= 0 {
-				baseW = val
-			} else if m[1] == "height" && baseH <= 0 {
-				baseH = val
-			}
+		attrW, attrH := svgRootAttrSize(rootAttrs)
+		if baseW <= 0 {
+			baseW = attrW
+		}
+		if baseH <= 0 {
+			baseH = attrH
 		}
 	}
 
@@ -255,38 +254,33 @@ func preprocessSVGBackground(data []byte) []byte {
 // svgViewBoxAttrRE detects the presence of a viewBox attribute on the root.
 var svgViewBoxAttrRE = regexp.MustCompile(`\bviewBox\s*=`)
 
-// preprocessSVGViewBox synthesizes a viewBox on the root <svg> when one is
-// absent. oksvg needs a non-zero viewBox to render geometry — without it,
-// `<svg width="100" height="100">` rasterizes empty even with explicit shapes.
-// The synthesized viewBox uses the root width/height (or CSS defaults 300×150)
-// so the SVG coordinate space matches its intrinsic dimensions.
-func preprocessSVGViewBox(data []byte) []byte {
+// svgRootAttrSize returns the absolute width/height attributes of the root
+// <svg> (rootAttrs is its attribute text); 0 for an absent or percentage one.
+func svgRootAttrSize(rootAttrs string) (w, h float64) {
+	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
+		val, _ := strconv.ParseFloat(m[2], 64)
+		if m[1] == "width" {
+			w = val
+		} else {
+			h = val
+		}
+	}
+	return w, h
+}
+
+// preprocessSVGViewBox synthesizes viewBox="0 0 w h" on the root <svg> when
+// one is absent. oksvg needs a non-zero viewBox to render geometry — without
+// it, `<svg width="100" height="100">` rasterizes empty even with explicit
+// shapes. w×h is the SVG viewport, so user units stay CSS pixels.
+func preprocessSVGViewBox(data []byte, w, h float64) []byte {
 	s := string(data)
 	rootMatch := svgOpenTagRE.FindStringSubmatch(s)
 	if rootMatch == nil {
 		return data
 	}
-	rootAttrs := rootMatch[1]
-	if svgViewBoxAttrRE.MatchString(rootAttrs) {
+	if svgViewBoxAttrRE.MatchString(rootMatch[1]) {
 		return data
 	}
-
-	var w, h float64
-	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
-		val, _ := strconv.ParseFloat(m[2], 64)
-		if m[1] == "width" {
-			w = val
-		} else if m[1] == "height" {
-			h = val
-		}
-	}
-	if w <= 0 {
-		w = 300
-	}
-	if h <= 0 {
-		h = 150
-	}
-
 	rootTagEnd := strings.Index(s, ">")
 	if rootTagEnd <= 0 {
 		return data
@@ -294,10 +288,9 @@ func preprocessSVGViewBox(data []byte) []byte {
 	return []byte(s[:rootTagEnd] + fmt.Sprintf(` viewBox="0 0 %g %g"`, w, h) + s[rootTagEnd:])
 }
 
-// rasterizeSVG renders SVG data to an image.RGBA using oksvg.
-// If w/h are 0, the SVG's explicit width/height attributes are used when present;
-// otherwise the viewBox dimensions are used.
-func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
+// parseSVGIcon preprocesses SVG data for oksvg and parses it. vw×vh is the
+// viewport a viewBox-less SVG is laid out in.
+func parseSVGIcon(data []byte, vw, vh float64) (*oksvg.SvgIcon, error) {
 	// oksvg doesn't paint the root <svg> element's CSS `background` declaration
 	// (e.g. <svg style="background: green">). Per SVG 1.1 §2.5, the SVG
 	// background acts like the canvas color. To honor it, inject a full-bleed
@@ -307,9 +300,9 @@ func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 	data = preprocessSVGBackground(data)
 
 	// Without a viewBox, oksvg's coordinate space is undefined and rendered
-	// shapes vanish. Synthesize one from the root width/height (or CSS defaults
-	// 300×150) so percentage-based and absolute shapes both rasterize.
-	data = preprocessSVGViewBox(data)
+	// shapes vanish. Synthesize one from the viewport so percentage-based and
+	// absolute shapes both rasterize.
+	data = preprocessSVGViewBox(data, vw, vh)
 
 	// oksvg doesn't handle percentage width/height on shapes (e.g. width="100%").
 	// Resolve them to absolute values before parsing.
@@ -319,64 +312,134 @@ func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("SVG parse error: %w", err)
 	}
+	return icon, nil
+}
 
-	svgW := int(icon.ViewBox.W)
-	svgH := int(icon.ViewBox.H)
-	if svgW <= 0 {
-		svgW = 32
-	}
-	if svgH <= 0 {
-		svgH = 32
-	}
-
-	// When no target size is specified, prefer explicit pixel width/height from
-	// the root <svg> element over the viewBox coordinate dimensions.
-	// E.g. <svg viewBox="0 0 200 400" width="50px"> has intrinsic size 50×100,
-	// not 200×400. The viewBox only defines the coordinate space.
-	if w <= 0 && h <= 0 {
-		s := string(data)
-		if rootMatch := svgOpenTagRE.FindStringSubmatch(s); rootMatch != nil {
-			var explW, explH float64
-			for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootMatch[1], -1) {
-				val, _ := strconv.ParseFloat(m[2], 64)
-				if m[1] == "width" {
-					explW = val
-				} else {
-					explH = val
-				}
-			}
-			if explW > 0 && explH > 0 {
-				w, h = int(explW), int(explH)
-			} else if explW > 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0 {
-				w = int(explW)
-				h = int(explW*icon.ViewBox.H/icon.ViewBox.W + 0.5)
-			} else if explH > 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0 {
-				h = int(explH)
-				w = int(explH*icon.ViewBox.W/icon.ViewBox.H + 0.5)
-			} else if explW > 0 {
-				// Width only, no viewBox/height: pair with CSS 2.1 §10.3.2's
-				// default intrinsic height (150) so the buffer matches what
-				// the layout engine produces for the same case.
-				w, h = int(explW), 150
-			} else if explH > 0 {
-				w, h = 300, int(explH)
-			}
-		}
-	}
-
-	if w <= 0 {
-		w = svgW
-	}
-	if h <= 0 {
-		h = svgH
-	}
-
+// drawSVGIcon rasterizes icon with its viewBox mapped onto a w×h buffer.
+func drawSVGIcon(icon *oksvg.SvgIcon, w, h int) *image.RGBA {
 	icon.SetTarget(0, 0, float64(w), float64(h))
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	scanner := rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())
 	raster := rasterx.NewDasher(w, h, scanner)
 	icon.Draw(raster, 1.0)
-	return rgba, nil
+	return rgba
+}
+
+// rasterizeSVG renders SVG data at its natural size using oksvg: the root's
+// explicit width/height when present (the missing one derived from the
+// viewBox ratio, or CSS 2.1 §10.3.2's 300×150 default), else the viewBox
+// dimensions.
+func rasterizeSVG(data []byte) (image.Image, error) {
+	var explW, explH float64
+	if rootMatch := svgOpenTagRE.FindSubmatch(data); rootMatch != nil {
+		explW, explH = svgRootAttrSize(string(rootMatch[1]))
+	}
+	// A viewBox-less SVG is laid out in its explicit size, or the CSS
+	// defaults 300×150.
+	vw, vh := explW, explH
+	if vw <= 0 {
+		vw = 300
+	}
+	if vh <= 0 {
+		vh = 150
+	}
+	icon, err := parseSVGIcon(data, vw, vh)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer explicit pixel width/height from the root <svg> element over the
+	// viewBox coordinate dimensions. E.g. <svg viewBox="0 0 200 400"
+	// width="50px"> has intrinsic size 50×100, not 200×400. The viewBox only
+	// defines the coordinate space.
+	var w, h int
+	switch {
+	case explW > 0 && explH <= 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0:
+		w = int(explW)
+		h = int(explW*icon.ViewBox.H/icon.ViewBox.W + 0.5)
+	case explH > 0 && explW <= 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0:
+		h = int(explH)
+		w = int(explH*icon.ViewBox.W/icon.ViewBox.H + 0.5)
+	case explW > 0 || explH > 0:
+		// Both explicit, or one with no viewBox ratio: the missing side
+		// takes CSS 2.1 §10.3.2's default (matching the layout engine).
+		w, h = int(vw), int(vh)
+	}
+	if w <= 0 {
+		w = int(icon.ViewBox.W)
+	}
+	if h <= 0 {
+		h = int(icon.ViewBox.H)
+	}
+	if w <= 0 {
+		w = 32
+	}
+	if h <= 0 {
+		h = 32
+	}
+	return drawSVGIcon(icon, w, h), nil
+}
+
+// SVGImage is an SVG document used as an image: it keeps its source so it
+// can be laid out and drawn at any container size. Mirrors Blink's SVGImage
+// (core/svg/graphics/svg_image.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type SVGImage struct {
+	data   []byte
+	Sizing SVGSizingInfo
+}
+
+// DrawForContainer renders the image laid out in a w×h container, as
+// SVGImageForContainer does: the root <svg>'s width/height are replaced by
+// the container size (LayoutSVGRoot::SetContainerSize,
+// svg_image.cc:462-473 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
+// percentages resolve against it and a viewBox maps onto it; without a
+// viewBox, user units stay CSS pixels.
+//
+// louis14 limitation: oksvg ignores preserveAspectRatio, so a viewBox is
+// stretched onto the container.
+func (s *SVGImage) DrawForContainer(w, h int) (image.Image, error) {
+	icon, err := parseSVGIcon(s.data, float64(w), float64(h))
+	if err != nil {
+		return nil, err
+	}
+	return drawSVGIcon(icon, w, h), nil
+}
+
+// svgImageCache caches SVGImage loads by URL; a nil entry records a URL
+// whose resource is not SVG (or failed to fetch).
+var svgImageCache = struct {
+	sync.RWMutex
+	m map[string]*SVGImage
+}{m: make(map[string]*SVGImage)}
+
+// LoadSVGImageWithFetcher returns the SVG document at path, or nil when the
+// resource cannot be fetched or is not SVG. A nil fetcher still serves
+// data: URLs. A fetched non-SVG resource is decoded into the raster image
+// cache, so a following LoadImageWithFetcher does not fetch it again.
+func LoadSVGImageWithFetcher(path string, fetcher ImageFetcher) *SVGImage {
+	svgImageCache.RLock()
+	img, ok := svgImageCache.m[path]
+	svgImageCache.RUnlock()
+	if ok {
+		return img
+	}
+	fetch := fetcher
+	if fetch == nil {
+		fetch = stdnet.RequestResource(nil)
+	}
+	if data, err := fetch(path); err == nil {
+		if isSVGData(data) {
+			img = &SVGImage{data: data, Sizing: GetSVGSizingInfo(data)}
+		} else if raster, err := DecodeImageBytes(data); err == nil {
+			globalCache.mu.Lock()
+			globalCache.cache[path] = raster
+			globalCache.mu.Unlock()
+		}
+	}
+	svgImageCache.Lock()
+	svgImageCache.m[path] = img
+	svgImageCache.Unlock()
+	return img
 }
 
 // LoadImageWithFetcher loads an image using the provided fetcher.
@@ -435,10 +498,17 @@ type SVGSizingInfo struct {
 	HasViewBox        bool
 	ViewBoxWidth      float64
 	ViewBoxHeight     float64
+	// PreserveAspectRatioNone is true when the root's preserveAspectRatio
+	// align is `none` (SVGImage::GetNaturalDimensions drops a natural ratio
+	// for a partially sized image in that case).
+	PreserveAspectRatioNone bool
 }
 
 // svgViewBoxRE matches a viewBox attribute on the root <svg> element.
 var svgViewBoxRE = regexp.MustCompile(`viewBox=["']([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)["']`)
+
+// svgPreserveAspectRatioNoneRE matches preserveAspectRatio="none" on the root.
+var svgPreserveAspectRatioNoneRE = regexp.MustCompile(`\bpreserveAspectRatio\s*=\s*["']\s*none\b`)
 
 // GetSVGSizingInfo parses SVG data to extract explicit width/height and viewBox.
 func GetSVGSizingInfo(data []byte) SVGSizingInfo {
@@ -467,6 +537,7 @@ func GetSVGSizingInfo(data []byte) SVGSizingInfo {
 		info.ViewBoxWidth, _ = strconv.ParseFloat(m[3], 64)
 		info.ViewBoxHeight, _ = strconv.ParseFloat(m[4], 64)
 	}
+	info.PreserveAspectRatioNone = svgPreserveAspectRatioNoneRE.MatchString(rootAttrs)
 
 	return info
 }
