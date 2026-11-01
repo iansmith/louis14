@@ -251,6 +251,18 @@ func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
 	return cs.PercentageResolutionSize.BlockSize.Float64() < 0
 }
 
+// HasKnownFragmentainerBlockSize reports whether the fragmentainer
+// block-size is known: in a fragmentation context, outside the initial column
+// balancing pass. Mirrors Blink's ConstraintSpace::
+// HasKnownFragmentainerBlockSize (constraint_space.h:327-334 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink DCHECKs a definite size
+// there; louis14 also leaves it Indefinite for an auto-height multicol row
+// with no content (createConstraintSpaceForColumn), so that reads as unknown.
+func (cs ConstraintSpace) HasKnownFragmentainerBlockSize() bool {
+	return cs.HasBlockFragmentation && !cs.IsInitialColumnBalancingPass &&
+		cs.FragmentainerBlockSize != Indefinite
+}
+
 // ShouldPropagateChildBreakValues reports whether a box laid out in this
 // space propagates its children's break-before / break-after values up
 // through LayoutResult.InitialBreakBefore / FinalBreakAfter. Mirrors Blink's

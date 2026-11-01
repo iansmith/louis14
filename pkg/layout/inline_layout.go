@@ -1138,9 +1138,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Only check when we have a real (non-indefinite) fragmentainer block-size and
 		// this is NOT the initial balancing pass (which runs unconstrained to measure
 		// total content height).
-		if bla.space.HasBlockFragmentation &&
-			bla.space.FragmentainerBlockSize != Indefinite &&
-			!bla.space.IsInitialColumnBalancingPass {
+		if bla.space.HasKnownFragmentainerBlockSize() {
 			// blockOffset is content-relative: measure the boundary and the
 			// "no progress yet" guard from the content edge's fragmentainer
 			// offset, so the container's own block-start border/padding both
