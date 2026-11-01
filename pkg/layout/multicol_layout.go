@@ -2072,7 +2072,9 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	// empty spanner-detection column after full columns (the phantom column
 	// of multicol-span-all-006/007/008) — which must not get cross gaps.
 	// The OOF-drain columns come only from the rowHasDeferredOOFs branch of
-	// the column loop above.
+	// the column loop above. Columns added later by CreateEmptyColumn
+	// (OutOfFlowLayoutPart) never reach the accumulator, as in Blink, where
+	// only LayoutLine records columns.
 	gapColumnCount := 0
 	if mla.gapAccumulator != nil {
 		gapColumnCount = len(finalColumns)
