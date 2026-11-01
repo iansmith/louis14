@@ -333,7 +333,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		item            *InlineItem
 		margins         LogicalEdges
 		childLogical    LogicalFragment
-		fragment        *PhysicalFragment
+		result          *LayoutResult
 		isInitialLetter bool
 	}
 	// LOU-289 part 3: an initial-letter ::first-letter float (CSS Inline 3 §7.3)
@@ -385,11 +385,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// group inline (Blink: LayoutObject::PaintingLayer returns the
 		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
 		childResult.Fragment.PaintGroup = item.EnclosingPaintGroup
+		childResult.Fragment.IsFloating = true
 		pendingFloats[item] = &pendingFloat{
 			item:            item,
 			margins:         childMargins,
 			childLogical:    childLogical,
-			fragment:        childResult.Fragment,
+			result:          childResult,
 			isInitialLetter: il.Set,
 		}
 		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
@@ -445,12 +446,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineOffset: floatInlineBFC - bfcInlineOrigin,
 			BlockOffset:  localFloatBlock + pf.margins.BlockStart,
 		}
-		bla.containerBuilder.AddChild(pf.fragment, floatOffset)
+		bla.containerBuilder.AddChild(pf.result.Fragment, floatOffset)
 		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
-		// 227-229, :479-489 @ a9f50e522efa): the float at its own block-size
-		// (its result is not kept here; the float-margin term,
-		// fragmentation_utils.cc:1562-1570, is not ported).
-		bla.containerBuilder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: pf.fragment}, floatOffset)
+		// 227-229, :479-489 @ a9f50e522efa): the float laid out without
+		// fragmentation counts its margins too (BlockSizeForFragmentation,
+		// fragmentation_utils.cc:1562-1570).
+		bla.containerBuilder.PropagateChildBlockSizeForFragmentation(pf.result, floatOffset)
 		return es.Add(Exclusion{
 			InlineOffset: floatInlineBFC - pf.margins.InlineStart,
 			BlockOffset:  floatBlockOffset,
