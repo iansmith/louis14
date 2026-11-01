@@ -30,11 +30,9 @@ type TableLayoutAlgorithm struct {
 // Mirrors Blink's LayoutObject::ComputeIsFixedContainer /
 // CanContainFixedPositionObjects (layout_object.cc ~1888/~2150) folding in
 // HasTransformRelatedProperty (computed_style.h:2266), pinned to Chromium SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. It is the same predicate the block
-// path assembles inline at block_layout.go:1952-1978 from these same canonical
-// Style accessors; extracting a single shared helper is deferred because that
-// would require editing block_layout.go / pkg/css/style.go, which are out of
-// scope for this change.
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. It is LayoutInputNode.IsFixedContainer
+// without containment (rows and sections are not eligible for layout/paint
+// containment).
 func rowOrSectionEstablishesFixedCB(style *css.Style) bool {
 	if style == nil {
 		return false

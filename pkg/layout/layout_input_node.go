@@ -200,6 +200,47 @@ func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
 	return nil
 }
 
+// IsFixedContainer reports whether this box is a containing block for
+// fixed-position (and so all positioned) descendants: layout or paint
+// containment, a transform-related property (transform, preserve-3d,
+// backface-visibility:hidden, will-change of one), a filter or
+// backdrop-filter. Mirrors Blink's LayoutObject::ComputeIsFixedContainer
+// (layout_object.cc:1849-1900 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Not ported: view-transition roots, foreignObject, text controls and the
+// fieldset content box; the document element's filter exclusion is moot
+// because the root resolves every candidate.
+func (n *LayoutInputNode) IsFixedContainer() bool {
+	style := n.Style()
+	if style == nil {
+		return false
+	}
+	return style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() ||
+		len(style.GetTransforms()) > 0 ||
+		len(style.GetFilter()) > 0 ||
+		len(style.GetBackdropFilter()) > 0 ||
+		style.WillChangeEstablishesContainingBlock(true) ||
+		style.GetTransformStyle() == css.TransformStylePreserve3D ||
+		// Blink's HasTransformRelatedProperty treats
+		// backface-visibility:hidden as CB-establishing (CSS Transforms L2
+		// §11; WPT backface-visibility-hidden-003).
+		style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden
+}
+
+// IsAbsoluteContainer reports whether this box is a containing block for
+// absolutely positioned descendants: a fixed container, a non-static
+// position, or a will-change of an abspos-only containing-block property
+// (CSS Will Change §2.2). Mirrors Blink's
+// LayoutObject::ComputeIsAbsoluteContainer (layout_object.cc:1902-1912 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsAbsoluteContainer() bool {
+	style := n.Style()
+	if style == nil {
+		return false
+	}
+	return n.IsFixedContainer() || style.GetPosition() != css.PositionStatic ||
+		style.WillChangeEstablishesContainingBlock(false)
+}
+
 // IsAnonymous returns true for generated anonymous boxes.
 func (n *LayoutInputNode) IsAnonymous() bool {
 	return n.isAnonymous

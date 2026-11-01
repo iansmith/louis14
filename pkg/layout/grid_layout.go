@@ -532,7 +532,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		isContainmentCB := gla.style != nil && (gla.style.ShouldApplyLayoutContainment() || gla.style.ShouldApplyPaintContainment())
 		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
 		// CB triggers) makes this grid container a CB for abs-pos descendants
-		// but not for fixed. Mirrors block_layout's isWillChangeAbsposCB.
+		// but not for fixed (the abspos-only half of LayoutInputNode.IsAbsoluteContainer).
 		isWillChangeAbsposCB := false
 		if gla.style != nil && !isContainmentCB && !isPositioned {
 			if gla.style.WillChangeEstablishesContainingBlock(false) {
