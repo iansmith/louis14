@@ -6911,14 +6911,33 @@ func (s *Style) GetOverflow() OverflowType {
 	return OverflowVisible
 }
 
+// IsOverflowValueScrollable reports whether overflow is a scrollable value
+// (hidden, scroll or auto — neither visible nor clip). Mirrors Blink's
+// ComputedStyle::IsOverflowValueScrollable (core/style/computed_style.h:
+// 1977-1979 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func IsOverflowValueScrollable(overflow OverflowType) bool {
+	return overflow != OverflowVisible && overflow != OverflowClip
+}
+
 // IsScrollContainer reports whether either axis has a scrollable overflow
-// value (hidden, scroll or auto — neither visible nor clip). Mirrors
-// Blink's ComputedStyle::IsScrollContainer and IsOverflowValueScrollable
+// value. Mirrors Blink's ComputedStyle::IsScrollContainer
 // (core/style/computed_style.h:1984-1987 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (s *Style) IsScrollContainer() bool {
-	scrollable := func(o OverflowType) bool { return o != OverflowVisible && o != OverflowClip }
-	return scrollable(s.GetOverflowX()) || scrollable(s.GetOverflowY())
+	return s.IsOverflowValueScrollableX() || s.IsOverflowValueScrollableY()
+}
+
+// IsOverflowValueScrollableX / IsOverflowValueScrollableY report whether
+// the physical horizontal / vertical axis has a scrollable overflow value.
+// Mirror Blink's ComputedStyle::IsOverflowValueScrollableX/Y
+// (core/style/computed_style.h:2003-2011 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) IsOverflowValueScrollableX() bool {
+	return IsOverflowValueScrollable(s.GetOverflowX())
+}
+
+func (s *Style) IsOverflowValueScrollableY() bool {
+	return IsOverflowValueScrollable(s.GetOverflowY())
 }
 
 // GetOverflowX returns the overflow-x value (default: overflow value).
