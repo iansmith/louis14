@@ -37,7 +37,7 @@ func TestTableLengths_UseElementConversionData(t *testing.T) {
 	if i, b := tla.logicalBorderSpacing(); i != 20 || b != 40 {
 		t.Errorf("border-spacing 1ch 2ch = %v, %v; want 20, 40", i, b)
 	}
-	if got := readBorderEdge(s, "top").width; got != 20 {
+	if got := TableBordersBorderWidth(s, TableBordersEdgeSideTop); got != 20 {
 		t.Errorf("border-top-width 1ch = %v, want 20", got)
 	}
 }

@@ -2388,12 +2388,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 3: Descendant block backgrounds (non-self-painting subtree).
 	r.paintDescendantsPhase(layer, PhaseBackground)
 
-	// Collapsed table-cell border paints inside the background phase,
-	// after descendant backgrounds. paintLayerContent reaches the cell
-	// when it is its own stacking context (e.g. position: relative);
-	// paintDescendantPhase reaches non-SC cells. Both delegate to the
-	// same helper so the spec ordering stays in one place.
-	r.paintCollapsedTableCellBorder(layer)
+	// A collapsed table paints its borders after its descendants'
+	// backgrounds (box_fragment_painter.cc:941-947 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). paintLayerContent reaches
+	// a self-painting table; paintDescendantPhase reaches the others.
+	r.PaintCollapsedBorders(layer)
 
 	// Step 4: Floats (each runs its own full phase loop).
 	r.paintDescendantsPhase(layer, PhaseFloat)
@@ -2477,19 +2476,21 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		r.paintFieldsetBoxDecorationBackground(layer)
 	} else if !layer.EmptyCellHide {
 		rect := borderBoxRect(layer.Box)
+		clipped := r.clipTableCellBackground(layer, rect)
 		if len(layer.BoxShadows) > 0 {
 			r.drawOutsetBoxShadows(layer, rect)
 		}
 		r.drawBackground(layer, rect)
-		// Collapsed table cell borders paint in their own phase AFTER
-		// descendants (see paintCollapsedBordersAfterDescendants). The
-		// background and box shadows still belong here so descendants
-		// paint above them in the normal way.
-		if !layer.IsCollapsedBorderCell {
+		// A collapsed table and its cells paint no border of their own;
+		// the table paints the collapsed borders (PaintCollapsedBorders).
+		if !layer.HasCollapsedBorders {
 			r.drawBorders(layer, rect)
 		}
 		if len(layer.BoxShadows) > 0 {
 			r.drawInsetBoxShadows(layer, rect)
+		}
+		if clipped {
+			r.dc.Pop()
 		}
 	}
 
@@ -2649,12 +2650,10 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 
 	r.paintDescendantsPhase(child, phase)
 
-	// Collapsed table-cell border. See paintCollapsedTableCellBorder
-	// for the spec ordering. Gated on PhaseBackground so we only fire
-	// once per cell per layout pass (paintDescendantPhase is called
-	// once per phase).
+	// A collapsed table's borders, after its descendants' backgrounds
+	// (see paintLayerContent).
 	if phase == PhaseBackground {
-		r.paintCollapsedTableCellBorder(child)
+		r.PaintCollapsedBorders(child)
 	}
 
 	if clipping {
@@ -3782,119 +3781,6 @@ func scaleImage(src image.Image, srcW, srcH, dstW, dstH int, imageRendering stri
 	return scaleImageBilinear(src, srcW, srcH, dstW, dstH)
 }
 
-// paintCollapsedTableCellBorder paints a collapsed table cell's border
-// in its CSS Tables 3 paint phase: inside the background phase, after
-// descendant backgrounds (so a child's CSS background can't overpaint
-// the shared border) but before the foreground phase (so an inline-block
-// descendant's foreground — e.g. a `background: green` painted as part
-// of its own atomic-inline phase loop — paints above the collapsed
-// border). Mirrors Blink's TablePainter::PaintCollapsedBorders ordering
-// inside PaintPhase::kBlockBackground at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. WPT
-// collapsed-border-paint-001 asserts the latter; -paint-phase-002
-// asserts the former.
-func (r *Renderer) paintCollapsedTableCellBorder(layer *PaintLayer) {
-	if !layer.IsCollapsedBorderCell || layer.EmptyCellHide {
-		return
-	}
-	rect := borderBoxRect(layer.Box)
-	r.drawBorders(layer, rect)
-	r.drawCollapsedBorderOutwardStrips(layer, rect)
-}
-
-// drawCollapsedBorderOutwardStrips paints the per-side outward strips for
-// a border-collapse:collapse table cell whose neighbor on that side is
-// missing from the grid. CSS 2.1 §17.6.3 / CSS Tables 3 §4.2: the
-// collapsed border for each cell-edge grid line paints centered on the
-// grid line with the full winning width. When the neighbor cell exists,
-// each side paints its half inside its own border-box and the two halves
-// meet at the grid line. When the neighbor is missing (e.g. JS removed
-// the cell), the live cell's drawBorders still paints only the inside
-// half against its border-box; the spec-mandated outside half is painted
-// here as an additive strip just OUTSIDE the cell's border-box on the
-// open side.
-//
-// Mirrors the painted extent of Blink's TablePainter::PaintCollapsedBorders
-// (third_party/blink/renderer/core/paint/table_painters.cc:356-362 @
-// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Blink walks a
-// per-edge grid at the table level; louis14 currently paints collapsed
-// borders per cell, so we recover the same final pixels via this outward
-// strip rather than restructuring the paint dispatch.
-//
-// CollapsedBorderOutwardExtension is indexed [top, right, bottom, left]
-// to match drawBorders. The strip's color and style mirror the cell's
-// own border on the same side — both sides of the grid line carry the
-// same winning style/color from resolveBorderConflict.
-func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer, rect layout.PhysicalRect) {
-	if !layer.IsCollapsedBorderCell {
-		return
-	}
-	ext := layer.CollapsedBorderOutwardExtension
-	if ext[0] == 0 && ext[1] == 0 && ext[2] == 0 && ext[3] == 0 {
-		return
-	}
-	box := layer.Box
-	if box == nil {
-		return
-	}
-
-	// Pixel-snapped cell border-box outer corners — same convention as
-	// drawBorders so the strip aligns precisely with the cell's painted
-	// inside half.
-	x, y, w, h := pixelSnap(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height)
-	outerLeft, outerTop := x, y
-	outerRight, outerBottom := x+w, y+h
-
-	// Top strip: just above the cell's top edge.
-	if ext[0] > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
-		if c := layer.BorderColors[0]; c.A > 0 {
-			r.setColor(c)
-			r.dc.MoveTo(outerLeft, outerTop-ext[0])
-			r.dc.LineTo(outerRight, outerTop-ext[0])
-			r.dc.LineTo(outerRight, outerTop)
-			r.dc.LineTo(outerLeft, outerTop)
-			r.dc.ClosePath()
-			r.dc.Fill()
-		}
-	}
-	// Right strip: just outside the cell's right edge.
-	if ext[1] > 0 && layer.BorderStyles[1] != css.BorderStyleNone {
-		if c := layer.BorderColors[1]; c.A > 0 {
-			r.setColor(c)
-			r.dc.MoveTo(outerRight, outerTop)
-			r.dc.LineTo(outerRight+ext[1], outerTop)
-			r.dc.LineTo(outerRight+ext[1], outerBottom)
-			r.dc.LineTo(outerRight, outerBottom)
-			r.dc.ClosePath()
-			r.dc.Fill()
-		}
-	}
-	// Bottom strip: just below the cell's bottom edge.
-	if ext[2] > 0 && layer.BorderStyles[2] != css.BorderStyleNone {
-		if c := layer.BorderColors[2]; c.A > 0 {
-			r.setColor(c)
-			r.dc.MoveTo(outerLeft, outerBottom)
-			r.dc.LineTo(outerRight, outerBottom)
-			r.dc.LineTo(outerRight, outerBottom+ext[2])
-			r.dc.LineTo(outerLeft, outerBottom+ext[2])
-			r.dc.ClosePath()
-			r.dc.Fill()
-		}
-	}
-	// Left strip: just outside the cell's left edge.
-	if ext[3] > 0 && layer.BorderStyles[3] != css.BorderStyleNone {
-		if c := layer.BorderColors[3]; c.A > 0 {
-			r.setColor(c)
-			r.dc.MoveTo(outerLeft-ext[3], outerTop)
-			r.dc.LineTo(outerLeft, outerTop)
-			r.dc.LineTo(outerLeft, outerBottom)
-			r.dc.LineTo(outerLeft-ext[3], outerBottom)
-			r.dc.ClosePath()
-			r.dc.Fill()
-		}
-	}
-}
-
 // drawBorders paints the layer's borders in rect, its border box: the
 // border image when one is set and loads, else BoxBorderPainter
 // (BoxPainterBase::PaintBorder, box_painter_base.cc:1745-1780 @
@@ -3909,21 +3795,6 @@ func (r *Renderer) drawBorders(layer *PaintLayer, rect layout.PhysicalRect) {
 	r.PaintBorder(layer, toLayoutRect(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height))
 }
 
-// clampLineWidth snaps a computed line width (column-rule-width) to whole
-// CSS pixels: values strictly between 0 and 1 round up to 1, everything
-// else floors. Mirrors Blink StyleBuilderConverter::ClampLineWidth
-// (style_builder_converter.cc:1964-1971 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-// which column-rule-width reaches through ConvertBorderWidth (:2600-2601).
-// Applied at the PaintLayer boundary because the computed-value home
-// (pkg/css GetColumnRuleWidth) is outside LOU-366's file territory —
-// flagged for promotion into pkg/css alongside border-width handling.
-func clampLineWidth(width float64) float64 {
-	if width > 0 && width < 1 {
-		return 1
-	}
-	return math.Floor(width)
-}
-
 // drawColumnRuleRect paints one pixel-snapped column-rule segment through
 // BoxBorderPainter::DrawBoxSide (box_border_painter.cc:2497-2507 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Blink's gap decoration
@@ -3933,15 +3804,11 @@ func clampLineWidth(width float64) float64 {
 // writing modes, kTop otherwise). Styles css.BorderStyle cannot hold
 // (groove, ridge, inset, outset) paint solid.
 func (r *Renderer) drawColumnRuleRect(style string, c css.Color, x, y, w, h float64, horizontalRule bool) {
-	bs := css.BorderStyle(style)
-	if bs == css.BorderStyleNone || bs == css.BorderStyleHidden {
-		return
-	}
 	side := BoxSideLeft
 	if horizontalRule {
 		side = BoxSideTop
 	}
-	r.drawLineForBoxSide(int(x), int(y), int(x+w), int(y+h), side, c, bs, 0, 0)
+	r.DrawBoxSide(intRect{int(x), int(y), int(x+w) - int(x), int(y+h) - int(y)}, side, c, css.BorderStyle(style))
 }
 
 // drawOutline draws the CSS outline around the border-box, offset by outline-offset.

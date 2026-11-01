@@ -43,6 +43,12 @@ type LayoutInputNode struct {
 	// For anonymous boxes, this is a synthesized style inheriting from the parent.
 	style *css.Style
 
+	// collapsedBorderSourceStyle is a collapsed-border table cell's own
+	// computed style, kept when table layout swaps style for a clone that
+	// carries the cell's resolved border share (applyCollapsedCellBorders),
+	// so a later layout of the table resolves borders from the source again.
+	collapsedBorderSourceStyle *css.Style
+
 	// children are the layout children (pre-filtered, may include anonymous wrappers).
 	children []*LayoutInputNode
 
