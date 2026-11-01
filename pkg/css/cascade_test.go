@@ -591,7 +591,7 @@ func TestGetDisplay_TwoKeywordRuby(t *testing.T) {
 }
 
 // TestEquivalentInlineDisplay covers the Phase 1 inlinification mapping
-// used by normalizeRubySubtrees / inlinifyRubyChildren. Mirrors Blink
+// used by normalizeRubySubtrees / inlinifyChild. Mirrors Blink
 // `core/css/resolver/style_adjuster.cc:303-356`.
 func TestEquivalentInlineDisplay(t *testing.T) {
 	cases := []struct {
