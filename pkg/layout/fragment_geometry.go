@@ -676,6 +676,17 @@ func CalculateInitialFragmentGeometry(
 		return FragmentGeometry{BorderBoxSize: LogicalSize{InlineSize: space.AvailableSize.InlineSize.Float64(), BlockSize: Indefinite}}
 	}
 	pctBase := space.PercentageResolutionInlineSize
+
+	// A replaced box takes its border-box size from ComputeReplacedSize
+	// (CalculateInitialFragmentGeometry, length_utils.cc:1701-1707 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 has no
+	// is_intrinsic pass through here, so the mode is always kNormal.
+	if node.IsReplaced() {
+		geom := replacedFragmentGeometry(style, wdm, space)
+		geom.BorderBoxSize = ComputeReplacedSize(ctx, node, space, ReplacedSizeModeNormal)
+		return geom
+	}
+
 	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
 	// Lazy cache for content-based MinMaxSizes — used by min/max-inline-size

@@ -583,8 +583,12 @@ func TestBlockLayout_EmptyDivStillCollapsesThrough(t *testing.T) {
 	if len(result.Fragment.Children) != 2 {
 		t.Fatalf("got %d children, want 2 (empty div kept, then sibling)", len(result.Fragment.Children))
 	}
-	if !result.Fragment.Children[0].Fragment.IsSelfCollapsing {
-		t.Errorf("plain empty 0x0 child not marked self-collapsing")
+	emptySpace := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		Build()
+	if !NewBlockLayoutAlgorithm(ctx, layoutRoot.Children()[0], emptySpace).Layout().IsSelfCollapsing {
+		t.Errorf("plain empty 0x0 child not self-collapsing")
 	}
 	if got := result.Fragment.Children[1].Offset.Top.Float64(); got != 0 {
 		t.Errorf("sibling top = %v, want 0", got)

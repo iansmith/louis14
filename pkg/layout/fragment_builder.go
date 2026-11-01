@@ -1725,7 +1725,9 @@ func (b *BoxFragmentBuilder) AdjustSpaceShortageForBreakAvoidRoot(ctx *LayoutCon
 	if b.PreviousBreakToken().IsBreakInside() {
 		return
 	}
+	enableSideEffects := ctx.DisableLayoutSideEffects()
 	measure := layoutElement(ctx, b.layoutNode, space.CloneWithoutFragmentation())
+	enableSideEffects()
 	if measure == nil || measure.Status != LayoutResultSuccess || measure.Fragment == nil {
 		return
 	}

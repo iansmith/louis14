@@ -1638,26 +1638,23 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	switch {
 	case balanceColumns:
 		colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
-		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
-	case !mla.hasAutoColumnHeight() || mla.hasExplicitBlock():
-		// initialColBlockSize is definite: not content-based.
-		colBlockSize = mla.constrainColumnBlockSize(initialColBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
+	case initialColBlockSize == Indefinite && !mla.isConstrainedByOuterFragmentation():
+		// An unconstrained column-fill:auto line still gets a
+		// content-based column block-size, unbalanced
+		// (has_content_based_block_size, cla.cc:845-856 @ a9f50e522efa).
+		colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, false)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
 	default:
-		if mla.isConstrainedByOuterFragmentation() {
-			// Blink cla.cc:857-872 @ a9f50e522efa: when an auto-height
-			// multicol with column-fill:auto has no explicit height
-			// but is constrained by an outer fragmentainer, use the outer
-			// remaining space as the column block-size, not a
-			// content-based one (has_content_based_block_size requires
-			// !is_constrained_by_outer_fragmentation_context_).
-			colBlockSize = mla.constrainColumnBlockSize(outerRemaining, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
-			shrinkToFitColumnBlockSize = true
-		} else {
-			// An unconstrained column-fill:auto line still gets a
-			// content-based column block-size, unbalanced
-			// (has_content_based_block_size, cla.cc:845-856 @ a9f50e522efa).
-			colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, false)
-			colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
+		// Not content-based: the initial column block-size (column-height,
+		// or what is left of the content block-size), only kept within the
+		// available outer space; an auto one takes all of it and shrinks to
+		// fit a single partly filled column (cla.cc:857-872 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		colBlockSize = initialColBlockSize
+		if outerRemaining != Indefinite && (colBlockSize == Indefinite || colBlockSize > outerRemaining) {
+			shrinkToFitColumnBlockSize = colBlockSize == Indefinite
+			colBlockSize = outerRemaining
 		}
 	}
 
@@ -1862,7 +1859,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
 				colBlockSize = mla.resolveColumnAutoBlockSize(wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, true)
-				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
+				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, outerRemaining, lineOffset)
 				continue
 			}
 			break
@@ -1938,7 +1935,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			}
 			newColBlockSize = colBlockSize + minSpaceShortage
 		}
-		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
+		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, outerRemaining, lineOffset)
 		if newColBlockSize <= colBlockSize {
 			// Nested balancing: we can't stretch any further in this inner
 			// multicol. Report the minimum shortage upward so the outer
@@ -2345,18 +2342,13 @@ measure:
 // Mirrors Blink's ConstrainColumnBlockSize() (cla.cc:1736-1821 @
 // a9f50e522efa; louis14 works in content-box units so the border-box
 // conversion at :1770-1772/:1813 is a no-op here).
-// maxBlockSize == Indefinite means the container has no max-height constraint.
+// The caps are the multicol's explicit block-size, max-block-size
+// (effectiveMaxBlockSize, Indefinite for none) and min-block-size.
 // outerRemaining (unless Indefinite) is the outer fragmentainer limit; 0 is a
 // real limit (cla.cc:1743-1746 @ a9f50e522efa). A regrown line's minimum
 // column block-size reaches here through outerRemaining (LayoutLine).
-func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
-	size float64,
-	hasExplicitBlock bool,
-	explicitBlockSize float64,
-	maxBlockSize float64,
-	outerRemaining float64,
-	lineOffset float64,
-) float64 {
+func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(size, outerRemaining, lineOffset float64) float64 {
+	hasExplicitBlock, explicitBlockSize, maxBlockSize := mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize
 	if size < 0 {
 		size = 0
 	}
