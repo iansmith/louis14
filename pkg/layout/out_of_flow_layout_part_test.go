@@ -205,3 +205,24 @@ func TestRootOutOfFlowLayoutPartContentSize(t *testing.T) {
 		t.Errorf("containing block size = %v, want the viewport %v", p.containingBlockSize, want)
 	}
 }
+
+// TestOOFStaticPositionWithPercentagePadding pins the border+padding a
+// propagated static position moves past to the laid-out child's, so
+// percentage padding counts: Blink's static positions are relative to the
+// border box and PropagateOOFPositionedInfo adds the child's offset
+// (fragment_builder.cc:762 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+// louis14's content-box static positions add the fragment's own border and
+// padding. A flex item with padding:10% of 200px puts `f` at (20,20); a
+// block with padding 5% 0 0 10% of 300px, after the 90px flex container,
+// puts `g` at (30,105).
+func TestOOFStaticPositionWithPercentagePadding(t *testing.T) {
+	got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font-size:0">`+
+		`<div style="display:flex;width:200px"><div style="padding:10%;width:50px;height:50px">`+
+		`<div id=f style="position:fixed;width:5px;height:5px"></div></div></div>`+
+		`<div style="width:300px"><div style="padding:5% 0 0 10%;height:20px">`+
+		`<div id=g style="position:fixed;width:5px;height:5px"></div></div></div>`)
+	checkRectsFrom(t, got, map[string][]fragRect{
+		"f": {{20, 20, 5, 5}},
+		"g": {{30, 105, 5, 5}},
+	}, chrome152)
+}
