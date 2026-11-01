@@ -656,6 +656,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		geom.Border.BlockStart == 0 && geom.Padding.BlockStart == 0 &&
 		!incomingBreakToken.IsBreakInside()
 	firstNonEmptyChild := true
+	// Blink PreviousInflowPosition::self_collapsing_child_had_clearance: the
+	// last in-flow children are self-collapsing and one of them had clearance.
+	selfCollapsingChildHadClearance := false
 	// Whether a child placed so far left a breakpoint before the next one,
 	// giving it container separation (Blink BlockLayoutAlgorithm::
 	// has_break_opportunity_before_next_child_, block_layout_algorithm.cc:
@@ -1123,6 +1126,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// 2326-2337 @ a9f50e522efa). Unlike hasClearance it stays false
 			// when `clear` inserts no gap.
 			isPushedByFloats := false
+			// The cursor and strut before clearance was applied, and the
+			// content offset clearance moved the child to: a self-collapsing
+			// child re-decides its clearance once its margin strut is known.
+			var preClearanceCursor, clearanceOffset float64
+			var preClearanceStrut MarginStrut
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone && !exclusionSpace.IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
@@ -1140,6 +1148,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						// Set blockCursor so that blockCursor + childMargins.BlockStart
 						// = clearedBlock after the strut is reset and the child's
 						// block-start margin is re-appended at step 1 below.
+						preClearanceCursor, preClearanceStrut = blockCursor, prevMarginStrut
+						clearanceOffset = clearedBlock
 						blockCursor = clearedBlock - childMargins.BlockStart
 						prevMarginStrut = MarginStrut{} // consumed by clearance
 						isPushedByFloats = true
@@ -1530,6 +1540,26 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// (PositionSelfCollapsingChildWithParentBfc,
 				// block_layout_algorithm.cc:3066-3081 @ a9f50e522efa).
 				prevMarginStrut.AppendStrut(childResult.EndMarginStrut)
+				if isPushedByFloats {
+					// A self-collapsing child gets clearance only when its
+					// hypothetical border edge, past every margin collapsed
+					// up to it, is above the floats (FinishInflow,
+					// block_layout_algorithm.cc:2440-2454). With clearance,
+					// the margins before it separate from its own, and the
+					// cursor is set so that its own strut lands it at the
+					// clearance offset (ComputeInflowPosition, :2900-2950;
+					// relayout with a strut of its block-start margin only,
+					// :2496-2515 @ a9f50e522efa).
+					unclearedStrut := preClearanceStrut
+					unclearedStrut.Append(childMargins.BlockStart)
+					unclearedStrut.AppendStrut(childResult.EndMarginStrut)
+					if preClearanceCursor+unclearedStrut.Resolve() >= clearanceOffset {
+						blockCursor, prevMarginStrut = preClearanceCursor, unclearedStrut
+						isPushedByFloats = false
+					} else {
+						blockCursor = clearanceOffset - prevMarginStrut.Resolve()
+					}
+				}
 			}
 
 			// Step 4: Position child in the inline direction.
@@ -1713,9 +1743,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				bla.containerBuilder.PropagateChildBreakValues(childResult)
 			}
 
-			if !isSelfCollapsing {
+			// A self-collapsing child cleared past floats resolves this
+			// block's BFC block-offset (has_clearance_past_adjoining_floats
+			// forces it, FinishInflow, block_layout_algorithm.cc:2436-2465):
+			// later children no longer adjoin its block-start. With actual
+			// clearance its end margin strut also stays inside this block
+			// (ComputeInflowPosition :3044-3047, FinishLayout :1287-1294 @
+			// a9f50e522efa).
+			if !isSelfCollapsing || hasClearance {
 				firstNonEmptyChild = false
 			}
+			selfCollapsingChildHadClearance = isSelfCollapsing &&
+				(isPushedByFloats || selfCollapsingChildHadClearance)
 			// A child resumed in a parallel flow leaves no breakpoint before
 			// the next sibling, so a forced break-before on that sibling does
 			// not fire again (Blink HandleInflow, block_layout_algorithm.cc:
@@ -1865,7 +1904,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// is explicit (not auto), OR there is border/padding at block-end,
 	// the trailing margin does NOT propagate out as EndMarginStrut.
 	canPropagateBottom := !bla.space.IsNewFormattingContext &&
-		!hasExplicitBlock &&
+		!hasExplicitBlock && !selfCollapsingChildHadClearance &&
 		geom.Border.BlockEnd == 0 && geom.Padding.BlockEnd == 0
 
 	// Gate A: a fragment that breaks inside adds no trailing margin.
