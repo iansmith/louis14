@@ -397,15 +397,18 @@ func treeShape(n *Node) string {
 		if id := n.Attributes["id"]; id != "" {
 			b.WriteString("#" + id)
 		}
-		if len(n.Children) == 0 {
+		var kids []*Node
+		for _, c := range n.Children {
+			if c.Type != TextNode || strings.TrimSpace(c.Text) != "" {
+				kids = append(kids, c)
+			}
+		}
+		if len(kids) == 0 {
 			return
 		}
 		b.WriteString("(")
 		first := true
-		for _, c := range n.Children {
-			if c.Type == TextNode && strings.TrimSpace(c.Text) == "" {
-				continue
-			}
+		for _, c := range kids {
 			if !first {
 				b.WriteString(" ")
 			}
@@ -495,6 +498,21 @@ func TestParser_TableInsertionModes(t *testing.T) {
 			name:   "explicitly closed table unchanged apart from tbody",
 			markup: `<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>`,
 			want:   `table(tbody(tr(td("a") td("b")) tr(td("c"))))`,
+		},
+		{
+			name:   "col gets implied colgroup, closed by tr",
+			markup: `<table><col><tr><td>a</table>`,
+			want:   `table(colgroup(col) tbody(tr(td("a"))))`,
+		},
+		{
+			name:   "tr closes an open caption",
+			markup: `<table><caption>c<tr><td>a</table>`,
+			want:   `table(caption("c") tbody(tr(td("a"))))`,
+		},
+		{
+			name:   "end tag of an element outside the cell is ignored",
+			markup: `<div><table><tr><td>a</div>b</table></div>`,
+			want:   `table(tbody(tr(td("a" "b"))))`,
 		},
 		{
 			name:   "end tag for a cell outside table scope is ignored",

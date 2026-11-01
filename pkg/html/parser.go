@@ -158,10 +158,9 @@ func (p *Parser) Parse() (*Document, error) {
 			// <dt>/<dd> close an open <dt>/<dd>.
 			p.autoCloseListItem(token.TagName)
 
-			// HTML5 table parsing: auto-close table structural elements.
-			// colgroup is implicitly closed by tbody/tfoot/thead/tr/td/th.
-			// tbody/thead/tfoot are implicitly closed by each other.
-			p.autoCloseTableElements(token.TagName)
+			// Table insertion modes: close an open cell/row/row group and
+			// insert implied <tbody>/<tr>/<colgroup> (Blink HTMLTreeBuilder).
+			p.processStartTagForTable(token.TagName)
 
 			// Create new element node
 			node := &Node{
@@ -552,41 +551,308 @@ func (p *Parser) closeTag(tagName string) {
 	if tagName == "html" || tagName == "body" {
 		return
 	}
+	// Table-structure end tags act only when the element is in table scope
+	// (ProcessEndTagForInTable / InTableBody / InRow / InCell,
+	// html_tree_builder.cc:2007-2117, :2319-2345 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); popping through it also
+	// covers CloseTheCell and the fake </tr> those modes issue first. Any
+	// other end tag never pops past a cell, caption or table: those are
+	// scope markers for "has an element in scope" (IsScopeMarkerTag,
+	// html_element_stack.cc:47-56) and special elements for
+	// ProcessAnyOtherEndTagForInBody (html_tree_builder.cc:1730) @ the same
+	// SHA. Unmatched end tags are ignored.
+	marker := isCellOrTableScopeMarker
+	if tagName == "caption" || tagName == "colgroup" || tagName == "tr" || tagName == "table" ||
+		isTableCellContextTag(tagName) || isTableBodyContextTag(tagName) {
+		marker = isTableScopeMarker
+	}
+	if i := p.inScopeCommon(marker, tagName); i >= 0 {
+		p.popUntilPopped(i)
+	}
+}
+
+// insertionMode is the subset of Blink's HTMLTreeBuilder::InsertionMode
+// (core/html/parser/html_tree_builder.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) that the table start-tag rules
+// distinguish. louis14's tree builder keeps no explicit mode state: the mode
+// is recomputed from the stack of open elements on demand, exactly as
+// ResetInsertionModeAppropriately does (html_tree_builder.cc:1949-2005 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Every non-table mode collapses
+// to inOtherMode, where the table rules do not apply.
+type insertionMode int
+
+const (
+	inOtherMode insertionMode = iota
+	inTableMode
+	inCaptionMode
+	inColumnGroupMode
+	inTableBodyMode
+	inRowMode
+	inCellMode
+)
+
+// resetInsertionModeAppropriately mirrors HTMLTreeBuilder::
+// ResetInsertionModeAppropriately (html_tree_builder.cc:1949-2005 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), restricted to the table
+// modes: the nearest table-structure element on the stack picks the mode;
+// template/head/body/html (or reaching the document root) means a non-table
+// mode. Only HTML-namespace items count (item->IsHTMLNamespace()).
+func (p *Parser) resetInsertionModeAppropriately() insertionMode {
 	for i := len(p.stack) - 1; i >= 1; i-- {
-		if p.stack[i].TagName == tagName {
-			p.stack = p.stack[:i]
+		n := p.stack[i]
+		if n.NamespaceURI() != XHTMLNamespaceURI {
+			continue
+		}
+		switch n.TagName {
+		case "td", "th":
+			return inCellMode
+		case "tr":
+			return inRowMode
+		case "tbody", "thead", "tfoot":
+			return inTableBodyMode
+		case "caption":
+			return inCaptionMode
+		case "colgroup":
+			return inColumnGroupMode
+		case "table":
+			return inTableMode
+		case "template", "head", "body", "frameset", "html":
+			return inOtherMode
+		}
+	}
+	return inOtherMode
+}
+
+func isTableCellContextTag(tag string) bool { return tag == "td" || tag == "th" } // TABLE_CELL_CONTEXT_CASES
+func isTableBodyContextTag(tag string) bool {
+	return tag == "tbody" || tag == "thead" || tag == "tfoot" // TABLE_BODY_CONTEXT_CASES
+}
+func isCaptionColOrColgroupTag(tag string) bool {
+	return tag == "caption" || tag == "col" || tag == "colgroup" // CAPTION_COL_OR_COLGROUP_CASES
+}
+
+// isTableStructureTag reports the start tags that end an open cell or row:
+// the union of the case labels at html_tree_builder.cc:1557-1559 / 1573-1576
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func isTableStructureTag(tag string) bool {
+	return isCaptionColOrColgroupTag(tag) || isTableCellContextTag(tag) ||
+		tag == "tr" || isTableBodyContextTag(tag)
+}
+
+// Scope markers, html_element_stack.cc:94-136 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (HTML namespace only). The
+// document root (stack[0]) stands in for html when no <html> is open.
+func isTableScopeMarker(n *Node) bool {
+	return n.NamespaceURI() == XHTMLNamespaceURI &&
+		(n.TagName == "html" || n.TagName == "table" || n.TagName == "template")
+}
+func isTableBodyScopeMarker(n *Node) bool {
+	return n.NamespaceURI() == XHTMLNamespaceURI && (n.TagName == "html" ||
+		isTableBodyContextTag(n.TagName) || n.TagName == "template")
+}
+func isTableRowScopeMarker(n *Node) bool {
+	return n.NamespaceURI() == XHTMLNamespaceURI &&
+		(n.TagName == "html" || n.TagName == "tr" || n.TagName == "template")
+}
+
+// popUntil pops open elements until the current node satisfies marker or
+// only the document root remains. Shared body of HTMLElementStack::
+// PopUntilTableScopeMarker / PopUntilTableBodyScopeMarker /
+// PopUntilTableRowScopeMarker (html_element_stack.cc:243-259 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (p *Parser) popUntil(marker func(*Node) bool) {
+	for len(p.stack) > 1 && !marker(p.currentParent()) {
+		p.pop()
+	}
+}
+
+// inScopeCommon mirrors HTMLElementStack's InScopeCommon template
+// (html_element_stack.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// index of the topmost open element named one of tags, searching down to the
+// first element satisfying marker (inclusive), or -1.
+func (p *Parser) inScopeCommon(marker func(*Node) bool, tags ...string) int {
+	for i := len(p.stack) - 1; i >= 1; i-- {
+		n := p.stack[i]
+		for _, t := range tags {
+			if n.TagName == t {
+				return i
+			}
+		}
+		if marker(n) {
+			return -1
+		}
+	}
+	return -1
+}
+
+// inTableScope mirrors HTMLElementStack::InTableScope
+// (html_element_stack.cc:484-491 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (p *Parser) inTableScope(tags ...string) int {
+	return p.inScopeCommon(isTableScopeMarker, tags...)
+}
+
+// isCellOrTableScopeMarker is the table-related subset of IsScopeMarkerTag
+// (html_element_stack.cc:47-56 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// that bounds non-table end tags.
+func isCellOrTableScopeMarker(n *Node) bool {
+	return n.NamespaceURI() == XHTMLNamespaceURI &&
+		(isTableCellContextTag(n.TagName) || n.TagName == "caption" || n.TagName == "table")
+}
+
+// popUntilPopped pops open elements through stack[i] (HTMLElementStack::
+// PopUntilPopped, after the caller located the element).
+func (p *Parser) popUntilPopped(i int) {
+	p.stack = p.stack[:i]
+}
+
+// processFakeStartTag inserts an implied element (no attributes) as the
+// current node — HTMLTreeBuilder::ProcessFakeStartTag
+// (html_tree_builder.cc:599 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), used
+// for the implied <tbody>, <tr> and <colgroup>.
+func (p *Parser) processFakeStartTag(tag string) {
+	node := &Node{Type: ElementNode, TagName: tag, Attributes: map[string]string{}, Children: make([]*Node, 0)}
+	insertElement(node, p.currentParent())
+	p.push(node)
+}
+
+// closeTheCell mirrors HTMLTreeBuilder::CloseTheCell
+// (html_tree_builder.cc:1304-1314 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the fake </td> or </th> pops through the open cell
+// (ProcessEndTagForInCell, :2096-2107), leaving the row as current node.
+func (p *Parser) closeTheCell() bool {
+	i := p.inTableScope("td", "th")
+	if i < 0 {
+		return false
+	}
+	p.popUntilPopped(i)
+	return true
+}
+
+// processTrEndTagForInRow mirrors HTMLTreeBuilder::ProcessTrEndTagForInRow
+// (html_tree_builder.cc:2306-2317 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (p *Parser) processTrEndTagForInRow() bool {
+	if p.inTableScope("tr") < 0 {
+		return false
+	}
+	p.popUntil(isTableRowScopeMarker)
+	p.pop() // the <tr>
+	return true
+}
+
+// processStartTagForTable runs the table insertion modes' start-tag rules
+// for tag before the generic insertion path inserts it as the current
+// node. It mirrors the kInTableMode / kInCaptionMode / kInColumnGroupMode /
+// kInTableBodyMode / kInRowMode / kInCellMode arms of
+// HTMLTreeBuilder::ProcessStartTag (html_tree_builder.cc:1497-1590 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) plus ProcessStartTagForInTable
+// (:1316-1393). Blink's "reprocess the token" (ProcessStartTag(token) after a
+// mode change) is the loop's continue; returning lets the caller insert the
+// element.
+//
+// Not modelled: foster parenting of non-table content inside a table (the
+// RedirectToFosterParentGuard at :1392) and the active-formatting-element
+// markers; such content stays where louis14 already puts it (the current
+// node). XML documents are parsed by Blink's XMLDocumentParser, not the
+// HTML tree builder, so none of this applies to them.
+func (p *Parser) processStartTagForTable(tag string) {
+	if p.isXML {
+		return
+	}
+	// Tokens in foreign content bypass the insertion modes
+	// (HTMLTreeBuilder::ProcessToken → ProcessTokenInForeignContent). The
+	// loop below only pops or inserts HTML elements, so this holds for
+	// every reprocess iteration.
+	if cur := p.currentParent(); cur.Type == ElementNode && cur.NamespaceURI() != XHTMLNamespaceURI &&
+		shouldProcessTokenInForeignContent(tag, cur) {
+		return
+	}
+	for {
+		switch p.resetInsertionModeAppropriately() {
+		case inCellMode: // :1571-1590
+			if !isTableStructureTag(tag) || !p.closeTheCell() {
+				return
+			}
+		case inRowMode: // :1548-1570
+			switch {
+			case isTableCellContextTag(tag):
+				p.popUntil(isTableRowScopeMarker)
+				return
+			case tag == "tr" || isCaptionColOrColgroupTag(tag) || isTableBodyContextTag(tag):
+				if !p.processTrEndTagForInRow() {
+					return
+				}
+			default:
+				if !p.processStartTagForInTable(tag) {
+					return
+				}
+			}
+		case inTableBodyMode: // :1516-1547
+			switch {
+			case tag == "tr":
+				p.popUntil(isTableBodyScopeMarker)
+				return
+			case isTableCellContextTag(tag):
+				p.popUntil(isTableBodyScopeMarker) // ProcessFakeStartTag(kTr) → the tr arm
+				p.processFakeStartTag("tr")
+			case isCaptionColOrColgroupTag(tag) || isTableBodyContextTag(tag):
+				if p.inTableScope("tbody", "thead", "tfoot") < 0 {
+					return
+				}
+				p.popUntil(isTableBodyScopeMarker)
+				p.pop() // ProcessFakeEndTag(current table body)
+			default:
+				if !p.processStartTagForInTable(tag) {
+					return
+				}
+			}
+		case inCaptionMode: // :1478-1489 → ProcessCaptionEndTagForInCaption
+			i := p.inTableScope("caption")
+			if !isTableStructureTag(tag) || i < 0 {
+				return
+			}
+			p.popUntilPopped(i)
+		case inColumnGroupMode: // :1496-1515 → ProcessColgroupEndTagForInColumnGroup
+			if tag == "col" || tag == "template" || p.currentParent().TagName != "colgroup" {
+				return
+			}
+			p.pop()
+		case inTableMode:
+			if !p.processStartTagForInTable(tag) {
+				return
+			}
+		default:
 			return
 		}
 	}
-	// Tag not found on stack; ignore the end tag
 }
 
-// autoCloseTableElements implements HTML5 table implicit closing rules.
-// Key rules per HTML5 §12.2.6.4.9-12:
-//   - <colgroup> is implicitly closed when <tbody>, <tfoot>, <thead>, <tr>, <td>, <th> is seen
-//   - <tbody>/<thead>/<tfoot> are implicitly closed when another section element starts
-func (p *Parser) autoCloseTableElements(tagName string) {
-	parent := p.currentParent()
-	switch tagName {
-	case "tbody", "tfoot", "thead":
-		// Close <colgroup> if it is the current parent
-		if parent.TagName == "colgroup" {
-			p.pop()
+// processStartTagForInTable mirrors HTMLTreeBuilder::ProcessStartTagForInTable
+// (html_tree_builder.cc:1316-1393 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// It reports whether the token must be reprocessed in the new mode.
+func (p *Parser) processStartTagForInTable(tag string) bool {
+	switch {
+	case tag == "caption" || tag == "colgroup" || isTableBodyContextTag(tag):
+		p.popUntil(isTableScopeMarker)
+		return false
+	case tag == "col":
+		p.popUntil(isTableScopeMarker) // ProcessFakeStartTag(kColgroup) → the colgroup arm
+		p.processFakeStartTag("colgroup")
+		return true
+	case isTableCellContextTag(tag) || tag == "tr":
+		p.popUntil(isTableScopeMarker) // ProcessFakeStartTag(kTbody) → the tbody arm
+		p.processFakeStartTag("tbody")
+		return true
+	case tag == "table":
+		// ProcessTableEndTagForInTable (:2319-2328): a <table> start tag in
+		// table context closes the open table.
+		i := p.inTableScope("table")
+		if i < 0 {
+			return false
 		}
-		// Close any open tbody/thead/tfoot so they become siblings, not nested
-		parent = p.currentParent()
-		if parent.TagName == "tbody" || parent.TagName == "thead" || parent.TagName == "tfoot" {
-			p.pop()
-		}
-	case "tr":
-		// Close <colgroup> if it is the current parent
-		if parent.TagName == "colgroup" {
-			p.pop()
-		}
-	case "td", "th":
-		// Close any open <tr> sibling (handled naturally by close tag)
-		// No action needed here: td/th go inside the current tr
+		p.popUntilPopped(i)
+		return true
 	}
+	return false
 }
 
 // autoCloseP closes an open <p> element if one is on the stack
