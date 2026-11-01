@@ -59,7 +59,9 @@ type LogicalOofContainingBlock struct {
 
 	// IsInsideColumnSpanner marks OOFs whose CB is inside a column-spanner
 	// descendant (handled differently because spanners interrupt the column
-	// flow). Mirrors Blink's OofContainingBlock::is_inside_column_spanner_.
+	// flow). Set by PropagateOOFFragmentainerDescendants when propagating out
+	// of a spanner; read by the inner-multicol drain branch. Mirrors Blink's
+	// OofContainingBlock::is_inside_column_spanner_.
 	IsInsideColumnSpanner bool
 }
 
