@@ -109,26 +109,14 @@ func (bla *BlockLayoutAlgorithm) SetBoxType(t BoxType) {
 // through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
 // height:% etc.) reaches the real containing block. Mirrors Blink's
 // PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
-// Mirrors Blink's ConstraintSpace::PercentageResolutionBlockSize() separation
-// from AvailableSize: when an anonymous block's height was imposed by a parent
-// algorithm (IsBlockSizeOverride, e.g. multicol column fragmentainer), the
-// dedicated PercentageResolutionSize carries the containing block's CSS height,
-// NOT the fragmentainer height.
+// A column box's own block-size is the fragmentainer's, not the containing
+// block's CSS height: its children resolve percentages against the
+// dedicated PercentageResolutionSize the multicol passes in (Blink's
+// CreateConstraintSpaceForFragmentainer percentage_resolution_size,
+// fragmentation_utils.cc:1388-1389 @ a9f50e522efa).
 func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
-	// For anonymous blocks whose height comes from IsBlockSizeOverride (the
-	// multicol column fragmentainer case), the override height is the column
-	// height — not the CSS containing-block height for percentage resolution.
-	// Use the dedicated PercentageResolutionSize.BlockSize which carries the
-	// multicol container's explicit height.
-	// We do NOT apply this to named (non-anonymous) elements: flex items and
-	// other real elements that get IsBlockSizeOverride already have their CSS
-	// height correctly expressed as the override, so explicitBlockSize is right.
-	if bla.space.IsBlockSizeOverride && bla.node != nil && bla.node.isAnonymous {
-		pctRes := bla.space.PercentageResolutionSize.BlockSize.Float64()
-		if pctRes >= 0 {
-			return pctRes
-		}
-		return Indefinite
+	if bla.boxType == BoxTypeColumn {
+		return bla.space.PercentageResolutionSize.BlockSize.Float64()
 	}
 	if hasExplicitBlock {
 		return explicitBlockSize
@@ -141,7 +129,10 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 			return bla.space.PercentageResolutionSize.BlockSize.Float64()
 		}
 	}
-	return explicitBlockSize // 0 if auto and not an anonymous passthrough
+	// An auto block-size gives children an indefinite percentage block-size
+	// (CalculateChildPercentageSize returns the child available size,
+	// length_utils.cc:1810-1828 @ a9f50e522efa), never a definite 0.
+	return Indefinite
 }
 
 // desiredBlockSizeAtBlockEnd reports whether a definite-height block is known
@@ -515,6 +506,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	childAvailableBlock := Indefinite
 	if hasExplicitBlock {
 		childAvailableBlock = explicitBlockSize
+	}
+	// A fragmentainer's space is anonymous: its children get its available
+	// block-size (CalculateChildAvailableSize, length_utils.cc:1781-1785 @
+	// a9f50e522efa; CreateConstraintSpaceForFragmentainer sets IsAnonymous,
+	// fragmentation_utils.cc:1393).
+	if bla.boxType == BoxTypeColumn {
+		childAvailableBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 
 	// §10.3.2: Compute the available block-size for orthogonal children.
@@ -1844,7 +1842,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					} else if len(child.Children()) == 0 && !hasOnlyInlineChildren(child) {
 						// Leaf block: child completed but its declared size overflowed.
 						childConsumed := fragEnd - actualChildBlockOff
-						if childConsumed == 0 && (fragSize > 0 || !bla.space.IsBlockSizeOverride) {
+						if childConsumed == 0 && (fragSize > 0 || bla.boxType != BoxTypeColumn) {
 							// Child starts exactly at fragEnd. Fresh start
 							// next fragmentainer (also covers the balance-
 							// estimate fragSize==0 path).
@@ -1852,7 +1850,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 								Node:          child,
 								IsBreakBefore: true,
 							})
-						} else if bla.space.IsBlockSizeOverride {
+						} else if bla.boxType == BoxTypeColumn {
 							// Inner column context: the leaf returned no break
 							// token, so it is complete — it fit, or is
 							// unbreakable and overflows the column whole.
@@ -1914,7 +1912,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 					isInsideCurrent := childResult != nil && childResult.BreakToken != nil
 					if !isInsideCurrent && len(child.Children()) == 0 &&
-						!hasOnlyInlineChildren(child) && bla.space.IsBlockSizeOverride {
+						!hasOnlyInlineChildren(child) && bla.boxType == BoxTypeColumn {
 						if fragEnd-actualChildBlockOff > 0 {
 							isInsideCurrent = true
 						}

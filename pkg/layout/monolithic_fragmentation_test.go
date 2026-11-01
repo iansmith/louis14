@@ -491,8 +491,8 @@ func TestParallelFlow_CompletedParentCarriesChildContinuation(t *testing.T) {
 // finished — the multicol-nested-011 infinite row loop (30s watchdog
 // hang).
 //
-// Geometry mirrors nested-011's inner wrapper: fragmentainer 50 with
-// IsBlockSizeOverride (a column slot), monolithic contain:size leaf h100.
+// Geometry mirrors nested-011's inner wrapper: a 50px column box,
+// monolithic contain:size leaf h100.
 func TestMonolithic_LeafNeverGetsResumeToken(t *testing.T) {
 	leaf := makeNode("div")
 	parent := makeNode("div", leaf)
@@ -506,15 +506,15 @@ func TestMonolithic_LeafNeverGetsResumeToken(t *testing.T) {
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: 50}).
-		SetIsFixedBlockSize(true).
-		SetIsBlockSizeOverride(true).
 		SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(50).
 		SetFragmentainerOffset(0).
 		SetBlockFragmentationType(FragmentColumn).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(testContext(), node, space).Layout()
+	bla := NewBlockLayoutAlgorithm(testContext(), node, space)
+	bla.SetBoxType(BoxTypeColumn)
+	result := bla.Layout()
 	if result == nil || result.Fragment == nil {
 		t.Fatal("layout returned nil")
 	}
