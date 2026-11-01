@@ -222,6 +222,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		if !stretchInline {
 			if isAutoOrUnsetInline(item.style, wdm) { // auto inline-size: apply ShrinkToFit
 				mmSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
 					Build()
@@ -231,6 +232,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
 			SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: firstPassBlock}).
@@ -376,6 +378,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
 				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{InlineSize: reLayoutInline, BlockSize: reLayoutBlock}).
@@ -440,11 +443,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		relativeOffset := ComputeRelativeOffsetForBoxFragment(item.result.Fragment, wdm,
 			LogicalSize{InlineSize: itemInline, BlockSize: itemBlock})
 		builder.AddChildWithRelativeOffset(item.result.Fragment, offset, relativeOffset)
-
-		// Propagate OOF candidates from children.
-		for _, cand := range item.result.PropagatedOOFCandidates {
-			builder.AddOutOfFlowCandidate(cand)
-		}
+		builder.PropagateOOFPositionedInfo(item.result, item.style, offset, relativeOffset)
 	}
 
 	// Set first/last baseline from baseline-participating items in first/last rows.

@@ -276,7 +276,7 @@ func (p *OutOfFlowLayoutPart) layoutCandidate(candidate OutOfFlowCandidate) []Ou
 // propagatedDescendants returns the OOF descendants childResult surfaced,
 // with their static positions translated from the child's content-box
 // coordinates into the coordinates childOffset (the child's border-box
-// offset) is expressed in. Mirrors block_layout.go's PropagateOOFCandidates,
+// offset) is expressed in. Mirrors BoxFragmentBuilder.PropagateOOFPositionedInfo,
 // except the adjustment is applied against the resolved child offset rather
 // than a normal-flow block cursor.
 func (p *OutOfFlowLayoutPart) propagatedDescendants(childResult *LayoutResult, info OffsetInfo, childOffset LogicalOffset) []OutOfFlowCandidate {

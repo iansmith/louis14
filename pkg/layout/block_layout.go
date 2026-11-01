@@ -121,13 +121,14 @@ func (bla *BlockLayoutAlgorithm) SetBoxType(t BoxType) {
 // through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
 // height:% etc.) reaches the real containing block. Mirrors Blink's
 // PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
-// A column box's own block-size is the fragmentainer's, not the containing
-// block's CSS height: its children resolve percentages against the
-// dedicated PercentageResolutionSize the multicol passes in (Blink's
-// CreateConstraintSpaceForFragmentainer percentage_resolution_size,
-// fragmentation_utils.cc:1388-1389 @ a9f50e522efa).
+// An anonymous space (a column box, whose own block-size is the
+// fragmentainer's, not the containing block's CSS height) passes its own
+// percentage-resolution block-size to its children: the dedicated one the
+// multicol passes in (CalculateChildPercentageSize, length_utils.cc:
+// 1810-1818; CreateConstraintSpaceForFragmentainer, fragmentation_utils.cc:
+// 1388, :1393 @ a9f50e522efa).
 func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
-	if bla.boxType == BoxTypeColumn {
+	if bla.space.IsAnonymous {
 		return bla.space.PercentageResolutionSize.BlockSize.Float64()
 	}
 	if hasExplicitBlock {
@@ -367,9 +368,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// (LOU-337 / css-pseudo marker-content-012's `::before{display:inline-block;
 				// width:0;content:url(32px)}` reference).
 				//
-				// The fill is left untouched ONLY when it collapsed to 0 because the
-				// containing block's inline size is indefinite (a max-content/min-content
-				// measurement pass) and no block constraint transfers: forcing the intrinsic
+				// The fill is left untouched ONLY when the available inline-size collapsed
+				// to 0 because the containing block's inline size is indefinite (a
+				// max-content/min-content measurement pass) and no block constraint
+				// transfers. The test reads the space's available size, not the
+				// geometry's: a fit-content space shrinks an element with no intrinsic
+				// size (an <svg> with only attribute sizes) to 0 even when space is
+				// available (LOU-504, css-transforms skew-test1). Forcing the intrinsic
 				// there would make an auto-sized replaced element wrongly contribute its
 				// natural width to its container's intrinsic size (css-sizing
 				// svg-intrinsic-size-005: `<div width:max-content><svg width:100%>` stays 0,
@@ -380,7 +385,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
 					blockConstraintTransfers := replacedBlockConstraintTransfersToInline(
 						bla.ctx, bla.node, bla.style, wdm, bla.space, geom)
-					if contentInlineSize > 0 || blockFixed || blockConstraintTransfers {
+					hasAvailableInline := bla.space.AvailableSize.InlineSize.Float64()-geom.InlineBorderPadding() > 0
+					if hasAvailableInline || blockFixed || blockConstraintTransfers {
 						contentInlineSize = inlineSize
 					}
 				}
@@ -421,8 +427,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// (MustStayInCurrentFragmentainer, box_fragment_builder.h:401-413).
 	// Mirrors SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:
 	// 451-453, :484-487, :500 @ a9f50e522efa); a fragmentainer's space is
-	// anonymous and skips it.
-	if bla.space.HasBlockFragmentation && bla.boxType != BoxTypeColumn &&
+	// anonymous and skips it (:451).
+	if bla.space.HasBlockFragmentation && !bla.space.IsAnonymous &&
 		!bla.space.IsInitialColumnBalancingPass {
 		bla.containerBuilder.SetRequiresContentBeforeBreaking(bla.space.RequiresContentBeforeBreaking ||
 			(isKnownToFitInFragmentainer && !bla.space.BreakToken.IsBreakInside()))
@@ -536,11 +542,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		childAvailableBlock = explicitBlockSize
 	}
-	// A fragmentainer's space is anonymous: its children get its available
-	// block-size (CalculateChildAvailableSize, length_utils.cc:1781-1785 @
-	// a9f50e522efa; CreateConstraintSpaceForFragmentainer sets IsAnonymous,
-	// fragmentation_utils.cc:1393).
-	if bla.boxType == BoxTypeColumn {
+	// An anonymous space (a fragmentainer's) gives its children its
+	// available block-size (CalculateChildAvailableSize, length_utils.cc:
+	// 1781-1785 @ a9f50e522efa; CreateConstraintSpaceForFragmentainer sets
+	// IsAnonymous, fragmentation_utils.cc:1393).
+	if bla.space.IsAnonymous {
 		childAvailableBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 	// The builder's child available size, against which AddChild resolves
@@ -1246,6 +1252,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{
 						InlineSize: contentInlineSize,
 						BlockSize:  Indefinite,
@@ -1724,8 +1731,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// inside it, deferred for outer-fragmentation-root drain).
 			if len(childResult.PropagatedOOFCandidates) > 0 ||
 				(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
-				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-					childInlineOffset, actualChildBlockOff)
+				bla.containerBuilder.PropagateOOFPositionedInfo(childResult, childStyle,
+					LogicalOffset{InlineOffset: childInlineOffset, BlockOffset: actualChildBlockOff}, relativeOffset)
 			}
 
 			// A self-collapsing child cleared past floats resolves this
@@ -2253,133 +2260,6 @@ func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder,
 		BlockSize:  contentSize.BlockSize + geom.Padding.BlockSum(),
 	}
 	return NewOutOfFlowLayoutPart(ctx, builder, space, paddingBoxSize, geom.Padding, previousConsumedContent).Run()
-}
-
-// inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
-// Converts static positions from the child's content-box coordinates to this
-// element's content-box coordinates.
-func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
-	childResult *LayoutResult,
-	childStyle *css.Style,
-	parentWDM WritingDirectionMode,
-	childInlineOff, childBlockOff float64,
-) {
-	PropagateOOFCandidates(childResult, childStyle, parentWDM, childInlineOff, childBlockOff, bla.containerBuilder)
-}
-
-// PropagateOOFCandidates adjusts and adopts OOF candidates from a child result.
-// Converts static positions from the child's content-box coordinates to the
-// parent's content-box coordinates. Shared by block, table, and other layout algorithms.
-//
-// When the child's writing mode differs from the parent's, the static position
-// is converted from child-logical to physical, then from physical to
-// parent-logical before adding the parent-logical offset adjustments.
-//
-// Mirrors Blink's propagation of OutOfFlowPositionedCandidates through the tree
-// and its cross-writing-mode static position conversion in
-// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
-func PropagateOOFCandidates(
-	childResult *LayoutResult,
-	childStyle *css.Style,
-	parentWDM WritingDirectionMode,
-	childInlineOff, childBlockOff float64,
-	builder *BoxFragmentBuilder,
-) {
-	// Compute the child's WDM first so we can use it for both BP computation
-	// and cross-WM static position conversion.
-	childWDM := NewWritingDirectionMode(childStyle)
-
-	// Compute child's border+padding in the CHILD's logical axes (not parent's),
-	// then convert to physical, then to parent-logical coordinates.
-	//
-	// The bug with using parentWDM here: when child and parent have orthogonal or
-	// parallel-but-different writing modes, interpreting the child's physical borders
-	// using the parent's WDM gives wrong logical edge assignments.
-	//
-	// Mirrors Blink's use of child's own WDM for border/padding in
-	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
-	childGeomBP := ComputeFragmentGeometry(childStyle, childWDM)
-	childBPLogical := LogicalEdges{
-		InlineStart: childGeomBP.Border.InlineStart + childGeomBP.Padding.InlineStart,
-		InlineEnd:   childGeomBP.Border.InlineEnd + childGeomBP.Padding.InlineEnd,
-		BlockStart:  childGeomBP.Border.BlockStart + childGeomBP.Padding.BlockStart,
-		BlockEnd:    childGeomBP.Border.BlockEnd + childGeomBP.Padding.BlockEnd,
-	}
-	// Convert child-logical BP edges to physical, then to parent-logical.
-	physBPEdges := ToPhysicalEdges(childBPLogical, childWDM)
-	parentLogicalBP := ToLogicalEdges(physBPEdges, parentWDM)
-
-	// A position:relative child is visually displaced from its normal-flow
-	// position by the relative offset the parent applies when it adds it.
-	// Propagated OOF descendants whose CB is the parent or higher (e.g. fixed
-	// descendants of a relative ancestor) anchor at the child's VISUAL
-	// position per the hypothetical-box algorithm. Mirrors Blink's
-	// FragmentBuilder::PropagateOOFPositionedInfo, which adds the child's
-	// relative_offset to the descendants' static positions
-	// (fragment_builder.cc:749-762 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	relOffsetLog := builder.relativeOffsetFor(childResult.Fragment)
-
-	blockAdj := childBlockOff + parentLogicalBP.BlockStart + relOffsetLog.BlockOffset
-	inlineAdj := childInlineOff + parentLogicalBP.InlineStart + relOffsetLog.InlineOffset
-
-	// Detect when the child's writing direction differs from the parent's.
-	// This includes both orthogonal writing modes (e.g. HTB inside VRL) and
-	// same-axis writing modes with different directions (e.g. VLR-LTR inside
-	// VLR-RTL, or VLR inside VRL). In all these cases the static position must be re-expressed in
-	// the parent's logical coordinate system via a physical round-trip.
-	needsConversion := childWDM.WM != parentWDM.WM || childWDM.Dir != parentWDM.Dir
-
-	// Pre-compute the child's content-box physical size for coordinate
-	// conversion. The static position is measured within this box.
-	var childContentPhys PhysicalSize
-	if needsConversion {
-		childContentPhys = PhysicalSize{
-			Width:  childResult.Fragment.Size.WidthF64() - physBPEdges.Left - physBPEdges.Right,
-			Height: childResult.Fragment.Size.HeightF64() - physBPEdges.Top - physBPEdges.Bottom,
-		}
-		if childContentPhys.Width < 0 {
-			childContentPhys.Width = 0
-		}
-		if childContentPhys.Height < 0 {
-			childContentPhys.Height = 0
-		}
-	}
-
-	for _, cand := range childResult.PropagatedOOFCandidates {
-		adj := cand
-
-		if needsConversion {
-			// Convert static position: child-logical → physical → parent-logical.
-			// The container for both conversions is the child's content-box
-			// (the space within which the static position was accumulated).
-			physSP := adj.StaticPosition.ConvertToPhysical(childWDM, childContentPhys)
-			adj.StaticPosition = physSP.ConvertToLogical(parentWDM, childContentPhys)
-		}
-
-		adj.StaticPosition.Offset.BlockOffset += blockAdj
-		adj.StaticPosition.Offset.InlineOffset += inlineAdj
-		builder.AddOutOfFlowCandidate(adj)
-	}
-
-	// Phase 25 Cmt-2: also forward any OOF fragmentainer descendants the
-	// child carries on its outgoing fragment (an inner multicol that
-	// deferred its abspos descendants to the outer fragmentation root).
-	// blockAdj/inlineAdj already include the child's offset, border-padding,
-	// and relative offset — pass them as the combined translation. CB
-	// defaults are nil here; descendants entered with their CB resolved at
-	// the deferral site, and the drain pipeline (Cmt-3) supplies defaults
-	// for any that didn't.
-	if childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil {
-		builder.PropagateOOFFragmentainerDescendants(
-			childResult.Fragment,
-			LogicalOffset{InlineOffset: inlineAdj, BlockOffset: blockAdj},
-			LogicalOffset{},
-			layoutunit.LayoutUnit{},
-			nil,
-			nil,
-			nil,
-		)
-	}
 }
 
 // adoptBlockInInlineResult applies to the laid-out block-in-inline wrapper

@@ -898,14 +898,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		rowBuilder := NewBoxFragmentBuilder(wdm)
 		rowBuilder.SetLayoutNode(row.node)
 
-		// Cell-OOF candidates accumulated in ROW-content-box coordinates
-		// for the cells of this row. They are routed to the row, section,
-		// or table CB after the cell loop based on which ancestor (if any)
-		// is positioned. Mirrors Blink's per-section OOF collection in
-		// TableSectionLayoutAlgorithm before the row's
-		// NGOutOfFlowLayoutPart::Run.
-		var rowOOFs []OutOfFlowCandidate
-
 		for _, cl := range measured[rowIdx].cells {
 			if cl.cell.rowSpan > 1 {
 				// Defer rowspan cells: they are NOT children of any
@@ -991,30 +983,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellFrag.updateScrollableOverflow()
 			}
 
-			rowBuilder.AddChildWithRelativeOffset(cellFrag, LogicalOffset{
-				InlineOffset: cl.inlineOffset,
-				BlockOffset:  cl.cellBlockOffset,
-			}, relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows))
-
-			// Collect cell-OOF candidates in row-content-box coords.
-			// Inline axis: cell.inlineOffset is already row-relative.
-			// Block axis: cl.cellBlockOffset is row-relative (the row's
-			// origin is the row fragment's block-start). The cell's own
-			// border+padding shifts the OOF static position into the
-			// cell's content-box, then the row-relative cell offset
-			// shifts it into the row's content-box. This matches the
-			// table-coords math previously here (lines 805-811), minus
-			// the `blockOffset` table-origin term.
-			if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
-				cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
-				inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
-				blockAdj := cl.cellBlockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
-				for _, cand := range cl.result.PropagatedOOFCandidates {
-					adj := cand
-					adj.StaticPosition.Offset.InlineOffset += inlineAdj
-					adj.StaticPosition.Offset.BlockOffset += blockAdj
-					rowOOFs = append(rowOOFs, adj)
-				}
+			cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset, BlockOffset: cl.cellBlockOffset}
+			cellRelativeOffset := relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows)
+			rowBuilder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
+			// The cell's OOF candidates, in row-content-box coordinates.
+			if cl.cell.style != nil {
+				rowBuilder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: cl.result.PropagatedOOFCandidates},
+					cl.cell.style, cellOffset, cellRelativeOffset)
 			}
 		}
 
@@ -1055,14 +1030,17 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// Blink's OutOfFlowLayoutPart::Run at the end of
 		// TableRowLayoutAlgorithm (box_fragment_builder.cc:660-671 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		bubbleOOFs := rowOOFs
-		if row.node.IsAbsoluteContainer() && len(rowOOFs) > 0 {
+		// The cells' candidates are on rowBuilder, in row-content-box
+		// coordinates.
+		var bubbleOOFs []OutOfFlowCandidate
+		if len(rowBuilder.outOfFlowCandidates) > 0 && row.node.IsAbsoluteContainer() {
 			// Row CB: padding-box. Row's geometry has been applied to
 			// rowBuilder via SetBoxData above; CB inline/block size
 			// includes row padding.
-			rowBuilder.outOfFlowCandidates = rowOOFs
 			bubbleOOFs = NewOutOfFlowLayoutPart(tla.ctx, rowBuilder, tableInternalOOFSpace(wdm),
 				LogicalSize{InlineSize: totalInline, BlockSize: rowHeight}, ComputeFragmentGeometry(row.style, wdm).Padding, 0).Run()
+		} else {
+			bubbleOOFs, rowBuilder.outOfFlowCandidates = rowBuilder.outOfFlowCandidates, nil
 		}
 		// Bubble remaining OOFs to enclosing CB (section if open, else
 		// table). Translate row-content-box coords to the enclosing
@@ -1216,24 +1194,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// row's block-offset. Its relative offset still resolves against
 		// the originating row, the row Blink adds it through, not the
 		// table's child available size.
-		builder.AddChildWithRelativeOffset(cellFrag, LogicalOffset{
-			InlineOffset: cl.inlineOffset,
-			BlockOffset:  p.blockOffset + cl.cellBlockOffset,
-		}, relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows))
-
-		// OOF candidates from rowspan cell content reference the
-		// originating row's final block-offset (same convention as
-		// non-rowspan cells in the row loop above).
-		if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
-			cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
-			inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
-			blockAdj := p.blockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
-			for _, cand := range cl.result.PropagatedOOFCandidates {
-				adj := cand
-				adj.StaticPosition.Offset.InlineOffset += inlineAdj
-				adj.StaticPosition.Offset.BlockOffset += blockAdj
-				builder.AddOutOfFlowCandidate(adj)
-			}
+		cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset, BlockOffset: p.blockOffset + cl.cellBlockOffset}
+		cellRelativeOffset := relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
+		builder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
+		if cl.cell.style != nil {
+			builder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: cl.result.PropagatedOOFCandidates},
+				cl.cell.style, cellOffset, cellRelativeOffset)
 		}
 	}
 
@@ -2027,6 +1993,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					skipIntrinsic := isOrthogonal && colConstrained[colIdx]
 					if !skipIntrinsic {
 						childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+							SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 							SetOrthogonalFallbackInlineSize(
 								orthogonalFallbackSize(childWDM, tla.ctx)).
 							SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
@@ -2200,6 +2167,7 @@ func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDire
 		capWDM = NewWritingDirectionMode(cap.style)
 	}
 	capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(capWDM, tla.ctx)).
 		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).

@@ -1524,43 +1524,13 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		seedHighlightInheritance(finalStyle, highlightParent, parentStyles)
 	} else if len(parentStyles) > 0 && parentStyles[0] != nil {
 		parent := parentStyles[0]
-		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
-			"color", "line-height", "text-align", "white-space", "visibility",
-			"letter-spacing", "word-spacing", "text-indent", "text-transform",
-			// CSS Lists §2: the list-style properties are inherited. A
-			// ::before / ::after pseudo-element with display:list-item is
-			// itself a list item and must pick up the originating subtree's
-			// list-style-type / -position / -image for its own ::marker box.
-			"list-style-type", "list-style-position", "list-style-image",
-			// CSS Writing Modes §2-3: writing-mode, direction and
-			// text-orientation are inherited. A pseudo-element (notably a
-			// ::marker laid out as a real box) must inherit them so its
-			// inline/block axes and glyph orientation match the originating
-			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
-			"writing-mode", "direction", "text-orientation",
-			// CSS Text 3 §3.2, §5.5, §9.1, §9.3: tab-size, overflow-wrap,
-			// word-break, hyphens and line-break are inherited. CSS Text Decor
-			// 4 §4: text-emphasis and its longhands are inherited. CSS
-			// Pseudo-4 §4.4: text-shadow is inherited by ::marker
-			// pseudo-elements.
-			"tab-size", "overflow-wrap", "word-break", "hyphens", "line-break",
-			"text-shadow", "text-emphasis", "text-emphasis-style",
-			"text-emphasis-color", "text-emphasis-position",
-			// CSS UI 4 §7.1: accent-color is inherited.
-			"accent-color",
-			// CSS Fragmentation 3 §4.4: orphans and widows are inherited.
-			"orphans", "widows",
-			// CSS Color Adjustment 1 §2.1: color-scheme is inherited. A
-			// highlight pseudo-element's light-dark() resolution (see the
-			// resolveLightDarkValues call below) needs the originating
-			// element's own used color-scheme, not the UA initial
-			// "normal" — LOU-356.
-			"color-scheme"}
-		for _, prop := range inheritableProps {
-			if val, ok := parent.Get(prop); ok {
-				finalStyle.Set(prop, val)
-			}
-		}
+		// A pseudo-element inherits from its originating element exactly as
+		// a child element does — every inherited property (Blink resolves it
+		// with the originating element as parent; there is no
+		// pseudo-element-specific list). E.g. a display:list-item ::before
+		// needs list-style-*, a ::marker box writing-mode/direction, and a
+		// highlight's light-dark() the originating color-scheme (LOU-356).
+		ApplyInheritedFrom(finalStyle, parent)
 		// CSS Custom Properties for Cascading Variables §3: Custom properties
 		// inherit by default. Pseudo-elements inherit custom properties from
 		// their originating element so that var() references in the pseudo-
@@ -2563,9 +2533,21 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 	resolveLightDarkValues(style, parentColorStyle)
 
 	// Third pass: resolve inherit keyword in all other properties.
+	resolveInheritKeywords(node, style, styles)
+}
+
+// resolveInheritKeywords replaces each `inherit` value with the parent's
+// computed value (or drops it when the parent has none). A logical border
+// marker (`_border-inline-start-width`, ...) is skipped: like Blink's
+// StyleCascade, which maps a logical property to its physical surrogate with
+// the element's own writing-mode/direction before applying `inherit`, the
+// keyword must inherit the parent's PHYSICAL value. resolveLogicalBoxProperties
+// carries the marker's `inherit` onto the physical property, and
+// applyStylesToNode then runs this again to resolve it.
+func resolveInheritKeywords(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property := range style.Properties {
-		if property == "color" {
-			continue // Already processed in first pass
+		if property == "color" || strings.HasPrefix(property, "_border-") {
+			continue // color: resolveColorProperty; markers: see above
 		}
 		value, _ := style.Get(property)
 		if value == "inherit" {
@@ -2681,95 +2663,6 @@ var knownHTMLElements = map[string]bool{
 
 func isKnownHTMLElement(tag string) bool {
 	return knownHTMLElements[tag]
-}
-
-// inheritableProperties lists CSS properties that inherit from parent to child by default
-var inheritableProperties = map[string]bool{
-	"color": true, "font-family": true, "font-size": true,
-	"font-style": true, "font-weight": true, "font-variant": true,
-	"font-feature-settings": true, "font-kerning": true,
-	// CSS Fonts 4 §6.4: font-variant-ligatures and font-variant-numeric
-	// inherit by default. Mirrors Blink's FontDescription propagation via
-	// inherited ComputedStyle (font_description.h::VariantLigatures /
-	// VariantNumeric fields, Chromium SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	"font-variant-ligatures":  true,
-	"font-variant-numeric":    true,
-	"font-variant-east-asian": true,
-	"font-variant-alternates": true,
-	// CSS Fonts 4 §6.6: each font-synthesis-* longhand is inherited.
-	// https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
-	"font-synthesis-weight": true, "font-synthesis-style": true,
-	"font-synthesis-small-caps": true, "font-synthesis-position": true,
-	// NOTE: text-decoration is intentionally NOT inherited (CSS Text Decor 3
-	// §2). Instead, ResolveAppliedTextDecorations accumulates an
-	// []AppliedTextDecoration vector from parent → child. See
-	// applied_text_decoration.h:18-50 (Blink SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	"line-height": true, "text-align": true,
-	"text-transform": true, "text-indent": true, "white-space": true,
-	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
-	"direction": true, "letter-spacing": true, "word-spacing": true,
-	"cursor": true, "writing-mode": true, "text-orientation": true,
-	"empty-cells": true,
-	// CSS 2.1 §17.6: border-collapse is inherited (table → cell). Paint
-	// uses the cell's own GetBorderCollapse() to decide empty-cells
-	// suppression and other collapsed-only behavior, so it must see the
-	// value cascaded from the parent <table>.
-	"border-collapse": true,
-	// CSS Text 3 inherited properties:
-	"word-break": true, "overflow-wrap": true, "hyphens": true,
-	"line-break": true, "tab-size": true,
-	// CSS Fragmentation 3 §4.4: orphans and widows are inherited
-	// (css_properties.json5 `inherited: true` @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	"orphans": true, "widows": true,
-	// CSS Text Decor 4: skip-spaces is inherited (unlike the other
-	// text-decoration-* longhands which accumulate via
-	// AppliedTextDecorations). See
-	// https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-spaces-property
-	"text-decoration-skip-spaces": true,
-	// CSS Text Decor 4 §1.1.5: text-decoration-skip-ink is inherited.
-	// https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-ink-property
-	"text-decoration-skip-ink": true,
-	// CSS Generated Content L3 §3.2 `quotes` is inherited; the
-	// open-quote/close-quote pair lookup in pseudo-element content
-	// reads `quotes` off the originating element, which must see the
-	// ancestor declaration (the css-contain quote-scoping tests set
-	// `quotes` on the container and observe open-quote behavior on
-	// descendant pseudo-elements).
-	"quotes": true,
-	// CSS Text Decor 4 §3.2: text-emphasis-color, text-emphasis-style,
-	// text-emphasis-position are all inherited. Mirrors Blink
-	// core/style/computed_style.cc @ 4883d11fef4a — the text-emphasis
-	// longhands live on the inherited ComputedStyleBase via the
-	// `inherited` flag in computed_style_initial_values.json5.
-	// https://drafts.csswg.org/css-text-decor-4/#text-emphasis-color-property
-	"text-emphasis-color":    true,
-	"text-emphasis-style":    true,
-	"text-emphasis-position": true,
-	// CSS Text Decor 4 §3.3: text-shadow is inherited (css_properties.json5
-	// `inherited: true`, Blink SHA ad05980221f2bdd2d290749001c50805c7ee15d1).
-	// Required by css-pseudo/marker-text-shadow, whose `inherit` column and
-	// reference both rely on text-shadow reaching descendant text. (Distinct
-	// from the ::marker pseudo-inherit list at the top of
-	// ComputePseudoElementStyle, which only covers the synthetic marker box;
-	// regular descendants need the general inheritance pass.)
-	"text-shadow": true,
-	// CSS Color 4 §2.2: color-scheme is inherited.
-	"color-scheme": true,
-	// CSS UI 4 §7.1: accent-color is inherited.
-	// https://drafts.csswg.org/css-ui-4/#widget-accent
-	"accent-color": true,
-	// Filter Effects Module Level 1 §6.4: color-interpolation-filters is
-	// inherited (property table "Inherited: yes"; initial value linearRGB).
-	// An ancestor <svg color-interpolation-filters="sRGB"> must reach a
-	// descendant <filter>, whose computed value the filter builders read to
-	// choose the operating color space (filter_effect_builder.go,
-	// svg_filter_painter.go, svg_filter_container_painter.go). The same §6.4
-	// presentation attribute is mapped onto the originating element in
-	// svgPresentationAttrs below; inheritance is what propagates it downward.
-	// https://drafts.fxtf.org/filter-effects-1/#propdef-color-interpolation-filters
-	"color-interpolation-filters": true,
 }
 
 // fontParentStyle returns the style node's font-size (and lh in its
@@ -3058,7 +2951,10 @@ func resolveLogicalSizeProperties(style *Style) {
 // For vertical-rl / vertical-lr:
 //
 //	inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
-func resolveLogicalBoxProperties(style *Style) {
+//
+// It reports whether a border marker carried `inherit` onto a physical
+// property, which applyStylesToNode then resolves (resolveInheritKeywords).
+func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 	wm, _ := style.Get("writing-mode")
 	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
 		wm == "sideways-rl" || wm == "sideways-lr"
@@ -3081,7 +2977,7 @@ func resolveLogicalBoxProperties(style *Style) {
 		}
 	}
 	if !hasMarkers {
-		return
+		return false
 	}
 
 	// Determine the correct physical mapping for each logical direction.
@@ -3202,11 +3098,13 @@ func resolveLogicalBoxProperties(style *Style) {
 
 				if _, alreadySet := style.Get(correctProp); !alreadySet {
 					style.Set(correctProp, val)
+					carriedInherit = carriedInherit || val == "inherit"
 				}
 				delete(style.Properties, marker)
 			}
 		}
 	}
+	return carriedInherit
 }
 
 // varDeferredShorthands lists the shorthands expandShorthand leaves
@@ -3377,8 +3275,12 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// element's computed writing-mode. Must happen after inheritance so that
 		// inherited writing-mode is available.
 		resolveLogicalSizeProperties(style)
-		// Resolve logical box properties (margin/padding/border-inline/block)
-		resolveLogicalBoxProperties(style)
+		// Resolve logical box properties (margin/padding/border-inline/block),
+		// then any `inherit` a logical declaration carried onto its physical
+		// side (resolveInheritKeywords).
+		if resolveLogicalBoxProperties(style) {
+			resolveInheritKeywords(node, style, styles)
+		}
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		// A matching @container rule can re-introduce a var()-deferred

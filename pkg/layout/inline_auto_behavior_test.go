@@ -100,8 +100,8 @@ func TestInlineAutoBehavior_NonReplacedStretches_LOU499(t *testing.T) {
 // The spanner space's inline auto behaviour and orthogonal fallback, by
 // CreateConstraintSpaceForSpanner (column_layout_algorithm.cc:1871-1876 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An orthogonal spanner sets no
-// parallel behaviour (louis14 keeps the builder default) but gets the ICB
-// fallback inline size.
+// behaviour, so it keeps the builder's fit-content default
+// (constraint_space.h:1619-1621), but gets the ICB fallback inline size.
 func TestCreateConstraintSpaceForSpanner_InlineAutoBehavior_LOU499(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	for _, tc := range []struct {
@@ -116,7 +116,7 @@ func TestCreateConstraintSpaceForSpanner_InlineAutoBehavior_LOU499(t *testing.T)
 		{name: "table", tag: "div", props: []string{"display", "table"}, wantBehavior: AutoSizeBehaviorFitContent},
 		{name: "form control", tag: "button", wantBehavior: AutoSizeBehaviorFitContent},
 		{name: "orthogonal", tag: "div", props: []string{"writing-mode", "vertical-rl"},
-			wantBehavior: AutoSizeBehaviorStretchImplicit, wantFallback: 600},
+			wantBehavior: AutoSizeBehaviorFitContent, wantFallback: 600},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sp := makeNode(tc.tag)

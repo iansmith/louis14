@@ -3004,15 +3004,20 @@ func createLineBoxEx(
 				r.LayoutResult.Fragment.PaintGroup = flPaintGroup(r.Item.EnclosingPaintGroup)
 				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
 				// Sticky is scroll-time, not layout-time.
+				atomicRelativeOffset := ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style)
 				lineBuilder.AddChildWithRelativeOffset(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
-				}, ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style))
+				}, atomicRelativeOffset)
 				// Propagate OOF candidates from atomic inline's subtree.
 				// These are abs/fixed children of the inline-block that need to
-				// reach the nearest positioned ancestor (or the root) for layout.
-				// Mirrors Blink's InlineLayoutAlgorithm collecting propagated OOF
-				// candidates from atomic-inline LayoutResults.
+				// reach the nearest positioned ancestor (or the root) for layout,
+				// shifted by the atomic inline's offset, border+padding and
+				// relative offset. Mirrors Blink's line box builder propagating
+				// the atomic inline's result (PropagateOOFPositionedInfo,
+				// fragment_builder.cc:762 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 keeps the
+				// line builder's forced-LTR coordinates out of it.
 				if len(r.LayoutResult.PropagatedOOFCandidates) > 0 && r.Item.Style != nil {
 					childGeom := ComputeFragmentGeometry(r.Item.Style, wdm)
 					inlineBP := childGeom.Border.InlineStart + childGeom.Padding.InlineStart
@@ -3022,8 +3027,8 @@ func createLineBoxEx(
 						if adj.InlineContainer == nil {
 							adj.InlineContainer = atomicInlineContainers[r.Item].For(adj)
 						}
-						adj.StaticPosition.Offset.InlineOffset += inlinePos + inlineBP
-						adj.StaticPosition.Offset.BlockOffset += blockPos + blockBP
+						adj.StaticPosition.Offset.InlineOffset += inlinePos + inlineBP + atomicRelativeOffset.InlineOffset
+						adj.StaticPosition.Offset.BlockOffset += blockPos + blockBP + atomicRelativeOffset.BlockOffset
 						lineOOFCandidates = append(lineOOFCandidates, adj)
 					}
 				}
