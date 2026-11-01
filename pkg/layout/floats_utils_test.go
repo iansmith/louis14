@@ -347,3 +347,39 @@ func TestFloatFragmentation_InlineFloatAndLinesBreak(t *testing.T) {
 		t.Errorf("lines = %d, want 15", lines)
 	}
 }
+
+// A float on a line that breaks before goes with the line: it is laid out
+// again with the line in the next column, not also resumed there from a
+// break token of the first column (Blink places floats as children of the
+// line box, discarded when the block breaks before the line,
+// block_layout_algorithm.cc:2646-2678 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFloatFragmentation_InlineFloatGoesWithPushedLine(t *testing.T) {
+	float := makeNode("div")
+	var kids []*html.Node
+	for range 10 {
+		kids = append(kids, makeTextNode("x"), makeNode("br"))
+	}
+	kids = append(kids, makeTextNode("x"), float, makeTextNode("x"))
+	mc := makeNode("div", kids...)
+	styles := inlineFloatMulticolStyles(mc, float)
+	styles[float] = makeStyle("display", "block", "float", "left", "width", "20px", "height", "30px")
+	for _, k := range kids {
+		if k.Type != html.TextNode && k != float {
+			styles[k] = makeStyle("display", "inline", "font-family", "Ahem", "font-size", "10px",
+				"line-height", "10px")
+		}
+	}
+	result := layoutMulticolForFloatTest(t, mc, styles)
+	cols := columnChildren(result)
+	if len(cols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(cols))
+	}
+	if n := len(fragmentsOfNode(cols[0].Fragment, float)); n != 0 {
+		t.Errorf("column 0: float fragments = %d, want 0", n)
+	}
+	floats := fragmentsOfNode(cols[1].Fragment, float)
+	if len(floats) != 1 || floats[0].Offset.Top.Float64() != 0 || floats[0].Fragment.Size.HeightF64() != 30 {
+		t.Errorf("column 1: float fragments = %v, want one 30px at top 0", floats)
+	}
+}
