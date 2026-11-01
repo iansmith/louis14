@@ -199,6 +199,15 @@ type ConstraintSpace struct {
 	// a9f50e522efa); louis14 has no params struct, so it rides on the space.
 	ColumnSpannerPath *ColumnSpannerPath
 
+	// EarlyBreak is the predetermined breakpoint in or before this node's
+	// children: the parent re-lays out to break earlier and the break goes
+	// inside this node (EnterEarlyBreakInChild). Blink carries it in
+	// LayoutAlgorithmParams::early_break (layout_algorithm.h:37 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, set by LayoutBlockChild,
+	// block_layout_algorithm.cc:109-122); louis14 has no params struct, so
+	// it rides on the space like ColumnSpannerPath.
+	EarlyBreak *EarlyBreak
+
 	// IsPastBreak is true when there is a preceding break in the current
 	// fragmentainer (typically in a parallel flow), so a column spanner
 	// found now must wait until the fragmentainers before it are done.
@@ -553,6 +562,13 @@ func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintS
 // descendant should be ignored because some ancestor prevents it.
 func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *ConstraintSpaceBuilder {
 	b.space.ColumnSpannerDescendantsBlocked = v
+	return b
+}
+
+// SetEarlyBreak sets the predetermined breakpoint for this node — see
+// ConstraintSpace.EarlyBreak doc.
+func (b *ConstraintSpaceBuilder) SetEarlyBreak(earlyBreak *EarlyBreak) *ConstraintSpaceBuilder {
+	b.space.EarlyBreak = earlyBreak
 	return b
 }
 

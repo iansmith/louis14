@@ -643,6 +643,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// InlineLayoutStateStack across NGInlineLayoutAlgorithm iterations.
 	var openInlineStack []*InlineItem
 
+	// lineStartBlockOffset is where the line being laid out started, before
+	// any float pushed it down (Blink's child BFC block-offset, vs the line
+	// box BFC block-offset; block_layout_algorithm.cc:2597-2617 @
+	// a9f50e522efa). It survives the restart that re-breaks a line below a
+	// float (the `continue` after placing pending floats).
+	lineStartBlockOffset := blockOffset
+
 	for {
 		// Save item index and text offset at the start of this line iteration,
 		// before NextLine advances the line breaker. Both are needed for inline
@@ -1146,7 +1153,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// AddBreakBeforeChild with perfect appeal, then
 			// ConsumeRemainingFragmentainerSpace (the caller's
 			// setBreakingSize). No space shortage is propagated.
-			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder) {
+			if bla.earlyBreak != nil && IsEarlyBreakTarget(bla.earlyBreak, bla.containerBuilder, nil) {
 				bla.containerBuilder.ClampBreakAppeal(bla.earlyBreak.GetBreakAppeal())
 				inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, 0)
 				break
@@ -1182,10 +1189,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A louis14
 				// line carries no break-before of its own (no block in
 				// inline), so its initial break-before is auto.
+				// A line pushed down by floats is separated from the
+				// container (Blink HandleInflow, block_layout_algorithm.cc:
+				// 2616-2626 @ a9f50e522efa). Not ported: the container's own
+				// IsPushedByFloats exception (louis14 has no builder flag).
+				isLineBoxPushedByFloats := blockOffset > lineStartBlockOffset
 				appealBefore := CalculateBreakAppealBeforeWithStatus(
 					bla.space, LayoutResultSuccess,
 					bla.containerBuilder.JoinedBreakBetweenValue("auto"),
-					hasBreakOpportunityBeforeNextChild,
+					hasBreakOpportunityBeforeNextChild || isLineBoxPushedByFloats,
 					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
 				if bla.breakBeforeLine(&appealBefore, shortage, isEmptyLineBox) {
 					bla.containerBuilder.SetBreakAppeal(appealBefore)
@@ -1269,6 +1281,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 
 		blockOffset += lineHeight
+		lineStartBlockOffset = blockOffset
 	}
 
 	if firstLineAscent < 0 {
@@ -1306,9 +1319,11 @@ func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lin
 // lines before the break. Mirrors the line-box part of Blink's
 // BlockLayoutAlgorithm::BreakBeforeChildIfNeeded (block_layout_algorithm.cc:
 // 3187-3279 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); AttemptSoftBreak
-// (:3281-3285) always succeeds, as louis14 records no earlier block-level
-// breakpoints (EarlyBreak kBlock is not ported). Not ported: the BR
-// clear=all status check and text-box-trim's fragmentainer-end exception.
+// (:3281-3285) always succeeds: an inline formatting context records no
+// earlier breakpoint while laying out its lines (UpdateEarlyBreakBetweenLines
+// runs once they are all laid out; louis14 has no block-in-inline). Not
+// ported: the BR clear=all status check and text-box-trim's
+// fragmentainer-end exception.
 func (bla *BlockLayoutAlgorithm) breakBeforeLine(appealBefore *BreakAppeal, shortage float64, isEmptyLineBox bool) bool {
 	if bla.firstOverflowingLine == 0 && bla.space.BlockFragmentationType == FragmentColumn {
 		// The first overflowing line's shortage is the one reported, before
@@ -1352,9 +1367,7 @@ func (bla *BlockLayoutAlgorithm) breakBeforeLine(appealBefore *BreakAppeal, shor
 // after it, or else at the line that best balances orphans and widows.
 // Mirrors the inline formatting context part of Blink's
 // BlockLayoutAlgorithm::FinalizeForFragmentation (block_layout_algorithm.cc:
-// 3106-3127 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported:
-// UpdateEarlyBreakBetweenLines (:3133, :3291-3325), whose breakpoint only
-// a block-level early break of an ancestor would consume.
+// 3106-3127 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (bla *BlockLayoutAlgorithm) lineEarlyBreak() *EarlyBreak {
 	if bla.earlyBreak != nil || !bla.space.HasBlockFragmentation ||
 		bla.firstOverflowingLine == 0 || bla.firstOverflowingLine >= bla.containerBuilder.LineCount() {
@@ -1370,6 +1383,34 @@ func (bla *BlockLayoutAlgorithm) lineEarlyBreak() *EarlyBreak {
 	return NewLineEarlyBreak(lineNumber, BreakAppealPerfect)
 }
 
+// UpdateEarlyBreakBetweenLines records the best place to break between two
+// of this block's lines, when they all fit: the line that best honors
+// orphans and widows, or, if they cannot both be honored, before the last
+// line with ViolatingOrphansAndWidows appeal. A parent that later runs out
+// of space at a worse breakpoint comes back to it. Mirrors Blink's
+// BlockLayoutAlgorithm::UpdateEarlyBreakBetweenLines
+// (block_layout_algorithm.cc:3291-3325 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (bla *BlockLayoutAlgorithm) UpdateEarlyBreakBetweenLines() {
+	lineCount := bla.containerBuilder.LineCount()
+	if lineCount < 2 {
+		return
+	}
+	orphans, widows := bla.style.GetOrphans(), bla.style.GetWidows()
+	lineNumber := max(lineCount-widows, min(lineCount-1, orphans))
+	appeal := BreakAppealPerfect
+	if lineNumber < orphans || lineCount-lineNumber < widows {
+		// Too few lines for orphans and / or widows: breaking before the
+		// last line fits as much as possible.
+		lineNumber = lineCount - 1
+		appeal = BreakAppealViolatingOrphansAndWidows
+	}
+	if bla.containerBuilder.HasEarlyBreak() && bla.containerBuilder.GetEarlyBreak().GetBreakAppeal() > appeal {
+		return
+	}
+	bla.containerBuilder.SetEarlyBreak(NewLineEarlyBreak(lineNumber, appeal))
+}
+
 // relayoutAndBreakEarlier lays this block out again, breaking at
 // earlyBreak. Mirrors Blink's LayoutAlgorithm::RelayoutAndBreakEarlier
 // (layout_algorithm.h:272-281 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
@@ -1377,9 +1418,10 @@ func (bla *BlockLayoutAlgorithm) lineEarlyBreak() *EarlyBreak {
 // repeats the space shortage this pass's builder found (SetupRelayoutData,
 // :200-224).
 func (bla *BlockLayoutAlgorithm) relayoutAndBreakEarlier(earlyBreak *EarlyBreak) *LayoutResult {
-	relayout := NewBlockLayoutAlgorithm(bla.ctx, bla.node, bla.space)
+	space := bla.space
+	space.EarlyBreak = earlyBreak
+	relayout := NewBlockLayoutAlgorithm(bla.ctx, bla.node, space)
 	relayout.SetBoxType(bla.boxType)
-	relayout.earlyBreak = earlyBreak
 	relayout.relayoutSpaceShortage = bla.containerBuilder.minimalSpaceShortage
 	return relayout.Layout()
 }
