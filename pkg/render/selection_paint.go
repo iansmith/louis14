@@ -608,7 +608,7 @@ func resolveHighlightColors(pseudoStyle *css.Style) highlightColors {
 	// layer below's background" fallthrough handle it uniformly with a
 	// genuinely-unset background-color.
 	if bg, ok := pseudoStyle.Get("background-color"); ok && !strings.EqualFold(bg, "currentColor") {
-		if c, ok := css.ParseColorWithCurrentColor(bg, pseudoStyle.GetColor()); ok {
+		if c, ok := pseudoStyle.ResolvedColor(bg); ok {
 			hc.background = &c
 		}
 	}
