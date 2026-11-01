@@ -19,7 +19,8 @@ import (
 //   - BreakBeforeChild + AttemptSoftBreak helpers
 //
 // Out of scope (deferred):
-//   - EarlyBreak storage / RelayoutAndBreakEarlier retry → Phase 12g
+//   - Block-level EarlyBreak storage / RelayoutAndBreakEarlier retry (the
+//     line variant, for orphans / widows, is in early_break.go)
 //   - Paginated PageName interaction → not multicol
 //   - FlexColumnBreakInfo per-column flex info → not multicol
 //   - The soft-break half of LayoutResult.InitialBreakBefore /

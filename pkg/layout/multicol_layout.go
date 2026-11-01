@@ -565,8 +565,7 @@ func (mla *MulticolLayoutAlgorithm) offsetToNextRow(lineOffset float64) float64 
 // Layout performs multi-column layout and returns the result. Mirrors
 // Blink's ColumnLayoutAlgorithm::Layout (column_layout_algorithm.cc:265-431
 // @ a9f50e522efa): resolve the per-layout state, lay the parts out in
-// LayoutChildren (:337), then size and finish the fragment. The Phase 14b
-// defer before LayoutChildren has no Blink analog (deleted by plan WI-7).
+// LayoutChildren (:337), then size and finish the fragment.
 func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := mla.space.WritingDirection
 	mla.geom = CalculateInitialFragmentGeometry(mla.ctx, mla.node, mla.style, wdm, mla.space)
@@ -752,55 +751,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	mla.blockCursor = 0
 	mla.totalColumnsRendered = 0
-
-	// Phase 14b: defer entire multicol when its required column block-size
-	// can't fit in the remaining outer fragmentainer. Under column-fill:auto
-	// + explicit height, the inner column block-size is the explicit height;
-	// if that exceeds the outer remaining space, fragmenting in place would
-	// produce sub-columns much smaller than intended (and leak content into
-	// the outer overflow area — see multicol-nested-010). Returning a 0-height
-	// fragment with BlockSizeForFragmentation=explicitBlockSize makes the
-	// parent's BreakBeforeChildIfNeeded push the entire multicol to the next
-	// outer fragmentainer, where it has full space to lay out at its declared
-	// height. Mirrors Blink's BlockSizeForFragmentation hook for nested
-	// fragmentation. Only fires when starting fresh (no incoming BreakToken),
-	// not balanced, has explicit height, and there is container separation
-	// (the parent's break-before would be meaningful).
-	//
-	// Cmt-5e: also gated on FragmentainerOffset > 0. When the inner-mc starts
-	// at the OUTER fragmentainer's origin (FragmentainerOffset == 0), the
-	// outer column has already supplied a clean fresh starting offset — the
-	// inner-mc should fragment in place rather than be deferred. Without this
-	// narrowing, an inner-mc fresh in outer col-1 with declared > available
-	// would be deferred to col-2 (where it's still fresh and would defer
-	// again, infinitely). Mirrors Blink's behavior for fragmenting nested
-	// multicols where the OUTER context provides the fragmentation boundaries.
-	// Closure flip for `multicol-nested-011/032/033` cluster (combined with
-	// Cmt-5b's chain semantics; visual closure of `-011` further requires
-	// Phase 21 clip ungating).
-	if mla.isConstrainedByOuterFragmentation() && mla.hasExplicitBlock && mla.space.BreakToken == nil &&
-		// Deliberately the raw outer space (pre-LOU-391 formula): this gate
-		// has no Blink analog and is deleted by WI-7.
-		columnFill == "auto" && mla.space.FragmentainerBlockSize-mla.space.FragmentainerOffset < mla.explicitBlockSize &&
-		mla.space.FragmentainerOffset > 0 {
-		builder.SetSize(LogicalSize{
-			InlineSize: mla.contentInlineSize + mla.geom.InlineBorderPadding(),
-			BlockSize:  0,
-		})
-		builder.SetIntrinsicBlockSize(0)
-		builder.SetLayoutNode(mla.node)
-		// Zero-height defer fragment: omit border/padding to
-		// prevent top-border paint leaking into the skipped
-		// fragment. Only margin is needed for outer layout.
-		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
-		builder.SetBoxData(&PhysicalBoxData{
-			Margin:    physMargin,
-			Scrollbar: PhysicalEdges{},
-		})
-		result := builder.Build()
-		result.BlockSizeForFragmentation = mla.explicitBlockSize + mla.geom.BlockBorderPadding()
-		return result
-	}
 
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil

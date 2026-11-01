@@ -3431,6 +3431,8 @@ var supportedCSSProperties = map[string]struct{}{
 	"break-before":      {},
 	"break-after":       {},
 	"break-inside":      {},
+	"orphans":           {},
+	"widows":            {},
 	"page-break-before": {}, "page-break-after": {}, "page-break-inside": {},
 	// Animations / transitions
 	"transition": {}, "transition-property": {}, "transition-duration": {},
@@ -5055,6 +5057,12 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
+		// CSS Fragmentation 3 §4.4 `orphans` / `widows`: <integer [1,∞]>.
+		// Zero, negative and non-integer values are invalid.
+		if (property == "orphans" || property == "widows") && !isValidPositiveIntegerValue(value) {
+			continue
+		}
+
 		// CSS Multi-column 1 §3.1 `column-width`: <length [0,∞]> | auto. A
 		// non-length keyword or a negative length is invalid.
 		if property == "column-width" && !isValidColumnWidthValue(value) {
@@ -5515,11 +5523,22 @@ func isSystemFontKeyword(lowered string) bool {
 // `auto | <integer [1,∞]>` (CSS Multi-column 1 §3.2). Defers var()/attr()/
 // CSS-wide keywords to cascade-time resolution.
 func isValidColumnCountValue(value string) bool {
-	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
-	if lower == "auto" {
+	if strings.EqualFold(strings.TrimSpace(value), "auto") {
 		return true
 	}
+	return isValidPositiveIntegerValue(value)
+}
+
+// isValidPositiveIntegerValue checks if value is a valid `<integer [1,∞]>`
+// (the grammar of orphans / widows, CSS Fragmentation 3 §4.4, and of
+// column-count's integer branch). Defers var()/attr()/CSS-wide keywords to
+// cascade-time resolution. Mirrors Blink's ConsumePositiveInteger
+// (Orphans::ParseSingleValue / Widows::ParseSingleValue,
+// core/css/properties/longhands/longhands_custom.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isValidPositiveIntegerValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
 	// CSS-wide keywords accepted on every property; resolved later.
 	if lower == "inherit" || lower == "initial" || lower == "unset" ||
 		lower == "revert" || lower == "revert-layer" {
