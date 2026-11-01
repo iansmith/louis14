@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/images"
 	urlpkg "louis14/pkg/url"
+	stdnet "louis14/std/net"
 )
 
 // IntrinsicSizingInfo holds the natural dimensions and aspect ratio for a
@@ -202,7 +203,7 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		src = urlpkg.CompleteURL(src, s.BaseDir)
 	}
 	// data: URIs decode inline and need no fetcher.
-	if ctx.ImageFetcher == nil && !images.IsDataURI(src) {
+	if ctx.ImageFetcher == nil && !stdnet.IsDataURL(src) {
 		return IntrinsicSizingInfo{}
 	}
 

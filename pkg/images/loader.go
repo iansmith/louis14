@@ -2,13 +2,11 @@ package images
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +16,8 @@ import (
 
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
+
+	stdnet "louis14/std/net"
 )
 
 // ImageCache caches loaded images
@@ -31,83 +31,20 @@ var globalCache = &ImageCache{
 	cache: make(map[string]image.Image),
 }
 
-// IsDataURI returns true if the string is a data URI.
-func IsDataURI(uri string) bool {
-	return strings.HasPrefix(uri, "data:")
-}
-
 // LoadImageFromDataURI decodes a data URI and returns the embedded image.
 // Format: data:[<mediatype>][;base64],<data>
 func LoadImageFromDataURI(uri string) (image.Image, error) {
-	data, err := DecodeDataURI(uri)
+	data, _, err := stdnet.DecodeDataURL(uri)
 	if err != nil {
 		return nil, err
 	}
 	return DecodeImageBytes(data)
 }
 
-// DataURIForDisplay returns uri for a log or error message: a data: URI keeps
-// only its header, never its (possibly megabytes-long) payload; any other
-// URI is returned unchanged.
-func DataURIForDisplay(uri string) string {
-	if !IsDataURI(uri) {
-		return uri
-	}
-	if i := strings.IndexByte(uri, ','); i >= 0 {
-		return fmt.Sprintf("%s,<%d bytes>", uri[:i], len(uri)-i-1)
-	}
-	return uri
-}
-
-// DecodeDataURI returns the payload bytes of a data URI
-// (data:[<mediatype>][;base64],<data>), base64- or percent-decoded. The
-// louis14 counterpart of Blink's network_utils::ParseDataURL
-// (platform/network/network_utils.h:38 @
-// 5992657f556bcd9d207a4aca187488462f027cab), minus the MIME/response half.
-func DecodeDataURI(uri string) ([]byte, error) {
-	if !strings.HasPrefix(uri, "data:") {
-		return nil, fmt.Errorf("not a data URI")
-	}
-
-	// Split off "data:" prefix
-	rest := uri[5:]
-
-	// Find the comma separating metadata from data
-	commaIdx := strings.Index(rest, ",")
-	if commaIdx < 0 {
-		return nil, fmt.Errorf("invalid data URI: no comma found")
-	}
-
-	meta := rest[:commaIdx]
-	encoded := rest[commaIdx+1:]
-
-	isBase64 := strings.HasSuffix(meta, ";base64")
-
-	var data []byte
-	if isBase64 {
-		// URL-decode the base64 data first (handles %2F, %2B, etc.)
-		if decoded, err := url.PathUnescape(encoded); err == nil {
-			encoded = decoded
-		}
-		var err error
-		data, err = base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil, fmt.Errorf("base64 decode error: %w", err)
-		}
-	} else {
-		// Lenient URL-decode: handles valid percent-encoding (%3C → <, %25 → %)
-		// while passing through invalid sequences (e.g. 100%' in SVG attributes).
-		// url.PathUnescape rejects the entire string if any % is followed by
-		// non-hex characters, which breaks SVGs like width='100%'.
-		data = []byte(lenientPercentDecode(encoded))
-	}
-	return data, nil
-}
-
 // LoadImage loads an image from the filesystem or a data URI.
 func LoadImage(path string) (image.Image, error) {
 	// Handle data URIs
-	if IsDataURI(path) {
+	if stdnet.IsDataURL(path) {
 		// Check cache first
 		globalCache.mu.RLock()
 		if img, ok := globalCache.cache[path]; ok {
@@ -443,15 +380,10 @@ func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 }
 
 // LoadImageWithFetcher loads an image using the provided fetcher.
-// The fetcher is used for both network URIs and relative paths.
-// Falls back to LoadImage for data URIs and when no fetcher is provided.
+// The fetcher serves every URI, data: URLs included (stdnet.RequestResource).
+// Falls back to LoadImage when no fetcher is provided.
 func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error) {
-	// Data URIs are handled by LoadImage
-	if IsDataURI(path) {
-		return LoadImage(path)
-	}
-
-	// If no fetcher, use regular loading (only works for absolute paths)
+	// If no fetcher, use regular loading (absolute paths and data: URLs)
 	if fetcher == nil {
 		return LoadImage(path)
 	}
@@ -474,7 +406,7 @@ func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error
 	// Fetch via network
 	data, err := fetcher(path)
 	if err != nil {
-		return nil, fmt.Errorf("fetching image %s: %w", path, err)
+		return nil, fmt.Errorf("fetching image %s: %w", stdnet.DataURLForDisplay(path), err)
 	}
 
 	img, err := DecodeImageBytes(data)
@@ -585,7 +517,7 @@ func ImageIsPotentiallyAvailable(src string, fetcher ImageFetcher) bool {
 	if src == "" {
 		return false
 	}
-	if fetcher == nil && !IsDataURI(src) {
+	if fetcher == nil && !stdnet.IsDataURL(src) {
 		return true
 	}
 	w, h, err := GetImageDimensionsWithFetcher(src, fetcher)
@@ -598,11 +530,12 @@ func isNetworkURI(s string) bool {
 }
 
 // NewFilesystemFetcher creates an ImageFetcher that resolves relative paths
-// against a base URL (typically the document's file path).
+// against a base URL (typically the document's file path); data: URLs are
+// served through stdnet.RequestResource.
 func NewFilesystemFetcher(baseURL string) ImageFetcher {
-	return func(uri string) ([]byte, error) {
-		// Don't resolve data URIs or absolute network URLs
-		if IsDataURI(uri) || isNetworkURI(uri) {
+	return stdnet.RequestResource(func(uri string) ([]byte, error) {
+		// Don't resolve absolute network URLs
+		if isNetworkURI(uri) {
 			return nil, fmt.Errorf("filesystem fetcher only handles file paths")
 		}
 
@@ -620,38 +553,5 @@ func NewFilesystemFetcher(baseURL string) ImageFetcher {
 		}
 
 		return data, nil
-	}
-}
-
-// lenientPercentDecode decodes percent-encoded sequences (%XX) while passing
-// through invalid sequences (where XX are not valid hex digits). This is needed
-// for SVG data URIs that contain literal % characters (e.g. width='100%').
-func lenientPercentDecode(s string) string {
-	var buf strings.Builder
-	buf.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == '%' && i+2 < len(s) {
-			hi := unhex(s[i+1])
-			lo := unhex(s[i+2])
-			if hi >= 0 && lo >= 0 {
-				buf.WriteByte(byte(hi<<4 | lo))
-				i += 2
-				continue
-			}
-		}
-		buf.WriteByte(s[i])
-	}
-	return buf.String()
-}
-
-func unhex(c byte) int {
-	switch {
-	case '0' <= c && c <= '9':
-		return int(c - '0')
-	case 'a' <= c && c <= 'f':
-		return int(c - 'a' + 10)
-	case 'A' <= c && c <= 'F':
-		return int(c - 'A' + 10)
-	}
-	return -1
+	})
 }

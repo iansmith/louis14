@@ -246,7 +246,7 @@ func (fla *FieldsetLayoutAlgorithm) Layout() *LayoutResult {
 		LogicalSize{
 			InlineSize: max(0, fla.geom.BorderBoxSize.InlineSize-builderGeom.InlineBorderPadding()),
 			BlockSize:  max(0, fragmentBlockSize-builderGeom.BlockBorderPadding()),
-		}, max(0, previouslyConsumedBlockSize(fla.space.BreakToken)-fla.geom.Border.BlockStart))
+		}, previousConsumedContentBlockSize(fla.space, fla.geom.Border.BlockStart))
 
 	result := fla.containerBuilder.Build()
 	result.Fragment.IsFieldsetContainer = true

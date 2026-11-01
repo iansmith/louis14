@@ -76,10 +76,15 @@ func IsDataURL(s string) bool {
 
 // DecodeDataURL parses a `data:[<mediatype>][;base64],<data>` URL per RFC 2397.
 // Returns the decoded body, the media type (empty if unspecified), and any error.
-// Supports both base64-encoded and URL-encoded (percent-encoded) payloads.
+// The louis14 counterpart of Blink's network_utils::ParseDataURL
+// (platform/network/network_utils.h:38 @
+// 5992657f556bcd9d207a4aca187488462f027cab), minus the response half: the
+// payload is percent-decoded ('+' stays '+'; an invalid escape such as an
+// SVG's width='100%' passes through), then base64-decoded when the header
+// says ;base64 (whitespace in the base64 payload is ignored).
 func DecodeDataURL(s string) (body []byte, mediaType string, err error) {
-	if !strings.HasPrefix(s, "data:") {
-		return nil, "", fmt.Errorf("not a data URL: %q", s)
+	if !IsDataURL(s) {
+		return nil, "", fmt.Errorf("not a data URL: %q", DataURLForDisplay(s))
 	}
 	rest := s[len("data:"):]
 	commaIdx := strings.IndexByte(rest, ',')
@@ -87,39 +92,94 @@ func DecodeDataURL(s string) (body []byte, mediaType string, err error) {
 		return nil, "", fmt.Errorf("malformed data URL: missing comma")
 	}
 	meta := rest[:commaIdx]
-	payload := rest[commaIdx+1:]
+	payload := lenientPercentDecode(rest[commaIdx+1:])
 
-	isBase64 := false
-	if strings.HasSuffix(meta, ";base64") {
-		isBase64 = true
-		mediaType = strings.TrimSuffix(meta, ";base64")
-	} else {
-		mediaType = meta
+	mediaType, isBase64 := strings.CutSuffix(meta, ";base64")
+	if !isBase64 {
+		return []byte(payload), mediaType, nil
 	}
-	// Strip any other parameters (e.g. ";charset=utf-8") from the trailing portion;
-	// callers only need the core media type. Keep it simple and pass through.
-
-	if isBase64 {
-		// Per RFC 2397 the base64 payload may contain whitespace which we strip.
-		clean := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-				return -1
-			}
-			return r
-		}, payload)
-		body, err = base64.StdEncoding.DecodeString(clean)
-		if err != nil {
-			return nil, mediaType, fmt.Errorf("base64 decode: %w", err)
+	clean := strings.Map(func(r rune) rune {
+		if strings.ContainsRune(asciiWhitespace, r) {
+			return -1
 		}
-		return body, mediaType, nil
-	}
-
-	// URL-encoded payload.
-	decoded, err := url.QueryUnescape(payload)
+		return r
+	}, payload)
+	body, err = base64.StdEncoding.DecodeString(clean)
 	if err != nil {
-		return nil, mediaType, fmt.Errorf("url decode: %w", err)
+		return nil, mediaType, fmt.Errorf("base64 decode: %w", err)
 	}
-	return []byte(decoded), mediaType, nil
+	return body, mediaType, nil
+}
+
+// asciiWhitespace is the fetch spec's ASCII whitespace set.
+const asciiWhitespace = " \t\n\r\f"
+
+// DataURLForDisplay returns s for a log or error message: a data: URL keeps
+// only its header, never its (possibly megabytes-long) payload; any other
+// URL is returned unchanged.
+func DataURLForDisplay(s string) string {
+	if !IsDataURL(s) {
+		return s
+	}
+	if i := strings.IndexByte(s, ','); i >= 0 {
+		return fmt.Sprintf("%s,<%d bytes>", s[:i], len(s)-i-1)
+	}
+	return s
+}
+
+// lenientPercentDecode decodes %XX escapes and passes through a '%' not
+// followed by two hex digits (url.PathUnescape rejects the whole string
+// instead, which breaks SVGs like width='100%').
+func lenientPercentDecode(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			hi, lo := unhex(s[i+1]), unhex(s[i+2])
+			if hi >= 0 && lo >= 0 {
+				buf.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
+func unhex(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c - 'a' + 10)
+	case 'A' <= c && c <= 'F':
+		return int(c - 'A' + 10)
+	}
+	return -1
+}
+
+// RequestResource returns the fetcher image and font loads go through: a data: URL is static data, decoded in place and
+// never handed to fetch; any other URL goes to fetch (an error when fetch is
+// nil). Mirrors ResourceFetcher::RequestResource sending a data: URL to
+// CreateResourceForStaticData, which decodes it with
+// network_utils::ParseDataURL instead of issuing a request
+// (platform/loader/fetch/resource_fetcher.cc:1463-1474, 1061-1063 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func RequestResource(fetch func(uri string) ([]byte, error)) func(uri string) ([]byte, error) {
+	return func(uri string) ([]byte, error) {
+		if IsDataURL(uri) {
+			body, _, err := DecodeDataURL(uri)
+			return body, err
+		}
+		if fetch == nil {
+			return nil, fmt.Errorf("no fetcher for %s", uri)
+		}
+		return fetch(uri)
+	}
 }
 
 // FileURLToPath converts a `file://` URL to a local filesystem path.

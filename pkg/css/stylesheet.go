@@ -6364,8 +6364,13 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 		case "line-gap-override":
 			ff.LineGapOverride = parseFontMetricOverride(val)
 		case "font-feature-settings":
+			// Escapes resolve as for every declaration value
+			// (parseDeclarations' unescapeCSS) — Blink resolves them
+			// inside the <string> token (core/css/parser/
+			// css_tokenizer.cc:393-432 @
+			// 5992657f556bcd9d207a4aca187488462f027cab).
 			if !strings.EqualFold(val, "normal") {
-				ff.FeatureSettings = val
+				ff.FeatureSettings = unescapeCSS(val)
 			}
 		}
 	}

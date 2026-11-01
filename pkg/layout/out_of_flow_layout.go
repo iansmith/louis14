@@ -168,7 +168,12 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 func (p *OutOfFlowLayoutPart) Run() []OutOfFlowCandidate {
 	var candidates []OutOfFlowCandidate
 	candidates, p.containerBuilder.outOfFlowCandidates = p.containerBuilder.outOfFlowCandidates, nil
-	return p.LayoutCandidates(candidates)
+	if len(candidates) > 0 {
+		return p.LayoutCandidates(candidates)
+	}
+	p.containerBuilder.AdjustFixedposContainingBlockForFragmentainerDescendants(p.previousConsumedBlockSize)
+	p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+	return nil
 }
 
 // IsContainingBlockForCandidate reports whether the container contains
@@ -220,7 +225,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 			// it CB-stitched. The CB's outgoing fragment isn't built yet, so
 			// the parent's PropagateOOFFragmentainerDescendants fills it in.
 			d := LogicalOofNodeForFragmentation{Candidate: candidate}
-			p.containerBuilder.AdjustFragmentainerDescendant(&d, p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+			p.containerBuilder.AdjustFragmentainerDescendant(&d, false, p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
+			p.containerBuilder.AdjustFixedposContainingBlockForInnerMulticols(p.previousConsumedBlockSize, p.previousConsumedContentBlockSize)
 			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
 			continue
 		}
@@ -674,8 +680,12 @@ type NodeToLayout struct {
 	// in. It includes the containing block's position:relative offset
 	// (Blink's base_container_info.relative_offset): the containing block's
 	// fragments are found at link offsets with relative positioning applied.
-	offset     LogicalOffset
-	breakToken *BlockBreakToken
+	offset LogicalOffset
+	// originalOffset is the offset in stacked-fragmentainer coordinates
+	// (Blink's offset_info.original_offset, out_of_flow_layout_part.cc:
+	// 1643-1644).
+	originalOffset LogicalOffset
+	breakToken     *BlockBreakToken
 }
 
 // containingBlockInfo is a fragmentainer descendant's containing block,
@@ -850,9 +860,12 @@ func (p *fragmentationContextOOFPart) multicolFragments(pending map[*LayoutInput
 // inner multicols they bring go to this part's container builder, at the
 // multicol's offset. Mirrors Blink's OutOfFlowLayoutPart::LayoutOOFsInMulticol
 // (out_of_flow_layout_part.cc:1324-1557 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The pending fixedpos containing
-// block is not passed on: louis14 does not record one (see
-// TransferOutOfFlowCandidates).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A fixed box whose fixedpos
+// containing block is outside the inner multicol is handed back as a
+// fragmentainer descendant contained by it (TransferOutOfFlowCandidates).
+// Not ported: outer_context_has_fixedpos_container_'s column consumed-size
+// adjustment for an inner multicol that itself breaks across outer
+// fragmentainers (:3071-3087).
 func (p *fragmentationContextOOFPart) LayoutOOFsInMulticol(multicolFragments []*PhysicalFragment, info *MulticolWithPendingOOFs) {
 	first := multicolFragments[0]
 	wdm := NewWritingDirectionMode(first.Style)
@@ -965,6 +978,7 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 				InlineOffset: cbInfo.contentStackedOffset.InlineOffset + offsetInfo.Offset.InlineOffset,
 				BlockOffset:  cbInfo.contentStackedOffset.BlockOffset + offsetInfo.Offset.BlockOffset,
 			}
+			originalOffset := offset
 			blockEstimate := NewLogicalFragment(p.containingBlockWDM, offsetInfo.result.Fragment).BlockSize()
 			startIndex := p.ComputeStartFragmentIndexAndRelativeOffset(blockEstimate, &offset)
 			if startIndex >= maxOOFFragmentainers {
@@ -974,9 +988,10 @@ func (p *fragmentationContextOOFPart) LayoutFragmentainerDescendants(descendants
 				descendantsToLayout = append(descendantsToLayout, nil)
 			}
 			descendantsToLayout[startIndex] = append(descendantsToLayout[startIndex], NodeToLayout{
-				descendant: d,
-				offsetInfo: offsetInfo,
-				offset:     offset,
+				descendant:     d,
+				offsetInfo:     offsetInfo,
+				offset:         offset,
+				originalOffset: originalOffset,
 			})
 		}
 
@@ -1227,7 +1242,40 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 		InlineOffset: fragmentainerOffset.InlineOffset + offset.InlineOffset,
 		BlockOffset:  fragmentainerOffset.BlockOffset + offset.BlockOffset,
 	}
-	for _, cand := range p.propagatedDescendants(result, n.offsetInfo, inRoot) {
+	// A fixed descendant whose fixedpos containing block is inside this
+	// fragmentation context becomes a fragmentainer descendant contained by
+	// it, its static position relative to that containing block: the OOF's
+	// stacked offset less the containing block's, plus what the OOF's
+	// earlier fragments consumed (additional_fixedpos_offset and the
+	// fixedpos branch of PropagateOOFPositionedInfo,
+	// out_of_flow_layout_part.cc:3057-3070, fragment_builder.cc:783-816 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Relative offsets between
+	// the OOF and the containing block are not applied (louis14 finds the
+	// containing block's fragments where they were placed).
+	fixedposCB := n.descendant.FixedposContainingBlock
+	var fixedpos []OutOfFlowCandidate
+	if fixedposCB.Fragment != nil {
+		if fixedposCBInfo, ok := p.GetContainingBlockInfo(LogicalOofNodeForFragmentation{ContainingBlock: fixedposCB}); ok {
+			additional := LogicalOffset{
+				InlineOffset: n.originalOffset.InlineOffset - fixedposCBInfo.contentStackedOffset.InlineOffset,
+				BlockOffset:  n.originalOffset.BlockOffset - fixedposCBInfo.contentStackedOffset.BlockOffset,
+			}
+			if n.breakToken != nil {
+				additional.BlockOffset += n.breakToken.ConsumedBlockSize.Float64()
+			}
+			fixedpos = p.propagatedDescendants(result, n.offsetInfo, additional)
+		}
+	}
+	for i, cand := range p.propagatedDescendants(result, n.offsetInfo, inRoot) {
+		if fixedpos != nil && cand.IsFixedPosition {
+			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
+				Candidate:               fixedpos[i],
+				ContainingBlock:         fixedposCB,
+				FixedposContainingBlock: fixedposCB,
+				FixedposInlineContainer: n.descendant.FixedposInlineContainer,
+			})
+			continue
+		}
 		p.containerBuilder.AddOutOfFlowCandidate(cand)
 	}
 	p.containerBuilder.PropagateOOFFragmentainerDescendants(result.Fragment, inRoot, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, nil)
