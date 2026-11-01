@@ -39,6 +39,13 @@ type UnpositionedFloat struct {
 
 	BfcContainerInlineSize float64
 	Ctx                    *LayoutContext
+
+	// LayoutResult and Margins are the float laid out without
+	// fragmentation, to find its inline-size before it is positioned (set
+	// by ComputeMarginBoxInlineSizeForUnpositionedFloat; Blink's
+	// layout_result and margins, unpositioned_float.h:61-64).
+	LayoutResult *LayoutResult
+	Margins      LogicalEdges
 }
 
 // FloatSide is the float's physical side (Blink: Style().Floating()).

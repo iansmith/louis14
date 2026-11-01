@@ -63,6 +63,43 @@ func findLayoutOpportunityForFloat(uf *UnpositionedFloat, es *ExclusionSpace, ma
 		uf.AvailableSize.InlineSize, blockStart, uf.OriginBfcLineOffset, uf.BfcContainerInlineSize)
 }
 
+// layoutFloat lays the float out in space and tags its fragment as a
+// float. LOU-365 (CodeRabbit 3514362226): the parent-side monolithic tag is
+// for writing-mode roots the float's own layout cannot see (parallel
+// flips), as at the in-flow child walk.
+func layoutFloat(uf *UnpositionedFloat, space ConstraintSpace) *LayoutResult {
+	result := layoutElement(uf.Ctx, uf.Node, space)
+	if result.Fragment != nil {
+		result.Fragment.IsFloating = true
+		wdm := uf.ParentSpace.WritingDirection
+		if uf.Node.IsMonolithic(wdm.WM != NewWritingDirectionMode(uf.Node.Style()).WM) {
+			result.Fragment.IsMonolithic = true
+		}
+	}
+	return result
+}
+
+// layoutFloatWithoutFragmentation lays the float out without block
+// fragmentation, once, caching the result and margins on uf. Mirrors
+// Blink's LayoutFloatWithoutFragmentation (floats_utils.cc:171-189).
+func layoutFloatWithoutFragmentation(uf *UnpositionedFloat) {
+	if uf.LayoutResult != nil {
+		return
+	}
+	uf.LayoutResult = layoutFloat(uf, createConstraintSpaceForFloat(uf, false, false, 0, LogicalEdges{}))
+	uf.Margins = ResolveMargins(uf.Node.Style(), uf.ParentSpace.WritingDirection, uf.PercentageSize.InlineSize)
+}
+
+// ComputeMarginBoxInlineSizeForUnpositionedFloat returns the float's
+// margin-box inline-size, laying it out without fragmentation (the line
+// breaker needs it before the float is positioned). Mirrors Blink's
+// ComputeMarginBoxInlineSizeForUnpositionedFloat (floats_utils.cc:193-210).
+func ComputeMarginBoxInlineSizeForUnpositionedFloat(uf *UnpositionedFloat) float64 {
+	layoutFloatWithoutFragmentation(uf)
+	return max(0, NewLogicalFragment(uf.ParentSpace.WritingDirection, uf.LayoutResult.Fragment).InlineSize()+
+		uf.Margins.InlineSum())
+}
+
 // PositionFloat lays out and positions a float, adding its exclusion to
 // *exclusionSpace. Under block fragmentation the float is laid out at its
 // final position with the fragmentainer, so it may break inside (its
@@ -80,45 +117,45 @@ func PositionFloat(uf *UnpositionedFloat, exclusionSpace **ExclusionSpace) Posit
 	isFragmentable := childWDM.WM == wdm.WM && parentSpace.HasBlockFragmentation
 	isMonolithic := uf.Node.IsMonolithic(wdm.WM != childWDM.WM)
 
-	margins := ResolveMargins(style, wdm, uf.PercentageSize.InlineSize)
-	if isFragmentable {
+	// Without block fragmentation the float is laid out once, reusing the
+	// result from measuring its inline-size in an inline formatting
+	// context. Under fragmentation its block-offset must be known before
+	// layout: from the measured inline-size when there is one, else
+	// optimistically at the offset it gets if no other float affects it,
+	// laying it out again when it got pushed down (relayout deeper in the
+	// fragmentainer can only shrink the fragment). A monolithic float gets
+	// no fragmentainer, so its layout does not depend on the offset
+	// (floats_utils.cc:230-312).
+	var result *LayoutResult
+	var margins LogicalEdges
+	var opportunityBlockOffset float64
+	if !isFragmentable {
+		layoutFloatWithoutFragmentation(uf)
+		result, margins = uf.LayoutResult, uf.Margins
+		opportunityBlockOffset = findLayoutOpportunityForFloat(uf, es, margins, NewLogicalFragment(wdm, result.Fragment))
+	} else {
+		margins = ResolveMargins(style, wdm, uf.PercentageSize.InlineSize)
 		AdjustMarginsForFragmentation(uf.Token, &margins)
-	}
-
-	// layout lays the float out with its border edge at bfcBlockOffset.
-	layout := func(bfcBlockOffset float64) *LayoutResult {
-		space := createConstraintSpaceForFloat(uf, isFragmentable, isMonolithic,
-			uf.FragmentainerOffsetAtBfc()+bfcBlockOffset, margins)
-		result := layoutElement(uf.Ctx, uf.Node, space)
-		if result.Fragment != nil {
-			result.Fragment.IsFloating = true
-			// LOU-365 (CodeRabbit 3514362226): parent-side monolithic tag
-			// for writing-mode roots the float's own layout cannot see
-			// (parallel flips), as at the in-flow child walk.
-			if isMonolithic {
-				result.Fragment.IsMonolithic = true
-			}
+		layout := func(bfcBlockOffset float64) *LayoutResult {
+			return layoutFloat(uf, createConstraintSpaceForFloat(uf, true, isMonolithic,
+				uf.FragmentainerOffsetAtBfc()+bfcBlockOffset, margins))
 		}
-		return result
+		originBorderBfcOffset := uf.OriginBfcBlockOffset + margins.BlockStart
+		measured := uf.LayoutResult
+		if measured == nil {
+			result = layout(originBorderBfcOffset)
+			measured = result
+		}
+		opportunityBlockOffset = findLayoutOpportunityForFloat(uf, es, margins, NewLogicalFragment(wdm, measured.Fragment))
+		if bfcBlockOffset := opportunityBlockOffset + margins.BlockStart; isMonolithic {
+			// Laid out without the fragmentainer either way.
+			result = measured
+		} else if result == nil || bfcBlockOffset > originBorderBfcOffset {
+			result = layout(bfcBlockOffset)
+		}
 	}
-
-	// Lay the float out at the offset it gets if no other float affects
-	// it, then find its layout opportunity; when it got pushed down and
-	// the fragmentainer reaches it, lay it out again there, keeping that
-	// opportunity (relayout deeper in the fragmentainer can only shrink the
-	// fragment; a monolithic float gets no fragmentainer, so its layout
-	// would not change). Blink lays out without fragmentation first only to
-	// measure the inline-size of a float in an inline formatting context
-	// (floats_utils.cc:230-323).
-	originBorderBfcOffset := uf.OriginBfcBlockOffset + margins.BlockStart
-	result := layout(originBorderBfcOffset)
 	fragment := NewLogicalFragment(wdm, result.Fragment)
-	opportunityBlockOffset := findLayoutOpportunityForFloat(uf, es, margins, fragment)
 	bfcBlockOffset := opportunityBlockOffset + margins.BlockStart
-	if isFragmentable && !isMonolithic && bfcBlockOffset > originBorderBfcOffset {
-		result = layout(bfcBlockOffset)
-		fragment = NewLogicalFragment(wdm, result.Fragment)
-	}
 	fragmentainerBlockOffset := uf.FragmentainerOffsetAtBfc() + bfcBlockOffset
 	// At the fragmentainer start: the border edge for a float laid out
 	// with the fragmentainer (SetupSpaceBuilderForFragmentation), else —
