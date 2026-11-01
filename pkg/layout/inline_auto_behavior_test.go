@@ -96,3 +96,49 @@ func TestInlineAutoBehavior_NonReplacedStretches_LOU499(t *testing.T) {
 		t.Errorf("column child: want width 25, got %v", f)
 	}
 }
+
+// The spanner space's inline auto behaviour and orthogonal fallback, by
+// CreateConstraintSpaceForSpanner (column_layout_algorithm.cc:1871-1876 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An orthogonal spanner sets no
+// parallel behaviour (louis14 keeps the builder default) but gets the ICB
+// fallback inline size.
+func TestCreateConstraintSpaceForSpanner_InlineAutoBehavior_LOU499(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	for _, tc := range []struct {
+		name         string
+		tag          string
+		props        []string
+		wantBehavior AutoSizeBehavior
+		wantFallback float64
+	}{
+		{name: "block", tag: "div", wantBehavior: AutoSizeBehaviorStretchImplicit},
+		{name: "replaced", tag: "canvas", wantBehavior: AutoSizeBehaviorFitContent},
+		{name: "table", tag: "div", props: []string{"display", "table"}, wantBehavior: AutoSizeBehaviorFitContent},
+		{name: "form control", tag: "button", wantBehavior: AutoSizeBehaviorFitContent},
+		{name: "orthogonal", tag: "div", props: []string{"writing-mode", "vertical-rl"},
+			wantBehavior: AutoSizeBehaviorStretchImplicit, wantFallback: 600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sp := makeNode(tc.tag)
+			mc := makeNode("div", sp)
+			styles := map[*html.Node]*css.Style{
+				mc: makeStyle("display", "block", "column-count", "2", "column-gap", "0"),
+				sp: makeStyle(append([]string{"display", "block", "column-span", "all"}, tc.props...)...),
+			}
+			space := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: Indefinite}).
+				Build()
+			mcNode := buildTestTree(mc, styles)
+			mla := NewMulticolLayoutAlgorithm(testContext(), mcNode, space)
+			mla.Layout()
+			got := mla.CreateConstraintSpaceForSpanner(mcNode.Children()[0], 0, nil)
+			if got.InlineAutoBehavior != tc.wantBehavior {
+				t.Errorf("InlineAutoBehavior = %v, want %v", got.InlineAutoBehavior, tc.wantBehavior)
+			}
+			if got.OrthogonalFallbackInlineSize != tc.wantFallback {
+				t.Errorf("OrthogonalFallbackInlineSize = %v, want %v", got.OrthogonalFallbackInlineSize, tc.wantFallback)
+			}
+		})
+	}
+}

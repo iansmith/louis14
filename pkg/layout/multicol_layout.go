@@ -2301,6 +2301,9 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 				BlockSize:  containerPercentResolutionBlockSize,
 			}).
 			SetPercentageResolutionInlineSize(colWidth).
+			// CreateConstraintSpaceForBalancing sets it
+			// (column_layout_algorithm.cc:1852 @ a9f50e522efa).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetIsContentSuggestionLayout(true)
 		// SetShouldPropagateChildBreakValues: column_layout_algorithm.cc:1850
 		// @ a9f50e522efa.
@@ -2507,11 +2510,14 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 // SetupSpaceBuilderForFragmentation(container_builder_, ...)
 // (fragmentation_utils.cc:379-397).
 //
-// Not ported: the orthogonal fallback inline size and
-// ShouldBlockContainerChildStretchAutoInlineSize / kStretchImplicit
-// (cla.cc:1871-1876; louis14's space has no inline auto behaviour, and an
-// auto-width spanner already fills the content box), the baseline algorithm
-// type and text-box-trim (cla.cc:1880-1886).
+// An orthogonal spanner gets the orthogonal fallback inline size; a
+// parallel one stretches an auto inline-size only when
+// ShouldBlockContainerChildStretchAutoInlineSize holds, and is fit-content
+// otherwise (cla.cc:1871-1876). louis14's fallback is the ICB size, as for
+// block and flex children.
+//
+// Not ported: the baseline algorithm type and text-box-trim (cla.cc:
+// 1880-1886); louis14's ConstraintSpace carries neither.
 func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *LayoutInputNode, blockOffset float64, breakToken *BlockBreakToken) ConstraintSpace {
 	wdm := mla.space.WritingDirection
 	spannerWDM := NewWritingDirectionMode(spanner.Style())
@@ -2519,8 +2525,15 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 		InlineSize: mla.contentInlineSize,
 		BlockSize:  mla.containerPercentResolutionBlockSize,
 	}
-	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true).
-		SetAvailableSize(childAvailableSize).
+	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true)
+	if wdm.IsOrthogonalTo(spannerWDM) {
+		b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(spannerWDM, mla.ctx))
+	} else if ShouldBlockContainerChildStretchAutoInlineSize(spanner) {
+		b.SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit)
+	} else {
+		b.SetInlineAutoBehavior(AutoSizeBehaviorFitContent)
+	}
+	b.SetAvailableSize(childAvailableSize).
 		SetPercentageResolutionSize(childAvailableSize).
 		SetPercentageResolutionInlineSize(mla.contentInlineSize)
 	if breakToken != nil {
@@ -2587,6 +2600,9 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 			BlockSize:  containerPercentResolutionBlockSize,
 		}).
 		SetPercentageResolutionInlineSize(colWidth).
+		// CreateConstraintSpaceForFragmentainer sets it
+		// (fragmentation_utils.cc:1389 @ a9f50e522efa).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetHasBlockFragmentation(true).
 		// CreateConstraintSpaceForFragmentainer sets the bit
 		// (fragmentation_utils.cc:1391 @ a9f50e522efa).

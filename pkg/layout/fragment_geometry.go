@@ -719,17 +719,15 @@ func CalculateInitialFragmentGeometry(
 		}
 		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
 		inlineSizeIsAuto = true
-	} else if needsShrinkToFit(style) || space.IsOrthogonalWritingModeRoot {
-		// Shrink-to-fit: floats, abs-pos, inline-block, or orthogonal
-		// positioned/float elements.
-		minMax := ComputeMinMaxSizes(ctx, node, space)
-		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
-		if available < 0 {
-			available = 0
-		}
-		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
-		inlineSizeIsAuto = true
-	} else if space.IsInsideFlexibleBox && !space.IsFixedInlineSize {
+	} else if needsShrinkToFit(style) || space.IsInsideFlexibleBox ||
+		space.InlineAutoBehavior == AutoSizeBehaviorFitContent {
+		// Shrink-to-fit: floats, abs-pos, inline-block (including orthogonal
+		// ones), flex items, and any child whose parent's space does not
+		// stretch an auto inline-size (fit-content, length_utils.cc:556-569 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: that
+		// function's may_apply_aspect_ratio rule, under which an aspect-ratio
+		// with a definite block-size turns kStretchImplicit into fit-content;
+		// louis14 treats both stretch behaviours alike.
 		minMax := ComputeMinMaxSizes(ctx, node, space)
 		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
