@@ -149,7 +149,8 @@ func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *Logical
 
 // ShouldCloneBlockStartBorderPadding reports whether this fragment repeats
 // its block-start border/padding: box-decoration-break:clone, unless the
-// fragment is past the box's block end. Mirrors Blink's
+// fragment is past the box's block end, or follows monolithic overflow
+// with less space left than its block border+padding. Mirrors Blink's
 // ShouldCloneBlockStartBorderPadding (fragmentation_utils.cc:61-78 @
 // a9f50e522efa), which takes the builder; box is its louis14 stand-in (the
 // constraint space carries the previous break token).
@@ -160,6 +161,12 @@ func ShouldCloneBlockStartBorderPadding(box FragmentainerBox) bool {
 	previousBreakToken := box.Space.BreakToken
 	if previousBreakToken == nil {
 		return true
+	}
+	// Pushed by monolithic overflow into a fragmentainer with no room for
+	// the edges: don't repeat them.
+	if previousBreakToken.MonolithicOverflow != 0 &&
+		FragmentainerSpaceLeft(box, false) < box.BorderScrollbarPadding.BlockSum() {
+		return false
 	}
 	return !previousBreakToken.IsAtBlockEnd
 }
