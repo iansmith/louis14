@@ -564,9 +564,11 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		// Propagate ::marker style and resolved content from layout input to box.
 	}
 
-	// Content area origin = border-box + border + padding.
-	contentX := absX + box.Border.Left + box.Padding.Left
-	contentY := absY + box.Border.Top + box.Padding.Top
+	// Content area origin = border-box + border + padding, moved by the
+	// scroll translation when this is a scrolled scroll container.
+	scrollDX, scrollDY := applyScrollableArea(frag, box)
+	contentX := absX + box.Border.Left + box.Padding.Left - scrollDX
+	contentY := absY + box.Border.Top + box.Padding.Top - scrollDY
 
 	// Convert children. Child offsets are relative to the content area.
 	for _, childLink := range frag.Children {

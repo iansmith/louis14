@@ -34,6 +34,21 @@ type Node struct {
 	// :focus-within evaluate O(1) during selector matching.
 	HasFocusWithin bool
 
+	// ScrollOffset is the scroll offset a script requested for this element
+	// through Element.scrollLeft / scrollTop, in CSSOM View scroll-offset
+	// coordinates (0 is the initial position; leftward/upward overflow
+	// scrolls through negative values). Mirrors the persistent
+	// PaintLayerScrollableArea::scroll_offset_ (paint/
+	// paint_layer_scrollable_area.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which outlives relayout.
+	// The scroll bindings store the offset layout clamped the request to
+	// when they can run layout (js.Engine.SetLayoutUpdater), the request
+	// otherwise; layout clamps it again to the element's current scroll
+	// range (pkg/layout PaintLayerScrollableArea.ClampScrollOffset) when
+	// it applies the scroll translation, as Blink re-clamps after an
+	// overflow change (ClampScrollOffsetAfterOverflowChange).
+	ScrollOffset ScrollOffset
+
 	// MarkerAnimatedStyle holds property values a Web Animation targeting
 	// this element's ::marker pseudo-element (Element.animate with
 	// {pseudoElement: '::marker'}) has sampled at the current time. Written
@@ -113,6 +128,14 @@ func (n *Node) NamespaceURI() string {
 		return XHTMLNamespaceURI
 	}
 	return n.namespaceURI
+}
+
+// ScrollOffset is a scroll offset in CSSOM View coordinates: how far the
+// scrolled contents have moved from their initial position, in CSS px.
+// Mirrors Blink's ScrollOffset (core/scroll/scroll_types.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, a gfx::Vector2dF).
+type ScrollOffset struct {
+	X, Y float64
 }
 
 // LayoutDisposition mirrors Blink's HTMLImageElement::LayoutDisposition

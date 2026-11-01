@@ -1575,24 +1575,25 @@ func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	physSize := ToPhysicalSize(b.size, b.wdm.WM)
 
-	// Children are stored with content-relative logical offsets.
-	// The converter's outer size must be the CONTENT-BOX physical size so that
-	// "outerW - block - innerW" type formulas (used by RTL, vertical, sideways
-	// modes) give content-relative physical offsets that fragmentToBox can add
-	// to the content origin.  For boxes without borders/padding (line boxes,
-	// anonymous boxes), boxData is nil and physSize is already the content size.
+	// Children are stored with logical offsets relative to the content box
+	// inside the scrollbar gutters. The converter's outer size must be that
+	// box's physical size so that "outerW - block - innerW" type formulas
+	// (used by RTL, vertical, sideways modes) give physical offsets within
+	// it; a left/top gutter then moves them, keeping the physical offsets
+	// relative to the border+padding origin fragmentToBox adds them to. (A
+	// gutter on a flipped axis's start — vertical-rl's right, the bottom of
+	// a vertical RTL box — is thereby skipped, as Blink's
+	// BorderScrollbarPadding start edge is.) For boxes without
+	// borders/padding (line boxes, anonymous boxes), boxData is nil and
+	// physSize is already the content size.
 	convSize := physSize
+	var gutterLeft, gutterTop float64
 	if b.boxData != nil {
 		bd := b.boxData
-		w := physSize.Width - bd.Border.Left - bd.Border.Right - bd.Padding.Left - bd.Padding.Right
-		h := physSize.Height - bd.Border.Top - bd.Border.Bottom - bd.Padding.Top - bd.Padding.Bottom
-		if w < 0 {
-			w = 0
-		}
-		if h < 0 {
-			h = 0
-		}
-		convSize = PhysicalSize{Width: w, Height: h}
+		w := physSize.Width - bd.Border.Left - bd.Border.Right - bd.Padding.Left - bd.Padding.Right - bd.Scrollbar.Left - bd.Scrollbar.Right
+		h := physSize.Height - bd.Border.Top - bd.Border.Bottom - bd.Padding.Top - bd.Padding.Bottom - bd.Scrollbar.Top - bd.Scrollbar.Bottom
+		convSize = PhysicalSize{Width: max(0, w), Height: max(0, h)}
+		gutterLeft, gutterTop = bd.Scrollbar.Left, bd.Scrollbar.Top
 	}
 	conv := NewConverter(b.wdm, convSize)
 	physChildren := make([]ChildLink, len(b.children))
@@ -1600,7 +1601,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		childPhysSize := geomSizeToOld(child.fragment.Size)
 		physOff := conv.ToPhysicalOffset(child.offset, childPhysSize)
 		physChildren[i] = ChildLink{
-			Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X, physOff.Y),
+			Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X+gutterLeft, physOff.Y+gutterTop),
 			Fragment: child.fragment,
 		}
 	}
