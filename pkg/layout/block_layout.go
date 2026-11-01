@@ -2289,9 +2289,7 @@ func (bla *BlockLayoutAlgorithm) adoptBlockInInlineResult(wdm WritingDirectionMo
 	}
 	var offset LogicalOffset
 	for _, open := range bii.openInlineStack {
-		rel := ComputeRelativeOffsetForInline(wdm, bla.containerBuilder.ChildAvailableSize(), open.Style)
-		offset.InlineOffset += rel.InlineOffset
-		offset.BlockOffset += rel.BlockOffset
+		offset = offset.Add(ComputeRelativeOffsetForInline(wdm, bla.containerBuilder.ChildAvailableSize(), open.Style))
 	}
 	return offset
 }

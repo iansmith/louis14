@@ -2270,6 +2270,9 @@ func createLineBoxEx(
 			isLastFragment   bool
 			cumulativeVAOffs float64 // sum of vertical-align: <length> from this span + all open ancestor spans
 			openSeq          int     // monotonically increasing push order: ancestor-before-descendant, earlier-sibling-first
+			// cumulativeRelativeOffset is this span's relative offset plus
+			// all open ancestor spans' (ApplyRelativePositioning).
+			cumulativeRelativeOffset LogicalOffset
 		}
 		var spanStack []spanEntry
 		// openSeqCounter assigns a unique, monotonically increasing index to each
@@ -2277,6 +2280,20 @@ func createLineBoxEx(
 		// pushed first, then OpenTags in source order — so a lower openSeq is
 		// always an ancestor or earlier sibling of a higher one.
 		openSeqCounter := 0
+		// pushSpan opens span inside the innermost open span, accumulating
+		// the vertical-align length and relative offsets.
+		pushSpan := func(span spanEntry) {
+			var parent spanEntry
+			if n := len(spanStack); n > 0 {
+				parent = spanStack[n-1]
+			}
+			span.cumulativeVAOffs = parent.cumulativeVAOffs + span.style.GetVerticalAlignOffset()
+			span.cumulativeRelativeOffset = parent.cumulativeRelativeOffset.Add(
+				ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, span.style))
+			span.openSeq = openSeqCounter
+			openSeqCounter++
+			spanStack = append(spanStack, span)
+		}
 		// pendingBg buffers the inline span-background fragments produced by emit
 		// so they can be added to the line box in ancestor-first order. CloseTag
 		// fires innermost-first, which would otherwise place descendant
@@ -2407,10 +2424,11 @@ func createLineBoxEx(
 					InlineOffset: fragStart,
 					BlockOffset:  spanBlockOffset,
 				},
-				// CSS 2.1 §9.4.3: inline span backgrounds also shift with
-				// position:relative. Use the original (non-reset) style.
+				// CSS 2.1 §9.4.3: an inline box moves by its own and its
+				// ancestor boxes' relative offsets (ApplyRelativePositioning,
+				// inline/inline_box_state.cc:975-977 @ a9f50e522efa).
 				// Sticky is scroll-time, not layout-time — leave zero.
-				relativeOffset: ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, span.style),
+				relativeOffset: span.cumulativeRelativeOffset,
 				seq:            span.openSeq,
 			})
 		}
@@ -2422,21 +2440,14 @@ func createLineBoxEx(
 			if item == nil || item.Style == nil {
 				continue
 			}
-			parentCum := 0.0
-			if n := len(spanStack); n > 0 {
-				parentCum = spanStack[n-1].cumulativeVAOffs
-			}
-			spanStack = append(spanStack, spanEntry{
-				item:             item,
-				style:            item.Style,
-				node:             item.Node,
-				borderStart:      alignOffset,
-				isFirstFragment:  false,
-				isLastFragment:   false,
-				cumulativeVAOffs: parentCum + item.Style.GetVerticalAlignOffset(),
-				openSeq:          openSeqCounter,
+			pushSpan(spanEntry{
+				item:            item,
+				style:           item.Style,
+				node:            item.Node,
+				borderStart:     alignOffset,
+				isFirstFragment: false,
+				isLastFragment:  false,
 			})
-			openSeqCounter++
 		}
 
 		trackPos := alignOffset
@@ -2450,21 +2461,14 @@ func createLineBoxEx(
 			switch r.Item.Type {
 			case InlineItemOpenTag:
 				if effStyle != nil {
-					parentCum := 0.0
-					if n := len(spanStack); n > 0 {
-						parentCum = spanStack[n-1].cumulativeVAOffs
-					}
-					spanStack = append(spanStack, spanEntry{
-						item:             r.Item,
-						style:            effStyle,
-						node:             r.Item.Node,
-						borderStart:      trackPos + r.Margins.InlineStart,
-						isFirstFragment:  true,
-						isLastFragment:   false, // set by its CloseTag
-						cumulativeVAOffs: parentCum + effStyle.GetVerticalAlignOffset(),
-						openSeq:          openSeqCounter,
+					pushSpan(spanEntry{
+						item:            r.Item,
+						style:           effStyle,
+						node:            r.Item.Node,
+						borderStart:     trackPos + r.Margins.InlineStart,
+						isFirstFragment: true,
+						isLastFragment:  false, // set by its CloseTag
 					})
-					openSeqCounter++
 				}
 			case InlineItemCloseTag:
 				if len(spanStack) > 0 && effStyle != nil {
@@ -2529,16 +2533,31 @@ func createLineBoxEx(
 	// with length offsets accumulate.
 	var vaLengthOffset float64
 	var vaLengthStack []float64
-	// Pre-populate vaLengthStack with spans opened on prior lines so their
-	// length offsets continue to affect this line's descendant fragments.
+	// relativeOffset is the sum of the relative offsets of the inline boxes
+	// open at the current item: every line item inside an inline box moves
+	// by that box's relative offset, so items in nested boxes move by the
+	// sum. Mirrors Blink's InlineLayoutStateStack::ApplyRelativePositioning
+	// (inline/inline_box_state.cc:961-973 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). relativeOffsetStack holds
+	// the offset outside each open box, restored at its CloseTag.
+	var relativeOffset LogicalOffset
+	var relativeOffsetStack []LogicalOffset
+	pushInlineBox := func(style *css.Style) {
+		off := style.GetVerticalAlignOffset()
+		vaLengthStack = append(vaLengthStack, off)
+		vaLengthOffset += off
+		relativeOffsetStack = append(relativeOffsetStack, relativeOffset)
+		relativeOffset = relativeOffset.Add(ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, style))
+	}
+	// Pre-populate with spans opened on prior lines so their length and
+	// relative offsets continue to affect this line's descendant fragments.
 	for _, item := range enteringSpanStack {
 		if item == nil || item.Style == nil {
 			vaLengthStack = append(vaLengthStack, 0)
+			relativeOffsetStack = append(relativeOffsetStack, relativeOffset)
 			continue
 		}
-		off := item.Style.GetVerticalAlignOffset()
-		vaLengthStack = append(vaLengthStack, off)
-		vaLengthOffset += off
+		pushInlineBox(item.Style)
 	}
 	// inlineBoxAsDesc computes an inline box's ascent/descent contribution the
 	// same way computeLineMetricsEx does for an OpenTag: font ascent/descent
@@ -2582,11 +2601,10 @@ func createLineBoxEx(
 					a, d := inlineBoxAsDesc(rStyle)
 					vaStack = append(vaStack, vaFrame{vAlign: va, rootAsc: a, rootDesc: d})
 				}
-				// Push the span's length offset onto the cumulative stack so
-				// descendant text/atomic-inline fragments inherit the shift.
-				off := rStyle.GetVerticalAlignOffset()
-				vaLengthStack = append(vaLengthStack, off)
-				vaLengthOffset += off
+				// Push the span's length and relative offsets onto the
+				// cumulative stacks so descendant text/atomic-inline
+				// fragments inherit the shift.
+				pushInlineBox(rStyle)
 			}
 		case InlineItemCloseTag:
 			if rStyle != nil {
@@ -2599,6 +2617,10 @@ func createLineBoxEx(
 				if n := len(vaLengthStack); n > 0 {
 					vaLengthOffset -= vaLengthStack[n-1]
 					vaLengthStack = vaLengthStack[:n-1]
+				}
+				if n := len(relativeOffsetStack); n > 0 {
+					relativeOffset = relativeOffsetStack[n-1]
+					relativeOffsetStack = relativeOffsetStack[:n-1]
 				}
 			}
 		case InlineItemText:
@@ -2685,15 +2707,10 @@ func createLineBoxEx(
 			// fixed inline offset, while Blink mutates per-glyph offsets in
 			// ShapeResult.
 			fontPath := resolveFontPath(rStyle, fonts)
-			// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
-			// text fragments. Only applies when the parent is a true inline element
-			// (display:inline), not a block container. Block containers are
-			// shifted by their own parent — applying it here would
-			// double-offset the text.
-			var textRelativeOffset LogicalOffset
-			if rStyle != nil && (rStyle.GetDisplay() == css.DisplayInline || rStyle.IsInlineBoxListItem()) {
-				textRelativeOffset = ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, rStyle)
-			}
+			// CSS 2.1 §9.4.3: text moves by the relative offsets of the
+			// inline boxes enclosing it (relativeOffset). The block container
+			// is not one of them: its own parent shifts it.
+			textRelativeOffset := relativeOffset
 			emitTextFragment := func(piece string, pieceInline float64, pieceOffset float64) {
 				if len(piece) == 0 {
 					return
@@ -2927,9 +2944,13 @@ func createLineBoxEx(
 				// On a ::first-line with group opacity, the synthetic first-line
 				// group is that enclosing group (LOU-305).
 				r.LayoutResult.Fragment.PaintGroup = flPaintGroup(r.Item.EnclosingPaintGroup)
-				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
-				// Sticky is scroll-time, not layout-time.
-				atomicRelativeOffset := ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style)
+				// CSS 2.1 §9.4.3: an atomic inline moves by its own relative
+				// offset (PlaceRelativePositionedItems, inline/
+				// inline_layout_algorithm.cc:225-235 @ a9f50e522efa) and its
+				// enclosing inline boxes'. Sticky is scroll-time, not
+				// layout-time.
+				atomicRelativeOffset := relativeOffset.Add(
+					ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style))
 				lineBuilder.AddChildWithRelativeOffset(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
