@@ -2351,7 +2351,7 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 		}
 	}
 
-	if info.style == css.BorderStyleNone || info.style == "hidden" {
+	if info.style == css.BorderStyleNone || info.style == css.BorderStyleHidden {
 		info.width = 0
 	} else if wv, ok := s.Get(widthProp); ok {
 		if v, ok := s.GetLengthForVal(wv); ok {
@@ -2370,20 +2370,7 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 		}
 	}
 
-	// Read color from longhand (e.g., border-top-color), fall back to currentColor.
-	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
-	if cv, ok := s.Get("color"); ok {
-		if c, ok := css.ParseColor(cv); ok {
-			currentColor = c
-		}
-	}
-
-	info.color = currentColor // default
-	if cv, ok := s.Get(colorProp); ok {
-		if c, ok := css.ParseColor(cv); ok {
-			info.color = c
-		}
-	}
+	info.color = s.VisitedDependentColor(colorProp)
 
 	return info
 }
@@ -2392,7 +2379,7 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 // per CSS 2.1 §17.6.2.1: double > solid > dashed > dotted > ridge > outset > groove > inset > none.
 func borderStylePrecedence(s css.BorderStyle) int {
 	switch s {
-	case "hidden":
+	case css.BorderStyleHidden:
 		return 100 // hidden always wins
 	case css.BorderStyleDouble:
 		return 9
@@ -2421,7 +2408,7 @@ func borderStylePrecedence(s css.BorderStyle) int {
 // Returns the winning border.
 func resolveBorderConflict(a, b borderEdgeInfo, startCellWins bool) borderEdgeInfo {
 	// Rule 1: hidden wins (becomes no border).
-	if a.style == "hidden" || b.style == "hidden" {
+	if a.style == css.BorderStyleHidden || b.style == css.BorderStyleHidden {
 		return borderEdgeInfo{style: css.BorderStyleNone, width: 0}
 	}
 
