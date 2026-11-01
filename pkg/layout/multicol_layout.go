@@ -1857,14 +1857,21 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 		// the stretch decision. Mirrors Blink cla.cc:1087-1129 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (has_oof_fragmentainer_
 		// descendants is set only while balancing, cla.cc:973-978). The
-		// containing-block adjustment Blink passes is not needed: louis14
-		// finds a containing block's first fragment in the line's columns
-		// (plan WI-3).
+		// containing-block offsets are made relative to the line, as Blink's
+		// are.
 		// As before a spanner, descendants whose containing block continues
 		// past this line wait (out_of_flow_layout_part.cc:1611-1621).
+		// The containing-block offsets are made relative to this line's
+		// first column: less what the columns before it hold
+		// (containing_block_adjustment = -TotalColumnBlockSize(),
+		// cla.cc:1093-1098).
+		var lineConsumed layoutunit.LayoutUnit
+		if nextColumnToken != nil {
+			lineConsumed = nextColumnToken.ConsumedBlockSize
+		}
 		var lineDescendants []LogicalOofNodeForFragmentation
 		for _, c := range columns {
-			mla.containerBuilder.PropagateOOFFragmentainerDescendants(c.fragment, c.offset, LogicalOffset{}, layoutunit.LayoutUnit{}, nil, nil, &lineDescendants)
+			mla.containerBuilder.PropagateOOFFragmentainerDescendants(c.fragment, c.offset, LogicalOffset{}, layoutunit.LayoutUnit{}.Sub(lineConsumed), nil, nil, &lineDescendants)
 		}
 		if balanceColumns && len(lineDescendants) > 0 {
 			lineColumns := make([]logicalChildLink, 0, len(columns))
