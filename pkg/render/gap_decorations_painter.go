@@ -214,7 +214,7 @@ func (r *Renderer) paintGapDecorationsForDirection(layer *PaintLayer, direction 
 			x, y, w, h := pixelSnap(originX+physOff.X, originY+physOff.Y, physSize.Width, physSize.Height)
 			// BoxSideFromDirection: a column rule is drawn as the logical
 			// inline-start side, physically horizontal in vertical modes.
-			r.drawColumnRuleRect(layer.ColumnRuleStyle, x, y, w, h, isColumnGap != wdm.IsHorizontal())
+			r.drawColumnRuleRect(layer.ColumnRuleStyle, layer.ColumnRuleColor, x, y, w, h, isColumnGap != wdm.IsHorizontal())
 
 			start = end
 		}

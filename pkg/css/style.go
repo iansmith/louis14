@@ -10948,6 +10948,19 @@ func (fl *FillLayer) AnyLayerHasImage() bool {
 	return false
 }
 
+// AnyLayerHasFixedAttachmentImage reports whether any layer with an image
+// has `background-attachment: fixed`. Mirrors
+// FillLayer::AnyLayerHasFixedAttachmentImage (core/style/fill_layer.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (fl *FillLayer) AnyLayerHasFixedAttachmentImage() bool {
+	for cur := fl; cur != nil; cur = cur.Next {
+		if (cur.Image != nil || cur.Gradient != "") && cur.Attachment == BackgroundAttachmentFixed {
+			return true
+		}
+	}
+	return false
+}
+
 // IterateReverse calls fn for each layer from bottom to top (Blink paint order).
 func (fl *FillLayer) IterateReverse(fn func(*FillLayer)) {
 	if fl == nil {

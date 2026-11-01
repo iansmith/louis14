@@ -393,17 +393,6 @@ type PaintLayer struct {
 	// root. The flag is only meaningful in combination with IsBackdropRoot.
 	HasBackdropFilterDescendant bool
 
-	// PaintsCanvasBackground is true for the root element (or body when
-	// background propagates). Per CSS 2.1 §14.2, the root element's background
-	// paints the entire canvas, not just its own box.
-	PaintsCanvasBackground bool
-
-	// CanvasBackgroundRootBox is set on a promoted body layer to store the
-	// root element's box. Per CSS Backgrounds Level 3 §2.11.2, when the
-	// body's background is promoted to the canvas, the positioning area is
-	// the root element's padding box, not the body's.
-	CanvasBackgroundRootBox *layout.Box
-
 	// empty-cells: hide — skip background/border painting for empty table cells
 	// (CSS 2.1 §17.6.1.1, only in separate border model).
 	EmptyCellHide bool
@@ -1120,11 +1109,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// CSS Color 5 §4 relative-color forms `<func>(from currentColor ...)`
 	// where the base color is the element's computed `color` value.
 	if box.Text == "" {
-		if bg, ok := s.Get("background-color"); ok {
-			if c, ok := s.ResolvedColor(bg); ok {
-				layer.BackgroundColor = c
-			}
-		}
+		layer.BackgroundColor = s.UsedBackgroundColor()
 	}
 
 	// Background clip for background-color (uses bottom layer's clip per CSS spec).
