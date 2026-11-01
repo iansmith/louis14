@@ -121,13 +121,14 @@ func (bla *BlockLayoutAlgorithm) SetBoxType(t BoxType) {
 // through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
 // height:% etc.) reaches the real containing block. Mirrors Blink's
 // PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
-// A column box's own block-size is the fragmentainer's, not the containing
-// block's CSS height: its children resolve percentages against the
-// dedicated PercentageResolutionSize the multicol passes in (Blink's
-// CreateConstraintSpaceForFragmentainer percentage_resolution_size,
-// fragmentation_utils.cc:1388-1389 @ a9f50e522efa).
+// An anonymous space (a column box, whose own block-size is the
+// fragmentainer's, not the containing block's CSS height) passes its own
+// percentage-resolution block-size to its children: the dedicated one the
+// multicol passes in (CalculateChildPercentageSize, length_utils.cc:
+// 1810-1818; CreateConstraintSpaceForFragmentainer, fragmentation_utils.cc:
+// 1388, :1393 @ a9f50e522efa).
 func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
-	if bla.boxType == BoxTypeColumn {
+	if bla.space.IsAnonymous {
 		return bla.space.PercentageResolutionSize.BlockSize.Float64()
 	}
 	if hasExplicitBlock {
@@ -414,8 +415,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// (MustStayInCurrentFragmentainer, box_fragment_builder.h:401-413).
 	// Mirrors SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:
 	// 451-453, :484-487, :500 @ a9f50e522efa); a fragmentainer's space is
-	// anonymous and skips it.
-	if bla.space.HasBlockFragmentation && bla.boxType != BoxTypeColumn &&
+	// anonymous and skips it (:451).
+	if bla.space.HasBlockFragmentation && !bla.space.IsAnonymous &&
 		!bla.space.IsInitialColumnBalancingPass {
 		bla.containerBuilder.SetRequiresContentBeforeBreaking(bla.space.RequiresContentBeforeBreaking ||
 			(isKnownToFitInFragmentainer && !bla.space.BreakToken.IsBreakInside()))
@@ -529,11 +530,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		childAvailableBlock = explicitBlockSize
 	}
-	// A fragmentainer's space is anonymous: its children get its available
-	// block-size (CalculateChildAvailableSize, length_utils.cc:1781-1785 @
-	// a9f50e522efa; CreateConstraintSpaceForFragmentainer sets IsAnonymous,
-	// fragmentation_utils.cc:1393).
-	if bla.boxType == BoxTypeColumn {
+	// An anonymous space (a fragmentainer's) gives its children its
+	// available block-size (CalculateChildAvailableSize, length_utils.cc:
+	// 1781-1785 @ a9f50e522efa; CreateConstraintSpaceForFragmentainer sets
+	// IsAnonymous, fragmentation_utils.cc:1393).
+	if bla.space.IsAnonymous {
 		childAvailableBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 	// The builder's child available size, against which AddChild resolves
@@ -1304,6 +1305,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{
 						InlineSize: contentInlineSize,
 						BlockSize:  Indefinite,
