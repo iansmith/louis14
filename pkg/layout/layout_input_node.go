@@ -1,7 +1,6 @@
 package layout
 
 import (
-	"slices"
 	"strings"
 
 	"louis14/pkg/css"
@@ -24,9 +23,9 @@ import (
 //
 // Consequences for the rest of the codebase:
 //   - *LayoutInputNode pointers are persistent across Layout() calls and
-//     serve as the stable identity that Blink uses *LayoutBox for. The
-//     groupedChildrenCache and contentNodeCache fields exist specifically
-//     to preserve that stability inside the multicol algorithm.
+//     serve as the stable identity that Blink uses *LayoutBox for (break
+//     tokens resume by node identity; a column box's break token names
+//     the multicol node itself, as Blink's does).
 //   - Where Blink keys maps by *LayoutBox (e.g., FragmentedOofData's
 //     multicols-with-pending-OOFs map, OrthogonalLayoutCache), louis14
 //     keys them by *LayoutInputNode. Same identity, one fewer indirection.
@@ -53,13 +52,15 @@ type LayoutInputNode struct {
 	// flex/grid/table layout). Mirrors LayoutObject::parent_
 	// (layout_object.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	// Written only by adoptChildren, so parent's children list always
-	// holds this node; siblings are derived from that list rather than
-	// stored. The link is one-directional across the multicol flow-thread
-	// re-parenting: the multicol's first layout makes its content node
-	// (contentNodeCache) the parent of its children, as Blink's
-	// LayoutMultiColumnFlowThread is, while the multicol's own children
-	// list still names them.
+	// holds this node, at siblingIndex. A multicol's children keep it as
+	// their parent: Blink has no flow thread at this SHA and lays columns
+	// out on the multicol node.
 	parent *LayoutInputNode
+	// siblingIndex is this node's index in parent's children list, written
+	// with parent by adoptChildren, so NextSibling starts at the node
+	// instead of searching for it, as Blink's LayoutObject::next_ link
+	// does.
+	siblingIndex int
 
 	// isAnonymous is true for generated anonymous boxes (CSS 2.1 §9.2.1.1).
 	isAnonymous bool
@@ -153,25 +154,6 @@ type LayoutInputNode struct {
 	// (pkg/layout/svg imports pkg/geometry; pkg/layout imports
 	// pkg/layout/svg). Callers in pkg/render cast to *svg.SVGRoot.
 	SVGRoot any
-
-	// groupedChildrenCache caches the result of groupInlineChildrenForMulticol
-	// so that repeated Layout() calls on the same multicol node return the same
-	// anonymous block pointer identities. Without this cache, each invocation
-	// creates fresh anonymous wrappers, causing break-token node-pointer
-	// comparisons to fail when resuming a column in a later outer column.
-	groupedChildrenCache []*LayoutInputNode
-
-	// contentNodeCache caches the anonymous wrapper that
-	// MulticolLayoutAlgorithm constructs around the multicol's children.
-	// Stable across Layout() calls so the MulticolPartWalker's
-	// child.Node == multicolContainer dispatch survives outer-fragmentainer
-	// resumes. Without this cache, each Layout() call allocates a fresh anon
-	// wrapper; outer column 1 emits break tokens referencing the col-1
-	// pointer, but outer column 2 builds the walker with the col-2 pointer,
-	// and the equality check fails — every column-content resume then
-	// mis-dispatches as a spanner. Mirrors the LayoutObject pointer
-	// stability that Blink's column-box assumes.
-	contentNodeCache *LayoutInputNode
 }
 
 // Style returns the computed style for this node.
@@ -187,8 +169,9 @@ func (n *LayoutInputNode) Children() []*LayoutInputNode {
 // adoptChildren makes n the layout parent of each of its children. Call it
 // wherever a persistent children list is finalized.
 func (n *LayoutInputNode) adoptChildren() {
-	for _, c := range n.children {
+	for i, c := range n.children {
 		c.parent = n
+		c.siblingIndex = i
 	}
 }
 
@@ -201,12 +184,7 @@ func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
 	if n.parent == nil {
 		return nil
 	}
-	siblings := n.parent.children
-	i := slices.Index(siblings, n)
-	if i < 0 {
-		return nil
-	}
-	for _, next := range siblings[i+1:] {
+	for _, next := range n.parent.children[n.siblingIndex+1:] {
 		if !next.IsText() {
 			return next
 		}

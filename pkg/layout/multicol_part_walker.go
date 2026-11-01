@@ -21,9 +21,10 @@ package layout
 //     resume token from the most recent LayoutLine result).
 //  4. isFinished when all three are exhausted.
 type MulticolPartWalker struct {
-	// multicolContainer is the anonymous content node that wraps multicol
-	// children. ChildBreakToken entries with Node == multicolContainer are
-	// column-content resume points.
+	// multicolContainer is the multicol node; columns are laid out on it,
+	// so ChildBreakToken entries with Node == multicolContainer are
+	// column-content resume points (column_layout_algorithm.cc:164-170 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	multicolContainer *LayoutInputNode
 
 	// parentBreakToken is the incoming break token (may be nil at start
@@ -62,7 +63,7 @@ type MulticolPartWalkerEntry struct {
 }
 
 // NewMulticolPartWalker constructs a walker for the given multicol
-// container content node, seeded by an incoming parent break token (may
+// container, seeded by an incoming parent break token (may
 // be nil at start of fresh layout).
 func NewMulticolPartWalker(container *LayoutInputNode, parentToken *BlockBreakToken) *MulticolPartWalker {
 	w := &MulticolPartWalker{

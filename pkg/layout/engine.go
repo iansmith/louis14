@@ -470,9 +470,23 @@ func findRootElement(node *html.Node) *html.Node {
 // expected by the renderer. absX/absY are the absolute position of
 // this fragment's border-box top-left corner.
 func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box {
+	node, style := frag.Node, frag.Style
+	if frag.IsFragmentainerBox() {
+		// A column box is laid out on the multicol node itself, so its
+		// fragment carries the multicol's node and style (Blink
+		// FragmentBuilder sets layout_object_ = node.GetLayoutBox(),
+		// fragment_builder.h:541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+		// but it is no CSS box (IsCSSBox) and paints no box of its own:
+		// BoxFragmentPainter::PaintBlockChild goes straight to PaintObject
+		// for a fragmentainer (paint/box_fragment_painter.cc:1194-1210 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). no Blink analog for
+		// the Box: the paint tree gets an anonymous block in its place.
+		node = nil
+		style = css.CreateAnonymousStyleWithDisplay(frag.Style, string(css.DisplayBlock))
+	}
 	box := &Box{
-		Node:                            frag.Node,
-		Style:                           frag.Style,
+		Node:                            node,
+		Style:                           style,
 		X:                               absX,
 		Y:                               absY,
 		Width:                           frag.Size.WidthF64(),
@@ -547,7 +561,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	// only NGPhysicalBoxFragment does. Text fragments inherit their parent's
 	// complete style (including position: relative), but must not be classified
 	// as positioned elements in the paint layer, or they corrupt paint order.
-	if box.Style != nil && frag.Type != FragmentText {
+	if box.Style != nil && frag.Type != FragmentText && !frag.IsFragmentainerBox() {
 		box.Position = box.Style.GetPosition()
 		if box.Style.HasExplicitZIndex() {
 			box.ZIndex = box.Style.GetZIndex()
@@ -558,7 +572,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	// Only for element nodes: text nodes can produce multiple fragments (split
 	// across lines), and anonymous boxes don't have a stable identity.
 	box.IsBlockInInline = frag.LayoutNode != nil && frag.LayoutNode.IsBlockInInline()
-	if lin := frag.LayoutNode; lin != nil && !lin.IsText() && !lin.IsAnonymous() {
+	if lin := frag.LayoutNode; lin != nil && !lin.IsText() && !lin.IsAnonymous() && !frag.IsFragmentainerBox() {
 		box.LayoutNode = lin
 		box.DOMIndex = lin.DOMIndex
 		lin.Box = box

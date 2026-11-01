@@ -250,7 +250,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// still laid out unfragmented via the parent's gate (which compares
 	// full writing modes) but its fragment goes untagged, so it
 	// contributes no balancing floor.
-	if bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
+	// A column box (anonymous space) is never monolithic, though it is
+	// laid out on the multicol node (fragmentation_utils.cc:422-423).
+	if !bla.space.IsAnonymous && bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
 		bla.containerBuilder.SetIsMonolithic(true)
 	}
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
@@ -1216,8 +1218,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// would block — so descendants at any depth see the flag.
 				// Mirrors Blink's ShouldPreventColumnSpannerDescendants walk in
 				// DoesAncestryAllowColumnSpanner (layout_box.cc:2987-3001).
+				// The multicol itself (the column box's node) is not one of
+				// those ancestors.
 				if bla.space.ColumnSpannerDescendantsBlocked ||
-					shouldPreventColumnSpannerDescendants(bla.node) {
+					(!bla.containerBuilder.IsFragmentainerBoxType() && shouldPreventColumnSpannerDescendants(bla.node)) {
 					b.SetColumnSpannerDescendantsBlocked(true)
 				}
 
@@ -2173,7 +2177,7 @@ func (bla *BlockLayoutAlgorithm) handleFloat(
 	childSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: availableBlock}
 	uf := bla.newUnpositionedFloat(child, childBreakToken, childSize, childSize, bfcInlineOrigin,
 		originBfcBlockOffset, bfcBlockOrigin, bfcContainerInlineSize)
-	es, _, breakToken := bla.addPositionedFloat(uf, bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin, bfcInlineOrigin)
+	es, breakToken := bla.addPositionedFloat(uf, bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin, bfcInlineOrigin)
 	bla.containerBuilder.SetExclusionSpace(es)
 	// A break before the float (:1792-1800), or inside it (AddResult →
 	// FragmentBuilder::PropagateFromFragment, fragment_builder.cc:455-464).
@@ -2232,49 +2236,51 @@ func (bla *BlockLayoutAlgorithm) newUnpositionedFloat(
 	}
 }
 
-// addPositionedFloat positions uf through PositionFloat and, unless it
-// breaks before, adds it to this block, propagating its break info. It
-// returns the updated exclusion space, the positioned float and the break
-// token to resume the float with in the next fragmentainer (a parallel
-// flow), if any; the caller collects the token. Shared by
-// a float in a block flow (BlockLayoutAlgorithm::HandleFloat,
-// block_layout_algorithm.cc:1761-1821) and one in an inline formatting
-// context (LineBreaker::HandleFloat → PositionFloat, inline/
-// line_breaker.cc:3815-3839; InlineLayoutAlgorithm::PositionFloat,
-// inline/inline_layout_algorithm.cc:1782-1819 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the AddResult part is
-// BoxFragmentBuilder::PropagateBreakInfo (box_fragment_builder.cc:479-617).
+// addPositionedFloat positions uf through PositionFloat and adds it to
+// this block at once (commitPositionedFloat): a float in a block flow
+// (BlockLayoutAlgorithm::HandleFloat, block_layout_algorithm.cc:1761-1821 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It returns the updated
+// exclusion space and the break token to resume the float with in the next
+// fragmentainer (a parallel flow), if any; the caller collects the token.
 func (bla *BlockLayoutAlgorithm) addPositionedFloat(
 	uf *UnpositionedFloat,
 	es *ExclusionSpace,
 	bfcBlockOrigin, bfcInlineOrigin float64,
-) (*ExclusionSpace, PositionedFloat, *BlockBreakToken) {
-	space := bla.space
+) (*ExclusionSpace, *BlockBreakToken) {
 	positioned := PositionFloat(uf, &es)
+	return es, bla.commitPositionedFloat(uf.Node, positioned, bfcBlockOrigin, bfcInlineOrigin)
+}
 
+// commitPositionedFloat adds a positioned float to this block: its space
+// shortage or unbreakable block-size when it breaks before, else its
+// fragment and break info (the AddResult part, BoxFragmentBuilder::
+// PropagateBreakInfo, box_fragment_builder.cc:479-617 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It returns the break token to
+// resume the float with in the next fragmentainer, if any. A float of the
+// inline formatting context is committed with its line, once the line is
+// kept (layoutInlineChildren).
+func (bla *BlockLayoutAlgorithm) commitPositionedFloat(node *LayoutInputNode, positioned PositionedFloat, bfcBlockOrigin, bfcInlineOrigin float64) *BlockBreakToken {
 	if positioned.MinimumSpaceShortage > 0 {
 		bla.containerBuilder.PropagateSpaceShortage(positioned.MinimumSpaceShortage)
 	} else if positioned.TallestUnbreakableBlockSize > 0 {
 		bla.containerBuilder.PropagateTallestUnbreakableBlockSize(positioned.TallestUnbreakableBlockSize)
 	}
-
 	if positioned.BreakBeforeToken != nil {
 		// The float goes to the next fragmentainer; siblings that fit may
-		// still follow here (:1792-1800).
-		return es, positioned, positioned.BreakBeforeToken
+		// still follow here (block_layout_algorithm.cc:1792-1800).
+		return positioned.BreakBeforeToken
 	}
-
 	result := positioned.LayoutResult
 	offset := LogicalOffset{
 		InlineOffset: positioned.BfcLineOffset - bfcInlineOrigin,
 		BlockOffset:  positioned.BfcBlockOffset - bfcBlockOrigin,
 	}
 	bla.containerBuilder.AddChild(result.Fragment, offset)
-	if !space.HasBlockFragmentation {
-		return es, positioned, nil
+	if !bla.space.HasBlockFragmentation {
+		return nil
 	}
-	bla.containerBuilder.PropagateBreakInfo(uf.Node, result, offset)
-	return es, positioned, result.BreakToken
+	bla.containerBuilder.PropagateBreakInfo(node, result, offset)
+	return result.BreakToken
 }
 
 // nestedDocFragment wraps the result of laying out an embedded document.
@@ -2515,13 +2521,16 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 // the enclosing multicol: column-span:all on a valid spanner inside a column
 // fragmentation context whose ancestry allows spanners. Mirrors Blink's
 // IsColumnSpanAll() && IsInColumnBfc() && HasBlockFragmentation()
-// (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa).
+// (block_layout_algorithm.cc:1013-1014 @ a9f50e522efa). A column box is
+// laid out on the multicol node itself, whose own formatting context does
+// not block its spanners: Blink checks only the ancestors between the
+// spanner and the multicol (LayoutBox::IsValidColumnSpannerInTree).
 func (bla *BlockLayoutAlgorithm) isColumnSpannerChild(child *LayoutInputNode) bool {
 	return bla.space.HasBlockFragmentation &&
 		bla.space.BlockFragmentationType == FragmentColumn &&
 		isColumnSpanAll(child) &&
 		!bla.space.ColumnSpannerDescendantsBlocked &&
-		!shouldPreventColumnSpannerDescendants(bla.node)
+		(bla.containerBuilder.IsFragmentainerBoxType() || !shouldPreventColumnSpannerDescendants(bla.node))
 }
 
 // isColumnSpanAll reports whether n is a column-span:all box that may span
