@@ -502,7 +502,15 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of a line.
 	// Skipped for white-space: pre / pre-wrap which preserve all whitespace.
-	if lb.position == 0 && len(line.Results) == 0 && !cssPreservesWhitespace(item.Style) {
+	// The line is still "leading" until text or an atomic inline lands on it
+	// (line.HasContent): open tags, floats and text-indent do not end it, so a
+	// space just inside an inline box that starts the line is skipped too.
+	// Mirrors Blink's LineBreaker::HandleText skipping leading spaces while
+	// trailing_whitespace_ == WhitespaceState::kLeading
+	// (inline/line_breaker.cc:1336-1351 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); HandleOpenTag (:3947-3998)
+	// leaves that state alone.
+	if !line.HasContent && !cssPreservesWhitespace(item.Style) {
 		trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 		if len(trimmed) < len(content) {
 			textStart += len(content) - len(trimmed)
