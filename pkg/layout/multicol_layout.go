@@ -1631,10 +1631,10 @@ type layoutLineResult struct {
 // leaves both, so the margin collapses through it (cla.cc:1218-1251).
 // Mirrors Blink's ColumnLayoutAlgorithm::LayoutLine
 // (column_layout_algorithm.h:115-119, column_layout_algorithm.cc:799-1331 @
-// a9f50e522efa), which returns nullptr in that case (:1214).
-//
-// Blink's has_wrapped parameter is not ported: louis14 records the row gap
-// in LayoutFragmentationContext.
+// a9f50e522efa), which returns nullptr in that case (:1214). The parameters
+// are Blink's, in Blink's order (column_layout_algorithm.h:115-119):
+// hasWrapped is has_wrapped, set when this line follows a column wrap, so
+// the preceding row gap is recorded (:1262-1268).
 func (mla *MulticolLayoutAlgorithm) LayoutLine(
 	nextColumnToken *BlockBreakToken,
 	lineOffset float64,
