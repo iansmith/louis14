@@ -6612,11 +6612,18 @@ func (r *Renderer) measureSegmentAdvanceTrailing(text string, fontID int32, laye
 // it (sizing the highlighted rect itself, which must not bleed into the gap
 // before the next, unselected rune).
 func measureUprightVerticalSegmentAdvance(text string, layer *PaintLayer, fontPath string, includeTrailing bool) float64 {
-	if text == "" {
+	return uprightAdvanceExtent(uprightVerticalAdvances(layer, text, fontPath), layer, includeTrailing)
+}
+
+// uprightAdvanceExtent sums advances, the segment's uprightVerticalAdvances,
+// dropping the final rune's trailing LetterSpacing unless includeTrailing
+// (see measureUprightVerticalSegmentAdvance). An empty segment is 0.
+func uprightAdvanceExtent(advances []float64, layer *PaintLayer, includeTrailing bool) float64 {
+	if len(advances) == 0 {
 		return 0
 	}
 	var total float64
-	for _, a := range uprightVerticalAdvances(layer, text, fontPath) {
+	for _, a := range advances {
 		total += a
 	}
 	if !includeTrailing {
@@ -7150,7 +7157,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// Mirrors Blink's writing-mode dispatch at
 		// third_party/blink/renderer/core/paint/text_fragment_painter.cc:609-618
 		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		r.drawVerticalTextDecoration(layer, text, box, fontID, ascent)
+		r.drawVerticalTextDecoration(layer, text, advances, box, fontID, ascent)
 		return
 	}
 
@@ -8897,8 +8904,9 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 //
 // The box passed in is the physical bounding box of the upright vertical run.
 // box.Width is the line height (physical block extent). box.Height is the
-// text column height (physical inline extent).
-func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+// text column height (physical inline extent). advances is the run's
+// uprightVerticalAdvances, computed once by the caller's paint loop.
+func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, advances []float64, box *layout.Box, fontID int32, ascent float64) {
 	if len(layer.AppliedTextDecorations) == 0 &&
 		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
 		return
@@ -8910,7 +8918,7 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, bo
 	// The inline extent: the glyphs' upright advances plus letter-spacing,
 	// as the paint loop steps them. This is the physical HEIGHT of the
 	// vertical text column.
-	inlineLen := measureUprightVerticalSegmentAdvance(text, layer, r.fontPathForLayer(layer), true)
+	inlineLen := uprightAdvanceExtent(advances, layer, true)
 
 	// Determine which physical X direction is "under" (block-end) based on
 	// the writing mode. For vertical-rl, under = left; for vertical-lr, under = right.

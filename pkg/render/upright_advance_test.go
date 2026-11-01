@@ -70,7 +70,8 @@ func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	// 2048 → 18 + 4, so 5 glyphs end 10px past 5em.
 	const height = 22.0
 	fontID := r.fontIDForLayer(layer)
-	r.drawVerticalTextDecoration(layer, box.Text, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
+	advances := uprightVerticalAdvances(layer, box.Text, r.fontPathForLayer(layer))
+	r.drawVerticalTextDecoration(layer, box.Text, advances, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
 
 	rowHasRed := func(y int) bool {
 		for x := 0; x < target.Bounds().Dx(); x++ {
