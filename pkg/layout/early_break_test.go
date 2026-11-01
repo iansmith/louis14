@@ -159,6 +159,31 @@ func TestLinePushedByFloatsHasContainerSeparation_LOU487(t *testing.T) {
 	})
 }
 
+// FinishFragmentation (fragmentation_utils.cc:796-813 @ a9f50e522efa): a box
+// whose content fits but whose block-end edge does not has its only
+// breakpoint inside that edge; with an early break found, it relays out
+// to break there (kNeedsEarlierBreak), reporting its space shortage first.
+func TestFinishFragmentationNeedsEarlierBreak_LOU487(t *testing.T) {
+	in := FinishFragmentationInput{
+		SpaceLeft:               100,
+		FragmentainerCapacity:   100,
+		HasBlockFragmentation:   true,
+		IsColumnFragmentation:   true,
+		FragmentsTotalBlockSize: 110,
+		IntrinsicBlockSize:      110,
+		TrailingBorderPadding:   15,
+		HasEarlyBreak:           true,
+	}
+	got := FinishFragmentation(in)
+	if !got.NeedsEarlierBreak || got.SpaceShortage != 10 {
+		t.Errorf("NeedsEarlierBreak=%v SpaceShortage=%v, want true, 10", got.NeedsEarlierBreak, got.SpaceShortage)
+	}
+	in.HasEarlyBreak = false
+	if got := FinishFragmentation(in); got.NeedsEarlierBreak || !got.ClampAppealToLastResort {
+		t.Errorf("without an early break: NeedsEarlierBreak=%v ClampAppealToLastResort=%v, want false, true", got.NeedsEarlierBreak, got.ClampAppealToLastResort)
+	}
+}
+
 // C6: a soft break before a child propagates the pushed child's break
 // values (BreakBeforeChild, fragmentation_utils.cc:970-972 @
 // a9f50e522efa): the container's final break-after is the pushed child's.

@@ -2,7 +2,6 @@ package layout
 
 import (
 	"math"
-	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
@@ -1353,6 +1352,13 @@ func (mla *MulticolLayoutAlgorithm) LayoutSpanner(spanner *LayoutInputNode, brea
 	if mla.isConstrainedByOuterFragmentation() && fullResult != nil && breakToken.IsFirstForNode() {
 		status, isForced := BreakBeforeChildIfNeeded(mla.space, spanner, fullResult,
 			fragOff, mla.fragmentainerCapacityForChildren(), mla.hasProcessedFirstChild, mla.containerBuilder)
+		// The multicol keeps no early breaks yet: Blink's LayoutChildren
+		// returns kNeedsEarlierBreak for a better breakpoint before an
+		// earlier spanner and relays out (cla.cc:338-343, :635-637, :653-655
+		// @ a9f50e522efa), which needs the BreakStatus return shape and a
+		// relayout louis14's multicol lacks (ledger L60). Dropping the
+		// breakpoint keeps AttemptSoftBreak breaking before this spanner.
+		mla.containerBuilder.SetEarlyBreak(nil)
 		if status == BreakStatusBrokeBefore {
 			mla.outBuilder.AddBreakBeforeChild(spanner, isForced)
 			return layoutSpannerResult{status: BreakStatusBrokeBefore, isForcedBreak: isForced}
@@ -2846,15 +2852,18 @@ func groupInlineChildrenForMulticol(children []*LayoutInputNode, parentStyle *cs
 		// Drop whitespace-only runs: they have no visual effect in a block
 		// container (CSS white-space:normal collapses inter-element whitespace)
 		// and anonymous wrappers for them cause break-token pointer instability
-		// during multicol fragmentation resume.
-		allWS := true
-		for _, n := range inlineRun {
-			if !n.IsText() || strings.TrimSpace(n.TextContent()) != "" {
-				allWS = false
-				break
+		// during multicol fragmentation resume. Floats and out-of-flow boxes
+		// in such a run stay direct children, unwrapped: an anonymous block
+		// holding only them would be an extra in-flow child, and so an extra
+		// breakpoint, that Blink does not have (whitespace after a non-inline
+		// sibling gets no LayoutText, Text::TextLayoutObjectIsNeeded), as
+		// maybeWrapAnonymousBlocks already does (CSS 2.1 §9.2.2.1).
+		if isWhitespaceOnly(inlineRun) {
+			for _, n := range inlineRun {
+				if isOutOfFlowOrFloat(n) {
+					result = append(result, n)
+				}
 			}
-		}
-		if allWS {
 			inlineRun = nil
 			return
 		}
