@@ -630,6 +630,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	var line LineInfo
 	isFirstLine := true
 	firstLineAscent = -1.0 // -1 means not yet set
+	// Whether a line placed so far left a breakpoint before the next line,
+	// giving it container separation. The lines are this block's only
+	// in-flow children, so this is the block's own flag (Blink
+	// BlockLayoutAlgorithm::has_break_opportunity_before_next_child_,
+	// block_layout_algorithm.cc:311, :2767-2772 @ a9f50e522efa).
+	hasBreakOpportunityBeforeNextChild := false
 
 	// openInlineStack tracks inline spans opened on prior lines that are
 	// still open at the start of the current line. Passed into createLineBoxEx
@@ -637,13 +643,6 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// from the residual returned after each line. Mirrors Blink's persistent
 	// InlineLayoutStateStack across NGInlineLayoutAlgorithm iterations.
 	var openInlineStack []*InlineItem
-
-	// Whether a line placed so far left a breakpoint before the next line,
-	// giving it container separation. Mirrors Blink's BlockLayoutAlgorithm::
-	// has_break_opportunity_before_next_child_ (block_layout_algorithm.cc:
-	// 311 @ a9f50e522efa); its MonolithicOverflow seeding (:868-876) is
-	// omitted, as in the block-children path.
-	hasBreakOpportunityBeforeNextLine := false
 
 	for {
 		// Save item index and text offset at the start of this line iteration,
@@ -1143,9 +1142,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Only check when we have a real (non-indefinite) fragmentainer block-size and
 		// this is NOT the initial balancing pass (which runs unconstrained to measure
 		// total content height).
-		if bla.space.HasBlockFragmentation &&
-			bla.space.FragmentainerBlockSize != Indefinite &&
-			!bla.space.IsInitialColumnBalancingPass {
+		if bla.space.HasKnownFragmentainerBlockSize() {
 			// A relayout breaks before the predetermined line. Mirrors the
 			// early-break branch of BlockLayoutAlgorithm::Layout
 			// (block_layout_algorithm.cc:1074-1089 @ a9f50e522efa):
@@ -1179,10 +1176,22 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// Per Blink: shortage is the minimum additional space needed
 				// to fit the overflowing line (per-break-point), not the
 				// cumulative overflow across all fragmentainers.
-				appealBefore := CalculateBreakAppealBeforeWithStatus(bla.space, LayoutResultSuccess, "auto",
-					hasBreakOpportunityBeforeNextLine, IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, true))
+				// The appeal of breaking before this line: last resort
+				// without container separation, so the parent prefers a
+				// break before this block when it has one. Blink
+				// BreakBeforeChildIfNeeded → CalculateBreakAppealBefore,
+				// whose break-between for an inline child is the joined
+				// value (fragmentation_utils.cc:133-136, :235-266), recorded
+				// by BreakBeforeChild (:944-1014) @ a9f50e522efa. A louis14
+				// line carries no break-before of its own (no block in
+				// inline), so its initial break-before is auto.
+				appealBefore := CalculateBreakAppealBeforeWithStatus(
+					bla.space, LayoutResultSuccess,
+					builder.JoinedBreakBetweenValue("auto"),
+					hasBreakOpportunityBeforeNextChild,
+					IsBreakableAtStartOfResumedContainerWithFirstForNode(bla.space, lineFragment.IsFirstForNode()))
 				if bla.breakBeforeLine(builder, &appealBefore, shortage, isEmptyLineBox) {
-					builder.ClampBreakAppeal(appealBefore)
+					builder.SetBreakAppeal(appealBefore)
 					inlineBreakToken = bla.createInlineBreakToken(blockOffset, lineStartIdx, lineStartTextOffset, shortage)
 					break
 				}
@@ -1216,17 +1225,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// Mirrors FragmentBuilder::PropagateFromFragment
 			// (fragment_builder.cc:487-492 @ a9f50e522efa).
 			builder.SetLineCount(builder.LineCount() + 1)
-			// A line with block-size leaves a breakpoint before the next one.
-			// Mirrors HasBreakOpportunityBeforeNextChild for a line box
-			// (fragmentation_utils.cc:885-892, set from
-			// block_layout_algorithm.cc:2767-2772 @ a9f50e522efa).
-			hasBreakOpportunityBeforeNextLine = true
 		}
 		// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:
 		// 227-229, :479-489 @ a9f50e522efa): a line box records no
 		// BlockSizeForFragmentation, so it contributes its own block-size
 		// (fragmentation_utils.cc:1545-1583), not its glyphs' overhang.
 		builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{Fragment: lineFragment}, lineOffset)
+		if bla.space.HasBlockFragmentation && !hasBreakOpportunityBeforeNextChild {
+			hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, lineFragment, nil)
+		}
 
 		// Propagate OOF candidates collected from atomic inline children
 		// (e.g. abs-pos descendants of inline-blocks) to the parent block.
@@ -1287,11 +1294,10 @@ func (bla *BlockLayoutAlgorithm) createInlineBreakToken(blockOffset float64, lin
 		InlineItemStartIndex: lineStartIdx,
 		InlineTextOffset:     lineStartTextOffset,
 		InlineShortage:       shortage,
-		SequenceNumber:       0,
+		SequenceNumber:       sequenceNumberAfter(bla.space.BreakToken),
 	}
 	if bla.space.BreakToken != nil {
 		token.ConsumedBlockSize = token.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
-		token.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
 	}
 	return token
 }

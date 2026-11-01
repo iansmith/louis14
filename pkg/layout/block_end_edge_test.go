@@ -146,6 +146,24 @@ func TestBreakingFragment_BlockEndEdge(t *testing.T) {
 			tree:  ms("C", nil, ms("F", h("30px")), ms("K", h("80px", "break-inside", "avoid"))),
 			rects: map[string][]fragRect{"C": {{0, 0, 50, 80}, {50, 0, 50, 80}}, "K": {{50, 0, 50, 80}}}},
 
+		// --- Unbalanced columns: a break before a child stretches the
+		// breaking fragment to the column end (Blink
+		// ConsumeRemainingFragmentainerSpace, block_layout_algorithm.cc:
+		// 3084-3095, called on every break-before at :3167 and :3287 @
+		// a9f50e522efa), not only inside balanced columns.
+		{name: "f21 break before a pushed avoid child fills the column",
+			tree: ms("C", edge(), ms("A", h("30px")), ms("K", h("80px", "break-inside", "avoid"))),
+			rects: map[string][]fragRect{"C": {{0, 0, 50, 100}, {50, 0, 50, 95}},
+				"A": {{0, 10, 50, 30}}, "K": {{50, 0, 50, 80}}}},
+		{name: "f22 forced break fills the column",
+			tree: ms("C", nil, ms("A", h("30px")), ms("K", h("10px", "break-before", "column"))),
+			rects: map[string][]fragRect{"C": {{0, 0, 50, 100}, {50, 0, 50, 10}},
+				"A": {{0, 0, 50, 30}}, "K": {{50, 0, 50, 10}}}},
+		{name: "f23 break before a wrapper whose first child is pushed fills the column",
+			tree: ms("C", nil, ms("A", h("30px")), ms("W", nil, ms("K", h("80px", "break-inside", "avoid")))),
+			rects: map[string][]fragRect{"C": {{0, 0, 50, 100}, {50, 0, 50, 80}},
+				"A": {{0, 0, 50, 30}}, "W": {{50, 0, 50, 80}}, "K": {{50, 0, 50, 80}}}},
+
 		// --- A column spanner interrupts the box.
 		{name: "f7 spanner: fragments before it carry no end edge", balance: true,
 			tree: span(),

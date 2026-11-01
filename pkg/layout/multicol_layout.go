@@ -276,9 +276,7 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 // (column_layout_algorithm.cc:311-318 @ a9f50e522efa). The measurement pass is
 // excluded because it has no committed fragmentainer geometry to cap against.
 func (mla *MulticolLayoutAlgorithm) isConstrainedByOuterFragmentation() bool {
-	return mla.space.HasBlockFragmentation &&
-		mla.space.FragmentainerBlockSize != Indefinite &&
-		!mla.space.IsInitialColumnBalancingPass
+	return mla.space.HasKnownFragmentainerBlockSize()
 }
 
 // fragmentainerBuilder is this multicol's FragmentainerBox: louis14 clones
@@ -642,10 +640,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.remainingContentBlockSize = Indefinite
 	if mla.hasExplicitBlock {
 		mla.remainingContentBlockSize = mla.explicitBlockSize
-		if mla.space.BreakToken != nil &&
-			mla.space.HasBlockFragmentation &&
-			mla.space.FragmentainerBlockSize != Indefinite &&
-			!mla.space.IsInitialColumnBalancingPass {
+		if mla.space.BreakToken != nil && mla.space.HasKnownFragmentainerBlockSize() {
 			mla.remainingContentBlockSize -= mla.previouslyConsumedContentBlockSize()
 			if mla.remainingContentBlockSize < 0 {
 				mla.remainingContentBlockSize = 0
@@ -1538,18 +1533,11 @@ func (mla *MulticolLayoutAlgorithm) breakOuter(walker *MulticolPartWalker, build
 // HasSeenAllChildren, the unpositioned list marker). Mirrors
 // BlockBreakToken::Create and its constructor (block_break_token.cc:34-42,
 // :65-78 @ a9f50e522efa), which read these fields from the builder.
-// louis14 deviation: the sequence number is the incoming token's plus one
-// for any incoming token; Blink skips the increment after a break-before
-// token (SetupFragmentBuilderForFragmentation, fragmentation_utils.cc:426-430).
 func (mla *MulticolLayoutAlgorithm) createBreakToken(finish FinishFragmentationResult) *BlockBreakToken {
-	seqNum := 0
-	if mla.space.BreakToken != nil {
-		seqNum = mla.space.BreakToken.SequenceNumber + 1
-	}
 	return &BlockBreakToken{
 		Node:              mla.node,
 		ConsumedBlockSize: layoutunit.FromFloat64Round(finish.ConsumedBlockSize),
-		SequenceNumber:    seqNum,
+		SequenceNumber:    sequenceNumberAfter(mla.space.BreakToken),
 		IsAtBlockEnd:      finish.IsAtBlockEnd,
 	}
 }
@@ -1925,12 +1913,7 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 				// the line out once more with columns tall enough to
 				// encompass the overflow — whether the taller multicol then
 				// stays is the parent's call (MovePastBreakpoint).
-				// BlockEndScrollableOverflow stand-in: the column's size or
-				// its content's furthest block-end. Unlike scrollable
-				// overflow it ignores relative offsets, transforms,
-				// out-of-flow children and overflow-clip-margin (fails safe:
-				// no regrowth).
-				blockEndOverflow := math.Max(colHeight, FragmentainerBlockSizeForFragmentation(wdm, colFrag))
+				blockEndOverflow := NewLogicalFragment(wdm, colFrag).BlockEndScrollableOverflow()
 				if lineOffset+blockEndOverflow > mla.spaceLeftForContent() {
 					if mla.space.IsInsideBalancedColumns && !mla.space.IsInitialColumnBalancingPass && hasShortage {
 						builder.PropagateSpaceShortage(minSpaceShortage)

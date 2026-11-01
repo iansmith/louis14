@@ -32,7 +32,9 @@ type BlockBreakToken struct {
 	// consumed by previous fragments. The next fragment starts here.
 	ConsumedBlockSize layoutunit.LayoutUnit
 
-	// SequenceNumber is which fragment this is (0-indexed).
+	// SequenceNumber is which fragment this is (0-indexed). A
+	// break-before token carries none of its own: the node's first
+	// fragment follows it (see sequenceNumberAfter).
 	SequenceNumber int
 
 	// ChildBreakTokens contains break tokens for children that need to
@@ -168,4 +170,18 @@ func (t *BlockBreakToken) InputBreakToken() *BlockBreakToken {
 		return nil
 	}
 	return t.ChildBreakTokens[0]
+}
+
+// sequenceNumberAfter is the sequence number of the fragment that resumes
+// from previousBreakToken: 0 for a node's first fragment, which has no
+// token or follows a break-before token, else one past the previous
+// fragment's. Mirrors the sequence-number half of Blink's
+// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430 @
+// a9f50e522efa), which sets it on the builder; louis14 builders carry no
+// sequence number, so each token-creating site calls this.
+func sequenceNumberAfter(previousBreakToken *BlockBreakToken) int {
+	if previousBreakToken == nil || previousBreakToken.IsBreakBefore {
+		return 0
+	}
+	return previousBreakToken.SequenceNumber + 1
 }

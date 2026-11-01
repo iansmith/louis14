@@ -906,6 +906,14 @@ func (b *BoxFragmentBuilder) SetIsEmptySpannerParent(v bool) {
 	b.isEmptySpannerParent = v
 }
 
+// IsEmptySpannerParent reports whether this fragment holds nothing before the
+// spanner it was interrupted by. Mirrors Blink's
+// FragmentBuilder::IsEmptySpannerParent (fragment_builder.h:450 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) IsEmptySpannerParent() bool {
+	return b.isEmptySpannerParent
+}
+
 // finalBlockSizeForFragmentation is the block-size for fragmentation the
 // built fragment records: the children's furthest block-end, made border-box
 // relative by the block-start border and padding (louis14 child offsets are
@@ -928,7 +936,7 @@ func (b *BoxFragmentBuilder) finalBlockSizeForFragmentation() float64 {
 	if b.boxType == BoxTypeColumn {
 		return bsff
 	}
-	if clipsBlockAxisOverflow(b.style, b.wdm) {
+	if clipsBlockAxisOverflow(b.style, b.node, b.wdm) {
 		return b.size.BlockSize
 	}
 	return max(bsff, b.size.BlockSize)
@@ -984,6 +992,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		notFirstForNode:  b.notFirstForNode,
 		BoxType:          b.boxType,
 	}
+
+	fragment.updateScrollableOverflow()
 
 	// Phase 25 Cmt-2: stash any deferred OOF fragmentainer descendants and
 	// pending-multicol entries on the outgoing fragment so ancestors can
