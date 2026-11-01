@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"slices"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
 )
@@ -1049,7 +1051,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// Resume in front of the first following sibling that is not
 				// a spanner; the break is forced, so the sibling keeps its
 				// block-start margin. With no such sibling, resume after all
-				// the children (:1059-1068, :1150-1161).
+				// the children (:1059-1068, :1150-1161); with one, whether
+				// all children are seen is settled after the loop.
 				pendingHasSeenAllChildren = true
 				for _, sibling := range children[childIdx+1:] {
 					if sibling.IsText() || bla.isColumnSpannerChild(sibling) {
@@ -1062,7 +1065,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					})
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
-					pendingHasSeenAllChildren = false
 					break
 				}
 				break
@@ -1853,6 +1855,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						break
 					}
 				}
+			}
+		}
+
+		// The child loop stopped at the child its last break token is for
+		// (the child that broke inside or is broken before, or the sibling
+		// a spanner stop resumes at). BlockChildIterator::NextChild then
+		// advances past it (block_child_iterator.cc:96-98, :141-145 @
+		// a9f50e522efa), so all children are seen when no block sibling
+		// follows it (SetHasSeenAllChildren, block_layout_algorithm.cc:
+		// 1150-1161).
+		if n := len(pendingChildBreakTokens); n > 0 {
+			if idx := slices.Index(children, pendingChildBreakTokens[n-1].Node); idx >= 0 {
+				pendingHasSeenAllChildren = !slices.ContainsFunc(children[idx+1:],
+					func(c *LayoutInputNode) bool { return !c.IsText() })
 			}
 		}
 	}
