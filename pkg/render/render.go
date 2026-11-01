@@ -2813,7 +2813,9 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
 	// The cell still occupies space; only painting is suppressed.
-	if !layer.EmptyCellHide {
+	if layer.Box != nil && layer.Box.IsFieldsetContainer {
+		r.paintFieldsetBoxDecorationBackground(layer)
+	} else if !layer.EmptyCellHide {
 		if len(layer.BoxShadows) > 0 {
 			r.drawOutsetBoxShadows(layer)
 		}
@@ -9213,7 +9215,10 @@ func (r *Renderer) SavePNG(filename string) error {
 // hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto/clip
 // on either axis, or paint containment (which also clips and contains positioned descendants).
 func hasOverflowClipping(box *layout.Box) bool {
-	if box.Style == nil {
+	// A fieldset container does not respect CSS overflow; its anonymous
+	// content box clips (LayoutFieldset::RespectsCSSOverflow,
+	// forms/layout_fieldset.h:61-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if box.Style == nil || box.IsFieldsetContainer {
 		return false
 	}
 	clipping := func(o css.OverflowType) bool {

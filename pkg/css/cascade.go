@@ -441,18 +441,16 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 		style.Set("overflow", "hidden")
 	case "button":
-		// Blink's <button> is an inline flex container with cross-axis centering
-		// (align-items:center) and start-aligned main-axis content
-		// (justify-content defaults to flex-start). Horizontal centering of text
-		// content is handled separately by text-align:center below.
-		// Mirrors third_party/blink/renderer/core/html/forms/html_button_element.cc
-		// and the UA defaults in third_party/blink/renderer/core/html/resources/html.css.
+		// Blink's <button> is an inline-block block container whose content
+		// is centered in the block axis by the internal
+		// -internal-align-content-block: center (html.css:422-440 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), applied by
+		// AlignBlockContent; it is laid out as a LayoutBlockFlow
+		// (html_button_element.cc:59-74).
 		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "inline-flex")
+			style.Set("display", "inline-block")
 		}
-		if _, ok := style.Get("align-items"); !ok {
-			style.Set("align-items", "center")
-		}
+		style.Set(InternalAlignContentBlockProperty, "center")
 		style.Set("box-sizing", "border-box")
 		setFormPadding(style, "1px", "6px", "1px", "6px")
 		setFormBorder(style, "2px", "solid", "#767676")
@@ -527,6 +525,24 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("list-style-type", "decimal")
 	case "li":
 		style.Set("display", "list-item")
+
+	// HTML §15.3.13 fieldset / legend UA rules. Mirrors Blink html.css:396-408
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+	//   fieldset { display: block; margin-inline: 2px;
+	//              border: groove 2px ThreeDFace;
+	//              padding-block: 0.35em 0.625em; padding-inline: 0.75em;
+	//              min-inline-size: min-content; }
+	//   legend { display: block; padding-inline: 2px; }
+	case "fieldset":
+		style.Set("display", "block")
+		expandShorthand(style, "margin-inline", "2px")
+		setFormBorder(style, "2px", "groove", "ThreeDFace")
+		expandShorthand(style, "padding-block", "0.35em 0.625em")
+		expandShorthand(style, "padding-inline", "0.75em")
+		expandShorthand(style, "min-inline-size", "min-content")
+	case "legend":
+		style.Set("display", "block")
+		expandShorthand(style, "padding-inline", "2px")
 	}
 }
 

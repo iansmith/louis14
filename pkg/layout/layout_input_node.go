@@ -2,6 +2,7 @@ package layout
 
 import (
 	"slices"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -58,6 +59,14 @@ type LayoutInputNode struct {
 
 	// isAnonymous is true for generated anonymous boxes (CSS 2.1 §9.2.1.1).
 	isAnonymous bool
+
+	// isFieldsetContainer is true for a <fieldset> laid out as a fieldset
+	// container: its children are the rendered legend (if any) followed by
+	// the anonymous fieldset content box. Set by buildFieldsetChildren.
+	// Mirrors LayoutObject::IsFieldset() for a LayoutFieldset
+	// (layout_object.h:865, forms/layout_fieldset.h:44-47 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isFieldsetContainer bool
 
 	// isBlockInInline marks the anonymous block that wraps block-level
 	// children of an inline box, which stays a child of that inline.
@@ -207,13 +216,19 @@ func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
 // backface-visibility:hidden, will-change of one), a filter or
 // backdrop-filter. Mirrors Blink's LayoutObject::ComputeIsFixedContainer
 // (layout_object.cc:1849-1900 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// Not ported: view-transition roots, foreignObject, text controls and the
-// fieldset content box; the document element's filter exclusion is moot
+// Not ported: view-transition roots, foreignObject and text controls (the
+// fieldset content box is handled below); the document element's filter
+// exclusion is moot
 // because the root resolves every candidate.
 func (n *LayoutInputNode) IsFixedContainer() bool {
 	style := n.Style()
 	if style == nil {
 		return false
+	}
+	// crbug.com/1153042: the anonymous content box of a fixed-container
+	// <fieldset> is a fixed container too (layout_object.cc:1875-1880).
+	if n.IsAnonymousFieldsetContentBox() && n.parent.IsFixedContainer() {
+		return true
 	}
 	return style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() ||
 		len(style.GetTransforms()) > 0 ||
@@ -239,7 +254,11 @@ func (n *LayoutInputNode) IsAbsoluteContainer() bool {
 		return false
 	}
 	return n.IsFixedContainer() || style.GetPosition() != css.PositionStatic ||
-		style.WillChangeEstablishesContainingBlock(false)
+		style.WillChangeEstablishesContainingBlock(false) ||
+		// crbug.com/1153042: the anonymous content box of an
+		// absolute-container <fieldset> is one too (layout_object.cc:
+		// 1908-1911).
+		(n.IsAnonymousFieldsetContentBox() && n.parent.IsAbsoluteContainer())
 }
 
 // IsBlockInInline reports whether n is the anonymous block-in-inline
@@ -298,6 +317,27 @@ func (n *LayoutInputNode) blockInInlineChildren() []*LayoutInputNode {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the InlineNode.
 func (n *LayoutInputNode) IsInline() bool {
 	return n.isInlineSegment
+}
+
+// IsButtonOrInputButton reports whether this node is a <button> or a
+// button-type <input>. Mirrors LayoutObject::IsButtonOrInputButton /
+// IsInputButton (layout_object.cc:538-549 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsButtonOrInputButton() bool {
+	if n == nil || n.DOMNode == nil || n.DOMNode.Type != html.ElementNode {
+		return false
+	}
+	switch n.DOMNode.TagName {
+	case "button":
+		return true
+	case "input":
+		t, _ := n.DOMNode.GetAttribute("type")
+		switch strings.ToLower(t) {
+		case "button", "submit", "reset", "image":
+			return true
+		}
+	}
+	return false
 }
 
 // IsAnonymous returns true for generated anonymous boxes.
@@ -399,7 +439,11 @@ func (n *LayoutInputNode) ListMarkerOccupiesWholeLine() bool {
 // Mirrors LayoutBox::HasUnsplittableScrollingOverflow
 // (layout_box.cc:3639-3649 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (n *LayoutInputNode) hasUnsplittableScrollingOverflow() bool {
-	return n.style.IsScrollContainer()
+	// A fieldset container does not respect CSS overflow
+	// (LayoutFieldset::RespectsCSSOverflow, forms/layout_fieldset.h:61-64 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it is never a scroll
+	// container; its anonymous content box carries the overflow.
+	return !n.IsFieldsetContainer() && n.style.IsScrollContainer()
 }
 
 // IsMonolithic reports whether this node must never be fragmented across
@@ -427,4 +471,53 @@ func (n *LayoutInputNode) IsMonolithic(isWritingModeRoot bool) bool {
 		return false
 	}
 	return n.hasUnsplittableScrollingOverflow() || n.style.ShouldApplySizeContainment()
+}
+
+// IsFieldsetContainer reports whether this node is a <fieldset> laid out by
+// FieldsetLayoutAlgorithm. Mirrors LayoutInputNode::IsFieldsetContainer
+// (layout_input_node.h:105 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsFieldsetContainer() bool {
+	return n != nil && n.isFieldsetContainer
+}
+
+// GetRenderedLegend returns the fieldset's rendered legend, or nil. The
+// rendered legend is always the first child (LayoutFieldset::AddChild).
+// Mirrors BlockNode::GetRenderedLegend (block_node.cc:1190-1195 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) GetRenderedLegend() *LayoutInputNode {
+	if !n.IsFieldsetContainer() || len(n.children) == 0 {
+		return nil
+	}
+	if first := n.children[0]; !first.isAnonymous {
+		return first
+	}
+	return nil
+}
+
+// GetFieldsetContent returns the fieldset's anonymous content box. Mirrors
+// BlockNode::GetFieldsetContent (block_node.cc:1197-1202) and
+// LayoutFieldset::FindAnonymousFieldsetContentBox (layout_fieldset.cc:16-30
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) GetFieldsetContent() *LayoutInputNode {
+	if !n.IsFieldsetContainer() || len(n.children) == 0 {
+		return nil
+	}
+	if last := n.children[len(n.children)-1]; last.isAnonymous {
+		return last
+	}
+	return nil
+}
+
+// IsRenderedLegend reports whether this node is the rendered legend of its
+// parent fieldset. Mirrors LayoutObject::IsRenderedLegend
+// (layout_object.h:1663-1670, layout_object.cc:880-892 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsRenderedLegend() bool {
+	return n != nil && n.parent.GetRenderedLegend() == n
+}
+
+// IsAnonymousFieldsetContentBox reports whether this node is the anonymous
+// content box of a fieldset (Blink: IsAnonymous() && Parent()->IsFieldset()).
+func (n *LayoutInputNode) IsAnonymousFieldsetContentBox() bool {
+	return n != nil && n.isAnonymous && n.parent.IsFieldsetContainer()
 }

@@ -150,10 +150,17 @@ type MulticolLayoutAlgorithm struct {
 	// isKnownToFitInFragmentainer: this nested multicol's remaining
 	// block-size fits in the outer fragmentainer, so a break inside it is a
 	// parallel flow and its early break is not offered to the parent. Set
-	// by finishNestedFragment. Mirrors BoxFragmentBuilder's
+	// once in Layout (SetupFragmentBuilderForFragmentation). Mirrors BoxFragmentBuilder's
 	// is_known_to_fit_in_fragmentainer_ (box_fragment_builder.h:393-395 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	isKnownToFitInFragmentainer bool
+	// cloneBoxStartDecorations: this fragment repeats the block-start
+	// border/padding, so earlier fragments' cloned edges count toward its
+	// block-size. Decided once in Layout from the full edges. Mirrors
+	// clone_box_start_decorations in SetupFragmentBuilderForFragmentation
+	// (fragmentation_utils.cc:440-449 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	cloneBoxStartDecorations bool
 
 	// --- Loop state of LayoutChildren and the methods it calls.
 	// Initialised by Layout() before the walker loop. ---
@@ -252,8 +259,13 @@ func AllowsColumns(node *html.Node) bool {
 // LayoutBlockFlow::UpdateForMulticol's ShouldBeMulticol
 // (layout_block_flow.cc:650-653 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 // Anonymous boxes (no DOM node) allow columns.
+//
+// Multicol on a fieldset is applied to its anonymous content box, not the
+// fieldset itself (layout_block_flow.cc:657-662 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func shouldBeMulticol(node *LayoutInputNode, style *css.Style) bool {
-	return isMulticolContainer(style) && (node.DOMNode == nil || AllowsColumns(node.DOMNode))
+	return isMulticolContainer(style) && !node.IsFieldsetContainer() &&
+		(node.DOMNode == nil || AllowsColumns(node.DOMNode))
 }
 
 // resolveColumnCount implements CSS Multicol §3.4 — the pseudo-algorithm
@@ -443,10 +455,7 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 		previouslyConsumed = tok.ConsumedBlockSize.Float64()
 	}
 	// ComputeBlockSizeForFragment (border-box, all fragments).
-	total := mla.containerBuilder.InitialFragmentGeometry().BorderBoxSize.BlockSize
-	if hasExplicitBlock && hasCloneBoxDecorationBreak(mla.containerBuilder.Style()) {
-		total += mla.clonedEdgesOfPreviousFragments()
-	}
+	total := mla.maxBlockSizeForFragment()
 	if !hasExplicitBlock {
 		total = previouslyConsumed + intrinsic
 		if maxBlockSize != Indefinite {
@@ -460,8 +469,6 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 	if mla.isConstrainedByOuterFragmentation() {
 		spaceLeft = FragmentainerSpaceLeft(mla.containerBuilder, false)
 	}
-	desired := math.Max(0, total-previouslyConsumed)
-	mla.isKnownToFitInFragmentainer = hasExplicitBlock && spaceLeft != Indefinite && desired <= spaceLeft
 	return FinishFragmentation(FinishFragmentationInput{
 		SpaceLeft:                             spaceLeft,
 		FragmentainerCapacity:                 FragmentainerCapacity(mla.containerBuilder, false),
@@ -479,6 +486,29 @@ func (mla *MulticolLayoutAlgorithm) finishNestedFragment(shouldBreakInside, hasI
 		IsKnownToFitInFragmentainer:           mla.isKnownToFitInFragmentainer,
 		ShouldCloneBoxEndDecorations:          mla.containerBuilder.ShouldCloneBoxEndDecorations(),
 	})
+}
+
+// maxBlockSizeForFragment is the border-box block-size of all the box's
+// fragments as resolved before layout, with an "infinite" intrinsic
+// block-size: the definite height, else max(max-height, min-height), plus
+// the block edges (and, with cloned decorations, those of earlier
+// fragments); Indefinite when only content could size it. Mirrors the
+// ComputeBlockSizeForFragment(..., LayoutUnit::Max(), ...) call in
+// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:463-474 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mla *MulticolLayoutAlgorithm) maxBlockSizeForFragment() float64 {
+	clonedEdges := 0.0
+	if mla.cloneBoxStartDecorations {
+		clonedEdges = mla.clonedEdgesOfPreviousFragments()
+	}
+	if mla.hasExplicitBlock() {
+		return mla.containerBuilder.InitialFragmentGeometry().BorderBoxSize.BlockSize + clonedEdges
+	}
+	if mla.effectiveMaxBlockSize == Indefinite {
+		return Indefinite
+	}
+	return math.Max(mla.effectiveMaxBlockSize, mla.minBlockSize) +
+		mla.declaredBorderScrollbarPadding.BlockSum() + clonedEdges
 }
 
 // previouslyConsumedContentBlockSize is the content block-size earlier
@@ -668,12 +698,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	mla.declaredBorderScrollbarPadding = geom.BorderBoxPadding()
-	// louis14 clones the block-end decorations along with the block-start
-	// ones whenever the style clones (as finishNestedFragment does), where
-	// Blink's SetupFragmentBuilderForFragmentation sets it only for a
-	// fragmented box not known to fit (fragmentation_utils.cc:440-498 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	mla.containerBuilder.SetShouldCloneBoxEndDecorations(hasCloneBoxDecorationBreak(mla.style))
 
 	mla.contentInlineSize = geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if mla.contentInlineSize < 0 {
@@ -760,6 +784,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// CalculateInitialFragmentGeometry, so this only matters for the
 	// max-height (auto block-size) case.
 	mla.minBlockSize = ResolveMinBlockSize(mla.style, wdm, mla.space, geom).Float64()
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:436-498
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): decide, from the full
+	// edges and before any is cleared, whether the box is known to fit in
+	// the outer fragmentainer and whether it clones its block-end
+	// decorations (only when fragmented and not known to fit).
+	mla.cloneBoxStartDecorations = ShouldCloneBlockStartBorderPadding(mla.containerBuilder)
+	maxBlockSize := mla.maxBlockSizeForFragment()
+	mla.isKnownToFitInFragmentainer = mla.space.HasKnownFragmentainerBlockSize() &&
+		maxBlockSize != Indefinite && desiredBlockSizeAtBlockEnd(mla.containerBuilder, maxBlockSize)
+	mla.containerBuilder.SetShouldCloneBoxEndDecorations(
+		shouldCloneBoxEndDecorations(mla.space, mla.cloneBoxStartDecorations, mla.isKnownToFitInFragmentainer))
 	// A continuation that neither starts at a break before the box nor
 	// clones its decorations (slice mode, or any fragment past the block
 	// end) carries no block-start border/scrollbar/padding, so the builder
@@ -814,7 +849,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.outBuilder = MulticolBreakTokenBuilder{}
 	mla.outgoingMulticolData = nil
 	mla.hasProcessedFirstChild = false
-	mla.isKnownToFitInFragmentainer = false
 	mla.brokeInMainFlow = false
 	mla.hasForcedBreak = false
 	if mla.LayoutChildren() == BreakStatusNeedsEarlierBreak {
@@ -1846,21 +1880,6 @@ func (mla *MulticolLayoutAlgorithm) LayoutLine(
 			colBlockSize = mla.resolveColumnAutoBlockSize(mla.contentNode, wdm, mla.usedColWidth, mla.usedColumnCount, mla.columnGapSize, nextColumnToken, mla.containerPercentResolutionBlockSize, false)
 			colBlockSize = mla.constrainColumnBlockSize(colBlockSize, mla.hasExplicitBlock(), mla.explicitBlockSize(), mla.effectiveMaxBlockSize, outerRemaining, lineOffset)
 		}
-	}
-
-	// Blink: when a definite-height multicol's content budget is fully spent by
-	// earlier column rows and spanners, a trailing row with content still to
-	// place gets 1px column boxes rather than 0-height ones — otherwise the
-	// content can never make progress. The WPT reference for
-	// multicol-span-all-children-height-003 renders block2's post-spanner
-	// columns at height:1px ("the column container creates 1px column boxes
-	// for it"). Floor to 1px only in the budget-exhausted case (definite
-	// budget, colBlockSize clamped to 0, a break token remaining) — the
-	// genuinely-empty balance row keeps its 0 (→ Indefinite) so no ghost row
-	// appears before a spanner.
-	if colBlockSize == 0 && mla.remainingContentBlockSize != Indefinite &&
-		initialColBlockSize == 0 && nextColumnToken != nil {
-		colBlockSize = 1
 	}
 
 	var finalColumns []struct {

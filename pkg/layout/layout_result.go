@@ -280,7 +280,18 @@ const (
 	// MulticolLayoutAlgorithm for one column of a multicol container.
 	// Mirrors Blink's kColumnBox.
 	BoxTypeColumn
+	// BoxTypeRenderedLegend marks the rendered legend of a fieldset.
+	// Mirrors Blink's kRenderedLegend (physical_fragment.h:111 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	BoxTypeRenderedLegend
 )
+
+// IsRenderedLegend reports whether this fragment is a fieldset's rendered
+// legend. Mirrors Blink PhysicalFragment::IsRenderedLegend
+// (physical_fragment.h:221-225 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (f *PhysicalFragment) IsRenderedLegend() bool {
+	return f != nil && f.Type == FragmentBox && f.BoxType == BoxTypeRenderedLegend
+}
 
 // IsColumnBox reports whether this fragment is a multicol column
 // fragmentainer. Mirrors Blink PhysicalFragment::IsColumnBox.
@@ -352,9 +363,12 @@ const (
 // Mirrors LayoutObject/LayoutBlock::RespectsCSSOverflow (layout_object.h:
 // 583-586, layout_block.cc:166-170 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the viewport-defining
-// element's propagated overflow is not modelled.
+// element's propagated overflow is not modelled. A fieldset container does
+// not respect overflow: its anonymous content box carries it
+// (LayoutFieldset::RespectsCSSOverflow, forms/layout_fieldset.h:61-64 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func respectsCSSOverflow(style *css.Style, node *html.Node) bool {
-	return style != nil && !isNonAtomicInline(style, node)
+	return style != nil && !isNonAtomicInline(style, node) && !IsFieldsetContainerElement(node, style)
 }
 
 // hasNonVisibleOverflow mirrors LayoutObject::HasNonVisibleOverflow as set
@@ -599,6 +613,14 @@ type PhysicalFragment struct {
 	// ClipContentToBorderBox for multicol; that flag now retains its
 	// CSS-Tables-3 §5.4.1 semantics only.
 	IsMulticolContainer bool
+
+	// IsFieldsetContainer marks the fragment of a fieldset container: its
+	// children are the rendered legend (BoxTypeRenderedLegend) and the
+	// anonymous fieldset content box. Mirrors Blink's
+	// PhysicalFragment::IsFieldsetContainer (physical_fragment.h:283-287 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Read by the fieldset
+	// painter.
+	IsFieldsetContainer bool
 
 	// IsMonolithic marks this fragment as unbreakable for column-layout
 	// purposes — its block-size is fixed and its content does not

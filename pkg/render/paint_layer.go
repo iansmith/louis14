@@ -867,6 +867,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	clipX := isClippedAxis(overflowX) || hasPaintContain
 	clipY := isClippedAxis(overflowY) || hasPaintContain
+	// A fieldset container does not respect CSS overflow (see
+	// hasOverflowClipping); its anonymous content box carries the clip.
+	if box.IsFieldsetContainer {
+		clipX, clipY = false, false
+	}
 
 	// CSS Tables 3 §5.4.1: rowspan cells whose span overlaps a
 	// visibility:collapse row must clip content to their border-box,
@@ -1613,7 +1618,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	//     (multicol-rule-solid-000.xht and siblings).
 	//   - AllowsColumns: an <img> (alt-text fallback) never becomes a
 	//     multicol container (layout.AllowsColumns).
-	if !box.IsColumnBox && box.Text == "" &&
+	if !box.IsColumnBox && box.Text == "" && !box.IsFieldsetContainer &&
 		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) &&
 		(box.Node == nil || layout.AllowsColumns(box.Node)) {
 		layer.IsMulticol = true
