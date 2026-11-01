@@ -311,3 +311,44 @@ func TestColumnRule_RowWrap_RuleBreaksAtRowGaps(t *testing.T) {
 		}
 	}
 }
+
+// TestColumnRule_NestedFragment_NoRuleAfterLastColumn (LOU-486, LOU-488,
+// multicol-breaking-003): a column-fill:auto multicol broken by an outer
+// multicol paints rules only at the cross gaps its own fragment recorded —
+// one per column boundary inside the fragment (ColumnGapAccumulator,
+// column_layout_algorithm.cc:1295-1319 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Nothing may be painted past its
+// last column, where the outer multicol's rule sits. The inner fragment
+// holds column-count (2) columns: under an outer fragmentation context whose
+// column block-size is not known to fit, the inner columns stop at the used
+// column count rather than overflowing inline (column_layout_algorithm.cc:
+// 1012-1024, :1823-1842 @ a9f50e522efa).
+//
+// Layout: outer 800px, 4 columns, 16px gaps -> 188px columns; the outer rule
+// (4px) covers x 194..198. The inner (2 columns, 16px gap) has 86px columns
+// and its own rule at x 93..95 in each outer column.
+func TestColumnRule_NestedFragment_NoRuleAfterLastColumn(t *testing.T) {
+	src := `<!DOCTYPE html>
+<body style="margin:0">
+<div style="height:100px; column-fill:auto; width:800px; column-count:4; column-rule:4px solid blue; column-gap:16px;">
+  <div style="height:300px; column-fill:auto; column-count:2; column-rule:2px solid fuchsia; column-gap:16px;">
+    <div style="height:340px"></div>
+  </div>
+</div>`
+	img := renderColumnRuleHTML(t, src, 820, 120)
+
+	for _, tc := range []struct {
+		x       int
+		r, g, b uint8
+		what    string
+	}{
+		{94, 255, 0, 255, "inner rule in the first outer column"},
+		{195, 0, 0, 255, "outer rule, left half"},
+		{196, 0, 0, 255, "outer rule, right half"},
+	} {
+		r, g, b := rgbAt(img, tc.x, 50)
+		if r != tc.r || g != tc.g || b != tc.b {
+			t.Errorf("pixel (%d,50) = (%d,%d,%d), want (%d,%d,%d): %s", tc.x, r, g, b, tc.r, tc.g, tc.b, tc.what)
+		}
+	}
+}
