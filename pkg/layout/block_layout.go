@@ -1554,8 +1554,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// HandleNonsuccessfulLayoutResult →
 					// RelayoutAndBreakEarlier, block_layout_algorithm.cc:
 					// 2004-2006, :1102-1105, :617-626).
-					if bla.space.BlockFragmentationType == FragmentColumn && bla.space.HasKnownFragmentainerBlockSize() {
-						bla.containerBuilder.PropagateSpaceShortage(CalculateSpaceShortage(bla.space, childResult, fragOff, bla.fragmentainerCapacityForChildren()))
+					if bla.space.HasKnownFragmentainerBlockSize() {
+						PropagateSpaceShortage(bla.space, childResult, fragOff, bla.fragmentainerCapacityForChildren(), bla.containerBuilder)
 					}
 					if bla.earlyBreak == nil {
 						return bla.relayoutAndBreakEarlier(bla.containerBuilder.GetEarlyBreak())
