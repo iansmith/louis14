@@ -129,7 +129,10 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 			return bla.space.PercentageResolutionSize.BlockSize.Float64()
 		}
 	}
-	return explicitBlockSize // 0 if auto and not an anonymous passthrough
+	// An auto block-size gives children an indefinite percentage block-size
+	// (CalculateChildPercentageSize returns the child available size,
+	// length_utils.cc:1810-1828 @ a9f50e522efa), never a definite 0.
+	return Indefinite
 }
 
 // desiredBlockSizeAtBlockEnd reports whether a definite-height block is known
