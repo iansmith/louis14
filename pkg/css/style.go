@@ -2432,6 +2432,11 @@ func expandShorthand(style *Style, property, value string) {
 		style.Set(property, value)
 		return
 	}
+	// A CSS-wide keyword on a shorthand sets every longhand to it (CSS
+	// Cascade 4 §7.3), whatever the shorthand's own grammar.
+	if longhands, ok := shorthandLonghands[property]; ok && setLonghandsToCSSWideKeyword(style, value, longhands) {
+		return
+	}
 	// If value contains var(), skip shorthand expansion for most properties
 	// (var() will be resolved later when the property is read).
 	// Case-insensitive per CSS Syntax §4.3.10.
@@ -2897,19 +2902,14 @@ func expandShorthand(style *Style, property, value string) {
 		// animation-* longhand declaration (declaration order is lost once a
 		// rule's declarations are a map).
 		//
-		// Two value kinds must NOT be tokenized as a shorthand list:
-		//   - a CSS-wide keyword applies to every animation-* longhand;
-		//   - an unresolved var() can't be decomposed (doing so would freeze
-		//     the non-name longhands to defaults before var() resolution).
-		if !setLonghandsToCSSWideKeyword(style, value, []string{"animation-name", "animation-duration",
-			"animation-timing-function", "animation-delay",
-			"animation-iteration-count", "animation-direction",
-			"animation-fill-mode", "animation-play-state"}) {
-			if containsVarFunction(value) {
-				style.Set("animation", value)
-			} else {
-				expandAnimationShorthand(style, value)
-			}
+		// A CSS-wide keyword never reaches here (the shorthandLonghands check
+		// at the top of expandShorthand), and an unresolved var() can't be
+		// decomposed (doing so would freeze the non-name longhands to
+		// defaults before var() resolution).
+		if containsVarFunction(value) {
+			style.Set("animation", value)
+		} else {
+			expandAnimationShorthand(style, value)
 		}
 	case "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
 		"transition-behavior":
@@ -3093,11 +3093,8 @@ func expandShorthand(style *Style, property, value string) {
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates CSSPropertyIDIterator
 // over every longhand and skips kDirection, kUnicodeBidi, and custom properties.
 func expandAllShorthand(style *Style, value string) {
-	keyword := strings.ToLower(strings.TrimSpace(value))
-	switch keyword {
-	case "initial", "inherit", "unset", "revert", "revert-layer":
-		// valid CSS-wide keywords — fall through to expansion below.
-	default:
+	keyword, ok := cssWideKeyword(value)
+	if !ok {
 		// Per spec, the `all` shorthand only accepts CSS-wide keywords; any
 		// other value (including var()) is invalid and the declaration is
 		// dropped. Mirrors Blink's CSSPropertyParser::ParseSingleValue check.
@@ -3190,12 +3187,12 @@ var nonDefaultInitialValues = map[string]string{
 	// `color: transparent` parent.
 	"color": "canvastext",
 	// CSS Color Adjust 1 §3: initial value of `color-scheme` is `normal`.
-	// `color-scheme` IS inherited (cascade.go inheritableProperties), so an
+	// `color-scheme` IS inherited (inheritableProperties), so an
 	// explicit initial here prevents ApplyInheritedProperties from re-filling
 	// the slot with the parent's scheme after `color-scheme: initial`.
 	"color-scheme": "normal",
 	// CSS Text 4 §7.1: initial value of `text-align` is `start`. `text-align`
-	// IS inherited (cascade.go inheritableProperties), so without an explicit
+	// IS inherited (inheritableProperties), so without an explicit
 	// initial here ApplyInheritedProperties re-fills a deleted slot with the
 	// parent's alignment — making `text-align: initial` wrongly inherit instead
 	// of reset. Required by css-pseudo/marker-content marker-text-align-001,
@@ -3255,14 +3252,16 @@ func applyDeclarationWithVisitedFilter(style *Style, property, value string, vis
 // shorthandProducesVisitedLonghand returns true for shorthand property names
 // whose expansion can touch one or more visited-allowed longhands. Used by
 // applyDeclarationWithVisitedFilter to decide whether the temp-style detour
-// is worth taking. `all` is always included; the others cover the shorthands
-// louis14 expands that resolve to a color-eligible longhand.
+// is worth taking. `all` is always included; any other shorthand qualifies
+// when one of its longhands (shorthandLonghands) is visited-allowed.
 func shorthandProducesVisitedLonghand(property string) bool {
-	switch property {
-	case "all", "background", "border", "border-color",
-		"border-top", "border-right", "border-bottom", "border-left",
-		"outline", "text-decoration", "text-emphasis":
+	if property == "all" {
 		return true
+	}
+	for _, lh := range shorthandLonghands[property] {
+		if visitedAllowedProperties[lh] {
+			return true
+		}
 	}
 	return false
 }
@@ -3301,106 +3300,6 @@ func selectorMatchesVisited(sel Selector) bool {
 		}
 	}
 	return false
-}
-
-// cssLonghandProperties is the canonical list of CSS longhand properties the
-// louis14 engine knows about. Sourced from the union of every style.Get / Set
-// call site in the engine — i.e. every property a reader or writer references.
-// Shorthand spellings (border, margin, padding, font, background, etc.) are
-// deliberately excluded; the `all` shorthand expands to longhands only, matching
-// Blink's all.cc which iterates CSSPropertyIDIterator over longhands.
-//
-// When adding support for a new CSS property, append its longhand name(s) here
-// so `all: initial` resets it correctly. This is the one place that enumerates
-// "every CSS property" — there is no other registry.
-var cssLonghandProperties = []string{
-	// Box model
-	"display", "position", "float", "clear", "visibility",
-	"top", "right", "bottom", "left",
-	"width", "min-width", "max-width", "height", "min-height", "max-height",
-	"margin-top", "margin-right", "margin-bottom", "margin-left",
-	"padding-top", "padding-right", "padding-bottom", "padding-left",
-	"box-sizing", "overflow", "overflow-x", "overflow-y",
-	"aspect-ratio",
-	// Border
-	"border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-	"border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
-	"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
-	"border-top-left-radius", "border-top-right-radius",
-	"border-bottom-left-radius", "border-bottom-right-radius",
-	"border-image-source", "border-image-slice", "border-image-width",
-	"border-image-outset", "border-image-repeat",
-	"border-collapse", "border-spacing",
-	// Outline
-	"outline-width", "outline-style", "outline-color", "outline-offset",
-	// Background
-	"background-color", "background-image", "background-repeat",
-	"background-position", "background-size", "background-attachment",
-	"background-clip", "background-origin",
-	// Color & opacity
-	"color", "color-scheme", "opacity",
-	// Font
-	"font-family", "font-size", "font-weight", "font-style", "font-variant",
-	"font-feature-settings", "font-optical-sizing", "font-size-adjust",
-	"font-synthesis-weight", "font-synthesis-style",
-	"font-synthesis-small-caps", "font-synthesis-position",
-	"font-variant-caps", "font-variant-ligatures",
-	"font-variant-numeric", "font-variant-east-asian",
-	"font-variant-alternates",
-	// Text
-	"line-height", "text-align", "text-align-last", "text-indent",
-	"text-transform", "text-decoration-line", "text-decoration-style",
-	"text-decoration-color", "text-decoration-thickness",
-	"text-decoration-inset", "text-decoration-skip-spaces",
-	"text-underline-offset", "text-underline-position", "text-overflow",
-	"text-shadow", "text-wrap", "text-emphasis-color",
-	"text-emphasis-style", "text-emphasis-position",
-	"letter-spacing", "word-spacing", "white-space",
-	"word-break", "overflow-wrap", "word-wrap", "hyphens",
-	"tab-size", "vertical-align",
-	// Writing modes
-	"writing-mode", "text-orientation",
-	// Lists
-	"list-style-type", "list-style-position", "list-style-image",
-	// Tables
-	"caption-side", "empty-cells", "table-layout",
-	// Flex
-	"flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
-	"align-items", "align-content", "align-self",
-	"justify-content", "justify-items", "justify-self",
-	"order", "row-gap", "column-gap",
-	// Grid
-	"grid-template-columns", "grid-template-rows", "grid-template-areas",
-	"grid-auto-columns", "grid-auto-rows", "grid-auto-flow",
-	"grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
-	// Multi-column
-	"column-count", "column-width", "column-fill",
-	"column-rule-width", "column-rule-style", "column-rule-color",
-	"column-span",
-	// Transform / animation
-	"transform", "transform-origin", "translate", "rotate", "scale",
-	"transform-style", "backface-visibility", "perspective", "perspective-origin",
-	"transition", "animation-name", "animation-duration",
-	"animation-timing-function", "animation-delay", "animation-iteration-count",
-	"animation-direction", "animation-fill-mode", "animation-play-state",
-	// Effects
-	"box-shadow", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
-	"clip", "clip-path", "mask-image",
-	// SVG paint
-	"fill", "fill-rule", "stroke", "stroke-dasharray", "stroke-dashoffset",
-	"stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-width",
-	"flood-color", "flood-opacity", "stop-color", "stop-opacity",
-	"lighting-color",
-	// Misc
-	"content", "counter-increment", "counter-reset", "quotes",
-	"cursor", "z-index", "will-change", "contain",
-	"break-before", "break-after", "break-inside", "orphans", "widows",
-	"image-rendering", "object-fit", "object-position",
-	"scrollbar-color", "scrollbar-gutter", "scrollbar-width",
-	"box-decoration-break", "initial-letter",
-	// Vendor-prefixed longhands louis14 reads
-	"-webkit-box-align", "-webkit-box-direction", "-webkit-box-orient",
-	"-webkit-box-decoration-break", "-webkit-line-clamp", "-webkit-mask-image",
 }
 
 // allShorthandRevertSnapshot captures the cascade origin baseline against
@@ -3550,20 +3449,8 @@ func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSn
 
 // expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
 // Format: "3px solid blue" — order of components is not significant.
-// Per CSS Cascade 4 §3.2, a CSS-wide keyword as the shorthand value applies to every
-// longhand (mirroring Blink's StylePropertyShorthand::longhand expansion at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// CSS-wide keywords are handled by expandShorthand before this runs.
 func expandOutlineShorthand(style *Style, value string) {
-	// CSS-wide keyword as the entire shorthand value: route to every longhand
-	// so that the post-cascade resolveInheritValues / resolveCSSWideKeywords
-	// pass picks them all up. This is what makes `outline: inherit` inherit
-	// the parent's outline-width / outline-style / outline-color (not just the
-	// color). Without this, `outline: inherit` resets width to medium and
-	// style to none, producing no visible outline on the inheriting element.
-	if setLonghandsToCSSWideKeyword(style, value, []string{"outline-width", "outline-style", "outline-color"}) {
-		return
-	}
-
 	// Reset all outline sub-properties to initial values
 	style.Set("outline-width", "3px") // medium = 3px
 	style.Set("outline-style", "none")
@@ -4043,17 +3930,6 @@ func (s *Style) GetOutlineOffset() float64 {
 // Single value: all corners. Two values: TL+BR, TR+BL. Three: TL, TR+BL, BR. Four: TL TR BR BL.
 // Note: the "/" syntax for elliptical radii is not supported.
 func expandBorderRadiusProperty(style *Style, value string) {
-	// If the value is "inherit" or "initial", expand to all individual corner properties
-	// so that resolveInheritValues can find each corner on the parent.
-	lower := strings.TrimSpace(strings.ToLower(value))
-	if lower == "inherit" || lower == "initial" || lower == "unset" {
-		style.Set("border-top-left-radius", lower)
-		style.Set("border-top-right-radius", lower)
-		style.Set("border-bottom-right-radius", lower)
-		style.Set("border-bottom-left-radius", lower)
-		return
-	}
-
 	// Handle elliptical radii (slash syntax): "10px 20px / 5px 15px"
 	// First set = horizontal radii (Rx), second set = vertical radii (Ry).
 	// splitOnSlashOutsideParens / splitShorthandParts respect parentheses so
@@ -4294,7 +4170,8 @@ func expandBorderProperty(style *Style, value string) {
 
 // expandFlexProperty expands the flex shorthand.
 // CSS spec: flex: none | [ <flex-grow> <flex-shrink>? || <flex-basis> ]
-// Keywords: "none" = "0 0 auto", "auto" = "1 1 auto", "initial" = "0 1 auto"
+// Keywords: "none" = "0 0 auto", "auto" = "1 1 auto" (CSS-wide keywords are
+// handled by expandShorthand before this runs).
 // IMPORTANT: When omitted from shorthand, flex-grow defaults to 1, flex-basis defaults to 0
 // (different from individual property defaults of 0 and auto)
 func expandFlexProperty(style *Style, value string) {
@@ -4307,11 +4184,6 @@ func expandFlexProperty(style *Style, value string) {
 		return
 	case "auto":
 		style.Set("flex-grow", "1")
-		style.Set("flex-shrink", "1")
-		style.Set("flex-basis", "auto")
-		return
-	case "initial":
-		style.Set("flex-grow", "0")
 		style.Set("flex-shrink", "1")
 		style.Set("flex-basis", "auto")
 		return
@@ -4430,45 +4302,42 @@ func expandBorderSideProperty(style *Style, property, value string) {
 	}
 }
 
+// cssWideKeyword returns value lowercased when it is one of the CSS-wide
+// keywords (CSS Cascade 4 §7.3 / Cascade 5: initial, inherit, unset, revert,
+// revert-layer).
+func cssWideKeyword(value string) (string, bool) {
+	kw := strings.ToLower(strings.TrimSpace(value))
+	switch kw {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		return kw, true
+	}
+	return "", false
+}
+
 // setLonghandsToCSSWideKeyword sets every longhand to value when value is a
 // CSS-wide keyword (initial, inherit, unset, revert, revert-layer), the only
 // values a shorthand passes to all its longhands unchanged; the post-cascade
 // resolveInheritValues / resolveCSSWideKeywords passes then resolve them.
-// Reports whether it did.
+// Each longhand goes through expandShorthand so a logical longhand lands on
+// its writing-mode marker like a direct declaration would. Reports whether
+// it did. Mirrors Blink's CSSPropertyParser::ParseValueStart, which consumes
+// a CSS-wide keyword for every longhand of shorthandForProperty before any
+// per-shorthand grammar runs (core/css/parser/css_property_parser.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func setLonghandsToCSSWideKeyword(style *Style, value string, longhands []string) bool {
-	kw := strings.ToLower(strings.TrimSpace(value))
-	switch kw {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
-	default:
+	kw, ok := cssWideKeyword(value)
+	if !ok {
 		return false
 	}
 	for _, lh := range longhands {
-		style.Set(lh, kw)
+		expandShorthand(style, lh, kw)
 	}
 	return true
-}
-
-// fontShorthandLonghands are the longhands of the `font` shorthand. Mirrors
-// Blink's css_properties.json5 "font" entry (:9642-9650 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-var fontShorthandLonghands = []string{
-	"font-style", "font-variant-ligatures", "font-variant-caps",
-	"font-variant-numeric", "font-variant-east-asian", "font-variant-alternates",
-	"font-variant-position", "font-variant-emoji", "font-weight", "font-stretch",
-	"font-size", "line-height", "font-family", "font-optical-sizing",
-	"font-size-adjust", "font-kerning", "font-feature-settings",
-	"font-variation-settings", "font-language-override",
 }
 
 // expandFontProperty expands the font shorthand.
 // Format: [style] [variant] [weight] size[/line-height] family[, family...]
 func expandFontProperty(style *Style, value string) {
-	// A CSS-wide keyword applies to every longhand, as for `background`
-	// (expandBackgroundProperty). Without this `font: inherit` has a single
-	// token and was dropped, leaving a less specific `font` in force.
-	if setLonghandsToCSSWideKeyword(style, value, fontShorthandLonghands) {
-		return
-	}
 	parts := strings.Fields(value)
 	if len(parts) < 2 {
 		return
@@ -4538,20 +4407,6 @@ func expandBackgroundProperty(style *Style, value string) {
 		style.Set("background-image", "none")
 		return
 	}
-	// CSS Backgrounds 3 §3.10: CSS-wide keywords on the `background`
-	// shorthand apply to every longhand. Without this branch the keyword
-	// falls through the token-classification loop, no longhand gets set,
-	// and the parent's background never propagates. Mirrors the shorthand
-	// expansion path in `core/css/properties/shorthands/background.cc`
-	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	if setLonghandsToCSSWideKeyword(style, trimmed, []string{
-		"background-color", "background-image", "background-repeat",
-		"background-position", "background-size", "background-origin",
-		"background-clip", "background-attachment",
-	}) {
-		return
-	}
-
 	// Split into comma-separated layers (depth-aware).
 	layers := splitCommaSeparated(trimmed)
 
