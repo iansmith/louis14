@@ -250,7 +250,7 @@ func TestShouldIncludeBlockBorderPadding(t *testing.T) {
 		{"break-before resume keeps both edges", false, &BlockBreakToken{IsBreakBefore: true}, true, true},
 	} {
 		space := ConstraintSpace{BreakToken: tc.token}
-		start := ShouldIncludeBlockStartBorderPadding(FragmentainerBox{Space: &space, HasClonedBoxDecorations: tc.cloned})
+		start := ShouldIncludeBlockStartBorderPadding(newFragmentationTestBuilder(&space, LogicalEdges{}, tc.cloned))
 		end := ShouldIncludeBlockEndBorderPadding(tc.token, shouldBreakInside, false, false, false, false)
 		if start != tc.wantStart || end != tc.wantEnd {
 			t.Errorf("%s: include block-start/end = %v/%v, want %v/%v",

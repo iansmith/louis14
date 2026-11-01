@@ -126,9 +126,9 @@ func TestMulticolFragmentainerSpaceForChildren_Clone(t *testing.T) {
 				FragmentainerBlockSize: 100,
 				FragmentainerOffset:    20,
 			},
-			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
-			hasClonedBoxDecorations: tc.cloned,
 		}
+		mla.containerBuilder = newFragmentationTestBuilder(&mla.space, LogicalEdges{BlockStart: 10, BlockEnd: 5}, tc.cloned)
+		mla.containerBuilder.SetShouldCloneBoxEndDecorations(tc.cloned)
 		if got := mla.fragmentainerCapacityForChildren(); got != tc.wantCapacity {
 			t.Errorf("cloned=%v: capacity = %v, want %v", tc.cloned, got, tc.wantCapacity)
 		}
@@ -486,10 +486,10 @@ func TestMulticolPreviouslyConsumedContentBlockSize(t *testing.T) {
 		{"clone, zero-consumed break-inside token clamps to 0", true, tok(0, 0), 0},
 	} {
 		mla := &MulticolLayoutAlgorithm{
-			space:                   ConstraintSpace{BreakToken: tc.token},
-			borderScrollbarPadding:  LogicalEdges{BlockStart: 10, BlockEnd: 5},
-			hasClonedBoxDecorations: tc.cloned,
+			space:                          ConstraintSpace{BreakToken: tc.token},
+			declaredBorderScrollbarPadding: LogicalEdges{BlockStart: 10, BlockEnd: 5},
 		}
+		mla.containerBuilder = newFragmentationTestBuilder(&mla.space, LogicalEdges{}, tc.cloned)
 		if got := mla.previouslyConsumedContentBlockSize(); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}

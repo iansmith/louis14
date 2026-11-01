@@ -146,7 +146,7 @@ func TestFinishFragmentationForFragmentainerKeepsSpannerParentWithOOFs_LOU478(t 
 			if tc.hasOOFs {
 				builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{})
 			}
-			FinishFragmentationForFragmentainer(builder, FragmentainerBox{Space: &space}, 0)
+			FinishFragmentationForFragmentainer(builder, 0)
 			if got := builder.IsEmptySpannerParent(); got != tc.want {
 				t.Errorf("IsEmptySpannerParent = %v, want %v", got, tc.want)
 			}

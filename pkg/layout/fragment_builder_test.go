@@ -440,3 +440,132 @@ func TestBlockSizeForFragmentation_FragmentainerIsRaw_LOU411(t *testing.T) {
 		}
 	}
 }
+
+// newFragmentationTestBuilder returns a builder laid out in space whose
+// geometry has the given block border+scrollbar+padding (all in Border),
+// with box-decoration-break:clone when cloned: what Blink's
+// FragmentainerCapacity / FragmentainerOffset / FragmentainerSpaceLeft read
+// off the builder (fragmentation_utils.h:153-257 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func newFragmentationTestBuilder(space *ConstraintSpace, edges LogicalEdges, cloned bool) *BoxFragmentBuilder {
+	builder := NewBoxFragmentBuilder(WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR})
+	builder.SetConstraintSpace(space)
+	builder.SetInitialFragmentGeometry(&FragmentGeometry{Border: edges})
+	if cloned {
+		builder.SetStyle(makeStyle("box-decoration-break", "clone"))
+	}
+	return builder
+}
+
+// TestBoxFragmentBuilder_FragmentationAccessors (LOU-475): the builder
+// exposes what Blink's fragmentation helpers read off BoxFragmentBuilder —
+// BorderScrollbarPadding over the initial fragment geometry, cleared in
+// place per edge (box_fragment_builder.h:298-312), PreviousBreakToken from
+// the constraint space (:151-153), ShouldCloneBoxEndDecorations (:418-423),
+// GetConstraintSpace and Style (fragment_builder.h:57-65), all @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestBoxFragmentBuilder_FragmentationAccessors(t *testing.T) {
+	empty := NewBoxFragmentBuilder(WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR})
+	if got := empty.BorderScrollbarPadding(); got != (LogicalEdges{}) {
+		t.Errorf("no geometry: BorderScrollbarPadding = %v, want zero", got)
+	}
+	if empty.PreviousBreakToken() != nil || empty.GetConstraintSpace() != nil || empty.Style() != nil {
+		t.Errorf("no space/style: want nil PreviousBreakToken, GetConstraintSpace and Style")
+	}
+
+	token := &BlockBreakToken{}
+	space := ConstraintSpace{BreakToken: token}
+	geom := FragmentGeometry{
+		Border:    LogicalEdges{BlockStart: 1, BlockEnd: 2, InlineStart: 7},
+		Scrollbar: LogicalEdges{BlockEnd: 3},
+		Padding:   LogicalEdges{BlockStart: 4, BlockEnd: 5},
+	}
+	builder := NewBoxFragmentBuilder(WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR})
+	builder.SetConstraintSpace(&space)
+	builder.SetInitialFragmentGeometry(&geom)
+	style := makeStyle("box-decoration-break", "clone")
+	builder.SetStyle(style)
+	if builder.GetConstraintSpace() != &space || builder.PreviousBreakToken() != token || builder.Style() != style {
+		t.Errorf("GetConstraintSpace / PreviousBreakToken / Style do not return what was set")
+	}
+	if builder.InitialFragmentGeometry() != &geom {
+		t.Errorf("InitialFragmentGeometry does not return the geometry set")
+	}
+	if got, want := builder.BorderScrollbarPadding(), (LogicalEdges{BlockStart: 5, BlockEnd: 10, InlineStart: 7}); got != want {
+		t.Errorf("BorderScrollbarPadding = %v, want %v", got, want)
+	}
+	builder.ClearBorderScrollbarPaddingBlockStart()
+	if got, want := builder.BorderScrollbarPadding(), (LogicalEdges{BlockEnd: 10, InlineStart: 7}); got != want {
+		t.Errorf("after ClearBorderScrollbarPaddingBlockStart: %v, want %v", got, want)
+	}
+	builder.ClearBorderScrollbarPaddingBlockEnd()
+	if got, want := builder.BorderScrollbarPadding(), (LogicalEdges{InlineStart: 7}); got != want {
+		t.Errorf("after ClearBorderScrollbarPaddingBlockEnd: %v, want %v", got, want)
+	}
+	if builder.ShouldCloneBoxEndDecorations() {
+		t.Errorf("ShouldCloneBoxEndDecorations defaults to true")
+	}
+	builder.SetShouldCloneBoxEndDecorations(true)
+	if !builder.ShouldCloneBoxEndDecorations() {
+		t.Errorf("SetShouldCloneBoxEndDecorations(true) not reflected")
+	}
+}
+
+// TestFragmentainerHelpersReadBuilder (LOU-475): FragmentainerCapacity /
+// FragmentainerOffset / FragmentainerSpaceLeft read the builder's style,
+// BorderScrollbarPadding, ShouldCloneBoxEndDecorations and previous break
+// token (fragmentation_utils.h:159-257 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Fragmentainer 100, offset 20,
+// edges 10+5.
+func TestFragmentainerHelpersReadBuilder(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		cloned, cloneEnd           bool
+		token                      *BlockBreakToken
+		wantCapChildren, wantCapIt float64
+		wantOffChildren            float64
+		wantLeftChildren           float64
+	}{
+		{"slice", false, false, nil, 100, 100, 20, 80},
+		{"clone start only", true, false, nil, 90, 100, 10, 80},
+		{"clone both ends", true, true, nil, 85, 100, 10, 75},
+		{"clone past block end keeps offset", true, false, &BlockBreakToken{IsAtBlockEnd: true}, 90, 100, 20, 70},
+	} {
+		space := ConstraintSpace{HasBlockFragmentation: true, FragmentainerBlockSize: 100, FragmentainerOffset: 20, BreakToken: tc.token}
+		builder := newFragmentationTestBuilder(&space, LogicalEdges{BlockStart: 10, BlockEnd: 5}, tc.cloned)
+		builder.SetShouldCloneBoxEndDecorations(tc.cloneEnd)
+		if got := FragmentainerCapacity(builder, true); got != tc.wantCapChildren {
+			t.Errorf("%s: capacity for children = %v, want %v", tc.name, got, tc.wantCapChildren)
+		}
+		if got := FragmentainerCapacity(builder, false); got != tc.wantCapIt {
+			t.Errorf("%s: capacity = %v, want %v", tc.name, got, tc.wantCapIt)
+		}
+		if got := FragmentainerOffset(builder, true); got != tc.wantOffChildren {
+			t.Errorf("%s: offset for children = %v, want %v", tc.name, got, tc.wantOffChildren)
+		}
+		if got := FragmentainerOffset(builder, false); got != 20 {
+			t.Errorf("%s: offset = %v, want 20", tc.name, got)
+		}
+		if got := FragmentainerSpaceLeft(builder, true); got != tc.wantLeftChildren {
+			t.Errorf("%s: space left for children = %v, want %v", tc.name, got, tc.wantLeftChildren)
+		}
+	}
+	// ClampedToValidFragmentainerCapacity(builder, ...): a box cloning its
+	// block-end decorations fits them plus 1px (fragmentation_utils.h:159-173).
+	space := ConstraintSpace{HasBlockFragmentation: true, FragmentainerBlockSize: 0}
+	builder := newFragmentationTestBuilder(&space, LogicalEdges{BlockStart: 10, BlockEnd: 5}, true)
+	if got := ClampedToValidFragmentainerCapacityForBuilder(builder, 0, false); got != 1 {
+		t.Errorf("no end clone: clamp = %v, want 1", got)
+	}
+	builder.SetShouldCloneBoxEndDecorations(true)
+	if got := ClampedToValidFragmentainerCapacityForBuilder(builder, 0, false); got != 16 {
+		t.Errorf("end clone, fragment: clamp = %v, want 16", got)
+	}
+	if got := ClampedToValidFragmentainerCapacityForBuilder(builder, 0, true); got != 1 {
+		t.Errorf("end clone, children: clamp = %v, want 1", got)
+	}
+	unknown := ConstraintSpace{HasBlockFragmentation: true, FragmentainerBlockSize: Indefinite}
+	if got := FragmentainerSpaceLeft(newFragmentationTestBuilder(&unknown, LogicalEdges{}, false), true); got != Indefinite {
+		t.Errorf("unknown fragmentainer: space left = %v, want Indefinite", got)
+	}
+}

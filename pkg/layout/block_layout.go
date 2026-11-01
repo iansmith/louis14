@@ -43,12 +43,14 @@ type BlockLayoutAlgorithm struct {
 	// the fragmentainer start.
 	fragmentainerOffsetForChildren float64
 
-	// fragmentainerBox is what Blink's FragmentainerCapacity /
-	// FragmentainerOffset / FragmentainerSpaceLeft read off this block's
-	// fragment builder (fragmentation_utils.h:164-257 @ a9f50e522efa),
-	// less the space, which fragmentainerBuilder() supplies. Set in
-	// Layout(); ShouldCloneBoxEndDecorations is filled in once known.
-	fragmentainerBox FragmentainerBox
+	// containerBuilder is the builder of the fragment being laid out,
+	// created in Layout(). Mirrors Blink's LayoutAlgorithm::
+	// container_builder_ (layout_algorithm.h:299 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which Blink's
+	// FragmentainerCapacity / FragmentainerOffset / FragmentainerSpaceLeft
+	// read (fragmentation_utils.h:153-257). The only access path to the
+	// builder: Layout and its helpers read the field.
+	containerBuilder *BoxFragmentBuilder
 
 	// boxType is the type of fragment this algorithm produces. A column box
 	// (fragmentainer) is sized by its multicol, not by FinishFragmentation.
@@ -142,12 +144,12 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 //
 // LOU-370: the consumed-size subtraction is gated on break-INSIDE, as Blink
 // guards it with `!previous_break_token->IsBreakBefore()`.
-func desiredBlockSizeAtBlockEnd(space ConstraintSpace, borderBoxBlockSize float64, incomingBreakToken *BlockBreakToken) bool {
+func desiredBlockSizeAtBlockEnd(builder *BoxFragmentBuilder, borderBoxBlockSize float64) bool {
 	// FragmentainerSpaceLeft(builder, is_for_children=false)
 	// (fragmentation_utils.cc:433-434): ShouldCloneBoxEndDecorations is not
-	// known yet here, so the floor is the plain 1px.
-	spaceLeft := FragmentainerSpaceLeft(FragmentainerBox{Space: &space}, false)
-	return borderBoxBlockSize-previouslyConsumedBlockSize(incomingBreakToken) <= spaceLeft
+	// set yet here, so the floor is the plain 1px.
+	spaceLeft := FragmentainerSpaceLeft(builder, false)
+	return borderBoxBlockSize-previouslyConsumedBlockSize(builder.PreviousBreakToken()) <= spaceLeft
 }
 
 // previouslyConsumedBlockSize is the border-box block-size earlier fragments
@@ -168,7 +170,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// edges, whatever this fragment carries.
 	declaredBlockBorderPadding := geom.BlockBorderPadding()
 	declaredBlockStart := geom.BorderBoxPadding().BlockStart
-	hasClonedBoxDecorations := bla.style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone
+	bla.containerBuilder = NewBoxFragmentBuilder(wdm)
+	bla.containerBuilder.SetLayoutNode(bla.node)
+	bla.containerBuilder.SetConstraintSpace(&bla.space)
+	bla.containerBuilder.SetInitialFragmentGeometry(&geom)
+	bla.containerBuilder.SetBoxType(bla.boxType)
 	// A slice-mode continuation carries no block-start border/scrollbar/
 	// padding: it is sized, painted and its children placed without the
 	// edge, and it has consumed nothing before its first child. Mirrors
@@ -179,33 +185,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink decides clone_box_start_decorations once, from the full edges
 	// (fragmentation_utils.cc:440-442 @ a9f50e522efa), before any is
 	// cleared; shouldCloneBlockStart is that decision.
-	blockStartBox := FragmentainerBox{
-		Space:                   &bla.space,
-		BorderScrollbarPadding:  geom.BorderBoxPadding(),
-		HasClonedBoxDecorations: hasClonedBoxDecorations,
+	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(bla.containerBuilder)
+	if !ShouldIncludeBlockStartBorderPadding(bla.containerBuilder) {
+		bla.containerBuilder.ClearBorderScrollbarPaddingBlockStart()
 	}
-	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(blockStartBox)
-	if !ShouldIncludeBlockStartBorderPadding(blockStartBox) {
-		geom.ClearBorderScrollbarPaddingBlockStart()
-	}
-	bla.fragmentainerBox = FragmentainerBox{
-		BorderScrollbarPadding:  geom.BorderBoxPadding(),
-		HasClonedBoxDecorations: hasClonedBoxDecorations,
-	}
-	bla.fragmentainerOffsetForChildren = FragmentainerOffset(bla.fragmentainerBuilder(), true) + geom.BorderBoxPadding().BlockStart
-	builder := NewBoxFragmentBuilder(wdm)
-	builder.SetLayoutNode(bla.node)
-	builder.SetConstraintSpace(&bla.space)
-	builder.SetBoxType(bla.boxType)
-	builder.PropagateSpaceShortage(bla.relayoutSpaceShortage)
+	bla.fragmentainerOffsetForChildren = FragmentainerOffset(bla.containerBuilder, true) + geom.BorderBoxPadding().BlockStart
+	bla.containerBuilder.PropagateSpaceShortage(bla.relayoutSpaceShortage)
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
 	// @ a9f50e522efa): resuming after a break inside this node.
-	builder.SetIsFirstForNode(!bla.space.BreakToken.IsBreakInside())
+	bla.containerBuilder.SetIsFirstForNode(!bla.space.BreakToken.IsBreakInside())
 	// A node on the spanner path keeps its breaks in its parent's flow, so
 	// content after the spanner is not laid out before it
 	// (block_layout_algorithm.cc:820-827 @ a9f50e522efa).
 	if bla.space.ColumnSpannerPath != nil {
-		builder.SetShouldForceSameFragmentationFlow()
+		bla.containerBuilder.SetShouldForceSameFragmentationFlow()
 	}
 
 	// CSS Lists §3 / Blink BlockLayoutAlgorithm constructor (bla.cc:319-327):
@@ -221,7 +214,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		!markerNode.ListMarkerOccupiesWholeLine() {
 		incoming := bla.space.BreakToken
 		if incoming == nil || incoming.HasUnpositionedListMarker {
-			builder.SetUnpositionedListMarker(&UnpositionedListMarker{
+			bla.containerBuilder.SetUnpositionedListMarker(&UnpositionedListMarker{
 				MarkerNode: markerNode,
 				Item:       bla.node,
 			})
@@ -256,7 +249,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// full writing modes) but its fragment goes untagged, so it
 	// contributes no balancing floor.
 	if bla.node.IsMonolithic(bla.space.IsOrthogonalWritingModeRoot) {
-		builder.SetIsMonolithic(true)
+		bla.containerBuilder.SetIsMonolithic(true)
 	}
 	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
 	// initial column-balancing pass, propagate the container's own border-
@@ -275,8 +268,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.space.IsInitialColumnBalancingPass {
 		blockStart := geom.Border.BlockStart + geom.Padding.BlockStart
 		blockEnd := geom.Border.BlockEnd + geom.Padding.BlockEnd
-		builder.PropagateTallestUnbreakableBlockSize(blockStart)
-		builder.PropagateTallestUnbreakableBlockSize(blockEnd)
+		bla.containerBuilder.PropagateTallestUnbreakableBlockSize(blockStart)
+		bla.containerBuilder.PropagateTallestUnbreakableBlockSize(blockEnd)
 	}
 
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
@@ -394,18 +387,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	isKnownToFitInFragmentainer := bla.space.HasKnownFragmentainerBlockSize() && hasExplicitBlock &&
 		!bla.space.IsBlockSizeOverride &&
-		desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize+fragmentsBorderPadding, bla.space.BreakToken)
+		desiredBlockSizeAtBlockEnd(bla.containerBuilder, explicitBlockSize+fragmentsBorderPadding)
 	shouldCloneBoxEndDecorations := bla.space.HasBlockFragmentation &&
 		!bla.space.IsInitialColumnBalancingPass &&
 		shouldCloneBlockStart && !isKnownToFitInFragmentainer
-	bla.fragmentainerBox.ShouldCloneBoxEndDecorations = shouldCloneBoxEndDecorations
+	bla.containerBuilder.SetShouldCloneBoxEndDecorations(shouldCloneBoxEndDecorations)
 	// clearBlockEndIfExcluded clears an excluded block-end edge from geom,
 	// so it neither sizes nor paints the fragment.
 	clearBlockEndIfExcluded := func(shouldBreakInside, hasInflowChildBreakInside bool) {
 		if !ShouldIncludeBlockEndBorderPadding(bla.space.BreakToken, shouldBreakInside,
 			isKnownToFitInFragmentainer, shouldCloneBoxEndDecorations,
 			bla.space.IsNewFormattingContext, hasInflowChildBreakInside) {
-			geom.ClearBorderScrollbarPaddingBlockEnd()
+			bla.containerBuilder.ClearBorderScrollbarPaddingBlockEnd()
 		}
 	}
 	// consumeRemainingFragmentainerSpace stretches a breaking fragment's
@@ -443,7 +436,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// and, its space being anonymous, ComputeBlockSizeForFragment
 			// returns the intrinsic size (length_utils.cc:921-922 @
 			// a9f50e522efa).
-			return FinishFragmentationForFragmentainer(builder, bla.fragmentainerBuilder(), intrinsic)
+			return FinishFragmentationForFragmentainer(bla.containerBuilder, intrinsic)
 		}
 		var total float64
 		switch {
@@ -464,11 +457,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// decorations always has room for them plus 1px of content.
 		spaceLeft := Indefinite
 		if !bla.space.IsInitialColumnBalancingPass {
-			spaceLeft = FragmentainerSpaceLeft(bla.fragmentainerBuilder(), false)
+			spaceLeft = FragmentainerSpaceLeft(bla.containerBuilder, false)
 		}
 		res := FinishFragmentation(FinishFragmentationInput{
 			SpaceLeft:                             spaceLeft,
-			FragmentainerCapacity:                 FragmentainerCapacity(bla.fragmentainerBuilder(), false),
+			FragmentainerCapacity:                 FragmentainerCapacity(bla.containerBuilder, false),
 			HasBlockFragmentation:                 bla.space.HasBlockFragmentation,
 			IsColumnFragmentation:                 bla.space.BlockFragmentationType == FragmentColumn,
 			IsInitialColumnBalancingPass:          bla.space.IsInitialColumnBalancingPass,
@@ -478,17 +471,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			TrailingBorderPadding:                 edges.BlockEnd,
 			BlockStartBorderPadding:               declaredBlockStart,
 			PreventBreakBeforeBlockEndDecorations: shouldCloneBoxEndDecorations,
-			FoundColumnSpanner:                    builder.FoundColumnSpanner(),
+			FoundColumnSpanner:                    bla.containerBuilder.FoundColumnSpanner(),
 			ShouldBreakInside:                     shouldBreakInside,
 			HasInflowChildBreakInside:             hasInflowChildBreakInside,
 			IsKnownToFitInFragmentainer:           isKnownToFitInFragmentainer,
 			ShouldCloneBoxEndDecorations:          shouldCloneBoxEndDecorations,
 		})
 		if !res.IncludeBlockEnd {
-			geom.ClearBorderScrollbarPaddingBlockEnd()
+			bla.containerBuilder.ClearBorderScrollbarPaddingBlockEnd()
 		}
 		if res.ClampAppealToLastResort {
-			builder.ClampBreakAppeal(BreakAppealLastResort)
+			bla.containerBuilder.ClampBreakAppeal(BreakAppealLastResort)
 		}
 		return res
 	}
@@ -496,7 +489,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// finishFragmentation.
 	setBreakingSize := func(contentBlockSize float64) FinishFragmentationResult {
 		res := finishFragmentation(contentBlockSize, true, true)
-		builder.SetSize(LogicalSize{InlineSize: geom.BorderBoxSize.InlineSize, BlockSize: res.FragmentBlockSize})
+		bla.containerBuilder.SetSize(LogicalSize{InlineSize: geom.BorderBoxSize.InlineSize, BlockSize: res.FragmentBlockSize})
 		return res
 	}
 
@@ -517,7 +510,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// the children's relative offsets. BLA's own content sizes (replaced
 	// and fragmentainer cases above) stand in for CalculateChildAvailableSize's
 	// border-box shrink; the anonymous-block step is shared.
-	builder.SetChildAvailableSize(LogicalSize{
+	bla.containerBuilder.SetChildAvailableSize(LogicalSize{
 		InlineSize: contentInlineSize,
 		BlockSize:  anonymousChildAvailableBlockSize(bla.space, bla.node, childAvailableBlock),
 	})
@@ -688,7 +681,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// For vertical-rl/sideways-rl nested roots, the root is anchored to the
 		// right edge of the iframe viewport. Apply the X offset as an inline offset.
 		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
-		builder.AddChild(nested.fragment, offset)
+		bla.containerBuilder.AddChild(nested.fragment, offset)
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		// When resuming from a column break, start the line breaker at the
@@ -736,14 +729,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
-			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
 			// Widows moved the break earlier than where the lines ran out
 			// of space: lay out again and break there
 			// (FinalizeForFragmentation → kNeedsEarlierBreak →
 			// RelayoutAndBreakEarlier, block_layout_algorithm.cc:3106-3127,
 			// :617-626 @ a9f50e522efa).
-			if earlyBreak := bla.lineEarlyBreak(builder); earlyBreak != nil {
-				return bla.relayoutAndBreakEarlier(earlyBreak, builder)
+			if earlyBreak := bla.lineEarlyBreak(); earlyBreak != nil {
+				return bla.relayoutAndBreakEarlier(earlyBreak)
 			}
 		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
@@ -776,7 +769,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// inline offset (InlineMarginsForOutside) placing it left of the
 		// content-box start.
 		if firstLineAscent > 0 {
-			marker := builder.GetUnpositionedListMarker()
+			marker := bla.containerBuilder.GetUnpositionedListMarker()
 			if marker.IsValid() {
 				if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
 					// AddToBox returns the amount the content must be pushed DOWN
@@ -794,10 +787,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// down. Mirrors BlockLayoutAlgorithm::
 					// PositionOrPropagateListMarker (block_layout_algorithm.cc /
 					// unpositioned_list_marker.cc:81-123 @ 4883d11f).
-					contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, builder)
-					builder.ClearUnpositionedListMarker()
+					contentPush := marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, bla.containerBuilder)
+					bla.containerBuilder.ClearUnpositionedListMarker()
 					if contentPush > 0 {
-						builder.ShiftLineBoxChildrenBlockOffset(contentPush)
+						bla.containerBuilder.ShiftLineBoxChildrenBlockOffset(contentPush)
 						blockCursor += contentPush
 						firstLineAscent += contentPush
 						// If the IFC fragmented (an inline-only list item overflowing
@@ -839,21 +832,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				inlineBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
 				inlineBreakToken.MonolithicOverflow = finish.MonolithicOverflow
 			}
-			builder.SetIntrinsicBlockSize(blockCursor)
-			builder.SetNode(bla.node.DOMNode)
-			builder.SetStyle(bla.style)
-			builder.SetLayoutNode(bla.node)
-			builder.SetBoxData(&PhysicalBoxData{
+			bla.containerBuilder.SetIntrinsicBlockSize(blockCursor)
+			bla.containerBuilder.SetNode(bla.node.DOMNode)
+			bla.containerBuilder.SetStyle(bla.style)
+			bla.containerBuilder.SetLayoutNode(bla.node)
+			bla.containerBuilder.SetBoxData(&PhysicalBoxData{
 				Border:    ToPhysicalEdges(geom.Border, wdm),
 				Padding:   ToPhysicalEdges(geom.Padding, wdm),
 				Scrollbar: ToPhysicalEdges(geom.Scrollbar, wdm),
 			})
-			result := builder.Build()
+			result := bla.containerBuilder.Build()
 			result.BreakToken = inlineBreakToken
 			// Min-merge with a shortage an earlier, moved-past line already
 			// propagated (BoxFragmentBuilder::PropagateSpaceShortage).
 			result.MinSpaceShortage = MinPositiveSpaceShortage(result.MinSpaceShortage, shortage)
-			result.PropagatedOOFCandidates = builder.outOfFlowCandidates
+			result.PropagatedOOFCandidates = bla.containerBuilder.outOfFlowCandidates
 			return result
 		}
 	} else {
@@ -923,7 +916,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 				}
 
-				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+				bla.containerBuilder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node: child,
 					StaticPosition: LogicalStaticPosition{
 						Offset:     LogicalOffset{InlineOffset: staticInlineOffset, BlockOffset: staticBlockOffset},
@@ -938,7 +931,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Handle floats.
 			if childStyle.GetFloat() != css.FloatNone {
 				bla.layoutFloat(child, childStyle, wdm, contentInlineSize, childAvailableBlock,
-					blockCursor, &prevMarginStrut, exclusionSpace, builder, &exclusionSpace, bfcBlockOrigin,
+					blockCursor, &prevMarginStrut, exclusionSpace, &exclusionSpace, bfcBlockOrigin,
 					bfcInlineOrigin, bfcContainerInlineSize)
 				// Only BFC roots extend auto block-size to clear floats
 				// (CSS 2.1 §10.6.7). Non-BFC parents let floats overflow;
@@ -969,13 +962,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					})
 					pendingShouldBreakInside = true
 					pendingHasInflowChildBreakInside = true
-					builder.SetHasColumnSpanner(true)
+					bla.containerBuilder.SetHasColumnSpanner(true)
 					break
 				}
 				// Establish the spanner path, and note whether nothing in
 				// this resumed fragment precedes the spanner (:1042-1055).
-				builder.SetColumnSpannerPath(&ColumnSpannerPath{Box: child})
-				builder.SetIsEmptySpannerParent(len(builder.children) == 0 && incomingBreakToken.IsBreakInside())
+				bla.containerBuilder.SetColumnSpannerPath(&ColumnSpannerPath{Box: child})
+				bla.containerBuilder.SetIsEmptySpannerParent(len(bla.containerBuilder.children) == 0 && incomingBreakToken.IsBreakInside())
 				// Resume in front of the first following sibling that is not
 				// a spanner; the break is forced, so the sibling keeps its
 				// block-start margin. With no such sibling, resume after all
@@ -1371,7 +1364,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Runs after the below-floats re-layout so the propagated floor
 			// is the one the placed fragment actually carries.
 			if bla.space.IsInitialColumnBalancingPass && childResult != nil {
-				builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+				bla.containerBuilder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
 			}
 
 			// CSS 2.1 §9.5: Floats from non-BFC children escape to the
@@ -1457,7 +1450,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 					approxBlock := blockCursor + prevMarginStrut.Resolve()
 					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-						childInlineOffset, approxBlock, builder)
+						childInlineOffset, approxBlock)
 				}
 				prevMarginStrut.Append(childMargins.BlockEnd)
 				continue
@@ -1483,7 +1476,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				status, isForced := BreakBeforeChildIfNeeded(
 					bla.space, child, childResult,
 					fragOff, bla.fragmentainerCapacityForChildren(),
-					hasContainerSeparation, builder)
+					hasContainerSeparation, bla.containerBuilder)
 
 				if status == BreakStatusBrokeBefore {
 					// Break before this child without placing it, and finish
@@ -1568,14 +1561,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					InlineOffset: childInlineOffset,
 					BlockOffset:  0,
 				}
-				builder.AddChild(childResult.Fragment, childOffset)
+				bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
 				// Under block fragmentation, max-merge this in-flow child's
 				// block-end for fragmentation (offset + its
 				// BlockSizeForFragmentation) into the builder, mirroring
 				// Blink AddResult -> PropagateBreakInfo
 				// (box_fragment_builder.cc:227-229, :479-489 @
 				// a9f50e522efa).
-				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
+				bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = childBlockSize
 			} else {
 				// Step 6: Normal margin resolution.
@@ -1587,10 +1580,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					InlineOffset: childInlineOffset,
 					BlockOffset:  actualChildBlockOff,
 				}
-				builder.AddChild(childResult.Fragment, childOffset)
+				bla.containerBuilder.AddChild(childResult.Fragment, childOffset)
 				// Max-merge the child's block-end for fragmentation. See
 				// note above.
-				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
+				bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
 
@@ -1603,7 +1596,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if len(childResult.PropagatedOOFCandidates) > 0 ||
 				(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-					childInlineOffset, actualChildBlockOff, builder)
+					childInlineOffset, actualChildBlockOff)
 			}
 
 			// A column spanner was found inside this child: take over its
@@ -1613,7 +1606,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inColumnBfc := bla.space.HasBlockFragmentation &&
 				bla.space.BlockFragmentationType == FragmentColumn
 			if inColumnBfc {
-				builder.PropagateBreakInfo(child, childResult)
+				bla.containerBuilder.PropagateBreakInfo(child, childResult)
 			}
 
 			// Propagate this child's break values: the first child's
@@ -1622,7 +1615,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// BoxFragmentBuilder::AddResult → PropagateChildBreakValues
 			// (box_fragment_builder.cc:226-232, :618-657 @ a9f50e522efa).
 			if bla.space.ShouldPropagateChildBreakValues() {
-				builder.PropagateChildBreakValues(childResult)
+				bla.containerBuilder.PropagateChildBreakValues(childResult)
 			}
 
 			firstNonEmptyChild = false
@@ -1661,7 +1654,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// child fragment is re-offset inside positionOrPropagateListMarker).
 			if !isOrthogonal {
 				if contentPush := bla.positionOrPropagateListMarker(
-					builder, childResult.Fragment, childResult, actualChildBlockOff,
+					childResult.Fragment, childResult, actualChildBlockOff,
 				); contentPush > 0 {
 					blockCursor += contentPush
 					if hasFirstChildBaseline && firstChildBlockOffset == actualChildBlockOff {
@@ -1725,10 +1718,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if childResult.HasForcedBreak {
 					pendingHasForcedBreak = true
 				} else if !bla.space.IsInitialColumnBalancingPass {
-					builder.PropagateSpaceShortage(childResult.MinSpaceShortage)
+					bla.containerBuilder.PropagateSpaceShortage(childResult.MinSpaceShortage)
 				}
 				if token := childResult.BreakToken; token.IsBreakInside() {
-					builder.ClampBreakAppeal(CalculateBreakAppealInside(bla.space, childResult))
+					bla.containerBuilder.ClampBreakAppeal(CalculateBreakAppealInside(bla.space, childResult))
 					// A child that broke inside before its block end applies
 					// no trailing margin (ComputeInflowPosition,
 					// block_layout_algorithm.cc:3014-3031).
@@ -1764,7 +1757,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// float clearance, as any finished fragment does (Blink's FinishLayout
 	// adds the end margin strut whether or not the box breaks,
 	// block_layout_algorithm.cc:1298-1349 @ a9f50e522efa).
-	breaksBeforeEnd := pendingShouldBreakInside && !builder.FoundColumnSpanner()
+	breaksBeforeEnd := pendingShouldBreakInside && !bla.containerBuilder.FoundColumnSpanner()
 	if !breaksBeforeEnd {
 		// The strut is reset even when it resolves to nothing: a
 		// discarding strut (DiscardMargins) must not leak out as the end
@@ -1823,7 +1816,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Not when a child broke inside: the marker goes with the content of a
 	// later fragment (block_layout_algorithm.cc:1440-1448 @ a9f50e522efa).
 	if !pendingHasInflowChildBreakInside {
-		bla.positionListMarkerWithoutLineBoxes(builder, &intrinsicBlockSize)
+		bla.positionListMarkerWithoutLineBoxes(&intrinsicBlockSize)
 	}
 
 	// A fragment that breaks — a child broke inside, or a child continues
@@ -1874,21 +1867,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	selfBreakShortage := finish.SpaceShortage
 
 	// Set the fragment size.
-	builder.SetSize(LogicalSize{
+	bla.containerBuilder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
 	})
 
-	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
+	bla.containerBuilder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// Set first baseline: for flex align-items:baseline (uses first line).
 	// CSS Inline §4.2: the first baseline of a block container is:
 	//   1. The first line box's baseline (inline children), OR
 	//   2. The first in-flow block child's propagated first baseline.
 	if firstLineAscent > 0 {
-		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+		bla.containerBuilder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 	} else if hasFirstChildBaseline {
-		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+		bla.containerBuilder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			firstChildBlockOffset + firstChildBaseline)
 	}
 	// Set last baseline: for inline-block alignment §10.8.1 (uses last line box).
@@ -1905,18 +1898,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
 			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
 		if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
-			builder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
+			bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
 		} else if hasLastChildBaseline {
-			builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 				lastChildBlockOffset + lastChildBaseline)
 		} else if firstLineAscent > 0 {
-			builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 		}
 	} else if hasLastChildBaseline {
-		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
 	} else if firstLineAscent > 0 {
-		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 	}
 
 	// Set box data for the renderer.
@@ -1924,15 +1917,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
 	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(logMargins, wdm)
-	builder.SetBoxData(&PhysicalBoxData{
+	bla.containerBuilder.SetBoxData(&PhysicalBoxData{
 		Margin:    physMargin,
 		Border:    physBorder,
 		Padding:   physPadding,
 		Scrollbar: physScrollbar,
 	})
 
-	builder.SetEndMarginStrut(prevMarginStrut)
-	builder.SetExclusionSpace(exclusionSpace)
+	bla.containerBuilder.SetEndMarginStrut(prevMarginStrut)
+	bla.containerBuilder.SetExclusionSpace(exclusionSpace)
 
 	// CSS 2.1 §17.5.4 — table-cell vertical-align within the cell's own
 	// block-size. Mirrors Blink FinalizeTableCellLayout
@@ -1974,11 +1967,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			vaShift = finalBlockSize - cellContentBlockSize
 		}
 		if vaShift > 0 {
-			for i := range builder.children {
-				builder.children[i].offset.BlockOffset += vaShift
+			for i := range bla.containerBuilder.children {
+				bla.containerBuilder.children[i].offset.BlockOffset += vaShift
 			}
-			for i := range builder.outOfFlowCandidates {
-				builder.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset += vaShift
+			for i := range bla.containerBuilder.outOfFlowCandidates {
+				bla.containerBuilder.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset += vaShift
 			}
 		}
 	}
@@ -1994,14 +1987,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// A positioned element resolves absolute candidates but must propagate
 	// fixed candidates upward. The root resolves ALL candidates.
 	var propagatedOOF []OutOfFlowCandidate
-	if len(builder.outOfFlowCandidates) > 0 {
+	if len(bla.containerBuilder.outOfFlowCandidates) > 0 {
 		// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
 		// to an inline element is sized against the inline's first/last-line
 		// fragment union rect. Only the block that owns the inline's line
 		// fragments has the geometry — resolve here when this block is
 		// non-anonymous (anonymous blocks pass through to the parent which
 		// walks transparently into them via ComputeInlineContainerGeometry).
-		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(builder.outOfFlowCandidates)
+		inlineCBCandidates, regularCandidates := splitInlineContainingBlockCandidates(bla.containerBuilder.outOfFlowCandidates)
 
 		if len(inlineCBCandidates) > 0 {
 			if bla.node.IsAnonymous() {
@@ -2010,7 +2003,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// (including a block-in-inline split's sibling anon blocks).
 				propagatedOOF = append(propagatedOOF, inlineCBCandidates...)
 			} else {
-				unresolved, extra := layoutInlineContainingBlockCandidates(bla.ctx, builder, wdm,
+				unresolved, extra := layoutInlineContainingBlockCandidates(bla.ctx, bla.containerBuilder, wdm,
 					LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize}, geom, inlineCBCandidates)
 				regularCandidates = append(regularCandidates, unresolved...)
 				propagatedOOF = append(propagatedOOF, extra...)
@@ -2047,7 +2040,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                   geom,
 				resolvesFixed:          true,
 			}
-			oofPart.LayoutCandidates(regularCandidates, builder)
+			oofPart.LayoutCandidates(regularCandidates, bla.containerBuilder)
 		} else if isFixedContainer {
 			// CSS Containment / CSS Transforms: containment, transforms, filters,
 			// and will-change:transform/perspective/filter make this element a
@@ -2066,7 +2059,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                   geom,
 				resolvesFixed:          true,
 			}
-			oofPart.LayoutCandidates(regularCandidates, builder)
+			oofPart.LayoutCandidates(regularCandidates, bla.containerBuilder)
 		} else if isAbsoluteContainer {
 			// Positioned element OR will-change:position-like CB: resolve
 			// absolute candidates here, but propagate fixed candidates
@@ -2100,8 +2093,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
 				for _, cand := range absoluteCandidates {
 					d := LogicalOofNodeForFragmentation{Candidate: cand}
-					builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
-					builder.AddOutOfFlowFragmentainerDescendant(d)
+					bla.containerBuilder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+					bla.containerBuilder.AddOutOfFlowFragmentainerDescendant(d)
 				}
 				absoluteCandidates = nil
 			}
@@ -2118,7 +2111,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					containingBlockPadding: geom.Padding,
 					geom:                   geom,
 				}
-				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
+				if extra := oofPart.LayoutCandidates(absoluteCandidates, bla.containerBuilder); len(extra) > 0 {
 					fixedCandidates = append(fixedCandidates, extra...)
 				}
 			}
@@ -2144,7 +2137,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	result := builder.Build()
+	result := bla.containerBuilder.Build()
 
 	// Option-b step 6.4.c: unified outgoing-break-token construction
 	// (plan §3.6). Mirrors Blink's FinishFragmentation building the
@@ -2201,7 +2194,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		result.BreakToken = &BlockBreakToken{
 			Node:                    bla.node,
-			IsCausedByColumnSpanner: builder.FoundColumnSpanner(),
+			IsCausedByColumnSpanner: bla.containerBuilder.FoundColumnSpanner(),
 			ConsumedBlockSize:       layoutunit.FromFloat64Round(consumedBlockSize),
 			SequenceNumber:          sequenceNumberAfter(incomingBreakToken),
 			ChildBreakTokens:        childBreakTokens,
@@ -2213,7 +2206,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// continuation that resumes before any baseline-bearing child claims
 		// the marker must re-seed it (Blink BlockBreakToken::
 		// has_unpositioned_list_marker_).
-		if builder.GetUnpositionedListMarker().IsValid() {
+		if bla.containerBuilder.GetUnpositionedListMarker().IsValid() {
 			result.BreakToken.HasUnpositionedListMarker = true
 		}
 		if didBreakSelf {
@@ -2256,9 +2249,8 @@ func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
 	childStyle *css.Style,
 	parentWDM WritingDirectionMode,
 	childInlineOff, childBlockOff float64,
-	builder *BoxFragmentBuilder,
 ) {
-	PropagateOOFCandidates(childResult, childStyle, parentWDM, childInlineOff, childBlockOff, builder)
+	PropagateOOFCandidates(childResult, childStyle, parentWDM, childInlineOff, childBlockOff, bla.containerBuilder)
 }
 
 // PropagateOOFCandidates adjusts and adopts OOF candidates from a child result.
@@ -2441,7 +2433,6 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	blockCursor float64,
 	prevMarginStrut *MarginStrut,
 	es *ExclusionSpace,
-	builder *BoxFragmentBuilder,
 	outES **ExclusionSpace,
 	bfcBlockOrigin float64,
 	bfcInlineOrigin float64,
@@ -2566,9 +2557,9 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		if ShouldAvoidBreakInside(bla.space, childResult) {
 			unbreakable := CalculateUnbreakableBlockSize(bla.space, childResult, 0) +
 				childMargins.BlockSum()
-			builder.PropagateTallestUnbreakableBlockSize(unbreakable)
+			bla.containerBuilder.PropagateTallestUnbreakableBlockSize(unbreakable)
 		}
-		builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+		bla.containerBuilder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
 	}
 
 	// CSS float:left/right are physical, but the positioning logic uses logical
@@ -2602,12 +2593,12 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		InlineOffset: floatInlineBFC - bfcInlineOrigin,
 		BlockOffset:  localFloatBlockOffset + childMargins.BlockStart,
 	}
-	builder.AddChild(childResult.Fragment, floatOffset)
+	bla.containerBuilder.AddChild(childResult.Fragment, floatOffset)
 	// Blink AddResult → PropagateBreakInfo (box_fragment_builder.cc:227-229,
 	// :479-489 @ a9f50e522efa); the float-margin term of
 	// BlockSizeForFragmentation (fragmentation_utils.cc:1562-1570) is not
 	// ported.
-	builder.PropagateChildBlockSizeForFragmentation(childResult, floatOffset)
+	bla.containerBuilder.PropagateChildBlockSizeForFragmentation(childResult, floatOffset)
 
 	// Add an exclusion for this float. The exclusion uses BFC-relative
 	// coordinates so it works correctly throughout the BFC.
@@ -3007,9 +2998,9 @@ func shouldPreventColumnSpannerDescendants(node *LayoutInputNode) bool {
 // If the child has no baseline the marker stays unpositioned for the next
 // child (Blink: re-Set the marker on the builder and return).
 func (bla *BlockLayoutAlgorithm) positionOrPropagateListMarker(
-	builder *BoxFragmentBuilder, child *PhysicalFragment, childResult *LayoutResult,
+	child *PhysicalFragment, childResult *LayoutResult,
 	childBlockOffset float64) float64 {
-	marker := builder.GetUnpositionedListMarker()
+	marker := bla.containerBuilder.GetUnpositionedListMarker()
 	if !marker.IsValid() {
 		return 0
 	}
@@ -3029,7 +3020,7 @@ func (bla *BlockLayoutAlgorithm) positionOrPropagateListMarker(
 	// block offset within the list item's content box. AddToBox places the
 	// marker at childBlockOffset + (baseline - markerAscent).
 	contentPush := marker.AddToBox(bla.ctx, markerResult,
-		baseline, childBlockOffset, builder)
+		baseline, childBlockOffset, bla.containerBuilder)
 	if contentPush > 0 {
 		// The marker's ascent is taller than the content's: Blink pushes the
 		// content child down (*block_offset -= baseline_adjust). The content
@@ -3037,9 +3028,9 @@ func (bla *BlockLayoutAlgorithm) positionOrPropagateListMarker(
 		// the marker was added at childBlockOffset (its block offset is correct
 		// relative to the content's pre-push position, which is also where the
 		// content's baseline now sits after the push).
-		builder.ShiftChildBlockOffset(child, contentPush)
+		bla.containerBuilder.ShiftChildBlockOffset(child, contentPush)
 	}
-	builder.ClearUnpositionedListMarker()
+	bla.containerBuilder.ClearUnpositionedListMarker()
 	return contentPush
 }
 
@@ -3051,8 +3042,8 @@ func (bla *BlockLayoutAlgorithm) positionOrPropagateListMarker(
 // place — this MUST run before builder.SetIntrinsicBlockSize / SetSize so the
 // marker's block-size contribution propagates.
 func (bla *BlockLayoutAlgorithm) positionListMarkerWithoutLineBoxes(
-	builder *BoxFragmentBuilder, intrinsicBlockSize *float64) {
-	marker := builder.GetUnpositionedListMarker()
+	intrinsicBlockSize *float64) {
+	marker := bla.containerBuilder.GetUnpositionedListMarker()
 	if !marker.IsValid() {
 		return
 	}
@@ -3060,8 +3051,8 @@ func (bla *BlockLayoutAlgorithm) positionListMarkerWithoutLineBoxes(
 	if markerResult == nil {
 		return
 	}
-	marker.AddToBoxWithoutLineBoxes(bla.ctx, markerResult, builder, intrinsicBlockSize)
-	builder.ClearUnpositionedListMarker()
+	marker.AddToBoxWithoutLineBoxes(bla.ctx, markerResult, bla.containerBuilder, intrinsicBlockSize)
+	bla.containerBuilder.ClearUnpositionedListMarker()
 }
 
 // isAutoOrUnsetInline reports whether the style's inline-size property
@@ -3280,15 +3271,7 @@ func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *Constraint
 // LayoutAlgorithm::FragmentainerCapacityForChildren() (layout_algorithm.h:
 // 160-162 @ a9f50e522efa).
 func (bla *BlockLayoutAlgorithm) fragmentainerCapacityForChildren() float64 {
-	return FragmentainerCapacity(bla.fragmentainerBuilder(), true)
-}
-
-// fragmentainerBuilder is this block's FragmentainerBox over its own
-// constraint space.
-func (bla *BlockLayoutAlgorithm) fragmentainerBuilder() FragmentainerBox {
-	box := bla.fragmentainerBox
-	box.Space = &bla.space
-	return box
+	return FragmentainerCapacity(bla.containerBuilder, true)
 }
 
 // isFloatAtFragmentainerStart reports whether a float whose border edge sits

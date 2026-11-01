@@ -163,13 +163,22 @@ type BoxFragmentBuilder struct {
 	// first-for-node. Read into PhysicalFragment at Build().
 	notFirstForNode bool
 
-	// hasClonedBoxDecorations is set when the element has
-	// box-decoration-break:clone. When true, each fragment behaves as
-	// an independent decorated box — block-start AND block-end borders
-	// appear on every fragment. Mirrors Blink's
-	// BoxFragmentBuilder::clone_box_start_decorations_ /
-	// clone_box_end_decorations_.
-	hasClonedBoxDecorations bool
+	// initialFragmentGeometry is the fragment geometry the algorithm
+	// resolved for this box, read through BorderScrollbarPadding. It points
+	// at the algorithm's own geometry, which louis14 clears in place
+	// (FragmentGeometry.ClearBorderScrollbarPadding*): the one copy serves
+	// as both Blink's initial_fragment_geometry_ and its
+	// border_scrollbar_padding_ (box_fragment_builder.h:72-98, :772-774 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so after a clear it holds
+	// the edges this fragment carries, not the declared ones.
+	initialFragmentGeometry *FragmentGeometry
+
+	// shouldCloneBoxEndDecorations: this fragment repeats its block-end
+	// border/padding (box-decoration-break:clone, not known to be the last
+	// fragment). Mirrors Blink's
+	// BoxFragmentBuilder::should_clone_box_end_decorations_
+	// (box_fragment_builder.h:791 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	shouldCloneBoxEndDecorations bool
 
 	// previousBreakAfter is the break-after value of the most recently added
 	// in-flow child, joined with the value that child propagated
@@ -355,20 +364,92 @@ func (b *BoxFragmentBuilder) SetIsFirstForNode(isFirst bool) {
 	b.notFirstForNode = !isFirst
 }
 
-// SetHasClonedBoxDecorations marks this fragment as having cloned box
-// decorations (box-decoration-break:clone). When true, each fragment
-// behaves as an independent decorated box — block-start and block-end
-// borders appear on every fragment. Mirrors Blink's
-// SetupFragmentBuilderForFragmentation setting clone_box_start_decorations_
-// and clone_box_end_decorations_.
-func (b *BoxFragmentBuilder) SetHasClonedBoxDecorations(v bool) {
-	b.hasClonedBoxDecorations = v
+// SetInitialFragmentGeometry points the builder at the fragment geometry
+// its algorithm resolved (see initialFragmentGeometry). Mirrors Blink's
+// BoxFragmentBuilder::SetInitialFragmentGeometry (box_fragment_builder.h:
+// 72-98 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which the algorithm
+// calls before SetupFragmentBuilderForFragmentation.
+func (b *BoxFragmentBuilder) SetInitialFragmentGeometry(geom *FragmentGeometry) {
+	b.initialFragmentGeometry = geom
 }
 
-// HasClonedBoxDecorations reports whether this fragment has cloned box
-// decorations (box-decoration-break:clone).
-func (b *BoxFragmentBuilder) HasClonedBoxDecorations() bool {
-	return b.hasClonedBoxDecorations
+// InitialFragmentGeometry returns the geometry set by
+// SetInitialFragmentGeometry, with the edges this fragment carries. Mirrors
+// Blink's BoxFragmentBuilder::InitialFragmentGeometry
+// (box_fragment_builder.h:100-103 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) InitialFragmentGeometry() *FragmentGeometry {
+	return b.initialFragmentGeometry
+}
+
+// BorderScrollbarPadding is the border + scrollbar + padding this fragment
+// carries: a block edge it does not carry has been cleared. Zero when no
+// geometry was set. Mirrors Blink's BoxFragmentBuilder::
+// BorderScrollbarPadding (box_fragment_builder.h:298-301 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) BorderScrollbarPadding() LogicalEdges {
+	if b.initialFragmentGeometry == nil {
+		return LogicalEdges{}
+	}
+	return b.initialFragmentGeometry.BorderBoxPadding()
+}
+
+// ClearBorderScrollbarPaddingBlockStart drops the block-start edge, for a
+// fragment that does not carry it. Mirrors Blink's BoxFragmentBuilder::
+// ClearBorderScrollbarPaddingBlockStart (box_fragment_builder.h:307-309 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) ClearBorderScrollbarPaddingBlockStart() {
+	b.initialFragmentGeometry.ClearBorderScrollbarPaddingBlockStart()
+}
+
+// ClearBorderScrollbarPaddingBlockEnd drops the block-end edge, for a
+// fragment that does not carry it. Mirrors Blink's BoxFragmentBuilder::
+// ClearBorderScrollbarPaddingBlockEnd (box_fragment_builder.h:310-312 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) ClearBorderScrollbarPaddingBlockEnd() {
+	b.initialFragmentGeometry.ClearBorderScrollbarPaddingBlockEnd()
+}
+
+// ShouldCloneBoxEndDecorations reports whether this fragment repeats its
+// block-end border/padding. Mirrors Blink's BoxFragmentBuilder::
+// ShouldCloneBoxEndDecorations (box_fragment_builder.h:418-420 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) ShouldCloneBoxEndDecorations() bool {
+	return b.shouldCloneBoxEndDecorations
+}
+
+// SetShouldCloneBoxEndDecorations is set by the algorithm's
+// SetupFragmentBuilderForFragmentation port. Mirrors Blink's
+// BoxFragmentBuilder::SetShouldCloneBoxEndDecorations
+// (box_fragment_builder.h:421-423 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetShouldCloneBoxEndDecorations(v bool) {
+	b.shouldCloneBoxEndDecorations = v
+}
+
+// Style is the computed style of the fragment's node (nil if none was
+// set). Mirrors Blink's FragmentBuilder::Style (fragment_builder.h:57-60 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) Style() *css.Style {
+	return b.style
+}
+
+// GetConstraintSpace is the space the fragment is laid out in (nil if the
+// algorithm set none). Mirrors Blink's FragmentBuilder::GetConstraintSpace
+// (fragment_builder.h:65 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) GetConstraintSpace() *ConstraintSpace {
+	return b.space
+}
+
+// PreviousBreakToken is the incoming break token of the fragment being
+// built. Blink hands it to the builder separately
+// (BoxFragmentBuilder::PreviousBreakToken, box_fragment_builder.h:151-153 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's constraint space
+// carries it, so it is read from there (nil without a space).
+func (b *BoxFragmentBuilder) PreviousBreakToken() *BlockBreakToken {
+	if b.space == nil {
+		return nil
+	}
+	return b.space.BreakToken
 }
 
 // SetExclusionSpace sets the updated float exclusion state.
@@ -388,14 +469,10 @@ func (b *BoxFragmentBuilder) SetStyle(style *css.Style) {
 
 // SetLayoutNode sets both the DOM node and style from a LayoutInputNode,
 // and stores the LayoutInputNode itself for fragment→LayoutInputNode bridging.
-// Also sets HasClonedBoxDecorations when the element has box-decoration-break:clone.
 func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
 	b.node = lin.DOMNode
 	b.style = lin.Style()
 	b.layoutNode = lin
-	if s := lin.Style(); s != nil && s.GetBoxDecorationBreak() == css.BoxDecorationBreakClone {
-		b.hasClonedBoxDecorations = true
-	}
 }
 
 // AddOutOfFlowCandidate records an absolutely/fixed positioned child
