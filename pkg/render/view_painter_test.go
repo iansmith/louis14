@@ -73,3 +73,21 @@ func TestViewBackgroundPaintsUnderNegativeZChildren(t *testing.T) {
 		t.Errorf("negative-z child at (25,25) = %v, want %v", got, want)
 	}
 }
+
+// TestRootOverflowDoesNotClipRootBox: the document element is the viewport
+// defining element when its overflow is not visible, and such a box does not
+// respect CSS overflow — the viewport clips instead (LayoutBlock::
+// RespectsCSSOverflow, layout_block.cc:166-170; Document::
+// ViewportDefiningElement, document.cc:4147-4180 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Content past a short root's
+// border box stays visible (css-transforms/transform-fixed-bg-007,
+// css-overflow/overflow-body-propagation-007-ref).
+func TestRootOverflowDoesNotClipRootBox(t *testing.T) {
+	const src = `<!DOCTYPE html><html style="overflow:hidden"><body style="margin:0">` +
+		`<div style="height:20px"></div>` +
+		`<div style="position:relative;top:30px;width:50px;height:50px;background:blue"></div></body></html>`
+	img := renderView(t, src)
+	if got, want := rgbAt(img, 25, 90), (color.RGBA{0, 0, 255, 255}); got != want {
+		t.Errorf("content below the root box at (25,90) = %v, want %v", got, want)
+	}
+}

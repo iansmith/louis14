@@ -397,31 +397,12 @@ type PaintLayer struct {
 	// (CSS 2.1 §17.6.1.1, only in separate border model).
 	EmptyCellHide bool
 
-	// IsCollapsedBorderCell marks a table cell whose table is in
-	// border-collapse: collapse mode. Per CSS Tables 3 / CSS 2.1 Appendix E,
-	// collapsed table borders paint in a dedicated phase AFTER cell
-	// foreground content, so descendants (e.g. a positioned background)
-	// cannot overpaint the border. Mirrors Blink's PaintPhase::kTable
-	// CollapsedBorders dispatch in TablePainter (table_painters.cc,
-	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	IsCollapsedBorderCell bool
-
-	// CollapsedBorderOutwardExtension carries the per-physical-side width
-	// (px) of the collapsed-border "outside half" that this cell must
-	// paint as an additive outward strip — its neighbor on that side is
-	// missing from the grid (cell removed, or table outer edge with no
-	// element border to share), so the live cell carries the part of the
-	// collapsed border that would otherwise sit on the missing neighbor's
-	// painted half.
-	//
-	// Indexed [top, right, bottom, left] (matches drawBorders index order).
-	// Forwarded from layout.Box.CollapsedBorderOutwardExtension. Consumed
-	// by paintCollapsedTableCellBorder in pkg/render/render.go.
-	//
-	// Spec: CSS 2.1 §17.6.3 / CSS Tables 3 §4.2. Blink reference:
-	// TablePainter::PaintCollapsedBorders @ table_painters.cc:356-362
-	// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	CollapsedBorderOutwardExtension [4]float64
+	// HasCollapsedBorders marks a border-collapse:collapse table and its
+	// cells. Their own borders never paint (BoxDecorationData's
+	// has_non_collapsed_border_decoration, box_decoration_data.h:38-40 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the table paints the
+	// resolved collapsed borders instead (TablePainter, table_painters.go).
+	HasCollapsedBorders bool
 
 	// Column rules (for multicol containers):
 	IsMulticol      bool
@@ -861,8 +842,17 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// (LayoutObject::GetOverflowClipAxes, layout_object.h:2058-2061 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): none for a box that does
 	// not respect overflow (a non-atomic inline, a fieldset container).
+	//
+	// The document element never clips its own overflow either: when its
+	// overflow is not visible it is the viewport-defining element, whose
+	// overflow the viewport applies, and a viewport-defining element does
+	// not respect CSS overflow (LayoutBlock::RespectsCSSOverflow,
+	// layout_block.cc:166-170; Document::ViewportDefiningElement,
+	// document.cc:4147-4180 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+	// otherwise its overflow is visible and it has no containment. The
+	// viewport's own clip is the paint target's bounds.
 	axes := box.OverflowClipAxes
-	if IsViewportDefiningBody(box) {
+	if IsViewportDefiningBody(box) || (box.LayoutNode != nil && box.LayoutNode.IsDocumentElement()) {
 		overflowX = css.OverflowVisible
 		overflowY = css.OverflowVisible
 		axes = layout.NoOverflowClip
@@ -1606,7 +1596,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// whose columns its content box takes.
 	if box.IsMulticolContainer {
 		layer.IsMulticol = true
-		layer.ColumnRuleWidth = clampLineWidth(s.GetColumnRuleWidth())
+		layer.ColumnRuleWidth = css.ClampLineWidth(s.GetColumnRuleWidth())
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
 		layer.ColumnRuleColor = s.GetColumnRuleColor()
 		// GapGeometry: forwarded from layout when column rules are active.
@@ -1625,23 +1615,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.EmptyCellHide = true
 	}
 
-	// border-collapse: collapse — defer cell border paint to after descendants
-	// so cell content can't overpaint the (shared) border. CSS 2.1 §17.6.2
-	// + CSS Tables 3 collapsed-borders paint phase; matches Blink's
-	// TablePainter::PaintCollapsedBorders ordering. The flag is set on the
-	// cell itself; the paint pipeline reads it to skip drawBorders during
-	// the cell's own paintSelfDecorations and instead invokes drawBorders
-	// after the cell's foreground walk completes.
-	if s.GetDisplay() == css.DisplayTableCell &&
-		s.GetBorderCollapse() == css.BorderCollapseCollapse {
-		layer.IsCollapsedBorderCell = true
-	}
-	// Forward the missing-neighbor outward-strip widths produced by table
-	// layout (CSS 2.1 §17.6.3; Blink table_painters.cc:356-362 @ SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Non-zero only for
-	// border-collapse:collapse cells with a missing neighbor on that
-	// side; zero array on every other layer.
-	layer.CollapsedBorderOutwardExtension = box.CollapsedBorderOutwardExtension
+	// border-collapse: collapse — the table and its cells paint no border of
+	// their own; table layout marks their fragments.
+	layer.HasCollapsedBorders = box.HasCollapsedBorders
 
 	return layer
 }

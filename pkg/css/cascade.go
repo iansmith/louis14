@@ -3156,7 +3156,7 @@ var computedLengthProperties = []struct {
 	round    func(float64) float64
 }{
 	{"outline-offset", convertOutlineOffset},
-	{"outline-width", clampLineWidth},
+	{"outline-width", ClampLineWidth},
 	{"tab-size", nil},
 	{"text-indent", nil},
 	{"text-underline-offset", nil},

@@ -132,44 +132,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
-	// Phase 5: Build initial constraint space for the root.
-	rootStyle := layoutRoot.Style()
-	rootWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	if rootStyle != nil {
-		rootWDM = NewWritingDirectionMode(rootStyle)
-	}
-
-	rootSpace, rootPositioned := buildRootConstraintSpace(
-		rootStyle, rootWDM, le.viewport.width, le.viewport.height,
-	)
-
-	// Phase 6: Run layout.
-	result := layoutElement(ctx, layoutRoot, rootSpace)
-
-	// Phase 7: Convert fragment tree to box tree.
-	// When the root is position:absolute/fixed with resolved insets, place it
-	// per the IMCB math against the ICB. Otherwise, apply the vertical-rl
-	// right-anchoring offset used for shrink-wrapped vertical roots.
-	var rootOffsetX, rootOffsetY float64
-	if rootPositioned {
-		rootOffsetX, rootOffsetY = resolvePositionedRootOffset(
-			rootStyle, rootWDM, le.viewport.width, le.viewport.height, result.Fragment,
-		)
-	} else if rootWDM.IsFlippedBlocks() {
-		rootWidth := result.Fragment.Size.WidthF64()
-		if rootWidth < le.viewport.width {
-			rootOffsetX = le.viewport.width - rootWidth
-		}
-	}
+	// Phases 5-7: Lay the root out in the view, then convert the fragment
+	// tree to the box tree with the root at its place in the view.
+	result, rootSpace, rootOffset := layoutRootInView(ctx, layoutRoot, le.viewport.width, le.viewport.height)
+	rootWDM := rootSpace.WritingDirection
 	// A position:relative root is shifted by the LayoutView when it adds the
 	// root against the initial containing block, as any parent does
 	// (BoxFragmentBuilder::AddChild, box_fragment_builder.cc:255-267 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rootRelative := NewConverter(rootWDM, PhysicalSize{}).ToPhysicalOffset(
-		ComputeRelativeOffsetForBoxFragment(result.Fragment, rootWDM, geomLogicalToOld(rootSpace.AvailableSize)), PhysicalSize{})
-	rootOffsetX += rootRelative.X
-	rootOffsetY += rootRelative.Y
-	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, rootOffsetY)
+		ComputeRelativeOffsetForBoxFragment(result.Fragment, rootWDM, geomLogicalToOld(rootSpace.PercentageResolutionSize)), PhysicalSize{})
+	rootBox := fragmentToBox(result.Fragment, nil, rootOffset.X+rootRelative.X, rootOffset.Y+rootRelative.Y)
 
 	// Phase 8: Apply sticky offsets. Louis14 is a static renderer (scroll=0);
 	// sticky elements that are above their top/left inset threshold are pushed
@@ -224,12 +197,11 @@ func buildNodeBoxIndex(boxes []*Box) map[*html.Node]*Box {
 }
 
 // NestedDocumentResult wraps the root layout result for a nested document
-// together with the physical X offset of the root element within the viewport.
-// For vertical-rl roots, rootOffsetX = vpWidth - root.Width (right-anchored).
-// For all other writing modes, rootOffsetX = 0.
+// together with the physical offset of the root element's border box within
+// the viewport (placeRootInView).
 type NestedDocumentResult struct {
-	Result      *LayoutResult
-	RootOffsetX float64
+	Result     *LayoutResult
+	RootOffset PhysicalOffset
 	// Doc is the parsed *html.Document for the nested document. Retained so
 	// callers (e.g. iframe layout) can expose it via iframe.contentDocument.
 	Doc *html.Document
@@ -289,8 +261,8 @@ func openFrameOwnerURL(ctx *LayoutContext, owner *html.Node) (htmlContent, baseD
 
 // layoutFrameOwnerDocument lays out the document openFrameOwnerURL returned
 // in a vpW x vpH viewport, retains it on owner for iframe.contentDocument,
-// and returns the root fragment with its X offset, or nil.
-func layoutFrameOwnerDocument(ctx *LayoutContext, owner *html.Node, htmlContent, baseDir string, vpW, vpH float64) *nestedDocFragment {
+// and returns its root layout result with the root's offset, or nil.
+func layoutFrameOwnerDocument(ctx *LayoutContext, owner *html.Node, htmlContent, baseDir string, vpW, vpH float64) *NestedDocumentResult {
 	res := layoutNestedDocument(ctx, htmlContent, vpW, vpH, baseDir)
 	if res == nil {
 		return nil
@@ -298,7 +270,7 @@ func layoutFrameOwnerDocument(ctx *LayoutContext, owner *html.Node, htmlContent,
 	if res.Doc != nil {
 		owner.NestedDocument = res.Doc
 	}
-	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
+	return res
 }
 
 // layoutNestedDocument parses and lays out a nested HTML document (for
@@ -346,39 +318,16 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		FontConfig:      ctx.FontConfig,
 	}
 
-	rootStyle := layoutRoot.Style()
-	rootWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	if rootStyle != nil {
-		rootWDM = NewWritingDirectionMode(rootStyle)
-	}
-
-	rootSpace, rootPositioned := buildRootConstraintSpace(rootStyle, rootWDM, vpWidth, vpHeight)
-
-	result := layoutElement(nestedCtx, layoutRoot, rootSpace)
+	result, _, rootOffset := layoutRootInView(nestedCtx, layoutRoot, vpWidth, vpHeight)
 	if result == nil || result.Fragment == nil {
 		return nil
 	}
 
-	// Compute the physical X offset for the root element within the viewport.
-	// For a positioned root with resolved insets, use IMCB-based placement.
-	// Otherwise, anchor vertical-rl/sideways-rl shrink-wrapped roots to the
-	// right edge (block-start in those writing modes).
-	var rootOffsetX float64
-	if rootPositioned {
-		rx, _ := resolvePositionedRootOffset(rootStyle, rootWDM, vpWidth, vpHeight, result.Fragment)
-		rootOffsetX = rx
-	} else if rootWDM.WM == WritingModeVerticalRL || rootWDM.WM == WritingModeSidewaysRL {
-		marginRight := 0.0
-		if result.Fragment.BoxData != nil {
-			marginRight = result.Fragment.BoxData.Margin.Right
-		}
-		rootOffsetX = vpWidth - result.Fragment.Size.WidthF64() - marginRight
-		if rootOffsetX < 0 {
-			rootOffsetX = 0
-		}
+	return &NestedDocumentResult{
+		Result:     result,
+		RootOffset: rootOffset,
+		Doc:        doc,
 	}
-
-	return &NestedDocumentResult{Result: result, RootOffsetX: rootOffsetX, Doc: doc}
 }
 
 // computeDocumentStyles is the style phase shared by the top-level and
@@ -485,23 +434,25 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		style = css.CreateAnonymousStyleWithDisplay(frag.Style, string(css.DisplayBlock))
 	}
 	box := &Box{
-		Node:                            node,
-		Style:                           style,
-		X:                               absX,
-		Y:                               absY,
-		Width:                           frag.Size.WidthF64(),
-		Height:                          frag.Size.HeightF64(),
-		Parent:                          parent,
-		ClipContentToBorderBox:          frag.ClipContentToBorderBox,
-		GapGeometry:                     frag.GapGeometry,
-		IsColumnBox:                     frag.IsColumnBox(),
-		IsMulticolContainer:             frag.IsMulticolContainer,
-		OverflowClipAxes:                frag.GetOverflowClipAxes(),
-		IsFieldsetContainer:             frag.IsFieldsetContainer,
-		IsRenderedLegend:                frag.IsRenderedLegend(),
-		AppliedTextDecorations:          frag.AppliedTextDecorations,
-		CollapsedBorderOutwardExtension: frag.CollapsedBorderOutwardExtension,
-		PaintGroup:                      frag.PaintGroup,
+		Node:                          node,
+		Style:                         style,
+		X:                             absX,
+		Y:                             absY,
+		Width:                         frag.Size.WidthF64(),
+		Height:                        frag.Size.HeightF64(),
+		Parent:                        parent,
+		ClipContentToBorderBox:        frag.ClipContentToBorderBox,
+		GapGeometry:                   frag.GapGeometry,
+		IsColumnBox:                   frag.IsColumnBox(),
+		IsMulticolContainer:           frag.IsMulticolContainer,
+		OverflowClipAxes:              frag.GetOverflowClipAxes(),
+		IsFieldsetContainer:           frag.IsFieldsetContainer,
+		IsRenderedLegend:              frag.IsRenderedLegend(),
+		AppliedTextDecorations:        frag.AppliedTextDecorations,
+		HasCollapsedBorders:           frag.HasCollapsedBorders,
+		TableCollapsedBorders:         frag.TableCollapsedBorders,
+		TableCollapsedBordersGeometry: frag.TableCollapsedBordersGeometry,
+		PaintGroup:                    frag.PaintGroup,
 	}
 
 	// Text fragments carry their rendered text content.
