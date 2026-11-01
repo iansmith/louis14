@@ -164,7 +164,13 @@ type ConstraintSpace struct {
 	// set through ConstraintSpaceBuilder::SetShouldPropagateChildBreakValues.
 	PropagateChildBreakValues bool
 
-	// RequiresContentBeforeBreaking prevents empty fragmentainers.
+	// RequiresContentBeforeBreaking: the parent's builder still required
+	// content before breaking when this child was laid out (a node that must
+	// stay in the current fragmentainer, with nothing placed yet), so the
+	// child's first piece of content stays too. Mirrors Blink's
+	// ConstraintSpace::RequiresContentBeforeBreaking (constraint_space.h:
+	// 556-558 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), set by
+	// SetupSpaceBuilderForFragmentation.
 	RequiresContentBeforeBreaking bool
 
 	// BreakToken is the incoming break token for resuming layout.
@@ -226,6 +232,14 @@ type ConstraintSpace struct {
 	// inline-table layout). Mirrors Blink's
 	// ConstraintSpace::ShouldIgnoreForcedBreaks().
 	ShouldIgnoreForcedBreaks bool
+
+	// IsInsideBreakAvoid: an ancestor in this fragmentation context has
+	// break-inside:avoid. Mirrors Blink's ConstraintSpace::IsInsideBreakAvoid
+	// (constraint_space.h:375-377 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// set by SetupSpaceBuilderForFragmentation. Its Blink reader, the
+	// break-inside:avoid root space-shortage reset in ToBoxFragment
+	// (box_fragment_builder.cc:713-740), is not ported yet.
+	IsInsideBreakAvoid bool
 
 	// IsBlockFragmentationForcedOff is set on a node that participates in
 	// block fragmentation but was relaid out with fragmentation disabled
@@ -610,6 +624,32 @@ func (b *ConstraintSpaceBuilder) SetIsPastBreak(v bool) *ConstraintSpaceBuilder 
 // Mirrors Blink's ConstraintSpaceBuilder::SetMinBreakAppeal.
 func (b *ConstraintSpaceBuilder) SetMinBreakAppeal(v BreakAppeal) *ConstraintSpaceBuilder {
 	b.space.MinBreakAppeal = v
+	return b
+}
+
+// SetRequiresContentBeforeBreaking mirrors Blink's
+// ConstraintSpaceBuilder::SetRequiresContentBeforeBreaking
+// (constraint_space_builder.h:318-323 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetRequiresContentBeforeBreaking(v bool) *ConstraintSpaceBuilder {
+	b.space.RequiresContentBeforeBreaking = v
+	return b
+}
+
+// SetIsInsideBreakAvoid mirrors Blink's
+// ConstraintSpaceBuilder::SetIsInsideBreakAvoid (constraint_space_builder.h:
+// 223-228 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetIsInsideBreakAvoid(v bool) *ConstraintSpaceBuilder {
+	b.space.IsInsideBreakAvoid = v
+	return b
+}
+
+// SetShouldIgnoreForcedBreaks mirrors Blink's
+// ConstraintSpaceBuilder::SetShouldIgnoreForcedBreaks
+// (constraint_space_builder.h:329-331 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetShouldIgnoreForcedBreaks() *ConstraintSpaceBuilder {
+	b.space.ShouldIgnoreForcedBreaks = true
 	return b
 }
 

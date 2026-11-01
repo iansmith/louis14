@@ -23,7 +23,7 @@ func TestShouldPropagateChildBreakValues_DedicatedBit(t *testing.T) {
 	// SetupSpaceBuilderForFragmentation sets the bit.
 	parent := ConstraintSpace{HasBlockFragmentation: true, FragmentainerBlockSize: 100, BlockFragmentationType: FragmentColumn}
 	b := NewConstraintSpaceBuilder(wdm, wdm, false)
-	SetupSpaceBuilderForFragmentation(parent, 10, 100, b)
+	SetupSpaceBuilderForFragmentation(parent, 10, 100, false, b)
 	if got := b.Build(); !got.ShouldPropagateChildBreakValues() {
 		t.Errorf("SetupSpaceBuilderForFragmentation: ShouldPropagateChildBreakValues() = false, want true")
 	}

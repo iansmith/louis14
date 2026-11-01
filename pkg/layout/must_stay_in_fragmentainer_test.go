@@ -17,7 +17,7 @@ import (
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; box_fragment_builder.h:
 // 401-413); MovePastBreakpoint then moves past the child that does not fit
 // and calls SetIsBlockSizeForFragmentationClamped (fragmentation_utils.cc:
-// 1223-1228), so ToBoxFragment records the box's own block-size as its
+// 1224-1228), so ToBoxFragment records the box's own block-size as its
 // block-size for fragmentation (box_fragment_builder.cc:743-761) and the
 // parent sees the box fit.
 //

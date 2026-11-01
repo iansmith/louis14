@@ -402,6 +402,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		!bla.space.IsInitialColumnBalancingPass &&
 		shouldCloneBlockStart && !isKnownToFitInFragmentainer
 	bla.containerBuilder.SetShouldCloneBoxEndDecorations(shouldCloneBoxEndDecorations)
+	// Some content must be placed before breaking when the space requires
+	// it, or when the node must stay in the current fragmentainer: it is
+	// known to fit and this is its first fragment
+	// (MustStayInCurrentFragmentainer, box_fragment_builder.h:401-413).
+	// Mirrors SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:
+	// 451-453, :484-487, :500 @ a9f50e522efa); a fragmentainer's space is
+	// anonymous and skips it.
+	if bla.space.HasBlockFragmentation && bla.boxType != BoxTypeColumn &&
+		!bla.space.IsInitialColumnBalancingPass {
+		bla.containerBuilder.SetRequiresContentBeforeBreaking(bla.space.RequiresContentBeforeBreaking ||
+			(isKnownToFitInFragmentainer && !bla.space.BreakToken.IsBreakInside()))
+	}
 	// clearBlockEndIfExcluded clears an excluded block-end edge from geom,
 	// so it neither sizes nor paints the fragment.
 	clearBlockEndIfExcluded := func(shouldBreakInside, hasInflowChildBreakInside bool) {
@@ -3302,7 +3314,7 @@ func computeOrthogonalFallbackBlockForChildren(
 // with the capacity left to children (SetupSpaceBuilderForFragmentation,
 // fragmentation_utils.cc:379-397 @ a9f50e522efa).
 func (bla *BlockLayoutAlgorithm) setupSpaceBuilderForFragmentation(b *ConstraintSpaceBuilder, fragmentainerOffset float64) {
-	SetupSpaceBuilderForFragmentation(bla.space, fragmentainerOffset, bla.fragmentainerCapacityForChildren(), b)
+	SetupSpaceBuilderForFragmentationFromBuilder(bla.containerBuilder, fragmentainerOffset, bla.fragmentainerCapacityForChildren(), b)
 }
 
 // fragmentainerCapacityForChildren is the fragmentainer block-size available
