@@ -47,12 +47,7 @@ func TestCalculateBreakBetweenValue_ResumedChildIsAuto_LOU473(t *testing.T) {
 // (fragmentation_utils.cc:1037-1040). A reported shortage is still trusted
 // (:1046-1051).
 func TestCalculateSpaceShortage_AbortedLayoutIsIndefinite_LOU473(t *testing.T) {
-	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
-		SetHasBlockFragmentation(true).
-		SetFragmentainerBlockSize(100).
-		SetBlockFragmentationType(FragmentColumn).
-		Build()
+	space, _, _ := outOfFragmentainerSpaceFixture()
 	aborted := &LayoutResult{Status: LayoutResultOutOfFragmentainerSpace}
 	if got := CalculateSpaceShortage(space, aborted, 90, 100); got != Indefinite {
 		t.Errorf("aborted, no reported shortage: CalculateSpaceShortage = %v, want Indefinite", got)
