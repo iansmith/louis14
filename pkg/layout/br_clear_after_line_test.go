@@ -97,7 +97,9 @@ func TestAddAnyClearanceAfterLine_BreaksBeforeLineClearingPastFragmentainer(t *t
 	mc := makeNode("div", float, p)
 	styles := brClearTestStyles(p, br, "left")
 	styles[br0] = makeStyle("display", "inline", "font-family", "Ahem", "font-size", "10px", "line-height", "10px")
-	styles[mc] = makeStyle("display", "block", "column-count", "2", "column-gap", "0",
+	// An explicit width: the helper's space has the builder's fit-content
+	// default, which would shrink the multicol to its content.
+	styles[mc] = makeStyle("display", "block", "width", "100px", "column-count", "2", "column-gap", "0",
 		"column-fill", "auto", "height", "100px", "orphans", "1", "widows", "1")
 	styles[float] = makeStyle("display", "block", "float", "left", "width", "20px", "height", "150px")
 
