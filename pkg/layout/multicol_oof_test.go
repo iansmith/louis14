@@ -8,13 +8,10 @@ import (
 )
 
 // TestBlockLayout_OOFStaticPositionStitchedAcrossCBFragments verifies that
-// an OOF candidate's static block-offset captured by a continuation BLA pass
-// is expressed in CB-STITCHED coords (cumulative across CB fragments), not
-// in fragment-local coords. This is the invariant relied on by the outer
-// multicol's OOF-fragmentation drain — `column-balancing-with-span-and-oof-002`
-// (C38) regressed because the captured value was fragment-local (`50` for
-// col 1's pass), causing the drain to misplace the OOF inside the CB's first
-// fragment instead of past it.
+// an OOF deferred to a fragmentainer descendant at its fragmented containing
+// block carries a static block-offset in CB-STITCHED coords (cumulative
+// across CB fragments), not fragment-local coords. The outer multicol's
+// OOF-fragmentation drain relies on it (column-balancing-with-span-and-oof-002).
 //
 // Setup: a positioned CB containing a 50×30 in-flow div followed by an
 // abspos. The CB has already consumed 50px in a previous fragment
@@ -22,10 +19,9 @@ import (
 // y=0 (col-local), block-size 30, leaving the abspos at col-local y=30.
 // In CB-STITCHED coords the abspos sits at y=80 (50 consumed + 30 in-flow).
 //
-// Mirrors Blink's static-position capture in `BlockLayoutAlgorithm` —
-// the static position is recorded in stitched-CB coords so deferred OOF
-// resolution at the outer fragmentation root finds the OOF in the right
-// column fragmentainer.
+// The static position is recorded fragment-local and made stitched by
+// BoxFragmentBuilder::AdjustFragmentainerDescendant at the CB
+// (box_fragment_builder.cc:781-809 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func TestBlockLayout_OOFStaticPositionStitchedAcrossCBFragments(t *testing.T) {
 	abspos := makeNode("div")
 	inflow := makeNode("div")

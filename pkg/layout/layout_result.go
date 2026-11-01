@@ -94,8 +94,8 @@ type LayoutResult struct {
 	// read the fragment's own block-size, see the free
 	// BlockSizeForFragmentation). Mirrors Blink's
 	// LayoutResult::BlockSizeForFragmentation (layout_result.cc:75-79 @
-	// a9f50e522efa). A few louis14 sites overwrite it after Build (the
-	// Phase 14b nested-multicol defer, the nested-spanner early return).
+	// a9f50e522efa). One louis14 site overwrites it after Build (the
+	// nested-spanner early return).
 	BlockSizeForFragmentation float64
 
 	// HasForcedBreak is true if this layout emitted a forced column/page break
@@ -195,7 +195,8 @@ type LayoutResult struct {
 // :1058-1061 @ a9f50e522efa); louis14 has no
 // ExclusionSpace::NeedsClearancePastFragmentainer and does not route line
 // boxes through BreakBeforeChildIfNeeded. LayoutResultNeedsEarlierBreak
-// needs early breaks (EarlyBreak / RelayoutAndBreakEarlier), not ported.
+// needs block-level early breaks, not ported (an inline formatting
+// context's line early break relays out directly, relayoutAndBreakEarlier).
 // The consumers of a non-success status (BreakBeforeChildIfNeeded,
 // CalculateBreakAppealBefore) are ported so a producer can be added.
 type EStatus int

@@ -194,6 +194,13 @@ type BoxFragmentBuilder struct {
 	breakAppeal    BreakAppeal
 	hasBreakAppeal bool
 
+	// lineCount is the number of non-empty line boxes added to the builder,
+	// counted only under block fragmentation (orphans / widows). Mirrors
+	// Blink's FragmentBuilder::line_count_ (fragment_builder.h:654-656,
+	// incremented in PropagateFromFragment, fragment_builder.cc:466-494 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lineCount int
+
 	// columnSpannerPath is the path to a column spanner found inside this
 	// box; hasColumnSpanner is set with it, or alone when a spanner was
 	// found but is not to be laid out yet (a parallel flow broke before it).
@@ -392,8 +399,9 @@ func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
 
 // AddOutOfFlowCandidate records an absolutely/fixed positioned child
 // for deferred layout by OutOfFlowLayoutPart.
-// PropagateSpaceShortage records a minimum space shortage reported by an
-// inner nested multicol whose balancing pass gave up. The outer balancing
+// PropagateSpaceShortage records a minimum space shortage: a line or child
+// that did not fit, or an inner nested multicol whose balancing pass gave
+// up. The outer balancing
 // loop consumes LayoutResult.MinSpaceShortage to decide its next stretch.
 // Mirrors Blink's FragmentBuilder::PropagateSpaceShortage (cla.cc:1241).
 func (b *BoxFragmentBuilder) PropagateSpaceShortage(shortage float64) {
@@ -588,6 +596,14 @@ func (b *BoxFragmentBuilder) SetBreakAppeal(appeal BreakAppeal) {
 	b.hasBreakAppeal = true
 }
 
+// LineCount mirrors Blink's BoxFragmentBuilder::LineCount
+// (box_fragment_builder.h:541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) LineCount() int { return b.lineCount }
+
+// SetLineCount mirrors Blink's BoxFragmentBuilder::SetLineCount
+// (box_fragment_builder.h:542 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *BoxFragmentBuilder) SetLineCount(lineCount int) { b.lineCount = lineCount }
+
 // ClampBreakAppeal lowers the recorded break appeal to `appeal` when that is
 // worse than what is recorded (an unset appeal counts as Perfect). Used to
 // fold a child's or a column's sub-perfect appeal into the container's
@@ -610,6 +626,32 @@ func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
 // propagating variant).
 func (b *BoxFragmentBuilder) AddOutOfFlowFragmentainerDescendant(d LogicalOofNodeForFragmentation) {
 	b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
+}
+
+// AdjustFragmentainerDescendant moves a fragmentainer descendant deferred at
+// this containing block into stitched-CB coordinates: the containing-block
+// offset becomes the offset of the CB's first fragment, and the static
+// position is made relative to it. previousConsumedBlockSize is the CB's
+// incoming break token's (border-box) ConsumedBlockSize. Mirrors Blink's
+// BoxFragmentBuilder::AdjustFragmentainerDescendant
+// (box_fragment_builder.cc:781-809 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), called from
+// OutOfFlowLayoutPart::LayoutCandidates (out_of_flow_layout_part.cc:1190-1200
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// louis14 static positions are content-box relative, Blink's border-box
+// relative (plan RC-8), so the static position takes the content block-size
+// the CB's earlier fragments consumed (previousConsumedContentBlockSize)
+// while the containing-block offset takes the border-box one. The
+// Fragment!=nil guard is Blink's (only an undeferred descendant is
+// adjusted). The fixedpos containing-block half of Blink's function is not
+// ported: louis14 never fills FixedposContainingBlock at a deferral site.
+func (b *BoxFragmentBuilder) AdjustFragmentainerDescendant(d *LogicalOofNodeForFragmentation, previousConsumedBlockSize, previousConsumedContentBlockSize float64) {
+	if d.ContainingBlock.Fragment != nil {
+		return
+	}
+	d.ContainingBlock.Offset.BlockOffset -= previousConsumedBlockSize
+	d.Candidate.StaticPosition.Offset.BlockOffset += previousConsumedContentBlockSize
 }
 
 // AddMulticolWithPendingOOFs records an inner-multicol descendant whose own

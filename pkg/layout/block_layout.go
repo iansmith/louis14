@@ -56,6 +56,34 @@ type BlockLayoutAlgorithm struct {
 	// Mirrors Blink's LayoutAlgorithm::SetBoxType (column_layout_algorithm.cc:
 	// 945, :1639 @ a9f50e522efa).
 	boxType BoxType
+
+	// earlyBreak, when set, is the line to break before: this algorithm
+	// is the relayout of an inline formatting context that found a better
+	// breakpoint (orphans / widows) than where it ran out of space. Mirrors
+	// Blink's LayoutAlgorithm::early_break_ (layout_algorithm.h:295-297 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	earlyBreak *EarlyBreak
+
+	// relayoutSpaceShortage is the space shortage the pass that found
+	// earlyBreak detected. Breaking earlier, the relayout does not run out
+	// of space, so it repeats that shortage. Mirrors LayoutAlgorithm::
+	// SetupRelayoutData's kRelayoutForEarlyBreak branch (layout_algorithm.h:
+	// 210-216 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	relayoutSpaceShortage float64
+
+	// firstOverflowingLine is the line box index at which the inline
+	// content ran out of fragmentainer space (0: none yet). That is where
+	// the break goes, unless widows require an earlier one. Mirrors Blink's
+	// BlockLayoutAlgorithm::first_overflowing_line_ (block_layout_algorithm.h:
+	// 550-553 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	firstOverflowingLine int
+
+	// fitAllLines is set when as many lines as fit are to stay in this
+	// fragment (no earlier break for widows): there are enough widows for
+	// the next fragment, or the orphans / widows request cannot be met.
+	// Mirrors Blink's BlockLayoutAlgorithm::fit_all_lines_
+	// (block_layout_algorithm.h:555-559).
+	fitAllLines bool
 }
 
 // NewBlockLayoutAlgorithm creates a block layout algorithm for the given
@@ -157,7 +185,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's ClearBorderScrollbarPaddingBlockStart in
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:504-510
 	// @ a9f50e522efa).
-	if !ShouldIncludeBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) {
+	//
+	// Blink decides clone_box_start_decorations once, from the full edges
+	// (fragmentation_utils.cc:440-442 @ a9f50e522efa), before any is
+	// cleared; shouldCloneBlockStart is that decision.
+	blockStartBox := FragmentainerBox{
+		Space:                   &bla.space,
+		BorderScrollbarPadding:  geom.BorderBoxPadding(),
+		HasClonedBoxDecorations: hasClonedBoxDecorations,
+	}
+	shouldCloneBlockStart := ShouldCloneBlockStartBorderPadding(blockStartBox)
+	if !ShouldIncludeBlockStartBorderPadding(blockStartBox) {
 		geom.ClearBorderScrollbarPaddingBlockStart()
 	}
 	bla.fragmentainerBox = FragmentainerBox{
@@ -169,6 +207,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetLayoutNode(bla.node)
 	builder.SetConstraintSpace(&bla.space)
 	builder.SetBoxType(bla.boxType)
+	builder.PropagateSpaceShortage(bla.relayoutSpaceShortage)
 	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc:426-430
 	// @ a9f50e522efa): resuming after a break inside this node.
 	builder.SetIsFirstForNode(!bla.space.BreakToken.IsBreakInside())
@@ -360,8 +399,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// UpdateBorderPaddingForClonedBoxDecorations (box_fragment_builder.cc:
 	// 88-99 @ a9f50e522efa).
 	fragmentsBorderPadding := declaredBlockBorderPadding
-	if ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) &&
-		bla.space.BreakToken.IsBreakInside() {
+	if shouldCloneBlockStart && bla.space.BreakToken.IsBreakInside() {
 		fragmentsBorderPadding *= float64(bla.space.BreakToken.SequenceNumber + 2)
 	}
 	isKnownToFitInFragmentainer := bla.space.HasKnownFragmentainerBlockSize() && hasExplicitBlock &&
@@ -369,8 +407,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		desiredBlockSizeAtBlockEnd(bla.space, explicitBlockSize+fragmentsBorderPadding, bla.space.BreakToken)
 	shouldCloneBoxEndDecorations := bla.space.HasBlockFragmentation &&
 		!bla.space.IsInitialColumnBalancingPass &&
-		ShouldCloneBlockStartBorderPadding(hasClonedBoxDecorations, bla.space.BreakToken) &&
-		!isKnownToFitInFragmentainer
+		shouldCloneBlockStart && !isKnownToFitInFragmentainer
 	bla.fragmentainerBox.ShouldCloneBoxEndDecorations = shouldCloneBoxEndDecorations
 	// clearBlockEndIfExcluded clears an excluded block-end edge from geom,
 	// so it neither sizes nor paints the fragment.
@@ -441,6 +478,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		res := FinishFragmentation(FinishFragmentationInput{
 			SpaceLeft:                             spaceLeft,
+			FragmentainerCapacity:                 FragmentainerCapacity(bla.fragmentainerBuilder(), false),
 			HasBlockFragmentation:                 bla.space.HasBlockFragmentation,
 			IsColumnFragmentation:                 bla.space.BlockFragmentationType == FragmentColumn,
 			IsInitialColumnBalancingPass:          bla.space.IsInitialColumnBalancingPass,
@@ -614,10 +652,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// giving it container separation (Blink BlockLayoutAlgorithm::
 	// has_break_opportunity_before_next_child_, block_layout_algorithm.cc:
 	// 311, :2767-2772 @ a9f50e522efa). Unlike firstNonEmptyChild, a child
-	// resumed in a parallel flow does not set it. Blink's MonolithicOverflow
-	// seeding (:868-876) is omitted: louis14 never sets
-	// BlockBreakToken.MonolithicOverflow.
-	hasBreakOpportunityBeforeNextChild := false
+	// resumed in a parallel flow does not set it. A container pushed by
+	// monolithic overflow from an earlier fragmentainer behaves as if there
+	// were a perfect breakpoint before its first child (:868-876).
+	hasBreakOpportunityBeforeNextChild := incomingBreakToken.HasMonolithicOverflow()
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
@@ -710,6 +748,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
 			blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
+			// Widows moved the break earlier than where the lines ran out
+			// of space: lay out again and break there
+			// (FinalizeForFragmentation → kNeedsEarlierBreak →
+			// RelayoutAndBreakEarlier, block_layout_algorithm.cc:3106-3127,
+			// :617-626 @ a9f50e522efa).
+			if earlyBreak := bla.lineEarlyBreak(builder); earlyBreak != nil {
+				return bla.relayoutAndBreakEarlier(earlyBreak, builder)
+			}
 		}
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
@@ -789,8 +835,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			// The per-break-point line shortage: the only producer
-			// (layoutInlineChildren) breaks only when it is positive.
+			// The per-break-point line shortage: positive when the line
+			// ran out of space, 0 for a predetermined early break (which
+			// propagates none).
 			shortage := inlineBreakToken.InlineShortage
 			// A line break breaks this block inside, as an in-flow child
 			// break (Blink AddBreakBeforeChild on the inline node,
@@ -801,6 +848,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if bla.space.HasBlockFragmentation {
 				inlineBreakToken.ConsumedBlockSize = layoutunit.FromFloat64Round(finish.ConsumedBlockSize)
 				inlineBreakToken.IsAtBlockEnd = finish.IsAtBlockEnd
+				inlineBreakToken.MonolithicOverflow = finish.MonolithicOverflow
 			}
 			builder.SetIntrinsicBlockSize(blockCursor)
 			builder.SetNode(bla.node.DOMNode)
@@ -857,22 +905,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
 				// in-flow position.
 				//
-				// Phase 25 (C38): when the CB is itself fragmented (this BLA is a continuation),
-				// `blockCursor` is fragment-LOCAL (resets to 0 at the start of each fragment).
-				// For the deferred OOF-fragmentation drain at the outer multicol — which slices
-				// the OOF across CB fragments using stitched-CB-relative coords — we need the
-				// static position in CB-STITCHED coords. Add the incoming break token's
-				// ConsumedBlockSize so the captured offset cumulates across CB fragments.
-				// Non-resumed passes (`incomingBreakToken == nil`) contribute 0 — no behavioral
-				// change. Mirrors Blink's static-position capture which uses
-				// stitched coords throughout (block_layout_algorithm.cc).
-				// The consumed block-size is border-box; the static
-				// position is content-relative, so the first fragment's
-				// block-start edge is taken out of it.
+				// The static position is fragment-local: Blink records
+				// previous_inflow_position.logical_block_offset with no
+				// consumed block-size (block_layout_algorithm.cc:1654-1656 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It is made
+				// stitched only for a fragmentainer descendant, at its
+				// containing block (AdjustFragmentainerDescendant).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
-				if previouslyConsumed > 0 {
-					staticBlockOffset += max(0, previouslyConsumed-declaredBlockStart)
-				}
 
 				// Static inline offset: block-level abspos gets inline-start (0).
 				// Inline-level abspos (display:inline/inline-*) in a block FC would
@@ -987,6 +1026,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				AdjustMarginsForFragmentation(childToken, &childMargins)
 				if childToken.IsForcedBreak {
 					prevMarginStrut = MarginStrut{}
+				}
+				// Every container pushed past monolithic overflow records it
+				// in its token; only the outermost one is offset here
+				// (block_layout_algorithm.cc:2848-2855). louis14 has no
+				// paginated root, so Blink's IsPaginatedRoot() term is false.
+				if childToken.HasMonolithicOverflow() && !incomingBreakToken.HasMonolithicOverflow() {
+					blockCursor += childToken.MonolithicOverflow
 				}
 			}
 
@@ -2429,21 +2475,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// descendant so the descendant payload bubbles up via
 			// FragmentedOofData. Mirrors Blink's
 			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
-			// `out_of_flow_layout_part.cc:1158-1170` (the
+			// `out_of_flow_layout_part.cc:1190-1200 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b` (the
 			// `should_add_outer_fragmentainer_children_` branch). The static
-			// position is already in this CB's content-box coords (it accumulated
-			// upward via PropagateOOFCandidates); preserve as-is. The CB's
+			// position arrives fragment-local in this CB's content-box coords
+			// (it accumulated upward via PropagateOOFCandidates);
+			// AdjustFragmentainerDescendant makes it CB-stitched. The CB's
 			// outgoing fragment isn't yet built, so leave Fragment=nil — the
 			// parent's PropagateOOFFragmentainerDescendants will fill it in.
 			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				previouslyConsumedContent := max(0, previouslyConsumed-declaredBlockStart)
 				for _, cand := range absoluteCandidates {
-					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
-						Candidate:       cand,
-						ContainingBlock: LogicalOofContainingBlock{
-							// Fragment: nil — assigned by parent's propagator.
-							// Offset: zero — CB origin within its own content-box.
-						},
-					})
+					d := LogicalOofNodeForFragmentation{Candidate: cand}
+					builder.AdjustFragmentainerDescendant(&d, previouslyConsumed, previouslyConsumedContent)
+					builder.AddOutOfFlowFragmentainerDescendant(d)
 				}
 				absoluteCandidates = nil
 			}
@@ -2508,7 +2553,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// (didBreakSelf). When both fire (e.g. spanner-3 in 006), the
 	// pending state takes precedence — consumed = pendingIntrinsicAtBreak
 	// preserves the pre-6.4.c frag-overflow reader's emitted value.
-	if pendingShouldBreakInside || didBreakSelf {
+	// Monolithic overflow still to steer clear of also needs a token
+	// (ShouldBreakInside, box_fragment_builder.h:494-497 @ a9f50e522efa).
+	if pendingShouldBreakInside || didBreakSelf || finish.MonolithicOverflow > 0 {
 		var childBreakTokens []*BlockBreakToken
 		var hasSeenAllChildren bool
 		consumed := finalBlockSize
@@ -2532,7 +2579,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Driver: multicol-span-all-children-height-001, where a
 		// one-line block taller than its column would otherwise repeat
 		// its text in the next column.
-		if didBreakSelf && !pendingShouldBreakInside {
+		// So has one breaking only for monolithic overflow.
+		if !pendingShouldBreakInside {
 			hasSeenAllChildren = true
 		}
 		consumedBlockSize := previouslyConsumed + consumed
@@ -2553,6 +2601,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			ChildBreakTokens:        childBreakTokens,
 			HasSeenAllChildren:      hasSeenAllChildren,
 			IsAtBlockEnd:            isAtBlockEnd,
+			MonolithicOverflow:      finish.MonolithicOverflow,
 		}
 		// Carry the unpositioned outside ::marker into the break token: a
 		// continuation that resumes before any baseline-bearing child claims

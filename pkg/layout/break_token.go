@@ -84,8 +84,12 @@ type BlockBreakToken struct {
 	// signaling (block_break_token.h:~287).
 	IsInParallelFlow bool
 
-	// MonolithicOverflow tracks how much a monolithic (unbreakable) element
-	// overflowed the fragmentainer.
+	// MonolithicOverflow is how far monolithic content overflowed the
+	// fragmentainer; later fragments steer clear of it. Mirrors Blink's
+	// BlockBreakToken::MonolithicOverflow (block_break_token.h:101-111 @
+	// a9f50e522efa). Its only original producer, BoxFragmentBuilder::AddResult
+	// (box_fragment_builder.cc:532-565), is gated on page fragmentation,
+	// which louis14 lacks, so outside hand-built tokens it stays 0.
 	MonolithicOverflow float64
 
 	// InlineItemStartIndex is the index into InlineItemsData.Items at which
@@ -150,6 +154,12 @@ func (t *BlockBreakToken) HasBreakToken() bool {
 // carries nothing consumed, so its fragment must size fresh.
 func (t *BlockBreakToken) IsBreakInside() bool {
 	return t != nil && !t.IsBreakBefore
+}
+
+// HasMonolithicOverflow reports whether t carries monolithic overflow from
+// an earlier fragmentainer; nil-safe (Blink: token && token->MonolithicOverflow()).
+func (t *BlockBreakToken) HasMonolithicOverflow() bool {
+	return t != nil && t.MonolithicOverflow > 0
 }
 
 // IsFirstForNode reports whether a child resumed with this token (nil when
