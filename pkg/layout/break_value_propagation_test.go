@@ -37,7 +37,10 @@ func layoutBlockInFragmentainer(t *testing.T, node *html.Node, styles map[*html.
 		SetAvailableSize(LogicalSize{InlineSize: 50, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 50, BlockSize: Indefinite})
 	if fragBlockSize != Indefinite {
+		// A fragmentation space carries the propagate-child-break-values
+		// bit (fragmentation_utils.cc:346, :1391 @ a9f50e522efa).
 		b = b.SetHasBlockFragmentation(true).
+			SetShouldPropagateChildBreakValues(true).
 			SetFragmentainerBlockSize(fragBlockSize).
 			SetFragmentainerOffset(fragOffset).
 			SetIsAtFragmentainerStart(fragOffset <= 0).
@@ -60,6 +63,9 @@ func layoutMulticolInBalancingPass(t *testing.T, mc *html.Node, styles map[*html
 		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
 		SetHasBlockFragmentation(true).
+		// The balancing space sets the bit (column_layout_algorithm.cc:1850
+		// @ a9f50e522efa).
+		SetShouldPropagateChildBreakValues(true).
 		SetFragmentainerBlockSize(Indefinite).
 		SetIsInitialColumnBalancingPass(true).
 		SetBlockFragmentationType(FragmentColumn).

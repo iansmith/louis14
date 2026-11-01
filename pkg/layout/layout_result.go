@@ -598,16 +598,9 @@ type PhysicalFragment struct {
 	// a9f50e522efa). Read through IsFirstForNode.
 	notFirstForNode bool
 
-	// RenderedColumnCount is the number of column fragments actually placed
-	// in this multicol fragment (column-fill:auto may render fewer columns
-	// than column-count when content fits in a subset). Zero for non-multicol
-	// fragments. Used by the column-rule painter to honor the spec rule that
-	// rules are only drawn between columns that both have content.
-	RenderedColumnCount int
-
 	// GapGeometry carries column-rule / row-rule geometry for multicol
 	// containers. Nil for non-multicol fragments or when no gap rules apply.
-	// Consumed by drawColumnRules in pkg/render/render.go.
+	// Consumed by paintGapDecorations in pkg/render.
 	// Mirrors Blink's PhysicalBoxFragment::gap_geometry_ field.
 	GapGeometry *GapGeometry
 
