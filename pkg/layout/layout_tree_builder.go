@@ -370,7 +370,22 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		rawChildren = append(rawChildren, b.createAltTextShadowTree(node, style))
 	}
 
+	// A list-box <select> has one manually-assigned slot that takes only
+	// option / optgroup / hr / span / div children; any other child is not
+	// in the flat tree and gets no layout object
+	// (ListBoxSelectType::ManuallyAssignSlots, select_type.cc:2002-2033 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A menulist slots every
+	// child into its picker (MenuListSelectType::ManuallyAssignSlots,
+	// :668-729), so it is not filtered here. The two predicates are ORed
+	// exactly as Blink does at :2022-2023 (the customizable set subsumes
+	// the base set).
+	isListBoxSelect := node.TagName == "select" && node.NamespaceURI() == html.XHTMLNamespaceURI &&
+		!node.UsesMenuList()
+
 	for _, child := range node.Children {
+		if isListBoxSelect && !html.CanAssignToSelectSlot(child) && !html.CanAssignToCustomizableSelectSlot(child) {
+			continue
+		}
 		switch child.Type {
 		case html.TextNode:
 			// Text nodes always participate in layout (whitespace handled later).
