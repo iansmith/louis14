@@ -388,7 +388,7 @@ func TestCSSFontSelector_FontSizeAdjustIcNoWaterGlyph(t *testing.T) {
 func TestFirstFontAspectRatio_MissingMetricFallback(t *testing.T) {
 	d := simpleFontData{platformData: fontPlatformData{size: 20}, ideographic: new(ideographicAdvance)}
 	for _, metric := range []css.FontSizeAdjustMetric{css.FontSizeAdjustCapHeight, css.FontSizeAdjustExHeight} {
-		if got := firstFontAspectRatio(metric, d, ""); got != 1 {
+		if got := firstFontAspectRatio(metric, d); got != 1 {
 			t.Errorf("metric %v: aspect = %v, want 1", metric, got)
 		}
 	}

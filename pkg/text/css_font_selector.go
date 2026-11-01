@@ -79,13 +79,16 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	usedSize := specifiedSize
 	adjust := s.GetFontSizeAdjust()
 	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseData, spacePath)
+		actualRatio := firstFontAspectRatio(adjust.Metric, baseData)
 		if actualRatio > 0 {
 			usedSize = specifiedSize * adjust.Value / actualRatio
 		} else {
-			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; louis14 clamps to 0, hiding the glyphs.
-			// Blink differs (see firstFontAspectRatio).
+			// A present metric that measures 0: louis14 clamps the used size
+			// to 0, hiding the glyphs. Not ported: Blink's
+			// FontSizeFunctions::MetricsMultiplierAdjustedFontSize returns
+			// nullopt and leaves the size unadjusted
+			// (core/css/font_size_functions.cc:292-295 @
+			// 5992657f556bcd9d207a4aca187488462f027cab).
 			usedSize = 0
 		}
 	}
@@ -131,49 +134,47 @@ func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o c
 }
 
 // firstFontAspectRatio returns the first available font's actual aspect ratio
-// for the requested font-size-adjust metric (CSS Fonts 5 §1.7); fontPath and d
-// are the U+0020 primary font's (Blink FontBuilder::UpdateAdjustedSize uses
-// font->PrimaryFont() for every metric, core/css/resolver/font_builder.cc:397
-// @ 5992657f556bcd9d207a4aca187488462f027cab), and d's size is the one
-// AspectValue divides by (PlatformData().size(),
-// core/css/font_size_functions.cc:128 @ the same SHA). ch-width reads
-// ZeroInlineSize, so a font with no "0" glyph has aspect 0.5, as Blink's
-// kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145). Returns 0 when
-// the font has no usable value for the metric — callers treat that as a
-// zero-sized used font-size. That clamp is a pre-existing louis14 divergence
-// from Blink on both paths: for a missing metric (no 水 glyph, !HasXHeight,
-// CapHeight <= 0) Blink's AspectValue falls back to aspect 1.0 and still
-// adjusts the size (:134-136); only a metric that is present but measures 0
-// makes FontSizeFunctions::MetricsMultiplierAdjustedFontSize return nullopt
-// and leave the size unadjusted (:292-295).
-func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData, fontPath string) float64 {
+// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Mirrors
+// Blink's AspectValue (core/css/font_size_functions.cc:126-169 @
+// 5992657f556bcd9d207a4aca187488462f027cab): d is the U+0020 primary font
+// (FontBuilder::UpdateAdjustedSize uses font->PrimaryFont() for every
+// metric, core/css/resolver/font_builder.cc:397 @ the same SHA), d's size is
+// the one AspectValue divides by (PlatformData().size(), :128), and a metric
+// the font lacks keeps the aspect at 1.0 (:136, csswg-drafts#6384): no 水
+// glyph for ic-width / ic-height (IdeographicAdvanceWidth / Height empty,
+// :148-160), cap-height <= 0 (:140-142), x-height <= 0 (HasXHeight, :163).
+// ch-width reads ZeroInlineSize, so a font with no "0" glyph has aspect 0.5,
+// as Blink's kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145).
+// Returns 0 only for a zero size or a present metric that measures 0 (a 水
+// or "0" glyph with a zero advance). Not ported: Blink's HasXHeight is also
+// false for a font with no OS/2 x-height (simple_font_data.cc:164-167 @ the
+// same SHA); louis14's xHeight has no presence flag.
+func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData) float64 {
 	fontSize := d.platformData.size
 	if fontSize <= 0 {
 		return 0
 	}
+	aspect := 1.0
 	switch metric {
 	case css.FontSizeAdjustCapHeight:
-		return d.capHeight / fontSize
+		if d.capHeight > 0 {
+			aspect = d.capHeight / fontSize
+		}
 	case css.FontSizeAdjustChWidth:
-		return d.ZeroInlineSize() / fontSize
-	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
-		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
-		// height of the U+6C34 (水) glyph, measured in the same (U+0020
-		// primary) font as Blink does. A measured 0 gives ratio 0 (the clamp
-		// above). Not ported: Blink gates on the 水 glyph and takes aspect
-		// 1.0 without it (:148-160); louis14 measures whatever glyph shaping
-		// substitutes (.notdef) for a font with no 水.
-		w, h := MeasureText("水", fontSize, fontPath)
-		wf, hf := w.Float64(), h.Float64()
-		if wf == 0 || hf == 0 {
-			return 0
+		aspect = d.ZeroInlineSize() / fontSize
+	case css.FontSizeAdjustIcWidth:
+		if w, ok := d.IdeographicAdvanceWidth(); ok {
+			aspect = w / fontSize
 		}
-		if metric == css.FontSizeAdjustIcWidth {
-			return wf / fontSize
+	case css.FontSizeAdjustIcHeight:
+		if h, ok := d.IdeographicAdvanceHeight(); ok {
+			aspect = h / fontSize
 		}
-		return hf / fontSize
 	default:
 		// ex-height (default)
-		return d.xHeight / fontSize
+		if d.xHeight > 0 {
+			aspect = d.xHeight / fontSize
+		}
 	}
+	return aspect
 }
