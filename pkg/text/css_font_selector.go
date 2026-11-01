@@ -1,8 +1,6 @@
 package text
 
 import (
-	"math"
-
 	"louis14/pkg/css"
 )
 
@@ -12,25 +10,21 @@ import (
 // (core/css/css_font_selector.h:45 @ 5992657f556bcd9d207a4aca187488462f027cab),
 // the document's font lookup over its @font-face cache (GetFontFaceCache
 // :64 — louis14's FontConfig.Registry). Each font's glyph presence and
-// measurements are cached per (font, rounded size), the analog of
-// SimpleFontData computing them once per font. One selector serves one
-// cascade; it is not safe for concurrent use.
+// measurements are cached per fontPlatformData (font, exact size,
+// orientation), as Blink's FontCache keeps one SimpleFontData per
+// FontPlatformData (FontCache::FontDataFromFontPlatformData,
+// platform/fonts/font_cache.cc:193-196, into FontDataCache::Get keyed by the
+// platform data, font_data_cache.cc:47-61, @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+// One selector serves one cascade; it is not safe for concurrent use.
 type CSSFontSelector struct {
 	fc    FontConfig
-	cache map[fontKey]simpleFontData
-}
-
-// fontKey keys the simpleFontData cache. Sub-pixel size jitter is rare;
-// rounding the size stabilises the cache for documents rendering many
-// elements at one size (openFont rounds it the same way).
-type fontKey struct {
-	path     string
-	fontSize int32
+	cache map[fontPlatformData]simpleFontData
 }
 
 // NewCSSFontSelector returns a selector over fc with an empty metric cache.
 func NewCSSFontSelector(fc FontConfig) *CSSFontSelector {
-	return &CSSFontSelector{fc: fc, cache: make(map[fontKey]simpleFontData)}
+	return &CSSFontSelector{fc: fc, cache: make(map[fontPlatformData]simpleFontData)}
 }
 
 // CreateFont selects s's per-probe primary fonts from its font properties
@@ -79,14 +73,13 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 	usedSize := specifiedSize
 	adjust := s.GetFontSizeAdjust()
 	if adjust.IsActive() && specifiedSize > 0 {
-		actualRatio := firstFontAspectRatio(adjust.Metric, baseData, spacePath)
-		if actualRatio > 0 {
-			usedSize = specifiedSize * adjust.Value / actualRatio
-		} else {
-			// Spec: when the first font lacks the requested metric, the used
-			// size is undefined; louis14 clamps to 0, hiding the glyphs.
-			// Blink differs (see firstFontAspectRatio).
-			usedSize = 0
+		// A zero aspect (a present metric that measures 0) leaves the size
+		// unadjusted: FontSizeFunctions::MetricsMultiplierAdjustedFontSize
+		// returns nullopt for !aspect_value
+		// (core/css/font_size_functions.cc:292-296 @
+		// 5992657f556bcd9d207a4aca187488462f027cab).
+		if aspect := firstFontAspectRatio(adjust.Metric, baseData); aspect != 0 {
+			usedSize = specifiedSize * adjust.Value / aspect
 		}
 	}
 
@@ -107,73 +100,67 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 }
 
 // simpleFontData returns the font at fontPath instantiated at fontSize and
-// orientation o. Glyph presence and measurements are cached per (font,
-// rounded size) — safe because every measurement shapes the font opened at
-// the rounded size (openFont), so sizes in one bucket measure identically;
-// the 水 advance is filled lazily, on first IdeographicAdvanceWidth. The exact
-// size and the orientation are stamped on each returned copy, so
-// ZeroInlineSize's fallback scales with the exact size, as Blink's reads
-// font_.getSize().
+// orientation o, cached per that fontPlatformData; the 水 advances are filled
+// lazily, on first use. Measurements that shape (the "0" and 水 advances, and
+// the x-height and cap-height textshape reports) come from the font opened at
+// the rounded size (openFont: textshape opens fonts at integer sizes), where
+// Blink's SimpleFontData measures at the exact size.
 func (fs *CSSFontSelector) simpleFontData(fontPath string, fontSize float64, o css.FontOrientation) simpleFontData {
-	k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
-	d, ok := fs.cache[k]
+	p := fontPlatformData{fontPath: fontPath, size: fontSize, orientation: o}
+	d, ok := fs.cache[p]
 	if !ok {
 		d = simpleFontData{
-			xHeight:   FontXHeightFromFont(fontSize, fontPath),
-			capHeight: FontCapHeightFromFont(fontSize, fontPath),
+			platformData: p,
+			xHeight:      FontXHeightFromFont(fontSize, fontPath),
+			capHeight:    FontCapHeightFromFont(fontSize, fontPath),
+			ideographic:  new(ideographicAdvance),
 		}
 		d.zeroGlyph, d.zeroAdvance = glyphAdvance(fontPath, fontSize, kDigitZero)
-		d.ideographic = new(ideographicAdvance)
-		fs.cache[k] = d
+		fs.cache[p] = d
 	}
-	d.platformData = fontPlatformData{fontPath: fontPath, size: fontSize, orientation: o}
 	return d
 }
 
 // firstFontAspectRatio returns the first available font's actual aspect ratio
-// for the requested font-size-adjust metric (CSS Fonts 5 §1.7); fontPath and d
-// are the U+0020 primary font's (Blink FontBuilder::UpdateAdjustedSize uses
-// font->PrimaryFont() for every metric, core/css/resolver/font_builder.cc:397
-// @ 5992657f556bcd9d207a4aca187488462f027cab), and d's size is the one
-// AspectValue divides by (PlatformData().size(),
-// core/css/font_size_functions.cc:128 @ the same SHA). ch-width reads
+// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Mirrors
+// Blink's AspectValue (core/css/font_size_functions.cc:126-169 @
+// 5992657f556bcd9d207a4aca187488462f027cab): d is the U+0020 primary font
+// (FontBuilder::UpdateAdjustedSize uses font->PrimaryFont() for every
+// metric, core/css/resolver/font_builder.cc:397 @ the same SHA), d's size is
+// the one AspectValue divides by (PlatformData().size(), :128), and a metric
+// the font lacks keeps the aspect at 1.0 (:136, csswg-drafts#6384): no 水
+// glyph for ic-width / ic-height (IdeographicAdvanceWidth / Height empty,
+// :148-160), cap-height <= 0 (:140-142), !HasXHeight (:163). ch-width reads
 // ZeroInlineSize, so a font with no "0" glyph has aspect 0.5, as Blink's
-// kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145). Returns 0 when
-// the font has no usable value for the metric — callers treat that as a
-// zero-sized used font-size. That clamp is a pre-existing louis14 divergence
-// from Blink on both paths: for a missing metric (no 水 glyph, !HasXHeight,
-// CapHeight <= 0) Blink's AspectValue falls back to aspect 1.0 and still
-// adjusts the size (:134-136); only a metric that is present but measures 0
-// makes FontSizeFunctions::MetricsMultiplierAdjustedFontSize return nullopt
-// and leave the size unadjusted (:292-295).
-func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData, fontPath string) float64 {
+// kChWidth reads ZeroWidth whenever HasZeroWidth (:143-145). Returns 0 only
+// for a zero size or a present metric that measures 0 (a 水 or "0" glyph with
+// a zero advance).
+func firstFontAspectRatio(metric css.FontSizeAdjustMetric, d simpleFontData) float64 {
 	fontSize := d.platformData.size
 	if fontSize <= 0 {
 		return 0
 	}
+	aspect := 1.0
 	switch metric {
 	case css.FontSizeAdjustCapHeight:
-		return d.capHeight / fontSize
+		if d.capHeight > 0 {
+			aspect = d.capHeight / fontSize
+		}
 	case css.FontSizeAdjustChWidth:
-		return d.ZeroInlineSize() / fontSize
-	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
-		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
-		// height of the U+6C34 (水) glyph, measured in the same (U+0020
-		// primary) font as Blink does. A measured 0 gives ratio 0 (the clamp
-		// above). Not ported: Blink gates on the 水 glyph and takes aspect
-		// 1.0 without it (:148-160); louis14 measures whatever glyph shaping
-		// substitutes (.notdef) for a font with no 水.
-		w, h := MeasureText("水", fontSize, fontPath)
-		wf, hf := w.Float64(), h.Float64()
-		if wf == 0 || hf == 0 {
-			return 0
+		aspect = d.ZeroInlineSize() / fontSize
+	case css.FontSizeAdjustIcWidth:
+		if w, ok := d.IdeographicAdvanceWidth(); ok {
+			aspect = w / fontSize
 		}
-		if metric == css.FontSizeAdjustIcWidth {
-			return wf / fontSize
+	case css.FontSizeAdjustIcHeight:
+		if h, ok := d.IdeographicAdvanceHeight(); ok {
+			aspect = h / fontSize
 		}
-		return hf / fontSize
 	default:
 		// ex-height (default)
-		return d.xHeight / fontSize
+		if d.HasXHeight() {
+			aspect = d.xHeight / fontSize
+		}
 	}
+	return aspect
 }
