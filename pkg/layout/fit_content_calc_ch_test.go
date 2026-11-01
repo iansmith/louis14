@@ -22,3 +22,34 @@ func TestResolveFitContentArgInline_CalcWithPercentUsesElementCh(t *testing.T) {
 		t.Errorf("fit-content(calc(10%% + 2ch)) of 100 = %v, %v; want 50, true", got, ok)
 	}
 }
+
+// TestTableLengths_UseElementConversionData (LOU-454): border-spacing and
+// collapsed border widths resolve through the table/cell style's conversion
+// data, so ch is the font's "0" advance (Ahem: 1em), not 0.5em.
+func TestTableLengths_UseElementConversionData(t *testing.T) {
+	s := css.NewStyle()
+	s.Set("font-size", "20px")
+	s.SetZeroWidth(20)
+	s.Set("border-spacing", "1ch 2ch")
+	s.Set("border-top-style", "solid")
+	s.Set("border-top-width", "1ch")
+	tla := &TableLayoutAlgorithm{style: s}
+	if i, b := tla.logicalBorderSpacing(); i != 20 || b != 40 {
+		t.Errorf("border-spacing 1ch 2ch = %v, %v; want 20, 40", i, b)
+	}
+	if got := readBorderEdge(s, "top").width; got != 20 {
+		t.Errorf("border-top-width 1ch = %v, want 20", got)
+	}
+}
+
+// TestFitContentArg_MaxWithPercent (LOU-454): fit-content(max(10%, 2ch))
+// resolves its percentage against the containing block like calc() does.
+func TestFitContentArg_MaxWithPercent(t *testing.T) {
+	s := css.NewStyle()
+	s.Set("font-size", "20px")
+	s.SetZeroWidth(20)
+	got, ok := resolveFitContentArgInline("max(50%, 2ch)", s, 100)
+	if !ok || got != 50 {
+		t.Errorf("fit-content(max(50%%, 2ch)) of 100 = %v, %v; want 50, true", got, ok)
+	}
+}

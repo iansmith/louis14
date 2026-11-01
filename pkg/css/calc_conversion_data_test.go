@@ -102,3 +102,71 @@ func closeTo(a, b float64) bool {
 	d := a - b
 	return d < 1e-4 && d > -1e-4
 }
+
+// TestStyleHolderLengths_UseElementConversionData (LOU-454): text-shadow and
+// background-position lengths (plain and inside calc()) read the element's
+// font metrics, not the selectorless initial-font fallbacks. Blink resolves
+// both through the element's CSSToLengthConversionData (FontSizes::Ch,
+// core/css/css_to_length_conversion_data.cc:117-126 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestStyleHolderLengths_UseElementConversionData(t *testing.T) {
+	s := ahemStyle20()
+	s.Set("text-shadow", "2ch 2ex black")
+	if sh := s.GetTextShadow(); len(sh) != 1 || sh[0].OffsetX != 40 || sh[0].OffsetY != 32 {
+		t.Errorf("text-shadow 2ch 2ex = %+v, want offsets 40, 32", sh)
+	}
+
+	for _, tc := range []struct {
+		pos      string
+		wantX    float64
+		wantXOff float64
+	}{
+		{"2ch 0", 40, 0},
+		{"calc(10% + 2ch) 0", -10, 40},
+	} {
+		s := ahemStyle20()
+		s.Set("background-position", tc.pos)
+		got := s.GetBackgroundPosition()
+		if got.X != tc.wantX || got.XOffset != tc.wantXOff {
+			t.Errorf("background-position %s: X=%v XOffset=%v, want %v, %v", tc.pos, got.X, got.XOffset, tc.wantX, tc.wantXOff)
+		}
+		s.Set("background-image", "url(a.png)")
+		if l := s.GetBackgroundLayers(); l == nil || l.Position.X != tc.wantX || l.Position.XOffset != tc.wantXOff {
+			t.Errorf("background layer position %s = %+v, want X=%v XOffset=%v", tc.pos, l, tc.wantX, tc.wantXOff)
+		}
+	}
+}
+
+// TestMathFunctionWithPercent_MinMaxClampLikeCalc (LOU-454): min() / max() /
+// clamp() carrying a percentage resolve against the percentage base exactly
+// as calc() does — Blink treats every CSSMathFunctionValue alike, evaluating
+// the CalculationValue with the base at use time
+// (core/css/css_math_function_value.cc ToCalcValue,
+// platform/geometry/calculation_value.cc Evaluate @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func TestMathFunctionWithPercent_MinMaxClampLikeCalc(t *testing.T) {
+	const v = "max(10%, 2ch)" // 40 against Ahem 20px and a base of 100
+	s := ahemStyle20()
+	s.Set("margin-left", v)
+	s.Set("padding-left", v)
+	s.Set("text-indent", "min(10%, 2ch)")
+	if got := s.GetAllMarginsForWidth(100).Left; got != 40 {
+		t.Errorf("margin-left %s of 100 = %v, want 40", v, got)
+	}
+	if got := s.GetMarginForWidth(100).Left; got != 40 {
+		t.Errorf("inline margin-left %s of 100 = %v, want 40", v, got)
+	}
+	if got := s.GetPaddingForWidth(100).Left; got != 40 {
+		t.Errorf("padding-left %s of 100 = %v, want 40", v, got)
+	}
+	if got := s.ResolveTextIndent(1000); got != 40 {
+		t.Errorf("text-indent min(10%%, 2ch) of 1000 = %v, want 40", got)
+	}
+	if got := s.ResolveTextIndentIntrinsic(); got != 0 {
+		t.Errorf("text-indent min(10%%, 2ch) intrinsic = %v, want 0 (%% → 0)", got)
+	}
+	s.Set("flex-basis", "clamp(10%, 2ch, 50%)")
+	if fbv := s.GetFlexBasisValue(); !fbv.IsCalc {
+		t.Errorf("flex-basis clamp(10%%, 2ch, 50%%) = %+v, want a deferred math value (IsCalc)", fbv)
+	}
+}
