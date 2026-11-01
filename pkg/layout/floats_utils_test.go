@@ -383,3 +383,21 @@ func TestFloatFragmentation_InlineFloatGoesWithPushedLine(t *testing.T) {
 		t.Errorf("column 1: float fragments = %v, want one 30px at top 0", floats)
 	}
 }
+
+// A float clears an initial letter on its side (CSS Inline 3 §7.6): Blink's
+// FindLayoutOpportunityForFloat clears past InitialLetterClearanceOffset
+// of the float's side (floats_utils.cc:39-58, exclusion_space.h:128-133 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Mirrors css-inline/
+// initial-letter/initial-letter-float-004.
+func TestExclusionSpace_InitialLetterClearanceOffset(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	es := (&ExclusionSpace{}).
+		Add(Exclusion{InlineSize: 80, BlockSize: 82, Side: ExclusionInlineStart, IsInitialLetter: true}).
+		Add(Exclusion{InlineSize: 10, BlockSize: 100, Side: ExclusionInlineEnd})
+	if got := es.InitialLetterClearanceOffset(css.FloatLeft, wdm); got != 82 {
+		t.Errorf("left float: initial-letter clearance = %v, want 82", got)
+	}
+	if got := es.InitialLetterClearanceOffset(css.FloatRight, wdm); got != 0 {
+		t.Errorf("right float: initial-letter clearance = %v, want 0 (no right initial letter)", got)
+	}
+}
