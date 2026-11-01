@@ -85,20 +85,18 @@ type BoxFragmentBuilder struct {
 	// multicolsWithPendingOOFs records inner-multicol nodes nested in this
 	// builder that themselves have deferred OOF fragmentainer descendants.
 	// Drained at the fragmentation root via
-	// `OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs`. Phase 25
-	// scaffolding — wiring in subsequent commits. Mirrors Blink's
+	// `OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs`. Mirrors Blink's
 	// `FragmentBuilder::multicols_with_pending_oofs_` (fragment_builder.h:51-55).
 	// Keyed by *LayoutInputNode (louis14's persistent layout-tree identity;
 	// where Blink keys by *LayoutBox — see pkg/layout/layout_input_node.go).
 	multicolsWithPendingOOFs map[*LayoutInputNode]*MulticolWithPendingOOFs
 
-	// isBlockFragmentationContextRoot marks this builder as the outermost
-	// multicol (or paginated root) — the only place
-	// `OutOfFlowLayoutPart.HandleFragmentation` actually drains the
-	// descendants list. Phase 25 scaffolding — gate-setter wiring in a
-	// subsequent commit. Mirrors Blink's
+	// isBlockFragmentationContextRoot marks this builder as a block
+	// fragmentation context root (every multicol). Only the outermost one
+	// lays out fragmentainer descendants (OutOfFlowLayoutPart.
+	// HandleFragmentation returns early for a nested root). Mirrors Blink's
 	// `FragmentBuilder::IsBlockFragmentationContextRoot()`
-	// (fragment_builder.h:415-423).
+	// (fragment_builder.h:422-428 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	isBlockFragmentationContextRoot bool
 
 	// childAvailableSize is the content-box size of this fragment — the
@@ -769,6 +767,34 @@ func (b *BoxFragmentBuilder) AddMulticolWithPendingOOFs(node *LayoutInputNode, i
 	b.multicolsWithPendingOOFs[node] = info
 }
 
+// TransferOutOfFlowCandidates moves this builder's out-of-flow candidates to
+// destination, adding additionalOffset to their static positions. multicol,
+// when set, is the inner multicol the candidates surfaced in: a fixed
+// candidate whose fixedpos containing block was found inside it becomes a
+// fragmentainer descendant of destination instead. Mirrors Blink's
+// FragmentBuilder::TransferOutOfFlowCandidates (fragment_builder.cc:682-710
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 does not yet record
+// a fixedpos containing block on a pending multicol (Blink's
+// AdjustFixedposContainerInfo, fragment_builder.cc:1108-1143, is not
+// ported), so that branch is not reached yet.
+func (b *BoxFragmentBuilder) TransferOutOfFlowCandidates(destination *BoxFragmentBuilder, additionalOffset LogicalOffset, multicol *MulticolWithPendingOOFs) {
+	for _, candidate := range b.outOfFlowCandidates {
+		candidate.StaticPosition.Offset.InlineOffset += additionalOffset.InlineOffset
+		candidate.StaticPosition.Offset.BlockOffset += additionalOffset.BlockOffset
+		if multicol != nil && multicol.FixedposContainingBlock.Fragment != nil && candidate.IsFixedPosition {
+			destination.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
+				Candidate:               candidate,
+				ContainingBlock:         multicol.FixedposContainingBlock,
+				FixedposContainingBlock: multicol.FixedposContainingBlock,
+				FixedposInlineContainer: multicol.FixedposInlineContainer,
+			})
+			continue
+		}
+		destination.AddOutOfFlowCandidate(candidate)
+	}
+	b.outOfFlowCandidates = nil
+}
+
 // HasOutOfFlowFragmentainerDescendants reports whether any deferred OOFs are
 // queued. Mirrors Blink's `FragmentBuilder::HasOutOfFlowFragmentainerDescendants`.
 func (b *BoxFragmentBuilder) HasOutOfFlowFragmentainerDescendants() bool {
@@ -799,17 +825,16 @@ func (b *BoxFragmentBuilder) SwapMulticolsWithPendingOOFs(out *map[*LayoutInputN
 	*out, b.multicolsWithPendingOOFs = b.multicolsWithPendingOOFs, *out
 }
 
-// IsBlockFragmentationContextRoot reports whether this builder is the
-// outermost fragmentation root (the only place
-// `OutOfFlowLayoutPart.HandleFragmentation` actually drains the descendants
-// list). Mirrors Blink's `FragmentBuilder::IsBlockFragmentationContextRoot`
-// (fragment_builder.h:415-423).
+// IsBlockFragmentationContextRoot reports whether this builder is a block
+// fragmentation context root (a multicol). Mirrors Blink's
+// `FragmentBuilder::IsBlockFragmentationContextRoot`
+// (fragment_builder.h:426-428 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *BoxFragmentBuilder) IsBlockFragmentationContextRoot() bool {
 	return b.isBlockFragmentationContextRoot
 }
 
-// SetIsBlockFragmentationContextRoot marks this builder as the outermost
-// fragmentation root. Mirrors Blink's
+// SetIsBlockFragmentationContextRoot marks this builder as a block
+// fragmentation context root. Mirrors Blink's
 // `FragmentBuilder::SetIsBlockFragmentationContextRoot`.
 func (b *BoxFragmentBuilder) SetIsBlockFragmentationContextRoot() {
 	b.isBlockFragmentationContextRoot = true
@@ -873,6 +898,21 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 		// fragmentainer descendants.
 		isColumnSpanner := childFragment.LayoutNode != nil && isColumnSpanAll(childFragment.LayoutNode)
 		for _, d := range data.OofPositionedFragmentainerDescendants {
+			// An inner multicol keeps the fragmentainer descendants whose
+			// containing block is inside it: they are laid out in its
+			// columns once the outermost fragmentation context root is
+			// reached (LayoutOOFsInMulticol). Only one whose containing
+			// block is inside a column spanner it contains goes on, to the
+			// next fragmentation context root, with its spanner tag reset
+			// (fragment_builder.cc:952-972 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if childFragment.IsFragmentationContextRoot && d.ContainingBlock.Fragment != nil {
+				if !d.ContainingBlock.IsInsideColumnSpanner {
+					continue
+				}
+				d.ContainingBlock.IsInsideColumnSpanner = false
+				d.FixedposContainingBlock.IsInsideColumnSpanner = false
+			}
 			if isColumnSpanner {
 				d.ContainingBlock.IsInsideColumnSpanner = true
 			}
@@ -1114,17 +1154,18 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 
 	fragment := &PhysicalFragment{
-		Size:             oldSizeToGeom(physSize),
-		Children:         physChildren,
-		WritingDirection: b.wdm,
-		BoxData:          b.boxData,
-		Node:             b.node,
-		Style:            b.style,
-		LayoutNode:       b.layoutNode,
-		GapGeometry:      b.gapGeometry,
-		IsMonolithic:     b.isMonolithic,
-		notFirstForNode:  b.notFirstForNode,
-		BoxType:          b.boxType,
+		Size:                       oldSizeToGeom(physSize),
+		Children:                   physChildren,
+		WritingDirection:           b.wdm,
+		BoxData:                    b.boxData,
+		Node:                       b.node,
+		Style:                      b.style,
+		LayoutNode:                 b.layoutNode,
+		GapGeometry:                b.gapGeometry,
+		IsMonolithic:               b.isMonolithic,
+		IsFragmentationContextRoot: b.isBlockFragmentationContextRoot,
+		notFirstForNode:            b.notFirstForNode,
+		BoxType:                    b.boxType,
 	}
 
 	fragment.updateScrollableOverflow()
