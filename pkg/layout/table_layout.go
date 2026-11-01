@@ -1993,6 +1993,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					skipIntrinsic := isOrthogonal && colConstrained[colIdx]
 					if !skipIntrinsic {
 						childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+							SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 							SetOrthogonalFallbackInlineSize(
 								orthogonalFallbackSize(childWDM, tla.ctx)).
 							SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
@@ -2166,6 +2167,7 @@ func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDire
 		capWDM = NewWritingDirectionMode(cap.style)
 	}
 	capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(capWDM, tla.ctx)).
 		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).

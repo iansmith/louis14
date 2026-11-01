@@ -2113,6 +2113,7 @@ func (fla *FlexLayoutAlgorithm) crossConstraintSpace(
 		crossBlock = containerCrossSize
 	}
 	return NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossBlock}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossBlock}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2198,6 +2199,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				pctBlockSize = float64(Indefinite)
 			}
 			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: availBlockSize}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2318,6 +2320,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		// Re-run auto logic.
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2421,6 +2424,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 
 	// Numeric flex-basis (non-negative lengths/percentages only).
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, parentWDM, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2551,6 +2555,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			// flex-basis:content suppresses the main-size (width) but the
 			// cross-size (height) still applies.
 			crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2576,6 +2581,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			}
 		}
 		crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
@@ -2607,6 +2613,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
 		}
 		space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: parentBlockSize}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
@@ -2646,11 +2653,13 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	if !willStretch {
 		if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
 			NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				Build(), childGeom); !hasExplicitInline {
 			mmSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
@@ -2671,6 +2680,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
 	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
@@ -2849,11 +2859,13 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		if !willStretch {
 			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
 				NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					Build(), childGeom); !hasExplicitInline {
 				mmSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
@@ -2889,6 +2901,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		pctBlock = containerCrossSize
 	}
 	csb := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline, BlockSize: pctBlock}).
@@ -2950,6 +2963,7 @@ func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
 
 	if mainIsItemInline {
 		childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 			SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
@@ -2965,6 +2979,7 @@ func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
 		// Block-axis intrinsic keyword: lay out the item to determine its content block-size.
 		containerInlineSize := space.AvailableSize.InlineSize.Float64()
 		minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
 			SetPercentageResolutionInlineSize(containerInlineSize).
@@ -3039,6 +3054,7 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 	isRow bool,
 ) float64 {
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
@@ -3405,6 +3421,11 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 	b := NewConstraintSpaceBuilder(parentWDM, childWDM, true)
 
 	// Mark this child as a flex item so inner layout can use flex-specific sizing rules.
+	// A flex item's auto inline-size keeps the builder's fit-content default
+	// (Blink's BuildSpaceForLayout sets stretch only for a stretched cross
+	// axis, flex_layout_algorithm.cc:769-776 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the measuring spaces
+	// elsewhere in this file stretch to the size they are handed.
 	b.SetIsInsideFlexibleBox(true)
 
 	// Set orthogonal fallback before SetAvailableSize so the swap can apply it.
@@ -3450,6 +3471,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			itemSpaceBlock = fla.containerCrossSize
 		}
 		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: itemSpaceBlock}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4187,6 +4209,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				// Fall through to §4.5 automatic minimum size below.
 			} else if mainIsItemInline {
 				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
@@ -4201,6 +4224,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			} else {
 				containerInlineSize := space.AvailableSize.InlineSize.Float64()
 				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
 					SetPercentageResolutionInlineSize(containerInlineSize).
@@ -4243,6 +4267,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		pctBlockSize := Indefinite
 		{
 			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4263,6 +4288,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			pctResSize.BlockSize = pctBlockSize
 		}
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(pctResSize).
 			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
@@ -4293,11 +4319,13 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		if !willStretch {
 			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
 				NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					Build(), childGeom); !hasExplicitInline {
 				mmSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
@@ -4314,6 +4342,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			}
 		}
 		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionInlineSize(containerInlineSize).
@@ -4366,6 +4395,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			availBlockSize = containerMainSize
 		}
 		itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: availBlockSize}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4394,6 +4424,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 
 			// Check for explicit cross-size on the item.
 			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4498,6 +4529,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
 			crossContentSize := -1.0
 			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4609,6 +4641,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// §4.5: "In all cases, the size is capped by the item's max main size property, if definite."
 	{
 		maxSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
@@ -4792,6 +4825,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			useAspectRatioStretch := false
 			hasExplicitMainSize := false
 			tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
