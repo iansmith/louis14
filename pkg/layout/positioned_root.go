@@ -46,6 +46,7 @@ func buildRootConstraintSpace(
 			rootMinBlock = vpHeight
 		}
 		return NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetForcedMinBlockSize(rootMinBlock).
 			SetIsRootElement(true).
 			SetAvailableSize(LogicalSize{

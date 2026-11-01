@@ -100,8 +100,8 @@ func TestSelectionPseudoStyle_AppliesAllowedAndIgnoresDisallowed(t *testing.T) {
 // ::selection cascades against its own UA baseline rather than inheriting
 // the originating element's computed color/background-color — mirrors how
 // ::marker/::first-line don't inherit color from the originating element's
-// *used* color either, only via the explicit inheritableProps allowlist in
-// ComputePseudoElementStyle. The originating div sets color:transparent;
+// *used* color either, only via normal inheritance (ApplyInheritedFrom in
+// ComputePseudoElementStyle). The originating div sets color:transparent;
 // ::selection (no author rule) must NOT pick up "transparent" as its
 // color — that would defeat the highlight entirely, contradicting CSS
 // Pseudo-4 §highlight-styling's "cascade against the UA default" model
