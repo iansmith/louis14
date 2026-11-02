@@ -508,6 +508,15 @@ type replacedSizer struct {
 func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, mode ReplacedSizeMode) LogicalSize {
 	style := node.Style()
 	r := newReplacedLengthResolver(style, space)
+	// An SVG image's document element takes its container size
+	// (length_utils.cc:1238-1249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if ctx != nil && !ctx.SVGRootContainerSize.IsEmpty() &&
+		IsInlineSVG(node) && node.IsDocumentElement() {
+		size := ToLogicalSize(geomSizeToOld(ctx.SVGRootContainerSize), r.wdm.WM)
+		size.InlineSize += r.bp.InlineSum()
+		size.BlockSize += r.bp.BlockSum()
+		return size
+	}
 	info := GetNaturalSizingInfo(ctx, node)
 	s := replacedSizer{r: r, borderBox: boxSizingForAspectRatio(style)}
 	s.aspectRatio = replacedAspectRatio(style, info, r.wdm)

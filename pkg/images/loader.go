@@ -2,6 +2,7 @@ package images
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -458,55 +459,66 @@ type SVGImage struct {
 	Sizing SVGSizingInfo
 }
 
-// DrawForContainer renders the image laid out in a w×h container, as
-// SVGImageForContainer does: the root <svg>'s width/height are replaced by
-// the container size (LayoutSVGRoot::SetContainerSize,
-// svg_image.cc:462-473 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
-// percentages resolve against it and a viewBox maps onto it; without a
-// viewBox, user units stay CSS pixels.
-//
-// louis14 limitation: oksvg ignores preserveAspectRatio, so a viewBox is
-// stretched onto the container.
-func (s *SVGImage) DrawForContainer(w, h int) (image.Image, error) {
-	icon, err := parseSVGIcon(s.data, float64(w), float64(h))
-	if err != nil {
-		return nil, err
-	}
-	return drawSVGIcon(icon, w, h), nil
-}
+// Data returns the SVG resource's bytes (Image::Data). The image is laid
+// out and painted from them by the renderer (render.Renderer's
+// svgImageForContainer, SVGImage::DrawForContainer).
+func (s *SVGImage) Data() []byte { return s.data }
 
-// svgImageCache caches SVGImage loads by URL; a nil entry records a URL
-// whose resource is not SVG (or failed to fetch).
+// svgImageCache caches SVGImage loads. byContent holds one SVGImage per
+// distinct resource body (keyed by its SHA-256), so every load of the same
+// bytes shares one *SVGImage and one natural-size parse. byURL short-cuts
+// the fetch for URLs that name the same resource whatever document loads
+// them — data:, file:, absolute path and network URLs; a nil entry records
+// a resource that is not SVG or failed to fetch.
+//
+// A relative URL reaches here uncompleted (a top-level document has no base
+// URL; its fetcher resolves the string), so the same string can name
+// different resources in different documents and its SVG load is fetched
+// every time. LOU-633 completes URLs against a document base so both caches
+// can key by URL, as Blink's MemoryCache keys by the completed KURL.
 var svgImageCache = struct {
 	sync.RWMutex
-	m map[string]*SVGImage
-}{m: make(map[string]*SVGImage)}
+	byContent map[[sha256.Size]byte]*SVGImage
+	byURL     map[string]*SVGImage
+}{byContent: make(map[[sha256.Size]byte]*SVGImage), byURL: make(map[string]*SVGImage)}
 
 // LoadSVGImageWithFetcher returns the SVG document at path, or nil when the
 // resource cannot be fetched or is not SVG. A nil fetcher still serves
 // data: URLs. A fetched non-SVG resource is decoded into the raster image
-// cache, so a following LoadImageWithFetcher does not fetch it again.
+// cache (unless already there), so a following LoadImageWithFetcher does
+// not fetch it again.
 func LoadSVGImageWithFetcher(path string, fetcher ImageFetcher) *SVGImage {
-	svgImageCache.RLock()
-	img, ok := svgImageCache.m[path]
-	svgImageCache.RUnlock()
-	if ok {
-		return img
+	unambiguous := stdnet.IsDataURL(path) || filepath.IsAbs(path) || isNetworkURI(path) || strings.HasPrefix(path, "file:")
+	if unambiguous {
+		svgImageCache.RLock()
+		img, ok := svgImageCache.byURL[path]
+		svgImageCache.RUnlock()
+		if ok {
+			return img
+		}
 	}
 	fetch := fetcher
 	if fetch == nil {
 		fetch = stdnet.RequestResource(nil)
 	}
-	if data, err := fetch(path); err == nil {
-		if isSVGData(data) {
+	data, err := fetch(path)
+	isSVG := err == nil && isSVGData(data)
+	if err == nil && !isSVG && globalCache.cached(path) == nil {
+		_, _ = decodeAndCache(path, data)
+	}
+	var img *SVGImage
+	svgImageCache.Lock()
+	defer svgImageCache.Unlock()
+	if isSVG {
+		key := sha256.Sum256(data)
+		if img = svgImageCache.byContent[key]; img == nil {
 			img = &SVGImage{data: data, Sizing: GetSVGSizingInfo(data)}
-		} else {
-			_, _ = decodeAndCache(path, data)
+			svgImageCache.byContent[key] = img
 		}
 	}
-	svgImageCache.Lock()
-	svgImageCache.m[path] = img
-	svgImageCache.Unlock()
+	if unambiguous {
+		svgImageCache.byURL[path] = img
+	}
 	return img
 }
 
@@ -657,14 +669,19 @@ func ImageLoadIsAttempted(src string, fetcher ImageFetcher) bool {
 // d4ecdfed88f962439247c2ad36b8fe47805b1520): an empty source URL is never
 // available, and an image that is still loading is. louis14 loads
 // synchronously, so "still loading" is the case with no fetcher (no load is
-// attempted; data: URIs decode without one). Otherwise the image must
-// fetch and decode (SVG included: DecodeImageBytes rasterizes it) to a
-// positive size — Blink's "loaded without error and has an image".
+// attempted; data: URIs decode without one). Otherwise an SVG document is
+// available whatever its natural size (an SVGImage need not have one,
+// SVGImage::DataChanged @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a
+// bitmap must fetch and decode to a positive size — Blink's "loaded without
+// error and has an image".
 func ImageIsPotentiallyAvailable(src string, fetcher ImageFetcher) bool {
 	if src == "" {
 		return false
 	}
 	if !ImageLoadIsAttempted(src, fetcher) {
+		return true
+	}
+	if LoadSVGImageWithFetcher(src, fetcher) != nil {
 		return true
 	}
 	w, h, err := GetImageDimensionsWithFetcher(src, fetcher)

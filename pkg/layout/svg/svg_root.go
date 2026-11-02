@@ -197,7 +197,12 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 	// are routed into root.Resources instead of the visible Children
 	// list — they live in the resource registry rather than the paint
 	// tree (mirrors Blink's LayoutSVGHiddenContainer routing).
-	lengthCtx := NewSVGLengthContext(containerSize)
+	// Children resolve percentages against the viewBox size when it is
+	// non-empty, else the root's viewport (SVGViewportResolver::
+	// ResolveViewport's LayoutSVGRoot case, core/svg/
+	// svg_length_functions.cc:55-60 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lengthCtx := NewSVGLengthContext(root.ViewBox.viewportSizeOr(containerSize))
 	for _, child := range svgElement.SVGChildren() {
 		node := buildSVGTreeWithResources(child, lengthCtx, styleResolver, root.Resources)
 		if node != nil {

@@ -150,11 +150,13 @@ func (v *SVGViewportContainer) AppendChild(child SVGNode) {
 }
 
 // ChildLengthContext returns the SVGLengthContext that the nested
-// <svg>'s children should use for resolving percentage lengths.
-// Mirrors the way Blink's SVGSVGElement (and LayoutSVGViewportContainer)
-// installs a new SVGLengthContext keyed on the nested viewport size.
+// <svg>'s children should use for resolving percentage lengths: the
+// viewBox size when it has a non-empty one, else the nested viewport.
+// Mirrors SVGViewportResolver::ResolveViewport's LayoutSVGViewportContainer
+// case (core/svg/svg_length_functions.cc:62-67 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (v *SVGViewportContainer) ChildLengthContext() SVGLengthContext {
-	return NewSVGLengthContext(geometry.SizeF{Width: v.Width, Height: v.Height})
+	return NewSVGLengthContext(v.ViewBox.viewportSizeOr(geometry.SizeF{Width: v.Width, Height: v.Height}))
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes
