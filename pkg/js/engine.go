@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
@@ -17,6 +18,10 @@ type Engine struct {
 	// onloadCallbacks stores element-level onload callbacks registered via
 	// element.onload = fn. Keyed by *html.Node for fast lookup.
 	onloadCallbacks map[*html.Node]goja.Callable
+
+	// imageFetcher loads the images script asks for (img.src); nil serves
+	// only data: URLs. See SetImageFetcher.
+	imageFetcher images.ImageFetcher
 
 	// Layout snapshot from the most recent layout pass, used to back
 	// getComputedStyle. Set via SetLayoutSnapshot before Execute.
@@ -183,6 +188,13 @@ function waitForCompositorReady() {
 // DOMHighResTimeStamp and CSSNumberish timeline times use.
 func frameTimeMs(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
+}
+
+// SetImageFetcher sets the fetcher the document's images load through when
+// script sets an <img>'s src: the same document-relative fetcher layout and
+// paint use (the Document's ResourceFetcher, in Blink).
+func (e *Engine) SetImageFetcher(fetcher images.ImageFetcher) {
+	e.imageFetcher = fetcher
 }
 
 // RegisterOnloadCallback stores an element-level onload callback.
