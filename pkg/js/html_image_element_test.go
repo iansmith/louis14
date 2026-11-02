@@ -150,3 +150,77 @@ func TestImageParsedLoadBeforeWindowLoad(t *testing.T) {
 		t.Errorf("log = %q, want %q", got, want)
 	}
 }
+
+// new Image(w, h) converts its arguments with WebIDL ToUint32 (unsigned
+// long): non-finite → 0, truncate, modulo 2^32 (#355 review).
+func TestImageConstructorToUint32(t *testing.T) {
+	got := runImageScript(t, New(), `
+		var a = new Image(Infinity, NaN);
+		log(a.getAttribute("width") + "," + a.getAttribute("height"));
+		var b = new Image(-1, 4294967297.9);
+		log(b.getAttribute("width") + "," + b.getAttribute("height"));
+	`)
+	if want := "0,0;4294967295,1;"; got != want {
+		t.Errorf("log = %q, want %q", got, want)
+	}
+}
+
+// Removing src makes a null source: no error event of its own, the pending
+// load event is canceled, and an error event already queued by the previous
+// request still fires (ImageLoader::DoUpdateFromElement,
+// core/loader/image_loader.cc:585-628 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) (#355 review).
+func TestImageRemoveSrc(t *testing.T) {
+	engine := New()
+	engine.SetImageFetcher(func(uri string) ([]byte, error) { return nil, fmt.Errorf("404: %s", uri) })
+	got := runImageScript(t, engine, fmt.Sprintf(`
+		var ok = new Image();
+		ok.onload = function() { log("ok load"); };
+		ok.onerror = function() { log("ok error"); };
+		ok.src = %q;
+		ok.removeAttribute("src");
+		var bad = new Image();
+		bad.onload = function() { log("bad load"); };
+		bad.onerror = function() { log("bad error"); };
+		bad.src = "missing.png";
+		bad.removeAttribute("src");
+	`, pngDataURL(t, 2, 2)))
+	if want := "bad error;"; got != want {
+		t.Errorf("log = %q, want %q", got, want)
+	}
+}
+
+// An <img> inside <template> content is inert: its load never starts
+// (#355 review).
+func TestImageInTemplateIsInert(t *testing.T) {
+	doc := parseHTML(t, fmt.Sprintf(`<div id="log"></div><template><img src=%q></template>`, pngDataURL(t, 2, 2)))
+	doc.Scripts = append(doc.Scripts, `
+		function log(s) { document.getElementById("log").textContent += s + ";"; }
+		var t = document.getElementsByTagName("template")[0];
+		var img = t.getElementsByTagName("img")[0] || t.firstChild;
+		if (img) img.onload = function() { log("template img load"); };
+		log("script");
+	`)
+	if err := New().Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := getTextContent(getElementById(doc.Root, "log")), "script;"; got != want {
+		t.Errorf("log = %q, want %q", got, want)
+	}
+}
+
+// Non-img load handlers fire in the order they were set, not in map
+// order (#355 review).
+func TestElementLoadHandlersInRegistrationOrder(t *testing.T) {
+	var want string
+	script := ""
+	for i := 0; i < 12; i++ {
+		script += fmt.Sprintf(`document.createElement("iframe").onload = function() { log("%d"); };`+"\n", i)
+		want += fmt.Sprintf("%d;", i)
+	}
+	for run := 0; run < 5; run++ {
+		if got := runImageScript(t, New(), script); got != want {
+			t.Fatalf("run %d: log = %q, want %q", run, got, want)
+		}
+	}
+}
