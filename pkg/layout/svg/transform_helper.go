@@ -293,3 +293,11 @@ func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
 	style.ApplyTransform(&m, geometry.RectF{}, css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
 	return geometry.AffineTransformFromTransform(m)
 }
+
+// ElementTransform returns the transform an SVG node paints its content
+// with: its CSS transform composed on top of its SVG `transform`
+// attribute (SVG 2 §7.5), the louis14 counterpart of Blink's
+// LocalSVGTransform.
+func ElementTransform(n SVGNode, style *css.Style) geometry.AffineTransform {
+	return ParseCSSTransformForSVG(style).Compose(n.LocalTransform())
+}

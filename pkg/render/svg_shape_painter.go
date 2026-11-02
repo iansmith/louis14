@@ -85,17 +85,15 @@ func (sp *svgShapePainter) paint() {
 		return
 	}
 
-	// CSS `transform` on an SVG shape (SVG 2 §7.5). Shapes don't
-	// have an SVG `transform` attribute (only containers do per SVG
-	// 1.1 §7.6), so the effective shape-level transform is just
-	// whatever CSS supplies. The same scope guard used by
-	// paintSVGContainer wraps the path build + fill + stroke so
-	// rasterization happens in the transformed coordinate space.
-	// Mirrors Blink's SVGShapePainter applying
+	// The shape's transform: its SVG `transform` attribute with the CSS
+	// `transform` composed on top, as paintSVGContainer composes a
+	// container's (SVG 2 §7.5). The scope guard wraps the path build,
+	// fill and stroke so rasterization happens in the transformed
+	// coordinate space. Mirrors Blink's SVGShapePainter applying
 	// LocalSVGTransform via a ScopedSVGTransformState.
-	cssT := svg.ParseCSSTransformForSVG(style)
-	if !cssT.IsIdentity() {
-		guard := pushScopedSVGTransform(sp.ctx, cssT, geometry.RectF{})
+	effective := svg.ElementTransform(sp.shape, style)
+	if !effective.IsIdentity() {
+		guard := pushScopedSVGTransform(sp.ctx, effective, geometry.RectF{})
 		defer guard.Close()
 	}
 

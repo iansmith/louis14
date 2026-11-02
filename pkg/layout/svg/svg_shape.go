@@ -78,6 +78,11 @@ type SVGShape struct {
 	// run the cascade. Mirrors how Blink's LayoutSVGShape reaches
 	// its style via the element's ComputedStyle().
 	Style *css.Style
+
+	// transform is the parsed SVG `transform` attribute (identity when
+	// absent); the CSS transform composes on top of it at paint time, as
+	// for SVGContainer.
+	transform geometry.AffineTransform
 }
 
 // NewSVGShape builds an SVGShape from a shape ElementAdapter, resolving
@@ -112,6 +117,8 @@ func NewSVGShape(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGShape {
 		return nil
 	}
 	shape.FillBoundingBox = shape.Path.BoundingBox()
+	v, _ := elt.Attribute("transform")
+	shape.transform = ParseSVGTransform(v)
 	return shape
 }
 
@@ -120,13 +127,14 @@ func (s *SVGShape) ObjectBoundingBox() geometry.RectF {
 	return s.FillBoundingBox
 }
 
-// LocalTransform returns identity — shape elements do not have their
-// own SVG transform attribute (only containers do). Mirrors Blink's
-// LayoutSVGShape::LocalSVGTransform which returns identity for
-// non-transformable shapes (transform is on the containing
-// LayoutSVGTransformableContainer / <g>).
+// LocalTransform returns the shape's SVG `transform` attribute: every SVG
+// graphics element is transformable, and LayoutSVGShape::LocalSVGTransform
+// is the element's transform (LayoutSVGShape::UpdateLocalTransform,
+// core/layout/svg/layout_svg_shape.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Like SVGContainer's, it
+// excludes the CSS transform, which the painter composes on top.
 func (s *SVGShape) LocalTransform() geometry.AffineTransform {
-	return geometry.Identity()
+	return s.transform
 }
 
 // UpdateSVGLayout is a no-op in Phase 2: the path was built at

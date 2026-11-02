@@ -138,8 +138,7 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 	// attribute. With the SVGRoot painter pushing transforms onto a
 	// DrawContext stack, "applied after" means composed on the LEFT
 	// (outer) side, so a point p goes through svgT first, then cssT.
-	cssT := svg.ParseCSSTransformForSVG(c.Style)
-	effective := cssT.Compose(c.SVGAttributeTransform())
+	effective := svg.ElementTransform(c, c.Style)
 
 	guard := pushScopedSVGTransform(pctx, effective, geometry.RectF{})
 	defer guard.Close()
