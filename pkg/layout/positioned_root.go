@@ -29,8 +29,7 @@ func rootIsOutOfFlow(rootStyle *css.Style) bool {
 	if rootStyle == nil {
 		return false
 	}
-	pos := rootStyle.GetPosition()
-	return pos == css.PositionAbsolute || pos == css.PositionFixed
+	return rootStyle.HasOutOfFlowPosition()
 }
 
 // buildRootConstraintSpace builds the constraint space for the document root

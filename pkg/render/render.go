@@ -2041,7 +2041,7 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// invertibility/empty-visual-rect cull applies to flattened
 	// TransformPaintPropertyNodes, not to the 3D-rendering-context root
 	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	flattens := box.Style == nil || box.Style.GetTransformStyle() != css.TransformStylePreserve3D
+	flattens := !box.Preserves3D()
 
 	// 3D rendering context composition. Per CSS Transforms L2 §6.2,
 	// a child of a `transform-style: preserve-3d` parent shares the
@@ -2184,7 +2184,7 @@ func isLayerTransformSingular(layer *PaintLayer) bool {
 	// preserve-3d layers are never culled by their own projection (children
 	// compose in 4×4 and can produce a visible quad even when the layer's
 	// own transform is edge-on). Same guard as applyTransforms.
-	if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+	if box.Preserves3D() {
 		return false
 	}
 	// If there is a preserve-3d ancestor, the combined projection may differ
@@ -2267,13 +2267,15 @@ func wrapTransformsWithOriginZ(transforms []css.Transform, oz float64) []css.Tra
 // preserve3DAncestorTransforms returns the flat list of ancestor
 // transforms (in document/composition order: outermost first) that share
 // `box`'s 3D rendering context. The walk stops at the first ancestor
-// whose parent is NOT `transform-style: preserve-3d` — that ancestor's
+// whose parent does not preserve 3D (Box.Preserves3D) — that ancestor's
 // transform is included (it's the context root from the descendant's
 // perspective) only if its parent is preserve-3d; otherwise the walk
 // stops with nothing included.
 //
 // Concretely: walk parent → grandparent → ... while
-// `ancestor.Style.GetTransformStyle() == preserve-3d`. The walk
+// `ancestor.Preserves3D()` (the used transform-style, Blink's
+// LayoutObject::Preserves3D: a grouping property such as overflow:hidden
+// flattens). The walk
 // terminates as soon as that condition fails (the ancestor sits in a
 // flat parent's context, so its own transform was already 2D-projected
 // at its own paint).
@@ -2301,7 +2303,7 @@ func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
 		if ancestor.Node == nil && len(ancestor.Style.GetTransforms()) == 0 {
 			continue
 		}
-		if ancestor.Style.GetTransformStyle() != css.TransformStylePreserve3D {
+		if !ancestor.Preserves3D() {
 			break
 		}
 		// Prepend this ancestor's transforms (outermost first, applied

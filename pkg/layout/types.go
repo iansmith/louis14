@@ -252,21 +252,18 @@ func (b *Box) CreatesStackingContext() bool {
 		return true
 	}
 	// CSS mix-blend-mode: elements with non-normal blend mode create a stacking context.
-	if bm := b.Style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
+	if b.Style.HasBlendMode() {
 		return true
 	}
 	// CSS Masking Level 1 §3.1: a computed clip-path other than 'none'
-	// creates a stacking context (and, in Blink, a PaintLayer). Use a raw
-	// property lookup so unparsed shape values (e.g. `clip-path: inset(...)`,
-	// which GetClipPath does not yet recognise) still create the SC — the
-	// spec only asks whether the computed value differs from `none`, not
-	// whether the parser can model the shape.
-	if cp, ok := b.Style.Get("clip-path"); ok && cp != "" && cp != "none" {
+	// creates a stacking context (and, in Blink, a PaintLayer). HasClipPath
+	// uses a raw lookup, so shapes GetClipPath does not model still count.
+	if b.Style.HasClipPath() {
 		return true
 	}
 	// CSS Masking Level 1 §6.1: a computed mask/mask-image other than 'none'
 	// creates a stacking context.
-	if mi := b.Style.GetMaskImage(); mi != "" && mi != "none" {
+	if b.Style.HasMask() {
 		return true
 	}
 	// CSS Containment: layout and paint containment create a stacking context.
@@ -274,12 +271,14 @@ func (b *Box) CreatesStackingContext() bool {
 		return true
 	}
 	// CSS Compositing Level 1 §2: isolation: isolate creates a stacking context.
-	if b.Style.GetIsolation() == "isolate" {
+	if b.Style.HasIsolation() {
 		return true
 	}
-	// CSS Transforms L2 §10: a used value of `preserve-3d` on `transform-style`
-	// or `hidden` on `backface-visibility` makes the element form a stacking
-	// context. Mirrors Blink's HasPropertyThatCreatesStackingContext at
+	// CSS Transforms L2 §10: `preserve-3d` on `transform-style` or `hidden`
+	// on `backface-visibility` makes the element form a stacking context.
+	// Blink keeps the SPECIFIED transform-style here (not
+	// UsedTransformStyle3D): CalculateIsStackingContextWithoutContainment,
+	// computed_style.cc:2911-2919 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Mirrors Blink's HasPropertyThatCreatesStackingContext at
 	// computed_style.cc :1319 (kTransformStyle + kBackfaceVisibility), pinned
 	// to SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	if b.Style.GetTransformStyle() == css.TransformStylePreserve3D {
@@ -303,6 +302,17 @@ func (b *Box) CreatesStackingContext() bool {
 		return true
 	}
 	return false
+}
+
+// Preserves3D reports whether this box's children share its 3D rendering
+// context: the used transform-style is preserve-3d and the box honours
+// transform-related properties (a LayoutBox, not a LayoutInline). Mirrors
+// Blink's LayoutObject::Preserves3D (core/layout/layout_object.h:1582-1586 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); HasTransformRelatedProperty
+// is implied by ComputedStyle::Preserves3D for a box, and SVG children are
+// not layout.Boxes.
+func (b *Box) Preserves3D() bool {
+	return b.Style != nil && b.Style.Preserves3D() && IsTransformableBox(b.Style, b.Node)
 }
 
 // IsFlexItem returns true if this box is a child of a flex container.
