@@ -132,26 +132,36 @@ func (t *Tokenizer) readTag() (Token, error) {
 			t.pos++
 			break
 		}
-		// HTML5 error recovery: if we hit '<' while reading attributes,
-		// the current tag's closing '>' was omitted. Implicitly close
-		// the tag without consuming the '<', so the next NextToken()
-		// call will parse the new tag that starts here.
+		// louis14 divergence (not spec / Blink): a '<' where an attribute
+		// name would start closes the tag, as if its '>' were omitted, and
+		// the '<' starts the next token. Blink instead starts an attribute
+		// named "<…" (a parse error in the before-attribute-name state).
 		if t.input[t.pos] == '<' {
 			break
 		}
+		// '/' goes to the self-closing start tag state: '>' ends a
+		// self-closing tag; anything else is a parse error reconsumed in
+		// the before-attribute-name state, so the '/' never starts an
+		// attribute (HTMLTokenizer kBeforeAttributeNameState /
+		// kSelfClosingStartTagState, core/html/parser/html_tokenizer.cc
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if t.input[t.pos] == '/' {
 			t.pos++
-			t.skipWhitespace()
 			if t.pos < len(t.input) && t.input[t.pos] == '>' {
 				t.pos++
 				return Token{Type: TokenStartTag, TagName: tagName, Attributes: attributes, SelfClosing: true}, nil
 			}
+			continue
 		}
 		name, value, err := t.readAttribute()
 		if err != nil {
 			return Token{}, err
 		}
-		attributes[name] = value
+		// A duplicate attribute is a parse error and is dropped: the first
+		// value wins (HTML §13.2.5.33).
+		if _, dup := attributes[name]; !dup {
+			attributes[name] = value
+		}
 	}
 	return Token{Type: TokenStartTag, TagName: tagName, Attributes: attributes}, nil
 }
@@ -166,8 +176,9 @@ func (t *Tokenizer) readTagName() string {
 
 // readAttribute reads one attribute. Its name starts with whatever
 // character the before-attribute-name state sees (a `"`, `'` or `=` there
-// is a parse error but still starts the name; readTag handles `<` first) and
-// runs to whitespace,
+// is a parse error but still starts the name; readTag handles '/' as the
+// spec does, and '<' by a louis14 divergence, before calling this) and runs
+// to whitespace,
 // `/`, `=`, `>` or EOF; any other character, quotes included, is appended
 // (HTMLTokenizer kBeforeAttributeNameState / kAttributeNameState,
 // core/html/parser/html_tokenizer.cc:831-880 @
