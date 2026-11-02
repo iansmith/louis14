@@ -7,6 +7,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,18 +18,110 @@ import (
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 
+	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 	stdnet "louis14/std/net"
 )
 
-// ImageCache caches loaded images
+// cachedImage is a decoded image with the orientation its decoder reported
+// (ImageDecoder::Orientation) and, once asked for, the oriented bitmap.
+type cachedImage struct {
+	img         image.Image
+	orientation graphics.ImageOrientation
+	oriented    image.Image
+}
+
+// ImageCache caches decoded images by URL.
 type ImageCache struct {
-	cache map[string]image.Image
+	cache map[string]*cachedImage
 	mu    sync.RWMutex
 }
 
 // Global image cache
 var globalCache = &ImageCache{
-	cache: make(map[string]image.Image),
+	cache: make(map[string]*cachedImage),
+}
+
+// cached returns the cache entry for path, or nil.
+func (c *ImageCache) cached(path string) *cachedImage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cache[path]
+}
+
+// decodeAndCache decodes data, caches the image under path together with its
+// EXIF orientation (readExifOrientation), and returns the image.
+func decodeAndCache(path string, data []byte) (image.Image, error) {
+	img, err := DecodeImageBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	globalCache.mu.Lock()
+	globalCache.cache[path] = &cachedImage{img: img, orientation: readExifOrientation(data)}
+	globalCache.mu.Unlock()
+	return img, nil
+}
+
+// ImageOrientationWithFetcher returns the orientation of the image at path,
+// loading it first. Mirrors BitmapImage::Orientation
+// (platform/graphics/bitmap_image.cc:630 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which reports the decoder's
+// orientation; an image that fails to load has the default orientation.
+func ImageOrientationWithFetcher(path string, fetcher ImageFetcher) graphics.ImageOrientation {
+	if _, err := LoadImageWithFetcher(path, fetcher); err != nil {
+		return graphics.ImageOrientation{}
+	}
+	if e := globalCache.cached(path); e != nil {
+		return e.orientation
+	}
+	return graphics.ImageOrientation{}
+}
+
+// OrientedImageWithFetcher returns the image at path as drawn under its
+// orientation: the bitmap BitmapImage::Draw produces with
+// kRespectImageOrientation by concatenating
+// ImageOrientation::TransformFromDefault (platform/graphics/
+// bitmap_image.cc:343-363 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// louis14 paints through image.Image rather than a transformable canvas, so
+// the oriented frame is resampled once — an exact pixel permutation — and
+// cached with the image.
+func OrientedImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error) {
+	img, err := LoadImageWithFetcher(path, fetcher)
+	if err != nil {
+		return nil, err
+	}
+	e := globalCache.cached(path)
+	if e == nil || e.orientation.Orientation() == graphics.ImageOrientationDefault {
+		return img, nil
+	}
+	globalCache.mu.Lock()
+	defer globalCache.mu.Unlock()
+	if e.oriented == nil {
+		e.oriented = orientImage(e.img, e.orientation)
+	}
+	return e.oriented, nil
+}
+
+// orientImage resamples img under orientation o: each pixel of the oriented
+// box takes the source pixel TransformFromDefault maps onto it.
+func orientImage(img image.Image, o graphics.ImageOrientation) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if o.UsesWidthAsHeight() {
+		w, h = h, w
+	}
+	inv, ok := o.TransformFromDefault(float64(w), float64(h)).Invert()
+	if !ok {
+		return img
+	}
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			p := inv.MapPoint(geometry.PointF{X: float64(x) + 0.5, Y: float64(y) + 0.5})
+			out.Set(x, y, img.At(b.Min.X+int(math.Floor(p.X)), b.Min.Y+int(math.Floor(p.Y))))
+		}
+	}
+	return out
 }
 
 // LoadImageFromDataURI decodes a data URI and returns the embedded image.
@@ -46,51 +139,28 @@ func LoadImage(path string) (image.Image, error) {
 	// Handle data URIs
 	if stdnet.IsDataURL(path) {
 		// Check cache first
-		globalCache.mu.RLock()
-		if img, ok := globalCache.cache[path]; ok {
-			globalCache.mu.RUnlock()
-			return img, nil
+		if e := globalCache.cached(path); e != nil {
+			return e.img, nil
 		}
-		globalCache.mu.RUnlock()
 
-		img, err := LoadImageFromDataURI(path)
+		data, _, err := stdnet.DecodeDataURL(path)
 		if err != nil {
 			return nil, err
 		}
-
-		globalCache.mu.Lock()
-		globalCache.cache[path] = img
-		globalCache.mu.Unlock()
-
-		return img, nil
+		return decodeAndCache(path, data)
 	}
 
 	// Check cache first
-	globalCache.mu.RLock()
-	if img, ok := globalCache.cache[path]; ok {
-		globalCache.mu.RUnlock()
-		return img, nil
+	if e := globalCache.cached(path); e != nil {
+		return e.img, nil
 	}
-	globalCache.mu.RUnlock()
 
 	// Load image from file
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return nil, err
-	}
-
-	// Cache the image
-	globalCache.mu.Lock()
-	globalCache.cache[path] = img
-	globalCache.mu.Unlock()
-
-	return img, nil
+	return decodeAndCache(path, data)
 }
 
 // GetImageDimensions returns the width and height of an image
@@ -430,10 +500,8 @@ func LoadSVGImageWithFetcher(path string, fetcher ImageFetcher) *SVGImage {
 	if data, err := fetch(path); err == nil {
 		if isSVGData(data) {
 			img = &SVGImage{data: data, Sizing: GetSVGSizingInfo(data)}
-		} else if raster, err := DecodeImageBytes(data); err == nil {
-			globalCache.mu.Lock()
-			globalCache.cache[path] = raster
-			globalCache.mu.Unlock()
+		} else {
+			_, _ = decodeAndCache(path, data)
 		}
 	}
 	svgImageCache.Lock()
@@ -459,12 +527,9 @@ func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error
 	}
 
 	// Check cache first
-	globalCache.mu.RLock()
-	if img, ok := globalCache.cache[path]; ok {
-		globalCache.mu.RUnlock()
-		return img, nil
+	if e := globalCache.cached(path); e != nil {
+		return e.img, nil
 	}
-	globalCache.mu.RUnlock()
 
 	// Fetch via network
 	data, err := fetcher(path)
@@ -472,17 +537,7 @@ func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error
 		return nil, fmt.Errorf("fetching image %s: %w", stdnet.DataURLForDisplay(path), err)
 	}
 
-	img, err := DecodeImageBytes(data)
-	if err != nil {
-		return nil, err
-	}
-
-	// Cache the image
-	globalCache.mu.Lock()
-	globalCache.cache[path] = img
-	globalCache.mu.Unlock()
-
-	return img, nil
+	return decodeAndCache(path, data)
 }
 
 // SVGSizingInfo holds the parsed intrinsic sizing metadata from an SVG file.

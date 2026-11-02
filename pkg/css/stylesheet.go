@@ -5100,6 +5100,13 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
+		// image-orientation: from-image | none
+		// (ImageOrientation::ParseSingleValue, longhands_custom.cc:5381-5387 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if property == "image-orientation" && !isValidImageOrientationValue(value) {
+			continue
+		}
+
 		// object-position is a <position> without the three-value form
 		// (ObjectPosition::ParseSingleValue, longhands_custom.cc:7317 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).

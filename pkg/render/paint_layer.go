@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
 	"louis14/pkg/text"
@@ -131,6 +132,9 @@ type PaintLayer struct {
 	// image's visual rect is its content box (ImagePainter::PaintReplaced).
 	ClipsToContentBox bool
 	ImageRendering    string // auto, pixelated, crisp-edges, -webkit-optimize-contrast
+	// ImageOrientation is the computed image-orientation
+	// (ComputedStyle::ImageOrientation).
+	ImageOrientation graphics.RespectImageOrientationEnum
 
 	// Background:
 	BackgroundColor  css.Color              // A==0 means no background
@@ -1084,6 +1088,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 		layer.ObjectFit = s.GetObjectFit()
 		layer.ObjectPosition = s.ObjectPosition()
+		layer.ImageOrientation = s.ImageOrientation()
 		clipMargin, _ := s.GetOverflowClipMargin()
 		layer.ClipsToContentBox = layout.ClipsToContentBox(clipX && clipY, clipMargin)
 	}

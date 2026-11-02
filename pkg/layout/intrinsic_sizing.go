@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"louis14/pkg/graphics"
 	"louis14/pkg/images"
 	urlpkg "louis14/pkg/url"
 	stdnet "louis14/std/net"
@@ -232,6 +233,16 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		// the alt-text container (html_image_fallback_helper.cc:50-62,
 		// :103-116 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
 		return IntrinsicSizingInfo{}
+	}
+	// A bitmap's natural size is its oriented size when the style respects
+	// the image orientation (LayoutImageResource::GetNaturalDimensions,
+	// image.Size(ImageOrientation()), core/layout/layout_image_resource.cc:
+	// 145-170; BitmapImage::SizeWithConfig transposes for orientations 5-8,
+	// platform/graphics/bitmap_image.cc:193-201, both @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if s := node.Style(); (s == nil || s.ImageOrientation() == graphics.RespectImageOrientation) &&
+		images.ImageOrientationWithFetcher(src, ctx.ImageFetcher).UsesWidthAsHeight() {
+		natW, natH = natH, natW
 	}
 	return IntrinsicSizingInfo{
 		IntrinsicWidth:  float64(natW),

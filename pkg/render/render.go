@@ -18,6 +18,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
@@ -3662,7 +3663,15 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 		return
 	}
 	box := layer.Box
-	img, err := images.LoadImageWithFetcher(layer.ImageSrc, r.imageFetcher)
+	// ImagePainter::PaintIntoRect draws with the style's respect-orientation
+	// (image_painter.cc:224-247 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// and the natural size the replaced content rect is fitted to is the
+	// oriented size.
+	load := images.LoadImageWithFetcher
+	if layer.ImageOrientation == graphics.RespectImageOrientation {
+		load = images.OrientedImageWithFetcher
+	}
+	img, err := load(layer.ImageSrc, r.imageFetcher)
 	if err != nil {
 		return
 	}
