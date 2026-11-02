@@ -314,8 +314,8 @@ type PaintLayer struct {
 
 	// CSS Transforms:
 	Transform        geometry.Transform // own transform, without transform-origin
-	TransformOrigin  [2]float64 // resolved to px: (origin-x, origin-y)
-	TransformOriginZ float64    // resolved z-component of transform-origin (default 0)
+	TransformOrigin  [2]float64         // resolved to px: (origin-x, origin-y)
+	TransformOriginZ float64            // resolved z-component of transform-origin (default 0)
 	HasTransform     bool
 
 	// HasTransformPaint is true when this layer participates in transform

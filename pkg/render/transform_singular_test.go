@@ -65,9 +65,9 @@ func TestIsSingularProjection(t *testing.T) {
 		{
 			// Two rotateX(90deg) composed (preserve-3d 180°) → scaleY(-1): det = -1,
 			// content reappears mirrored, must NOT be culled.
-			name: "double rotateX(90deg) composes to non-singular",
+			name:       "double rotateX(90deg) composes to non-singular",
 			transforms: build(rotateX(90), rotateX(90)),
-			want: false,
+			want:       false,
 		},
 	}
 
