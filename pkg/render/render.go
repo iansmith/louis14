@@ -3308,7 +3308,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 		if bg.IsBottomLayer() {
 			r.paintFillLayerColor(layer, rect)
 		}
-		img := r.loadFillLayerImage(bg)
+		// FillLayerInfo takes the respect-orientation from the painted box's
+		// style (box_painter_base.cc:633 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		img := r.loadFillLayerImage(bg, layer.ImageOrientation)
 		if bg.Gradient != "" || !img.isNone() {
 			r.paintFillLayer(layer, ctx, rect, paintRect, bg, img)
 		}
@@ -3343,12 +3346,29 @@ type fillLayerImage struct {
 
 func (f fillLayerImage) isNone() bool { return f.raster == nil && f.svg == nil }
 
+// loadImageForPaint loads the bitmap at url as it is drawn with
+// respectOrientation: oriented under kRespectImageOrientation
+// (BitmapImage::Draw, bitmap_image.cc:343-363 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as stored otherwise. Its size
+// is then Image::SizeAsFloat(respect_orientation), so the natural sizing
+// info every painter derives from it is the oriented one
+// (StyleFetchedImage::GetNaturalSizingInfo, style_fetched_image.cc:163-176).
+// louis14 has no origin model, so StyleImage::ForceOrientationIfNecessary
+// (style_image.cc:11-19) — forcing orientation for a cross-origin image —
+// is not applied.
+func (r *Renderer) loadImageForPaint(url string, respectOrientation graphics.RespectImageOrientationEnum) (image.Image, error) {
+	if respectOrientation == graphics.RespectImageOrientation {
+		return images.OrientedImageWithFetcher(url, r.imageFetcher)
+	}
+	return images.LoadImageWithFetcher(url, r.imageFetcher)
+}
+
 // loadFillLayerImage fetches a fill layer's url() image, keeping an SVG
 // document as an SVGImage (StyleFetchedImage over an SVGImage) so it is
 // sized by its natural sizing info and drawn for its container. None when
 // the layer has no url() image or there is no fetcher (data: URIs decode
 // inline and need none).
-func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) fillLayerImage {
+func (r *Renderer) loadFillLayerImage(bg *css.FillLayer, respectOrientation graphics.RespectImageOrientationEnum) fillLayerImage {
 	if bg.Image == nil || (r.imageFetcher == nil && !stdnet.IsDataURL(bg.Image.Data.Absolute)) {
 		return fillLayerImage{}
 	}
@@ -3356,7 +3376,7 @@ func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) fillLayerImage {
 	if svg := images.LoadSVGImageWithFetcher(url, r.imageFetcher); svg != nil {
 		return fillLayerImage{svg: svg}
 	}
-	img, _ := images.LoadImageWithFetcher(url, r.imageFetcher)
+	img, _ := r.loadImageForPaint(url, respectOrientation)
 	return fillLayerImage{raster: img}
 }
 
@@ -3655,11 +3675,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	// (image_painter.cc:224-247 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
 	// and the natural size the replaced content rect is fitted to is the
 	// oriented size.
-	load := images.LoadImageWithFetcher
-	if layer.ImageOrientation == graphics.RespectImageOrientation {
-		load = images.OrientedImageWithFetcher
-	}
-	img, err := load(layer.ImageSrc, r.imageFetcher)
+	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
 	if err != nil {
 		return
 	}
