@@ -278,9 +278,7 @@ func (b *Box) CreatesStackingContext() bool {
 	// on `backface-visibility` makes the element form a stacking context.
 	// Blink keeps the SPECIFIED transform-style here (not
 	// UsedTransformStyle3D): CalculateIsStackingContextWithoutContainment,
-	// computed_style.cc:2910-2919 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Mirrors Blink's HasPropertyThatCreatesStackingContext at
-	// computed_style.cc :1319 (kTransformStyle + kBackfaceVisibility), pinned
-	// to SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	// computed_style.cc:2910-2919 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 	if b.Style.GetTransformStyle() == css.TransformStylePreserve3D {
 		return true
 	}
