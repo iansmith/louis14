@@ -2493,6 +2493,8 @@ func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
 	// poster through ImagePainter::PaintIntoRect, i.e. drawImage.
 	if layer.ImageSrc != "" {
 		r.drawImage(layer)
+	} else if layer.Canvas != nil {
+		r.paintCanvas(layer)
 	}
 }
 
@@ -3613,13 +3615,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if layer.ImageSrc == "" || (r.imageFetcher == nil && !stdnet.IsDataURL(layer.ImageSrc)) {
 		return
 	}
-	box := layer.Box
-	contentRect := geometry.PhysicalRect{
-		Offset: geometry.PhysicalOffsetFromF64Round(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top),
-		Size: geometry.PhysicalSizeFromF64Round(
-			box.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
-			box.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom),
-	}
+	contentRect := replacedContentBox(layer.Box)
 	if contentRect.Size.IsEmpty() {
 		return
 	}
@@ -3659,6 +3655,39 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
 		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(srcW, srcH)))
 	r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))
+}
+
+// replacedContentBox is a replaced box's content box in page coordinates
+// (PhysicalContentBoxRect moved to the paint offset).
+func replacedContentBox(box *layout.Box) geometry.PhysicalRect {
+	return geometry.PhysicalRect{
+		Offset: geometry.PhysicalOffsetFromF64Round(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top),
+		Size: geometry.PhysicalSizeFromF64Round(
+			box.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
+			box.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom),
+	}
+}
+
+// paintCanvas paints a <canvas>'s bitmap. Mirrors HTMLCanvasPainter::
+// PaintReplaced (core/paint/html_canvas_painter.cc:36-88 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the paint rect is the replaced
+// content rect over the canvas's natural size (its bitmap size), drawn with
+// the image-rendering interpolation (InterpolationQualityForCanvas, :22-33)
+// and, like an image, clipped to the content box when the element
+// ClipsToContentBox. A clear canvas paints nothing.
+func (r *Renderer) paintCanvas(layer *PaintLayer) {
+	bitmap := layer.Canvas.CanvasBitmap
+	if bitmap == nil {
+		return
+	}
+	contentRect := replacedContentBox(layer.Box)
+	if contentRect.Size.IsEmpty() {
+		return
+	}
+	w, h := layer.Canvas.CanvasSize()
+	paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
+		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(w, h)))
+	r.paintImageIntoRect(layer, bitmap, paintRect, imageVisualRect(layer, contentRect, paintRect))
 }
 
 // imageVisualRect is ImagePainter::PaintReplaced's visual rect

@@ -1,6 +1,7 @@
 package html
 
 import (
+	"image"
 	"sort"
 	"strings"
 	"unicode/utf16"
@@ -20,6 +21,13 @@ type Node struct {
 	// contentWindow). Loaded once and re-used across layout passes; see
 	// pkg/layout openFrameOwnerURL.
 	NestedDocument *Document
+
+	// CanvasBitmap is a <canvas>'s output bitmap, CanvasSize() pixels of
+	// non-premultiplied RGBA; nil while the canvas is clear (transparent
+	// black). The analog of HTMLCanvasElement's CanvasResourceProvider
+	// (core/html/canvas/html_canvas_element.cc @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	CanvasBitmap *image.NRGBA
 
 	// LinkStyle is the sheet a <link rel=stylesheet> loaded, or nil (not a
 	// stylesheet link, or the fetch failed). Mirrors HTMLLinkElement::

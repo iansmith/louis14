@@ -48,21 +48,21 @@ func CanAssignToCustomizableSelectSlot(n *Node) bool {
 // size is <= 1. An unparsable size is 0 (ParseAttribute, :424-430).
 func (n *Node) UsesMenuList() bool {
 	sizeAttr, hasSize := n.GetAttribute("size")
-	size, _ := parseHTMLNonNegativeInteger(sizeAttr) // 0 on failure
+	size, _ := ParseHTMLNonNegativeInteger(sizeAttr) // 0 on failure
 	if _, multiple := n.GetAttribute("multiple"); multiple {
 		return hasSize && size == 1
 	}
 	return size <= 1
 }
 
-// parseHTMLNonNegativeInteger implements the HTML "rules for parsing
+// ParseHTMLNonNegativeInteger implements the HTML "rules for parsing
 // non-negative integers" (HTML §2.3.4.1): skip leading ASCII whitespace,
 // accept an optional sign, then one or more ASCII digits; trailing garbage is
 // ignored. A negative value fails unless it is zero ("-0"), and a value that
 // overflows an unsigned 32-bit int fails. Mirrors Blink's
 // ParseHTMLNonNegativeInteger (core/html/parser/html_parser_idioms.cc:175-222
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func parseHTMLNonNegativeInteger(s string) (uint32, bool) {
+func ParseHTMLNonNegativeInteger(s string) (uint32, bool) {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\f' || s[i] == '\r') {
 		i++
