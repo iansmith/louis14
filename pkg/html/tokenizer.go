@@ -178,8 +178,8 @@ func (t *Tokenizer) readTagName() string {
 // character the before-attribute-name state sees (a `"`, `'` or `=` there
 // is a parse error but still starts the name; readTag handles '/' as the
 // spec does, and '<' by a louis14 divergence, before calling this) and runs
-// to whitespace,
-// `/`, `=`, `>` or EOF; any other character, quotes included, is appended
+// to whitespace, `/`, `=`, `>` or EOF; any other character, quotes
+// included, is appended
 // (HTMLTokenizer kBeforeAttributeNameState / kAttributeNameState,
 // core/html/parser/html_tokenizer.cc:831-880 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; HTML §13.2.5.32-33).
