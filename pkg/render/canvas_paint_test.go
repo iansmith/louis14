@@ -22,8 +22,11 @@ func renderScripted(t *testing.T, src string, w, h int) (*image.RGBA, []*layout.
 	if err != nil {
 		t.Fatal(err)
 	}
-	layout.NewLayoutEngine(float64(w), float64(h)).Layout(doc)
-	if err := js.New().Execute(doc); err != nil {
+	first := layout.NewLayoutEngine(float64(w), float64(h))
+	first.Layout(doc)
+	eng := js.New()
+	eng.SetLayoutSnapshot(first.ComputedStyles(), first.NodeBoxes())
+	if err := eng.Execute(doc); err != nil {
 		t.Fatal(err)
 	}
 	boxes := layout.NewLayoutEngine(float64(w), float64(h)).Layout(doc)
@@ -126,4 +129,72 @@ func TestCanvas_ObjectViewBoxSizesCanvas(t *testing.T) {
 	if found == nil || found.Width != 50 || found.Height != 50 {
 		t.Fatalf("canvas box = %+v, want 50×50", found)
 	}
+}
+
+// drawImage of an <img> whose request has not completed draws nothing
+// (HTMLImageElement::GetSourceImageForCanvas: not "fully decodable"); the
+// image completes when its load task runs (#357 review).
+func TestCanvas_DrawImageBeforeLoadDrawsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range src.Pix {
+		src.Pix[i] = []uint8{255, 0, 0, 255}[i%4]
+	}
+	if err := png.Encode(&buf, src); err != nil {
+		t.Fatal(err)
+	}
+	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+	img, _ := renderScripted(t, `<!DOCTYPE html><body style="margin:0">
+		<canvas id="c" width="8" height="8" style="display:block"></canvas>
+		<script>
+			var image = new Image();
+			image.src = "`+uri+`";
+			document.getElementById("c").getContext("2d").drawImage(image, 0, 0);
+		</script>`, 20, 20)
+	wantPixel(t, img, 1, 1, canvasWhite, "the image had not loaded when it was drawn")
+}
+
+// drawImage of a canvas onto itself reads a snapshot of the source, not the
+// pixels it is writing (#357 review).
+func TestCanvas_DrawImageOntoItself(t *testing.T) {
+	img, _ := renderScripted(t, `<!DOCTYPE html><body style="margin:0">
+		<canvas id="c" width="4" height="1" style="display:block; width:40px; height:10px; image-rendering:pixelated"></canvas>
+		<script>
+			var c = document.getElementById("c"), ctx = c.getContext("2d");
+			ctx.fillStyle = "red";
+			ctx.fillRect(0, 0, 1, 1);
+			ctx.drawImage(c, 1, 0);
+		</script>`, 50, 20)
+	wantPixel(t, img, 5, 5, canvasRed, "the original pixel")
+	wantPixel(t, img, 15, 5, canvasRed, "the copy one pixel right")
+	wantPixel(t, img, 25, 5, canvasWhite, "no smear from reading written pixels")
+}
+
+// drawImage with an argument count no overload takes throws a TypeError
+// (WebIDL overload resolution) (#357 review).
+func TestCanvas_DrawImageBadArityThrows(t *testing.T) {
+	renderScripted(t, `<!DOCTYPE html><body>
+		<canvas id="c" width="4" height="4"></canvas>
+		<script>
+			var c = document.getElementById("c"), ctx = c.getContext("2d");
+			[[c], [c, 0], [c, 0, 0, 1], [c, 0, 0, 1, 1, 0], [c, 0, 0, 1, 1, 0, 0], [c, 0, 0, 1, 1, 0, 0, 1]].forEach(function(args) {
+				var threw = false;
+				try { ctx.drawImage.apply(ctx, args); } catch (e) { threw = e instanceof TypeError; }
+				if (!threw) throw new Error("no TypeError for " + args.length + " arguments");
+			});
+		</script>`, 20, 20)
+}
+
+// fillStyle = "currentcolor" resolves against the canvas element's computed
+// color (CanvasRenderingContext2D's ParseColorOrCurrentColor) (#357 review).
+func TestCanvas_FillStyleCurrentColor(t *testing.T) {
+	img, _ := renderScripted(t, `<!DOCTYPE html><body style="margin:0">
+		<canvas id="c" width="4" height="4" style="display:block; color: rgb(0, 128, 0)"></canvas>
+		<script>
+			var ctx = document.getElementById("c").getContext("2d");
+			ctx.fillStyle = "currentColor";
+			if (ctx.fillStyle !== "#008000") throw new Error("fillStyle = " + ctx.fillStyle);
+			ctx.fillRect(0, 0, 4, 4);
+		</script>`, 20, 20)
+	wantPixel(t, img, 1, 1, canvasGreen, "filled with the canvas's color")
 }
