@@ -186,9 +186,32 @@ func (b *transformTreeBuilder) transformContextParent(box *layout.Box) *layout.B
 		if a.Node == nil && !needsTransformNode(a) {
 			continue
 		}
+		if start == box.Parent && boxlessElementFlattens(box.LayoutNode, a.LayoutNode) {
+			return nil
+		}
 		return a
 	}
 	return nil
+}
+
+// boxlessElementFlattens reports whether the layout input tree holds a
+// non-anonymous element between from and to that has no box of its own and
+// does not preserve 3D: Blink resets the 3D rendering context at such an
+// object ("3D rendering contexts follow the DOM ancestor chain",
+// paint_property_tree_builder.cc:1630-1651 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Stopgap: louis14's box tree
+// has no box for a table's row groups, which Blink lays out as
+// LayoutTableSection; LOU-652 adds those boxes and retires this walk.
+func boxlessElementFlattens(from, to *layout.LayoutInputNode) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	for n := from.Parent(); n != nil && n != to; n = n.Parent() {
+		if n.IsElement() && n.Style() != nil && !n.Style().Preserves3D() {
+			return true
+		}
+	}
+	return false
 }
 
 // node returns box's TransformPaintPropertyNode, nil when it needs none.
