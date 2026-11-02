@@ -263,10 +263,9 @@ type SVGContainer struct {
 	// computed values, used by the painter for paint-state setup).
 	Style *css.Style
 
-	// transform is the parsed `transform` attribute (SVG-side).
-	// CSS `transform` is folded in by the painter via
-	// ParseCSSTransformForSVG so that animations of the CSS
-	// property reach the rasterizer.
+	// transform is the parsed `transform` attribute (SVG-side). A
+	// specified CSS `transform` replaces it at paint time
+	// (ElementTransform).
 	transform geometry.AffineTransform
 
 	// Children are the SVG children of this container in DOM order.
@@ -294,13 +293,6 @@ func (c *SVGContainer) SetSVGTransform(t geometry.AffineTransform) {
 	c.transform = t
 }
 
-// SVGAttributeTransform returns the parsed SVG `transform` attribute
-// (NOT including any CSS transform — that's composed at paint time).
-// Mirrors Blink's LayoutSVGTransformableContainer::AdditionalTransform.
-func (c *SVGContainer) SVGAttributeTransform() geometry.AffineTransform {
-	return c.transform
-}
-
 // AppendChild adds a child node to the container, in DOM order.
 func (c *SVGContainer) AppendChild(child SVGNode) {
 	if child == nil {
@@ -315,11 +307,10 @@ func (c *SVGContainer) ObjectBoundingBox() geometry.RectF {
 	return c.bbox
 }
 
-// LocalTransform returns the container's SVG `transform` attribute.
-// CSS `transform` is composed on top of this at paint time so the
-// SVGNode interface stays uniform (callers that walk the tree without
-// a painter — e.g. bbox accumulation — see only the SVG-attribute
-// transform, which is the stable value the layout pass owns).
+// LocalTransform returns the container's SVG `transform` attribute. A
+// specified CSS `transform` replaces it at paint time (ElementTransform);
+// callers that walk the tree without a painter — e.g. bbox accumulation —
+// see only the attribute (LOU-648 moves it into the cascade).
 func (c *SVGContainer) LocalTransform() geometry.AffineTransform {
 	return c.transform
 }

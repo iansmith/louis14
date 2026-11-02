@@ -102,8 +102,8 @@ func (s *scopedSVGTransformState) Close() {
 }
 
 // paintSVGContainer paints an SVGContainer (typically a <g>): push
-// the container's effective local transform (SVG transform composed
-// with CSS transform per SVG 2 §7.5), then recurse into children in
+// the container's effective local transform (svg.ElementTransform: its
+// CSS transform, or its SVG transform attribute), then recurse into children in
 // tree order. Mirrors Blink's SVGContainerPainter::Paint with its
 // ScopedSVGTransformState scope and SVGObjectPainter recursion.
 func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
@@ -133,13 +133,7 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		return
 	}
 
-	// Effective transform = cssTransform ∘ svgTransform. SVG 2 §7.5:
-	// CSS `transform` is applied AFTER the SVG `transform`
-	// attribute. With the SVGRoot painter pushing transforms onto a
-	// DrawContext stack, "applied after" means composed on the LEFT
-	// (outer) side, so a point p goes through svgT first, then cssT.
-	cssT := svg.ParseCSSTransformForSVG(c.Style, svg.ViewBoxReferenceBox(c.Viewport))
-	effective := cssT.Compose(c.SVGAttributeTransform())
+	effective := svg.ElementTransform(c, c.Style, svg.ViewBoxReferenceBox(c.Viewport))
 
 	guard := pushScopedSVGTransform(pctx, effective, geometry.RectF{})
 	defer guard.Close()

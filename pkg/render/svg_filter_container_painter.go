@@ -107,12 +107,11 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		float64(-region.Min.X), float64(-region.Min.Y),
 	).Compose(pctx.DeviceFromUser)
 
-	// Apply the container's own SVG + CSS transform inside the buffer.
+	// Apply the container's own transform (ElementTransform) inside the buffer.
 	// Mirrors paintSVGContainer's pushScopedSVGTransform — the
 	// container's transform stack participates in the source-graphic
 	// painting just like in the un-filtered path.
-	cssT := svg.ParseCSSTransformForSVG(c.Style, svg.ViewBoxReferenceBox(c.Viewport))
-	effective := cssT.Compose(c.SVGAttributeTransform())
+	effective := svg.ElementTransform(c, c.Style, svg.ViewBoxReferenceBox(c.Viewport))
 	guard := pushScopedSVGTransform(&childCtx, effective, geometry.RectF{})
 	for _, child := range c.Children {
 		paintSVGNode(&childCtx, child)
