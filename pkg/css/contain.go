@@ -1,6 +1,9 @@
 package css
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // CSS Containment 1 (https://drafts.csswg.org/css-contain-1/) eligibility
 // helpers — extend the bit-test functions `HasLayoutContainment`,
@@ -161,4 +164,78 @@ func isEligibleForSizeContainment(s *Style) bool {
 		return false
 	}
 	return true
+}
+
+// ContainIntrinsicWidth / ContainIntrinsicHeight return the length of
+// contain-intrinsic-width / -height (StyleIntrinsicLength::GetLength), ok
+// false for none. `auto <length>` gives the length: louis14 has no display
+// locking, so there is never a remembered size to prefer
+// (LayoutBox::OverrideIntrinsicContentInlineSize, layout_box.cc:1271-1300 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) ContainIntrinsicWidth() (float64, bool) {
+	return s.containIntrinsicLength("contain-intrinsic-width")
+}
+
+func (s *Style) ContainIntrinsicHeight() (float64, bool) {
+	return s.containIntrinsicLength("contain-intrinsic-height")
+}
+
+func (s *Style) containIntrinsicLength(prop string) (float64, bool) {
+	v, ok := s.Get(prop)
+	if !ok {
+		return 0, false
+	}
+	v = strings.TrimSpace(v)
+	if f := strings.Fields(v); len(f) == 2 && strings.EqualFold(f[0], "auto") {
+		v = f[1]
+	}
+	if strings.EqualFold(v, "none") {
+		return 0, false
+	}
+	return s.GetLengthForVal(v)
+}
+
+// parseContainIntrinsicSizeAxes splits a contain-intrinsic-size value into
+// one or two axes, each [auto]? [none | <length [0,∞]>]; ok is false when
+// the value does not match (a lone auto, a percentage, a negative or
+// unitless non-zero length, extra tokens).
+func parseContainIntrinsicSizeAxes(value string) ([]string, bool) {
+	parts := splitShorthandParts(value)
+	var axes []string
+	for i := 0; i < len(parts); i++ {
+		axis := parts[i]
+		if strings.EqualFold(axis, "auto") {
+			if i+1 >= len(parts) {
+				return nil, false
+			}
+			i++
+			axis = "auto " + parts[i]
+			if !validContainIntrinsicLength(parts[i]) {
+				return nil, false
+			}
+		} else if !validContainIntrinsicLength(axis) {
+			return nil, false
+		}
+		axes = append(axes, axis)
+	}
+	if len(axes) == 0 || len(axes) > 2 {
+		return nil, false
+	}
+	return axes, true
+}
+
+// validContainIntrinsicLength reports whether v is none or a non-negative
+// <length> (no percentage; a bare number only when 0).
+func validContainIntrinsicLength(v string) bool {
+	if strings.EqualFold(v, "none") {
+		return true
+	}
+	if strings.HasSuffix(v, "%") {
+		return false
+	}
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return v == "0" || strings.Trim(v, "+-.0") == ""
+	}
+	n, ok := ParseLength(v)
+	return ok && n >= 0
 }
