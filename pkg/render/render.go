@@ -2095,9 +2095,16 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	if ancestorTransforms := preserve3DAncestorTransforms(box); len(ancestorTransforms) > 0 {
 		// Move origin to transform-origin point.
 		r.dc.Translate(ox, oy)
+		// The nearest ancestor preserves 3D, so what it applied is the
+		// regularized projection of its chain (see
+		// regularizePreserve3DProjection).
 		ancXX, ancYX, ancXY, ancYY, ancX0, ancY0 := css.ComposeAffineProjection(ancestorTransforms)
+		ancXX, ancYX, ancXY, ancYY = regularizePreserve3DProjection(ancXX, ancYX, ancXY, ancYY)
 		combined := append(append([]css.Transform(nil), ancestorTransforms...), selfTransforms...)
 		newXX, newYX, newXY, newYY, newX0, newY0 := css.ComposeAffineProjection(combined)
+		if !flattens {
+			newXX, newYX, newXY, newYY = regularizePreserve3DProjection(newXX, newYX, newXY, newYY)
+		}
 		// 2D affine inverse of M with coefficients (xx, yx, xy, yy, x0, y0):
 		// the point transform is x' = xx*x + xy*y + x0, y' = yx*x + yy*y + y0.
 		// Determinant det = xx*yy - xy*yx; inverse exists when det != 0.
@@ -2159,7 +2166,11 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 		return false
 	}
 	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
-	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
+	xx, yx, xy, yy := h[0], h[3], h[1], h[4]
+	if !flattens {
+		xx, yx, xy, yy = regularizePreserve3DProjection(xx, yx, xy, yy)
+	}
+	r.dc.MultiplyMatrix(xx, yx, xy, yy, h[2], h[5])
 
 	// Move back from transform-origin.
 	r.dc.Translate(-ox, -oy)
@@ -2196,6 +2207,29 @@ func isLayerTransformSingular(layer *PaintLayer) bool {
 	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
 	xx, yx, xy, yy, _, _ := css.ComposeAffineProjection(selfTransforms)
 	return isSingularProjection(xx, yx, xy, yy)
+}
+
+// preserve3DRegularization is the diagonal bias regularizePreserve3DProjection
+// adds to an edge-on projection: far below a device pixel for any box, so
+// the layer's own content stays invisible.
+const preserve3DRegularization = 1e-9
+
+// regularizePreserve3DProjection keeps the 2D projection a preserve-3d layer
+// applies to the draw context invertible. no Blink analog: it exists only
+// for the delta-projection stand-in in applyTransforms (worklist B2), which
+// composes a descendant by undoing its preserve-3d ancestor's applied 2D
+// projection. An edge-on ancestor (rotateX(90deg); exact since
+// gfx::SinCosDegrees) leaves a singular matrix on the draw context that no
+// later multiply can undo, so the descendant — which can compose back to a
+// visible quad — would be lost. Blink has no such step: each
+// TransformPaintPropertyNode in a 3D rendering context keeps its unflattened
+// 4×4 and is projected once (paint_property_tree_builder.cc:1458-1481 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Deleted with worklist D3.
+func regularizePreserve3DProjection(xx, yx, xy, yy float64) (float64, float64, float64, float64) {
+	if !isSingularProjection(xx, yx, xy, yy) {
+		return xx, yx, xy, yy
+	}
+	return xx + preserve3DRegularization, yx, xy, yy + preserve3DRegularization
 }
 
 // singularProjectionEpsilon bounds the determinant magnitude below which a
