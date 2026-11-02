@@ -431,9 +431,11 @@ func applySpreadMethod(t float64, method svg.SVGSpreadMethod) float64 {
 // earlier, but this is a safe default).
 //
 // Stop colors are interpolated in straight (non-premultiplied) sRGB
-// space — matching the existing CSS gradient code in gradient.go and
-// Blink's default gradient color space (no `color-interpolation`
-// override; Phase 4 doesn't plumb that property).
+// space: SVG gradients take Gradient::Create*'s default
+// PremultipliedAlpha::kUnpremultiplied (platform/graphics/gradient.h:79-98
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), unlike CSS gradients
+// (interpolateGradientColor), and Blink's default gradient color space (no
+// `color-interpolation` override; Phase 4 doesn't plumb that property).
 func sampleGradientStops(stops []svg.SVGGradientStop, t float64) css.Color {
 	n := len(stops)
 	if n == 0 {
