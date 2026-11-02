@@ -898,6 +898,9 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which reads the element's
 	// attribute and substitutes the typed value into the property's token list.
 	resolveAttrReferences(node, finalStyle)
+	// sibling-index() / sibling-count() resolve for this element, also
+	// before inheritance (resolveTreeCountingFunctions).
+	resolveTreeCountingFunctions(node, finalStyle)
 
 	// CSS Fonts 4 §11.4: collect all @font-feature-values rules from every
 	// active stylesheet so font-variant-alternates' named values can resolve
@@ -1956,6 +1959,9 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// animation's `inherit` is computed against the same inheritance parent
 	// as above.
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	// sibling-index() / sibling-count() resolve against the originating
+	// element, before the font step (resolveTreeCountingFunctions).
+	resolveTreeCountingFunctions(node, finalStyle)
 
 	// The pseudo-element's font-size computes against the originating
 	// element's (its inheritance parent) inside applyFontAndLineHeight. This
