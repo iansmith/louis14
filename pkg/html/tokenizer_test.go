@@ -104,3 +104,28 @@ func TestTokenizer_CompleteSequence(t *testing.T) {
 		t.Error("expected EOF")
 	}
 }
+
+// In the attribute name state a `"` is a parse error and joins the
+// attribute name; tokenizing continues (HTML §13.2.5.33 attribute name
+// state; HTMLTokenizer kAttributeNameState @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) (LOU-597).
+func TestTokenizer_QuoteInAttributeNameRecovers(t *testing.T) {
+	doc, err := Parse(`<link rel="assert" content"sibling-index() is 2 for body"><p id="after">hi</p>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var found bool
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if id, _ := n.GetAttribute("id"); id == "after" {
+			found = true
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(doc.Root)
+	if !found {
+		t.Error("content after the malformed attribute was lost")
+	}
+}
