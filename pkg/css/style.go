@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode"
 
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -10588,37 +10589,14 @@ func (s *Style) hasNonNoneValue(property string) bool {
 }
 
 // IsBackFaceVisible reports whether the back face of a box transformed by
-// `transforms` is the face currently presented to the viewer. The CSS
-// Transforms L2 §11 algorithm:
-//
-//  1. Build the accumulated transform matrix M from `transforms`.
-//  2. Apply M to the box's local normal vector (0, 0, 1).
-//  3. If the resulting normal's Z component is < 0 the back face is toward
-//     the viewer.
-//
-// Returns true when the back face is toward the viewer (i.e. the element
-// should be hidden when `backface-visibility: hidden`).
-//
-// This matches Blink's TransformationMatrix::IsBackFaceVisible() at
-// third_party/blink/renderer/platform/transforms/transformation_matrix.cc
-// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f — which returns true when the
-// determinant of the upper-left 3×3 is negative (equivalent for orthogonal
-// rotations, and the test files use rotations, scalez(-1), and matrix3d
-// only). For correctness across arbitrary 3D affine matrices we use the
-// normal-vector method, which is the textbook definition of back-facing
-// in a right-handed coordinate system.
+// `transforms` is the face currently presented to the viewer (CSS Transforms
+// L2 §11): the accumulated matrix's gfx::Transform::IsBackFaceVisible
+// (ui/gfx/geometry/transform.cc:424-477 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which tests the sign of the
+// (3,3) entry of the inverse-transpose — the transformed normal (0, 0, 1).
 func IsBackFaceVisible(transforms []Transform) bool {
-	m := identityMatrix4()
-	for _, t := range transforms {
-		m = m.multiply(transformToMatrix4(t))
-	}
-	// Normal vector (0, 0, 1) transformed by M. We only need the resulting
-	// Z component:
-	//     n'.z = m20*0 + m21*0 + m22*1 = m22.
-	// In our column-major layout m22 is the (z,z) entry of the upper-left
-	// 3×3 — the "how much of source Z survives along destination Z" factor.
-	// Negative → back face toward viewer.
-	return m[2][2] < 0
+	m := composeTransformOperations(transforms)
+	return m.IsBackFaceVisible()
 }
 
 // ComposeAffineProjection returns the 6-coefficient 2D affine projection of
@@ -10644,13 +10622,9 @@ func IsBackFaceVisible(transforms []Transform) bool {
 // which builds the same 4×4 then projects to a 2D affine for any layer that
 // inherits a flat parent context.
 func ComposeAffineProjection(transforms []Transform) (xx, yx, xy, yy, x0, y0 float64) {
-	m := identityMatrix4()
-	for _, t := range transforms {
-		m = m.multiply(transformToMatrix4(t))
-	}
-	// Drop column 2 (Z input) and row 2 (Z output), keep row 3 only for
-	// the m33 normalization in the no-perspective case.
-	return m[0][0], m[1][0], m[0][1], m[1][1], m[0][3], m[1][3]
+	m := composeTransformOperations(transforms)
+	// Drop column 2 (Z input) and row 2 (Z output); row 3 is ignored.
+	return m.Rc(0, 0), m.Rc(1, 0), m.Rc(0, 1), m.Rc(1, 1), m.Rc(0, 3), m.Rc(1, 3)
 }
 
 // ComposeProjective composes the transform list into a 4×4, then returns the
@@ -10666,14 +10640,16 @@ func ComposeAffineProjection(transforms []Transform) (xx, yx, xy, yy, x0, y0 flo
 // true foreshortening instead of an affine approximation. For a non-perspective
 // transform the bottom row is [0 0 1] and the result is the affine map.
 func ComposeProjective(transforms []Transform) [9]float64 {
-	m := identityMatrix4()
-	for _, t := range transforms {
-		m = m.multiply(transformToMatrix4(t))
-	}
+	return projectiveHomography(composeTransformOperations(transforms))
+}
+
+// projectiveHomography returns the 3×3 (row-major) homography of m restricted
+// to the z=0 plane: rows 0, 1 and 3, columns 0, 1 and 3.
+func projectiveHomography(m geometry.Transform) [9]float64 {
 	return [9]float64{
-		m[0][0], m[0][1], m[0][3],
-		m[1][0], m[1][1], m[1][3],
-		m[3][0], m[3][1], m[3][3],
+		m.Rc(0, 0), m.Rc(0, 1), m.Rc(0, 3),
+		m.Rc(1, 0), m.Rc(1, 1), m.Rc(1, 3),
+		m.Rc(3, 0), m.Rc(3, 1), m.Rc(3, 3),
 	}
 }
 
@@ -10716,14 +10692,6 @@ func (s *Style) ResolvePerspectiveOriginPx(boxW, boxH float64) (float64, float64
 	return s.resolveOriginPropertyPx("perspective-origin", boxW, boxH)
 }
 
-// translationMatrix4 returns a 4×4 translation matrix (x,y in the plane; z=0).
-func translationMatrix4(x, y float64) matrix4 {
-	m := identityMatrix4()
-	m[0][3] = x
-	m[1][3] = y
-	return m
-}
-
 // ComposePerspectiveChildProjection returns the 2D homography (3×3, row-major)
 // mapping a child element's z=0 plane (in screen coordinates) to screen, for a
 // child carrying transform list `child` about screen-space transform-origin
@@ -10737,208 +10705,109 @@ func translationMatrix4(x, y float64) matrix4 {
 // by the parent perspective — which a chain of two 2D homographies cannot do
 // (the first would flatten Z away). For d == 0 the perspective is skipped.
 func ComposePerspectiveChildProjection(child []Transform, ocx, ocy, d, opx, opy float64) [9]float64 {
-	M := identityMatrix4()
-	for _, t := range child {
-		M = M.multiply(transformToMatrix4(t))
-	}
 	// Child transform about its (screen-space) transform-origin.
-	childM := translationMatrix4(ocx, ocy).multiply(M).multiply(translationMatrix4(-ocx, -ocy))
+	childM := composeTransformOperations(child)
+	childM.ApplyTransformOrigin(ocx, ocy, 0)
 	// Parent perspective about its (screen-space) perspective-origin.
-	// d is always >= 1 when coming from GetPerspective (clamped); the d == 0
-	// guard is a defensive no-op for direct callers.
-	combined := childM
-	if d != 0 {
-		persp := identityMatrix4()
-		persp[3][2] = -1 / d
-		parentP := translationMatrix4(opx, opy).multiply(persp).multiply(translationMatrix4(-opx, -opy))
-		combined = parentP.multiply(childM)
-	}
-	return [9]float64{
-		combined[0][0], combined[0][1], combined[0][3],
-		combined[1][0], combined[1][1], combined[1][3],
-		combined[3][0], combined[3][1], combined[3][3],
-	}
+	// d is always >= 1 when coming from GetPerspective (clamped); a zero d
+	// is a no-op in ApplyPerspectiveDepth.
+	var parentP geometry.Transform
+	parentP.ApplyPerspectiveDepth(d)
+	parentP.ApplyTransformOrigin(opx, opy, 0)
+	return projectiveHomography(parentP.Mul(childM))
 }
 
-// matrix4 is a 4×4 transform matrix stored in row-major order: m[row][col].
-// We use this only for back-face computation; the renderer keeps its 2D
-// matrices as DrawContext state.
-type matrix4 [4][4]float64
-
-func identityMatrix4() matrix4 {
-	return matrix4{
-		{1, 0, 0, 0},
-		{0, 1, 0, 0},
-		{0, 0, 1, 0},
-		{0, 0, 0, 1},
+// composeTransformOperations multiplies the operations' matrices in list
+// order (outermost first), as Blink's TransformOperations::Apply does
+// (platform/transforms/transform_operations.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func composeTransformOperations(transforms []Transform) geometry.Transform {
+	var m geometry.Transform
+	for _, t := range transforms {
+		applyTransformOperation(&m, t)
 	}
+	return m
 }
 
-// multiply returns a * b (standard 4×4 matrix multiplication).
-func (a matrix4) multiply(b matrix4) matrix4 {
-	var r matrix4
-	for i := 0; i < 4; i++ {
-		for j := 0; j < 4; j++ {
-			r[i][j] = a[i][0]*b[0][j] + a[i][1]*b[1][j] + a[i][2]*b[2][j] + a[i][3]*b[3][j]
-		}
-	}
-	return r
-}
-
-// transformToMatrix4 converts a single CSS Transform into its 4×4 matrix.
-// 2D-only transforms produce identity in the Z row/column. Unknown types
-// produce identity (forward-compatible).
-func transformToMatrix4(t Transform) matrix4 {
+// applyTransformOperation post-multiplies m by one operation's matrix with
+// the gfx::Transform call each Blink TransformOperation::Apply makes
+// (platform/transforms/*_transform_operation.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): Translate3d, Scale3d, Rotate /
+// RotateAbout, Skew, PreConcat(Affine / ColMajor), ApplyPerspectiveDepth.
+// Operations with missing arguments, and unknown types, apply nothing.
+func applyTransformOperation(m *geometry.Transform, t Transform) {
+	v := t.Values
 	switch t.Type {
 	case "translate":
-		m := identityMatrix4()
-		if len(t.Values) >= 1 {
-			m[0][3] = t.Values[0]
+		if len(v) >= 2 {
+			m.Translate(v[0], v[1])
+		} else if len(v) == 1 {
+			m.Translate(v[0], 0)
 		}
-		if len(t.Values) >= 2 {
-			m[1][3] = t.Values[1]
-		}
-		return m
 	case "translate3d":
-		m := identityMatrix4()
-		if len(t.Values) >= 3 {
-			m[0][3] = t.Values[0]
-			m[1][3] = t.Values[1]
-			m[2][3] = t.Values[2]
+		if len(v) >= 3 {
+			m.Translate3d(v[0], v[1], v[2])
 		}
-		return m
 	case "translateZ":
-		m := identityMatrix4()
-		if len(t.Values) >= 1 {
-			m[2][3] = t.Values[0]
+		if len(v) >= 1 {
+			m.Translate3d(0, 0, v[0])
 		}
-		return m
 	case "scale":
-		m := identityMatrix4()
-		if len(t.Values) >= 1 {
-			m[0][0] = t.Values[0]
+		if len(v) >= 2 {
+			m.Scale(v[0], v[1])
+		} else if len(v) == 1 {
+			m.Scale(v[0], 1)
 		}
-		if len(t.Values) >= 2 {
-			m[1][1] = t.Values[1]
-		}
-		return m
 	case "scaleZ":
-		m := identityMatrix4()
-		if len(t.Values) >= 1 {
-			m[2][2] = t.Values[0]
+		if len(v) >= 1 {
+			m.Scale3d(1, 1, v[0])
 		}
-		return m
 	case "scale3d":
-		m := identityMatrix4()
-		if len(t.Values) >= 3 {
-			m[0][0] = t.Values[0]
-			m[1][1] = t.Values[1]
-			m[2][2] = t.Values[2]
+		if len(v) >= 3 {
+			m.Scale3d(v[0], v[1], v[2])
 		}
-		return m
 	case "rotate":
-		// 2D rotation in the XY plane (around Z axis).
-		if len(t.Values) >= 1 {
-			c := math.Cos(t.Values[0] * math.Pi / 180)
-			s := math.Sin(t.Values[0] * math.Pi / 180)
-			return matrix4{
-				{c, -s, 0, 0},
-				{s, c, 0, 0},
-				{0, 0, 1, 0},
-				{0, 0, 0, 1},
-			}
+		// RotateTransformOperation kRotate: transform.Rotate(angle).
+		if len(v) >= 1 {
+			m.Rotate(v[0])
 		}
 	case "rotateX":
-		if len(t.Values) >= 1 {
-			c := math.Cos(t.Values[0] * math.Pi / 180)
-			s := math.Sin(t.Values[0] * math.Pi / 180)
-			return matrix4{
-				{1, 0, 0, 0},
-				{0, c, -s, 0},
-				{0, s, c, 0},
-				{0, 0, 0, 1},
-			}
+		if len(v) >= 1 {
+			m.RotateAbout(1, 0, 0, v[0])
 		}
 	case "rotateY":
-		if len(t.Values) >= 1 {
-			c := math.Cos(t.Values[0] * math.Pi / 180)
-			s := math.Sin(t.Values[0] * math.Pi / 180)
-			return matrix4{
-				{c, 0, s, 0},
-				{0, 1, 0, 0},
-				{-s, 0, c, 0},
-				{0, 0, 0, 1},
-			}
+		if len(v) >= 1 {
+			m.RotateAbout(0, 1, 0, v[0])
 		}
 	case "rotate3d":
-		// rotate3d(x, y, z, angle) per CSS Transforms L2 §13.7.4 — the
-		// Rodrigues rotation formula. Axis is normalized first.
-		if len(t.Values) >= 4 {
-			x, y, z, ang := t.Values[0], t.Values[1], t.Values[2], t.Values[3]
-			n := math.Sqrt(x*x + y*y + z*z)
-			if n == 0 {
-				return identityMatrix4()
-			}
-			x, y, z = x/n, y/n, z/n
-			c := math.Cos(ang * math.Pi / 180)
-			s := math.Sin(ang * math.Pi / 180)
-			t1 := 1 - c
-			return matrix4{
-				{c + x*x*t1, x*y*t1 - z*s, x*z*t1 + y*s, 0},
-				{y*x*t1 + z*s, c + y*y*t1, y*z*t1 - x*s, 0},
-				{z*x*t1 - y*s, z*y*t1 + x*s, c + z*z*t1, 0},
-				{0, 0, 0, 1},
-			}
+		if len(v) >= 4 {
+			m.RotateAbout(v[0], v[1], v[2], v[3])
 		}
 	case "skew":
-		if len(t.Values) >= 2 {
-			ax := t.Values[0] * math.Pi / 180
-			ay := t.Values[1] * math.Pi / 180
-			return matrix4{
-				{1, math.Tan(ax), 0, 0},
-				{math.Tan(ay), 1, 0, 0},
-				{0, 0, 1, 0},
-				{0, 0, 0, 1},
-			}
+		if len(v) >= 2 {
+			m.Skew(v[0], v[1])
 		}
 	case "matrix":
-		// matrix(a, b, c, d, e, f): 2D affine → 4×4 with identity Z.
-		if len(t.Values) >= 6 {
-			return matrix4{
-				{t.Values[0], t.Values[2], 0, t.Values[4]},
-				{t.Values[1], t.Values[3], 0, t.Values[5]},
-				{0, 0, 1, 0},
-				{0, 0, 0, 1},
-			}
+		// matrix(a, b, c, d, e, f).
+		if len(v) >= 6 {
+			m.PreConcat(geometry.TransformAffine(v[0], v[1], v[2], v[3], v[4], v[5]))
 		}
 	case "matrix3d":
-		// matrix3d uses column-major order m00..m33: m[col*4+row].
-		if len(t.Values) >= 16 {
-			v := t.Values
-			return matrix4{
-				{v[0], v[4], v[8], v[12]},
-				{v[1], v[5], v[9], v[13]},
-				{v[2], v[6], v[10], v[14]},
-				{v[3], v[7], v[11], v[15]},
-			}
+		// matrix3d arguments are column-major.
+		if len(v) >= 16 {
+			m.PreConcat(geometry.TransformColMajor(v[0], v[1], v[2], v[3],
+				v[4], v[5], v[6], v[7],
+				v[8], v[9], v[10], v[11],
+				v[12], v[13], v[14], v[15]))
 		}
 	case "perspective":
-		// perspective(d): equivalent to matrix3d(1,0,0,0, 0,1,0,0,
-		// 0,0,1,-1/d, 0,0,0,1) per CSS Transforms L2 §11.
-		// CSS Transforms L2 / csswg-drafts #413: perspective(d) with d < 1px
-		// (including d==0) is clamped to perspective(1px); negative values
-		// are treated as the identity (degenerate — no finite focal point).
-		if len(t.Values) >= 1 && t.Values[0] >= 0 {
-			d := t.Values[0]
-			if d < 1 {
-				d = 1
-			}
-			m := identityMatrix4()
-			m[3][2] = -1 / d
-			return m
+		// PerspectiveTransformOperation::UsedPerspective clamps below to 1px
+		// (csswg-drafts #413); a negative length is not a valid perspective()
+		// and applies nothing.
+		if len(v) >= 1 && v[0] >= 0 {
+			m.ApplyPerspectiveDepth(math.Max(1, v[0]))
 		}
 	}
-	return identityMatrix4()
 }
 
 // Phase 24: Background image support

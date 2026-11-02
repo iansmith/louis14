@@ -53,13 +53,13 @@ func Rotate(deg float64) AffineTransform {
 
 // SkewX returns a skew transform along the X axis (angle in degrees).
 func SkewX(deg float64) AffineTransform {
-	t := math.Tan(deg * math.Pi / 180.0)
+	t := tanDegrees(deg)
 	return AffineTransform{A: 1, B: 0, C: t, D: 1, E: 0, F: 0}
 }
 
 // SkewY returns a skew transform along the Y axis (angle in degrees).
 func SkewY(deg float64) AffineTransform {
-	t := math.Tan(deg * math.Pi / 180.0)
+	t := tanDegrees(deg)
 	return AffineTransform{A: 1, B: t, C: 0, D: 1, E: 0, F: 0}
 }
 
