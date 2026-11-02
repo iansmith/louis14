@@ -3689,19 +3689,6 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 		return
 	}
 	box := layer.Box
-	// ImagePainter::PaintIntoRect draws with the style's respect-orientation
-	// (image_painter.cc:224-247 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-	// and the natural size the replaced content rect is fitted to is the
-	// oriented size.
-	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
-	if err != nil {
-		return
-	}
-	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
-	if srcW == 0 || srcH == 0 {
-		return
-	}
-
 	contentRect := geometry.PhysicalRect{
 		Offset: geometry.PhysicalOffsetFromF64Round(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top),
 		Size: geometry.PhysicalSizeFromF64Round(
@@ -3711,13 +3698,52 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if contentRect.Size.IsEmpty() {
 		return
 	}
+
+	// An SVG image is fitted by its SVG natural dimensions
+	// (LayoutImageResource::GetNaturalDimensions → SVGImageForContainer::
+	// GetNaturalDimensions, layout_image_resource.cc:153-158 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and drawn laid out at the
+	// destination size: PaintIntoRect paints image_resource.GetImage(
+	// dest_rect.size), an SVGImageForContainer (image_painter.cc:214-217).
+	if svg := images.LoadSVGImageWithFetcher(layer.ImageSrc, r.imageFetcher); svg != nil {
+		paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
+			layout.PhysicalNaturalSizingInfoFromSizingInfo(naturalSizingInfoForSVG(svg.Sizing)))
+		dest := geometry.ToPixelSnappedRect(paintRect)
+		if dest.Empty() {
+			return
+		}
+		img, err := svg.DrawForContainer(dest.Dx(), dest.Dy())
+		if err != nil {
+			return
+		}
+		r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))
+		return
+	}
+
+	// ImagePainter::PaintIntoRect draws with the style's respect-orientation
+	// (image_painter.cc:224-247), and the natural size the replaced content
+	// rect is fitted to is the oriented size.
+	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
+	if err != nil {
+		return
+	}
+	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
+	if srcW == 0 || srcH == 0 {
+		return
+	}
 	paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
 		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(srcW, srcH)))
-	visualRect := paintRect
+	r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))
+}
+
+// imageVisualRect is ImagePainter::PaintReplaced's visual rect
+// (image_painter.cc:141-146 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// content box when the element ClipsToContentBox, else the paint rect.
+func imageVisualRect(layer *PaintLayer, contentRect, paintRect geometry.PhysicalRect) geometry.PhysicalRect {
 	if layer.ClipsToContentBox {
-		visualRect = contentRect
+		return contentRect
 	}
-	r.paintImageIntoRect(layer, img, paintRect, visualRect)
+	return paintRect
 }
 
 // paintImageIntoRect draws img scaled into destRect, restricted to
