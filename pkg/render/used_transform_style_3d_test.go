@@ -63,3 +63,20 @@ func TestPreserve3D_EdgeOnParentComposesWithChild(t *testing.T) {
 		t.Errorf("pixel (75,75) = %v, want lime", c)
 	}
 }
+
+// TestNonInvertibleTransformIsNotDrawn: a layer whose local 4×4 transform is
+// not invertible is skipped with its subtree, even when its 2D projection is
+// invertible (scale3d(2, 2, 0)). Mirrors cc's
+// TransformNode::node_and_ancestors_are_animated_or_invertible
+// (cc/trees/property_tree.cc:939-955) and the layer skip in
+// draw_property_utils.cc:544-549 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+// WPT css-transforms/transform3d-scale-004.
+func TestNonInvertibleTransformIsNotDrawn(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="transform: scale3d(2, 2, 0); transform-origin: 0 0; width: 100px; height: 100px">` +
+		`<div style="background: blue; width: 50px; height: 50px"></div></div></body></html>`
+	img := renderToImage(t, src, 200, 200)
+	if c := img.RGBAAt(20, 20); c.B > 200 && c.R < 60 {
+		t.Errorf("pixel (20,20) = %v: a non-invertible scale3d(2,2,0) layer was drawn", c)
+	}
+}
