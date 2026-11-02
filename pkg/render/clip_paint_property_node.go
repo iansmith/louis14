@@ -25,6 +25,8 @@ type ClipPaintPropertyNode struct {
 	Layer  *PaintLayer
 	Kind   clipNodeKind
 	Parent *ClipPaintPropertyNode
+	// applied counts this node's entries on the Renderer's clipStack.
+	applied int
 }
 
 // clipTreeBuilder builds the clip tree for one paint, lazily per box: the
@@ -135,10 +137,16 @@ func (r *Renderer) pushClip(layer *PaintLayer, kind clipNodeKind, node *ClipPain
 	r.dc.Push()
 	r.applyClipNode(layer, kind)
 	r.clipStack = append(r.clipStack, node)
+	if node != nil {
+		node.applied++
+	}
 }
 
 // popClipNode undoes pushClipNode.
 func (r *Renderer) popClipNode() {
+	if node := r.clipStack[len(r.clipStack)-1]; node != nil {
+		node.applied--
+	}
 	r.clipStack = r.clipStack[:len(r.clipStack)-1]
 	r.dc.Pop()
 }
@@ -156,7 +164,7 @@ func (r *Renderer) popClipNode() {
 // Returns the number applied, for exitClipNodes.
 func (r *Renderer) enterLocalBorderBoxClip(layer *PaintLayer) int {
 	var missing []*ClipPaintPropertyNode
-	for n := r.clipTree.localBorderBoxClip(layer.Box); n != nil && !r.clipApplied(n); n = n.Parent {
+	for n := r.clipTree.localBorderBoxClip(layer.Box); n != nil && n.applied == 0; n = n.Parent {
 		missing = append(missing, n)
 	}
 	for i := len(missing) - 1; i >= 0; i-- {
@@ -170,14 +178,4 @@ func (r *Renderer) exitClipNodes(n int) {
 	for ; n > 0; n-- {
 		r.popClipNode()
 	}
-}
-
-// clipApplied reports whether n is on the applied clip stack.
-func (r *Renderer) clipApplied(n *ClipPaintPropertyNode) bool {
-	for _, applied := range r.clipStack {
-		if applied == n {
-			return true
-		}
-	}
-	return false
 }

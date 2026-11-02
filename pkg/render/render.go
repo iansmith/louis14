@@ -131,10 +131,8 @@ type Renderer struct {
 	contextScopes3D []*contextScope3D
 	replaying       map[*PaintLayer][9]float64
 
-	// backfaceCulled is set while painting a layer whose back face culls its
-	// own content but which still walks its subtree for descendants that are
-	// not culled (beginBackfaceCulling).
-	backfaceCulled bool
+	// unculledBelow memoizes hasUnculledDescendant per layer for one paint.
+	unculledBelow map[*PaintLayer]bool
 
 	// LOU-344: ::selection highlight painting. selectionRange carries the
 	// document's current DOM Selection/Range (html.Document.Selection,
@@ -636,6 +634,7 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	r.transformTree = newTransformTreeBuilder(r.parentPerspective, r.domParentBox)
 	r.contextScopes3D = nil
 	r.replaying = make(map[*PaintLayer][9]float64)
+	r.unculledBelow = make(map[*PaintLayer]bool)
 	// Build the renderer-wide SVG resource registry by walking every
 	// box subtree for inline `<svg>` SVGRoots and merging their
 	// per-root registries. `url(#id)` references on any element on
@@ -973,11 +972,9 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 		return
 	}
 	// CSS Transforms L2 §11: `backface-visibility: hidden`.
-	paint, outerCulled := r.beginBackfaceCulling(layer)
-	if !paint {
+	if r.skipsBackfaceCulledSubtree(layer) {
 		return
 	}
-	defer func() { r.backfaceCulled = outerCulled }()
 
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
 	if layer.HasMaskImage {
@@ -1707,9 +1704,6 @@ func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 // common case; isolation: isolate does not form a backdrop root, which is
 // consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
-	if r.backfaceCulled {
-		return
-	}
 	box := layer.Box
 
 	// A logically zero-area border box paints no backdrop. Skip before
@@ -2304,13 +2298,19 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.applyClipPath(layer)
 	}
 
+	// A backface-culled layer reaching here has unculled descendants to
+	// paint; its own content is skipped (skipsBackfaceCulledSubtree).
+	own := !r.isBackfaceCulled(layer)
+
 	// CSS backdrop-filter: filter the region behind the element before painting.
-	if layer.HasBackdropFilter {
+	if own && layer.HasBackdropFilter {
 		r.applyBackdropFilter(layer)
 	}
 
 	// Self decorations: bg, borders, shadows, outline, list marker.
-	r.paintSelfDecorations(layer)
+	if own {
+		r.paintSelfDecorations(layer)
+	}
 
 	// Overflow clip using pre-computed rectangle.
 	clipping := false
@@ -2331,13 +2331,17 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// backgrounds (box_fragment_painter.cc:941-947 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). paintLayerContent reaches
 	// a self-painting table; paintDescendantPhase reaches the others.
-	r.PaintCollapsedBorders(layer)
+	if own {
+		r.PaintCollapsedBorders(layer)
+	}
 
 	// Step 4: Floats (each runs its own full phase loop).
 	r.paintDescendantsPhase(layer, PhaseFloat)
 
 	// Step 5a: Self foreground — text + image content.
-	r.paintSelfForeground(layer)
+	if own {
+		r.paintSelfForeground(layer)
+	}
 
 	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
 	r.paintDescendantsPhase(layer, PhaseForeground)
@@ -2373,13 +2377,14 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// ScrollableAreaPainter::PaintOverflowControls running after the
 	// foreground phase (scrollable_area_painter.cc @
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	r.paintScrollbars(layer)
-
 	// Self outline paints OUTSIDE the element's own overflow clip — the
 	// clip applies to the box's contents, never to its own outline ring
 	// (Blink paints kSelfOutlineOnly without the contents clip) — but
 	// still inside clip-path / CSS clip, which do clip outlines.
-	r.paintSelfOutline(layer)
+	if own {
+		r.paintScrollbars(layer)
+		r.paintSelfOutline(layer)
+	}
 
 	if clipPathActive {
 		r.dc.Pop()
@@ -2397,9 +2402,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 // dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
-	if r.backfaceCulled {
-		return
-	}
 	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
 		r.drawOutline(layer)
 	}
@@ -2411,9 +2413,6 @@ func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
 // The outline is NOT painted here; it has its own post-content phase
 // (see paintSelfOutline). Called once per layer (not once per phase).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
-	if r.backfaceCulled {
-		return
-	}
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
 	// The cell still occupies space; only painting is suppressed.
@@ -2458,9 +2457,6 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 // Mirrors Blink's ReplacedPainter::PaintReplacedContent dispatch on
 // LayoutSVGRoot.
 func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
-	if r.backfaceCulled {
-		return
-	}
 	if layer.Box != nil && layer.Box.Text != "" {
 		r.drawText(layer)
 	}
@@ -2545,13 +2541,6 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if child.Opacity <= 0 {
 		return
 	}
-	// CSS Transforms L2 §11: same gate as paintLayerContents, for flow
-	// children that paint in their parent's phases.
-	paint, outerCulled := r.beginBackfaceCulling(child)
-	if !paint {
-		return
-	}
-	defer func() { r.backfaceCulled = outerCulled }()
 	if child.Box != nil && child.Box.CreatesStackingContext() {
 		if phase == PhaseForeground {
 			r.paintLayer(child)
@@ -2574,23 +2563,32 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 		return
 	}
 
+	// CSS Transforms L2 §11: the paintLayerContents gate, for flow children
+	// that paint in their parent's phases (the branches above reach it
+	// through paintLayer).
+	if r.skipsBackfaceCulledSubtree(child) {
+		return
+	}
+	own := !r.isBackfaceCulled(child)
 	pureInline := isPureInlineForPaint(child)
 
-	switch phase {
-	case PhaseBackground:
+	switch {
+	case !own:
+		// Backface culled: only descendants paint.
+	case phase == PhaseBackground:
 		if !pureInline {
 			r.paintSelfDecorations(child)
 		}
 		// Pure inline defers self decorations to PhaseForeground.
-	case PhaseForeground:
+	case phase == PhaseForeground:
 		if pureInline {
 			r.paintSelfDecorations(child)
 		}
 		r.paintSelfForeground(child)
-	case PhaseOutline:
+	case phase == PhaseOutline:
 		r.paintSelfOutline(child)
-	case PhaseFloat:
-		// Skip self — floats paint their own bg during their paintLayer.
+		// PhaseFloat: skip self — floats paint their own bg during their
+		// paintLayer.
 	}
 
 	// Overflow clip on a non-SC descendant still applies to its own
@@ -2607,7 +2605,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 
 	// A collapsed table's borders, after its descendants' backgrounds
 	// (see paintLayerContent).
-	if phase == PhaseBackground {
+	if own && phase == PhaseBackground {
 		r.PaintCollapsedBorders(child)
 	}
 
@@ -2620,7 +2618,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	// OUTSIDE the box's overflow clip, mirroring the self-painting-layer
 	// path in paintLayerContent. A box reaches exactly one of the two
 	// paths, so the scrollbar paints once.
-	if phase == PhaseForeground {
+	if own && phase == PhaseForeground {
 		r.paintScrollbars(child)
 	}
 }
@@ -3103,9 +3101,6 @@ func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, cli
 // ScrollbarThemeAura::PaintThumb+PaintTrackBackground
 // (scrollable_area_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintScrollbars(layer *PaintLayer) {
-	if r.backfaceCulled {
-		return
-	}
 	box := layer.Box
 	if box == nil || box.Style == nil {
 		return
