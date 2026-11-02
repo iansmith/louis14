@@ -36,3 +36,20 @@ func TestVideoPoster_NaturalSizeFromPoster(t *testing.T) {
 	wantRGB(t, img, 8, 4, c.R, c.G, c.B, "poster at its natural size")
 	wantRGB(t, img, 5, 9, 0, 0, 255, "sibling right below the 8px-tall video")
 }
+
+// Without a poster (and no media player) a video has no natural dimensions
+// (LayoutVideo::GetNaturalDimensions → PhysicalNaturalSizingInfo::None(),
+// layout_video.cc:74-112): only the 300×150 default object size applies, with
+// no aspect ratio. Chrome 152: width:100px → 100×150; height:60px → 300×60
+// (LOU-610).
+func TestVideo_NoPosterHasNoNaturalRatio(t *testing.T) {
+	src := `<!DOCTYPE html><style>body{margin:0} video{display:block; background:rgb(0,0,255)}</style>
+<video style="width:100px"></video><video style="height:60px"></video>`
+	img := renderColumnRuleHTML(t, src, 400, 300)
+	// First video: x 0..99, y 0..149. Second: x 0..299, y 150..209.
+	wantRGB(t, img, 50, 140, 0, 0, 255, "100px-wide video is 150px tall")
+	wantRGB(t, img, 150, 100, 255, 255, 255, "right of the 100px-wide video")
+	wantRGB(t, img, 250, 180, 0, 0, 255, "60px-tall video is 300px wide")
+	wantRGB(t, img, 301, 180, 255, 255, 255, "right of the 300px-wide video")
+	wantRGB(t, img, 50, 211, 255, 255, 255, "below the 60px-tall video")
+}
