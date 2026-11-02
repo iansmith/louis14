@@ -44,6 +44,10 @@ func TestContainIntrinsicSizeValid(t *testing.T) {
 	if _, ok := s.ContainIntrinsicHeight(); ok {
 		t.Errorf("height should be none")
 	}
+	expandShorthand(s, "contain-intrinsic-width", "inherit")
+	if v, _ := s.Get("contain-intrinsic-width"); v != "inherit" {
+		t.Errorf("CSS-wide keyword on a longhand = %q, want it kept", v)
+	}
 	expandShorthand(s, "contain-intrinsic-height", "0")
 	if h, ok := s.ContainIntrinsicHeight(); !ok || h != 0 {
 		t.Errorf("height = %v,%v, want 0", h, ok)

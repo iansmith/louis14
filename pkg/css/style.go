@@ -2631,23 +2631,21 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("column-gap", parts[1])
 		}
 	case "contain-intrinsic-size":
-		// contain-intrinsic-size: [auto? [none | <length>]]{1,2} →
-		// contain-intrinsic-width / -height, the second defaulting to the
-		// first (ContainIntrinsicSize::ParseShorthand, Blink
-		// css_parsing_utils @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		var axes []string
-		parts := splitShorthandParts(value)
-		for i := 0; i < len(parts); i++ {
-			if strings.EqualFold(parts[i], "auto") && i+1 < len(parts) {
-				axes = append(axes, parts[i]+" "+parts[i+1])
-				i++
-				continue
-			}
-			axes = append(axes, parts[i])
-		}
-		if len(axes) == 1 || len(axes) == 2 {
+		// contain-intrinsic-size: <axis>{1,2} → contain-intrinsic-width /
+		// -height, the second defaulting to the first; an invalid value
+		// drops the declaration (ContainIntrinsicSize::ParseShorthand,
+		// Blink css_parsing_utils @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if axes, ok := parseContainIntrinsicSizeAxes(value); ok {
 			style.Set("contain-intrinsic-width", axes[0])
 			style.Set("contain-intrinsic-height", axes[len(axes)-1])
+		}
+	case "contain-intrinsic-width", "contain-intrinsic-height":
+		// One <axis> or a CSS-wide keyword, else the declaration is
+		// dropped.
+		if isCSSWideKeyword(strings.TrimSpace(value)) {
+			style.Set(property, value)
+		} else if axes, ok := parseContainIntrinsicSizeAxes(value); ok && len(axes) == 1 {
+			style.Set(property, axes[0])
 		}
 	case "place-items":
 		// place-items shorthand: <align-items> <justify-items>
