@@ -138,7 +138,7 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 	// attribute. With the SVGRoot painter pushing transforms onto a
 	// DrawContext stack, "applied after" means composed on the LEFT
 	// (outer) side, so a point p goes through svgT first, then cssT.
-	cssT := svg.ParseCSSTransformForSVG(c.Style)
+	cssT := svg.ParseCSSTransformForSVG(c.Style, svg.ViewBoxReferenceBox(c.Viewport))
 	effective := cssT.Compose(c.SVGAttributeTransform())
 
 	guard := pushScopedSVGTransform(pctx, effective, geometry.RectF{})
@@ -183,7 +183,7 @@ func paintSVGViewportContainer(pctx *svgPaintContext, vc *svg.SVGViewportContain
 	// before applying the viewBox→viewport scaling, so the clip rect
 	// is in the same coordinate space the viewport's width/height
 	// refer to.
-	cssT := svg.ParseCSSTransformForSVG(vc.Style)
+	cssT := svg.ParseCSSTransformForSVG(vc.Style, svg.ViewBoxReferenceBox(vc.Viewport))
 	outer := cssT.Compose(geometry.Translate(vc.X, vc.Y))
 	clipRect := geometry.NewRectF(0, 0, vc.Width, vc.Height)
 

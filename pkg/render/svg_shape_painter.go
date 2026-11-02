@@ -93,7 +93,7 @@ func (sp *svgShapePainter) paint() {
 	// rasterization happens in the transformed coordinate space.
 	// Mirrors Blink's SVGShapePainter applying
 	// LocalSVGTransform via a ScopedSVGTransformState.
-	cssT := svg.ParseCSSTransformForSVG(style)
+	cssT := svg.ParseCSSTransformForSVG(style, svg.ViewBoxReferenceBox(sp.shape.Viewport))
 	if !cssT.IsIdentity() {
 		guard := pushScopedSVGTransform(sp.ctx, cssT, geometry.RectF{})
 		defer guard.Close()

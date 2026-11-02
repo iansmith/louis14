@@ -275,21 +275,31 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // through ComputedStyle::ApplyTransform and flattened with
 // AffineTransform::FromTransform, as Blink's SVGElement::CalculateTransform
 // does (core/svg/svg_element.cc; computed_style.cc:1434-1496 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink resolves percentages
-// against TransformHelper::ComputeReferenceBox (the view box by default) and
-// applies transform-origin; louis14 does not plumb the reference box here
-// yet, so percentages resolve against an empty box and the origin is left
-// out (the CSS default for SVG elements is 0 0).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Percentages and
+// transform-origin resolve against referenceBox, which callers compute as
+// TransformHelper::ComputeReferenceBox does for the default transform-box,
+// view-box: the size of the nearest SVG viewport (transform_helper.cc:93-117;
+// louis14 has no fill-box / stroke-box). The UA stylesheet gives SVG
+// elements transform-origin: 0 0, the reference box's origin, which is what
+// leaving the origin out applies when the author sets none.
 //
 // Per SVG 2 §7.5, when both the SVG `transform` attribute and a CSS
 // `transform` are present, the effective transform is `cssT ∘ svgT`
 // (the SVG attribute is the inner transform; CSS applies on top of
 // it). Callers should compose accordingly.
-func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
+func ParseCSSTransformForSVG(style *css.Style, referenceBox geometry.RectF) geometry.AffineTransform {
 	if style == nil || !style.HasTransform() {
 		return geometry.Identity()
 	}
+	_, authorOrigin := style.Properties["transform-origin"]
 	var m geometry.Transform
-	style.ApplyTransform(&m, geometry.RectF{}, css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	style.ApplyTransform(&m, referenceBox, css.IncludeTransformOperations, css.ApplyTransformOrigin(authorOrigin), css.IncludeIndependentTransformProperties)
 	return geometry.AffineTransformFromTransform(m)
+}
+
+// ViewBoxReferenceBox returns TransformHelper::ComputeReferenceBox for
+// transform-box: view-box — the nearest SVG viewport's size at the origin
+// (transform_helper.cc:104-108).
+func ViewBoxReferenceBox(viewport geometry.SizeF) geometry.RectF {
+	return geometry.RectF{Size: viewport}
 }

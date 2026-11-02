@@ -78,6 +78,12 @@ type SVGShape struct {
 	// run the cascade. Mirrors how Blink's LayoutSVGShape reaches
 	// its style via the element's ComputedStyle().
 	Style *css.Style
+
+	// Viewport is the size of the nearest SVG viewport
+	// (SVGViewportResolver::ResolveViewport): the reference box of the
+	// element's CSS transform for transform-box: view-box
+	// (TransformHelper::ComputeReferenceBox).
+	Viewport geometry.SizeF
 }
 
 // NewSVGShape builds an SVGShape from a shape ElementAdapter, resolving
@@ -92,7 +98,7 @@ func NewSVGShape(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGShape {
 		return nil
 	}
 	tag := elt.TagName()
-	shape := &SVGShape{TagName: tag, Element: elt}
+	shape := &SVGShape{TagName: tag, Element: elt, Viewport: lengthCtx.ViewportSize()}
 	switch tag {
 	case "rect":
 		buildRectPath(shape, elt, lengthCtx)

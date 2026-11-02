@@ -56,6 +56,12 @@ type SVGViewportContainer struct {
 	// Defaults to xMidYMid meet per SVG 2 §8.2.4.
 	PreserveAspectRatio PreserveAspectRatio
 
+	// Viewport is the size of the viewport of the nested <svg>'s parent
+	// (SVGViewportResolver::ResolveViewport): the reference box of the
+	// element's CSS transform for transform-box: view-box
+	// (TransformHelper::ComputeReferenceBox).
+	Viewport geometry.SizeF
+
 	// LocalToBorderBoxTransform is the viewBox → viewport mapping
 	// (NOT including the translate(x, y) that positions the nested
 	// viewport in its parent). Mirrors the same name on SVGRoot for
@@ -80,6 +86,7 @@ func NewSVGViewportContainer(elt ElementAdapter, parentCtx SVGLengthContext) *SV
 		return nil
 	}
 	vc := &SVGViewportContainer{
+		Viewport:                  parentCtx.ViewportSize(),
 		TagName:                   elt.TagName(),
 		PreserveAspectRatio:       DefaultPreserveAspectRatio(),
 		LocalToBorderBoxTransform: geometry.Identity(),
@@ -243,6 +250,12 @@ func (v *SVGViewportContainer) Paint(ctx *SVGPaintContext) {}
 type SVGContainer struct {
 	// TagName is the SVG tag this node represents.
 	TagName string
+
+	// Viewport is the size of the nearest SVG viewport
+	// (SVGViewportResolver::ResolveViewport): the reference box of the
+	// element's CSS transform for transform-box: view-box
+	// (TransformHelper::ComputeReferenceBox).
+	Viewport geometry.SizeF
 
 	// Style is the resolved computed style for the container element.
 	// Carries fill/stroke/etc. for child inheritance (the cascade
