@@ -32,7 +32,9 @@ type BspTree struct {
 }
 
 // NewBspTree builds the tree from polygons, taking the first as the root's
-// splitting plane (BspTree::BspTree, bsp_tree.cc:22-28).
+// splitting plane (BspTree::BspTree, bsp_tree.cc:22-28). Like viz, it expects
+// every polygon to have vertices and a normal; DirectRenderer drops the
+// others before building (direct_renderer.cc:829-836).
 func NewBspTree(polygons []*DrawPolygon) *BspTree {
 	return &BspTree{root: newSubtree(polygons)}
 }

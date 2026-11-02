@@ -63,3 +63,19 @@ func TestDepthSort3D_PlaneBehindCameraIsDropped(t *testing.T) {
 		t.Errorf("pixel (50,50) = %v, want lime with the behind-camera plane dropped", c)
 	}
 }
+
+// TestDepthSort3D_RootBehindCameraIsDropped: when the root's own quads lie
+// behind the camera they clip to no vertices, and as the first polygons
+// they would become the BspTree's splitting plane, whose split math reads
+// the plane's first vertex. The guard drops them; the participant in front
+// still draws.
+func TestDepthSort3D_RootBehindCameraIsDropped(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0"><div style="perspective:100px">` +
+		`<div style="transform-style:preserve-3d;transform:translateZ(500px);width:100px;height:100px;position:relative;background:red">` +
+		`<div style="position:absolute;width:100px;height:100px;background:lime;transform:translateZ(-450px)"></div>` +
+		`</div></div></body></html>`
+	img := renderToImage(t, src, 200, 200)
+	if c := img.RGBAAt(50, 50); !isGreen(c) {
+		t.Errorf("pixel (50,50) = %v, want the lime participant in front of the camera", c)
+	}
+}

@@ -152,3 +152,18 @@ func TestBspTree_CoplanarSplit(t *testing.T) {
 		NewDrawPolygon(nil, []p3{{X: 0, Y: -15, Z: -15}, {X: 0, Y: 15, Z: -15}, {X: 0, Y: 15, Z: 15}, {X: 0, Y: -15, Z: 15}}, v3{X: -1}, 3),
 	}, []int{3, 0, 1, 2, 3})
 }
+
+// NewBspTree's precondition: a splitting polygon needs a vertex
+// (direct_renderer.cc:829-836 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b
+// filters before building).
+func TestBspTree_EmptySplittingPolygonPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("building a tree split by an empty polygon did not panic")
+		}
+	}()
+	NewBspTree([]*DrawPolygon{
+		NewDrawPolygon(nil, nil, v3{Z: 1}, 0),
+		NewDrawPolygon(nil, quadA, v3{Z: 1}, 1),
+	})
+}
