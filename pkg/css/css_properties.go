@@ -237,6 +237,7 @@ var cssProperties = []cssProperty{
 	{"image-orientation", true, nil},             // :4038
 	{"object-fit", false, nil},                   // :4608
 	{"object-position", false, nil},              // :4619
+	{"object-view-box", false, nil},              // :4633
 	{"scrollbar-color", true, nil},               // :5485
 	{"scrollbar-gutter", false, nil},             // :5501
 	{"scrollbar-width", false, nil},              // :5518

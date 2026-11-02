@@ -130,6 +130,9 @@ type PaintLayer struct {
 	ImageSrc       string          // <img> src completed against its owning document's base; empty if not an img element
 	ObjectFit      css.ObjectFit   // fill, contain, cover, none, scale-down
 	ObjectPosition css.LengthPoint // computed object-position (ComputedStyle::ObjectPosition)
+	// ObjectViewBox is the computed object-view-box, nil for none
+	// (ComputedStyle::ObjectViewBox).
+	ObjectViewBox *css.BasicShapeInset
 	// ClipsToContentBox mirrors LayoutReplaced::ClipsToContentBox: the
 	// image's visual rect is its content box (ImagePainter::PaintReplaced).
 	ClipsToContentBox bool
@@ -1090,6 +1093,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 		layer.ObjectFit = s.GetObjectFit()
 		layer.ObjectPosition = s.ObjectPosition()
+		layer.ObjectViewBox = s.ObjectViewBox()
 		layer.ImageOrientation = s.ImageOrientation()
 		clipMargin, _ := s.GetOverflowClipMargin()
 		layer.ClipsToContentBox = layout.ClipsToContentBox(clipX && clipY, clipMargin)

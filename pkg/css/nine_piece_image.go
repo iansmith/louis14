@@ -83,6 +83,31 @@ func (l Length) SubtractFromOneHundredPercent() Length {
 	return Length{Fixed: -l.Fixed, Percent: 100 - l.Percent}
 }
 
+// Add returns l + other. Mirrors Length::Add (platform/geometry/length.cc:
+// 191-200 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): fixed and percent
+// parts add directly; a calculated operand makes a calc() of both.
+func (l Length) Add(other Length) Length {
+	if l.calculation == nil && other.calculation == nil {
+		return Length{Fixed: l.Fixed + other.Fixed, Percent: l.Percent + other.Percent}
+	}
+	ctx := calcContext{}
+	if l.calculation != nil {
+		ctx = l.calculation.ctx
+	} else {
+		ctx = other.calculation.ctx
+	}
+	return Length{calculation: &CalculationValue{expr: "calc(" + l.cssText() + " + " + other.cssText() + ")", ctx: ctx}}
+}
+
+// cssText returns l as a math-function term: its calc() expression, or
+// calc(<fixed>px + <percent>%) for a fixed / percent / linear length.
+func (l Length) cssText() string {
+	if l.calculation != nil {
+		return l.calculation.expr
+	}
+	return "calc(" + strconv.FormatFloat(l.Fixed, 'g', -1, 64) + "px + " + strconv.FormatFloat(l.Percent, 'g', -1, 64) + "%)"
+}
+
 // MinimumValueForLength resolves l against maximumValue as a LayoutUnit.
 // Mirrors MinimumValueForLength (platform/geometry/length_functions.h:52 and
 // MinimumValueForLengthInternal, length_functions.cc:60 @
