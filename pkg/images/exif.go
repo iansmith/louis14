@@ -8,20 +8,54 @@ import (
 )
 
 // readExifOrientation returns the orientation recorded in an image's EXIF
-// metadata, or the default when there is none. It is the part of
+// metadata, or the default when there is none: SkExif::Parse's fOrigin
+// (EXIF tag 0x0112 in IFD0). For JPEG this is what
 // ImageDecoder::ApplyExifMetadata (platform/image-decoders/
 // image_decoder.cc:1008-1018 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
-// louis14 needs: SkExif::Parse's fOrigin (EXIF tag 0x0112 in IFD0), read
-// from the APP1 "Exif\0\0" segment JPEGImageDecoder hands it
-// (jpeg_image_decoder.cc:469, getExifMetadata). Only JPEG is read; other
-// formats keep the default orientation.
+// reads from the APP1 "Exif\0\0" segment JPEGImageDecoder hands it
+// (jpeg_image_decoder.cc:469); for PNG it is the codec origin
+// SkiaImageDecoderBase takes from SkPngRustDecoder
+// (skia/skia_image_decoder_base.cc:109), read from an eXIf chunk that
+// precedes the image data. Other formats keep the default orientation.
 func readExifOrientation(data []byte) graphics.ImageOrientation {
-	if exif := jpegExifPayload(data); exif != nil {
+	exif := jpegExifPayload(data)
+	if exif == nil {
+		exif = pngExifPayload(data)
+	}
+	if exif != nil {
 		if o, ok := exifOrigin(exif); ok {
 			return graphics.NewImageOrientation(o)
 		}
 	}
 	return graphics.NewImageOrientation(graphics.ImageOrientationDefault)
+}
+
+// pngSignature is the 8-byte PNG file signature.
+const pngSignature = "\x89PNG\r\n\x1a\n"
+
+// pngExifPayload returns the TIFF data of a PNG's eXIf chunk when it comes
+// before the first IDAT; an eXIf chunk after the image data is ignored
+// (PNG Third Edition §11.3.6.1: "the eXIf chunk shall be before IDAT").
+func pngExifPayload(data []byte) []byte {
+	if !bytes.HasPrefix(data, []byte(pngSignature)) {
+		return nil
+	}
+	for i := len(pngSignature); i+8 <= len(data); {
+		length := int(binary.BigEndian.Uint32(data[i : i+4]))
+		typ := string(data[i+4 : i+8])
+		end := i + 12 + length
+		if length < 0 || end > len(data) {
+			return nil
+		}
+		switch typ {
+		case "eXIf":
+			return data[i+8 : i+8+length]
+		case "IDAT", "IEND":
+			return nil
+		}
+		i = end
+	}
+	return nil
 }
 
 // jpegExifPayload returns the TIFF data of a JPEG's first APP1 Exif
