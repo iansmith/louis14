@@ -47,32 +47,6 @@ func TestRenderHTMLToFileWithBase_NestedDocumentImgResolvesAgainstOwnBase(t *tes
 			t.Fatal(err)
 		}
 	}
-	// render renders outer from dir and returns the output image.
-	render := func(t *testing.T, dir, outer string) image.Image {
-		t.Helper()
-		out := filepath.Join(dir, "out.png")
-		if err := RenderHTMLToFileWithBase(outer, out, 200, 200, dir); err != nil {
-			t.Fatalf("render: %v", err)
-		}
-		f, err := os.Open(out)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		img, err := png.Decode(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return img
-	}
-	assertPixel := func(t *testing.T, img image.Image, x, y int, want color.RGBA, what string) {
-		t.Helper()
-		r, g, b, a := img.At(x, y).RGBA()
-		got := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
-		if got != want {
-			t.Errorf("%s: pixel (%d,%d) = %v, want %v", what, x, y, got, want)
-		}
-	}
 	const frameStyle = `<!doctype html><style>html,body{margin:0}img,iframe{display:block}iframe{border:0;width:100px;height:100px}</style>`
 
 	t.Run("depth1", func(t *testing.T) {
@@ -82,7 +56,7 @@ func TestRenderHTMLToFileWithBase_NestedDocumentImgResolvesAgainstOwnBase(t *tes
 		writePNG(t, filepath.Join(dir, "support", name), green)
 		writeFile(t, filepath.Join(dir, "support", "frame.html"), frameStyle+`<img src="`+name+`">`)
 
-		img := render(t, dir, frameStyle+`<img src="`+name+`"><iframe src="support/frame.html"></iframe>`)
+		img := renderWithBase(t, dir, 200, 200, frameStyle+`<img src="`+name+`"><iframe src="support/frame.html"></iframe>`)
 		// Outer img at y 0..40; iframe at y 40..140, its img at y 40..80.
 		assertPixel(t, img, 20, 20, red, "outer img (decoy reachable)")
 		assertPixel(t, img, 20, 60, green, "nested img")
@@ -97,10 +71,40 @@ func TestRenderHTMLToFileWithBase_NestedDocumentImgResolvesAgainstOwnBase(t *tes
 		writeFile(t, filepath.Join(dir, "a", "frame.html"), frameStyle+`<iframe src="b/inner.html"></iframe>`)
 		writeFile(t, filepath.Join(dir, "a", "b", "inner.html"), frameStyle+`<img src="`+name+`">`)
 
-		img := render(t, dir, frameStyle+`<img src="`+name+`"><iframe src="a/frame.html"></iframe>`)
+		img := renderWithBase(t, dir, 200, 200, frameStyle+`<img src="`+name+`"><iframe src="a/frame.html"></iframe>`)
 		// Outer img at y 0..40; a/frame.html at y 40..140; its iframe at
 		// y 40..140, whose img is at y 40..80.
 		assertPixel(t, img, 20, 20, red, "outer img (decoy reachable)")
 		assertPixel(t, img, 20, 60, green, "depth-2 nested img")
 	})
+}
+
+// renderWithBase renders doc as a document in basePath at width x height
+// through RenderHTMLToFileWithBase and returns the decoded output.
+func renderWithBase(t *testing.T, basePath string, width, height int, doc string) image.Image {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "out.png")
+	if err := RenderHTMLToFileWithBase(doc, out, width, height, basePath); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+// assertPixel reports an error unless img's pixel at (x, y) is want.
+func assertPixel(t *testing.T, img image.Image, x, y int, want color.RGBA, what string) {
+	t.Helper()
+	r, g, b, a := img.At(x, y).RGBA()
+	got := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+	if got != want {
+		t.Errorf("%s: pixel (%d,%d) = %v, want %v", what, x, y, got, want)
+	}
 }

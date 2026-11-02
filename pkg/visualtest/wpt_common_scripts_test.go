@@ -2,20 +2,16 @@ package visualtest
 
 import (
 	"image/color"
-	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// TestWPTCommonScripts_ReftestWaitRemovedByTakeScreenshot pins that a corpus
-// document loading WPT's shared /common/reftest-wait.js and
-// /common/rendering-utils.js runs the upstream scripts: wptserve serves
-// /common/ from the doc root, so both resolve to wpt-css3/common/, and
-// upstream takeScreenshot() removes the root's `reftest-wait` class
-// (common/reftest-wait.js), which is wptrunner's signal to take the
-// screenshot. A style keyed on html.reftest-wait therefore must not apply
-// in the captured render. No Blink analog: test-harness data.
+// TestWPTCommonScripts_ReftestWaitRemovedByTakeScreenshot pins that corpus
+// documents run WPT's upstream /common/ scripts (served from the wpt-css3 doc
+// root, as wptserve serves them): upstream takeScreenshot() removes the root's
+// reftest-wait class, so a style keyed on html.reftest-wait must not apply in
+// the render. No Blink analog: test-harness data.
 func TestWPTCommonScripts_ReftestWaitRemovedByTakeScreenshot(t *testing.T) {
 	for _, rel := range []string{"common/reftest-wait.js", "common/rendering-utils.js"} {
 		if _, err := os.Stat(filepath.Join("testdata", "wpt-css3", rel)); err != nil {
@@ -38,23 +34,6 @@ waitForAtLeastOneFrame().then(takeScreenshot);
 </script>
 </html>`
 	// Any directory inside the wpt-css3 corpus gives the wpt-css3 doc root.
-	base := filepath.Join("testdata", "wpt-css3", "css-transforms")
-	out := filepath.Join(t.TempDir(), "out.png")
-	if err := RenderHTMLToFileWithBase(doc, out, 100, 100, base); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	f, err := os.Open(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	img, err := png.Decode(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, g, b, a := img.At(20, 20).RGBA()
-	got := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
-	if want := (color.RGBA{0, 128, 0, 255}); got != want {
-		t.Errorf("pixel (20,20) = %v, want %v (reftest-wait class still on the root)", got, want)
-	}
+	img := renderWithBase(t, filepath.Join("testdata", "wpt-css3", "css-transforms"), 100, 100, doc)
+	assertPixel(t, img, 20, 20, color.RGBA{0, 128, 0, 255}, "reftest-wait class removed from the root")
 }
