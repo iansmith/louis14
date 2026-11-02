@@ -164,15 +164,22 @@ func (t *Tokenizer) readTagName() string {
 	return strings.ToLower(t.input[start:t.pos])
 }
 
+// readAttribute reads one attribute. Its name starts with whatever
+// character the before-attribute-name state sees (a `"`, `'`, `<` or `=`
+// there is a parse error but still starts the name) and runs to whitespace,
+// `/`, `=`, `>` or EOF; any other character, quotes included, is appended
+// (HTMLTokenizer kBeforeAttributeNameState / kAttributeNameState,
+// core/html/parser/html_tokenizer.cc:831-880 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; HTML §13.2.5.32-33).
 func (t *Tokenizer) readAttribute() (string, string, error) {
 	start := t.pos
-	for t.pos < len(t.input) && isAttributeNameChar(t.input[t.pos]) {
+	if t.pos < len(t.input) {
+		t.pos++
+	}
+	for t.pos < len(t.input) && !isAttributeNameEnd(t.input[t.pos]) {
 		t.pos++
 	}
 	name := strings.ToLower(t.input[start:t.pos])
-	if name == "" {
-		return "", "", fmt.Errorf("expected attribute name at position %d", t.pos)
-	}
 	t.skipWhitespace()
 	if t.pos >= len(t.input) || t.input[t.pos] != '=' {
 		return name, "", nil
@@ -316,6 +323,12 @@ func isTagNameChar(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
 }
 
-func isAttributeNameChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':' || c == '.'
+// isAttributeNameEnd reports whether c ends an attribute name
+// (ScanFlags::kAttributeNameSpecial: tokenizer whitespace, `/`, `=`, `>`).
+func isAttributeNameEnd(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\f', '\r', '/', '=', '>':
+		return true
+	}
+	return false
 }
