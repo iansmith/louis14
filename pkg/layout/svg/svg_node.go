@@ -29,7 +29,7 @@ type SVGNode interface {
 
 	// LocalTransform returns the affine transform this node applies to
 	// its own content: for shapes and <g>, the parsed `transform="…"`
-	// attribute (the CSS transform composes on top at paint time,
+	// attribute (a specified CSS transform replaces it at paint time,
 	// ElementTransform). Mirrors Blink's
 	// LayoutSVGModelObject::LocalSVGTransform.
 	LocalTransform() geometry.AffineTransform

@@ -279,12 +279,8 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // against TransformHelper::ComputeReferenceBox (the view box by default) and
 // applies transform-origin; louis14 does not plumb the reference box here
 // yet, so percentages resolve against an empty box and the origin is left
-// out (the CSS default for SVG elements is 0 0).
-//
-// Per SVG 2 §7.5, when both the SVG `transform` attribute and a CSS
-// `transform` are present, the effective transform is `cssT ∘ svgT`
-// (the SVG attribute is the inner transform; CSS applies on top of
-// it). Callers should compose accordingly.
+// out (the CSS default for SVG elements is 0 0). ElementTransform combines
+// it with the SVG `transform` attribute.
 func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
 	if style == nil || !style.HasTransform() {
 		return geometry.Identity()
@@ -295,9 +291,28 @@ func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
 }
 
 // ElementTransform returns the transform an SVG node paints its content
-// with: its CSS transform composed on top of its SVG `transform`
-// attribute (SVG 2 §7.5), the louis14 counterpart of Blink's
-// LocalSVGTransform.
+// with, the louis14 counterpart of Blink's LocalSVGTransform. The
+// `transform` attribute is a presentation attribute for the CSS
+// `transform` property (SVGElement::CollectStyleForPresentationAttribute
+// maps it to CSSPropertyID::kTransform, core/svg/svg_element.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a specified CSS `transform`
+// replaces it; otherwise the attribute stands in for the transform list,
+// after the translate, rotate and scale properties
+// (ComputedStyle::ApplyTransform's order). louis14 keeps the attribute on
+// the node rather than in the cascade (LOU-648).
 func ElementTransform(n SVGNode, style *css.Style) geometry.AffineTransform {
-	return ParseCSSTransformForSVG(style).Compose(n.LocalTransform())
+	if style == nil {
+		return n.LocalTransform()
+	}
+	_, specified := style.Properties["transform"]
+	if !specified && style.Translate() == nil && style.Rotate() == nil && style.Scale() == nil {
+		return n.LocalTransform()
+	}
+	var m geometry.Transform
+	style.ApplyTransform(&m, geometry.RectF{}, css.ApplyTransformOperations(specified), css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	t := geometry.AffineTransformFromTransform(m)
+	if specified {
+		return t
+	}
+	return t.Compose(n.LocalTransform())
 }

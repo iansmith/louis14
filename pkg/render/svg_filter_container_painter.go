@@ -107,7 +107,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		float64(-region.Min.X), float64(-region.Min.Y),
 	).Compose(pctx.DeviceFromUser)
 
-	// Apply the container's own SVG + CSS transform inside the buffer.
+	// Apply the container's own transform (ElementTransform) inside the buffer.
 	// Mirrors paintSVGContainer's pushScopedSVGTransform — the
 	// container's transform stack participates in the source-graphic
 	// painting just like in the un-filtered path.

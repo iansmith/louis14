@@ -85,9 +85,8 @@ func (sp *svgShapePainter) paint() {
 		return
 	}
 
-	// The shape's transform: its SVG `transform` attribute with the CSS
-	// `transform` composed on top, as paintSVGContainer composes a
-	// container's (SVG 2 §7.5). The scope guard wraps the path build,
+	// The shape's transform (svg.ElementTransform: its CSS transform, or
+	// its SVG transform attribute), as for a container. The scope guard wraps the path build,
 	// fill and stroke so rasterization happens in the transformed
 	// coordinate space. Mirrors Blink's SVGShapePainter applying
 	// LocalSVGTransform via a ScopedSVGTransformState.

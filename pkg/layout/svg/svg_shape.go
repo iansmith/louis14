@@ -80,8 +80,8 @@ type SVGShape struct {
 	Style *css.Style
 
 	// transform is the parsed SVG `transform` attribute (identity when
-	// absent); the CSS transform composes on top of it at paint time, as
-	// for SVGContainer.
+	// absent); a specified CSS transform replaces it at paint time
+	// (ElementTransform), as for SVGContainer.
 	transform geometry.AffineTransform
 }
 
@@ -132,7 +132,7 @@ func (s *SVGShape) ObjectBoundingBox() geometry.RectF {
 // is the element's transform (LayoutSVGShape::UpdateLocalTransform,
 // core/layout/svg/layout_svg_shape.cc @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Like SVGContainer's, it
-// excludes the CSS transform, which the painter composes on top.
+// excludes the CSS transform, which replaces it at paint time.
 func (s *SVGShape) LocalTransform() geometry.AffineTransform {
 	return s.transform
 }
