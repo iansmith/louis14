@@ -398,7 +398,7 @@ func interpolateValue(prop, from, to string, t float64, base *Style) string {
 	// lists), the discrete fallback below matches Blink's own
 	// matrix-interpolation failure path (progress < 0.5 ? from : to).
 	if prop == "transform" {
-		if interp, ok := interpolateTransformList(from, to, t); ok {
+		if interp, ok := interpolateTransformList(from, to, t, styleConversionData(base)); ok {
 			return interp
 		}
 	}
@@ -556,9 +556,9 @@ func interpolateLengthPair(from, to string, t float64, base *Style) (string, boo
 // need the matrix decomposition louis14 does not implement) report !ok; the
 // caller's discrete fallback then matches Blink's matrix-interpolation
 // failure path.
-func interpolateTransformList(from, to string, t float64) (string, bool) {
-	fromOps, fok := parseTransformListOrNone(from)
-	toOps, tok := parseTransformListOrNone(to)
+func interpolateTransformList(from, to string, t float64, ctx calcContext) (string, bool) {
+	fromOps, fok := parseTransformListOrNone(from, ctx)
+	toOps, tok := parseTransformListOrNone(to, ctx)
 	if !fok || !tok {
 		return "", false
 	}
@@ -589,15 +589,24 @@ func interpolateTransformList(from, to string, t float64) (string, bool) {
 	return serializeTransforms(result), true
 }
 
+// styleConversionData returns the element's length conversion data, or the
+// initial style's for a nil base.
+func styleConversionData(base *Style) calcContext {
+	if base == nil {
+		return initialConversionData()
+	}
+	return base.cssToLengthConversionData()
+}
+
 // parseTransformListOrNone parses a transform value, treating `none` as the
 // empty operation list (per css-transforms, `none` blends as the matching
 // identity list). Reports false for unparseable values.
-func parseTransformListOrNone(val string) ([]Transform, bool) {
+func parseTransformListOrNone(val string, ctx calcContext) ([]Transform, bool) {
 	val = strings.TrimSpace(val)
 	if val == "none" {
 		return nil, true
 	}
-	ops := parseTransforms(val)
+	ops := parseTransforms(val, ctx)
 	if len(ops) == 0 {
 		return nil, false
 	}
@@ -627,7 +636,9 @@ func canBlendTransforms(a, b Transform) bool {
 		return a.Values[0] == b.Values[0] && a.Values[1] == b.Values[1] && a.Values[2] == b.Values[2]
 	}
 	for i := range a.IsPercent {
-		if a.IsPercent[i] != b.IsPercent[i] {
+		// A zero component is both 0px and 0% (the computed Length does not
+		// keep the unit of a zero), so it blends with either kind.
+		if a.IsPercent[i] != b.IsPercent[i] && a.Values[i] != 0 && b.Values[i] != 0 {
 			return false
 		}
 	}
@@ -663,15 +674,17 @@ func identityTransformLike(op Transform) (Transform, bool) {
 
 // blendTransform lerps two blendable transform operations component-wise.
 func blendTransform(a, b Transform, t float64) Transform {
-	// a.IsPercent is shared, not copied: the blended op is serialized and
-	// discarded without mutation.
 	out := Transform{
 		Type:      a.Type,
 		Values:    make([]float64, len(a.Values)),
-		IsPercent: a.IsPercent,
+		IsPercent: append([]bool(nil), a.IsPercent...),
 	}
 	for i := range a.Values {
 		out.Values[i] = a.Values[i] + (b.Values[i]-a.Values[i])*t
+		// A zero endpoint takes the other endpoint's kind (canBlendTransforms).
+		if i < len(out.IsPercent) && a.Values[i] == 0 {
+			out.IsPercent[i] = b.IsPercent[i]
+		}
 	}
 	return out
 }

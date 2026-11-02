@@ -153,7 +153,7 @@ func transitionValuesInterpolable(prop, from, to string, base *Style) bool {
 		_, ok := interpolateFilterValue(from, to, 0.5)
 		return ok
 	case "transform":
-		_, ok := interpolateTransformList(from, to, 0.5)
+		_, ok := interpolateTransformList(from, to, 0.5, styleConversionData(base))
 		return ok
 	}
 	if isColorProperty(prop) {
@@ -270,6 +270,8 @@ func transitionProperty(n *html.Node, prop string, timing Timing, newStyle, oldS
 	// idempotent and the selector caches fonts. A line-height already computed
 	// to px from the after-change font stays as computed, as for em (LOU-418).
 	applyFontAndLineHeight(newStyle, styles[n.Parent])
+	// The transitioned text (or font) changes the computed transform values.
+	newStyle.applyTransformConversions()
 	if inheritableProperties[prop] {
 		for _, c := range n.Children {
 			propagateInheritedTransitionValue(c, prop, newVal, val, styles)
@@ -299,6 +301,7 @@ func propagateInheritedTransitionValue(n *html.Node, prop, newVal, val string, s
 		}
 		s.Properties[prop] = val
 		applyFontAndLineHeight(s, styles[n.Parent])
+		s.applyTransformConversions()
 	}
 	for _, c := range n.Children {
 		propagateInheritedTransitionValue(c, prop, newVal, val, styles)

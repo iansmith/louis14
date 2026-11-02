@@ -1486,6 +1486,7 @@ func resolvePseudoInheritKeyword(finalStyle *Style, parentStyles []*Style) {
 		}
 		if parentVal, ok := parent.Get(property); ok {
 			finalStyle.Set(property, parentVal)
+			inheritComputedValue(finalStyle, parent, property)
 		} else {
 			delete(finalStyle.Properties, property)
 		}
@@ -1947,6 +1948,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// The pseudo-element's lengths compute against its now-final font, as
 	// an element's do in applyStylesToNode.
 	absolutizeComputedLengths(finalStyle)
+	finalStyle.applyTransformConversions()
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
 	// explicitly set by a rule. GetDisplay() defaults to DisplayBlock for
@@ -2556,6 +2558,7 @@ func resolveInheritKeywords(node *html.Node, style *Style, styles map[*html.Node
 				if parentStyle, ok := styles[node.Parent]; ok {
 					if parentVal, ok := parentStyle.Get(property); ok {
 						style.Set(property, parentVal)
+						inheritComputedValue(style, parentStyle, property)
 						continue
 					}
 				}
@@ -3270,6 +3273,9 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// so compute them now that the font is final (@container rules
 		// included); an inheriting child then copies the px value.
 		absolutizeComputedLengths(style)
+		// transform and transform-origin compute their lengths to absolute
+		// values at the same point (StyleBuilderConverter).
+		style.applyTransformConversions()
 		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
 		// Must run AFTER longhand resolution so this element's contribution sees
 		// final text-decoration-line/style/color/thickness values. Mirrors

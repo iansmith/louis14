@@ -221,6 +221,30 @@ type Style struct {
 	// Empty for styles that never went through it (anonymous boxes); read
 	// through OriginalDisplay.
 	originalDisplay DisplayType
+
+	// transform and transformOrigin are the computed `transform` and
+	// `transform-origin` values (ComputedStyle::Transform /
+	// GetTransformOrigin), set at computed-value time or copied by
+	// `inherit`. Each is valid only while the property text still equals
+	// its Source; otherwise Transform / GetTransformOrigin compute from the
+	// text. Shared by Clone; never mutated in place.
+	transform       *computedTransform
+	transformOrigin *computedTransformOrigin
+}
+
+// computedTransform is a computed transform list with the property text it
+// was computed from, and whether `inherit` copied it from the parent.
+type computedTransform struct {
+	ops       TransformOperations
+	source    string
+	inherited bool
+}
+
+// computedTransformOrigin is computedTransform for transform-origin.
+type computedTransformOrigin struct {
+	origin    TransformOrigin
+	source    string
+	inherited bool
 }
 
 func NewStyle() *Style {
@@ -244,6 +268,8 @@ func (s *Style) Clone() *Style {
 	dst.UAShadowHostData = s.UAShadowHostData // shared by reference; never mutated after AdjustHostStyle
 	dst.isInBlockifyingDisplay = s.isInBlockifyingDisplay
 	dst.originalDisplay = s.originalDisplay
+	dst.transform = s.transform
+	dst.transformOrigin = s.transformOrigin
 	return dst
 }
 
@@ -9698,20 +9724,83 @@ type Transform struct {
 	IsPercent []bool
 }
 
-// GetTransforms parses the transform property and returns a list of transforms
-func (s *Style) GetTransforms() []Transform {
-	if val, ok := s.Get("transform"); ok {
-		if val == "none" {
-			return nil
-		}
-		return parseTransforms(val)
+// Transform returns the computed `transform` list. Mirrors
+// ComputedStyle::Transform(): the cascade computes it once lengths can be
+// absolutized (applyTransformConversions) and `inherit` copies the parent's
+// computed list (resolveInheritKeywords); a style built outside the cascade
+// computes it from the property text against its own conversion data.
+func (s *Style) Transform() TransformOperations {
+	if s.transform != nil && s.transform.source == s.Properties["transform"] {
+		return s.transform.ops
 	}
-	return nil
+	val, ok := s.Get("transform")
+	if !ok {
+		return TransformOperations{}
+	}
+	return CreateTransformOperations(val, s.cssToLengthConversionData())
+}
+
+// GetTransformOrigin returns the computed transform-origin. Mirrors
+// ComputedStyle::GetTransformOrigin(), computed and inherited like Transform.
+func (s *Style) GetTransformOrigin() TransformOrigin {
+	if s.transformOrigin != nil && s.transformOrigin.source == s.Properties["transform-origin"] {
+		return s.transformOrigin.origin
+	}
+	val, ok := s.Get("transform-origin")
+	if !ok {
+		return initialTransformOrigin
+	}
+	return convertTransformOrigin(val, s.cssToLengthConversionData())
+}
+
+// applyTransformConversions computes the transform and transform-origin
+// values at computed-value time, the StyleBuilderConverter step
+// (ConvertTransformOperations / ConvertTransformOrigin,
+// style_builder_converter.cc:3269, :3276 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A value `inherit` copied for
+// the current text is kept; anything else recomputes against the current
+// font, so a caller that changed the text or the font (transitions) can
+// re-run it.
+func (s *Style) applyTransformConversions() {
+	if t := s.transform; t == nil || !t.inherited || t.source != s.Properties["transform"] {
+		s.transform = nil
+		s.transform = &computedTransform{ops: s.Transform(), source: s.Properties["transform"]}
+	}
+	if o := s.transformOrigin; o == nil || !o.inherited || o.source != s.Properties["transform-origin"] {
+		s.transformOrigin = nil
+		s.transformOrigin = &computedTransformOrigin{origin: s.GetTransformOrigin(), source: s.Properties["transform-origin"]}
+	}
+}
+
+// inheritComputedValue copies the parent's computed value for a property
+// whose computed value is not its text, after `inherit` copied the text:
+// the child takes the parent's absolutized lengths, not its specified em
+// (Blink's StyleBuilder ApplyInherit copies ComputedStyle::Transform() /
+// GetTransformOrigin()).
+func inheritComputedValue(style, parentStyle *Style, property string) {
+	switch property {
+	case "transform":
+		style.transform = &computedTransform{ops: parentStyle.Transform(), source: style.Properties[property], inherited: true}
+	case "transform-origin":
+		style.transformOrigin = &computedTransformOrigin{origin: parentStyle.GetTransformOrigin(), source: style.Properties[property], inherited: true}
+	}
+}
+
+// HasTransformOperations mirrors ComputedStyle::HasTransformOperations
+// (computed_style.h:2128-2130 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasTransformOperations() bool { return !s.Transform().IsEmpty() }
+
+// GetTransforms returns the transform list in the legacy css.Transform form
+// (translate percentages unresolved, flagged by IsPercent) for the callers
+// not yet on TransformOperations. Bridge, removed when they apply
+// TransformOperations directly (worklist D2 M3).
+func (s *Style) GetTransforms() []Transform {
+	return legacyTransforms(s.Transform(), nil)
 }
 
 // ResolvedTransformOperations returns the box's transform operations in
 // application order — the individual translate, rotate and scale
-// properties, then the transform list — with translate percentages resolved
+// properties, then the transform list — with translate lengths resolved
 // against the boxW x boxH reference box. Mirrors the operation order of
 // Blink's ComputedStyle::ApplyTransform (translate, rotate, scale, then
 // transform). Nil when the box has none.
@@ -9732,335 +9821,93 @@ func (s *Style) ResolvedTransformOperations(boxW, boxH float64) []Transform {
 	if sx, sy, ok := s.GetIndividualScale(); ok {
 		ops = append(ops, Transform{Type: "scale", Values: []float64{sx, sy}})
 	}
-	for _, t := range s.GetTransforms() {
-		resolved := Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
-		copy(resolved.Values, t.Values)
-		if t.Type == "translate" {
-			if len(resolved.Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
-				resolved.Values[0] = (resolved.Values[0] / 100) * boxW
-			}
-			if len(resolved.Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
-				resolved.Values[1] = (resolved.Values[1] / 100) * boxH
-			}
-		}
-		ops = append(ops, resolved)
-	}
-	return ops
+	return append(ops, legacyTransforms(s.Transform(), &geometry.SizeF{Width: boxW, Height: boxH})...)
 }
 
-// parseTransforms parses transform functions (e.g., "translate(10px, 20px) rotate(45deg)")
-func parseTransforms(val string) []Transform {
-	transforms := make([]Transform, 0)
-
-	// Simple parser for transform functions
-	i := 0
-	for i < len(val) {
-		// Skip whitespace
-		for i < len(val) && val[i] == ' ' {
-			i++
-		}
-		if i >= len(val) {
-			break
-		}
-
-		// Find function name
-		start := i
-		for i < len(val) && val[i] != '(' {
-			i++
-		}
-		if i >= len(val) {
-			break
-		}
-
-		funcName := val[start:i]
-		i++ // Skip '('
-
-		// Find function arguments
-		argStart := i
-		depth := 1
-		for i < len(val) && depth > 0 {
-			if val[i] == '(' {
-				depth++
-			} else if val[i] == ')' {
-				depth--
-			}
-			i++
-		}
-
-		args := val[argStart : i-1]
-
-		// Parse the transform
-		transform := parseTransformFunction(funcName, args)
-		if transform != nil {
-			transforms = append(transforms, *transform)
-		}
-	}
-
-	return transforms
+// parseTransforms parses a transform value text into the legacy form, with
+// lengths converted against ctx (the animation path, which interpolates
+// value text). Bridge with GetTransforms.
+func parseTransforms(val string, ctx calcContext) []Transform {
+	return legacyTransforms(CreateTransformOperations(val, ctx), nil)
 }
 
-// parseTransformFunction parses a single transform function
-func parseTransformFunction(name, args string) *Transform {
-	name = strings.TrimSpace(name)
-	args = strings.TrimSpace(args)
-	// CSS function names are case-insensitive per CSS Syntax §4.3.10.
-	// Normalise to the canonical mixed-case spelling so test authors who
-	// write `rotatex(180deg)`, `ROTATEY(45deg)`, etc. hit the same branches
-	// as the canonical spelling.
-	switch strings.ToLower(name) {
-	case "translatex":
-		name = "translateX"
-	case "translatey":
-		name = "translateY"
-	case "translatez":
-		name = "translateZ"
-	case "translate3d":
-		name = "translate3d"
-	case "scalex":
-		name = "scaleX"
-	case "scaley":
-		name = "scaleY"
-	case "scalez":
-		name = "scaleZ"
-	case "scale3d":
-		name = "scale3d"
-	case "rotatex":
-		name = "rotateX"
-	case "rotatey":
-		name = "rotateY"
-	case "rotatez":
-		name = "rotateZ"
-	case "rotate3d":
-		name = "rotate3d"
-	case "skewx":
-		name = "skewX"
-	case "skewy":
-		name = "skewY"
-	case "matrix3d":
-		name = "matrix3d"
-	case "translate", "scale", "rotate", "skew", "matrix", "perspective":
-		name = strings.ToLower(name)
+// legacyLengthComponent returns l as a legacy (value, isPercent) component:
+// a plain percentage stays a percentage, anything else resolves against a
+// zero basis. Bridge with GetTransforms.
+func legacyLengthComponent(l Length) (float64, bool) {
+	if l.IsPercent() {
+		return l.Percent, true
 	}
-
-	switch name {
-	case "translate":
-		// translate(x, y) or translate(x)
-		parts := strings.Split(args, ",")
-		values := make([]float64, 0, 2)
-		pct := make([]bool, 0, 2)
-		for _, part := range parts {
-			if v, isPct, ok := parseTransformValue(strings.TrimSpace(part)); ok {
-				values = append(values, v)
-				pct = append(pct, isPct)
-			}
-		}
-		if len(values) == 1 {
-			values = append(values, 0)
-			pct = append(pct, false)
-		}
-		if len(values) >= 2 {
-			return &Transform{Type: "translate", Values: values[:2], IsPercent: pct[:2]}
-		}
-
-	case "translateX":
-		if v, isPct, ok := parseTransformValue(args); ok {
-			return &Transform{Type: "translate", Values: []float64{v, 0}, IsPercent: []bool{isPct, false}}
-		}
-
-	case "translateY":
-		if v, isPct, ok := parseTransformValue(args); ok {
-			return &Transform{Type: "translate", Values: []float64{0, v}, IsPercent: []bool{false, isPct}}
-		}
-
-	case "rotate":
-		// rotate(45deg)
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "rotate", Values: []float64{*val}}
-		}
-
-	case "scale":
-		// scale(x, y) or scale(x)
-		parts := strings.Split(args, ",")
-		values := make([]float64, 0)
-		for _, part := range parts {
-			if val, ok := parseScaleFactor(part); ok {
-				values = append(values, val)
-			}
-		}
-		if len(values) == 1 {
-			values = append(values, values[0]) // y defaults to x
-		}
-		if len(values) >= 2 {
-			return &Transform{Type: "scale", Values: values[:2]}
-		}
-
-	case "scaleX":
-		if val, ok := parseScaleFactor(args); ok {
-			return &Transform{Type: "scale", Values: []float64{val, 1}}
-		}
-
-	case "scaleY":
-		if val, ok := parseScaleFactor(args); ok {
-			return &Transform{Type: "scale", Values: []float64{1, val}}
-		}
-
-	case "skewX":
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "skew", Values: []float64{*val, 0}}
-		}
-
-	case "skewY":
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "skew", Values: []float64{0, *val}}
-		}
-
-	case "skew":
-		parts := strings.Split(args, ",")
-		values := make([]float64, 0)
-		for _, part := range parts {
-			if val := parseAngle(strings.TrimSpace(part)); val != nil {
-				values = append(values, *val)
-			}
-		}
-		if len(values) == 1 {
-			values = append(values, 0)
-		}
-		if len(values) >= 2 {
-			return &Transform{Type: "skew", Values: values[:2]}
-		}
-
-	case "matrix":
-		// matrix(a, b, c, d, e, f) — 2D affine transform matrix
-		// a=XX, b=YX, c=XY, d=YY, e=X0, f=Y0
-		parts := strings.Split(args, ",")
-		values := make([]float64, 0)
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if val, err := strconv.ParseFloat(part, 64); err == nil {
-				values = append(values, val)
-			}
-		}
-		if len(values) == 6 {
-			return &Transform{Type: "matrix", Values: values}
-		}
-
-	// 3D transform functions (CSS Transforms L2 §11). louis14 doesn't render
-	// a true 3D scene, but it must recognise these so back-face computation
-	// (IsBackFaceVisible) and stacking-context tracking work correctly.
-	// Tagged with their own Type strings so 2D paint sites can ignore them
-	// while back-face / preserve-3d code paths consume them. Mirrors Blink's
-	// TransformOperations table at
-	// third_party/blink/renderer/platform/transforms/transform_operations.h
-	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	case "rotateX":
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "rotateX", Values: []float64{*val}}
-		}
-	case "rotateY":
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "rotateY", Values: []float64{*val}}
-		}
-	case "rotateZ":
-		// rotateZ(a) == rotate(a) in the 2D plane; emit as 2D rotate so the
-		// existing paint path renders it correctly.
-		if val := parseAngle(args); val != nil {
-			return &Transform{Type: "rotate", Values: []float64{*val}}
-		}
-	case "rotate3d":
-		// rotate3d(x, y, z, angle) — 4 args, last is the angle.
-		parts := strings.Split(args, ",")
-		if len(parts) == 4 {
-			x, errX := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-			y, errY := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			z, errZ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-			ang := parseAngle(strings.TrimSpace(parts[3]))
-			if errX == nil && errY == nil && errZ == nil && ang != nil {
-				return &Transform{Type: "rotate3d", Values: []float64{x, y, z, *ang}}
-			}
-		}
-	case "scaleZ":
-		if val, err := strconv.ParseFloat(args, 64); err == nil {
-			return &Transform{Type: "scaleZ", Values: []float64{val}}
-		}
-	case "scale3d":
-		parts := strings.Split(args, ",")
-		if len(parts) == 3 {
-			sx, errX := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-			sy, errY := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			sz, errZ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-			if errX == nil && errY == nil && errZ == nil {
-				return &Transform{Type: "scale3d", Values: []float64{sx, sy, sz}}
-			}
-		}
-	case "translateZ":
-		// translateZ accepts a length only; no useful px width context
-		// (no reference axis), so parse as a bare length.
-		if v, _, ok := parseTransformValue(args); ok {
-			return &Transform{Type: "translateZ", Values: []float64{v}}
-		}
-	case "translate3d":
-		parts := strings.Split(args, ",")
-		if len(parts) == 3 {
-			tx, txPct, okx := parseTransformValue(strings.TrimSpace(parts[0]))
-			ty, tyPct, oky := parseTransformValue(strings.TrimSpace(parts[1]))
-			tz, _, okz := parseTransformValue(strings.TrimSpace(parts[2]))
-			if okx && oky && okz {
-				return &Transform{
-					Type:      "translate3d",
-					Values:    []float64{tx, ty, tz},
-					IsPercent: []bool{txPct, tyPct, false},
-				}
-			}
-		}
-	case "matrix3d":
-		// matrix3d(m00..m33) — column-major 4x4 matrix; 16 args.
-		parts := strings.Split(args, ",")
-		if len(parts) == 16 {
-			values := make([]float64, 0, 16)
-			ok := true
-			for _, part := range parts {
-				v, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
-				if err != nil {
-					ok = false
-					break
-				}
-				values = append(values, v)
-			}
-			if ok {
-				return &Transform{Type: "matrix3d", Values: values}
-			}
-		}
-	case "perspective":
-		// perspective(<length>) — used only for back-face math here.
-		if v, _, ok := parseTransformValue(args); ok {
-			return &Transform{Type: "perspective", Values: []float64{v}}
-		}
-	}
-
-	return nil
+	return l.ValueForLength(0), false
 }
 
-// parseTransformValue parses a length-or-percentage value for a translate
-// component. Returns (value, isPercent, ok). Legitimate negative pixel
-// lengths (e.g. `-50px`) are preserved — a prior sign-sentinel encoding
-// silently flipped such values into positive percentages.
-func parseTransformValue(val string) (float64, bool, bool) {
-	val = strings.TrimSpace(val)
-
-	if strings.HasSuffix(val, "%") {
-		percentStr := strings.TrimSuffix(val, "%")
-		if percent, err := strconv.ParseFloat(percentStr, 64); err == nil {
-			return percent, true, true
+// legacyTransforms converts TransformOperations to the legacy css.Transform
+// list. With size, translate lengths resolve against it; without, a
+// percentage stays a percentage (IsPercent) and a calculated length
+// resolves against a zero basis. Bridge with GetTransforms.
+func legacyTransforms(ops TransformOperations, size *geometry.SizeF) []Transform {
+	if ops.IsEmpty() {
+		return nil
+	}
+	out := make([]Transform, 0, len(ops.Operations))
+	length := func(l Length, extent func(geometry.SizeF) float64) (float64, bool) {
+		if size != nil {
+			return l.ValueForLength(extent(*size)), false
 		}
-		return 0, false, false
+		return legacyLengthComponent(l)
 	}
-
-	val = strings.TrimSuffix(val, "px")
-	if length, err := strconv.ParseFloat(val, 64); err == nil {
-		return length, false, true
+	width := func(sz geometry.SizeF) float64 { return sz.Width }
+	height := func(sz geometry.SizeF) float64 { return sz.Height }
+	for _, op := range ops.Operations {
+		switch o := op.(type) {
+		case *TranslateTransformOperation:
+			x, xPct := length(o.X, width)
+			y, yPct := length(o.Y, height)
+			switch o.typ {
+			case TransformOperationTranslateZ:
+				out = append(out, Transform{Type: "translateZ", Values: []float64{o.Z}})
+			case TransformOperationTranslate3D:
+				out = append(out, Transform{Type: "translate3d", Values: []float64{x, y, o.Z}, IsPercent: []bool{xPct, yPct, false}})
+			default:
+				out = append(out, Transform{Type: "translate", Values: []float64{x, y}, IsPercent: []bool{xPct, yPct}})
+			}
+		case *RotateTransformOperation:
+			switch o.typ {
+			case TransformOperationRotateX:
+				out = append(out, Transform{Type: "rotateX", Values: []float64{o.Angle}})
+			case TransformOperationRotateY:
+				out = append(out, Transform{Type: "rotateY", Values: []float64{o.Angle}})
+			case TransformOperationRotate3D:
+				out = append(out, Transform{Type: "rotate3d", Values: []float64{o.X, o.Y, o.Z, o.Angle}})
+			default:
+				out = append(out, Transform{Type: "rotate", Values: []float64{o.Angle}})
+			}
+		case *ScaleTransformOperation:
+			switch o.typ {
+			case TransformOperationScaleZ:
+				out = append(out, Transform{Type: "scaleZ", Values: []float64{o.Z}})
+			case TransformOperationScale3D:
+				out = append(out, Transform{Type: "scale3d", Values: []float64{o.X, o.Y, o.Z}})
+			default:
+				out = append(out, Transform{Type: "scale", Values: []float64{o.X, o.Y}})
+			}
+		case *SkewTransformOperation:
+			out = append(out, Transform{Type: "skew", Values: []float64{o.AngleX, o.AngleY}})
+		case *MatrixTransformOperation:
+			out = append(out, Transform{Type: "matrix", Values: []float64{o.A, o.B, o.C, o.D, o.E, o.F}})
+		case *Matrix3DTransformOperation:
+			v := make([]float64, 16)
+			for i := range v {
+				v[i] = o.Matrix.Rc(i%4, i/4)
+			}
+			out = append(out, Transform{Type: "matrix3d", Values: v})
+		case *PerspectiveTransformOperation:
+			if o.HasPerspective {
+				out = append(out, Transform{Type: "perspective", Values: []float64{o.Perspective}})
+			}
+		}
 	}
-
-	return 0, false, false
+	return out
 }
 
 // parseScaleFactor parses a scale() / scaleX() / scaleY() argument as a
@@ -10083,7 +9930,7 @@ func parseScaleFactor(val string) (float64, bool) {
 // round-trips (the animation path writes interpolated transform lists into
 // styles — including inline style on the element.animate() path — which are
 // re-parsed downstream). Each operation serializes in the canonical form its
-// parser produces: parseTransformFunction normalizes translateX/translateY
+// parser produces: legacyTransforms normalizes translateX/translateY
 // into "translate" and rotateZ into "rotate", so those types re-emit as the
 // normalized function. An empty list serializes as "none".
 func serializeTransforms(ops []Transform) string {
@@ -10140,73 +9987,14 @@ func parseAngle(val string) *float64 {
 	return &deg
 }
 
-// TransformOrigin represents the transform-origin property
-type TransformOrigin struct {
-	X float64 // 0.0 = left, 0.5 = center, 1.0 = right
-	Y float64 // 0.0 = top, 0.5 = center, 1.0 = bottom
-}
-
-// GetTransformOrigin parses transform-origin (default: center center = 50% 50%)
-func (s *Style) GetTransformOrigin() TransformOrigin {
-	if val, ok := s.Get("transform-origin"); ok {
-		// Paren-aware split so `calc(50% - 3px)` survives as one token.
-		parts := splitShorthandParts(val)
-		origin := TransformOrigin{X: 0.5, Y: 0.5} // Default center center
-
-		if len(parts) >= 1 {
-			origin.X = parseOriginValue(parts[0])
-		}
-		if len(parts) >= 2 {
-			origin.Y = parseOriginValue(parts[1])
-		}
-
-		return origin
-	}
-	return TransformOrigin{X: 0.5, Y: 0.5} // Default center center
-}
-
-// ResolveTransformOriginPx returns transform-origin resolved to absolute
-// pixel offsets within the element's border box, given the box dimensions.
-// Supports length, percent, calc() (including calc-with-percent), and the
-// `left/center/right/top/bottom` keywords. Returns (originX, originY) in
-// pixels, relative to the box's top-left corner. Defaults to center center.
-// Mirrors Blink's TransformOrigin::ResolveAxisFromConvert with width/height.
-//
-// Per CSS Transforms 1 §6 + CSS Values 3 §6.1 (<position>): with two values,
-// if EITHER value is `top`/`bottom`/`left`/`right`, the natural axis of the
-// keyword wins regardless of token order. Examples:
-//   - `top center`, `center top`              → x=center, y=top
-//   - `top left`, `left top`                  → x=left,   y=top
-//   - `top 10%`, `10% top`                    → x=10%,    y=top
-//   - `center 10%`                            → x=center, y=10% (no axis keyword → positional)
-//   - `10% 50%`                               → x=10%,    y=50% (no axis keyword → positional)
-//
-// The third (z-axis) component, if present, is ignored for the 2D paint
-// pipeline.
-// resolveOriginPropertyPx resolves a CSS <position>-syntax property (e.g.
-// transform-origin or perspective-origin) to pixel offsets within the element's
-// box. Shared by ResolveTransformOriginPx and ResolvePerspectiveOriginPx.
-func (s *Style) resolveOriginPropertyPx(property string, boxW, boxH float64) (float64, float64) {
-	val, ok := s.Get(property)
-	if !ok {
-		return 0.5 * boxW, 0.5 * boxH
-	}
-	parts := splitShorthandParts(val)
-	ctx := s.cssToLengthConversionData()
-	xPart, yPart := classifyOriginParts(parts)
-	x := 0.5 * boxW
-	y := 0.5 * boxH
-	if xPart != "" {
-		x = resolveOriginAxisKeywordOrLength(xPart, ctx, boxW)
-	}
-	if yPart != "" {
-		y = resolveOriginAxisKeywordOrLength(yPart, ctx, boxH)
-	}
-	return x, y
-}
-
+// ResolveTransformOriginPx returns the computed transform-origin resolved to
+// pixel offsets from the border box's top-left corner (TransformOrigin's
+// Lengths against boxW x boxH; Blink's ComputedStyle::ApplyTransform
+// FloatValueForLength). Keyword placement follows CSS Values 3 §6.1
+// <position> (classifyOriginParts): `top 10%` is x=10%, y=top.
 func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) {
-	return s.resolveOriginPropertyPx("transform-origin", boxW, boxH)
+	o := s.GetTransformOrigin()
+	return o.X.ValueForLength(boxW), o.Y.ValueForLength(boxH)
 }
 
 // ResolveTransformOriginZ returns the resolved z-axis component of
@@ -10215,17 +10003,7 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 // the renderer to include the z-origin shift when composing 3D
 // transforms before 2D projection: 4×4 matrix becomes T(0,0,oz) * M * T(0,0,-oz).
 func (s *Style) ResolveTransformOriginZ() float64 {
-	val, ok := s.Get("transform-origin")
-	if !ok {
-		return 0
-	}
-	parts := splitShorthandParts(val)
-	if len(parts) < 3 {
-		return 0
-	}
-	// Third part is always z, regardless of any x/y keyword reordering.
-	z, _ := s.GetLengthForVal(parts[2])
-	return z
+	return s.GetTransformOrigin().Z
 }
 
 // classifyOriginParts maps a list of <position> tokens to (xToken, yToken),
@@ -10281,58 +10059,6 @@ func isVerticalKeyword(val string) bool {
 		return true
 	}
 	return false
-}
-
-// resolveOriginAxisKeywordOrLength resolves a single transform-origin
-// component to absolute pixels along the given axis. boxLen is the box's
-// extent in this axis. Accepts left/top (= 0), right/bottom (= boxLen),
-// center (= 0.5*boxLen), percent, length, and math functions (including %).
-func resolveOriginAxisKeywordOrLength(val string, ctx calcContext, boxLen float64) float64 {
-	val = strings.TrimSpace(val)
-	switch val {
-	case "left", "top":
-		return 0
-	case "center":
-		return 0.5 * boxLen
-	case "right", "bottom":
-		return boxLen
-	}
-	ctx.percentBase = boxLen
-	if length, ok := computeLengthOrPercentage(val, ctx); ok {
-		return length
-	}
-	return 0.5 * boxLen // Default to center on parse failure
-}
-
-// parseOriginValue parses a single origin value (left/center/right/top/bottom or percentage)
-// Returns a 0-1 fraction. Use ResolveTransformOriginPx for calc/length-aware resolution.
-func parseOriginValue(val string) float64 {
-	val = strings.TrimSpace(val)
-
-	switch val {
-	case "left", "top":
-		return 0.0
-	case "center":
-		return 0.5
-	case "right", "bottom":
-		return 1.0
-	}
-
-	// Try percentage
-	if strings.HasSuffix(val, "%") {
-		percentStr := strings.TrimSuffix(val, "%")
-		if percent, err := strconv.ParseFloat(percentStr, 64); err == nil {
-			return percent / 100.0
-		}
-	}
-
-	// Try pixels (convert to 0-1 range... but we don't know element size here)
-	// For now, just use as-is
-	if length, ok := ParseLength(val); ok {
-		return length / 100.0 // Rough approximation
-	}
-
-	return 0.5 // Default to center
 }
 
 // GetIndividualScale returns the CSS `scale` individual transform property as (sx, sy, hasValue).
@@ -10397,14 +10123,20 @@ func (s *Style) GetIndividualTranslate() (float64, float64, bool, bool, bool) {
 		if val == "none" || val == "" {
 			return 0, 0, false, false, false
 		}
-		parts := strings.Fields(val)
+		parts := splitShorthandParts(val)
+		ctx := s.cssToLengthConversionData()
+		component := func(tok string) (float64, bool, bool) {
+			l, ok := convertLength(tok, ctx)
+			v, isPct := legacyLengthComponent(l)
+			return v, isPct, ok
+		}
 		if len(parts) == 1 {
-			if v, isPct, ok := parseTransformValue(parts[0]); ok {
+			if v, isPct, ok := component(parts[0]); ok {
 				return v, 0, isPct, false, true
 			}
 		} else if len(parts) >= 2 {
-			vx, xPct, okx := parseTransformValue(parts[0])
-			vy, yPct, oky := parseTransformValue(parts[1])
+			vx, xPct, okx := component(parts[0])
+			vy, yPct, oky := component(parts[1])
 			if okx && oky {
 				return vx, vy, xPct, yPct, true
 			}
@@ -10694,7 +10426,11 @@ func (s *Style) GetPerspective() (float64, bool) {
 // ResolveTransformOriginPx; perspective-origin uses the same <position> syntax
 // but has no z-component.
 func (s *Style) ResolvePerspectiveOriginPx(boxW, boxH float64) (float64, float64) {
-	return s.resolveOriginPropertyPx("perspective-origin", boxW, boxH)
+	origin := initialTransformOrigin
+	if val, ok := s.Get("perspective-origin"); ok {
+		origin = convertTransformOrigin(val, s.cssToLengthConversionData())
+	}
+	return origin.X.ValueForLength(boxW), origin.Y.ValueForLength(boxH)
 }
 
 // ComposePerspectiveChildProjection returns the 2D homography (3×3, row-major)
