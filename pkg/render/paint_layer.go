@@ -607,10 +607,14 @@ func reparentZList(zlist []*PaintLayer, parent *PaintLayer, idx map[*html.Node]*
 			continue
 		}
 
-		// Only reparent absolutely-positioned children, not fixed-positioned.
-		// Fixed children's layout CB (which may be an ancestor's fixed-CB or
-		// the ICB) takes precedence over DOM ancestry for paint tree routing.
-		if child.Box.Position == css.PositionFixed {
+		// Only reparent absolutely-positioned children. Fixed children's
+		// layout CB (which may be an ancestor's fixed-CB or the ICB) takes
+		// precedence over DOM ancestry for paint tree routing. Every other
+		// z-ordered layer is in flow, so buildPaintSubtree already met it
+		// under its own fragment's stacking context; the node index holds
+		// only an element's first fragment and would merge a fragmented
+		// stacking context's later fragments into its first.
+		if child.Box.Position != css.PositionAbsolute {
 			filtered = append(filtered, child)
 			continue
 		}
