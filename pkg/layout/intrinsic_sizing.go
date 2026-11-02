@@ -114,8 +114,12 @@ func getCanvasIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
 }
 
 // getInlineSVGIntrinsicInfo returns intrinsic sizing info for an inline <svg>
-// element: its width/height/viewBox attributes, sized by the same rules as
-// an SVG image (svgIntrinsicInfo).
+// element from its width/height/viewBox attributes. Unlike an SVG image
+// (svgIntrinsicInfo → SVGImage::GetNaturalDimensions), one explicit
+// dimension plus a viewBox derives the other natural dimension from the
+// ratio — louis14's pre-existing inline behaviour, not yet Blink's
+// LayoutSVGRoot::UnscaledNaturalSizingInfo (layout_svg_root.cc:74-103 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func getInlineSVGIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
 	if node == nil || node.DOMNode == nil {
 		return NaturalSizingInfoNone()
@@ -149,7 +153,35 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
 			}
 		}
 	}
-	return svgIntrinsicInfo(svg)
+
+	var w, h float64
+	var ratio geometry.SizeF
+	if svg.HasViewBox {
+		ratio = geometry.SizeF{Width: svg.ViewBoxWidth, Height: svg.ViewBoxHeight}
+	}
+	switch {
+	case svg.HasExplicitWidth && svg.HasExplicitHeight:
+		w, h = svg.ExplicitWidth, svg.ExplicitHeight
+		if ratio.IsEmpty() {
+			ratio = geometry.SizeF{Width: w, Height: h}
+		}
+	case svg.HasExplicitWidth && svg.HasViewBox:
+		w = svg.ExplicitWidth
+		h = svg.ExplicitWidth / (ratio.Width / ratio.Height)
+	case svg.HasExplicitHeight && svg.HasViewBox:
+		h = svg.ExplicitHeight
+		w = svg.ExplicitHeight * (ratio.Width / ratio.Height)
+	case svg.HasExplicitWidth:
+		// Width only, no viewBox: the natural height stays absent so the
+		// CSS 2.1 §10.3.2 default (150) supplies it.
+		w = svg.ExplicitWidth
+	case svg.HasExplicitHeight:
+		// Height only, no viewBox: the CSS 2.1 default width (300) applies.
+		h = svg.ExplicitHeight
+	}
+	// No explicit dimensions: only the viewBox ratio; ComputeReplacedSize
+	// uses the 300×150 default subject to it.
+	return naturalSizingInfo(w, h, ratio)
 }
 
 // brokenImageWidth/Height are the natural size of Blink's broken-image icon,
