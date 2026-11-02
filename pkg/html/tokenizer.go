@@ -165,8 +165,9 @@ func (t *Tokenizer) readTagName() string {
 }
 
 // readAttribute reads one attribute. Its name starts with whatever
-// character the before-attribute-name state sees (a `"`, `'`, `<` or `=`
-// there is a parse error but still starts the name) and runs to whitespace,
+// character the before-attribute-name state sees (a `"`, `'` or `=` there
+// is a parse error but still starts the name; readTag handles `<` first) and
+// runs to whitespace,
 // `/`, `=`, `>` or EOF; any other character, quotes included, is appended
 // (HTMLTokenizer kBeforeAttributeNameState / kAttributeNameState,
 // core/html/parser/html_tokenizer.cc:831-880 @
