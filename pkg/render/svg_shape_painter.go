@@ -90,7 +90,7 @@ func (sp *svgShapePainter) paint() {
 	// fill and stroke so rasterization happens in the transformed
 	// coordinate space. Mirrors Blink's SVGShapePainter applying
 	// LocalSVGTransform via a ScopedSVGTransformState.
-	effective := svg.ElementTransform(sp.shape, style)
+	effective := svg.ElementTransform(sp.shape, style, svg.ViewBoxReferenceBox(sp.shape.Viewport))
 	if !effective.IsIdentity() {
 		guard := pushScopedSVGTransform(sp.ctx, effective, geometry.RectF{})
 		defer guard.Close()

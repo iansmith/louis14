@@ -387,6 +387,7 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		return vc
 	}
 	container := NewSVGContainer(tag)
+	container.Viewport = lengthCtx.ViewportSize()
 	if styleResolver != nil {
 		container.Style = styleResolver(elt)
 	}
@@ -531,6 +532,7 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 	// the attribute via SVGTransformList::Parse without filtering by
 	// element type.
 	container := NewSVGContainer(tag)
+	container.Viewport = lengthCtx.ViewportSize()
 	if styleResolver != nil {
 		container.Style = styleResolver(elt)
 	}

@@ -275,26 +275,51 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // through ComputedStyle::ApplyTransform and flattened with
 // AffineTransform::FromTransform, as Blink's SVGElement::CalculateTransform
 // does (core/svg/svg_element.cc; computed_style.cc:1434-1496 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink resolves percentages
-// against TransformHelper::ComputeReferenceBox (the view box by default) and
-// applies transform-origin; louis14 does not plumb the reference box here
-// yet, so percentages resolve against an empty box and the origin is left
-// out (the CSS default for SVG elements is 0 0).
-func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Percentages and
+// transform-origin resolve against referenceBox, which callers compute as
+// TransformHelper::ComputeReferenceBox does for the default transform-box,
+// view-box: the size of the nearest SVG viewport (transform_helper.cc:93-117;
+// louis14 has no fill-box / stroke-box). The UA stylesheet gives SVG
+// elements transform-origin: 0 0, the reference box's origin.
+func ParseCSSTransformForSVG(style *css.Style, referenceBox geometry.RectF) geometry.AffineTransform {
 	if style == nil || !style.HasTransform() {
 		return geometry.Identity()
 	}
-	return svgCSSTransform(style, css.IncludeTransformOperations)
+	return aroundSVGTransformOrigin(style, referenceBox, svgCSSTransform(style, css.IncludeTransformOperations, referenceBox))
+}
+
+// ViewBoxReferenceBox returns TransformHelper::ComputeReferenceBox for
+// transform-box: view-box — the nearest SVG viewport's size at the origin
+// (transform_helper.cc:104-108).
+func ViewBoxReferenceBox(viewport geometry.SizeF) geometry.RectF {
+	return geometry.RectF{Size: viewport}
 }
 
 // svgCSSTransform evaluates style's CSS transform for an SVG element —
 // ComputedStyle::ApplyTransform flattened by AffineTransform::FromTransform —
-// with or without the `transform` list (the one definition both
-// ParseCSSTransformForSVG and ElementTransform use).
-func svgCSSTransform(style *css.Style, operations css.ApplyTransformOperations) geometry.AffineTransform {
+// with or without the `transform` list, its percentages against
+// referenceBox and without transform-origin, which
+// aroundSVGTransformOrigin applies around the whole transform (the one
+// definition both ParseCSSTransformForSVG and ElementTransform use).
+func svgCSSTransform(style *css.Style, operations css.ApplyTransformOperations, referenceBox geometry.RectF) geometry.AffineTransform {
 	var m geometry.Transform
-	style.ApplyTransform(&m, geometry.RectF{}, operations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	style.ApplyTransform(&m, referenceBox, operations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
 	return geometry.AffineTransformFromTransform(m)
+}
+
+// aroundSVGTransformOrigin returns T(origin)·t·T(-origin) for the author's
+// transform-origin resolved against referenceBox
+// (TransformHelper::ComputeTransformOrigin, transform_helper.cc:173-184);
+// with none set, the SVG UA default 0 0 is the reference box origin, and t
+// is returned as is.
+func aroundSVGTransformOrigin(style *css.Style, referenceBox geometry.RectF, t geometry.AffineTransform) geometry.AffineTransform {
+	if _, authored := style.Properties["transform-origin"]; !authored {
+		return t
+	}
+	o := style.GetTransformOrigin()
+	ox := o.X.ValueForLength(referenceBox.Width()) + referenceBox.X()
+	oy := o.Y.ValueForLength(referenceBox.Height()) + referenceBox.Y()
+	return geometry.Translate(ox, oy).Compose(t).Compose(geometry.Translate(-ox, -oy))
 }
 
 // ElementTransform returns the transform an SVG node paints its content
@@ -305,19 +330,21 @@ func svgCSSTransform(style *css.Style, operations css.ApplyTransformOperations) 
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a specified CSS `transform`
 // replaces it; otherwise the attribute stands in for the transform list,
 // after the translate, rotate and scale properties
-// (ComputedStyle::ApplyTransform's order). louis14 keeps the attribute on
-// the node rather than in the cascade (LOU-648).
-func ElementTransform(n SVGNode, style *css.Style) geometry.AffineTransform {
+// (ComputedStyle::ApplyTransform's order). transform-origin wraps the
+// whole, attribute included. louis14 keeps the attribute on the node
+// rather than in the cascade (LOU-648).
+func ElementTransform(n SVGNode, style *css.Style, referenceBox geometry.RectF) geometry.AffineTransform {
 	if style == nil {
 		return n.LocalTransform()
 	}
 	_, specified := style.Properties["transform"]
-	if !specified && style.Translate() == nil && style.Rotate() == nil && style.Scale() == nil {
+	_, authoredOrigin := style.Properties["transform-origin"]
+	if !specified && !authoredOrigin && !style.HasTransform() {
 		return n.LocalTransform()
 	}
-	t := svgCSSTransform(style, css.ApplyTransformOperations(specified))
-	if specified {
-		return t
+	t := svgCSSTransform(style, css.ApplyTransformOperations(specified), referenceBox)
+	if !specified {
+		t = t.Compose(n.LocalTransform())
 	}
-	return t.Compose(n.LocalTransform())
+	return aroundSVGTransformOrigin(style, referenceBox, t)
 }
