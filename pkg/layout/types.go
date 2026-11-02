@@ -230,16 +230,7 @@ func (b *Box) CreatesStackingContext() bool {
 	// kTransform/kTranslate/kRotate/kScale unconditionally and is not a
 	// transformability check.
 	if IsTransformableBox(b.Style, b.Node) {
-		if b.Style.HasTransformOperations() {
-			return true
-		}
-		if _, _, _, _, ok := b.Style.GetIndividualTranslate(); ok {
-			return true
-		}
-		if _, ok := b.Style.GetIndividualRotate(); ok {
-			return true
-		}
-		if _, _, ok := b.Style.GetIndividualScale(); ok {
+		if b.Style.HasTransform() {
 			return true
 		}
 	}

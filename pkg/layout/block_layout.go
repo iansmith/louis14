@@ -2652,7 +2652,7 @@ func shouldPreventColumnSpannerDescendants(node *LayoutInputNode) bool {
 	// Condition 5: elements that can contain fixed-position objects
 	// (transforms, will-change:transform, filter). Mirrors Blink's
 	// CanContainFixedPositionObjects check in ShouldPreventColumnSpannerDescendants.
-	if style.HasTransformOperations() || len(style.GetFilter()) > 0 {
+	if style.HasTransform() || len(style.GetFilter()) > 0 {
 		return true
 	}
 	if v, ok := style.Get("will-change"); ok && v == "transform" {

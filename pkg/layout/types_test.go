@@ -156,11 +156,10 @@ func TestCreatesStackingContext_BlockWithScale_SC(t *testing.T) {
 
 // === Item 1 matrix fill — display × individual-property cells not covered above ===
 //
-// CreatesStackingContext (types.go:146-157) consults 4 independent
-// transform-related branches: GetTransforms (shorthand) and
-// GetIndividual{Translate,Rotate,Scale}. The eventual fix wraps all four
-// in one IsTransformableBox gate, so a copy-paste bug in any single
-// branch could silently regress one display × property combination.
+// CreatesStackingContext consults Style.HasTransform, which covers the
+// transform list and the translate, rotate and scale properties, inside one
+// IsTransformableBox gate; these cells pin every display × property
+// combination.
 //
 // The explicit tests above cover inline×{transform,translate,rotate,scale}
 // (NoSC) and block×{transform,translate,rotate,scale} (SC) — the two

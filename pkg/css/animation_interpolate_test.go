@@ -39,8 +39,8 @@ func sampleKeyframes(t *testing.T, prop, from, to string, progress float64, base
 // operation lists so tests are robust to serialization choices.
 func assertTransformsEqual(t *testing.T, got, want string) {
 	t.Helper()
-	gotOps := parseTransforms(got, initialConversionData())
-	wantOps := parseTransforms(want, initialConversionData())
+	gotOps := CreateTransformOperations(got, initialConversionData())
+	wantOps := CreateTransformOperations(want, initialConversionData())
 	if !reflect.DeepEqual(gotOps, wantOps) {
 		t.Errorf("transform mismatch:\n  got  %q -> %#v\n  want %q -> %#v", got, gotOps, want, wantOps)
 	}

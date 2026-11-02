@@ -543,50 +543,24 @@ func interpolateLengthPair(from, to string, t float64, base *Style) (string, boo
 	}
 }
 
-// interpolateTransformList blends two <transform-list> values per-operation,
-// mirroring TransformOperations::Blend + MatchingPrefixLength
-// (platform/transforms/transform_operations.cc:179, :124 @
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): operation pairs that can blend
-// do so component-wise, and when one list is a matching prefix of the other
-// the shorter list pads with identity operations (css-transforms
-// §interpolation-of-transforms). A `none` endpoint is the empty list.
-//
-// Lists whose operations cannot be paired (different function types, mixed
-// px/percent translate components, or matrix/matrix3d/perspective, which
-// need the matrix decomposition louis14 does not implement) report !ok; the
-// caller's discrete fallback then matches Blink's matrix-interpolation
-// failure path.
+// interpolateTransformList blends two <transform-list> values, mirroring
+// TransformOperations::Blend (platform/transforms/transform_operations.cc:
+// 179-215 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): matching operation
+// pairs blend per operation, the shorter list padding with identity
+// operations; a `none` endpoint is the empty list. It reports false where
+// Blink would need matrix interpolation, which louis14 does not port; the
+// caller's discrete fallback then matches Blink's failure path.
 func interpolateTransformList(from, to string, t float64, ctx calcContext) (string, bool) {
-	fromOps, fok := parseTransformListOrNone(from, ctx)
-	toOps, tok := parseTransformListOrNone(to, ctx)
+	fromOps, fok := transformListOrNone(from, ctx)
+	toOps, tok := transformListOrNone(to, ctx)
 	if !fok || !tok {
 		return "", false
 	}
-	n := len(fromOps)
-	if len(toOps) > n {
-		n = len(toOps)
+	blended, ok := toOps.Blend(fromOps, t)
+	if !ok {
+		return "", false
 	}
-	result := make([]Transform, 0, n)
-	for i := 0; i < n; i++ {
-		var a, b Transform
-		ok := true
-		switch {
-		case i < len(fromOps) && i < len(toOps):
-			a, b = fromOps[i], toOps[i]
-			ok = canBlendTransforms(a, b)
-		case i < len(fromOps):
-			a = fromOps[i]
-			b, ok = identityTransformLike(a)
-		default:
-			b = toOps[i]
-			a, ok = identityTransformLike(b)
-		}
-		if !ok {
-			return "", false
-		}
-		result = append(result, blendTransform(a, b, t))
-	}
-	return serializeTransforms(result), true
+	return blended.CSSText(), true
 }
 
 // styleConversionData returns the element's length conversion data, or the
@@ -598,95 +572,16 @@ func styleConversionData(base *Style) calcContext {
 	return base.cssToLengthConversionData()
 }
 
-// parseTransformListOrNone parses a transform value, treating `none` as the
-// empty operation list (per css-transforms, `none` blends as the matching
-// identity list). Reports false for unparseable values.
-func parseTransformListOrNone(val string, ctx calcContext) ([]Transform, bool) {
+// transformListOrNone builds a keyframe's transform operations: `none` is
+// the empty list (it blends as the matching identity list); text that
+// yields no operation reports false.
+func transformListOrNone(val string, ctx calcContext) (TransformOperations, bool) {
 	val = strings.TrimSpace(val)
 	if val == "none" {
-		return nil, true
+		return TransformOperations{}, true
 	}
-	ops := parseTransforms(val, ctx)
-	if len(ops) == 0 {
-		return nil, false
-	}
-	return ops, true
-}
-
-// canBlendTransforms reports whether two parsed transform operations can
-// blend component-wise — the louis14 analog of
-// TransformOperation::CanBlendWith consumed by MatchingPrefixLength
-// (transform_operations.cc:124 @ 4883d11f). Requirements: same function
-// type, same component count, and for translate components the same
-// px/percent kind per component (the Transform struct carries one scalar per
-// component, so a px<->percent pair would need Blink's pixels+percent Length
-// representation). rotate3d additionally requires an equal rotation axis.
-// matrix / matrix3d / perspective are excluded: Blink blends those through
-// matrix decomposition (or reciprocals for perspective), which louis14 does
-// not implement.
-func canBlendTransforms(a, b Transform) bool {
-	if a.Type != b.Type || len(a.Values) != len(b.Values) || len(a.IsPercent) != len(b.IsPercent) {
-		return false
-	}
-	switch a.Type {
-	case "matrix", "matrix3d", "perspective":
-		return false
-	case "rotate3d":
-		// Blendable only about a shared axis (x, y, z; Values[3] is the angle).
-		return a.Values[0] == b.Values[0] && a.Values[1] == b.Values[1] && a.Values[2] == b.Values[2]
-	}
-	for i := range a.IsPercent {
-		// A zero component is both 0px and 0% (the computed Length does not
-		// keep the unit of a zero), so it blends with either kind.
-		if a.IsPercent[i] != b.IsPercent[i] && a.Values[i] != 0 && b.Values[i] != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// identityTransformLike returns the identity operation matching op's type,
-// used to pad the shorter of two matching transform lists
-// (MatchingPrefixLength's identity padding, transform_operations.cc:135-138
-// @ 4883d11f). Reports false for types with no component-wise identity here
-// (matrix / matrix3d / perspective — see canBlendTransforms).
-func identityTransformLike(op Transform) (Transform, bool) {
-	id := Transform{
-		Type:      op.Type,
-		Values:    make([]float64, len(op.Values)),
-		IsPercent: append([]bool(nil), op.IsPercent...),
-	}
-	switch op.Type {
-	case "translate", "translate3d", "translateZ", "rotate", "rotateX", "rotateY", "skew":
-		// Zero values are the identity.
-	case "scale", "scaleZ", "scale3d":
-		for i := range id.Values {
-			id.Values[i] = 1
-		}
-	case "rotate3d":
-		// Same axis, zero angle.
-		copy(id.Values, op.Values[:3])
-	default:
-		return Transform{}, false
-	}
-	return id, true
-}
-
-// blendTransform lerps two blendable transform operations component-wise.
-func blendTransform(a, b Transform, t float64) Transform {
-	out := Transform{
-		Type:      a.Type,
-		Values:    make([]float64, len(a.Values)),
-		IsPercent: append([]bool(nil), a.IsPercent...),
-	}
-	for i := range a.Values {
-		out.Values[i] = a.Values[i] + (b.Values[i]-a.Values[i])*t
-		// A zero endpoint takes the other endpoint's kind (canBlendTransforms).
-		if i < len(out.IsPercent) && a.Values[i] == 0 {
-			out.IsPercent[i] = b.IsPercent[i]
-		}
-	}
-	return out
+	ops := CreateTransformOperations(val, ctx)
+	return ops, !ops.IsEmpty()
 }
 
 // parsePxOrZero parses a CSS length expressed in px (e.g. "150px") or the

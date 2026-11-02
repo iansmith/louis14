@@ -47,3 +47,32 @@ func TestApplyTransform(t *testing.T) {
 		t.Error("HasTransform")
 	}
 }
+
+// TestTransformOperationsBlend covers TransformOperations::Blend for the
+// ported cases (transform_operations.cc:179-215, the per-operation Blend @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestTransformOperationsBlend(t *testing.T) {
+	ctx := initialConversionData()
+	for _, tc := range []struct{ from, to, want string }{
+		// Matching translates; px and % blend into one Length.
+		{"translateX(0px)", "translateX(50%)", "translateX(25%)"},
+		{"translateX(10px)", "translateX(50%)", "translateX(calc(5px + 25%))"},
+		// translate vs translate3d: common primitive kTranslate3D.
+		{"translate(10px, 0px)", "translate3d(30px, 0px, 20px)", "translate3d(20px, 0px, 10px)"},
+		// Identity padding of the shorter list.
+		{"translateX(0px)", "translateX(100px) scale(3)", "translateX(50px) scale(2, 2)"},
+		// A zero rotation shares the other rotation's axis.
+		{"rotateX(0deg)", "rotateY(90deg)", "rotate3d(0, 1, 0, 45deg)"},
+	} {
+		from := CreateTransformOperations(tc.from, ctx)
+		to := CreateTransformOperations(tc.to, ctx)
+		got, ok := to.Blend(from, 0.5)
+		if !ok || got.CSSText() != tc.want {
+			t.Errorf("Blend(%q → %q, 0.5) = %q, %v; want %q", tc.from, tc.to, got.CSSText(), ok, tc.want)
+		}
+	}
+	// Different functions need matrix interpolation, which is not ported.
+	if _, ok := CreateTransformOperations("scale(2)", ctx).Blend(CreateTransformOperations("rotate(10deg)", ctx), 0.5); ok {
+		t.Error("mismatched lists blended")
+	}
+}

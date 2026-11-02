@@ -77,96 +77,6 @@ func ParseSVGTransform(value string) geometry.AffineTransform {
 	return result
 }
 
-// ParseCSSTransformForSVG converts the already-parsed CSS `transform`
-// list on the supplied computed style into a single AffineTransform.
-// Mirrors what Blink's TransformHelper::ComputeTransform does for the
-// CSS half of an SVG element's transform: collect the parsed
-// css::Transform list, fold each function into an AffineTransform,
-// and compose them left-to-right (same convention as
-// ParseSVGTransform). Percent translates are not supported here
-// because SVG-context CSS transforms resolve % against the reference
-// box (Blink: TransformHelper::ComputeReferenceBox) — Phase 3 doesn't
-// plumb the reference box yet, so percentages map to pixels through
-// the typical CSS box translate semantics (treat percent as the
-// scalar value as-is, mirroring how render.go's applyTransforms
-// does on a CSS box that hasn't been laid out — those cases don't
-// exercise SVG percent translates).
-//
-// Returns Identity() for nil style or an empty / "none" transform list.
-//
-// Per SVG 2 §7.5, when both the SVG `transform` attribute and a CSS
-// `transform` are present, the effective transform is `cssT ∘ svgT`
-// (the SVG attribute is the inner transform; CSS applies on top of
-// it). Callers should compose accordingly.
-func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
-	if style == nil {
-		return geometry.Identity()
-	}
-	list := style.GetTransforms()
-	if len(list) == 0 {
-		return geometry.Identity()
-	}
-	result := geometry.Identity()
-	first := true
-	for _, t := range list {
-		af, ok := cssTransformToAffine(t)
-		if !ok {
-			continue
-		}
-		if first {
-			result = af
-			first = false
-		} else {
-			result = result.Compose(af)
-		}
-	}
-	return result
-}
-
-// cssTransformToAffine converts a single css.Transform into an
-// AffineTransform. Mirrors the Blink TransformOperation → matrix
-// conversion path. Percent translates fall back to treating the
-// percentage as the raw float (no reference-box plumbing in Phase 3
-// — the SVG transform attribute is the dominant path for the Phase 3
-// gates; CSS percent translate on an SVG element is uncommon and
-// will be addressed when Phase 4+ wires reference-box-aware transform
-// origins).
-func cssTransformToAffine(t css.Transform) (geometry.AffineTransform, bool) {
-	switch t.Type {
-	case "translate":
-		if len(t.Values) < 2 {
-			return geometry.Identity(), false
-		}
-		return geometry.Translate(t.Values[0], t.Values[1]), true
-	case "scale":
-		if len(t.Values) < 2 {
-			return geometry.Identity(), false
-		}
-		return geometry.Scale(t.Values[0], t.Values[1]), true
-	case "rotate":
-		if len(t.Values) < 1 {
-			return geometry.Identity(), false
-		}
-		return geometry.Rotate(t.Values[0]), true
-	case "skew":
-		if len(t.Values) < 2 {
-			return geometry.Identity(), false
-		}
-		// skew(ax, ay) = matrix(1, tan(ay), tan(ax), 1, 0, 0).
-		// Use the skewX·skewY decomposition by composing the two.
-		return geometry.SkewY(t.Values[1]).Compose(geometry.SkewX(t.Values[0])), true
-	case "matrix":
-		if len(t.Values) < 6 {
-			return geometry.Identity(), false
-		}
-		return geometry.NewAffineTransform(
-			t.Values[0], t.Values[1], t.Values[2],
-			t.Values[3], t.Values[4], t.Values[5],
-		), true
-	}
-	return geometry.Identity(), false
-}
-
 // buildSVGTransformFunction builds the AffineTransform for a single
 // parsed SVG transform function (already split into a name and an
 // args list of float64). Returns false on bad arity / unknown name.
@@ -358,3 +268,28 @@ func (p *svgTransformParser) readNumber() (float64, bool) {
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+// ParseCSSTransformForSVG returns the CSS transform (the translate, rotate
+// and scale properties and the `transform` list) of an SVG element's
+// computed style as an AffineTransform, applied
+// through ComputedStyle::ApplyTransform and flattened with
+// AffineTransform::FromTransform, as Blink's SVGElement::CalculateTransform
+// does (core/svg/svg_element.cc; computed_style.cc:1434-1496 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink resolves percentages
+// against TransformHelper::ComputeReferenceBox (the view box by default) and
+// applies transform-origin; louis14 does not plumb the reference box here
+// yet, so percentages resolve against an empty box and the origin is left
+// out (the CSS default for SVG elements is 0 0).
+//
+// Per SVG 2 §7.5, when both the SVG `transform` attribute and a CSS
+// `transform` are present, the effective transform is `cssT ∘ svgT`
+// (the SVG attribute is the inner transform; CSS applies on top of
+// it). Callers should compose accordingly.
+func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
+	if style == nil || !style.HasTransform() {
+		return geometry.Identity()
+	}
+	var m geometry.Transform
+	style.ApplyTransform(&m, geometry.RectF{}, css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	return geometry.AffineTransformFromTransform(m)
+}
