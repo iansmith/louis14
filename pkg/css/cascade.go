@@ -1959,6 +1959,9 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// animation's `inherit` is computed against the same inheritance parent
 	// as above.
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	// sibling-index() / sibling-count() resolve against the originating
+	// element, before the font step (resolveTreeCountingFunctions).
+	resolveTreeCountingFunctions(node, finalStyle)
 
 	// The pseudo-element's font-size computes against the originating
 	// element's (its inheritance parent) inside applyFontAndLineHeight. This
