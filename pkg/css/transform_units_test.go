@@ -48,7 +48,7 @@ func TestParseTransforms_ScalePercentages(t *testing.T) {
 		{"scaleY(0.5)", 1, 0.5},
 	}
 	for _, tt := range tests {
-		ts := parseTransforms(tt.val)
+		ts := parseTransforms(tt.val, initialConversionData())
 		if len(ts) != 1 || ts[0].Type != "scale" || len(ts[0].Values) < 2 {
 			t.Errorf("parseTransforms(%q) = %+v, want one scale transform with 2 values", tt.val, ts)
 			continue

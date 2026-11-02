@@ -2334,7 +2334,7 @@ func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
 	}
 	var ancestors []css.Transform
 	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil && !ancestor.IsBlockInInline; ancestor = ancestor.Parent {
-		if ancestor.Node == nil && len(ancestor.Style.GetTransforms()) == 0 {
+		if ancestor.Node == nil && !ancestor.Style.HasTransformOperations() {
 			continue
 		}
 		if !ancestor.Preserves3D() {
