@@ -8,7 +8,7 @@ import (
 	"louis14/pkg/layout"
 )
 
-// TestPreserve3DAncestorTransforms_AnonymousAncestorsPassThrough: a 3D
+// TestTransformNode_AnonymousAncestorsPassThrough: a 3D
 // rendering context follows the DOM ancestor chain, so an anonymous box
 // without a transform (here the anonymous table generated around a
 // display:table-cell, CSS 2.1 §17.2.1) neither joins nor flattens it. Blink
@@ -22,7 +22,7 @@ import (
 // built it as an anonymous LayoutInputNode (no Box.LayoutNode): the
 // block-in-inline wrapper keeps the inline's DOM node and style, and in
 // Blink that inline is a non-anonymous LayoutInline.
-func TestPreserve3DAncestorTransforms_AnonymousAncestorsPassThrough(t *testing.T) {
+func TestTransformNode_AnonymousAncestorsPassThrough(t *testing.T) {
 	style := func(props ...string) *css.Style {
 		s := css.NewStyle()
 		for i := 0; i+1 < len(props); i += 2 {
@@ -38,29 +38,30 @@ func TestPreserve3DAncestorTransforms_AnonymousAncestorsPassThrough(t *testing.T
 		}
 	}
 	for _, tc := range []struct {
-		name          string
-		mid           func(outer *layout.Box) *layout.Box
-		wantAncestors int
+		name             string
+		mid              func(outer *layout.Box) *layout.Box
+		wantParticipates bool
 	}{
 		{"anonymous flat box between preserve-3d boxes", func(outer *layout.Box) *layout.Box {
 			return &layout.Box{Style: css.CreateAnonymousStyleWithDisplay(outer.Style, "table"), Parent: outer}
-		}, 1},
+		}, true},
 		{"element flat box between preserve-3d boxes", func(outer *layout.Box) *layout.Box {
 			return element(style("display", "block"), outer)
-		}, 0},
+		}, false},
 		{"block-in-inline wrapper keeping its DOM node between preserve-3d boxes", func(outer *layout.Box) *layout.Box {
 			span := &html.Node{Type: html.ElementNode, TagName: "span"}
 			return &layout.Box{Style: style("display", "block"), Parent: outer, Node: span}
-		}, 0},
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outer := element(style("transform", "rotateX(90deg)", "transform-style", "preserve-3d"), nil)
 			cell := element(style("display", "table-cell", "transform-style", "preserve-3d"), tc.mid(outer))
 			inner := element(style("transform", "rotateX(90deg)"), cell)
-			// The outer rotateX(90deg) reaches inner only through a
+			// inner shares outer's 3D rendering context only through a
 			// pass-through (anonymous) box.
-			if _, got := preserve3DAncestorTransform(inner); got != (tc.wantAncestors > 0) {
-				t.Errorf("preserve3DAncestorTransform found = %v, want %v", got, tc.wantAncestors > 0)
+			node := newTransformTreeBuilder(nil, nil).node(inner)
+			if got := node.participatesInRenderingContext() && node.RenderingContextRoot == outer; got != tc.wantParticipates {
+				t.Errorf("inner participates in outer's rendering context = %v, want %v", got, tc.wantParticipates)
 			}
 		})
 	}
