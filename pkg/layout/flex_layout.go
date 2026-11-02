@@ -10,6 +10,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/html"
 )
 
 const flexDebug = false
@@ -4837,7 +4838,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
 			}
 			if !hasExplicitMainSize {
-				if item.node.DOMNode != nil && item.node.DOMNode.TagName == "img" {
+				if html.CreatesLayoutImage(item.node.DOMNode) {
 					info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 					if info.HasAspectRatio && info.AspectRatio > 0 {
 						useAspectRatioStretch = true

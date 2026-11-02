@@ -1031,3 +1031,34 @@ func TestUAStyles_AnchorOnlyStyledWhenLink(t *testing.T) {
 		t.Errorf("bare <a> (no href): must not get UA link color, got %q", v)
 	}
 }
+
+// Blink html.css:175-183 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b (LOU-600):
+// img/video/canvas clip to the content box by default (author can override);
+// iframe/embed/object/fencedframe do so with !important, which outranks every
+// author declaration.
+func TestUAStyles_ReplacedOverflowClip(t *testing.T) {
+	ss, err := ParseStylesheet("img, object, embed { overflow: visible !important; overflow-x: auto; overflow-clip-margin: padding-box; }", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		tag      string
+		wantX    OverflowType
+		wantClip OverflowClipMarginBox
+	}{
+		{"object", OverflowClip, OverflowClipMarginContentBox},
+		{"embed", OverflowClip, OverflowClipMarginContentBox},
+		{"img", OverflowVisible, OverflowClipMarginPaddingBox}, // author !important overflow beats overflow-x: auto
+	} {
+		n := &html.Node{Type: html.ElementNode, TagName: tc.tag}
+		s := ComputeStyle(n, []*Stylesheet{ss}, 800, 600, nil)
+		m, _ := s.GetOverflowClipMargin()
+		if got := s.GetOverflowX(); got != tc.wantX || m.Box != tc.wantClip {
+			t.Errorf("<%s>: overflow-x %v, overflow-clip-margin %v; want %v, %v", tc.tag, got, m.Box, tc.wantX, tc.wantClip)
+		}
+	}
+	plain := &html.Node{Type: html.ElementNode, TagName: "canvas"}
+	if s := ComputeStyle(plain, nil, 800, 600, nil); s.GetOverflowX() != OverflowClip {
+		t.Errorf("<canvas>: overflow-x %v, want clip", s.GetOverflowX())
+	}
+}
