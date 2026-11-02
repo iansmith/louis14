@@ -941,8 +941,10 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	// its concatenated transform is non-invertible and its visual rect is
 	// empty (GeometryMapper / TransformPaintPropertyNode invertibility,
 	// paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	// We still balance the Push/Pop and transformDepth so the paint walk
-	// stays consistent.
+	// So does a layer whose own 4×4 is not invertible (scale3d(2, 2, 0); cc
+	// node_and_ancestors_are_animated_or_invertible, see
+	// isLayerTransformSingular). We still balance the Push/Pop and
+	// transformDepth so the paint walk stays consistent.
 	transformSingular := r.enterLayerTransform(layer)
 
 	if !transformSingular {
@@ -982,13 +984,14 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 // ViewPainter::PaintBoxDecorationBackground, view_painter.cc:183-201 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), then pushes and applies the
 // layer's transform and enters its transform paint context. Reports
-// whether the transform is singular (see applyTransforms). Pair with
-// exitLayerTransform.
+// whether the layer must not paint: its projection is edge-on (see
+// applyTransforms) or its 4×4 is not invertible (isLayerTransformSingular).
+// Pair with exitLayerTransform.
 func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 	r.paintViewBackground(layer)
 	if layer.HasTransform {
 		r.dc.Push()
-		singular = r.applyTransforms(layer)
+		singular = r.applyTransforms(layer) || !layer.Transform.IsInvertible()
 	}
 	if layer.HasTransformPaint {
 		r.transformDepth++
@@ -1017,7 +1020,7 @@ func (r *Renderer) exitLayerTransform(layer *PaintLayer) {
 // For each pixel: result.A = element.A * maskValue
 // where maskValue is either mask.A (alpha mode) or luminance(mask) (luminance mode).
 func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
-	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if isLayerTransformSingular(layer) {
 		return
 	}
@@ -1235,7 +1238,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // subtree is recorded into a source buffer, fed to the filter graph as
 // SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
-	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if isLayerTransformSingular(layer) {
 		return
 	}
@@ -1752,7 +1755,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 // Mirrors Blink's PaintLayer isolation step (paint_layer_painter.cc /
 // paint_layer.cc) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
-	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if isLayerTransformSingular(layer) {
 		return
 	}
@@ -1861,7 +1864,7 @@ func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 // buffer, then blend-composites the result onto the destination using the
 // specified CSS mix-blend-mode.
 func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
-	// Cull edge-on flattened transforms before setting up the offscreen buffer.
+	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if isLayerTransformSingular(layer) {
 		return
 	}
@@ -2162,7 +2165,8 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 }
 
 // isLayerTransformSingular returns true if layer.HasTransform is set and the
-// layer's flattened 2D projection is singular (edge-on / zero-area). Used to
+// layer's 4×4 transform is not invertible, or its flattened 2D projection is
+// singular (edge-on / zero-area). Used to
 // cull the layer before any paint path — including the special-effect paths
 // (HasMaskImage, HasFilter, blend, isolated) that would otherwise bypass the
 // transformSingular check in the main paintLayer body.
@@ -2174,6 +2178,20 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 func isLayerTransformSingular(layer *PaintLayer) bool {
 	if !layer.HasTransform || layer.Box == nil {
 		return false
+	}
+	// A layer whose own 4×4 transform is not invertible is skipped with its
+	// subtree, preserve-3d or not, even when its 2D projection is invertible
+	// (scale3d(2, 2, 0)). Mirrors cc's
+	// TransformNode::node_and_ancestors_are_animated_or_invertible
+	// (cc/trees/property_tree.cc:939-955: is_invertible is the node's
+	// to_parent.IsInvertible()) and the layer skip in
+	// cc/trees/draw_property_utils.cc:544-549 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. louis14 bakes animations
+	// into the style, so the has_potential_animation exemption has no
+	// counterpart; descendants of a skipped layer are not painted, which
+	// covers the ancestor half for layers painted inside it.
+	if !layer.Transform.IsInvertible() {
+		return true
 	}
 	box := layer.Box
 	// preserve-3d layers are never culled by their own projection (children
@@ -3308,7 +3326,10 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 		if bg.IsBottomLayer() {
 			r.paintFillLayerColor(layer, rect)
 		}
-		img := r.loadFillLayerImage(bg)
+		// FillLayerInfo takes the respect-orientation from the painted box's
+		// style (box_painter_base.cc:633 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		img := r.loadFillLayerImage(bg, layer.ImageOrientation)
 		if bg.Gradient != "" || !img.isNone() {
 			r.paintFillLayer(layer, ctx, rect, paintRect, bg, img)
 		}
@@ -3343,12 +3364,29 @@ type fillLayerImage struct {
 
 func (f fillLayerImage) isNone() bool { return f.raster == nil && f.svg == nil }
 
+// loadImageForPaint loads the bitmap at url as it is drawn with
+// respectOrientation: oriented under kRespectImageOrientation
+// (BitmapImage::Draw, bitmap_image.cc:343-363 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as stored otherwise. Its size
+// is then Image::SizeAsFloat(respect_orientation), so the natural sizing
+// info every painter derives from it is the oriented one
+// (StyleFetchedImage::GetNaturalSizingInfo, style_fetched_image.cc:163-176).
+// louis14 has no origin model, so StyleImage::ForceOrientationIfNecessary
+// (style_image.cc:11-19) — forcing orientation for a cross-origin image —
+// is not applied.
+func (r *Renderer) loadImageForPaint(url string, respectOrientation graphics.RespectImageOrientationEnum) (image.Image, error) {
+	if respectOrientation == graphics.RespectImageOrientation {
+		return images.OrientedImageWithFetcher(url, r.imageFetcher)
+	}
+	return images.LoadImageWithFetcher(url, r.imageFetcher)
+}
+
 // loadFillLayerImage fetches a fill layer's url() image, keeping an SVG
 // document as an SVGImage (StyleFetchedImage over an SVGImage) so it is
 // sized by its natural sizing info and drawn for its container. None when
 // the layer has no url() image or there is no fetcher (data: URIs decode
 // inline and need none).
-func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) fillLayerImage {
+func (r *Renderer) loadFillLayerImage(bg *css.FillLayer, respectOrientation graphics.RespectImageOrientationEnum) fillLayerImage {
 	if bg.Image == nil || (r.imageFetcher == nil && !stdnet.IsDataURL(bg.Image.Data.Absolute)) {
 		return fillLayerImage{}
 	}
@@ -3356,7 +3394,7 @@ func (r *Renderer) loadFillLayerImage(bg *css.FillLayer) fillLayerImage {
 	if svg := images.LoadSVGImageWithFetcher(url, r.imageFetcher); svg != nil {
 		return fillLayerImage{svg: svg}
 	}
-	img, _ := images.LoadImageWithFetcher(url, r.imageFetcher)
+	img, _ := r.loadImageForPaint(url, respectOrientation)
 	return fillLayerImage{raster: img}
 }
 
@@ -3655,11 +3693,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	// (image_painter.cc:224-247 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
 	// and the natural size the replaced content rect is fitted to is the
 	// oriented size.
-	load := images.LoadImageWithFetcher
-	if layer.ImageOrientation == graphics.RespectImageOrientation {
-		load = images.OrientedImageWithFetcher
-	}
-	img, err := load(layer.ImageSrc, r.imageFetcher)
+	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
 	if err != nil {
 		return
 	}

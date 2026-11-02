@@ -6,7 +6,6 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
-	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	stdnet "louis14/std/net"
 )
@@ -113,7 +112,11 @@ func (r *Renderer) acquireNinePieceImageSource(layer *PaintLayer, areaW, areaH i
 	if r.imageFetcher == nil && !stdnet.IsDataURL(url) {
 		return ninePieceImageSource{}, false
 	}
-	img, err := images.LoadImageWithFetcher(url, r.imageFetcher)
+	// The nine-piece painter resolves the respect-orientation from the
+	// style (nine_piece_image_painter.cc:211-218 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and slices the image at its
+	// oriented size (image.SizeAsFloat(respect_orientation), :97).
+	img, err := r.loadImageForPaint(url, layer.ImageOrientation)
 	if err != nil || img.Bounds().Dx() == 0 || img.Bounds().Dy() == 0 {
 		return ninePieceImageSource{}, false
 	}

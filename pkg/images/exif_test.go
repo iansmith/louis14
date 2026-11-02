@@ -63,3 +63,47 @@ func TestReadExifOrientation(t *testing.T) {
 		}
 	}
 }
+
+// pngWithExif builds a PNG chunk stream with an eXIf chunk (raw TIFF data)
+// placed before or after IDAT. Chunk CRCs are not checked by the reader.
+func pngWithExif(orient uint16, beforeIDAT bool) []byte {
+	var tiff bytes.Buffer
+	tiff.WriteString("MM")
+	binary.Write(&tiff, binary.BigEndian, uint16(42))
+	binary.Write(&tiff, binary.BigEndian, uint32(8))
+	binary.Write(&tiff, binary.BigEndian, uint16(1))
+	binary.Write(&tiff, binary.BigEndian, []uint16{0x0112, 3})
+	binary.Write(&tiff, binary.BigEndian, uint32(1))
+	binary.Write(&tiff, binary.BigEndian, []uint16{orient, 0})
+	binary.Write(&tiff, binary.BigEndian, uint32(0))
+	chunk := func(out *bytes.Buffer, typ string, data []byte) {
+		binary.Write(out, binary.BigEndian, uint32(len(data)))
+		out.WriteString(typ)
+		out.Write(data)
+		out.Write([]byte{0, 0, 0, 0})
+	}
+	var out bytes.Buffer
+	out.WriteString(pngSignature)
+	chunk(&out, "IHDR", make([]byte, 13))
+	if beforeIDAT {
+		chunk(&out, "eXIf", tiff.Bytes())
+	}
+	chunk(&out, "IDAT", []byte{1, 2, 3})
+	if !beforeIDAT {
+		chunk(&out, "eXIf", tiff.Bytes())
+	}
+	chunk(&out, "IEND", nil)
+	return out.Bytes()
+}
+
+// A PNG eXIf chunk before the image data sets the orientation (the codec
+// origin SkiaImageDecoderBase reads, skia_image_decoder_base.cc:109 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); one after IDAT is ignored.
+func TestReadExifOrientation_PNG(t *testing.T) {
+	if got := readExifOrientation(pngWithExif(6, true)).Orientation(); got != graphics.OriginRightTop {
+		t.Errorf("eXIf before IDAT: got %d, want 6", got)
+	}
+	if got := readExifOrientation(pngWithExif(6, false)).Orientation(); got != graphics.OriginTopLeft {
+		t.Errorf("eXIf after IDAT: got %d, want default", got)
+	}
+}

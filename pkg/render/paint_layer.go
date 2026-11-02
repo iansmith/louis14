@@ -1094,10 +1094,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ObjectFit = s.GetObjectFit()
 		layer.ObjectPosition = s.ObjectPosition()
 		layer.ObjectViewBox = s.ObjectViewBox()
-		layer.ImageOrientation = s.ImageOrientation()
 		clipMargin, _ := s.GetOverflowClipMargin()
 		layer.ClipsToContentBox = layout.ClipsToContentBox(clipX && clipY, clipMargin)
 	}
+	// image-orientation applies to every image the element paints: its
+	// LayoutImage content and its CSS images (FillLayerInfo / the nine-piece
+	// painter read style.ImageOrientation(), box_painter_base.cc:633,
+	// nine_piece_image_painter.cc:214-215 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	layer.ImageOrientation = s.ImageOrientation()
 	// image-rendering applies to all elements (images and background images).
 	if ir, ok := s.Get("image-rendering"); ok {
 		layer.ImageRendering = ir
