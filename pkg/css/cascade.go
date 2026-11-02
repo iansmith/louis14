@@ -3865,8 +3865,9 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// SVGSVGElement::CollectStyleForPresentationAttribute) so the replaced-box
 	// sizing in ComputeReplacedSize sees them as explicit CSS lengths. This is
 	// what makes height="0" produce a 0-height box: routing it through the
-	// intrinsic path instead would be lost, because IntrinsicSizingInfo uses 0
-	// to mean "unknown" and falls back to the CSS 2.1 §10.3.2 300x150 default.
+	// natural-size path instead would be lost, because louis14's inline-svg
+	// NaturalSizingInfo treats a 0 width/height as no natural size and falls
+	// back to the CSS 2.1 §10.3.2 300x150 default.
 	// Unlike the paint attributes above these are meaningful ONLY on <svg> —
 	// width/height on <img>/<td>/<div> carry legacy HTML semantics that are not
 	// CSS lengths — so gate on the tag.

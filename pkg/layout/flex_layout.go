@@ -773,14 +773,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// tall, not 10px from the 1:1 intrinsic ratio).
 			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) &&
 				!fla.hasExplicitCrossSize(item.style, wdm, isRow) {
-				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
-				if info.HasAspectRatio && info.AspectRatio > 0 {
+				info := GetNaturalSizingInfo(fla.ctx, item.node)
+				if !info.AspectRatio.IsEmpty() {
 					// Convert physical ratio (width/height) to logical (inline/block).
-					logicalRatio := info.AspectRatio
-					if item.wdm.IsVertical() {
-						// Vertical WM: inline=height, block=width → logical = 1/physical.
-						logicalRatio = 1.0 / info.AspectRatio
-					}
+					logicalRatio := info.logicalRatio(item.wdm)
 					mainContent := item.resolvedMain
 					var crossContent float64
 					if item.mainIsItemInline {
@@ -2134,11 +2130,11 @@ func (fla *FlexLayoutAlgorithm) itemEffectiveAspectRatio(
 ) css.AspectRatio {
 	ar := style.GetAspectRatio()
 	if !ar.IsSet && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetIntrinsicSizingInfo(fla.ctx, child)
-		if info.HasAspectRatio && info.AspectRatio > 0 {
-			ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
+		info := GetNaturalSizingInfo(fla.ctx, child)
+		if !info.AspectRatio.IsEmpty() {
+			ar = css.AspectRatio{IsSet: true, Width: info.ratio(), Height: 1}
 			if childWDM.IsVertical() {
-				ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.AspectRatio}
+				ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.ratio()}
 			}
 		}
 	}
@@ -2344,12 +2340,12 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		if ar := style.GetAspectRatio(); ar.IsSet {
 			arW, arH, hasAR = ar.Width, ar.Height, true
 		} else if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-			info := GetIntrinsicSizingInfo(fla.ctx, child)
-			if info.HasAspectRatio && info.AspectRatio > 0 {
+			info := GetNaturalSizingInfo(fla.ctx, child)
+			if !info.AspectRatio.IsEmpty() {
 				if childWDM.IsVertical() {
-					arW, arH, hasAR = info.IntrinsicHeight, info.IntrinsicWidth, true
+					arW, arH, hasAR = info.Size.Height, info.Size.Width, true
 				} else {
-					arW, arH, hasAR = info.IntrinsicWidth, info.IntrinsicHeight, true
+					arW, arH, hasAR = info.Size.Width, info.Size.Height, true
 				}
 			}
 		}
@@ -2539,16 +2535,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	// has an explicit CSS cross-size.
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		info := GetNaturalSizingInfo(fla.ctx, child)
 		// Logical aspect ratio: inline/block.
-		var logicalRatio float64
-		if info.HasAspectRatio && info.AspectRatio > 0 {
-			if childWDM.IsVertical() {
-				logicalRatio = 1.0 / info.AspectRatio
-			} else {
-				logicalRatio = info.AspectRatio
-			}
-		}
+		logicalRatio := info.logicalRatio(childWDM)
 		if mainIsItemInline {
 			// Inline axis: check for explicit CSS cross-size (block-size).
 			// If the item has an explicit cross-size and aspect ratio,
@@ -2567,9 +2556,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			}
 			// No explicit cross-size or no AR: use intrinsic inline-size.
 			if childWDM.IsVertical() {
-				return info.IntrinsicHeight
+				return info.Size.Height
 			}
-			return info.IntrinsicWidth
+			return info.Size.Width
 		}
 		// Block axis: resolve CSS cross-size (inline-size) and derive
 		// block-size via aspect ratio, suppressing any CSS block-size.
@@ -2593,9 +2582,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		if !hasCross {
 			// No explicit CSS inline-size; use intrinsic block dimension.
 			if childWDM.IsVertical() {
-				return info.IntrinsicWidth
+				return info.Size.Width
 			}
-			return info.IntrinsicHeight
+			return info.Size.Height
 		}
 		// CSS cross-size is set. Derive block-size via intrinsic AR.
 		if logicalRatio > 0 {
@@ -2603,9 +2592,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		}
 		// No AR — use intrinsic block dimension.
 		if childWDM.IsVertical() {
-			return info.IntrinsicWidth
+			return info.Size.Width
 		}
-		return info.IntrinsicHeight
+		return info.Size.Height
 	}
 	if mainIsItemInline {
 		// Main axis = item's inline axis. Use computeContentMinMaxSizes which
@@ -2716,26 +2705,19 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	// A full layout (below for non-replaced) applies ALL min/max
 	// constraints, which is incorrect for the flex base size (§9.2).
 	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		info := GetNaturalSizingInfo(fla.ctx, child)
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 
 		// Convert physical intrinsic dimensions to logical.
 		var intrinsicInline, intrinsicBlock float64
 		if childWDM.IsVertical() {
-			intrinsicInline = info.IntrinsicHeight
-			intrinsicBlock = info.IntrinsicWidth
+			intrinsicInline = info.Size.Height
+			intrinsicBlock = info.Size.Width
 		} else {
-			intrinsicInline = info.IntrinsicWidth
-			intrinsicBlock = info.IntrinsicHeight
+			intrinsicInline = info.Size.Width
+			intrinsicBlock = info.Size.Height
 		}
-		logicalRatio := 0.0
-		if info.HasAspectRatio && info.AspectRatio > 0 {
-			if childWDM.IsVertical() {
-				logicalRatio = 1.0 / info.AspectRatio
-			} else {
-				logicalRatio = info.AspectRatio
-			}
-		}
+		logicalRatio := info.logicalRatio(childWDM)
 
 		// Determine base inline and block sizes (same as ComputeReplacedSize default case).
 		inlineSize := intrinsicInline
@@ -4418,8 +4400,8 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// cross-content-size * aspect-ratio.
 	transferredSuggestion := -1.0
 	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetIntrinsicSizingInfo(fla.ctx, child)
-		if info.HasAspectRatio && info.AspectRatio > 0 {
+		info := GetNaturalSizingInfo(fla.ctx, child)
+		if !info.AspectRatio.IsEmpty() {
 			// Try to get a definite cross-size: first from explicit CSS, then from
 			// the container cross-size (for stretched items).
 			crossContentSize := -1.0
@@ -4510,10 +4492,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 
 			if crossContentSize >= 0 {
 				// Convert physical aspect ratio to logical.
-				logicalRatio := info.AspectRatio // width/height = inline/block for horizontal WM
-				if childWDM.IsVertical() {
-					logicalRatio = 1.0 / info.AspectRatio
-				}
+				logicalRatio := info.logicalRatio(childWDM)
 				if mainIsItemInline {
 					// Main = inline: transferred = cross * logicalRatio
 					transferredSuggestion = crossContentSize * logicalRatio
@@ -4765,8 +4744,8 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			// suggestion used that definite size. Stretching would override both
 			// the cross-size and (via aspect ratio) the flex-resolved main-size.
 			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
-				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
-				if info.HasAspectRatio && info.IntrinsicWidth == 0 && info.IntrinsicHeight == 0 {
+				info := GetNaturalSizingInfo(fla.ctx, item.node)
+				if !info.AspectRatio.IsEmpty() && !info.HasWidth && !info.HasHeight {
 					continue
 				}
 			}
@@ -4839,8 +4818,8 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			}
 			if !hasExplicitMainSize {
 				if html.CreatesLayoutImage(item.node.DOMNode) {
-					info := GetIntrinsicSizingInfo(fla.ctx, item.node)
-					if info.HasAspectRatio && info.AspectRatio > 0 {
+					info := GetNaturalSizingInfo(fla.ctx, item.node)
+					if !info.AspectRatio.IsEmpty() {
 						useAspectRatioStretch = true
 					}
 				} else if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {

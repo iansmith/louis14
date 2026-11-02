@@ -26,7 +26,7 @@ func fakeImagePNG(w, h int) []byte {
 }
 
 // imgContextWithIntrinsic returns a LayoutContext whose ImageFetcher serves a
-// PNG of the given natural dimensions for any URI, so GetIntrinsicSizingInfo
+// PNG of the given natural dimensions for any URI, so GetNaturalSizingInfo
 // reports the intended aspect ratio.
 func imgContextWithIntrinsic(natW, natH int) *LayoutContext {
 	data := fakeImagePNG(natW, natH)

@@ -10,7 +10,9 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"louis14/pkg/geometry"
 	"louis14/pkg/images"
+	"louis14/pkg/layout"
 )
 
 func svgDataURI(svg string) string {
@@ -48,19 +50,19 @@ func TestNaturalSizingInfoForSVG(t *testing.T) {
 	cases := []struct {
 		name string
 		svg  string
-		want NaturalSizingInfo
+		want layout.NaturalSizingInfo
 	}{
-		{"none", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`, NaturalSizingInfo{}},
-		{"percent size is not natural", `<svg width="100%" height="50%"></svg>`, NaturalSizingInfo{}},
+		{"none", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`, layout.NaturalSizingInfoNone()},
+		{"percent size is not natural", `<svg width="100%" height="50%"></svg>`, layout.NaturalSizingInfoNone()},
 		{"width and height", `<svg width="40" height="20" viewBox="0 0 10 10"></svg>`,
-			NaturalSizingInfo{Width: 40, Height: 20, RatioW: 40, RatioH: 20, HasWidth: true, HasHeight: true}},
+			layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 40, Height: 20})},
 		{"width and viewBox", `<svg width="40" viewBox="0 0 10 20"></svg>`,
-			NaturalSizingInfo{Width: 40, RatioW: 10, RatioH: 20, HasWidth: true}},
-		{"viewBox only", `<svg viewBox="0 0 16 8"></svg>`, NaturalSizingInfo{RatioW: 16, RatioH: 8}},
+			layout.NaturalSizingInfo{Size: geometry.SizeF{Width: 40}, AspectRatio: geometry.SizeF{Width: 10, Height: 20}, HasWidth: true}},
+		{"viewBox only", `<svg viewBox="0 0 16 8"></svg>`, layout.NaturalSizingInfo{AspectRatio: geometry.SizeF{Width: 16, Height: 8}}},
 		{"viewBox only, preserveAspectRatio none", `<svg viewBox="0 0 16 8" preserveAspectRatio="none"></svg>`,
-			NaturalSizingInfo{}},
+			layout.NaturalSizingInfoNone()},
 		{"fixed size, preserveAspectRatio none", `<svg width="16" height="8" viewBox="0 0 1 1" preserveAspectRatio="none"></svg>`,
-			NaturalSizingInfo{Width: 16, Height: 8, RatioW: 16, RatioH: 8, HasWidth: true, HasHeight: true}},
+			layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 16, Height: 8})},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

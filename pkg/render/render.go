@@ -3456,7 +3456,7 @@ func (r *Renderer) newBoxBackgroundPaintContext(layer *PaintLayer) *BoxBackgroun
 // imageStyle is BoxBackgroundPaintContext::ImageStyle
 // (box_background_paint_context.cc:399-405).
 func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, bg *css.FillLayer, img fillLayerImage, imageRendering string, imageStyle *css.Style) {
-	var info NaturalSizingInfo
+	var info layout.NaturalSizingInfo
 	var tileImage func(w, h int) image.Image
 	switch {
 	case img.svg != nil:
@@ -3474,7 +3474,7 @@ func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect
 		if srcW == 0 || srcH == 0 {
 			return
 		}
-		info = naturalSizingInfoForRaster(srcW, srcH)
+		info = layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: float64(srcW), Height: float64(srcH)})
 		tileImage = func(w, h int) image.Image {
 			if w == srcW && h == srcH {
 				return src
@@ -3616,7 +3616,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	// dest_rect.size), an SVGImageForContainer (image_painter.cc:214-217).
 	if svg := images.LoadSVGImageWithFetcher(layer.ImageSrc, r.imageFetcher); svg != nil {
 		paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
-			physicalNaturalSizingInfo(naturalSizingInfoForSVG(svg.Sizing)))
+			layout.PhysicalNaturalSizingInfoFromSizingInfo(naturalSizingInfoForSVG(svg.Sizing)))
 		dest := geometry.ToPixelSnappedRect(paintRect)
 		if dest.Empty() {
 			return

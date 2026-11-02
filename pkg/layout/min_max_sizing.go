@@ -1026,10 +1026,10 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 
 			// Also check replaced elements for intrinsic aspect ratio.
 			if !hasAR && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-				info := GetIntrinsicSizingInfo(ctx, child)
-				if info.HasAspectRatio && info.AspectRatio > 0 {
+				info := GetNaturalSizingInfo(ctx, child)
+				if !info.AspectRatio.IsEmpty() {
 					hasAR = true
-					ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
+					ar = css.AspectRatio{IsSet: true, Width: info.ratio(), Height: 1}
 				}
 			}
 

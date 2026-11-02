@@ -404,14 +404,14 @@ func boxSizingForAspectRatio(style *css.Style) bool {
 // ratio when no size containment applies, else the ratio of
 // `auto && <ratio>`. Mirrors Blink's BlockNode::GetReplacedAspectRatio
 // (block_node.cc:1329-1354 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func replacedAspectRatio(style *css.Style, info IntrinsicSizingInfo, wdm WritingDirectionMode) LogicalSize {
+func replacedAspectRatio(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode) LogicalSize {
 	ar := style.GetAspectRatio()
 	if ar.IsSet && !styleAspectRatioIsAutoAndRatio(style) {
 		return logicalAspectRatio(ar.Width, ar.Height, wdm)
 	}
 	if !style.ShouldApplySizeContainment() && !style.ShouldApplyInlineSizeContainment() &&
-		info.HasAspectRatio && info.AspectRatio > 0 {
-		return logicalAspectRatio(info.AspectRatio, 1, wdm)
+		!info.AspectRatio.IsEmpty() {
+		return logicalAspectRatio(info.ratio(), 1, wdm)
 	}
 	if ar.IsSet {
 		return logicalAspectRatio(ar.Width, ar.Height, wdm)
@@ -425,13 +425,13 @@ func replacedAspectRatio(style *css.Style, info IntrinsicSizingInfo, wdm Writing
 // LayoutInputNode::IntrinsicSize and GetOverrideIntrinsicSize
 // (layout_input_node.cc:153-183, :236-253 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); contain-intrinsic-size is not
-// modelled. louis14's IntrinsicSizingInfo reports an unknown axis as 0.
-func replacedIntrinsicSize(style *css.Style, info IntrinsicSizingInfo, wdm WritingDirectionMode) (inline float64, hasInline bool, block float64, hasBlock bool) {
+// modelled.
+func replacedIntrinsicSize(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode) (inline float64, hasInline bool, block float64, hasBlock bool) {
 	if style.ShouldApplySizeContainment() {
 		return 0, true, 0, true
 	}
-	w, hasW := info.IntrinsicWidth, info.IntrinsicWidth > 0
-	h, hasH := info.IntrinsicHeight, info.IntrinsicHeight > 0
+	w, hasW := info.Size.Width, info.HasWidth
+	h, hasH := info.Size.Height, info.HasHeight
 	if wdm.IsVertical() {
 		w, hasW, h, hasH = h, hasH, w, hasW
 	}
@@ -453,7 +453,7 @@ func replacedDefaultNaturalSize(wdm WritingDirectionMode) LogicalSize {
 // the natural block-size to the ratio; ok is false when there is only a
 // ratio. Mirrors Blink's ComputeNormalizedNaturalSize (length_utils.cc:
 // 964-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func computeNormalizedNaturalSize(style *css.Style, info IntrinsicSizingInfo, wdm WritingDirectionMode, bp LogicalEdges, borderBox bool, aspectRatio LogicalSize) (LogicalSize, bool) {
+func computeNormalizedNaturalSize(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode, bp LogicalEdges, borderBox bool, aspectRatio LogicalSize) (LogicalSize, bool) {
 	inline, hasInline, block, hasBlock := replacedIntrinsicSize(style, info, wdm)
 	noRatio := isEmptyAspectRatio(aspectRatio)
 	if hasInline {
@@ -508,7 +508,7 @@ type replacedSizer struct {
 func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, mode ReplacedSizeMode) LogicalSize {
 	style := node.Style()
 	r := newReplacedLengthResolver(style, space)
-	info := GetIntrinsicSizingInfo(ctx, node)
+	info := GetNaturalSizingInfo(ctx, node)
 	s := replacedSizer{r: r, borderBox: boxSizingForAspectRatio(style)}
 	s.aspectRatio = replacedAspectRatio(style, info, r.wdm)
 	s.noRatio = isEmptyAspectRatio(s.aspectRatio)

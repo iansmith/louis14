@@ -11,23 +11,13 @@ import (
 	stdnet "louis14/std/net"
 )
 
-// IntrinsicSizingInfo holds the natural dimensions and aspect ratio for a
-// replaced element. Uses PHYSICAL dimensions (not logical).
-// Mirrors Blink's IntrinsicSizingInfo (layout_replaced.h).
-type IntrinsicSizingInfo struct {
-	IntrinsicWidth  float64 // natural physical width, 0 if unknown
-	IntrinsicHeight float64 // natural physical height, 0 if unknown
-	AspectRatio     float64 // width/height, 0 if none
-	HasAspectRatio  bool
-}
-
-// GetIntrinsicSizingInfo returns the natural dimensions a replaced element
+// GetNaturalSizingInfo returns the natural dimensions a replaced element
 // is laid out with: its natural dimensions with any object-view-box applied
 // (LayoutReplaced::ComputeNaturalSizingInfo, layout_replaced.cc:505-516 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An inline <svg> ignores
 // object-view-box (LayoutSVGRoot::ShouldApplyObjectViewBox,
 // layout_svg_root.h:166-169).
-func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
+func GetNaturalSizingInfo(ctx *LayoutContext, node *LayoutInputNode) NaturalSizingInfo {
 	info := getNaturalDimensions(ctx, node)
 	if node.DOMNode == nil || node.DOMNode.TagName == "svg" {
 		return info
@@ -40,32 +30,28 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	if viewBox == nil {
 		return info
 	}
-	applied := ComputeNaturalSizingInfo(viewBox, physicalNaturalSizingInfo(info))
-	info.IntrinsicWidth, info.IntrinsicHeight = applied.Size.WidthF64(), applied.Size.HeightF64()
-	if info.HasAspectRatio && !applied.Size.IsEmpty() {
-		info.AspectRatio = info.IntrinsicWidth / info.IntrinsicHeight
+	applied := ComputeNaturalSizingInfo(viewBox, PhysicalNaturalSizingInfoFromSizingInfo(info))
+	size := geometry.SizeF{Width: applied.Size.WidthF64(), Height: applied.Size.HeightF64()}
+	var ratio geometry.SizeF
+	if !info.AspectRatio.IsEmpty() && !applied.Size.IsEmpty() {
+		ratio = size
 	}
-	return info
+	return naturalSizingInfo(size.Width, size.Height, ratio)
 }
 
-// physicalNaturalSizingInfo converts louis14's float IntrinsicSizingInfo
-// (an unknown axis is 0) to PhysicalNaturalSizingInfo, rounding as
-// PhysicalNaturalSizingInfo::FromSizingInfo does (natural_sizing_info.cc:
-// 104-110 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func physicalNaturalSizingInfo(info IntrinsicSizingInfo) PhysicalNaturalSizingInfo {
-	size := geometry.PhysicalSizeFromF64Round(info.IntrinsicWidth, info.IntrinsicHeight)
-	out := PhysicalNaturalSizingInfo{Size: size, HasWidth: info.IntrinsicWidth > 0, HasHeight: info.IntrinsicHeight > 0}
-	if info.HasAspectRatio {
-		out.AspectRatio = size
-	}
-	return out
+// naturalSizingInfo returns sizing info of natural size w×h — each axis
+// present when positive — and natural ratio ratio (empty for none). Used by
+// the producers that still spell an absent axis as 0 (SVG sizing and the
+// object-view-box result).
+func naturalSizingInfo(w, h float64, ratio geometry.SizeF) NaturalSizingInfo {
+	return NaturalSizingInfo{Size: geometry.SizeF{Width: w, Height: h}, AspectRatio: ratio, HasWidth: w > 0, HasHeight: h > 0}
 }
 
 // getNaturalDimensions returns a replaced element's natural dimensions
 // (LayoutReplaced::GetNaturalDimensions and its overrides).
-func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
+func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) NaturalSizingInfo {
 	if node.DOMNode == nil {
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
 	// A LayoutImage (an <img>, or an image-typed <object>/<embed>) takes its
 	// natural size from the image (LayoutImage::GetNaturalDimensions). Every
@@ -85,32 +71,32 @@ func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSi
 		// Per CSS 2.1 §10.3.2, these have a default 300×150 size but NO
 		// intrinsic aspect ratio. Unlike images/video, their content doesn't
 		// define a natural ratio between width and height.
-		return IntrinsicSizingInfo{300, 150, 0, false}
+		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 300, Height: 150})
 	case "textarea":
 		// Form controls have intrinsic dimensions but no aspect ratio.
 		// Textarea default: ~173×54 border-box per UA stylesheet; content-box
 		// is 167×48 (minus 2×1px border + 2×2px padding).
-		return IntrinsicSizingInfo{167, 48, 0, false}
+		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 167, Height: 48})
 	case "input":
 		inputType, _ := node.DOMNode.GetAttribute("type")
 		if inputType == "checkbox" || inputType == "radio" {
-			return IntrinsicSizingInfo{13, 13, 1.0, true}
+			return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 13, Height: 13})
 		}
 		// Text input default: ~173×19 border-box per UA stylesheet; content-box
 		// is 165×11 (minus 2×2px border + 2×(1+2)px padding).
-		return IntrinsicSizingInfo{165, 11, 0, false}
+		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 165, Height: 11})
 	case "select":
 		// Select default: ~173×19 border-box; content-box is 167×13.
-		return IntrinsicSizingInfo{167, 13, 0, false}
+		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 167, Height: 13})
 	default:
-		return IntrinsicSizingInfo{300, 150, 0, false}
+		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 300, Height: 150})
 	}
 }
 
 // getCanvasIntrinsicInfo returns the intrinsic dimensions for a canvas element.
 // Per HTML spec, the intrinsic size comes from the width/height HTML attributes,
 // defaulting to 300x150 if not specified.
-func getCanvasIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
+func getCanvasIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
 	w, h := 300.0, 150.0
 	if node.DOMNode != nil {
 		if val, ok := node.DOMNode.GetAttribute("width"); ok {
@@ -124,46 +110,35 @@ func getCanvasIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 			}
 		}
 	}
-	ar := 2.0
-	if h > 0 {
-		ar = w / h
-	}
-	return IntrinsicSizingInfo{w, h, ar, true}
+	return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: w, Height: h})
 }
 
 // getInlineSVGIntrinsicInfo returns intrinsic sizing info for an inline <svg>
-// element based on its width/height/viewBox attributes. Matches Blink's
-// behavior and svgIntrinsicInfo for SVG images:
-//   - Explicit width + height → intrinsic dimensions (aspect ratio derived).
-//   - viewBox only → aspect ratio from viewBox; no intrinsic dimensions
-//     (ComputeReplacedSize applies the CSS default 300x150 subject to ratio).
-//   - One explicit dimension + viewBox → derive the other via aspect ratio.
-func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
+// element from its width/height/viewBox attributes. Unlike an SVG image
+// (svgIntrinsicInfo → SVGImage::GetNaturalDimensions), one explicit
+// dimension plus a viewBox derives the other natural dimension from the
+// ratio — louis14's pre-existing inline behaviour, not yet Blink's
+// LayoutSVGRoot::UnscaledNaturalSizingInfo (layout_svg_root.cc:74-103 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func getInlineSVGIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
 	if node == nil || node.DOMNode == nil {
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
-	var info IntrinsicSizingInfo
-
-	var explW, explH float64
-	var hasExplW, hasExplH bool
+	var svg images.SVGSizingInfo
 	if val, ok := node.DOMNode.GetAttribute("width"); ok {
 		if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
-			explW = parsed
-			hasExplW = true
+			svg.ExplicitWidth, svg.HasExplicitWidth = parsed, true
 		}
 	}
 	if val, ok := node.DOMNode.GetAttribute("height"); ok {
 		if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
-			explH = parsed
-			hasExplH = true
+			svg.ExplicitHeight, svg.HasExplicitHeight = parsed, true
 		}
 	}
 
 	// Parse viewBox "min-x min-y width height" for aspect ratio.
 	// Our HTML tokenizer lowercases attribute names, so SVG's camelCase
 	// viewBox is stored as "viewbox". Try both to be robust.
-	var vbW, vbH float64
-	hasViewBox := false
 	vb, ok := node.DOMNode.GetAttribute("viewBox")
 	if !ok {
 		vb, ok = node.DOMNode.GetAttribute("viewbox")
@@ -173,44 +148,40 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 		if len(parts) == 4 {
 			if w, err := strconv.ParseFloat(parts[2], 64); err == nil && w > 0 {
 				if h, err2 := strconv.ParseFloat(parts[3], 64); err2 == nil && h > 0 {
-					vbW, vbH = w, h
-					hasViewBox = true
-					info.HasAspectRatio = true
-					info.AspectRatio = vbW / vbH
+					svg.ViewBoxWidth, svg.ViewBoxHeight, svg.HasViewBox = w, h, true
 				}
 			}
 		}
 	}
 
-	switch {
-	case hasExplW && hasExplH:
-		info.IntrinsicWidth = explW
-		info.IntrinsicHeight = explH
-		if !info.HasAspectRatio && explH > 0 {
-			info.HasAspectRatio = true
-			info.AspectRatio = explW / explH
-		}
-	case hasExplW && hasViewBox:
-		info.IntrinsicWidth = explW
-		info.IntrinsicHeight = explW / info.AspectRatio
-	case hasExplH && hasViewBox:
-		info.IntrinsicHeight = explH
-		info.IntrinsicWidth = explH * info.AspectRatio
-	case hasExplW:
-		// Width only, no viewBox: intrinsic width is set, intrinsic height
-		// remains unknown so the CSS 2.1 §10.3.2 default (150) supplies it.
-		info.IntrinsicWidth = explW
-	case hasExplH:
-		// Height only, no viewBox: intrinsic height is set, intrinsic width
-		// falls back to the CSS 2.1 default (300) downstream.
-		info.IntrinsicHeight = explH
-	default:
-		// No explicit dimensions. Aspect ratio (if any) from viewBox is
-		// preserved; intrinsic dimensions remain 0 so ComputeReplacedSize
-		// applies the CSS 2.1 §10.3.2 default (300x150) subject to ratio.
+	var w, h float64
+	var ratio geometry.SizeF
+	if svg.HasViewBox {
+		ratio = geometry.SizeF{Width: svg.ViewBoxWidth, Height: svg.ViewBoxHeight}
 	}
-
-	return info
+	switch {
+	case svg.HasExplicitWidth && svg.HasExplicitHeight:
+		w, h = svg.ExplicitWidth, svg.ExplicitHeight
+		if ratio.IsEmpty() {
+			ratio = geometry.SizeF{Width: w, Height: h}
+		}
+	case svg.HasExplicitWidth && svg.HasViewBox:
+		w = svg.ExplicitWidth
+		h = svg.ExplicitWidth / (ratio.Width / ratio.Height)
+	case svg.HasExplicitHeight && svg.HasViewBox:
+		h = svg.ExplicitHeight
+		w = svg.ExplicitHeight * (ratio.Width / ratio.Height)
+	case svg.HasExplicitWidth:
+		// Width only, no viewBox: the natural height stays absent so the
+		// CSS 2.1 §10.3.2 default (150) supplies it.
+		w = svg.ExplicitWidth
+	case svg.HasExplicitHeight:
+		// Height only, no viewBox: the CSS 2.1 default width (300) applies.
+		h = svg.ExplicitHeight
+	}
+	// No explicit dimensions: only the viewBox ratio; ComputeReplacedSize
+	// uses the 300×150 default subject to it.
+	return naturalSizingInfo(w, h, ratio)
 }
 
 // brokenImageWidth/Height are the natural size of Blink's broken-image icon,
@@ -229,28 +200,23 @@ const (
 // resolver_document.CompleteURL(src)
 // (third_party/blink/renderer/core/loader/image_loader.cc:746 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520).
-func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
+func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) NaturalSizingInfo {
 	if node.DOMNode.IsFallbackImage {
-		return IntrinsicSizingInfo{
-			IntrinsicWidth:  brokenImageWidth,
-			IntrinsicHeight: brokenImageHeight,
-			AspectRatio:     float64(brokenImageWidth) / brokenImageHeight,
-			HasAspectRatio:  true,
-		}
+		return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: brokenImageWidth, Height: brokenImageHeight})
 	}
 	if ctx == nil {
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
 	src := node.DOMNode.ImageSourceURL()
 	if src == "" {
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
 	if s := node.Style(); s != nil {
 		src = urlpkg.CompleteURL(src, s.BaseDir)
 	}
 	// data: URIs decode inline and need no fetcher.
 	if ctx.ImageFetcher == nil && !stdnet.IsDataURL(src) {
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
 
 	// An SVG image's natural dimensions are SVGImage::GetNaturalDimensions
@@ -269,7 +235,7 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		// width/height only through TreatImageAsReplaced + ShowAsReplaced on
 		// the alt-text container (html_image_fallback_helper.cc:50-62,
 		// :103-116 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
-		return IntrinsicSizingInfo{}
+		return NaturalSizingInfoNone()
 	}
 	// A bitmap's natural size is its oriented size when the style respects
 	// the image orientation (LayoutImageResource::GetNaturalDimensions,
@@ -281,29 +247,25 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		images.ImageOrientationWithFetcher(src, ctx.ImageFetcher).UsesWidthAsHeight() {
 		natW, natH = natH, natW
 	}
-	return IntrinsicSizingInfo{
-		IntrinsicWidth:  float64(natW),
-		IntrinsicHeight: float64(natH),
-		AspectRatio:     float64(natW) / float64(natH),
-		HasAspectRatio:  true,
-	}
+	return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: float64(natW), Height: float64(natH)})
 }
 
 // svgIntrinsicInfo converts an SVG image's natural dimensions
 // (images.SVGSizingInfo.NaturalSize / NaturalRatio, SVGImage::
-// GetNaturalDimensions) to IntrinsicSizingInfo, where an absent natural
-// width or height is 0.
-func svgIntrinsicInfo(svg images.SVGSizingInfo) IntrinsicSizingInfo {
-	var info IntrinsicSizingInfo
-	w, h, hasW, hasH := svg.NaturalSize()
+// GetNaturalDimensions) to NaturalSizingInfo; an absent natural width or
+// height is 0.
+func svgIntrinsicInfo(svg images.SVGSizingInfo) NaturalSizingInfo {
+	var w, h float64
+	nw, nh, hasW, hasH := svg.NaturalSize()
 	if hasW {
-		info.IntrinsicWidth = w
+		w = nw
 	}
 	if hasH {
-		info.IntrinsicHeight = h
+		h = nh
 	}
+	var ratio geometry.SizeF
 	if rw, rh := svg.NaturalRatio(); rw > 0 && rh > 0 {
-		info.AspectRatio, info.HasAspectRatio = rw/rh, true
+		ratio = geometry.SizeF{Width: rw, Height: rh}
 	}
-	return info
+	return naturalSizingInfo(w, h, ratio)
 }
