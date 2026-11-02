@@ -79,10 +79,11 @@ type PaintLayer struct {
 
 	// AncestorOverflowClips: pre-computed chain of ancestor overflow clip
 	// rectangles (in absolute coordinates) that should be applied before
-	// painting this layer's content. Populated only on layers that escape
-	// their parent's overflow clip via z-list escalation (positioned
-	// stacking contexts whose nearest ancestor SC is above the overflow
-	// clip ancestor). For each entry the renderer must Push a clip rect
+	// painting this layer's content. Populated on positioned layers that
+	// paint from a stacking context's z-order lists (stacking contexts, and
+	// z-index:auto layers such as a relatively positioned atomic inline)
+	// while an ancestor below that stacking context in their
+	// containing-block chain clips overflow. For each entry the renderer must Push a clip rect
 	// in addition to (and BEFORE) the layer's own HasClip rect.
 	//
 	// Blink models clips orthogonally to stacking via the paint property
@@ -1943,7 +1944,18 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			continue
 		}
 
-		// Positioned, z-index:auto, not contained — participates at Appendix E step 6.
+		// Positioned, z-index:auto, not contained by the box being walked —
+		// participates at Appendix E step 6. The box being walked is not
+		// always the layout parent: an atomic inline reaches here through
+		// its (unstyled) line box, so an overflow-clipping ancestor further
+		// up the containing-block chain still clips it. Blink's layer
+		// inherits that clip as its LocalBorderBoxProperties clip
+		// (FragmentPaintPropertyTreeBuilder::UpdateOverflowClip sets
+		// context_.current.clip for descendants, :3137-3138, and
+		// UpdateLocalBorderBoxContext records it, :2756-2779 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) whatever its paint
+		// order; louis14 carries it as AncestorOverflowClips. LOU-609.
+		childLayer.AncestorOverflowClips = collectAncestorOverflowClips(child, currentSC)
 		currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 		if hasOverflowClipping(child) {
 			// Overflow containment boundary — positioned descendants
@@ -1983,9 +1995,9 @@ func isFloat(box *layout.Box) bool {
 // contain `child`. Returns clip rects in innermost→outermost order.
 //
 // This is the louis14 substitute for the Blink paint property tree's
-// inherited clip chain. It runs only on positioned stacking-context
-// children that escape their parent box's overflow via z-list escalation
-// (see buildPaintSubtree). The collected clips are Pushed by the renderer
+// inherited clip chain. It runs on positioned children that paint from a
+// stacking context's z-order lists instead of inside their clipping
+// ancestor's flow (see buildPaintSubtree). The collected clips are Pushed by the renderer
 // before painting the child layer, ensuring the overflow clip honoured
 // even though the child paints outside its parent's HasClip bracket.
 //
@@ -1999,6 +2011,9 @@ func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4
 		scBox = currentSC.Box
 	}
 	var clips [][4]float64
+	// The layout box tree parents an absolutely or fixed positioned box under
+	// its containing block, so this parent walk is the containing-block
+	// chain: a clip an abspos ancestor escapes is not on it.
 	for ancestor := child.Parent; ancestor != nil && ancestor != scBox; ancestor = ancestor.Parent {
 		if !hasOverflowClipping(ancestor) {
 			continue

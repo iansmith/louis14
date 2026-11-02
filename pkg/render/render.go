@@ -945,10 +945,10 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	transformSingular := r.enterLayerTransform(layer)
 
 	if !transformSingular {
-		// Apply inherited ancestor overflow clips. Populated only on
-		// layers that escaped a parent's overflow via z-list escalation
-		// (positioned stacking-context children of an overflow-clipping
-		// parent). See PaintLayer.AncestorOverflowClips for rationale.
+		// Apply inherited ancestor overflow clips. Populated on positioned
+		// layers that paint from a stacking context's z-order lists while an
+		// ancestor in their containing-block chain clips overflow. See
+		// PaintLayer.AncestorOverflowClips for rationale.
 		// Pushed innermost→outermost so the clip stack matches Blink's
 		// property-tree-inherited clip nodes.
 		for _, clip := range layer.AncestorOverflowClips {

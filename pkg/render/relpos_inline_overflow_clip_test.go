@@ -39,3 +39,20 @@ func TestOverflowClip_RelativeAtomicInlineIsClipped(t *testing.T) {
 		})
 	}
 }
+
+// TestOverflowClip_RelativeInsideEscapingAbsposIsNotClipped: the clip a
+// box inherits follows its containing-block chain. A relatively positioned
+// box inside an absolutely positioned box that escapes a static
+// overflow:hidden ancestor (its containing block is above it) escapes that
+// clip too.
+func TestOverflowClip_RelativeInsideEscapingAbsposIsNotClipped(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0"><div style="position:relative;padding-top:60px">` +
+		`<div style="width:50px;height:50px;overflow:hidden">` +
+		`<div style="position:absolute;top:0;left:0">` +
+		`<span style="position:relative;display:inline-block;width:50px;height:50px;background:red"></span>` +
+		`</div></div></div></body></html>`
+	img := renderToImage(t, src, 100, 150)
+	if c := img.RGBAAt(10, 10); !(c.R > 200 && c.G < 60) {
+		t.Errorf("pixel (10,10) = %v: the relpos box inside the escaping abspos box was clipped", c)
+	}
+}
