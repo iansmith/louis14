@@ -8,7 +8,6 @@ import (
 	"louis14/pkg/graphics"
 	"louis14/pkg/images"
 	urlpkg "louis14/pkg/url"
-	stdnet "louis14/std/net"
 )
 
 // GetNaturalSizingInfo returns the natural dimensions a replaced element
@@ -214,8 +213,7 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) NaturalSizin
 	if s := node.Style(); s != nil {
 		src = urlpkg.CompleteURL(src, s.BaseDir)
 	}
-	// data: URIs decode inline and need no fetcher.
-	if ctx.ImageFetcher == nil && !stdnet.IsDataURL(src) {
+	if !images.ImageLoadIsAttempted(src, ctx.ImageFetcher) {
 		return NaturalSizingInfoNone()
 	}
 
