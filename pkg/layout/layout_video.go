@@ -26,17 +26,20 @@ func GetVideoDisplayMode(video *html.Node) VideoDisplayMode {
 // getVideoNaturalDimensions mirrors LayoutVideo::GetNaturalDimensions
 // (layout_video.cc:74-112 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): in
 // poster mode the poster image's natural dimensions
-// (LayoutImage::GetNaturalDimensions) unless it failed to load. Otherwise
-// Blink asks the media player, and without one returns no natural
-// dimensions; louis14 keeps its 300×150, 2:1 stand-in for that case
-// (worklist row B7).
+// (LayoutImage::GetNaturalDimensions) unless it failed to load; otherwise
+// the media player's natural size, and with no player (always, in louis14)
+// PhysicalNaturalSizingInfo::None() — no natural size and no aspect ratio,
+// so ComputeReplacedSize falls back to the default object size
+// (ComputeDefaultNaturalSize). louis14's IntrinsicSizingInfo spells that the
+// way it does for <iframe>/<embed>/<object>: the 300×150 default with no
+// ratio.
 func getVideoNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
 	if GetVideoDisplayMode(node.DOMNode) == VideoDisplayModePoster {
 		if info := getImgIntrinsicInfo(ctx, node); info.IntrinsicWidth > 0 && info.IntrinsicHeight > 0 {
 			return info
 		}
 	}
-	return IntrinsicSizingInfo{300, 150, 2.0, true}
+	return IntrinsicSizingInfo{300, 150, 0, false}
 }
 
 // LayoutImageSource reports whether n's layout object is a LayoutImage and,
