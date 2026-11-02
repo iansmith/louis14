@@ -548,6 +548,21 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.paintBoxes(boxes)
 }
 
+// renderOnTransparentBase is Render for a frame view whose base background
+// color is transparent: an SVG image's (IsolatedSVGDocumentHost,
+// core/svg/graphics/isolated_svg_document_host.cc:148 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so only the document's own
+// backgrounds paint.
+func (r *Renderer) renderOnTransparentBase(boxes []*layout.Box) {
+	r.embeddedViewport.W = 0
+	r.embeddedViewport.H = 0
+
+	r.tempFontIDs = r.tempFontIDs[:0]
+	defer r.closeTempFonts()
+
+	r.paintBoxes(boxes)
+}
+
 // RenderEmbedded paints the box tree onto the DrawContext without calling
 // dc.Clear(). The white canvas background is painted with FillRectangle
 // scoped to (0,0)-(viewportW,viewportH), so any clip the caller pushed is
@@ -3466,7 +3481,7 @@ func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect
 	case img.svg != nil:
 		info = naturalSizingInfoForSVG(img.svg.Sizing)
 		tileImage = func(w, h int) image.Image {
-			if tile := r.svgImageForContainer(img.svg, w, h); tile != nil {
+			if tile := r.svgImageForContainer(img.svg, geometry.SizeF{Width: float64(w), Height: float64(h)}, w, h); tile != nil {
 				return tile
 			}
 			return image.Transparent
@@ -3624,7 +3639,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 		if dest.Empty() {
 			return
 		}
-		img := r.svgImageForContainer(svg, dest.Dx(), dest.Dy())
+		img := r.svgImageForContainer(svg, geometry.SizeF{Width: paintRect.Size.Width.Float64(), Height: paintRect.Size.Height.Float64()}, dest.Dx(), dest.Dy())
 		if img == nil {
 			return
 		}

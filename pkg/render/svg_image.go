@@ -10,31 +10,34 @@ import (
 	"louis14/pkg/text"
 )
 
-// svgImageForContainer draws an SVG image laid out in a w×h container,
-// through louis14's own layout and paint tree. Mirrors SVGImage::
-// DrawForContainer → PaintRecordForCurrentFrame (core/svg/graphics/
-// svg_image.cc:283-296, :451-495 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-// the image's isolated SVG document (IsolatedSVGDocumentHost, built in
-// SVGImage::DataChanged :879-930) has its root sized to the container
-// (LayoutSVGRoot::SetContainerSize) and its view resized to the rounded
-// container size, then is laid out and painted. Blink records the paint and
-// replays it into the destination; louis14 paints into a w×h raster at the
-// destination size, so drawing it needs no resampling.
+// svgImageForContainer draws an SVG image laid out in a container of size
+// containerSize into a w×h raster (the pixel-snapped destination), through
+// louis14's own layout and paint tree. Mirrors SVGImage::DrawForContainer →
+// DrawInternal → PaintRecordForCurrentFrame (core/svg/graphics/
+// svg_image.cc:283-296, :451-495, :510-545 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the image's isolated SVG
+// document (IsolatedSVGDocumentHost, built in SVGImage::DataChanged
+// :879-930) has its root sized to the container (LayoutSVGRoot::
+// SetContainerSize, PhysicalSize::FromSizeFFloor(container_size)), is laid
+// out and painted, and the paint is mapped onto the destination rect. Blink
+// replays a paint record; louis14 paints straight into the destination
+// raster under that mapping's scale.
 //
 // The document has no URL (NullUrl) and runs no script: only data: URL
 // resources load inside it (a nil image fetcher serves just those), and
-// Document.Scripts is never executed. Returns nil when the data does not
-// parse or w×h is empty. Each drawing is kept for the renderer's paint
-// pass.
-func (r *Renderer) svgImageForContainer(svg *images.SVGImage, w, h int) image.Image {
-	if w <= 0 || h <= 0 {
+// Document.Scripts is never executed. Its frame view's base background is
+// transparent (isolated_svg_document_host.cc:148). Returns nil when the
+// data does not parse or a size is empty. Each drawing is kept for the
+// renderer's paint pass.
+func (r *Renderer) svgImageForContainer(svg *images.SVGImage, containerSize geometry.SizeF, w, h int) image.Image {
+	if w <= 0 || h <= 0 || containerSize.IsEmpty() {
 		return nil
 	}
-	key := svgImageForContainerKey{svg, w, h}
+	key := svgImageForContainerKey{svg, containerSize, w, h}
 	if img, ok := r.svgImagesForContainer[key]; ok {
 		return img
 	}
-	img := r.drawSVGImageForContainer(svg, w, h)
+	img := r.drawSVGImageForContainer(svg, containerSize, w, h)
 	if r.svgImagesForContainer == nil {
 		r.svgImagesForContainer = make(map[svgImageForContainerKey]image.Image)
 	}
@@ -42,22 +45,23 @@ func (r *Renderer) svgImageForContainer(svg *images.SVGImage, w, h int) image.Im
 	return img
 }
 
-// svgImageForContainerKey identifies one SVG image drawn at one container
-// size; Renderer.svgImagesForContainer keeps each such drawing for the
-// paint pass (read-only), as Blink reuses an SVGImageForContainer's paint
-// record while the container size is unchanged.
+// svgImageForContainerKey identifies one SVG image drawn for one container
+// into one raster size; Renderer.svgImagesForContainer keeps each such
+// drawing for the paint pass (read-only), as Blink reuses an
+// SVGImageForContainer's paint record while nothing changes.
 type svgImageForContainerKey struct {
-	svg  *images.SVGImage
-	w, h int
+	svg           *images.SVGImage
+	containerSize geometry.SizeF
+	w, h          int
 }
 
-func (r *Renderer) drawSVGImageForContainer(svg *images.SVGImage, w, h int) image.Image {
+func (r *Renderer) drawSVGImageForContainer(svg *images.SVGImage, containerSize geometry.SizeF, w, h int) image.Image {
 	doc, err := html.ParseSVGDocument(string(svg.Data()))
 	if err != nil {
 		return nil
 	}
-	engine := layout.NewLayoutEngine(float64(w), float64(h))
-	engine.SetSVGRootContainerSize(geometry.NewPhysicalSize(w, h))
+	engine := layout.NewLayoutEngine(containerSize.Width, containerSize.Height)
+	engine.SetSVGRootContainerSize(geometry.PhysicalSizeFromF64Floor(containerSize.Width, containerSize.Height))
 	engine.SetFontConfig(r.fonts)
 	boxes := engine.Layout(doc)
 
@@ -67,6 +71,9 @@ func (r *Renderer) drawSVGImageForContainer(svg *images.SVGImage, w, h int) imag
 	defer text.SetTextLayout(r.dc.TextLayout())
 	ir := NewRendererForImage(target)
 	ir.SetFonts(r.fonts)
-	ir.Render(boxes)
+	// The container maps onto the destination raster (the src→dst rect
+	// transform of DrawInternal, :517-518).
+	ir.dc.Scale(float64(w)/containerSize.Width, float64(h)/containerSize.Height)
+	ir.renderOnTransparentBase(boxes)
 	return target
 }

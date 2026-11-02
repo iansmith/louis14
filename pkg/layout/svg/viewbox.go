@@ -54,6 +54,17 @@ type ViewBox struct {
 	Valid               bool
 }
 
+// viewportSizeOr returns the viewBox size when it is valid and non-empty
+// (ViewBoxRect().size(), as SVGViewportResolver::ResolveViewport reads it,
+// core/svg/svg_length_functions.cc:55-67 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), else viewport.
+func (v ViewBox) viewportSizeOr(viewport geometry.SizeF) geometry.SizeF {
+	if size := (geometry.SizeF{Width: v.Width, Height: v.Height}); v.Valid && !size.IsEmpty() {
+		return size
+	}
+	return viewport
+}
+
 // ParseViewBox parses an SVG viewBox attribute value of the form
 //
 //	"min-x min-y width height"
