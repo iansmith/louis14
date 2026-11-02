@@ -179,6 +179,34 @@ type TransformOperations struct {
 // IsEmpty mirrors TransformOperations::IsEmpty.
 func (o TransformOperations) IsEmpty() bool { return len(o.Operations) == 0 }
 
+// Is3DOperation reports whether op's type is a 3D operation type, whatever
+// its values. Mirrors TransformOperation::Is3DOperation
+// (transform_operation.h:109-116 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// louis14 has no kInterpolated operation.
+func Is3DOperation(op TransformOperation) bool {
+	switch op.Type() {
+	case TransformOperationScaleZ, TransformOperationScale3D,
+		TransformOperationTranslateZ, TransformOperationTranslate3D,
+		TransformOperationRotateX, TransformOperationRotateY, TransformOperationRotate3D,
+		TransformOperationMatrix3D, TransformOperationPerspective:
+		return true
+	}
+	return false
+}
+
+// HasNonPerspective3DOperation reports whether any operation has a 3D
+// operation type other than perspective. Mirrors
+// TransformOperations::HasNonPerspective3DOperation (transform_operations.h:
+// 81-88 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (o TransformOperations) HasNonPerspective3DOperation() bool {
+	for _, op := range o.Operations {
+		if Is3DOperation(op) && op.Type() != TransformOperationPerspective {
+			return true
+		}
+	}
+	return false
+}
+
 // Apply post-multiplies t by every operation in list order. Mirrors
 // TransformOperations::Apply (transform_operations.h:58-61).
 func (o TransformOperations) Apply(borderBoxSize geometry.SizeF, t *geometry.Transform) {

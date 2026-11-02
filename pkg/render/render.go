@@ -131,6 +131,11 @@ type Renderer struct {
 	contextScopes3D []*contextScope3D
 	replaying       map[*PaintLayer][9]float64
 
+	// backfaceCulled is set while painting a layer whose back face culls its
+	// own content but which still walks its subtree for descendants that are
+	// not culled (beginBackfaceCulling).
+	backfaceCulled bool
+
 	// LOU-344: ::selection highlight painting. selectionRange carries the
 	// document's current DOM Selection/Range (html.Document.Selection,
 	// populated by pkg/js's Selection/Range API bindings);
@@ -967,15 +972,12 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	if layer.Opacity <= 0 {
 		return
 	}
-	// CSS Transforms L2 §11: `backface-visibility: hidden` skips the layer
-	// (and its subtree) when the back face is presented to the viewer.
-	// BackfaceHidden was computed at layer-build time from the element's
-	// own transform composed with any preserve-3d ancestor transforms.
-	// Mirrors Blink's PaintLayerPainter::ShouldPaintForBackfaceHidden gate at
-	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	if layer.BackfaceHidden {
+	// CSS Transforms L2 §11: `backface-visibility: hidden`.
+	paint, outerCulled := r.beginBackfaceCulling(layer)
+	if !paint {
 		return
 	}
+	defer func() { r.backfaceCulled = outerCulled }()
 
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
 	if layer.HasMaskImage {
@@ -1705,6 +1707,9 @@ func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 // common case; isolation: isolate does not form a backdrop root, which is
 // consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	box := layer.Box
 
 	// A logically zero-area border box paints no backdrop. Skip before
@@ -2392,6 +2397,9 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 // dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
 		r.drawOutline(layer)
 	}
@@ -2403,6 +2411,9 @@ func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
 // The outline is NOT painted here; it has its own post-content phase
 // (see paintSelfOutline). Called once per layer (not once per phase).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
 	// The cell still occupies space; only painting is suppressed.
@@ -2447,6 +2458,9 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 // Mirrors Blink's ReplacedPainter::PaintReplacedContent dispatch on
 // LayoutSVGRoot.
 func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	if layer.Box != nil && layer.Box.Text != "" {
 		r.drawText(layer)
 	}
@@ -2531,13 +2545,13 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if child.Opacity <= 0 {
 		return
 	}
-	// CSS Transforms L2 §11: `backface-visibility: hidden` skips the layer
-	// (and its non-self-painting subtree) when the back face is presented
-	// to the viewer. Same gate as the paintLayer entry — applied here so
-	// non-stacking-context flow children also honour the skip.
-	if child.BackfaceHidden {
+	// CSS Transforms L2 §11: same gate as paintLayerContents, for flow
+	// children that paint in their parent's phases.
+	paint, outerCulled := r.beginBackfaceCulling(child)
+	if !paint {
 		return
 	}
+	defer func() { r.backfaceCulled = outerCulled }()
 	if child.Box != nil && child.Box.CreatesStackingContext() {
 		if phase == PhaseForeground {
 			r.paintLayer(child)
@@ -3089,6 +3103,9 @@ func backgroundClipRadiiForClip(layer *PaintLayer, rect layout.PhysicalRect, cli
 // ScrollbarThemeAura::PaintThumb+PaintTrackBackground
 // (scrollable_area_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintScrollbars(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	box := layer.Box
 	if box == nil || box.Style == nil {
 		return

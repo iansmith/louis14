@@ -36,23 +36,64 @@ type TransformPaintPropertyNode struct {
 	// this node belongs to (Blink's rendering_context_id, :1458-1466), nil
 	// outside any context.
 	RenderingContextRoot *layout.Box
+	// BackfaceVisibility mirrors the Blink field (UpdateTransform,
+	// :1487-1508).
+	BackfaceVisibility BackfaceVisibility
+	// backfaceParent is the node a kInherited node delegates to: the
+	// transform node box's painting inherits from its parent
+	// (localBorderBoxTransform).
+	backfaceParent *TransformPaintPropertyNode
 
 	// projection caches projectionToRenderingContextBase (GeometryMapper's
 	// TransformCache role).
 	projection *geometry.Transform
 }
 
+// BackfaceVisibility mirrors TransformPaintPropertyNode::BackfaceVisibility
+// (transform_paint_property_node.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type BackfaceVisibility int
+
+const (
+	// BackfaceVisibilityInherited: the node's back face is hidden when its
+	// parent's is (DelegatesToParentForBackface).
+	BackfaceVisibilityInherited BackfaceVisibility = iota
+	BackfaceVisibilityHidden
+	BackfaceVisibilityVisible
+)
+
+// willChangeTransformProperties are the will-change longhands whose
+// compositing reasons are in CompositingReasonsForTransformProperty, louis14
+// folding the translate/rotate/scale nodes into the transform node
+// (CompositingReasonsForWillChange, compositing_reason_finder.cc:105-118;
+// compositing_reasons.h:149-159 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var willChangeTransformProperties = [...]string{"transform", "perspective", "transform-style", "translate", "rotate", "scale"}
+
 // needsTransformNode mirrors NeedsTransform (paint_property_tree_builder.cc:
-// 1330-1350 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a transformable
-// box: a transform (or translate/rotate/scale, whose nodes louis14 folds into
-// the transform node), a used transform-style of preserve-3d, or a hidden
-// backface.
+// 1330-1350 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a hidden backface on
+// any element but text and SVG content, and for a transformable box a
+// transform (or translate/rotate/scale, whose nodes louis14 folds into the
+// transform node), a will-change transform hint, or a used transform-style
+// of preserve-3d.
 func needsTransformNode(box *layout.Box) bool {
-	if box == nil || box.Style == nil || box.Text != "" || !layout.IsTransformableBox(box.Style, box.Node) {
+	if box == nil || box.Style == nil || box.Text != "" {
 		return false
 	}
-	return box.Style.HasTransform() || box.Preserves3D() ||
-		box.Style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden
+	if box.Style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden && !isSVGContentBox(box) {
+		return true
+	}
+	if !layout.IsTransformableBox(box.Style, box.Node) {
+		return false
+	}
+	if box.Style.HasTransform() || box.Preserves3D() {
+		return true
+	}
+	for _, p := range willChangeTransformProperties {
+		if box.Style.HasWillChangeProperty(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // perspectiveLookup returns the perspective matrix the DOM parent of box
@@ -63,6 +104,7 @@ type perspectiveLookup func(box *layout.Box) (geometry.Transform, bool)
 // paint (the FragmentPaintPropertyTreeBuilder walk, done lazily per box).
 type transformTreeBuilder struct {
 	nodes       map[*layout.Box]*TransformPaintPropertyNode
+	local       map[*layout.Box]*TransformPaintPropertyNode // localBorderBoxTransform memo
 	perspective perspectiveLookup
 	// domParent returns the box of a box's DOM parent: the layout tree
 	// parents an absolutely or fixed positioned box under its containing
@@ -73,7 +115,12 @@ type transformTreeBuilder struct {
 }
 
 func newTransformTreeBuilder(perspective perspectiveLookup, domParent func(*layout.Box) *layout.Box) *transformTreeBuilder {
-	return &transformTreeBuilder{nodes: make(map[*layout.Box]*TransformPaintPropertyNode), perspective: perspective, domParent: domParent}
+	return &transformTreeBuilder{
+		nodes:       make(map[*layout.Box]*TransformPaintPropertyNode),
+		local:       make(map[*layout.Box]*TransformPaintPropertyNode),
+		perspective: perspective,
+		domParent:   domParent,
+	}
 }
 
 // transformContextParent returns the ancestor whose transform state box
@@ -132,9 +179,91 @@ func (b *transformTreeBuilder) node(box *layout.Box) *TransformPaintPropertyNode
 				n.Matrix = p.Mul(n.Matrix)
 			}
 		}
+		// UpdateTransform's backface_visibility (:1487-1508). A child of a
+		// preserve-3d parent cannot inherit it (can_inherit_backface_visibility
+		// is the parent's should_flatten_inherited_transform, :4126-4130).
+		switch {
+		case box.Style.GetBackfaceVisibility() == css.BackfaceVisibilityHidden:
+			n.BackfaceVisibility = BackfaceVisibilityHidden
+		case n.RenderingContextRoot == box || !n.FlattensInheritedTransform || box.Style.Has3DTransformOperation():
+			n.BackfaceVisibility = BackfaceVisibilityVisible
+		default:
+			n.backfaceParent = b.localBorderBoxTransform(box.Parent)
+		}
 	}
 	b.nodes[box] = n
 	return n
+}
+
+// localBorderBoxTransform returns the transform node box paints in, the
+// transform of FragmentData::LocalBorderBoxProperties: its own node, else
+// its parent's. The box tree parents an absolutely or fixed positioned box
+// under its containing block, whose transform state Blink's
+// absolute_position / fixed_position contexts carry.
+func (b *transformTreeBuilder) localBorderBoxTransform(box *layout.Box) *TransformPaintPropertyNode {
+	if box == nil {
+		return nil
+	}
+	if n, ok := b.local[box]; ok {
+		return n
+	}
+	n := b.node(box)
+	if n == nil {
+		n = b.localBorderBoxTransform(box.Parent)
+	}
+	b.local[box] = n
+	return n
+}
+
+// IsBackfaceHidden mirrors TransformPaintPropertyNode::IsBackfaceHidden: a
+// kInherited node takes its parent's (GeometryMapperTransformCache, via
+// IsBackfaceHiddenInternal).
+func (n *TransformPaintPropertyNode) IsBackfaceHidden() bool {
+	for ; n != nil; n = n.backfaceParent {
+		switch n.BackfaceVisibility {
+		case BackfaceVisibilityHidden:
+			return true
+		case BackfaceVisibilityVisible:
+			return false
+		}
+	}
+	return false
+}
+
+// transformNodeForBackfaceVisibility walks up from n while it delegates to
+// its parent for backface visibility. Mirrors cc
+// TransformNodeForBackfaceVisibility (cc/trees/draw_property_utils.cc:
+// 406-418 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func transformNodeForBackfaceVisibility(n *TransformPaintPropertyNode) *TransformPaintPropertyNode {
+	for n.BackfaceVisibility == BackfaceVisibilityInherited && n.backfaceParent != nil {
+		n = n.backfaceParent
+	}
+	return n
+}
+
+// isBackFaceVisible reports whether n's back face is toward the viewer.
+// Mirrors cc IsTransformToRootOf3DRenderingContextBackFaceVisible
+// (draw_property_utils.cc:432-463 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the transform from n up to the root of its 3D sorting context, including
+// the root's own to_parent. A node outside any context sorts with the root
+// (sorting context 0), so its transform runs to the screen, but every node
+// above it flattens, and a flattened ancestor leaves the inverse's (2, 2)
+// entry, the back-face test, unchanged: n.Matrix, its parent's perspective
+// included (the perspective node's children do not flatten it), decides.
+// A context root's parent perspective node is outside the context, so the
+// root contributes only its own transform.
+func isBackFaceVisible(n *TransformPaintPropertyNode) bool {
+	return backfaceTransformToContextRoot(n).IsBackFaceVisible()
+}
+
+func backfaceTransformToContextRoot(n *TransformPaintPropertyNode) geometry.Transform {
+	switch {
+	case n.RenderingContextRoot == nil:
+		return n.Matrix
+	case n.Box == n.RenderingContextRoot || n.Parent == nil:
+		return localTransformMatrix(n.Box)
+	}
+	return backfaceTransformToContextRoot(n.Parent).Mul(n.Matrix)
 }
 
 // localTransformMatrix returns T(origin) · ApplyTransform · T(-origin) for
@@ -233,4 +362,51 @@ func multiplyHomographies(a, b [9]float64) [9]float64 {
 		}
 	}
 	return r
+}
+
+// isBackfaceCulled reports whether layer's own content is not drawn because
+// its transform node hides its back face and the back face is toward the
+// viewer. Mirrors cc LayerNeedsUpdate's double-sided test: the layer's
+// effect is single-sided when its transform IsBackfaceHidden
+// (PropertyTreeManager, property_tree_manager.cc:1364) and is skipped when
+// IsLayerBackFaceVisible (draw_property_utils.cc:465-485, :527-530 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) isBackfaceCulled(layer *PaintLayer) bool {
+	if r.transformTree == nil {
+		return false
+	}
+	n := r.transformTree.localBorderBoxTransform(layer.Box)
+	return n.IsBackfaceHidden() && isBackFaceVisible(transformNodeForBackfaceVisibility(n))
+}
+
+// beginBackfaceCulling decides how layer paints under backface culling.
+// Blink culls per paint chunk, so a culled layer's descendants with their
+// own transform nodes that are not culled (a child of a preserve-3d parent
+// resets backface visibility) still paint. louis14 paints a layer's subtree
+// inside its paint, so a culled layer either paints nothing (paint false)
+// or, when such a descendant exists, walks its subtree with backfaceCulled
+// set, which suppresses its own content. Returns the previous
+// backfaceCulled for the caller to restore. no Blink analog: immediate-mode
+// substitute for per-chunk culling.
+func (r *Renderer) beginBackfaceCulling(layer *PaintLayer) (paint, outer bool) {
+	outer = r.backfaceCulled
+	culled := r.isBackfaceCulled(layer)
+	if culled && !r.hasUnculledDescendant(layer) {
+		return false, outer
+	}
+	r.backfaceCulled = culled
+	return true, outer
+}
+
+// hasUnculledDescendant reports whether any layer below layer is not
+// backface culled.
+func (r *Renderer) hasUnculledDescendant(layer *PaintLayer) bool {
+	for _, list := range [][]*PaintLayer{layer.NegativeZ, layer.FlowChildren, layer.FloatChildren, layer.AutoZero, layer.PositiveZ} {
+		for _, c := range list {
+			if !r.isBackfaceCulled(c) || r.hasUnculledDescendant(c) {
+				return true
+			}
+		}
+	}
+	return false
 }

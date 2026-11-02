@@ -75,6 +75,23 @@ func (s *Style) HasTransform() bool {
 	return s.HasTransformOperations() || s.Translate() != nil || s.Rotate() != nil || s.Scale() != nil
 }
 
+// Has3DTransformOperation mirrors ComputedStyle::Has3DTransformOperation
+// (computed_style.h:2117-2122 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a
+// syntactically 3D function in transform, or a 3D translate, rotate or scale.
+func (s *Style) Has3DTransformOperation() bool {
+	if s.Transform().HasNonPerspective3DOperation() {
+		return true
+	}
+	if t := s.Translate(); t != nil && t.Z != 0 {
+		return true
+	}
+	if r := s.Rotate(); r != nil && (r.X != 0 || r.Y != 0) {
+		return true
+	}
+	sc := s.Scale()
+	return sc != nil && sc.Z != 1
+}
+
 // computedIndependentTransform is a computed translate, rotate or scale
 // property (nil op = none) with the property text it was computed from, and
 // whether `inherit` copied it from the parent — the computedTransform

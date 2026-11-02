@@ -311,16 +311,6 @@ type PaintLayer struct {
 	// background_image_geometry.cc @ 4883d11fef.
 	HasTransformPaint bool
 
-	// BackfaceHidden is true when the element's computed back-face is
-	// currently facing the viewer AND `backface-visibility: hidden` is set.
-	// Per CSS Transforms L2 §11 the entire layer (and its subtree) is then
-	// skipped at paint time. Computed from the element's own transform
-	// composed with any preserve-3d ancestor transforms above the nearest
-	// 3D rendering context boundary. Mirrors Blink's
-	// PaintLayerPainter::ShouldPaintForBackfaceHidden() at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	BackfaceHidden bool
-
 	// CSS Filters:
 	Filters   []css.FilterFunction
 	HasFilter bool
@@ -426,14 +416,6 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	// PaintLayerStackingNode::AncestorStackingContext semantics.
 	reparentZOrderByAncestorSC(rootLayer)
 	rootLayer.sortZLists()
-	// CSS Transforms L2 §11: propagate backface-hidden down the DOM tree so
-	// out-of-flow descendants (which the layout engine hoists into a higher
-	// containing block's z-list) still inherit the back-face skip. Without
-	// this pass, a position:fixed descendant of a back-face-hidden subtree
-	// would be promoted into an ancestor SC's z-list and painted even though
-	// its hosting subtree is back-facing. Mirrors Blink's PaintLayerPainter
-	// behaviour where the entire subtree paint is short-circuited.
-	propagateBackfaceHidden(rootLayer)
 	// Consolidate outline drawing for multi-line inline elements. A split
 	// inline span generates one PaintLayer per line fragment; each fragment
 	// independently calls drawOutline using only its own fragment box, leaving
@@ -648,50 +630,6 @@ func reparentZList(zlist []*PaintLayer, parent *PaintLayer, idx map[*html.Node]*
 		}
 	}
 	return filtered
-}
-
-// propagateBackfaceHidden ensures every layer whose DOM ancestor (in the
-// document tree, not the layout tree) is back-face-hidden also carries the
-// flag. We build a `Node → *PaintLayer` index from the assembled tree, then
-// for each layer walk its element's DOM Node.Parent chain looking up each
-// ancestor's pre-computed BackfaceHidden flag.
-func propagateBackfaceHidden(root *PaintLayer) {
-	if root == nil {
-		return
-	}
-	idx := buildLayerIndex(root)
-	// For each layer, walk its DOM ancestors and inherit BackfaceHidden if
-	// any ancestor element layer carries it.
-	var propagate func(*PaintLayer)
-	propagate = func(l *PaintLayer) {
-		if l == nil || l.Box == nil {
-			return
-		}
-		if !l.BackfaceHidden && l.Box.Node != nil {
-			for n := l.Box.Node.Parent; n != nil; n = n.Parent {
-				if anc, ok := idx[n]; ok && anc.BackfaceHidden {
-					l.BackfaceHidden = true
-					break
-				}
-			}
-		}
-		for _, c := range l.NegativeZ {
-			propagate(c)
-		}
-		for _, c := range l.AutoZero {
-			propagate(c)
-		}
-		for _, c := range l.PositiveZ {
-			propagate(c)
-		}
-		for _, c := range l.FlowChildren {
-			propagate(c)
-		}
-		for _, c := range l.FloatChildren {
-			propagate(c)
-		}
-	}
-	propagate(root)
 }
 
 // consolidateInlineOutlines resolves the outline-drawing geometry for split
@@ -1371,25 +1309,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// background_image_geometry.cc @ 4883d11fef.
 	if s.HasWillChangeAnyTransformProperty() {
 		layer.HasTransformPaint = true
-	}
-
-	// CSS Transforms L2 §11 backface-visibility: when set to `hidden`, an
-	// element is not painted if its back face is currently presented to the
-	// viewer. The back face is determined by applying the element's own
-	// transform (plus any preserve-3d ancestor transforms that share the
-	// 3D rendering context) to the local normal vector (0, 0, 1) and
-	// checking the sign of the resulting Z. Mirrors Blink's
-	// PaintLayerPainter::ShouldPaintForBackfaceHidden @ SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	//
-	// The subtree of a back-face-hidden ancestor is also skipped, including
-	// out-of-flow descendants that have been hoisted into a higher
-	// containing block (Blink handles this implicitly because the paint
-	// walk descends through the parent's stacking-context paint subtree;
-	// in louis14 OOF promotion would expose the escapee for paint, so we
-	// propagate the flag down the DOM parent chain).
-	if s.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
-		layer.BackfaceHidden = computeBackfaceHidden(box)
 	}
 
 	// CSS Filters. SVG content elements (descendants of an inline <svg> other
@@ -2179,21 +2098,4 @@ func (layer *PaintLayer) sortZLists() {
 	for _, child := range layer.FloatChildren {
 		child.sortZLists()
 	}
-}
-
-// computeBackfaceHidden returns true when the element's back face is currently
-// facing the viewer, taking into account the chain of preserve-3d ancestors
-// that share the element's 3D rendering context.
-//
-// Per CSS Transforms L2 §11 the back-face test consults the element's
-// "accumulated transformation matrix": its TransformPaintPropertyNode's
-// projection to its 3D rendering context's base
-// (projectionToRenderingContextBase), gfx::Transform::IsBackFaceVisible.
-// The parent's perspective is not looked up at layer-build time.
-func computeBackfaceHidden(box *layout.Box) bool {
-	node := newTransformTreeBuilder(nil, nil).node(box)
-	if node == nil {
-		return false
-	}
-	return projectionToRenderingContextBase(node).IsBackFaceVisible()
 }

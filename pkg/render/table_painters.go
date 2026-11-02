@@ -239,6 +239,9 @@ func computeEdgeJoints(edge TableCollapsedEdge) (startJoint, endJoint layout.Log
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), walking each section's rows.
 // louis14 tables do not fragment, so the fragmentation adjustments drop out.
 func (r *Renderer) PaintCollapsedBorders(layer *PaintLayer) {
+	if r.backfaceCulled {
+		return
+	}
 	box := layer.Box
 	if box == nil || box.TableCollapsedBorders == nil || box.TableCollapsedBordersGeometry == nil {
 		return
