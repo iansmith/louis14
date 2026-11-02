@@ -559,6 +559,41 @@ type SVGSizingInfo struct {
 	PreserveAspectRatioNone bool
 }
 
+// NaturalSize returns the SVG image's natural width and height, each only
+// when the root's width/height is an absolute length (a percentage is not
+// natural). NaturalRatio returns its natural aspect ratio: the natural size
+// when both are non-empty, else the viewBox; 0, 0 for none. Together they
+// are SVGImage::GetNaturalDimensions (core/svg/graphics/svg_image.cc:238-264
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) over
+// LayoutSVGRoot::UnscaledNaturalSizingInfo (layout_svg_root.cc:74-103): a
+// partially sized image with preserveAspectRatio="none" reports nothing
+// (the SvgSizingWithPreserveAspectRatioNone flag that removes that is
+// experimental).
+func (s SVGSizingInfo) NaturalSize() (width, height float64, hasWidth, hasHeight bool) {
+	if s.partiallySizedWithPreserveAspectRatioNone() {
+		return 0, 0, false, false
+	}
+	return s.ExplicitWidth, s.ExplicitHeight, s.HasExplicitWidth, s.HasExplicitHeight
+}
+
+// NaturalRatio: see NaturalSize.
+func (s SVGSizingInfo) NaturalRatio() (width, height float64) {
+	switch {
+	case s.partiallySizedWithPreserveAspectRatioNone():
+		return 0, 0
+	case s.ExplicitWidth > 0 && s.ExplicitHeight > 0:
+		return s.ExplicitWidth, s.ExplicitHeight
+	case s.HasViewBox && s.ViewBoxWidth > 0 && s.ViewBoxHeight > 0:
+		// The viewBox can only yield a natural ratio, not a natural size.
+		return s.ViewBoxWidth, s.ViewBoxHeight
+	}
+	return 0, 0
+}
+
+func (s SVGSizingInfo) partiallySizedWithPreserveAspectRatioNone() bool {
+	return (!s.HasExplicitWidth || !s.HasExplicitHeight) && s.PreserveAspectRatioNone
+}
+
 // svgViewBoxRE matches a viewBox attribute on the root <svg> element.
 var svgViewBoxRE = regexp.MustCompile(`viewBox=["']([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)["']`)
 
@@ -595,27 +630,6 @@ func GetSVGSizingInfo(data []byte) SVGSizingInfo {
 	info.PreserveAspectRatioNone = svgPreserveAspectRatioNoneRE.MatchString(rootAttrs)
 
 	return info
-}
-
-// GetSVGSizingInfoWithFetcher fetches SVG data and returns sizing info.
-func GetSVGSizingInfoWithFetcher(path string, fetcher ImageFetcher) (SVGSizingInfo, error) {
-	if fetcher == nil {
-		return SVGSizingInfo{}, fmt.Errorf("no fetcher")
-	}
-	data, err := fetcher(path)
-	if err != nil {
-		return SVGSizingInfo{}, err
-	}
-	if !isSVGData(data) {
-		return SVGSizingInfo{}, fmt.Errorf("not SVG data")
-	}
-	return GetSVGSizingInfo(data), nil
-}
-
-// IsSVGPath returns true if the path likely refers to an SVG file.
-func IsSVGPath(path string) bool {
-	lower := strings.ToLower(path)
-	return strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".svgz")
 }
 
 // GetImageDimensionsWithFetcher returns the width and height of an image,
