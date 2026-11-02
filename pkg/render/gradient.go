@@ -377,18 +377,18 @@ func resolveStopPositions(stops []gradientStop, lineLen float64, style *css.Styl
 	}
 }
 
-// interpolateGradientColor returns the color at a given pixel position along the gradient line.
+// interpolateGradientColor returns the color (straight alpha) at a given
+// pixel position along the gradient line; stops interpolate premultiplied.
 func interpolateGradientColor(stops []gradientStop, pos float64) color.RGBA {
 	if len(stops) == 0 {
 		return color.RGBA{A: 255}
 	}
 	if pos < stops[0].pos {
-		s := &stops[0]
-		return color.RGBA{R: uint8(s.r * 255), G: uint8(s.g * 255), B: uint8(s.b * 255), A: uint8(s.a * 255)}
+		return stops[0].rgba()
 	}
 	last := &stops[len(stops)-1]
 	if pos >= last.pos {
-		return color.RGBA{R: uint8(last.r * 255), G: uint8(last.g * 255), B: uint8(last.b * 255), A: uint8(last.a * 255)}
+		return last.rgba()
 	}
 	for i := 1; i < len(stops); i++ {
 		if pos <= stops[i].pos {
@@ -399,30 +399,43 @@ func interpolateGradientColor(stops []gradientStop, pos float64) color.RGBA {
 				for i+1 < len(stops) && stops[i+1].pos == pos {
 					i++
 				}
-				s := &stops[i]
-				return color.RGBA{R: uint8(s.r * 255), G: uint8(s.g * 255), B: uint8(s.b * 255), A: uint8(s.a * 255)}
+				return stops[i].rgba()
 			}
 			a := &stops[i-1]
 			b := &stops[i]
 			span := b.pos - a.pos
 			if span <= 0 {
-				return color.RGBA{R: uint8(b.r * 255), G: uint8(b.g * 255), B: uint8(b.b * 255), A: uint8(b.a * 255)}
+				return b.rgba()
 			}
+			// Interpolate in premultiplied alpha, returning the straight
+			// color: CSS gradients are Gradient::PremultipliedAlpha::
+			// kPremultiplied (core/css/css_gradient_value.cc:1456), drawn
+			// with SkGradient::Interpolation::InPremul::kYes
+			// (platform/graphics/gradient.cc:288-290 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); CSS Images 4
+			// §3.4.3.
 			t := (pos - a.pos) / span
-			rv := a.r + (b.r-a.r)*t
-			gv := a.g + (b.g-a.g)*t
-			bv := a.b + (b.b-a.b)*t
 			av := a.a + (b.a-a.a)*t
-			return color.RGBA{
-				R: uint8(clamp01(rv) * 255),
-				G: uint8(clamp01(gv) * 255),
-				B: uint8(clamp01(bv) * 255),
-				A: uint8(clamp01(av) * 255),
+			if av <= 0 {
+				return color.RGBA{}
 			}
+			inv := 1 / av
+			unpremul := func(ac, bc float64) uint8 {
+				return to8((ac*a.a + (bc*b.a-ac*a.a)*t) * inv)
+			}
+			return color.RGBA{R: unpremul(a.r, b.r), G: unpremul(a.g, b.g), B: unpremul(a.b, b.b), A: to8(av)}
 		}
 	}
-	return color.RGBA{R: uint8(last.r * 255), G: uint8(last.g * 255), B: uint8(last.b * 255), A: uint8(last.a * 255)}
+	return last.rgba()
 }
+
+// rgba is the stop's color as 8-bit straight RGBA.
+func (s *gradientStop) rgba() color.RGBA {
+	return color.RGBA{R: to8(s.r), G: to8(s.g), B: to8(s.b), A: to8(s.a)}
+}
+
+// to8 quantizes a [0, 1] channel to 8 bits.
+func to8(v float64) uint8 { return uint8(clamp01(v) * 255) }
 
 func clamp01(v float64) float64 {
 	if v < 0 {
@@ -658,8 +671,9 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64, style 
 // straight, non-premultiplied alpha as produced by interpolateGradientColor)
 // onto an image.RGBA pixel using Porter-Duff source-over.
 //
-// interpolateGradientColor interpolates and returns straight-alpha colors,
-// but image.RGBA stores premultiplied alpha — so a semi-transparent stop
+// interpolateGradientColor returns straight-alpha colors (interpolated
+// premultiplied, then un-premultiplied), but image.RGBA stores premultiplied
+// alpha — so a semi-transparent stop
 // must be premultiplied and composited over whatever was painted behind
 // the gradient layer (e.g. the element's background-color), not written
 // raw. For a fully opaque stop (A == 255) this is exactly a replace, so

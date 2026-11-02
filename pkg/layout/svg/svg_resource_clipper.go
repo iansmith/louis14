@@ -146,6 +146,9 @@ func (c *SVGResourceClipper) AsPath(target geometry.RectF) (Path, bool) {
 	if !c.Transform.IsIdentity() {
 		t = t.Compose(c.Transform)
 	}
+	// The child's own transform maps its path into the clipPath's user
+	// space, as on the content path (paintSVGNode).
+	t = t.Compose(ElementTransform(shape, shape.Style))
 	if t.IsIdentity() {
 		// Return a copy so callers can't mutate the cached child.
 		return clonePath(&shape.Path), true

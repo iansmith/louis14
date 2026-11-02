@@ -181,3 +181,19 @@ func TestParseConicGradient_SingleStopTwoPositions(t *testing.T) {
 		t.Fatalf("parse: ok=%v len(stops)=%d, want ok with 2 stops", ok, len(stops))
 	}
 }
+
+// Gradient stops interpolate in premultiplied alpha (CSS gradients are
+// Gradient::PremultipliedAlpha::kPremultiplied, css_gradient_value.cc:1456;
+// InPremul::kYes, platform/graphics/gradient.cc:288-290 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): halfway from opaque blue to
+// transparent black is half-transparent blue, the same as to
+// rgba(0,0,255,0), not a darkened blue-black.
+func TestInterpolateGradientColor_Premultiplied(t *testing.T) {
+	toTransparentBlack := []gradientStop{{b: 1, a: 1, pos: 0}, {pos: 100}}
+	toTransparentBlue := []gradientStop{{b: 1, a: 1, pos: 0}, {b: 1, pos: 100}}
+	got := interpolateGradientColor(toTransparentBlack, 50)
+	want := interpolateGradientColor(toTransparentBlue, 50)
+	if got != want || got.B < 250 || got.A < 126 || got.A > 128 {
+		t.Errorf("to transparent black = %v, to transparent blue = %v; want both straight blue at alpha 127", got, want)
+	}
+}
