@@ -179,4 +179,7 @@ func TestLoadSVGImageWithFetcher_RelativeURLPerFetcher(t *testing.T) {
 	if got := LoadSVGImageWithFetcher(path, bitmap); got != nil {
 		t.Errorf("bitmap resource under the same string: got an SVGImage, want nil")
 	}
+	if got := LoadSVGImageWithFetcher(path, tall); got != b {
+		t.Errorf("SVG resource after a bitmap under the same string = %p, want %p", got, b)
+	}
 }

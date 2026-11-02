@@ -533,32 +533,36 @@ func (r *Renderer) closeTempFonts() {
 //
 // Implements CSS 2.1 Appendix E paint order (simplified).
 func (r *Renderer) Render(boxes []*layout.Box) {
-	r.embeddedViewport.W = 0
-	r.embeddedViewport.H = 0
-
-	r.tempFontIDs = r.tempFontIDs[:0]
-	defer r.closeTempFonts()
-
 	// The base background color behind the view background (ViewPainter::
 	// PaintRootGroup, view_painter.cc:36-74 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
-	r.dc.Clear()
-
-	r.paintBoxes(boxes)
+	r.renderOnBase(boxes, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 }
 
-// renderOnTransparentBase is Render for a frame view whose base background
-// color is transparent: an SVG image's (IsolatedSVGDocumentHost,
+// beginPaintPass starts a paint pass over an embedder viewport of
+// viewportW×viewportH (0×0: the target is the viewport), dropping what the
+// previous pass kept. Callers defer closeTempFonts.
+func (r *Renderer) beginPaintPass(viewportW, viewportH float64) {
+	r.embeddedViewport.W = viewportW
+	r.embeddedViewport.H = viewportH
+	r.svgImagesForContainer = nil
+	r.tempFontIDs = r.tempFontIDs[:0]
+}
+
+// renderOnBase paints a whole document over the frame view's base
+// background color (LocalFrameView::BaseBackgroundColor): white for a
+// page, transparent for an SVG image (IsolatedSVGDocumentHost,
 // core/svg/graphics/isolated_svg_document_host.cc:148 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so only the document's own
-// backgrounds paint.
-func (r *Renderer) renderOnTransparentBase(boxes []*layout.Box) {
-	r.embeddedViewport.W = 0
-	r.embeddedViewport.H = 0
-
-	r.tempFontIDs = r.tempFontIDs[:0]
+// backgrounds paint there. Each call is a new paint pass.
+func (r *Renderer) renderOnBase(boxes []*layout.Box, base color.RGBA) {
+	r.beginPaintPass(0, 0)
 	defer r.closeTempFonts()
+
+	if base.A != 0 {
+		r.dc.SetColor(base)
+		r.dc.Clear()
+	}
 
 	r.paintBoxes(boxes)
 }
@@ -573,10 +577,7 @@ func (r *Renderer) renderOnTransparentBase(boxes []*layout.Box) {
 // The viewport is also recorded so the view background
 // (ViewPainter.PaintRootElementGroup) covers only that rectangle.
 func (r *Renderer) RenderEmbedded(boxes []*layout.Box, viewportW, viewportH float64) {
-	r.embeddedViewport.W = viewportW
-	r.embeddedViewport.H = viewportH
-
-	r.tempFontIDs = r.tempFontIDs[:0]
+	r.beginPaintPass(viewportW, viewportH)
 	defer r.closeTempFonts()
 
 	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
@@ -612,7 +613,7 @@ func (r *Renderer) buildNodeBoxIndex(boxes []*layout.Box) {
 }
 
 // paintBoxes performs the per-box paint pass shared by [Render] and
-// [RenderEmbedded]. The base white fill is the caller's responsibility; the
+// [RenderEmbedded]. The base background fill (white, or none for an SVG image) is the caller's responsibility; the
 // view background is painted from the root layer (paintViewBackground).
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// LOU-344: reset the per-render ::selection bookkeeping. Both maps are

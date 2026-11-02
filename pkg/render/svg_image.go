@@ -2,6 +2,8 @@ package render
 
 import (
 	"image"
+	"image/color"
+	"math"
 
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
@@ -60,7 +62,15 @@ func (r *Renderer) drawSVGImageForContainer(svg *images.SVGImage, containerSize 
 	if err != nil {
 		return nil
 	}
-	engine := layout.NewLayoutEngine(containerSize.Width, containerSize.Height)
+	// The view is resized to the rounded container size and the root laid
+	// out at the floored one (PaintRecordForCurrentFrame, :462-473); the
+	// root painter scales the root onto its pixel-snapped box, which fills
+	// the view (SVGRootPainter::TransformToPixelSnappedBorderBox).
+	viewW, viewH := math.Round(containerSize.Width), math.Round(containerSize.Height)
+	if viewW <= 0 || viewH <= 0 {
+		return nil
+	}
+	engine := layout.NewLayoutEngine(viewW, viewH)
 	engine.SetSVGRootContainerSize(geometry.PhysicalSizeFromF64Floor(containerSize.Width, containerSize.Height))
 	engine.SetFontConfig(r.fonts)
 	boxes := engine.Layout(doc)
@@ -71,9 +81,11 @@ func (r *Renderer) drawSVGImageForContainer(svg *images.SVGImage, containerSize 
 	defer text.SetTextLayout(r.dc.TextLayout())
 	ir := NewRendererForImage(target)
 	ir.SetFonts(r.fonts)
-	// The container maps onto the destination raster (the src→dst rect
-	// transform of DrawInternal, :517-518).
-	ir.dc.Scale(float64(w)/containerSize.Width, float64(h)/containerSize.Height)
-	ir.renderOnTransparentBase(boxes)
+	// The view maps onto the destination raster: DrawForContainer's src
+	// rect is the container compensated by the rounding residual, i.e. the
+	// rounded view (:287-293), and DrawInternal maps src onto dst
+	// (:517-518).
+	ir.dc.Scale(float64(w)/viewW, float64(h)/viewH)
+	ir.renderOnBase(boxes, color.RGBA{})
 	return target
 }

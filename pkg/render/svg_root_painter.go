@@ -47,27 +47,24 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	// (svg_root_painter.cc:41-61) is not ported: it is gated by
 	// SvgInlineRootPixelSnappingScaleAdjustment, status "test"
 	// (platform/runtime_enabled_features.json5:6672-6673 @ 5992657f556b),
-	// so shipping Chrome does not apply it. The document-element scale
-	// (:37-40) has no caller here: paintSVGRoot paints inline <svg> only.
-	snappedX, snappedY, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
-	contentOffsetX := box.Border.Left + box.Padding.Left
-	contentOffsetY := box.Border.Top + box.Padding.Top
-	originX := snappedX + contentOffsetX
-	originY := snappedY + contentOffsetY
+	// so shipping Chrome does not apply it. A document-element root (an SVG
+	// image's or SVG document's) is scaled onto its pixel-snapped border
+	// box (svg_root_painter.cc:30-35 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isDocumentElement := box.LayoutNode.IsDocumentElement()
+	contentToDevice := transformToPixelSnappedBorderBox(box, isDocumentElement)
 
-	// DeviceFromUser at the root paint scope is the composed
-	// translate(originX, originY) · LocalToBorderBoxTransform: maps a
-	// point in the outermost SVG's user-space coords into device
-	// (page-pixel) coords. Each scopedSVGTransformState composes its
-	// own transform on top as the paint walk descends. Paint servers
-	// use this when fill is `url(#…)` to know the device rect they
-	// need to iterate.
-	deviceFromUser := geometry.Translate(originX, originY).Compose(root.LocalToBorderBoxTransform)
+	// DeviceFromUser at the root paint scope is contentToDevice ·
+	// LocalToBorderBoxTransform: maps a point in the outermost SVG's
+	// user-space coords into device (page-pixel) coords. Each
+	// scopedSVGTransformState composes its own transform on top as the
+	// paint walk descends. Paint servers use this when fill is `url(#…)`
+	// to know the device rect they need to iterate.
+	deviceFromUser := contentToDevice.Compose(root.LocalToBorderBoxTransform)
 
 	pctx := &svgPaintContext{
-		dc:      r.dc,
-		originX: originX,
-		originY: originY,
+		dc:              r.dc,
+		contentToDevice: contentToDevice,
 		viewport: geometry.NewRectF(0, 0,
 			root.ContainerSize.Width, root.ContainerSize.Height),
 		CurrentTransform: geometry.Identity(),
@@ -98,18 +95,16 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	// painter installs it. The content box is snapped on its own, as
 	// Blink snaps the clip rect, not derived from the snapped origin: the
 	// two differ when border or padding is fractional.
-	if !layer.HasClip {
-		cx, cy, cw, ch := pixelSnap(box.X+contentOffsetX, box.Y+contentOffsetY,
+	// The UA rule is svg:not(:root), so a document-element root has none.
+	if !layer.HasClip && !isDocumentElement {
+		cx, cy, cw, ch := pixelSnap(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top,
 			root.ContainerSize.Width, root.ContainerSize.Height)
 		r.dc.DrawRectangle(cx, cy, cw, ch)
 		r.dc.Clip()
 	}
 
-	r.dc.Translate(originX, originY)
-	t := root.LocalToBorderBoxTransform
-	if !t.IsIdentity() {
-		r.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
-	}
+	t := deviceFromUser
+	r.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
 
 	// Recurse children.
 	for _, child := range root.Children {
@@ -193,4 +188,21 @@ func isSVGContentBox(box *layout.Box) bool {
 		}
 	}
 	return false
+}
+
+// transformToPixelSnappedBorderBox maps the SVG root's content box (where
+// louis14's content-box-relative LocalToBorderBoxTransform starts) to
+// device pixels: the pixel-snapped border-box origin, scaled onto the
+// pixel-snapped border box for a document-element root, then the
+// border+padding offset. Mirrors SVGRootPainter::
+// TransformToPixelSnappedBorderBox (core/paint/svg_root_painter.cc:23-61 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose LocalToBorderBoxTransform
+// already carries that offset. Box.Width/Height are the border-box size.
+func transformToPixelSnappedBorderBox(box *layout.Box, isDocumentElement bool) geometry.AffineTransform {
+	snappedX, snappedY, snappedW, snappedH := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	t := geometry.Translate(snappedX, snappedY)
+	if isDocumentElement && box.Width > 0 && box.Height > 0 {
+		t = t.Compose(geometry.Scale(snappedW/box.Width, snappedH/box.Height))
+	}
+	return t.Compose(geometry.Translate(box.Border.Left+box.Padding.Left, box.Border.Top+box.Padding.Top))
 }

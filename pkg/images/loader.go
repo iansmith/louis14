@@ -2,6 +2,7 @@ package images
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -463,38 +464,61 @@ type SVGImage struct {
 // svgImageForContainer, SVGImage::DrawForContainer).
 func (s *SVGImage) Data() []byte { return s.data }
 
-// svgImageCache caches SVGImage loads by URL; a nil entry records a URL
-// whose resource is not SVG (or failed to fetch).
+// svgImageCache caches SVGImage loads. byContent holds one SVGImage per
+// distinct resource body (keyed by its SHA-256), so every load of the same
+// bytes shares one *SVGImage and one natural-size parse. byURL short-cuts
+// the fetch for URLs that name the same resource whatever document loads
+// them — data:, file:, absolute path and network URLs; a nil entry records
+// a resource that is not SVG or failed to fetch.
+//
+// A relative URL reaches here uncompleted (a top-level document has no base
+// URL; its fetcher resolves the string), so the same string can name
+// different resources in different documents and its SVG load is fetched
+// every time. LOU-633 completes URLs against a document base so both caches
+// can key by URL, as Blink's MemoryCache keys by the completed KURL.
 var svgImageCache = struct {
 	sync.RWMutex
-	m map[string]*SVGImage
-}{m: make(map[string]*SVGImage)}
+	byContent map[[sha256.Size]byte]*SVGImage
+	byURL     map[string]*SVGImage
+}{byContent: make(map[[sha256.Size]byte]*SVGImage), byURL: make(map[string]*SVGImage)}
 
 // LoadSVGImageWithFetcher returns the SVG document at path, or nil when the
 // resource cannot be fetched or is not SVG. A nil fetcher still serves
 // data: URLs. A fetched non-SVG resource is decoded into the raster image
-// cache, so a following LoadImageWithFetcher does not fetch it again.
+// cache (unless already there), so a following LoadImageWithFetcher does
+// not fetch it again.
 func LoadSVGImageWithFetcher(path string, fetcher ImageFetcher) *SVGImage {
-	svgImageCache.RLock()
-	img, ok := svgImageCache.m[path]
-	svgImageCache.RUnlock()
-	if ok {
-		return img
+	unambiguous := stdnet.IsDataURL(path) || filepath.IsAbs(path) || isNetworkURI(path) || strings.HasPrefix(path, "file:")
+	if unambiguous {
+		svgImageCache.RLock()
+		img, ok := svgImageCache.byURL[path]
+		svgImageCache.RUnlock()
+		if ok {
+			return img
+		}
 	}
 	fetch := fetcher
 	if fetch == nil {
 		fetch = stdnet.RequestResource(nil)
 	}
-	if data, err := fetch(path); err == nil {
-		if isSVGData(data) {
+	data, err := fetch(path)
+	isSVG := err == nil && isSVGData(data)
+	if err == nil && !isSVG && globalCache.cached(path) == nil {
+		_, _ = decodeAndCache(path, data)
+	}
+	var img *SVGImage
+	svgImageCache.Lock()
+	defer svgImageCache.Unlock()
+	if isSVG {
+		key := sha256.Sum256(data)
+		if img = svgImageCache.byContent[key]; img == nil {
 			img = &SVGImage{data: data, Sizing: GetSVGSizingInfo(data)}
-		} else {
-			_, _ = decodeAndCache(path, data)
+			svgImageCache.byContent[key] = img
 		}
 	}
-	svgImageCache.Lock()
-	svgImageCache.m[path] = img
-	svgImageCache.Unlock()
+	if unambiguous {
+		svgImageCache.byURL[path] = img
+	}
 	return img
 }
 
