@@ -440,6 +440,33 @@ func (t Transform) MapPoint3F(p Point3F) Point3F {
 	return Point3F{clampFloatGeometry(v[0]), clampFloatGeometry(v[1]), clampFloatGeometry(v[2])}
 }
 
+// MapVector maps a direction (w = 0), gfx::Transform::MapVector
+// (transform.cc:714-724 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (t Transform) MapVector(v Vector3dF) Vector3dF {
+	v = Vector3dF{toFloat(v.X), toFloat(v.Y), toFloat(v.Z)} // gfx::Vector3dF is float
+	if !t.fullMatrix {
+		return Vector3dF{clampFloatGeometry(v.X), clampFloatGeometry(v.Y), clampFloatGeometry(v.Z)}
+	}
+	p := [4]float64{v.X, v.Y, v.Z, 0}
+	t.matrix.MapVector4(&p)
+	return Vector3dF{clampFloatGeometry(p[0]), clampFloatGeometry(p[1]), clampFloatGeometry(p[2])}
+}
+
+// TransformVector4 maps a homogeneous vector in place,
+// gfx::Transform::TransformVector4 (transform.cc:726-741): float in,
+// double math, float out.
+func (t Transform) TransformVector4(v *[4]float64) {
+	for i := range v {
+		v[i] = toFloat(v[i]) // the vector is float
+	}
+	if t.fullMatrix {
+		t.matrix.MapVector4(v)
+	}
+	for i := range v {
+		v[i] = clampFloatGeometry(v[i])
+	}
+}
+
 // kProjectionClampedBigNumber is the coordinate ProjectPoint returns for a
 // point behind the eye: 1 << (numeric_limits<float>::digits - 1).
 const kProjectionClampedBigNumber = float64(1 << 23)

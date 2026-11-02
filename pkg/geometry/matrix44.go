@@ -273,9 +273,9 @@ func (m *Matrix44) SetConcat(x, y *Matrix44) {
 	m.matrix = r
 }
 
-// isNormalFloat mirrors std::isnormal(static_cast<float>(v)): v is finite,
+// IsNormalFloat mirrors std::isnormal(static_cast<float>(v)): v is finite,
 // non-zero and not subnormal at float precision.
-func isNormalFloat(v float64) bool {
+func IsNormalFloat(v float64) bool {
 	f := float64(float32(v))
 	if math.IsNaN(f) || math.IsInf(f, 0) || f == 0 {
 		return false
@@ -318,7 +318,7 @@ func inverseWithDouble4Cols(c0, c1, c2, c3 *double4) bool {
 	*c0 = c0.sub(r2.mul(t))
 
 	det := r0.mul(*c0).sum()
-	if !isNormalFloat(det) {
+	if !IsNormalFloat(det) {
 		return false
 	}
 
@@ -362,7 +362,7 @@ func inverseWithDouble4Cols(c0, c1, c2, c3 *double4) bool {
 func (m *Matrix44) GetInverse(inverse *Matrix44) bool {
 	if m.Is2dTransform() {
 		determinant := m.Determinant()
-		if !isNormalFloat(determinant) {
+		if !IsNormalFloat(determinant) {
 			return false
 		}
 		invDet := 1.0 / determinant
@@ -387,7 +387,7 @@ func (m *Matrix44) GetInverse(inverse *Matrix44) bool {
 }
 
 // IsInvertible mirrors gfx::Matrix44::IsInvertible.
-func (m *Matrix44) IsInvertible() bool { return isNormalFloat(m.Determinant()) }
+func (m *Matrix44) IsInvertible() bool { return IsNormalFloat(m.Determinant()) }
 
 // Determinant mirrors gfx::Matrix44::Determinant (a reduced
 // InverseWithDouble4Cols).
