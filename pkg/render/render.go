@@ -117,10 +117,19 @@ type Renderer struct {
 	view *ViewPainter
 
 	// nodeBoxIndex maps each html.Node to its primary layout box. Built once
-	// per Render call in paintBoxes. Used by parentPerspectiveContext to
+	// per Render call in paintBoxes. Used by parentPerspective and the
+	// transform tree's DOM-parent walk to
 	// locate the perspective-establishing box for an abspos child whose
 	// layout parent (containing block) differs from its DOM parent.
 	nodeBoxIndex map[*html.Node]*layout.Box
+
+	// transformTree builds each box's TransformPaintPropertyNode for this
+	// paint; contextScopes3D is the stack of preserve-3d layers being painted
+	// and replaying holds, per participant painted from its context base, the
+	// homography undoing its enclosing scope's projection (see paintLayer).
+	transformTree   *transformTreeBuilder
+	contextScopes3D []*contextScope3D
+	replaying       map[*PaintLayer][9]float64
 
 	// LOU-344: ::selection highlight painting. selectionRange carries the
 	// document's current DOM Selection/Range (html.Document.Selection,
@@ -619,6 +628,9 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
 	r.buildNodeBoxIndex(boxes)
+	r.transformTree = newTransformTreeBuilder(r.parentPerspective, r.domParentBox)
+	r.contextScopes3D = nil
+	r.replaying = make(map[*PaintLayer][9]float64)
 	// Build the renderer-wide SVG resource registry by walking every
 	// box subtree for inline `<svg>` SVGRoots and merging their
 	// per-root registries. `url(#id)` references on any element on
@@ -835,11 +847,84 @@ func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
 }
 
 // paintLayer paints a PaintLayer and its descendants using the pre-built
-// stacking order. All paint decisions use pre-computed fields — no Style access.
+// stacking order.
+//
+// 3D rendering contexts. Blink paints every participant of a context with
+// its own transform state — its node's projection to the context base,
+// unflattened through its preserve-3d ancestors — and cc then depth-sorts
+// the participants (worklist D4; louis14 keeps paint order). The draw
+// context only composes 2D projections, so a participant reached inside its
+// preserve-3d parent's paint composes onto the parent's applied projection
+// P the homography P⁻¹·H(projection to base): undoing an invertible 3×3
+// homography is exact, and the draw context ends at H(projection to base)
+// (applyTransforms). When P is singular (edge-on), nothing else in the
+// parent's plane is visible, and the participant is painted right after the
+// parent instead, where the draw context is back at the base.
 func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
+	var node *TransformPaintPropertyNode
+	if r.transformTree != nil && layer.Box != nil {
+		node = r.transformTree.node(layer.Box)
+	}
+	if _, replaying := r.replaying[layer]; node.participatesInRenderingContext() && !replaying {
+		if scope := r.topContextScope(node.RenderingContextRoot); scope != nil {
+			if inv, ok := invertHomography(scope.applied); ok {
+				r.paintParticipant(layer, inv)
+			} else {
+				scope.deferred = append(scope.deferred, layer)
+			}
+			return
+		}
+	}
+	undo, replaying := r.replaying[layer]
+	if node == nil || !layer.Box.Preserves3D() || (node.participatesInRenderingContext() && !replaying) {
+		// Not a preserve-3d scope — or a participant whose context has no
+		// open scope, which then paints as if it flattened.
+		r.paintLayerContents(layer)
+		return
+	}
+	// A preserve-3d layer opens a scope: the projection it applies relative
+	// to the context base, which its participating descendants undo.
+	scope := &contextScope3D{root: node.RenderingContextRoot, applied: identityHomography}
+	if r.appliesTransform(layer) {
+		scope.applied = projectiveHomography(r.layerProjection(layer, node))
+	}
+	r.contextScopes3D = append(r.contextScopes3D, scope)
+	r.paintLayerContents(layer)
+	// Deferred participants paint at this paint's entry state, which the
+	// layer's own undo (identity for a context root) reverts to the base.
+	if !replaying {
+		undo = identityHomography
+	}
+	for i := 0; i < len(scope.deferred); i++ {
+		r.paintParticipant(scope.deferred[i], undo)
+	}
+	r.contextScopes3D = r.contextScopes3D[:len(r.contextScopes3D)-1]
+}
+
+// paintParticipant paints a 3D-rendering-context participant whose draw
+// context carries the projection `undo` reverts to the context base
+// (identity when it is at the base).
+func (r *Renderer) paintParticipant(layer *PaintLayer, undo [9]float64) {
+	r.replaying[layer] = undo
+	r.paintLayer(layer)
+	delete(r.replaying, layer)
+}
+
+// topContextScope returns the innermost preserve-3d paint scope of the 3D
+// rendering context rooted at root, nil when none is open.
+func (r *Renderer) topContextScope(root *layout.Box) *contextScope3D {
+	if n := len(r.contextScopes3D); n > 0 && r.contextScopes3D[n-1].root == root {
+		return r.contextScopes3D[n-1]
+	}
+	return nil
+}
+
+// paintLayerContents paints one layer at its place in the stacking order.
+// All paint decisions use pre-computed fields — no Style access.
+func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	if outer, ok := r.enterFrameView(layer); ok {
 		defer func() { r.view = outer }()
 	}
@@ -980,9 +1065,9 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 // Pair with exitLayerTransform.
 func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 	r.paintViewBackground(layer)
-	if layer.HasTransform {
+	if r.appliesTransform(layer) {
 		r.dc.Push()
-		singular = r.applyTransforms(layer) || !layer.Transform.IsInvertible()
+		singular = r.applyTransforms(layer) || !r.transformTree.node(layer.Box).Matrix.IsInvertible()
 	}
 	if layer.HasTransformPaint {
 		r.transformDepth++
@@ -990,12 +1075,20 @@ func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 	return singular
 }
 
+// appliesTransform reports whether layer paints under a transform of its
+// own: a transform, or — for a 3D-rendering-context participant painted
+// from the context base — its projection to that base.
+func (r *Renderer) appliesTransform(layer *PaintLayer) bool {
+	_, replaying := r.replaying[layer]
+	return layer.HasTransform || replaying
+}
+
 // exitLayerTransform undoes enterLayerTransform.
 func (r *Renderer) exitLayerTransform(layer *PaintLayer) {
 	if layer.HasTransformPaint {
 		r.transformDepth--
 	}
-	if layer.HasTransform {
+	if r.appliesTransform(layer) {
 		r.dc.Pop()
 	}
 }
@@ -1012,7 +1105,7 @@ func (r *Renderer) exitLayerTransform(layer *PaintLayer) {
 // where maskValue is either mask.A (alpha mode) or luminance(mask) (luminance mode).
 func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
-	if isLayerTransformSingular(layer) {
+	if r.isLayerTransformSingular(layer) {
 		return
 	}
 	box := layer.Box
@@ -1230,7 +1323,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
-	if isLayerTransformSingular(layer) {
+	if r.isLayerTransformSingular(layer) {
 		return
 	}
 	box := layer.Box
@@ -1255,7 +1348,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// no-transform case) this collapses to the original behaviour.
 	dm := deviceMatrixFromDC(r.dc)
 	dmFull := dm
-	if layer.HasTransform {
+	if r.appliesTransform(layer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 		dmFull = deviceMatrixFromDC(r.dc)
@@ -1747,7 +1840,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 // paint_layer.cc) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
-	if isLayerTransformSingular(layer) {
+	if r.isLayerTransformSingular(layer) {
 		return
 	}
 	box := layer.Box
@@ -1856,7 +1949,7 @@ func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 // specified CSS mix-blend-mode.
 func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
-	if isLayerTransformSingular(layer) {
+	if r.isLayerTransformSingular(layer) {
 		return
 	}
 	box := layer.Box
@@ -2002,172 +2095,80 @@ func clampByte(v float64) uint8 {
 	return uint8(v)
 }
 
-// applyTransforms applies the CSS transform list to the draw context.
-// Transforms are applied relative to the transform-origin point.
+// applyTransforms applies the layer's TransformPaintPropertyNode to the draw
+// context. The draw context holds the flattened projection of the space the
+// node's parent paints into, so a node that flattens what it inherits
+// composes its own matrix onto it (projecting the z=0 plane of a flattened
+// parent commutes with the product). A node that participates in a 3D
+// rendering context is painted from the context base instead (paintLayer
+// defers it until the context root has painted) and applies its whole
+// projection to that base, GeometryMapper::SourceToDestinationProjection
+// (projectionToRenderingContextBase), so its preserve-3d ancestors' 4×4s
+// compose before anything is projected.
 //
-// The transform-origin's absolute position is computed against the *snapped*
-// border-box, not the raw layout box. Blink does the same in
-// `TransformPaintPropertyNode::Build` (paint_property_tree_builder.cc
-// @ 4883d11fef): the origin is added to `EnclosingLayoutRect(border_box)`
-// rather than the unsnapped origin so that the paint-time transform pivots
-// against the same pixel grid the box itself is rasterized to. Without this,
-// a 0.0625-px sub-pixel offset in `box.Y` is compounded by the rotation
-// matrix and leaks one full pixel of color across an axis-aligned edge after
-// 180° / 90° rotations.
+// The node matrix carries the transform-origin on the pixel-snapped border
+// box (TransformPaintPropertyNode::Build adds the origin to the snapped
+// border box), so the paint-time transform pivots on the pixel grid the box
+// is rasterized to.
 //
-// Returns whether the effective 2D affine it applied is singular — i.e. the
-// flattened transform maps the box to a zero-area quad (edge-on, e.g. after
-// rotateX(90deg)). The HasTransform paint scope uses this to cull the
-// subtree, mirroring Blink's GeometryMapper invertibility check.
+// Returns whether the applied projection maps the box to a zero-area quad
+// (edge-on, e.g. rotateX(90deg)) while the layer flattens its children: the
+// HasTransform paint scope then culls the subtree (an empty visual rect in
+// Blink). A preserve-3d layer is never culled by its own projection: its
+// participating descendants are painted from the context base, not under it.
 func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
-	box := layer.Box
-	sx, sy, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
-	ox := sx + layer.TransformOrigin[0]
-	oy := sy + layer.TransformOrigin[1]
-
-	// A layer that establishes a 3D rendering context (transform-style:
-	// preserve-3d) does NOT flatten: its children compose in 4×4 within the
-	// shared context, so the layer's own 2D projection being edge-on does
-	// not make the subtree empty — a child's transform can compose back to a
-	// visible (non-degenerate) quad (e.g. rotateX(90deg) preserve-3d wrapping
-	// rotateX(90deg) scale(2) → scale(2,-2)). The singular-projection cull is
-	// therefore only valid for flattening layers; preserve-3d layers are
-	// never culled by their own projection. Mirrors Blink, where the
-	// invertibility/empty-visual-rect cull applies to flattened
-	// TransformPaintPropertyNodes, not to the 3D-rendering-context root
-	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	flattens := !box.Preserves3D()
-
-	// 3D rendering context composition. Per CSS Transforms L2 §6.2,
-	// a child of a `transform-style: preserve-3d` parent shares the
-	// parent's 3D rendering context: its transform composes with the
-	// parent's transform in 4×4 (cumulative 3D rotation/scale/perspective)
-	// BEFORE 2D projection — not as the cumulative 2D projection that
-	// each ancestor independently applied.
-	//
-	// Mirrors Blink's TransformPaintPropertyNode tree, where a child
-	// inside a preserve-3d context inherits the parent's 4×4 transform
-	// node directly rather than re-flattening at each level
-	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	//
-	// Implementation (worklist B2 stand-in): preserve3DAncestorTransform
-	// multiplies the transforms of the ancestors sharing this 3D context.
-	// Compute the 2D projection of (ancestors) vs (ancestors × self) and
-	// apply the delta
-	//     M_new = proj(ancestors × self) · proj(ancestors)⁻¹
-	// which, multiplied onto the DC matrix (already carrying
-	// proj(ancestors)), yields proj(ancestors × self).
-	//
-	// Falls back to plain self-only projection (per-layer flat
-	// composition) when there is no preserve-3d ancestor OR when the
-	// ancestors' projection is singular. The singular fallback is a
-	// graceful degradation rather than correctness — the singular case
-	// cannot be expressed as a 2D affine delta.
-	//
-	// The self transform carries the z part of transform-origin
-	// (layerSelfTransform); the x/y origin is the enclosing
-	// Translate(ox, oy) / Translate(-ox, -oy) pair.
-	self := layerSelfTransform(layer)
-
-	// Parent-established perspective (CSS Transforms L2 §6): when the box's
-	// parent carries a `perspective` property, the child's transform composes
-	// with the parent's perspective matrix (about perspective-origin) in 4×4
-	// BEFORE projecting to 2D — so the child's out-of-plane Z (from
-	// rotateX/rotateY) is foreshortened. This is the property-sourced
-	// counterpart of the `perspective()` transform function and is what the
-	// transform3d-perspective-* reference files exercise.
-	if d, opx, opy, ok := r.parentPerspectiveContext(box); ok {
-		h := perspectiveChildProjection(self, ox, oy, d, opx, opy)
-		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+	node := r.transformTree.node(layer.Box)
+	if node == nil {
 		return false
 	}
-
-	if ancestors, ok := preserve3DAncestorTransform(box); ok {
-		// Move origin to transform-origin point.
-		r.dc.Translate(ox, oy)
-		// The nearest ancestor preserves 3D, so what it applied is the
-		// regularized projection of its chain (see
-		// regularizePreserve3DProjection).
-		anc := geometry.AffineTransformFromTransform(ancestors)
-		anc.A, anc.B, anc.C, anc.D = regularizePreserve3DProjection(anc.A, anc.B, anc.C, anc.D)
-		combined := geometry.AffineTransformFromTransform(ancestors.Mul(self))
-		if !flattens {
-			combined.A, combined.B, combined.C, combined.D = regularizePreserve3DProjection(combined.A, combined.B, combined.C, combined.D)
-		}
-		if inv, ok := anc.Invert(); ok {
-			// Undo ancestor's accumulated 2D projection.
-			r.dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
-			// Apply the full combined (ancestors+self) projection.
-			r.dc.MultiplyMatrix(combined.A, combined.B, combined.C, combined.D, combined.E, combined.F)
-			// Move back from transform-origin.
-			r.dc.Translate(-ox, -oy)
-			// The effective applied projection is the combined ancestors+self
-			// affine; if it is edge-on the subtree maps to zero area (only
-			// when this layer flattens — preserve-3d layers are never culled).
-			return flattens && isSingularProjection(combined.A, combined.B, combined.C, combined.D)
-		}
-		// Singular ancestor projection: fall through to flat composition.
-		r.dc.Translate(-ox, -oy)
+	h := projectiveHomography(r.layerProjection(layer, node))
+	singular := !layer.Box.Preserves3D() && isSingularProjection(h[0], h[3], h[1], h[4])
+	if undo, ok := r.replaying[layer]; ok {
+		h = multiplyHomographies(undo, h)
 	}
+	if !r.multiplyHomography(h) {
+		return false
+	}
+	return singular
+}
 
-	// Move origin to transform-origin point.
-	r.dc.Translate(ox, oy)
-
-	// Compose all transforms into a single 4×4 matrix, then project to a
-	// 2D affine. This is the "flatten" step Blink's
-	// TransformPaintPropertyNode performs for every layer that inherits
-	// a flat parent context (paint_property_tree_builder.cc @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	//
-	// The composed projection is correct for cumulative 3D transforms
-	// — e.g. rotateX(90deg) * scale3d(2,1,2) * rotateX(-90deg) composes
-	// to scale(2,2), which a per-function 2D projection cannot produce.
-	//
-	// Perspective division (m30/m31 != 0 or m33 != 1) is approximated by
-	// dropping row 3 — this matches the no-perspective case exactly and
-	// degrades gracefully for tests where the perspective component is
-	// small. Boxes with non-trivial perspective render as the affine
-	// portion of the projection rather than the full perspective image.
-	// When the composed projection of the z=0 plane carries a perspective
-	// component (homography bottom row ≠ [0 0 1]), apply the full 2D homography
-	// (with perspective divide) so perspective()/`perspective` foreshortening is
-	// exact. Perspective preserves straight lines, so a transformed rectangle
-	// remains a (non-affine) quad — correct for the box's border/background fill,
-	// which the renderer emits as a 4-corner path. Otherwise use the affine
-	// projection (the common, cheaper path).
-	//
-	// The homography's affine entries are the flat case's coefficients.
-	h := projectiveHomography(self)
+// multiplyHomography composes a 3×3 row-major homography onto the draw
+// context: as an affine matrix when its bottom row is [0 0 1] (reported
+// true), else in projective mode with the perspective divide.
+func (r *Renderer) multiplyHomography(h [9]float64) (affine bool) {
 	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
 		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
-		r.dc.Translate(-ox, -oy)
 		return false
 	}
 	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
-	xx, yx, xy, yy := h[0], h[3], h[1], h[4]
-	if !flattens {
-		xx, yx, xy, yy = regularizePreserve3DProjection(xx, yx, xy, yy)
-	}
-	r.dc.MultiplyMatrix(xx, yx, xy, yy, h[2], h[5])
+	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
+	return true
+}
 
-	// Move back from transform-origin.
-	r.dc.Translate(-ox, -oy)
-	return flattens && isSingularProjection(h[0], h[3], h[1], h[4])
+// layerProjection is the transform applyTransforms paints layer with: its
+// node matrix onto its parent's flattened projection, or — painted from its
+// 3D rendering context base — its projection to that base.
+func (r *Renderer) layerProjection(layer *PaintLayer, node *TransformPaintPropertyNode) geometry.Transform {
+	if _, ok := r.replaying[layer]; ok {
+		return projectionToRenderingContextBase(node)
+	}
+	return node.Matrix
 }
 
 // isLayerTransformSingular returns true if layer.HasTransform is set and the
-// layer's 4×4 transform is not invertible, or its flattened 2D projection is
-// singular (edge-on / zero-area). Used to
+// layer's 4×4 transform is not invertible, or it flattens its children while
+// the projection it paints with is singular (edge-on / zero-area). Used to
 // cull the layer before any paint path — including the special-effect paths
 // (HasMaskImage, HasFilter, blend, isolated) that would otherwise bypass the
-// transformSingular check in the main paintLayer body.
-//
-// Conservative in the preserve-3d-ancestor case: if a preserve-3d ancestor
-// exists the combined projection is not computed here (returns false, no cull).
-// This is correct for the common case and avoids duplicating the full
-// preserve-3d delta-projection maths from applyTransforms.
-func isLayerTransformSingular(layer *PaintLayer) bool {
-	if !layer.HasTransform || layer.Box == nil {
+// transformSingular check in the main paintLayer body. A participant of a 3D
+// rendering context is judged by its projection to the context base, as
+// applyTransforms paints it.
+func (r *Renderer) isLayerTransformSingular(layer *PaintLayer) bool {
+	if !r.appliesTransform(layer) || layer.Box == nil {
+		return false
+	}
+	node := r.transformTree.node(layer.Box)
+	if node == nil {
 		return false
 	}
 	// A layer whose own 4×4 transform is not invertible is skipped with its
@@ -2181,47 +2182,14 @@ func isLayerTransformSingular(layer *PaintLayer) bool {
 	// into the style, so the has_potential_animation exemption has no
 	// counterpart; descendants of a skipped layer are not painted, which
 	// covers the ancestor half for layers painted inside it.
-	if !layer.Transform.IsInvertible() {
+	if !node.Matrix.IsInvertible() {
 		return true
 	}
-	box := layer.Box
-	// preserve-3d layers are never culled by their own projection (children
-	// compose in 4×4 and can produce a visible quad even when the layer's
-	// own transform is edge-on). Same guard as applyTransforms.
-	if box.Preserves3D() {
+	if layer.Box.Preserves3D() {
 		return false
 	}
-	// If there is a preserve-3d ancestor, the combined projection may differ
-	// from the self-only projection. Conservatively skip culling (don't cull
-	// visible layers). The main-path applyTransforms handles this correctly.
-	if _, ok := preserve3DAncestorTransform(box); ok {
-		return false
-	}
-	a := geometry.AffineTransformFromTransform(layerSelfTransform(layer))
-	return isSingularProjection(a.A, a.B, a.C, a.D)
-}
-
-// preserve3DRegularization is the diagonal bias regularizePreserve3DProjection
-// adds to an edge-on projection: far below a device pixel for any box, so
-// the layer's own content stays invisible.
-const preserve3DRegularization = 1e-9
-
-// regularizePreserve3DProjection keeps the 2D projection a preserve-3d layer
-// applies to the draw context invertible. no Blink analog: it exists only
-// for the delta-projection stand-in in applyTransforms (worklist B2), which
-// composes a descendant by undoing its preserve-3d ancestor's applied 2D
-// projection. An edge-on ancestor (rotateX(90deg); exact since
-// gfx::SinCosDegrees) leaves a singular matrix on the draw context that no
-// later multiply can undo, so the descendant — which can compose back to a
-// visible quad — would be lost. Blink has no such step: each
-// TransformPaintPropertyNode in a 3D rendering context keeps its unflattened
-// 4×4 and is projected once (paint_property_tree_builder.cc:1458-1481 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Deleted with worklist D3.
-func regularizePreserve3DProjection(xx, yx, xy, yy float64) (float64, float64, float64, float64) {
-	if !isSingularProjection(xx, yx, xy, yy) {
-		return xx, yx, xy, yy
-	}
-	return xx + preserve3DRegularization, yx, xy, yy + preserve3DRegularization
+	h := projectiveHomography(r.layerProjection(layer, node))
+	return isSingularProjection(h[0], h[3], h[1], h[4])
 }
 
 // singularProjectionEpsilon bounds the determinant magnitude below which a
@@ -2244,6 +2212,30 @@ const singularProjectionEpsilon = 1e-12
 func isSingularProjection(xx, yx, xy, yy float64) bool {
 	det := xx*yy - xy*yx
 	return math.Abs(det) < singularProjectionEpsilon
+}
+
+// parentPerspective returns the perspective node matrix box's DOM parent
+// applies to box: perspective(d) about the parent's perspective-origin in
+// absolute coordinates (FragmentPaintPropertyTreeBuilder::UpdatePerspective,
+// paint_property_tree_builder.cc:3153-3216 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; ComputedStyle::ApplyPerspective).
+func (r *Renderer) parentPerspective(box *layout.Box) (geometry.Transform, bool) {
+	var m geometry.Transform
+	d, opx, opy, ok := r.parentPerspectiveContext(box)
+	if !ok {
+		return m, false
+	}
+	m.ApplyPerspectiveDepth(d)
+	m.ApplyTransformOrigin(opx, opy, 0)
+	return m, true
+}
+
+// domParentBox returns the layout box of box's DOM parent, nil when unknown.
+func (r *Renderer) domParentBox(box *layout.Box) *layout.Box {
+	if box == nil || box.Node == nil || box.Node.Parent == nil {
+		return nil
+	}
+	return r.nodeBoxIndex[box.Node.Parent]
 }
 
 // parentPerspectiveContext reports whether the box's DOM parent establishes a
@@ -2272,89 +2264,6 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 	psx, psy, _, _ := pixelSnap(p.X, p.Y, p.Width, p.Height)
 	oox, ooy := p.Style.ResolvePerspectiveOriginPx(p.Width, p.Height)
 	return pd, psx + oox, psy + ooy, true
-}
-
-// layerSelfTransform returns the layer's own transform with the z part of
-// its transform-origin applied (T(0,0,oz)·M·T(0,0,-oz), gfx
-// ApplyTransformOrigin); the x/y origin is applied by applyTransforms'
-// Translate(ox, oy) pair.
-func layerSelfTransform(layer *PaintLayer) geometry.Transform {
-	self := layer.Transform
-	self.ApplyTransformOrigin(0, 0, layer.TransformOriginZ)
-	return self
-}
-
-// perspectiveChildProjection returns the 3×3 (row-major) homography mapping
-// a child's z=0 plane to screen for a child transform `child` about
-// screen-space transform-origin (ocx, ocy) whose parent has `perspective: d`
-// about screen-space perspective-origin (opx, opy):
-//
-//	screen = T(op)·persp(d)·T(-op) · T(oc)·M_child·T(-oc) · (x,y,0,1)   (then ÷W)
-//
-// composed in 4×4 before projecting, so the child's out-of-plane z is
-// foreshortened (Blink's perspective TransformPaintPropertyNode parenting
-// the child's transform node; paint_property_tree_builder.cc:3153 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func perspectiveChildProjection(child geometry.Transform, ocx, ocy, d, opx, opy float64) [9]float64 {
-	child.ApplyTransformOrigin(ocx, ocy, 0)
-	var parent geometry.Transform
-	parent.ApplyPerspectiveDepth(d)
-	parent.ApplyTransformOrigin(opx, opy, 0)
-	return projectiveHomography(parent.Mul(child))
-}
-
-// projectiveHomography returns the 3×3 (row-major) homography of m on the
-// z=0 plane: rows 0, 1 and 3, columns 0, 1 and 3.
-func projectiveHomography(m geometry.Transform) [9]float64 {
-	return [9]float64{
-		m.Rc(0, 0), m.Rc(0, 1), m.Rc(0, 3),
-		m.Rc(1, 0), m.Rc(1, 1), m.Rc(1, 3),
-		m.Rc(3, 0), m.Rc(3, 1), m.Rc(3, 3),
-	}
-}
-
-// preserve3DAncestorTransform returns the product of the ancestor
-// transforms (outermost first) that share box's 3D rendering context, and
-// whether any ancestor contributed one. The walk goes parent → grandparent
-// → ... while the ancestor preserves 3D (Box.Preserves3D: the used
-// transform-style, so a grouping property such as overflow:hidden
-// flattens). Each ancestor contributes ComputedStyle::ApplyTransform of its
-// operations and independent transform properties over its border box,
-// without its transform-origin (worklist row B2 stand-in: replaced by the
-// TransformPaintPropertyNode chain, D3).
-//
-// An anonymous ancestor without a transform of its own (e.g. the anonymous
-// table, row-group and row generated around a display:table-cell) is
-// skipped: the 3D rendering context follows the DOM ancestor chain, and
-// Blink resets the flattening state only for non-anonymous objects
-// (FragmentPaintPropertyTreeBuilder::UpdateTransform,
-// core/paint/paint_property_tree_builder.cc:1640-1651 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Such a box has no DOM node.
-// A block-in-inline wrapper ends the walk: its layout parent is an inline
-// box, which is not transformable, so its used transform-style is flat and
-// the 3D rendering context does not reach past it.
-func preserve3DAncestorTransform(box *layout.Box) (geometry.Transform, bool) {
-	var ancestors geometry.Transform
-	found := false
-	if box == nil || box.Parent == nil {
-		return ancestors, false
-	}
-	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil && !ancestor.IsBlockInInline; ancestor = ancestor.Parent {
-		if ancestor.Node == nil && !ancestor.Style.HasTransform() {
-			continue
-		}
-		if !ancestor.Preserves3D() {
-			break
-		}
-		if ancestor.Style.HasTransform() {
-			var own geometry.Transform
-			ancestor.Style.ApplyTransform(&own, geometry.NewRectF(0, 0, ancestor.Width, ancestor.Height),
-				css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
-			ancestors = own.Mul(ancestors)
-			found = true
-		}
-	}
-	return ancestors, found
 }
 
 // paintLayerContent paints the layer's own box and children in
@@ -3674,19 +3583,6 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 		return
 	}
 	box := layer.Box
-	// ImagePainter::PaintIntoRect draws with the style's respect-orientation
-	// (image_painter.cc:224-247 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-	// and the natural size the replaced content rect is fitted to is the
-	// oriented size.
-	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
-	if err != nil {
-		return
-	}
-	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
-	if srcW == 0 || srcH == 0 {
-		return
-	}
-
 	contentRect := geometry.PhysicalRect{
 		Offset: geometry.PhysicalOffsetFromF64Round(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top),
 		Size: geometry.PhysicalSizeFromF64Round(
@@ -3696,13 +3592,52 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if contentRect.Size.IsEmpty() {
 		return
 	}
+
+	// An SVG image is fitted by its SVG natural dimensions
+	// (LayoutImageResource::GetNaturalDimensions → SVGImageForContainer::
+	// GetNaturalDimensions, layout_image_resource.cc:153-158 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and drawn laid out at the
+	// destination size: PaintIntoRect paints image_resource.GetImage(
+	// dest_rect.size), an SVGImageForContainer (image_painter.cc:214-217).
+	if svg := images.LoadSVGImageWithFetcher(layer.ImageSrc, r.imageFetcher); svg != nil {
+		paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
+			physicalNaturalSizingInfo(naturalSizingInfoForSVG(svg.Sizing)))
+		dest := geometry.ToPixelSnappedRect(paintRect)
+		if dest.Empty() {
+			return
+		}
+		img, err := svg.DrawForContainer(dest.Dx(), dest.Dy())
+		if err != nil {
+			return
+		}
+		r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))
+		return
+	}
+
+	// ImagePainter::PaintIntoRect draws with the style's respect-orientation
+	// (image_painter.cc:224-247), and the natural size the replaced content
+	// rect is fitted to is the oriented size.
+	img, err := r.loadImageForPaint(layer.ImageSrc, layer.ImageOrientation)
+	if err != nil {
+		return
+	}
+	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
+	if srcW == 0 || srcH == 0 {
+		return
+	}
 	paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
 		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(srcW, srcH)))
-	visualRect := paintRect
+	r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))
+}
+
+// imageVisualRect is ImagePainter::PaintReplaced's visual rect
+// (image_painter.cc:141-146 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// content box when the element ClipsToContentBox, else the paint rect.
+func imageVisualRect(layer *PaintLayer, contentRect, paintRect geometry.PhysicalRect) geometry.PhysicalRect {
 	if layer.ClipsToContentBox {
-		visualRect = contentRect
+		return contentRect
 	}
-	r.paintImageIntoRect(layer, img, paintRect, visualRect)
+	return paintRect
 }
 
 // paintImageIntoRect draws img scaled into destRect, restricted to
