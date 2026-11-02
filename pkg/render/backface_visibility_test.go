@@ -74,3 +74,18 @@ func TestBackface_HiddenInlineInRotatedContext(t *testing.T) {
 		t.Errorf("%d red pixels: the inline's hidden back face painted", n)
 	}
 }
+
+// TestBackface_HiddenInlineTextInRotatedContext: an inline's text, and the
+// content of inline elements nested in it, paints in the inline's
+// LocalBorderBoxProperties (Blink paints text in its LayoutInline's
+// contents state), so a hidden inline back face culls its text too, not
+// only its background fragments.
+func TestBackface_HiddenInlineTextInRotatedContext(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="transform:rotateY(180deg);transform-style:preserve-3d;width:100px;font-size:20px">` +
+		`<span style="backface-visibility:hidden;color:red">XXXX <b>YYYY</b></span>` +
+		`</div></body></html>`
+	if n := countRed(renderToImage(t, src, 200, 100)); n != 0 {
+		t.Errorf("%d red pixels: the hidden inline's text painted", n)
+	}
+}
