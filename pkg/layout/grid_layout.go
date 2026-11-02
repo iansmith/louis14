@@ -1340,14 +1340,14 @@ func (gla *GridLayoutAlgorithm) replacedHasNaturalSize(node *LayoutInputNode, wd
 	if html.IsSemiReplacedElementTag(node.DOMNode.TagName) {
 		return false
 	}
-	info := GetIntrinsicSizingInfo(gla.ctx, node)
-	// IntrinsicSizingInfo holds PHYSICAL dimensions. The inline axis maps to the
+	info := GetNaturalSizingInfo(gla.ctx, node)
+	// NaturalSizingInfo holds PHYSICAL dimensions. The inline axis maps to the
 	// physical width in horizontal writing modes and the physical height in
 	// vertical writing modes (and vice-versa for the block axis).
 	if inlineAxis == wdm.IsVertical() {
-		return info.IntrinsicHeight > 0
+		return info.HasHeight
 	}
-	return info.IntrinsicWidth > 0
+	return info.HasWidth
 }
 
 // alignOffset computes offset for alignment within available space.

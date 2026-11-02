@@ -3547,7 +3547,7 @@ func (r *Renderer) newBoxBackgroundPaintContext(layer *PaintLayer) *BoxBackgroun
 // imageStyle is BoxBackgroundPaintContext::ImageStyle
 // (box_background_paint_context.cc:399-405).
 func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, bg *css.FillLayer, img fillLayerImage, imageRendering string, imageStyle *css.Style) {
-	var info NaturalSizingInfo
+	var info layout.NaturalSizingInfo
 	var tileImage func(w, h int) image.Image
 	switch {
 	case img.svg != nil:
@@ -3565,7 +3565,7 @@ func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect
 		if srcW == 0 || srcH == 0 {
 			return
 		}
-		info = naturalSizingInfoForRaster(srcW, srcH)
+		info = layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: float64(srcW), Height: float64(srcH)})
 		tileImage = func(w, h int) image.Image {
 			if w == srcW && h == srcH {
 				return src

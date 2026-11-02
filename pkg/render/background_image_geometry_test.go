@@ -5,6 +5,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/layout"
 )
 
 // Pure BackgroundImageGeometry unit tests (LOU-531), against
@@ -15,7 +16,7 @@ func boxCtx() *BoxBackgroundPaintContext { return &BoxBackgroundPaintContext{} }
 
 func sz(w, h int) geometry.PhysicalSize { return geometry.NewPhysicalSize(w, h) }
 
-func calcTile(t *testing.T, fl *css.FillLayer, info NaturalSizingInfo, area geometry.PhysicalSize) geometry.PhysicalSize {
+func calcTile(t *testing.T, fl *css.FillLayer, info layout.NaturalSizingInfo, area geometry.PhysicalSize) geometry.PhysicalSize {
 	t.Helper()
 	var g BackgroundImageGeometry
 	g.calculateFillTileSize(fl, info, area, area)
@@ -27,7 +28,7 @@ func calcTile(t *testing.T, fl *css.FillLayer, info NaturalSizingInfo, area geom
 // CalculateFillTileSize :485-516.
 func TestCalculateFillTileSize_CoverZeroWidthArea(t *testing.T) {
 	fl := &css.FillLayer{Size: css.BackgroundSize{Cover: true}}
-	got := calcTile(t, fl, naturalSizingInfoForRaster(100, 50), sz(0, 100))
+	got := calcTile(t, fl, layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 100, Height: 50}), sz(0, 100))
 	if got != sz(200, 100) {
 		t.Errorf("cover tile = %v, want 200x100", got)
 	}
@@ -38,7 +39,7 @@ func TestCalculateFillTileSize_CoverZeroWidthArea(t *testing.T) {
 // of the positioning area. CalculateFillTileSize :464-473.
 func TestCalculateFillTileSize_AutoWithoutRatioIsHundredPercent(t *testing.T) {
 	fl := &css.FillLayer{Size: css.BackgroundSize{Width: 200}}
-	got := calcTile(t, fl, NaturalSizingInfo{}, sz(400, 300))
+	got := calcTile(t, fl, layout.NaturalSizingInfoNone(), sz(400, 300))
 	if got != sz(200, 300) {
 		t.Errorf("tile = %v, want 200x300", got)
 	}
@@ -47,7 +48,7 @@ func TestCalculateFillTileSize_AutoWithoutRatioIsHundredPercent(t *testing.T) {
 // `auto auto` on a generated image (gradient) is the positioning area —
 // the default object size. CalculateFillTileSize :474-480.
 func TestCalculateFillTileSize_GradientAutoIsArea(t *testing.T) {
-	got := calcTile(t, &css.FillLayer{}, NaturalSizingInfo{}, sz(123, 45))
+	got := calcTile(t, &css.FillLayer{}, layout.NaturalSizingInfoNone(), sz(123, 45))
 	if got != sz(123, 45) {
 		t.Errorf("tile = %v, want 123x45", got)
 	}
@@ -59,7 +60,7 @@ func TestCalculateFillTileSize_GradientAutoIsArea(t *testing.T) {
 func TestCalculateRepeatAndPosition_Space(t *testing.T) {
 	fl := &css.FillLayer{Repeat: css.BackgroundRepeat{X: css.BackgroundRepeatSpace, Y: css.BackgroundRepeatSpace}}
 	var g BackgroundImageGeometry
-	g.Calculate(fl, boxCtx(), geometry.NewPhysicalRect(0, 0, 100, 30), naturalSizingInfoForRaster(30, 20))
+	g.Calculate(fl, boxCtx(), geometry.NewPhysicalRect(0, 0, 100, 30), layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 30, Height: 20}))
 	// X: 3 tiles of 30 in 100 → gap 5. Y: one 20px tile in 30 → no-repeat.
 	if w := g.SpaceSize().Width; w != geometry.NewPhysicalSize(5, 0).Width {
 		t.Errorf("x spacing = %v, want 5", w.Float64())
@@ -77,7 +78,7 @@ func TestComputePhase_RepeatPosition(t *testing.T) {
 		PositionX: css.Length{Fixed: 10},
 	}
 	var g BackgroundImageGeometry
-	g.Calculate(fl, boxCtx(), geometry.NewPhysicalRect(0, 0, 100, 100), naturalSizingInfoForRaster(30, 30))
+	g.Calculate(fl, boxCtx(), geometry.NewPhysicalRect(0, 0, 100, 100), layout.MakeFixedNaturalSizingInfo(geometry.SizeF{Width: 30, Height: 30}))
 	if got := g.ComputePhase().Left.Float64(); got != -20 {
 		t.Errorf("phase x = %v, want -20", got)
 	}

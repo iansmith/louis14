@@ -130,6 +130,11 @@ type SizeF struct {
 	Width, Height float64
 }
 
+// IsEmpty reports whether either dimension is non-positive. Mirrors
+// gfx::SizeF::IsEmpty (ui/gfx/geometry/size_f.h; gfx::SizeF clamps negative
+// dimensions to 0, so "not positive" is its empty).
+func (s SizeF) IsEmpty() bool { return s.Width <= 0 || s.Height <= 0 }
+
 // RectF is an axis-aligned rectangle in user-space coordinates (float64),
 // represented as an origin (top-left) plus a non-negative extent.
 type RectF struct {
@@ -162,7 +167,7 @@ func (r RectF) Bottom() float64 { return r.Origin.Y + r.Size.Height }
 
 // IsEmpty reports whether the rect has zero or negative width or height.
 func (r RectF) IsEmpty() bool {
-	return r.Size.Width <= 0 || r.Size.Height <= 0
+	return r.Size.IsEmpty()
 }
 
 // MapPoint returns t applied to p.

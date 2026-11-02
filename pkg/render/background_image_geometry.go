@@ -16,62 +16,6 @@ import (
 // layer: raster images and gradients (generated images with no natural
 // size) alike.
 
-// NaturalSizingInfo describes a fill-layer image's natural dimensions and
-// ratio. Mirrors Blink's NaturalSizingInfo (core/style/style_image.h @
-// a9f50e52) as returned by StyleImage::GetNaturalSizingInfo. A gradient has
-// none of the three; a raster image has all of them.
-type NaturalSizingInfo struct {
-	Width, Height       float64
-	RatioW, RatioH      float64 // natural aspect ratio; zero = none
-	HasWidth, HasHeight bool
-}
-
-// naturalSizingInfoForRaster returns the sizing info of a raster image with
-// pixel dimensions w×h.
-func naturalSizingInfoForRaster(w, h int) NaturalSizingInfo {
-	return NaturalSizingInfo{
-		Width: float64(w), Height: float64(h),
-		RatioW: float64(w), RatioH: float64(h),
-		HasWidth: true, HasHeight: true,
-	}
-}
-
-// HasIntrinsicSize mirrors StyleImage::HasIntrinsicSize: true when the
-// image has at least one natural dimension (generated images have none).
-func (n NaturalSizingInfo) HasIntrinsicSize() bool { return n.HasWidth || n.HasHeight }
-
-// concreteObjectSize resolves the image's size against a default object size
-// per the CSS Images 3 default sizing algorithm (§5.3), the computation
-// StyleImage::ImageSize performs for an `auto auto` background-size
-// (background_image_geometry.cc:474-480 @ a9f50e52 calls
-// image->ImageSize(zoom, positioning_area_size)). A generated image returns
-// the default object size.
-func (n NaturalSizingInfo) concreteObjectSize(def geometry.PhysicalSize) (float64, float64) {
-	dw, dh := def.Width.Float64(), def.Height.Float64()
-	hasRatio := n.RatioW > 0 && n.RatioH > 0
-	switch {
-	case n.HasWidth && n.HasHeight:
-		return n.Width, n.Height
-	case n.HasWidth:
-		if hasRatio {
-			return n.Width, n.Width * n.RatioH / n.RatioW
-		}
-		return n.Width, dh
-	case n.HasHeight:
-		if hasRatio {
-			return n.Height * n.RatioW / n.RatioH, n.Height
-		}
-		return dw, n.Height
-	case hasRatio:
-		// Contain-fit the ratio into the default object size.
-		if dw*n.RatioH > dh*n.RatioW {
-			return dh * n.RatioW / n.RatioH, dh
-		}
-		return dw, dw * n.RatioH / n.RatioW
-	}
-	return dw, dh
-}
-
 // BoxBackgroundPaintContext carries the box-dependent inputs to
 // BackgroundImageGeometry. Mirrors Blink's BoxBackgroundPaintContext
 // (core/paint/box_background_paint_context.h:34-151 @ a9f50e52). louis14
@@ -421,14 +365,16 @@ func resolveFillSizeLength(v float64, area geometry.LayoutUnit) geometry.LayoutU
 }
 
 // calculateFillTileSize mirrors background_image_geometry.cc:406-523.
-func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info NaturalSizingInfo, unsnappedAreaSize, snappedAreaSize geometry.PhysicalSize) {
+func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info layout.NaturalSizingInfo, unsnappedAreaSize, snappedAreaSize geometry.PhysicalSize) {
 	var ratio geometry.PhysicalSize
-	if info.RatioW > 0 && info.RatioH > 0 {
-		ratio = geometry.PhysicalSizeFromF64Floor(info.RatioW, info.RatioH)
+	if !info.AspectRatio.IsEmpty() {
+		ratio = geometry.PhysicalSizeFromF64Floor(info.AspectRatio.Width, info.AspectRatio.Height)
 	}
 	ratioEmpty := !layoutunit.Zero.Less(ratio.Width) || !layoutunit.Zero.Less(ratio.Height)
 	areaSize := unsnappedAreaSize
-	if !info.HasIntrinsicSize() {
+	// StyleImage::HasIntrinsicSize (style_image.h @ a9f50e52): at least one
+	// natural dimension; generated images have none.
+	if !info.HasWidth && !info.HasHeight {
 		areaSize = snappedAreaSize
 	}
 	size := fl.Size
@@ -475,7 +421,7 @@ func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info 
 		if !ratioEmpty {
 			g.tileSize.Width = resolveClampedWidthForRatio(g.tileSize.Height, ratio)
 		} else if info.HasWidth {
-			g.tileSize.Width = layoutunit.FromFloat64Floor(info.Width)
+			g.tileSize.Width = layoutunit.FromFloat64Floor(info.Size.Width)
 		} else {
 			g.tileSize.Width = areaSize.Width
 		}
@@ -483,13 +429,16 @@ func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info 
 		if !ratioEmpty {
 			g.tileSize.Height = resolveClampedHeightForRatio(g.tileSize.Width, ratio)
 		} else if info.HasHeight {
-			g.tileSize.Height = layoutunit.FromFloat64Floor(info.Height)
+			g.tileSize.Height = layoutunit.FromFloat64Floor(info.Size.Height)
 		} else {
 			g.tileSize.Height = areaSize.Height
 		}
 	case widthAuto && heightAuto:
-		w, h := info.concreteObjectSize(areaSize)
-		g.tileSize = geometry.PhysicalSizeFromF64Floor(w, h)
+		// StyleImage::ImageSize(zoom, positioning_area_size)
+		// (background_image_geometry.cc:474-480 @ a9f50e52) →
+		// ConcreteObjectSize.
+		c := layout.ConcreteObjectSizeF(info, geometry.SizeF{Width: areaSize.Width.Float64(), Height: areaSize.Height.Float64()})
+		g.tileSize = geometry.PhysicalSizeFromF64Floor(c.Width, c.Height)
 	}
 	g.tileSize = clampNegativeToZero(g.tileSize)
 }
@@ -564,7 +513,7 @@ func (g *BackgroundImageGeometry) calculateRepeatAndPosition(fl *css.FillLayer, 
 // Calculate mirrors BackgroundImageGeometry::Calculate
 // (background_image_geometry.cc:654-757 @ a9f50e52), minus the border-shape
 // state (louis14 has no border-shape).
-func (g *BackgroundImageGeometry) Calculate(fl *css.FillLayer, ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, info NaturalSizingInfo) {
+func (g *BackgroundImageGeometry) Calculate(fl *css.FillLayer, ctx *BoxBackgroundPaintContext, paintRect geometry.PhysicalRect, info layout.NaturalSizingInfo) {
 	var unsnappedPositioningArea, snappedPositioningArea geometry.PhysicalRect
 	var unsnappedBoxOffset, snappedBoxOffset geometry.PhysicalOffset
 
@@ -620,20 +569,20 @@ func (g *BackgroundImageGeometry) ComputePhase() geometry.PhysicalOffset {
 // partially sized image with preserveAspectRatio="none" (the
 // SvgSizingWithPreserveAspectRatioNone flag that removes that is
 // "experimental", runtime_enabled_features.json5:6045-6046).
-func naturalSizingInfoForSVG(svg images.SVGSizingInfo) NaturalSizingInfo {
-	n := NaturalSizingInfo{
-		Width: svg.ExplicitWidth, Height: svg.ExplicitHeight,
+func naturalSizingInfoForSVG(svg images.SVGSizingInfo) layout.NaturalSizingInfo {
+	n := layout.NaturalSizingInfo{
+		Size:     geometry.SizeF{Width: svg.ExplicitWidth, Height: svg.ExplicitHeight},
 		HasWidth: svg.HasExplicitWidth, HasHeight: svg.HasExplicitHeight,
 	}
 	if (!n.HasWidth || !n.HasHeight) && svg.PreserveAspectRatioNone {
-		return NaturalSizingInfo{}
+		return layout.NaturalSizingInfoNone()
 	}
 	switch {
-	case n.Width > 0 && n.Height > 0:
-		n.RatioW, n.RatioH = n.Width, n.Height
+	case !n.Size.IsEmpty():
+		n.AspectRatio = n.Size
 	case svg.HasViewBox && svg.ViewBoxWidth > 0 && svg.ViewBoxHeight > 0:
 		// The viewBox can only yield a natural ratio, not a natural size.
-		n.RatioW, n.RatioH = svg.ViewBoxWidth, svg.ViewBoxHeight
+		n.AspectRatio = geometry.SizeF{Width: svg.ViewBoxWidth, Height: svg.ViewBoxHeight}
 	}
 	return n
 }

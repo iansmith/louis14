@@ -4,6 +4,101 @@ import (
 	"louis14/pkg/geometry"
 )
 
+// NaturalSizingInfo is an image's or replaced element's natural size and
+// natural aspect ratio in float CSS pixels, with whether each natural
+// dimension exists. Mirrors Blink's NaturalSizingInfo (core/layout/
+// natural_sizing_info.h:15-42 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// An empty AspectRatio means no natural ratio.
+type NaturalSizingInfo struct {
+	Size        geometry.SizeF
+	AspectRatio geometry.SizeF
+	HasWidth    bool
+	HasHeight   bool
+}
+
+// NaturalSizingInfoNone mirrors NaturalSizingInfo::None: no natural size or
+// ratio.
+func NaturalSizingInfoNone() NaturalSizingInfo { return NaturalSizingInfo{} }
+
+// MakeFixedNaturalSizingInfo mirrors NaturalSizingInfo::MakeFixed: the
+// natural size, with the same ratio.
+func MakeFixedNaturalSizingInfo(naturalSize geometry.SizeF) NaturalSizingInfo {
+	return NaturalSizingInfo{Size: naturalSize, AspectRatio: naturalSize, HasWidth: true, HasHeight: true}
+}
+
+// MakeSizeNaturalSizingInfo mirrors NaturalSizingInfo::MakeSize
+// (natural_sizing_info.h:26-28 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the natural size, without a natural ratio.
+func MakeSizeNaturalSizingInfo(naturalSize geometry.SizeF) NaturalSizingInfo {
+	return NaturalSizingInfo{Size: naturalSize, HasWidth: true, HasHeight: true}
+}
+
+// ratio returns the natural aspect ratio as width / height (louis14 helper
+// for the consumers that compare scalar ratios).
+func (n NaturalSizingInfo) ratio() float64 { return n.AspectRatio.Width / n.AspectRatio.Height }
+
+// logicalRatio returns the natural aspect ratio as inline / block in wdm, or
+// 0 when there is none (louis14 helper for the scalar-ratio flex consumers).
+func (n NaturalSizingInfo) logicalRatio(wdm WritingDirectionMode) float64 {
+	if n.AspectRatio.IsEmpty() {
+		return 0
+	}
+	if wdm.IsVertical() {
+		return 1.0 / n.ratio()
+	}
+	return n.ratio()
+}
+
+// ResolveWidthForRatioF / ResolveHeightForRatioF mirror the float overloads
+// in natural_sizing_info.h:61-64, :70-73 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func ResolveWidthForRatioF(height float64, naturalRatio geometry.SizeF) float64 {
+	return height * naturalRatio.Width / naturalRatio.Height
+}
+
+func ResolveHeightForRatioF(width float64, naturalRatio geometry.SizeF) float64 {
+	return width * naturalRatio.Height / naturalRatio.Width
+}
+
+// PhysicalNaturalSizingInfoFromSizingInfo rounds n to LayoutUnits. Mirrors
+// PhysicalNaturalSizingInfo::FromSizingInfo (natural_sizing_info.cc:
+// 104-109 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func PhysicalNaturalSizingInfoFromSizingInfo(n NaturalSizingInfo) PhysicalNaturalSizingInfo {
+	size := geometry.PhysicalSizeFromF64Round(n.Size.Width, n.Size.Height)
+	out := PhysicalNaturalSizingInfo{Size: size, HasWidth: n.HasWidth, HasHeight: n.HasHeight}
+	if !n.AspectRatio.IsEmpty() {
+		out.AspectRatio = geometry.PhysicalSizeFromF64Round(n.AspectRatio.Width, n.AspectRatio.Height)
+	}
+	return out
+}
+
+// ConcreteObjectSizeF is ConcreteObjectSize's float overload (core/layout/
+// natural_sizing_info.cc:54-101, :111-114 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the CSS Images 3 default
+// sizing algorithm with a contain constraint of defaultObjectSize.
+func ConcreteObjectSizeF(info NaturalSizingInfo, defaultObjectSize geometry.SizeF) geometry.SizeF {
+	switch {
+	case info.HasWidth && info.HasHeight:
+		return info.Size
+	case info.HasWidth:
+		if info.AspectRatio.IsEmpty() {
+			return geometry.SizeF{Width: info.Size.Width, Height: defaultObjectSize.Height}
+		}
+		return geometry.SizeF{Width: info.Size.Width, Height: ResolveHeightForRatioF(info.Size.Width, info.AspectRatio)}
+	case info.HasHeight:
+		if info.AspectRatio.IsEmpty() {
+			return geometry.SizeF{Width: defaultObjectSize.Width, Height: info.Size.Height}
+		}
+		return geometry.SizeF{Width: ResolveWidthForRatioF(info.Size.Height, info.AspectRatio), Height: info.Size.Height}
+	case !info.AspectRatio.IsEmpty():
+		if solutionWidth := ResolveWidthForRatioF(defaultObjectSize.Height, info.AspectRatio); solutionWidth <= defaultObjectSize.Width {
+			return geometry.SizeF{Width: solutionWidth, Height: defaultObjectSize.Height}
+		}
+		return geometry.SizeF{Width: defaultObjectSize.Width, Height: ResolveHeightForRatioF(defaultObjectSize.Width, info.AspectRatio)}
+	}
+	return defaultObjectSize
+}
+
 // PhysicalNaturalSizingInfo is a replaced element's natural size and natural
 // aspect ratio in LayoutUnits, with whether each natural dimension exists.
 // Mirrors Blink's PhysicalNaturalSizingInfo (core/layout/
