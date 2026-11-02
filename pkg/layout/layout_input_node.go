@@ -336,6 +336,13 @@ func (n *LayoutInputNode) IsReplaced() bool {
 	return n != nil && n.DOMNode != nil && IsReplacedElement(n.DOMNode)
 }
 
+// Parent returns the node's parent in the layout input tree, which keeps
+// elements the box tree has no box for (a table's row groups), as Blink's
+// LayoutObject tree does (LayoutObject::Parent).
+func (n *LayoutInputNode) Parent() *LayoutInputNode {
+	return n.parent
+}
+
 // IsAnonymous returns true for generated anonymous boxes.
 func (n *LayoutInputNode) IsAnonymous() bool {
 	return n.isAnonymous
