@@ -354,11 +354,8 @@ func (r *Renderer) clipTableCellBackground(layer *PaintLayer, rect layout.Physic
 	}
 	row := cell.Parent
 	needsClip := tableBoxHasLayer(cell) || tableBoxHasLayer(row)
-	if row != nil && row.Parent != nil && row.Parent.Style != nil {
-		switch row.Parent.Style.GetDisplay() {
-		case css.DisplayTableRowGroup, css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup:
-			needsClip = needsClip || tableBoxHasLayer(row.Parent)
-		}
+	if row != nil && row.Parent != nil && isTableRowGroup(row.Parent.Style) {
+		needsClip = needsClip || tableBoxHasLayer(row.Parent)
 	}
 	if !needsClip {
 		return false

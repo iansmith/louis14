@@ -41,3 +41,27 @@ func TestRenderingContext3D_RowGroupBreaksContext(t *testing.T) {
 		t.Error("tbody with preserve-3d: no red, want the box rotated 180deg and visible")
 	}
 }
+
+// TestRenderingContext3D_DisplayContentsKeepsContext: a display:contents
+// element has no LayoutObject, so Blink's context walk (LayoutObject::
+// Parent) never meets it and the context continues through it. The inner
+// rotateX(90deg) joins the outer one's context and the two compose to
+// 180deg, so the box shows.
+func TestRenderingContext3D_DisplayContentsKeepsContext(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="transform:rotateX(90deg);transform-style:preserve-3d;width:100px">` +
+		`<span style="display:contents"><div style="transform:rotateX(90deg);width:50px;height:50px;background:red"></div></span>` +
+		`</div></body></html>`
+	img := renderToImage(t, src, 200, 200)
+	n := 0
+	for y := 0; y < 200; y++ {
+		for x := 0; x < 200; x++ {
+			if isRed(img.RGBAAt(x, y)) {
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		t.Error("no red: the display:contents span broke the 3D rendering context")
+	}
+}

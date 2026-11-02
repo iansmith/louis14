@@ -186,7 +186,7 @@ func (b *transformTreeBuilder) transformContextParent(box *layout.Box) *layout.B
 		if a.Node == nil && !needsTransformNode(a) {
 			continue
 		}
-		if start == box.Parent && boxlessElementFlattens(box.LayoutNode, a.LayoutNode) {
+		if start == box.Parent && rowGroupFlattens(box.LayoutNode, a.LayoutNode) {
 			return nil
 		}
 		return a
@@ -194,22 +194,44 @@ func (b *transformTreeBuilder) transformContextParent(box *layout.Box) *layout.B
 	return nil
 }
 
-// boxlessElementFlattens reports whether the layout input tree holds a
-// non-anonymous element between from and to that has no box of its own and
-// does not preserve 3D: Blink resets the 3D rendering context at such an
-// object ("3D rendering contexts follow the DOM ancestor chain",
+// rowGroupFlattens reports whether the layout input tree holds a
+// table row group between from and to that does not preserve 3D: Blink
+// resets the 3D rendering context at any non-anonymous object that does
+// not preserve 3D ("3D rendering contexts follow the DOM ancestor chain",
 // paint_property_tree_builder.cc:1630-1651 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Stopgap: louis14's box tree
-// has no box for a table's row groups, which Blink lays out as
-// LayoutTableSection; LOU-652 adds those boxes and retires this walk.
-func boxlessElementFlattens(from, to *layout.LayoutInputNode) bool {
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a row group is a
+// LayoutTableSection there. Stopgap: louis14's box tree has no box for a
+// table's row groups; LOU-652 adds those boxes and retires this walk. The
+// walk passes only anonymous nodes and row groups, so it stops at the
+// first node with a box of its own and never runs past to, even when to is
+// not an input-tree ancestor of from.
+func rowGroupFlattens(from, to *layout.LayoutInputNode) bool {
 	if from == nil || to == nil {
 		return false
 	}
 	for n := from.Parent(); n != nil && n != to; n = n.Parent() {
-		if n.IsElement() && n.Style() != nil && !n.Style().Preserves3D() {
-			return true
+		switch {
+		case n.IsAnonymous():
+		case isTableRowGroup(n.Style()):
+			if !n.Style().Preserves3D() {
+				return true
+			}
+		default:
+			return false
 		}
+	}
+	return false
+}
+
+// isTableRowGroup reports a table-row-group, -header-group or
+// -footer-group display.
+func isTableRowGroup(s *css.Style) bool {
+	if s == nil {
+		return false
+	}
+	switch s.GetDisplay() {
+	case css.DisplayTableRowGroup, css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup:
+		return true
 	}
 	return false
 }
