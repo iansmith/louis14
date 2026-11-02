@@ -197,3 +197,12 @@ func (t AffineTransform) MapRect(r RectF) RectF {
 
 	return NewRectF(minX, minY, maxX-minX, maxY-minY)
 }
+
+// AffineTransformFromTransform takes the 2D affine part of a 4×4 transform
+// (dropping the z row and column and the perspective row). Mirrors
+// blink::AffineTransform::FromTransform
+// (platform/transforms/affine_transform.cc:227-230 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func AffineTransformFromTransform(t Transform) AffineTransform {
+	return AffineTransform{A: t.Rc(0, 0), B: t.Rc(1, 0), C: t.Rc(0, 1), D: t.Rc(1, 1), E: t.Rc(0, 3), F: t.Rc(1, 3)}
+}

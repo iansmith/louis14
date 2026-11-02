@@ -2056,29 +2056,24 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// node directly rather than re-flattening at each level
 	// (paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	//
-	// Implementation: walk up while parent has preserve-3d, prepending
-	// each ancestor's transforms (and transform-origin shift) to a
-	// cumulative transform list. Compute the 2D projection of (ancestors)
-	// vs (ancestors+self), and apply the delta:
-	//     M_new = proj(ancestors+self) * proj(ancestors)^-1
-	// which when multiplied onto the DC matrix (already carrying
-	// proj(ancestors)) yields proj(ancestors+self).
+	// Implementation (worklist B2 stand-in): preserve3DAncestorTransform
+	// multiplies the transforms of the ancestors sharing this 3D context.
+	// Compute the 2D projection of (ancestors) vs (ancestors × self) and
+	// apply the delta
+	//     M_new = proj(ancestors × self) · proj(ancestors)⁻¹
+	// which, multiplied onto the DC matrix (already carrying
+	// proj(ancestors)), yields proj(ancestors × self).
 	//
 	// Falls back to plain self-only projection (per-layer flat
 	// composition) when there is no preserve-3d ancestor OR when the
-	// ancestors' projection is singular (determinant 0, e.g. an
-	// ancestor's transform is scaleY(0)). The singular fallback is a
+	// ancestors' projection is singular. The singular fallback is a
 	// graceful degradation rather than correctness — the singular case
 	// cannot be expressed as a 2D affine delta.
-	// Build the transform-origin-Z-wrapped self transforms once; reused
-	// by both the preserve-3d branch and the flat branch below. Per CSS
-	// Transforms L2 §6 the transform-origin's z-component shifts the
-	// transform's 3D origin along the Z axis: the effective composition
-	// is `translateZ(oz) * Mtransforms * translateZ(-oz)`. (X/Y origin
-	// shifts are handled by the renderer's enclosing Translate(ox,oy) /
-	// Translate(-ox,-oy) pair.) For an oz of 0 this collapses to the
-	// raw transform list.
-	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
+	//
+	// The self transform carries the z part of transform-origin
+	// (layerSelfTransform); the x/y origin is the enclosing
+	// Translate(ox, oy) / Translate(-ox, -oy) pair.
+	self := layerSelfTransform(layer)
 
 	// Parent-established perspective (CSS Transforms L2 §6): when the box's
 	// parent carries a `perspective` property, the child's transform composes
@@ -2088,45 +2083,34 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// counterpart of the `perspective()` transform function and is what the
 	// transform3d-perspective-* reference files exercise.
 	if d, opx, opy, ok := r.parentPerspectiveContext(box); ok {
-		h := css.ComposePerspectiveChildProjection(selfTransforms, ox, oy, d, opx, opy)
+		h := perspectiveChildProjection(self, ox, oy, d, opx, opy)
 		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
 		return false
 	}
 
-	if ancestorTransforms := preserve3DAncestorTransforms(box); len(ancestorTransforms) > 0 {
+	if ancestors, ok := preserve3DAncestorTransform(box); ok {
 		// Move origin to transform-origin point.
 		r.dc.Translate(ox, oy)
 		// The nearest ancestor preserves 3D, so what it applied is the
 		// regularized projection of its chain (see
 		// regularizePreserve3DProjection).
-		ancXX, ancYX, ancXY, ancYY, ancX0, ancY0 := css.ComposeAffineProjection(ancestorTransforms)
-		ancXX, ancYX, ancXY, ancYY = regularizePreserve3DProjection(ancXX, ancYX, ancXY, ancYY)
-		combined := append(append([]css.Transform(nil), ancestorTransforms...), selfTransforms...)
-		newXX, newYX, newXY, newYY, newX0, newY0 := css.ComposeAffineProjection(combined)
+		anc := geometry.AffineTransformFromTransform(ancestors)
+		anc.A, anc.B, anc.C, anc.D = regularizePreserve3DProjection(anc.A, anc.B, anc.C, anc.D)
+		combined := geometry.AffineTransformFromTransform(ancestors.Mul(self))
 		if !flattens {
-			newXX, newYX, newXY, newYY = regularizePreserve3DProjection(newXX, newYX, newXY, newYY)
+			combined.A, combined.B, combined.C, combined.D = regularizePreserve3DProjection(combined.A, combined.B, combined.C, combined.D)
 		}
-		// 2D affine inverse of M with coefficients (xx, yx, xy, yy, x0, y0):
-		// the point transform is x' = xx*x + xy*y + x0, y' = yx*x + yy*y + y0.
-		// Determinant det = xx*yy - xy*yx; inverse exists when det != 0.
-		det := ancXX*ancYY - ancXY*ancYX
-		if det != 0 {
-			invXX := ancYY / det
-			invYX := -ancYX / det
-			invXY := -ancXY / det
-			invYY := ancXX / det
-			invX0 := (ancXY*ancY0 - ancYY*ancX0) / det
-			invY0 := (ancYX*ancX0 - ancXX*ancY0) / det
+		if inv, ok := anc.Invert(); ok {
 			// Undo ancestor's accumulated 2D projection.
-			r.dc.MultiplyMatrix(invXX, invYX, invXY, invYY, invX0, invY0)
+			r.dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
 			// Apply the full combined (ancestors+self) projection.
-			r.dc.MultiplyMatrix(newXX, newYX, newXY, newYY, newX0, newY0)
+			r.dc.MultiplyMatrix(combined.A, combined.B, combined.C, combined.D, combined.E, combined.F)
 			// Move back from transform-origin.
 			r.dc.Translate(-ox, -oy)
 			// The effective applied projection is the combined ancestors+self
 			// affine; if it is edge-on the subtree maps to zero area (only
 			// when this layer flattens — preserve-3d layers are never culled).
-			return flattens && isSingularProjection(newXX, newYX, newXY, newYY)
+			return flattens && isSingularProjection(combined.A, combined.B, combined.C, combined.D)
 		}
 		// Singular ancestor projection: fall through to flat composition.
 		r.dc.Translate(-ox, -oy)
@@ -2158,9 +2142,8 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	// which the renderer emits as a 4-corner path. Otherwise use the affine
 	// projection (the common, cheaper path).
 	//
-	// ComposeProjective is called once; affine coefficients are extracted from
-	// the same h matrix rather than calling ComposeAffineProjection again.
-	h := css.ComposeProjective(selfTransforms)
+	// The homography's affine entries are the flat case's coefficients.
+	h := projectiveHomography(self)
 	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
 		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
 		r.dc.Translate(-ox, -oy)
@@ -2202,12 +2185,11 @@ func isLayerTransformSingular(layer *PaintLayer) bool {
 	// If there is a preserve-3d ancestor, the combined projection may differ
 	// from the self-only projection. Conservatively skip culling (don't cull
 	// visible layers). The main-path applyTransforms handles this correctly.
-	if len(preserve3DAncestorTransforms(box)) > 0 {
+	if _, ok := preserve3DAncestorTransform(box); ok {
 		return false
 	}
-	selfTransforms := wrapTransformsWithOriginZ(layer.Transforms, layer.TransformOriginZ)
-	xx, yx, xy, yy, _, _ := css.ComposeAffineProjection(selfTransforms)
-	return isSingularProjection(xx, yx, xy, yy)
+	a := geometry.AffineTransformFromTransform(layerSelfTransform(layer))
+	return isSingularProjection(a.A, a.B, a.C, a.D)
 }
 
 // preserve3DRegularization is the diagonal bias regularizePreserve3DProjection
@@ -2283,81 +2265,87 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 	return pd, psx + oox, psy + ooy, true
 }
 
-// wrapTransformsWithOriginZ returns `transforms` bracketed by
-// translateZ(oz) and translateZ(-oz) so that ComposeAffineProjection's
-// 4×4 composition reflects the full 3D transform-origin per CSS
-// Transforms L2 §6 (`T(0,0,oz) * M * T(0,0,-oz)`). For oz == 0 the
-// original slice is returned unchanged.
-func wrapTransformsWithOriginZ(transforms []css.Transform, oz float64) []css.Transform {
-	if oz == 0 {
-		return transforms
-	}
-	wrapped := make([]css.Transform, 0, len(transforms)+2)
-	wrapped = append(wrapped, css.Transform{Type: "translateZ", Values: []float64{oz}})
-	wrapped = append(wrapped, transforms...)
-	wrapped = append(wrapped, css.Transform{Type: "translateZ", Values: []float64{-oz}})
-	return wrapped
+// layerSelfTransform returns the layer's own transform with the z part of
+// its transform-origin applied (T(0,0,oz)·M·T(0,0,-oz), gfx
+// ApplyTransformOrigin); the x/y origin is applied by applyTransforms'
+// Translate(ox, oy) pair.
+func layerSelfTransform(layer *PaintLayer) geometry.Transform {
+	self := layer.Transform
+	self.ApplyTransformOrigin(0, 0, layer.TransformOriginZ)
+	return self
 }
 
-// preserve3DAncestorTransforms returns the flat list of ancestor
-// transforms (in document/composition order: outermost first) that share
-// `box`'s 3D rendering context. The walk stops at the first ancestor
-// whose parent does not preserve 3D (Box.Preserves3D) — that ancestor's
-// transform is included (it's the context root from the descendant's
-// perspective) only if its parent is preserve-3d; otherwise the walk
-// stops with nothing included.
+// perspectiveChildProjection returns the 3×3 (row-major) homography mapping
+// a child's z=0 plane to screen for a child transform `child` about
+// screen-space transform-origin (ocx, ocy) whose parent has `perspective: d`
+// about screen-space perspective-origin (opx, opy):
 //
-// Concretely: walk parent → grandparent → ... while
-// `ancestor.Preserves3D()` (the used transform-style, Blink's
-// LayoutObject::Preserves3D: a grouping property such as overflow:hidden
-// flattens). The walk
-// terminates as soon as that condition fails (the ancestor sits in a
-// flat parent's context, so its own transform was already 2D-projected
-// at its own paint).
+//	screen = T(op)·persp(d)·T(-op) · T(oc)·M_child·T(-oc) · (x,y,0,1)   (then ÷W)
+//
+// composed in 4×4 before projecting, so the child's out-of-plane z is
+// foreshortened (Blink's perspective TransformPaintPropertyNode parenting
+// the child's transform node; paint_property_tree_builder.cc:3153 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func perspectiveChildProjection(child geometry.Transform, ocx, ocy, d, opx, opy float64) [9]float64 {
+	child.ApplyTransformOrigin(ocx, ocy, 0)
+	var parent geometry.Transform
+	parent.ApplyPerspectiveDepth(d)
+	parent.ApplyTransformOrigin(opx, opy, 0)
+	return projectiveHomography(parent.Mul(child))
+}
+
+// projectiveHomography returns the 3×3 (row-major) homography of m on the
+// z=0 plane: rows 0, 1 and 3, columns 0, 1 and 3.
+func projectiveHomography(m geometry.Transform) [9]float64 {
+	return [9]float64{
+		m.Rc(0, 0), m.Rc(0, 1), m.Rc(0, 3),
+		m.Rc(1, 0), m.Rc(1, 1), m.Rc(1, 3),
+		m.Rc(3, 0), m.Rc(3, 1), m.Rc(3, 3),
+	}
+}
+
+// preserve3DAncestorTransform returns the product of the ancestor
+// transforms (outermost first) that share box's 3D rendering context, and
+// whether any ancestor contributed one. The walk goes parent → grandparent
+// → ... while the ancestor preserves 3D (Box.Preserves3D: the used
+// transform-style, so a grouping property such as overflow:hidden
+// flattens). Each ancestor contributes ComputedStyle::ApplyTransform of its
+// operations and independent transform properties over its border box,
+// without its transform-origin (worklist row B2 stand-in: replaced by the
+// TransformPaintPropertyNode chain, D3).
 //
 // An anonymous ancestor without a transform of its own (e.g. the anonymous
 // table, row-group and row generated around a display:table-cell) is
 // skipped: the 3D rendering context follows the DOM ancestor chain, and
 // Blink resets the flattening state only for non-anonymous objects
 // (FragmentPaintPropertyTreeBuilder::UpdateTransform,
-// core/paint/paint_property_tree_builder.cc:1606-1620 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520). Such a box has no DOM node.
+// core/paint/paint_property_tree_builder.cc:1640-1651 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Such a box has no DOM node.
 // A block-in-inline wrapper ends the walk: its layout parent is an inline
 // box, which is not transformable, so its used transform-style is flat and
-// the 3D rendering context does not reach past it (the context follows the
-// layout tree, where the LayoutInline is the wrapper's parent).
-//
-// Mirrors Blink's TransformPaintPropertyNode 3D-rendering-context walk
-// in paint_property_tree_builder.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func preserve3DAncestorTransforms(box *layout.Box) []css.Transform {
+// the 3D rendering context does not reach past it.
+func preserve3DAncestorTransform(box *layout.Box) (geometry.Transform, bool) {
+	var ancestors geometry.Transform
+	found := false
 	if box == nil || box.Parent == nil {
-		return nil
+		return ancestors, false
 	}
-	var ancestors []css.Transform
 	for ancestor := box.Parent; ancestor != nil && ancestor.Style != nil && !ancestor.IsBlockInInline; ancestor = ancestor.Parent {
-		if ancestor.Node == nil && !ancestor.Style.HasTransformOperations() {
+		if ancestor.Node == nil && !ancestor.Style.HasTransform() {
 			continue
 		}
 		if !ancestor.Preserves3D() {
 			break
 		}
-		// Prepend this ancestor's transforms (outermost first, applied
-		// before descendant transforms in the composition chain).
-		ancTransforms := ancestor.Style.GetTransforms()
-		if len(ancTransforms) > 0 {
-			ancestors = append(append([]css.Transform(nil), ancTransforms...), ancestors...)
-		}
-		// Individual longhands (translate/rotate/scale) apply in
-		// canonical CSS order: translate → rotate → scale → transform.
-		// Mirrors css.IsBackFaceVisible / computeBackfaceHidden.
-		if deg, ok := ancestor.Style.GetIndividualRotate(); ok {
-			ancestors = append([]css.Transform{{Type: "rotate", Values: []float64{deg}}}, ancestors...)
-		}
-		if sx, sy, ok := ancestor.Style.GetIndividualScale(); ok {
-			ancestors = append([]css.Transform{{Type: "scale", Values: []float64{sx, sy}}}, ancestors...)
+		if ancestor.Style.HasTransform() {
+			var own geometry.Transform
+			ancestor.Style.ApplyTransform(&own, geometry.NewRectF(0, 0, ancestor.Width, ancestor.Height),
+				css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+			ancestors = own.Mul(ancestors)
+			found = true
 		}
 	}
-	return ancestors
+	return ancestors, found
 }
 
 // paintLayerContent paints the layer's own box and children in

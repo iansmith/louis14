@@ -219,7 +219,7 @@ func (n *LayoutInputNode) IsFixedContainer() bool {
 		return true
 	}
 	return style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() ||
-		style.HasTransformOperations() ||
+		style.HasTransform() ||
 		len(style.GetFilter()) > 0 ||
 		len(style.GetBackdropFilter()) > 0 ||
 		style.WillChangeEstablishesContainingBlock(true) ||

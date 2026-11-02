@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
@@ -316,9 +317,9 @@ type PaintLayer struct {
 	// has been retired.
 
 	// CSS Transforms:
-	Transforms       []css.Transform
-	TransformOrigin  [2]float64 // resolved to px: (origin-x, origin-y)
-	TransformOriginZ float64    // resolved z-component of transform-origin (default 0)
+	Transform        geometry.Transform // own transform, without transform-origin
+	TransformOrigin  [2]float64         // resolved to px: (origin-x, origin-y)
+	TransformOriginZ float64            // resolved z-component of transform-origin (default 0)
 	HasTransform     bool
 
 	// HasTransformPaint is true when this layer participates in transform
@@ -1363,20 +1364,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// TransformPropertyTreeNode. Same suppression pattern as background-color
 	// above (line 594: `if box.Text == ""`).
 	if layout.IsTransformableBox(s, box.Node) && box.Text == "" {
-		// Individual transform properties, then the transform list, with
-		// translate percentages resolved against the border box.
-		if transforms := s.ResolvedTransformOperations(box.Width, box.Height); len(transforms) > 0 {
+		// ComputedStyle::ApplyTransform without the origin: the translate,
+		// rotate and scale properties, then the transform list, with
+		// percentages against the border box.
+		if s.HasTransform() {
 			layer.HasTransform = true
 			layer.HasTransformPaint = true
-			// ResolveTransformOriginPx handles length, percent, and calc()
-			// (including calc-with-percent) relative to the border box.
-			ox, oy := s.ResolveTransformOriginPx(box.Width, box.Height)
-			layer.TransformOrigin = [2]float64{ox, oy}
-			// Z-component (length only; default 0). Used by applyTransforms to
-			// expand the 4×4 composition with T(0,0,oz) * M * T(0,0,-oz) so the
-			// projected 2D affine correctly accounts for the 3D origin shift.
-			layer.TransformOriginZ = s.ResolveTransformOriginZ()
-			layer.Transforms = transforms
+			s.ApplyTransform(&layer.Transform, geometry.NewRectF(0, 0, box.Width, box.Height),
+				css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+			// The origin, resolved against the border box; applyTransforms
+			// applies x/y around the snapped box and z via layerSelfTransform.
+			origin := s.GetTransformOrigin()
+			layer.TransformOrigin = [2]float64{origin.X.ValueForLength(box.Width), origin.Y.ValueForLength(box.Height)}
+			layer.TransformOriginZ = origin.Z
 		}
 	}
 
@@ -1406,7 +1406,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// in louis14 OOF promotion would expose the escapee for paint, so we
 	// propagate the flag down the DOM parent chain).
 	if s.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
-		layer.BackfaceHidden = computeBackfaceHidden(box, layer.Transforms)
+		layer.BackfaceHidden = computeBackfaceHidden(box, layer.Transform)
 	}
 
 	// CSS Filters. SVG content elements (descendants of an inline <svg> other
@@ -2312,8 +2312,9 @@ func (layer *PaintLayer) sortZLists() {
 // descendant. Mirrors Blink's `TransformPaintPropertyNode::Build`
 // flattening logic at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
-// `selfTransforms` already contains the element's own resolved transforms
-// (with percent translates resolved against its own border-box).
-func computeBackfaceHidden(box *layout.Box, selfTransforms []css.Transform) bool {
-	return css.IsBackFaceVisible(append(preserve3DAncestorTransforms(box), selfTransforms...))
+// self is the element's own transform (gfx::Transform::IsBackFaceVisible on
+// ancestors × self).
+func computeBackfaceHidden(box *layout.Box, self geometry.Transform) bool {
+	ancestors, _ := preserve3DAncestorTransform(box)
+	return ancestors.Mul(self).IsBackFaceVisible()
 }
