@@ -10451,6 +10451,142 @@ func (s *Style) GetTransformStyle() TransformStyle {
 	return TransformStyleFlat
 }
 
+// UsedTransformStyle3D returns the used value of `transform-style`: a
+// specified `preserve-3d` is overridden to `flat` by any grouping property
+// (CSS Transforms 2 §grouping-property-values). Mirrors Blink's
+// ComputedStyle::UsedTransformStyle3D (core/style/computed_style.h:2131-2144
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Stacking-context and
+// containing-block decisions keep the specified value (GetTransformStyle),
+// as Blink's CalculateIsStackingContextWithoutContainment and
+// LayoutObject::ComputeIsFixedContainer do.
+func (s *Style) UsedTransformStyle3D() TransformStyle {
+	if s.GetTransformStyle() == TransformStyleFlat {
+		return TransformStyleFlat
+	}
+	if s.HasGroupingPropertyForUsedTransformStyle3D() {
+		return TransformStyleFlat
+	}
+	return TransformStylePreserve3D
+}
+
+// Preserves3D mirrors Blink's ComputedStyle::Preserves3D
+// (computed_style.h:2145-2147 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) Preserves3D() bool {
+	return s.UsedTransformStyle3D() != TransformStyleFlat
+}
+
+// HasGroupingPropertyForUsedTransformStyle3D reports whether a grouping
+// property forces this style's used transform-style to flat: any grouping
+// property, or overflow other than visible on either axis. Mirrors Blink's
+// ComputedStyle::HasGroupingPropertyForUsedTransformStyle3D
+// (computed_style.h:2264-2267 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasGroupingPropertyForUsedTransformStyle3D() bool {
+	return s.HasGroupingProperty(s.HasBoxReflect()) || !s.IsOverflowVisibleAlongBothAxes()
+}
+
+// HasGroupingProperty mirrors Blink's ComputedStyle::HasGroupingProperty
+// (computed_style.h:2216-2226 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the stacking grouping properties, plus a non-auto `clip` on an
+// out-of-flow box.
+func (s *Style) HasGroupingProperty(hasBoxReflection bool) bool {
+	if s.HasStackingGroupingProperty(hasBoxReflection) {
+		return true
+	}
+	return s.GetClipRect() != nil && s.HasOutOfFlowPosition()
+}
+
+// HasStackingGroupingProperty mirrors Blink's
+// ComputedStyle::HasStackingGroupingProperty (computed_style.h:2230-2259 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the grouping properties that
+// also create stacking contexts.
+func (s *Style) HasStackingGroupingProperty(hasBoxReflection bool) bool {
+	return s.HasNonInitialOpacity() ||
+		s.HasNonInitialFilter() ||
+		hasBoxReflection ||
+		s.HasClipPath() ||
+		s.HasIsolation() ||
+		s.HasMask() ||
+		s.HasBlendMode() ||
+		s.HasNonInitialBackdropFilter() ||
+		s.hasNonNoneValue("view-transition-name")
+}
+
+// IsOverflowVisibleAlongBothAxes mirrors Blink's
+// ComputedStyle::IsOverflowVisibleAlongBothAxes (computed_style.h:1961-1965
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) IsOverflowVisibleAlongBothAxes() bool {
+	return s.GetOverflowX() == OverflowVisible && s.GetOverflowY() == OverflowVisible
+}
+
+// HasOutOfFlowPosition mirrors Blink's ComputedStyle::HasOutOfFlowPosition
+// (computed_style.h:1572 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasOutOfFlowPosition() bool {
+	p := s.GetPosition()
+	return p == PositionAbsolute || p == PositionFixed
+}
+
+// HasNonInitialOpacity mirrors Blink's ComputedStyle::HasNonInitialOpacity
+// (computed_style.h:2205-2208 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// louis14 bakes running animations into the style, so GetOpacity covers
+// HasCurrentOpacityAnimation.
+func (s *Style) HasNonInitialOpacity() bool {
+	return s.GetOpacity() < 1 || s.HasWillChangeProperty("opacity")
+}
+
+// HasNonInitialFilter mirrors Blink's ComputedStyle::HasNonInitialFilter
+// (computed_style.h:2192-2194 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasNonInitialFilter() bool {
+	return len(s.GetFilter()) > 0 || s.HasWillChangeProperty("filter")
+}
+
+// HasNonInitialBackdropFilter mirrors Blink's
+// ComputedStyle::HasNonInitialBackdropFilter (computed_style.h:2198-2201 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasNonInitialBackdropFilter() bool {
+	return len(s.GetBackdropFilter()) > 0 || s.HasWillChangeProperty("backdrop-filter")
+}
+
+// HasClipPath mirrors Blink's ComputedStyle::HasClipPath: any computed
+// clip-path other than none, including shapes GetClipPath does not model.
+func (s *Style) HasClipPath() bool {
+	return s.hasNonNoneValue("clip-path")
+}
+
+// HasIsolation mirrors Blink's ComputedStyle::HasIsolation
+// (computed_style.h:1821 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasIsolation() bool {
+	return s.GetIsolation() != "auto"
+}
+
+// HasMask mirrors Blink's ComputedStyle::HasMask (computed_style.h:1149 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the mask-image layers
+// louis14 models.
+func (s *Style) HasMask() bool {
+	mi := s.GetMaskImage()
+	return mi != "" && mi != "none"
+}
+
+// HasBlendMode mirrors Blink's ComputedStyle::HasBlendMode
+// (computed_style.h:1533 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) HasBlendMode() bool {
+	bm := s.GetMixBlendMode()
+	return bm != MixBlendModeNormal && bm != ""
+}
+
+// HasBoxReflect reports a non-none -webkit-box-reflect (Blink's
+// ComputedStyle::BoxReflect() != nullptr).
+func (s *Style) HasBoxReflect() bool {
+	return s.hasNonNoneValue("-webkit-box-reflect")
+}
+
+// hasNonNoneValue reports whether property is set to something other than
+// `none`.
+func (s *Style) hasNonNoneValue(property string) bool {
+	v, ok := s.Get(property)
+	v = strings.TrimSpace(v)
+	return ok && v != "" && v != "none"
+}
+
 // IsBackFaceVisible reports whether the back face of a box transformed by
 // `transforms` is the face currently presented to the viewer. The CSS
 // Transforms L2 §11 algorithm:
@@ -13046,18 +13182,15 @@ func (s *Style) IsBackdropRoot() bool {
 	if len(s.GetBackdropFilter()) > 0 {
 		return true
 	}
-	if m := s.GetMaskImage(); m != "" && m != "none" {
+	if s.HasMask() {
 		return true
 	}
-	// Use raw property lookup for clip-path so unparsed shape values
-	// (e.g. `clip-path: inset(-100%)`, which GetClipPath does not yet
-	// recognise) still report as Backdrop Root creators. The spec only
-	// asks whether the computed value differs from `none`, not whether
-	// the parser can model the shape.
-	if cp, ok := s.Get("clip-path"); ok && cp != "" && cp != "none" {
+	// HasClipPath uses a raw lookup so unparsed shape values (e.g.
+	// `clip-path: inset(-100%)`) still report as Backdrop Root creators.
+	if s.HasClipPath() {
 		return true
 	}
-	if bm := s.GetMixBlendMode(); bm != MixBlendModeNormal && bm != "" {
+	if s.HasBlendMode() {
 		return true
 	}
 	// will-change: any property that would itself form a backdrop-root

@@ -1436,8 +1436,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.ClipPath = s.GetClipPath()
 
 	// CSS mask-image.
-	if mi := s.GetMaskImage(); mi != "" && mi != "none" {
-		layer.MaskImage = mi
+	if s.HasMask() {
+		layer.MaskImage = s.GetMaskImage()
 		layer.HasMaskImage = true
 	}
 
@@ -1877,7 +1877,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 					// and the SC boundary — stay in flow order so the clip applies.
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
-				} else if box.Style != nil && box.Style.GetTransformStyle() == css.TransformStylePreserve3D {
+				} else if box.Preserves3D() {
 					// Inside a preserve-3d rendering context: children's visual
 					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
 					// applyTransforms' preserve-3d ancestor composition fires at
@@ -2292,9 +2292,9 @@ func (layer *PaintLayer) sortZLists() {
 //
 // Per CSS Transforms L2 §11 the back-face test consults the element's
 // "accumulated transformation matrix": start with the element's own
-// transform and prepend each ancestor transform whose parent uses
-// `transform-style: preserve-3d`. The walk stops at the first flattening
-// boundary (default `transform-style: flat`) — that ancestor's transform
+// transform and prepend each ancestor transform whose parent preserves 3D
+// (used transform-style, Box.Preserves3D). The walk stops at the first
+// flattening boundary (used transform-style flat) — that ancestor's transform
 // is NOT included because flattening collapses the descendant subtree
 // into the ancestor's plane before the back-face check fires on the
 // descendant. Mirrors Blink's `TransformPaintPropertyNode::Build`

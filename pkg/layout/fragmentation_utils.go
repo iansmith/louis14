@@ -209,8 +209,7 @@ func isOutOfFlowFragment(frag *PhysicalFragment) bool {
 	if frag.Style == nil {
 		return false
 	}
-	pos := frag.Style.GetPosition()
-	return pos == css.PositionAbsolute || pos == css.PositionFixed
+	return frag.Style.HasOutOfFlowPosition()
 }
 
 // MinPositiveSpaceShortage merges two space-shortage reports, keeping the
