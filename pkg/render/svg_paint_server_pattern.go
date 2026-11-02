@@ -261,8 +261,7 @@ func renderTileContent(p *svg.SVGPattern, tile *image.RGBA, pxW, pxH int, tileUs
 
 	pctx := &svgPaintContext{
 		dc:               tileR.dc,
-		originX:          0,
-		originY:          0,
+		contentToDevice:  geometry.Identity(),
 		viewport:         geometry.NewRectF(0, 0, ctxSize.Width, ctxSize.Height),
 		CurrentTransform: geometry.Identity(),
 		DeviceFromUser:   deviceFromUser,

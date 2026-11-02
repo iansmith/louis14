@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
@@ -28,6 +29,9 @@ type LayoutEngine struct {
 	// pass, in which case no transitions start. See
 	// css.ApplyTransitionsFirstFrame for the Blink citations.
 	prevStyles map[*html.Node]*css.Style
+
+	// svgRootContainerSize: see SetSVGRootContainerSize.
+	svgRootContainerSize geometry.PhysicalSize
 }
 
 // SetPreviousStyles supplies the previous pass's computed styles so the
@@ -57,6 +61,14 @@ func (le *LayoutEngine) SetImageFetcher(fetcher images.ImageFetcher) {
 // (iframe, object) during layout.
 func (le *LayoutEngine) SetDocumentFetcher(fetcher DocumentFetcher) {
 	le.documentFetcher = fetcher
+}
+
+// SetSVGRootContainerSize lays the document out as an SVG image's document
+// in a container of size: the document-element <svg> takes that size
+// (SVGImage::PaintRecordForCurrentFrame → LayoutSVGRoot::SetContainerSize,
+// svg_image.cc:462-466 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (le *LayoutEngine) SetSVGRootContainerSize(size geometry.PhysicalSize) {
+	le.svgRootContainerSize = size
 }
 
 // SetFontConfig sets the font configuration for text measurement during layout.
@@ -112,6 +124,8 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		DocumentFetcher: le.documentFetcher,
 		FontConfig:      fontConfig,
 		ComputedStyles:  computedStyles,
+
+		SVGRootContainerSize: le.svgRootContainerSize,
 	}
 
 	// Phase 3: Find the root element (skip document-level wrapper nodes).

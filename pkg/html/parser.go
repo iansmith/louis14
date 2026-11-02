@@ -28,6 +28,10 @@ type Parser struct {
 	fragmentMode     bool          // When true, <script> becomes a DOM node
 	commentSeenInPre bool          // True when a comment has been seen inside a <pre> element
 	isXML            bool          // True for XML/XHTML documents (governs <style> content rules)
+	// xmlDocument is true for a document built as Blink's XMLDocumentParser
+	// builds one: its elements are exactly the parsed ones, with no implied
+	// html/head/body. louis14 uses it for SVG documents (ParseSVGDocument).
+	xmlDocument bool
 }
 
 func NewParser(html string) *Parser {
@@ -171,7 +175,9 @@ func (p *Parser) Parse() (*Document, error) {
 			// HTML5 §12.2.6.4: Ensure proper html > body structure.
 			// Block-level content and <body> tags must be inside <body>.
 			// This applies both at document root AND inside <html> (after </head>).
-			if parent.TagName == "document" {
+			if p.xmlDocument {
+				// No implied html/head/body in an XML document.
+			} else if parent.TagName == "document" {
 				if token.TagName == "body" {
 					p.ensureHTML()
 					parent = p.currentParent()
@@ -310,7 +316,7 @@ func (p *Parser) Parse() (*Document, error) {
 				// (no <html>/<body>) and inside <html> after </head> (no explicit
 				// <body>). HTML5 "after head" insertion mode treats a non-whitespace
 				// character as an implicit <body> start tag.
-				if (parent.TagName == "document" || parent.TagName == "html") && strings.TrimSpace(text) != "" {
+				if !p.xmlDocument && (parent.TagName == "document" || parent.TagName == "html") && strings.TrimSpace(text) != "" {
 					p.ensureBody()
 					parent = p.currentParent()
 				}
@@ -336,7 +342,9 @@ func (p *Parser) Parse() (*Document, error) {
 	// so CSS rules targeting `html { ... }` (e.g. body-less canvas
 	// backgrounds) can apply to a real root element.
 	if !p.fragmentMode {
-		p.ensureFinalHTML()
+		if !p.xmlDocument {
+			p.ensureFinalHTML()
+		}
 		p.doc.UpdateActiveStyleSheets()
 	}
 
@@ -958,6 +966,20 @@ func (p *Parser) loadLinkStylesheet(href string) string {
 
 func Parse(html string) (*Document, error) {
 	parser := NewParser(html)
+	return parser.Parse()
+}
+
+// ParseSVGDocument parses an SVG resource into an SVG document whose
+// document element is the root <svg>, as Blink builds an SVGImage's
+// document with XMLDocument::CreateSVG and the XML document parser
+// (SVGImage::DataChanged, core/svg/graphics/svg_image.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Interim: louis14 has no XML
+// tree builder, so this runs the HTML parser in XML mode with no implied
+// html/head/body (xmlDocument); its other HTML tree-building rules still
+// apply. Scripts are collected into Document.Scripts, never run here.
+func ParseSVGDocument(content string) (*Document, error) {
+	parser := NewParser(content)
+	parser.isXML, parser.xmlDocument = true, true
 	return parser.Parse()
 }
 
