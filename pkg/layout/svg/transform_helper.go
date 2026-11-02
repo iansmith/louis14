@@ -338,6 +338,10 @@ func ElementTransform(n SVGNode, style *css.Style, referenceBox geometry.RectF) 
 		return n.LocalTransform()
 	}
 	_, specified := style.Properties["transform"]
+	_, authoredOrigin := style.Properties["transform-origin"]
+	if !specified && !authoredOrigin && !style.HasTransform() {
+		return n.LocalTransform()
+	}
 	t := svgCSSTransform(style, css.ApplyTransformOperations(specified), referenceBox)
 	if !specified {
 		t = t.Compose(n.LocalTransform())
