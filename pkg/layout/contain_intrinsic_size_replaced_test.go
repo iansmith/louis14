@@ -25,7 +25,7 @@ func TestReplacedContainIntrinsicSize(t *testing.T) {
 		{"shorthand one value", `<img id="t" src="` + png + `" style="contain:size; contain-intrinsic-size:8px">`, 8, 8},
 		{"auto length", `<img id="t" src="` + png + `" style="contain:size; contain-intrinsic-size:auto 10px auto 12px">`, 10, 12},
 		{"not contained ignores it", `<img id="t" src="` + png + `" style="contain-intrinsic-size:50px 100px">`, 40, 20},
-		{"canvas", `<canvas id="t" width="16" height="8" style="contain:size; contain-intrinsic-size:30px 20px"></canvas>`, 30, 20},
+		{"canvas", `<canvas id="t" style="contain:size; contain-intrinsic-size:30px 20px"></canvas>`, 30, 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc, err := html.Parse(`<!DOCTYPE html><body style="margin:0">` + tc.html)

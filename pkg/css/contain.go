@@ -162,3 +162,32 @@ func isEligibleForSizeContainment(s *Style) bool {
 	}
 	return true
 }
+
+// ContainIntrinsicWidth / ContainIntrinsicHeight return the length of
+// contain-intrinsic-width / -height (StyleIntrinsicLength::GetLength), ok
+// false for none. `auto <length>` gives the length: louis14 has no display
+// locking, so there is never a remembered size to prefer
+// (LayoutBox::OverrideIntrinsicContentInlineSize, layout_box.cc:1271-1300 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) ContainIntrinsicWidth() (float64, bool) {
+	return s.containIntrinsicLength("contain-intrinsic-width")
+}
+
+func (s *Style) ContainIntrinsicHeight() (float64, bool) {
+	return s.containIntrinsicLength("contain-intrinsic-height")
+}
+
+func (s *Style) containIntrinsicLength(prop string) (float64, bool) {
+	v, ok := s.Get(prop)
+	if !ok {
+		return 0, false
+	}
+	v = strings.TrimSpace(v)
+	if f := strings.Fields(v); len(f) == 2 && strings.EqualFold(f[0], "auto") {
+		v = f[1]
+	}
+	if strings.EqualFold(v, "none") {
+		return 0, false
+	}
+	return s.GetLengthForVal(v)
+}

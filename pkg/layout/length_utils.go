@@ -420,25 +420,61 @@ func replacedAspectRatio(style *css.Style, info NaturalSizingInfo, wdm WritingDi
 }
 
 // replacedIntrinsicSize is the content-box natural size of a replaced box
-// with natural sizing info, each axis reported only when it has one; size
-// containment makes a contained axis 0. Mirrors Blink's
-// LayoutInputNode::IntrinsicSize and GetOverrideIntrinsicSize
+// with natural sizing info, each axis reported only when it has one. A
+// size-contained axis takes its override (contain-intrinsic-size), else 0.
+// Mirrors Blink's LayoutInputNode::IntrinsicSize and GetOverrideIntrinsicSize
 // (layout_input_node.cc:153-183, :236-253 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); contain-intrinsic-size is not
-// modelled.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func replacedIntrinsicSize(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode) (inline float64, hasInline bool, block float64, hasBlock bool) {
-	if style.ShouldApplySizeContainment() {
-		return 0, true, 0, true
-	}
 	w, hasW := info.Size.Width, info.HasWidth
 	h, hasH := info.Size.Height, info.HasHeight
 	if wdm.IsVertical() {
 		w, hasW, h, hasH = h, hasH, w, hasW
 	}
-	if style.ShouldApplyInlineSizeContainment() {
-		w, hasW = 0, true
+	if size, contained := overrideIntrinsicContentInlineSize(style, wdm); contained {
+		w, hasW = size, true
+	}
+	if size, contained := overrideIntrinsicContentBlockSize(style, wdm); contained {
+		h, hasH = size, true
 	}
 	return w, hasW, h, hasH
+}
+
+// overrideIntrinsicContentInlineSize is the intrinsic content inline-size an
+// inline-size-contained box takes: its contain-intrinsic inline length, else
+// 0; contained is false when inline-size containment does not apply.
+// Mirrors LayoutBox::OverrideIntrinsicContentInlineSize (layout_box.cc:
+// 1271-1302 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) together with
+// GetOverrideIntrinsicSize's zero for a contained axis without one; the
+// inline axis is width in a horizontal writing mode
+// (ComputedStyle::ContainIntrinsicInlineSize). louis14 wires it into
+// replaced sizing only (LOU-641 tracks the non-replaced IgnoringChildren
+// paths).
+func overrideIntrinsicContentInlineSize(style *css.Style, wdm WritingDirectionMode) (size float64, contained bool) {
+	if !style.ShouldApplySizeContainment() && !style.ShouldApplyInlineSizeContainment() {
+		return 0, false
+	}
+	if wdm.IsVertical() {
+		size, _ = style.ContainIntrinsicHeight()
+	} else {
+		size, _ = style.ContainIntrinsicWidth()
+	}
+	return size, true
+}
+
+// overrideIntrinsicContentBlockSize is overrideIntrinsicContentInlineSize
+// for the block axis, contained under full size containment
+// (LayoutBox::OverrideIntrinsicContentBlockSize, layout_box.cc:1305-1336).
+func overrideIntrinsicContentBlockSize(style *css.Style, wdm WritingDirectionMode) (size float64, contained bool) {
+	if !style.ShouldApplySizeContainment() {
+		return 0, false
+	}
+	if wdm.IsVertical() {
+		size, _ = style.ContainIntrinsicWidth()
+	} else {
+		size, _ = style.ContainIntrinsicHeight()
+	}
+	return size, true
 }
 
 // replacedDefaultNaturalSize is the 300x150 default natural size, logical.
