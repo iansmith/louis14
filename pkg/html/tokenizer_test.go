@@ -128,4 +128,44 @@ func TestTokenizer_QuoteInAttributeNameRecovers(t *testing.T) {
 	if !found {
 		t.Error("content after the malformed attribute was lost")
 	}
+	tok := NewTokenizer(`<link rel="assert" content"sibling-index() is 2 for body">`)
+	got, err := tok.NextToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Attributes["rel"] != "assert" {
+		t.Errorf("rel = %q, want assert", got.Attributes["rel"])
+	}
+	if _, ok := got.Attributes[`content"sibling-index()`]; !ok {
+		t.Errorf("attributes = %v, want the recovered name content\"sibling-index()", got.Attributes)
+	}
+}
+
+// In the before-attribute-name state a '/' goes to the self-closing start
+// tag state; one not followed by '>' is a parse error and reconsumes in the
+// before-attribute-name state, so it never starts an attribute
+// (HTMLTokenizer kBeforeAttributeNameState / kSelfClosingStartTagState @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) (#362 review).
+func TestTokenizer_SolidusInTagIsNotAnAttribute(t *testing.T) {
+	for _, src := range []string{`<a / / >`, `<a //>`, `<a / x=1>`} {
+		got, err := NewTokenizer(src).NextToken()
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if _, ok := got.Attributes["/"]; ok {
+			t.Errorf("%s: attributes = %v, want no attribute named /", src, got.Attributes)
+		}
+	}
+}
+
+// A duplicate attribute is dropped: the first value wins (HTML §13.2.5.33,
+// HTMLToken::AddNewAttribute duplicate handling) (#362 review).
+func TestTokenizer_DuplicateAttributeKeepsFirst(t *testing.T) {
+	got, err := NewTokenizer(`<div id=a id=b>`).NextToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Attributes["id"] != "a" {
+		t.Errorf("id = %q, want a", got.Attributes["id"])
+	}
 }
