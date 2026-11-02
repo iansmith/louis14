@@ -135,8 +135,10 @@ func New() *Engine {
 
 	// WPT reftest helpers. Tests load these via external
 	// <script src="/common/rendering-utils.js"> and
-	// <script src="/common/reftest-wait.js">, which the HTML parser does
-	// not fetch, so the globals must be supplied here. The prelude is
+	// <script src="/common/reftest-wait.js">. The visualtest harness serves
+	// the upstream files from wpt-css3/common/ (LOU-624), and their
+	// declarations replace these; the prelude covers documents parsed
+	// without a script fetcher. The prelude is
 	// compiled once at init (goja *Program is cross-runtime safe) and
 	// re-run into each fresh runtime — a sweep builds many Engines.
 	if _, err := vm.RunProgram(wptReftestPrelude); err != nil {
@@ -154,8 +156,9 @@ func New() *Engine {
 //     requestAnimationFrame ticks. Our rAF runs synchronously, so the
 //     resolve fires in the same task and goja drains the .then job on
 //     RunProgram return.
-//   - takeScreenshot is a no-op: the visualtest harness captures after
-//     JS finishes regardless of when the test signals.
+//   - takeScreenshot is a no-op here (upstream removes the root's
+//     reftest-wait class): louis14 captures after JS finishes regardless
+//     of when the test signals.
 //   - waitForCompositorReady (upstream in /web-animations/testcommon.js)
 //     resolves once the compositor has committed a frame; louis14 has no
 //     compositor, so an immediately-resolving promise is the faithful
