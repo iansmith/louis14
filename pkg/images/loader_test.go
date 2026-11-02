@@ -143,3 +143,40 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 		}
 	}
 }
+
+// The same relative URL names different resources in documents with
+// different bases (different fetchers), so an SVG load must not be served
+// from another document's load of that string (#354 review).
+func TestLoadSVGImageWithFetcher_RelativeURLPerFetcher(t *testing.T) {
+	const path = "support/lou626-per-fetcher.svg"
+	wide := func(string) ([]byte, error) {
+		return []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="10"></svg>`), nil
+	}
+	tall := func(string) ([]byte, error) {
+		return []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="40"></svg>`), nil
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatal(err)
+	}
+	bitmap := func(string) ([]byte, error) { return pngBuf.Bytes(), nil }
+	missing := func(string) ([]byte, error) { return nil, fmt.Errorf("404") }
+
+	if got := LoadSVGImageWithFetcher(path, missing); got != nil {
+		t.Fatalf("missing resource: got %v, want nil", got)
+	}
+	a := LoadSVGImageWithFetcher(path, wide)
+	b := LoadSVGImageWithFetcher(path, tall)
+	if a == nil || b == nil {
+		t.Fatalf("SVG loads = %v, %v; want both non-nil (an earlier failed load must not be cached for the string)", a, b)
+	}
+	if a.Sizing.ExplicitWidth != 40 || b.Sizing.ExplicitWidth != 10 {
+		t.Errorf("widths = %v, %v; want 40 (first document's resource) and 10 (second's)", a.Sizing.ExplicitWidth, b.Sizing.ExplicitWidth)
+	}
+	if again := LoadSVGImageWithFetcher(path, wide); again != a {
+		t.Errorf("same resource loaded again = %p, want the same *SVGImage %p", again, a)
+	}
+	if got := LoadSVGImageWithFetcher(path, bitmap); got != nil {
+		t.Errorf("bitmap resource under the same string: got an SVGImage, want nil")
+	}
+}

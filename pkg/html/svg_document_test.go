@@ -35,3 +35,33 @@ func TestParseSVGDocument_RootIsSVG(t *testing.T) {
 		t.Errorf("<svg> element children = %v, want [rect g] (self-closing <rect/> has no children)", kids)
 	}
 }
+
+// An XML document has no HTML foreign-content breakout: an HTML-named
+// element inside the SVG stays there, in the SVG namespace (#354 review).
+func TestParseSVGDocument_NoForeignContentBreakout(t *testing.T) {
+	doc, err := ParseSVGDocument(`<svg xmlns="http://www.w3.org/2000/svg"><g><b>x</b><p/><font>y</font><rect/></g></svg>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g *Node
+	for _, c := range doc.Root.Children {
+		if c.Type == ElementNode && c.TagName == "svg" && len(c.Children) > 0 {
+			g = c.Children[0]
+		}
+	}
+	if g == nil || g.TagName != "g" {
+		t.Fatalf("no <g> under the root <svg>")
+	}
+	var kids []string
+	for _, c := range g.Children {
+		if c.Type == ElementNode {
+			kids = append(kids, c.TagName)
+			if c.NamespaceURI() != SVGNamespaceURI {
+				t.Errorf("<%s> namespace = %q, want SVG", c.TagName, c.NamespaceURI())
+			}
+		}
+	}
+	if len(kids) != 4 {
+		t.Errorf("<g> children = %v, want [b p font rect]", kids)
+	}
+}
