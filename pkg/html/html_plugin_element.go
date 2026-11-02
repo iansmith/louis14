@@ -37,12 +37,8 @@ func (n *Node) IsPlugInElement() bool {
 // html_object_element.cc:110-111; HTMLEmbedElement::ParseAttribute kSrcAttr,
 // html_embed_element.cc:113-121 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (n *Node) PlugInURL() string {
-	return strings.Trim(n.ImageSourceURL(), htmlSpaces)
+	return stripLeadingAndTrailingHTMLSpaces(n.ImageSourceURL())
 }
-
-// htmlSpaces are the HTML ASCII whitespace characters
-// (StripLeadingAndTrailingHtmlSpaces).
-const htmlSpaces = " \t\n\f\r"
 
 // ServiceType returns the plug-in element's service_type_: its type
 // attribute lower-cased, cut at the first ';' (HTMLObjectElement::
@@ -108,20 +104,6 @@ func (n *Node) GetObjectContentType() ObjectContentType {
 // type decides.
 func (n *Node) IsImageType() bool {
 	return n.IsPlugInElement() && n.GetObjectContentType() == ObjectContentTypeImage
-}
-
-// ImageSourceURL returns the URL an element's ImageLoader loads: <img> src,
-// <object> data, <embed> src. Mirrors Element::ImageSourceURL (src;
-// core/dom/element.cc:4222-4224) and its override
-// HTMLObjectElement::ImageSourceURL (data; html_object_element.cc:282-284),
-// both @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
-func (n *Node) ImageSourceURL() string {
-	attr := "src"
-	if n.TagName == "object" {
-		attr = "data"
-	}
-	v, _ := n.GetAttribute(attr)
-	return v
 }
 
 // CreatesLayoutImage reports whether n's layout object is a LayoutImage: an

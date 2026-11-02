@@ -37,9 +37,7 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	case "canvas":
 		return getCanvasIntrinsicInfo(node)
 	case "video":
-		// Per HTML spec, video has intrinsic dimensions (default 300×150 if no
-		// source) and an intrinsic aspect ratio.
-		return IntrinsicSizingInfo{300, 150, 2.0, true}
+		return getVideoNaturalDimensions(ctx, node)
 	case "iframe", "embed", "object":
 		// Per CSS 2.1 §10.3.2, these have a default 300×150 size but NO
 		// intrinsic aspect ratio. Unlike images/video, their content doesn't

@@ -2540,6 +2540,13 @@ func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
 		r.paintSVGRoot(layer)
 		return
 	}
+	// An <img> / image-typed <object>/<embed> paints through
+	// ImagePainter::PaintReplaced; a <video> through VideoPainter::
+	// PaintReplaced (video_painter.cc:20-117 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which — with no media
+	// player, so only in kPoster mode (ImageSrc set) — takes the same
+	// replaced content rect and ClipsToContentBox visual rect and paints the
+	// poster through ImagePainter::PaintIntoRect, i.e. drawImage.
 	if layer.ImageSrc != "" {
 		r.drawImage(layer)
 	}
