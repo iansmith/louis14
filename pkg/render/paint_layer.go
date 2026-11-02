@@ -1076,10 +1076,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// content is a block flow that paints its alt text, never the image (only
 	// a LayoutImage paints one, HTMLImageElement::CreateLayoutObject,
 	// html_image_element.cc:517-543 @ the same SHA). An image-typed
-	// <object>/<embed> is a LayoutImage too (html.CreatesLayoutImage), loading
-	// its Element::ImageSourceURL.
-	if html.CreatesLayoutImage(box.Node) {
-		if src := box.Node.ImageSourceURL(); src != "" {
+	// <object>/<embed> and a <video> showing its poster are LayoutImages too
+	// (layout.LayoutImageSource).
+	if src, isLayoutImage := layout.LayoutImageSource(box.Node); isLayoutImage {
+		if src != "" {
 			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
 		layer.ObjectFit = s.GetObjectFit()

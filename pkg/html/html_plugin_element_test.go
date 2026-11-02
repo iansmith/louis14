@@ -52,3 +52,16 @@ func TestImageSourceURLAndCreatesLayoutImage(t *testing.T) {
 		t.Error("an <img> showing its image is a LayoutImage")
 	}
 }
+
+// HTMLVideoElement::ImageSourceURL / PosterImageURL
+// (html_video_element.cc:386-392, :859-864 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestVideoImageSourceURL(t *testing.T) {
+	v := pluginNode("video", map[string]string{"poster": "  p.png\n", "src": "movie.webm"})
+	if v.ImageSourceURL() != "  p.png\n" || v.PosterImageURL() != "p.png" {
+		t.Errorf("ImageSourceURL %q PosterImageURL %q, want the poster", v.ImageSourceURL(), v.PosterImageURL())
+	}
+	if blank := pluginNode("video", map[string]string{"poster": "   "}); blank.PosterImageURL() != "" {
+		t.Errorf("blank poster: PosterImageURL %q, want empty", blank.PosterImageURL())
+	}
+}

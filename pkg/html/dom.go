@@ -808,6 +808,32 @@ func IsReplacedElement(n *Node) bool {
 		!(n.TagName == "img" && n.LayoutDisposition == LayoutDispositionFallbackContent)
 }
 
+// ImageSourceURL returns the URL an element's ImageLoader loads: <img> src,
+// <object> data, <embed> src, <video> poster. Mirrors Element::ImageSourceURL
+// (src; core/dom/element.cc:4222-4224) and its overrides
+// HTMLObjectElement::ImageSourceURL (data; html_object_element.cc:282-284)
+// and HTMLVideoElement::ImageSourceURL (poster; core/html/media/
+// html_video_element.cc:386-392), all @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. louis14 has no default poster
+// (default_poster_url_).
+func (n *Node) ImageSourceURL() string {
+	attr := "src"
+	switch n.TagName {
+	case "object":
+		attr = "data"
+	case "video":
+		attr = "poster"
+	}
+	v, _ := n.GetAttribute(attr)
+	return v
+}
+
+// stripLeadingAndTrailingHTMLSpaces trims HTML ASCII whitespace. Mirrors
+// WTF's StripLeadingAndTrailingHtmlSpaces.
+func stripLeadingAndTrailingHTMLSpaces(s string) string {
+	return strings.Trim(s, " \t\n\f\r")
+}
+
 // AltText returns the text an <img> represents when its image is not shown,
 // and whether there is any: the alt attribute when present (even empty),
 // else the title attribute. Mirrors HTMLImageElement::AltText
