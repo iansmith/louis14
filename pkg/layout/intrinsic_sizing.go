@@ -24,9 +24,14 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	if node.DOMNode == nil {
 		return IntrinsicSizingInfo{}
 	}
-	switch node.DOMNode.TagName {
-	case "img":
+	// A LayoutImage (an <img>, or an image-typed <object>/<embed>) takes its
+	// natural size from the image (LayoutImage::GetNaturalDimensions). Every
+	// <img> is routed here, not only html.CreatesLayoutImage ones: a fallback
+	// <img> gets the broken-image size from getImgIntrinsicInfo.
+	if node.DOMNode.TagName == "img" || node.DOMNode.IsImageType() {
 		return getImgIntrinsicInfo(ctx, node)
+	}
+	switch node.DOMNode.TagName {
 	case "svg":
 		return getInlineSVGIntrinsicInfo(node)
 	case "canvas":
@@ -195,8 +200,8 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 	if ctx == nil {
 		return IntrinsicSizingInfo{}
 	}
-	src, ok := node.DOMNode.GetAttribute("src")
-	if !ok || src == "" {
+	src := node.DOMNode.ImageSourceURL()
+	if src == "" {
 		return IntrinsicSizingInfo{}
 	}
 	if s := node.Style(); s != nil {

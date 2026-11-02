@@ -1075,9 +1075,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520). An <img> showing fallback
 	// content is a block flow that paints its alt text, never the image (only
 	// a LayoutImage paints one, HTMLImageElement::CreateLayoutObject,
-	// html_image_element.cc:517-543 @ the same SHA).
-	if box.Node != nil && box.Node.TagName == "img" && html.IsReplacedElement(box.Node) {
-		if src, ok := box.Node.GetAttribute("src"); ok {
+	// html_image_element.cc:517-543 @ the same SHA). An image-typed
+	// <object>/<embed> is a LayoutImage too (html.CreatesLayoutImage), loading
+	// its Element::ImageSourceURL.
+	if html.CreatesLayoutImage(box.Node) {
+		if src := box.Node.ImageSourceURL(); src != "" {
 			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
 		layer.ObjectFit = s.GetObjectFit()

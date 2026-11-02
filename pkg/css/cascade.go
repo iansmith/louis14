@@ -222,18 +222,17 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
-	// CSS Overflow Module Level 4 §3.7 / Blink html.css:
-	//   embed, iframe, img, video {
-	//     overflow: clip;
-	//     overflow-clip-margin: content-box;
+	// Replaced elements clip to their content box. Blink html.css:175-183 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+	//   video, canvas, img { overflow: clip; overflow-clip-margin: content-box; }
+	//   iframe, embed, object, fencedframe {
+	//     overflow: clip !important;
+	//     overflow-clip-margin: content-box !important;
 	//   }
-	// "Host languages should define UA style sheet rules that apply a
-	// default value of clip to such elements and set their
-	// overflow-clip-margin to content-box."
-	// Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-	// (third_party/blink/renderer/core/html/resources/html.css).
+	// The frame owners' !important rule is applied after the author
+	// cascade, by applyUserAgentImportantStyles.
 	switch node.TagName {
-	case "embed", "iframe", "img", "video":
+	case "video", "canvas", "img":
 		if _, ok := style.Get("overflow"); !ok {
 			style.Set("overflow", "clip")
 		}
@@ -604,6 +603,29 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 	return len(layerOrder) - normalPri
 }
 
+// applyUserAgentImportantStyles applies the user-agent stylesheet's
+// !important declarations after the author cascade: important user-agent
+// declarations outrank every author declaration, important or not (CSS
+// Cascade 5 §6.1 origin order). Only Blink html.css:180-183 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b is ported here:
+//
+//	iframe, embed, object, fencedframe {
+//	  overflow: clip !important;
+//	  overflow-clip-margin: content-box !important;
+//	}
+//
+// `overflow` sets both longhands, so an author overflow-x/-y is overridden
+// too.
+func applyUserAgentImportantStyles(node *html.Node, style *Style) {
+	switch node.TagName {
+	case "iframe", "embed", "object", "fencedframe":
+		for _, p := range []string{"overflow", "overflow-x", "overflow-y"} {
+			style.Set(p, "clip")
+		}
+		style.Set("overflow-clip-margin", "content-box")
+	}
+}
+
 // ComputeStyle computes the final style for a node by applying the cascade.
 // ctx is the owning document's ParserContext — used to resolve url() tokens
 // inside the node's inline `style=""` attribute at parse time. Pass nil for
@@ -840,6 +862,8 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// the exception of properties in nonDefaultInitialValues whose getter
 	// default differs from spec.
 	resolveCSSWideKeywords(finalStyle, revertSnap, layerSnap)
+
+	applyUserAgentImportantStyles(node, finalStyle)
 
 	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin,
 	// vmax). Must precede ApplyAnimations: keyframe interpolation resolves

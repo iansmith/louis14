@@ -253,8 +253,12 @@ func frameOwnerSource(ctx *LayoutContext, owner *html.Node) (src html.FrameSourc
 		}
 		raw, _ = owner.GetAttribute("src")
 	case "object":
-		if dataType, _ := owner.GetAttribute("type"); dataType == "text/html" || dataType == "" {
-			raw, _ = owner.GetAttribute("data")
+		// Only an object whose content is a frame embeds a document
+		// (HTMLPlugInElement::GetObjectContentType, html_plugin_element.cc:
+		// 643-670 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an image-typed
+		// one is a LayoutImage.
+		if owner.GetObjectContentType() == html.ObjectContentTypeFrame {
+			raw = owner.PlugInURL()
 		}
 	default:
 		return html.FrameSource{}, false
