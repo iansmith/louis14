@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/images"
+	"louis14/pkg/layout"
 )
 
 // This file ports Blink's BackgroundImageGeometry
@@ -226,19 +227,9 @@ func computeTilePhase(position, tileExtent geometry.LayoutUnit) geometry.LayoutU
 	return tileExtent.Sub(intMod(position, tileExtent))
 }
 
-// resolveWidthForRatio / resolveHeightForRatio mirror Blink's
-// ResolveWidthForRatio / ResolveHeightForRatio (a MulDiv by the ratio).
-func resolveWidthForRatio(height geometry.LayoutUnit, ratio geometry.PhysicalSize) geometry.LayoutUnit {
-	return height.MulDiv(ratio.Width, ratio.Height)
-}
-
-func resolveHeightForRatio(width geometry.LayoutUnit, ratio geometry.PhysicalSize) geometry.LayoutUnit {
-	return width.MulDiv(ratio.Height, ratio.Width)
-}
-
 // resolveClampedWidthForRatio mirrors background_image_geometry.cc:45-52.
 func resolveClampedWidthForRatio(height geometry.LayoutUnit, ratio geometry.PhysicalSize) geometry.LayoutUnit {
-	w := resolveWidthForRatio(height, ratio)
+	w := layout.ResolveWidthForRatio(height, ratio)
 	if !ratio.Width.Less(layoutunit.New(1)) && w.Less(layoutunit.New(1)) {
 		return layoutunit.New(1)
 	}
@@ -247,7 +238,7 @@ func resolveClampedWidthForRatio(height geometry.LayoutUnit, ratio geometry.Phys
 
 // resolveClampedHeightForRatio mirrors background_image_geometry.cc:54-61.
 func resolveClampedHeightForRatio(width geometry.LayoutUnit, ratio geometry.PhysicalSize) geometry.LayoutUnit {
-	h := resolveHeightForRatio(width, ratio)
+	h := layout.ResolveHeightForRatio(width, ratio)
 	if !ratio.Height.Less(layoutunit.New(1)) && h.Less(layoutunit.New(1)) {
 		return layoutunit.New(1)
 	}
@@ -409,16 +400,6 @@ func clampNegativeToZero(s geometry.PhysicalSize) geometry.PhysicalSize {
 	}
 }
 
-// fitToAspectRatio mirrors PhysicalSize::FitToAspectRatio
-// (platform/geometry/physical_size.cc:12-26 @ a9f50e52).
-func fitToAspectRatio(s, ratio geometry.PhysicalSize, grow bool) geometry.PhysicalSize {
-	constrainedHeight := s.Width.MulDiv(ratio.Height, ratio.Width)
-	if (grow && constrainedHeight.Less(s.Height)) || (!grow && s.Height.Less(constrainedHeight)) {
-		return geometry.PhysicalSize{Width: s.Height.MulDiv(ratio.Width, ratio.Height), Height: s.Height}
-	}
-	return geometry.PhysicalSize{Width: s.Width, Height: constrainedHeight}
-}
-
 // resolveFillSizeLength resolves one background-size component: louis14's
 // BackgroundSize stores 0 for auto, a negative value for a percentage, a
 // positive value for pixels.
@@ -446,7 +427,11 @@ func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info 
 			g.tileSize = snappedAreaSize
 			return
 		}
-		g.tileSize = fitToAspectRatio(snappedAreaSize, ratio, size.Cover)
+		fit := geometry.AspectRatioFitShrink
+		if size.Cover {
+			fit = geometry.AspectRatioFitGrow
+		}
+		g.tileSize = snappedAreaSize.FitToAspectRatio(ratio, fit)
 		one := layoutunit.New(1)
 		if size.Contain {
 			if g.tileSize.Width != snappedAreaSize.Width {

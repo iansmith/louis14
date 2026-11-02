@@ -3606,7 +3606,14 @@ func (r *Renderer) drawTiledBackground(g *BackgroundImageGeometry, tileImage fun
 	r.dc.DrawImage(buf, destPx.Min.X, destPx.Min.Y)
 }
 
-// drawImage paints an <img> element with object-fit and object-position support.
+// drawImage paints an <img> element's image. Mirrors
+// ImagePainter::PaintReplaced (core/paint/image_painter.cc:118-203 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the paint rect is the replaced
+// content rect (LayoutReplaced::ReplacedContentRect →
+// ComputeReplacedContentRect, layout_replaced.cc:356-420, which without an
+// object-view-box is ComputeObjectFitAndPositionRect over the image's natural
+// size), and the visual rect is the content box when the element
+// ClipsToContentBox, else the paint rect.
 func (r *Renderer) drawImage(layer *PaintLayer) {
 	if layer.ImageSrc == "" || (r.imageFetcher == nil && !stdnet.IsDataURL(layer.ImageSrc)) {
 		return
@@ -3616,85 +3623,54 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if err != nil {
 		return
 	}
-
-	srcW := float64(img.Bounds().Dx())
-	srcH := float64(img.Bounds().Dy())
-	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
-	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
-	cw := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
-	ch := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
-	dstW := int(math.Round(cw))
-	dstH := int(math.Round(ch))
-	if dstW <= 0 || dstH <= 0 || srcW == 0 || srcH == 0 {
+	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
+	if srcW == 0 || srcH == 0 {
 		return
 	}
 
-	// Compute actual draw dimensions based on object-fit.
-	var drawW, drawH float64
-	switch layer.ObjectFit {
-	case css.ObjectFitContain:
-		scale := math.Min(cw/srcW, ch/srcH)
-		drawW, drawH = srcW*scale, srcH*scale
-	case css.ObjectFitCover:
-		scale := math.Max(cw/srcW, ch/srcH)
-		drawW, drawH = srcW*scale, srcH*scale
-	case css.ObjectFitNone:
-		drawW, drawH = srcW, srcH
-	case css.ObjectFitScaleDown:
-		scale := math.Min(1, math.Min(cw/srcW, ch/srcH))
-		drawW, drawH = srcW*scale, srcH*scale
-	default: // ObjectFitFill
-		drawW, drawH = cw, ch
+	contentRect := geometry.PhysicalRect{
+		Offset: geometry.PhysicalOffsetFromF64Round(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top),
+		Size: geometry.PhysicalSizeFromF64Round(
+			box.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
+			box.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom),
 	}
-
-	// Scale image to draw dimensions.
-	scaledW, scaledH := int(math.Round(drawW)), int(math.Round(drawH))
-	if scaledW <= 0 || scaledH <= 0 {
+	if contentRect.Size.IsEmpty() {
 		return
 	}
-	scaled := scaleImage(img, int(srcW), int(srcH), scaledW, scaledH, layer.ImageRendering)
+	paintRect := layout.ComputeObjectFitAndPositionRect(layer.ObjectFit, layer.ObjectPosition, contentRect,
+		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(srcW, srcH)))
+	visualRect := paintRect
+	if layer.ClipsToContentBox {
+		visualRect = contentRect
+	}
+	r.paintImageIntoRect(layer, img, paintRect, visualRect)
+}
 
-	// Position within content box using object-position.
-	dx := contentX + (cw-drawW)*layer.ObjectPosition[0]
-	dy := contentY + (ch-drawH)*layer.ObjectPosition[1]
-
-	// Determine if clipping to the content box is needed (image may extend beyond).
-	needsContentClip := layer.ObjectFit == css.ObjectFitCover || layer.ObjectFit == css.ObjectFitNone ||
-		(layer.ObjectFit == css.ObjectFitScaleDown && (srcW > cw || srcH > ch))
-
-	// finalImg and finalX/finalY will hold the image to draw after all clipping.
-	var finalImg image.Image
-	finalX, finalY := int(math.Round(dx)), int(math.Round(dy))
-
-	if needsContentClip {
-		// Crop the scaled image to the content box.
-		cropX := int(math.Round(contentX - dx))
-		cropY := int(math.Round(contentY - dy))
-		cropW := dstW
-		cropH := dstH
-		if cropX < 0 {
-			cropX = 0
-		}
-		if cropY < 0 {
-			cropY = 0
-		}
-		if cropX+cropW > scaledW {
-			cropW = scaledW - cropX
-		}
-		if cropY+cropH > scaledH {
-			cropH = scaledH - cropY
-		}
-		if cropW <= 0 || cropH <= 0 {
+// paintImageIntoRect draws img scaled into destRect, restricted to
+// contentRect. Mirrors ImagePainter::PaintIntoRect (core/paint/
+// image_painter.cc:205-302 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): when
+// contentRect does not contain destRect, the pixel-snapped destination is
+// intersected with the pixel-snapped content rect and the source rect mapped
+// to match. louis14 scales the whole image to the pixel-snapped destination
+// and crops that, which samples the same source pixels as Blink's mapped
+// source rect.
+func (r *Renderer) paintImageIntoRect(layer *PaintLayer, img image.Image, destRect, contentRect geometry.PhysicalRect) {
+	pixelSnappedDestRect := geometry.ToPixelSnappedRect(destRect)
+	if pixelSnappedDestRect.Empty() {
+		return
+	}
+	drawRect := pixelSnappedDestRect
+	if !contentRect.Contains(destRect) {
+		drawRect = geometry.ToPixelSnappedRect(contentRect).Intersect(pixelSnappedDestRect)
+		if drawRect.Empty() {
 			return
 		}
-		finalImg = scaled.(interface {
-			SubImage(image.Rectangle) image.Image
-		}).SubImage(image.Rect(cropX, cropY, cropX+cropW, cropY+cropH))
-		finalX = finalX + cropX
-		finalY = finalY + cropY
-	} else {
-		finalImg = scaled
 	}
+	scaled := scaleImage(img, img.Bounds().Dx(), img.Bounds().Dy(), pixelSnappedDestRect.Dx(), pixelSnappedDestRect.Dy(), layer.ImageRendering)
+	finalImg := scaled.(interface {
+		SubImage(image.Rectangle) image.Image
+	}).SubImage(drawRect.Sub(pixelSnappedDestRect.Min))
+	finalX, finalY := drawRect.Min.X, drawRect.Min.Y
 
 	// CSS clip: rect() — DrawImage bypasses the clip mask, so we must
 	// manually crop the image to the CSS clip region.

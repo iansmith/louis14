@@ -3,6 +3,8 @@ package css
 import (
 	"strconv"
 	"strings"
+
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // ENinePieceImageRule is the border-image-repeat keyword for one axis.
@@ -20,8 +22,8 @@ const (
 // Length is the computed form of a <length-percentage> (or a border-image-slice
 // <number>, stored as a fixed length): Fixed px plus Percent of the reference
 // extent. A calc() mixing both folds into the two terms. Mirrors the subset of
-// Blink's Length (platform/geometry/length.h) that nine-piece images use:
-// Length::Fixed, Length::Percent and a linear calc.
+// Blink's Length (platform/geometry/length.h) that nine-piece images and
+// object-position use: Length::Fixed, Length::Percent and a linear calc.
 type Length struct {
 	Fixed   float64
 	Percent float64
@@ -35,6 +37,28 @@ func (l Length) IsPercent() bool { return l.Percent != 0 }
 // ValueForLength / FloatValueForLength (platform/geometry/length_functions.cc).
 func (l Length) ValueForLength(extent float64) float64 {
 	return l.Fixed + l.Percent*extent/100
+}
+
+// SubtractFromOneHundredPercent returns calc(100% - l). Mirrors
+// Length::SubtractFromOneHundredPercent (platform/geometry/length.cc:184 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (l Length) SubtractFromOneHundredPercent() Length {
+	return Length{Fixed: -l.Fixed, Percent: 100 - l.Percent}
+}
+
+// MinimumValueForLength resolves l against maximumValue as a LayoutUnit.
+// Mirrors MinimumValueForLength (platform/geometry/length_functions.h:52 and
+// MinimumValueForLengthInternal, length_functions.cc:60 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the fixed, percent and calc
+// cases all go through the truncating LayoutUnit(float) constructor.
+func (l Length) MinimumValueForLength(maximumValue layoutunit.LayoutUnit) layoutunit.LayoutUnit {
+	return layoutunit.FromFloat64Trunc(l.ValueForLength(maximumValue.Float64()))
+}
+
+// LengthPoint is a pair of Lengths, x then y. Mirrors Blink's LengthPoint
+// (platform/geometry/length_point.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type LengthPoint struct {
+	X, Y Length
 }
 
 // LengthBox holds one Length per physical side. Mirrors Blink's LengthBox
@@ -174,17 +198,17 @@ func hasUnitOrPercent(expr string) bool {
 	return strings.ContainsAny(strings.ToLower(expr), "abcdefghijklmnopqrstuvwxyz%")
 }
 
-// parseBorderImageLengthPercent parses a non-negative <length-percentage>
-// into a Length (ConsumeLengthOrPercent + StyleBuilderConverter). A calc()
-// mixing px and % is folded linearly into the Fixed / Percent terms.
-func parseBorderImageLengthPercent(tok string, ctx calcContext, allowPercent bool) (Length, bool) {
+// convertLength converts a <length-percentage> component to a Length.
+// Mirrors StyleBuilderConverter::ConvertLength (style_builder_converter.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calc() mixing px and % is
+// folded linearly into the Fixed / Percent terms; louis14's Length has no
+// expression form, so a min()/max()/clamp() whose result is not linear in the
+// percentage basis is approximated by that fold.
+func convertLength(tok string, ctx calcContext) (Length, bool) {
 	if pct, ok := ParsePercentage(tok); ok {
-		return Length{Percent: pct}, allowPercent && pct >= 0
+		return Length{Percent: pct}, true
 	}
 	if IsMathFunctionWithPercent(tok) {
-		if !allowPercent {
-			return Length{}, false
-		}
 		ctx.percentBase, ctx.percentResolvesToZero = 0, true
 		fixed, ok := EvalMathFunction(tok, ctx)
 		if !ok {
@@ -201,7 +225,24 @@ func parseBorderImageLengthPercent(tok string, ctx calcContext, allowPercent boo
 		return Length{}, false // unitless non-zero is a <number>, not a length
 	}
 	f, ok := parseLengthFullWithCh(tok, ctx)
-	return Length{Fixed: f}, ok && f >= 0
+	return Length{Fixed: f}, ok
+}
+
+// parseBorderImageLengthPercent parses a non-negative <length-percentage>
+// into a Length (ConsumeLengthOrPercent + StyleBuilderConverter). Percentages
+// are rejected unless allowPercent.
+func parseBorderImageLengthPercent(tok string, ctx calcContext, allowPercent bool) (Length, bool) {
+	l, ok := convertLength(tok, ctx)
+	if !ok {
+		return Length{}, false
+	}
+	if pct, isPct := ParsePercentage(tok); isPct {
+		return l, allowPercent && pct >= 0
+	}
+	if IsMathFunctionWithPercent(tok) {
+		return l, allowPercent
+	}
+	return l, l.Fixed >= 0
 }
 
 // consumeBorderImageSlice parses border-image-slice:
