@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"math"
 	"strconv"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -122,7 +123,7 @@ func (ctx *domContext) canvasContext2D(canvas *html.Node) *canvasRenderingContex
 			// setFillStyle: a string that parses as a CSS <color> replaces
 			// the style; anything else is ignored (canvas_2d_recorder_context.
 			// cc:1037).
-			if col, ok := css.ParseColor(call.Argument(0).String()); ok {
+			if col, ok := ctx.parseCanvasColor(canvas, call.Argument(0).String()); ok {
 				c.fillStyle = col
 			}
 			return goja.Undefined()
@@ -137,6 +138,21 @@ func (ctx *domContext) canvasContext2D(canvas *html.Node) *canvasRenderingContex
 		return goja.Undefined()
 	})
 	return c
+}
+
+// parseCanvasColor parses a fillStyle color string: a CSS <color>, with
+// currentcolor resolving to the canvas element's computed color, or opaque
+// black when it has none (ParseCanvasColorString /
+// ParseColorOrCurrentColor, modules/canvas/canvas2d @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (ctx *domContext) parseCanvasColor(canvas *html.Node, s string) (css.Color, bool) {
+	if strings.EqualFold(strings.TrimSpace(s), "currentcolor") {
+		if style := ctx.layoutStyles[canvas]; style != nil {
+			return style.GetColor(), true
+		}
+		return css.Color{A: 1}, true
+	}
+	return css.ParseColor(s)
 }
 
 // bitmap returns the canvas's bitmap, allocating it (transparent black) on
@@ -175,6 +191,12 @@ func (c *canvasRenderingContext2D) fillRect(x, y, w, h float64) {
 // proportion (ClipRectsToImageRect); images are smoothed (the default
 // imageSmoothingEnabled). An image that has not loaded draws nothing.
 func (c *canvasRenderingContext2D) drawImage(ctx *domContext, call goja.FunctionCall) {
+	// WebIDL overload resolution: drawImage takes 3, 5 or 9 arguments.
+	switch n := len(call.Arguments); n {
+	case 3, 5, 9:
+	default:
+		panic(ctx.vm.NewTypeError(fmt.Sprintf("Failed to execute 'drawImage' on 'CanvasRenderingContext2D': Valid arities are: [3, 5, 9], but %d arguments provided.", n)))
+	}
 	src := canvasImageSource(ctx, ctx.unwrapNode(call.Argument(0)))
 	if src == nil {
 		return
@@ -187,10 +209,8 @@ func (c *canvasRenderingContext2D) drawImage(ctx *domContext, call goja.Function
 		sx, sy, sw, sh, dx, dy, dw, dh = 0, 0, iw, ih, arg(1), arg(2), iw, ih
 	case 5:
 		sx, sy, sw, sh, dx, dy, dw, dh = 0, 0, iw, ih, arg(1), arg(2), arg(3), arg(4)
-	case 9:
-		sx, sy, sw, sh, dx, dy, dw, dh = arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8)
 	default:
-		return
+		sx, sy, sw, sh, dx, dy, dw, dh = arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8)
 	}
 	srcRect, ok1 := normalizedCanvasRect(sx, sy, sw, sh)
 	dstRect, ok2 := normalizedCanvasRect(dx, dy, dw, dh)
@@ -198,13 +218,21 @@ func (c *canvasRenderingContext2D) drawImage(ctx *domContext, call goja.Function
 		return
 	}
 	srcRect, dstRect = clipRectsToImageRect(srcRect, dstRect, iw, ih)
-	if bm := c.bitmap(); bm != nil {
-		graphics.DrawImageRect(bm, src, srcRect, dstRect, true)
+	bm := c.bitmap()
+	if bm == nil {
+		return
 	}
+	// A canvas drawn onto itself draws a snapshot of its bitmap
+	// (HTMLCanvasElement::GetSourceImageForCanvas snapshots the resource),
+	// not the pixels being written.
+	if src == image.Image(bm) {
+		src = &image.NRGBA{Pix: append([]uint8(nil), bm.Pix...), Stride: bm.Stride, Rect: bm.Rect}
+	}
+	graphics.DrawImageRect(bm, src, srcRect, dstRect, true)
 }
 
 // canvasImageSource returns the pixels of a CanvasImageSource: an <img>'s
-// loaded image, oriented as drawn (HTMLImageElement::GetSourceImageForCanvas
+// loaded image (its ImageLoader's request has loaded), oriented as drawn (HTMLImageElement::GetSourceImageForCanvas
 // respects the image's EXIF orientation), or another <canvas>'s bitmap.
 // Nil when there is nothing to draw: not an image source, not loaded, or an
 // empty canvas.
@@ -219,8 +247,13 @@ func canvasImageSource(ctx *domContext, node *html.Node) image.Image {
 		}
 		return node.CanvasBitmap
 	case "img":
+		// Only an image whose request has loaded is drawn
+		// (HTMLImageElement::GetSourceImageForCanvas).
 		src := node.ImageSourceURL()
 		if src == "" || ctx.engine == nil {
+			return nil
+		}
+		if l := ctx.engine.imageLoaders[node]; l == nil || !l.imageLoaded {
 			return nil
 		}
 		src = urlpkg.CompleteURL(src, ctx.doc.BaseDir)

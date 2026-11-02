@@ -30,6 +30,11 @@ type imageLoader struct {
 	started           bool
 	pendingLoadEvent  *postedTask
 	pendingErrorEvent *postedTask
+	// imageLoaded is true once the current request's image has loaded:
+	// set when its load task runs, cleared by a new request. Canvas
+	// drawImage reads it (HTMLImageElement::GetSourceImageForCanvas draws
+	// only a fully decodable image).
+	imageLoaded bool
 }
 
 // registerImageConstructor defines the `Image` named constructor:
@@ -72,6 +77,7 @@ func (e *Engine) updateImageFromElement(ctx *domContext, node *html.Node) {
 		e.imageLoaders[node] = loader
 	}
 	loader.started = true
+	loader.imageLoaded = false
 	src, hasSrc := node.GetAttribute("src")
 	if hasSrc && src == "" {
 		e.queuePendingImageEvent(ctx, node, &loader.pendingErrorEvent, "error")
@@ -98,6 +104,9 @@ func (e *Engine) queuePendingImageEvent(ctx *domContext, node *html.Node, slot *
 	cancelPostedTask(slot)
 	*slot = e.postTask(func() {
 		*slot = nil
+		if eventType == "load" {
+			e.imageLoaders[node].imageLoaded = true
+		}
 		e.dispatchImageLoaderEvent(ctx, node, eventType)
 	})
 }
