@@ -576,6 +576,21 @@ func expandBackgroundProperty(style *Style, value string) {
 	}
 }
 
+// isValidImageOrientationValue validates an image-orientation declaration:
+// from-image | none (ImageOrientation::ParseSingleValue,
+// longhands_custom.cc:5381-5387 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// CSS-wide keywords and var()/attr() are accepted as-is.
+func isValidImageOrientationValue(value string) bool {
+	if _, wide := cssWideKeyword(value); wide {
+		return true
+	}
+	if containsVarFunction(value) || containsAttrFunction(value) {
+		return true
+	}
+	s := newComponentStream(value)
+	return s.consumeIdent("from-image", "none") != "" && s.atEnd()
+}
+
 // isValidObjectPositionValue validates an object-position declaration —
 // ObjectPosition::ParseSingleValue (longhands_custom.cc:7317 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ConsumePosition with

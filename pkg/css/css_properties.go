@@ -234,6 +234,7 @@ var cssProperties = []cssProperty{
 	{"orphans", true, nil},                       // :4766
 	{"widows", true, nil},                        // :8081
 	{"image-rendering", true, nil},               // :4025
+	{"image-orientation", true, nil},             // :4038
 	{"object-fit", false, nil},                   // :4608
 	{"object-position", false, nil},              // :4619
 	{"scrollbar-color", true, nil},               // :5485

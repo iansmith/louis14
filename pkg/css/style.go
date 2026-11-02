@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode"
 
+	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 )
 
@@ -11984,6 +11985,20 @@ func (s *Style) GetObjectFit() ObjectFit {
 		}
 	}
 	return ObjectFitFill
+}
+
+// ImageOrientation returns the computed image-orientation: whether images
+// respect their EXIF orientation. Mirrors ComputedStyle::ImageOrientation
+// with StyleBuilderConverter::ConvertImageOrientation
+// (style_builder_converter.cc:3429-3436 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): none is
+// kDoNotRespectImageOrientation, anything else (the initial from-image) is
+// kRespectImageOrientation (css_properties.json5:4038-4052).
+func (s *Style) ImageOrientation() graphics.RespectImageOrientationEnum {
+	if v, ok := s.Get("image-orientation"); ok && strings.EqualFold(strings.TrimSpace(v), "none") {
+		return graphics.DoNotRespectImageOrientation
+	}
+	return graphics.RespectImageOrientation
 }
 
 // InitialObjectPosition is object-position's initial value,
