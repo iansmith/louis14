@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,61 +51,115 @@ type wptFuzzy struct {
 }
 
 // parseFuzzy extracts the WPT <meta name="fuzzy"> annotation from HTML content.
-// Supports both formats:
+// Mirrors SourceFile.fuzzy / parse_ref_keyed_meta in WPT's
+// tools/manifest/sourcefile.py (web-platform-tests/wpt @ a834cbae7a0a):
+// the meta is found through an HTML parse, so any attribute quoting, order,
+// case, or whitespace HTML accepts is honored. The content grammar is
 //
-//	content="0-25;0-90"
-//	content="maxDifference=0-25;totalPixels=0-90"
+//	[<ref url>:]<range>;<range>
 //
-// Returns nil if no fuzzy annotation is found.
+// where each range is "N" or "MIN-MAX", optionally named "maxDifference=" or
+// "totalPixels=". Named ranges bind by name; unnamed ones fill the remaining
+// slots in maxDifference, totalPixels order. Only the upper bounds are kept.
+//
+// Divergences from WPT (louis14-specific): the first fuzzy meta wins and
+// applies to every reference regardless of its ref-url key, and a malformed
+// value yields nil (no tolerance) instead of an error.
+//
+// Returns nil if no well-formed fuzzy annotation is found.
 func parseFuzzy(content string) *wptFuzzy {
-	// Match <meta name="fuzzy" content="..."> or <meta name='fuzzy' content='...'>
-	re := regexp.MustCompile(`(?i)<meta\s+name=["']fuzzy["']\s+content=["']([^"']+)["']`)
-	m := re.FindStringSubmatch(content)
-	if m == nil {
+	contents := findMetaContents(content, "fuzzy")
+	if len(contents) == 0 {
 		return nil
 	}
-	raw := m[1]
-
-	// Split on ";" — first part is maxDifference, second is totalPixels.
-	parts := strings.Split(raw, ";")
-	if len(parts) != 2 {
-		return nil
+	value := contents[0]
+	// parse_ref_keyed_meta: item.rsplit(":", 1) — the ranges follow the
+	// last colon; anything before it names a reference.
+	if idx := strings.LastIndex(value, ":"); idx >= 0 {
+		value = value[idx+1:]
 	}
 
-	parseRange := func(s string) int {
-		s = strings.TrimSpace(s)
-		// Strip optional label like "maxDifference=" or "totalPixels="
-		if idx := strings.Index(s, "="); idx >= 0 {
-			s = s[idx+1:]
+	ranges := strings.Split(value, ";")
+	if len(ranges) != 2 {
+		return nil
+	}
+	named := map[string]int{}
+	var positional []int
+	for _, r := range ranges {
+		name := ""
+		if k, v, ok := strings.Cut(r, "="); ok {
+			name, r = strings.TrimSpace(k), v
+			if name != "maxDifference" && name != "totalPixels" {
+				return nil
+			}
+			if _, dup := named[name]; dup {
+				return nil
+			}
 		}
-		// Could be "25" or "0-25" — we want the upper bound.
-		if idx := strings.LastIndex(s, "-"); idx > 0 {
-			s = s[idx+1:]
+		// "MIN-MAX" or a single "N" (MIN == MAX); keep the upper bound.
+		upper := r
+		if _, hi, ok := strings.Cut(r, "-"); ok {
+			upper = hi
 		}
-		v, _ := strconv.Atoi(strings.TrimSpace(s))
+		v, err := strconv.Atoi(strings.TrimSpace(upper))
+		if err != nil {
+			return nil
+		}
+		if name == "" {
+			positional = append(positional, v)
+		} else {
+			named[name] = v
+		}
+	}
+	slot := func(name string) int {
+		if v, ok := named[name]; ok {
+			return v
+		}
+		v := positional[0]
+		positional = positional[1:]
 		return v
 	}
-
-	return &wptFuzzy{
-		MaxDifference: parseRange(parts[0]),
-		TotalPixels:   parseRange(parts[1]),
-	}
+	maxDifference := slot("maxDifference")
+	return &wptFuzzy{MaxDifference: maxDifference, TotalPixels: slot("totalPixels")}
 }
 
 // hasWPTFlag reports whether the HTML content has a <meta name="flags"> element
 // whose content includes the given flag token (e.g. "dom", "svg", "scroll").
 func hasWPTFlag(content, flag string) bool {
-	re := regexp.MustCompile(`(?i)<meta\s+name=["']flags["']\s+content=["']([^"']+)["']`)
-	m := re.FindStringSubmatch(content)
-	if m == nil {
-		return false
-	}
-	for _, f := range strings.Fields(m[1]) {
-		if strings.EqualFold(f, flag) {
-			return true
+	for _, c := range findMetaContents(content, "flags") {
+		for _, f := range strings.Fields(c) {
+			if strings.EqualFold(f, flag) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// findMetaContents returns the content attribute of every <meta> whose name
+// attribute equals name (case-insensitively), in tree order. Like WPT's
+// SourceFile meta lookups (root.findall(".//meta[@name=...]") over an
+// html5lib parse) and findRefLinks, it reads the parsed DOM, so attribute
+// quoting and order are whatever HTML accepts.
+func findMetaContents(content, name string) []string {
+	doc, err := html.Parse(content)
+	if err != nil {
+		return nil
+	}
+	var contents []string
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.TagName == "meta" && strings.EqualFold(n.Attributes["name"], name) {
+			if c, ok := n.Attributes["content"]; ok {
+				contents = append(contents, c)
+			}
+		}
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	walk(doc.Root)
+	return contents
 }
 
 // TestWPTReftests runs WPT CSS 2.1 reftests by rendering both test and reference
