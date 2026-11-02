@@ -32,3 +32,27 @@ func TestSVGImage_NoNaturalSizeUsesConcreteObjectSize(t *testing.T) {
 	wantRGB(t, img, 38, 28, 0, 128, 0, "right edge of the 40×20 concrete object")
 	wantRGB(t, img, 20, 5, 255, 255, 255, "above the concrete object")
 }
+
+// svgImageForContainer lays the image's own SVG document out in the
+// container (SVGImage::DrawForContainer → PaintRecordForCurrentFrame,
+// svg_image.cc:283-296, :451-495 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// so the root's default preserveAspectRatio (xMidYMid meet) centres a
+// viewBox-only image's 10×10 viewBox in a 40×20 container at 20×20 (x
+// 10..30) instead of stretching it.
+const centredSquareSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="rgb(255,0,0)"/></svg>`
+
+func TestSVGImage_ImgLaidOutWithPreserveAspectRatio(t *testing.T) {
+	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:20px}</style><img src="` + svgDataURI(centredSquareSVG) + `">`
+	img := renderColumnRuleHTML(t, src, 100, 100)
+	wantRGB(t, img, 4, 10, 255, 255, 255, "left band outside the centred viewBox stays unpainted")
+	wantRGB(t, img, 20, 10, 255, 0, 0, "centre is the viewBox content")
+	wantRGB(t, img, 35, 10, 255, 255, 255, "right band outside the centred viewBox stays unpainted")
+}
+
+func TestSVGImage_BackgroundLaidOutWithPreserveAspectRatio(t *testing.T) {
+	src := `<!DOCTYPE html><style>body{margin:0} div{width:40px; height:20px; background:url("` + svgDataURI(centredSquareSVG) + `") no-repeat; background-size:40px 20px}</style><div></div>`
+	img := renderColumnRuleHTML(t, src, 100, 100)
+	wantRGB(t, img, 4, 10, 255, 255, 255, "left band outside the centred viewBox stays unpainted")
+	wantRGB(t, img, 20, 10, 255, 0, 0, "centre is the viewBox content")
+	wantRGB(t, img, 35, 10, 255, 255, 255, "right band outside the centred viewBox stays unpainted")
+}

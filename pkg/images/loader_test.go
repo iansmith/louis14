@@ -98,6 +98,13 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 	const svgData = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="5"></svg>`
 	// No width/height: no natural size, only a ratio, but the image loaded.
 	const viewBoxOnlySVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 5"></svg>`
+	// No natural size and, with preserveAspectRatio="none", no natural
+	// ratio either (object-view-box-svg-img-no-size's image): still loaded.
+	const noSizeSVG = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+  <rect width="100%" height="100%" fill="grey"/>
+  <rect x="0" y="0" width="25px" height="50px" style="fill: blue"/>
+</svg>`
 	fetcher := func(uri string) ([]byte, error) {
 		switch uri {
 		case "ok.png":
@@ -106,6 +113,8 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 			return []byte(svgData), nil
 		case "viewbox.svg":
 			return []byte(viewBoxOnlySVG), nil
+		case "nosize.svg":
+			return []byte(noSizeSVG), nil
 		}
 		return nil, fmt.Errorf("404: %s", uri)
 	}
@@ -125,6 +134,7 @@ func TestImageIsPotentiallyAvailable(t *testing.T) {
 		{"valid png", "ok.png", fetcher, true},
 		{"valid svg", "ok.svg", fetcher, true},
 		{"viewBox-only svg", "viewbox.svg", fetcher, true},
+		{"svg with no natural size or ratio", "nosize.svg", fetcher, true},
 		{"svg fetch error", "missing.svg", fetcher, false},
 	}
 	for _, c := range cases {
