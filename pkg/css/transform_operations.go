@@ -179,6 +179,34 @@ type TransformOperations struct {
 // IsEmpty mirrors TransformOperations::IsEmpty.
 func (o TransformOperations) IsEmpty() bool { return len(o.Operations) == 0 }
 
+// Is3DOperation reports whether op's type is a 3D operation type, whatever
+// its values. Mirrors TransformOperation::Is3DOperation
+// (transform_operation.h:109-116 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// louis14 has no kInterpolated operation.
+func Is3DOperation(op TransformOperation) bool {
+	switch op.Type() {
+	case TransformOperationScaleZ, TransformOperationScale3D,
+		TransformOperationTranslateZ, TransformOperationTranslate3D,
+		TransformOperationRotateX, TransformOperationRotateY, TransformOperationRotate3D,
+		TransformOperationMatrix3D, TransformOperationPerspective:
+		return true
+	}
+	return false
+}
+
+// HasNonPerspective3DOperation reports whether any operation has a 3D
+// operation type other than perspective. Mirrors
+// TransformOperations::HasNonPerspective3DOperation (transform_operations.h:
+// 81-88 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (o TransformOperations) HasNonPerspective3DOperation() bool {
+	for _, op := range o.Operations {
+		if Is3DOperation(op) && op.Type() != TransformOperationPerspective {
+			return true
+		}
+	}
+	return false
+}
+
 // Apply post-multiplies t by every operation in list order. Mirrors
 // TransformOperations::Apply (transform_operations.h:58-61).
 func (o TransformOperations) Apply(borderBoxSize geometry.SizeF, t *geometry.Transform) {
@@ -243,14 +271,6 @@ func commonPrimitiveForInterpolation(to, from TransformOperationType, is3D bool,
 	return twoD
 }
 
-func (o *TranslateTransformOperation) is3DOperation() bool {
-	return o.typ == TransformOperationTranslate3D || o.typ == TransformOperationTranslateZ
-}
-
-func (o *ScaleTransformOperation) is3DOperation() bool {
-	return o.typ == TransformOperationScale3D || o.typ == TransformOperationScaleZ
-}
-
 // blendOperation blends from (nil = the matching identity) to to (nil =
 // blend from toward identity). Mirrors the per-type Blend overrides.
 func blendOperation(from, to TransformOperation, progress float64) (TransformOperation, bool) {
@@ -268,14 +288,14 @@ func blendOperation(from, to TransformOperation, progress float64) (TransformOpe
 		if !okx || !oky {
 			return nil, false
 		}
-		typ := commonPrimitiveForInterpolation(t.typ, f.typ, t.is3DOperation() || f.is3DOperation(), TransformOperationTranslate, TransformOperationTranslate3D)
+		typ := commonPrimitiveForInterpolation(t.typ, f.typ, Is3DOperation(t) || Is3DOperation(f), TransformOperationTranslate, TransformOperationTranslate3D)
 		return &TranslateTransformOperation{X: x, Y: y, Z: blendNumber(f.Z, t.Z, progress), typ: typ}, true
 	case *ScaleTransformOperation:
 		f, _ := from.(*ScaleTransformOperation)
 		if f == nil {
 			f = &ScaleTransformOperation{X: 1, Y: 1, Z: 1, typ: t.typ}
 		}
-		typ := commonPrimitiveForInterpolation(t.typ, f.typ, t.is3DOperation() || f.is3DOperation(), TransformOperationScale, TransformOperationScale3D)
+		typ := commonPrimitiveForInterpolation(t.typ, f.typ, Is3DOperation(t) || Is3DOperation(f), TransformOperationScale, TransformOperationScale3D)
 		return &ScaleTransformOperation{X: blendNumber(f.X, t.X, progress), Y: blendNumber(f.Y, t.Y, progress), Z: blendNumber(f.Z, t.Z, progress), typ: typ}, true
 	case *SkewTransformOperation:
 		f, _ := from.(*SkewTransformOperation)
