@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics"
 	"louis14/pkg/images"
 	urlpkg "louis14/pkg/url"
@@ -20,8 +21,49 @@ type IntrinsicSizingInfo struct {
 	HasAspectRatio  bool
 }
 
-// GetIntrinsicSizingInfo returns the natural dimensions for a replaced element.
+// GetIntrinsicSizingInfo returns the natural dimensions a replaced element
+// is laid out with: its natural dimensions with any object-view-box applied
+// (LayoutReplaced::ComputeNaturalSizingInfo, layout_replaced.cc:505-516 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An inline <svg> ignores
+// object-view-box (LayoutSVGRoot::ShouldApplyObjectViewBox,
+// layout_svg_root.h:166-169).
 func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
+	info := getNaturalDimensions(ctx, node)
+	if node.DOMNode == nil || node.DOMNode.TagName == "svg" {
+		return info
+	}
+	s := node.Style()
+	if s == nil {
+		return info
+	}
+	viewBox := s.ObjectViewBox()
+	if viewBox == nil {
+		return info
+	}
+	applied := ComputeNaturalSizingInfo(viewBox, physicalNaturalSizingInfo(info))
+	info.IntrinsicWidth, info.IntrinsicHeight = applied.Size.WidthF64(), applied.Size.HeightF64()
+	if info.HasAspectRatio && !applied.Size.IsEmpty() {
+		info.AspectRatio = info.IntrinsicWidth / info.IntrinsicHeight
+	}
+	return info
+}
+
+// physicalNaturalSizingInfo converts louis14's float IntrinsicSizingInfo
+// (an unknown axis is 0) to PhysicalNaturalSizingInfo, rounding as
+// PhysicalNaturalSizingInfo::FromSizingInfo does (natural_sizing_info.cc:
+// 104-110 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func physicalNaturalSizingInfo(info IntrinsicSizingInfo) PhysicalNaturalSizingInfo {
+	size := geometry.PhysicalSizeFromF64Round(info.IntrinsicWidth, info.IntrinsicHeight)
+	out := PhysicalNaturalSizingInfo{Size: size, HasWidth: info.IntrinsicWidth > 0, HasHeight: info.IntrinsicHeight > 0}
+	if info.HasAspectRatio {
+		out.AspectRatio = size
+	}
+	return out
+}
+
+// getNaturalDimensions returns a replaced element's natural dimensions
+// (LayoutReplaced::GetNaturalDimensions and its overrides).
+func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {
 	if node.DOMNode == nil {
 		return IntrinsicSizingInfo{}
 	}

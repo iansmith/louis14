@@ -5114,6 +5114,13 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
+		// object-view-box: none | inset() | rect() | xywh()
+		// (ObjectViewBox::ParseSingleValue, longhands_custom.cc:7339-7357 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if property == "object-view-box" && !isValidObjectViewBoxValue(value) {
+			continue
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {
