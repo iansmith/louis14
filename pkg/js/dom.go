@@ -247,12 +247,7 @@ func registerDocumentNodeMethods(ctx *domContext, docObj *goja.Object, doc *html
 	})
 
 	newElement := func(tag string) goja.Value {
-		return ctx.elementProxy(&html.Node{
-			Type:       html.ElementNode,
-			TagName:    strings.ToLower(tag),
-			Attributes: make(map[string]string),
-			Children:   make([]*html.Node, 0),
-		})
+		return ctx.elementProxy(newElementNode(strings.ToLower(tag)))
 	}
 	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -646,12 +641,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			if len(call.Arguments) < 2 {
 				return goja.Undefined()
 			}
-			name := call.Arguments[0].String()
-			val := call.Arguments[1].String()
-			if e.node.Attributes == nil {
-				e.node.Attributes = make(map[string]string)
-			}
-			e.node.Attributes[name] = val
+			e.setAttribute(call.Arguments[0].String(), call.Arguments[1].String())
 			return goja.Undefined()
 		})
 	case "hasAttribute":
@@ -672,6 +662,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			if e.node.Attributes != nil {
 				delete(e.node.Attributes, name)
 			}
+			e.attributeChanged(name)
 			return goja.Undefined()
 		})
 	case "children":
@@ -1116,10 +1107,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		if key == "poster" && e.node.TagName != "video" {
 			return false
 		}
-		if e.node.Attributes == nil {
-			e.node.Attributes = make(map[string]string)
-		}
-		e.node.Attributes[key] = val.String()
+		e.setAttribute(key, val.String())
 		return true
 	case "type":
 		// HTMLInputElement.type / HTMLButtonElement.type / HTMLSelectElement.type
@@ -1179,12 +1167,13 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 			e.scrollLayoutBoxTo(nil, &v)
 		}
 		return true
-	case "onload":
-		// Store element-level onload callback so the engine can fire it after
-		// iframes (and other resources) have been loaded during layout.
+	case "onload", "onerror":
+		// Event handler IDL attributes. The engine dispatches an <img>'s
+		// load / error from its ImageLoader and other elements' load after
+		// the window load event (Engine.Execute).
 		if e.ctx.engine != nil {
 			if fn, ok := goja.AssertFunction(val); ok {
-				e.ctx.engine.RegisterOnloadCallback(e.node, fn)
+				e.ctx.engine.setEventHandler(e.node, key[len("on"):], fn)
 			}
 		}
 		return true
@@ -1207,7 +1196,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
-		"onload",
+		"onload", "onerror",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
 		"scrollLeft", "scrollTop", "scrollTo", "scrollWidth", "scrollHeight",
@@ -1216,6 +1205,38 @@ func (e *elementAccessor) Has(key string) bool {
 		return true
 	}
 	return false
+}
+
+// setAttribute sets a content attribute and reacts to the change
+// (Element::setAttribute → AttributeChanged).
+func (e *elementAccessor) setAttribute(name, value string) {
+	if e.node.Attributes == nil {
+		e.node.Attributes = make(map[string]string)
+	}
+	e.node.Attributes[name] = value
+	e.attributeChanged(name)
+}
+
+// attributeChanged reacts to a content attribute change: an <img>'s src
+// starts a new image request (Element::AttributeChanged →
+// HTMLImageElement::ParseAttribute kSrcAttr → SelectSourceURL →
+// ImageLoader::UpdateFromElement, html_image_element.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (e *elementAccessor) attributeChanged(name string) {
+	if name == "src" && e.node.TagName == "img" && e.ctx.engine != nil {
+		e.ctx.engine.updateImageFromElement(e.ctx, e.node)
+	}
+}
+
+// newElementNode returns a detached element not created by the parser, as
+// Document::CreateElementForBinding and the named constructors make.
+func newElementNode(tag string) *html.Node {
+	return &html.Node{
+		Type:       html.ElementNode,
+		TagName:    tag,
+		Attributes: make(map[string]string),
+		Children:   make([]*html.Node, 0),
+	}
 }
 
 func (e *elementAccessor) Delete(key string) bool {
@@ -1239,7 +1260,7 @@ func (e *elementAccessor) Keys() []string {
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
-		"onload",
+		"onload", "onerror",
 		"contentDocument", "contentWindow",
 		"focus", "blur",
 		"getBoundingClientRect", "getClientRects",

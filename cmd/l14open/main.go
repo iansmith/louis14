@@ -72,6 +72,7 @@ func main() {
 	// Execute JavaScript if there are scripts
 	if js.HasScriptWork(doc) {
 		engine := js.New()
+		engine.SetImageFetcher(fetcher)
 		engine.SetLayoutSnapshot(layoutEngine.ComputedStyles(), layoutEngine.NodeBoxes())
 		if err := engine.Execute(doc); err != nil {
 			log.Printf("js: %v", err)

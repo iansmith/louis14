@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
@@ -14,9 +15,22 @@ import (
 // Engine executes JavaScript against an HTML document's DOM.
 type Engine struct {
 	vm *goja.Runtime
-	// onloadCallbacks stores element-level onload callbacks registered via
-	// element.onload = fn. Keyed by *html.Node for fast lookup.
-	onloadCallbacks map[*html.Node]goja.Callable
+	// eventHandlers holds each element's event handler IDL attributes
+	// (element.onload = fn), by node and event type: the analog of Blink's
+	// EventTarget::SetAttributeEventListener.
+	eventHandlers map[*html.Node]map[string]goja.Callable
+	// eventHandlerNodes lists the nodes of eventHandlers in the order
+	// their first handler was set, so dispatch order is deterministic.
+	eventHandlerNodes []*html.Node
+
+	// imageFetcher loads the images script asks for (img.src); nil serves
+	// only data: URLs. See SetImageFetcher.
+	imageFetcher images.ImageFetcher
+	// imageLoaders holds each <img>'s ImageLoader state
+	// (html_image_element.go).
+	imageLoaders map[*html.Node]*imageLoader
+	// tasks queues posted tasks (postTask), run after the current one.
+	tasks []*postedTask
 
 	// Layout snapshot from the most recent layout pass, used to back
 	// getComputedStyle. Set via SetLayoutSnapshot before Execute.
@@ -56,8 +70,9 @@ type Engine struct {
 func New() *Engine {
 	vm := goja.New()
 	e := &Engine{
-		vm:              vm,
-		onloadCallbacks: make(map[*html.Node]goja.Callable),
+		vm:            vm,
+		eventHandlers: make(map[*html.Node]map[string]goja.Callable),
+		imageLoaders:  make(map[*html.Node]*imageLoader),
 	}
 
 	// Register console API
@@ -185,10 +200,49 @@ func frameTimeMs(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
 }
 
-// RegisterOnloadCallback stores an element-level onload callback.
-// Called from DOM bindings when JS does element.onload = fn.
-func (e *Engine) RegisterOnloadCallback(node *html.Node, fn goja.Callable) {
-	e.onloadCallbacks[node] = fn
+// SetImageFetcher sets the fetcher the document's images load through when
+// script sets an <img>'s src: the same document-relative fetcher layout and
+// paint use (the Document's ResourceFetcher, in Blink).
+func (e *Engine) SetImageFetcher(fetcher images.ImageFetcher) {
+	e.imageFetcher = fetcher
+}
+
+// setEventHandler stores node's event handler IDL attribute for eventType.
+func (e *Engine) setEventHandler(node *html.Node, eventType string, fn goja.Callable) {
+	if e.eventHandlers[node] == nil {
+		e.eventHandlers[node] = make(map[string]goja.Callable)
+		e.eventHandlerNodes = append(e.eventHandlerNodes, node)
+	}
+	e.eventHandlers[node][eventType] = fn
+}
+
+// postedTask is a task posted to the engine's queue; a canceled one is
+// skipped (Blink's TaskHandle from PostCancellableTask).
+type postedTask struct {
+	run      func()
+	canceled bool
+}
+
+// postTask queues fn to run after the current task, as Blink posts to the
+// document's task runner (Document::GetTaskRunner(TaskType::
+// kDOMManipulation) + PostCancellableTask, core/loader/image_loader.cc:375,
+// :859 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (e *Engine) postTask(fn func()) *postedTask {
+	t := &postedTask{run: fn}
+	e.tasks = append(e.tasks, t)
+	return t
+}
+
+// runPostedTasks runs the queued tasks in order, including any they post.
+func (e *Engine) runPostedTasks() {
+	for len(e.tasks) > 0 {
+		t := e.tasks[0]
+		e.tasks = e.tasks[1:]
+		if !t.canceled {
+			t.run()
+		}
+	}
+	e.tasks = nil
 }
 
 // CurrentSelection returns the document's current DOM Selection/Range
@@ -249,7 +303,7 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// Register document global pointing at this document's DOM
 	ctx := registerDocument(e.vm, doc)
 	// Give the DOM context a reference to the engine so element proxies
-	// can register onload callbacks.
+	// can set event handlers and start image requests.
 	ctx.engine = e
 	ctx.layoutStyles = e.layoutStyles
 	ctx.layoutBoxes = e.layoutBoxes
@@ -269,31 +323,54 @@ func (e *Engine) Execute(doc *html.Document) error {
 		}
 	}
 
-	// Execute each script in document order
+	e.registerImageConstructor(ctx)
+
+	// Each step below is a task; tasks it posts (image load/error events)
+	// run after it.
+	runTask := func(step func() error) error {
+		err := step()
+		e.runPostedTasks()
+		return err
+	}
+
+	// Execute each script in document order.
 	for i, script := range doc.Scripts {
-		_, err := e.vm.RunString(script)
-		if err != nil {
+		if err := runTask(func() error {
+			_, err := e.vm.RunString(script)
+			return err
+		}); err != nil {
 			return fmt.Errorf("script %d: %w", i, err)
 		}
 	}
+	// The document's images finish loading before the window load event.
+	_ = runTask(func() error {
+		e.startParsedImageLoads(ctx)
+		return nil
+	})
 
-	// Fire window.onload if any script registered it
-	if onloadVal := e.vm.Get("onload"); onloadVal != nil &&
-		!goja.IsUndefined(onloadVal) && !goja.IsNull(onloadVal) {
-		if fn, ok := goja.AssertFunction(onloadVal); ok {
-			if _, err := fn(goja.Undefined()); err != nil {
-				return fmt.Errorf("onload: %w", err)
+	// The window load event: window.onload, then the <body onload="...">
+	// attribute (per HTML, an event handler for the Window's load event;
+	// many WPT tests use this form directly), then load listeners.
+	if err := runTask(func() error {
+		if onloadVal := e.vm.Get("onload"); onloadVal != nil &&
+			!goja.IsUndefined(onloadVal) && !goja.IsNull(onloadVal) {
+			if fn, ok := goja.AssertFunction(onloadVal); ok {
+				if _, err := fn(goja.Undefined()); err != nil {
+					return fmt.Errorf("onload: %w", err)
+				}
 			}
 		}
-	}
-
-	// Fire <body onload="..."> HTML attribute if present.
-	// Per HTML spec, the body element's onload attribute is an event handler
-	// for the Window's load event. Many WPT tests use this form directly.
-	if onloadAttr := bodyOnloadHandler(doc); onloadAttr != "" {
-		if _, err := e.vm.RunString(onloadAttr); err != nil {
-			return fmt.Errorf("body onload: %w", err)
+		if onloadAttr := bodyOnloadHandler(doc); onloadAttr != "" {
+			if _, err := e.vm.RunString(onloadAttr); err != nil {
+				return fmt.Errorf("body onload: %w", err)
+			}
 		}
+		for _, l := range ctx.docEventListeners["load"] {
+			_, _ = l.fn(goja.Undefined())
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	// WPT reftest-wait protocol (/common/reftest-wait.js): after the page
@@ -301,28 +378,26 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// tests mutate styles in the handler and then clear the reftest-wait
 	// class. Louis14 renders once after Execute returns, so dispatching
 	// synchronously here is the faithful equivalent — the mutations land
-	// before the only screenshot.
-	//
-	// Window "load" fires first: all subresources are synchronously
-	// available in the one-shot model, so load listeners run right after
-	// script execution, before TestRendered (browser event order).
-	for _, l := range ctx.docEventListeners["load"] {
-		_, _ = l.fn(goja.Undefined())
-	}
-	fireTestRendered(ctx)
+	// before the only screenshot. It follows the window load event and the
+	// image events the scripts' loads posted (browser event order).
+	_ = runTask(func() error {
+		fireTestRendered(ctx)
+		return nil
+	})
 
-	// Fire element-level onload callbacks (e.g. iframe.onload = fn).
-	// These were registered during script execution above. The iframe has
-	// already loaded (first layout pass fetched the content), so firing
-	// onload now is correct. rAF callbacks are synchronous in our engine,
-	// so any DOM mutations they make are immediately visible.
-	for node, fn := range e.onloadCallbacks {
-		_ = node // node identity tracked for future use
-		if _, err := fn(goja.Undefined()); err != nil {
-			// Log but continue — one broken callback shouldn't stop others
-			_ = err
+	// Fire the other elements' load handlers (e.g. iframe.onload = fn): the
+	// iframe has already loaded (the first layout pass fetched the
+	// content). An <img>'s load comes from its ImageLoader instead. They
+	// fire in the order their handlers were first set.
+	_ = runTask(func() error {
+		for _, node := range e.eventHandlerNodes {
+			if fn := e.eventHandlers[node]["load"]; fn != nil && node.TagName != "img" {
+				// One broken callback shouldn't stop the others.
+				_, _ = fn(goja.Undefined())
+			}
 		}
-	}
+		return nil
+	})
 
 	return nil
 }

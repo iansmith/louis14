@@ -656,6 +656,13 @@ func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, he
 	return bounds.Dx(), bounds.Dy(), nil
 }
 
+// ImageLoadIsAttempted reports whether louis14 loads src now: always with
+// a fetcher, and without one only for a data: URL, which decodes inline.
+// Any other source without a fetcher is an image that is still loading.
+func ImageLoadIsAttempted(src string, fetcher ImageFetcher) bool {
+	return fetcher != nil || stdnet.IsDataURL(src)
+}
+
 // ImageIsPotentiallyAvailable reports whether the image at src can be shown:
 // it loaded with usable dimensions, or no load was attempted yet. Mirrors
 // ImageLoader::ImageIsPotentiallyAvailable (image_loader.cc:284-310 @
@@ -671,7 +678,7 @@ func ImageIsPotentiallyAvailable(src string, fetcher ImageFetcher) bool {
 	if src == "" {
 		return false
 	}
-	if fetcher == nil && !stdnet.IsDataURL(src) {
+	if !ImageLoadIsAttempted(src, fetcher) {
 		return true
 	}
 	if LoadSVGImageWithFetcher(src, fetcher) != nil {

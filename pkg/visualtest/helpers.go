@@ -87,6 +87,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 			return e
 		}
 		jsEng := js.New()
+		jsEng.SetImageFetcher(fetcher)
 		jsEng.SetLayoutSnapshot(engine.ComputedStyles(), engine.NodeBoxes())
 		jsEng.SetLayoutUpdater(func() map[*html.Node]*layout.Box {
 			e := newPostScriptEngine()
