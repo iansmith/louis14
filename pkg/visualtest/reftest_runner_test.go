@@ -848,6 +848,62 @@ func TestParseFuzzy(t *testing.T) {
 			html: `<meta name="author" content="test">`,
 			want: nil,
 		},
+		// LOU-614: WPT reads the meta through an HTML parser (html5lib in
+		// tools/manifest/sourcefile.py), so every attribute syntax HTML
+		// accepts must be honored, not just name-first double quotes.
+		{
+			name: "unquoted name",
+			html: `<meta name=fuzzy content="0-5;0-150">`,
+			want: &wptFuzzy{MaxDifference: 5, TotalPixels: 150},
+		},
+		{
+			name: "unquoted content",
+			html: `<meta name="fuzzy" content=0-5;0-150>`,
+			want: &wptFuzzy{MaxDifference: 5, TotalPixels: 150},
+		},
+		{
+			name: "content before name",
+			html: `<meta content="0-5;0-200" name="fuzzy">`,
+			want: &wptFuzzy{MaxDifference: 5, TotalPixels: 200},
+		},
+		{
+			name: "single quotes",
+			html: `<meta name='fuzzy' content='0-3;0-60'>`,
+			want: &wptFuzzy{MaxDifference: 3, TotalPixels: 60},
+		},
+		{
+			name: "uppercase and spaced attributes",
+			html: "<META\n  NAME = \"FUZZY\"\n  CONTENT = \"0-120;0-10\" />",
+			want: &wptFuzzy{MaxDifference: 120, TotalPixels: 10},
+		},
+		{
+			name: "after other metas in a document",
+			html: `<!DOCTYPE html><html><head><meta name="assert" content="1-2;3-4"><link rel="match" href="a-ref.html"><meta name=fuzzy content="maxDifference=0-1;totalPixels=0-40000"></head><body></body></html>`,
+			want: &wptFuzzy{MaxDifference: 1, TotalPixels: 40000},
+		},
+		{
+			// sourcefile.py binds named ranges by name, not by position.
+			name: "named arguments in reverse order",
+			html: `<meta name="fuzzy" content="totalPixels=0-2;maxDifference=0-1">`,
+			want: &wptFuzzy{MaxDifference: 1, TotalPixels: 2},
+		},
+		{
+			// parse_ref_keyed_meta: an optional "<ref url>:" prefix keys the
+			// value to one reference; the ranges follow the last colon.
+			name: "reference-keyed value",
+			html: `<meta name=fuzzy content="transform3d-matrix3d-001-ref.html:0-100;0-980">`,
+			want: &wptFuzzy{MaxDifference: 100, TotalPixels: 980},
+		},
+		{
+			name: "first of several fuzzy metas wins",
+			html: `<meta name="fuzzy" content="0-38; 0-400"><meta name="fuzzy" content="maxDifference=0-59; totalPixels=0-600">`,
+			want: &wptFuzzy{MaxDifference: 38, TotalPixels: 400},
+		},
+		{
+			name: "malformed value",
+			html: `<meta name="fuzzy" content="0-5">`,
+			want: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -866,6 +922,28 @@ func TestParseFuzzy(t *testing.T) {
 				t.Errorf("got {%d, %d}, want {%d, %d}",
 					got.MaxDifference, got.TotalPixels,
 					tt.want.MaxDifference, tt.want.TotalPixels)
+			}
+		})
+	}
+}
+
+func TestHasWPTFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		flag string
+		want bool
+	}{
+		{"quoted", `<meta name="flags" content="ahem dom">`, "dom", true},
+		{"unquoted name", `<meta name=flags content="dom">`, "dom", true},
+		{"content before name", `<meta content="dom" name="flags" />`, "dom", true},
+		{"flag absent", `<meta name="flags" content="ahem image">`, "dom", false},
+		{"no flags meta", `<meta name="assert" content="dom">`, "dom", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasWPTFlag(tt.html, tt.flag); got != tt.want {
+				t.Errorf("hasWPTFlag(%q, %q) = %v, want %v", tt.html, tt.flag, got, tt.want)
 			}
 		})
 	}
