@@ -47,3 +47,19 @@ func TestUsedTransformStyle3D_GroupingPropertyFlattens(t *testing.T) {
 		})
 	}
 }
+
+// TestPreserve3D_EdgeOnParentComposesWithChild: a rotateX(90deg)
+// preserve-3d parent is exactly edge-on (gfx::SinCosDegrees), yet its
+// rotateX(90deg) scale(2) child composes with it to scale(2, -2) and must
+// paint. WPT css-transforms/transform3d-preserve3d-014.
+func TestPreserve3D_EdgeOnParentComposesWithChild(t *testing.T) {
+	src := `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="transform: rotatex(90deg); transform-style: preserve-3d; margin: 50px">` +
+		`<div style="transform: rotatex(90deg) scale(2); width: 50px; height: 50px; background: lime"></div>` +
+		`</div></body></html>`
+	img := renderToImage(t, src, 200, 200)
+	c := img.RGBAAt(75, 75)
+	if !(c.R < 40 && c.G > 200 && c.B < 40) {
+		t.Errorf("pixel (75,75) = %v, want lime", c)
+	}
+}
