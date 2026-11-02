@@ -11402,7 +11402,7 @@ func (s *Style) GetBackgroundPosition() BackgroundPosition {
 // the initial 0% 0%.
 func parseBackgroundPosition(val string, ctx calcContext) BackgroundPosition {
 	pos := BackgroundPosition{}
-	x, y, ok := consumePosition(newComponentStream(val), true)
+	x, y, ok := consumePosition(newComponentStream(val), true, true)
 	if !ok {
 		return pos
 	}
@@ -12873,40 +12873,61 @@ func (s *Style) GetObjectFit() ObjectFit {
 	return ObjectFitFill
 }
 
-// GetObjectPosition returns the object-position as (x%, y%) in range [0,1].
-// Default is (0.5, 0.5) which centers the image.
-func (s *Style) GetObjectPosition() (float64, float64) {
+// InitialObjectPosition is object-position's initial value,
+// LengthPoint(Length::Percent(50), Length::Percent(50))
+// (css_properties.json5:4625 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+// ComputedStyleInitialValues::InitialObjectPosition).
+var InitialObjectPosition = LengthPoint{X: Length{Percent: 50}, Y: Length{Percent: 50}}
+
+// ObjectPosition returns the computed object-position. Mirrors
+// ComputedStyle::ObjectPosition, whose value StyleBuilderConverter::
+// ConvertPosition builds (style_builder_converter.cc:2471 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) from the CSSValuePair
+// ObjectPosition::ParseSingleValue consumed (longhands_custom.cc:7317). The
+// declaration was validated by isValidObjectPositionValue; a value that still
+// fails to parse (e.g. after var() substitution) is the initial value.
+func (s *Style) ObjectPosition() LengthPoint {
 	val, ok := s.Get("object-position")
 	if !ok {
-		return 0.5, 0.5
+		return InitialObjectPosition
 	}
-	parts := strings.Fields(val)
-	x, y := 0.5, 0.5
-	if len(parts) >= 1 {
-		x = parsePositionKeyword(parts[0])
+	stream := newComponentStream(val)
+	x, y, ok := consumePosition(stream, false, false)
+	if !ok || !stream.atEnd() {
+		return InitialObjectPosition
 	}
-	if len(parts) >= 2 {
-		y = parsePositionKeyword(parts[1])
+	ctx := s.cssToLengthConversionData()
+	lx, okX := convertPositionLength(x, "left", "right", ctx)
+	ly, okY := convertPositionLength(y, "top", "bottom", ctx)
+	if !okX || !okY {
+		return InitialObjectPosition
 	}
-	return x, y
+	return LengthPoint{X: lx, Y: ly}
 }
 
-// parsePositionKeyword converts a position keyword or percentage to a 0-1 fraction.
-func parsePositionKeyword(s string) float64 {
-	switch s {
-	case "left", "top":
-		return 0.0
-	case "center":
-		return 0.5
-	case "right", "bottom":
-		return 1.0
-	}
-	if strings.HasSuffix(s, "%") {
-		if v, err := strconv.ParseFloat(s[:len(s)-1], 64); err == nil {
-			return v / 100
+// convertPositionLength converts one axis of a consumed <position> to a
+// Length. Mirrors StyleBuilderConverter::ConvertPositionLength<cssValueFor0,
+// cssValueFor100> (style_builder_converter.h:542 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an edge + offset pair is the
+// offset from the near edge, or 100% minus it from the far edge; a lone
+// keyword is 0%, 100% or 50% (center); otherwise the <length-percentage>.
+func convertPositionLength(a positionAxis, edgeFor0, edgeFor100 string, ctx calcContext) (Length, bool) {
+	if a.offset != "" && a.edge != "" {
+		l, ok := convertLength(a.offset, ctx)
+		if a.edge == edgeFor100 {
+			l = l.SubtractFromOneHundredPercent()
 		}
+		return l, ok
 	}
-	return 0.5
+	switch a.edge {
+	case edgeFor0:
+		return Length{Percent: 0}, true
+	case edgeFor100:
+		return Length{Percent: 100}, true
+	case "center":
+		return Length{Percent: 50}, true
+	}
+	return convertLength(a.offset, ctx)
 }
 
 // AspectRatio represents a parsed aspect-ratio CSS value

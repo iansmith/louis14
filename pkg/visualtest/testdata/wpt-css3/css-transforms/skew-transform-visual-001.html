@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<title>CSS transform: skewX(45deg) shifts top-right corner</title>
+<title>CSS transform: skewX(45deg) shifts the top edge left</title>
 <link rel="match" href="skew-transform-visual-001-ref.html">
 <style>
   body { margin: 0; }
-  /* A 100x100 green box skewed 45deg on X axis.
-     The top edge shifts right by height*tan(45deg) = 100px.
-     Bottom-left stays at (0,100). Top-left shifts to (100,0).
+  /* A 100x100 green box skewed 45deg on X axis about its bottom-left
+     corner: x' = x + tan(45deg)*(y - 100). The bottom edge stays put and
+     the top edge shifts LEFT by 100px: top-left (0,0) -> (-100,0).
      We compare against a polygon reference. */
   div {
     width: 100px;

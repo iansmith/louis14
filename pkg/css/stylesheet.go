@@ -5100,6 +5100,13 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
+		// object-position is a <position> without the three-value form
+		// (ObjectPosition::ParseSingleValue, longhands_custom.cc:7317 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if property == "object-position" && !isValidObjectPositionValue(value) {
+			continue
+		}
+
 		// Validate color property values before they enter the cascade
 		if isColorProperty(property) {
 			if !isValidColorValue(value) {

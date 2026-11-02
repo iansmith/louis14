@@ -289,10 +289,15 @@ func positionFromThreeOrFourValues(values []positionValue) (x, y positionAxis) {
 	return x, y
 }
 
-// consumePosition mirrors ConsumePosition (css_parsing_utils.cc:2649) for the
-// background case, where three-value positions are permitted
-// (WebFeature::kThreeValuedPositionBackground).
-func consumePosition(s *componentStream, allowUnitless bool) (x, y positionAxis, ok bool) {
+// consumePosition mirrors ConsumePosition (css_parsing_utils.cc:2649 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). threeValuePosition mirrors a
+// non-null three_value_position WebFeature: background-position passes it
+// (WebFeature::kThreeValuedPositionBackground) and accepts
+// "<edge> <length-percentage> <edge>"; object-position does not
+// (ObjectPosition::ParseSingleValue, longhands_custom.cc:7317), so a
+// three-value form backs up to its one- or two-value prefix and the
+// trailing component is left unconsumed.
+func consumePosition(s *componentStream, allowUnitless, threeValuePosition bool) (x, y positionAxis, ok bool) {
 	var horizontalEdge, verticalEdge bool
 	v1, ok := consumePositionComponent(s, allowUnitless, &horizontalEdge, &verticalEdge)
 	if !ok {
@@ -309,6 +314,7 @@ func consumePosition(s *componentStream, allowUnitless bool) (x, y positionAxis,
 		return x, y, true
 	}
 
+	afterSecond := s.save()
 	var v3 positionValue
 	have3 := false
 	nextIsIdent := s.peekIdent() != ""
@@ -332,10 +338,23 @@ func consumePosition(s *componentStream, allowUnitless bool) (x, y positionAxis,
 	}
 
 	values := []positionValue{v1, v2, v3}
+	have4 := false
 	if v3.isIdent() && v3.ident != "center" && s.peekIdent() == "" {
-		if v4, ok := consumePositionComponent(s, allowUnitless, &horizontalEdge, &verticalEdge); ok {
+		var v4 positionValue
+		if v4, have4 = consumePositionComponent(s, allowUnitless, &horizontalEdge, &verticalEdge); have4 {
 			values = append(values, v4)
 		}
+	}
+	if !have4 && !threeValuePosition {
+		// [top | bottom] <length-percentage> is not permitted.
+		if verticalEdge && !v2.isIdent() {
+			s.restore(afterFirst)
+			x, y = positionFromOneValue(v1)
+			return x, y, true
+		}
+		s.restore(afterSecond)
+		x, y = positionFromTwoValues(v1, v2)
+		return x, y, true
 	}
 	x, y = positionFromThreeOrFourValues(values)
 	return x, y, true
@@ -469,7 +488,7 @@ func parseBackgroundOrMask(value string) (longhands [len(backgroundShorthand)]st
 				switch i {
 				case bgPosition:
 					start := s.save()
-					if _, _, ok := consumePosition(s, false); !ok {
+					if _, _, ok := consumePosition(s, false, true); !ok {
 						continue
 					}
 					v = s.since(start)
@@ -555,6 +574,23 @@ func expandBackgroundProperty(style *Style, value string) {
 	for i, lh := range backgroundShorthand {
 		style.Set(lh.property, longhands[i])
 	}
+}
+
+// isValidObjectPositionValue validates an object-position declaration —
+// ObjectPosition::ParseSingleValue (longhands_custom.cc:7317 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ConsumePosition with
+// UnitlessQuirk::kForbid and no three-value form, consuming the whole value.
+// CSS-wide keywords and var()/attr() are accepted as-is.
+func isValidObjectPositionValue(value string) bool {
+	if _, wide := cssWideKeyword(value); wide {
+		return true
+	}
+	if containsVarFunction(value) || containsAttrFunction(value) {
+		return true
+	}
+	s := newComponentStream(value)
+	_, _, ok := consumePosition(s, false, false)
+	return ok && s.atEnd()
 }
 
 // isValidBackgroundSizeValue validates a background-size longhand —
