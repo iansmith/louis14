@@ -19,6 +19,9 @@ type Engine struct {
 	// (element.onload = fn), by node and event type: the analog of Blink's
 	// EventTarget::SetAttributeEventListener.
 	eventHandlers map[*html.Node]map[string]goja.Callable
+	// eventHandlerNodes lists the nodes of eventHandlers in the order
+	// their first handler was set, so dispatch order is deterministic.
+	eventHandlerNodes []*html.Node
 
 	// imageFetcher loads the images script asks for (img.src); nil serves
 	// only data: URLs. See SetImageFetcher.
@@ -208,6 +211,7 @@ func (e *Engine) SetImageFetcher(fetcher images.ImageFetcher) {
 func (e *Engine) setEventHandler(node *html.Node, eventType string, fn goja.Callable) {
 	if e.eventHandlers[node] == nil {
 		e.eventHandlers[node] = make(map[string]goja.Callable)
+		e.eventHandlerNodes = append(e.eventHandlerNodes, node)
 	}
 	e.eventHandlers[node][eventType] = fn
 }
@@ -383,10 +387,11 @@ func (e *Engine) Execute(doc *html.Document) error {
 
 	// Fire the other elements' load handlers (e.g. iframe.onload = fn): the
 	// iframe has already loaded (the first layout pass fetched the
-	// content). An <img>'s load comes from its ImageLoader instead.
+	// content). An <img>'s load comes from its ImageLoader instead. They
+	// fire in the order their handlers were first set.
 	_ = runTask(func() error {
-		for node, handlers := range e.eventHandlers {
-			if fn := handlers["load"]; fn != nil && node.TagName != "img" {
+		for _, node := range e.eventHandlerNodes {
+			if fn := e.eventHandlers[node]["load"]; fn != nil && node.TagName != "img" {
 				// One broken callback shouldn't stop the others.
 				_, _ = fn(goja.Undefined())
 			}

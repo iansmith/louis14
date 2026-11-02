@@ -1107,9 +1107,6 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		if key == "poster" && e.node.TagName != "video" {
 			return false
 		}
-		if e.node.Attributes == nil {
-			e.node.Attributes = make(map[string]string)
-		}
 		e.setAttribute(key, val.String())
 		return true
 	case "type":

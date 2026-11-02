@@ -1,6 +1,7 @@
 package js
 
 import (
+	"math"
 	"strconv"
 
 	"louis14/pkg/html"
@@ -23,11 +24,12 @@ import (
 // set src (Engine.postTask).
 
 // imageLoader is an <img>'s ImageLoader state: whether its request has
-// started, and the posted task that will dispatch its pending load or error
-// event (Blink's pending_load_event_ / pending_error_event_).
+// started, and the posted tasks that will dispatch its pending load and
+// error events (Blink's pending_load_event_ / pending_error_event_).
 type imageLoader struct {
-	started      bool
-	pendingEvent *postedTask
+	started           bool
+	pendingLoadEvent  *postedTask
+	pendingErrorEvent *postedTask
 }
 
 // registerImageConstructor defines the `Image` named constructor:
@@ -40,7 +42,7 @@ func (e *Engine) registerImageConstructor(ctx *domContext) {
 		// setWidth / setHeight take an IDL unsigned long.
 		for i, attr := range []string{"width", "height"} {
 			if i < len(call.Arguments) {
-				node.Attributes[attr] = strconv.FormatUint(uint64(uint32(call.Argument(i).ToInteger())), 10)
+				node.Attributes[attr] = strconv.FormatUint(uint64(toUint32(call.Argument(i))), 10)
 			}
 		}
 		return ctx.elementProxy(node).ToObject(e.vm)
@@ -49,16 +51,20 @@ func (e *Engine) registerImageConstructor(ctx *domContext) {
 
 // updateImageFromElement starts an <img>'s image request: after its src
 // content attribute changed, or for a parsed image before the window load
-// event (startParsedImageLoads). It replaces the previous request's
-// undispatched event and posts the new request's. Mirrors ImageLoader::
-// UpdateFromElement → DoUpdateFromElement (image_loader.cc:427-645): no
-// src attribute means no request and no event; an empty or unloadable
-// source fires error; an image that loads fires load. The src is completed
-// against the document's base first (ImageLoader::ImageSourceToKURL,
-// image_loader.cc:746 @ d4ecdfed88f962439247c2ad36b8fe47805b1520). With no
-// fetcher only data: URLs load; any other source stays loading, with no
-// event yet. Whether it loaded is decided when the event is dispatched,
-// and only if a handler is listening.
+// event (startParsedImageLoads). Mirrors ImageLoader::UpdateFromElement →
+// DoUpdateFromElement (image_loader.cc:427-645):
+//   - no src attribute (a null source): no request and no error of its
+//     own; the pending load event is canceled, an error event already
+//     queued by the previous request still fires (:585-628);
+//   - an empty src: QueuePendingErrorEvent (:586-590);
+//   - otherwise a request: both pending events are canceled, and the
+//     loaded image posts load, a failed one error (ImageNotifyFinished,
+//     :844-864). With no fetcher only data: URLs load; any other source
+//     stays loading, with no event yet.
+//
+// The src is completed against the document's base first
+// (ImageLoader::ImageSourceToKURL, image_loader.cc:746 @
+// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (e *Engine) updateImageFromElement(ctx *domContext, node *html.Node) {
 	loader := e.imageLoaders[node]
 	if loader == nil {
@@ -66,40 +72,49 @@ func (e *Engine) updateImageFromElement(ctx *domContext, node *html.Node) {
 		e.imageLoaders[node] = loader
 	}
 	loader.started = true
-	if loader.pendingEvent != nil {
-		loader.pendingEvent.canceled = true
-		loader.pendingEvent = nil
+	src, hasSrc := node.GetAttribute("src")
+	if hasSrc && src == "" {
+		e.queuePendingImageEvent(ctx, node, &loader.pendingErrorEvent, "error")
 	}
-	src, ok := node.GetAttribute("src")
-	if !ok {
+	cancelPostedTask(&loader.pendingLoadEvent)
+	if !hasSrc || src == "" {
 		return
 	}
-	if src != "" {
-		src = urlpkg.CompleteURL(src, e.doc.BaseDir)
-		if !images.ImageLoadIsAttempted(src, e.imageFetcher) {
-			return
-		}
+	cancelPostedTask(&loader.pendingErrorEvent)
+	src = urlpkg.CompleteURL(src, e.doc.BaseDir)
+	switch {
+	case !images.ImageLoadIsAttempted(src, e.imageFetcher):
+	case images.ImageIsPotentiallyAvailable(src, e.imageFetcher):
+		e.queuePendingImageEvent(ctx, node, &loader.pendingLoadEvent, "load")
+	default:
+		e.queuePendingImageEvent(ctx, node, &loader.pendingErrorEvent, "error")
 	}
-	loader.pendingEvent = e.postTask(func() {
-		loader.pendingEvent = nil
-		e.dispatchImageLoaderEvent(ctx, node, src)
+}
+
+// queuePendingImageEvent posts the dispatch of eventType at node into slot,
+// replacing (canceling) what the slot held, as assigning a TaskHandle does
+// (QueuePendingErrorEvent, image_loader.cc:363-381).
+func (e *Engine) queuePendingImageEvent(ctx *domContext, node *html.Node, slot **postedTask, eventType string) {
+	cancelPostedTask(slot)
+	*slot = e.postTask(func() {
+		*slot = nil
+		e.dispatchImageLoaderEvent(ctx, node, eventType)
 	})
 }
 
-// dispatchImageLoaderEvent fires the load or error event of node's request
-// for src at the image, whose handler runs with the image as `this`:
-// ImageLoader::DispatchPendingLoadEvent / DispatchPendingErrorEvent
-// (image_loader.cc:1010-1030).
-func (e *Engine) dispatchImageLoaderEvent(ctx *domContext, node *html.Node, src string) {
-	handlers := e.eventHandlers[node]
-	if handlers["load"] == nil && handlers["error"] == nil {
-		return
+// cancelPostedTask cancels the task in slot, if any.
+func cancelPostedTask(slot **postedTask) {
+	if *slot != nil {
+		(*slot).canceled = true
+		*slot = nil
 	}
-	eventType := "error"
-	if src != "" && images.ImageIsPotentiallyAvailable(src, e.imageFetcher) {
-		eventType = "load"
-	}
-	fn := handlers[eventType]
+}
+
+// dispatchImageLoaderEvent fires eventType at the image, whose handler
+// runs with the image as `this`: ImageLoader::DispatchPendingLoadEvent /
+// DispatchPendingErrorEvent (image_loader.cc:1010-1030).
+func (e *Engine) dispatchImageLoaderEvent(ctx *domContext, node *html.Node, eventType string) {
+	fn := e.eventHandlers[node][eventType]
 	if fn == nil {
 		return
 	}
@@ -114,12 +129,18 @@ func (e *Engine) dispatchImageLoaderEvent(ctx *domContext, node *html.Node, src 
 }
 
 // startParsedImageLoads starts, in tree order, the request of each parsed
-// <img> in the document whose request script has not already replaced: a
+// connected <img> in the document whose request script has not already
+// replaced: a
 // parsed image's load completes after the parser-blocking scripts and
 // delays the window load event (Document load-event delay).
 func (e *Engine) startParsedImageLoads(ctx *domContext) {
 	var walk func(n *html.Node)
 	walk = func(n *html.Node) {
+		// <template> content is an unconnected fragment
+		// (HTMLTemplateElement::content): its images are inert.
+		if n.Type == html.ElementNode && n.TagName == "template" {
+			return
+		}
 		if n.Type == html.ElementNode && n.TagName == "img" {
 			if l := e.imageLoaders[n]; l == nil || !l.started {
 				e.updateImageFromElement(ctx, n)
@@ -130,4 +151,20 @@ func (e *Engine) startParsedImageLoads(ctx *domContext) {
 		}
 	}
 	walk(e.doc.Root)
+}
+
+// toUint32 is WebIDL's ToUint32 conversion for an `unsigned long`
+// argument: NaN and ±Infinity become 0, otherwise the value is truncated
+// and taken modulo 2^32 (Web IDL §3.2.4.6, ConvertToUint32 in Blink's
+// bindings).
+func toUint32(v goja.Value) uint32 {
+	f := v.ToFloat()
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0
+	}
+	m := math.Mod(math.Trunc(f), 1<<32)
+	if m < 0 {
+		m += 1 << 32
+	}
+	return uint32(m)
 }
