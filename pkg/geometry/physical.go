@@ -96,6 +96,37 @@ func PhysicalSizeFromF64Floor(width, height float64) PhysicalSize {
 func (s PhysicalSize) WidthF64() float64  { return s.Width.Float64() }
 func (s PhysicalSize) HeightF64() float64 { return s.Height.Float64() }
 
+// IsEmpty reports whether either dimension is exactly zero. Mirrors
+// PhysicalSize::IsEmpty (platform/geometry/physical_size.h:65 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which — unlike
+// PhysicalRect::IsEmpty — does not treat a negative extent as empty.
+func (s PhysicalSize) IsEmpty() bool {
+	return s.Width.IsZero() || s.Height.IsZero()
+}
+
+// AspectRatioFit selects how FitToAspectRatio resolves the constrained axis.
+// Mirrors Blink's AspectRatioFit (platform/geometry/physical_size.h:15 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type AspectRatioFit int
+
+const (
+	AspectRatioFitShrink AspectRatioFit = iota
+	AspectRatioFitGrow
+)
+
+// FitToAspectRatio returns the size with aspectRatio's ratio that fits inside
+// s (shrink) or covers it (grow). Mirrors PhysicalSize::FitToAspectRatio
+// (platform/geometry/physical_size.cc:12-26 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s PhysicalSize) FitToAspectRatio(aspectRatio PhysicalSize, fit AspectRatioFit) PhysicalSize {
+	constrainedHeight := s.Width.MulDiv(aspectRatio.Height, aspectRatio.Width)
+	grow := fit == AspectRatioFitGrow
+	if (grow && constrainedHeight.Less(s.Height)) || (!grow && s.Height.Less(constrainedHeight)) {
+		return PhysicalSize{Width: s.Height.MulDiv(aspectRatio.Width, aspectRatio.Height), Height: s.Height}
+	}
+	return PhysicalSize{Width: s.Width, Height: constrainedHeight}
+}
+
 // PhysicalRect is an offset + size in physical coordinates.
 type PhysicalRect struct {
 	Offset PhysicalOffset
@@ -121,6 +152,14 @@ func (r PhysicalRect) Bottom() LayoutUnit { return r.Offset.Top.Add(r.Size.Heigh
 // physical_rect.h:45 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r PhysicalRect) IsEmpty() bool {
 	return r.Size.Width.LessEqual(layoutunit.Zero) || r.Size.Height.LessEqual(layoutunit.Zero)
+}
+
+// Contains reports whether other lies entirely inside r. Mirrors
+// PhysicalRect::Contains(const PhysicalRect&) (core/layout/geometry/
+// physical_rect.cc:41-44 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) Contains(other PhysicalRect) bool {
+	return r.Offset.Left.LessEqual(other.Offset.Left) && r.Offset.Top.LessEqual(other.Offset.Top) &&
+		other.Right().LessEqual(r.Right()) && other.Bottom().LessEqual(r.Bottom())
 }
 
 // UniteEvenIfEmpty returns the smallest rect containing both r and other,

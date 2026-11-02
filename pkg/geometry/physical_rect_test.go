@@ -57,3 +57,30 @@ func TestPhysicalRectEnclosingRect(t *testing.T) {
 		t.Errorf("EnclosingRect = %+v, want %+v", got, want)
 	}
 }
+
+// PhysicalRect::Contains (physical_rect.cc:41-44 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) is inclusive on every edge.
+func TestPhysicalRectContains(t *testing.T) {
+	r := NewPhysicalRect(0, 0, 10, 10)
+	if !r.Contains(r) || !r.Contains(NewPhysicalRect(2, 2, 8, 8)) {
+		t.Error("rect should contain itself and an inner rect")
+	}
+	if r.Contains(NewPhysicalRect(-1, 0, 10, 10)) || r.Contains(NewPhysicalRect(0, 0, 10, 11)) {
+		t.Error("rect should not contain a rect crossing an edge")
+	}
+}
+
+// PhysicalSize::IsEmpty (physical_size.h:65) and FitToAspectRatio
+// (physical_size.cc:12-26) @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestPhysicalSizeIsEmptyAndFitToAspectRatio(t *testing.T) {
+	if !NewPhysicalSize(0, 5).IsEmpty() || NewPhysicalSize(-1, 5).IsEmpty() {
+		t.Error("IsEmpty is true only for a zero dimension")
+	}
+	box, ratio := NewPhysicalSize(48, 32), NewPhysicalSize(16, 8)
+	if got, want := box.FitToAspectRatio(ratio, AspectRatioFitShrink), NewPhysicalSize(48, 24); got != want {
+		t.Errorf("shrink = %+v, want %+v", got, want)
+	}
+	if got, want := box.FitToAspectRatio(ratio, AspectRatioFitGrow), NewPhysicalSize(64, 32); got != want {
+		t.Errorf("grow = %+v, want %+v", got, want)
+	}
+}
