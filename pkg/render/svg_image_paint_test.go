@@ -56,3 +56,15 @@ func TestSVGImage_BackgroundLaidOutWithPreserveAspectRatio(t *testing.T) {
 	wantRGB(t, img, 20, 10, 255, 0, 0, "centre is the viewBox content")
 	wantRGB(t, img, 35, 10, 255, 255, 255, "right band outside the centred viewBox stays unpainted")
 }
+
+// An SVG image's frame view has a transparent base background
+// (isolated_svg_document_host.cc:148 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): what the document leaves
+// unpainted shows the <img>'s own background.
+func TestSVGImage_TransparentBaseBackground(t *testing.T) {
+	uri := svgDataURI(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="10" height="20" fill="rgb(255,0,0)"/></svg>`)
+	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; background:rgb(0,0,255)}</style><img src="` + uri + `">`
+	img := renderColumnRuleHTML(t, src, 100, 100)
+	wantRGB(t, img, 5, 10, 255, 0, 0, "the document's rect")
+	wantRGB(t, img, 30, 10, 0, 0, 255, "unpainted document area shows the img background")
+}
