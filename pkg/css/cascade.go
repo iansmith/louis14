@@ -3560,12 +3560,24 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
-	// canvas and video: width+height attributes → CSS aspect-ratio (per HTML spec 2024).
-	// When both numeric attributes are present, they establish the element's
-	// CSS aspect-ratio as a presentational hint. The width attribute continues
-	// to map to CSS width (above) for backward-compatibility and flex sizing.
+	// canvas and video: width+height attributes → CSS aspect-ratio
+	// presentational hint.
 	switch node.TagName {
-	case "canvas", "video":
+	case "canvas":
+		// HTMLCanvasElement::CollectStyleForPresentationAttribute →
+		// ApplyIntegerAspectRatioToStyle (core/html/canvas/
+		// html_canvas_element.cc:1426-1440, core/html/html_element.cc:
+		// 1069-1097 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): both
+		// attributes non-negative integers → `aspect-ratio: auto w / h`, so
+		// a natural ratio (e.g. under object-view-box) still wins.
+		wVal, _ := node.GetAttribute("width")
+		hVal, _ := node.GetAttribute("height")
+		w, wOk := html.ParseHTMLNonNegativeInteger(wVal)
+		h, hOk := html.ParseHTMLNonNegativeInteger(hVal)
+		if wOk && hOk {
+			style.Set("aspect-ratio", fmt.Sprintf("auto %d / %d", w, h))
+		}
+	case "video":
 		wVal, wOk := node.GetAttribute("width")
 		hVal, hOk := node.GetAttribute("height")
 		if wOk && hOk && !strings.HasSuffix(wVal, "%") && !strings.HasSuffix(hVal, "%") {

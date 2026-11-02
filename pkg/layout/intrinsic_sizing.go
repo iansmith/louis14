@@ -92,24 +92,12 @@ func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) NaturalSizi
 	}
 }
 
-// getCanvasIntrinsicInfo returns the intrinsic dimensions for a canvas element.
-// Per HTML spec, the intrinsic size comes from the width/height HTML attributes,
-// defaulting to 300x150 if not specified.
+// getCanvasIntrinsicInfo returns a <canvas>'s natural dimensions: its bitmap
+// size (LayoutHTMLCanvas natural size = HTMLCanvasElement::Size, from the
+// width / height attributes, html.Node.CanvasSize).
 func getCanvasIntrinsicInfo(node *LayoutInputNode) NaturalSizingInfo {
-	w, h := 300.0, 150.0
-	if node.DOMNode != nil {
-		if val, ok := node.DOMNode.GetAttribute("width"); ok {
-			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
-				w = parsed
-			}
-		}
-		if val, ok := node.DOMNode.GetAttribute("height"); ok {
-			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
-				h = parsed
-			}
-		}
-	}
-	return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: w, Height: h})
+	w, h := node.DOMNode.CanvasSize()
+	return MakeFixedNaturalSizingInfo(geometry.SizeF{Width: float64(w), Height: float64(h)})
 }
 
 // getInlineSVGIntrinsicInfo returns intrinsic sizing info for an inline <svg>

@@ -106,7 +106,10 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc       string          // <img> src completed against its owning document's base; empty if not an img element
+	ImageSrc string // <img> src completed against its owning document's base; empty if not an img element
+	// Canvas is the <canvas> element whose bitmap the layer paints
+	// (HTMLCanvasPainter); nil otherwise.
+	Canvas         *html.Node
 	ObjectFit      css.ObjectFit   // fill, contain, cover, none, scale-down
 	ObjectPosition css.LengthPoint // computed object-position (ComputedStyle::ObjectPosition)
 	// ObjectViewBox is the computed object-view-box, nil for none
@@ -1005,8 +1008,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// html_image_element.cc:517-543 @ the same SHA). An image-typed
 	// <object>/<embed> and a <video> showing its poster are LayoutImages too
 	// (layout.LayoutImageSource).
-	if src, isLayoutImage := layout.LayoutImageSource(box.Node); isLayoutImage {
-		if src != "" {
+	// A <canvas> is a LayoutHTMLCanvas, a replaced element fitted like an
+	// image (HTMLCanvasPainter::PaintReplaced, core/paint/
+	// html_canvas_painter.cc:36-88 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isCanvas := box.Node.IsHTMLCanvasElement()
+	if src, isLayoutImage := layout.LayoutImageSource(box.Node); isLayoutImage || isCanvas {
+		if isCanvas {
+			layer.Canvas = box.Node
+		} else if src != "" {
 			layer.ImageSrc = urlpkg.CompleteURL(src, s.BaseDir)
 		}
 		layer.ObjectFit = s.GetObjectFit()

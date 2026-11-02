@@ -43,6 +43,10 @@ type domContext struct {
 	// is retained so removeEventListener can match by JS identity.
 	docEventListeners map[string][]documentEventListener
 
+	// canvasContexts holds each <canvas>'s 2D context
+	// (canvas_rendering_context_2d.go).
+	canvasContexts map[*html.Node]*canvasRenderingContext2D
+
 	// ranges maps each JS Range proxy (from document.createRange() or `new
 	// Range()`) back to its Go-side *html.Range, the same
 	// proxy-identity-to-Go-state pattern the node cache above uses (and
@@ -428,6 +432,12 @@ type elementAccessor struct {
 
 func (e *elementAccessor) Get(key string) goja.Value {
 	vm := e.ctx.vm
+
+	if e.node.IsHTMLCanvasElement() {
+		if v, ok := e.canvasGet(key); ok {
+			return v
+		}
+	}
 
 	switch key {
 	case "__node__":
@@ -1049,6 +1059,11 @@ func (e *elementAccessor) Get(key string) goja.Value {
 }
 
 func (e *elementAccessor) Set(key string, val goja.Value) bool {
+	if e.node.IsHTMLCanvasElement() {
+		if ok := e.canvasSet(key, val); ok {
+			return true
+		}
+	}
 	switch key {
 	case "textContent":
 		setTextContent(e.node, val.String())
@@ -1217,14 +1232,20 @@ func (e *elementAccessor) setAttribute(name, value string) {
 	e.attributeChanged(name)
 }
 
-// attributeChanged reacts to a content attribute change: an <img>'s src
+// attributeChanged reacts to a content attribute change: a <canvas>'s
+// width / height resets it (canvasAttributeChanged); an <img>'s src
 // starts a new image request (Element::AttributeChanged →
 // HTMLImageElement::ParseAttribute kSrcAttr → SelectSourceURL →
 // ImageLoader::UpdateFromElement, html_image_element.cc @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (e *elementAccessor) attributeChanged(name string) {
-	if name == "src" && e.node.TagName == "img" && e.ctx.engine != nil {
-		e.ctx.engine.updateImageFromElement(e.ctx, e.node)
+	switch e.node.TagName {
+	case "img":
+		if name == "src" && e.ctx.engine != nil {
+			e.ctx.engine.updateImageFromElement(e.ctx, e.node)
+		}
+	case "canvas":
+		e.canvasAttributeChanged(name)
 	}
 }
 
