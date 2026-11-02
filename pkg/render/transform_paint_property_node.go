@@ -1,8 +1,6 @@
 package render
 
 import (
-	"math"
-
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/layout"
@@ -388,51 +386,6 @@ func projectiveHomography(m geometry.Transform) [9]float64 {
 		m.Rc(1, 0), m.Rc(1, 1), m.Rc(1, 3),
 		m.Rc(3, 0), m.Rc(3, 1), m.Rc(3, 3),
 	}
-}
-
-// contextScope3D is a preserve-3d layer being painted inside a 3D
-// rendering context: the projection it applied relative to the context
-// base, and the participants deferred until its paint returns (when that
-// projection is singular).
-type contextScope3D struct {
-	root     *layout.Box
-	applied  [9]float64
-	deferred []*PaintLayer
-}
-
-// identityHomography is the 3×3 identity, row-major.
-var identityHomography = [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1}
-
-// invertHomography inverts a 3×3 row-major homography, reporting false when
-// it is singular (singularProjectionEpsilon on its determinant).
-func invertHomography(h [9]float64) ([9]float64, bool) {
-	a, b, c := h[0], h[1], h[2]
-	d, e, f := h[3], h[4], h[5]
-	g, i, k := h[6], h[7], h[8]
-	co0 := e*k - f*i
-	co1 := f*g - d*k
-	co2 := d*i - e*g
-	det := a*co0 + b*co1 + c*co2
-	if math.Abs(det) < singularProjectionEpsilon {
-		return [9]float64{}, false
-	}
-	inv := 1 / det
-	return [9]float64{
-		co0 * inv, (c*i - b*k) * inv, (b*f - c*e) * inv,
-		co1 * inv, (a*k - c*g) * inv, (c*d - a*f) * inv,
-		co2 * inv, (b*g - a*i) * inv, (a*e - b*d) * inv,
-	}, true
-}
-
-// multiplyHomographies returns a·b for 3×3 row-major homographies.
-func multiplyHomographies(a, b [9]float64) [9]float64 {
-	var r [9]float64
-	for i := 0; i < 3; i++ {
-		for j := 0; j < 3; j++ {
-			r[i*3+j] = a[i*3]*b[j] + a[i*3+1]*b[3+j] + a[i*3+2]*b[6+j]
-		}
-	}
-	return r
 }
 
 // isBackfaceCulled reports whether layer's own content is not drawn because

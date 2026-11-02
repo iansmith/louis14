@@ -1798,8 +1798,8 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				} else if box.Preserves3D() {
 					// Inside a preserve-3d rendering context: children's visual
 					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
-					// the participant paints in its place in the context, drawn
-					// from the context base (paintLayer, contextScope3D).
+					// the context root collects the participant for depth sorting
+					// (paintRenderingContext3D).
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else {

@@ -128,12 +128,10 @@ type Renderer struct {
 	nodeBoxIndex map[*html.Node]*layout.Box
 
 	// transformTree builds each box's TransformPaintPropertyNode for this
-	// paint; contextScopes3D is the stack of preserve-3d layers being painted
-	// and replaying holds, per participant painted from its context base, the
-	// homography undoing its enclosing scope's projection (see paintLayer).
-	transformTree   *transformTreeBuilder
-	contextScopes3D []*contextScope3D
-	replaying       map[*PaintLayer][9]float64
+	// paint; context3D is the 3D rendering context being drawn
+	// (paintRenderingContext3D), nil otherwise.
+	transformTree *transformTreeBuilder
+	context3D     *renderingContext3D
 
 	// unculledBelow memoizes hasUnculledDescendant per layer for one paint.
 	unculledBelow map[*PaintLayer]bool
@@ -652,8 +650,7 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
 	r.buildNodeBoxIndex(boxes)
 	r.transformTree = newTransformTreeBuilder(r.parentPerspective, r.domParentBox)
-	r.contextScopes3D = nil
-	r.replaying = make(map[*PaintLayer][9]float64)
+	r.context3D = nil
 	r.unculledBelow = make(map[*PaintLayer]bool)
 	// Build the renderer-wide SVG resource registry by walking every
 	// box subtree for inline `<svg>` SVGRoots and merging their
@@ -873,77 +870,26 @@ func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
 // paintLayer paints a PaintLayer and its descendants using the pre-built
 // stacking order.
 //
-// 3D rendering contexts. Blink paints every participant of a context with
-// its own transform state — its node's projection to the context base,
-// unflattened through its preserve-3d ancestors — and cc then depth-sorts
-// the participants (worklist D4; louis14 keeps paint order). The draw
-// context only composes 2D projections, so a participant reached inside its
-// preserve-3d parent's paint composes onto the parent's applied projection
-// P the homography P⁻¹·H(projection to base): undoing an invertible 3×3
-// homography is exact, and the draw context ends at H(projection to base)
-// (applyTransforms). When P is singular (edge-on), nothing else in the
-// parent's plane is visible, and the participant is painted right after the
-// parent instead, where the draw context is back at the base.
+// 3D rendering contexts. The root of a context draws the context's layers
+// itself, depth-sorted (paintRenderingContext3D); such a layer reached in
+// paint order is skipped, except while the root draws it.
 func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
-	var node *TransformPaintPropertyNode
-	if r.transformTree != nil && layer.Box != nil {
-		node = r.transformTree.node(layer.Box)
+	if c := r.context3D; c != nil && c.units[layer] {
+		if layer == c.drawing.layer {
+			r.paintLayerContents(layer)
+		}
+		return
 	}
-	if _, replaying := r.replaying[layer]; node.participatesInRenderingContext() && !replaying {
-		if scope := r.topContextScope(node.RenderingContextRoot); scope != nil {
-			if inv, ok := invertHomography(scope.applied); ok {
-				r.paintParticipant(layer, inv)
-			} else {
-				scope.deferred = append(scope.deferred, layer)
-			}
+	if r.transformTree != nil && layer.Box != nil {
+		if node := r.transformTree.node(layer.Box); node != nil && node.RenderingContextRoot == layer.Box {
+			r.paintRenderingContext3D(layer, node)
 			return
 		}
 	}
-	undo, replaying := r.replaying[layer]
-	if node == nil || !layer.Box.Preserves3D() || (node.participatesInRenderingContext() && !replaying) {
-		// Not a preserve-3d scope — or a participant whose context has no
-		// open scope, which then paints as if it flattened.
-		r.paintLayerContents(layer)
-		return
-	}
-	// A preserve-3d layer opens a scope: the projection it applies relative
-	// to the context base, which its participating descendants undo.
-	scope := &contextScope3D{root: node.RenderingContextRoot, applied: identityHomography}
-	if r.appliesTransform(layer) {
-		scope.applied = projectiveHomography(r.layerProjection(layer, node))
-	}
-	r.contextScopes3D = append(r.contextScopes3D, scope)
 	r.paintLayerContents(layer)
-	// Deferred participants paint at this paint's entry state, which the
-	// layer's own undo (identity for a context root) reverts to the base.
-	if !replaying {
-		undo = identityHomography
-	}
-	for i := 0; i < len(scope.deferred); i++ {
-		r.paintParticipant(scope.deferred[i], undo)
-	}
-	r.contextScopes3D = r.contextScopes3D[:len(r.contextScopes3D)-1]
-}
-
-// paintParticipant paints a 3D-rendering-context participant whose draw
-// context carries the projection `undo` reverts to the context base
-// (identity when it is at the base).
-func (r *Renderer) paintParticipant(layer *PaintLayer, undo [9]float64) {
-	r.replaying[layer] = undo
-	r.paintLayer(layer)
-	delete(r.replaying, layer)
-}
-
-// topContextScope returns the innermost preserve-3d paint scope of the 3D
-// rendering context rooted at root, nil when none is open.
-func (r *Renderer) topContextScope(root *layout.Box) *contextScope3D {
-	if n := len(r.contextScopes3D); n > 0 && r.contextScopes3D[n-1].root == root {
-		return r.contextScopes3D[n-1]
-	}
-	return nil
 }
 
 // paintLayerContents paints one layer at its place in the stacking order.
@@ -1098,8 +1044,7 @@ func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 // own: a transform, or — for a 3D-rendering-context participant painted
 // from the context base — its projection to that base.
 func (r *Renderer) appliesTransform(layer *PaintLayer) bool {
-	_, replaying := r.replaying[layer]
-	return layer.HasTransform || replaying
+	return layer.HasTransform || r.paintsFromContextBase(layer)
 }
 
 // exitLayerTransform undoes enterLayerTransform.
@@ -2119,8 +2064,8 @@ func clampByte(v float64) uint8 {
 // node's parent paints into, so a node that flattens what it inherits
 // composes its own matrix onto it (projecting the z=0 plane of a flattened
 // parent commutes with the product). A node that participates in a 3D
-// rendering context is painted from the context base instead (paintLayer
-// defers it until the context root has painted) and applies its whole
+// rendering context is painted from the context base instead (its root
+// draws it, paintRenderingContext3D) and applies its whole
 // projection to that base, GeometryMapper::SourceToDestinationProjection
 // (projectionToRenderingContextBase), so its preserve-3d ancestors' 4×4s
 // compose before anything is projected.
@@ -2142,9 +2087,6 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	}
 	h := projectiveHomography(r.layerProjection(layer, node))
 	singular := !layer.Box.Preserves3D() && isSingularProjection(h[0], h[3], h[1], h[4])
-	if undo, ok := r.replaying[layer]; ok {
-		h = multiplyHomographies(undo, h)
-	}
 	if !r.multiplyHomography(h) {
 		return false
 	}
@@ -2168,7 +2110,7 @@ func (r *Renderer) multiplyHomography(h [9]float64) (affine bool) {
 // node matrix onto its parent's flattened projection, or — painted from its
 // 3D rendering context base — its projection to that base.
 func (r *Renderer) layerProjection(layer *PaintLayer, node *TransformPaintPropertyNode) geometry.Transform {
-	if _, ok := r.replaying[layer]; ok {
+	if r.paintsFromContextBase(layer) {
 		return projectionToRenderingContextBase(node)
 	}
 	return node.Matrix
@@ -2304,32 +2246,36 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// CSS clip: rect() — clips everything including backgrounds and borders.
 	// Purely physical coordinates per CSS Writing Modes §7.6.
-	cssClipping := false
 	if layer.HasCSSClip {
-		cssClipping = true
 		r.pushClipNode(layer, clipNodeCssClip)
+		defer r.popClipNode()
 	}
 
 	// CSS clip-path: clips all content to a shape.
-	clipPathActive := false
 	if layer.ClipPath != nil {
 		r.dc.Push()
-		clipPathActive = true
 		r.applyClipPath(layer)
+		defer r.dc.Pop()
 	}
 
 	// A backface-culled layer reaching here has unculled descendants to
 	// paint; its own content is skipped (skipsBackfaceCulledSubtree).
 	own := !r.isBackfaceCulled(layer)
+	// A layer that preserves 3D in a context being drawn paints its
+	// background and its other content as separate polygons, around its
+	// negative z-index children (paintRenderingContext3D).
+	part := r.context3D.partOf(layer)
 
-	// CSS backdrop-filter: filter the region behind the element before painting.
-	if own && layer.HasBackdropFilter {
-		r.applyBackdropFilter(layer)
-	}
-
-	// Self decorations: bg, borders, shadows, outline, list marker.
-	if own {
+	if own && part != memberContent {
+		// CSS backdrop-filter: filter the region behind the element before painting.
+		if layer.HasBackdropFilter {
+			r.applyBackdropFilter(layer)
+		}
+		// Self decorations: bg, borders, shadows, outline, list marker.
 		r.paintSelfDecorations(layer)
+	}
+	if part == memberBackground {
+		return
 	}
 
 	// Overflow clip using pre-computed rectangle.
@@ -2406,13 +2352,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.paintSelfOutline(layer)
 	}
 
-	if clipPathActive {
-		r.dc.Pop()
-	}
-
-	if cssClipping {
-		r.popClipNode()
-	}
 }
 
 // paintSelfOutline paints the layer's own outline. CSS 2.1 Appendix E
@@ -2563,22 +2502,15 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if child.Opacity <= 0 {
 		return
 	}
-	if child.Box != nil && child.Box.CreatesStackingContext() {
-		if phase == PhaseForeground {
-			r.paintLayer(child)
-		}
-		return
-	}
-
-	// An absolutely positioned flow child (kept in DOM-order paint because
-	// an overflow clip contains it) paints as a unit, like the
-	// self-painting PaintLayer Blink gives every stacked (positioned) box
-	// (PaintLayer::ShouldBeSelfPaintingLayer, core/paint/paint_layer.cc:
-	// 2274-2276 → LayoutBox::LayerTypeRequired, layout/layout_box.cc:556-563
-	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): its background must not
-	// drop to the parent's step-3 background phase and paint under in-flow
-	// text that precedes it in DOM order.
-	if isAtomicInlineForPaint(child) || isOutOfFlowForPaint(child) {
+	// A stacking context, an atomic inline or an absolutely positioned flow
+	// child (kept in DOM-order paint because an overflow clip contains it)
+	// paints as a unit, like the self-painting PaintLayer Blink gives every
+	// stacked (positioned) box (PaintLayer::ShouldBeSelfPaintingLayer,
+	// core/paint/paint_layer.cc:2274-2276 → LayoutBox::LayerTypeRequired,
+	// layout/layout_box.cc:556-563 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// its background must not drop to the parent's step-3 background phase
+	// and paint under in-flow text that precedes it in DOM order.
+	if isSelfPaintingFlowChild(child) {
 		if phase == PhaseForeground {
 			r.paintLayer(child)
 		}
