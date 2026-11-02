@@ -80,3 +80,38 @@ func TestClipsToContentBox(t *testing.T) {
 		t.Error("a padding-box reference box (or no overflow-clip-margin) does not clip to the content box")
 	}
 }
+
+// LayoutReplaced::ComputeObjectViewBoxRect / ComputeReplacedContentRect /
+// ComputeNaturalSizingInfo (layout_replaced.cc:317-420, :505-516 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestObjectViewBox_ReplacedContentRect(t *testing.T) {
+	natural := MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(50, 100))
+	subset := &css.BasicShapeInset{Top: css.Length{Fixed: 50}}      // inset(50px 0 0 0): 50×50 at (0,50)
+	superset := &css.BasicShapeInset{Right: css.Length{Fixed: -50}} // inset(0 -50px 0 0): 100×100 at (0,0)
+	same := &css.BasicShapeInset{}                                  // the natural rect: no view box
+
+	if r, ok := ComputeObjectViewBoxRect(subset, natural); !ok || r != geometry.NewPhysicalRect(0, 50, 50, 50) {
+		t.Errorf("subset view box = %+v %v", r, ok)
+	}
+	if _, ok := ComputeObjectViewBoxRect(same, natural); ok {
+		t.Error("a view box equal to the natural rect does not apply")
+	}
+	if _, ok := ComputeObjectViewBoxRect(subset, PhysicalNaturalSizingInfo{AspectRatio: geometry.NewPhysicalSize(1, 2)}); ok {
+		t.Error("no natural size, no view box")
+	}
+
+	content := geometry.NewPhysicalRect(0, 0, 50, 50)
+	// fill: the 50×50 view box fills the box, so the whole 50×100 image is
+	// drawn 50×100 shifted up by the view box offset.
+	if got, want := ComputeReplacedContentRect(css.ObjectFitFill, css.InitialObjectPosition, subset, content, natural), geometry.NewPhysicalRect(0, -50, 50, 100); got != want {
+		t.Errorf("subset fill = %+v, want %+v", got, want)
+	}
+	// fill of a 100×100 superset into 50×50: scale 1/2, image 25×50.
+	if got, want := ComputeReplacedContentRect(css.ObjectFitFill, css.InitialObjectPosition, superset, content, natural), geometry.NewPhysicalRect(0, 0, 25, 50); got != want {
+		t.Errorf("superset fill = %+v, want %+v", got, want)
+	}
+
+	if got := ComputeNaturalSizingInfo(subset, natural); got.Size != geometry.NewPhysicalSize(50, 50) || got.AspectRatio != got.Size {
+		t.Errorf("natural sizing with view box = %+v", got)
+	}
+}

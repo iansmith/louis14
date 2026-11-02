@@ -3711,7 +3711,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if contentRect.Size.IsEmpty() {
 		return
 	}
-	paintRect := layout.ComputeObjectFitAndPositionRect(layer.ObjectFit, layer.ObjectPosition, contentRect,
+	paintRect := layout.ComputeReplacedContentRect(layer.ObjectFit, layer.ObjectPosition, layer.ObjectViewBox, contentRect,
 		layout.MakeFixedPhysicalNaturalSizingInfo(geometry.NewPhysicalSize(srcW, srcH)))
 	visualRect := paintRect
 	if layer.ClipsToContentBox {
@@ -3725,22 +3725,37 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 // image_painter.cc:205-302 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): when
 // contentRect does not contain destRect, the pixel-snapped destination is
 // intersected with the pixel-snapped content rect and the source rect mapped
-// to match. louis14 scales the whole image to the pixel-snapped destination
-// and crops that, which samples the same source pixels as Blink's mapped
-// source rect.
+// to match, and the draw clamps sampling to that source rect
+// (Image::ImageClampingMode::kClampImageToSourceRect, :297-301). louis14
+// scales the whole image to the pixel-snapped destination and crops that,
+// which maps destination pixels to the same source points as Blink's
+// mapped source rect; the bilinear filter is clamped to the source pixels
+// the mapped rect covers so pixels outside it do not bleed in.
 func (r *Renderer) paintImageIntoRect(layer *PaintLayer, img image.Image, destRect, contentRect geometry.PhysicalRect) {
 	pixelSnappedDestRect := geometry.ToPixelSnappedRect(destRect)
 	if pixelSnappedDestRect.Empty() {
 		return
 	}
+	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
 	drawRect := pixelSnappedDestRect
+	clamp := image.Rect(0, 0, srcW, srcH)
 	if !contentRect.Contains(destRect) {
 		drawRect = geometry.ToPixelSnappedRect(contentRect).Intersect(pixelSnappedDestRect)
 		if drawRect.Empty() {
 			return
 		}
+		// src_rect = MapRect(pixel-snapped content ∩ dest, pixel-snapped
+		// dest, full source) (image_painter.cc:230-240).
+		d := pixelSnappedDestRect
+		sx := float64(srcW) / float64(d.Dx())
+		sy := float64(srcH) / float64(d.Dy())
+		clamp = image.Rect(
+			int(math.Floor(float64(drawRect.Min.X-d.Min.X)*sx)),
+			int(math.Floor(float64(drawRect.Min.Y-d.Min.Y)*sy)),
+			int(math.Ceil(float64(drawRect.Max.X-d.Min.X)*sx)),
+			int(math.Ceil(float64(drawRect.Max.Y-d.Min.Y)*sy))).Intersect(clamp)
 	}
-	scaled := scaleImage(img, img.Bounds().Dx(), img.Bounds().Dy(), pixelSnappedDestRect.Dx(), pixelSnappedDestRect.Dy(), layer.ImageRendering)
+	scaled := scaleImageClamped(img, srcW, srcH, pixelSnappedDestRect.Dx(), pixelSnappedDestRect.Dy(), layer.ImageRendering, clamp)
 	finalImg := scaled.(interface {
 		SubImage(image.Rectangle) image.Image
 	}).SubImage(drawRect.Sub(pixelSnappedDestRect.Min))
@@ -3810,7 +3825,8 @@ func scaleImageNearest(src image.Image, srcW, srcH, dstW, dstH int) image.Image 
 
 // scaleImageBilinear scales src to dstW×dstH using bilinear interpolation.
 // This produces smoother results than nearest-neighbor for photographic images.
-func scaleImageBilinear(src image.Image, srcW, srcH, dstW, dstH int) image.Image {
+// The filter's source taps are clamped to clamp (source pixel coordinates).
+func scaleImageBilinear(src image.Image, srcW, srcH, dstW, dstH int, clamp image.Rectangle) image.Image {
 	if dstW <= 0 || dstH <= 0 || srcW <= 0 || srcH <= 0 {
 		return image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	}
@@ -3823,24 +3839,14 @@ func scaleImageBilinear(src image.Image, srcW, srcH, dstW, dstH int) image.Image
 		sy0 := int(math.Floor(sy))
 		sy1 := sy0 + 1
 		fy := sy - float64(sy0)
-		if sy0 < 0 {
-			sy0 = 0
-		}
-		if sy1 >= srcH {
-			sy1 = srcH - 1
-		}
+		sy0, sy1 = clampInt(sy0, clamp.Min.Y, clamp.Max.Y-1), clampInt(sy1, clamp.Min.Y, clamp.Max.Y-1)
 
 		for dx := 0; dx < dstW; dx++ {
 			sx := (float64(dx)+0.5)*float64(srcW)/float64(dstW) - 0.5
 			sx0 := int(math.Floor(sx))
 			sx1 := sx0 + 1
 			fx := sx - float64(sx0)
-			if sx0 < 0 {
-				sx0 = 0
-			}
-			if sx1 >= srcW {
-				sx1 = srcW - 1
-			}
+			sx0, sx1 = clampInt(sx0, clamp.Min.X, clamp.Max.X-1), clampInt(sx1, clamp.Min.X, clamp.Max.X-1)
 
 			// Sample four source pixels.
 			r00, g00, b00, a00 := src.At(b.Min.X+sx0, b.Min.Y+sy0).RGBA()
@@ -3880,10 +3886,22 @@ func isNearestNeighborRendering(imageRendering string) bool {
 // "pixelated", "crisp-edges", "-webkit-optimize-contrast" use nearest-neighbor;
 // everything else (including "auto" and "") uses bilinear.
 func scaleImage(src image.Image, srcW, srcH, dstW, dstH int, imageRendering string) image.Image {
+	return scaleImageClamped(src, srcW, srcH, dstW, dstH, imageRendering, image.Rect(0, 0, srcW, srcH))
+}
+
+// scaleImageClamped is scaleImage with bilinear taps clamped to clamp
+// (source pixel coordinates); nearest-neighbor sampling of a destination
+// pixel never leaves the source pixels it maps onto.
+func scaleImageClamped(src image.Image, srcW, srcH, dstW, dstH int, imageRendering string, clamp image.Rectangle) image.Image {
 	if isNearestNeighborRendering(imageRendering) {
 		return scaleImageNearest(src, srcW, srcH, dstW, dstH)
 	}
-	return scaleImageBilinear(src, srcW, srcH, dstW, dstH)
+	return scaleImageBilinear(src, srcW, srcH, dstW, dstH, clamp)
+}
+
+// clampInt returns v limited to [lo, hi].
+func clampInt(v, lo, hi int) int {
+	return max(lo, min(v, hi))
 }
 
 // drawBorders paints the layer's borders in rect, its border box: the

@@ -486,6 +486,16 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "src":
 		src, _ := e.node.GetAttribute("src")
 		return vm.ToValue(src)
+	case "poster":
+		// HTMLVideoElement.poster reflects the poster content attribute
+		// ([Reflect, URL] in core/html/media/html_video_element.idl @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); like src here, the
+		// value is returned uncompleted.
+		if e.node.TagName != "video" {
+			return goja.Undefined()
+		}
+		poster, _ := e.node.GetAttribute("poster")
+		return vm.ToValue(poster)
 	case "type":
 		// HTMLInputElement.type / HTMLButtonElement.type IDL attribute
 		// reflects the `type` content attribute. For <input>, an invalid or
@@ -1102,11 +1112,14 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 			setTextData(e.node, val.String())
 		}
 		return true
-	case "src":
+	case "src", "poster":
+		if key == "poster" && e.node.TagName != "video" {
+			return false
+		}
 		if e.node.Attributes == nil {
 			e.node.Attributes = make(map[string]string)
 		}
-		e.node.Attributes["src"] = val.String()
+		e.node.Attributes[key] = val.String()
 		return true
 	case "type":
 		// HTMLInputElement.type / HTMLButtonElement.type / HTMLSelectElement.type
@@ -1182,7 +1195,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerText", "innerHTML", "outerHTML", "src", "dir", "type", "value", "splitText", "data", "appendData", "insertData",
+		"textContent", "innerText", "innerHTML", "outerHTML", "src", "poster", "dir", "type", "value", "splitText", "data", "appendData", "insertData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
