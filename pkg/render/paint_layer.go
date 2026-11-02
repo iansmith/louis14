@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
-	"louis14/pkg/geometry"
 	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
@@ -318,10 +317,7 @@ type PaintLayer struct {
 	// has been retired.
 
 	// CSS Transforms:
-	Transform        geometry.Transform // own transform, without transform-origin
-	TransformOrigin  [2]float64         // resolved to px: (origin-x, origin-y)
-	TransformOriginZ float64            // resolved z-component of transform-origin (default 0)
-	HasTransform     bool
+	HasTransform bool
 
 	// HasTransformPaint is true when this layer participates in transform
 	// paint semantics — either it has an actual `transform` (HasTransform)
@@ -1376,13 +1372,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		if s.HasTransform() {
 			layer.HasTransform = true
 			layer.HasTransformPaint = true
-			s.ApplyTransform(&layer.Transform, geometry.NewRectF(0, 0, box.Width, box.Height),
-				css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
-			// The origin, resolved against the border box; applyTransforms
-			// applies x/y around the snapped box and z via layerSelfTransform.
-			origin := s.GetTransformOrigin()
-			layer.TransformOrigin = [2]float64{origin.X.ValueForLength(box.Width), origin.Y.ValueForLength(box.Height)}
-			layer.TransformOriginZ = origin.Z
 		}
 	}
 
@@ -1412,7 +1401,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// in louis14 OOF promotion would expose the escapee for paint, so we
 	// propagate the flag down the DOM parent chain).
 	if s.GetBackfaceVisibility() == css.BackfaceVisibilityHidden {
-		layer.BackfaceHidden = computeBackfaceHidden(box, layer.Transform)
+		layer.BackfaceHidden = computeBackfaceHidden(box)
 	}
 
 	// CSS Filters. SVG content elements (descendants of an inline <svg> other
@@ -1898,8 +1887,8 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				} else if box.Preserves3D() {
 					// Inside a preserve-3d rendering context: children's visual
 					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
-					// applyTransforms' preserve-3d ancestor composition fires at
-					// PhaseForeground and the 3D z-order is respected.
+					// the participant paints in its place in the context, drawn
+					// from the context base (paintLayer, contextScope3D).
 					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else {
@@ -2323,18 +2312,14 @@ func (layer *PaintLayer) sortZLists() {
 // that share the element's 3D rendering context.
 //
 // Per CSS Transforms L2 §11 the back-face test consults the element's
-// "accumulated transformation matrix": start with the element's own
-// transform and prepend each ancestor transform whose parent preserves 3D
-// (used transform-style, Box.Preserves3D). The walk stops at the first
-// flattening boundary (used transform-style flat) — that ancestor's transform
-// is NOT included because flattening collapses the descendant subtree
-// into the ancestor's plane before the back-face check fires on the
-// descendant. Mirrors Blink's `TransformPaintPropertyNode::Build`
-// flattening logic at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-//
-// self is the element's own transform (gfx::Transform::IsBackFaceVisible on
-// ancestors × self).
-func computeBackfaceHidden(box *layout.Box, self geometry.Transform) bool {
-	ancestors, _ := preserve3DAncestorTransform(box)
-	return ancestors.Mul(self).IsBackFaceVisible()
+// "accumulated transformation matrix": its TransformPaintPropertyNode's
+// projection to its 3D rendering context's base
+// (projectionToRenderingContextBase), gfx::Transform::IsBackFaceVisible.
+// The parent's perspective is not looked up at layer-build time.
+func computeBackfaceHidden(box *layout.Box) bool {
+	node := newTransformTreeBuilder(nil, nil).node(box)
+	if node == nil {
+		return false
+	}
+	return projectionToRenderingContextBase(node).IsBackFaceVisible()
 }
