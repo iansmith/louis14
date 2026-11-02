@@ -140,7 +140,10 @@ func TestBuildPaintTree_UnstyedSkipped(t *testing.T) {
 }
 
 func TestBuildPaintTree_OverflowContainment(t *testing.T) {
-	// Positioned child stays in FlowChildren when parent has overflow:hidden.
+	// An overflow clip does not change paint order: a positioned child of an
+	// overflow:hidden positioned box joins the stacking context's z-order
+	// list after its parent, in tree order, and the clip reaches it through
+	// the clip tree (LOU-612).
 	root := &layout.Box{Style: css.NewStyle()}
 	clipParent := &layout.Box{
 		Style:            styleWithOverflow("hidden"),
@@ -158,17 +161,14 @@ func TestBuildPaintTree_OverflowContainment(t *testing.T) {
 	root.Children = []*layout.Box{clipParent}
 
 	layer := BuildPaintTree(root)
-	// clipParent is positioned → goes to root SC's AutoZero.
-	if len(layer.AutoZero) != 1 {
-		t.Fatalf("expected 1 AutoZero (clipParent), got %d", len(layer.AutoZero))
+	if len(layer.AutoZero) != 2 {
+		t.Fatalf("expected 2 AutoZero (clipParent, absChild), got %d", len(layer.AutoZero))
 	}
-	clipLayer := layer.AutoZero[0]
-	// absChild is contained by clipParent's overflow → stays in FlowChildren.
-	if len(clipLayer.FlowChildren) != 1 {
-		t.Fatalf("expected 1 flow child (contained abs), got %d", len(clipLayer.FlowChildren))
+	if layer.AutoZero[0].Box != clipParent || layer.AutoZero[1].Box != absChild {
+		t.Fatal("AutoZero should hold clipParent then absChild")
 	}
-	if clipLayer.FlowChildren[0].Box != absChild {
-		t.Fatal("contained abs-pos child should be in FlowChildren")
+	if n := len(layer.AutoZero[0].FlowChildren); n != 0 {
+		t.Fatalf("clipParent has %d flow children, want 0", n)
 	}
 }
 

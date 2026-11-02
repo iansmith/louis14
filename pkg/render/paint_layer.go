@@ -78,26 +78,6 @@ type PaintLayer struct {
 	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
 	ClipRect [4]float64 // x, y, w, h of the rectangular overflow clip (padding box minus scrollbar gutter by default)
 
-	// AncestorOverflowClips: pre-computed chain of ancestor overflow clip
-	// rectangles (in absolute coordinates) that should be applied before
-	// painting this layer's content. Populated on positioned layers that
-	// paint from a stacking context's z-order lists (stacking contexts, and
-	// z-index:auto layers such as a relatively positioned atomic inline)
-	// while an ancestor below that stacking context in their
-	// containing-block chain clips overflow. For each entry the renderer must Push a clip rect
-	// in addition to (and BEFORE) the layer's own HasClip rect.
-	//
-	// Blink models clips orthogonally to stacking via the paint property
-	// tree, so any descendant inherits the chain of ancestor clip nodes
-	// regardless of where it paints in z-order. Louis14's paint model
-	// brackets each layer's clip via Push/Pop in paintLayer, so we need
-	// to carry the chain explicitly on layers that escape.
-	//
-	// Each entry is [x, y, w, h] in absolute coordinates of the ancestor's
-	// overflow-clip rectangle (padding box by default). Order is innermost
-	// → outermost (the renderer Pushes in this order and Pops in reverse).
-	AncestorOverflowClips [][4]float64
-
 	// Overflow-clip-margin geometry (CSS Overflow 3 §3.2).
 	//
 	// The clip rect is the chosen visual-box (border-box,
@@ -1750,14 +1730,17 @@ func moveOutsideMarkerToFront(children []*layout.Box) []*layout.Box {
 // AutoZero of the nearest stacking context (CSS Color 3 §3.2 "treated as if
 // it created a new stacking context", painted as a positioned z-index:0
 // element at Appendix E step 6); a nested group nests in its outer group.
-func ensureInlinePaintGroup(item *layout.InlineItem, currentSC *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) *PaintLayer {
+// The group's box hangs off container, the box whose walk met the first
+// member, so the group paints under the clips of the inline's containing
+// block (an inline box itself never clips overflow).
+func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, currentSC *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) *PaintLayer {
 	if g, ok := groups[item]; ok {
 		return g
 	}
-	g := newPaintLayer(&layout.Box{Node: item.Node, Style: item.Style})
+	g := newPaintLayer(&layout.Box{Node: item.Node, Style: item.Style, Parent: container})
 	groups[item] = g
 	if item.EnclosingPaintGroup != nil {
-		outer := ensureInlinePaintGroup(item.EnclosingPaintGroup, currentSC, groups)
+		outer := ensureInlinePaintGroup(item.EnclosingPaintGroup, container, currentSC, groups)
 		outer.AutoZero = append(outer.AutoZero, g)
 	} else {
 		currentSC.AutoZero = append(currentSC.AutoZero, g)
@@ -1803,7 +1786,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// resolving every fragment and inline-contained float of the
 		// LayoutInline to the same self-painting PaintLayer.
 		if child.PaintGroup != nil {
-			groupLayer := ensureInlinePaintGroup(child.PaintGroup, currentSC, groups)
+			groupLayer := ensureInlinePaintGroup(child.PaintGroup, box, currentSC, groups)
 			childLayer := newPaintLayer(child)
 			// The group applies the element's alpha once; the element's own
 			// fragments (which carry the same style) must not re-apply it.
@@ -1884,20 +1867,12 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				// positioned z-index:auto descendants. The CSS Stacking spec
 				// (and all browser implementations) treat all z-index:auto
 				// stacking contexts uniformly at step 6 — "flow order" (step 3/5)
-				// only applies to non-SC elements.
-				//
-				// Exception: if the SC is contained within an overflow-clipping
-				// ancestor, keep it in FlowChildren so the parent's HasClip bracket
-				// clips it naturally — same logic as the positioned path at line
-				// ~1844 below. A non-positioned SC contained by overflow must NOT
-				// escape to the ancestor SC's AutoZero list or the clip is lost.
+				// only applies to non-SC elements. An overflow clip between the
+				// child and the stacking context does not change that: the
+				// child paints under it through the clip tree
+				// (enterLocalBorderBoxClip).
 				if isFloat(child) {
 					parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
-				} else if isContainedByAnyOverflow(box, currentSC.Box) {
-					// Contained by an overflow-clipping ancestor between this box
-					// and the SC boundary — stay in flow order so the clip applies.
-					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else if box.Preserves3D() {
 					// Inside a preserve-3d rendering context: children's visual
@@ -1926,16 +1901,9 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// z-index ordering takes precedence over overflow containment — the
 		// child is z-sorted in the nearest ancestor stacking context even
 		// when clipped by a parent's overflow. Clipping is applied at paint
-		// time; it does not change z-order.
-		//
-		// When the child is contained by an ancestor's overflow clip but
-		// escapes to a higher stacking context for paint, capture the
-		// chain of intervening ancestor overflow clips on the child so
-		// the renderer can Push them before painting. Blink achieves the
-		// same effect via the paint property tree, which all descendants
-		// inherit regardless of stacking. See AncestorOverflowClips above.
+		// time from the clip tree (enterLocalBorderBoxClip); it does not
+		// change z-order.
 		if child.CreatesStackingContext() {
-			childLayer.AncestorOverflowClips = collectAncestorOverflowClips(child, currentSC)
 			z := child.ZIndex
 			switch {
 			case z < 0:
@@ -1950,48 +1918,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			continue
 		}
 
-		// Positioned child without stacking context. Check overflow clip:
-		// contained children stay in DOM-order painting (FlowChildren).
-		if isContainedByOverflow(child, box) {
-			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
-			continue
-		}
-
-		// Positioned, z-index:auto, not contained by the box being walked —
-		// participates at Appendix E step 6. The box being walked is not
-		// always the layout parent: an atomic inline reaches here through
-		// its (unstyled) line box, so an overflow-clipping ancestor further
-		// up the containing-block chain still clips it. Blink's layer
-		// inherits that clip as its LocalBorderBoxProperties clip
-		// (FragmentPaintPropertyTreeBuilder::UpdateOverflowClip sets
-		// context_.current.clip for descendants, :3137-3138, and
-		// UpdateLocalBorderBoxContext records it, :2756-2779 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) whatever its paint
-		// order; louis14 carries it as AncestorOverflowClips. LOU-609.
-		childLayer.AncestorOverflowClips = collectAncestorOverflowClips(child, currentSC)
+		// Positioned, z-index:auto — participates at Appendix E step 6 of
+		// the nearest stacking context, which also collects its positioned
+		// descendants in tree order (PaintLayerPaintOrderIterator over the
+		// stacking context's z-order lists). Overflow clips do not change
+		// paint order: the layer paints under the clips of its
+		// containing-block chain (enterLocalBorderBoxClip). LOU-609, LOU-612.
 		currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-		if hasOverflowClipping(child) {
-			// Overflow containment boundary — positioned descendants
-			// stay within this subtree.
-			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
-		} else {
-			buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
-		}
+		buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
 	}
-}
-
-// isContainedByAnyOverflow returns true if immediateParent or any ancestor up
-// to (but not including) scRoot has overflow clipping. Used to decide whether a
-// non-positioned SC should stay in FlowChildren (where the parent's HasClip
-// bracket clips it naturally) or be promoted to AutoZero (step 6 paint order).
-func isContainedByAnyOverflow(immediateParent *layout.Box, scRoot *layout.Box) bool {
-	for ancestor := immediateParent; ancestor != nil && ancestor != scRoot; ancestor = ancestor.Parent {
-		if hasOverflowClipping(ancestor) {
-			return true
-		}
-	}
-	return false
 }
 
 // isFloat returns true if the box has float:left or float:right.
@@ -2001,75 +1936,6 @@ func isFloat(box *layout.Box) bool {
 	}
 	f := box.Style.GetFloat()
 	return f == css.FloatLeft || f == css.FloatRight
-}
-
-// collectAncestorOverflowClips walks from `child`'s parent up to (but not
-// including) the box that owns `currentSC`, collecting overflow-clip
-// rectangles from any ancestor that has overflow clipping AND would
-// contain `child`. Returns clip rects in innermost→outermost order.
-//
-// This is the louis14 substitute for the Blink paint property tree's
-// inherited clip chain. It runs on positioned children that paint from a
-// stacking context's z-order lists instead of inside their clipping
-// ancestor's flow (see buildPaintSubtree). The collected clips are Pushed by the renderer
-// before painting the child layer, ensuring the overflow clip honoured
-// even though the child paints outside its parent's HasClip bracket.
-//
-// Per CSS Overflow 3 §3.3, `overflow: clip` clips descendants without
-// establishing a stacking context — the very case that requires this
-// helper. Hidden/scroll/auto behave the same in louis14's model
-// because none of them are SCs by themselves in this codebase.
-func collectAncestorOverflowClips(child *layout.Box, currentSC *PaintLayer) [][4]float64 {
-	var scBox *layout.Box
-	if currentSC != nil {
-		scBox = currentSC.Box
-	}
-	var clips [][4]float64
-	// The layout box tree parents an absolutely or fixed positioned box under
-	// its containing block, so this parent walk is the containing-block
-	// chain: a clip an abspos ancestor escapes is not on it.
-	for ancestor := child.Parent; ancestor != nil && ancestor != scBox; ancestor = ancestor.Parent {
-		if !hasOverflowClipping(ancestor) {
-			continue
-		}
-		if !isContainedByOverflow(child, ancestor) {
-			continue
-		}
-		// Padding-box clip rectangle. Matches the default clip in
-		// newPaintLayer's overflow-clip path (paint_layer.go:557-560).
-		// overflow-clip-margin extension is not modelled here; the
-		// failing tests do not exercise it. When/if needed, mirror the
-		// applyMargin geometry from newPaintLayer.
-		clipX := ancestor.X + ancestor.Border.Left
-		clipY := ancestor.Y + ancestor.Border.Top
-		clipW := ancestor.Width - ancestor.Border.Left - ancestor.Border.Right
-		clipH := ancestor.Height - ancestor.Border.Top - ancestor.Border.Bottom
-		if clipW < 0 {
-			clipW = 0
-		}
-		if clipH < 0 {
-			clipH = 0
-		}
-		// Per-axis: when only one axis is clipped (overflow: clip per CSS
-		// Overflow 3 §3.3 keeps the other axis visible when paired with
-		// `visible`), extend the unclipped axis to a large range so the
-		// rectangle effectively clips only the active axis. Mirrors the
-		// large-extent encoding in newPaintLayer. The axes are layout's
-		// (LayoutObject::GetOverflowClipAxes).
-		axisClipX := ancestor.OverflowClipAxes&layout.OverflowClipX != 0
-		axisClipY := ancestor.OverflowClipAxes&layout.OverflowClipY != 0
-		const largeExtent = 1e7
-		if !axisClipX {
-			clipX = -largeExtent / 2
-			clipW = largeExtent
-		}
-		if !axisClipY {
-			clipY = -largeExtent / 2
-			clipH = largeExtent
-		}
-		clips = append(clips, [4]float64{clipX, clipY, clipW, clipH})
-	}
-	return clips
 }
 
 // fontVariantAlternatesFeatures maps a CSS font-variant-alternates value to

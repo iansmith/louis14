@@ -105,6 +105,12 @@ type Renderer struct {
 	// background_image_geometry.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	transformDepth int
 
+	// clipTree is the clip property tree of the box tree being painted;
+	// clipStack holds the clip nodes applied to r.dc, outermost first (nil
+	// for a bracket whose layer has no node). Set per paintBoxes root.
+	clipTree  *clipTreeBuilder
+	clipStack []*ClipPaintPropertyNode
+
 	// view paints the canvas background of the document being rendered
 	// (ViewPainter, view_painter.go); nil when no root box. Set per
 	// paintBoxes call.
@@ -643,6 +649,7 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 		if i == 0 {
 			r.view = newViewPainter(r, box, layer)
 		}
+		r.clipTree = newClipTreeBuilder(layer)
 		r.paintLayer(layer)
 	}
 }
@@ -836,6 +843,7 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if outer, ok := r.enterFrameView(layer); ok {
 		defer func() { r.view = outer }()
 	}
+	defer r.exitClipNodes(r.enterLocalBorderBoxClip(layer))
 	// Pre-computed visibility and opacity.
 	if !layer.Visible {
 		// Filter Effects 1 §3.3: when a filtered element has
@@ -948,19 +956,6 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	transformSingular := r.enterLayerTransform(layer)
 
 	if !transformSingular {
-		// Apply inherited ancestor overflow clips. Populated on positioned
-		// layers that paint from a stacking context's z-order lists while an
-		// ancestor in their containing-block chain clips overflow. See
-		// PaintLayer.AncestorOverflowClips for rationale.
-		// Pushed innermost→outermost so the clip stack matches Blink's
-		// property-tree-inherited clip nodes.
-		for _, clip := range layer.AncestorOverflowClips {
-			r.dc.Push()
-			ox, oy, ow, oh := pixelSnap(clip[0], clip[1], clip[2], clip[3])
-			r.dc.DrawRectangle(ox, oy, ow, oh)
-			r.dc.Clip()
-		}
-
 		if layer.Opacity < 1.0 {
 			// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
 			r.dc.PushGroup()
@@ -968,10 +963,6 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 			r.dc.PopGroupWithAlpha(layer.Opacity)
 		} else {
 			r.paintLayerContent(layer)
-		}
-
-		for range layer.AncestorOverflowClips {
-			r.dc.Pop()
 		}
 	}
 
@@ -2387,12 +2378,8 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Purely physical coordinates per CSS Writing Modes §7.6.
 	cssClipping := false
 	if layer.HasCSSClip {
-		r.dc.Push()
 		cssClipping = true
-		cx, cy, cw, ch := pixelSnap(layer.CSSClipRect[0], layer.CSSClipRect[1],
-			layer.CSSClipRect[2], layer.CSSClipRect[3])
-		r.dc.DrawRectangle(cx, cy, cw, ch)
-		r.dc.Clip()
+		r.pushClipNode(layer, clipNodeCssClip)
 	}
 
 	// CSS clip-path: clips all content to a shape.
@@ -2414,9 +2401,8 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Overflow clip using pre-computed rectangle.
 	clipping := false
 	if layer.HasClip {
-		r.dc.Push()
 		clipping = true
-		r.applyOverflowClip(layer)
+		r.pushClipNode(layer, clipNodeOverflowClip)
 	}
 
 	// Step 2: Negative z-index stacking contexts.
@@ -2463,7 +2449,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if clipping {
-		r.dc.Pop()
+		r.popClipNode()
 	}
 
 	// Classic scrollbar widget (overflow controls). Painted after the
@@ -2486,7 +2472,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if cssClipping {
-		r.dc.Pop()
+		r.popClipNode()
 	}
 }
 
@@ -2690,9 +2676,8 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	// pass is independently clipped.
 	clipping := false
 	if child.HasClip {
-		r.dc.Push()
 		clipping = true
-		r.applyOverflowClip(child)
+		r.pushClipNode(child, clipNodeOverflowClip)
 	}
 
 	r.paintDescendantsPhase(child, phase)
@@ -2704,7 +2689,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	}
 
 	if clipping {
-		r.dc.Pop()
+		r.popClipNode()
 	}
 
 	// Classic scrollbar widget for a non-stacking-context scroll container.
@@ -7639,34 +7624,6 @@ func (r *Renderer) SavePNG(filename string) error {
 // (layout_object.h:2062-2065 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func hasOverflowClipping(box *layout.Box) bool {
 	return box.OverflowClipAxes != layout.NoOverflowClip
-}
-
-// isContainedByOverflow returns true if the child is clipped by the parent's
-// overflow/containment and should NOT escape to the ancestor stacking context.
-func isContainedByOverflow(child, parent *layout.Box) bool {
-	if parent.Style == nil {
-		return false
-	}
-	// CSS Containment: layout and paint containment contain all positioned
-	// descendants (absolute and fixed), acting as a containing block.
-	if parent.Style.ShouldApplyLayoutContainment() || parent.Style.ShouldApplyPaintContainment() {
-		if child.Position != css.PositionStatic {
-			return true
-		}
-	}
-	if !hasOverflowClipping(parent) {
-		return false
-	}
-	// position:relative and position:sticky children are always clipped by parent's overflow.
-	if child.Position == css.PositionRelative || child.Position == css.PositionSticky {
-		return true
-	}
-	// position:absolute children are clipped only when the parent is
-	// positioned (i.e., is the containing block for the abs-pos child).
-	if child.Position == css.PositionAbsolute && parent.Position != css.PositionStatic {
-		return true
-	}
-	return false
 }
 
 // applySpreadToShadowShape expands (or shrinks, for negative spread) shadow
