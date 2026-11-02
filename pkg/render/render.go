@@ -43,6 +43,10 @@ type Renderer struct {
 	externalSVGFetcher func(uri string) ([]byte, error)
 	scrollY            float64
 
+	// svgImagesForContainer keeps each SVG image drawn at a container size
+	// for this renderer's paint pass (svgImageForContainer).
+	svgImagesForContainer map[svgImageForContainerKey]image.Image
+
 	// svgResources aggregates the SVG resource registries from every
 	// inline `<svg>` in the current paint frame. Populated by Render
 	// (and RenderEmbedded) just before the paint walk by
@@ -3462,11 +3466,10 @@ func (r *Renderer) paintFillLayerImage(ctx *BoxBackgroundPaintContext, paintRect
 	case img.svg != nil:
 		info = naturalSizingInfoForSVG(img.svg.Sizing)
 		tileImage = func(w, h int) image.Image {
-			tile, err := img.svg.DrawForContainer(w, h)
-			if err != nil {
-				return image.Transparent
+			if tile := r.svgImageForContainer(img.svg, w, h); tile != nil {
+				return tile
 			}
-			return tile
+			return image.Transparent
 		}
 	case img.raster != nil:
 		src := img.raster
@@ -3621,8 +3624,8 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 		if dest.Empty() {
 			return
 		}
-		img, err := svg.DrawForContainer(dest.Dx(), dest.Dy())
-		if err != nil {
+		img := r.svgImageForContainer(svg, dest.Dx(), dest.Dy())
+		if img == nil {
 			return
 		}
 		r.paintImageIntoRect(layer, img, paintRect, imageVisualRect(layer, contentRect, paintRect))

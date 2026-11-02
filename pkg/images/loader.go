@@ -458,22 +458,10 @@ type SVGImage struct {
 	Sizing SVGSizingInfo
 }
 
-// DrawForContainer renders the image laid out in a w×h container, as
-// SVGImageForContainer does: the root <svg>'s width/height are replaced by
-// the container size (LayoutSVGRoot::SetContainerSize,
-// svg_image.cc:462-473 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
-// percentages resolve against it and a viewBox maps onto it; without a
-// viewBox, user units stay CSS pixels.
-//
-// louis14 limitation: oksvg ignores preserveAspectRatio, so a viewBox is
-// stretched onto the container.
-func (s *SVGImage) DrawForContainer(w, h int) (image.Image, error) {
-	icon, err := parseSVGIcon(s.data, float64(w), float64(h))
-	if err != nil {
-		return nil, err
-	}
-	return drawSVGIcon(icon, w, h), nil
-}
+// Data returns the SVG resource's bytes (Image::Data). The image is laid
+// out and painted from them by the renderer (render.Renderer's
+// svgImageForContainer, SVGImage::DrawForContainer).
+func (s *SVGImage) Data() []byte { return s.data }
 
 // svgImageCache caches SVGImage loads by URL; a nil entry records a URL
 // whose resource is not SVG (or failed to fetch).
@@ -650,14 +638,19 @@ func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, he
 // d4ecdfed88f962439247c2ad36b8fe47805b1520): an empty source URL is never
 // available, and an image that is still loading is. louis14 loads
 // synchronously, so "still loading" is the case with no fetcher (no load is
-// attempted; data: URIs decode without one). Otherwise the image must
-// fetch and decode (SVG included: DecodeImageBytes rasterizes it) to a
-// positive size — Blink's "loaded without error and has an image".
+// attempted; data: URIs decode without one). Otherwise an SVG document is
+// available whatever its natural size (an SVGImage need not have one,
+// SVGImage::DataChanged @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and a
+// bitmap must fetch and decode to a positive size — Blink's "loaded without
+// error and has an image".
 func ImageIsPotentiallyAvailable(src string, fetcher ImageFetcher) bool {
 	if src == "" {
 		return false
 	}
 	if fetcher == nil && !stdnet.IsDataURL(src) {
+		return true
+	}
+	if LoadSVGImageWithFetcher(src, fetcher) != nil {
 		return true
 	}
 	w, h, err := GetImageDimensionsWithFetcher(src, fetcher)

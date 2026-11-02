@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
@@ -41,6 +42,15 @@ type LayoutContext struct {
 
 	// ImageFetcher for loading images during layout (intrinsic sizing).
 	ImageFetcher images.ImageFetcher
+
+	// SVGRootContainerSize is the container size an SVG image's document is
+	// laid out in: the document-element <svg> takes exactly this size
+	// (LayoutSVGRoot::SetContainerSize, layout_svg_root.h:84-95, read by
+	// ComputeReplacedSize, length_utils.cc:1238-1249 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink keeps it on the
+	// LayoutSVGRoot; louis14 rebuilds layout objects per pass, so it rides on
+	// the context. Empty outside an SVG image.
+	SVGRootContainerSize geometry.PhysicalSize
 
 	// DocumentFetcher for loading nested documents (iframe, object).
 	DocumentFetcher DocumentFetcher
