@@ -1281,6 +1281,11 @@ type calcContext struct {
 	// renderer/core/layout/inline/inline_node.cc — InlineNode::ComputeMinMaxSizes
 	// uses LayoutUnit() for HasPercent text-indent).
 	percentResolvesToZero bool
+	// percentBaseKnown, when true, says percentBase is the resolved basis even
+	// when it is zero or negative (a fill-layer tile larger than its
+	// positioning area), so percentages resolve against it rather than
+	// failing. Set by CalculationValue.Evaluate.
+	percentBaseKnown bool
 }
 
 // evalCalcFull evaluates a calc() expression with full context (viewport, ch scale, percent base).
@@ -1386,7 +1391,7 @@ func parseCalcAtom(tokens []string, pos int, ctx calcContext) (calcResult, bool)
 	// Handle percentage values: resolve against percentBase. With
 	// percentResolvesToZero, percent terms evaluate to 0 (used in intrinsic
 	// sizing where there is no containing block to resolve against).
-	if strings.HasSuffix(token, "%") && (ctx.percentBase > 0 || ctx.percentResolvesToZero) {
+	if strings.HasSuffix(token, "%") && (ctx.percentBase > 0 || ctx.percentResolvesToZero || ctx.percentBaseKnown) {
 		numStr := strings.TrimSuffix(token, "%")
 		if num, err := strconv.ParseFloat(numStr, 64); err == nil {
 			return calcResult{value: num * ctx.percentBase / 100, pos: pos + 1}, true
@@ -11110,14 +11115,22 @@ func extractImageSetFirstURL(val string) (string, bool) {
 type FillLayer struct {
 	Next *FillLayer // next layer toward bottom; nil = bottommost
 
-	Image      *CSSImageValue // typed url() ref, nil = none (LOU-138 phase 7)
-	Gradient   string         // raw gradient string, empty = none
-	Repeat     BackgroundRepeat
-	Position   BackgroundPosition
-	Size       BackgroundSize
-	Origin     BackgroundOriginType
-	Clip       BackgroundClipType
-	Attachment BackgroundAttachmentType
+	Image    *CSSImageValue // typed url() ref, nil = none (LOU-138 phase 7)
+	Gradient string         // raw gradient string, empty = none
+	Repeat   BackgroundRepeat
+	// PositionX/PositionY and BackgroundXOrigin/BackgroundYOrigin mirror
+	// FillLayer::PositionX/Y and BackgroundX/YOrigin (core/style/
+	// fill_layer.h:72-80 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each
+	// position is measured from its origin edge. Initial: 0% from left/top
+	// (fill_layer.h:295-300).
+	PositionX         Length
+	PositionY         Length
+	BackgroundXOrigin BackgroundEdgeOrigin
+	BackgroundYOrigin BackgroundEdgeOrigin
+	Size              BackgroundSize
+	Origin            BackgroundOriginType
+	Clip              BackgroundClipType
+	Attachment        BackgroundAttachmentType
 
 	// Per-property "set" flags — true if explicitly specified for this layer.
 	ImageSet      bool
@@ -11191,7 +11204,10 @@ func (fl *FillLayer) FillUnsetProperties() {
 		return
 	}
 	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.PositionSet },
-		func(dst, src *FillLayer) { dst.Position = src.Position })
+		func(dst, src *FillLayer) {
+			dst.PositionX, dst.PositionY = src.PositionX, src.PositionY
+			dst.BackgroundXOrigin, dst.BackgroundYOrigin = src.BackgroundXOrigin, src.BackgroundYOrigin
+		})
 	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.AttachmentSet },
 		func(dst, src *FillLayer) { dst.Attachment = src.Attachment })
 	fl.fillUnsetFromPattern(func(l *FillLayer) bool { return l.ClipSet },
@@ -11210,7 +11226,8 @@ func (fl *FillLayer) FillUnsetProperties() {
 			cur.Repeat = BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
 		}
 		if !fl.PositionSet {
-			cur.Position = BackgroundPosition{}
+			cur.PositionX, cur.BackgroundXOrigin = Length{}, BackgroundEdgeOriginLeft
+			cur.PositionY, cur.BackgroundYOrigin = Length{}, BackgroundEdgeOriginTop
 		}
 		if !fl.SizeSet {
 			cur.Size = BackgroundSize{}
@@ -11386,288 +11403,80 @@ func (s *Style) GetBackgroundRepeat() BackgroundRepeat {
 	return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
 }
 
-// BackgroundPosition represents background-position x,y values.
-// Percentage values and keywords are stored as negative numbers (e.g., -100 = 100%).
-// Pixel values are stored directly. Negative pixel offsets use XIsPixel/YIsPixel flags
-// to distinguish from percentages.
-// Use ResolveX/ResolveY to convert to pixels given container and image dimensions.
-type BackgroundPosition struct {
-	X        float64
-	Y        float64
-	XIsPixel bool // true when X is a pixel value (may be negative)
-	YIsPixel bool // true when Y is a pixel value (may be negative)
-	// XOffset/YOffset hold the pixel offset from a calc() expression
-	// that combines a percentage and a pixel term, e.g. calc(100% - 278px).
-	// The percentage part is stored in X/Y (as negative), and the pixel
-	// offset is in XOffset/YOffset.
-	XOffset float64
-	YOffset float64
-	// XExpr/YExpr hold a raw min()/max()/clamp() expression for the axis,
-	// left unresolved at parse time because its resolution base
-	// (positioning area − image size) is only known at paint time and may be
-	// negative. ResolveX/ResolveY evaluate the comparison at the used-value
-	// (pixel) level so a negative base inverts the ordering correctly.
-	// Mirrors Blink storing a CSSMathFunctionValue as a Length(calc) that
-	// preserves the percentage and resolves in BackgroundImageGeometry
-	// against (positioning_area − image_size); Chromium
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-	// core/paint/background_image_geometry.cc.
-	XExpr string
-	YExpr string
-	// conversionData is the element's length conversion data, kept (only
-	// when an axis has one) for the font-relative / viewport terms of a
-	// deferred XExpr / YExpr — Blink
-	// absolutizes those when it computes the Length(calc), leaving only the
-	// percentage for BackgroundImageGeometry (core/css/
-	// css_to_length_conversion_data.cc:117-126 @
-	// 5992657f556bcd9d207a4aca187488462f027cab).
-	conversionData *calcContext
-}
+// BackgroundEdgeOrigin is the edge a fill layer's position is measured from.
+// Mirrors Blink's BackgroundEdgeOrigin (core/style/
+// computed_style_constants.h:336 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type BackgroundEdgeOrigin int
 
-// resolveBackgroundAxis resolves one background-position axis to a pixel
-// offset against base = (positioning area − image size), which may be
-// negative. A deferred min()/max()/clamp() expr takes precedence; otherwise
-// a pixel value is returned as-is and a percentage (stored negative) resolves
-// against base. Shared by ResolveX/ResolveY so the two axes stay in lockstep.
-func resolveBackgroundAxis(expr string, isPixel bool, val, offset, base float64, ctx *calcContext) float64 {
-	if expr != "" {
-		return resolvePositionExpr(expr, base, *ctx)
-	}
-	if isPixel {
-		return val
-	}
-	if val < 0 {
-		return base*(-val)/100 + offset
-	}
-	return val + offset
-}
+const (
+	BackgroundEdgeOriginTop BackgroundEdgeOrigin = iota
+	BackgroundEdgeOriginRight
+	BackgroundEdgeOriginBottom
+	BackgroundEdgeOriginLeft
+)
 
-// ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage + pixelOffset
-func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
-	return resolveBackgroundAxis(p.XExpr, p.XIsPixel, p.X, p.XOffset, containerW-imageW, p.conversionData)
-}
-
-// ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage + pixelOffset
-func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
-	return resolveBackgroundAxis(p.YExpr, p.YIsPixel, p.Y, p.YOffset, containerH-imageH, p.conversionData)
-}
-
-// resolvePositionExpr resolves a deferred min()/max()/clamp() background-position
-// component to a pixel offset against base = (positioning area − image size),
-// which may be negative. Each argument is resolved to its used pixel value
-// first, and min/max/clamp then compares those used values — so a negative base
-// inverts the percentage ordering, matching Blink's BackgroundImageGeometry,
-// which resolves percentages against (positioning_area − image_size) before
-// comparing; Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-// core/paint/background_image_geometry.cc.
-func resolvePositionExpr(expr string, base float64, ctx calcContext) float64 {
-	resolveArg := func(arg string) float64 {
-		// Font-relative and viewport units resolve through the element's
-		// conversion data ctx.
-		r := parsePositionComponent(strings.TrimSpace(arg), ctx)
-		if r.expr != "" { // nested math function
-			return resolvePositionExpr(r.expr, base, ctx)
-		}
-		if r.isPixel {
-			return r.value + r.offset
-		}
-		// Percentages are stored negative (see BackgroundPosition); the used
-		// offset is base * percentage.
-		return base*(-r.value)/100 + r.offset
-	}
-	var head, inner string
-	switch {
-	case strings.HasPrefix(expr, "min("):
-		head, inner = "min", expr[len("min("):len(expr)-1]
-	case strings.HasPrefix(expr, "max("):
-		head, inner = "max", expr[len("max("):len(expr)-1]
-	case strings.HasPrefix(expr, "clamp("):
-		head, inner = "clamp", expr[len("clamp("):len(expr)-1]
-	default:
-		return 0
-	}
-	args := splitCSSFunctionArgs(inner)
-	if head == "clamp" {
-		// clamp(min, val, max) ≡ max(minVal, min(val, maxVal)), compared at the
-		// used-value level. CSS Values 4 §10.4: when the resolved minimum
-		// exceeds the maximum (which a negative base can cause), the minimum
-		// wins — the max(min(...)) form yields that without a special case.
-		if len(args) != 3 {
-			return 0
-		}
-		lo, val, hi := resolveArg(args[0]), resolveArg(args[1]), resolveArg(args[2])
-		return math.Max(lo, math.Min(val, hi))
-	}
-	if len(args) == 0 {
-		return 0
-	}
-	result := resolveArg(args[0])
-	for _, a := range args[1:] {
-		v := resolveArg(a)
-		if head == "min" && v < result {
-			result = v
-		} else if head == "max" && v > result {
-			result = v
-		}
-	}
-	return result
-}
-
-// GetBackgroundPosition parses background-position (default: 0 0)
-func (s *Style) GetBackgroundPosition() BackgroundPosition {
-	val, ok := s.Get("background-position")
-	if !ok {
-		return BackgroundPosition{}
-	}
-	return parseBackgroundPosition(val, s.cssToLengthConversionData())
-}
-
-// parseBackgroundPosition builds a BackgroundPosition from one layer of a
-// background-position value. The components are consumed by consumePosition
-// (Blink's ConsumePosition, css_parsing_utils.cc:2649 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so keyword order ("top right")
-// and the three/four-value edge-offset forms ("right 25px top 75%") resolve
-// per PositionFromTwoValues / PositionFromThreeOrFourValues. The longhand is
-// not validated at declaration time, so this read is lenient: unitless
-// numbers are accepted (UnitlessQuirk::kAllow) and an unparseable value is
-// the initial 0% 0%.
-func parseBackgroundPosition(val string, ctx calcContext) BackgroundPosition {
-	pos := BackgroundPosition{}
+// mapFillPosition sets fl's PositionX/Y and BackgroundX/YOrigin from one
+// layer of a background-position value. louis14 stores background-position
+// as one longhand, so the value is consumed here by consumePosition
+// (Blink's ConsumePosition, css_parsing_utils.cc:2649, with the three-value
+// form that background permits) and each axis mapped as
+// CSSToStyleMap::MapFillPositionX/Y (core/css/resolver/
+// css_to_style_map.cc:200-238 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// maps the background-position-x/-y longhands. The longhand is not
+// validated at declaration time, so this read is lenient: unitless numbers
+// are px (UnitlessQuirk::kAllow) and an unparseable value is the initial
+// 0% 0% from the left/top edges.
+func (fl *FillLayer) mapFillPosition(val string, ctx calcContext) {
+	fl.PositionX, fl.BackgroundXOrigin = Length{}, BackgroundEdgeOriginLeft
+	fl.PositionY, fl.BackgroundYOrigin = Length{}, BackgroundEdgeOriginTop
 	x, y, ok := consumePosition(newComponentStream(val), true, true)
 	if !ok {
-		return pos
+		return
 	}
-	rx, ry := x.resolve(ctx), y.resolve(ctx)
-	pos.X, pos.XIsPixel, pos.XOffset, pos.XExpr = rx.value, rx.isPixel, rx.offset, rx.expr
-	pos.Y, pos.YIsPixel, pos.YOffset, pos.YExpr = ry.value, ry.isPixel, ry.offset, ry.expr
-	if pos.XExpr != "" || pos.YExpr != "" {
-		pos.conversionData = &ctx
+	lx, ox, okX := mapFillPositionAxis(x, "left", "right", ctx)
+	ly, oy, okY := mapFillPositionAxis(y, "top", "bottom", ctx)
+	if okX && okY {
+		fl.PositionX, fl.BackgroundXOrigin = lx, ox
+		fl.PositionY, fl.BackgroundYOrigin = ly, oy
 	}
-	return pos
 }
 
-// resolve converts a positionAxis to louis14's percent-negative /
-// pixel-offset axis encoding. An offset from the far edge (right / bottom)
-// becomes 100% minus the offset, as Blink's BackgroundImageGeometry resolves
-// a right/bottom origin (FillLayer::BackgroundXOrigin) — px offsets go into
-// offset, percentages into the stored percentage. A math-function offset from
-// the far edge is not representable here and resolves from the near edge.
-func (a positionAxis) resolve(ctx calcContext) positionComponentResult {
-	if a.offset == "" {
-		return parsePositionComponent(a.edge, ctx)
-	}
-	r := parsePositionComponent(a.offset, ctx)
-	if (a.edge != "right" && a.edge != "bottom") || r.expr != "" {
-		return r
-	}
-	if r.isPixel {
-		return positionComponentResult{value: -100, offset: -r.value}
-	}
-	// r.value is -pct; 100% - pct is stored as -(100 - pct).
-	return positionComponentResult{value: -(100 + r.value), offset: -r.offset}
+// MapFillPosition sets fl's position from the element's
+// background-position value (see mapFillPosition).
+func (s *Style) MapFillPosition(fl *FillLayer) {
+	val, _ := s.Get("background-position")
+	fl.mapFillPosition(val, s.cssToLengthConversionData())
 }
 
-// positionComponentResult holds the parsed result of a position component.
-// For calc() expressions, it may have both a percentage and a pixel offset.
-type positionComponentResult struct {
-	value   float64 // percentage (negative) or pixel value
-	isPixel bool
-	offset  float64 // additional pixel offset from calc()
-	// expr holds a raw min()/max()/clamp() expression deferred to resolve
-	// time (see BackgroundPosition.XExpr). When set, value/isPixel/offset
-	// are unused for that axis.
-	expr string
+// mapFillPositionAxis maps one consumed axis: an edge + offset pair (the
+// CSSValuePair PositionFromThreeOrFourValues builds) keeps the offset as the
+// Length and the edge as the origin; anything else is ConvertPositionLength
+// from the near edge.
+func mapFillPositionAxis(a positionAxis, edgeFor0, edgeFor100 string, ctx calcContext) (Length, BackgroundEdgeOrigin, bool) {
+	if isUnitlessNonZeroNumber(a.offset) {
+		a.offset += "px" // UnitlessQuirk::kAllow: a bare number is px
+	}
+	origin := backgroundEdgeOrigin(edgeFor0)
+	if a.edge != "" && a.offset != "" {
+		l, ok := convertLength(a.offset, ctx)
+		return l, backgroundEdgeOrigin(a.edge), ok
+	}
+	l, ok := convertPositionLength(a, edgeFor0, edgeFor100, ctx)
+	return l, origin, ok
 }
 
-func parsePositionComponent(val string, ctx calcContext) positionComponentResult {
-	switch val {
-	case "left", "top":
-		return positionComponentResult{value: 0}
-	case "right", "bottom":
-		return positionComponentResult{value: -100} // 100% stored as negative
-	case "center":
-		return positionComponentResult{value: -50} // 50% stored as negative
+// backgroundEdgeOrigin converts an edge keyword to its BackgroundEdgeOrigin
+// (CSSIdentifierValue::ConvertTo<BackgroundEdgeOrigin>).
+func backgroundEdgeOrigin(edge string) BackgroundEdgeOrigin {
+	switch edge {
+	case "right":
+		return BackgroundEdgeOriginRight
+	case "bottom":
+		return BackgroundEdgeOriginBottom
+	case "top":
+		return BackgroundEdgeOriginTop
 	}
-	// Handle calc() expressions.
-	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
-		inner := val[5 : len(val)-1]
-		return parseCalcPositionComponent(inner, ctx)
-	}
-	// Handle min()/max()/clamp() (calc() is handled above, so IsMathFunction
-	// only matches these three here). These can't be reduced to a single
-	// percentage at parse time: their resolution base (positioning area −
-	// image size) is only known at paint time and may be negative, in which
-	// case the min/max ordering inverts. Defer the raw expression to
-	// ResolveX/ResolveY, mirroring Blink's CSSMathFunctionValue → Length(calc)
-	// preserved to BackgroundImageGeometry; Chromium
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	if IsMathFunction(val) {
-		return positionComponentResult{expr: val}
-	}
-	if strings.HasSuffix(val, "%") {
-		if pct, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
-			return positionComponentResult{value: -pct} // Store percentage as negative
-		}
-	}
-	if length, ok := parseLengthFullWithCh(val, ctx); ok {
-		return positionComponentResult{value: length, isPixel: true}
-	}
-	return positionComponentResult{}
-}
-
-// parseCalcPositionComponent parses a calc() inner expression that may combine
-// a percentage and pixel terms, e.g. "100% - 278px".
-func parseCalcPositionComponent(expr string, ctx calcContext) positionComponentResult {
-	expr = strings.TrimSpace(expr)
-	// Split into terms separated by + or - (respecting parentheses).
-	var pctSum float64
-	var pxSum float64
-	hasPct := false
-
-	// Simple tokenizer: split on + and - at the top level.
-	// We handle expressions like "100% - 278px" and "100% + 8px".
-	sign := 1.0
-	i := 0
-	for i < len(expr) {
-		// Skip whitespace.
-		for i < len(expr) && (expr[i] == ' ' || expr[i] == '\t') {
-			i++
-		}
-		if i >= len(expr) {
-			break
-		}
-		// Check for sign.
-		if expr[i] == '+' {
-			sign = 1.0
-			i++
-			continue
-		}
-		if expr[i] == '-' {
-			sign = -1.0
-			i++
-			continue
-		}
-		// Consume a term.
-		start := i
-		for i < len(expr) && expr[i] != ' ' && expr[i] != '\t' && expr[i] != '+' && expr[i] != '-' {
-			i++
-		}
-		term := expr[start:i]
-		if strings.HasSuffix(term, "%") {
-			if pct, err := strconv.ParseFloat(strings.TrimSuffix(term, "%"), 64); err == nil {
-				pctSum += sign * pct
-				hasPct = true
-			}
-		} else if length, ok := parseLengthFullWithCh(term, ctx); ok {
-			pxSum += sign * length
-		}
-		sign = 1.0 // reset sign for next term
-	}
-
-	if hasPct {
-		return positionComponentResult{value: -pctSum, offset: pxSum}
-	}
-	return positionComponentResult{value: pxSum, isPixel: true}
+	return BackgroundEdgeOriginLeft
 }
 
 // BackgroundSize represents a parsed background-size value
@@ -11983,7 +11792,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 
 		// Position
 		if i < len(posParts) {
-			layer.Position = parseBackgroundPosition(posParts[i], ctx)
+			layer.mapFillPosition(posParts[i], ctx)
 			layer.PositionSet = true
 		}
 

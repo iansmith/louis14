@@ -117,22 +117,20 @@ func TestStyleHolderLengths_UseElementConversionData(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		pos      string
-		wantX    float64
-		wantXOff float64
+		pos   string
+		wantX float64 // resolved against a 100px available width
 	}{
-		{"2ch 0", 40, 0},
-		{"calc(10% + 2ch) 0", -10, 40},
+		{"2ch 0", 40},
+		{"calc(10% + 2ch) 0", 50},
 	} {
 		s := ahemStyle20()
 		s.Set("background-position", tc.pos)
-		got := s.GetBackgroundPosition()
-		if got.X != tc.wantX || got.XOffset != tc.wantXOff {
-			t.Errorf("background-position %s: X=%v XOffset=%v, want %v, %v", tc.pos, got.X, got.XOffset, tc.wantX, tc.wantXOff)
+		if got := fillPositionX(positionLayer(s), 100, 0); got != tc.wantX {
+			t.Errorf("background-position %s: x = %v, want %v", tc.pos, got, tc.wantX)
 		}
 		s.Set("background-image", "url(a.png)")
-		if l := s.GetBackgroundLayers(); l == nil || l.Position.X != tc.wantX || l.Position.XOffset != tc.wantXOff {
-			t.Errorf("background layer position %s = %+v, want X=%v XOffset=%v", tc.pos, l, tc.wantX, tc.wantXOff)
+		if l := s.GetBackgroundLayers(); l == nil || fillPositionX(l, 100, 0) != tc.wantX {
+			t.Errorf("background layer position %s = %+v, want x %v", tc.pos, l, tc.wantX)
 		}
 	}
 }

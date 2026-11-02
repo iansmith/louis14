@@ -116,7 +116,7 @@ func parseMathArgCtx(s string, ctx calcContext) (float64, bool) {
 	if strings.HasSuffix(s, "%") && !containsTopLevelOperator(s) {
 		numStr := strings.TrimSuffix(s, "%")
 		if num, err := strconv.ParseFloat(numStr, 64); err == nil {
-			if ctx.percentBase > 0 || ctx.percentResolvesToZero {
+			if ctx.percentBase > 0 || ctx.percentResolvesToZero || ctx.percentBaseKnown {
 				return num * ctx.percentBase / 100, true
 			}
 			// No percent base supplied — fall back to viewport-width

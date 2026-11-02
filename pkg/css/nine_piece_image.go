@@ -21,21 +21,54 @@ const (
 
 // Length is the computed form of a <length-percentage> (or a border-image-slice
 // <number>, stored as a fixed length): Fixed px plus Percent of the reference
-// extent. A calc() mixing both folds into the two terms. Mirrors the subset of
-// Blink's Length (platform/geometry/length.h) that nine-piece images and
-// object-position use: Length::Fixed, Length::Percent and a linear calc.
+// extent, or — for a math function with a percentage — a CalculationValue
+// evaluated against the extent at use time. Mirrors the subset of Blink's
+// Length (platform/geometry/length.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) that nine-piece images, fill
+// layers and object-position use: Length::Fixed, Length::Percent and
+// Length::kCalculated.
 type Length struct {
 	Fixed   float64
 	Percent float64
+	// calculation is non-nil for a Length::kCalculated; Fixed and Percent are
+	// then zero.
+	calculation *CalculationValue
 }
 
-// IsPercent reports whether the length has a percentage component
-// (Length::IsPercent / HasPercent).
+// CalculationValue is a math function over a percentage kept unevaluated
+// until the percentage basis is known, so min()/max()/clamp() compare used
+// values (a negative basis inverts the percentage ordering). Mirrors Blink's
+// CalculationValue (platform/geometry/calculation_value.h:45-67 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink absolutizes the
+// non-percentage terms when it computes the value; louis14 keeps the
+// element's conversion data for them instead.
+type CalculationValue struct {
+	expr string
+	ctx  calcContext
+}
+
+// Evaluate resolves the expression with maxValue as the percentage basis.
+// Mirrors CalculationValue::Evaluate.
+func (c *CalculationValue) Evaluate(maxValue float64) float64 {
+	ctx := c.ctx
+	ctx.percentBase, ctx.percentBaseKnown = maxValue, true
+	v, _ := EvalMathFunction(c.expr, ctx)
+	return v
+}
+
+// IsPercent reports whether the length is a plain percentage
+// (Length::IsPercent).
 func (l Length) IsPercent() bool { return l.Percent != 0 }
+
+// IsCalculated mirrors Length::IsCalculated.
+func (l Length) IsCalculated() bool { return l.calculation != nil }
 
 // ValueForLength resolves the length against extent. Mirrors
 // ValueForLength / FloatValueForLength (platform/geometry/length_functions.cc).
 func (l Length) ValueForLength(extent float64) float64 {
+	if l.calculation != nil {
+		return l.calculation.Evaluate(extent)
+	}
 	return l.Fixed + l.Percent*extent/100
 }
 
@@ -43,6 +76,10 @@ func (l Length) ValueForLength(extent float64) float64 {
 // Length::SubtractFromOneHundredPercent (platform/geometry/length.cc:184 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (l Length) SubtractFromOneHundredPercent() Length {
+	if l.calculation != nil {
+		// expr is a complete math function, so it nests as a calc() term.
+		return Length{calculation: &CalculationValue{expr: "calc(100% - " + l.calculation.expr + ")", ctx: l.calculation.ctx}}
+	}
 	return Length{Fixed: -l.Fixed, Percent: 100 - l.Percent}
 }
 
@@ -200,32 +237,33 @@ func hasUnitOrPercent(expr string) bool {
 
 // convertLength converts a <length-percentage> component to a Length.
 // Mirrors StyleBuilderConverter::ConvertLength (style_builder_converter.cc @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calc() mixing px and % is
-// folded linearly into the Fixed / Percent terms; louis14's Length has no
-// expression form, so a min()/max()/clamp() whose result is not linear in the
-// percentage basis is approximated by that fold.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a math function with a
+// percentage becomes a Length::kCalculated (CSSMathFunctionValue →
+// CalculationValue), anything else a fixed or percent Length.
 func convertLength(tok string, ctx calcContext) (Length, bool) {
 	if pct, ok := ParsePercentage(tok); ok {
 		return Length{Percent: pct}, true
 	}
 	if IsMathFunctionWithPercent(tok) {
-		ctx.percentBase, ctx.percentResolvesToZero = 0, true
-		fixed, ok := EvalMathFunction(tok, ctx)
-		if !ok {
+		check := ctx
+		check.percentBase, check.percentResolvesToZero = 100, false
+		if _, ok := EvalMathFunction(tok, check); !ok {
 			return Length{}, false
 		}
-		ctx.percentBase, ctx.percentResolvesToZero = 100, false
-		at100, ok := EvalMathFunction(tok, ctx)
-		if !ok {
-			return Length{}, false
-		}
-		return Length{Fixed: fixed, Percent: at100 - fixed}, true
+		return Length{calculation: &CalculationValue{expr: tok, ctx: ctx}}, true
 	}
-	if _, err := strconv.ParseFloat(tok, 64); err == nil && tok != "0" {
-		return Length{}, false // unitless non-zero is a <number>, not a length
+	if isUnitlessNonZeroNumber(tok) {
+		return Length{}, false // a <number>, not a length
 	}
 	f, ok := parseLengthFullWithCh(tok, ctx)
 	return Length{Fixed: f}, ok
+}
+
+// isUnitlessNonZeroNumber reports whether tok is a bare non-zero number: a
+// <number> rather than a <length> unless UnitlessQuirk::kAllow applies.
+func isUnitlessNonZeroNumber(tok string) bool {
+	_, err := strconv.ParseFloat(tok, 64)
+	return err == nil && tok != "0"
 }
 
 // parseBorderImageLengthPercent parses a non-negative <length-percentage>

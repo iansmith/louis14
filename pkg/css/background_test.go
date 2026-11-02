@@ -2,6 +2,8 @@ package css
 
 import (
 	"testing"
+
+	"louis14/pkg/geometry/layoutunit"
 )
 
 func TestParseURLValue(t *testing.T) {
@@ -145,20 +147,54 @@ func TestGetBackgroundRepeat_Default(t *testing.T) {
 	}
 }
 
-func TestGetBackgroundPosition(t *testing.T) {
+// positionLayer maps the element's background-position onto a FillLayer.
+func positionLayer(s *Style) *FillLayer {
+	fl := &FillLayer{}
+	s.MapFillPosition(fl)
+	return fl
+}
+
+func TestMapFillPosition(t *testing.T) {
 	s := NewStyle()
 	s.Set("background-position", "-46px 0")
-	pos := s.GetBackgroundPosition()
-	if pos.X != -46 || pos.Y != 0 {
-		t.Errorf("GetBackgroundPosition() = (%v, %v), want (-46, 0)", pos.X, pos.Y)
+	fl := positionLayer(s)
+	if fl.PositionX != (Length{Fixed: -46}) || fl.PositionY != (Length{}) {
+		t.Errorf("position = %+v %+v, want -46px 0", fl.PositionX, fl.PositionY)
 	}
 }
 
-func TestGetBackgroundPosition_Default(t *testing.T) {
+func TestMapFillPosition_Default(t *testing.T) {
+	fl := positionLayer(NewStyle())
+	if fl.PositionX != (Length{}) || fl.PositionY != (Length{}) ||
+		fl.BackgroundXOrigin != BackgroundEdgeOriginLeft || fl.BackgroundYOrigin != BackgroundEdgeOriginTop {
+		t.Errorf("default position = %+v", *fl)
+	}
+}
+
+// A negative percentage is a percentage, not a pixel length (LOU-598):
+// -7% of a 10px available extent is -0.7px, truncated to LayoutUnit.
+func TestMapFillPosition_NegativePercentage(t *testing.T) {
 	s := NewStyle()
-	pos := s.GetBackgroundPosition()
-	if pos.X != 0 || pos.Y != 0 {
-		t.Errorf("default GetBackgroundPosition() = (%v, %v), want (0, 0)", pos.X, pos.Y)
+	s.Set("background-position", "50% -7%")
+	fl := positionLayer(s)
+	if fl.PositionY != (Length{Percent: -7}) {
+		t.Fatalf("PositionY = %+v, want -7%%", fl.PositionY)
+	}
+	if got := fillPositionY(fl, 20, 10); got != -0.6875 {
+		t.Errorf("resolved y = %v, want -0.6875", got)
+	}
+}
+
+// Edge + offset pairs keep the offset and record the origin edge
+// (CSSToStyleMap::MapFillPositionX/Y, css_to_style_map.cc:200-238 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestMapFillPosition_EdgeOffsetOrigins(t *testing.T) {
+	s := NewStyle()
+	s.Set("background-position", "right 25px bottom 10%")
+	fl := positionLayer(s)
+	if fl.PositionX != (Length{Fixed: 25}) || fl.BackgroundXOrigin != BackgroundEdgeOriginRight ||
+		fl.PositionY != (Length{Percent: 10}) || fl.BackgroundYOrigin != BackgroundEdgeOriginBottom {
+		t.Errorf("position = %+v", *fl)
 	}
 }
 
@@ -173,6 +209,9 @@ func TestGetBackgroundPosition_Default(t *testing.T) {
 //
 //	X = min(used(0%), used(100%)) = min(0, -50) = -50  (the 100% / `right` branch)
 //	Y = max(used(0%), used(100%)) = max(0, -50) =  0   (the 0%  / `top`   branch)
+//
+// The math function is a Length::kCalculated evaluated with the base
+// (CalculationValue::Evaluate), so the comparison happens on used values.
 func TestBackgroundPositionMinMaxNegativeBase(t *testing.T) {
 	const area, image = 50.0, 100.0 // base = area - image = -50
 	tests := []struct {
@@ -195,11 +234,11 @@ func TestBackgroundPositionMinMaxNegativeBase(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewStyle()
 			s.Set("background-position", tt.value)
-			pos := s.GetBackgroundPosition()
-			gotX := pos.ResolveX(area, image)
-			gotY := pos.ResolveY(area, image)
+			fl := positionLayer(s)
+			gotX := fillPositionX(fl, area, image)
+			gotY := fillPositionY(fl, area, image)
 			if gotX != tt.wantX || gotY != tt.wantY {
-				t.Errorf("ResolveX/Y(%q) = (%v, %v), want (%v, %v)",
+				t.Errorf("position(%q) = (%v, %v), want (%v, %v)",
 					tt.value, gotX, gotY, tt.wantX, tt.wantY)
 			}
 		})
@@ -213,14 +252,14 @@ func TestBackgroundPositionMinMaxPositiveBase(t *testing.T) {
 	const area, image = 200.0, 100.0 // base = +100
 	s := NewStyle()
 	s.Set("background-position", "min(0%, 100%) max(0%, 100%)")
-	pos := s.GetBackgroundPosition()
+	fl := positionLayer(s)
 	// X = min(used(0%), used(100%)) = min(0, 100) = 0   (left)
 	// Y = max(used(0%), used(100%)) = max(0, 100) = 100 (bottom)
-	if gotX := pos.ResolveX(area, image); gotX != 0 {
-		t.Errorf("ResolveX positive base = %v, want 0", gotX)
+	if gotX := fillPositionX(fl, area, image); gotX != 0 {
+		t.Errorf("x positive base = %v, want 0", gotX)
 	}
-	if gotY := pos.ResolveY(area, image); gotY != 100 {
-		t.Errorf("ResolveY positive base = %v, want 100", gotY)
+	if gotY := fillPositionY(fl, area, image); gotY != 100 {
+		t.Errorf("y positive base = %v, want 100", gotY)
 	}
 }
 
@@ -315,4 +354,26 @@ func TestParseStylesheet_InvalidGradientDoesNotOverwriteValid(t *testing.T) {
 	if got != "linear-gradient(green, green)" {
 		t.Errorf("background-image: got %q, want %q", got, "linear-gradient(green, green)")
 	}
+}
+
+// fillPositionX / fillPositionY resolve a layer's position for a tile of
+// size tile in an area of size area, as BackgroundImageGeometry's
+// ResolveXPosition / ResolveYPosition do (core/paint/
+// background_image_geometry.cc:63-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with no offset.
+func fillPositionX(fl *FillLayer, area, tile float64) float64 {
+	return resolveFillPositionAxis(fl.PositionX, fl.BackgroundXOrigin == BackgroundEdgeOriginRight, area-tile)
+}
+
+func fillPositionY(fl *FillLayer, area, tile float64) float64 {
+	return resolveFillPositionAxis(fl.PositionY, fl.BackgroundYOrigin == BackgroundEdgeOriginBottom, area-tile)
+}
+
+func resolveFillPositionAxis(l Length, farEdge bool, available float64) float64 {
+	avail := layoutunit.FromFloat64Round(available)
+	v := l.MinimumValueForLength(avail)
+	if farEdge {
+		v = avail.Sub(v)
+	}
+	return v.Float64()
 }
