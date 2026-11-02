@@ -134,11 +134,13 @@ func New() *Engine {
 	})
 
 	// WPT reftest helpers. Tests load these via external
-	// <script src="/common/rendering-utils.js"> and
-	// <script src="/common/reftest-wait.js">, which the HTML parser does
-	// not fetch, so the globals must be supplied here. The prelude is
-	// compiled once at init (goja *Program is cross-runtime safe) and
-	// re-run into each fresh runtime — a sweep builds many Engines.
+	// <script src="/common/rendering-utils.js">,
+	// <script src="/common/reftest-wait.js"> and
+	// <script src="/web-animations/testcommon.js">. A fetched upstream
+	// script's declarations replace these; the prelude covers documents
+	// parsed without a script fetcher and scripts that are not fetched.
+	// The prelude is compiled once at init (goja *Program is cross-runtime
+	// safe) and re-run into each fresh runtime — a sweep builds many Engines.
 	if _, err := vm.RunProgram(wptReftestPrelude); err != nil {
 		panic(fmt.Errorf("wpt reftest prelude: %w", err))
 	}
@@ -154,8 +156,8 @@ func New() *Engine {
 //     requestAnimationFrame ticks. Our rAF runs synchronously, so the
 //     resolve fires in the same task and goja drains the .then job on
 //     RunProgram return.
-//   - takeScreenshot is a no-op: the visualtest harness captures after
-//     JS finishes regardless of when the test signals.
+//   - takeScreenshot removes the root's reftest-wait class, as upstream
+//     does; louis14 captures after JS finishes regardless.
 //   - waitForCompositorReady (upstream in /web-animations/testcommon.js)
 //     resolves once the compositor has committed a frame; louis14 has no
 //     compositor, so an immediately-resolving promise is the faithful
@@ -169,7 +171,9 @@ function waitForAtLeastOneFrame() {
     });
   });
 }
-function takeScreenshot() {}
+function takeScreenshot() {
+  document.documentElement.classList.remove("reftest-wait");
+}
 function waitForCompositorReady() {
   return Promise.resolve();
 }
