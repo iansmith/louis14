@@ -1122,12 +1122,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if layer.BackgroundLayers == nil && box.Text == "" {
 		if val, ok := s.Get("background-image"); ok && val != "none" && val != "" {
 			if isGradientValue(val) {
-				layer.BackgroundLayers = &css.FillLayer{
+				fl := &css.FillLayer{
 					Gradient:      val,
 					ImageSet:      true,
 					Repeat:        s.GetBackgroundRepeat(),
 					RepeatSet:     true,
-					Position:      s.GetBackgroundPosition(),
 					PositionSet:   true,
 					Size:          s.GetBackgroundSize(),
 					SizeSet:       true,
@@ -1138,6 +1137,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 					Attachment:    s.GetBackgroundAttachment(),
 					AttachmentSet: true,
 				}
+				s.MapFillPosition(fl)
+				layer.BackgroundLayers = fl
 			}
 		}
 	}

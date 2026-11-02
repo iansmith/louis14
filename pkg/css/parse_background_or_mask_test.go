@@ -36,7 +36,7 @@ func TestParseBackgroundOrMask_SlashSize_Background334(t *testing.T) {
 	if l.Repeat != (BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatNoRepeat}) {
 		t.Errorf("repeat = %+v, want no-repeat", l.Repeat)
 	}
-	if x, y := l.Position.ResolveX(150, 60), l.Position.ResolveY(150, 60); x != 0 || y != 0 {
+	if x, y := fillPositionX(l, 150, 60), fillPositionY(l, 150, 60); x != 0 || y != 0 {
 		t.Errorf("position = (%v,%v), want (0,0)", x, y)
 	}
 	if c, _ := s.Get("background-color"); c != "#CCC" {
@@ -66,7 +66,7 @@ func TestParseBackgroundOrMask_ResetsUnmentionedLonghands(t *testing.T) {
 	l := layers[0]
 	if l.Size != (BackgroundSize{}) || l.Repeat != (BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}) ||
 		l.Attachment != BackgroundAttachmentScroll || l.Origin != BackgroundOriginPaddingBox || l.Clip != BackgroundClipBorderBox ||
-		l.Position.ResolveX(100, 10) != 0 || l.Position.ResolveY(100, 10) != 0 {
+		fillPositionX(l, 100, 10) != 0 || fillPositionY(l, 100, 10) != 0 {
 		t.Errorf("unmentioned longhands not reset to initial: %+v", *l)
 	}
 	if c, _ := s.Get("background-color"); c != "transparent" {
@@ -159,7 +159,7 @@ func TestParseBackgroundOrMask_LocalAttachmentMultiLayer(t *testing.T) {
 		if l.Repeat.X != BackgroundRepeatNoRepeat || l.Repeat.Y != BackgroundRepeatNoRepeat {
 			t.Errorf("layer %d: repeat = %+v, want no-repeat", i, l.Repeat)
 		}
-		if x, y := l.Position.ResolveX(100, 20), l.Position.ResolveY(100, 100); !approxEq(x, w.x) || !approxEq(y, w.y) {
+		if x, y := fillPositionX(l, 100, 20), fillPositionY(l, 100, 100); !approxEq(x, w.x) || !approxEq(y, w.y) {
 			t.Errorf("layer %d: position = (%v,%v), want (%v,%v)", i, x, y, w.x, w.y)
 		}
 	}
@@ -204,8 +204,8 @@ func TestConsumePosition_ThreeFourValuesAndKeywordOrder(t *testing.T) {
 				t.Errorf("%q: got %d layers", decl, len(layers))
 				continue
 			}
-			p := layers[0].Position
-			if x, y := p.ResolveX(200, 50), p.ResolveY(200, 50); !approxEq(x, c.x) || !approxEq(y, c.y) {
+			p := layers[0]
+			if x, y := fillPositionX(p, 200, 50), fillPositionY(p, 200, 50); !approxEq(x, c.x) || !approxEq(y, c.y) {
 				t.Errorf("%q: position = (%v,%v), want (%v,%v)", decl, x, y, c.x, c.y)
 			}
 		}
@@ -249,8 +249,9 @@ func TestGetBackgroundLayers_CyclesShortLonghandLists(t *testing.T) {
 			t.Errorf("layer %d attachment = %v, want fixed", i, l.Attachment)
 		}
 		// background-position unset on every layer: initial 0% 0%.
-		if l.Position != (BackgroundPosition{}) {
-			t.Errorf("layer %d position = %+v, want initial", i, l.Position)
+		if l.PositionX != (Length{}) || l.PositionY != (Length{}) ||
+			l.BackgroundXOrigin != BackgroundEdgeOriginLeft || l.BackgroundYOrigin != BackgroundEdgeOriginTop {
+			t.Errorf("layer %d position = %+v %+v from %v/%v, want initial 0%% 0%% from left/top", i, l.PositionX, l.PositionY, l.BackgroundXOrigin, l.BackgroundYOrigin)
 		}
 	}
 }

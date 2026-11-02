@@ -16,7 +16,7 @@ import (
 // louis14 stores each background longhand as a comma-joined string (one entry
 // per layer) rather than as CSSValues, so the consumers here validate and
 // return the consumed component text; the typed values are built when the
-// longhands are read (GetBackgroundLayers / parseBackgroundPosition).
+// longhands are read (GetBackgroundLayers / FillLayer.mapFillPosition).
 
 // componentStream is a cursor over the component values of a declaration
 // value — the analog of CSSParserTokenStream for louis14's string-valued

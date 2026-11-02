@@ -73,8 +73,8 @@ func TestCalculateRepeatAndPosition_Space(t *testing.T) {
 // so the first origin left of the dest is -20. ComputePhase :834-842.
 func TestComputePhase_RepeatPosition(t *testing.T) {
 	fl := &css.FillLayer{
-		Repeat:   css.BackgroundRepeat{X: css.BackgroundRepeatRepeat, Y: css.BackgroundRepeatRepeat},
-		Position: css.BackgroundPosition{X: 10, XIsPixel: true, YIsPixel: true},
+		Repeat:    css.BackgroundRepeat{X: css.BackgroundRepeatRepeat, Y: css.BackgroundRepeatRepeat},
+		PositionX: css.Length{Fixed: 10},
 	}
 	var g BackgroundImageGeometry
 	g.Calculate(fl, boxCtx(), geometry.NewPhysicalRect(0, 0, 100, 100), naturalSizingInfoForRaster(30, 30))

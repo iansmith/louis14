@@ -245,18 +245,28 @@ func resolveClampedHeightForRatio(width geometry.LayoutUnit, ratio geometry.Phys
 	return h
 }
 
-// resolveXPosition mirrors background_image_geometry.cc:63-74: the
-// background-position x resolved against available_width (= positioning
-// area − tile), minus offset. louis14's BackgroundPosition already folds
-// right-edge origins into its value, so ResolveX(available, 0) is the
-// absolute position.
+// resolveXPosition mirrors ResolveXPosition (background_image_geometry.cc:
+// 63-74 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the edge-relative
+// position resolved against available_width (= positioning area − tile),
+// converted to absolute for a right origin, minus offset.
 func resolveXPosition(fl *css.FillLayer, availableWidth, offset geometry.LayoutUnit) geometry.LayoutUnit {
-	return layoutunit.FromFloat64Trunc(fl.Position.ResolveX(availableWidth.Float64(), 0)).Sub(offset)
+	edgeRelativePosition := fl.PositionX.MinimumValueForLength(availableWidth)
+	absolutePosition := edgeRelativePosition
+	if fl.BackgroundXOrigin == css.BackgroundEdgeOriginRight {
+		absolutePosition = availableWidth.Sub(edgeRelativePosition)
+	}
+	return absolutePosition.Sub(offset)
 }
 
-// resolveYPosition mirrors background_image_geometry.cc:76-87.
+// resolveYPosition mirrors ResolveYPosition (background_image_geometry.cc:
+// 76-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func resolveYPosition(fl *css.FillLayer, availableHeight, offset geometry.LayoutUnit) geometry.LayoutUnit {
-	return layoutunit.FromFloat64Trunc(fl.Position.ResolveY(availableHeight.Float64(), 0)).Sub(offset)
+	edgeRelativePosition := fl.PositionY.MinimumValueForLength(availableHeight)
+	absolutePosition := edgeRelativePosition
+	if fl.BackgroundYOrigin == css.BackgroundEdgeOriginBottom {
+		absolutePosition = availableHeight.Sub(edgeRelativePosition)
+	}
+	return absolutePosition.Sub(offset)
 }
 
 // setNoRepeatX mirrors background_image_geometry.cc:101-138 (fill layers
