@@ -48,13 +48,17 @@ func TestParseTransforms_ScalePercentages(t *testing.T) {
 		{"scaleY(0.5)", 1, 0.5},
 	}
 	for _, tt := range tests {
-		ts := parseTransforms(tt.val, initialConversionData())
-		if len(ts) != 1 || ts[0].Type != "scale" || len(ts[0].Values) < 2 {
-			t.Errorf("parseTransforms(%q) = %+v, want one scale transform with 2 values", tt.val, ts)
+		ops := CreateTransformOperations(tt.val, initialConversionData())
+		var sc *ScaleTransformOperation
+		if len(ops.Operations) == 1 {
+			sc, _ = ops.Operations[0].(*ScaleTransformOperation)
+		}
+		if sc == nil {
+			t.Errorf("CreateTransformOperations(%q) = %+v, want one scale operation", tt.val, ops.Operations)
 			continue
 		}
-		if ts[0].Values[0] != tt.wantX || ts[0].Values[1] != tt.wantY {
-			t.Errorf("parseTransforms(%q) values = (%v, %v), want (%v, %v)", tt.val, ts[0].Values[0], ts[0].Values[1], tt.wantX, tt.wantY)
+		if sc.X != tt.wantX || sc.Y != tt.wantY {
+			t.Errorf("CreateTransformOperations(%q) scale = (%v, %v), want (%v, %v)", tt.val, sc.X, sc.Y, tt.wantX, tt.wantY)
 		}
 	}
 }

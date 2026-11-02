@@ -24,9 +24,8 @@ func TestTransformComputedValue_EmResolvesPerElement(t *testing.T) {
 		id   string
 		want float64
 	}{{"a", 80}, {"b", 160}} {
-		ops := styleByID(t, styles, tc.id).ResolvedTransformOperations(100, 100)
-		if len(ops) != 1 || ops[0].Values[0] != tc.want {
-			t.Errorf("#%s transform = %+v, want translate %vpx", tc.id, ops, tc.want)
+		if x, _ := transformTranslation(styleByID(t, styles, tc.id)); x != tc.want {
+			t.Errorf("#%s transform translates x by %v, want %vpx", tc.id, x, tc.want)
 		}
 	}
 }
@@ -36,9 +35,8 @@ func TestTransformComputedValue_InheritCopiesAbsoluteLengths(t *testing.T) {
 		#p { font-size: 25px; transform: translate(1em, 1em); }
 		#c { font-size: 100px; transform: inherit; }
 	</style><div id=p><div id=c></div></div>`, nil)
-	ops := styleByID(t, styles, "c").ResolvedTransformOperations(100, 100)
-	if len(ops) != 1 || ops[0].Values[0] != 25 || ops[0].Values[1] != 25 {
-		t.Errorf("inherited transform = %+v, want translate(25px, 25px)", ops)
+	if x, y := transformTranslation(styleByID(t, styles, "c")); x != 25 || y != 25 {
+		t.Errorf("inherited transform translates by (%v, %v), want (25, 25)", x, y)
 	}
 }
 
@@ -51,6 +49,14 @@ func TestTransformComputedValue_InheritTransformOrigin(t *testing.T) {
 	if x != 50 || y != 100 {
 		t.Errorf("inherited transform-origin = (%v, %v), want (50, 100)", x, y)
 	}
+}
+
+// transformTranslation returns the translation of s's transform list for a
+// 100×100 box, without transform-origin.
+func transformTranslation(s *Style) (float64, float64) {
+	var m geometry.Transform
+	s.ApplyTransform(&m, geometry.NewRectF(0, 0, 100, 100), IncludeTransformOperations, ExcludeTransformOrigin, ExcludeIndependentTransformProperties)
+	return m.Rc(0, 3), m.Rc(1, 3)
 }
 
 // TestCreateTransformOperations covers TransformBuilder's per-function
@@ -107,7 +113,7 @@ func TestTransformComputedValue_TextChangeAfterCascade(t *testing.T) {
 	styles := cascadeHTML(t, `<!DOCTYPE html><style>#d { transform: translateX(10px); }</style><div id=d></div>`, nil)
 	s := styleByID(t, styles, "d")
 	s.Properties["transform"] = "translateX(30px)"
-	if ops := s.ResolvedTransformOperations(0, 0); len(ops) != 1 || ops[0].Values[0] != 30 {
-		t.Errorf("transform after text change = %+v, want translate 30px", ops)
+	if x, _ := transformTranslation(s); x != 30 {
+		t.Errorf("transform after text change translates x by %v, want 30", x)
 	}
 }

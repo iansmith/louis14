@@ -210,28 +210,22 @@ func (c *ScrollableOverflowCalculator) scrollableOverflowForPropagation(child *P
 }
 
 // transformForChildFragment returns the transform child's overflow is
-// mapped through into its container: its transform operations about its
-// transform-origin, relative to its border box. Mirrors
+// mapped through into its container: ComputedStyle::ApplyTransform about
+// its transform-origin over its border box. Mirrors
 // GetTransformForChildFragment (core/layout/transform_utils.cc:51-84 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a container without
-// `perspective`; the container's perspective, and the perspective and z
-// components of 3D operations, are not applied (css.ComposeAffineProjection
-// flattens to 2D, as the paint path's flat branch does).
+// `perspective`; the container's perspective is not applied and the result
+// is flattened to 2D (AffineTransform::FromTransform), as the paint path's
+// flat branch does.
 func transformForChildFragment(child *PhysicalFragment) (geometry.AffineTransform, bool) {
 	style := child.Style
-	if style == nil || !IsTransformableBox(style, child.Node) {
+	if style == nil || !IsTransformableBox(style, child.Node) || !style.HasTransform() {
 		return geometry.AffineTransform{}, false
 	}
-	w, h := child.Size.WidthF64(), child.Size.HeightF64()
-	ops := style.ResolvedTransformOperations(w, h)
-	if len(ops) == 0 {
-		return geometry.AffineTransform{}, false
-	}
-	ox, oy := style.ResolveTransformOriginPx(w, h)
-	a, b, cc, d, e, f := css.ComposeAffineProjection(ops)
-	return geometry.Translate(ox, oy).
-		Compose(geometry.NewAffineTransform(a, b, cc, d, e, f)).
-		Compose(geometry.Translate(-ox, -oy)), true
+	var m geometry.Transform
+	style.ApplyTransform(&m, geometry.NewRectF(0, 0, child.Size.WidthF64(), child.Size.HeightF64()),
+		css.IncludeTransformOperations, css.IncludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	return geometry.AffineTransformFromTransform(m), true
 }
 
 // hasTopOverflow reports whether a box in writingDirection scrolls upward

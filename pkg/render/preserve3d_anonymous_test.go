@@ -57,8 +57,10 @@ func TestPreserve3DAncestorTransforms_AnonymousAncestorsPassThrough(t *testing.T
 			outer := element(style("transform", "rotateX(90deg)", "transform-style", "preserve-3d"), nil)
 			cell := element(style("display", "table-cell", "transform-style", "preserve-3d"), tc.mid(outer))
 			inner := element(style("transform", "rotateX(90deg)"), cell)
-			if got := preserve3DAncestorTransforms(inner); len(got) != tc.wantAncestors {
-				t.Errorf("preserve3DAncestorTransforms = %v, want %d ancestor transform(s)", got, tc.wantAncestors)
+			// The outer rotateX(90deg) reaches inner only through a
+			// pass-through (anonymous) box.
+			if _, got := preserve3DAncestorTransform(inner); got != (tc.wantAncestors > 0) {
+				t.Errorf("preserve3DAncestorTransform found = %v, want %v", got, tc.wantAncestors > 0)
 			}
 		})
 	}
