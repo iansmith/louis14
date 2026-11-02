@@ -279,14 +279,21 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // against TransformHelper::ComputeReferenceBox (the view box by default) and
 // applies transform-origin; louis14 does not plumb the reference box here
 // yet, so percentages resolve against an empty box and the origin is left
-// out (the CSS default for SVG elements is 0 0). ElementTransform combines
-// it with the SVG `transform` attribute.
+// out (the CSS default for SVG elements is 0 0).
 func ParseCSSTransformForSVG(style *css.Style) geometry.AffineTransform {
 	if style == nil || !style.HasTransform() {
 		return geometry.Identity()
 	}
+	return svgCSSTransform(style, css.IncludeTransformOperations)
+}
+
+// svgCSSTransform evaluates style's CSS transform for an SVG element —
+// ComputedStyle::ApplyTransform flattened by AffineTransform::FromTransform —
+// with or without the `transform` list (the one definition both
+// ParseCSSTransformForSVG and ElementTransform use).
+func svgCSSTransform(style *css.Style, operations css.ApplyTransformOperations) geometry.AffineTransform {
 	var m geometry.Transform
-	style.ApplyTransform(&m, geometry.RectF{}, css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
+	style.ApplyTransform(&m, geometry.RectF{}, operations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
 	return geometry.AffineTransformFromTransform(m)
 }
 
@@ -308,9 +315,7 @@ func ElementTransform(n SVGNode, style *css.Style) geometry.AffineTransform {
 	if !specified && style.Translate() == nil && style.Rotate() == nil && style.Scale() == nil {
 		return n.LocalTransform()
 	}
-	var m geometry.Transform
-	style.ApplyTransform(&m, geometry.RectF{}, css.ApplyTransformOperations(specified), css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
-	t := geometry.AffineTransformFromTransform(m)
+	t := svgCSSTransform(style, css.ApplyTransformOperations(specified))
 	if specified {
 		return t
 	}
