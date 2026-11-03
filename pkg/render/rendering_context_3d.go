@@ -3,7 +3,10 @@ package render
 import (
 	"math"
 
+	"mazarin/textshape"
+
 	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 	"louis14/pkg/layout"
 	"louis14/pkg/viz"
 )
@@ -215,10 +218,10 @@ func boxPaintBounds(box *layout.Box) geometry.RectF {
 func (r *Renderer) drawPolygon(p *viz.DrawPolygon) {
 	r.dc.Push()
 	defer r.dc.Pop()
-	if p.IsSplit() {
-		r.clipToPolygon(p.Points())
-	}
 	u := p.OriginalRef().(contextUnit)
+	if p.IsSplit() {
+		r.clipToPolygon(p.Points(), u)
+	}
 	if u.plane != nil {
 		r.multiplyHomography(projectiveHomography(*u.plane))
 	}
@@ -228,37 +231,60 @@ func (r *Renderer) drawPolygon(p *viz.DrawPolygon) {
 	r.context3D.drawing = outer
 }
 
-// clipToPolygon clips the draw context to a split piece's outline. An
-// axis-aligned rectangular piece is pixel-snapped, as louis14 snaps every
-// rectangular clip, so a pixel whose center it covers is drawn (the draw
-// context's rectangle clip would otherwise truncate a fractional edge).
-func (r *Renderer) clipToPolygon(points []geometry.Point3F) {
-	if x0, y0, x1, y1, ok := axisAlignedRect(points); ok {
-		r.dc.DrawRectangle(pixelSnap(x0, y0, x1-x0, y1-y0))
-	} else {
-		outline := make([]geometry.PointF, len(points))
-		for i, pt := range points {
-			outline[i] = geometry.PointF{X: pt.X, Y: pt.Y}
+// clipToPolygon clips the draw context to a split piece of u's quad. As
+// viz draws a BSP-clipped quad (GetClippedEdgeFlags / GetCornerAAFlags,
+// components/viz/service/display/skia_renderer.cc:128, :150-230 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), a piece edge on the layer
+// rect's boundary is exterior and keeps the quad's own anti-aliased edge,
+// while an interior split edge is cut without anti-aliasing. Each interior
+// edge clips to its half-plane separately, built from the edge's endpoints
+// in a canonical order, so the two pieces on either side of a split cut
+// along bit-identical lines and partition its pixels. The vertices are in
+// the target space, already perspective-divided.
+func (r *Renderer) clipToPolygon(points []geometry.Point3F, u contextUnit) {
+	var inv geometry.Transform
+	if !u.projection.GetInverse(&inv) {
+		return
+	}
+	// kAAEpsilon: a layer-space vertex within 1/1024px of a side of the
+	// layer rect touches it.
+	const aaEpsilon = 1.0 / 1024
+	b := u.bounds
+	// sides[i] holds a bit per side of the layer rect vertex i touches.
+	sides := make([]int, len(points))
+	var cx, cy float64
+	for i, pt := range points {
+		l := inv.MapPoint3F(pt)
+		for s, d := range [4]float64{l.X - b.X(), l.Y - b.Y(), l.X - b.Right(), l.Y - b.Bottom()} {
+			if math.Abs(d) < aaEpsilon {
+				sides[i] |= 1 << s
+			}
 		}
-		addPolygonPath(r.dc, outline)
+		cx, cy = cx+pt.X/float64(len(points)), cy+pt.Y/float64(len(points))
 	}
-	r.dc.Clip()
-}
-
-// axisAlignedRect returns the bounds of points when they outline an
-// axis-aligned rectangle in x and y.
-func axisAlignedRect(points []geometry.Point3F) (x0, y0, x1, y1 float64, ok bool) {
-	if len(points) != 4 {
-		return 0, 0, 0, 0, false
-	}
-	x0, y0, x1, y1 = points[0].X, points[0].Y, points[0].X, points[0].Y
-	for _, p := range points[1:] {
-		x0, y0, x1, y1 = math.Min(x0, p.X), math.Min(y0, p.Y), math.Max(x1, p.X), math.Max(y1, p.Y)
-	}
-	for _, p := range points {
-		if (p.X != x0 && p.X != x1) || (p.Y != y0 && p.Y != y1) {
-			return 0, 0, 0, 0, false
+	// far exceeds any canvas, so a half-plane quad covers its whole side.
+	const far = 1 << 14
+	for i, a := range points {
+		c := points[(i+1)%len(points)]
+		if sides[i]&sides[(i+1)%len(points)] != 0 {
+			continue // exterior edge
 		}
+		if c.X < a.X || (c.X == a.X && c.Y < a.Y) {
+			a, c = c, a
+		}
+		dx, dy := c.X-a.X, c.Y-a.Y
+		l := math.Hypot(dx, dy)
+		if l == 0 {
+			continue
+		}
+		ux, uy := dx/l, dy/l
+		nx, ny := -uy, ux
+		if (cx-a.X)*nx+(cy-a.Y)*ny < 0 {
+			nx, ny = -nx, -ny
+		}
+		p0 := geometry.PointF{X: a.X - ux*far, Y: a.Y - uy*far}
+		p1 := geometry.PointF{X: c.X + ux*far, Y: c.Y + uy*far}
+		addPolygonPath(r.dc, []geometry.PointF{p0, p1, {X: p1.X + nx*far, Y: p1.Y + ny*far}, {X: p0.X + nx*far, Y: p0.Y + ny*far}})
+		clipPath(r.dc, graphics.NotAntiAliased, textshape.ClipOpIntersect)
 	}
-	return x0, y0, x1, y1, true
 }

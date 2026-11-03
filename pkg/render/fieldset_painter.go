@@ -88,17 +88,13 @@ func (r *Renderer) paintFieldsetBoxDecorationBackground(layer *PaintLayer) {
 		r.drawInsetBoxShadows(layer, rect)
 	}
 
-	// Clip out the legend cutout (GraphicsContext::ClipOut, :130-134): an
-	// outer rectangle plus the cutout wound the other way leaves a hole
-	// under the nonzero rule the clip rasterizer uses.
+	// Clip out the legend cutout (GraphicsContext::ClipOut(
+	// ToPixelSnappedRect(legend_cutout_rect)), :130-134).
 	cut := info.legendCutout
 	if cut.Size.Width > 0 && cut.Size.Height > 0 {
 		r.dc.Push()
 		defer r.dc.Pop()
-		r.dc.DrawRectangle(pixelSnap(box.X, box.Y, box.Width, box.Height))
-		cx, cy, cw, ch := pixelSnap(box.X+cut.Offset.X, box.Y+cut.Offset.Y, cut.Size.Width, cut.Size.Height)
-		r.buildRoundedRectPathReverse(cx, cy, cw, ch, css.EllipticalRadii{})
-		r.dc.Clip()
+		r.clipOut(pixelSnap(box.X+cut.Offset.X, box.Y+cut.Offset.Y, cut.Size.Width, cut.Size.Height))
 	}
 	r.drawBorders(layer, rect)
 }

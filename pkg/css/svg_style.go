@@ -88,6 +88,33 @@ func (s *Style) GetStroke() SVGPaint {
 	return parseSVGPaint(v, s.GetColor())
 }
 
+// EShapeRendering is the computed shape-rendering keyword (Blink's
+// EShapeRendering, generated from css_properties.json5:5888-5897 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type EShapeRendering int
+
+const (
+	ShapeRenderingAuto EShapeRendering = iota
+	ShapeRenderingOptimizeSpeed
+	ShapeRenderingCrispEdges
+	ShapeRenderingGeometricPrecision
+)
+
+// ShapeRendering returns the computed shape-rendering (initial auto).
+func (s *Style) ShapeRendering() EShapeRendering {
+	v, _ := s.Get("shape-rendering")
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "optimizespeed":
+		return ShapeRenderingOptimizeSpeed
+	case "crispedges":
+		return ShapeRenderingCrispEdges
+	case "geometricprecision":
+		return ShapeRenderingGeometricPrecision
+	default:
+		return ShapeRenderingAuto
+	}
+}
+
 // SVGFillRule enumerates the resolved fill-rule keyword.
 type SVGFillRule int
 

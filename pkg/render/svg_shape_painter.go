@@ -29,6 +29,19 @@ type svgShapePainter struct {
 	shape *svg.SVGShape
 }
 
+// shouldAntiAliasSVGShape mirrors SVGShapePainter::PaintShape's
+// should_anti_alias (svg_shape_painter.cc:98-102 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): shape-rendering crispEdges
+// and optimizeSpeed turn anti-aliasing off for the fill, stroke and
+// clip-mask flags (:104-155).
+func shouldAntiAliasSVGShape(style *css.Style) bool {
+	if style == nil {
+		return true
+	}
+	sr := style.ShapeRendering()
+	return sr != css.ShapeRenderingCrispEdges && sr != css.ShapeRenderingOptimizeSpeed
+}
+
 // paint executes the fill-then-stroke sequence for the shape. The
 // path is added to dc only once and reused via FillPreserve /
 // StrokePreserve when both passes are active, so the path
@@ -84,6 +97,13 @@ func (sp *svgShapePainter) paint() {
 	if !svgIsVisible(style) {
 		return
 	}
+
+	// The shape's fill, stroke and clip-mask flags anti-alias unless
+	// shape-rendering asks for crisp edges or speed (a GraphicsContext
+	// state scope, as GraphicsContextStateSaver).
+	dc.Push()
+	defer dc.Pop()
+	dc.SetAntiAlias(shouldAntiAliasSVGShape(style))
 
 	// The shape's transform (svg.ElementTransform: its CSS transform, or
 	// its SVG transform attribute), as for a container. The scope guard wraps the path build,
@@ -359,6 +379,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// geometry pixel-aligns with what DrawImage will composite back.
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	tmpR := NewRendererForImage(buf)
+	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
 	tmpR.dc.Translate(float64(-bx), float64(-by))
 	t := sp.ctx.DeviceFromUser
 	if !t.IsIdentity() {

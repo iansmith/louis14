@@ -1,6 +1,11 @@
 package render
 
-import "louis14/pkg/layout"
+import (
+	"mazarin/textshape"
+
+	"louis14/pkg/graphics"
+	"louis14/pkg/layout"
+)
 
 // clipNodeKind is the property a ClipPaintPropertyNode comes from.
 type clipNodeKind int
@@ -123,7 +128,10 @@ func (r *Renderer) applyClipNode(layer *PaintLayer, kind clipNodeKind) {
 	cx, cy, cw, ch := pixelSnap(layer.CSSClipRect[0], layer.CSSClipRect[1],
 		layer.CSSClipRect[2], layer.CSSClipRect[3])
 	r.dc.DrawRectangle(cx, cy, cw, ch)
-	r.dc.Clip()
+	// A clip node becomes an anti-aliased ClipRectOp
+	// (paint_chunks_to_cc_layer.cc:573-579 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 }
 
 // pushClipNode applies layer's clip of the given kind and records its node

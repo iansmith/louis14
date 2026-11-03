@@ -3,6 +3,7 @@ package render
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 	"louis14/pkg/layout/svg"
 
 	"mazarin/textshape"
@@ -74,7 +75,10 @@ func pushScopedSVGTransform(pctx *svgPaintContext, transform geometry.AffineTran
 			extraClip.X(), extraClip.Y(),
 			extraClip.Width(), extraClip.Height(),
 		)
-		s.dc.Clip()
+		// The viewport's overflow clip node is an anti-aliased
+		// ClipRectOp (paint_chunks_to_cc_layer.cc:573-579 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		clipPath(s.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 		s.hadClip = true
 		s.prevClip = extraClip
 	}

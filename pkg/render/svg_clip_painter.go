@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 	"louis14/pkg/layout/svg"
 
 	"mazarin/textshape"
@@ -73,7 +74,10 @@ func (r *Renderer) applySVGClipPath(target geometry.RectF, clipPathReferenceID s
 	if path, ok := clipper.AsPath(target); ok {
 		// Shape-based fast path: replay the path on the DC and clip.
 		buildSVGPathOnDC(r.dc, &path)
-		r.dc.Clip()
+		// A path-based clip-path is an anti-aliased ClipPathOp
+		// (paint_chunks_to_cc_layer.cc:581-583 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 		return true
 	}
 	// Content-based fallback: rasterize the clipper's subtree into an
@@ -214,7 +218,7 @@ func (r *Renderer) applySVGClipPathOnSVGShape(pctx *svgPaintContext, refBoxUser 
 	}
 	if path, ok := clipper.AsPath(refBoxUser); ok {
 		buildSVGPathOnDC(pctx.dc, &path)
-		pctx.dc.Clip()
+		clipPath(pctx.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 		return true
 	}
 	// Content-based fallback for SVG-side clip-path is not yet

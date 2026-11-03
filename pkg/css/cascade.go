@@ -3853,6 +3853,7 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 		"display",
 		"clip-rule",
 		"clip-path",
+		"shape-rendering",
 		"mask",
 		"mask-type",
 		"stop-color",

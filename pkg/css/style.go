@@ -3256,6 +3256,7 @@ var nonDefaultInitialValues = map[string]string{
 	"caption-side":            "top",
 	"fill":                    "black",
 	"fill-rule":               "nonzero",
+	"shape-rendering":         "auto",
 	"stroke":                  "none",
 	"stroke-dasharray":        "none",
 	"stroke-dashoffset":       "0",

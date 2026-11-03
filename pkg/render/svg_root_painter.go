@@ -1,7 +1,10 @@
 package render
 
 import (
+	"mazarin/textshape"
+
 	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 	"louis14/pkg/layout"
 	"louis14/pkg/layout/svg"
 )
@@ -100,7 +103,10 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 		cx, cy, cw, ch := pixelSnap(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top,
 			root.ContainerSize.Width, root.ContainerSize.Height)
 		r.dc.DrawRectangle(cx, cy, cw, ch)
-		r.dc.Clip()
+		// The overflow clip node is an anti-aliased ClipRectOp
+		// (paint_chunks_to_cc_layer.cc:573-579 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	}
 
 	t := deviceFromUser
