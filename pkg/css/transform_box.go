@@ -1,5 +1,7 @@
 package css
 
+import "strings"
+
 // TransformBox is the `transform-box` property: the box transform-origin and
 // transform percentages resolve against (CSS Transforms 1 §transform-box).
 // Mirrors Blink's ETransformBox, generated from css_properties.json5:6596-6604
@@ -26,9 +28,11 @@ var transformBoxKeywords = [...]string{
 // (TransformBox::CSSValueFromComputedStyleInternal).
 func (b TransformBox) String() string { return transformBoxKeywords[b] }
 
-// GetTransformBox returns the computed transform-box (initial: view-box).
+// GetTransformBox returns the computed transform-box (initial: view-box),
+// its keyword matched ASCII case-insensitively.
 func (s *Style) GetTransformBox() TransformBox {
 	if v, ok := s.Get("transform-box"); ok {
+		v = asciiToLower(strings.TrimSpace(v))
 		for b, keyword := range transformBoxKeywords {
 			if v == keyword {
 				return TransformBox(b)
