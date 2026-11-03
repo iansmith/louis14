@@ -97,6 +97,12 @@ type SVGRoot struct {
 // viewBox / user-unit coordinates). Phase 1: empty.
 func (r *SVGRoot) ObjectBoundingBox() geometry.RectF { return r.bbox }
 
+// StrokeBoundingBox returns the union of the children's stroke bounding
+// boxes (SVGContentContainer::ComputeStrokeBoundingBox).
+func (r *SVGRoot) StrokeBoundingBox() geometry.RectF {
+	return computeStrokeBoundingBox(r.Children)
+}
+
 // LocalTransform returns the viewBox→viewport mapping. Phase 1: this is
 // the only non-identity transform any node may carry; descendant
 // containers/shapes return identity until Phase 3.

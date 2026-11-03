@@ -137,7 +137,7 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		return
 	}
 
-	effective := svg.ElementTransform(c, c.Style, svg.ViewBoxReferenceBox(c.Viewport))
+	effective := svg.ElementTransform(c, c.Style, c.Viewport)
 
 	guard := pushScopedSVGTransform(pctx, effective, geometry.RectF{})
 	defer guard.Close()
@@ -181,7 +181,7 @@ func paintSVGViewportContainer(pctx *svgPaintContext, vc *svg.SVGViewportContain
 	// before applying the viewBox→viewport scaling, so the clip rect
 	// is in the same coordinate space the viewport's width/height
 	// refer to.
-	cssT := svg.ParseCSSTransformForSVG(vc.Style, svg.ViewBoxReferenceBox(vc.Viewport))
+	cssT := svg.ParseCSSTransformForSVG(vc, vc.Style, vc.Viewport)
 	outer := cssT.Compose(geometry.Translate(vc.X, vc.Y))
 	clipRect := geometry.NewRectF(0, 0, vc.Width, vc.Height)
 

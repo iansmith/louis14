@@ -1,6 +1,8 @@
 package svg
 
 import (
+	"math"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 )
@@ -131,6 +133,50 @@ func NewSVGShape(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGShape {
 // ObjectBoundingBox returns the shape's fill bounding box.
 func (s *SVGShape) ObjectBoundingBox() geometry.RectF {
 	return s.FillBoundingBox
+}
+
+// StrokeBoundingBox returns the fill bounding box grown by the stroke, or
+// the fill bounding box when the shape has no stroke or no geometry.
+// Mirrors LayoutSVGShape::StrokeBoundingBox (core/layout/svg/
+// layout_svg_shape.cc:238-262 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// for its simple shapes (rect, ellipse, circle), where
+// ApproximateStrokeBoundingBox is exact. Blink strokes a path or line for
+// its tight bounds (Path::StrokeBoundingRect); louis14 has no stroker for
+// bounds and uses the approximation, which is larger for mitered or
+// square-capped paths (LOU-667).
+func (s *SVGShape) StrokeBoundingBox() geometry.RectF {
+	if s.Style == nil || s.Style.GetStroke().Kind == css.SVGPaintNone || s.Path.Empty() {
+		return s.FillBoundingBox
+	}
+	return s.ApproximateStrokeBoundingBox(s.FillBoundingBox)
+}
+
+// ApproximateStrokeBoundingBox returns shapeBounds outset by half the
+// stroke width, scaled by the miter limit for a mitered path and by √2 for
+// a square-capped path or line (CSS Masking §compute-stroke-bounding-box,
+// ignoring whether the stroke is none). Mirrors
+// LayoutSVGShape::ApproximateStrokeBoundingBox (layout_svg_shape.cc:201-229
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *SVGShape) ApproximateStrokeBoundingBox(shapeBounds geometry.RectF) geometry.RectF {
+	width := s.Style.GetStrokeWidth()
+	if width <= 0 {
+		return shapeBounds
+	}
+	delta := width / 2
+	if s.GeometryType == GeometryPath || s.GeometryType == GeometryLine { // CanHaveMitersOrCaps
+		squareCap := s.Style.GetStrokeLinecap() == css.SVGLineCapSquare
+		if s.GeometryType == GeometryPath && s.Style.GetStrokeLinejoin() == css.SVGLineJoinMiter { // CanHaveMiters
+			if miter := s.Style.GetStrokeMiterLimit(); miter < math.Sqrt2 && squareCap {
+				delta *= math.Sqrt2
+			} else {
+				delta *= max(miter, 1)
+			}
+		} else if squareCap {
+			delta *= math.Sqrt2
+		}
+	}
+	return geometry.NewRectF(shapeBounds.X()-delta, shapeBounds.Y()-delta,
+		shapeBounds.Width()+2*delta, shapeBounds.Height()+2*delta)
 }
 
 // LocalTransform returns the shape's SVG `transform` attribute: every SVG

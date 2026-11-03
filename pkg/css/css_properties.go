@@ -181,6 +181,7 @@ var cssProperties = []cssProperty{
 	{"column-rule-color", false, nil},            // :7228
 	{"column-span", false, nil},                  // :7357
 	{"transform", false, nil},                    // :6578
+	{"transform-box", false, nil},                // :6596
 	{"transform-origin", false, nil},             // :6606
 	{"translate", false, nil},                    // :6635
 	{"rotate", false, nil},                       // :6653

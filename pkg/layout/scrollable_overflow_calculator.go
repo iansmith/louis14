@@ -211,7 +211,7 @@ func (c *ScrollableOverflowCalculator) scrollableOverflowForPropagation(child *P
 
 // transformForChildFragment returns the transform child's overflow is
 // mapped through into its container: ComputedStyle::ApplyTransform about
-// its transform-origin over its border box. Mirrors
+// its transform-origin over its reference box (ComputeReferenceBox). Mirrors
 // GetTransformForChildFragment (core/layout/transform_utils.cc:51-84 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a container without
 // `perspective`; the container's perspective is not applied and the result
@@ -223,7 +223,7 @@ func transformForChildFragment(child *PhysicalFragment) (geometry.AffineTransfor
 		return geometry.AffineTransform{}, false
 	}
 	var m geometry.Transform
-	style.ApplyTransform(&m, geometry.NewRectF(0, 0, child.Size.WidthF64(), child.Size.HeightF64()),
+	style.ApplyTransform(&m, ComputeReferenceBox(child),
 		css.IncludeTransformOperations, css.IncludeTransformOrigin, css.IncludeIndependentTransformProperties)
 	return geometry.AffineTransformFromTransform(m), true
 }

@@ -92,6 +92,9 @@ func (f *SVGResourceFilter) SetCycleState(s SVGCycleState) { f.cycleState = s }
 // LayoutSVGHiddenContainer::ObjectBoundingBox.
 func (f *SVGResourceFilter) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }
 
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (f *SVGResourceFilter) StrokeBoundingBox() geometry.RectF { return geometry.RectF{} }
+
 // LocalTransform returns identity — filter elements are never in the
 // paint tree, so their LocalTransform doesn't compose into ancestor
 // paint transforms.

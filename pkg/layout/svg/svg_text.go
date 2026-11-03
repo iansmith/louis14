@@ -96,6 +96,16 @@ func (t *SVGText) ObjectBoundingBox() geometry.RectF {
 	return geometry.RectF{}
 }
 
+// StrokeBoundingBox is empty, as ObjectBoundingBox is: LayoutSVGText::
+// StrokeBoundingBox returns an empty box for an empty object bounding box,
+// and otherwise outsets it by the stroke width
+// (SVGLayoutSupport::ExtendTextBBoxWithStroke; layout_svg_text.cc:312-319,
+// svg_layout_support.cc:253-268 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// which applies once SVGText has a bounding box.
+func (t *SVGText) StrokeBoundingBox() geometry.RectF {
+	return geometry.RectF{}
+}
+
 // LocalTransform returns identity. tryBuildSVGText (svg_root.go) rejects
 // any `<text>` carrying its own `transform` attribute back to the
 // SVGContainer fallback path, so an SVGText instance never actually

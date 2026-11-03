@@ -381,9 +381,12 @@ func backfaceTransformToContextRoot(n *TransformPaintPropertyNode) geometry.Tran
 }
 
 // localTransformMatrix returns T(origin) · ApplyTransform · T(-origin) for
-// box in absolute coordinates, the origin resolved on the pixel-snapped
+// box in absolute coordinates, percentages and the origin resolved on the
+// box's reference box (ComputeReferenceBox), offset from the pixel-snapped
 // border box (TransformPaintPropertyNode::Build adds the origin to the
-// snapped border box). Identity when the box has no transform.
+// snapped border box; GetTransformOrigin, paint_property_tree_builder.cc:
+// 1255-1270 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Identity when the
+// box has no transform.
 func localTransformMatrix(box *layout.Box) geometry.Transform {
 	var m geometry.Transform
 	s := box.Style
@@ -391,10 +394,11 @@ func localTransformMatrix(box *layout.Box) geometry.Transform {
 		return m
 	}
 	sx, sy, _, _ := pixelSnap(box.X, box.Y, box.Width, box.Height)
-	s.ApplyTransform(&m, geometry.NewRectF(0, 0, box.Width, box.Height),
+	ref := layout.ComputeReferenceBoxForBox(box)
+	s.ApplyTransform(&m, ref,
 		css.IncludeTransformOperations, css.ExcludeTransformOrigin, css.IncludeIndependentTransformProperties)
 	origin := s.GetTransformOrigin()
-	m.ApplyTransformOrigin(sx+origin.X.ValueForLength(box.Width), sy+origin.Y.ValueForLength(box.Height), origin.Z)
+	m.ApplyTransformOrigin(sx+ref.X()+origin.X.ValueForLength(ref.Width()), sy+ref.Y()+origin.Y.ValueForLength(ref.Height()), origin.Z)
 	return m
 }
 
