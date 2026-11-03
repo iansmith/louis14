@@ -58,3 +58,15 @@ func TestUsedTransformBox(t *testing.T) {
 		}
 	}
 }
+
+// CSS keywords are ASCII case-insensitive, and a value can carry stray
+// whitespace (e.g. after var() substitution).
+func TestGetTransformBox_CaseInsensitiveTrimmed(t *testing.T) {
+	for _, v := range []string{"Fill-Box", "FILL-BOX", " fill-box ", "\tfill-box\n"} {
+		s := NewStyle()
+		s.Set("transform-box", v)
+		if got := s.GetTransformBox(); got != TransformBoxFillBox {
+			t.Errorf("transform-box: %q gave %v, want fill-box", v, got)
+		}
+	}
+}
