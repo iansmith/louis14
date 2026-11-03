@@ -170,12 +170,15 @@ func TestSVG_CombinedTransforms(t *testing.T) {
 		t.Errorf("rotated rect center at (50,50): RGBA=(%d,%d,%d,%d), want red",
 			rC>>8, gC>>8, bC>>8, aC>>8)
 	}
-	// Sample 14 px below center — well inside the rotated rect (the
-	// rect's local-y extends to ±10, but the rotated diagonal reaches
-	// √200 ≈ 14.14 px from the center).
-	rD, gD, bD, aD := img.At(50, 64).RGBA()
+	// Sample 12 px below center — inside the rotated rect (the rect's
+	// local-y extends to ±10, but the rotated diagonal reaches √200 ≈
+	// 14.14 px from the center). Pixel (50,62) spans y 62..63, where the
+	// diamond is ≥ 2.3px wide about x=50, so it is fully covered; the
+	// pixel at y=64 holds only the corner's tip (≈1% coverage), which
+	// anti-aliasing (LOU-654) leaves almost white.
+	rD, gD, bD, aD := img.At(50, 62).RGBA()
 	if rD>>8 < 200 || gD>>8 > 50 || bD>>8 > 50 || aD == 0 {
-		t.Errorf("rotated rect diagonal at (50,64): RGBA=(%d,%d,%d,%d), want red",
+		t.Errorf("rotated rect diagonal at (50,62): RGBA=(%d,%d,%d,%d), want red",
 			rD>>8, gD>>8, bD>>8, aD>>8)
 	}
 	// Outside the rotated rect.

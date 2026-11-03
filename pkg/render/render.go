@@ -249,39 +249,28 @@ func newProvider() textshape.GlyphProvider {
 
 // NewRenderer creates a new renderer with a fresh image of the given dimensions.
 func NewRenderer(width, height int) *Renderer {
-	dc := textshape.NewDrawContext(width, height, newProvider())
-	text.SetTextLayout(dc.TextLayout())
-	return &Renderer{
-		dc:        dc,
-		target:    dc.Image().(*image.RGBA),
-		fonts:     text.DefaultFontConfig(),
-		fontCache: make(map[fontCacheKey]int32),
-	}
+	return newRendererForContext(textshape.NewDrawContext(width, height, newProvider()))
+}
+
+// newRendererForContext wraps a fresh root draw context. The context
+// anti-aliases fills, strokes and images, as a GraphicsContext does by
+// default (GraphicsContextState::should_antialias_,
+// platform/graphics/graphics_context_state.cc:22-30 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); child contexts inherit it.
+func newRendererForContext(dc *textshape.DrawContextImpl) *Renderer {
+	dc.SetAntiAlias(true)
+	return NewRendererForDrawContext(dc)
 }
 
 // NewRendererForImage creates a renderer that paints onto an existing image.
 func NewRendererForImage(target *image.RGBA) *Renderer {
-	dc := textshape.NewDrawContextForImage(target, newProvider())
-	text.SetTextLayout(dc.TextLayout())
-	return &Renderer{
-		dc:        dc,
-		target:    target,
-		fonts:     text.DefaultFontConfig(),
-		fontCache: make(map[fontCacheKey]int32),
-	}
+	return newRendererForContext(textshape.NewDrawContextForImage(target, newProvider()))
 }
 
 // NewRendererForImageWithProvider creates a renderer that paints onto an
 // existing image using the supplied GlyphProvider for font rasterization.
 func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.GlyphProvider) *Renderer {
-	dc := textshape.NewDrawContextForImage(target, provider)
-	text.SetTextLayout(dc.TextLayout())
-	return &Renderer{
-		dc:        dc,
-		target:    target,
-		fonts:     text.DefaultFontConfig(),
-		fontCache: make(map[fontCacheKey]int32),
-	}
+	return newRendererForContext(textshape.NewDrawContextForImage(target, provider))
 }
 
 // NewRendererForDrawContext creates a renderer that paints using an
@@ -1777,7 +1766,11 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	} else {
 		r.dc.DrawRectangle(bxf, byf, bwf, bhf)
 	}
-	r.dc.Clip()
+	// Blink hands this shape to cc as BackdropFilterInfo::bounds
+	// (PopulateBackdropFilterIfNeeded, paint_property_tree_builder.cc:
+	// 4186-4212 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); viz clips the
+	// filtered backdrop to it anti-aliased (viz-side, not in Blink's tree).
+	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
 }
@@ -2769,7 +2762,10 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 		return // Unknown type, no clipping
 	}
 
-	r.dc.Clip()
+	// A path-based clip-path is a clip node whose ClipPathOp anti-aliases
+	// (paint_chunks_to_cc_layer.cc:581-583 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 }
 
 // hasBorderRadius returns true if any corner radius is non-zero.
@@ -2804,13 +2800,17 @@ func (r *Renderer) applyOverflowClip(layer *PaintLayer) {
 	default:
 		r.dc.DrawRectangle(ox, oy, ow, oh)
 		if rounded && layer.ClipX && layer.ClipY {
-			r.dc.Clip()
-			PixelSnappedContouredInnerBorder(layer.BorderRadius,
+			clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
+			r.clipContouredRect(PixelSnappedContouredInnerBorder(layer.BorderRadius,
 				toLayoutRect(box.X, box.Y, box.Width, box.Height),
-				toLayoutStrut(box.Border)).addPath(r.dc)
+				toLayoutStrut(box.Border)), textshape.ClipOpIntersect, graphics.AntiAliased)
+			return
 		}
 	}
-	r.dc.Clip()
+	// Overflow clip nodes become ClipRectOp / ClipRRectOp with
+	// antialias=true (paint_chunks_to_cc_layer.cc:573-579 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 }
 
 // overflowClipRadii returns the elliptical radii to use when drawing the
@@ -2853,12 +2853,6 @@ func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
 // elliptical corner arcs. Uses kappa constant for quarter-ellipse approximation.
 func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii css.EllipticalRadii) {
 	buildRoundedRectPathOnDC(r.dc, x, y, w, h, radii)
-}
-
-// buildRoundedRectPathReverse traces a rounded rectangle path in reverse (CCW)
-// for use with even-odd fill rule to cut out inner regions.
-func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii css.EllipticalRadii) {
-	buildRoundedRectPathReverseDC(r.dc, x, y, w, h, radii)
 }
 
 // buildRoundedRectPathOnDC traces an elliptical rounded rectangle path on any DrawContext.
@@ -3182,14 +3176,16 @@ func (r *Renderer) drawBackground(layer *PaintLayer, rect layout.PhysicalRect) {
 
 	// Paint from bottom to top.
 	fl.IterateReverse(func(bg *css.FillLayer) {
-		// Background-color only on the bottom layer.
-		if bg.IsBottomLayer() {
-			r.paintFillLayerColor(layer, rect)
-		}
 		// FillLayerInfo takes the respect-orientation from the painted box's
 		// style (box_painter_base.cc:633 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		img := r.loadFillLayerImage(bg, layer.ImageOrientation)
+		// Background-color only on the bottom layer, and not under an
+		// image that occludes it (FillLayerInfo::should_paint_color,
+		// box_painter_base.cc:696-699).
+		if bg.IsBottomLayer() && !imageOccludesNextLayers(bg, img) {
+			r.paintFillLayerColor(layer, rect)
+		}
 		if bg.Gradient != "" || !img.isNone() {
 			r.paintFillLayer(layer, ctx, rect, paintRect, bg, img)
 		}
@@ -3223,6 +3219,27 @@ type fillLayerImage struct {
 }
 
 func (f fillLayerImage) isNone() bool { return f.raster == nil && f.svg == nil }
+
+// imageOccludesNextLayers reports whether bg's image covers everything
+// beneath it: FillLayer::ImageOccludesNextLayers for the source-over,
+// normal-blend composite louis14 paints with — an image that tiles the
+// layer (ImageTilesLayer: repeat or round on both axes) and is known to be
+// opaque with a non-empty size (ImageIsOpaque) (core/style/fill_layer.cc:
+// 419-464 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It takes the decoded
+// image because louis14's css.FillLayer holds only the url. Only a raster
+// image is known to be opaque here (BitmapImage::
+// CurrentFrameKnownToBeOpaque); an SVG image never is, and a gradient's
+// opacity (CSSGradientValue::KnownToBeOpaque) is not ported.
+func imageOccludesNextLayers(bg *css.FillLayer, img fillLayerImage) bool {
+	tiles := func(t css.BackgroundRepeatType) bool {
+		return t == css.BackgroundRepeatRepeat || t == css.BackgroundRepeatRound
+	}
+	if img.raster == nil || !tiles(bg.Repeat.X) || !tiles(bg.Repeat.Y) || img.raster.Bounds().Empty() {
+		return false
+	}
+	o, ok := img.raster.(interface{ Opaque() bool })
+	return ok && o.Opaque()
+}
 
 // loadImageForPaint loads the bitmap at url as it is drawn with
 // respectOrientation: oriented under kRespectImageOrientation
@@ -3268,8 +3285,8 @@ func (r *Renderer) paintFillLayer(layer *PaintLayer, ctx *BoxBackgroundPaintCont
 	local := isClippedWithLocalScrolling(layer, bg.Attachment)
 	r.dc.Push()
 	defer r.dc.Pop()
-	scrolledPaintRect := r.fillLayerClipPath(layer, rect, contouredBorderClip(bg.Clip, local), local)
-	r.dc.Clip()
+	scrolledPaintRect, aa := r.fillLayerClipPath(layer, rect, contouredBorderClip(bg.Clip, local), local)
+	clipPath(r.dc, aa, textshape.ClipOpIntersect)
 	if local {
 		paintRect = backgroundPaintRect(scrolledPaintRect)
 	}
@@ -3285,7 +3302,12 @@ func (r *Renderer) paintFillLayer(layer *PaintLayer, ctx *BoxBackgroundPaintCont
 // the unscrolled rect (ContouredBorderRectForClip, box_painter_base.cc:
 // 1474-1477 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the non-rounded
 // padding/content clip contracts the scrolled one (:1533-1551).
-func (r *Renderer) fillLayerClipPath(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType, local bool) layout.PhysicalRect {
+//
+// It also returns how a clip to that path anti-aliases: a renderable
+// rounded rect is RoundedInnerRectClipper's ClipContouredRect
+// (anti-aliased); a plain rect is GraphicsContext::Clip
+// (ToPixelSnappedRect(clip_rect), not anti-aliased, :1540-1551).
+func (r *Renderer) fillLayerClipPath(layer *PaintLayer, rect layout.PhysicalRect, clip css.BackgroundClipType, local bool) (layout.PhysicalRect, graphics.AntiAliasingMode) {
 	scrolledPaintRect := rect
 	if local {
 		scrolledPaintRect = r.adjustRectForScrolledContent(layer.Box, rect)
@@ -3293,20 +3315,28 @@ func (r *Renderer) fillLayerClipPath(layer *PaintLayer, rect layout.PhysicalRect
 	if radii := backgroundClipRadiiForClip(layer, rect, clip); !radii.IsZero() {
 		x, y, w, h := r.backgroundPaintRectForLayer(layer, rect, clip)
 		rr := FloatRoundedRect{Rect: geometry.NewRectF(x, y, w, h), Radii: radii}
+		// A border-box fill under borders that obscure its edge shrinks
+		// away from the anti-aliased border edge (ContouredBorderRectForClip,
+		// box_painter_base.cc:1226-1231).
+		if clip == css.BackgroundClipBorderBox && !local {
+			if edges := borderEdgesForLayer(layer, backgroundPaintRect(rect)); computeBleedAvoidance(layer, edges) == layout.BackgroundBleedShrinkBackground {
+				rr = backgroundRoundedRectAdjustedForBleedAvoidance(edges, rr)
+			}
+		}
 		if rr.IsRenderable() {
 			rr.addPath(r.dc)
-		} else {
-			// Non-renderable rrect: corner-wise clip, then the plain rect
-			// (PaintFastBottomLayer / PaintFillLayer's
-			// RoundedInnerRectClipper, box_painter_base.cc:1101-1108,
-			// :1503-1505 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			r.clipRoundedInnerRect(geometry.NewRectF(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height), rr)
-			r.dc.DrawRectangle(x, y, w, h)
+			return scrolledPaintRect, graphics.AntiAliased
 		}
+		// Non-renderable rrect: corner-wise clip, then the plain rect
+		// (PaintFastBottomLayer / PaintFillLayer's
+		// RoundedInnerRectClipper, box_painter_base.cc:1101-1108,
+		// :1503-1505 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		r.clipRoundedInnerRect(geometry.NewRectF(rect.Offset.X, rect.Offset.Y, rect.Size.Width, rect.Size.Height), rr)
+		r.dc.DrawRectangle(x, y, w, h)
 	} else {
 		r.dc.DrawRectangle(r.backgroundPaintRectForLayer(layer, scrolledPaintRect, clip))
 	}
-	return scrolledPaintRect
+	return scrolledPaintRect, graphics.NotAntiAliased
 }
 
 // adjustRectForScrolledContent mirrors BoxFragmentPainter::
@@ -6853,7 +6883,6 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	thickness := layer.TextDecorationThickness
 
 	var rectTop, centerY float64
-	var isLineThrough bool
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
 		if onlyLineThrough {
@@ -6886,8 +6915,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 			return
 		}
 		centerY = box.Y + ascent*0.65
-		rectTop = centerY // unused for line-through (stays stroke-centered)
-		isLineThrough = true
+		rectTop = centerY - thickness/2 // the solid line is centered on centerY
 	default:
 		return
 	}
@@ -6907,15 +6935,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	case "wavy":
 		r.drawWavyLine(legacyXStart, centerY, legacyXEnd-legacyXStart, thickness)
 	default: // "solid"
-		if isLineThrough {
-			r.dc.MoveTo(legacyXStart, centerY)
-			r.dc.LineTo(legacyXEnd, centerY)
-			r.dc.Stroke()
-		} else {
-			// See paintLine above for why path-fill, not FillRectangle.
-			r.dc.DrawRectangle(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness)
-			r.dc.Fill()
-		}
+		r.drawLineAsRect(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness)
 	}
 }
 
@@ -6997,7 +7017,14 @@ func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBo
 
 // clampDecorationBounds clamps the painting extent to the fragment's physical
 // boundary for the HasDecoratingBox case. Interior edges are ceil'd to prevent
-// sub-pixel double-coverage at adjacent fragment joints.
+// sub-pixel double-coverage at adjacent fragment joints. The ceil is a
+// louis14 stand-in (no Blink analog): Blink paints each fragment's stretch
+// from its unsnapped origin (TextDecorationInfo local_origin_ / width_,
+// text_decoration_info.cc:125-145 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose joints land on whole
+// pixels when advances are rounded (SkiaTextMetrics without subpixel
+// positioning, platform/fonts/skia/skia_text_metrics.cc:32-33, 57-71).
+// Dropping it waits on that text-metrics port (LOU-654 finding).
 //
 // The inline-start edge (physical left for LTR, physical right for RTL) is NOT
 // clamped on the first fragment, and the inline-end edge (physical right for
@@ -7048,10 +7075,24 @@ func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFr
 	case "wavy":
 		r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
 	default: // "solid"
-		r.dc.MoveTo(xStart, lineY)
-		r.dc.LineTo(xEnd, lineY)
-		r.dc.Stroke()
+		r.drawLineAsRect(xStart, lineY-thickness/2, xEnd-xStart, thickness)
 	}
+}
+
+// drawLineAsRect paints a solid horizontal text-decoration line, the
+// non-SVG branch of Blink's DrawLineAsRect (core/paint/
+// decoration_line_painter.cc:104-124 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the rect is snapped on its
+// y axis (SnapYAxis, :40-45 — top rounded half up, thickness floored to
+// at least 1px, RoundDownThickness :21-23) so the line does not
+// anti-alias vertically, then filled with the fill flags (anti-aliased).
+// A path fill (not FillRectangle's fast path) keeps it inside the
+// layer's overflow clip mask (text-underline-offset-scroll-001).
+func (r *Renderer) drawLineAsRect(x, y, w, thickness float64) {
+	top := math.Floor(y + 0.5)
+	h := math.Max(math.Floor(thickness), 1)
+	r.dc.DrawRectangle(x, top, w, h)
+	r.dc.Fill()
 }
 
 // appliedDecorationIsRTL reports whether the decoration's inline axis runs
@@ -7175,13 +7216,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 			case "wavy":
 				r.drawWavyLinePhased(seg.Start, centerY, seg.End-seg.Start, thickness, segPhase)
 			default: // "solid"
-				// Path-based fill respects the layer's overflow:auto/hidden clip
-				// (the rasterizer's fillWithPattern applies dc.gs.clipMask/
-				// clipRect). FillRectangle's fast path bypasses that clip and
-				// leaks underlines outside the scroll box (regresses
-				// text-underline-offset-scroll-001).
-				r.dc.DrawRectangle(seg.Start, rectTop, seg.End-seg.Start, thickness)
-				r.dc.Fill()
+				r.drawLineAsRect(seg.Start, rectTop, seg.End-seg.Start, thickness)
 			}
 		}
 	}
@@ -7630,12 +7665,11 @@ func (r *Renderer) drawOutsetShadowBuffer(
 	lbx, lby := bx-minX, by-minY
 
 	// Fill the shadow shape, then clip out the border box
-	// (GraphicsContext::ClipOut(border rrect) in BoxPainterBase::
-	// PaintNormalBoxShadow, box_painter_base.cc @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Clearing every pixel the
-	// border box touches gives the same pixel partition as the border
-	// painter's clip-out (paintClippedOut): the box's own background and
-	// borders own their rounded edge pixels.
+	// (ClipOutContouredRect / ClipOut in BoxPainterBase::
+	// PaintNormalBoxShadow, box_painter_base.cc:188-196 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The hole is cleared by
+	// its anti-aliased coverage, as the border painter's clip-out
+	// (paintClippedOut) cuts the same rrect.
 	if !shadowRadii.IsZero() {
 		buildRoundedRectPathOnDC(childDC, lsx, lsy, sw, sh, shadowRadii)
 	} else {

@@ -208,6 +208,7 @@ var cssProperties = []cssProperty{
 	{"mask-image", false, nil},                   // :7643
 	{"fill", true, nil},                          // :3496
 	{"fill-rule", true, nil},                     // :3536
+	{"shape-rendering", true, nil},               // :5888
 	{"stroke", true, nil},                        // :5956
 	{"stroke-dasharray", true, nil},              // :5980
 	{"stroke-dashoffset", true, nil},             // :5999

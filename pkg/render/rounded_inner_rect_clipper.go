@@ -1,8 +1,11 @@
 package render
 
 import (
+	"mazarin/textshape"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/graphics"
 )
 
 // clipRoundedInnerRect intersects the clip with clipRect, a rrect inside
@@ -16,16 +19,15 @@ import (
 // Push/Pop around it (the clipper's Save / Restore).
 func (r *Renderer) clipRoundedInnerRect(rect geometry.RectF, clipRect FloatRoundedRect) {
 	if clipRect.IsRenderable() {
-		clipRect.addPath(r.dc)
-		r.dc.Clip()
+		r.clipContouredRect(clipRect, textshape.ClipOpIntersect, graphics.AntiAliased)
 		return
 	}
 	c, rd := clipRect.Rect, clipRect.Radii
 	corner := func(x, y, right, bottom float64, idx int) {
 		var radii css.EllipticalRadii
 		radii[idx] = rd[idx]
-		FloatRoundedRect{Rect: geometry.NewRectF(x, y, right-x, bottom-y), Radii: radii}.addPath(r.dc)
-		r.dc.Clip()
+		r.clipContouredRect(FloatRoundedRect{Rect: geometry.NewRectF(x, y, right-x, bottom-y), Radii: radii},
+			textshape.ClipOpIntersect, graphics.AntiAliased)
 	}
 	if !isEmptyRadius(rd[0]) || !isEmptyRadius(rd[2]) {
 		corner(c.X(), c.Y(), rect.Right(), rect.Bottom(), 0)
