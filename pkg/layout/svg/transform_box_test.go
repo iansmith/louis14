@@ -82,7 +82,7 @@ func TestElementTransform_FillBoxOffCentre(t *testing.T) {
 			s := rectShape(100, 50, 100, 60, tc.decls)
 			s.Style.Set("transform-box", "fill-box")
 			s.transform = ParseSVGTransform(tc.attr)
-			m := ElementTransform(s, s.Style, ComputeReferenceBox(s, s.Style, s.Viewport))
+			m := ElementTransform(s, s.Style, s.Viewport)
 			got := m.MapPoint(tc.in)
 			if absDiff(got.X, tc.want.X) > 1e-9 || absDiff(got.Y, tc.want.Y) > 1e-9 {
 				t.Errorf("%v mapped to %v, want %v", tc.in, got, tc.want)

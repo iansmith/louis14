@@ -176,6 +176,9 @@ func (g *SVGLinearGradient) ObjectBoundingBox() geometry.RectF {
 	return geometry.RectF{}
 }
 
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (g *SVGLinearGradient) StrokeBoundingBox() geometry.RectF { return geometry.RectF{} }
+
 // LocalTransform returns identity — gradient elements are never in the
 // paint tree, so their LocalTransform is irrelevant. Mirrors how
 // LayoutSVGHiddenContainer ignores its own transform attribute.
@@ -225,8 +228,11 @@ type SVGRadialGradient struct {
 }
 
 // ID implements SVGResourcePaintServer.
-func (g *SVGRadialGradient) ID() string                                    { return g.ResourceID }
-func (g *SVGRadialGradient) ObjectBoundingBox() geometry.RectF             { return geometry.RectF{} }
+func (g *SVGRadialGradient) ID() string                        { return g.ResourceID }
+func (g *SVGRadialGradient) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }
+
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (g *SVGRadialGradient) StrokeBoundingBox() geometry.RectF             { return geometry.RectF{} }
 func (g *SVGRadialGradient) LocalTransform() geometry.AffineTransform      { return geometry.Identity() }
 func (g *SVGRadialGradient) UpdateSVGLayout(SVGLayoutInfo) SVGLayoutResult { return SVGLayoutResult{} }
 func (g *SVGRadialGradient) Paint(*SVGPaintContext)                        {}
@@ -282,8 +288,11 @@ type SVGPattern struct {
 	cycleState SVGCycleState
 }
 
-func (p *SVGPattern) ID() string                                    { return p.ResourceID }
-func (p *SVGPattern) ObjectBoundingBox() geometry.RectF             { return geometry.RectF{} }
+func (p *SVGPattern) ID() string                        { return p.ResourceID }
+func (p *SVGPattern) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }
+
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (p *SVGPattern) StrokeBoundingBox() geometry.RectF             { return geometry.RectF{} }
 func (p *SVGPattern) LocalTransform() geometry.AffineTransform      { return geometry.Identity() }
 func (p *SVGPattern) UpdateSVGLayout(SVGLayoutInfo) SVGLayoutResult { return SVGLayoutResult{} }
 func (p *SVGPattern) Paint(*SVGPaintContext)                        {}

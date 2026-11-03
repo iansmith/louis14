@@ -176,6 +176,13 @@ func (v *SVGViewportContainer) ObjectBoundingBox() geometry.RectF {
 	return v.bbox
 }
 
+// StrokeBoundingBox returns the union of the children's stroke bounding
+// boxes, in the same space as ObjectBoundingBox
+// (SVGContentContainer::ComputeStrokeBoundingBox).
+func (v *SVGViewportContainer) StrokeBoundingBox() geometry.RectF {
+	return computeStrokeBoundingBox(v.Children)
+}
+
 // LocalTransform returns the transform that maps a point in this
 // nested viewport's local (viewBox / user-unit) space into its
 // parent's SVG coordinate system: translate(X, Y) · viewBox→viewport.
@@ -198,37 +205,8 @@ func (v *SVGViewportContainer) LocalTransform() geometry.AffineTransform {
 // UpdateSVGLayout walks children and accumulates their bbox under
 // this viewport's local transform.
 func (v *SVGViewportContainer) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
-	var combined SVGLayoutResult
-	var unionRect geometry.RectF
-	hasAny := false
-	for _, child := range v.Children {
-		res := child.UpdateSVGLayout(info)
-		if res.BoundsChanged {
-			combined.BoundsChanged = true
-		}
-		if res.HasViewportDependence {
-			combined.HasViewportDependence = true
-		}
-		childBBox := child.ObjectBoundingBox()
-		if childBBox.IsEmpty() {
-			continue
-		}
-		mapped := child.LocalTransform().MapRect(childBBox)
-		if mapped.IsEmpty() {
-			continue
-		}
-		if !hasAny {
-			unionRect = mapped
-			hasAny = true
-		} else {
-			unionRect = unionRects(unionRect, mapped)
-		}
-	}
-	if hasAny {
-		v.bbox = unionRect
-	} else {
-		v.bbox = geometry.RectF{}
-	}
+	combined := layoutSVGChildren(v.Children, info)
+	v.bbox = unionChildBoxes(v.Children, SVGNode.ObjectBoundingBox)
 	return combined
 }
 
@@ -307,6 +285,50 @@ func (c *SVGContainer) ObjectBoundingBox() geometry.RectF {
 	return c.bbox
 }
 
+// StrokeBoundingBox returns the union of the children's stroke bounding
+// boxes (SVGContentContainer::ComputeStrokeBoundingBox).
+func (c *SVGContainer) StrokeBoundingBox() geometry.RectF {
+	return computeStrokeBoundingBox(c.Children)
+}
+
+// computeStrokeBoundingBox unions each rendered child's stroke bounding box
+// mapped into the container's space. Mirrors
+// SVGContentContainer::ComputeStrokeBoundingBox
+// (core/layout/svg/svg_content_container.cc:254-266 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func computeStrokeBoundingBox(children []SVGNode) geometry.RectF {
+	return unionChildBoxes(children, SVGNode.StrokeBoundingBox)
+}
+
+// unionChildBoxes unions box(child) over the rendered children, each mapped
+// through the child's transform into the container's space. A child with an
+// empty object bounding box stands in for Blink's
+// HasValidBoundingBoxForContainer (svg_content_container.cc:88-106 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the child's transform is
+// its attribute (LocalTransform; LOU-648).
+func unionChildBoxes(children []SVGNode, box func(SVGNode) geometry.RectF) geometry.RectF {
+	var union geometry.RectF
+	for _, child := range children {
+		if child.ObjectBoundingBox().IsEmpty() {
+			continue
+		}
+		union = unionRects(union, child.LocalTransform().MapRect(box(child)))
+	}
+	return union
+}
+
+// layoutSVGChildren runs UpdateSVGLayout on each child and combines the
+// results.
+func layoutSVGChildren(children []SVGNode, info SVGLayoutInfo) SVGLayoutResult {
+	var combined SVGLayoutResult
+	for _, child := range children {
+		res := child.UpdateSVGLayout(info)
+		combined.BoundsChanged = combined.BoundsChanged || res.BoundsChanged
+		combined.HasViewportDependence = combined.HasViewportDependence || res.HasViewportDependence
+	}
+	return combined
+}
+
 // LocalTransform returns the container's SVG `transform` attribute. A
 // specified CSS `transform` replaces it at paint time (ElementTransform);
 // callers that walk the tree without a painter — e.g. bbox accumulation —
@@ -318,37 +340,8 @@ func (c *SVGContainer) LocalTransform() geometry.AffineTransform {
 // UpdateSVGLayout walks children and unions their bbox under this
 // container's local transform.
 func (c *SVGContainer) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
-	var combined SVGLayoutResult
-	var unionRect geometry.RectF
-	hasAny := false
-	for _, child := range c.Children {
-		res := child.UpdateSVGLayout(info)
-		if res.BoundsChanged {
-			combined.BoundsChanged = true
-		}
-		if res.HasViewportDependence {
-			combined.HasViewportDependence = true
-		}
-		childBBox := child.ObjectBoundingBox()
-		if childBBox.IsEmpty() {
-			continue
-		}
-		mapped := child.LocalTransform().MapRect(childBBox)
-		if mapped.IsEmpty() {
-			continue
-		}
-		if !hasAny {
-			unionRect = mapped
-			hasAny = true
-		} else {
-			unionRect = unionRects(unionRect, mapped)
-		}
-	}
-	if hasAny {
-		c.bbox = unionRect
-	} else {
-		c.bbox = geometry.RectF{}
-	}
+	combined := layoutSVGChildren(c.Children, info)
+	c.bbox = unionChildBoxes(c.Children, SVGNode.ObjectBoundingBox)
 	return combined
 }
 

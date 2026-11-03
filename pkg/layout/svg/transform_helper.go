@@ -276,22 +276,34 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // AffineTransform::FromTransform, as Blink's SVGElement::CalculateTransform
 // does (core/svg/svg_element.cc; computed_style.cc:1434-1496 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Percentages and
-// transform-origin resolve against referenceBox, which callers compute as
-// TransformHelper::ComputeReferenceBox does for the default transform-box,
-// view-box: the size of the nearest SVG viewport (transform_helper.cc:93-117;
-// louis14 has no fill-box / stroke-box). The UA stylesheet gives SVG
+// transform-origin resolve against n's reference box (ComputeReferenceBox,
+// viewport the nearest SVG viewport's size). The UA stylesheet gives SVG
 // elements transform-origin: 0 0, the reference box's origin.
-func ParseCSSTransformForSVG(style *css.Style, referenceBox geometry.RectF) geometry.AffineTransform {
+func ParseCSSTransformForSVG(n SVGNode, style *css.Style, viewport geometry.SizeF) geometry.AffineTransform {
 	if style == nil || !style.HasTransform() {
 		return geometry.Identity()
 	}
+	referenceBox := ComputeReferenceBox(n, style, viewport)
 	return aroundSVGTransformOrigin(style, referenceBox, svgCSSTransform(style, css.IncludeTransformOperations, referenceBox))
 }
 
-// ViewBoxReferenceBox returns TransformHelper::ComputeReferenceBox for
-// transform-box: view-box — the nearest SVG viewport's size at the origin
-// (transform_helper.cc:104-108).
-func ViewBoxReferenceBox(viewport geometry.SizeF) geometry.RectF {
+// ComputeReferenceBox returns the box n's CSS transform resolves
+// percentages and transform-origin against, by its used transform-box: the
+// object bounding box for fill-box, the stroke bounding box for stroke-box,
+// and the nearest SVG viewport (viewport, SVGViewportResolver::
+// ResolveViewport) at the origin for view-box. Mirrors
+// TransformHelper::ComputeReferenceBox (core/layout/svg/
+// transform_helper.cc:93-117 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// louis14 has no zoom, so the reference box is never scaled.
+func ComputeReferenceBox(n SVGNode, style *css.Style, viewport geometry.SizeF) geometry.RectF {
+	if style != nil {
+		switch style.UsedTransformBox(css.TransformBoxContextSvg) {
+		case css.TransformBoxFillBox:
+			return n.ObjectBoundingBox()
+		case css.TransformBoxStrokeBox:
+			return n.StrokeBoundingBox()
+		}
+	}
 	return geometry.RectF{Size: viewport}
 }
 
@@ -310,15 +322,17 @@ func svgCSSTransform(style *css.Style, operations css.ApplyTransformOperations, 
 // aroundSVGTransformOrigin returns T(origin)·t·T(-origin) for the author's
 // transform-origin resolved against referenceBox
 // (TransformHelper::ComputeTransformOrigin, transform_helper.cc:173-184);
-// with none set, the SVG UA default 0 0 is the reference box origin, and t
-// is returned as is.
+// with none set, the origin is the SVG UA default 0 0: the reference box
+// origin, where t is returned as is when that is (0, 0).
 func aroundSVGTransformOrigin(style *css.Style, referenceBox geometry.RectF, t geometry.AffineTransform) geometry.AffineTransform {
-	if _, authored := style.Properties["transform-origin"]; !authored {
+	ox, oy := referenceBox.X(), referenceBox.Y()
+	if _, authored := style.Properties["transform-origin"]; authored {
+		o := style.GetTransformOrigin()
+		ox += o.X.ValueForLength(referenceBox.Width())
+		oy += o.Y.ValueForLength(referenceBox.Height())
+	} else if ox == 0 && oy == 0 {
 		return t
 	}
-	o := style.GetTransformOrigin()
-	ox := o.X.ValueForLength(referenceBox.Width()) + referenceBox.X()
-	oy := o.Y.ValueForLength(referenceBox.Height()) + referenceBox.Y()
 	return geometry.Translate(ox, oy).Compose(t).Compose(geometry.Translate(-ox, -oy))
 }
 
@@ -332,16 +346,26 @@ func aroundSVGTransformOrigin(style *css.Style, referenceBox geometry.RectF, t g
 // after the translate, rotate and scale properties
 // (ComputedStyle::ApplyTransform's order). transform-origin wraps the
 // whole, attribute included. louis14 keeps the attribute on the node
-// rather than in the cascade (LOU-648).
-func ElementTransform(n SVGNode, style *css.Style, referenceBox geometry.RectF) geometry.AffineTransform {
+// rather than in the cascade (LOU-648). Percentages and the origin resolve
+// against n's reference box (ComputeReferenceBox, viewport the nearest SVG
+// viewport's size), computed only when the result depends on it, as
+// Blink's transform_uses_reference_box_ (TransformHelper::
+// DependsOnReferenceBox) skips it.
+func ElementTransform(n SVGNode, style *css.Style, viewport geometry.SizeF) geometry.AffineTransform {
 	if style == nil {
 		return n.LocalTransform()
 	}
 	_, specified := style.Properties["transform"]
-	_, authoredOrigin := style.Properties["transform-origin"]
-	if !specified && !authoredOrigin && !style.HasTransform() {
-		return n.LocalTransform()
+	if !specified && !style.HasTransform() {
+		// At most the attribute: identity, or pivoting on a view-box
+		// origin of (0, 0) unless an author origin moves it.
+		local := n.LocalTransform()
+		_, authoredOrigin := style.Properties["transform-origin"]
+		if local.IsIdentity() || (!authoredOrigin && style.UsedTransformBox(css.TransformBoxContextSvg) == css.TransformBoxViewBox) {
+			return local
+		}
 	}
+	referenceBox := ComputeReferenceBox(n, style, viewport)
 	t := svgCSSTransform(style, css.ApplyTransformOperations(specified), referenceBox)
 	if !specified {
 		t = t.Compose(n.LocalTransform())

@@ -119,8 +119,19 @@ func (c *computedStyleAccessor) box() *layout.Box {
 	return c.boxes[c.node]
 }
 
+// cssValueFromComputedStyle serializes a longhand from the computed style,
+// so an unset property reads as its initial value. Mirrors the per-longhand
+// CSSValueFromComputedStyleInternal Blink generates for each
+// css_properties.json5 entry that lists it (e.g. transform-box,
+// css_properties.json5:6597 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Longhands without an entry read the cascade Properties map (LOU-669).
+var cssValueFromComputedStyle = map[string]func(*css.Style) string{
+	"transform-box": func(s *css.Style) string { return s.GetTransformBox().String() },
+}
+
 // resolve returns the CSSOM resolved value for a kebab-case property name.
 // Layout-dependent properties come from the Box fragment (used values);
+// longhands in cssValueFromComputedStyle serialize the computed style;
 // everything else comes from the cascade Properties map.
 func (c *computedStyleAccessor) resolve(prop string) string {
 	if _, isLayoutDep := layoutUsedValueProps[prop]; isLayoutDep {
@@ -129,6 +140,9 @@ func (c *computedStyleAccessor) resolve(prop string) string {
 		}
 	}
 	if style := c.style(); style != nil {
+		if serialize, ok := cssValueFromComputedStyle[prop]; ok {
+			return serialize(style)
+		}
 		if v, ok := style.Properties[prop]; ok {
 			return v
 		}

@@ -80,6 +80,9 @@ func (c *SVGResourceClipper) SetCycleState(s SVGCycleState) { c.cycleState = s }
 // LayoutSVGHiddenContainer::ObjectBoundingBox.
 func (c *SVGResourceClipper) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }
 
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (c *SVGResourceClipper) StrokeBoundingBox() geometry.RectF { return geometry.RectF{} }
+
 // LocalTransform returns identity — clipper elements are never in the
 // paint tree, so their LocalTransform doesn't compose into ancestor
 // paint transforms.
@@ -148,7 +151,7 @@ func (c *SVGResourceClipper) AsPath(target geometry.RectF) (Path, bool) {
 	}
 	// The child's own transform maps its path into the clipPath's user
 	// space, as on the content path (paintSVGNode).
-	t = t.Compose(ElementTransform(shape, shape.Style, ViewBoxReferenceBox(shape.Viewport)))
+	t = t.Compose(ElementTransform(shape, shape.Style, shape.Viewport))
 	if t.IsIdentity() {
 		// Return a copy so callers can't mutate the cached child.
 		return clonePath(&shape.Path), true

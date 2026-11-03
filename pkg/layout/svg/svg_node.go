@@ -27,6 +27,14 @@ type SVGNode interface {
 	// and by parents accumulating their own bounding box.
 	ObjectBoundingBox() geometry.RectF
 
+	// StrokeBoundingBox returns the node's stroke bounding box in its
+	// local coordinate system: the object bounding box grown by the
+	// stroke, without dashes (SVG 2 §8.10). Mirrors Blink's
+	// LayoutObject::StrokeBoundingBox (core/layout/layout_object.h:1303 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the transform-box:
+	// stroke-box reference box.
+	StrokeBoundingBox() geometry.RectF
+
 	// LocalTransform returns the affine transform this node applies to
 	// its own content: for shapes and <g>, the parsed `transform="…"`
 	// attribute (a specified CSS transform replaces it at paint time,

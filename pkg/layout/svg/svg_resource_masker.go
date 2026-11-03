@@ -109,6 +109,9 @@ func (m *SVGResourceMasker) SetCycleState(s SVGCycleState) { m.cycleState = s }
 // ObjectBoundingBox returns an empty bbox.
 func (m *SVGResourceMasker) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }
 
+// StrokeBoundingBox is empty for a resource, like its object bounding box.
+func (m *SVGResourceMasker) StrokeBoundingBox() geometry.RectF { return geometry.RectF{} }
+
 // LocalTransform returns identity.
 func (m *SVGResourceMasker) LocalTransform() geometry.AffineTransform { return geometry.Identity() }
 

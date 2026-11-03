@@ -107,7 +107,7 @@ func TestParseSVGTransform_ScientificAndSigned(t *testing.T) {
 }
 
 func TestParseCSSTransformForSVG_Nil(t *testing.T) {
-	if !ParseCSSTransformForSVG(nil, geometry.RectF{}).IsIdentity() {
+	if !ParseCSSTransformForSVG(nil, nil, geometry.SizeF{}).IsIdentity() {
 		t.Errorf("nil style should give identity")
 	}
 }
@@ -115,7 +115,7 @@ func TestParseCSSTransformForSVG_Nil(t *testing.T) {
 func TestParseCSSTransformForSVG_Translate(t *testing.T) {
 	s := css.NewStyle()
 	s.Set("transform", "translate(10px, 20px)")
-	got := ParseCSSTransformForSVG(s, geometry.RectF{})
+	got := ParseCSSTransformForSVG(nil, s, geometry.SizeF{})
 	want := geometry.Translate(10, 20)
 	if !nearAffine(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
@@ -125,7 +125,7 @@ func TestParseCSSTransformForSVG_Translate(t *testing.T) {
 func TestParseCSSTransformForSVG_Composition(t *testing.T) {
 	s := css.NewStyle()
 	s.Set("transform", "translate(10px, 0px) rotate(45deg)")
-	got := ParseCSSTransformForSVG(s, geometry.RectF{})
+	got := ParseCSSTransformForSVG(nil, s, geometry.SizeF{})
 	want := geometry.Translate(10, 0).Compose(geometry.Rotate(45))
 	if !nearAffine(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
