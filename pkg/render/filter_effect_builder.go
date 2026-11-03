@@ -47,6 +47,11 @@ type FilterEffectBuilder struct {
 	// fetcher. Same fetcher the renderer's `<img>`/background-image
 	// path uses; see Renderer.imageFetcher.
 	ImageFetcher func(uri string) ([]byte, error)
+	// Mapping maps the filter functions' parameters (blur deviations,
+	// shadow offsets, in CSS px) into the layer the graph is evaluated
+	// in, as Skia's filters map theirs through skif::Mapping. The zero
+	// value is the identity.
+	Mapping filters.Mapping
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -82,7 +87,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 			// chain continues with the same `prev`.
 			continue
 		}
-		next := buildOneEffect(op, prev, src, srcAlpha, space, b.CurrentColor)
+		next := buildOneEffect(op, prev, src, srcAlpha, space, b.CurrentColor, b.Mapping)
 		if next != nil {
 			prev = next
 		}
@@ -330,7 +335,7 @@ func splitFilterRef(raw string) (docURL, fragID string) {
 // fed by prev. src / srcAlpha are the graph builtins (drop-shadow needs them).
 func buildOneEffect(op css.FilterFunction, prev filters.FilterEffect,
 	src *filters.SourceGraphic, srcAlpha *filters.SourceAlpha,
-	space filters.InterpolationSpace, currentColor css.Color) filters.FilterEffect {
+	space filters.InterpolationSpace, currentColor css.Color, mapping filters.Mapping) filters.FilterEffect {
 
 	switch op.Name {
 	case "grayscale":
@@ -400,15 +405,18 @@ func buildOneEffect(op css.FilterFunction, prev filters.FilterEffect,
 		if r < 0 {
 			r = 0
 		}
-		return filters.NewFEGaussianBlur(prev, space, r, r)
+		sx, sy := mapping.ParamToLayerSize(r, r)
+		return filters.NewFEGaussianBlur(prev, space, sx, sy)
 
 	case "drop-shadow":
 		shadowColor := op.ShadowColor
 		if op.ShadowUseCurrentColor {
 			shadowColor = currentColor
 		}
+		dx, dy := mapping.ParamToLayerVector(op.ShadowOffsetX, op.ShadowOffsetY)
+		sx, sy := mapping.ParamToLayerSize(op.ShadowBlur, op.ShadowBlur)
 		return filters.NewFEDropShadow(prev, srcAlpha, space,
-			op.ShadowOffsetX, op.ShadowOffsetY, op.ShadowBlur,
+			dx, dy, sx, sy,
 			shadowColor.R, shadowColor.G, shadowColor.B, shadowColor.A)
 
 	default:

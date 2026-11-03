@@ -142,3 +142,15 @@ func colorWithin(a, b color.RGBA, tol int) bool {
 	return abs(int(a.R)-int(b.R)) <= tol && abs(int(a.G)-int(b.G)) <= tol &&
 		abs(int(a.B)-int(b.B)) <= tol && abs(int(a.A)-int(b.A)) <= tol
 }
+
+// The filter's parameters are in the element's local space: a drop shadow's
+// offset turns with the element's rotation (Skia maps it through the layer
+// matrix and the layer is drawn through the remainder rotation).
+func TestFilterLayerSpace_ShadowOffsetIsLocal(t *testing.T) {
+	const page = `<!DOCTYPE html><style>body{margin:0}
+div{position:absolute;left:200px;top:200px;width:100px;height:100px;background:blue;
+transform:rotate(90deg);filter:drop-shadow(20px 0 0 black)}</style><div></div>`
+	img := renderFilterTestPage(t, page)
+	wantPixel(t, img, 250, 310, color.RGBA{0, 0, 0, 255}, "local +x offset lands below the box after rotate(90deg)")
+	wantPixel(t, img, 310, 250, color.RGBA{255, 255, 255, 255}, "no shadow to the right of the box")
+}

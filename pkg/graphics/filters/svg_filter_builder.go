@@ -515,9 +515,9 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		in := b.resolveInputAttr(prim, "in")
 		dx, _ := parseFloatAttr(prim, "dx", 2)
 		dy, _ := parseFloatAttr(prim, "dy", 2)
-		stdX, _ := parseStdDeviation1(prim)
+		stdX, stdY := parseStdDeviation1(prim)
 		r, g, bb, a := prim.FloodColor()
-		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, r, g, bb, a)
+		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, stdY, r, g, bb, a)
 	case "fedisplacementmap":
 		// Per SVG Filter Effects 1 §feDisplacementMap. `in` defaults to
 		// the chain default (handled by resolveInputAttr). `in2` has no

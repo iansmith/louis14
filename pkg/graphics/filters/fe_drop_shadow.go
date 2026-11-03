@@ -17,19 +17,19 @@ import (
 // SourceAlpha the shadow shape is derived from.
 type FEDropShadow struct {
 	baseEffect
-	DX, DY  float64
-	StdDev  float64
-	R, G, B uint8
-	A       float64
+	DX, DY           float64
+	StdDevX, StdDevY float64
+	R, G, B          uint8
+	A                float64
 }
 
 // NewFEDropShadow creates a drop-shadow effect. graphic is the chain output to
 // shadow; srcAlpha supplies the shadow shape.
 func NewFEDropShadow(graphic FilterEffect, srcAlpha FilterEffect, space InterpolationSpace,
-	dx, dy, stdDev float64, r, g, b uint8, a float64) *FEDropShadow {
+	dx, dy, stdDevX, stdDevY float64, r, g, b uint8, a float64) *FEDropShadow {
 	return &FEDropShadow{
 		baseEffect: baseEffect{inputs: []FilterEffect{graphic, srcAlpha}, space: space},
-		DX:         dx, DY: dy, StdDev: stdDev,
+		DX:         dx, DY: dy, StdDevX: stdDevX, StdDevY: stdDevY,
 		R: r, G: g, B: b, A: a,
 	}
 }
@@ -37,12 +37,13 @@ func NewFEDropShadow(graphic FilterEffect, srcAlpha FilterEffect, space Interpol
 // MapRect: the output covers the input rect unioned with the offset+blurred
 // shadow rect — the reason a drop-shadow buffer must not be clipped to the box.
 func (e *FEDropShadow) MapRect(r image.Rectangle) image.Rectangle {
-	ext := blurExtentForStdDev(e.StdDev)
+	ex := blurExtentForStdDev(e.StdDevX)
+	ey := blurExtentForStdDev(e.StdDevY)
 	dx := int(math.Round(e.DX))
 	dy := int(math.Round(e.DY))
 	shadow := image.Rect(
-		r.Min.X-ext+dx, r.Min.Y-ext+dy,
-		r.Max.X+ext+dx, r.Max.Y+ext+dy,
+		r.Min.X-ex+dx, r.Min.Y-ey+dy,
+		r.Max.X+ex+dx, r.Max.Y+ey+dy,
 	)
 	return r.Union(shadow)
 }
@@ -66,7 +67,7 @@ func (e *FEDropShadow) ApplyEffect(inputs []*image.RGBA, region image.Rectangle)
 	}
 
 	// 1. Blur the alpha shape.
-	blur := NewFEGaussianBlur(nil, e.space, e.StdDev, e.StdDev)
+	blur := NewFEGaussianBlur(nil, e.space, e.StdDevX, e.StdDevY)
 	blurred := blur.ApplyEffect([]*image.RGBA{srcAlpha}, region)
 
 	// 2. Offset it.

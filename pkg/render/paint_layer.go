@@ -1677,7 +1677,7 @@ func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, curr
 // the inline-paint-group branch and the ordinary descendant walk so grouped
 // members get identical treatment.
 func noteCompositingDescendants(childLayer, enclosingSC, currentBackdropRoot *PaintLayer) *PaintLayer {
-	if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
+	if hasBlendMode(childLayer) {
 		enclosingSC.HasBlendingDescendant = true
 	}
 	if childLayer.HasBackdropFilter && currentBackdropRoot != nil {

@@ -19,6 +19,7 @@ import (
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/graphics"
+	"louis14/pkg/graphics/filters"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
@@ -899,7 +900,7 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 		// element's content draw call become a no-op under
 		// visibility:hidden.
 		if layer.HasFilter {
-			r.paintLayerWithFilter(layer)
+			r.paintLayerWithEffect(layer, r.paintLayerWithFilter)
 			return
 		}
 		// Same spec rule on the SVG side: an inline <svg> with
@@ -937,15 +938,15 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 		return
 	}
 
-	// CSS Filters: render subtree to offscreen buffer, apply filters, composite.
+	// CSS Filters, inside the layer's effect node (opacity, mix-blend-mode).
 	if layer.HasFilter {
-		r.paintLayerWithFilter(layer)
+		r.paintLayerWithEffect(layer, r.paintLayerWithFilter)
 		return
 	}
 
-	// CSS mix-blend-mode: render to offscreen buffer and blend-composite.
-	if layer.BlendMode != css.MixBlendModeNormal && layer.BlendMode != "" {
-		r.paintLayerWithBlend(layer)
+	// CSS mix-blend-mode: the effect node over the layer's transformed content.
+	if hasBlendMode(layer) {
+		r.paintLayerWithEffect(layer, r.paintLayerContentDirectNoOpacityGroup)
 		return
 	}
 
@@ -1269,11 +1270,21 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	r.dc.DrawImage(buf, bx, by)
 }
 
-// paintLayerWithFilter renders the entire layer subtree into an offscreen
-// buffer sized to the filter region, runs the FilterEffect graph over it, and
-// composites the result back. Mirrors Blink's FilterPainter: the element
-// subtree is recorded into a source buffer, fed to the filter graph as
-// SourceGraphic, and the graph output replayed.
+// paintLayerWithFilter paints layer through its filter node: the subtree is
+// recorded into a layer as the graph's SourceGraphic, the graph runs over it,
+// and the output is drawn into the canvas.
+//
+// The filter node's local transform space is the layer's own transform
+// (FragmentPaintPropertyTreeBuilder::UpdateFilter sets local_transform_space
+// to context_.current.transform, paint_property_tree_builder.cc:2453 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and ConversionContext::
+// StartEffect switches to it before pushing the filter's SaveLayerOp
+// (paint_chunks_to_cc_layer.cc:690-731 @ a9f50e52). Skia then splits that
+// CTM into the layer the graph runs in and the remainder the layer is drawn
+// with (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600; skif::
+// Mapping::decomposeCTM, src/core/SkImageFilterTypes.cpp:259-298 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e — see filters.Mapping). Opacity
+// and blending belong to the parent effect node (paintLayerWithEffect).
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if r.isLayerTransformSingular(layer) {
@@ -1281,72 +1292,42 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 	box := layer.Box
 
-	// Device transform carried by the DC at this paint scope. Two matrices
-	// matter:
-	//
-	//   - dm: the ANCESTOR device matrix already on the DC (e.g. a
-	//     `transform: scale(10)` on the parent). This is the matrix the
-	//     source-render child DC must be seeded with, because
-	//     paintLayerContentWithEffects re-applies the layer's OWN transform.
-	//   - dmFull: ancestor ∘ own — the matrix the element's content actually
-	//     lands at in device pixels. The filter region and the composite
-	//     origin are computed from dmFull so a `transform` on the filtered
-	//     element itself (and the filter result's final position) is honored.
-	//
-	// Blink rasterizes a filter's SourceGraphic at the device-pixel scale
-	// (the "filter scale" = transform scale × device pixel ratio) so the
-	// input — and therefore the crisp box edges — are sampled at the
-	// resolution they are finally displayed at, not rasterized small and
-	// bilinearly upscaled. When both matrices are identity (the common
-	// no-transform case) this collapses to the original behaviour.
-	dm := deviceMatrixFromDC(r.dc)
-	dmFull := dm
-	if r.appliesTransform(layer) {
-		r.dc.Push()
-		r.applyTransforms(layer)
-		dmFull = deviceMatrixFromDC(r.dc)
-		r.dc.Pop()
+	// The SaveLayer's CTM: the draw context's matrix (the ancestors') ∘ the
+	// layer's own projection. A projective draw context cannot be read back;
+	// the CTM is then taken relative to it, and the remainder is still drawn
+	// through it.
+	own := r.ownLayerProjection(layer)
+	dm, dmKnown := deviceTransformFromDC(r.dc)
+	ctm := own
+	if dmKnown {
+		ctm = dm.Mul(own)
 	}
-	// The device-space path rasterizes the filter SourceGraphic at the
-	// device-pixel scale (so a scaled box has crisp edges instead of being
-	// rasterized small and bilinearly upscaled) and positions the result at
-	// its transformed device rect. It engages only for an axis-aligned
-	// (no rotation/skew) scale/translate, and only when:
-	//
-	//   - the ANCESTOR carries a scale (dm has scale), e.g.
-	//     `transform: scale(10)` on the parent of a filtered element — the
-	//     filter-scale-001 / filter-scaling-001 case; or
-	//   - the element's OWN transform is a pure translate (no scale), e.g.
-	//     `transform: translate(10px,10px)` on the filtered box — the
-	//     svg-filter-{filter,primitive}-units-user-space container-3 case.
-	//
-	// A self-SCALED filtered element (own transform has a scale component but
-	// no ancestor scale) deliberately keeps the legacy untransformed path:
-	// louis14 also re-applies the ancestor filter to a transformed/composited
-	// child layer, and engaging the device path there double-renders the
-	// scaled region over the parent's region. Rotation/skew and projective 3D
-	// transforms (deviceMatrixFromDC drops the perspective component) keep the
-	// legacy path too — the 3D-transform filter tests rely on it.
-	ancestorHasScale := !nearlyOne(dm.XX) || !nearlyOne(dm.YY)
-	ownHasScale := !nearlyOne(dmFull.XX) || !nearlyOne(dmFull.YY)
-	deviceScaled := isAxisAlignedScaleTranslate(dmFull) &&
-		!isIdentityMatrix(dmFull) &&
-		(ancestorHasScale || !ownHasScale)
 
-	var referenceBox image.Rectangle
-	if deviceScaled {
-		// Reference box: the border box mapped into device pixels via the
-		// full device matrix, corners rounded to align with the pixel-snapped
-		// content rasterization.
-		referenceBox = mapBoxToDeviceRect(dmFull, box.X, box.Y, box.Width, box.Height)
-	} else {
-		// Original untransformed path: border box at the layout position.
-		rbx := int(math.Floor(box.X))
-		rby := int(math.Floor(box.Y))
-		rbw := int(math.Ceil(box.X+box.Width)) - rbx
-		rbh := int(math.Ceil(box.Y+box.Height)) - rby
-		referenceBox = image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+	// Build the filter graph. The builder computes the filter region by
+	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
+	// Phase 7: SVG `<filter>` resource registry is supplied so
+	// `filter: url(#id)` references resolve via BuildReferenceFilter.
+	builder := &FilterEffectBuilder{
+		CurrentColor:       layer.TextColor,
+		Resources:          r.lookupSVGResources(),
+		ExternalSVGFetcher: r.externalSVGFetcher,
+		ImageFetcher:       r.imageFetcher,
 	}
+	borderBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
+	builder.ReferenceBox = snapRectFToDevice(borderBox)
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		// No supported CSS filter functions (e.g. only url() references,
+		// not yet handled) — paint without filtering rather than dropping
+		// the element.
+		r.paintLayerContentDirectNoOpacityGroup(layer)
+		return
+	}
+	var mapping filters.Mapping
+	if !mapping.DecomposeCTM(ctm, filters.CTMCapability(filter.LastEffect), r.filterDecompositionCenter(ctm)) {
+		return
+	}
+	paramToLayer := mapping.ParamToLayer
 
 	// SourceGraphic extent: the element subtree's paint bounds, which can
 	// extend beyond the border box (positioned/overflowing descendants).
@@ -1354,33 +1335,29 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// overflow; for drop-shadow especially the shadow is cast from the whole
 	// painted shape, so the source buffer must cover it. drop-shadow-clipped
 	// proves this: a descendant offset out of the border box still casts a
-	// shadow. In the device-scaled path it is mapped through the full device
-	// matrix so it lives in the same device-pixel space as referenceBox.
+	// shadow.
 	subtreeBounds := subtreeBorderBoxBounds(box)
-	if deviceScaled {
-		subtreeBounds = mapRectToDeviceRect(dmFull, subtreeBounds)
+	if !paramToLayer.IsIdentity() {
+		// The graph's geometry (reference box, filter region, primitive
+		// subregions) and its parameters are built in layer pixels, so
+		// rebuild it against the reference box mapped into the layer and
+		// with the parameter mapping. The box's corners are rounded to
+		// align with the pixel-snapped rasterization of the box.
+		ref, ok := mapRectToLayer(paramToLayer, borderBox)
+		sub, subOK := mapRectToLayer(paramToLayer, geometry.NewRectF(
+			float64(subtreeBounds.Min.X), float64(subtreeBounds.Min.Y),
+			float64(subtreeBounds.Dx()), float64(subtreeBounds.Dy())))
+		if !ok || !subOK {
+			return
+		}
+		builder.ReferenceBox = image.Rect(
+			int(math.Round(ref.X())), int(math.Round(ref.Y())),
+			int(math.Round(ref.Right())), int(math.Round(ref.Bottom())))
+		subtreeBounds = snapRectFToDevice(sub)
+		builder.Mapping = mapping
+		filter = builder.BuildFilterEffect(layer.Filters)
 	}
-	sourceExtent := referenceBox.Union(subtreeBounds)
-
-	// Build the filter graph. The builder computes the filter region by
-	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
-	// Phase 7: SVG `<filter>` resource registry is supplied so
-	// `filter: url(#id)` references resolve via BuildReferenceFilter.
-	builder := &FilterEffectBuilder{
-		ReferenceBox:       referenceBox,
-		CurrentColor:       layer.TextColor,
-		Resources:          r.lookupSVGResources(),
-		ExternalSVGFetcher: r.externalSVGFetcher,
-		ImageFetcher:       r.imageFetcher,
-	}
-	filter := builder.BuildFilterEffect(layer.Filters)
-	if filter == nil {
-		// No supported CSS filter functions (e.g. only url() references,
-		// not yet handled) — paint without filtering rather than dropping
-		// the element.
-		r.paintLayerContentWithEffects(layer)
-		return
-	}
+	sourceExtent := builder.ReferenceBox.Union(subtreeBounds)
 
 	// The filter region is the graph's forward-mapped bounds over the actual
 	// source extent (not just the border box) so the offscreen buffer covers
@@ -1411,7 +1388,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContentWithEffects(layer)
+		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
 
@@ -1421,7 +1398,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// filter graph still evaluates. Skip the content render in that case so
 	// the SourceGraphic is the zero-initialized transparent buf. (Descendants
 	// with explicit `visibility: visible` would still paint if we let
-	// paintLayerContentWithEffects run, mirroring CSS visibility inheritance;
+	// the content paint run, mirroring CSS visibility inheritance;
 	// the current bucket of visibility-hidden-with-filter tests has no such
 	// descendants, so the simple "skip the whole subtree" matches Blink's
 	// ApplyFilterIfNecessary path where the element's content draw is gated by
@@ -1430,22 +1407,13 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if layer.Visible {
 		origDC := r.dc
 		origTarget := r.target
-		childDC := origDC.NewChildContext(buf)
-		r.dc = childDC
+		r.dc = origDC.NewChildContext(buf)
 		r.target = buf
-		// Offset paint by -region.Min so it lands at the right buffer pixel.
+		// Layer pixel (bx, by) is buffer pixel (0, 0); the content paints in
+		// its local space mapped into the layer.
 		r.dc.Translate(float64(-bx), float64(-by))
-		if deviceScaled {
-			// Seed the child DC with the ANCESTOR device matrix.
-			// paintLayerContentWithEffects then composes the layer's OWN
-			// transform on top, so the effective content matrix is
-			// translate(-region.Min) ∘ dmFull — exactly the device space the
-			// region was computed in. The box therefore rasterizes at device
-			// scale (e.g. 150×150 under scale(10)) with crisp vector edges,
-			// instead of at layout scale (15×15) then bilinearly upscaled.
-			r.dc.MultiplyMatrix(dm.XX, dm.YX, dm.XY, dm.YY, dm.X0, dm.Y0)
-		}
-		r.paintLayerContentWithEffects(layer)
+		r.multiplyHomography(projectiveHomography(paramToLayer))
+		r.paintFilterSourceGraphic(layer)
 		r.dc = origDC
 		r.target = origTarget
 	}
@@ -1457,154 +1425,103 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if out == nil {
 		// Match the two earlier failure paths (filter == nil, oversize buffer):
 		// fall back to unfiltered paint so the element still renders rather
-		// than vanishing into an invisible hole. r.dc/r.target were already
-		// restored above.
-		r.paintLayerContentWithEffects(layer)
+		// than vanishing into an invisible hole.
+		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
-	if deviceScaled {
-		// The output is already in device pixels at region.Min — composite it
-		// 1:1, bypassing the DC's transform stack (which still carries the
-		// ancestor scale already baked into the device-space rasterization).
-		r.blitImageToTarget(out, bx, by)
-	} else {
-		// Identity device matrix: composite through the DC so the active clip
-		// stack (overflow:scroll/hidden, will-change layers) is honored.
-		r.dc.DrawImage(out, bx, by)
+
+	// Draw the layer through the remainder (fLayerToDevMatrix) on top of the
+	// draw context's matrix: own ∘ paramToLayer⁻¹, which is dm⁻¹ when the
+	// layer is device space.
+	var onDC geometry.Transform
+	switch {
+	case !mapping.LayerToDev.IsIdentity():
+		onDC = own.Mul(paramToLayer.InverseOrIdentity())
+	case dmKnown:
+		onDC = dm.InverseOrIdentity()
+	}
+	r.dc.Push()
+	r.multiplyHomography(projectiveHomography(onDC))
+	r.dc.DrawImage(out, bx, by)
+	r.dc.Pop()
+}
+
+// ownLayerProjection is the transform applyTransforms paints layer's content
+// with on top of the draw context: its projection (layerProjection), or the
+// identity when it paints under no transform of its own.
+func (r *Renderer) ownLayerProjection(layer *PaintLayer) geometry.Transform {
+	if !r.appliesTransform(layer) || r.transformTree == nil {
+		return geometry.Transform{}
+	}
+	node := r.transformTree.node(layer.Box)
+	if node == nil {
+		return geometry.Transform{}
+	}
+	return r.layerProjection(layer, node)
+}
+
+// paintFilterSourceGraphic paints layer's content as its filter's
+// SourceGraphic: in the layer's local space, which the caller has already
+// mapped into the filter layer. It does what enterLayerTransform does short
+// of applying the transform.
+func (r *Renderer) paintFilterSourceGraphic(layer *PaintLayer) {
+	r.paintViewBackground(layer)
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
+	r.paintLayerContent(layer)
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 }
 
-// deviceMatrixFromDC reconstructs the DrawContext's current affine matrix by
-// probing the transforms of three points. The DrawContext interface exposes
-// TransformPoint but not the raw matrix, so we recover it: with M(p) =
-// (XX·x + XY·y + X0, YX·x + YY·y + Y0), M(0,0) gives (X0,Y0) and the unit-axis
-// images give the columns.
-func deviceMatrixFromDC(dc textshape.DrawContext) textshape.Matrix {
+// filterDecompositionCenter is the local point a perspective CTM's layer
+// scale is measured at: the centre of the device clip mapped back through the
+// CTM. Mirrors compute_decomposition_center without content bounds
+// (src/core/SkCanvas.cpp:531-546 @ skia d19e557a).
+func (r *Renderer) filterDecompositionCenter(ctm geometry.Transform) geometry.PointF {
+	c := r.dc.ClipBounds()
+	v := [4]float64{float64(c.Min.X+c.Max.X) / 2, float64(c.Min.Y+c.Max.Y) / 2, 0, 1}
+	ctm.InverseOrIdentity().TransformVector4(&v)
+	return geometry.PointF{X: v[0] / v[3], Y: v[1] / v[3]}
+}
+
+// deviceTransformFromDC reconstructs the draw context's current matrix by
+// probing TransformPoint (the DrawContext interface does not expose it). It
+// reports false when the matrix is projective, which three probes cannot
+// recover.
+func deviceTransformFromDC(dc textshape.DrawContext) (geometry.Transform, bool) {
 	ox, oy := dc.TransformPoint(0, 0)
 	xx, yx := dc.TransformPoint(1, 0)
 	xy, yy := dc.TransformPoint(0, 1)
-	return textshape.Matrix{
-		XX: xx - ox, YX: yx - oy,
-		XY: xy - ox, YY: yy - oy,
-		X0: ox, Y0: oy,
-	}
-}
-
-// isIdentityMatrix reports whether m is the identity affine within a small
-// epsilon (the matrix is reconstructed from TransformPoint probes, so it
-// carries float rounding noise).
-func isIdentityMatrix(m textshape.Matrix) bool {
+	m := geometry.TransformAffine(xx-ox, yx-oy, xy-ox, yy-oy, ox, oy)
+	px, py := dc.TransformPoint(1, 1)
 	const eps = 1e-6
-	return nearlyOne(m.XX) && nearlyOne(m.YY) &&
-		math.Abs(m.XY) < eps && math.Abs(m.YX) < eps &&
-		math.Abs(m.X0) < eps && math.Abs(m.Y0) < eps
+	affine := math.Abs(px-(xx+xy-ox)) < eps && math.Abs(py-(yx+yy-oy)) < eps
+	return m, affine
 }
 
-// nearlyOne reports whether v is within a small epsilon of 1 (used to detect
-// the no-scale case in a reconstructed device matrix).
-func nearlyOne(v float64) bool { return math.Abs(v-1) < 1e-6 }
-
-// isAxisAlignedScaleTranslate reports whether m is a pure scale + translate
-// with no rotation or skew (off-diagonal terms ~0). The device-scaled filter
-// path only handles this case exactly; rotation/skew and projective 3D
-// transforms fall back to the untransformed path.
-func isAxisAlignedScaleTranslate(m textshape.Matrix) bool {
-	const eps = 1e-6
-	return math.Abs(m.XY) < eps && math.Abs(m.YX) < eps
-}
-
-// mapBoxToDeviceRect maps a CSS box (layout-space x/y/w/h) through the device
-// matrix and returns the integer reference rect in device pixels. The corners
-// are ROUNDED (not floor/ceil) so the reference box aligns with where the box
-// content is actually rasterized — the box painter pixel-snaps its border box
-// via pixelSnap (math.Round), and the filter SourceGraphic / feFlood
-// userSpaceOrigin anchor must match that snapped origin to avoid a 1px seam.
-// For a pure scale/translate this is exact; for a rotation it is the
-// axis-aligned bounding box (Blink's filter region is likewise axis-aligned).
-func mapBoxToDeviceRect(m textshape.Matrix, x, y, w, h float64) image.Rectangle {
-	x0, y0 := m.TransformPoint(x, y)
-	x1, y1 := m.TransformPoint(x+w, y+h)
-	x2, y2 := m.TransformPoint(x, y+h)
-	x3, y3 := m.TransformPoint(x+w, y)
-	minX := math.Min(math.Min(x0, x1), math.Min(x2, x3))
-	minY := math.Min(math.Min(y0, y1), math.Min(y2, y3))
-	maxX := math.Max(math.Max(x0, x1), math.Max(x2, x3))
-	maxY := math.Max(math.Max(y0, y1), math.Max(y2, y3))
-	return image.Rect(
-		int(math.Round(minX)), int(math.Round(minY)),
-		int(math.Round(maxX)), int(math.Round(maxY)),
-	)
-}
-
-// mapRectToDeviceRect maps an already-device-pixel integer rect (computed
-// in untransformed layout space) through the device matrix into device pixels.
-func mapRectToDeviceRect(m textshape.Matrix, r image.Rectangle) image.Rectangle {
-	if r.Empty() {
-		return r
-	}
-	return mapCornersToDeviceRect(m, float64(r.Min.X), float64(r.Min.Y), float64(r.Max.X), float64(r.Max.Y))
-}
-
-// mapCornersToDeviceRect transforms the four corners of (x0,y0)-(x1,y1) and
-// returns the axis-aligned integer bounding rect (floor min, ceil max).
-func mapCornersToDeviceRect(m textshape.Matrix, x0, y0, x1, y1 float64) image.Rectangle {
-	cx := [4]float64{x0, x1, x0, x1}
-	cy := [4]float64{y0, y0, y1, y1}
+// mapRectToLayer maps r's corners through t (with the perspective divide)
+// and returns their bounds. It reports false when a corner maps behind the
+// eye (w ≤ 0). The divide is done in float64; geometry.Transform.MapPoint
+// narrows to float32 (gfx::PointF), which would move the snapped edges.
+func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, bool) {
 	minX, minY := math.Inf(1), math.Inf(1)
 	maxX, maxY := math.Inf(-1), math.Inf(-1)
-	for i := 0; i < 4; i++ {
-		px, py := m.TransformPoint(cx[i], cy[i])
-		minX, maxX = math.Min(minX, px), math.Max(maxX, px)
-		minY, maxY = math.Min(minY, py), math.Max(maxY, py)
-	}
-	return image.Rect(
-		int(math.Floor(minX)), int(math.Floor(minY)),
-		int(math.Ceil(maxX)), int(math.Ceil(maxY)),
-	)
-}
-
-// blitImageToTarget composites a straight-alpha RGBA image onto the renderer's
-// target at absolute device pixel (dx, dy) using Porter-Duff source-over,
-// bypassing the DC transform/clip stack. Used to composite a filter output
-// that is already positioned and scaled in device pixels.
-func (r *Renderer) blitImageToTarget(im *image.RGBA, dx, dy int) {
-	if r == nil || r.target == nil || im == nil {
-		return
-	}
-	tb := r.target.Bounds()
-	sb := im.Bounds()
-	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
-		ty := sy - sb.Min.Y + dy
-		if ty < tb.Min.Y || ty >= tb.Max.Y {
-			continue
+	for _, p := range [4]geometry.PointF{
+		{X: r.X(), Y: r.Y()}, {X: r.Right(), Y: r.Y()},
+		{X: r.X(), Y: r.Bottom()}, {X: r.Right(), Y: r.Bottom()},
+	} {
+		w := t.Rc(3, 0)*p.X + t.Rc(3, 1)*p.Y + t.Rc(3, 3)
+		if w <= 0 {
+			return geometry.RectF{}, false
 		}
-		// Hoist the row-base pixel offsets and advance by 4 (RGBA stride) per
-		// column, avoiding a PixOffset multiply on every pixel.
-		si := im.PixOffset(sb.Min.X, sy)
-		for sx := sb.Min.X; sx < sb.Max.X; sx, si = sx+1, si+4 {
-			tx := sx - sb.Min.X + dx
-			if tx < tb.Min.X || tx >= tb.Max.X {
-				continue
-			}
-			sa := im.Pix[si+3]
-			if sa == 0 {
-				continue
-			}
-			ti := r.target.PixOffset(tx, ty)
-			if sa == 255 {
-				r.target.Pix[ti+0] = im.Pix[si+0]
-				r.target.Pix[ti+1] = im.Pix[si+1]
-				r.target.Pix[ti+2] = im.Pix[si+2]
-				r.target.Pix[ti+3] = 255
-				continue
-			}
-			inv := uint32(255 - sa)
-			r.target.Pix[ti+0] = uint8(uint32(im.Pix[si+0]) + uint32(r.target.Pix[ti+0])*inv/255)
-			r.target.Pix[ti+1] = uint8(uint32(im.Pix[si+1]) + uint32(r.target.Pix[ti+1])*inv/255)
-			r.target.Pix[ti+2] = uint8(uint32(im.Pix[si+2]) + uint32(r.target.Pix[ti+2])*inv/255)
-			r.target.Pix[ti+3] = uint8(uint32(sa) + uint32(r.target.Pix[ti+3])*inv/255)
-		}
+		x := (t.Rc(0, 0)*p.X + t.Rc(0, 1)*p.Y + t.Rc(0, 3)) / w
+		y := (t.Rc(1, 0)*p.X + t.Rc(1, 1)*p.Y + t.Rc(1, 3)) / w
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
 	}
+	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
 }
 
 // subtreeBorderBoxBounds returns the union of the border boxes of box and all
@@ -1628,22 +1545,6 @@ func subtreeBorderBoxBounds(box *layout.Box) image.Rectangle {
 		}
 	}
 	return bounds
-}
-
-// paintLayerContentWithEffects paints a layer's content applying its transform
-// and opacity, used inside an offscreen buffer (the filter source). It mirrors
-// the transform/opacity handling in paintLayer so a filtered element still
-// honours its own transform and opacity.
-func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
-	r.enterLayerTransform(layer)
-	if layer.Opacity < 1.0 {
-		r.dc.PushGroup()
-		r.paintLayerContent(layer)
-		r.dc.PopGroupWithAlpha(layer.Opacity)
-	} else {
-		r.paintLayerContent(layer)
-	}
-	r.exitLayerTransform(layer)
 }
 
 // applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
@@ -1829,7 +1730,7 @@ func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 	// Render the layer subtree into the buffer (transparent black init).
 	// The buffer is created with world-coordinate bounds so r.target
 	// pixel addressing inside the isolation matches the addressing used
-	// against the outer canvas. paintLayerWithBlend and other pixel-
+	// against the outer canvas. blendComposite and other pixel-
 	// level writers compute dst offsets via (dy - dstBounds.Min.Y) and
 	// (dx - dstBounds.Min.X), so a zero-origin buffer would mis-locate
 	// the blender's output by (-bx, -by). Mazarin's NewChildContext
@@ -1901,52 +1802,62 @@ func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 	r.exitLayerTransform(layer)
 }
 
-// paintLayerWithBlend renders the entire layer subtree into an offscreen
-// buffer, then blend-composites the result onto the destination using the
-// specified CSS mix-blend-mode.
-func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
-	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
+// hasBlendMode reports whether layer has a mix-blend-mode other than normal.
+func hasBlendMode(layer *PaintLayer) bool {
+	return layer.BlendMode != css.MixBlendModeNormal && layer.BlendMode != ""
+}
+
+// paintLayerWithEffect paints layer's contents (paintContents) inside its
+// effect node: a layer of its own that is composited with the layer's opacity
+// and mix-blend-mode. Blink's effect node for opacity and blending is the
+// parent of the layer's filter node (UpdateEffect runs before UpdateFilter,
+// paint_property_tree_builder.cc:4080-4082 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and ConversionContext::
+// StartEffect pushes its SaveLayer[Alpha]Op with the blend mode and opacity
+// separately from the filter's SaveLayerOp (paint_chunks_to_cc_layer.cc:
+// 700-735 @ a9f50e52) — so both apply to the filter's output.
+//
+// The layer is a buffer covering the current clip, addressed like the current
+// canvas and drawn under the same device matrix (Skia's saveLayer keeps the
+// CTM). With neither
+// effect, paintContents paints directly.
+func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*PaintLayer)) {
+	blend := hasBlendMode(layer)
+	if layer.Opacity >= 1 && !blend {
+		paintContents(layer)
+		return
+	}
 	if r.isLayerTransformSingular(layer) {
 		return
 	}
-	box := layer.Box
-	bx := int(math.Floor(box.X))
-	by := int(math.Floor(box.Y))
-	bw := int(math.Ceil(box.Width+(box.X-float64(bx)))) + 1
-	bh := int(math.Ceil(box.Height+(box.Y-float64(by)))) + 1
-
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
-		r.paintViewBackground(layer)
-		r.paintLayerContent(layer)
+	parent, ok := r.dc.Image().(*image.RGBA)
+	if !ok {
+		paintContents(layer)
 		return
 	}
-
-	// Render to offscreen buffer.
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	origDC := r.dc
-	origTarget := r.target
-	childDC := origDC.NewChildContext(buf)
-	r.dc = childDC
-	r.target = buf
-	r.dc.Translate(float64(-bx), float64(-by))
-
-	// Apply transforms and opacity within the offscreen buffer.
-	r.enterLayerTransform(layer)
-	if layer.Opacity < 1.0 {
-		r.dc.PushGroup()
-		r.paintLayerContent(layer)
-		r.dc.PopGroupWithAlpha(layer.Opacity)
-	} else {
-		r.paintLayerContent(layer)
+	// A projective draw context cannot be read back (deviceTransformFromDC);
+	// its affine part is used.
+	dm, _ := deviceTransformFromDC(r.dc)
+	clip := parent.Bounds().Intersect(r.dc.ClipBounds())
+	if clip.Empty() {
+		return
 	}
-	r.exitLayerTransform(layer)
+	buf := image.NewRGBA(clip)
+	origDC, origTarget := r.dc, r.target
+	r.dc = origDC.NewChildContext(buf)
+	r.target = buf
+	r.multiplyHomography(projectiveHomography(dm))
+	paintContents(layer)
+	r.dc, r.target = origDC, origTarget
 
-	// Restore original DC.
-	r.dc = origDC
-	r.target = origTarget
-
-	// Blend-composite the buffer onto the destination.
-	blendComposite(r.target, buf, bx, by, layer.BlendMode)
+	// The layer covers the clip in effect here (its bounds; a rounded clip
+	// is not reapplied).
+	applyConstantAlphaToBuffer(buf, layer.Opacity)
+	if !blend {
+		draw.Draw(parent, clip, buf, clip.Min, draw.Over)
+		return
+	}
+	blendComposite(parent, buf, clip.Min.X, clip.Min.Y, layer.BlendMode)
 }
 
 // blendComposite performs pixel-level blend compositing of src onto dst
