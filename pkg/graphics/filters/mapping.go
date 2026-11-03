@@ -125,7 +125,7 @@ func isScaleTranslateAsM33(m geometry.Transform) bool {
 const skScalarNearlyZero = 1.0 / (1 << 12)
 
 // decomposeTransformScale returns the layer scale decompose_transform
-// (src/core/SkImageFilterTypes.cpp:93-114) factors out of m's 3×3: the
+// (src/core/SkImageFilterTypes.cpp:93-116) factors out of m's 3×3: the
 // lengths of its x and y columns (SkMatrix::decomposeScale,
 // src/core/SkMatrix.cpp:1479-1499), or — under perspective, or when a column
 // is degenerate — one uniform scale: the square root of the differential area
