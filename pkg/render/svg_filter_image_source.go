@@ -84,6 +84,18 @@ func (p *svgFilterPrimitiveAdapter) ResolveImageSource(filterRegion, subregion i
 // shared svgSRGBToLinear / linearToSRGBf (defined in
 // svg_filter_painter.go) so there is one definition per direction.
 func convertImageSRGBToLinear(img *image.RGBA) {
+	convertImageTransfer(img, svgSRGBToLinear)
+}
+
+// convertImageLinearToSRGB is the opposite direction of
+// convertImageSRGBToLinear.
+func convertImageLinearToSRGB(img *image.RGBA) {
+	convertImageTransfer(img, linearToSRGBf)
+}
+
+// convertImageTransfer applies a transfer function to the unpremultiplied
+// colour channels of img, in place.
+func convertImageTransfer(img *image.RGBA, transfer func(float64) float64) {
 	pix := img.Pix
 	for i := 0; i+3 < len(pix); i += 4 {
 		a := pix[i+3]
@@ -92,9 +104,9 @@ func convertImageSRGBToLinear(img *image.RGBA) {
 		}
 		af := float64(a) / 255
 		inv := 1 / af
-		r := svgSRGBToLinear(float64(pix[i+0]) / 255 * inv)
-		g := svgSRGBToLinear(float64(pix[i+1]) / 255 * inv)
-		b := svgSRGBToLinear(float64(pix[i+2]) / 255 * inv)
+		r := transfer(float64(pix[i+0]) / 255 * inv)
+		g := transfer(float64(pix[i+1]) / 255 * inv)
+		b := transfer(float64(pix[i+2]) / 255 * inv)
 		pix[i+0] = clampU8Filter(r * af * 255)
 		pix[i+1] = clampU8Filter(g * af * 255)
 		pix[i+2] = clampU8Filter(b * af * 255)

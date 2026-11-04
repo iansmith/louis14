@@ -1153,16 +1153,8 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 				maskBuf := r.rasterizeSVGMask(masker, refBox, bw, bh, bx, by)
 				if maskBuf != nil {
 					applySVGMaskToBuffer(freshBuf, maskBuf, masker.MaskType)
-					// Composite freshBuf onto the page canvas using
-					// the same source-over math the existing CSS
-					// color-fill path produces, then apply opacity
-					// using the SAME compositor as a constant alpha
-					// modulation. This is what makes the test render
-					// pixel-identical to the rgba() ref render that
-					// the WPT reftest matches against (CSS Masking 1
-					// §3.7 rendering order: filter → mask → opacity →
-					// composite, with the louis14 canvas composite
-					// math matched to mazarin's gg backend).
+					// CSS Masking 1 §3.7 rendering order: filter → mask →
+					// opacity → composite.
 					compositeBufferWithOpacityOnto(r.target, freshBuf, bx, by, layer.Opacity)
 					return
 				}

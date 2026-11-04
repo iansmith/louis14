@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"image/color"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -84,16 +83,14 @@ type svgPaintContext struct {
 	Renderer *Renderer
 }
 
-// setDCColor sets the draw context's color from a css.Color,
-// mirroring the renderer-wide setColor helper. Centralized here so
-// the SVG painter cluster doesn't reach into Renderer methods.
+// setDCColor sets the draw context's color from a css.Color, premultiplied like
+// the renderer-wide setColor. Centralized here so the SVG painter cluster
+// doesn't reach into Renderer methods. Blink: SVGObjectPainter::PreparePaint,
+// core/paint/svg_object_painter.cc:180-181 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b (flags.setColor of the colour with
+// fill/stroke opacity folded in; Skia premultiplies it).
 func setDCColor(dc textshape.DrawContext, c css.Color) {
-	dc.SetColor(color.RGBA{
-		R: c.R,
-		G: c.G,
-		B: c.B,
-		A: uint8(c.A * 255),
-	})
+	dc.SetColor(premultipliedRGBA(c))
 }
 
 // viewportDeviceClip returns the SVG root viewport in device pixels, for the

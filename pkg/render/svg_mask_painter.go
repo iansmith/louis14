@@ -2,6 +2,8 @@ package render
 
 import (
 	"image"
+	"image/color"
+	"image/draw"
 	"math"
 
 	"louis14/pkg/geometry"
@@ -165,135 +167,25 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 	return maskBuf
 }
 
-// compositeBufferWithOpacityOnto composites a premultiplied RGBA
-// source buffer onto the target canvas at offset (dx, dy), applying
-// a constant alpha multiplier `opacity` to the source per pixel
-// during the composite step.
-//
-// The blend math matches the formula used by louis14's gg-backed
-// CSS color-fill path (pattern.Paint in third_party/gg/pattern.go).
-// Specifically the formula:
-//
-//	a = m - (src.A * coverage / m) * 0x101
-//	out.C = (dst.C * a + src.C * coverage) / m >> 8
-//
-// where m=65535, src.C is the per-channel 16-bit value, dst.C is the
-// destination's 16-bit value. coverage is the rasterizer's per-pixel
-// coverage (255 = full).
-//
-// Critically, the SOURCE values are interpreted as PREMULTIPLIED 16-
-// bit channels — but the function does NOT enforce the premultiplied
-// invariant (R, G, B ≤ A). This matches gg's behavior with
-// `color.RGBA{r, g, b, a}` where the caller passes straight-alpha
-// values into a premultiplied container (the existing CSS color path
-// does exactly this via setColor). The "buggy" output for invalid
-// premul colors is reproducible here so the SVG mask path's pixel
-// output matches the reftest reference, which is rendered through
-// the same gg-buggy path.
-//
-// `opacity` is the layer's CSS `opacity` (0..1). It modulates the
-// source alpha during composite — applying it post-mask matches
-// CSS Masking 1 §3.7 rendering order (mask → opacity → composite).
+// compositeBufferWithOpacityOnto composites a premultiplied RGBA source buffer
+// onto the target at offset (dx, dy) with source-over, scaling all four source
+// channels by `opacity` (0..1), the layer's CSS `opacity`: Blink's
+// SaveLayerAlphaOp (ConversionContext::StartEffect,
+// platform/graphics/compositing/paint_chunks_to_cc_layer.cc:734 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSS Masking 1 §3.7: mask, then
+// opacity, then composite.
 func compositeBufferWithOpacityOnto(target, src *image.RGBA, dx, dy int, opacity float64) {
 	if target == nil || src == nil {
 		return
 	}
-	if opacity < 0 {
-		opacity = 0
-	}
-	if opacity > 1 {
-		opacity = 1
-	}
-	tb := target.Bounds()
+	opacity = math.Min(1, math.Max(0, opacity))
+	mask := image.NewUniform(color.Alpha16{A: uint16(math.Round(opacity * 0xffff))})
 	sb := src.Bounds()
-	const m = 1<<16 - 1
-	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
-		ty := sy + dy
-		if ty < tb.Min.Y || ty >= tb.Max.Y {
-			continue
-		}
-		for sx := sb.Min.X; sx < sb.Max.X; sx++ {
-			tx := sx + dx
-			if tx < tb.Min.X || tx >= tb.Max.X {
-				continue
-			}
-			si := src.PixOffset(sx, sy)
-			ti := target.PixOffset(tx, ty)
-			// Read the source PREMULTIPLIED RGBA. The buffer was
-			// painted via gg's fill path which writes premultiplied
-			// values directly. We then un-premultiply to get the
-			// straight-alpha source color — that is what the masked
-			// element's CSS color was at this pixel.
-			sa := src.Pix[si+3]
-			if sa == 0 {
-				continue
-			}
-			var sR, sG, sB uint8
-			if sa == 255 {
-				sR, sG, sB = src.Pix[si+0], src.Pix[si+1], src.Pix[si+2]
-			} else {
-				// Un-premultiply.
-				af := float64(sa) / 255.0
-				sR = clampU8(math.Round(float64(src.Pix[si+0]) / af))
-				sG = clampU8(math.Round(float64(src.Pix[si+1]) / af))
-				sB = clampU8(math.Round(float64(src.Pix[si+2]) / af))
-			}
-			// Apply opacity to the source alpha. The straight-alpha
-			// source RGB is left intact — that's what setColor does
-			// for `rgba(R, G, B, A)`: stuffs straight RGB and alpha
-			// into a color.RGBA without premultiplying.
-			effectiveAlpha := uint8(math.Round(float64(sa) * opacity))
-			// Pack as the gg-style 16-bit "premultiplied" values that
-			// match how color.RGBA{R, G, B, A}.RGBA() expands the
-			// straight RGB to 16 bits.
-			cr := uint32(sR) * 0x101
-			cg := uint32(sG) * 0x101
-			cb := uint32(sB) * 0x101
-			ca := uint32(effectiveAlpha) * 0x101
-			ma := uint32(m) // full coverage
-			// gg's painter uses raw 8-bit dst values for `d*` and
-			// 16-bit blended values for the source — see
-			// third_party/gg/pattern.go. We replicate exactly so the
-			// SVG mask path's composite pixel-matches gg.
-			dr := uint32(target.Pix[ti+0])
-			dg := uint32(target.Pix[ti+1])
-			db := uint32(target.Pix[ti+2])
-			da := uint32(target.Pix[ti+3])
-			a := (m - ca*ma/m) * 0x101
-			rOut := (dr*a + cr*ma) / m
-			gOut := (dg*a + cg*ma) / m
-			bOut := (db*a + cb*ma) / m
-			aOut := (da*a + ca*ma) / m
-			target.Pix[ti+0] = uint8(rOut >> 8)
-			target.Pix[ti+1] = uint8(gOut >> 8)
-			target.Pix[ti+2] = uint8(bOut >> 8)
-			target.Pix[ti+3] = uint8(aOut >> 8)
-		}
-	}
-}
-
-// clampU8 clamps a float to [0, 255] and converts to uint8.
-func clampU8(v float64) uint8 {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return uint8(v)
+	draw.DrawMask(target, sb.Add(image.Pt(dx, dy)), src, sb.Min, mask, image.Point{}, draw.Over)
 }
 
 // applyConstantAlphaToBuffer multiplies every channel of `dst` by
-// the constant `alpha` ∈ [0, 1]. Used by the SVG mask path to apply
-// CSS `opacity` AFTER masking, matching the CSS Masking 1 §3.7
-// rendering order (filter → mask → opacity → composite). The buffer
-// stays premultiplied throughout.
-//
-// The mazarin DrawContext's PushGroup/PopGroupWithAlpha applies
-// opacity differently than what the plain CSS-color
-// `rgba(c, a)` path produces — to keep the SVG-mask path's
-// pixel output identical to the reference (which uses the plain
-// CSS path), we apply opacity manually here.
+// the constant `alpha` ∈ [0, 1]. The buffer stays premultiplied throughout.
 func applyConstantAlphaToBuffer(dst *image.RGBA, alpha float64) {
 	if dst == nil || alpha >= 1.0 {
 		return
