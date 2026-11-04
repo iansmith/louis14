@@ -577,25 +577,27 @@ func expandBackgroundProperty(style *Style, value string) {
 }
 
 // isCSSWideOrSubstitutedValue reports whether value is a CSS-wide keyword or
-// contains var()/attr(): property validators accept these as-is, leaving them
-// to cascade-time resolution.
+// contains var(), env() or attr(): property validators accept these as-is,
+// leaving them to computed-value time. Mirrors kHasReferences, which all three
+// set (parser/css_variable_parser.cc:582-587 for env() @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func isCSSWideOrSubstitutedValue(value string) bool {
 	if _, wide := cssWideKeyword(value); wide {
 		return true
 	}
-	return containsVarFunction(value) || containsAttrFunction(value)
+	return containsVarFunction(value) || containsEnvFunction(value) || containsAttrFunction(value)
 }
 
-// isValidKeywordPropertyAndValue reports whether value is one of the keyword
+// IsValidKeywordPropertyAndValue reports whether value is one of the keyword
 // property's keywords. Mirrors CSSParserFastPaths::
 // IsValidKeywordPropertyAndValue (parser/css_parser_fast_paths.cc:1142, clear
 // :1195-1199, float :1240-1244 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
 // which Blink calls for every keyword-only property; louis14 validates float
-// and clear here, and other properties pass. CSS-wide keywords and var()/attr()
-// are accepted as-is.
-func isValidKeywordPropertyAndValue(property, value string) bool {
+// and clear here, and other properties pass. The property name matches in any
+// case. CSS-wide keywords and pending substitutions are accepted as-is.
+func IsValidKeywordPropertyAndValue(property, value string) bool {
 	var keywords []string
-	switch property {
+	switch asciiToLower(property) {
 	case "clear":
 		keywords = []string{"none", "left", "right", "both", "inline-start", "inline-end"}
 	case "float":
