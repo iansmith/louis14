@@ -712,12 +712,9 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// HasPercent() text-indent as 0). Length and calc() length portions
 	// contribute their resolved value. Apply to both min and max content,
 	// since text-indent is always applied to the first formatted line.
-	if nodeStyle := node.Style(); nodeStyle != nil {
-		indent := nodeStyle.ResolveTextIndentIntrinsic()
-		if indent != 0 {
-			minContent += indent
-			maxContent += indent
-		}
+	if indent := node.Style().ResolveTextIndentIntrinsic(); indent != 0 {
+		minContent += indent
+		maxContent += indent
 	}
 
 	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
@@ -1721,12 +1718,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			// Non-float block child: flush any pending float row, since
 			// floats preceding this child occupy their own block positions
 			// and don't extend into this child's inline space at max-content.
-			floatMaxRow := floatStartMaxSum + floatEndMaxSum
-			if floatMaxRow > result.MaxContent {
-				result.MaxContent = floatMaxRow
-			}
-			floatStartMaxSum = 0
-			floatEndMaxSum = 0
+			flushFloatRowForClear(css.ClearBoth, &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
 			if childMax > result.MaxContent {
 				result.MaxContent = childMax
 			}

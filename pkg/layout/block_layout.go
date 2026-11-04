@@ -1891,18 +1891,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// This lets an enclosing non-scrollable inline-block propagate the correct
 	// synthesized value via its own LastBaseline.
 	logMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64())
-	if bla.style != nil {
-		d := bla.style.GetDisplay()
-		isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
-			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
-		if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
-			bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
-		} else if hasLastChildBaseline {
-			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
-				lastChildBlockOffset + lastChildBaseline)
-		} else if firstLineAscent > 0 {
-			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
-		}
+	d := bla.style.GetDisplay()
+	isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
+		d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
+	if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
+		bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
 	} else if hasLastChildBaseline {
 		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
@@ -1966,7 +1959,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		cellContentBlockSize = max(cellContentBlockSize, clearedBlock)
 	}
-	if bla.style != nil && bla.style.GetDisplay() == css.DisplayTableCell &&
+	if bla.style.GetDisplay() == css.DisplayTableCell &&
 		bla.space.TableSectionData != nil && finalBlockSize > cellContentBlockSize {
 		va := bla.style.GetVerticalAlign()
 		var vaShift float64
