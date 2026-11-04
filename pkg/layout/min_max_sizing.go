@@ -1692,20 +1692,19 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		childInColumnBfc := isInColumnBfc && !shouldPreventColumnSpannerDescendants(child)
 		childMin, childMax := childInlineContribution(ctx, child, space, nodeBlockSize, childInColumnBfc)
 
-		if !isOrthogonal {
-			if floatType := childStyle.Floating(cbDirection); floatType != css.FloatNone {
-				flushFloatRowForClear(childStyle.Clear(cbDirection), &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
+		floatType := childStyle.Floating(cbDirection)
+		if !isOrthogonal && floatType != css.FloatNone {
+			flushFloatRowForClear(childStyle.Clear(cbDirection), &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
 
-				if floatType == css.FloatLeft {
-					floatStartMaxSum += childMax
-				} else {
-					floatEndMaxSum += childMax
-				}
-				if childMin > result.MinContent {
-					result.MinContent = childMin
-				}
-				continue
+			if floatType == css.FloatLeft {
+				floatStartMaxSum += childMax
+			} else {
+				floatEndMaxSum += childMax
 			}
+			if childMin > result.MinContent {
+				result.MinContent = childMin
+			}
+			continue
 		}
 
 		// Non-float child (or orthogonal child — floats handled above for parallel).
@@ -1713,7 +1712,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			result.MinContent = childMin
 		}
 
-		if childStyle.IsFloating() {
+		if floatType != css.FloatNone {
 			// Orthogonal float: check clear before accumulating.
 			flushFloatRowForClear(childStyle.Clear(cbDirection), &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
 			// Orthogonal float: accumulate as start-side (conservative).
