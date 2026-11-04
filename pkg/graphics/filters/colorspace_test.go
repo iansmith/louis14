@@ -64,7 +64,7 @@ func TestPremultiplyRoundTrip(t *testing.T) {
 
 // TestconvertImageSpaceNoOp verifies same-space conversion leaves pixels
 // unchanged.
-func TestconvertImageSpaceNoOp(t *testing.T) {
+func TestConvertImageSpaceNoOp(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	for i := range img.Pix {
 		img.Pix[i] = uint8(i * 7)
@@ -81,7 +81,7 @@ func TestconvertImageSpaceNoOp(t *testing.T) {
 
 // TestconvertImageSpaceRoundTrip verifies sRGB->linear->sRGB on an image
 // returns close to the original (within 8-bit quantization noise).
-func TestconvertImageSpaceRoundTrip(t *testing.T) {
+func TestConvertImageSpaceRoundTrip(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for i := 0; i+3 < len(img.Pix); i += 4 {
 		img.Pix[i] = uint8((i * 3) % 256)
@@ -107,7 +107,7 @@ func TestconvertImageSpaceRoundTrip(t *testing.T) {
 
 // TestconvertImageSpace_SubImageOnly: a sub-image shares its parent's Pix, whose
 // rows are longer than the sub-image. Only pixels inside its bounds convert.
-func TestconvertImageSpace_SubImageOnly(t *testing.T) {
+func TestConvertImageSpace_SubImageOnly(t *testing.T) {
 	parent := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
