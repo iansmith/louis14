@@ -59,7 +59,8 @@ func TestFloatClear_KeywordsMatchCaseInsensitively(t *testing.T) {
 
 // TestFloatClear_SupportsRejectsInvalidKeyword pins that @supports sees the
 // same grammar: CSS.supports parses through CSSPropertyParser, so a value the
-// parser drops is unsupported.
+// parser drops is unsupported, with the property name in any case and env() as
+// a pending substitution.
 func TestFloatClear_SupportsRejectsInvalidKeyword(t *testing.T) {
 	cases := []struct {
 		property, value string
@@ -69,10 +70,81 @@ func TestFloatClear_SupportsRejectsInvalidKeyword(t *testing.T) {
 		{"clear", "inline-start", true},
 		{"float", "both", false},
 		{"float", "inline-end", true},
+		{"clear", "env(a,left)", true},
+		{"float", "ENV(a,left)", true},
+		{"CLEAR", "inline", false},
+		{"Float", "both", false},
+		{"CLEAR", "left", true},
 	}
 	for _, c := range cases {
 		if got := isSupportedDeclaration(c.property, c.value); got != c.want {
 			t.Errorf("isSupportedDeclaration(%q, %q) = %v, want %v", c.property, c.value, got, c.want)
 		}
+	}
+}
+
+// TestParseInlineStyle_InvalidKeywordDropsDeclaration pins the style attribute
+// path: it reaches the same check as a rule, since
+// CSSParserImpl::ParseInlineStyleDeclaration consumes its declarations through
+// ConsumeDeclarationValue too (parser/css_parser_impl.cc:371, :3470 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestParseInlineStyle_InvalidKeywordDropsDeclaration(t *testing.T) {
+	cases := []struct {
+		name, attr, property, want string
+	}{
+		{"clear: inline", "clear:left;clear:inline", "clear", "left"},
+		{"clear: bogus", "clear:left;clear:bogus", "clear", "left"},
+		{"float: both", "float:left;float:both", "float", "left"},
+		{"!important on an invalid value", "clear:left;clear:inline !important", "clear", "left"},
+		{"!important on a valid value", "clear:none;clear:left !important", "clear", "left"},
+		{"upper-case property name", "clear:left;CLEAR:inline", "clear", "left"},
+		{"a valid value still replaces", "clear:left;clear:both", "clear", "both"},
+		{"env() is a pending substitution", "float:left;float:env(x,right)", "float", "right"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got, _ := ParseInlineStyle(c.attr, nil).Get(c.property); got != c.want {
+				t.Errorf("%s = %q, want %q", c.property, got, c.want)
+			}
+		})
+	}
+}
+
+// TestDeclaration_EnvIsPendingSubstitution pins that any env() reference makes
+// the declaration a pending substitution, not checked against the property's
+// grammar at parse time: ConsumeEnvVariableReference sets kHasReferences
+// (parser/css_variable_parser.cc:582-587 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). This holds for every validator on
+// isCSSWideOrSubstitutedValue; each property's getter reads through Style.Get,
+// which substitutes env().
+func TestDeclaration_EnvIsPendingSubstitution(t *testing.T) {
+	cases := []struct {
+		property, value, want string
+	}{
+		{"float", "env(x,right)", "right"},
+		{"float", "ENV(x,right)", "right"},
+		{"float", "env(x, right)", "right"},
+		{"clear", "env(x,left)", "left"},
+		{"image-orientation", "env(x,none)", "none"},
+		{"object-position", "env(x,10px)", "10px"},
+		{"background-size", "env(x,10px)", "10px"},
+		{"object-view-box", "env(x,none)", "none"},
+	}
+	for _, c := range cases {
+		t.Run(c.property+":"+c.value, func(t *testing.T) {
+			decls := parseDeclarations(c.property + ":" + c.value).Declarations
+			if decls[c.property] != c.value {
+				t.Fatalf("declaration = %q, want it kept as %q", decls[c.property], c.value)
+			}
+			s := NewStyle()
+			s.Set(c.property, decls[c.property])
+			if got, _ := s.Get(c.property); got != c.want {
+				t.Errorf("substituted = %q, want %q", got, c.want)
+			}
+		})
+	}
+	// An identifier that merely ends in "env" is not an env() reference.
+	if got := parseDeclarations("float:left;float:xenv(a,right)").Declarations["float"]; got != "left" {
+		t.Errorf("float:xenv() = %q, want the earlier left", got)
 	}
 }

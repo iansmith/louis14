@@ -162,3 +162,50 @@ func TestStyleCSSTextSetterReplacesDeclarationBlock(t *testing.T) {
 		t.Errorf("style attribute after cssText = \"\" is %q, want empty", got)
 	}
 }
+
+// An invalid float or clear value leaves the existing declaration alone: the
+// setters go through the parser, and a parse error changes nothing
+// (AbstractPropertySetCSSStyleDeclaration::SetPropertyInternal,
+// core/css/abstract_property_set_css_style_declaration.cc:278-279 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Reads and rewrites of the style
+// attribute see the block the parser would build from it.
+func TestStyleSettersDropInvalidFloatClearValues(t *testing.T) {
+	cases := []struct {
+		name, attr, script, want string
+	}{
+		{"property setter", `clear:left`, `el.style.clear = "inline";`, "clear:left"},
+		{"setProperty", `clear:left`, `el.style.setProperty("clear", "bogus");`, "clear:left"},
+		{"setProperty, upper-case name", `clear:left`, `el.style.setProperty("CLEAR", "bogus");`, "clear:left"},
+		{"cssFloat", `float:left`, `el.style.cssFloat = "both";`, "float:left"},
+		{"empty value removes", `clear:left`, `el.style.clear = "";`, ""},
+		{"setProperty, empty value removes", `clear:left`, `el.style.setProperty("clear", "");`, ""},
+		{"valid value replaces", `clear:left`, `el.style.clear = "both";`, "clear: both"},
+		{"env() is accepted", `clear:left`, `el.style.clear = "env(a,both)";`, "clear: env(a,both)"},
+		{"rewrite keeps the earlier valid value", `clear:left;clear:inline`, `el.style.removeProperty("color");`, "clear: left"},
+		{"!important stays valid in the attribute", `clear:left !important`, `el.style.removeProperty("color");`, "clear: left !important"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := parseHTML(t, `<div id="el" style="`+c.attr+`"></div>`)
+			doc.Scripts = append(doc.Scripts, `var el = document.getElementById("el"); `+c.script)
+			if err := New().Execute(doc); err != nil {
+				t.Fatal(err)
+			}
+			if got := getElementById(doc.Root, "el").Attributes["style"]; got != c.want {
+				t.Errorf("style attribute = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestStyleReadsSkipInvalidFloatClearValues(t *testing.T) {
+	doc := parseHTML(t, `<div id="el" style="clear:left;clear:inline"></div>`)
+	doc.Scripts = append(doc.Scripts, `
+		var el = document.getElementById("el");
+		if (el.style.clear !== "left") throw new Error("clear: " + el.style.clear);
+		if (el.style.cssText !== "clear: left;") throw new Error("cssText: " + el.style.cssText);
+	`)
+	if err := New().Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
