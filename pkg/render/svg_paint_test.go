@@ -831,6 +831,36 @@ func TestSVG_FilterOverflowStaysInsideViewport(t *testing.T) {
 	}
 }
 
+// TestSVG_FilterMaskRunsAfterSRGBConversion — the sRGB transform is the end of
+// the filter; clip and mask are outside it, so they scale sRGB bytes. Blink:
+// core/paint/filter_effect_builder.cc:500-505 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Gray 32 is linear 4, sRGB 34 after the
+// round trip; under a mask of 12/255 that is 2 on black. Masking the 8-bit linear
+// buffer first rounds 4*12/255 to 0, which no conversion can recover.
+func TestSVG_FilterMaskRunsAfterSRGBConversion(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0;background:black">` +
+		`<svg width="100" height="100"><defs>` +
+		`<filter id="f" x="0" y="0" width="1" height="1"><feOffset dx="0" dy="0"/></filter>` +
+		`<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">` +
+		`<rect width="100" height="100" fill="white" fill-opacity="0.05"/></mask>` +
+		`</defs><rect width="100" height="100" fill="rgb(32,32,32)" filter="url(#f)" mask="url(#m)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	sampleColorClose(t, img, 50, 50, 2, 2, 2, 0, "masked linearRGB filter result")
+}
+
+// TestSVG_ContainerFilterWithoutGraphKeepsSourceColours — when a <g>'s filter has
+// no result, the fallback composites the untouched source, which is sRGB device
+// content whatever the filter's color-interpolation-filters says.
+func TestSVG_ContainerFilterWithoutGraphKeepsSourceColours(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100"><defs><filter id="e"></filter></defs>` +
+		`<g filter="url(#e)"><rect width="100" height="100" fill="rgb(136,136,136)"/></g>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	sampleColorClose(t, img, 50, 50, 136, 136, 136, 0, "unfiltered source")
+}
+
 // TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a
 // sharp-edged shape. Interior pixels stay near saturated; edge pixels
 // fall to a mid-value.
