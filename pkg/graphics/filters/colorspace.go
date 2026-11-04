@@ -100,33 +100,37 @@ func premultiply(r, g, b, a float64) [4]uint8 {
 	}
 }
 
-// convertImageSpace converts an image in place between interpolation spaces.
-// The conversion un-premultiplies, applies the transfer function to the colour
-// channels (alpha is space-independent), and re-premultiplies. It is a no-op
-// when from == to. This establishes the invariant that every filter primitive
-// works in its declared space with the graph edges doing the conversions.
-func convertImageSpace(img *image.RGBA, from, to InterpolationSpace) {
+// ConvertImageSpace converts an image in place between interpolation spaces,
+// over img's bounds. The conversion un-premultiplies, applies the transfer
+// function to the colour channels (alpha is space-independent), and
+// re-premultiplies. It is a no-op when from == to. This establishes the invariant
+// that every filter primitive works in its declared space with the graph edges
+// doing the conversions.
+func ConvertImageSpace(img *image.RGBA, from, to InterpolationSpace) {
 	if from == to || img == nil {
 		return
 	}
-	pix := img.Pix
-	for i := 0; i+3 < len(pix); i += 4 {
-		a := pix[i+3]
-		if a == 0 {
-			continue
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		pix := img.Pix[img.PixOffset(bounds.Min.X, y):][:bounds.Dx()*4]
+		for i := 0; i+3 < len(pix); i += 4 {
+			a := pix[i+3]
+			if a == 0 {
+				continue
+			}
+			r, g, b, af := unpremultiply([4]uint8{pix[i], pix[i+1], pix[i+2], a})
+			switch {
+			case from == InterpolationSpaceSRGB && to == InterpolationSpaceLinearRGB:
+				r = srgbToLinear(r)
+				g = srgbToLinear(g)
+				b = srgbToLinear(b)
+			case from == InterpolationSpaceLinearRGB && to == InterpolationSpaceSRGB:
+				r = linearToSRGB(r)
+				g = linearToSRGB(g)
+				b = linearToSRGB(b)
+			}
+			out := premultiply(r, g, b, af)
+			pix[i], pix[i+1], pix[i+2], pix[i+3] = out[0], out[1], out[2], out[3]
 		}
-		r, g, b, af := unpremultiply([4]uint8{pix[i], pix[i+1], pix[i+2], a})
-		switch {
-		case from == InterpolationSpaceSRGB && to == InterpolationSpaceLinearRGB:
-			r = srgbToLinear(r)
-			g = srgbToLinear(g)
-			b = srgbToLinear(b)
-		case from == InterpolationSpaceLinearRGB && to == InterpolationSpaceSRGB:
-			r = linearToSRGB(r)
-			g = linearToSRGB(g)
-			b = linearToSRGB(b)
-		}
-		out := premultiply(r, g, b, af)
-		pix[i], pix[i+1], pix[i+2], pix[i+3] = out[0], out[1], out[2], out[3]
 	}
 }

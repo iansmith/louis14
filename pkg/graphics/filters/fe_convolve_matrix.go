@@ -69,12 +69,19 @@ func (e *FEConvolveMatrix) MapRect(r image.Rectangle) image.Rectangle {
 	return image.Rect(r.Min.X-left, r.Min.Y-top, r.Max.X+right, r.Max.Y+bottom)
 }
 
-// ApplyEffect applies the convolution kernel to the input image.
-// All arithmetic is in [0,1] float64; per SVG Filter Effects §feConvolveMatrix
-// the formula is result[c] = Σ(src[c]*kernel) / divisor + bias, with values
-// in [0,1] normalized space. The input is already in the declared operating
-// space (premultiplied); bias is added after the sum/divisor step, matching
-// Skia's MatrixConvolutionPaintFilter gain+bias model.
+// ApplyEffect applies the convolution kernel to the input image, as Skia's
+// matrix convolution shader does (make_matrix_conv_shader,
+// src/core/SkKnownRuntimeEffects.cpp:166-196 @
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), with Blink's parameters
+// (platform/graphics/filters/fe_convolve_matrix.cc:148-152 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b: gain = 1/divisor,
+// convolve_alpha = !preserve_alpha_).
+//
+//	color = sum*gain + bias
+//	preserveAlpha: accumulate unpremultiplied; color = (color.rgb*a, a), where a
+//	               is the alpha of the sample under the target
+//	otherwise:     accumulate premultiplied; color.a = saturate(color.a)
+//	color.rgb = clamp(color.rgb, 0, color.a)
 func (e *FEConvolveMatrix) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
 	in := firstInput(inputs, region)
 	out := newRGBA(region)
@@ -123,30 +130,40 @@ func (e *FEConvolveMatrix) ApplyEffect(inputs []*image.RGBA, region image.Rectan
 
 					kv := e.KernelMatrix[ky*order+kx]
 					si := sy*in.Stride + sx*4
-					sumR += float64(in.Pix[si]) * inv * kv
-					sumG += float64(in.Pix[si+1]) * inv * kv
-					sumB += float64(in.Pix[si+2]) * inv * kv
-					sumA += float64(in.Pix[si+3]) * inv * kv
+					px := [4]uint8{in.Pix[si], in.Pix[si+1], in.Pix[si+2], in.Pix[si+3]}
+					var r, g, b, a float64
+					if e.PreserveAlpha {
+						r, g, b, a = unpremultiply(px)
+					} else {
+						r, g, b, a = float64(px[0])*inv, float64(px[1])*inv, float64(px[2])*inv, float64(px[3])*inv
+					}
+					sumR += r * kv
+					sumG += g * kv
+					sumB += b * kv
+					sumA += a * kv
 				}
 			}
 
-			rOut := clamp01(sumR/divisor + bias)
-			gOut := clamp01(sumG/divisor + bias)
-			bOut := clamp01(sumB/divisor + bias)
+			rOut := sumR/divisor + bias
+			gOut := sumG/divisor + bias
+			bOut := sumB/divisor + bias
 
 			var aOut float64
 			if e.PreserveAlpha {
-				si := y*in.Stride + x*4
-				aOut = float64(in.Pix[si+3]) * inv
+				// The kernel position under the target samples (x, y) itself.
+				aOut = float64(in.Pix[y*in.Stride+x*4+3]) * inv
+				rOut *= aOut
+				gOut *= aOut
+				bOut *= aOut
 			} else {
 				aOut = clamp01(sumA/divisor + bias)
 			}
 
 			di := y*out.Stride + x*4
-			out.Pix[di] = uint8(rOut*255 + 0.5)
-			out.Pix[di+1] = uint8(gOut*255 + 0.5)
-			out.Pix[di+2] = uint8(bOut*255 + 0.5)
-			out.Pix[di+3] = uint8(aOut*255 + 0.5)
+			out.Pix[di] = clampByte(min(rOut, aOut))
+			out.Pix[di+1] = clampByte(min(gOut, aOut))
+			out.Pix[di+2] = clampByte(min(bOut, aOut))
+			out.Pix[di+3] = clampByte(aOut)
 		}
 	}
 

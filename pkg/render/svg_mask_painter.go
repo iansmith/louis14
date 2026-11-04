@@ -2,8 +2,6 @@ package render
 
 import (
 	"image"
-	"image/color"
-	"image/draw"
 	"math"
 
 	"louis14/pkg/geometry"
@@ -167,10 +165,9 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 	return maskBuf
 }
 
-// compositeBufferWithOpacityOnto composites a premultiplied RGBA source buffer
-// onto the target at offset (dx, dy) with source-over, scaling all four source
-// channels by `opacity` (0..1), the layer's CSS `opacity`: Blink's
-// SaveLayerAlphaOp (ConversionContext::StartEffect,
+// compositeBufferWithOpacityOnto draws a premultiplied buffer onto the target at
+// offset (dx, dy) under a layer's `opacity` (0..1): Blink's SaveLayerAlphaOp
+// (ConversionContext::StartEffect,
 // platform/graphics/compositing/paint_chunks_to_cc_layer.cc:734 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSS Masking 1 §3.7: mask, then
 // opacity, then composite.
@@ -178,14 +175,13 @@ func compositeBufferWithOpacityOnto(target, src *image.RGBA, dx, dy int, opacity
 	if target == nil || src == nil {
 		return
 	}
-	opacity = math.Min(1, math.Max(0, opacity))
-	mask := image.NewUniform(color.Alpha16{A: uint16(math.Round(opacity * 0xffff))})
 	sb := src.Bounds()
-	draw.DrawMask(target, sb.Add(image.Pt(dx, dy)), src, sb.Min, mask, image.Point{}, draw.Over)
+	rasterPipelineSpriteBlit(target, sb.Add(image.Pt(dx, dy)), src, sb.Min, clampFilter01(opacity))
 }
 
 // applyConstantAlphaToBuffer multiplies every channel of `dst` by
-// the constant `alpha` ∈ [0, 1]. The buffer stays premultiplied throughout.
+// the constant `alpha` ∈ [0, 1], for a layer that goes through blendComposite.
+// The buffer stays premultiplied throughout.
 func applyConstantAlphaToBuffer(dst *image.RGBA, alpha float64) {
 	if dst == nil || alpha >= 1.0 {
 		return

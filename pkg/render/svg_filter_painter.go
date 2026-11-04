@@ -3,7 +3,6 @@ package render
 import (
 	"image"
 	"image/color"
-	"image/draw"
 	"math"
 
 	"louis14/pkg/css"
@@ -11,23 +10,6 @@ import (
 	"louis14/pkg/graphics/filters"
 	"louis14/pkg/layout/svg"
 )
-
-// sRGB ↔ linear transfer functions, mirroring filters/colorspace.go.
-// Duplicated here to avoid exporting package-private helpers.
-
-func svgSRGBToLinear(c float64) float64 {
-	if c <= 0.04045 {
-		return c / 12.92
-	}
-	return math.Pow((c+0.055)/1.055, 2.4)
-}
-
-func linearToSRGBf(c float64) float64 {
-	if c <= 0.0031308 {
-		return c * 12.92
-	}
-	return 1.055*math.Pow(c, 1.0/2.4) - 0.055
-}
 
 // paintWithSVGFilter dispatches an SVG shape through its referenced
 // `<filter>` element. Mirrors Blink's SVGShapePainter routing through
@@ -288,13 +270,13 @@ func (sp *svgShapePainter) rasterizeClipCoverageForRegion(clipPathReferenceID st
 // overflow (the default 10% filter-region expansion in SVG Filter
 // Effects 1 §4.4) past the host element.
 //
-// `buf` is premultiplied and reaches the target through source-over
-// (SkBlendMode::kSrcOver: out = src + dst*(1-srcA)). A result in linearRGB is
-// converted to sRGB first, so the composite itself runs in sRGB: Blink appends
-// a TransformInterpolationSpace to sRGB at the end of the filter
+// `buf` is premultiplied and reaches the target through source-over. A result
+// in linearRGB is converted to sRGB first, so the composite itself runs in sRGB:
+// Blink appends a TransformInterpolationSpace to sRGB at the end of the filter
 // (core/paint/filter_effect_builder.cc:500-505,
 // platform/graphics/filters/paint_filter_builder.cc:92-101 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `buf` itself is left unchanged.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The conversion is in place, over
+// the pixels written, so `buf` belongs to this call: no caller reuses it.
 func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, clipRect image.Rectangle, space filters.InterpolationSpace) {
 	if r == nil || r.target == nil || buf == nil {
 		return
@@ -305,24 +287,11 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 	if dest.Empty() {
 		return
 	}
-	src := buf
 	if space == filters.InterpolationSpaceLinearRGB {
-		src = image.NewRGBA(sb)
-		copy(src.Pix, buf.Pix)
-		convertImageLinearToSRGB(src)
+		written := buf.SubImage(dest.Sub(offset)).(*image.RGBA)
+		filters.ConvertImageSpace(written, space, filters.InterpolationSpaceSRGB)
 	}
-	draw.Draw(r.target, dest, src, dest.Min.Sub(offset), draw.Over)
-}
-
-// clampU8Filter clamps a float to [0, 255] and rounds to uint8.
-func clampU8Filter(v float64) uint8 {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return uint8(v + 0.5)
+	rasterPipelineSpriteBlit(r.target, dest, buf, dest.Min.Sub(offset), 1)
 }
 
 // shapeDeviceReferenceBox computes the shape's stroke-inflated user-space

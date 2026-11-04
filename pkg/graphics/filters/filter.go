@@ -55,7 +55,7 @@ func (f *Filter) ApplyToSRGB() *image.RGBA {
 	}
 	converted := image.NewRGBA(out.Bounds())
 	copy(converted.Pix, out.Pix)
-	convertImageSpace(converted, f.LastEffect.OperatingSpace(), InterpolationSpaceSRGB)
+	ConvertImageSpace(converted, f.LastEffect.OperatingSpace(), InterpolationSpaceSRGB)
 	return converted
 }
 
@@ -73,7 +73,7 @@ func (f *Filter) evaluate(e FilterEffect, memo map[FilterEffect]*image.RGBA) *im
 			// mutated for another consumer in a different space.
 			cp := image.NewRGBA(depImg.Bounds())
 			copy(cp.Pix, depImg.Pix)
-			convertImageSpace(cp, dep.OperatingSpace(), e.OperatingSpace())
+			ConvertImageSpace(cp, dep.OperatingSpace(), e.OperatingSpace())
 			depImg = cp
 		}
 		inputs[i] = depImg

@@ -62,7 +62,7 @@ func TestPremultiplyRoundTrip(t *testing.T) {
 	}
 }
 
-// TestconvertImageSpaceNoOp verifies same-space conversion leaves pixels
+// TestConvertImageSpaceNoOp verifies same-space conversion leaves pixels
 // unchanged.
 func TestConvertImageSpaceNoOp(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
@@ -71,7 +71,7 @@ func TestConvertImageSpaceNoOp(t *testing.T) {
 	}
 	orig := make([]uint8, len(img.Pix))
 	copy(orig, img.Pix)
-	convertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceSRGB)
+	ConvertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceSRGB)
 	for i := range img.Pix {
 		if img.Pix[i] != orig[i] {
 			t.Fatalf("no-op conversion changed pixel %d: %d -> %d", i, orig[i], img.Pix[i])
@@ -79,7 +79,7 @@ func TestConvertImageSpaceNoOp(t *testing.T) {
 	}
 }
 
-// TestconvertImageSpaceRoundTrip verifies sRGB->linear->sRGB on an image
+// TestConvertImageSpaceRoundTrip verifies sRGB->linear->sRGB on an image
 // returns close to the original (within 8-bit quantization noise).
 func TestConvertImageSpaceRoundTrip(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
@@ -91,8 +91,8 @@ func TestConvertImageSpaceRoundTrip(t *testing.T) {
 	}
 	orig := make([]uint8, len(img.Pix))
 	copy(orig, img.Pix)
-	convertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceLinearRGB)
-	convertImageSpace(img, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
+	ConvertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceLinearRGB)
+	ConvertImageSpace(img, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
 	// The intermediate linearRGB image is stored at 8-bit depth, so dark
 	// colours lose precision (sRGB's gamma curve crowds many sRGB codes into
 	// a few linear codes near black). A few LSBs of error is expected and
@@ -105,7 +105,7 @@ func TestConvertImageSpaceRoundTrip(t *testing.T) {
 	}
 }
 
-// TestconvertImageSpace_SubImageOnly: a sub-image shares its parent's Pix, whose
+// TestConvertImageSpace_SubImageOnly: a sub-image shares its parent's Pix, whose
 // rows are longer than the sub-image. Only pixels inside its bounds convert.
 func TestConvertImageSpace_SubImageOnly(t *testing.T) {
 	parent := image.NewRGBA(image.Rect(0, 0, 4, 4))
@@ -115,7 +115,7 @@ func TestConvertImageSpace_SubImageOnly(t *testing.T) {
 		}
 	}
 	sub := parent.SubImage(image.Rect(1, 1, 3, 3)).(*image.RGBA)
-	convertImageSpace(sub, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
+	ConvertImageSpace(sub, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
 			inside := image.Pt(x, y).In(sub.Rect)

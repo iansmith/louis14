@@ -1120,16 +1120,10 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	// claims (SVG `<mask>` resolution: mask-opacity-1d gate).
 	//
 	// Note: per CSS Masking 1 §3.7 the rendering order is filter →
-	// mask → opacity → composite. The buffer already had opacity
-	// applied above (via PushGroup/PopGroupWithAlpha). We undo that
-	// by repainting without opacity below if an SVG mask is in play,
-	// because mazarin's PushGroup/PopGroupWithAlpha applies opacity
-	// using PRE-multiplied alpha math that produces a slightly
-	// different pixel value than the per-channel-times-alpha math the
-	// plain CSS-color rendering uses. To match the reftest's
-	// reference page (which uses rgba(c, a) and goes through plain
-	// CSS-color rendering), the SVG-mask code path must apply
-	// opacity post-mask via the SAME per-channel multiplication.
+	// mask → opacity → composite. The buffer above already had opacity
+	// applied through PushGroup/PopGroupWithAlpha, so this branch repaints
+	// the layer without it, masks that, then applies opacity in the
+	// composite.
 	if id, ok := css.ParseURLReference(maskVal); ok {
 		if registry := r.lookupSVGResources(); registry != nil {
 			if masker, ok := registry.LookupMasker(id); ok && masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
@@ -1844,11 +1838,11 @@ func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*P
 
 	// The layer covers the clip in effect here (its bounds; a rounded clip
 	// is not reapplied).
-	applyConstantAlphaToBuffer(buf, layer.Opacity)
 	if !blend {
-		draw.Draw(parent, clip, buf, clip.Min, draw.Over)
+		compositeBufferWithOpacityOnto(parent, buf, 0, 0, layer.Opacity)
 		return
 	}
+	applyConstantAlphaToBuffer(buf, layer.Opacity)
 	blendComposite(parent, buf, clip.Min.X, clip.Min.Y, layer.BlendMode)
 }
 

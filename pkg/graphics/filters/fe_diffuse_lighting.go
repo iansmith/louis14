@@ -12,12 +12,11 @@ import "image"
 //
 //	I = DiffuseConstant * max(N · L, 0) * Visibility
 //	R_out = clamp(I * LightingColor.R, 0, 255)   (same for G, B)
-//	A_out = LightingColor.A * 255
+//	A_out = 255
 //
 // Per SVG Filter Effects 1 §"feDiffuseLighting": the diffuse BRDF is
 // pure Lambert (no Fresnel, no specular component), the output alpha
-// is the lighting-color alpha (NOT max(R,G,B) — that's specular's
-// rule). The colour-interpolation-filters CSS property selects the
+// is 1 (NOT max(R,G,B) — that's specular's rule). The colour-interpolation-filters CSS property selects the
 // space the BRDF runs in; the graph evaluator (Filter.evaluate) has
 // already converted inputs to OperatingSpace, so the BRDF math here
 // is space-agnostic.
@@ -81,16 +80,6 @@ func (e *FEDiffuseLighting) ApplyEffect(inputs []*image.RGBA, region image.Recta
 	lcG := float64(e.LightingColorG) / 255.0
 	lcB := float64(e.LightingColorB) / 255.0
 
-	// Output alpha is LightingColorA per spec — constant across all
-	// output pixels for diffuse.
-	outA := e.LightingColorA
-	if outA < 0 {
-		outA = 0
-	} else if outA > 1 {
-		outA = 1
-	}
-	outAByte := uint8(outA*255 + 0.5)
-
 	for y := 0; y < h; y++ {
 		outRow := y * out.Stride
 		for x := 0; x < w; x++ {
@@ -115,13 +104,15 @@ func (e *FEDiffuseLighting) ApplyEffect(inputs []*image.RGBA, region image.Recta
 			r := I * lcR
 			g := I * lcG
 			b := I * lcB
-			// Premultiply: out_alpha is constant, so R_out_premul =
-			// clamp(I*lc, 0, 1) * outA. Skia writes premultiplied
-			// buffers; image.RGBA storage is premultiplied.
-			out.Pix[outRow+x*4+0] = clampByte(r * outA)
-			out.Pix[outRow+x*4+1] = clampByte(g * outA)
-			out.Pix[outRow+x*4+2] = clampByte(b * outA)
-			out.Pix[outRow+x*4+3] = outAByte
+			// Opaque: only the lighting-color's RGB reaches Skia, whose
+			// $compute_lighting returns half4(saturate(coeff*color), 1) for
+			// diffuse (fe_lighting.cc:97 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+			// src/sksl/sksl_rt_shader.sksl:160-163 @
+			// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+			out.Pix[outRow+x*4+0] = clampByte(r)
+			out.Pix[outRow+x*4+1] = clampByte(g)
+			out.Pix[outRow+x*4+2] = clampByte(b)
+			out.Pix[outRow+x*4+3] = 255
 		}
 	}
 	return out

@@ -70,47 +70,9 @@ func (p *svgFilterPrimitiveAdapter) ResolveImageSource(filterRegion, subregion i
 	// FilterEffect::TransformResultIfNeeded on the FEImage result
 	// (svg_fe_image.cc + filter_effect.cc).
 	if src != nil && p.space == filters.InterpolationSpaceLinearRGB {
-		convertImageSRGBToLinear(src)
+		filters.ConvertImageSpace(src, filters.InterpolationSpaceSRGB, filters.InterpolationSpaceLinearRGB)
 	}
 	return src, target, parNone
-}
-
-// convertImageSRGBToLinear converts a premultiplied sRGB RGBA buffer to
-// premultiplied linearRGB in place. Un-premultiplies, applies the sRGB→
-// linear transfer to the colour channels (alpha is space-independent),
-// and re-premultiplies — the same algorithm filters.convertImageSpace
-// runs on graph edges, replicated here because that helper is package-
-// private to pkg/graphics/filters. The transfer functions are the
-// shared svgSRGBToLinear / linearToSRGBf (defined in
-// svg_filter_painter.go) so there is one definition per direction.
-func convertImageSRGBToLinear(img *image.RGBA) {
-	convertImageTransfer(img, svgSRGBToLinear)
-}
-
-// convertImageLinearToSRGB is the opposite direction of
-// convertImageSRGBToLinear.
-func convertImageLinearToSRGB(img *image.RGBA) {
-	convertImageTransfer(img, linearToSRGBf)
-}
-
-// convertImageTransfer applies a transfer function to the unpremultiplied
-// colour channels of img, in place.
-func convertImageTransfer(img *image.RGBA, transfer func(float64) float64) {
-	pix := img.Pix
-	for i := 0; i+3 < len(pix); i += 4 {
-		a := pix[i+3]
-		if a == 0 {
-			continue
-		}
-		af := float64(a) / 255
-		inv := 1 / af
-		r := transfer(float64(pix[i+0]) / 255 * inv)
-		g := transfer(float64(pix[i+1]) / 255 * inv)
-		b := transfer(float64(pix[i+2]) / 255 * inv)
-		pix[i+0] = clampU8Filter(r * af * 255)
-		pix[i+1] = clampU8Filter(g * af * 255)
-		pix[i+2] = clampU8Filter(b * af * 255)
-	}
 }
 
 // readImageHref reads the `href` attribute (preferring the plain form
