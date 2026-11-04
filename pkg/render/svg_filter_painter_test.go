@@ -5,7 +5,6 @@ import (
 	"image/color"
 	"testing"
 
-	"louis14/pkg/graphics/filters"
 	"louis14/pkg/layout/svg"
 )
 
@@ -58,7 +57,7 @@ func TestCompositeFilterOutputOntoTarget_ClipRespected(t *testing.T) {
 	// overlaps both the clipped region (5..10, 5..10) and the
 	// outside-clip top-left quadrant (0..5, 0..10) + (0..10, 0..5).
 	clip := image.Rect(5, 5, 15, 15)
-	compositeFilterOutputOntoTarget(r, src, 0, 0, clip, filters.InterpolationSpaceSRGB)
+	compositeFilterOutputOntoTarget(r, src, 0, 0, clip)
 
 	// Inside-clip pixels must be red; outside-clip pixels must remain white.
 	for y := 0; y < H; y++ {
@@ -145,48 +144,40 @@ func solidPremultipliedBuffer(c color.RGBA) *image.RGBA {
 // out = src + dst*(1-srcA), rounded (rasterPipelineSpriteBlit). Green (0,128,0) at
 // .75 over white is (64,160,64); the former straight-alpha shim gave (64,192,64).
 //
-// A linearRGB result is first converted to sRGB in unpremultiplied space, and
-// composited in sRGB: Blink appends a TransformInterpolationSpace to sRGB at the
-// end of the filter (core/paint/filter_effect_builder.cc:500-505,
-// platform/graphics/filters/paint_filter_builder.cc:92-101
-// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// A source pixel with RGB > A saturates as Skia's to_unorm does
+// (src/opts/SkRasterPipeline_opts.h:2269-2272 @
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
 func TestCompositeFilterOutputOntoTarget_PremultipliedSourceOver(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		src   color.RGBA
-		space filters.InterpolationSpace
-		dst   color.RGBA
-		want  color.RGBA
+		name string
+		src  color.RGBA
+		dst  color.RGBA
+		want color.RGBA
 	}{
 		{
-			name:  "sRGB green 75% over white",
-			src:   color.RGBA{0, 96, 0, 191},
-			space: filters.InterpolationSpaceSRGB,
-			dst:   color.RGBA{255, 255, 255, 255},
-			want:  color.RGBA{64, 160, 64, 255},
+			name: "green 75% over white",
+			src:  color.RGBA{0, 96, 0, 191},
+			dst:  color.RGBA{255, 255, 255, 255},
+			want: color.RGBA{64, 160, 64, 255},
 		},
 		{
-			name:  "sRGB red 50% over transparent",
-			src:   color.RGBA{128, 0, 0, 128},
-			space: filters.InterpolationSpaceSRGB,
-			dst:   color.RGBA{},
-			want:  color.RGBA{128, 0, 0, 128},
+			name: "red 50% over transparent",
+			src:  color.RGBA{128, 0, 0, 128},
+			dst:  color.RGBA{},
+			want: color.RGBA{128, 0, 0, 128},
 		},
 		{
-			// Linear 0.5 is sRGB 0.735; at alpha .5 premultiplied 94, plus
-			// 255*(127/255) = 127. Compositing in linear gives 225.
-			name:  "linearRGB gray 50% over white composites in sRGB",
-			src:   color.RGBA{64, 64, 64, 128},
-			space: filters.InterpolationSpaceLinearRGB,
-			dst:   color.RGBA{255, 255, 255, 255},
-			want:  color.RGBA{221, 221, 221, 255},
+			name: "RGB above alpha saturates",
+			src:  color.RGBA{255, 0, 0, 128},
+			dst:  color.RGBA{255, 255, 255, 255},
+			want: color.RGBA{255, 127, 127, 255},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := solidPremultipliedBuffer(tc.dst)
 			r := NewRendererForImage(target)
 			src := solidPremultipliedBuffer(tc.src)
-			compositeFilterOutputOntoTarget(r, src, 0, 0, target.Bounds(), tc.space)
+			compositeFilterOutputOntoTarget(r, src, 0, 0, target.Bounds())
 			if got := target.RGBAAt(1, 1); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
@@ -211,6 +202,7 @@ func TestCompositeBufferWithOpacityOnto_PremultipliedSourceOver(t *testing.T) {
 		{"opaque green at .5", color.RGBA{0, 128, 0, 255}, 0.5, color.RGBA{128, 192, 128, 255}},
 		{"premultiplied red .5 at 1", color.RGBA{128, 0, 0, 128}, 1, color.RGBA{255, 127, 127, 255}},
 		{"premultiplied red .5 at .5", color.RGBA{128, 0, 0, 128}, 0.5, color.RGBA{255, 191, 191, 255}},
+		{"RGB above alpha saturates", color.RGBA{255, 0, 0, 128}, 1, color.RGBA{255, 127, 127, 255}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := solidPremultipliedBuffer(white)
@@ -297,23 +289,17 @@ func TestComposite_OriginsOffsetsAndClipping(t *testing.T) {
 			{name: "outside the clip", targetBox: target8, srcBox: image.Rect(0, 0, 2, 2), dx: 3, dy: 4, clip: image.Rect(0, 0, 2, 2), want: image.Rectangle{}},
 			{name: "sub-image", targetBox: target8, srcBox: image.Rect(10, 10, 12, 12), subImage: true, dx: 3, dy: 4, want: image.Rect(3, 4, 5, 6)},
 		} {
-			for _, space := range []filters.InterpolationSpace{filters.InterpolationSpaceSRGB, filters.InterpolationSpaceLinearRGB} {
-				name := tc.name + " sRGB"
-				if space == filters.InterpolationSpaceLinearRGB {
-					name = tc.name + " linearRGB"
+			t.Run(tc.name, func(t *testing.T) {
+				target := image.NewRGBA(tc.targetBox)
+				fillRGBA(target, color.RGBA{255, 255, 255, 255})
+				clip := tc.clip
+				if clip.Empty() {
+					clip = tc.targetBox
 				}
-				t.Run(name, func(t *testing.T) {
-					target := image.NewRGBA(tc.targetBox)
-					fillRGBA(target, color.RGBA{255, 255, 255, 255})
-					clip := tc.clip
-					if clip.Empty() {
-						clip = tc.targetBox
-					}
-					r := NewRendererForImage(target)
-					compositeFilterOutputOntoTarget(r, newPlacementSource(tc.srcBox, tc.subImage), tc.dx, tc.dy, clip, space)
-					checkPlacement(t, target, tc.want, placementRed) // opaque red is 1 in both spaces
-				})
-			}
+				r := NewRendererForImage(target)
+				compositeFilterOutputOntoTarget(r, newPlacementSource(tc.srcBox, tc.subImage), tc.dx, tc.dy, clip)
+				checkPlacement(t, target, tc.want, placementRed)
+			})
 		}
 	})
 

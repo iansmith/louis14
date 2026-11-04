@@ -1,6 +1,9 @@
 package filters
 
-import "image"
+import (
+	"image"
+	"image/draw"
+)
 
 // Filter owns a filter graph and the geometry it is evaluated against. It is
 // the louis14 analogue of Blink's platform/graphics/filters/Filter: it holds
@@ -44,7 +47,13 @@ func (f *Filter) Apply() *image.RGBA {
 // sRGB, ready for compositing with the page. SVG filters default to linearRGB
 // (color-interpolation-filters:linearRGB); the final output must be converted
 // back to sRGB before DrawImage composites it over the page content.
-// Mirrors Blink's FilterPainter::PaintFilteredContent post-conversion step.
+// Mirrors Blink's FilterEffectBuilder appending TransformInterpolationSpace at
+// the end of the filter (core/paint/filter_effect_builder.cc:500-505 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// The conversion is in place: the graph's result buffers die with this call. A
+// linearRGB result is never the caller's source image, because production
+// SourceGraphics are sRGB and take the early return below.
 func (f *Filter) ApplyToSRGB() *image.RGBA {
 	out := f.Apply()
 	if out == nil || f.LastEffect == nil {
@@ -53,10 +62,15 @@ func (f *Filter) ApplyToSRGB() *image.RGBA {
 	if f.LastEffect.OperatingSpace() == InterpolationSpaceSRGB {
 		return out
 	}
-	converted := image.NewRGBA(out.Bounds())
-	copy(converted.Pix, out.Pix)
-	ConvertImageSpace(converted, f.LastEffect.OperatingSpace(), InterpolationSpaceSRGB)
-	return converted
+	ConvertImageSpace(out, f.LastEffect.OperatingSpace(), InterpolationSpaceSRGB)
+	return out
+}
+
+// cloneRGBA returns a copy of img with the same bounds.
+func cloneRGBA(img *image.RGBA) *image.RGBA {
+	cp := image.NewRGBA(img.Bounds())
+	draw.Draw(cp, cp.Bounds(), img, cp.Bounds().Min, draw.Src)
+	return cp
 }
 
 func (f *Filter) evaluate(e FilterEffect, memo map[FilterEffect]*image.RGBA) *image.RGBA {
@@ -71,8 +85,7 @@ func (f *Filter) evaluate(e FilterEffect, memo map[FilterEffect]*image.RGBA) *im
 		if depImg != nil && dep.OperatingSpace() != e.OperatingSpace() {
 			// Copy before converting so a shared dependency image is not
 			// mutated for another consumer in a different space.
-			cp := image.NewRGBA(depImg.Bounds())
-			copy(cp.Pix, depImg.Pix)
+			cp := cloneRGBA(depImg)
 			ConvertImageSpace(cp, dep.OperatingSpace(), e.OperatingSpace())
 			depImg = cp
 		}

@@ -126,3 +126,31 @@ func TestConvertImageSpace_SubImageOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestConvertImageSpace_OpaqueLUTMatchesFloatPath — opaque pixels go through the
+// byte tables, and must get the bytes the float path would give, for every byte in
+// both directions.
+func TestConvertImageSpace_OpaqueLUTMatchesFloatPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to InterpolationSpace
+		transfer func(float64) float64
+	}{
+		{"linear to sRGB", InterpolationSpaceLinearRGB, InterpolationSpaceSRGB, linearToSRGB},
+		{"sRGB to linear", InterpolationSpaceSRGB, InterpolationSpaceLinearRGB, srgbToLinear},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := 0; i < 256; i++ {
+				v := uint8(i)
+				img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+				img.SetRGBA(0, 0, color.RGBA{v, v, v, 255})
+				ConvertImageSpace(img, tc.from, tc.to)
+				r, _, _, a := unpremultiply([4]uint8{v, v, v, 255})
+				want := premultiply(tc.transfer(r), 0, 0, a)
+				if got := img.RGBAAt(0, 0); got.R != want[0] || got.G != want[0] || got.B != want[0] || got.A != 255 {
+					t.Errorf("byte %d: got %v, want %d", i, got, want[0])
+				}
+			}
+		})
+	}
+}

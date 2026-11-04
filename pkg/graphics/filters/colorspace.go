@@ -46,8 +46,9 @@ func linearToSRGB(c float64) float64 {
 
 // 256-entry lookup tables keyed by the 8-bit encoded component value. The
 // forward table (srgbToLinearLUT) is exact for byte input; the inverse table
-// is sampled at byte granularity and used only where a fast approximate path
-// is acceptable — the per-pixel conversion below uses the precise float path.
+// is sampled at byte granularity. ConvertImageSpace uses both for opaque pixels,
+// where a byte is the colour and the float path computes the same values, and the
+// float path for the rest.
 var (
 	srgbToLinearLUT [256]float64
 	linearToSRGBLUT [256]float64
@@ -110,12 +111,24 @@ func ConvertImageSpace(img *image.RGBA, from, to InterpolationSpace) {
 	if from == to || img == nil {
 		return
 	}
+	lut := &linearToSRGBLUT
+	if to == InterpolationSpaceLinearRGB {
+		lut = &srgbToLinearLUT
+	}
 	bounds := img.Bounds()
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		pix := img.Pix[img.PixOffset(bounds.Min.X, y):][:bounds.Dx()*4]
 		for i := 0; i+3 < len(pix); i += 4 {
 			a := pix[i+3]
 			if a == 0 {
+				continue
+			}
+			if a == 255 {
+				// Opaque: premultiplied bytes are the colour. The tables hold
+				// exactly what the float path below computes for these bytes.
+				pix[i] = uint8(lut[pix[i]]*255 + 0.5)
+				pix[i+1] = uint8(lut[pix[i+1]]*255 + 0.5)
+				pix[i+2] = uint8(lut[pix[i+2]]*255 + 0.5)
 				continue
 			}
 			r, g, b, af := unpremultiply([4]uint8{pix[i], pix[i+1], pix[i+2], a})

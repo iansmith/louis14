@@ -2,17 +2,23 @@ package render
 
 import "image"
 
-// rasterPipelineSpriteBlit draws src over dst the way Skia's float pipeline draws
-// a layer on restore: SkRasterPipelineSpriteBlitter (src/core/SkBlitter_Sprite.cpp:
-// 122-191 @ d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) loads premultiplied src,
-// applies scale_1_float with the paint's float alpha, then srcover and store_8888
-// (src/opts/SkRasterPipeline_opts.h:2891-2896, 2448, 3184-3191, with to_unorm's
-// clamp and round at :2269-2272 @ d19e557a):
+// rasterPipelineSpriteBlit draws src over dst with the float math of Skia's
+// SkRasterPipelineSpriteBlitter (src/core/SkBlitter_Sprite.cpp:122-191 @
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e): load premultiplied src, scale_1_float
+// by the paint's float alpha, srcover, store_8888 (src/opts/SkRasterPipeline_opts.h:
+// 2891-2896, 2448, 3184-3191, with to_unorm's clamp and round at :2269-2272 @
+// d19e557a):
 //
 //	out = round(clamp(s*alpha + d*(1 - sa*alpha)))
 //
+// This is a choice, not what Skia necessarily does on restore. CPU raster at the
+// pin would select Sprite_D32_S32 + SkBlendARGB32, which gives (126,191,126) for
+// opaque green at .5 over white where this gives (128,192,128). This path was
+// chosen because it stays within 1 of mazzy's PopGroupWithAlpha, louis14's other
+// opacity restore; Chrome's actual bytes were not probed. LOU-681 tracks settling it.
+//
 // r is in dst coordinates; sp is the src point that lands on r.Min. A source pixel
-// with RGB > A saturates, as in Skia, rather than wrapping.
+// with RGB > A saturates rather than wrapping.
 func rasterPipelineSpriteBlit(dst *image.RGBA, r image.Rectangle, src *image.RGBA, sp image.Point, alpha float64) {
 	clipped := r.Intersect(dst.Bounds())
 	if clipped.Empty() {

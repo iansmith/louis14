@@ -131,16 +131,16 @@ func (e *FEConvolveMatrix) ApplyEffect(inputs []*image.RGBA, region image.Rectan
 					kv := e.KernelMatrix[ky*order+kx]
 					si := sy*in.Stride + sx*4
 					px := [4]uint8{in.Pix[si], in.Pix[si+1], in.Pix[si+2], in.Pix[si+3]}
-					var r, g, b, a float64
+					var r, g, b float64
 					if e.PreserveAlpha {
-						r, g, b, a = unpremultiply(px)
+						r, g, b, _ = unpremultiply(px)
 					} else {
-						r, g, b, a = float64(px[0])*inv, float64(px[1])*inv, float64(px[2])*inv, float64(px[3])*inv
+						r, g, b = float64(px[0])*inv, float64(px[1])*inv, float64(px[2])*inv
+						sumA += float64(px[3]) * inv * kv
 					}
 					sumR += r * kv
 					sumG += g * kv
 					sumB += b * kv
-					sumA += a * kv
 				}
 			}
 
