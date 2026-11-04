@@ -767,13 +767,11 @@ func TestSVG_FilterFeFlood(t *testing.T) {
 }
 
 // TestSVG_FilterFeFloodWithOpacity — `<feFlood flood-color="red"
-// flood-opacity="0.5"/>` produces a half-transparent red flood. The
-// filter's output is composited onto the page via the louis14
-// straight-alpha-into-premultiplied-container convention (same shim
-// the SVG mask path uses); on a white background this produces a
-// mid-gray rather than the "correct" premultiplied-math (255,127,127).
-// Mirrors the well-known louis14 color-convention quirk — exhibits
-// pixel parity with the corresponding CSS-rendered ref.
+// flood-opacity="0.5"/>` is a half-transparent red flood composited with
+// premultiplied source-over, so on white it is (255,128,128).
+//
+// Blink: FEFlood::CreateImageFilter, platform/graphics/filters/fe_flood.cc:63-70
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<svg width="100" height="100">` +
@@ -784,21 +782,34 @@ func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="blue" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	// The reference rect uses the same color convention — `rgba(255,
-	// 0, 0, 0.5)` rendered via the gg pattern path. Sample the test
-	// against an equivalent CSS-rendered reference.
-	const refHTML = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="100" height="100">` +
-		`<rect width="100" height="100" fill="red" fill-opacity="0.5"/>` +
-		`</svg></body></html>`
 	testImg := renderToImage(t, htmlContent, 200, 200)
-	refImg := renderToImage(t, refHTML, 200, 200)
-	// Match the CSS-path pixel value at the sample point — confirms
-	// the filter path uses the same straight-alpha convention.
-	rR, rG, rB, _ := refImg.At(50, 50).RGBA()
-	sampleColorClose(t, testImg, 50, 50,
-		uint8(rR>>8), uint8(rG>>8), uint8(rB>>8), 5,
-		"feFlood 50% pixel-matches CSS rgba(255,0,0,0.5)")
+	sampleColorClose(t, testImg, 50, 50, 255, 128, 128, 1, "feFlood 50% red over white")
+}
+
+// TestSVG_SolidFillOpacityPremultiplied — a semi-transparent solid fill goes
+// through the same premultiplied pipeline as HTML colours. Before LOU-657
+// setDCColor stored straight RGB in a premultiplied color.RGBA, so 50% red
+// over white rendered (127,128,128).
+//
+// Blink: SVGObjectPainter::PreparePaint, core/paint/svg_object_painter.cc:180-181
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestSVG_SolidFillOpacityPremultiplied(t *testing.T) {
+	for _, tc := range []struct {
+		name, attrs string
+		r, g, b     uint8
+	}{
+		{"fill-opacity", `fill="red" fill-opacity="0.5"`, 255, 128, 128},
+		{"fill rgba", `fill="rgba(255,0,0,0.5)"`, 255, 128, 128},
+		{"stroke-opacity", `fill="none" stroke="red" stroke-width="100" stroke-opacity="0.5"`, 255, 128, 128},
+		{"green 75%", `fill="green" fill-opacity="0.75"`, 64, 160, 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<!DOCTYPE html><html><body style="margin:0"><svg width="100" height="100">` +
+				`<rect width="100" height="100" ` + tc.attrs + `/></svg></body></html>`
+			img := renderToImage(t, html, 200, 200)
+			sampleColorClose(t, img, 50, 50, tc.r, tc.g, tc.b, 1, tc.name)
+		})
+	}
 }
 
 // TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a

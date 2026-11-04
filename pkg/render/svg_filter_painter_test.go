@@ -132,3 +132,105 @@ func TestApplyClipCoverageToFilterOutput(t *testing.T) {
 		}
 	}
 }
+
+// solidPremultipliedBuffer returns a 4x4 buffer of one premultiplied colour.
+func solidPremultipliedBuffer(c color.RGBA) *image.RGBA {
+	buf := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			buf.SetRGBA(x, y, c)
+		}
+	}
+	return buf
+}
+
+func checkRGBAClose(t *testing.T, got, want color.RGBA, tol int) {
+	t.Helper()
+	far := func(a, b uint8) bool {
+		d := int(a) - int(b)
+		return d > tol || d < -tol
+	}
+	if far(got.R, want.R) || far(got.G, want.G) || far(got.B, want.B) || far(got.A, want.A) {
+		t.Errorf("got %v, want %v +-%d", got, want, tol)
+	}
+}
+
+// TestCompositeFilterOutputOntoTarget_PremultipliedSourceOver — the filter
+// output is premultiplied, and reaches the page through SkBlendMode::kSrcOver:
+// out = src + dst*(1-srcA). Green (0,128,0) at .75 over white is (64,160,64);
+// the former straight-alpha shim gave (64,192,64).
+//
+// A linearRGB result is first converted to sRGB in unpremultiplied space, and
+// composited in sRGB: Blink appends a TransformInterpolationSpace to sRGB at the
+// end of the filter (core/paint/filter_effect_builder.cc:500-505,
+// platform/graphics/filters/paint_filter_builder.cc:92-101
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestCompositeFilterOutputOntoTarget_PremultipliedSourceOver(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		src   color.RGBA
+		space filters.InterpolationSpace
+		dst   color.RGBA
+		want  color.RGBA
+	}{
+		{
+			name:  "sRGB green 75% over white",
+			src:   color.RGBA{0, 96, 0, 191},
+			space: filters.InterpolationSpaceSRGB,
+			dst:   color.RGBA{255, 255, 255, 255},
+			want:  color.RGBA{64, 160, 64, 255},
+		},
+		{
+			name:  "sRGB red 50% over transparent",
+			src:   color.RGBA{128, 0, 0, 128},
+			space: filters.InterpolationSpaceSRGB,
+			dst:   color.RGBA{},
+			want:  color.RGBA{128, 0, 0, 128},
+		},
+		{
+			// Linear 0.5 is sRGB 0.735; at alpha .5 premultiplied 94, plus
+			// half of the white destination. Compositing in linear gives 225.
+			name:  "linearRGB gray 50% over white composites in sRGB",
+			src:   color.RGBA{64, 64, 64, 128},
+			space: filters.InterpolationSpaceLinearRGB,
+			dst:   color.RGBA{255, 255, 255, 255},
+			want:  color.RGBA{221, 221, 221, 255},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := solidPremultipliedBuffer(tc.dst)
+			r := NewRendererForImage(target)
+			src := solidPremultipliedBuffer(tc.src)
+			compositeFilterOutputOntoTarget(r, src, 0, 0, target.Bounds(), tc.space)
+			checkRGBAClose(t, target.RGBAAt(1, 1), tc.want, 1)
+		})
+	}
+}
+
+// TestCompositeBufferWithOpacityOnto_PremultipliedSourceOver — the buffer is
+// premultiplied, and a layer's opacity scales all four channels before
+// source-over (cc SaveLayerAlphaOp). Opaque green (0,128,0) at .5 over white
+// is (128,192,128); the former straight-alpha shim overflowed.
+//
+// Blink: ConversionContext::StartEffect,
+// platform/graphics/compositing/paint_chunks_to_cc_layer.cc:734
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestCompositeBufferWithOpacityOnto_PremultipliedSourceOver(t *testing.T) {
+	white := color.RGBA{255, 255, 255, 255}
+	for _, tc := range []struct {
+		name    string
+		src     color.RGBA
+		opacity float64
+		want    color.RGBA
+	}{
+		{"opaque green at .5", color.RGBA{0, 128, 0, 255}, 0.5, color.RGBA{128, 192, 128, 255}},
+		{"premultiplied red .5 at 1", color.RGBA{128, 0, 0, 128}, 1, color.RGBA{255, 127, 127, 255}},
+		{"premultiplied red .5 at .5", color.RGBA{128, 0, 0, 128}, 0.5, color.RGBA{255, 191, 191, 255}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := solidPremultipliedBuffer(white)
+			compositeBufferWithOpacityOnto(target, solidPremultipliedBuffer(tc.src), 0, 0, tc.opacity)
+			checkRGBAClose(t, target.RGBAAt(1, 1), tc.want, 1)
+		})
+	}
+}
