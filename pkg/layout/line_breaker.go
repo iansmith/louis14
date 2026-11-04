@@ -1599,7 +1599,8 @@ func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
 // inline/inline_layout_algorithm.cc:1058-1059 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The clear resolves against the
 // block's direction, as AddAnyClearanceAfterLine does; HandleForcedLineBreak
-// uses the line breaker's current_style_, which louis14 does not track.
+// uses the line breaker's current_style_, which louis14 does not track
+// (LOU-678).
 func brNeedsClearancePastFragmentainer(space ConstraintSpace, item *InlineItem) bool {
 	return space.HasBlockFragmentation && isBRItem(item) &&
 		space.ExclusionSpace.NeedsClearancePastFragmentainer(item.Style.Clear(space.Direction()), space.WritingDirection)

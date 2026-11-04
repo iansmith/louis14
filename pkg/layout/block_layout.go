@@ -731,6 +731,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineContext.propagateTo(bla.containerBuilder)
 		}
 
+		// Children's logical clear resolves against this block's direction
+		// (child.Style().Clear(Style()), block_layout_algorithm.cc:2336 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		cbDirection := bla.style.GetDirection()
+
 		// Text children are not block children: the iterator skips them
 		// (they are laid out by inline layout in anonymous blocks).
 		for entry := childIterator.NextChild(); !entry.AtEnd(); entry = childIterator.NextChild() {
@@ -965,7 +970,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// child re-decides its clearance once its margin strut is known.
 			var preClearanceCursor, clearanceOffset float64
 			var preClearanceStrut MarginStrut
-			clearType := childStyle.Clear(bla.style.GetDirection())
+			clearType := childStyle.Clear(cbDirection)
 			if clearType != css.ClearNone && !bla.containerBuilder.GetExclusionSpace().IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
 				clearedBlockBfc := bla.containerBuilder.GetExclusionSpace().ClearanceOffset(clearType, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()

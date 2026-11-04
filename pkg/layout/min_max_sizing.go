@@ -697,12 +697,13 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	maxSpace := maxBuilder.Build()
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
+	cbDirection := node.Style().GetDirection()
 	for maxLB.NextLine(&line) {
 		if line.IsBlockInInline {
 			maxContent = math.Max(maxContent, blockInInlineMax[line.Results[0].Item])
 			continue
 		}
-		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, blockForPct), node.Style().GetDirection(), line.Width, maxContent)
+		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, blockForPct), cbDirection, line.Width, maxContent)
 	}
 
 	// CSS Text §7.1: text-indent contributes to the intrinsic inline-size of
@@ -720,6 +721,25 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
+}
+
+// flushFloatRowForClear ends the current float row when a float clears: a
+// cleared float cannot sit beside earlier floats on its cleared sides, so the
+// row counts towards maxContent and those sides' trackers reset. Mirrors the
+// clearance block of BlockLayoutAlgorithm::ComputeMinMaxSizes
+// (block_layout_algorithm.cc:439-451 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func flushFloatRowForClear(clearType css.ClearType, floatLeftInlineSize, floatRightInlineSize, maxContent *float64) {
+	if clearType == css.ClearNone {
+		return
+	}
+	*maxContent = math.Max(*maxContent, *floatLeftInlineSize+*floatRightInlineSize)
+	if clearType == css.ClearBoth || clearType == css.ClearLeft {
+		*floatLeftInlineSize = 0
+	}
+	if clearType == css.ClearBoth || clearType == css.ClearRight {
+		*floatRightInlineSize = 0
+	}
 }
 
 // inlineFloat is one float placed on a line during intrinsic sizing.
@@ -1673,25 +1693,8 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		childMin, childMax := childInlineContribution(ctx, child, space, nodeBlockSize, childInColumnBfc)
 
 		if !isOrthogonal {
-			floatType := childStyle.Floating(cbDirection)
-			if floatType == css.FloatLeft || floatType == css.FloatRight {
-				// CSS 2.1 §9.5.1: clear forces a float below previous floats
-				// on the cleared side(s), so cleared floats cannot be placed
-				// side-by-side with earlier same-side floats. Flush the
-				// current float row before starting a new one.
-				clearType := childStyle.Clear(cbDirection)
-				if clearType != css.ClearNone {
-					floatMaxRow := floatStartMaxSum + floatEndMaxSum
-					if floatMaxRow > result.MaxContent {
-						result.MaxContent = floatMaxRow
-					}
-					if clearType == css.ClearLeft || clearType == css.ClearBoth {
-						floatStartMaxSum = 0
-					}
-					if clearType == css.ClearRight || clearType == css.ClearBoth {
-						floatEndMaxSum = 0
-					}
-				}
+			if floatType := childStyle.Floating(cbDirection); floatType != css.FloatNone {
+				flushFloatRowForClear(childStyle.Clear(cbDirection), &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
 
 				if floatType == css.FloatLeft {
 					floatStartMaxSum += childMax
@@ -1712,19 +1715,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 		if childStyle.IsFloating() {
 			// Orthogonal float: check clear before accumulating.
-			clearType := childStyle.Clear(cbDirection)
-			if clearType != css.ClearNone {
-				floatMaxRow := floatStartMaxSum + floatEndMaxSum
-				if floatMaxRow > result.MaxContent {
-					result.MaxContent = floatMaxRow
-				}
-				if clearType == css.ClearLeft || clearType == css.ClearBoth {
-					floatStartMaxSum = 0
-				}
-				if clearType == css.ClearRight || clearType == css.ClearBoth {
-					floatEndMaxSum = 0
-				}
-			}
+			flushFloatRowForClear(childStyle.Clear(cbDirection), &floatStartMaxSum, &floatEndMaxSum, &result.MaxContent)
 			// Orthogonal float: accumulate as start-side (conservative).
 			floatStartMaxSum += childMax
 		} else {

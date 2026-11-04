@@ -1850,7 +1850,8 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 	}
 }
 
-// isFloat returns true if the box has float:left or float:right.
+// isFloat reports whether the box floats, for any float value but none,
+// logical ones included.
 func isFloat(box *layout.Box) bool {
 	return box.Style != nil && box.Style.IsFloating()
 }

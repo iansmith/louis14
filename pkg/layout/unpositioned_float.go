@@ -4,7 +4,7 @@ import "louis14/pkg/css"
 
 // UnpositionedFloat is a float waiting to be positioned in its block
 // formatting context: the inputs PositionFloat needs. Mirrors Blink's
-// UnpositionedFloat (unpositioned_float.h:19-90 @
+// UnpositionedFloat (unpositioned_float.h:24-86 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
 // Coordinates are louis14's: BFC offsets are float64 BFC-relative values,
@@ -43,7 +43,8 @@ type UnpositionedFloat struct {
 	// LayoutResult and Margins are the float laid out without
 	// fragmentation, to find its inline-size before it is positioned (set
 	// by ComputeMarginBoxInlineSizeForUnpositionedFloat; Blink's
-	// layout_result and margins, unpositioned_float.h:61-64).
+	// layout_result and margins, unpositioned_float.h:61-64 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	LayoutResult *LayoutResult
 	Margins      LogicalEdges
 }
@@ -66,7 +67,8 @@ func (uf *UnpositionedFloat) ClearType() css.ClearType {
 
 // FragmentainerSpaceLeft is the fragmentainer space left at the parent's
 // block-start, clamped to zero. Mirrors Blink's
-// UnpositionedFloat::FragmentainerSpaceLeft (unpositioned_float.h:74-78).
+// UnpositionedFloat::FragmentainerSpaceLeft (unpositioned_float.h:77-80 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (uf *UnpositionedFloat) FragmentainerSpaceLeft() float64 {
 	return max(0, uf.FragmentainerBlockSize-uf.FragmentainerBlockOffset)
 }
@@ -74,7 +76,7 @@ func (uf *UnpositionedFloat) FragmentainerSpaceLeft() float64 {
 // FragmentainerOffsetAtBfc is the fragmentainer offset of the BFC block
 // origin: add a BFC block offset to get a fragmentainer offset. Mirrors
 // Blink's UnpositionedFloat::FragmentainerOffsetAtBfc
-// (unpositioned_float.h:80-84).
+// (unpositioned_float.h:83-85 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (uf *UnpositionedFloat) FragmentainerOffsetAtBfc() float64 {
 	return uf.FragmentainerBlockOffset - uf.ExpectedBfcBlockOffset
 }
