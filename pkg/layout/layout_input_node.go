@@ -362,7 +362,7 @@ func (n *LayoutInputNode) IsFloatingOrOutOfFlowPositioned() bool {
 	if style == nil {
 		return false
 	}
-	return style.GetFloat() != css.FloatNone || style.HasOutOfFlowPosition()
+	return style.IsFloating() || style.HasOutOfFlowPosition()
 }
 
 // IsText returns true for text nodes.

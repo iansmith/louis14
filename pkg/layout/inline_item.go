@@ -294,7 +294,7 @@ func collectInlinesRecursive(
 		}
 
 		// Floats within inline content.
-		if childStyle.GetFloat() != css.FloatNone {
+		if childStyle.IsFloating() {
 			offset := text.Len()
 			data.Items = append(data.Items, &InlineItem{
 				Type:        InlineItemFloat,

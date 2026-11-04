@@ -182,7 +182,7 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 			continue
 		}
 		// Floats are allowed in both inline and block formatting contexts.
-		if style.GetFloat() != css.FloatNone {
+		if style.IsFloating() {
 			continue
 		}
 		display := style.GetDisplay()
@@ -1306,7 +1306,7 @@ func addAnyClearanceAfterLine(
 		return 0, LayoutResultSuccess
 	}
 	// Clearance only ever moves the offset down (Blink AdjustToClearance).
-	cleared := lineSpace.ExclusionSpace.ClearanceOffset(lastItem.Style.GetClear(),
+	cleared := lineSpace.ExclusionSpace.ClearanceOffset(lastItem.Style.Clear(lineSpace.Direction()),
 		layoutunit.FromFloat64Round(lineBfcBlockEnd), lineSpace.WritingDirection).Float64()
 	clearanceAfterLine = max(cleared-lineBfcBlockEnd, 0)
 	if brNeedsClearancePastFragmentainer(lineSpace, lastItem) {

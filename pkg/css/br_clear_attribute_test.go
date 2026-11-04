@@ -30,7 +30,7 @@ func TestBRClearAttributeMapsToClear(t *testing.T) {
 			Attributes: map[string]string{"clear": tc.value},
 		}
 		style := ComputeStyle(node, nil, 800, 600, nil)
-		if got := style.GetClear(); got != tc.want {
+		if got := style.Clear(DirectionLTR); got != tc.want {
 			t.Errorf("<br clear=%q>: clear = %v, want %v", tc.value, got, tc.want)
 		}
 	}
@@ -41,7 +41,7 @@ func TestBRClearAttributeMapsToClear(t *testing.T) {
 		TagName:    "div",
 		Attributes: map[string]string{"clear": "all"},
 	}
-	if got := ComputeStyle(div, nil, 800, 600, nil).GetClear(); got != ClearNone {
+	if got := ComputeStyle(div, nil, 800, 600, nil).Clear(DirectionLTR); got != ClearNone {
 		t.Errorf("<div clear=all>: clear = %v, want none", got)
 	}
 }

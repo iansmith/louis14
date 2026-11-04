@@ -1597,10 +1597,12 @@ func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
 // Blink's LineBreaker::HandleForcedLineBreak and InlineLayoutAlgorithm::
 // AddAnyClearanceAfterLine (inline/line_breaker.cc:2895-2898,
 // inline/inline_layout_algorithm.cc:1058-1059 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The clear resolves against the
+// block's direction, as AddAnyClearanceAfterLine does; HandleForcedLineBreak
+// uses the line breaker's current_style_, which louis14 does not track.
 func brNeedsClearancePastFragmentainer(space ConstraintSpace, item *InlineItem) bool {
 	return space.HasBlockFragmentation && isBRItem(item) &&
-		space.ExclusionSpace.NeedsClearancePastFragmentainer(item.Style.GetClear(), space.WritingDirection)
+		space.ExclusionSpace.NeedsClearancePastFragmentainer(item.Style.Clear(space.Direction()), space.WritingDirection)
 }
 
 // isBRItem reports whether item is the forced break of a <br> element

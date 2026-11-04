@@ -114,7 +114,7 @@ func AdjustMarginsForFragmentation(breakToken *BlockBreakToken, margins *Logical
 	}
 	isFloating := func() bool {
 		return breakToken.Node != nil && breakToken.Node.Style() != nil &&
-			breakToken.Node.Style().GetFloat() != css.FloatNone
+			breakToken.Node.Style().IsFloating()
 	}
 	if !breakToken.IsBreakBefore || (!breakToken.IsForcedBreak && !isFloating()) {
 		margins.BlockStart = 0
@@ -753,7 +753,7 @@ func BreakBeforeChildIfNeeded(
 	// (fragmentation_utils.cc:1102-1107 @ a9f50e522efa). The builder's
 	// exclusion space is the one current at this child.
 	if style := child.Style(); style != nil &&
-		builder.GetExclusionSpace().NeedsClearancePastFragmentainer(style.GetClear(), space.WritingDirection) {
+		builder.GetExclusionSpace().NeedsClearancePastFragmentainer(style.Clear(space.Direction()), space.WritingDirection) {
 		builder.SetBreakAppeal(appealBefore)
 		return BreakStatusBrokeBefore, false
 	}

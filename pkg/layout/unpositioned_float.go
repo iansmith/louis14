@@ -48,16 +48,20 @@ type UnpositionedFloat struct {
 	Margins      LogicalEdges
 }
 
-// FloatSide is the float's physical side (Blink: Style().Floating()).
+// FloatSide is the float's physical side, resolved against the parent space's
+// direction (Blink: node.Style().Floating(parent_space.Direction()),
+// floats_utils.cc:396 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (uf *UnpositionedFloat) FloatSide() css.FloatType {
-	return uf.Node.Style().GetFloat()
+	return uf.Node.Style().Floating(uf.ParentSpace.Direction())
 }
 
 // ClearType is the float's clear value. Mirrors Blink's
-// UnpositionedFloat::ClearType (unpositioned_float.h:70-72); louis14 keeps
-// clear physical and maps it in the exclusion-space queries.
+// UnpositionedFloat::ClearType (unpositioned_float.h:70-72), always called
+// with the parent space's direction (floats_utils.cc:48-49, :392 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 keeps clear physical and
+// maps it in the exclusion-space queries.
 func (uf *UnpositionedFloat) ClearType() css.ClearType {
-	return uf.Node.Style().GetClear()
+	return uf.Node.Style().Clear(uf.ParentSpace.Direction())
 }
 
 // FragmentainerSpaceLeft is the fragmentainer space left at the parent's

@@ -863,7 +863,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa). Only BFC roots extend auto block-size to clear
 			// floats (CSS 2.1 §10.6.7); hasOwnFloats is already true for
 			// BFC roots (initialized from IsNewFormattingContext).
-			if childStyle.GetFloat() != css.FloatNone {
+			if childStyle.IsFloating() {
 				bla.handleFloat(child, entry.BlockToken(), incomingBreakToken,
 					bfcBlockOrigin+blockCursor+prevMarginStrut.Resolve(),
 					contentInlineSize, childAvailableBlock, bfcBlockOrigin, bfcInlineOrigin,
@@ -965,7 +965,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// child re-decides its clearance once its margin strut is known.
 			var preClearanceCursor, clearanceOffset float64
 			var preClearanceStrut MarginStrut
-			clearType := childStyle.GetClear()
+			clearType := childStyle.Clear(bla.style.GetDirection())
 			if clearType != css.ClearNone && !bla.containerBuilder.GetExclusionSpace().IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
 				clearedBlockBfc := bla.containerBuilder.GetExclusionSpace().ClearanceOffset(clearType, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
@@ -2509,7 +2509,7 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	}
 
 	// Floats create a BFC.
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return true
 	}
 
@@ -2612,7 +2612,7 @@ func isSelfValidColumnSpanner(style *css.Style) bool {
 		return false
 	}
 	// Floats cannot span columns.
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return false
 	}
 	// Out-of-flow positioned elements cannot span columns.
@@ -2764,7 +2764,7 @@ func needsShrinkToFit(style *css.Style) bool {
 		d == css.DisplayInlineTable || d == css.DisplayInlineListItem {
 		return true
 	}
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return true
 	}
 	pos := style.GetPosition()

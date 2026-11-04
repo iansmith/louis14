@@ -750,7 +750,7 @@ func (b *BoxFragmentBuilder) PropagateChildBreakValues(childResult *LayoutResult
 	}
 	breakBefore, breakAfter := "auto", "auto"
 	if s := frag.Style; s != nil {
-		if s.GetFloat() != css.FloatNone {
+		if s.IsFloating() {
 			return
 		}
 		breakBefore, breakAfter = s.GetBreakBefore(), s.GetBreakAfter()

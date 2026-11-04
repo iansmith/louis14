@@ -297,7 +297,7 @@ func TestImageFallback_AltTextShadowTree(t *testing.T) {
 			if v, _ := container.GetAttribute("id"); v != "alttext-container" || container.Parent != host {
 				t.Errorf("icon parent = %v (id %q); want span#alttext-container whose parent is the img host", container.TagName, v)
 			}
-			if s := fl.styles[icon.Node]; s == nil || s.GetFloat() != css.FloatLeft || s.GetDisplay() != css.DisplayFlowRoot {
+			if s := fl.styles[icon.Node]; s == nil || s.Floating(css.DirectionLTR) != css.FloatLeft || s.GetDisplay() != css.DisplayFlowRoot {
 				t.Errorf("icon style: want display flow-root + float left (ShowBrokenImageIcon, ltr)")
 			}
 		}

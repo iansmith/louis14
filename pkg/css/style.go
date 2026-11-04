@@ -5897,26 +5897,37 @@ const (
 	FloatRight FloatType = "right"
 )
 
-// GetFloat returns the float value (default: none).
-// Resolves CSS logical values inline-start/inline-end using the computed direction.
-func (s *Style) GetFloat() FloatType {
-	if floatVal, ok := s.Get("float"); ok {
-		switch floatVal {
-		case "left":
-			return FloatLeft
-		case "right":
-			return FloatRight
-		case "inline-start":
-			if s.GetDirection() == DirectionRTL {
-				return FloatRight
-			}
-			return FloatLeft
-		case "inline-end":
-			if s.GetDirection() == DirectionRTL {
-				return FloatLeft
-			}
+// IsFloating reports whether float computes to anything but none. Mirrors
+// ComputedStyle::IsFloating (style/computed_style.h:1513 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) IsFloating() bool {
+	switch val, _ := s.Get("float"); val {
+	case "left", "right", "inline-start", "inline-end":
+		return true
+	}
+	return false
+}
+
+// Floating returns the physical float side, with inline-start and inline-end
+// resolved against the containing block's direction. Mirrors
+// ComputedStyle::Floating(TextDirection cb_direction)
+// (style/computed_style.h:1520-1530 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) Floating(cbDirection Direction) FloatType {
+	switch val, _ := s.Get("float"); val {
+	case "left":
+		return FloatLeft
+	case "right":
+		return FloatRight
+	case "inline-start":
+		if cbDirection == DirectionRTL {
 			return FloatRight
 		}
+		return FloatLeft
+	case "inline-end":
+		if cbDirection == DirectionRTL {
+			return FloatLeft
+		}
+		return FloatRight
 	}
 	return FloatNone
 }
@@ -5931,30 +5942,28 @@ const (
 	ClearBoth  ClearType = "both"
 )
 
-// GetClear returns the clear value (default: none).
-// Resolves CSS logical values inline-start/inline-end/inline/block using the computed direction.
-func (s *Style) GetClear() ClearType {
-	if clearVal, ok := s.Get("clear"); ok {
-		switch clearVal {
-		case "left":
-			return ClearLeft
-		case "right":
+// Clear returns the physical clear value, with inline-start and inline-end
+// resolved against the containing block's direction. Mirrors
+// ComputedStyle::Clear(TextDirection cb_direction)
+// (style/computed_style.h:1609-1620 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) Clear(cbDirection Direction) ClearType {
+	switch val, _ := s.Get("clear"); val {
+	case "left":
+		return ClearLeft
+	case "right":
+		return ClearRight
+	case "both":
+		return ClearBoth
+	case "inline-start":
+		if cbDirection == DirectionRTL {
 			return ClearRight
-		case "both":
-			return ClearBoth
-		case "inline-start":
-			if s.GetDirection() == DirectionRTL {
-				return ClearRight
-			}
-			return ClearLeft
-		case "inline-end":
-			if s.GetDirection() == DirectionRTL {
-				return ClearLeft
-			}
-			return ClearRight
-		case "inline":
-			return ClearBoth
 		}
+		return ClearLeft
+	case "inline-end":
+		if cbDirection == DirectionRTL {
+			return ClearLeft
+		}
+		return ClearRight
 	}
 	return ClearNone
 }
@@ -14024,7 +14033,7 @@ func isPropagationBoundary(s *Style, node *html.Node) bool {
 	case PositionAbsolute, PositionFixed:
 		return true
 	}
-	if s.GetFloat() != FloatNone {
+	if s.IsFloating() {
 		return true
 	}
 	return false

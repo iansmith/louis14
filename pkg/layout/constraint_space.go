@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 )
@@ -312,6 +313,16 @@ const (
 // Indefinite is the sentinel value for an unconstrained block-size.
 // Matches Blink's kIndefiniteSize.
 const Indefinite float64 = -1
+
+// Direction returns the space's text direction. Mirrors
+// ConstraintSpace::Direction (constraint_space.h:157 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (cs ConstraintSpace) Direction() css.Direction {
+	if cs.WritingDirection.IsRTL() {
+		return css.DirectionRTL
+	}
+	return css.DirectionLTR
+}
 
 // IsBlockSizeIndefinite returns true if the block-size is unconstrained.
 // Mirrors Blink's ConstraintSpace::IsBlockSizeIndefinite() which checks
