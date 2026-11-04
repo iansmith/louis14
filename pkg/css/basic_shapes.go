@@ -133,10 +133,7 @@ func indexOfIdent(toks []string, ident string) int {
 // longhands_custom.cc:7339-7357 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // CSS-wide keywords and var()/attr() are accepted as-is.
 func isValidObjectViewBoxValue(value string) bool {
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	if isCSSWideOrSubstitutedValue(value) {
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(value), "none") {

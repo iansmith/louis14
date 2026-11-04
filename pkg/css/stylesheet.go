@@ -3298,8 +3298,9 @@ func isSupportedDeclaration(property, value string) bool {
 	// For other recognized properties, accept any non-empty value (the spec
 	// only requires "if the user agent supports the property:value pair"; we
 	// take a permissive interpretation matching Blink's behavior of treating
-	// most properties as accepting any syntactically-valid <declaration-value>).
-	return true
+	// most properties as accepting any syntactically-valid <declaration-value>),
+	// keyword properties aside.
+	return isValidKeywordPropertyAndValue(property, value)
 }
 
 // isSupportedCSSProperty returns true for properties louis14 recognizes for
@@ -5104,6 +5105,13 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// (ImageOrientation::ParseSingleValue, longhands_custom.cc:5381-5387 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if property == "image-orientation" && !isValidImageOrientationValue(value) {
+			continue
+		}
+
+		// A keyword-only property's invalid value drops the declaration
+		// (ParseKeywordValue, parser/css_parser_fast_paths.cc:1976-1983 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if !isValidKeywordPropertyAndValue(property, value) {
 			continue
 		}
 

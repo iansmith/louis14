@@ -409,9 +409,17 @@ func containsVarReferenceTo(value, name string) bool {
 // non-ASCII UTF-8 sequences) untouched. Used for ASCII-case-insensitive CSS
 // keyword matching where Unicode case folding would over-match.
 func asciiToLower(s string) string {
+	first := 0
+	for first < len(s) && (s[first] < 'A' || s[first] > 'Z') {
+		first++
+	}
+	if first == len(s) {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
+	b.WriteString(s[:first])
+	for i := first; i < len(s); i++ {
 		c := s[i]
 		if c >= 'A' && c <= 'Z' {
 			c += 'a' - 'A'
@@ -5897,23 +5905,21 @@ const (
 	FloatRight FloatType = "right"
 )
 
-// IsFloating reports whether float computes to anything but none. Mirrors
-// ComputedStyle::IsFloating (style/computed_style.h:1513 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// IsFloating reports whether float computes to anything but none; the
+// direction does not affect that. Mirrors ComputedStyle::IsFloating
+// (style/computed_style.h:1513 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (s *Style) IsFloating() bool {
-	switch val, _ := s.Get("float"); val {
-	case "left", "right", "inline-start", "inline-end":
-		return true
-	}
-	return false
+	return s.Floating(DirectionLTR) != FloatNone
 }
 
 // Floating returns the physical float side, with inline-start and inline-end
 // resolved against the containing block's direction. Mirrors
 // ComputedStyle::Floating(TextDirection cb_direction)
 // (style/computed_style.h:1520-1530 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// The keyword matches ASCII case-insensitively, as CssValueKeywordID does.
 func (s *Style) Floating(cbDirection Direction) FloatType {
-	switch val, _ := s.Get("float"); val {
+	val, _ := s.Get("float")
+	switch asciiToLower(val) {
 	case "left":
 		return FloatLeft
 	case "right":
@@ -5946,8 +5952,10 @@ const (
 // resolved against the containing block's direction. Mirrors
 // ComputedStyle::Clear(TextDirection cb_direction)
 // (style/computed_style.h:1609-1620 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// The keyword matches ASCII case-insensitively, as CssValueKeywordID does.
 func (s *Style) Clear(cbDirection Direction) ClearType {
-	switch val, _ := s.Get("clear"); val {
+	val, _ := s.Get("clear")
+	switch asciiToLower(val) {
 	case "left":
 		return ClearLeft
 	case "right":
