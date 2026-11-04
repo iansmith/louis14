@@ -72,3 +72,17 @@ func TestBlockMinMax_FloatClearUseContainingBlockDirection(t *testing.T) {
 		t.Errorf("shrink-to-fit inline-block = %v, want width 30", boxDims(b))
 	}
 }
+
+// TestFloatClear_LastInvalidDeclarationKeepsEarlierValue pins the layout
+// result of an invalid clear value after a valid one: the earlier value still
+// clears (CSSParserFastPaths::IsValidKeywordPropertyAndValue,
+// parser/css_parser_fast_paths.cc:1195-1199 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFloatClear_LastInvalidDeclarationKeepsEarlierValue(t *testing.T) {
+	const box = "width:100px; height:5px;"
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><style>#t{clear:left;clear:inline}</style><body style="margin:0"><div style="display:flow-root; width:300px"><div style="float:left; `+box+`"></div><div id="t" style="`+box+`"></div></div>`, nil)
+	b := findBox(fl.root, byID("t"))
+	if b == nil || b.X != 0 || b.Y != 5 {
+		t.Errorf("box = %v, want at (0, 5)", boxDims(b))
+	}
+}
