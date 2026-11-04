@@ -290,7 +290,7 @@ func (s *Style) Get(property string) (string, bool) {
 		val, varResolutionFailed = s.resolveVarsWithStatus(val)
 	}
 	// Resolve env() references in the value
-	if containsEnvFunction(val) {
+	if strings.Contains(val, "env(") {
 		val = resolveEnvValue(val)
 	}
 	// CSS Variables §3 "Invalid at Computed Value Time" (IACVT): when a
@@ -591,7 +591,8 @@ func resolveEnvValue(val string) string {
 
 	// Replace all env(...) occurrences
 	for i := 0; i < 20; i++ { // limit iterations to prevent infinite loops
-		start := indexFunctionToken(val, "env")
+		lower := strings.ToLower(val)
+		start := strings.Index(lower, "env(")
 		if start < 0 {
 			break
 		}
@@ -941,7 +942,7 @@ func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64
 func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	val = strings.TrimSpace(val)
 	// Resolve env() variables before any other parsing
-	if containsEnvFunction(val) {
+	if strings.Contains(val, "env(") {
 		val = resolveEnvValue(val)
 		val = strings.TrimSpace(val)
 	}
@@ -1330,7 +1331,7 @@ type calcContext struct {
 // evalCalcFull evaluates a calc() expression with full context (viewport, ch scale, percent base).
 func evalCalcFull(expr string, ctx calcContext) (float64, bool) {
 	expr = strings.TrimSpace(expr)
-	if containsEnvFunction(expr) {
+	if strings.Contains(expr, "env(") {
 		expr = resolveEnvValue(expr)
 		expr = strings.TrimSpace(expr)
 	}
@@ -2356,7 +2357,7 @@ func (s *Style) HasExplicitZIndex() bool {
 	return false
 }
 
-// StripImportantSuffix returns (value-without-!important, true) if value has a
+// stripImportantSuffix returns (value-without-!important, true) if value has a
 // trailing "!important" token; otherwise returns (value, false). Used by
 // shorthand expanders so the parser can ignore the priority suffix in the
 // value-token stream. The actual cascade-priority bookkeeping is handled by
@@ -2366,7 +2367,7 @@ func (s *Style) HasExplicitZIndex() bool {
 // parses correctly, but the priority is not yet tracked separately from the
 // inline ordering. This matches the pre-Phase-1 behavior for shorthand
 // properties (e.g. `text-decoration: underline !important`).
-func StripImportantSuffix(value string) (string, bool) {
+func stripImportantSuffix(value string) (string, bool) {
 	v := strings.TrimSpace(value)
 	if len(v) < len("!important") {
 		return value, false
@@ -2413,7 +2414,7 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 		// removed from the value or it leaks into longhand parsers. Mirrors
 		// the rule-parser path at stylesheet.go:1917-1929 which has always
 		// stripped !important.
-		if stripped, _ := StripImportantSuffix(value); stripped != value {
+		if stripped, _ := stripImportantSuffix(value); stripped != value {
 			value = stripped
 		}
 
@@ -2427,11 +2428,6 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 
 		// ParseBackgroundSize gate (see parseDeclarations).
 		if property == "background-size" && !isValidBackgroundSizeValue(value) {
-			continue
-		}
-
-		// Invalid keyword gate (see parseDeclarations).
-		if !IsValidKeywordPropertyAndValue(property, value) {
 			continue
 		}
 

@@ -72,36 +72,3 @@ func TestBlockMinMax_FloatClearUseContainingBlockDirection(t *testing.T) {
 		t.Errorf("shrink-to-fit inline-block = %v, want width 30", boxDims(b))
 	}
 }
-
-// TestFloatClear_LastInvalidDeclarationKeepsEarlierValue pins the layout
-// result of an invalid clear value after a valid one, in a rule and in the
-// style attribute: the earlier value still clears
-// (CSSParserFastPaths::IsValidKeywordPropertyAndValue,
-// parser/css_parser_fast_paths.cc:1195-1199 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func TestFloatClear_LastInvalidDeclarationKeepsEarlierValue(t *testing.T) {
-	const box = "width:100px; height:5px;"
-	for _, c := range []struct{ name, sheet, attr string }{
-		{"rule", `<style>#t{clear:left;clear:inline}</style>`, ""},
-		{"style attribute", "", "clear:left;clear:inline;"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			fl := layoutFallbackHTML(t, `<!DOCTYPE html>`+c.sheet+`<body style="margin:0"><div style="display:flow-root; width:300px"><div style="float:left; `+box+`"></div><div id="t" style="`+c.attr+box+`"></div></div>`, nil)
-			b := findBox(fl.root, byID("t"))
-			if b == nil || b.X != 0 || b.Y != 5 {
-				t.Errorf("box = %v, want at (0, 5)", boxDims(b))
-			}
-		})
-	}
-}
-
-// TestFloat_EnvFallbackIsUsed pins float through env(): a pending substitution
-// at parse time (parser/css_variable_parser.cc:582-587 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the fallback at computed time.
-func TestFloat_EnvFallbackIsUsed(t *testing.T) {
-	fl := layoutFallbackHTML(t, `<!DOCTYPE html><style>#t{float:env(x,right)}</style><body style="margin:0"><div style="display:flow-root; width:300px"><div id="t" style="width:100px; height:5px"></div></div>`, nil)
-	b := findBox(fl.root, byID("t"))
-	if b == nil || b.X != 200 {
-		t.Errorf("box = %v, want x=200", boxDims(b))
-	}
-}

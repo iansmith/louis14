@@ -1352,7 +1352,14 @@ func (s *styleAccessor) Get(key string) goja.Value {
 			}
 			prop := call.Arguments[0].String()
 			val := call.Arguments[1].String()
-			s.setDeclaration(prop, val)
+			styles := parseInlineStyle(s.getStyleAttr())
+			// CSSOM §6.7.3 step 4: an empty value means removeProperty.
+			if strings.TrimSpace(val) == "" {
+				delete(styles, prop)
+			} else {
+				styles[prop] = val
+			}
+			s.setStyleAttr(serializeInlineStyle(styles))
 			return goja.Undefined()
 		})
 	case "removeProperty":
@@ -1403,27 +1410,17 @@ func (s *styleAccessor) Set(key string, val goja.Value) bool {
 		s.setStyleAttr(cssTextForDeclarations(parseDeclarationList(val.String())))
 		return true
 	}
-	s.setDeclaration(camelToKebab(key), val.String())
-	return true
-}
-
-// setDeclaration sets one declaration in the style attribute. An empty value
-// removes it (CSSOM §6.7.3 step 4; also `el.style.counterSet = ""`). A value
-// the parser rejects leaves the block unchanged (SetPropertyInternal,
-// core/css/abstract_property_set_css_style_declaration.cc:278-279 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (s *styleAccessor) setDeclaration(prop, val string) {
-	isEmpty := strings.TrimSpace(val) == ""
-	if !isEmpty && !css.IsValidKeywordPropertyAndValue(prop, val) {
-		return
-	}
+	cssProp := camelToKebab(key)
 	styles := parseInlineStyle(s.getStyleAttr())
-	if isEmpty {
-		delete(styles, prop)
+	// CSSOM: assigning the empty string removes the declaration
+	// (CSSStyleDeclaration attribute setter; `el.style.counterSet = ""`).
+	if v := val.String(); strings.TrimSpace(v) == "" {
+		delete(styles, cssProp)
 	} else {
-		styles[prop] = val
+		styles[cssProp] = v
 	}
 	s.setStyleAttr(serializeInlineStyle(styles))
+	return true
 }
 
 func (s *styleAccessor) Has(key string) bool {
@@ -1467,8 +1464,7 @@ type cssDeclaration struct {
 }
 
 // parseDeclarationList splits a CSS declaration list into its
-// declarations in source order, skipping ones without a colon and ones the
-// parser drops for an invalid keyword (css.ParseInlineStyle has the same gate).
+// declarations in source order, skipping ones without a colon.
 func parseDeclarationList(s string) []cssDeclaration {
 	var decls []cssDeclaration
 	for _, decl := range strings.Split(s, ";") {
@@ -1476,11 +1472,10 @@ func parseDeclarationList(s string) []cssDeclaration {
 		if idx < 0 {
 			continue
 		}
-		name, value := strings.TrimSpace(decl[:idx]), strings.TrimSpace(decl[idx+1:])
-		if stripped, _ := css.StripImportantSuffix(value); !css.IsValidKeywordPropertyAndValue(name, stripped) {
-			continue
-		}
-		decls = append(decls, cssDeclaration{name: name, value: value})
+		decls = append(decls, cssDeclaration{
+			name:  strings.TrimSpace(decl[:idx]),
+			value: strings.TrimSpace(decl[idx+1:]),
+		})
 	}
 	return decls
 }

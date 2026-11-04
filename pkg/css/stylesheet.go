@@ -3298,9 +3298,8 @@ func isSupportedDeclaration(property, value string) bool {
 	// For other recognized properties, accept any non-empty value (the spec
 	// only requires "if the user agent supports the property:value pair"; we
 	// take a permissive interpretation matching Blink's behavior of treating
-	// most properties as accepting any syntactically-valid <declaration-value>),
-	// keyword properties aside.
-	return IsValidKeywordPropertyAndValue(property, value)
+	// most properties as accepting any syntactically-valid <declaration-value>).
+	return true
 }
 
 // isSupportedCSSProperty returns true for properties louis14 recognizes for
@@ -5108,13 +5107,6 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
-		// A keyword-only property's invalid value drops the declaration
-		// (ParseKeywordValue, parser/css_parser_fast_paths.cc:1976-1983 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if !IsValidKeywordPropertyAndValue(property, value) {
-			continue
-		}
-
 		// object-position is a <position> without the three-value form
 		// (ObjectPosition::ParseSingleValue, longhands_custom.cc:7317 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
@@ -6105,36 +6097,22 @@ func isValidDeclarationValueTokens(s string, topLevel bool) bool {
 // like `bar` or `myvar` don't match. Function-token names are ASCII case-
 // insensitive per CSS Syntax §4.3.10, so `VAR(`, `Var(`, etc. all match.
 func isVarFunctionAt(s string, openIdx int) bool {
-	return isFunctionTokenAt(s, openIdx, "var")
-}
-
-// isFunctionTokenAt reports whether the open-paren at openIdx ends a function
-// token named name, in any case and not as the tail of a longer identifier.
-func isFunctionTokenAt(s string, openIdx int, name string) bool {
-	nameStart := openIdx - len(name)
-	if nameStart < 0 || !strings.EqualFold(s[nameStart:openIdx], name) {
+	if openIdx < 3 {
 		return false
 	}
-	if nameStart == 0 {
+	if !strings.EqualFold(s[openIdx-3:openIdx], "var") {
+		return false
+	}
+	if openIdx == 3 {
 		return true
 	}
+	prev := s[openIdx-4]
 	// Word boundary: any non-ident char qualifies.
-	return !isIdentContinue(s[nameStart-1])
-}
-
-// indexFunctionToken returns the byte index of the first function token named
-// name in s, or -1 if none.
-func indexFunctionToken(s, name string) int {
-	open := strings.IndexByte(s, '(')
-	if open < 0 {
-		return -1
+	if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+		(prev >= '0' && prev <= '9') || prev == '_' || prev == '-' || prev >= 0x80 {
+		return false
 	}
-	for i := open; i < len(s); i++ {
-		if s[i] == '(' && isFunctionTokenAt(s, i, name) {
-			return i - len(name)
-		}
-	}
-	return -1
+	return true
 }
 
 // closeUnmatchedTokens appends synthesized closing tokens for any unmatched
@@ -6249,14 +6227,6 @@ func containsVarFunction(s string) bool {
 	return indexVarFunction(s) >= 0
 }
 
-// containsEnvFunction reports whether s contains an `env(` function-token in
-// any case (CSS Syntax §4.3.10), which makes a declaration a pending
-// substitution (parser/css_variable_parser.cc:582-587 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func containsEnvFunction(s string) bool {
-	return indexFunctionToken(s, "env") >= 0
-}
-
 // containsAttrFunction reports whether s contains a typed attr() function call
 // (CSS Values 5 §11.5). This is used to defer shorthand expansion when the
 // value contains an attr() reference that needs element-attribute access for
@@ -6273,7 +6243,12 @@ func containsAttrFunction(s string) bool {
 // -1 if none. Companion to containsVarFunction; also case-insensitive per
 // CSS Syntax §4.3.10.
 func indexVarFunction(s string) int {
-	return indexFunctionToken(s, "var")
+	for i := 3; i < len(s); i++ {
+		if s[i] == '(' && isVarFunctionAt(s, i) {
+			return i - 3
+		}
+	}
+	return -1
 }
 
 // matchClosingParen returns the index of the matching `)` for the `(` at
