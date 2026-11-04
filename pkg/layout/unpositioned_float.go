@@ -56,7 +56,7 @@ func (uf *UnpositionedFloat) FloatSide() css.FloatType {
 }
 
 // ClearType is the float's clear value. Mirrors Blink's
-// UnpositionedFloat::ClearType (unpositioned_float.h:70-72), always called
+// UnpositionedFloat::ClearType (unpositioned_float.h:72-74), always called
 // with the parent space's direction (floats_utils.cc:48-49, :392 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 keeps clear physical and
 // maps it in the exclusion-space queries.
