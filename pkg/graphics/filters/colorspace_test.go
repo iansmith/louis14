@@ -2,6 +2,7 @@ package filters
 
 import (
 	"image"
+	"image/color"
 	"math"
 	"testing"
 )
@@ -61,9 +62,9 @@ func TestPremultiplyRoundTrip(t *testing.T) {
 	}
 }
 
-// TestConvertImageSpaceNoOp verifies same-space conversion leaves pixels
+// TestconvertImageSpaceNoOp verifies same-space conversion leaves pixels
 // unchanged.
-func TestConvertImageSpaceNoOp(t *testing.T) {
+func TestconvertImageSpaceNoOp(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	for i := range img.Pix {
 		img.Pix[i] = uint8(i * 7)
@@ -78,9 +79,9 @@ func TestConvertImageSpaceNoOp(t *testing.T) {
 	}
 }
 
-// TestConvertImageSpaceRoundTrip verifies sRGB->linear->sRGB on an image
+// TestconvertImageSpaceRoundTrip verifies sRGB->linear->sRGB on an image
 // returns close to the original (within 8-bit quantization noise).
-func TestConvertImageSpaceRoundTrip(t *testing.T) {
+func TestconvertImageSpaceRoundTrip(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for i := 0; i+3 < len(img.Pix); i += 4 {
 		img.Pix[i] = uint8((i * 3) % 256)
@@ -100,6 +101,28 @@ func TestConvertImageSpaceRoundTrip(t *testing.T) {
 		d := int(img.Pix[i]) - int(orig[i])
 		if d < -6 || d > 6 {
 			t.Errorf("round-trip pixel %d: %d -> %d (delta %d)", i, orig[i], img.Pix[i], d)
+		}
+	}
+}
+
+// TestconvertImageSpace_SubImageOnly: a sub-image shares its parent's Pix, whose
+// rows are longer than the sub-image. Only pixels inside its bounds convert.
+func TestconvertImageSpace_SubImageOnly(t *testing.T) {
+	parent := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			parent.SetRGBA(x, y, color.RGBA{128, 128, 128, 255})
+		}
+	}
+	sub := parent.SubImage(image.Rect(1, 1, 3, 3)).(*image.RGBA)
+	convertImageSpace(sub, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			inside := image.Pt(x, y).In(sub.Rect)
+			changed := parent.RGBAAt(x, y).R != 128
+			if inside != changed {
+				t.Errorf("pixel (%d,%d): inside=%v changed=%v", x, y, inside, changed)
+			}
 		}
 	}
 }

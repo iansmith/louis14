@@ -105,3 +105,35 @@ func TestFEDiffuseLighting_NoLightSourceProducesTransparent(t *testing.T) {
 		}
 	}
 }
+
+// TestFEDiffuseLighting_OpaqueAndValidPremultiplied — feDiffuseLighting output
+// is opaque whatever the lighting-color's alpha: Blink passes the colour's RGB
+// (platform/graphics/filters/fe_lighting.cc:97 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), Skia reads only R, G and B of it
+// (src/effects/imagefilters/SkLightingImageFilter.cpp:278-280 @
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) and $compute_lighting returns alpha 1
+// for diffuse (src/sksl/sksl_rt_shader.sksl:160-163 @ d19e557a). With a
+// translucent lighting-color and a constant above 1 the old code stored
+// (255,0,0,128), which is not valid premultiplied.
+func TestFEDiffuseLighting_OpaqueAndValidPremultiplied(t *testing.T) {
+	region := image.Rect(0, 0, 10, 10)
+	src := image.NewRGBA(region)
+	for i := 3; i < len(src.Pix); i += 4 {
+		src.Pix[i] = 255
+	}
+	srcEffect := NewSourceGraphic(InterpolationSpaceSRGB)
+	srcEffect.image = src
+	fe := NewFEDiffuseLighting(srcEffect, InterpolationSpaceSRGB,
+		255, 0, 0, 0.5,
+		/*surfaceScale*/ 1.0,
+		/*diffuseConstant*/ 2.0,
+		/*kernelUnitLengthX*/ 1.0,
+		/*kernelUnitLengthY*/ 1.0,
+		NewDistantLightSource(0, 90),
+	)
+	out := fe.ApplyEffect([]*image.RGBA{src}, region)
+	got := out.RGBAAt(5, 5)
+	if got.R != 255 || got.G != 0 || got.B != 0 || got.A != 255 {
+		t.Errorf("center = %v, want {255 0 0 255}", got)
+	}
+}

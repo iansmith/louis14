@@ -812,6 +812,25 @@ func TestSVG_SolidFillOpacityPremultiplied(t *testing.T) {
 	}
 }
 
+// TestSVG_FilterOverflowStaysInsideViewport — a filter region larger than the
+// <svg> viewport paints only inside it, including when the <svg> is offset on
+// the page. The composite bypasses the DC clip, so it must apply the viewport.
+func TestSVG_FilterOverflowStaysInsideViewport(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="50" height="50" style="position:absolute;left:20px;top:30px">` +
+		`<defs><filter id="f" x="-1" y="-1" width="3" height="3">` +
+		`<feFlood flood-color="blue"/></filter></defs>` +
+		`<rect x="10" y="10" width="30" height="30" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	for _, p := range []struct{ x, y int }{{20, 30}, {69, 30}, {20, 79}, {69, 79}, {45, 55}} {
+		sampleColorClose(t, img, p.x, p.y, 0, 0, 255, 0, "inside the viewport")
+	}
+	for _, p := range []struct{ x, y int }{{19, 55}, {70, 55}, {45, 29}, {45, 80}, {5, 5}, {100, 100}} {
+		sampleColorClose(t, img, p.x, p.y, 255, 255, 255, 0, "outside the viewport")
+	}
+}
+
 // TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a
 // sharp-edged shape. Interior pixels stay near saturated; edge pixels
 // fall to a mid-value.
