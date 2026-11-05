@@ -160,3 +160,45 @@ func TestShorthandFilter_TransformedEdgeRowSurvives(t *testing.T) {
 		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "rotated box edge")
 	}
 }
+
+// TestShorthandFilter_ClipReachThroughCroppedStage — the buffer's clip is grown
+// by how far the filter reads, measured without the url() stage's crop: here
+// the feOffset reads 50px left of the viewport, and the box's left part, off
+// screen, must still feed the visible strip.
+func TestShorthandFilter_ClipReachThroughCroppedStage(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="0" height="0" style="position:absolute"><defs>` +
+		`<filter id="off" x="0" y="0" width="1" height="1"><feOffset dx="50" dy="0"/></filter>` +
+		`</defs></svg>` +
+		`<div style="position:relative;left:-60px;width:100px;height:100px;background:rgb(255,0,0);filter:url(#off) grayscale(1)"></div>` +
+		`</body></html>`
+	img := renderToImage(t, page, 300, 200)
+	sampleColorClose(t, img, 20, 50, 54, 54, 54, 2, "offset content from off screen")
+}
+
+// TestShorthandFilter_ProjectiveAncestorSkipLink — under a perspective
+// ancestor the draw context's matrix cannot be read back, so the device clip
+// cannot bound the buffer; the box must still be filtered, as it was before
+// shorthand chains lost their crop.
+func TestShorthandFilter_ProjectiveAncestorSkipLink(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="perspective:500px"><div style="transform:rotateY(20deg)">` +
+		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
+		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
+		`</div></div></div></body></html>`
+	img := renderToImage(t, page, 300, 300)
+	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
+}
+
+// TestSVGShapeFilterChain_RegionAsBefore — an SVG shape's shorthand chain keeps
+// its buffer at MapRect(reference box): a 2100px rect whose url() stage moves
+// it 2000px right must not grow the buffer past the cap and paint unfiltered.
+func TestSVGShapeFilterChain_RegionAsBefore(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="4200" height="50"><defs>` +
+		`<filter id="o" x="0" y="0" width="2" height="1" filterUnits="objectBoundingBox"><feOffset dx="2000" dy="0"/></filter>` +
+		`</defs><rect width="2100" height="50" fill="rgb(255,0,0)" style="filter:url(#o) grayscale(1)"/></svg>` +
+		`</body></html>`
+	img := renderToImage(t, page, 4200, 50)
+	sampleColorClose(t, img, 50, 25, 255, 255, 255, 0, "left of the offset rect stays empty")
+}
