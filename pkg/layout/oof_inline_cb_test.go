@@ -210,15 +210,30 @@ func TestBlockLayout_AbsposInEmptyRubyText_Surfaced(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so an empty ruby alone in a block
 // leaves the line empty and the block zero-height (css-inline
 // empty-span-size-002).
+//
+// A <br> in the base does not change that: inside ruby it becomes a space
+// text item (inline_items_builder.cc:830-838, css-ruby #anon-gen-unbreak),
+// and a collapsible space at the start of a line is skipped without creating
+// the line box (LineBreaker::HandleText, inline/line_breaker.cc:1340-1351).
 func TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox(t *testing.T) {
-	ruby := makeNode("ruby")
-	root := makeNode("div", ruby)
-	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
-		root: ahem50Style("display", "block", "width", "200px"),
-		ruby: ahem50Style("display", "ruby"),
-	})
-	if got := frag.Size.HeightF64(); got != 0 {
-		t.Errorf("block holding only an empty ruby: height %v, want 0", got)
+	for _, withBR := range []bool{false, true} {
+		styles := map[*html.Node]*css.Style{}
+		var ruby *html.Node
+		if withBR {
+			br := makeNode("br")
+			rb := makeNode("rb", br)
+			ruby = makeNode("ruby", rb)
+			styles[br] = ahem50Style("display", "inline")
+			styles[rb] = ahem50Style("display", "inline")
+		} else {
+			ruby = makeNode("ruby")
+		}
+		root := makeNode("div", ruby)
+		styles[root] = ahem50Style("display", "block", "width", "200px")
+		styles[ruby] = ahem50Style("display", "ruby")
+		if got := layoutBlockAt200(t, root, styles).Size.HeightF64(); got != 0 {
+			t.Errorf("block holding only an empty ruby (br in base: %v): height %v, want 0", withBR, got)
+		}
 	}
 }
 
@@ -229,8 +244,6 @@ func TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox(t *testing.T) {
 // must not collapse to zero height:
 //   - a nested ruby with ruby-text (should_create_line_box, :3608);
 //   - an atomic inline, even at zero width (HandleAtomicInline);
-//   - a <br>, which inside ruby becomes a space text item
-//     (inline_items_builder.cc:830-838, css-ruby #anon-gen-unbreak);
 //   - an empty inline box with inline-axis padding (InlineItem::IsEmptyItem,
 //     inline/inline_item.cc:32-67, :128-139).
 func TestBlockLayout_RubyBaseContentCreatesLineBox(t *testing.T) {
@@ -249,11 +262,6 @@ func TestBlockLayout_RubyBaseContentCreatesLineBox(t *testing.T) {
 			ib := makeNode("span")
 			styles[ib] = ahem50Style("display", "inline-block", "width", "0", "height", "0")
 			return ib
-		}},
-		{"br", func(styles map[*html.Node]*css.Style) *html.Node {
-			br := makeNode("br")
-			styles[br] = ahem50Style("display", "inline")
-			return br
 		}},
 		{"padded empty span", func(styles map[*html.Node]*css.Style) *html.Node {
 			sp := makeNode("span")
@@ -277,22 +285,32 @@ func TestBlockLayout_RubyBaseContentCreatesLineBox(t *testing.T) {
 	}
 }
 
-// TestBlockLayout_FloatInEmptyRubyBase_Placed: a float in the base of a ruby
-// without ruby-text is an ordinary float of the line (line_breaker.cc:
-// 3328-3331, :1115-1131 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a line
-// holding only that ruby still places it (LineBreaker::HandleFloat).
-func TestBlockLayout_FloatInEmptyRubyBase_Placed(t *testing.T) {
+// TestCollectInlines_FloatInRubyBaseIsInlinified: a ruby base never holds a
+// float. A ruby inlinifies its children, an inlinified inline box inlinifies
+// its own (ComputedStyle::InlinifiesChildren, style/computed_style.h:
+// 1805-1817), and an inlinified float loses its float and takes its
+// equivalent inline display (StyleAdjuster::AdjustStyleForDisplay,
+// css/resolver/style_adjuster.cc:789-806 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So a block float inside <rb> is
+// collected as an atomic inline, not as a float.
+func TestCollectInlines_FloatInRubyBaseIsInlinified(t *testing.T) {
 	float := makeNode("span")
 	rb := makeNode("rb", float)
 	ruby := makeNode("ruby", rb)
 	root := makeNode("div", ruby)
-	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
+	data := CollectInlines(buildTestTree(root, map[*html.Node]*css.Style{
 		root:  ahem50Style("display", "block", "width", "200px"),
 		ruby:  ahem50Style("display", "ruby"),
 		rb:    ahem50Style("display", "inline"),
 		float: ahem50Style("display", "block", "float", "left", "width", "50px", "height", "50px"),
-	})
-	if got := countBoxFragmentsForNode(frag, float); got != 1 {
-		t.Errorf("box fragments for a float in an empty ruby base: got %d, want 1 (0 means the float was dropped)", got)
+	}))
+	for _, it := range data.Items {
+		if it.Node == float {
+			if it.Type != InlineItemAtomicInline {
+				t.Errorf("float in a ruby base collected as item type %v, want InlineItemAtomicInline", it.Type)
+			}
+			return
+		}
 	}
+	t.Error("float in a ruby base produced no inline item")
 }

@@ -656,14 +656,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// advancing. This matches Blink's behavior where a trailing line
 		// after a <br> containing only positioned content collapses away.
 		if lineHasOnlyOutOfFlow(&line, itemsData, wdm) {
-			for _, r := range line.Results {
-				// An empty ruby column's base items are ordinary line
-				// items in Blink (no column without ruby-text,
-				// inline/line_breaker.cc:3328-3331 @ a9f50e522efa), so
-				// the OOFs buried in it are surfaced like this line's own.
-				if r.RubyColumn != nil {
-					surfaceRubyColumnOOFCandidates(r.RubyColumn, 0, blockOffset, positionedInlineMap, bla.containerBuilder)
-				}
+			// The base items of a ruby without ruby-text are this line's
+			// own (forEachLineItemResult); a column with ruby-text never
+			// reaches here, as it makes lineHasOnlyOutOfFlow false.
+			forEachLineItemResult(line.Results, func(r *InlineItemResult) bool {
 				if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
 						r.Item.LayoutNode, 0, blockOffset,
@@ -676,7 +672,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						delete(pendingFloats, r.Item)
 					}
 				}
-			}
+				return true
+			})
 			continue
 		}
 
@@ -3611,18 +3608,48 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 	}
 }
 
+// forEachLineItemResult calls fn for each result of results in order, until
+// fn returns false, and reports whether it ran to the end. A ruby column
+// without ruby-text is not passed to fn: its base sub-line's results are
+// walked in its place, because Blink makes no column for such a ruby and its
+// base items are ordinary items of the line (LineBreaker::HandleRuby returns
+// false, then AddItem + MoveToNextOf, inline/line_breaker.cc:3328-3331,
+// :1115-1131 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 still
+// builds that column (LOU-721); this walk is its stand-in for the line's own
+// items. A column with ruby-text is passed to fn itself.
+func forEachLineItemResult(results []InlineItemResult, fn func(r *InlineItemResult) bool) bool {
+	for i := range results {
+		r := &results[i]
+		if c := r.RubyColumn; c != nil && len(c.AnnotationLines) == 0 {
+			if c.BaseLine != nil && !forEachLineItemResult(c.BaseLine.Results, fn) {
+				return false
+			}
+			continue
+		}
+		if r.Item != nil && !fn(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // lineHasOnlyOutOfFlow returns true if the given line contains no visible
-// in-flow content — i.e., no atomic inlines, no ruby columns, no forced
-// breaks, and no text with non-whitespace characters. Out-of-flow candidates
-// (abs/fixed), floats (which are positioned separately in Phase 1c, not by
-// line layout), and collapsible whitespace are ignored for this
-// determination.
+// in-flow content — i.e., no atomic inlines, no ruby columns with ruby-text,
+// no forced breaks, and no text with non-whitespace characters, counting the
+// base items of a ruby without ruby-text as the line's own
+// (forEachLineItemResult). Out-of-flow candidates (abs/fixed), floats (which
+// are positioned separately in Phase 1c, not by line layout), and
+// collapsible whitespace are ignored for this determination.
 //
 // Such lines should not generate a line box: they would otherwise add a
 // line-height's worth of empty space, and — for inline-block baseline
 // propagation (CSS 2.1 §10.8.1) — would incorrectly shift the "last in-flow
 // line box" to a trailing empty line. Mirrors Blink's suppression of trailing
 // line boxes that contain only positioned content after a forced break.
+//
+// The empty-line path in layoutInlineChildren relies on a true result never
+// covering a column with ruby-text: it surfaces OOFs and places floats from
+// the walked results only.
 func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm WritingDirectionMode) bool {
 	// A forced break by itself does not create a line box: a <br> or
 	// preserved newline does (its InlineItemControl below), the forced break
@@ -3632,14 +3659,12 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm Writin
 	if line.Width > 0 {
 		return false
 	}
-	for _, r := range line.Results {
+	return forEachLineItemResult(line.Results, func(r *InlineItemResult) bool {
 		// A ruby column with ruby-text creates the line box, empty or not
 		// (LineBreaker::HandleRuby sets column_result->
 		// should_create_line_box, inline/line_breaker.cc:3608 @
-		// a9f50e522efa). Blink makes no column for a ruby without
-		// ruby-text (:3328-3331); louis14 still does, and such a column,
-		// like Blink's ordinary base items, creates no line box by itself.
-		if r.RubyColumn != nil && len(r.RubyColumn.AnnotationLines) > 0 {
+		// a9f50e522efa).
+		if r.RubyColumn != nil {
 			return false
 		}
 		switch r.Item.Type {
@@ -3664,8 +3689,8 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm Writin
 				return false
 			}
 		}
-	}
-	return true
+		return true
+	})
 }
 
 // isInlineBoxEdgeEmpty reports whether an inline box's start (or end) edge
