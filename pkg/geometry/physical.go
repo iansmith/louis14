@@ -179,6 +179,19 @@ func (r PhysicalRect) UniteEvenIfEmpty(other PhysicalRect) PhysicalRect {
 	}
 }
 
+// Unite returns the smallest rect containing both r and other, ignoring an
+// empty one. Mirrors Blink's PhysicalRect::Unite (core/layout/geometry/
+// physical_rect.cc:59-68 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) Unite(other PhysicalRect) PhysicalRect {
+	if other.IsEmpty() {
+		return r
+	}
+	if r.IsEmpty() {
+		return other
+	}
+	return r.UniteEvenIfEmpty(other)
+}
+
 // Intersect returns the intersection of r and other, or the zero rect when
 // they do not intersect. Mirrors Blink's PhysicalRect::Intersect
 // (core/layout/geometry/physical_rect.cc:116-131 @

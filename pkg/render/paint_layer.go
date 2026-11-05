@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
@@ -891,7 +892,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// side`. The corresponding border-radius is computed lazily by
 		// overflowClipRadii (coverage-factor corner correction shared
 		// with box-shadow spread).
-		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left]
+		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left], set when applyMargin
 		switch {
 		case forceBorderBoxClip:
 			// CSS Tables 3 §5.4.1 forces a border-box clip irrespective of
@@ -901,22 +902,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			clipW = box.Width
 			clipH = box.Height
 		case applyMargin:
-			switch marginBox {
-			case css.OverflowClipMarginContentBox:
-				visualBoxInset = [4]float64{
-					box.Border.Top + box.Padding.Top,
-					box.Border.Right + box.Padding.Right,
-					box.Border.Bottom + box.Padding.Bottom,
-					box.Border.Left + box.Padding.Left,
-				}
-			case css.OverflowClipMarginPaddingBox:
-				visualBoxInset = [4]float64{
-					box.Border.Top, box.Border.Right,
-					box.Border.Bottom, box.Border.Left,
-				}
-			case css.OverflowClipMarginBorderBox:
-				// All insets stay 0 — clip edge starts at the border edge.
-			}
+			visualBoxInset = overflowClipMarginVisualBoxInset(box, marginBox)
 			// Per-side outward offset from the border-edge to the clip edge
 			// (positive = outward, negative = inward).
 			edgeTop := -visualBoxInset[0] + marginLength
@@ -2104,4 +2090,260 @@ func (layer *PaintLayer) sortZLists() {
 	for _, child := range layer.FloatChildren {
 		child.sortZLists()
 	}
+}
+
+// paintsWithFilters mirrors PaintLayer::PaintsWithFilters
+// (core/paint/paint_layer.cc:269-273 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the layer has a filter-inducing property. louis14 has no box-reflect.
+func (layer *PaintLayer) paintsWithFilters() bool {
+	return len(layer.Filters) > 0
+}
+
+// hasFilterThatMovesPixels mirrors PaintLayer::HasFilterThatMovesPixels
+// (ComputeHasFilterThatMovesPixels, paint_layer.cc:2653-2662 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): some operation moves pixels.
+// Reference, blur and drop-shadow operations do (FilterOperation::MovesPixels,
+// core/style/filter_operation.h:152, 336, 372 @ a9f50e52).
+func (layer *PaintLayer) hasFilterThatMovesPixels() bool {
+	for _, op := range layer.Filters {
+		switch op.Name {
+		case "url", "blur", "drop-shadow":
+			return true
+		}
+	}
+	return false
+}
+
+// forEachChild calls f on each child layer of layer in paint order, with
+// whether it is a self-painting layer: PaintLayerPaintOrderIterator(this,
+// kAllChildren) and IsSelfPaintingLayer (paint_layer.cc:2201-2206 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A flow child is self-painting when
+// paintDescendantPhase paints it through paintLayer (isSelfPaintingFlowChild).
+func (layer *PaintLayer) forEachChild(f func(c *PaintLayer, selfPainting bool)) {
+	for _, c := range layer.NegativeZ {
+		f(c, true)
+	}
+	for _, c := range layer.FlowChildren {
+		f(c, isSelfPaintingFlowChild(c))
+	}
+	for _, list := range [][]*PaintLayer{layer.FloatChildren, layer.AutoZero, layer.PositiveZ} {
+		for _, c := range list {
+			f(c, true)
+		}
+	}
+}
+
+// selfPaintingDescendantBoxes returns the boxes of layer's self-painting
+// descendant layers at any depth: the boxes visualOverflowRect leaves out.
+func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
+	boxes := map[*layout.Box]bool{}
+	var walk func(l *PaintLayer)
+	walk = func(l *PaintLayer) {
+		l.forEachChild(func(c *PaintLayer, selfPainting bool) {
+			if selfPainting && c.Box != nil {
+				boxes[c.Box] = true
+			}
+			walk(c)
+		})
+	}
+	walk(layer)
+	return boxes
+}
+
+// localBoundingBox mirrors PaintLayer::LocalBoundingBox (paint_layer.cc:
+// 2172-2179 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the layer box's visual
+// overflow rect. louis14 works in absolute coordinates, without the layer's own
+// transform.
+func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+	return visualOverflowRect(layer.Box, selfPainting)
+}
+
+// visualOverflowRect stands in for LayoutBox::VisualOverflowRect
+// (core/layout/layout_box.cc:3690-3728 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the border box united with the contents' overflow, which an overflow clip
+// cuts back to the border box on each clipped axis (ApplyOverflowClip), or,
+// with an overflow-clip-margin, to the border box expanded by
+// BorderOutsetsForClipping. A descendant painted by a self-painting layer of
+// its own is left out, as Blink leaves it out of its ancestors' visual
+// overflow; ExpandRectForSelfPaintingDescendants adds it.
+//
+// no Blink analog: louis14 keeps no visual overflow, so this is built from
+// border boxes alone, without ink overflow (shadows, outlines, glyph overflow).
+func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+	border := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(box.X, box.Y, box.Width, box.Height))
+	var contents geometry.PhysicalRect
+	for _, child := range box.Children {
+		if !selfPainting[child] {
+			contents = contents.Unite(visualOverflowRect(child, selfPainting))
+		}
+	}
+	if outsets, ok := borderOutsetsForClipping(box); ok {
+		if contents.IsEmpty() {
+			return border
+		}
+		clip := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(
+			box.X-outsets[3], box.Y-outsets[0],
+			box.Width+outsets[1]+outsets[3], box.Height+outsets[0]+outsets[2]))
+		return clip.Intersect(contents).Unite(border)
+	}
+	result := border.Unite(contents)
+	if box.OverflowClipAxes&layout.OverflowClipX != 0 {
+		result.Offset.Left, result.Size.Width = border.Offset.Left, border.Size.Width
+	}
+	if box.OverflowClipAxes&layout.OverflowClipY != 0 {
+		result.Offset.Top, result.Size.Height = border.Offset.Top, border.Size.Height
+	}
+	return result
+}
+
+// borderOutsetsForClipping mirrors LayoutBox::BorderOutsetsForClipping
+// (core/layout/layout_box.cc:3668-3688 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// for a box that applies an overflow-clip-margin: the outsets, [top, right,
+// bottom, left] from the border box, of the margin's reference box inflated
+// by the margin. ok is false when ShouldApplyOverflowClipMargin
+// (core/layout/layout_object.h:588-617 @ a9f50e52) does not hold: a scroll
+// container, no margin with an effect, or not clipped by overflow:clip on
+// both axes (or paint containment) where the box respects overflow. Replaced
+// elements' looser overflow test is not ported.
+func borderOutsetsForClipping(box *layout.Box) (outsets [4]float64, ok bool) {
+	s := box.Style
+	if s == nil || box.IsScrollContainer() || box.OverflowClipAxes != layout.OverflowClipBothAxis {
+		return outsets, false
+	}
+	m, set := s.GetOverflowClipMargin()
+	if !set || (m.Length == 0 && m.Box == css.OverflowClipMarginPaddingBox) {
+		return outsets, false
+	}
+	isOverflowClip := s.GetOverflowX() == css.OverflowClip && s.GetOverflowY() == css.OverflowClip
+	if !isOverflowClip && !s.ShouldApplyPaintContainment() {
+		return outsets, false
+	}
+	for i, inset := range overflowClipMarginVisualBoxInset(box, m.Box) {
+		outsets[i] = m.Length - inset
+	}
+	return outsets, true
+}
+
+// overflowClipMarginVisualBoxInset is the shrink, [top, right, bottom, left],
+// from the border box to overflow-clip-margin's reference box
+// (BorderOutsetsForClipping's switch, layout_box.cc:3675-3684 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func overflowClipMarginVisualBoxInset(box *layout.Box, marginBox css.OverflowClipMarginBox) [4]float64 {
+	switch marginBox {
+	case css.OverflowClipMarginContentBox:
+		return [4]float64{
+			box.Border.Top + box.Padding.Top, box.Border.Right + box.Padding.Right,
+			box.Border.Bottom + box.Padding.Bottom, box.Border.Left + box.Padding.Left,
+		}
+	case css.OverflowClipMarginPaddingBox:
+		return [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
+	}
+	return [4]float64{} // border-box: the clip edge starts at the border edge
+}
+
+// knownToClipSubtreeToPaddingBox mirrors PaintLayer::KnownToClipSubtreeToPaddingBox
+// (paint_layer.cc:2225-2242 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// layer clips its whole subtree on both axes, with no absolute or fixed
+// descendant whose containing block lies outside it
+// (HasNonContainedAbsolutePositionDescendant, and HasFixedPositionDescendant
+// without CanContainFixedPositionObjects; UpdateDescendantDependentFlags,
+// :394-395, 422-429).
+func (layer *PaintLayer) knownToClipSubtreeToPaddingBox() bool {
+	box := layer.Box
+	if box == nil || box.OverflowClipAxes != layout.OverflowClipBothAxis || layer.HasClipMargin {
+		return false
+	}
+	return outOfFlowDescendantsContainedBy(layer, box)
+}
+
+// outOfFlowDescendantsContainedBy reports whether every absolute or fixed
+// descendant layer of l has its containing block at or inside clipper.
+func outOfFlowDescendantsContainedBy(l *PaintLayer, clipper *layout.Box) bool {
+	contained := true
+	l.forEachChild(func(c *PaintLayer, _ bool) {
+		if contained && isOutOfFlowForPaint(c) && !containingBlockWithin(c.Box, clipper) {
+			contained = false
+		}
+		contained = contained && outOfFlowDescendantsContainedBy(c, clipper)
+	})
+	return contained
+}
+
+// containingBlockWithin reports whether the out-of-flow box's containing
+// block is clipper or a box inside it. Layout parents an out-of-flow box under
+// its containing block, so that is oof.Parent. Blink tracks the same thing
+// with flags up its layer tree.
+func containingBlockWithin(oof, clipper *layout.Box) bool {
+	for a := oof.Parent; a != nil; a = a.Parent {
+		if a == clipper {
+			return true
+		}
+	}
+	return false
+}
+
+// localBoundingBoxIncludingSelfPaintingDescendants mirrors
+// PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants
+// (paint_layer.cc:2244-2249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) localBoundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer) geometry.PhysicalRect {
+	return r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.selfPaintingDescendantBoxes())
+}
+
+// boundingBoxIncludingSelfPaintingDescendants is
+// localBoundingBoxIncludingSelfPaintingDescendants with the self-painting box
+// set of an ancestor, which serves every layer under it.
+func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+	result := layer.localBoundingBox(selfPainting)
+	r.expandRectForSelfPaintingDescendants(layer, &result, selfPainting)
+	return result
+}
+
+// expandRectForSelfPaintingDescendants mirrors
+// PaintLayer::ExpandRectForSelfPaintingDescendants (paint_layer.cc:2181-2223 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): unite each self-painting child's
+// own bounding box, mapped through its filter and then its transform. louis14's
+// rects are absolute, so Blink's final offset to the parent is the identity.
+//
+// A non-self-painting child layer's content is already in this layer's visual
+// overflow, but its self-painting descendants are left out of it, and in
+// louis14 they hang under that child (floats, atomic inlines). The child
+// contributes them through its own expansion. In Blink such a layer has no
+// self-painting descendants of its own to drop.
+func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, selfPainting map[*layout.Box]bool) {
+	if layer.knownToClipSubtreeToPaddingBox() {
+		return
+	}
+	layer.forEachChild(func(child *PaintLayer, childSelfPainting bool) {
+		if !childSelfPainting || child.Box == nil {
+			r.expandRectForSelfPaintingDescendants(child, result, selfPainting)
+			return
+		}
+		added := r.boundingBoxIncludingSelfPaintingDescendants(child, selfPainting)
+		if child.paintsWithFilters() {
+			added = r.mapRectForFilter(child, added)
+		}
+		if child.HasTransform {
+			added = geometry.PhysicalRectEnclosingRect(localTransformMatrix(child.Box).MapRect(added.ToRectF()))
+		}
+		*result = result.Unite(added)
+	})
+}
+
+// mapRectForFilter mirrors PaintLayer::MapRectForFilter (paint_layer.cc:
+// 2641-2651 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): FilterOperations::MapRect
+// over the layer's filter, built against rect as its reference box, which is
+// what Blink's FilterReferenceBox holds for this layer.
+func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRect) geometry.PhysicalRect {
+	if !layer.hasFilterThatMovesPixels() {
+		return rect
+	}
+	builder := r.newFilterEffectBuilder(layer)
+	builder.ReferenceBox = snapRectFToDevice(rect.ToRectF())
+	builder.FilterViewport = snapRectFToDevice(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height))
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		return rect
+	}
+	m := filter.MapRect(builder.ReferenceBox)
+	return geometry.PhysicalRectEnclosingRect(rectFFromInts(m.Min.X, m.Min.Y, m.Dx(), m.Dy()))
 }

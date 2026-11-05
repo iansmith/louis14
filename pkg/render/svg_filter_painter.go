@@ -440,8 +440,12 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if sp.shape != nil && sp.shape.Style != nil {
 		currentColor = sp.shape.Style.GetColor()
 	}
+	// The shape's chain has no layer: its reference box is also the
+	// viewport and origin for userSpaceOnUse lengths, as before
+	// FilterViewport existed.
 	builder := &FilterEffectBuilder{
 		ReferenceBox:       referenceBox,
+		FilterViewport:     referenceBox,
 		CurrentColor:       currentColor,
 		Resources:          sp.ctx.Resources,
 		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,

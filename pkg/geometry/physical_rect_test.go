@@ -84,3 +84,20 @@ func TestPhysicalSizeIsEmptyAndFitToAspectRatio(t *testing.T) {
 		t.Errorf("grow = %+v, want %+v", got, want)
 	}
 }
+
+// TestPhysicalRect_Unite mirrors PhysicalRect::Unite (core/layout/geometry/
+// physical_rect.cc:59-68 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an empty
+// operand is ignored, so its origin does not stretch the result.
+func TestPhysicalRect_Unite(t *testing.T) {
+	a := NewPhysicalRect(10, 10, 20, 20)
+	empty := NewPhysicalRect(0, 0, 0, 0)
+	if got := a.Unite(empty); got != a {
+		t.Errorf("a.Unite(empty) = %v, want %v", got, a)
+	}
+	if got := empty.Unite(a); got != a {
+		t.Errorf("empty.Unite(a) = %v, want %v", got, a)
+	}
+	if got, want := a.Unite(NewPhysicalRect(40, 0, 10, 5)), NewPhysicalRect(10, 0, 40, 30); got != want {
+		t.Errorf("a.Unite(b) = %v, want %v", got, want)
+	}
+}

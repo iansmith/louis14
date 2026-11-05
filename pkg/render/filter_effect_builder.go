@@ -20,8 +20,18 @@ import (
 // do not clip to a primitive subregion (Filter Effects 1 §13, and Blink's
 // filter_effect_builder.cc).
 type FilterEffectBuilder struct {
-	// ReferenceBox is the element's border box in absolute device pixels.
+	// ReferenceBox is the filter reference box in absolute device pixels:
+	// the border box, or for a filter that moves pixels the layer's bounding
+	// box including its self-painting descendants (UpdateFilterReferenceBox).
 	ReferenceBox image.Rectangle
+	// FilterViewport is the element's border box in absolute device pixels.
+	// Its size is Blink's FilterViewport (ComputeFilterViewport, core/paint/
+	// paint_layer.cc:164-174 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the
+	// viewport userSpaceOnUse percentages resolve against
+	// (filter_effect_builder.cc:528-537 @ a9f50e52); its origin is the
+	// layer's local origin, which userSpaceOnUse coordinates are relative
+	// to. It may be empty: a 0x0 box keeps its 0x0 viewport.
+	FilterViewport image.Rectangle
 	// CurrentColor resolves currentColor for drop-shadow.
 	CurrentColor css.Color
 	// Resources, when non-nil, supplies the SVG resource registry so
@@ -52,6 +62,21 @@ type FilterEffectBuilder struct {
 	// in, as Skia's filters map theirs through skif::Mapping. The zero
 	// value is the identity.
 	Mapping filters.Mapping
+}
+
+// viewportLengthContext is the SVGLengthContext userSpaceOnUse percentages
+// resolve against: FilterViewport's size (filter_effect_builder.cc:528-537 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *FilterEffectBuilder) viewportLengthContext() svg.SVGLengthContext {
+	return svg.NewSVGLengthContext(geometry.SizeF{
+		Width: float64(b.FilterViewport.Dx()), Height: float64(b.FilterViewport.Dy()),
+	})
+}
+
+// userSpaceOrigin is the layer's local origin, which userSpaceOnUse
+// coordinates are relative to.
+func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
+	return geometry.PointF{X: float64(b.FilterViewport.Min.X), Y: float64(b.FilterViewport.Min.Y)}
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -187,30 +212,19 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		float64(b.ReferenceBox.Dx()),
 		float64(b.ReferenceBox.Dy()),
 	)
-	// CSS `filter: url(...)` has no SVG transform stack — the
-	// "user-space origin" equivalent for this path is the reference
-	// box origin (where the filtered element lives in absolute device
-	// coords). Used by ResourceBoundingBox to anchor explicit
-	// userSpaceOnUse x/y values.
-	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
+	// userSpaceOnUse x/y are relative to the layer's local origin,
+	// FilterViewport.Min.
+	regionF := filter.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
-	// userSpaceOrigin for the CSS `filter: url(...)` path is the
-	// reference box origin: this path has no SVG transform stack
-	// because the FilterEffectBuilder is constructed with
-	// b.ReferenceBox already in absolute device coords. The CSS
-	// filter reference operates on the element's reference box, so
-	// its "user-space origin" equivalent is the reference box origin.
 	adapter := &svgFilterElementAdapter{
 		filter:       filter,
 		filterRegion: region,
 		referenceBox: b.ReferenceBox,
-		// CSS `filter: url(...)` on an HTML box: the primitive subregion
-		// percentage viewport is the element's border (reference) box —
-		// NOT the filter region, which can carry the default 10% expansion.
-		subregionViewport:  b.ReferenceBox,
-		userSpaceOrigin:    b.ReferenceBox.Min,
+		// The primitive subregion percentage viewport is FilterViewport,
+		// not the filter region, which can carry the default 10% expansion.
+		subregionViewport:  b.FilterViewport,
+		userSpaceOrigin:    b.FilterViewport.Min,
 		space:              space,
 		resolveStyle:       b.ResolveStyle,
 		resources:          b.Resources,
@@ -253,10 +267,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	// cascade, so styleResolver is nil — filter primitives fall back to
 	// raw attribute lookup, which is what the external-resource tests
 	// exercise (`flood-color="green"`, `type="hueRotate" values="..."`).
-	resource := svg.NewSVGResourceFilter(target, svg.NewSVGLengthContext(geometry.SizeF{
-		Width:  float64(b.ReferenceBox.Dx()),
-		Height: float64(b.ReferenceBox.Dy()),
-	}), nil)
+	resource := svg.NewSVGResourceFilter(target, b.viewportLengthContext(), nil)
 	if resource == nil {
 		return nil
 	}
@@ -276,16 +287,15 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		float64(b.ReferenceBox.Dx()),
 		float64(b.ReferenceBox.Dy()),
 	)
-	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
-	regionF := resource.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
+	regionF := resource.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{
 		filter:            resource,
 		filterRegion:      region,
 		referenceBox:      b.ReferenceBox,
-		subregionViewport: b.ReferenceBox,
-		userSpaceOrigin:   b.ReferenceBox.Min,
+		subregionViewport: b.FilterViewport,
+		userSpaceOrigin:   b.FilterViewport.Min,
 		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.
