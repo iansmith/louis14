@@ -150,3 +150,86 @@ func TestBlockLayout_AbsposInRubyBase_Surfaced(t *testing.T) {
 			"(0 means the buried ruby-sub-line OOF was dropped — LOU-312)", got)
 	}
 }
+
+// layoutEmptyRubyCase lays out root at 200px wide under a horizontal-tb LTR
+// space, for the empty-ruby tests below.
+func layoutEmptyRubyCase(t *testing.T, root *html.Node, styles map[*html.Node]*css.Style) *PhysicalFragment {
+	t.Helper()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
+		Build()
+	result := NewBlockLayoutAlgorithm(testContext(), buildTestTree(root, styles), space).Layout()
+	if result == nil || result.Fragment == nil {
+		t.Fatal("layout returned nil result")
+	}
+	return result.Fragment
+}
+
+// emptyRubyStyle is the Ahem 50px style shared by the empty-ruby tests.
+func emptyRubyStyle(kv ...string) *css.Style {
+	return makeStyle(append(kv, "font-family", "Ahem", "font-size", "50px")...)
+}
+
+// TestBlockLayout_AbsposInEmptyRuby_Surfaced: a ruby column with no ruby-text
+// gets no column result; its base items break as ordinary items of the outer
+// line (LineBreaker::HandleRuby returns false, then AddItem + MoveToNextOf,
+// inline/line_breaker.cc:3328-3331, :1115-1131 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An abs-pos element in the base
+// is therefore an ordinary out-of-flow item of that line and is surfaced.
+func TestBlockLayout_AbsposInEmptyRuby_Surfaced(t *testing.T) {
+	absSpan := makeNode("span", makeTextNode("X"))
+	rb := makeNode("rb", absSpan)
+	ruby := makeNode("ruby", rb)
+	root := makeNode("div", ruby)
+	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
+		root:    emptyRubyStyle("display", "block", "position", "relative", "width", "200px"),
+		ruby:    emptyRubyStyle("display", "ruby"),
+		rb:      emptyRubyStyle("display", "inline"),
+		absSpan: emptyRubyStyle("position", "absolute", "display", "block", "left", "0", "top", "0", "width", "50px", "height", "50px"),
+	})
+	if got := countBoxFragmentsForNode(frag, absSpan); got != 1 {
+		t.Errorf("abs-pos box fragments for abs in empty ruby base: got %d, want 1 "+
+			"(0 means the OOF buried in the empty ruby was dropped)", got)
+	}
+}
+
+// TestBlockLayout_AbsposInEmptyRubyText_Surfaced: a ruby column with ruby-text
+// always creates the line box, empty or not (LineBreaker::HandleRuby sets
+// column_result->should_create_line_box, inline/line_breaker.cc:3608 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so an abs-pos element in its
+// empty annotation is surfaced. Mirrors css-contain/contain-layout-005.
+func TestBlockLayout_AbsposInEmptyRubyText_Surfaced(t *testing.T) {
+	absSpan := makeNode("span", makeTextNode("X"))
+	rt := makeNode("rt", absSpan)
+	ruby := makeNode("ruby", rt)
+	root := makeNode("div", ruby)
+	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
+		root:    emptyRubyStyle("display", "block", "position", "relative", "width", "200px"),
+		ruby:    emptyRubyStyle("display", "ruby"),
+		rt:      emptyRubyStyle("display", "ruby-text"),
+		absSpan: emptyRubyStyle("position", "absolute", "display", "block", "left", "0", "top", "0", "width", "50px", "height", "50px"),
+	})
+	if got := countBoxFragmentsForNode(frag, absSpan); got != 1 {
+		t.Errorf("abs-pos box fragments for abs in empty ruby-text: got %d, want 1 "+
+			"(0 means the empty column's line was treated as empty and the OOF dropped)", got)
+	}
+}
+
+// TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox: with no ruby-text
+// there is no column result (line_breaker.cc:1115-1131, :3328-3331 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so an empty ruby alone in a block
+// leaves the line empty and the block zero-height (css-inline
+// empty-span-size-002).
+func TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox(t *testing.T) {
+	ruby := makeNode("ruby")
+	root := makeNode("div", ruby)
+	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
+		root: emptyRubyStyle("display", "block", "width", "200px"),
+		ruby: emptyRubyStyle("display", "ruby"),
+	})
+	if got := frag.Size.HeightF64(); got != 0 {
+		t.Errorf("block holding only an empty ruby: height %v, want 0", got)
+	}
+}
