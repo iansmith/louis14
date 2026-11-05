@@ -50,8 +50,9 @@ Usage:
       missing files at gitignored paths (the corpus fonts) as "ignored".
       Prints one line per action.
   scripts/wpt-audit.py <wpt-sha> <cache.tsv> --orphans
-      list local-only files (no-upstream) that nothing loads and that are not
-      reftests: references left behind when their tests moved.
+      list files not at their upstream path (no-upstream, ambiguous, or a
+      relocated copy) that nothing loads and that are not reftests:
+      references left behind when their tests moved, and stale copies.
   scripts/wpt-audit.py --missing-refs <dir>...
       list reftests whose <link rel=match|mismatch> target is missing.
 
@@ -462,16 +463,17 @@ def ignored(path):
 
 
 def orphans(upstream):
-    """Corpus files with no upstream counterpart (no-upstream) that no file
-    loads and that are not reftests themselves: references left behind when
-    their tests moved, and other dead local files."""
+    """Corpus files not at their upstream path (no-upstream, ambiguous, or a
+    relocated copy) that no file loads and that are not reftests themselves:
+    references left behind when their tests moved, stale copies of upstream
+    files, and other dead local files."""
     rows = audit_rows(upstream)
     loaded = set()
     for local in corpus_text_files(SUITES):
         loaded |= file_loads(local, read_bytes(local))
     out = []
     for local, status, _, _, _ in rows:
-        if status != "no-upstream" or local in loaded:
+        if status in ("identical", "differs") or local in loaded:
             continue
         if local.endswith(DOC_EXT) and match_hrefs(read_bytes(local)):
             continue  # a louis14-authored reftest (LOU-172), not an orphan
