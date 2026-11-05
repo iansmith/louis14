@@ -2145,17 +2145,15 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	// Overflow clip using pre-computed rectangle.
-	clipping := false
 	var overflowClip *ClipPaintPropertyNode
 	if layer.HasClip {
-		clipping = true
 		overflowClip = r.clipTree.ownClipNode(layer, clipNodeOverflowClip)
 		r.pushClip(layer, clipNodeOverflowClip, overflowClip)
 	}
 
 	// Step 2: Negative z-index stacking contexts.
 	for _, child := range layer.NegativeZ {
-		r.paintZOrderChild(layer, child, overflowClip)
+		r.paintZOrderChild(child, overflowClip)
 	}
 
 	// Step 3: Descendant block backgrounds (non-self-painting subtree).
@@ -2192,15 +2190,15 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 
 	// Step 6: z-index:auto positioned + z-index:0 SCs.
 	for _, child := range layer.AutoZero {
-		r.paintZOrderChild(layer, child, overflowClip)
+		r.paintZOrderChild(child, overflowClip)
 	}
 
 	// Step 7: Positive z-index stacking contexts.
 	for _, child := range layer.PositiveZ {
-		r.paintZOrderChild(layer, child, overflowClip)
+		r.paintZOrderChild(child, overflowClip)
 	}
 
-	if clipping {
+	if layer.HasClip {
 		r.popClipNode()
 	}
 

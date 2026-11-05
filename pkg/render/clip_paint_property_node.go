@@ -150,9 +150,18 @@ func (r *Renderer) pushClip(layer *PaintLayer, kind clipNodeKind, node *ClipPain
 	}
 }
 
+// innermostClip returns the node on top of the clip stack, nil when it is
+// empty or the top entry has no node.
+func (r *Renderer) innermostClip() *ClipPaintPropertyNode {
+	if len(r.clipStack) == 0 {
+		return nil
+	}
+	return r.clipStack[len(r.clipStack)-1]
+}
+
 // popClipNode undoes pushClipNode.
 func (r *Renderer) popClipNode() {
-	if node := r.clipStack[len(r.clipStack)-1]; node != nil {
+	if node := r.innermostClip(); node != nil {
 		node.applied--
 	}
 	r.clipStack = r.clipStack[:len(r.clipStack)-1]
@@ -200,21 +209,28 @@ func (b *clipTreeBuilder) localBorderBoxClipContains(box *layout.Box, node *Clip
 	return false
 }
 
-// paintZOrderChild paints a z-order child of layer while layer's overflow clip
-// node overflowClip is the innermost applied clip (paintLayerContent's
-// bracket; nil when layer does not clip). In Blink each
-// paint chunk carries its own clip state, and an out-of-flow box takes its
-// clip from its containing block (UpdateOutOfFlowContext and
-// SwitchToOOFContext, core/paint/paint_property_tree_builder.cc:3617-3622,
-// 3750-3754 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a stacking context's
-// z-order lists can hold such a box whose containing block is outside it. When
-// the child's clip chain does not pass through layer's overflow clip, the
-// clip is lifted while the child paints. The child stays inside layer's effect
-// (opacity, filter), which is not a clip.
-func (r *Renderer) paintZOrderChild(layer, child *PaintLayer, overflowClip *ClipPaintPropertyNode) {
-	if overflowClip != nil && child.Box != nil && !r.clipTree.localBorderBoxClipContains(child.Box, overflowClip) {
+// paintZOrderChild paints a z-order child of a stacking context while that
+// context's overflow clip node overflowClip is applied (paintLayerContent's
+// bracket). In Blink each paint chunk carries its own clip state, and an
+// out-of-flow box takes its clip from its containing block
+// (UpdateOutOfFlowContext and SwitchToOOFContext,
+// core/paint/paint_property_tree_builder.cc:3617-3622, 3750-3754 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a stacking context's z-order lists
+// can hold such a box whose containing block is outside it. When the child's
+// clip chain does not pass through overflowClip, the clip is lifted while the
+// child paints. The child stays inside the context's effect (opacity, filter),
+// which is not a clip.
+//
+// overflowClip is nil when the context does not clip, or when the clip tree
+// has no node for it (ownClipNode: a box without style, or a second layer on
+// the same box); the clip then stays applied (LOU-700). It is lifted only when
+// it is the innermost applied clip, so the pop undoes exactly its push.
+// LOU-700 replaces this with Blink's per-chunk clip-state switch.
+func (r *Renderer) paintZOrderChild(child *PaintLayer, overflowClip *ClipPaintPropertyNode) {
+	if overflowClip != nil && child.Box != nil && r.innermostClip() == overflowClip &&
+		!r.clipTree.localBorderBoxClipContains(child.Box, overflowClip) {
 		r.popClipNode()
-		defer r.pushClip(layer, clipNodeOverflowClip, overflowClip)
+		defer r.pushClip(overflowClip.Layer, clipNodeOverflowClip, overflowClip)
 	}
 	r.paintLayer(child)
 }
