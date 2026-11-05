@@ -26,7 +26,9 @@ Usage:
       pkg/visualtest/testdata), skipping paths containing any <exclude>:
         differs            overwrite with the upstream bytes
         relocated          git mv to the upstream location (or git rm when an
-                           identical copy is already there)
+                           identical copy is already there); a file some local
+                           reftest still names as its reference is copied
+                           instead, and kept
         relocated-differs  the same, with the upstream bytes, but only for
                            mappings listed in scripts/wpt-audit-relocations.tsv
                            (a same-named upstream file may be a different test)
@@ -248,8 +250,9 @@ MATCH_LINK_RE = re.compile(rb"""<link\b[^>]*\brel\s*=\s*["']?(?:mis)?match["']?[
 HREF_RE = re.compile(rb"""href\s*=\s*["']([^"']+)["']""", re.I)
 
 
-def missing_refs(dirs):
-    """Print reftests whose rel=match/mismatch target is missing locally."""
+def match_links(dirs):
+    """Yield (reftest path, href, resolved target) for each rel=match/mismatch
+    link of the files under dirs, paths relative to REPO."""
     for root in dirs:
         for d, _, files in os.walk(os.path.join(REPO, root)):
             for name in files:
@@ -261,14 +264,25 @@ def missing_refs(dirs):
                 for link in MATCH_LINK_RE.finditer(text):
                     href = HREF_RE.search(link.group(0))
                     ref = href.group(1).decode("utf-8", "replace").split("#")[0] if href else ""
-                    if ref and ":" not in ref and not os.path.exists(os.path.normpath(os.path.join(d, ref))):
-                        print("%s\t%s" % (os.path.relpath(path, REPO), ref))
+                    if ref and ":" not in ref:
+                        target = os.path.normpath(os.path.join(d, ref))
+                        yield os.path.relpath(path, REPO), ref, os.path.relpath(target, REPO)
+
+
+def missing_refs(dirs):
+    """Print reftests whose rel=match/mismatch target is missing locally."""
+    for path, ref, target in match_links(dirs):
+        if not os.path.exists(os.path.join(REPO, target)):
+            print("%s\t%s" % (path, ref))
 
 
 def apply(sha, out_tsv, prefix, excludes):
     upstream = load_upstream(sha, out_tsv)
     written = []  # (upstream path, bytes)
     reviewed = load_reviewed()
+    # References a local file still points at stay where they are: the
+    # pointing test may be louis14-authored and not move with them.
+    referenced = {t for _, _, t in match_links([TESTDATA + "/wpt-css2", TESTDATA + "/wpt-css3"])}
     for line in open(out_tsv):
         if line.startswith("#") or line.startswith("local_path"):
             continue
@@ -297,6 +311,12 @@ def apply(sha, out_tsv, prefix, excludes):
             data = fetch(sha, up, ublob, target if not os.path.exists(os.path.join(REPO, local)) else local)
             if not os.path.exists(os.path.join(REPO, local)):
                 pass  # already moved or removed by an earlier run
+            elif local in referenced:
+                if not os.path.exists(os.path.join(REPO, target)):
+                    write(target, data)
+                    print("copied-referenced\t%s\t%s" % (local, target))
+                else:
+                    print("kept-referenced\t%s\t%s" % (local, up))
             elif os.path.exists(os.path.join(REPO, target)):
                 with open(os.path.join(REPO, target), "rb") as f:
                     there = f.read()
