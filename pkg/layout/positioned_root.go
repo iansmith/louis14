@@ -47,7 +47,9 @@ func rootIsFloating(rootStyle *css.Style) bool {
 // (LayoutView::LayoutRoot, layout_view.cc:848-909 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the root's available and
 // percentage-resolution sizes are the ICB, its auto inline-size stretches to
-// the ICB less its margins, and its auto block-size is its content's — the
+// the ICB less its margins (or, for a floating root, shrinks to fit, as
+// CreateConstraintSpaceForFloat leaves the fit-content default:
+// floats_utils.cc:64-104), and its auto block-size is its content's — the
 // root establishes a new formatting context (LayoutBlockFlow::
 // CreatesNewFormattingContext's IsDocumentElement, layout_block_flow_hot.cc:
 // 18-21), so nothing collapses through it. louis14 children take a
@@ -123,32 +125,33 @@ func buildRootConstraintSpace(
 
 // rootOffsetInView returns the logical offset of an in-flow root's border
 // box within the LayoutView (the ICB, icb in the root's writing mode), given
-// the root's laid-out border-box inline-size: its block-start margin, and its
-// inline-start margin with `auto` inline margins resolved against the ICB.
-// The view's BlockLayoutAlgorithm places its single new-formatting-context
-// child this way (LayoutNewFormattingContext → ResolveInlineAutoMargins,
-// block_layout_algorithm.cc:2063, :2209-2213, length_utils.cc:1551-1570 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the view has no border or
-// padding, and the root is its first child, so no margin collapses into
-// the view.
+// the root's laid-out border-box inline-size.
 //
-// A floating root is placed as PositionFloat places a float in the empty
-// view: its margin box starts at the layout opportunity's line-left edge, or
-// for a line-right float ends at its line-right edge, and auto margins are
-// zero (floats_utils.cc:382-388, :428-432 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The view's direction is the
-// root's, which LayoutView propagates from the document element.
+// A non-floating root is the view's single new-formatting-context child:
+// its block-start margin, and its inline-start margin with `auto` inline
+// margins resolved against the ICB (LayoutNewFormattingContext →
+// ResolveInlineAutoMargins, block_layout_algorithm.cc:2063, :2209-2213,
+// length_utils.cc:1551-1570 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// The view has no border or padding, and the root is its first child, so no
+// margin collapses into the view.
+//
+// A floating root (rootIsFloating) is the view's float, placed as
+// PositionFloat places it in an opportunity with no exclusions
+// (floatBorderBoxInlineOffset): margin box at the line-left edge, or ending
+// at the line-right edge, with auto margins zero. The view's direction is
+// the root's, which LayoutView propagates from the document element.
 func rootOffsetInView(rootStyle *css.Style, rootWDM WritingDirectionMode, icb LogicalSize, borderBoxInlineSize float64) LogicalOffset {
 	margins := ResolveMargins(rootStyle, rootWDM, icb.InlineSize)
 	if !rootIsFloating(rootStyle) {
 		margins = resolveInlineAutoMargins(rootStyle, rootWDM, icb.InlineSize, borderBoxInlineSize, margins)
 		return LogicalOffset{InlineOffset: margins.InlineStart, BlockOffset: margins.BlockStart}
 	}
-	inlineOffset := margins.InlineStart
-	if !IsInlineStartFloat(rootStyle.Floating(rootStyle.GetDirection()), rootWDM) {
-		inlineOffset = icb.InlineSize - borderBoxInlineSize - margins.InlineEnd
+	// The view holds nothing else, so no exclusion narrows the opportunity.
+	side := PhysicalFloatToExclusionSide(rootStyle.Floating(rootWDM.Direction()), rootWDM)
+	return LogicalOffset{
+		InlineOffset: floatBorderBoxInlineOffset(side, icb.InlineSize, 0, 0, margins, borderBoxInlineSize),
+		BlockOffset:  margins.BlockStart,
 	}
-	return LogicalOffset{InlineOffset: inlineOffset, BlockOffset: margins.BlockStart}
 }
 
 // placeRootInView returns the physical offset of the root's border box in
