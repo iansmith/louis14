@@ -29,7 +29,8 @@ const (
 // ClipPaintPropertyNode is a clip in the clip tree. Mirrors the subset of
 // blink::ClipPaintPropertyNode (platform/graphics/paint/
 // clip_paint_property_node.h) that FragmentPaintPropertyTreeBuilder builds
-// in UpdateCssClip and UpdateOverflowClip
+// in UpdateCssClip, UpdateFilter (the PixelMovingFilterClipExpander) and
+// UpdateOverflowClip
 // (core/paint/paint_property_tree_builder.cc:2560-2575, :3039-3139 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The clip shape is the owner
 // layer's (CSSClipRect / applyOverflowClip, rounded corners included); its
@@ -82,8 +83,10 @@ func newClipTreeBuilder(root *PaintLayer) *clipTreeBuilder {
 // localBorderBoxClip returns the clip box's painting enters under: the
 // contents clip of its containing-block parent. This is the clip of
 // FragmentData::LocalBorderBoxProperties without the box's own CssClip,
-// which paintLayerContent installs under the box's transform as Blink
-// orders it (UpdateCssClip follows UpdateTransform in UpdateForSelf).
+// which paintLayerContent (pushOwnClips) installs under the box's transform
+// as Blink orders it (UpdateCssClip follows UpdateTransform in
+// UpdateForSelf), or, for a filtered box, paintLayerWithFilter around the
+// filter output.
 func (b *clipTreeBuilder) localBorderBoxClip(box *layout.Box) *ClipPaintPropertyNode {
 	if b == nil || box == nil || box.Parent == nil {
 		return nil
@@ -103,7 +106,7 @@ func (b *clipTreeBuilder) contentsClip(box *layout.Box) *ClipPaintPropertyNode {
 		if layer.HasCSSClip {
 			clip = &ClipPaintPropertyNode{Layer: layer, Kind: clipNodeCssClip, Parent: clip}
 		}
-		if layer.paintsWithFilters() && layer.hasFilterThatMovesPixels() {
+		if layer.needsPixelMovingFilterClipExpander() {
 			clip = &ClipPaintPropertyNode{Layer: layer, Kind: clipNodePixelMovingFilterClipExpander, Parent: clip}
 		}
 		if layer.HasClip {
@@ -136,7 +139,7 @@ func (r *Renderer) applyClipNode(layer *PaintLayer, kind clipNodeKind) {
 		r.applyOverflowClip(layer)
 		return
 	case clipNodePixelMovingFilterClipExpander:
-		return
+		return // clips nothing (CombineClip)
 	}
 	// The CSS clip rect, in physical coordinates (CSS Writing Modes §7.6).
 	cx, cy, cw, ch := pixelSnap(layer.CSSClipRect[0], layer.CSSClipRect[1],
@@ -152,6 +155,37 @@ func (r *Renderer) applyClipNode(layer *PaintLayer, kind clipNodeKind) {
 // as the innermost applied clip. Pair with popClipNode.
 func (r *Renderer) pushClipNode(layer *PaintLayer, kind clipNodeKind) {
 	r.pushClip(layer, kind, r.clipTree.ownClipNode(layer, kind))
+}
+
+// pushAppliedClip records node as applied without applying it: its clip is
+// applied elsewhere (a filter's output clip). Pair with popClipNode.
+func (r *Renderer) pushAppliedClip(node *ClipPaintPropertyNode) {
+	r.dc.Push()
+	r.clipStack = append(r.clipStack, node)
+	node.applied++
+}
+
+// needsPixelMovingFilterClipExpander mirrors
+// EffectPaintPropertyNode::NeedsPixelMovingFilterClipExpander: a layer whose
+// filter moves pixels. The clip tree and paint share it, so every expander
+// node is pushed (pushPixelMovingFilterClipExpander).
+func (layer *PaintLayer) needsPixelMovingFilterClipExpander() bool {
+	return layer.paintsWithFilters() && layer.hasFilterThatMovesPixels()
+}
+
+// pushPixelMovingFilterClipExpander pushes layer's expander node, a clip that
+// clips nothing, so descendants' clip chains stop at it; it reports whether it
+// pushed one. Pair a true result with popClipNode.
+func (r *Renderer) pushPixelMovingFilterClipExpander(layer *PaintLayer) bool {
+	if !layer.needsPixelMovingFilterClipExpander() {
+		return false
+	}
+	node := r.clipTree.ownClipNode(layer, clipNodePixelMovingFilterClipExpander)
+	if node == nil {
+		return false
+	}
+	r.pushAppliedClip(node)
+	return true
 }
 
 // pushClip applies layer's clip of the given kind and pushes node.

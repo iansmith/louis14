@@ -37,10 +37,6 @@ type fontCacheKey struct {
 
 // Renderer paints a tree of layout boxes onto an image.
 type Renderer struct {
-	// filterInputLayer is the filtered layer whose filter source is being
-	// painted: its own clips are applied to the filter output instead.
-	filterInputLayer *PaintLayer
-
 	dc                 textshape.DrawContext
 	target             *image.RGBA
 	fonts              text.FontConfig
@@ -1024,6 +1020,12 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 // Pair with exitLayerTransform.
 func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 	r.paintViewBackground(layer)
+	return r.pushLayerTransform(layer)
+}
+
+// pushLayerTransform is enterLayerTransform without the view background.
+// Pair with exitLayerTransform.
+func (r *Renderer) pushLayerTransform(layer *PaintLayer) (singular bool) {
 	if r.appliesTransform(layer) {
 		r.dc.Push()
 		singular = r.applyTransforms(layer) || !r.transformTree.node(layer.Box).Matrix.IsInvertible()
@@ -1276,6 +1278,11 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e — see filters.Mapping). Opacity
 // and blending belong to the parent effect node (paintLayerWithEffect).
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+	// The canvas background is painted by the view in the root's
+	// PreTransform state (ViewPainter::PaintBoxDecorationBackground,
+	// view_painter.cc:183-201 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// outside the root's filter and its own clips, as without a filter.
+	r.paintViewBackground(layer)
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if r.isLayerTransformSingular(layer) {
 		return
@@ -1313,7 +1320,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// No supported CSS filter functions (e.g. only url() references,
 		// not yet handled) — paint without filtering rather than dropping
 		// the element.
-		r.paintLayerContentDirectNoOpacityGroup(layer)
+		r.paintLayerContentUnfiltered(layer)
 		return
 	}
 	var mapping filters.Mapping
@@ -1370,7 +1377,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContentDirectNoOpacityGroup(layer)
+		r.paintLayerContentUnfiltered(layer)
 		return
 	}
 
@@ -1399,23 +1406,11 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// and UpdateClipPathClip run before UpdateFilter, whose output_clip
 		// is the clip they leave, core/paint/paint_property_tree_builder.cc:
 		// 4079-4082, 2485 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
-		// the source paints without them; for a filter that moves pixels the
-		// descendants paint under the PixelMovingFilterClipExpander, which
-		// stops their clip chains here. Ancestors' clips are not on the
-		// offscreen draw context either, but they stay marked applied on the
-		// shared clip stack, so in practice the expander shields the layer's
-		// own CSS clip (LOU-700 ports per-chunk clip states).
-		outerInput := r.filterInputLayer
-		r.filterInputLayer = layer
-		expander := r.clipTree.ownClipNode(layer, clipNodePixelMovingFilterClipExpander)
-		if expander != nil {
-			r.pushClip(layer, clipNodePixelMovingFilterClipExpander, expander)
-		}
+		// the source paints without them (paintFilterSourceGraphic). Ancestors'
+		// clips are not on the offscreen draw context either, but they stay
+		// marked applied on the shared clip stack (LOU-700 ports per-chunk
+		// clip states).
 		r.paintFilterSourceGraphic(layer)
-		if expander != nil {
-			r.popClipNode()
-		}
-		r.filterInputLayer = outerInput
 		r.dc = origDC
 		r.target = origTarget
 	}
@@ -1428,7 +1423,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// Match the two earlier failure paths (filter == nil, oversize buffer):
 		// fall back to unfiltered paint so the element still renders rather
 		// than vanishing into an invisible hole.
-		r.paintLayerContentDirectNoOpacityGroup(layer)
+		r.paintLayerContentUnfiltered(layer)
 		return
 	}
 
@@ -1444,7 +1439,10 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	case dmKnown:
 		onDC = dm.InverseOrIdentity()
 	}
-	if !layer.HasCSSClip && layer.ClipPath == nil {
+	ownH := homographyTransform(own)
+	if (!layer.HasCSSClip && layer.ClipPath == nil) || !ownH.IsInvertible() {
+		// No own clips to apply, or no local space to apply them in (a
+		// singular homography): draw through onDC unsplit.
 		r.dc.Push()
 		r.multiplyHomography(projectiveHomography(onDC))
 		r.dc.DrawImage(out, bx, by)
@@ -1453,7 +1451,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 	// The split is taken on the z=0 homographies the draw context uses, so
 	// own ∘ fromLocal is exactly onDC there even when own is 3D.
-	fromLocal := homographyTransform(own).InverseOrIdentity().Mul(homographyTransform(onDC))
+	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
 	r.dc.Push()
 	r.multiplyHomography(projectiveHomography(own))
 	r.pushOwnClips(layer)
@@ -1505,6 +1503,15 @@ func homographyTransform(m geometry.Transform) geometry.Transform {
 		h[6], h[7], 0, h[8])
 }
 
+// paintLayerContentUnfiltered is paintLayerWithFilter's fallback: the layer's
+// content under its transform, without the filter, the view background
+// already painted.
+func (r *Renderer) paintLayerContentUnfiltered(layer *PaintLayer) {
+	r.pushLayerTransform(layer)
+	r.paintLayerContent(layer)
+	r.exitLayerTransform(layer)
+}
+
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
@@ -1532,14 +1539,27 @@ func (r *Renderer) ownLayerProjection(layer *PaintLayer) geometry.Transform {
 
 // paintFilterSourceGraphic paints layer's content as its filter's
 // SourceGraphic: in the layer's local space, which the caller has already
-// mapped into the filter layer. It does what enterLayerTransform does short
-// of applying the transform.
+// mapped into the filter layer, without the view background (painted outside
+// the filter) and without the layer's own clips (its filter's output clip).
 func (r *Renderer) paintFilterSourceGraphic(layer *PaintLayer) {
-	r.paintViewBackground(layer)
 	if layer.HasTransformPaint {
 		r.transformDepth++
 	}
-	r.paintLayerContent(layer)
+	// Descendants paint under the clip their chains stop at: the
+	// PixelMovingFilterClipExpander for a filter that moves pixels, else the
+	// layer's own CSS clip, which is applied to the output; either way not
+	// re-applied to the source.
+	stop := r.pushPixelMovingFilterClipExpander(layer)
+	if !stop && layer.HasCSSClip {
+		if node := r.clipTree.ownClipNode(layer, clipNodeCssClip); node != nil {
+			r.pushAppliedClip(node)
+			stop = true
+		}
+	}
+	r.paintLayerContentWithoutOwnClips(layer)
+	if stop {
+		r.popClipNode()
+	}
 	if layer.HasTransformPaint {
 		r.transformDepth--
 	}
@@ -2183,14 +2203,18 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 // inline content — a constraint that a single DOM-order walk cannot
 // satisfy for block-in-inline structures.
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
-	// The CSS clip and clip-path. A filtered layer's own clips are its
-	// filter's output clip, which paintLayerWithFilter applies around the
-	// filter output instead.
-	if layer != r.filterInputLayer {
-		r.pushOwnClips(layer)
-		defer r.popOwnClips(layer)
+	r.pushOwnClips(layer)
+	expander := r.pushPixelMovingFilterClipExpander(layer)
+	r.paintLayerContentWithoutOwnClips(layer)
+	if expander {
+		r.popClipNode()
 	}
+	r.popOwnClips(layer)
+}
 
+// paintLayerContentWithoutOwnClips is paintLayerContent without the layer's
+// own CSS clip and clip-path: a filter's source, whose output they clip.
+func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	// A backface-culled layer reaching here has unculled descendants to
 	// paint; its own content is skipped (skipsBackfaceCulledSubtree).
 	own := !r.isBackfaceCulled(layer)
@@ -3666,52 +3690,8 @@ func (r *Renderer) paintImageIntoRect(layer *PaintLayer, img image.Image, destRe
 	}).SubImage(drawRect.Sub(pixelSnappedDestRect.Min))
 	finalX, finalY := drawRect.Min.X, drawRect.Min.Y
 
-	// CSS clip: rect() — DrawImage bypasses the clip mask, so we must
-	// manually crop the image to the CSS clip region.
-	if layer.HasCSSClip {
-		// CSSClipRect is [x, y, w, h] in absolute coordinates.
-		cx := int(math.Round(layer.CSSClipRect[0]))
-		cy := int(math.Round(layer.CSSClipRect[1]))
-		ccw := int(math.Round(layer.CSSClipRect[2]))
-		cch := int(math.Round(layer.CSSClipRect[3]))
-
-		imgBounds := finalImg.Bounds()
-		imgW := imgBounds.Dx()
-		imgH := imgBounds.Dy()
-
-		// Intersect clip region with image draw area.
-		ix0 := finalX
-		if cx > ix0 {
-			ix0 = cx
-		}
-		iy0 := finalY
-		if cy > iy0 {
-			iy0 = cy
-		}
-		ix1 := finalX + imgW
-		if cx+ccw < ix1 {
-			ix1 = cx + ccw
-		}
-		iy1 := finalY + imgH
-		if cy+cch < iy1 {
-			iy1 = cy + cch
-		}
-		if ix1 <= ix0 || iy1 <= iy0 {
-			return // Entirely clipped
-		}
-		// Extract the visible sub-image.
-		sub := finalImg.(interface {
-			SubImage(image.Rectangle) image.Image
-		}).SubImage(image.Rect(
-			imgBounds.Min.X+(ix0-finalX),
-			imgBounds.Min.Y+(iy0-finalY),
-			imgBounds.Min.X+(ix1-finalX),
-			imgBounds.Min.Y+(iy1-finalY),
-		))
-		r.dc.DrawImage(sub, ix0, iy0)
-		return
-	}
-
+	// The layer's CSS clip is a clip node on the draw context, which
+	// DrawImage honours (its clip rect and clip mask).
 	r.dc.DrawImage(finalImg, finalX, finalY)
 }
 
