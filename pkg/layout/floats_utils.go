@@ -101,6 +101,21 @@ func ComputeMarginBoxInlineSizeForUnpositionedFloat(uf *UnpositionedFloat) float
 		uf.Margins.InlineSum())
 }
 
+// floatBorderBoxInlineOffset is a float's border-box inline offset from the
+// start of its opportunity's container: an inline-start float's margin box
+// starts after the exclusions on that side (localStartOff), an inline-end
+// float's margin box ends before those on the other (localEndOff). Mirrors
+// PositionFloat's float_margin_bfc_offset and its border-box adjustment
+// (floats_utils.cc:382-388, :428-432 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func floatBorderBoxInlineOffset(side ExclusionSide, availableInlineSize, localStartOff, localEndOff float64,
+	margins LogicalEdges, inlineSize float64) float64 {
+	if side == ExclusionInlineStart {
+		return localStartOff + margins.InlineStart
+	}
+	return availableInlineSize - localEndOff - margins.InlineEnd - inlineSize
+}
+
 // PositionFloat lays out and positions a float, adding its exclusion to
 // *exclusionSpace. Under block fragmentation the float is laid out at its
 // final position with the fragmentainer, so it may break inside (its
@@ -225,12 +240,8 @@ func PositionFloat(uf *UnpositionedFloat, exclusionSpace **ExclusionSpace) Posit
 		floatBlockSize := margins.BlockSum() + fragment.BlockSize()
 		localStartOff, localEndOff := es.FindLocalFloatOffsets(opportunityBlockOffset, floatBlockSize,
 			uf.OriginBfcLineOffset, uf.AvailableSize.InlineSize, uf.BfcContainerInlineSize)
-		if exclusionSide == ExclusionInlineStart {
-			positioned.BfcLineOffset = uf.OriginBfcLineOffset + localStartOff + margins.InlineStart
-		} else {
-			containerEnd := uf.OriginBfcLineOffset + uf.AvailableSize.InlineSize
-			positioned.BfcLineOffset = containerEnd - localEndOff - margins.InlineEnd - fragment.InlineSize()
-		}
+		positioned.BfcLineOffset = uf.OriginBfcLineOffset + floatBorderBoxInlineOffset(exclusionSide,
+			uf.AvailableSize.InlineSize, localStartOff, localEndOff, margins, fragment.InlineSize())
 
 		// The float's exclusion (CreateExclusionArea, floats_utils.cc:
 		// 149-169); if it broke inside, it takes up space in the next
