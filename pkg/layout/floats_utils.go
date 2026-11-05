@@ -101,14 +101,6 @@ func ComputeMarginBoxInlineSizeForUnpositionedFloat(uf *UnpositionedFloat) float
 		uf.Margins.InlineSum())
 }
 
-// PositionFloat lays out and positions a float, adding its exclusion to
-// *exclusionSpace. Under block fragmentation the float is laid out at its
-// final position with the fragmentainer, so it may break inside (its
-// result then carries a break token: the float resumes in the next
-// fragmentainer, in a parallel flow) — or, if it does not fit and is past
-// the fragmentainer start, it breaks before: it is not placed, and a
-// break-before token is returned instead. Mirrors Blink's PositionFloat
-// (floats_utils.cc:212-475).
 // floatBorderBoxInlineOffset is a float's border-box inline offset from the
 // start of its opportunity's container: an inline-start float's margin box
 // starts after the exclusions on that side (localStartOff), an inline-end
@@ -124,6 +116,14 @@ func floatBorderBoxInlineOffset(side ExclusionSide, availableInlineSize, localSt
 	return availableInlineSize - localEndOff - margins.InlineEnd - inlineSize
 }
 
+// PositionFloat lays out and positions a float, adding its exclusion to
+// *exclusionSpace. Under block fragmentation the float is laid out at its
+// final position with the fragmentainer, so it may break inside (its
+// result then carries a break token: the float resumes in the next
+// fragmentainer, in a parallel flow) — or, if it does not fit and is past
+// the fragmentainer start, it breaks before: it is not placed, and a
+// break-before token is returned instead. Mirrors Blink's PositionFloat
+// (floats_utils.cc:212-475).
 func PositionFloat(uf *UnpositionedFloat, exclusionSpace **ExclusionSpace) PositionedFloat {
 	es := *exclusionSpace
 	parentSpace := uf.ParentSpace
