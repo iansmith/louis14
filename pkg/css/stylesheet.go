@@ -3273,21 +3273,7 @@ func isSupportedDeclaration(property, value string) bool {
 	// For properties with limited keyword grammars, validate the value.
 	switch property {
 	case "display":
-		validDisplay := map[string]bool{
-			"block": true, "inline": true, "inline-block": true,
-			"flex": true, "inline-flex": true,
-			"grid": true, "inline-grid": true,
-			"none": true, "contents": true,
-			"table": true, "table-row": true, "table-cell": true,
-			"table-caption": true, "table-row-group": true,
-			"table-header-group": true, "table-footer-group": true,
-			"table-column": true, "table-column-group": true,
-			"list-item":   true,
-			"-webkit-box": true, "-webkit-inline-box": true,
-			"-webkit-flex": true, "-webkit-inline-flex": true,
-			"math": true,
-		}
-		return validDisplay[strings.ToLower(value)]
+		return isValidDisplayValue(value)
 	case "position":
 		validPosition := map[string]bool{
 			"static": true, "relative": true, "absolute": true,
@@ -5097,6 +5083,12 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// css_parsing_utils.cc:5182 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		// Required by WPT background-size-with-negative-value.
 		if property == "background-size" && !isValidBackgroundSizeValue(value) {
+			continue
+		}
+
+		// display (Display::ParseSingleValue, longhands_custom.cc:3851 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if property == "display" && !isValidDisplayValue(value) {
 			continue
 		}
 

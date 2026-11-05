@@ -28,8 +28,7 @@ import (
 //
 // Layout containment does not apply to:
 //   - non-atomic inline-level boxes (`display: inline` without atomic inner)
-//   - internal ruby boxes: `ruby-base`, `ruby-base-container`,
-//     `ruby-text-container`, `ruby-text`
+//   - internal ruby boxes: `ruby-text`
 //   - internal table boxes EXCEPT table-cell: `table-row`, `table-row-group`,
 //     `table-header-group`, `table-footer-group`, `table-column`,
 //     `table-column-group`. `table-cell` and `table-caption` ARE eligible.
@@ -115,19 +114,18 @@ func isEligibleForStyleContainment(s *Style) bool {
 // eligibility filter shared by layout and paint containment per CSS
 // Containment 1 §3 (preamble: "containment does not apply" list).
 //
-// Reads the *raw* `display` property because louis14's GetDisplay()
-// collapses ruby-internal values (`ruby-base`, `ruby-base-container`,
-// `ruby-text-container`) to DisplayBlock — there is no kRubyBase analog
-// in the enum, mirroring the pkg/css/style.go GetDisplay comment.
+// Reads the declared `display` keyword. The removed ruby-internal values
+// (`ruby-base`, `ruby-base-container`, `ruby-text-container`) never reach
+// the style: they are invalid and dropped at parse time
+// (isValidDisplayValue).
 func isEligibleForLayoutOrPaintContainment(s *Style) bool {
 	disp, ok := s.Get("display")
 	if !ok {
 		return true
 	}
 	switch strings.TrimSpace(disp) {
-	case "ruby-base", "ruby-base-container",
-		"ruby-text-container", "ruby-text":
-		// Internal ruby boxes (CSS Containment 1 §3 / Blink IsRuby family).
+	case "ruby-text":
+		// Internal ruby box (CSS Containment 1 §3 / Blink IsRuby family).
 		return false
 	case "table-row", "table-row-group",
 		"table-header-group", "table-footer-group",

@@ -591,6 +591,72 @@ func isValidImageOrientationValue(value string) bool {
 	return s.consumeIdent("from-image", "none") != "" && s.atEnd()
 }
 
+// Display keyword classes of Display::ParseSingleValue
+// (longhands_custom.cc:3682-3711 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// grid-lanes / inline-grid-lanes are gated on the experimental
+// CSSGridLanesLayout feature and so stay invalid.
+var (
+	displayOutside  = []string{"inline", "block"}
+	displayInside   = []string{"flow-root", "flow", "table", "flex", "grid", "math", "ruby"}
+	displayBox      = []string{"none", "contents"}
+	displayInternal = []string{
+		"table-row-group", "table-header-group", "table-footer-group", "table-row",
+		"table-column-group", "table-column", "table-cell", "table-caption", "ruby-text",
+	}
+	displayLegacy = []string{
+		"inline-block", "inline-table", "inline-flex", "inline-grid",
+		"-webkit-box", "-webkit-inline-box", "-webkit-flex", "-webkit-inline-flex",
+	}
+)
+
+// isValidDisplayValue validates a display declaration — Display::
+// ParseSingleValue (longhands_custom.cc:3851-3876): one keyword from the
+// list-item / box / internal / legacy / inside / outside classes, or two or
+// three keywords that ValidateDisplayKeywords (:3726-3748) splits into at
+// most one <display-outside>, one <display-inside> and one `list-item`, with
+// a list-item's inside limited to flow or flow-root
+// (ParseDisplayMultipleKeywords, :3823-3828). Anything else — the removed
+// ruby-base / ruby-base-container / ruby-text-container among them — drops
+// the declaration. The layout() functions need CSSLayoutAPI, which louis14
+// does not support. CSS-wide keywords and var()/attr() are accepted as-is.
+func isValidDisplayValue(value string) bool {
+	if _, wide := cssWideKeyword(value); wide {
+		return true
+	}
+	if containsVarFunction(value) || containsAttrFunction(value) {
+		return true
+	}
+	s := newComponentStream(value)
+	if s.atEnd() || len(s.toks) > 3 {
+		return false
+	}
+	if len(s.toks) == 1 {
+		return s.consumeIdent("list-item") != "" || s.consumeIdent(displayBox...) != "" ||
+			s.consumeIdent(displayInternal...) != "" || s.consumeIdent(displayLegacy...) != "" ||
+			s.consumeIdent(displayInside...) != "" || s.consumeIdent(displayOutside...) != ""
+	}
+	var outside, inside, listItem string
+	for !s.atEnd() {
+		if outside == "" {
+			if outside = s.consumeIdent(displayOutside...); outside != "" {
+				continue
+			}
+		}
+		if inside == "" {
+			if inside = s.consumeIdent(displayInside...); inside != "" {
+				continue
+			}
+		}
+		if listItem == "" {
+			if listItem = s.consumeIdent("list-item"); listItem != "" {
+				continue
+			}
+		}
+		return false
+	}
+	return listItem == "" || inside == "" || inside == "flow" || inside == "flow-root"
+}
+
 // isValidObjectPositionValue validates an object-position declaration —
 // ObjectPosition::ParseSingleValue (longhands_custom.cc:7317 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ConsumePosition with
