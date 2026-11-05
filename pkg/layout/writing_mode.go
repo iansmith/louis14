@@ -57,6 +57,16 @@ func NewWritingDirectionMode(style *css.Style) WritingDirectionMode {
 	return wdm
 }
 
+// Direction returns the text direction as a CSS direction value. Mirrors
+// WritingDirectionMode::Direction (platform/text/writing_direction_mode.h:29 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (wdm WritingDirectionMode) Direction() css.Direction {
+	if wdm.Dir == DirectionRTL {
+		return css.DirectionRTL
+	}
+	return css.DirectionLTR
+}
+
 // IsHorizontal returns true for horizontal-tb.
 func (wdm WritingDirectionMode) IsHorizontal() bool {
 	return wdm.WM == WritingModeHorizontalTB
