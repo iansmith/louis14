@@ -349,28 +349,34 @@ def plan(sha, out_tsv, prefix, excludes):
     to) and ("rm", path), in order."""
     upstream = load_upstream(sha, out_tsv)
     reviewed = load_reviewed()
-    # Every corpus file some local file loads stays where it is.
-    loaded = set()
-    for local in corpus_text_files(SUITES):
-        loaded |= file_loads(local, read_bytes(local))
+    rows = [r for r in read_mapping(out_tsv)
+            if r[0].startswith(prefix) and not excluded(r[0], excludes)]
     exists = {}  # planned existence overrides: path -> bool
 
     def present(path):
         return exists.get(path, os.path.exists(repo_path(path)))
 
     actions, log, walk = [], [], []
-    for local, status, up, _, ublob in read_mapping(out_tsv):
-        if not local.startswith(prefix) or excluded(local, excludes):
-            continue
+    restored = {}  # path -> upstream bytes for the differs rows
+    for local, status, up, _, ublob in rows:
         if status == "identical":
             walk.append((local, read_bytes(local)))
         elif status == "differs":
             data = upstream_bytes(sha, up, ublob, local)
+            restored[local] = data
             if data != read_bytes(local):
                 actions.append(("write", local, data))
                 log.append(("restored", local, up))
             walk.append((local, data))
-        elif status == "relocated-differs" and reviewed.get(local) != up:
+    # Every corpus file some local file loads, once the restores above are
+    # in, stays where it is.
+    loaded = set()
+    for local in corpus_text_files(SUITES):
+        loaded |= file_loads(local, restored.get(local) or read_bytes(local))
+    for local, status, up, _, ublob in rows:
+        if status in ("identical", "differs"):
+            continue
+        if status == "relocated-differs" and reviewed.get(local) != up:
             log.append(("unreviewed", local, up))
         elif status in ("relocated", "relocated-differs"):
             target = local_path(up, suite_root(local))
