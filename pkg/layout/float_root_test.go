@@ -34,3 +34,33 @@ func TestFloatingRoot(t *testing.T) {
 		})
 	}
 }
+
+// TestFloatingRoot_AutoMarginsAreZero: auto margins of a float compute to
+// zero, so a line-right root with margin:0 auto still ends at the ICB's
+// line-right edge (PositionFloat, floats_utils.cc:382-388 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFloatingRoot_AutoMarginsAreZero(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><html id="r" style="float:right; margin:0 auto"><body style="margin:0"><div style="width:50px; height:20px"></div></body></html>`, nil)
+	if b := findBox(fl.root, byID("r")); b == nil || b.X != 750 || b.Width != 50 {
+		t.Errorf("root = %v, want x=750 width=50", boxDims(b))
+	}
+}
+
+// TestFloatingRoot_AbsposChildUsesTheICB: the containing block of an abspos
+// child of a floated, non-positioned root is the initial containing block,
+// not the root's box, so left:0 is viewport x=0.
+func TestFloatingRoot_AbsposChildUsesTheICB(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><html style="float:right"><body style="margin:0"><div style="width:50px; height:20px"></div><div id="a" style="position:absolute; left:0; top:0; width:10px; height:10px"></div></body></html>`, nil)
+	if b := findBox(fl.root, byID("a")); b == nil || b.X != 0 || b.Y != 0 {
+		t.Errorf("abspos = %v, want at (0, 0)", boxDims(b))
+	}
+}
+
+// TestFloatingRoot_VerticalRL: in vertical-rl the inline axis is vertical,
+// and a line-right float in an ltr view ends at the ICB's bottom edge.
+func TestFloatingRoot_VerticalRL(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><html id="r" style="writing-mode:vertical-rl; float:right"><body style="margin:0"><div style="width:20px; height:50px"></div></body></html>`, nil)
+	if b := findBox(fl.root, byID("r")); b == nil || b.Y != 600-50 || b.Height != 50 || b.X != 800-20 {
+		t.Errorf("root = %v, want x=780 y=550 height=50", boxDims(b))
+	}
+}
