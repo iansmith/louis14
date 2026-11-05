@@ -202,3 +202,18 @@ func TestSVGShapeFilterChain_RegionAsBefore(t *testing.T) {
 	img := renderToImage(t, page, 4200, 50)
 	sampleColorClose(t, img, 50, 25, 255, 255, 255, 0, "left of the offset rect stays empty")
 }
+
+// TestReferenceFilter_RegionOffClip — a url() filter whose SVG region lies off
+// screen draws nothing on screen, as on master: the SVG region is not clipped
+// to the device clip, which would leave it empty and paint the content
+// unfiltered.
+func TestReferenceFilter_RegionOffClip(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="0" height="0" style="position:absolute"><defs>` +
+		`<filter id="away" x="-3" y="0" width="1" height="1"><feOffset dx="0" dy="0"/></filter>` +
+		`</defs></svg>` +
+		`<div style="width:100px;height:100px;background:rgb(255,0,0);filter:url(#away)"></div>` +
+		`</body></html>`
+	img := renderToImage(t, page, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 255, 255, 0, "region off screen: nothing drawn")
+}
