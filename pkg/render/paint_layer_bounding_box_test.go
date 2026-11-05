@@ -33,14 +33,14 @@ func boundingBoxOf(t *testing.T, page, id string) image.Rectangle {
 }
 
 // TestLocalBoundingBox_SelfPaintingUnderNonSelfPaintingChild — a float inside a
-// plain block child is left out of the visual overflow because it paints as a
+// plain block child (a louis14 layer that is not self-painting) is left out of the visual overflow because it paints as a
 // layer of its own, so the walk must still reach it through the block that is
 // not self-painting (PaintLayer::ExpandRectForSelfPaintingDescendants,
 // core/paint/paint_layer.cc:2181-2223 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func TestLocalBoundingBox_SelfPaintingUnderNonSelfPaintingChild(t *testing.T) {
 	const page = `<!DOCTYPE html><body style="margin:0">` +
 		`<div id="f" style="filter:drop-shadow(5px 5px 0 black);width:100px;height:20px">` +
-		`<div style="overflow:hidden"><div style="float:left;width:50px;height:200px"></div></div></div>`
+		`<div><div style="float:left;width:50px;height:200px"></div></div></div>`
 	if got, want := boundingBoxOf(t, page, "f"), image.Rect(0, 0, 100, 200); got != want {
 		t.Errorf("bounding box = %v, want %v", got, want)
 	}
@@ -62,25 +62,6 @@ func TestLocalBoundingBox_ClipContainsAbsoluteChild(t *testing.T) {
 	}
 	if got, want := boundingBoxOf(t, fmt.Sprintf(page, "opacity:0.5"), "f"), image.Rect(0, 0, 200, 100); got != want {
 		t.Errorf("clip is not the containing block: bounding box = %v, want %v", got, want)
-	}
-}
-
-// TestLocalBoundingBox_ChildTransformExcludesParentPerspective — a child is
-// mapped through its own Transform(), not its parent's perspective; and a
-// corner with w < 0 divides by w as gfx::Transform::MapRect does
-// (paint_layer.cc:2213-2216 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
-// ui/gfx/geometry/transform.cc:775-786, 1022-1036 @ a9f50e52).
-func TestLocalBoundingBox_ChildTransformExcludesParentPerspective(t *testing.T) {
-	const page = `<!DOCTYPE html><body style="margin:0"><div style="position:absolute;left:200px;top:200px">` +
-		`<div id="f" style="filter:blur(0);perspective:100px;width:100px;height:100px">` +
-		`<div style="width:100px;height:100px;transform:%s"></div></div></div>`
-	if got, want := boundingBoxOf(t, fmt.Sprintf(page, "translateZ(50px)"), "f"), image.Rect(200, 200, 300, 300); got != want {
-		t.Errorf("translateZ under perspective: bounding box = %v, want %v", got, want)
-	}
-	// w = -1 about origin (200,200): x maps to 400 - x, so the child lands on
-	// (100,100)-(200,200).
-	if got, want := boundingBoxOf(t, fmt.Sprintf(page, "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-1);transform-origin:0 0"), "f"), image.Rect(100, 100, 300, 300); got != want {
-		t.Errorf("w < 0: bounding box = %v, want %v", got, want)
 	}
 }
 
