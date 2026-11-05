@@ -1,0 +1,6 @@
+# Reviewed relocated-differs mappings for scripts/wpt-audit.py --apply (LOU-694).
+# local_path<TAB>upstream_path<TAB>note
+# Rows the audit reports as relocated-differs but are NOT listed here are
+# louis14-authored files that share a name with a different upstream test;
+# they are left alone and tracked on LOU-172.
+pkg/visualtest/testdata/wpt-css2/zindex/ref-filled-green-100px-square.xht	css/CSS2/reference/ref-filled-green-100px-square.xht	shared reference moved out of zindex/
