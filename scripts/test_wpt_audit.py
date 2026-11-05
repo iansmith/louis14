@@ -69,6 +69,14 @@ class HarnessResolve(unittest.TestCase):
         self.assertEqual(wa.harness_resolve(C3 + "/a/t.html", "/css/../fonts/x.css?v=1#f"), C3 + "/fonts/x.css")
         self.assertEqual(wa.harness_resolve(C3 + "/a/t.html", "r.html#x"), C3 + "/a/r.html")
 
+    def test_wpt_hosts_reduce_to_paths(self):
+        # stripWPTHost (pkg/visualtest/wpt_sub.go) with DefaultWPTServerConfig.
+        self.assertEqual(wa.harness_resolve(C3 + "/a/t.html", "http://web-platform.test:8000/css/support/x.png"),
+                         C3 + "/support/x.png")
+        self.assertEqual(wa.harness_resolve(C3 + "/a/t.html", "//www.not-web-platform.test/fonts/ahem.css"),
+                         C3 + "/fonts/ahem.css")
+        self.assertIsNone(wa.harness_resolve(C3 + "/a/t.html", "http://example.test/css/x.png"))
+
     def test_absolute_urls_are_not_files(self):
         for ref in ("http://example.com/x", "data:text/plain,x", "//host/x", "mailto:a@b", "#top", ""):
             self.assertIsNone(wa.harness_resolve(C3 + "/a/t.html", ref), ref)
