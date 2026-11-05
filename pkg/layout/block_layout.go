@@ -731,6 +731,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			inlineContext.propagateTo(bla.containerBuilder)
 		}
 
+		// Children's logical clear resolves against this block's direction
+		// (child.Style().Clear(Style()), block_layout_algorithm.cc:2336 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		cbDirection := bla.style.GetDirection()
+
 		// Text children are not block children: the iterator skips them
 		// (they are laid out by inline layout in anonymous blocks).
 		for entry := childIterator.NextChild(); !entry.AtEnd(); entry = childIterator.NextChild() {
@@ -863,7 +868,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa). Only BFC roots extend auto block-size to clear
 			// floats (CSS 2.1 §10.6.7); hasOwnFloats is already true for
 			// BFC roots (initialized from IsNewFormattingContext).
-			if childStyle.GetFloat() != css.FloatNone {
+			if childStyle.IsFloating() {
 				bla.handleFloat(child, entry.BlockToken(), incomingBreakToken,
 					bfcBlockOrigin+blockCursor+prevMarginStrut.Resolve(),
 					contentInlineSize, childAvailableBlock, bfcBlockOrigin, bfcInlineOrigin,
@@ -965,7 +970,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// child re-decides its clearance once its margin strut is known.
 			var preClearanceCursor, clearanceOffset float64
 			var preClearanceStrut MarginStrut
-			clearType := childStyle.GetClear()
+			clearType := childStyle.Clear(cbDirection)
 			if clearType != css.ClearNone && !bla.containerBuilder.GetExclusionSpace().IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
 				clearedBlockBfc := bla.containerBuilder.GetExclusionSpace().ClearanceOffset(clearType, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
@@ -1886,18 +1891,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// This lets an enclosing non-scrollable inline-block propagate the correct
 	// synthesized value via its own LastBaseline.
 	logMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64())
-	if bla.style != nil {
-		d := bla.style.GetDisplay()
-		isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
-			d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
-		if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
-			bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
-		} else if hasLastChildBaseline {
-			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
-				lastChildBlockOffset + lastChildBaseline)
-		} else if firstLineAscent > 0 {
-			bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
-		}
+	d := bla.style.GetDisplay()
+	isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
+		d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
+	if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) {
+		bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
 	} else if hasLastChildBaseline {
 		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
@@ -1961,7 +1959,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		cellContentBlockSize = max(cellContentBlockSize, clearedBlock)
 	}
-	if bla.style != nil && bla.style.GetDisplay() == css.DisplayTableCell &&
+	if bla.style.GetDisplay() == css.DisplayTableCell &&
 		bla.space.TableSectionData != nil && finalBlockSize > cellContentBlockSize {
 		va := bla.style.GetVerticalAlign()
 		var vaShift float64
@@ -2509,7 +2507,7 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 	}
 
 	// Floats create a BFC.
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return true
 	}
 
@@ -2612,7 +2610,7 @@ func isSelfValidColumnSpanner(style *css.Style) bool {
 		return false
 	}
 	// Floats cannot span columns.
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return false
 	}
 	// Out-of-flow positioned elements cannot span columns.
@@ -2764,7 +2762,7 @@ func needsShrinkToFit(style *css.Style) bool {
 		d == css.DisplayInlineTable || d == css.DisplayInlineListItem {
 		return true
 	}
-	if style.GetFloat() != css.FloatNone {
+	if style.IsFloating() {
 		return true
 	}
 	pos := style.GetPosition()

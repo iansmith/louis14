@@ -220,7 +220,7 @@ func inlinifyChild(child *LayoutInputNode) bool {
 	}
 	d := child.style.GetDisplay()
 	eq := css.EquivalentInlineDisplay(d)
-	isFloated := child.style.GetFloat() != css.FloatNone
+	isFloated := child.style.IsFloating()
 	if eq == d && !isFloated {
 		return true
 	}
@@ -971,7 +971,7 @@ func isBlockLevel(child *LayoutInputNode) bool {
 	}
 	// Floats and abs/fixed positioned elements are not block-level for
 	// the purpose of anonymous block generation (CSS 2.1 §9.2.1.1).
-	if s.GetFloat() != css.FloatNone {
+	if s.IsFloating() {
 		return false
 	}
 	pos := s.GetPosition()
@@ -999,7 +999,7 @@ func isOutOfFlowOrFloat(child *LayoutInputNode) bool {
 	if s == nil {
 		return false
 	}
-	if s.GetFloat() != css.FloatNone {
+	if s.IsFloating() {
 		return true
 	}
 	pos := s.GetPosition()

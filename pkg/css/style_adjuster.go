@@ -124,7 +124,7 @@ func AdjustComputedStyle(element *html.Node, style, layoutParentStyle *Style) {
 		pos := style.GetPosition()
 		hasOutOfFlowPosition := pos == PositionAbsolute || pos == PositionFixed
 		if isDocumentElement(element) ||
-			(display != DisplayContents && (hasOutOfFlowPosition || style.GetFloat() != FloatNone)) {
+			(display != DisplayContents && (hasOutOfFlowPosition || style.IsFloating())) {
 			setDisplay(style, EquivalentBlockDisplay(display))
 		}
 		if ns != html.MathMLNamespaceURI && style.IsDisplayMath() {

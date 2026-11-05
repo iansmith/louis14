@@ -1850,13 +1850,10 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 	}
 }
 
-// isFloat returns true if the box has float:left or float:right.
+// isFloat reports whether the box floats, for any float value but none,
+// logical ones included.
 func isFloat(box *layout.Box) bool {
-	if box.Style == nil {
-		return false
-	}
-	f := box.Style.GetFloat()
-	return f == css.FloatLeft || f == css.FloatRight
+	return box.Style != nil && box.Style.IsFloating()
 }
 
 // fontVariantAlternatesFeatures maps a CSS font-variant-alternates value to

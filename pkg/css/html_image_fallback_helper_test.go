@@ -185,8 +185,8 @@ func TestAltTextContainerAndImageStyle(t *testing.T) {
 				t.Errorf("icon shown = %v, want %v", shown, c.wantIcon)
 			}
 			if shown {
-				if icon.GetDisplay() != DisplayFlowRoot || icon.GetFloat() != c.wantIconFloatSide {
-					t.Errorf("icon = display %v float %v, want flow-root float %v", icon.GetDisplay(), icon.GetFloat(), c.wantIconFloatSide)
+				if icon.GetDisplay() != DisplayFlowRoot || icon.Floating(DirectionLTR) != c.wantIconFloatSide {
+					t.Errorf("icon = display %v float %v, want flow-root float %v", icon.GetDisplay(), icon.Floating(DirectionLTR), c.wantIconFloatSide)
 				}
 			}
 		})
