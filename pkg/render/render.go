@@ -1345,18 +1345,19 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
 	// filter_effect_builder.cc:534-550 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); otherwise the content's paint
-	// extent and what the chain draws from it (EnsureRegion). Either way it is
-	// clipped to the device clip, as Skia clips a layer's bounds
+	// extent and what the chain draws from it (filters.Filter.EnsureRegion).
+	// It is clipped to the device clip, as Skia clips a layer's bounds
 	// (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600 @ skia
 	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
-	filter.EnsureRegion(paintExtent)
-	// Without the draw context's matrix, LayerToDev ends in draw-context
-	// space, not device space, so the device clip cannot be mapped into the
-	// layer; the region is then left unclipped.
 	if dmKnown {
+		filter.EnsureRegion(paintExtent)
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
 			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
 		}
+	} else {
+		// A projective ancestor: LayerToDev ends in draw-context space, so
+		// the device clip cannot bound the buffer.
+		filter.EnsureMappedRegion(builder.ReferenceBox)
 	}
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
@@ -1427,7 +1428,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 // into the layer (fLayerToDevMatrix inverse) and expanded by the filter's
 // required input (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600
 // @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). louis14 has no reverse
-// MapRect, so the reach is the forward MapRect's largest outset per axis.
+// MapRect (LOU-704), so the reach is the forward MapRect's largest outset per
+// axis, which ignores crops (a cropped stage still reads outside the clip).
 func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mapping) (image.Rectangle, bool) {
 	c := r.dc.ClipBounds()
 	var inv geometry.Transform
@@ -1440,6 +1442,10 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	}
 	clip := snapRectFToDevice(layerClip)
 	m := filter.MapRect(clip)
+	if m.Empty() {
+		// No reach to measure: leave the region unclipped.
+		return image.Rectangle{}, false
+	}
 	padX := max(clip.Min.X-m.Min.X, m.Max.X-clip.Max.X, 0)
 	padY := max(clip.Min.Y-m.Min.Y, m.Max.Y-clip.Max.Y, 0)
 	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true

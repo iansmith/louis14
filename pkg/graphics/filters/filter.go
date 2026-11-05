@@ -39,6 +39,18 @@ func (f *Filter) EnsureRegion(extent image.Rectangle) image.Rectangle {
 	return f.FilterRegion
 }
 
+// EnsureMappedRegion sets an unset FilterRegion to ref mapped through the
+// chain, without the source extent: the size an unset region had before
+// EnsureRegion. Callers that cannot bound a larger buffer keep it (an SVG
+// shape's chain under its 4000px cap; a filter layer under a projective
+// ancestor, whose device clip cannot be mapped into the layer).
+func (f *Filter) EnsureMappedRegion(ref image.Rectangle) image.Rectangle {
+	if f.FilterRegion.Empty() {
+		f.FilterRegion = f.MapRect(ref)
+	}
+	return f.FilterRegion
+}
+
 // SetSourceImage installs the rendered element buffer as the SourceGraphic's
 // output. img must be sized to FilterRegion.
 func (f *Filter) SetSourceImage(img *image.RGBA) {

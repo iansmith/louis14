@@ -125,12 +125,8 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		return nil
 	}
 
-	// No FilterRegion: a shorthand chain is a SaveLayerOp with no bounds
-	// (ConversionContext::StartEffect, platform/graphics/compositing/
-	// paint_chunks_to_cc_layer.cc:737-743 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the caller sizes the
-	// buffer to what the content draws, mapped through the chain. Only a
-	// reference filter has a region (BuildReferenceFilter).
+	// No FilterRegion: a shorthand chain has no bounds; the caller sizes the
+	// buffer (filters.Filter.EnsureRegion).
 	return &filters.Filter{
 		ReferenceBox: b.ReferenceBox,
 		Source:       src,

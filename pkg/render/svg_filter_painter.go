@@ -455,9 +455,9 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if graph == nil {
 		return false
 	}
-	// The shape paints inside its stroke-inflated reference box, so that is
-	// the content extent a shorthand chain's buffer is sized from.
-	region := graph.EnsureRegion(referenceBox)
+	// A shorthand chain has no region; this path keeps the region it had
+	// before, under the 4000px cap below (filters.Filter.EnsureMappedRegion).
+	region := graph.EnsureMappedRegion(referenceBox)
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return false
