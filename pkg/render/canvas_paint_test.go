@@ -43,11 +43,9 @@ func wantPixel(t *testing.T, img *image.RGBA, x, y int, want color.RGBA, why str
 }
 
 var (
-	canvasWhite  = color.RGBA{255, 255, 255, 255}
-	canvasGreen  = color.RGBA{0, 128, 0, 255}
-	canvasRed    = color.RGBA{255, 0, 0, 255}
-	canvasYellow = color.RGBA{255, 255, 0, 255}
-	canvasOrange = color.RGBA{255, 165, 0, 255}
+	canvasWhite = color.RGBA{255, 255, 255, 255}
+	canvasGreen = color.RGBA{0, 128, 0, 255}
+	canvasRed   = color.RGBA{255, 0, 0, 255}
 )
 
 // fillRect fills the canvas bitmap with fillStyle
