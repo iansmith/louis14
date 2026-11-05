@@ -284,8 +284,20 @@ def file_loads(local, data, read=None):
         for script in [t for t in out if t.endswith(".js")]:
             sdata = read(script)
             if sdata is not None:
-                out |= {t for t in (harness_resolve(local, r) for r in loads(sdata, ".js")) if t}
+                out |= {t for t in (harness_resolve(local, r) for r in _script_refs(sdata)) if t}
     return out
+
+
+_SCRIPT_REFS = {}
+
+
+def _script_refs(data):
+    """A script's raw URLs, cached by content: shared helpers such as
+    testharness.js are loaded by thousands of documents."""
+    key = hashlib.sha1(data).digest()
+    if key not in _SCRIPT_REFS:
+        _SCRIPT_REFS[key] = loads(data, ".js")
+    return _SCRIPT_REFS[key]
 
 
 def read_if_present(path):
@@ -357,8 +369,10 @@ def gh_tree(sha, recursive=False):
 class Upstream(dict):
     """Upstream path -> blob sha. css/ and the top-level directories the
     corpus holds are loaded up front; any other top-level directory is loaded
-    the first time a path under it is looked up, so a load from, say, /html/
-    resolves without listing every wpt directory."""
+    the first time a path under it is looked up (`in` or [ ]), so a load from,
+    say, /html/ resolves without listing every wpt directory. Iteration sees
+    only what is loaded, which is what relocation search wants: the corpus's
+    own directories."""
 
     def __init__(self, sha, cache_dir, root_entries):
         super().__init__()
@@ -554,17 +568,18 @@ def orphans(upstream):
     references left behind when their tests moved, stale copies of upstream
     files, and other dead local files."""
     rows = audit_rows(upstream)
-    loaded, patterns = set(), []
+    loaded, patterns = set(), set()
     for local in corpus_text_files(SUITES):
         data = read_bytes(local)
         loaded |= file_loads(local, data, read_if_present)
         if local.endswith((".js",) + DOC_EXT):
-            patterns += template_patterns(data)
+            patterns |= {p.pattern for p in template_patterns(data)}
+    named = re.compile("|".join(sorted(patterns))) if patterns else None
     out = []
     for local, status, _, _, _ in rows:
         if status in ("identical", "differs") or local in loaded:
             continue
-        if any(p.match(posixpath.basename(local)) for p in patterns):
+        if named and named.match(posixpath.basename(local)):
             continue  # maybe named by a template literal
         if status in ("no-upstream", "ambiguous") and local.endswith(DOC_EXT) and match_hrefs(read_bytes(local)):
             continue  # a louis14-authored reftest (LOU-172), not an orphan
@@ -590,7 +605,7 @@ def plan(sha, out_tsv, prefix, excludes):
         """The bytes path holds once the planned actions run, or None."""
         if path in planned:
             return planned[path]
-        return read_bytes(path) if os.path.exists(repo_path(path)) else None
+        return read_if_present(path)
 
     actions, log, walk = [], [], []
 
@@ -602,7 +617,6 @@ def plan(sha, out_tsv, prefix, excludes):
         actions.append(("write", path, data))
         planned[path] = data
         return True
-
 
     for local, status, up, _, ublob in rows:
         if status == "identical":
