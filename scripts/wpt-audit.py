@@ -31,7 +31,8 @@ Usage:
   scripts/wpt-audit.py <wpt-sha> <out.tsv>
       audit: write the mapping.
   scripts/wpt-audit.py <wpt-sha> <out.tsv> --apply <local-prefix> [<exclude>...]
-      audit the tree afresh (writing the full mapping to out.tsv), then for
+      audit the tree afresh (out.tsv only places the upstream tree cache and
+      is not written), then for
       the rows under <local-prefix> (a path under pkg/visualtest/testdata),
       skipping local paths containing any <exclude>:
         differs            overwrite with the upstream bytes
@@ -48,6 +49,9 @@ Usage:
       Loads that resolve outside both suites are reported as "dangling", and
       missing files at gitignored paths (the corpus fonts) as "ignored".
       Prints one line per action.
+  scripts/wpt-audit.py <wpt-sha> <cache.tsv> --orphans
+      list local-only files (no-upstream) that nothing loads and that are not
+      reftests: references left behind when their tests moved.
   scripts/wpt-audit.py --missing-refs <dir>...
       list reftests whose <link rel=match|mismatch> target is missing.
 
@@ -64,6 +68,7 @@ upstream blob hash before being written.
 
 import collections
 import hashlib
+import http.client
 import html.parser
 import json
 import os
@@ -82,7 +87,7 @@ TESTDATA = "pkg/visualtest/testdata"
 SUITES = (TESTDATA + "/wpt-css2", TESTDATA + "/wpt-css3")
 GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
 # Top-level wpt directories a suite serves at its own root ("/" mount).
-TOP_LEVEL = {"common", "fonts", "resources", "images", "media"}
+TOP_LEVEL = {"common", "dom", "fonts", "resources", "images", "media"}
 UPSTREAM_DIRS = ["css"] + sorted(TOP_LEVEL)
 # Hosts the harness serves locally (stripWPTHost with DefaultWPTServerConfig,
 # pkg/visualtest/wpt_sub.go).
@@ -168,40 +173,51 @@ DOC_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg")
 TEXT_EXT = DOC_EXT + (".css", ".js", ".xml")
 CSS_URL_RE = re.compile(
     r"""url\(\s*["']?([^"')]*?)["']?\s*\)|@import\s+["']([^"']*)["']""", re.I)
-# Elements whose href fetches a resource (an <a> href is a navigation).
-HREF_LOAD_TAGS = {"link", "use", "image", "feimage", "script", "pattern", "lineargradient",
+# Elements whose href fetches a resource (an <a> href is a navigation; a
+# <link> loads only for the rels in LINK_LOAD_RELS).
+HREF_LOAD_TAGS = {"use", "image", "feimage", "script", "pattern", "lineargradient",
                   "radialgradient", "filter", "mask", "clippath", "textpath", "tref", "mpath"}
+LINK_LOAD_RELS = {"stylesheet", "match", "mismatch", "preload", "modulepreload", "prefetch", "icon"}
+# Attributes whose value is one URL to load, on any element.
+URL_ATTRS = {"src", "poster", "background"}
+# A quoted relative path to a file in script text: the best a scanner can do
+# for URLs built in JavaScript.
+SCRIPT_URL_RE = re.compile(r"""["']((?:\.{0,2}/)?[\w./-]*\.(?:js|css|png|jpe?g|gif|svg|webp|avif|ico|html?|xht|xhtml|xml|json|woff2?|ttf|otf|webm|mp4|ogg|wav|mp3|vtt))["']""")
 
 
 class _LoadParser(html.parser.HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.refs, self.match, self._style = [], [], False
+        self.refs, self.match, self._text = [], [], None
 
     def handle_starttag(self, tag, attrs):
+        tag = tag.split(":")[-1]  # svg:image, svg:use
         attrs = [(k.lower(), v) for k, v in attrs if v is not None]
         named = dict(attrs)
+        rels = set((named.get("rel") or "").lower().split())
         for k, v in attrs:
-            if k == "src" or (k == "data" and tag == "object"):
+            if k in URL_ATTRS or (k == "data" and tag == "object"):
                 self.refs.append(v)
-            elif k in ("href", "xlink:href") and tag in HREF_LOAD_TAGS:
+            elif k == "srcset":
+                self.refs.extend(c.strip().split()[0] for c in v.split(",") if c.strip())
+            elif k in ("href", "xlink:href") and (tag in HREF_LOAD_TAGS or (tag == "link" and rels & LINK_LOAD_RELS)):
                 self.refs.append(v)
             elif k == "style":
                 self.refs.extend(css_loads(v))
-        if tag == "link":
-            rels = (named.get("rel") or "").lower().split()
-            if ("match" in rels or "mismatch" in rels) and named.get("href"):
-                self.match.append(named["href"])
-        self._style = tag == "style"
+        if tag == "link" and rels & {"match", "mismatch"} and named.get("href"):
+            self.match.append(named["href"])
+        self._text = tag if tag in ("style", "script") else None
 
     handle_startendtag = handle_starttag
 
     def handle_endtag(self, tag):
-        self._style = False
+        self._text = None
 
     def handle_data(self, data):
-        if self._style:
+        if self._text == "style":
             self.refs.extend(css_loads(data))
+        elif self._text == "script":
+            self.refs.extend(SCRIPT_URL_RE.findall(data))
 
 
 def css_loads(text):
@@ -220,11 +236,15 @@ def loads(data, ext=".html"):
     """Every URL a document or stylesheet loads: src=, object data=, href= on
     elements that fetch it (link, SVG use/image/...), url() and @import in
     style sheets, <style> and style attributes. Attributes may be unquoted;
-    data-* attributes and <a href> are not loads. Scripts are not parsed."""
+    data-* attributes, <a href> and <link rel=author|help> are not loads.
+    srcset, poster and background= count; namespaced SVG tags (svg:image)
+    count as their local names. Script text, inline or .js, is scanned for
+    quoted relative file paths, since a URL built in JavaScript cannot be
+    resolved statically."""
     if ext == ".css":
         return css_loads(data.decode("utf-8", "replace"))
     if ext == ".js":
-        return []
+        return SCRIPT_URL_RE.findall(data.decode("utf-8", "replace"))
     return [r.strip() for r in _parse(data).refs if r.strip()]
 
 
@@ -370,7 +390,7 @@ def download(sha, up, ublob):
         except urllib.error.HTTPError as e:
             if e.code not in (403, 429) or attempt == 3:
                 raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead):
             # TimeoutError covers socket.timeout raised by read().
             if attempt == 3:
                 raise
@@ -421,21 +441,55 @@ def missing_refs(dirs):
                 print("%s\t%s" % (local, ref))
 
 
+_IGNORED = {}
+
+
+def check_ignored(paths):
+    """Look up whether git ignores each path, one git call for those not yet
+    cached. Ignored files cannot be committed."""
+    todo = [p for p in paths if (REPO, p) not in _IGNORED]
+    if todo:
+        out = subprocess.run(["git", "check-ignore", "--stdin", "-z"], cwd=REPO,
+                             input="\0".join(todo) + "\0", capture_output=True, text=True).stdout
+        hits = set(p for p in out.split("\0") if p)
+        for p in todo:
+            _IGNORED[(REPO, p)] = p in hits
+
+
 def ignored(path):
-    """Whether git ignores path: such files cannot be committed."""
-    return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode == 0
+    check_ignored([path])
+    return _IGNORED[(REPO, path)]
+
+
+def orphans(upstream):
+    """Corpus files with no upstream counterpart (no-upstream) that no file
+    loads and that are not reftests themselves: references left behind when
+    their tests moved, and other dead local files."""
+    rows = audit_rows(upstream)
+    loaded = set()
+    for local in corpus_text_files(SUITES):
+        loaded |= file_loads(local, read_bytes(local))
+    out = []
+    for local, status, _, _, _ in rows:
+        if status != "no-upstream" or local in loaded:
+            continue
+        if local.endswith(DOC_EXT) and match_hrefs(read_bytes(local)):
+            continue  # a louis14-authored reftest (LOU-172), not an orphan
+        out.append(local)
+    return out
 
 
 def plan(sha, out_tsv, prefix, excludes):
     """The actions --apply takes, with every download and hash check done.
     Audits the tree itself (so identical rows, which the committed mapping
-    leaves out, still seed the dependency walk) and writes that audit to
-    out_tsv. Returns (actions, log): actions are ("write", path, bytes),
-    ("mv", from, to) and ("rm", path), in order."""
+    leaves out, still seed the dependency walk); out_tsv only names the
+    directory the upstream tree cache lives in, and is not written. Returns
+    (actions, log): actions are ("write", path, bytes), ("mv", from, to) and
+    ("rm", path), in order. Nothing is written to a gitignored path, and no
+    relocation writes outside prefix."""
     upstream = load_upstream(sha, out_tsv)
     reviewed = load_reviewed()
     all_rows = audit_rows(upstream)
-    write_mapping(sha, out_tsv, all_rows)
     rows = [r for r in all_rows if r[0].startswith(prefix) and not excluded(r[0], excludes)]
     planned = {}  # path -> planned bytes, or None once planned away
 
@@ -447,17 +501,26 @@ def plan(sha, out_tsv, prefix, excludes):
 
     actions, log, walk = [], [], []
 
-    def write(path, data):
+    def write(path, data, up):
+        """Plan a write unless git ignores path; reports whether it did."""
+        if ignored(path):
+            log.append(("ignored", path, up))
+            return False
         actions.append(("write", path, data))
         planned[path] = data
+        return True
+
+    check_ignored([r[0] for r in rows])
 
     for local, status, up, _, ublob in rows:
         if status == "identical":
             walk.append((local, content(local)))
         elif status == "differs":
+            if ignored(local):
+                log.append(("ignored", local, up))
+                continue
             data = upstream_bytes(sha, up, ublob, local)
-            if data != content(local):
-                write(local, data)
+            if data != content(local) and write(local, data, up):
                 log.append(("restored", local, up))
             walk.append((local, data))
     # Every corpus file some local file loads, once the restores above are
@@ -478,33 +541,42 @@ def plan(sha, out_tsv, prefix, excludes):
         if target is None or excluded(target, excludes):
             log.append(("skipped", local, up))
             continue
-        if content(local) is None:
+        if not target.startswith(prefix):
+            log.append(("outside-prefix", local, target))
+            continue
+        local_bytes = content(local)
+        if local_bytes is None:
             continue  # already moved or removed
+        if ignored(target):
+            log.append(("ignored", target, up))
+            continue
         data = upstream_bytes(sha, up, ublob, local)
         there = content(target)
         if local in loaded:
             # Some local file loads it: copy, never move or remove.
             if there != data:
-                write(target, data)
+                write(target, data, up)
             log.append(("copied-loaded" if there != data else "kept-loaded", local, target))
         elif there is not None:
             if there != data:
-                write(target, data)
+                write(target, data, up)
             actions.append(("rm", local))
             planned[local] = None
             log.append(("removed-duplicate", local, target))
         else:
             actions.append(("mv", local, target))
             planned[local] = None
-            planned[target] = content(local)
-            if data != planned[target]:
-                write(target, data)
+            planned[target] = local_bytes
+            if data != local_bytes:
+                write(target, data, up)
             log.append(("moved", local, target))
         walk.append((target, data))
     seen = set()
     while walk:
         local, data = walk.pop()
-        for target in sorted(file_loads(local, data)):
+        targets = sorted(file_loads(local, data))
+        check_ignored([t for t in targets if suite_of(t) is not None])
+        for target in targets:
             if target in seen:
                 continue
             seen.add(target)
@@ -521,7 +593,7 @@ def plan(sha, out_tsv, prefix, excludes):
                 log.append(("ignored", target, up))
                 continue
             tdata = download(sha, up, upstream[up])
-            write(target, tdata)
+            write(target, tdata, up)
             log.append(("fetched", target, up))
             walk.append((target, tdata))
     return actions, log
@@ -549,7 +621,9 @@ def apply(sha, out_tsv, prefix, excludes):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--missing-refs":
+    if len(sys.argv) == 4 and sys.argv[3] == "--orphans":
+        print("\n".join(orphans(load_upstream(sys.argv[1], sys.argv[2]))))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--missing-refs":
         missing_refs(sys.argv[2:])
     elif len(sys.argv) == 3:
         audit(sys.argv[1], sys.argv[2])

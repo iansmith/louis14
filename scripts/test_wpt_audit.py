@@ -163,7 +163,7 @@ class Plan(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(data)
-        subprocess.check_call(["git", "add", local], cwd=self.repo)
+        subprocess.check_call(["git", "add", "-f", local], cwd=self.repo)
 
     def set_upstream(self, files):
         self.bytes = files
@@ -220,13 +220,16 @@ class Plan(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertIn(("outside-prefix", C3 + "/css-a/old/r.html", C3 + "/css-a/new/r.html"), log)
 
-    def test_restore_into_ignored_path_is_skipped(self):
+    def test_relocation_into_ignored_path_is_skipped(self):
+        # A tracked file under an ignored directory is committable; an
+        # untracked target there is not.
         with open(os.path.join(self.repo, ".gitignore"), "w") as f:
             f.write("fonts/\n")
-        self.set_upstream({"css/css-a/fonts/x.css": b"NEW"})
-        self.put(C3 + "/css-a/fonts/x.css", b"OLD")
+        self.set_upstream({"css/css-a/fonts/x.css": b"X"})
+        self.put(C3 + "/css-a/x.css", b"X")
         actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/", [])
         self.assertEqual(actions, [])
+        self.assertIn(("ignored", C3 + "/css-a/fonts/x.css", "css/css-a/fonts/x.css"), log)
 
     def test_apply_leaves_the_mapping_file(self):
         self.set_upstream({"css/css-a/t.html": b"T"})
