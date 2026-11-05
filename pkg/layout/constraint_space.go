@@ -318,10 +318,7 @@ const Indefinite float64 = -1
 // ConstraintSpace::Direction (constraint_space.h:157 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (cs ConstraintSpace) Direction() css.Direction {
-	if cs.WritingDirection.IsRTL() {
-		return css.DirectionRTL
-	}
-	return css.DirectionLTR
+	return cs.WritingDirection.Direction()
 }
 
 // IsBlockSizeIndefinite returns true if the block-size is unconstrained.
