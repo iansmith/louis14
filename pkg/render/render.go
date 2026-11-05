@@ -1434,17 +1434,26 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 
 	// Draw the layer through the remainder (fLayerToDevMatrix) on top of the
 	// draw context's matrix: own ∘ paramToLayer⁻¹, which is dm⁻¹ when the
-	// layer is device space. It is split as own ∘ fromLocal so the layer's own
-	// clips, the filter's output clip, apply in between, in its local space.
-	var fromLocal geometry.Transform
+	// layer is device space. With the layer's own clips, the filter's output
+	// clip, it is split as own ∘ fromLocal so they apply in between, in its
+	// local space.
+	var onDC geometry.Transform
 	switch {
 	case !mapping.LayerToDev.IsIdentity():
-		fromLocal = paramToLayer.InverseOrIdentity()
+		onDC = own.Mul(paramToLayer.InverseOrIdentity())
 	case dmKnown:
-		fromLocal = ctm.InverseOrIdentity()
-	default:
-		fromLocal = own.InverseOrIdentity()
+		onDC = dm.InverseOrIdentity()
 	}
+	if !layer.HasCSSClip && layer.ClipPath == nil {
+		r.dc.Push()
+		r.multiplyHomography(projectiveHomography(onDC))
+		r.dc.DrawImage(out, bx, by)
+		r.dc.Pop()
+		return
+	}
+	// The split is taken on the z=0 homographies the draw context uses, so
+	// own ∘ fromLocal is exactly onDC there even when own is 3D.
+	fromLocal := homographyTransform(own).InverseOrIdentity().Mul(homographyTransform(onDC))
 	r.dc.Push()
 	r.multiplyHomography(projectiveHomography(own))
 	r.pushOwnClips(layer)
@@ -1482,6 +1491,18 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	padX := max(clip.Min.X-m.Min.X, m.Max.X-clip.Max.X, 0)
 	padY := max(clip.Min.Y-m.Min.Y, m.Max.Y-clip.Max.Y, 0)
 	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true
+}
+
+// homographyTransform returns m's z=0 homography (projectiveHomography) as a
+// transform with no z terms, so products and inverses of it match those of the
+// homographies the draw context composes.
+func homographyTransform(m geometry.Transform) geometry.Transform {
+	h := projectiveHomography(m)
+	return geometry.TransformRowMajor(
+		h[0], h[1], 0, h[2],
+		h[3], h[4], 0, h[5],
+		0, 0, 1, 0,
+		h[6], h[7], 0, h[8])
 }
 
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
