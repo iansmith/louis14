@@ -61,20 +61,9 @@ func TestBlockLayout_AbsposInRelativeInline_SingleCandidate(t *testing.T) {
 		absSpan: makeStyle("position", "absolute", "display", "block", "left", "0", "top", "-50px", "width", "50px", "height", "50px", "font-family", "Ahem", "font-size", "50px"),
 	}
 
-	ctx := testContext()
-	layoutRoot := buildTestTree(root, styles)
-	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
-		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
-		Build()
+	frag := layoutBlockAt200(t, root, styles)
 
-	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
-	if result == nil || result.Fragment == nil {
-		t.Fatal("layout returned nil result")
-	}
-
-	got := countBoxFragmentsForNode(result.Fragment, absSpan)
+	got := countBoxFragmentsForNode(frag, absSpan)
 	if got != 1 {
 		t.Errorf("abs-pos box fragments for the abs node: got %d, want 1 "+
 			"(>1 means the duplicate/phantom OOF candidate — LOU-312)", got)
@@ -131,29 +120,18 @@ func TestBlockLayout_AbsposInRubyBase_Surfaced(t *testing.T) {
 		absSpan: makeStyle("position", "absolute", "display", "block", "left", "0", "top", "-50px", "width", "50px", "height", "50px", "font-family", "Ahem", "font-size", "50px"),
 	}
 
-	ctx := testContext()
-	layoutRoot := buildTestTree(root, styles)
-	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
-		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 600}).
-		Build()
+	frag := layoutBlockAt200(t, root, styles)
 
-	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
-	if result == nil || result.Fragment == nil {
-		t.Fatal("layout returned nil result")
-	}
-
-	got := countBoxFragmentsForNode(result.Fragment, absSpan)
+	got := countBoxFragmentsForNode(frag, absSpan)
 	if got != 1 {
 		t.Errorf("abs-pos box fragments for abs in ruby base: got %d, want 1 "+
 			"(0 means the buried ruby-sub-line OOF was dropped — LOU-312)", got)
 	}
 }
 
-// layoutEmptyRubyCase lays out root at 200px wide under a horizontal-tb LTR
-// space, for the empty-ruby tests below.
-func layoutEmptyRubyCase(t *testing.T, root *html.Node, styles map[*html.Node]*css.Style) *PhysicalFragment {
+// layoutBlockAt200 lays out root as a block in a 200x600 horizontal-tb LTR
+// space and returns its fragment.
+func layoutBlockAt200(t *testing.T, root *html.Node, styles map[*html.Node]*css.Style) *PhysicalFragment {
 	t.Helper()
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
@@ -167,15 +145,21 @@ func layoutEmptyRubyCase(t *testing.T, root *html.Node, styles map[*html.Node]*c
 	return result.Fragment
 }
 
-// emptyRubyStyle is the Ahem 50px style shared by the empty-ruby tests.
-func emptyRubyStyle(kv ...string) *css.Style {
+// ahem50Style is makeStyle plus Ahem at 50px.
+func ahem50Style(kv ...string) *css.Style {
 	return makeStyle(append(kv, "font-family", "Ahem", "font-size", "50px")...)
+}
+
+// absBox50 is the style of a 50x50 abs-pos box at the containing block's
+// top-left.
+func absBox50() *css.Style {
+	return ahem50Style("position", "absolute", "display", "block", "left", "0", "top", "0", "width", "50px", "height", "50px")
 }
 
 // TestBlockLayout_AbsposInEmptyRuby_Surfaced: in Blink a ruby with no
 // ruby-text gets no column result; its base items break as ordinary items of
-// the outer line (LineBreaker::HandleRuby returns false, then AddItem + MoveToNextOf,
-// inline/line_breaker.cc:3328-3331, :1115-1131 @
+// the outer line (LineBreaker::HandleRuby returns false, then AddItem +
+// MoveToNextOf, inline/line_breaker.cc:3328-3331, :1115-1131 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An abs-pos element in the base
 // is therefore an ordinary out-of-flow item of that line and is surfaced.
 func TestBlockLayout_AbsposInEmptyRuby_Surfaced(t *testing.T) {
@@ -183,11 +167,11 @@ func TestBlockLayout_AbsposInEmptyRuby_Surfaced(t *testing.T) {
 	rb := makeNode("rb", absSpan)
 	ruby := makeNode("ruby", rb)
 	root := makeNode("div", ruby)
-	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
-		root:    emptyRubyStyle("display", "block", "position", "relative", "width", "200px"),
-		ruby:    emptyRubyStyle("display", "ruby"),
-		rb:      emptyRubyStyle("display", "inline"),
-		absSpan: emptyRubyStyle("position", "absolute", "display", "block", "left", "0", "top", "0", "width", "50px", "height", "50px"),
+	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
+		root:    ahem50Style("display", "block", "position", "relative", "width", "200px"),
+		ruby:    ahem50Style("display", "ruby"),
+		rb:      ahem50Style("display", "inline"),
+		absSpan: absBox50(),
 	})
 	if got := countBoxFragmentsForNode(frag, absSpan); got != 1 {
 		t.Errorf("abs-pos box fragments for abs in empty ruby base: got %d, want 1 "+
@@ -198,19 +182,23 @@ func TestBlockLayout_AbsposInEmptyRuby_Surfaced(t *testing.T) {
 // TestBlockLayout_AbsposInEmptyRubyText_Surfaced: a ruby column with ruby-text
 // always creates the line box, empty or not (LineBreaker::HandleRuby sets
 // column_result->should_create_line_box, inline/line_breaker.cc:3608 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so an abs-pos element in its
-// empty annotation is surfaced. Mirrors css-contain/contain-layout-005.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the block gets a line and an
+// abs-pos element in the empty annotation is surfaced. Mirrors
+// css-contain/contain-layout-005.
 func TestBlockLayout_AbsposInEmptyRubyText_Surfaced(t *testing.T) {
 	absSpan := makeNode("span", makeTextNode("X"))
 	rt := makeNode("rt", absSpan)
 	ruby := makeNode("ruby", rt)
 	root := makeNode("div", ruby)
-	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
-		root:    emptyRubyStyle("display", "block", "position", "relative", "width", "200px"),
-		ruby:    emptyRubyStyle("display", "ruby"),
-		rt:      emptyRubyStyle("display", "ruby-text"),
-		absSpan: emptyRubyStyle("position", "absolute", "display", "block", "left", "0", "top", "0", "width", "50px", "height", "50px"),
+	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
+		root:    ahem50Style("display", "block", "position", "relative", "width", "200px"),
+		ruby:    ahem50Style("display", "ruby"),
+		rt:      ahem50Style("display", "ruby-text"),
+		absSpan: absBox50(),
 	})
+	if got := frag.Size.HeightF64(); got <= 0 {
+		t.Errorf("block holding an empty ruby with ruby-text: height %v, want > 0 (the column creates the line box)", got)
+	}
 	if got := countBoxFragmentsForNode(frag, absSpan); got != 1 {
 		t.Errorf("abs-pos box fragments for abs in empty ruby-text: got %d, want 1 "+
 			"(0 means the empty column's line was treated as empty and the OOF dropped)", got)
@@ -225,11 +213,86 @@ func TestBlockLayout_AbsposInEmptyRubyText_Surfaced(t *testing.T) {
 func TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox(t *testing.T) {
 	ruby := makeNode("ruby")
 	root := makeNode("div", ruby)
-	frag := layoutEmptyRubyCase(t, root, map[*html.Node]*css.Style{
-		root: emptyRubyStyle("display", "block", "width", "200px"),
-		ruby: emptyRubyStyle("display", "ruby"),
+	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
+		root: ahem50Style("display", "block", "width", "200px"),
+		ruby: ahem50Style("display", "ruby"),
 	})
 	if got := frag.Size.HeightF64(); got != 0 {
 		t.Errorf("block holding only an empty ruby: height %v, want 0", got)
+	}
+}
+
+// TestBlockLayout_RubyBaseContentCreatesLineBox: the base items of a ruby
+// without ruby-text are ordinary items of the line (line_breaker.cc:
+// 3328-3331, :1115-1131 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so any of
+// them that creates a line box on its own creates one here too and the block
+// must not collapse to zero height:
+//   - a nested ruby with ruby-text (should_create_line_box, :3608);
+//   - an atomic inline, even at zero width (HandleAtomicInline);
+//   - a <br>, which inside ruby becomes a space text item
+//     (inline_items_builder.cc:830-838, css-ruby #anon-gen-unbreak);
+//   - an empty inline box with inline-axis padding (InlineItem::IsEmptyItem,
+//     inline/inline_item.cc:32-67, :128-139).
+func TestBlockLayout_RubyBaseContentCreatesLineBox(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(styles map[*html.Node]*css.Style) *html.Node
+	}{
+		{"nested ruby with ruby-text", func(styles map[*html.Node]*css.Style) *html.Node {
+			rt := makeNode("rt")
+			inner := makeNode("ruby", rt)
+			styles[rt] = ahem50Style("display", "ruby-text")
+			styles[inner] = ahem50Style("display", "ruby")
+			return inner
+		}},
+		{"zero-width inline-block", func(styles map[*html.Node]*css.Style) *html.Node {
+			ib := makeNode("span")
+			styles[ib] = ahem50Style("display", "inline-block", "width", "0", "height", "0")
+			return ib
+		}},
+		{"br", func(styles map[*html.Node]*css.Style) *html.Node {
+			br := makeNode("br")
+			styles[br] = ahem50Style("display", "inline")
+			return br
+		}},
+		{"padded empty span", func(styles map[*html.Node]*css.Style) *html.Node {
+			sp := makeNode("span")
+			styles[sp] = ahem50Style("display", "inline", "padding-left", "10px")
+			return sp
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			styles := map[*html.Node]*css.Style{}
+			rb := makeNode("rb", tc.content(styles))
+			ruby := makeNode("ruby", rb)
+			root := makeNode("div", ruby)
+			styles[root] = ahem50Style("display", "block", "width", "200px")
+			styles[ruby] = ahem50Style("display", "ruby")
+			styles[rb] = ahem50Style("display", "inline")
+			if got := layoutBlockAt200(t, root, styles).Size.HeightF64(); got <= 0 {
+				t.Errorf("block holding a ruby whose base has a %s: height %v, want > 0", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestBlockLayout_FloatInEmptyRubyBase_Placed: a float in the base of a ruby
+// without ruby-text is an ordinary float of the line (line_breaker.cc:
+// 3328-3331, :1115-1131 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a line
+// holding only that ruby still places it (LineBreaker::HandleFloat).
+func TestBlockLayout_FloatInEmptyRubyBase_Placed(t *testing.T) {
+	float := makeNode("span")
+	rb := makeNode("rb", float)
+	ruby := makeNode("ruby", rb)
+	root := makeNode("div", ruby)
+	frag := layoutBlockAt200(t, root, map[*html.Node]*css.Style{
+		root:  ahem50Style("display", "block", "width", "200px"),
+		ruby:  ahem50Style("display", "ruby"),
+		rb:    ahem50Style("display", "inline"),
+		float: ahem50Style("display", "block", "float", "left", "width", "50px", "height", "50px"),
+	})
+	if got := countBoxFragmentsForNode(frag, float); got != 1 {
+		t.Errorf("box fragments for a float in an empty ruby base: got %d, want 1 (0 means the float was dropped)", got)
 	}
 }
