@@ -1020,12 +1020,6 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 // Pair with exitLayerTransform.
 func (r *Renderer) enterLayerTransform(layer *PaintLayer) (singular bool) {
 	r.paintViewBackground(layer)
-	return r.pushLayerTransform(layer)
-}
-
-// pushLayerTransform is enterLayerTransform without the view background.
-// Pair with exitLayerTransform.
-func (r *Renderer) pushLayerTransform(layer *PaintLayer) (singular bool) {
 	if r.appliesTransform(layer) {
 		r.dc.Push()
 		singular = r.applyTransforms(layer) || !r.transformTree.node(layer.Box).Matrix.IsInvertible()
@@ -1278,11 +1272,6 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e — see filters.Mapping). Opacity
 // and blending belong to the parent effect node (paintLayerWithEffect).
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
-	// The canvas background is painted by the view in the root's
-	// PreTransform state (ViewPainter::PaintBoxDecorationBackground,
-	// view_painter.cc:183-201 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-	// outside the root's filter and its own clips, as without a filter.
-	r.paintViewBackground(layer)
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if r.isLayerTransformSingular(layer) {
 		return
@@ -1320,7 +1309,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// No supported CSS filter functions (e.g. only url() references,
 		// not yet handled) — paint without filtering rather than dropping
 		// the element.
-		r.paintLayerContentUnfiltered(layer)
+		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
 	var mapping filters.Mapping
@@ -1377,7 +1366,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContentUnfiltered(layer)
+		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
 
@@ -1423,7 +1412,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// Match the two earlier failure paths (filter == nil, oversize buffer):
 		// fall back to unfiltered paint so the element still renders rather
 		// than vanishing into an invisible hole.
-		r.paintLayerContentUnfiltered(layer)
+		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
 
@@ -1503,15 +1492,6 @@ func homographyTransform(m geometry.Transform) geometry.Transform {
 		h[6], h[7], 0, h[8])
 }
 
-// paintLayerContentUnfiltered is paintLayerWithFilter's fallback: the layer's
-// content under its transform, without the filter, the view background
-// already painted.
-func (r *Renderer) paintLayerContentUnfiltered(layer *PaintLayer) {
-	r.pushLayerTransform(layer)
-	r.paintLayerContent(layer)
-	r.exitLayerTransform(layer)
-}
-
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
@@ -1539,9 +1519,15 @@ func (r *Renderer) ownLayerProjection(layer *PaintLayer) geometry.Transform {
 
 // paintFilterSourceGraphic paints layer's content as its filter's
 // SourceGraphic: in the layer's local space, which the caller has already
-// mapped into the filter layer, without the view background (painted outside
-// the filter) and without the layer's own clips (its filter's output clip).
+// mapped into the filter layer, without the layer's own clips (its filter's
+// output clip).
 func (r *Renderer) paintFilterSourceGraphic(layer *PaintLayer) {
+	// The canvas background is in the root's effect: the view paints it in
+	// the root's LocalBorderBoxProperties with its PreTransform
+	// (ViewPainter::PaintBoxDecorationBackground, view_painter.cc:183-188 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the root's filter
+	// applies to it (compositing/root-element-filter).
+	r.paintViewBackground(layer)
 	if layer.HasTransformPaint {
 		r.transformDepth++
 	}

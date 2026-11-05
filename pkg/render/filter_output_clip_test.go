@@ -70,17 +70,20 @@ func TestFilterOutputClip_ReplacedElement(t *testing.T) {
 	sampleColorClose(t, img, 175, 50, 255, 255, 255, 0, "the image's right half is clipped")
 }
 
-// TestFilterOutputClip_RootCanvasBackground — the canvas background is painted
-// by the view in the root's PreTransform state (ViewPainter::
-// PaintBoxDecorationBackground, view_painter.cc:183-201 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), outside the root's own clip-path
-// and filter, as it is without the filter.
-func TestFilterOutputClip_RootCanvasBackground(t *testing.T) {
-	const page = `<!DOCTYPE html><html style="background:yellow;clip-path:inset(50px);filter:grayscale(1)">` +
-		`<body style="margin:0"><div style="width:200px;height:200px;background:rgb(255,0,0)"></div></body></html>`
+// TestFilterOutputClip_RootCanvasBackgroundIsFiltered — the canvas background
+// is painted in the root's LocalBorderBoxProperties with its PreTransform
+// (ViewPainter::PaintBoxDecorationBackground, view_painter.cc:183-188 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it is under the root's filter
+// (WPT compositing/root-element-filter, which Chrome passes).
+func TestFilterOutputClip_RootCanvasBackgroundIsFiltered(t *testing.T) {
+	const page = `<!DOCTYPE html><html style="background:yellow;filter:grayscale(1)">` +
+		`<body style="margin:0"><div style="width:50px;height:50px;background:rgb(255,0,0)"></div></body></html>`
 	img := renderToImage(t, page, 200, 200)
-	sampleColorClose(t, img, 10, 10, 255, 255, 0, 0, "canvas outside the root's clip-path")
-	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "content, filtered and clipped")
+	// grayscale(1) of yellow: (0.2126 + 0.7152) * 255.
+	// Inside the root's box: the buffer covers the root's paint extent only
+	// (the canvas beyond it is LOU-704's sizing).
+	sampleColorClose(t, img, 150, 25, 237, 237, 237, 2, "canvas background, filtered")
+	sampleColorClose(t, img, 25, 25, 54, 54, 54, 2, "content, filtered")
 }
 
 // TestFilterOutputClip_ClipPathWithDescendants — with a filter that moves
