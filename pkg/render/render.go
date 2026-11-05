@@ -1337,12 +1337,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		if !ok || !subOK || !vpOK {
 			return
 		}
-		builder.FilterViewport = image.Rect(
-			int(math.Round(vp.X())), int(math.Round(vp.Y())),
-			int(math.Round(vp.Right())), int(math.Round(vp.Bottom())))
-		builder.ReferenceBox = image.Rect(
-			int(math.Round(ref.X())), int(math.Round(ref.Y())),
-			int(math.Round(ref.Right())), int(math.Round(ref.Bottom())))
+		builder.FilterViewport = snapRectF(vp)
+		builder.ReferenceBox = snapRectF(ref)
 		paintExtent = snapRectFToDevice(sub)
 		builder.Mapping = mapping
 		filter = builder.BuildFilterEffect(layer.Filters)
@@ -1618,6 +1614,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// same filter-function list as filter.
 	builder := r.newFilterEffectBuilder(layer)
 	builder.ReferenceBox = borderBox
+	builder.FilterViewport = borderBox
 	filter := builder.BuildFilterEffect(layer.BackdropFilters)
 	if filter == nil {
 		return

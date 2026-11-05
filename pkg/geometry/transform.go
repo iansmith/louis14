@@ -425,6 +425,28 @@ func (t Transform) MapPoint(p PointF) PointF {
 	return PointF{clampFloatGeometry(v[0]), clampFloatGeometry(v[1])}
 }
 
+// MapRect maps rect's corners and returns their bounding box; each corner is
+// divided by w only when w is a normal non-1 value, as MapPoint does. Mirrors
+// gfx::Transform::MapRect(const RectF&) (ui/gfx/geometry/transform.cc:775-786 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose axis-2d fast path gives the
+// same box.
+func (t Transform) MapRect(rect RectF) RectF {
+	if t.IsIdentity() {
+		return rect
+	}
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for _, c := range [4]PointF{
+		{rect.X(), rect.Y()}, {rect.Right(), rect.Y()},
+		{rect.Right(), rect.Bottom()}, {rect.X(), rect.Bottom()},
+	} {
+		p := t.MapPoint(c)
+		minX, maxX = math.Min(minX, p.X), math.Max(maxX, p.X)
+		minY, maxY = math.Min(minY, p.Y), math.Max(maxY, p.Y)
+	}
+	return NewRectF(minX, minY, maxX-minX, maxY-minY)
+}
+
 // MapPoint3F maps a 3D point (gfx::Transform::MapPoint(Point3F)).
 func (t Transform) MapPoint3F(p Point3F) Point3F {
 	p = Point3F{toFloat(p.X), toFloat(p.Y), toFloat(p.Z)} // gfx::Point3F is float

@@ -108,7 +108,7 @@ func (r *Renderer) collectContextUnits(root *PaintLayer, node *TransformPaintPro
 	var walk func(layer *PaintLayer)
 	var visit func(c *PaintLayer, selfPainting bool)
 	member := func(l *PaintLayer, n *TransformPaintPropertyNode) {
-		u := contextUnit{layer: l, part: memberBackground, bounds: r.boxPaintBounds(l), projection: projectionToRenderingContextBase(n)}
+		u := contextUnit{layer: l, part: memberBackground, bounds: r.boxPaintBounds(l, true), projection: projectionToRenderingContextBase(n)}
 		units = append(units, u)
 		for _, c := range l.NegativeZ {
 			visit(c, true)
@@ -147,7 +147,7 @@ func (r *Renderer) collectContextUnits(root *PaintLayer, node *TransformPaintPro
 // flattened into it when the layer is not the leaf.
 func (r *Renderer) leafUnit(l *PaintLayer, root *layout.Box) contextUnit {
 	plane := projectionToRenderingContextBase(r.transformTree.localBorderBoxTransform(r.sceneLeaf(l.Box, root)))
-	u := contextUnit{layer: l, bounds: r.boxPaintBounds(l), projection: plane, plane: &plane}
+	u := contextUnit{layer: l, bounds: r.boxPaintBounds(l, false), projection: plane, plane: &plane}
 	switch n := r.transformTree.node(l.Box); {
 	case n.participatesInRenderingContext():
 		// The leaf itself: plane is its own node's projection, which it
@@ -199,12 +199,23 @@ func zeroScreenArea(p *viz.DrawPolygon) bool {
 }
 
 // boxPaintBounds is the rect in a unit's local (absolute) coordinates its
-// polygon is made from, the quad's visible rect in viz: the layer's bounding
-// box including its self-painting descendants
-// (PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants), enclosed in
-// whole pixels as a cc layer's bounds are.
-func (r *Renderer) boxPaintBounds(l *PaintLayer) geometry.RectF {
-	b := snapRectFToDevice(r.localBoundingBoxIncludingSelfPaintingDescendants(l).ToRectF())
+// polygon is made from, the quad's visible rect in viz, enclosed in whole
+// pixels as a cc layer's bounds are. A cc layer's bounds are those of its own
+// paint chunks (PendingLayer, platform/graphics/compositing/pending_layer.cc:
+// 44-49, merged at :395-396 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+// each self-painting layer under a context member is a unit of its own with
+// its own transform node, so a member's bounds are its own visual overflow
+// (PaintLayer::LocalBoundingBox). A non-member unit paints its whole subtree:
+// its bounds include its self-painting descendants
+// (LocalBoundingBoxIncludingSelfPaintingDescendants).
+func (r *Renderer) boxPaintBounds(l *PaintLayer, member bool) geometry.RectF {
+	var bounds geometry.PhysicalRect
+	if member {
+		bounds = l.localBoundingBox(l.selfPaintingDescendantBoxes())
+	} else {
+		bounds = r.localBoundingBoxIncludingSelfPaintingDescendants(l)
+	}
+	b := snapRectFToDevice(bounds.ToRectF())
 	return rectFFromInts(b.Min.X, b.Min.Y, b.Dx(), b.Dy())
 }
 

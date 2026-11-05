@@ -2204,32 +2204,59 @@ func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geom
 
 // knownToClipSubtreeToPaddingBox mirrors PaintLayer::KnownToClipSubtreeToPaddingBox
 // (paint_layer.cc:2225-2242 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
-// layer clips its whole subtree on both axes. louis14 has no record of which
-// out-of-flow descendants escape the clip, so any absolute or fixed descendant
-// layer counts as escaping; that only makes the answer false more often, which
-// expands the rect. hasOutOfFlow reports a descendant out-of-flow layer.
-func (layer *PaintLayer) knownToClipSubtreeToPaddingBox(hasOutOfFlow bool) bool {
-	return layer.Box != nil && layer.Box.OverflowClipAxes == layout.OverflowClipBothAxis &&
-		!layer.HasClipMargin && !hasOutOfFlow
+// layer clips its whole subtree on both axes, with no absolute or fixed
+// descendant whose containing block lies outside it
+// (HasNonContainedAbsolutePositionDescendant, and HasFixedPositionDescendant
+// without CanContainFixedPositionObjects; UpdateDescendantDependentFlags,
+// :394-395, 422-429).
+func (layer *PaintLayer) knownToClipSubtreeToPaddingBox() bool {
+	box := layer.Box
+	if box == nil || box.OverflowClipAxes != layout.OverflowClipBothAxis || layer.HasClipMargin {
+		return false
+	}
+	return outOfFlowDescendantsContainedBy(layer, box)
+}
+
+// outOfFlowDescendantsContainedBy reports whether every absolute or fixed
+// descendant layer of l has its containing block at or inside clipper.
+func outOfFlowDescendantsContainedBy(l *PaintLayer, clipper *layout.Box) bool {
+	contained := true
+	l.forEachChild(func(c *PaintLayer, _ bool) {
+		if contained && isOutOfFlowForPaint(c) && !containingBlockWithin(c.Box, clipper) {
+			contained = false
+		}
+		contained = contained && outOfFlowDescendantsContainedBy(c, clipper)
+	})
+	return contained
+}
+
+// containingBlockWithin reports whether the out-of-flow box's containing
+// block is clipper or a box inside it. Layout parents an out-of-flow box under
+// its containing block, so that is oof.Parent. Blink tracks the same thing
+// with flags up its layer tree.
+func containingBlockWithin(oof, clipper *layout.Box) bool {
+	for a := oof.Parent; a != nil; a = a.Parent {
+		if a == clipper {
+			return true
+		}
+	}
+	return false
 }
 
 // localBoundingBoxIncludingSelfPaintingDescendants mirrors
 // PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants
 // (paint_layer.cc:2244-2249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) localBoundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer) geometry.PhysicalRect {
-	result, _ := r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.selfPaintingDescendantBoxes())
-	return result
+	return r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.selfPaintingDescendantBoxes())
 }
 
 // boundingBoxIncludingSelfPaintingDescendants is
 // localBoundingBoxIncludingSelfPaintingDescendants with the self-painting box
-// set of an ancestor, which serves every layer under it, and also reports
-// whether layer's subtree holds an out-of-flow layer, so one walk answers
-// knownToClipSubtreeToPaddingBox at every level.
-func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, selfPainting map[*layout.Box]bool) (geometry.PhysicalRect, bool) {
+// set of an ancestor, which serves every layer under it.
+func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
 	result := layer.localBoundingBox(selfPainting)
-	hasOutOfFlow := r.expandRectForSelfPaintingDescendants(layer, &result, selfPainting)
-	return result, hasOutOfFlow
+	r.expandRectForSelfPaintingDescendants(layer, &result, selfPainting)
+	return result
 }
 
 // expandRectForSelfPaintingDescendants mirrors
@@ -2237,33 +2264,30 @@ func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): unite each self-painting child's
 // own bounding box, mapped through its filter and then its transform. louis14's
 // rects are absolute, so Blink's final offset to the parent is the identity.
-// Unlike Blink it visits every child before deciding to skip, to learn whether
-// the subtree holds an out-of-flow layer; it returns that.
-func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, selfPainting map[*layout.Box]bool) bool {
-	var expanded geometry.PhysicalRect
-	hasOutOfFlow := false
+//
+// A non-self-painting child layer's content is already in this layer's visual
+// overflow, but its self-painting descendants are left out of it, and in
+// louis14 they hang under that child (floats, atomic inlines). The child
+// contributes them through its own expansion. In Blink such a layer has no
+// self-painting descendants of its own to drop.
+func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, selfPainting map[*layout.Box]bool) {
+	if layer.knownToClipSubtreeToPaddingBox() {
+		return
+	}
 	layer.forEachChild(func(child *PaintLayer, childSelfPainting bool) {
-		added, childOutOfFlow := r.boundingBoxIncludingSelfPaintingDescendants(child, selfPainting)
-		hasOutOfFlow = hasOutOfFlow || childOutOfFlow || isOutOfFlowForPaint(child)
 		if !childSelfPainting || child.Box == nil {
+			r.expandRectForSelfPaintingDescendants(child, result, selfPainting)
 			return
 		}
+		added := r.boundingBoxIncludingSelfPaintingDescendants(child, selfPainting)
 		if child.paintsWithFilters() {
 			added = r.mapRectForFilter(child, added)
 		}
-		if child.HasTransform && r.transformTree != nil {
-			if n := r.transformTree.node(child.Box); n != nil {
-				if mapped, ok := mapRectToLayer(n.Matrix, added.ToRectF()); ok {
-					added = geometry.PhysicalRectEnclosingRect(mapped)
-				}
-			}
+		if child.HasTransform {
+			added = geometry.PhysicalRectEnclosingRect(localTransformMatrix(child.Box).MapRect(added.ToRectF()))
 		}
-		expanded = expanded.Unite(added)
+		*result = result.Unite(added)
 	})
-	if !layer.knownToClipSubtreeToPaddingBox(hasOutOfFlow) {
-		*result = result.Unite(expanded)
-	}
-	return hasOutOfFlow
 }
 
 // mapRectForFilter mirrors PaintLayer::MapRectForFilter (paint_layer.cc:
