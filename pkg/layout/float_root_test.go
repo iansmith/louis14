@@ -21,6 +21,7 @@ func TestFloatingRoot(t *testing.T) {
 		{"float right with margins", "float:right; margin:0 10px 0 4px", 800 - 10 - 50, 50},
 		{"float inline-end, ltr", "float:inline-end", 800 - 50, 50},
 		{"float inline-start, rtl", "float:inline-start; direction:rtl", 800 - 50, 50},
+		{"float left, rtl", "float:left; direction:rtl", 0, 50},
 		{"not floated stretches", "", 0, 800},
 	}
 	for _, c := range cases {

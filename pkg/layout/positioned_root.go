@@ -32,6 +32,13 @@ func rootIsOutOfFlow(rootStyle *css.Style) bool {
 	return rootStyle.HasOutOfFlowPosition()
 }
 
+// rootIsFloating reports whether the view handles the root as a float:
+// LayoutBox::ShouldBeHandledAsFloating (layout_box.cc:938-943 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — floating and not out of flow.
+func rootIsFloating(rootStyle *css.Style) bool {
+	return rootStyle != nil && rootStyle.IsFloating() && !rootIsOutOfFlow(rootStyle)
+}
+
 // buildRootConstraintSpace builds the constraint space for the document root
 // element given the viewport size.
 //
@@ -71,8 +78,16 @@ func buildRootConstraintSpace(
 
 	if !rootIsOutOfFlow(rootStyle) {
 		margins := ResolveMargins(rootStyle, rootWDM, rootInlineSize)
+		// A floating root is the view's float: its space keeps the
+		// builder's fit-content inline auto behavior, so an auto
+		// inline-size shrinks to fit (CreateConstraintSpaceForFloat,
+		// floats_utils.cc:64-104 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		inlineAuto := AutoSizeBehaviorStretchImplicit
+		if rootIsFloating(rootStyle) {
+			inlineAuto = AutoSizeBehaviorFitContent
+		}
 		return NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
-			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+			SetInlineAutoBehavior(inlineAuto).
 			SetIsRootElement(true).
 			SetAvailableSize(LogicalSize{
 				InlineSize: max(0, rootInlineSize-margins.InlineSum()),
@@ -116,10 +131,24 @@ func buildRootConstraintSpace(
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the view has no border or
 // padding, and the root is its first child, so no margin collapses into
 // the view.
+//
+// A floating root is placed as PositionFloat places a float in the empty
+// view: its margin box starts at the layout opportunity's line-left edge, or
+// for a line-right float ends at its line-right edge, and auto margins are
+// zero (floats_utils.cc:382-388, :428-432 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The view's direction is the
+// root's, which LayoutView propagates from the document element.
 func rootOffsetInView(rootStyle *css.Style, rootWDM WritingDirectionMode, icb LogicalSize, borderBoxInlineSize float64) LogicalOffset {
-	margins := resolveInlineAutoMargins(rootStyle, rootWDM, icb.InlineSize, borderBoxInlineSize,
-		ResolveMargins(rootStyle, rootWDM, icb.InlineSize))
-	return LogicalOffset{InlineOffset: margins.InlineStart, BlockOffset: margins.BlockStart}
+	margins := ResolveMargins(rootStyle, rootWDM, icb.InlineSize)
+	if !rootIsFloating(rootStyle) {
+		margins = resolveInlineAutoMargins(rootStyle, rootWDM, icb.InlineSize, borderBoxInlineSize, margins)
+		return LogicalOffset{InlineOffset: margins.InlineStart, BlockOffset: margins.BlockStart}
+	}
+	inlineOffset := margins.InlineStart
+	if !IsInlineStartFloat(rootStyle.Floating(rootStyle.GetDirection()), rootWDM) {
+		inlineOffset = icb.InlineSize - borderBoxInlineSize - margins.InlineEnd
+	}
+	return LogicalOffset{InlineOffset: inlineOffset, BlockOffset: margins.BlockStart}
 }
 
 // placeRootInView returns the physical offset of the root's border box in
