@@ -11,6 +11,12 @@ cmd/l14open/l14open
 # Test output
 output/
 test-output.txt
+# Stale run output once tracked in pkg/visualtest (LOU-695); a hand-redirected
+# run must not recommit it. pkg/visualtest/*.txt would also match the tracked
+# expected_failures.txt, so the names are listed.
+pkg/visualtest/failing_tests.txt
+pkg/visualtest/css3-test-output.txt
+pkg/visualtest/errors.txt
 
 # Go build cache
 *.test
