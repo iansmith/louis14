@@ -12,5 +12,4 @@ pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-002.html	css
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-003.html	css/css-grid/alignment/grid-content-distribution-003.html	relocated, lightly edited
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-004.html	css/css-grid/alignment/grid-content-distribution-004.html	relocated, lightly edited
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-layout-basic.html	css/css-grid/grid-definition/grid-layout-basic.html	reformatted copy
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-indent-length-001-ref.html	css/css-text/text-indent/reference/text-indent-length-001-ref.html	hand-written reference
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-style-012-ref.html	css/css-ui/reference/outline-style-012-ref.html	hand-edited reference (8e531179)

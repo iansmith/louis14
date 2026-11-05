@@ -267,7 +267,7 @@ class Plan(unittest.TestCase):
         self.put(C3 + "/css-a/t.html", b'<link rel=match href="r.html">')
         self.put(C3 + "/css-a/sub/t.html", b'<link rel=match href="r.html">')
         self.put(C3 + "/css-a/r.html", b"R")
-        self.put(C3 + "/css-a/mine.html", b'<link rel=match href="r.html">')
+        self.put(C3 + "/css-a/mine.html", b'<link rel=match href="r.html"><p>mine')
         self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/t.html"])
 
     def test_script_urls_resolve_against_the_loading_document(self):
