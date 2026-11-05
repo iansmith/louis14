@@ -37,6 +37,10 @@ type fontCacheKey struct {
 
 // Renderer paints a tree of layout boxes onto an image.
 type Renderer struct {
+	// filterInputLayer is the filtered layer whose filter source is being
+	// painted: its own clips are applied to the filter output instead.
+	filterInputLayer *PaintLayer
+
 	dc                 textshape.DrawContext
 	target             *image.RGBA
 	fonts              text.FontConfig
@@ -1399,7 +1403,27 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// its local space mapped into the layer.
 		r.dc.Translate(float64(-bx), float64(-by))
 		r.multiplyHomography(projectiveHomography(paramToLayer))
+		// The layer's own clips are the filter's output clip (UpdateCssClip
+		// and UpdateClipPathClip run before UpdateFilter, whose output_clip
+		// is the clip they leave, core/paint/paint_property_tree_builder.cc:
+		// 4079-4082, 2485 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
+		// the source paints without them; for a filter that moves pixels the
+		// descendants paint under the PixelMovingFilterClipExpander, which
+		// stops their clip chains here. Ancestors' clips are not on the
+		// offscreen draw context either, but they stay marked applied on the
+		// shared clip stack, so in practice the expander shields the layer's
+		// own CSS clip (LOU-700 ports per-chunk clip states).
+		outerInput := r.filterInputLayer
+		r.filterInputLayer = layer
+		expander := r.clipTree.ownClipNode(layer, clipNodePixelMovingFilterClipExpander)
+		if expander != nil {
+			r.pushClip(layer, clipNodePixelMovingFilterClipExpander, expander)
+		}
 		r.paintFilterSourceGraphic(layer)
+		if expander != nil {
+			r.popClipNode()
+		}
+		r.filterInputLayer = outerInput
 		r.dc = origDC
 		r.target = origTarget
 	}
@@ -1418,17 +1442,23 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 
 	// Draw the layer through the remainder (fLayerToDevMatrix) on top of the
 	// draw context's matrix: own ∘ paramToLayer⁻¹, which is dm⁻¹ when the
-	// layer is device space.
-	var onDC geometry.Transform
+	// layer is device space. It is split as own ∘ fromLocal so the layer's own
+	// clips, the filter's output clip, apply in between, in its local space.
+	var fromLocal geometry.Transform
 	switch {
 	case !mapping.LayerToDev.IsIdentity():
-		onDC = own.Mul(paramToLayer.InverseOrIdentity())
+		fromLocal = paramToLayer.InverseOrIdentity()
 	case dmKnown:
-		onDC = dm.InverseOrIdentity()
+		fromLocal = ctm.InverseOrIdentity()
+	default:
+		fromLocal = own.InverseOrIdentity()
 	}
 	r.dc.Push()
-	r.multiplyHomography(projectiveHomography(onDC))
+	r.multiplyHomography(projectiveHomography(own))
+	r.pushOwnClips(layer)
+	r.multiplyHomography(projectiveHomography(fromLocal))
 	r.dc.DrawImage(out, bx, by)
+	r.popOwnClips(layer)
 	r.dc.Pop()
 }
 
@@ -2110,18 +2140,12 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 // inline content — a constraint that a single DOM-order walk cannot
 // satisfy for block-in-inline structures.
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
-	// CSS clip: rect() — clips everything including backgrounds and borders.
-	// Purely physical coordinates per CSS Writing Modes §7.6.
-	if layer.HasCSSClip {
-		r.pushClipNode(layer, clipNodeCssClip)
-		defer r.popClipNode()
-	}
-
-	// CSS clip-path: clips all content to a shape.
-	if layer.ClipPath != nil {
-		r.dc.Push()
-		r.applyClipPath(layer)
-		defer r.dc.Pop()
+	// The CSS clip and clip-path. A filtered layer's own clips are its
+	// filter's output clip, which paintLayerWithFilter applies around the
+	// filter output instead.
+	if layer != r.filterInputLayer {
+		r.pushOwnClips(layer)
+		defer r.popOwnClips(layer)
 	}
 
 	// A backface-culled layer reaching here has unculled descendants to
@@ -2541,6 +2565,29 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 	sw := float64(layoutunit.SnapSizeToPixel(luW, luX))
 	sh := float64(layoutunit.SnapSizeToPixel(luH, luY))
 	return sx, sy, sw, sh
+}
+
+// pushOwnClips applies layer's CSS clip (rect(), physical coordinates per CSS
+// Writing Modes §7.6) and clip-path, which clip everything the layer paints.
+// Pair with popOwnClips.
+func (r *Renderer) pushOwnClips(layer *PaintLayer) {
+	if layer.HasCSSClip {
+		r.pushClipNode(layer, clipNodeCssClip)
+	}
+	if layer.ClipPath != nil {
+		r.dc.Push()
+		r.applyClipPath(layer)
+	}
+}
+
+// popOwnClips undoes pushOwnClips.
+func (r *Renderer) popOwnClips(layer *PaintLayer) {
+	if layer.ClipPath != nil {
+		r.dc.Pop()
+	}
+	if layer.HasCSSClip {
+		r.popClipNode()
+	}
 }
 
 // applyClipPath builds the clip-path shape and calls Clip().

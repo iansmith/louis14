@@ -16,6 +16,14 @@ const (
 	// clipNodeOverflowClip is the overflow clip of a box's contents
 	// (UpdateOverflowClip).
 	clipNodeOverflowClip
+	// clipNodePixelMovingFilterClipExpander is the clip the descendants of a
+	// box whose filter moves pixels paint under (UpdateFilter,
+	// core/paint/paint_property_tree_builder.cc:2512-2532 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It clips nothing
+	// (CombineClip, platform/graphics/compositing/paint_chunks_to_cc_layer.cc:
+	// 414-415 @ a9f50e52): the filter input is not cut by the clips above it,
+	// which clip the filter output instead.
+	clipNodePixelMovingFilterClipExpander
 )
 
 // ClipPaintPropertyNode is a clip in the clip tree. Mirrors the subset of
@@ -83,9 +91,9 @@ func (b *clipTreeBuilder) localBorderBoxClip(box *layout.Box) *ClipPaintProperty
 	return b.contentsClip(box.Parent)
 }
 
-// contentsClip returns the clip box's descendants paint under: its CSS clip
-// and its overflow clip, in that order, over its own LocalBorderBoxProperties
-// clip.
+// contentsClip returns the clip box's descendants paint under: its CSS clip,
+// its PixelMovingFilterClipExpander and its overflow clip, in that order, over
+// its own LocalBorderBoxProperties clip.
 func (b *clipTreeBuilder) contentsClip(box *layout.Box) *ClipPaintPropertyNode {
 	if clip, ok := b.contents[box]; ok {
 		return clip
@@ -94,6 +102,9 @@ func (b *clipTreeBuilder) contentsClip(box *layout.Box) *ClipPaintPropertyNode {
 	if layer := b.layerByBox[box]; layer != nil && box.Style != nil {
 		if layer.HasCSSClip {
 			clip = &ClipPaintPropertyNode{Layer: layer, Kind: clipNodeCssClip, Parent: clip}
+		}
+		if layer.paintsWithFilters() && layer.hasFilterThatMovesPixels() {
+			clip = &ClipPaintPropertyNode{Layer: layer, Kind: clipNodePixelMovingFilterClipExpander, Parent: clip}
 		}
 		if layer.HasClip {
 			clip = &ClipPaintPropertyNode{Layer: layer, Kind: clipNodeOverflowClip, Parent: clip}
@@ -120,8 +131,11 @@ func (b *clipTreeBuilder) ownClipNode(layer *PaintLayer, kind clipNodeKind) *Cli
 // applyClipNode installs the clip of the given kind owned by layer on the
 // draw context; the caller has Push()ed.
 func (r *Renderer) applyClipNode(layer *PaintLayer, kind clipNodeKind) {
-	if kind == clipNodeOverflowClip {
+	switch kind {
+	case clipNodeOverflowClip:
 		r.applyOverflowClip(layer)
+		return
+	case clipNodePixelMovingFilterClipExpander:
 		return
 	}
 	// The CSS clip rect, in physical coordinates (CSS Writing Modes §7.6).
