@@ -209,6 +209,9 @@ func zeroScreenArea(p *viz.DrawPolygon) bool {
 // its bounds include its self-painting descendants
 // (LocalBoundingBoxIncludingSelfPaintingDescendants).
 func (r *Renderer) boxPaintBounds(l *PaintLayer, member bool) geometry.RectF {
+	if l.Box == nil {
+		return geometry.RectF{}
+	}
 	var bounds geometry.PhysicalRect
 	if member {
 		bounds = l.localBoundingBox(l.selfPaintingDescendantBoxes())

@@ -892,7 +892,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// side`. The corresponding border-radius is computed lazily by
 		// overflowClipRadii (coverage-factor corner correction shared
 		// with box-shadow spread).
-		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left]
+		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left], set when applyMargin
 		switch {
 		case forceBorderBoxClip:
 			// CSS Tables 3 §5.4.1 forces a border-box clip irrespective of
@@ -902,22 +902,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			clipW = box.Width
 			clipH = box.Height
 		case applyMargin:
-			switch marginBox {
-			case css.OverflowClipMarginContentBox:
-				visualBoxInset = [4]float64{
-					box.Border.Top + box.Padding.Top,
-					box.Border.Right + box.Padding.Right,
-					box.Border.Bottom + box.Padding.Bottom,
-					box.Border.Left + box.Padding.Left,
-				}
-			case css.OverflowClipMarginPaddingBox:
-				visualBoxInset = [4]float64{
-					box.Border.Top, box.Border.Right,
-					box.Border.Bottom, box.Border.Left,
-				}
-			case css.OverflowClipMarginBorderBox:
-				// All insets stay 0 — clip edge starts at the border edge.
-			}
+			visualBoxInset = overflowClipMarginVisualBoxInset(box, marginBox)
 			// Per-side outward offset from the border-edge to the clip edge
 			// (positive = outward, negative = inward).
 			edgeTop := -visualBoxInset[0] + marginLength
@@ -2176,14 +2161,14 @@ func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geo
 // visualOverflowRect stands in for LayoutBox::VisualOverflowRect
 // (core/layout/layout_box.cc:3690-3728 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 // the border box united with the contents' overflow, which an overflow clip
-// cuts back to the border box on each clipped axis (ApplyOverflowClip). A
-// descendant painted by a self-painting layer of its own is left out, as Blink
-// leaves it out of its ancestors' visual overflow;
-// ExpandRectForSelfPaintingDescendants adds it.
+// cuts back to the border box on each clipped axis (ApplyOverflowClip), or,
+// with an overflow-clip-margin, to the border box expanded by
+// BorderOutsetsForClipping. A descendant painted by a self-painting layer of
+// its own is left out, as Blink leaves it out of its ancestors' visual
+// overflow; ExpandRectForSelfPaintingDescendants adds it.
 //
 // no Blink analog: louis14 keeps no visual overflow, so this is built from
-// border boxes alone, without ink overflow (shadows, outlines, glyph overflow)
-// and without overflow-clip-margin.
+// border boxes alone, without ink overflow (shadows, outlines, glyph overflow).
 func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
 	border := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(box.X, box.Y, box.Width, box.Height))
 	var contents geometry.PhysicalRect
@@ -2191,6 +2176,15 @@ func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geom
 		if !selfPainting[child] {
 			contents = contents.Unite(visualOverflowRect(child, selfPainting))
 		}
+	}
+	if outsets, ok := borderOutsetsForClipping(box); ok {
+		if contents.IsEmpty() {
+			return border
+		}
+		clip := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(
+			box.X-outsets[3], box.Y-outsets[0],
+			box.Width+outsets[1]+outsets[3], box.Height+outsets[0]+outsets[2]))
+		return clip.Intersect(contents).Unite(border)
 	}
 	result := border.Unite(contents)
 	if box.OverflowClipAxes&layout.OverflowClipX != 0 {
@@ -2200,6 +2194,51 @@ func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geom
 		result.Offset.Top, result.Size.Height = border.Offset.Top, border.Size.Height
 	}
 	return result
+}
+
+// borderOutsetsForClipping mirrors LayoutBox::BorderOutsetsForClipping
+// (core/layout/layout_box.cc:3668-3688 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// for a box that applies an overflow-clip-margin: the outsets, [top, right,
+// bottom, left] from the border box, of the margin's reference box inflated
+// by the margin. ok is false when ShouldApplyOverflowClipMargin
+// (core/layout/layout_object.h:588-617 @ a9f50e52) does not hold: a scroll
+// container, no margin with an effect, or not clipped by overflow:clip on
+// both axes (or paint containment) where the box respects overflow. Replaced
+// elements' looser overflow test is not ported.
+func borderOutsetsForClipping(box *layout.Box) (outsets [4]float64, ok bool) {
+	s := box.Style
+	if s == nil || box.IsScrollContainer() || box.OverflowClipAxes != layout.OverflowClipBothAxis {
+		return outsets, false
+	}
+	m, set := s.GetOverflowClipMargin()
+	if !set || (m.Length == 0 && m.Box == css.OverflowClipMarginPaddingBox) {
+		return outsets, false
+	}
+	isOverflowClip := s.GetOverflowX() == css.OverflowClip && s.GetOverflowY() == css.OverflowClip
+	if !isOverflowClip && !s.ShouldApplyPaintContainment() {
+		return outsets, false
+	}
+	for i, inset := range overflowClipMarginVisualBoxInset(box, m.Box) {
+		outsets[i] = m.Length - inset
+	}
+	return outsets, true
+}
+
+// overflowClipMarginVisualBoxInset is the shrink, [top, right, bottom, left],
+// from the border box to overflow-clip-margin's reference box
+// (BorderOutsetsForClipping's switch, layout_box.cc:3675-3684 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func overflowClipMarginVisualBoxInset(box *layout.Box, marginBox css.OverflowClipMarginBox) [4]float64 {
+	switch marginBox {
+	case css.OverflowClipMarginContentBox:
+		return [4]float64{
+			box.Border.Top + box.Padding.Top, box.Border.Right + box.Padding.Right,
+			box.Border.Bottom + box.Padding.Bottom, box.Border.Left + box.Padding.Left,
+		}
+	case css.OverflowClipMarginPaddingBox:
+		return [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
+	}
+	return [4]float64{} // border-box: the clip edge starts at the border edge
 }
 
 // knownToClipSubtreeToPaddingBox mirrors PaintLayer::KnownToClipSubtreeToPaddingBox
