@@ -1322,6 +1322,16 @@ func setTextContent(node *html.Node, text string) {
 	}
 }
 
+// cssomValueAccepted reports whether a CSSOM write of value to property
+// parses. Blink's setters parse the value first and leave the declaration
+// untouched on kParseError (AbstractPropertySetCSSStyleDeclaration::
+// SetPropertyInternal, core/css/abstract_property_set_css_style_declaration.cc:
+// 254-282 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Only display is
+// validated here; other properties are stored as written (LOU-684).
+func cssomValueAccepted(property, value string) bool {
+	return property != "display" || css.IsValidDisplayValue(value)
+}
+
 // newStyleProxy creates a goja DynamicObject that maps JS camelCase
 // property access to CSS kebab-case on the node's inline style attribute.
 func newStyleProxy(vm *goja.Runtime, node *html.Node) goja.Value {
@@ -1356,8 +1366,10 @@ func (s *styleAccessor) Get(key string) goja.Value {
 			// CSSOM §6.7.3 step 4: an empty value means removeProperty.
 			if strings.TrimSpace(val) == "" {
 				delete(styles, prop)
-			} else {
+			} else if cssomValueAccepted(prop, val) {
 				styles[prop] = val
+			} else {
+				return goja.Undefined()
 			}
 			s.setStyleAttr(serializeInlineStyle(styles))
 			return goja.Undefined()
@@ -1416,8 +1428,10 @@ func (s *styleAccessor) Set(key string, val goja.Value) bool {
 	// (CSSStyleDeclaration attribute setter; `el.style.counterSet = ""`).
 	if v := val.String(); strings.TrimSpace(v) == "" {
 		delete(styles, cssProp)
-	} else {
+	} else if cssomValueAccepted(cssProp, v) {
 		styles[cssProp] = v
+	} else {
+		return true
 	}
 	s.setStyleAttr(serializeInlineStyle(styles))
 	return true

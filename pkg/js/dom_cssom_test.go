@@ -120,3 +120,19 @@ func TestRuleStyleSetOverridesImportantAndEmptyStringRemoves(t *testing.T) {
 		t.Error("assigning empty string must remove the declaration")
 	}
 }
+
+// A rule's style setter drops an invalid display and keeps the previous
+// value (see TestStyleSetInvalidDisplayKeepsPreviousValue).
+func TestRuleStyleSetInvalidDisplayKeepsPreviousValue(t *testing.T) {
+	doc := parseHTML(t, `<style>div { display: flex; }</style><div>x</div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		document.styleSheets[0].cssRules[0].style.display = "ruby-base";
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := css.ParseDocumentStylesheets(doc)[0].Rules[0].Declarations["display"]; got != "flex" {
+		t.Errorf("display = %q, want %q", got, "flex")
+	}
+}
