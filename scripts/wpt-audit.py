@@ -45,7 +45,8 @@ Usage:
       file the written and identical files load is fetched when it exists
       upstream but not locally, transitively. All downloads and hash checks
       happen before anything is changed, and every path touched is staged.
-      Loads that resolve outside both suites are reported as "dangling".
+      Loads that resolve outside both suites are reported as "dangling", and
+      missing files at gitignored paths (the corpus fonts) as "ignored".
       Prints one line per action.
   scripts/wpt-audit.py --missing-refs <dir>...
       list reftests whose <link rel=match|mismatch> target is missing.
@@ -420,6 +421,11 @@ def missing_refs(dirs):
                 print("%s\t%s" % (local, ref))
 
 
+def ignored(path):
+    """Whether git ignores path: such files cannot be committed."""
+    return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode == 0
+
+
 def plan(sha, out_tsv, prefix, excludes):
     """The actions --apply takes, with every download and hash check done.
     Audits the tree itself (so identical rows, which the committed mapping
@@ -509,6 +515,10 @@ def plan(sha, out_tsv, prefix, excludes):
                 continue
             up = upstream_path(target)
             if up not in upstream:
+                continue
+            if ignored(target):
+                # e.g. the corpus fonts, installed out of band.
+                log.append(("ignored", target, up))
                 continue
             tdata = download(sha, up, upstream[up])
             write(target, tdata)
