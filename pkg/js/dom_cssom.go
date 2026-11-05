@@ -122,6 +122,8 @@ func (s *ruleStyleAccessor) Set(key string, val goja.Value) bool {
 	prop := camelToKebab(key)
 	if v := val.String(); strings.TrimSpace(v) == "" {
 		delete(s.rule.Declarations, prop)
+	} else if !cssomValueAccepted(prop, v) {
+		return true
 	} else {
 		if s.rule.Declarations == nil {
 			s.rule.Declarations = make(map[string]string)

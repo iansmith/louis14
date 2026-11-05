@@ -115,16 +115,17 @@ func isEligibleForStyleContainment(s *Style) bool {
 // eligibility filter shared by layout and paint containment per CSS
 // Containment 1 §3 (preamble: "containment does not apply" list).
 //
-// Reads the *raw* `display` property because louis14's GetDisplay()
-// collapses ruby-internal values (`ruby-base`, `ruby-base-container`,
-// `ruby-text-container`) to DisplayBlock — there is no kRubyBase analog
-// in the enum, mirroring the pkg/css/style.go GetDisplay comment.
+// Reads the declared `display` keyword, ASCII case-insensitively. The
+// removed ruby-internal values (`ruby-base`, `ruby-base-container`,
+// `ruby-text-container`) are dropped at parse time (IsValidDisplayValue),
+// but var() substitution can still deliver one, and GetDisplay maps them to
+// block, so they are matched here by name.
 func isEligibleForLayoutOrPaintContainment(s *Style) bool {
 	disp, ok := s.Get("display")
 	if !ok {
 		return true
 	}
-	switch strings.TrimSpace(disp) {
+	switch asciiToLower(strings.TrimSpace(disp)) {
 	case "ruby-base", "ruby-base-container",
 		"ruby-text-container", "ruby-text":
 		// Internal ruby boxes (CSS Containment 1 §3 / Blink IsRuby family).
@@ -160,7 +161,7 @@ func isEligibleForSizeContainment(s *Style) bool {
 	if !ok {
 		return true
 	}
-	if strings.TrimSpace(disp) == "table-cell" {
+	if asciiToLower(strings.TrimSpace(disp)) == "table-cell" {
 		return false
 	}
 	return true

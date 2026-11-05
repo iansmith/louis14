@@ -2431,6 +2431,11 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 			continue
 		}
 
+		// Display::ParseSingleValue gate (see parseDeclarations).
+		if property == "display" && !IsValidDisplayValue(value) {
+			continue
+		}
+
 		// Phase 2: Expand shorthand properties
 		expandShorthand(style, property, value)
 	}
@@ -7292,9 +7297,14 @@ func (s *Style) GetBoxSizing() string {
 //
 // `ruby-base`, `ruby-base-container`, and `ruby-text-container` are not
 // real display values in modern Blink (no kRubyBase / kRubyBaseContainer
-// / kRubyTextContainer in EDisplay); they fall through to the default.
+// / kRubyTextContainer in EDisplay). A declaration of one is dropped at
+// parse time (IsValidDisplayValue), but var() substitution can still
+// deliver one; it falls through to the default here.
 func (s *Style) GetDisplay() DisplayType {
 	if display, ok := s.Get("display"); ok {
+		// Keywords match ASCII case-insensitively (as LOU-675 folds the
+		// other keyword getters); the declared value is stored as written.
+		display = asciiToLower(strings.TrimSpace(display))
 		// CSS Display L3 §2.1: the multi-value `display` syntax. Split on ANY
 		// whitespace (space/tab/newline — strings.Fields handles all) and map
 		// the supported two-keyword forms to a single DisplayType before the
