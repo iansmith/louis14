@@ -192,7 +192,7 @@ class Plan(unittest.TestCase):
         self.put(C3 + "/css-a/t.html", b"T")
         self.put(C3 + "/css-a/gone.html", b"G")
         os.remove(os.path.join(self.repo, C3 + "/css-a/gone.html"))
-        rows = wa.audit_rows("sha", os.path.join(self.repo, "m.tsv"))
+        rows = wa.audit_rows(self.upstream)
         self.assertEqual([r[0] for r in rows], [C3 + "/css-a/t.html"])
 
 

@@ -163,7 +163,8 @@ def harness_resolve(local_file, ref):
     return posixpath.normpath(posixpath.join(posixpath.dirname(local_file), ref))
 
 
-TEXT_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg", ".css", ".js", ".xml")
+DOC_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg")
+TEXT_EXT = DOC_EXT + (".css", ".js", ".xml")
 CSS_URL_RE = re.compile(
     r"""url\(\s*["']?([^"')]*?)["']?\s*\)|@import\s+["']([^"']*)["']""", re.I)
 # Elements whose href fetches a resource (an <a> href is a navigation).
@@ -178,6 +179,7 @@ class _LoadParser(html.parser.HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = [(k.lower(), v) for k, v in attrs if v is not None]
+        named = dict(attrs)
         for k, v in attrs:
             if k == "src" or (k == "data" and tag == "object"):
                 self.refs.append(v)
@@ -186,9 +188,9 @@ class _LoadParser(html.parser.HTMLParser):
             elif k == "style":
                 self.refs.extend(css_loads(v))
         if tag == "link":
-            rels = (dict(attrs).get("rel") or "").lower().split()
-            if ("match" in rels or "mismatch" in rels) and dict(attrs).get("href"):
-                self.match.append(dict(attrs)["href"])
+            rels = (named.get("rel") or "").lower().split()
+            if ("match" in rels or "mismatch" in rels) and named.get("href"):
+                self.match.append(named["href"])
         self._style = tag == "style"
 
     handle_startendtag = handle_starttag
@@ -329,9 +331,10 @@ def git_blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def audit_rows(sha, out_tsv):
-    """(local, status, upstream path, local blob, upstream blob) per file."""
-    index = UpstreamIndex(load_upstream(sha, out_tsv))
+def audit_rows(upstream):
+    """(local, status, upstream path, local blob, upstream blob) per file,
+    against the upstream path -> blob map."""
+    index = UpstreamIndex(upstream)
     locals_ = local_files()
     if not locals_:
         return []
@@ -341,15 +344,19 @@ def audit_rows(sha, out_tsv):
 
 
 def audit(sha, out_tsv):
-    rows = audit_rows(sha, out_tsv)
+    rows = audit_rows(load_upstream(sha, out_tsv))
+    write_mapping(sha, out_tsv, rows)
+    counts = collections.Counter(r[1] for r in rows)
+    for k in sorted(counts):
+        print("%-18s %d" % (k, counts[k]))
+
+
+def write_mapping(sha, out_tsv, rows):
     with open(out_tsv, "w") as f:
         f.write("# wpt %s\n" % sha)
         f.write("local_path\tstatus\tupstream_path\tlocal_blob\tupstream_blob\n")
         for row in rows:
             f.write("\t".join(row) + "\n")
-    counts = collections.Counter(r[1] for r in rows)
-    for k in sorted(counts):
-        print("%-18s %d" % (k, counts[k]))
 
 
 def download(sha, up, ublob):
@@ -405,7 +412,7 @@ def corpus_text_files(dirs):
 def missing_refs(dirs):
     """Print reftests whose rel=match/mismatch target is missing locally."""
     for local in corpus_text_files(dirs):
-        if not local.endswith((".html", ".htm", ".xht", ".xhtml", ".svg")):
+        if not local.endswith(DOC_EXT):
             continue
         for ref in match_hrefs(read_bytes(local)):
             target = harness_resolve(local, ref)
@@ -421,8 +428,9 @@ def plan(sha, out_tsv, prefix, excludes):
     ("mv", from, to) and ("rm", path), in order."""
     upstream = load_upstream(sha, out_tsv)
     reviewed = load_reviewed()
-    rows = [r for r in audit_rows(sha, out_tsv)
-            if r[0].startswith(prefix) and not excluded(r[0], excludes)]
+    all_rows = audit_rows(upstream)
+    write_mapping(sha, out_tsv, all_rows)
+    rows = [r for r in all_rows if r[0].startswith(prefix) and not excluded(r[0], excludes)]
     planned = {}  # path -> planned bytes, or None once planned away
 
     def content(path):
