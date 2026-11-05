@@ -1,30 +1,21 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <title>CSS Test: transform translate moves element visually</title>
-  <link rel="author" title="WPT" href="http://www.w3.org/TR/css-transforms-1/" />
-  <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#funcdef-translate" />
-  <link rel="match" href="transform-translate-001-ref.html" />
-  <meta name="assert" content="translate(50px, 50px) visually shifts an element by 50px in each direction" />
-  <style>
-  .container {
-    position: relative;
-    width: 200px;
-    height: 200px;
-    background: white;
-  }
-  .box {
-    width: 50px;
-    height: 50px;
-    background: green;
-    transform: translate(50px, 50px);
-  }
-  </style>
-</head>
-<body>
-  <p>Test passes if the green square is positioned 50px from the top-left corner.</p>
-  <div class="container">
-    <div class="box"></div>
-  </div>
-</body>
+  <head>
+    <title>CSS Test (Transforms): translate(50px, 50px)</title>
+    <link rel="author" title="Keith Schwarz" href="mailto:keith@keithschwarz.com">
+    <link rel="author" title="Aryeh Gregor" href="mailto:ayg@aryeh.name">
+    <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#two-d-transform-functions">
+    <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#funcdef-transform-translate">
+    <meta name="assert" content='This tests that translate(50px, 50px) is the same as
+    relative positioning by 50px toward the bottom right.'>
+    <link rel="match" href="transform-translate-ref.html">
+    <style>
+      div {
+        transform: translate(50px, 50px);
+      }
+    </style>
+  </head>
+  <body>
+    <div>Test Text</div>
+  </body>
 </html>
