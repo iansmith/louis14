@@ -249,7 +249,10 @@ class Plan(unittest.TestCase):
         self.put(C3 + "/css-a/old-ref.html", b"OLD")        # local-only, loaded by nothing
         self.put(C3 + "/css-a/mine.html", b'<link rel=match href="mine-ref.html">')  # louis14 test
         self.put(C3 + "/css-a/mine-ref.html", b"M")         # local-only, loaded
-        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/old-ref.html"])
+        self.set_upstream({"css/css-a/t.html": b'<link rel=match href="t-ref.html">',
+                           "css/css-a/t-ref.html": b"R", "css/css-a/reference/moved-ref.html": b"MV"})
+        self.put(C3 + "/css-a/moved-ref.html", b"MV")       # a stale copy of an upstream file
+        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/moved-ref.html", C3 + "/css-a/old-ref.html"])
 
     def test_identical_files_walk_without_a_mapping(self):
         # plan() audits the tree itself, so dependencies of identical files
