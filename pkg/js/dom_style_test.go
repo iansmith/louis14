@@ -162,3 +162,30 @@ func TestStyleCSSTextSetterReplacesDeclarationBlock(t *testing.T) {
 		t.Errorf("style attribute after cssText = \"\" is %q, want empty", got)
 	}
 }
+
+// A CSSOM write of an invalid display is dropped and the previous value
+// stays, as Blink's setProperty / attribute setter parse the value before
+// setting it (AbstractPropertySetCSSStyleDeclaration::SetPropertyInternal →
+// MutableCSSPropertyValueSet::ParseAndSetProperty; on kParseError it returns
+// with no change, core/css/abstract_property_set_css_style_declaration.cc:
+// 254-282 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestStyleSetInvalidDisplayKeepsPreviousValue(t *testing.T) {
+	doc := parseHTML(t, `<div id="a"></div><div id="b"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var a = document.getElementById("a");
+		a.style.display = "flex";
+		a.style.setProperty("display", "ruby-base");
+		var b = document.getElementById("b");
+		b.style.display = "flex";
+		b.style.display = "ruby-text-container";
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if got := getElementById(doc.Root, id).Attributes["style"]; got != "display: flex" {
+			t.Errorf("#%s style attribute = %q, want %q", id, got, "display: flex")
+		}
+	}
+}

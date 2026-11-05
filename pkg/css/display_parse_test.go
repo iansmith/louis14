@@ -1,6 +1,10 @@
 package css
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/html"
+)
 
 // display is validated at parse time like Blink's Display::ParseSingleValue
 // (core/css/properties/longhands/longhands_custom.cc:3851-3876 @
@@ -47,6 +51,74 @@ func TestDisplayParseValidation(t *testing.T) {
 	for _, v := range valid {
 		if got := parse(t, v); got == "inline" && v != "inline" {
 			t.Errorf("display: %q should be valid; the declaration was dropped", v)
+		}
+	}
+}
+
+// resolvedDisplay returns the DisplayType an element with the declaration
+// `display: <value>` resolves to, through the stylesheet path and through
+// the inline-style path.
+func resolvedDisplay(t *testing.T, value string) (sheet, inline DisplayType) {
+	t.Helper()
+	ss, err := ParseStylesheet("x-el { display: "+value+"; }", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	el := &html.Node{Type: html.ElementNode, TagName: "x-el"}
+	sheet = ComputeStyle(el, []*Stylesheet{ss}, 800, 600, nil).GetDisplay()
+	inline = ParseInlineStyle("display: "+value, nil).GetDisplay()
+	return sheet, inline
+}
+
+// Valid values resolve to their display type through both parse paths.
+// Keywords match ASCII case-insensitively, as Blink's CSS parser does, so
+// `Inline-Block` is inline-block (LOU-675 folds keyword getters the same way).
+func TestDisplayResolvesThroughBothParsePaths(t *testing.T) {
+	cases := []struct {
+		value string
+		want  DisplayType
+	}{
+		{"block", DisplayBlock}, {"flow", DisplayBlock}, {"inline", DisplayInline},
+		{"flow-root", DisplayFlowRoot}, {"inline-block", DisplayInlineBlock},
+		{"flex", DisplayFlex}, {"inline-flex", DisplayInlineFlex},
+		{"grid", DisplayGrid}, {"inline-grid", DisplayInlineGrid},
+		{"table", DisplayTable}, {"inline-table", DisplayInlineTable},
+		{"table-row-group", DisplayTableRowGroup}, {"table-header-group", DisplayTableHeaderGroup},
+		{"table-footer-group", DisplayTableFooterGroup}, {"table-row", DisplayTableRow},
+		{"table-cell", DisplayTableCell}, {"table-caption", DisplayTableCaption},
+		{"ruby", DisplayRuby}, {"ruby-text", DisplayRubyText}, {"math", DisplayMath},
+		{"none", DisplayNone}, {"contents", DisplayContents}, {"list-item", DisplayListItem},
+		{"-webkit-box", DisplayFlex}, {"-webkit-inline-box", DisplayInlineFlex},
+		{"-webkit-flex", DisplayFlex}, {"-webkit-inline-flex", DisplayInlineFlex},
+		{"inline flex", DisplayInlineFlex}, {"flex inline", DisplayInlineFlex},
+		{"block ruby", DisplayBlockRuby}, {"inline flow-root", DisplayInlineBlock},
+		{"inline list-item", DisplayInlineListItem},
+		{"Inline-Block", DisplayInlineBlock}, {"INLINE", DisplayInline},
+		{"Inline Flex", DisplayInlineFlex}, {"BLOCK RUBY", DisplayBlockRuby},
+	}
+	for _, tc := range cases {
+		sheet, inline := resolvedDisplay(t, tc.value)
+		if sheet != tc.want {
+			t.Errorf("stylesheet display: %q resolves to %q, want %q", tc.value, sheet, tc.want)
+		}
+		if inline != tc.want {
+			t.Errorf("inline style display: %q resolves to %q, want %q", tc.value, inline, tc.want)
+		}
+	}
+}
+
+// The removed ruby-internal displays are excluded from layout, paint and
+// size containment, case-insensitively: they are invalid at parse time, but
+// var() substitution can still deliver them to the style.
+func TestContainmentExcludesRubyInternalDisplays(t *testing.T) {
+	for _, v := range []string{"ruby-base", "ruby-base-container", "ruby-text-container", "ruby-text", "RUBY-BASE", "Ruby-Text-Container"} {
+		st := NewStyle()
+		st.Set("display", v)
+		if isEligibleForLayoutOrPaintContainment(st) {
+			t.Errorf("display %q should not be eligible for layout/paint containment", v)
+		}
+		if isEligibleForSizeContainment(st) {
+			t.Errorf("display %q should not be eligible for size containment", v)
 		}
 	}
 }
