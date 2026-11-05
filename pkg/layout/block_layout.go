@@ -1335,7 +1335,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// A block-in-inline sits inside its inline boxes: it moves with
-			// their relative offsets, paints in their opacity group, and its
+			// their relative offsets, paints in their paint group, and its
 			// out-of-flow descendants take an inline box that contains them
 			// as their containing block.
 			var blockInInlineRelativeOffset LogicalOffset
@@ -2125,7 +2125,7 @@ func resolveOutOfFlowCandidates(ctx *LayoutContext, builder *BoxFragmentBuilder,
 
 // adoptBlockInInlineResult applies to the laid-out block-in-inline wrapper
 // what Blink applies to the block-in-inline item on its line: the inline
-// boxes around it paint it in their opacity group, their relative offsets
+// boxes around it paint it in their paint group, their relative offsets
 // move it (InlineLayoutStateStack::ApplyRelativePositioning,
 // inline/inline_box_state.cc:940-984), and the innermost of them that
 // contains an out-of-flow descendant becomes its inline containing block

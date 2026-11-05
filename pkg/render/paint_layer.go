@@ -72,6 +72,30 @@ type PaintLayer struct {
 	// Floats are separated from FlowChildren so they paint above block backgrounds.
 	FloatChildren []*PaintLayer
 
+	// isLayoutInline marks the self-painting layer of a non-atomic inline
+	// (an inline paint group, see layout.IsInlinePaintGroup), whose Box is
+	// synthesized and has no geometry of its own. Blink reaches the
+	// equivalent through DynamicTo<LayoutInline>(GetLayoutObject()).
+	isLayoutInline bool
+	// inlineBoxFragments are a LayoutInline layer's box fragments in line
+	// order (Blink walks them with an InlineCursor), gathered while the
+	// inline's members are routed.
+	inlineBoxFragments []geometry.PhysicalRect
+	// linesBoundingBox is LayoutInline::PhysicalLinesBoundingBox
+	// (layout_inline.cc:658-673 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// the union of inlineBoxFragments, skipping zero-size ones. Set by
+	// finalizeInlineLayer once the paint tree is built.
+	linesBoundingBox geometry.PhysicalRect
+	// inlineMembersSC is the stacking context that collects the positioned
+	// and stacking descendants of a LayoutInline's layer: the layer itself
+	// when it is one, otherwise (a relatively or sticky positioned inline
+	// with z-index auto) the stacking context that encloses it.
+	inlineMembersSC *PaintLayer
+	// inlineMembersBackdropRoot is the backdrop root in effect for the
+	// members of a LayoutInline's layer: the layer itself when it is one,
+	// else the one enclosing it.
+	inlineMembersBackdropRoot *PaintLayer
+
 	// Overflow clip (pre-computed from Style):
 	HasClip  bool
 	ClipX    bool       // true if X axis is clipped (overflow-x != visible)
@@ -413,7 +437,11 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 		return nil
 	}
 	rootLayer := newPaintLayer(root)
-	buildPaintSubtree(root, rootLayer, rootLayer, nil, map[*layout.InlineItem]*PaintLayer{})
+	groups := map[*layout.InlineItem]*PaintLayer{}
+	buildPaintSubtree(root, rootLayer, rootLayer, nil, groups)
+	for _, g := range groups {
+		g.finalizeInlineLayer()
+	}
 	// Re-home z-ordered layers to their nearest stacking-context-creating
 	// DOM ancestor. This corrects out-of-flow children hoisted past their
 	// DOM-ancestor SC by the layout containing-block rule. Mirrors Blink's
@@ -617,16 +645,8 @@ func reparentZList(zlist []*PaintLayer, parent *PaintLayer, idx map[*html.Node]*
 
 		// If the child belongs in a different parent, move it there.
 		if correctParent != parent {
-			// Determine the z-index bucket and append to the correct parent.
-			z := child.ZIndex
-			switch {
-			case z < 0:
-				correctParent.NegativeZ = append(correctParent.NegativeZ, child)
-			case z > 0:
-				correctParent.PositiveZ = append(correctParent.PositiveZ, child)
-			default:
-				correctParent.AutoZero = append(correctParent.AutoZero, child)
-			}
+			correctParent.addToZOrderList(child)
+			noteReparentedCompositing(child, correctParent, idx)
 			// Do NOT add to filtered — this entry is moved elsewhere.
 		} else {
 			// Child stays in current parent.
@@ -634,6 +654,50 @@ func reparentZList(zlist []*PaintLayer, parent *PaintLayer, idx map[*html.Node]*
 		}
 	}
 	return filtered
+}
+
+// noteReparentedCompositing redoes, for a layer reparentZList moved under sc,
+// the bookkeeping buildPaintSubtree did against its old parent
+// (noteCompositingDescendants): its blending makes sc an isolated group, and
+// a backdrop-filter at or under it that no backdrop root of its own encloses
+// samples back to the backdrop root enclosing sc. In Blink the layer is
+// parented there from the start, so its effect node's ancestry already says
+// this. The flags set on the old parent stay (an extra isolation, no change
+// in output).
+func noteReparentedCompositing(child, sc *PaintLayer, idx map[*html.Node]*PaintLayer) {
+	root := enclosingBackdropRoot(sc, idx)
+	noteCompositingDescendants(child, sc, root)
+	if root != nil && !child.IsBackdropRoot && hasUnrootedBackdropFilter(child) {
+		root.HasBackdropFilterDescendant = true
+	}
+}
+
+// enclosingBackdropRoot returns sc when it is a backdrop root, else the
+// layer of sc's nearest DOM ancestor that is one; nil for the root's
+// implicit backdrop root.
+func enclosingBackdropRoot(sc *PaintLayer, idx map[*html.Node]*PaintLayer) *PaintLayer {
+	if sc.IsBackdropRoot {
+		return sc
+	}
+	for n := sc.Box.Node; n != nil; n = n.Parent {
+		if l, ok := idx[n]; ok && l != sc && l.IsBackdropRoot {
+			return l
+		}
+	}
+	return nil
+}
+
+// hasUnrootedBackdropFilter reports whether a descendant layer of l that no
+// backdrop root at or below l encloses has a backdrop-filter: one that
+// samples the backdrop root enclosing l.
+func hasUnrootedBackdropFilter(l *PaintLayer) bool {
+	found := false
+	l.forEachChild(func(c *PaintLayer, _ bool) {
+		if !found {
+			found = c.HasBackdropFilter || (!c.IsBackdropRoot && hasUnrootedBackdropFilter(c))
+		}
+	})
+	return found
 }
 
 // consolidateInlineOutlines resolves the outline-drawing geometry for split
@@ -1625,34 +1689,130 @@ func moveOutsideMarkerToFront(children []*layout.Box) []*layout.Box {
 //	within the subtree. Set by HasBackdropFilterDescendant
 //	when a descendant with backdrop-filter is encountered.
 //
-// ensureInlinePaintGroup returns the single PaintLayer for an inline paint
-// group (an opacity inline — see layout.IsInlinePaintGroup), creating it on
-// first sighting. The layer's Box is synthesized (zero-rect, the inline's
-// style+node): geometry lives on the member fragments routed into
-// FlowChildren/FloatChildren; the layer exists to apply the element's alpha
-// ONCE around all of them. Keyed by the OpenTag InlineItem, not the style
+// ensureInlinePaintGroup returns the self-painting PaintLayer of a
+// non-atomic inline (see layout.IsInlinePaintGroup), creating it on first
+// sighting. The layer's Box is synthesized (the inline's style and node, no
+// geometry): geometry lives on the member fragments routed into
+// FlowChildren/FloatChildren, and the reference boxes come from the inline's
+// box fragments (inlineBoxFragments). The layer applies the inline's effects
+// once around all of them. Keyed by the OpenTag InlineItem, not the style
 // pointer — inline layout clones styles (e.g. the position reset on
 // background fragments), but every fragment of one inline references the
-// same item. The group routes like today's per-fragment SC inline layers:
-// AutoZero of the nearest stacking context (CSS Color 3 §3.2 "treated as if
-// it created a new stacking context", painted as a positioned z-index:0
-// element at Appendix E step 6); a nested group nests in its outer group.
-// The group's box hangs off container, the box whose walk met the first
-// member, so the group paints under the clips of the inline's containing
-// block (an inline box itself never clips overflow).
-func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, currentSC *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) *PaintLayer {
+// same item. The layer joins the z-order list of the stacking context that
+// collects it — the enclosing group's when that one is a stacking context —
+// by its z-index (addToZOrderList), and sorts there by the inline's DOM
+// index. The group's box hangs off container, the box whose walk met the
+// first member, so the group paints under the clips of the inline's
+// containing block (an inline box itself never clips overflow).
+func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, currentSC, currentBackdropRoot *PaintLayer, groups map[*layout.InlineItem]*PaintLayer) *PaintLayer {
 	if g, ok := groups[item]; ok {
 		return g
 	}
-	g := newPaintLayer(&layout.Box{Node: item.Node, Style: item.Style, Parent: container})
+	s := item.Style
+	g := newPaintLayer(&layout.Box{
+		Node: item.Node, Style: s, Parent: container,
+		Position: s.GetPosition(), ZIndex: s.GetZIndex(), DOMIndex: item.DOMIndex,
+	})
+	g.isLayoutInline = item.Node != nil
 	groups[item] = g
+	sc, backdropRoot := currentSC, currentBackdropRoot
 	if item.EnclosingPaintGroup != nil {
-		outer := ensureInlinePaintGroup(item.EnclosingPaintGroup, container, currentSC, groups)
-		outer.AutoZero = append(outer.AutoZero, g)
-	} else {
-		currentSC.AutoZero = append(currentSC.AutoZero, g)
+		outer := ensureInlinePaintGroup(item.EnclosingPaintGroup, container, currentSC, currentBackdropRoot, groups)
+		sc, backdropRoot = outer.inlineMembersSC, outer.inlineMembersBackdropRoot
 	}
+	g.inlineMembersSC = sc
+	if g.Box.CreatesStackingContext() {
+		g.inlineMembersSC = g
+	}
+	g.inlineMembersBackdropRoot = noteCompositingDescendants(g, sc, backdropRoot)
+	sc.addToZOrderList(g)
 	return g
+}
+
+// addToZOrderList files a stacking-context or positioned child into the
+// z-order list its z-index selects. A child that is not a stacking context
+// is z-index auto and paints at step 6 in tree order.
+func (sc *PaintLayer) addToZOrderList(child *PaintLayer) {
+	z := 0
+	if child.Box.CreatesStackingContext() {
+		z = child.ZIndex
+	}
+	switch {
+	case z < 0:
+		sc.NegativeZ = append(sc.NegativeZ, child)
+	case z > 0:
+		sc.PositiveZ = append(sc.PositiveZ, child)
+	default:
+		sc.AutoZero = append(sc.AutoZero, child)
+	}
+}
+
+// addInlineBoxFragment records one of the inline's own box fragments.
+func (g *PaintLayer) addInlineBoxFragment(frag *layout.Box) {
+	g.inlineBoxFragments = append(g.inlineBoxFragments,
+		geometry.PhysicalRectEnclosingRect(geometry.NewRectF(frag.X, frag.Y, frag.Width, frag.Height)))
+}
+
+// clipPathReferenceBox returns the clip-path reference box: the border box,
+// or an inline's first box fragment (ClipPathClipper's BorderBoxRect,
+// clip_path_clipper.cc:97-107 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
+// empty when it has none).
+func (layer *PaintLayer) clipPathReferenceBox() geometry.RectF {
+	if !layer.isLayoutInline {
+		return geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)
+	}
+	if len(layer.inlineBoxFragments) == 0 {
+		return geometry.RectF{}
+	}
+	return layer.inlineBoxFragments[0].ToRectF()
+}
+
+// linesOrBorderBox returns the layer's box, or for a LayoutInline's layer a
+// copy whose border box is the inline's PhysicalLinesBoundingBox. That is the
+// rect Blink uses for an inline wherever it would use a box's border box:
+// PaintLayer::BackdropFilterReferenceBox (paint_layer.cc:2065-2070),
+// ComputeFilterViewport (:164-168) and CSSMaskPainter::MaskBoundingBox
+// (css_mask_painter.cc:80-92), all @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func (layer *PaintLayer) linesOrBorderBox() *layout.Box {
+	if !layer.isLayoutInline {
+		return layer.Box
+	}
+	b := *layer.Box
+	r := layer.linesBoundingBox.ToRectF()
+	b.X, b.Y, b.Width, b.Height = r.X(), r.Y(), r.Width(), r.Height()
+	return &b
+}
+
+// finalizeInlineLayer sets a LayoutInline layer's linesBoundingBox from its
+// box fragments, then resolves its border radii against it, the rect its
+// contoured backdrop-filter bounds are built from
+// (PaintLayer::BackdropFilterBounds, paint_layer.cc:2072-2078 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). newPaintLayer resolved them
+// against the synthesized box, which has no size.
+func (layer *PaintLayer) finalizeInlineLayer() {
+	if !layer.isLayoutInline {
+		return
+	}
+	for _, f := range layer.inlineBoxFragments {
+		layer.linesBoundingBox = layer.linesBoundingBox.UniteIfNonZero(f)
+	}
+	r := layer.linesBoundingBox.ToRectF()
+	layer.BorderRadius = layer.Box.Style.GetBorderRadiiResolved(r.Width(), r.Height()).
+		ConstrainRadii(r.Width(), r.Height())
+}
+
+// clearGroupEffects drops the effects an inline's own fragment carries in
+// its style (the inline's) and that the inline's layer applies once: the
+// grouping properties of ComputedStyle::HasStackingGroupingProperty that a
+// fragment layer would otherwise apply per line.
+func (layer *PaintLayer) clearGroupEffects() {
+	layer.Opacity = 1.0
+	layer.Filters, layer.HasFilter = nil, false
+	layer.BackdropFilters, layer.HasBackdropFilter = nil, false
+	layer.ClipPath = nil
+	layer.MaskImage, layer.HasMaskImage = "", false
+	layer.BlendMode = css.MixBlendModeNormal
+	layer.IsBackdropRoot = false
 }
 
 // noteCompositingDescendants records the compositing bookkeeping a child layer
@@ -1683,49 +1843,52 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			buildPaintSubtree(child, parentLayer, currentSC, currentBackdropRoot, groups)
 			continue
 		}
-		// CSS Color 3 §3.2: opacity on a non-atomic inline is GROUP opacity
-		// over the whole element. Inline layout stamps every fragment that
-		// must composite inside such a group (the group span's own per-line
-		// background fragments, text runs, atomic inlines, and floats) with
-		// Box.PaintGroup; all of them route into ONE lazily-created layer per
-		// group inline, which applies the alpha once. Mirrors Blink's
+		// A non-atomic inline with a self-painting layer (opacity, filter,
+		// clip-path, relative position, ...) owns every fragment inline
+		// layout stamped with Box.PaintGroup: its per-line box fragments,
+		// text runs, atomic inlines, and floats. All of them route into ONE
+		// lazily-created layer per inline. Mirrors Blink's
 		// LayoutObject::PaintingLayer (layout_object.cc:1218 @ 4883d11f)
 		// resolving every fragment and inline-contained float of the
 		// LayoutInline to the same self-painting PaintLayer.
+		parent, sc, backdropRoot := parentLayer, currentSC, currentBackdropRoot
 		if child.PaintGroup != nil {
-			groupLayer := ensureInlinePaintGroup(child.PaintGroup, box, currentSC, groups)
-			childLayer := newPaintLayer(child)
-			// The group applies the element's alpha once; the element's own
-			// fragments (which carry the same style) must not re-apply it.
-			// A synthetic ::first-line group (LOU-305) has no DOM node and owns
-			// the alpha of ALL its direct members — the band and the first-line
-			// text/atomic fragments each carry the merged ::first-line opacity,
-			// so every one must drop to 1.0 and let the group composite it once.
+			groupLayer := ensureInlinePaintGroup(child.PaintGroup, box, currentSC, currentBackdropRoot, groups)
+			groupSC := groupLayer.inlineMembersSC
+			// The inline's own fragments (its per-line box fragments and text,
+			// which carry its style) paint inside its layer and must not
+			// re-apply the layer's effects: the layer applies them once to the
+			// whole inline. A synthetic ::first-line group (LOU-305) has no DOM
+			// node and owns the alpha of ALL its direct members — the band and
+			// the first-line text/atomic fragments each carry the merged
+			// ::first-line opacity, so every one must drop to 1.0 and let the
+			// group composite it once.
 			ownFragment := child.PaintGroup.Node == nil ||
 				(child.Node != nil && child.Node == child.PaintGroup.Node)
 			if ownFragment {
-				childLayer.Opacity = 1.0
+				childLayer := newPaintLayer(child)
+				childLayer.clearGroupEffects()
+				if groupLayer.isLayoutInline && child.Text == "" {
+					groupLayer.addInlineBoxFragment(child)
+				}
+				childBackdropRoot := noteCompositingDescendants(childLayer, groupSC, groupLayer.inlineMembersBackdropRoot)
+				if isFloat(child) {
+					groupLayer.FloatChildren = append(groupLayer.FloatChildren, childLayer)
+				} else {
+					groupLayer.FlowChildren = append(groupLayer.FlowChildren, childLayer)
+				}
+				buildPaintSubtree(child, childLayer, groupSC, childBackdropRoot, groups)
+				continue
 			}
-			// A member that is itself a genuine stacking context (e.g. an
-			// atomic inline with its own opacity/transform) collects its own
-			// descendants; the group's own fragments do not.
-			memberSC := groupLayer
-			if !ownFragment && child.CreatesStackingContext() {
-				memberSC = childLayer
-			}
-			// A grouped member that blends or samples a backdrop imposes the
-			// same isolation bookkeeping as any other descendant — its
-			// enclosing stacking context is the group layer.
-			childBackdropRoot := noteCompositingDescendants(childLayer, groupLayer, currentBackdropRoot)
-			if isFloat(child) {
-				// CSS 2.1 Appendix E step 4 inside the group: the float
-				// paints below the inline's background and text.
-				groupLayer.FloatChildren = append(groupLayer.FloatChildren, childLayer)
-			} else {
-				groupLayer.FlowChildren = append(groupLayer.FlowChildren, childLayer)
-			}
-			buildPaintSubtree(child, childLayer, memberSC, childBackdropRoot, groups)
-			continue
+			// Any other member (text, atomic inlines, floats, positioned
+			// descendants) is a descendant of the inline's layer: it paints
+			// in the layer's flow, and its stacking or positioned layers join
+			// the layer's z-order lists when the inline is a stacking context,
+			// else those of the enclosing one. Mirrors Blink's
+			// LayoutObject::PaintingLayer (layout_object.cc:1218 @ 4883d11f)
+			// resolving every fragment and inline-contained float of the
+			// LayoutInline to the inline's self-painting PaintLayer.
+			parent, sc, backdropRoot = groupLayer, groupSC, groupLayer.inlineMembersBackdropRoot
 		}
 		// Text fragments (LayoutNode==nil with Text set) carry their parent
 		// element's Style so the renderer can resolve font/color. The
@@ -1734,7 +1897,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// foreground phase, not as an independent float at step 4.
 		if child.LayoutNode == nil && child.Text != "" {
 			childLayer := newPaintLayer(child)
-			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+			parent.FlowChildren = append(parent.FlowChildren, childLayer)
 			continue
 		}
 
@@ -1742,25 +1905,17 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
 
 		// Blend / backdrop-filter isolation bookkeeping (CSS Compositing 1 §8,
-		// CSS Filter Effects 2 §3.5). currentBackdropRoot may be nil for
+		// CSS Filter Effects 2 §3.5). backdropRoot may be nil for
 		// descendants of the implicit root backdrop-root — the canvas IS the
 		// backdrop there, so no extra isolation is needed.
-		childBackdropRoot := noteCompositingDescendants(childLayer, currentSC, currentBackdropRoot)
+		childBackdropRoot := noteCompositingDescendants(childLayer, sc, backdropRoot)
 
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest
 		// ancestor stacking context's z-lists, just like positioned elements
 		// with explicit z-index.
 		if !isPositioned && child.IsFlexItem() && child.Style.HasExplicitZIndex() {
-			z := child.ZIndex
-			switch {
-			case z < 0:
-				currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
-			case z > 0:
-				currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
-			default:
-				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-			}
+			sc.addToZOrderList(childLayer)
 			// New stacking context — descendants collected by childLayer.
 			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 			continue
@@ -1779,27 +1934,27 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				// child paints under it through the clip tree
 				// (enterLocalBorderBoxClip).
 				if isFloat(child) {
-					parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
+					parent.FloatChildren = append(parent.FloatChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else if box.Preserves3D() {
 					// Inside a preserve-3d rendering context: children's visual
 					// order is 3D-sorted, not 2D-stacked. Keep in FlowChildren so
 					// the context root collects the participant for depth sorting
 					// (paintRenderingContext3D).
-					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+					parent.FlowChildren = append(parent.FlowChildren, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				} else {
-					currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+					sc.AutoZero = append(sc.AutoZero, childLayer)
 					buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 				}
 			} else if isFloat(child) {
 				// CSS 2.1 Appendix E step 4: floats paint after non-float block
 				// backgrounds (step 3) so they appear above block backgrounds.
-				parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
+				parent.FloatChildren = append(parent.FloatChildren, childLayer)
+				buildPaintSubtree(child, childLayer, sc, childBackdropRoot, groups)
 			} else {
-				parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-				buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
+				parent.FlowChildren = append(parent.FlowChildren, childLayer)
+				buildPaintSubtree(child, childLayer, sc, childBackdropRoot, groups)
 			}
 			continue
 		}
@@ -1811,15 +1966,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// time from the clip tree (enterLocalBorderBoxClip); it does not
 		// change z-order.
 		if child.CreatesStackingContext() {
-			z := child.ZIndex
-			switch {
-			case z < 0:
-				currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
-			case z > 0:
-				currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
-			default:
-				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-			}
+			sc.addToZOrderList(childLayer)
 			// New stacking context — descendants collected by childLayer.
 			buildPaintSubtree(child, childLayer, childLayer, childBackdropRoot, groups)
 			continue
@@ -1831,8 +1978,8 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 		// stacking context's z-order lists). Overflow clips do not change
 		// paint order: the layer paints under the clips of its
 		// containing-block chain (enterLocalBorderBoxClip). LOU-609, LOU-612.
-		currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-		buildPaintSubtree(child, childLayer, currentSC, childBackdropRoot, groups)
+		sc.AutoZero = append(sc.AutoZero, childLayer)
+		buildPaintSubtree(child, childLayer, sc, childBackdropRoot, groups)
 	}
 }
 
@@ -2154,8 +2301,22 @@ func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
 // 2172-2179 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the layer box's visual
 // overflow rect. louis14 works in absolute coordinates, without the layer's own
 // transform.
+//
+// A LayoutInline's VisualOverflowRect is LinesVisualOverflowBoundingBox
+// (layout_inline.cc:675-708 @ a9f50e52): the inline's fragments and their
+// contents. In louis14 those hang under the inline's layer as its
+// non-self-painting children.
 func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
-	return visualOverflowRect(layer.Box, selfPainting)
+	if !layer.isLayoutInline {
+		return visualOverflowRect(layer.Box, selfPainting)
+	}
+	rect := layer.linesBoundingBox
+	layer.forEachChild(func(c *PaintLayer, childSelfPainting bool) {
+		if !childSelfPainting && c.Box != nil {
+			rect = rect.Unite(visualOverflowRect(c.Box, selfPainting))
+		}
+	})
+	return rect
 }
 
 // visualOverflowRect stands in for LayoutBox::VisualOverflowRect

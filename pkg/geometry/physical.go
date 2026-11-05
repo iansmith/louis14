@@ -104,6 +104,13 @@ func (s PhysicalSize) IsEmpty() bool {
 	return s.Width.IsZero() || s.Height.IsZero()
 }
 
+// IsZero reports whether both dimensions are zero. Mirrors
+// PhysicalSize::IsZero (platform/geometry/physical_size.h:68 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s PhysicalSize) IsZero() bool {
+	return s.Width.IsZero() && s.Height.IsZero()
+}
+
 // AspectRatioFit selects how FitToAspectRatio resolves the constrained axis.
 // Mirrors Blink's AspectRatioFit (platform/geometry/physical_size.h:15 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
@@ -187,6 +194,21 @@ func (r PhysicalRect) Unite(other PhysicalRect) PhysicalRect {
 		return r
 	}
 	if r.IsEmpty() {
+		return other
+	}
+	return r.UniteEvenIfEmpty(other)
+}
+
+// UniteIfNonZero returns the smallest rect containing both r and other,
+// ignoring one whose size is zero in both dimensions (a zero-width rect with
+// height still counts). Mirrors Blink's PhysicalRect::UniteIfNonZero
+// (core/layout/geometry/physical_rect.cc:70-79 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r PhysicalRect) UniteIfNonZero(other PhysicalRect) PhysicalRect {
+	if other.Size.IsZero() {
+		return r
+	}
+	if r.Size.IsZero() {
 		return other
 	}
 	return r.UniteEvenIfEmpty(other)
