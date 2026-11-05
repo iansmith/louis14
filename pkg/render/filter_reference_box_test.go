@@ -108,3 +108,55 @@ func TestShorthandFilter_NotCroppedToReferenceBox(t *testing.T) {
 	sampleColorClose(t, img, 50, 20, 26, 26, 26, 1, "child's left border")
 	sampleColorClose(t, img, 99, 20, 26, 26, 26, 1, "child's right border")
 }
+
+// TestShorthandFilter_OffscreenDescendant — a skip link far off-screen inside a
+// filtered box must not switch the filter off or size the buffer to it: Skia
+// clips a layer's bounds to the device clip (get_layer_mapping_and_bounds,
+// src/core/SkCanvas.cpp:570-600 @ d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func TestShorthandFilter_OffscreenDescendant(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
+		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
+		`</div></body></html>`
+	img := renderToImage(t, page, 300, 300)
+	// grayscale(1) of red: 0.2126 * 255.
+	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
+}
+
+// TestMixedFilterChain_ReferenceStageCropped — in `url(#off) grayscale(1)` the
+// reference stage's output is cropped to its SVG filter region before the
+// next stage, as it is when the url() stands alone
+// (FilterEffectBuilder::BuildReferenceFilter, core/paint/filter_effect_builder.cc:
+// 534-550; FilterEffect::GetCropRect, platform/graphics/filters/
+// filter_effect.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestMixedFilterChain_ReferenceStageCropped(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="0" height="0" style="position:absolute"><defs>` +
+		`<filter id="off" x="0" y="0" width="1" height="1"><feOffset dx="50" dy="0"/></filter>` +
+		`</defs></svg>` +
+		`<div style="width:100px;height:100px;background:rgb(255,0,0);filter:url(#off) grayscale(1)"></div>` +
+		`</body></html>`
+	img := renderToImage(t, page, 300, 200)
+	sampleColorClose(t, img, 75, 50, 54, 54, 54, 2, "offset content inside the region")
+	sampleColorClose(t, img, 125, 50, 255, 255, 255, 0, "offset content past the region is cropped")
+}
+
+// TestShorthandFilter_TransformedEdgeRowSurvives — a scaled and a rotated
+// filtered box keep their border-box edge rows: the buffer covers the paint
+// extent mapped into the filter layer.
+func TestShorthandFilter_TransformedEdgeRowSurvives(t *testing.T) {
+	const scaled = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:absolute;left:50px;top:50px;width:100px;height:100px;background:rgb(255,0,0);` +
+		`transform:scale(1.5);transform-origin:0 0;filter:grayscale(1)"></div></body></html>`
+	img := renderToImage(t, scaled, 300, 300)
+	for _, p := range [][2]int{{50, 50}, {199, 50}, {50, 199}, {199, 199}} {
+		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "scaled box edge")
+	}
+	const rotated = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:absolute;left:100px;top:100px;width:100px;height:100px;background:rgb(255,0,0);` +
+		`transform:rotate(90deg);filter:grayscale(1)"></div></body></html>`
+	img = renderToImage(t, rotated, 300, 300)
+	for _, p := range [][2]int{{100, 100}, {199, 100}, {100, 199}, {199, 199}} {
+		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "rotated box edge")
+	}
+}
