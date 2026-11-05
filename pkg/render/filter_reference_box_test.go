@@ -123,24 +123,6 @@ func TestShorthandFilter_OffscreenDescendant(t *testing.T) {
 	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
 }
 
-// TestMixedFilterChain_ReferenceStageCropped — in `url(#off) grayscale(1)` the
-// reference stage's output is cropped to its SVG filter region before the
-// next stage, as it is when the url() stands alone
-// (FilterEffectBuilder::BuildReferenceFilter, core/paint/filter_effect_builder.cc:
-// 534-550; FilterEffect::GetCropRect, platform/graphics/filters/
-// filter_effect.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func TestMixedFilterChain_ReferenceStageCropped(t *testing.T) {
-	const page = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="0" height="0" style="position:absolute"><defs>` +
-		`<filter id="off" x="0" y="0" width="1" height="1"><feOffset dx="50" dy="0"/></filter>` +
-		`</defs></svg>` +
-		`<div style="width:100px;height:100px;background:rgb(255,0,0);filter:url(#off) grayscale(1)"></div>` +
-		`</body></html>`
-	img := renderToImage(t, page, 300, 200)
-	sampleColorClose(t, img, 75, 50, 54, 54, 54, 2, "offset content inside the region")
-	sampleColorClose(t, img, 125, 50, 255, 255, 255, 0, "offset content past the region is cropped")
-}
-
 // TestShorthandFilter_TransformedEdgeRowSurvives — a scaled and a rotated
 // filtered box keep their border-box edge rows: the buffer covers the paint
 // extent mapped into the filter layer.
@@ -159,21 +141,6 @@ func TestShorthandFilter_TransformedEdgeRowSurvives(t *testing.T) {
 	for _, p := range [][2]int{{100, 100}, {199, 100}, {100, 199}, {199, 199}} {
 		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "rotated box edge")
 	}
-}
-
-// TestShorthandFilter_ClipReachThroughCroppedStage — the buffer's clip is grown
-// by how far the filter reads, measured without the url() stage's crop: here
-// the feOffset reads 50px left of the viewport, and the box's left part, off
-// screen, must still feed the visible strip.
-func TestShorthandFilter_ClipReachThroughCroppedStage(t *testing.T) {
-	const page = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="0" height="0" style="position:absolute"><defs>` +
-		`<filter id="off" x="0" y="0" width="1" height="1"><feOffset dx="50" dy="0"/></filter>` +
-		`</defs></svg>` +
-		`<div style="position:relative;left:-60px;width:100px;height:100px;background:rgb(255,0,0);filter:url(#off) grayscale(1)"></div>` +
-		`</body></html>`
-	img := renderToImage(t, page, 300, 200)
-	sampleColorClose(t, img, 20, 50, 54, 54, 54, 2, "offset content from off screen")
 }
 
 // TestShorthandFilter_ProjectiveAncestorSkipLink — under a perspective

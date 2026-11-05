@@ -455,9 +455,9 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if graph == nil {
 		return false
 	}
-	// A shorthand chain has no region; this path keeps the region it had
-	// before, under the 4000px cap below (filters.Filter.EnsureMappedRegion).
-	region := graph.EnsureMappedRegion(referenceBox)
+	// A shorthand-only chain has no region; this path keeps the reference
+	// box mapped through the chain, under the 4000px cap below.
+	region := graph.EnsureRegion(referenceBox, false)
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return false

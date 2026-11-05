@@ -105,11 +105,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		if op.Name == "url" {
 			sub := b.buildReferenceFilterWithSource(op.URL.Absolute, prev)
 			if sub != nil && sub.LastEffect != nil {
-				// The stage's output is cropped to its SVG region, as when the
-				// url() stands alone (BuildReferenceFilter,
-				// core/paint/filter_effect_builder.cc:534-550 @
-				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-				prev = filters.NewSubregionClippedEffect(sub.LastEffect, sub.FilterRegion)
+				prev = sub.LastEffect
 			}
 			// An unresolvable url() (missing fragment, cycle, fetch
 			// fail) drops the entry per Filter Effects 1 §3.1 — the
@@ -125,14 +121,30 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		return nil
 	}
 
-	// No FilterRegion: a shorthand chain has no bounds; the caller sizes the
-	// buffer (filters.Filter.EnsureRegion).
-	return &filters.Filter{
+	f := &filters.Filter{
 		ReferenceBox: b.ReferenceBox,
 		Source:       src,
 		SourceAlpha:  srcAlpha,
 		LastEffect:   prev,
 	}
+	// A shorthand-only chain has no region; the caller sizes its buffer
+	// (filters.Filter.EnsureRegion). A chain with a url() stage keeps the
+	// region it has had: the reference box mapped through the chain, with no
+	// per-stage crop (LOU-704 ports the exact sizing).
+	if hasReferenceFilter(ops) {
+		f.FilterRegion = f.MapRect(b.ReferenceBox)
+	}
+	return f
+}
+
+// hasReferenceFilter reports whether a filter list has a url() stage.
+func hasReferenceFilter(ops []css.FilterFunction) bool {
+	for _, op := range ops {
+		if op.Name == "url" {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildReferenceFilter resolves a `filter: url(#id)` reference

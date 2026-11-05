@@ -371,7 +371,14 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		// "Filter primitive subregion".
 		if prim.TagName() != "feflood" && prim.TagName() != "feimage" {
 			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
-				eff = NewSubregionClippedEffect(eff, sub)
+				wrapped := NewSubregionClippedEffect(eff, sub)
+				// Subregion wrapper carries the same tainted bit
+				// as the wrapped effect (it's a thin per-pixel
+				// clip; the underlying tainting is unchanged).
+				if eff.OriginTainted() {
+					wrapped.SetOriginTainted()
+				}
+				eff = wrapped
 			}
 		}
 		// `result="…"` registers the named output.
@@ -415,9 +422,11 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		if sub.Empty() {
 			// No explicit primitive subregion: feFlood covers the full
 			// filter region per SVG Filter Effects 1 §15.5. Default
-			// Subregion to the filter region so FEFlood.MapRect sees the
-			// full flood area — otherwise a flood mapped from a smaller
-			// source extent misses pixels the filter region extends into.
+			// Subregion to the filter region so FEFlood.MapRect and
+			// paintLayerWithFilter's filter.MapRect(sourceExtent) call
+			// see the full flood area — otherwise a flood applied to a
+			// CSS-filtered HTML element clips to the smaller source
+			// extent and misses pixels the filter region extends into.
 			// Mirrors Blink FEFlood which fills filter_region when no
 			// primitive subregion is set.
 			sub = elt.FilterRegion()

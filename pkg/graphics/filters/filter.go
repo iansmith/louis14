@@ -25,28 +25,24 @@ type Filter struct {
 	LastEffect FilterEffect
 }
 
-// EnsureRegion sets an unset FilterRegion to the buffer a filter with no
-// region of its own needs, and returns the region. A CSS shorthand chain is a
+// EnsureRegion sets an unset FilterRegion from extent, the content's paint
+// extent, and returns the region; a region already set (an SVG filter's, or
+// a chain with a url() stage) is kept.
+//
+// withSource selects the buffer of a CSS shorthand chain, which is a
 // SaveLayerOp with no bounds (ConversionContext::StartEffect,
 // platform/graphics/compositing/paint_chunks_to_cc_layer.cc:737-743 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): its buffer holds the source,
-// extent, and everything the chain draws from it, MapRect(extent). A reference
-// filter's region is its SVG region and is kept.
-func (f *Filter) EnsureRegion(extent image.Rectangle) image.Rectangle {
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the source, extent, and
+// everything the chain draws from it, MapRect(extent). Without it the region
+// is MapRect(extent), the earlier size, for callers that cannot bound the
+// larger buffer (no device clip to clip it to, an SVG shape's chain under its
+// size cap, a reference filter with an empty SVG region).
+func (f *Filter) EnsureRegion(extent image.Rectangle, withSource bool) image.Rectangle {
 	if f.FilterRegion.Empty() {
-		f.FilterRegion = extent.Union(f.MapRect(extent))
-	}
-	return f.FilterRegion
-}
-
-// EnsureMappedRegion sets an unset FilterRegion to ref mapped through the
-// chain, without the source extent: the size an unset region had before
-// EnsureRegion. Callers that cannot bound a larger buffer keep it (an SVG
-// shape's chain under its 4000px cap; a filter layer under a projective
-// ancestor, whose device clip cannot be mapped into the layer).
-func (f *Filter) EnsureMappedRegion(ref image.Rectangle) image.Rectangle {
-	if f.FilterRegion.Empty() {
-		f.FilterRegion = f.MapRect(ref)
+		f.FilterRegion = f.MapRect(extent)
+		if withSource {
+			f.FilterRegion = f.FilterRegion.Union(extent)
+		}
 	}
 	return f.FilterRegion
 }

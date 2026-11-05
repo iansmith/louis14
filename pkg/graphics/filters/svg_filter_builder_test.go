@@ -206,15 +206,3 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
 	}
 }
-
-// TestSubregionClippedEffect_KeepsOriginTainted — a crop around a tainted
-// effect is tainted too, so feDisplacementMap still refuses its pixels
-// (fe_displacement_map.cc CreateImageFilter's OriginTainted check @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func TestSubregionClippedEffect_KeepsOriginTainted(t *testing.T) {
-	inner := NewSourceGraphic(InterpolationSpaceSRGB)
-	inner.SetOriginTainted()
-	if !NewSubregionClippedEffect(inner, image.Rect(0, 0, 10, 10)).OriginTainted() {
-		t.Error("the crop dropped the tainted bit")
-	}
-}

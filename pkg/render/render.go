@@ -1341,24 +1341,26 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		builder.Mapping = mapping
 		filter = builder.BuildFilterEffect(layer.Filters)
 	}
-	// The buffer: a reference filter's SVG region, which crops its output
-	// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
-	// filter_effect_builder.cc:534-550 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); otherwise the content's paint
-	// extent and what the chain draws from it (filters.Filter.EnsureRegion).
-	// It is clipped to the device clip, as Skia clips a layer's bounds
-	// (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600 @ skia
-	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
-	if dmKnown {
-		filter.EnsureRegion(paintExtent)
+	// The buffer. A reference filter keeps its SVG region and a chain with a
+	// url() stage the region its builder gave it; an empty SVG region falls
+	// back to the source extent mapped through the filter, as before (exact
+	// sizing for these is LOU-704). A shorthand-only chain is not cropped
+	// (filters.Filter.EnsureRegion): its buffer holds the content and what
+	// the chain draws from it, clipped to the device clip as Skia clips a
+	// layer's bounds (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:
+	// 570-600 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) and grown by
+	// the filter's reach (filterLayerClip). Without a clip (a projective ancestor, or the
+	// layer's own perspective) the chain keeps the region it had before.
+	switch {
+	case hasReferenceFilter(layer.Filters):
+		filter.EnsureRegion(builder.ReferenceBox.Union(paintExtent), false)
+	case dmKnown:
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
+			filter.EnsureRegion(paintExtent, true)
 			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
 		}
-	} else {
-		// A projective ancestor: LayerToDev ends in draw-context space, so
-		// the device clip cannot bound the buffer.
-		filter.EnsureMappedRegion(builder.ReferenceBox)
 	}
+	filter.EnsureRegion(builder.ReferenceBox, false)
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
@@ -1429,7 +1431,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 // required input (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600
 // @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). louis14 has no reverse
 // MapRect (LOU-704), so the reach is the forward MapRect's largest outset per
-// axis, which ignores crops (a cropped stage still reads outside the clip).
+// axis; it serves shorthand-only chains, whose primitives all report their
+// reach that way.
 func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mapping) (image.Rectangle, bool) {
 	c := r.dc.ClipBounds()
 	var inv geometry.Transform

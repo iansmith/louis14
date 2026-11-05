@@ -3,15 +3,15 @@ package filters
 import "image"
 
 // subregionClippedEffect wraps another FilterEffect and clips its
-// output to a primitive subregion rect. Mirrors Blink's
+// output (and inputs) to a primitive subregion rect. Mirrors Blink's
 // FilterEffect::subregion_ + the Skia clip applied around each
-// primitive's evaluation in fe_*.cc.
+// primitive's evaluation in fe_*.cc — the primitive subregion both
+// clips the output and is used to compute the primitive's evaluation
+// rect.
 //
 // The wrapped effect is evaluated normally, and the result image is
 // then masked: pixels OUTSIDE the subregion are zeroed. This is
-// equivalent to running the primitive through a Skia clipRect. MapRect
-// passes the rect through: the reach a buffer is sized by must not
-// shrink to the crop (LOU-704 ports the reverse mapping).
+// equivalent to running the primitive through a Skia clipRect.
 type subregionClippedEffect struct {
 	baseEffect
 	inner     FilterEffect
@@ -24,7 +24,7 @@ func NewSubregionClippedEffect(inner FilterEffect, subregion image.Rectangle) Fi
 	if inner == nil || subregion.Empty() {
 		return inner
 	}
-	e := &subregionClippedEffect{
+	return &subregionClippedEffect{
 		baseEffect: baseEffect{
 			inputs: []FilterEffect{inner},
 			space:  inner.OperatingSpace(),
@@ -32,12 +32,6 @@ func NewSubregionClippedEffect(inner FilterEffect, subregion image.Rectangle) Fi
 		inner:     inner,
 		subregion: subregion,
 	}
-	// The crop is a thin per-pixel clip; the output is as tainted as the
-	// input, so feDisplacementMap still refuses it.
-	if inner.OriginTainted() {
-		e.SetOriginTainted()
-	}
-	return e
 }
 
 // ApplyEffect copies inner's output into a fresh buffer with
