@@ -3273,7 +3273,7 @@ func isSupportedDeclaration(property, value string) bool {
 	// For properties with limited keyword grammars, validate the value.
 	switch property {
 	case "display":
-		return isValidDisplayValue(value)
+		return IsValidDisplayValue(value)
 	case "position":
 		validPosition := map[string]bool{
 			"static": true, "relative": true, "absolute": true,
@@ -5088,7 +5088,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 
 		// display (Display::ParseSingleValue, longhands_custom.cc:3851 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if property == "display" && !isValidDisplayValue(value) {
+		if property == "display" && !IsValidDisplayValue(value) {
 			continue
 		}
 

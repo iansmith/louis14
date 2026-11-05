@@ -609,7 +609,7 @@ var (
 	}
 )
 
-// isValidDisplayValue validates a display declaration — Display::
+// IsValidDisplayValue validates a display declaration — Display::
 // ParseSingleValue (longhands_custom.cc:3851-3876): one keyword from the
 // list-item / box / internal / legacy / inside / outside classes, or two or
 // three keywords that ValidateDisplayKeywords (:3726-3748) splits into at
@@ -619,7 +619,7 @@ var (
 // ruby-base / ruby-base-container / ruby-text-container among them — drops
 // the declaration. The layout() functions need CSSLayoutAPI, which louis14
 // does not support. CSS-wide keywords and var()/attr() are accepted as-is.
-func isValidDisplayValue(value string) bool {
+func IsValidDisplayValue(value string) bool {
 	if _, wide := cssWideKeyword(value); wide {
 		return true
 	}
