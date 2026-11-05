@@ -1494,13 +1494,6 @@ func homographyTransform(m geometry.Transform) geometry.Transform {
 		h[6], h[7], 0, h[8])
 }
 
-// cssClipApplied reports whether layer's CSS clip node is applied on the
-// draw context, or the clip tree has no node for it.
-func (r *Renderer) cssClipApplied(layer *PaintLayer) bool {
-	node := r.clipTree.ownClipNode(layer, clipNodeCssClip)
-	return node == nil || node.applied > 0
-}
-
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
@@ -3676,20 +3669,6 @@ func (r *Renderer) paintImageIntoRect(layer *PaintLayer, img image.Image, destRe
 			int(math.Floor(float64(drawRect.Min.Y-d.Min.Y)*sy)),
 			int(math.Ceil(float64(drawRect.Max.X-d.Min.X)*sx)),
 			int(math.Ceil(float64(drawRect.Max.Y-d.Min.Y)*sy))).Intersect(clamp)
-	}
-	// The layer's CSS clip, cropped by hand: mazzy's affine DrawImage path
-	// ignores the clip rect without a clip mask. The crop follows the clip
-	// stack: it is skipped while the clip is not applied, as when the image
-	// is a filter's source and the clip is the filter's output clip.
-	if layer.HasCSSClip && r.cssClipApplied(layer) {
-		// CSSClipRect is [x, y, w, h] in absolute coordinates.
-		cx := int(math.Round(layer.CSSClipRect[0]))
-		cy := int(math.Round(layer.CSSClipRect[1]))
-		drawRect = drawRect.Intersect(image.Rect(cx, cy,
-			cx+int(math.Round(layer.CSSClipRect[2])), cy+int(math.Round(layer.CSSClipRect[3]))))
-		if drawRect.Empty() {
-			return
-		}
 	}
 	scaled := scaleImageClamped(img, srcW, srcH, pixelSnappedDestRect.Dx(), pixelSnappedDestRect.Dy(), layer.ImageRendering, clamp)
 	finalImg := scaled.(interface {
