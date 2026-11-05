@@ -178,6 +178,18 @@ class Plan(unittest.TestCase):
         actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/", [])
         self.assertIn(("dangling", C3 + "/css-a/t.html", "pkg/visualtest/testdata/images/x.png"), log)
 
+    def test_ignored_targets_are_not_fetched(self):
+        # The corpus fonts are gitignored and installed out of band; a fetch
+        # there could never be committed.
+        with open(os.path.join(self.repo, ".gitignore"), "w") as f:
+            f.write("fonts/\n")
+        self.set_upstream({"css/css-a/t.html": b'<link rel=stylesheet href="/fonts/x.css">',
+                           "fonts/x.css": b"X"})
+        self.put(C3 + "/css-a/t.html", b'<link rel=stylesheet href="/fonts/x.css">')
+        actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/", [])
+        self.assertEqual(actions, [])
+        self.assertIn(("ignored", C3 + "/fonts/x.css", "fonts/x.css"), log)
+
     def test_identical_files_walk_without_a_mapping(self):
         # plan() audits the tree itself, so dependencies of identical files
         # are fetched even though a committed mapping leaves those rows out.
