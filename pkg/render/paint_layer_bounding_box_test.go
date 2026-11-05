@@ -79,3 +79,30 @@ func TestBoxPaintBounds_MemberExcludesMemberChildren(t *testing.T) {
 		t.Errorf("member bounds = %v, want %v", got, want)
 	}
 }
+
+// TestLocalBoundingBox_OverflowClipMargin — an overflow:clip box with
+// overflow-clip-margin keeps the content inside the margin in its visual
+// overflow: the clip edge is the border box expanded by
+// BorderOutsetsForClipping (LayoutBox::VisualOverflowRect,
+// core/layout/layout_box.cc:3702-3716, 3668-3688 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The clip box has no padding, so the
+// padding-box margin edge is 20px outside the border box.
+func TestLocalBoundingBox_OverflowClipMargin(t *testing.T) {
+	const page = `<!DOCTYPE html><body style="margin:0">` +
+		`<div id="f" style="position:absolute;left:100px;top:100px;filter:blur(0)">` +
+		`<div style="overflow:clip;overflow-clip-margin:20px;width:100px;height:100px">` +
+		`<div style="margin-left:-50px;width:200px;height:150px"></div></div></div>`
+	if got, want := boundingBoxOf(t, page, "f"), image.Rect(80, 100, 220, 220); got != want {
+		t.Errorf("bounding box = %v, want %v", got, want)
+	}
+}
+
+// TestBoxPaintBounds_NoBox — a layer with no box has empty bounds.
+func TestBoxPaintBounds_NoBox(t *testing.T) {
+	r := NewRendererForImage(image.NewRGBA(image.Rect(0, 0, 10, 10)))
+	for _, member := range []bool{false, true} {
+		if got := r.boxPaintBounds(&PaintLayer{}, member); !got.IsEmpty() {
+			t.Errorf("member=%v: bounds = %v, want empty", member, got)
+		}
+	}
+}
