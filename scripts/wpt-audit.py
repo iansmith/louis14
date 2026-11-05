@@ -59,7 +59,8 @@ import sys
 import urllib.error
 import urllib.request
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The repo root: WPT_AUDIT_REPO, else the checkout this script lives in.
+REPO = os.environ.get("WPT_AUDIT_REPO") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTDATA = "pkg/visualtest/testdata"
 GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
 # Top-level wpt directories the corpus draws from.
