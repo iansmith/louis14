@@ -79,6 +79,10 @@ GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
 # Top-level wpt directories a suite serves at its own root ("/" mount).
 TOP_LEVEL = {"common", "fonts", "resources", "images", "media"}
 UPSTREAM_DIRS = ["css"] + sorted(TOP_LEVEL)
+# Hosts the harness serves locally (stripWPTHost with DefaultWPTServerConfig,
+# pkg/visualtest/wpt_sub.go).
+WPT_HOSTS = {"web-platform.test", "www.web-platform.test",
+             "not-web-platform.test", "www.not-web-platform.test"}
 # The harness mount table (wptMountPoints), most specific first: URL prefix
 # served from the suite's doc root.
 MOUNTS = ("/css/", "/")
@@ -129,10 +133,14 @@ def local_path(up, root):
 def harness_resolve(local_file, ref):
     """The corpus path the harness reads for ref in local_file, or None for a
     URL that names no corpus file. Mirrors wptResourceResolver.filesystemPath:
-    query and fragment dropped, root-relative paths cleaned and served from the
-    suite doc root through MOUNTS, other absolute URLs refused, relative ones
-    joined onto the document's directory."""
+    query and fragment dropped, a URL on a WPT host reduced to its path
+    (stripWPTHost), root-relative paths cleaned and served from the suite doc
+    root through MOUNTS, other absolute URLs refused, relative ones joined onto
+    the document's directory."""
     ref = re.split(r"[?#]", ref.strip(), maxsplit=1)[0]
+    host = re.match(r"^(?:https?:)?//([^/:]*)(?::\d+)?(/.*)?$", ref)
+    if host and host.group(1) in WPT_HOSTS:
+        ref = host.group(2) or "/"
     if not ref or ref.startswith("//") or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", ref):
         return None
     if ref.startswith("/"):
@@ -371,7 +379,8 @@ def plan(sha, out_tsv, prefix, excludes):
     # Every corpus file some local file loads, once the restores above are
     # in, stays where it is.
     loaded = set()
-    for local in corpus_text_files(SUITES):
+    relocating = any(r[1] in ("relocated", "relocated-differs") for r in rows)
+    for local in corpus_text_files(SUITES) if relocating else ():
         loaded |= file_loads(local, restored.get(local) or read_bytes(local))
     for local, status, up, _, ublob in rows:
         if status in ("identical", "differs"):
