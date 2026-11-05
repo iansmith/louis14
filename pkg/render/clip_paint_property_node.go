@@ -157,14 +157,6 @@ func (r *Renderer) pushClipNode(layer *PaintLayer, kind clipNodeKind) {
 	r.pushClip(layer, kind, r.clipTree.ownClipNode(layer, kind))
 }
 
-// pushAppliedClip records node as applied without applying it: its clip is
-// applied elsewhere (a filter's output clip). Pair with popClipNode.
-func (r *Renderer) pushAppliedClip(node *ClipPaintPropertyNode) {
-	r.dc.Push()
-	r.clipStack = append(r.clipStack, node)
-	node.applied++
-}
-
 // needsPixelMovingFilterClipExpander mirrors
 // EffectPaintPropertyNode::NeedsPixelMovingFilterClipExpander: a layer whose
 // filter moves pixels. The clip tree and paint share it, so every expander
@@ -184,7 +176,7 @@ func (r *Renderer) pushPixelMovingFilterClipExpander(layer *PaintLayer) bool {
 	if node == nil {
 		return false
 	}
-	r.pushAppliedClip(node)
+	r.pushClip(layer, clipNodePixelMovingFilterClipExpander, node)
 	return true
 }
 
