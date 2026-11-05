@@ -1289,10 +1289,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		ctm = dm.Mul(own)
 	}
 
-	// Build the filter graph. The builder computes the filter region by
-	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
-	// Phase 7: SVG `<filter>` resource registry is supplied so
-	// `filter: url(#id)` references resolve via BuildReferenceFilter.
+	// Build the filter graph; SVG `filter: url(#id)` references resolve
+	// through the renderer's resource registry (BuildReferenceFilter).
 	builder := r.newFilterEffectBuilder(layer)
 	// The reference box: the border box, or, for a filter that moves pixels,
 	// the bounding box of the layer and its self-painting descendants
@@ -1347,9 +1345,18 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
 	// filter_effect_builder.cc:534-550 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); otherwise the content's paint
-	// extent mapped through the chain, since a shorthand chain is not cropped.
-	if filter.FilterRegion.Empty() {
-		filter.FilterRegion = filter.MapRect(paintExtent)
+	// extent and what the chain draws from it (EnsureRegion). Either way it is
+	// clipped to the device clip, as Skia clips a layer's bounds
+	// (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600 @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+	filter.EnsureRegion(paintExtent)
+	// Without the draw context's matrix, LayerToDev ends in draw-context
+	// space, not device space, so the device clip cannot be mapped into the
+	// layer; the region is then left unclipped.
+	if dmKnown {
+		if clip, ok := r.filterLayerClip(filter, mapping); ok {
+			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
+		}
 	}
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
@@ -1412,6 +1419,30 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	r.multiplyHomography(projectiveHomography(onDC))
 	r.dc.DrawImage(out, bx, by)
 	r.dc.Pop()
+}
+
+// filterLayerClip returns the draw context's clip in the filter layer's pixels,
+// grown by the filter's reach so pixels just outside it still feed the
+// filtered pixels inside: the layer bounds Skia keeps, the device clip mapped
+// into the layer (fLayerToDevMatrix inverse) and expanded by the filter's
+// required input (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600
+// @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). louis14 has no reverse
+// MapRect, so the reach is the forward MapRect's largest outset per axis.
+func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mapping) (image.Rectangle, bool) {
+	c := r.dc.ClipBounds()
+	var inv geometry.Transform
+	if !mapping.LayerToDev.GetInverse(&inv) {
+		return image.Rectangle{}, false
+	}
+	layerClip, ok := mapRectToLayer(inv, rectFFromInts(c.Min.X, c.Min.Y, c.Dx(), c.Dy()))
+	if !ok {
+		return image.Rectangle{}, false
+	}
+	clip := snapRectFToDevice(layerClip)
+	m := filter.MapRect(clip)
+	padX := max(clip.Min.X-m.Min.X, m.Max.X-clip.Max.X, 0)
+	padY := max(clip.Min.Y-m.Min.Y, m.Max.Y-clip.Max.Y, 0)
+	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true
 }
 
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,

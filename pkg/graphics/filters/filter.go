@@ -25,6 +25,20 @@ type Filter struct {
 	LastEffect FilterEffect
 }
 
+// EnsureRegion sets an unset FilterRegion to the buffer a filter with no
+// region of its own needs, and returns the region. A CSS shorthand chain is a
+// SaveLayerOp with no bounds (ConversionContext::StartEffect,
+// platform/graphics/compositing/paint_chunks_to_cc_layer.cc:737-743 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): its buffer holds the source,
+// extent, and everything the chain draws from it, MapRect(extent). A reference
+// filter's region is its SVG region and is kept.
+func (f *Filter) EnsureRegion(extent image.Rectangle) image.Rectangle {
+	if f.FilterRegion.Empty() {
+		f.FilterRegion = extent.Union(f.MapRect(extent))
+	}
+	return f.FilterRegion
+}
+
 // SetSourceImage installs the rendered element buffer as the SourceGraphic's
 // output. img must be sized to FilterRegion.
 func (f *Filter) SetSourceImage(img *image.RGBA) {

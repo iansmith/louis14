@@ -34,6 +34,13 @@ func NewSubregionClippedEffect(inner FilterEffect, subregion image.Rectangle) Fi
 	}
 }
 
+// MapRect clips the inner rect to the subregion, as FilterEffect::ApplyBounds
+// does (platform/graphics/filters/filter_effect.cc:73-81 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (e *subregionClippedEffect) MapRect(r image.Rectangle) image.Rectangle {
+	return r.Intersect(e.subregion)
+}
+
 // ApplyEffect copies inner's output into a fresh buffer with
 // everything outside the subregion zeroed.
 func (e *subregionClippedEffect) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {

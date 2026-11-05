@@ -105,7 +105,11 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		if op.Name == "url" {
 			sub := b.buildReferenceFilterWithSource(op.URL.Absolute, prev)
 			if sub != nil && sub.LastEffect != nil {
-				prev = sub.LastEffect
+				// The stage's output is cropped to its SVG region, as when the
+				// url() stands alone (BuildReferenceFilter,
+				// core/paint/filter_effect_builder.cc:534-550 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				prev = filters.NewSubregionClippedEffect(sub.LastEffect, sub.FilterRegion)
 			}
 			// An unresolvable url() (missing fragment, cycle, fetch
 			// fail) drops the entry per Filter Effects 1 §3.1 — the
