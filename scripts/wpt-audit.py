@@ -31,8 +31,9 @@ Usage:
   scripts/wpt-audit.py <wpt-sha> <out.tsv>
       audit: write the mapping.
   scripts/wpt-audit.py <wpt-sha> <out.tsv> --apply <local-prefix> [<exclude>...]
-      for the rows of an existing mapping under <local-prefix> (a path under
-      pkg/visualtest/testdata), skipping local paths containing any <exclude>:
+      audit the tree afresh (writing the full mapping to out.tsv), then for
+      the rows under <local-prefix> (a path under pkg/visualtest/testdata),
+      skipping local paths containing any <exclude>:
         differs            overwrite with the upstream bytes
         relocated          git mv to the upstream location, or git rm when an
                            identical copy is already there
@@ -43,7 +44,10 @@ Usage:
       or removed; it is copied to the upstream location instead. Then every
       file the written and identical files load is fetched when it exists
       upstream but not locally, transitively. All downloads and hash checks
-      happen before anything is changed. Prints one line per action.
+      happen before anything is changed, and every path touched is staged.
+      Loads that resolve outside both suites are reported as "dangling", and
+      missing files at gitignored paths (the corpus fonts) as "ignored".
+      Prints one line per action.
   scripts/wpt-audit.py --missing-refs <dir>...
       list reftests whose <link rel=match|mismatch> target is missing.
 
@@ -60,6 +64,7 @@ upstream blob hash before being written.
 
 import collections
 import hashlib
+import html.parser
 import json
 import os
 import posixpath
@@ -98,12 +103,19 @@ def read_bytes(local):
         return f.read()
 
 
-def suite_root(local):
-    """The suite doc root (findWPTRoot) a corpus path is under."""
+def suite_of(local):
+    """The suite doc root (findWPTRoot) a corpus path is under, or None."""
     for root in SUITES:
         if local == root or local.startswith(root + "/"):
             return root
-    raise ValueError("not a corpus path: " + local)
+    return None
+
+
+def suite_root(local):
+    root = suite_of(local)
+    if root is None:
+        raise ValueError("not a corpus path: " + local)
+    return root
 
 
 def upstream_path(local):
@@ -152,28 +164,82 @@ def harness_resolve(local_file, ref):
     return posixpath.normpath(posixpath.join(posixpath.dirname(local_file), ref))
 
 
-TEXT_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg", ".css", ".js", ".xml")
-LOAD_RE = re.compile(
-    rb"""(?:href|src)\s*=\s*["']([^"']*)["']"""
-    rb"""|url\(\s*["']?([^"')]*)["']?\s*\)"""
-    rb"""|@import\s+["']([^"']*)["']""", re.I)
+DOC_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg")
+TEXT_EXT = DOC_EXT + (".css", ".js", ".xml")
+CSS_URL_RE = re.compile(
+    r"""url\(\s*["']?([^"')]*?)["']?\s*\)|@import\s+["']([^"']*)["']""", re.I)
+# Elements whose href fetches a resource (an <a> href is a navigation).
+HREF_LOAD_TAGS = {"link", "use", "image", "feimage", "script", "pattern", "lineargradient",
+                  "radialgradient", "filter", "mask", "clippath", "textpath", "tref", "mpath"}
 
 
-def loads(data):
-    """Every URL a document or stylesheet names: src=, href=, url(), @import."""
-    out = []
-    for m in LOAD_RE.finditer(data):
-        ref = next(g for g in m.groups() if g is not None).decode("utf-8", "replace").strip()
-        if ref:
-            out.append(ref)
-    return out
+class _LoadParser(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.refs, self.match, self._style = [], [], False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = [(k.lower(), v) for k, v in attrs if v is not None]
+        named = dict(attrs)
+        for k, v in attrs:
+            if k == "src" or (k == "data" and tag == "object"):
+                self.refs.append(v)
+            elif k in ("href", "xlink:href") and tag in HREF_LOAD_TAGS:
+                self.refs.append(v)
+            elif k == "style":
+                self.refs.extend(css_loads(v))
+        if tag == "link":
+            rels = (named.get("rel") or "").lower().split()
+            if ("match" in rels or "mismatch" in rels) and named.get("href"):
+                self.match.append(named["href"])
+        self._style = tag == "style"
+
+    handle_startendtag = handle_starttag
+
+    def handle_endtag(self, tag):
+        self._style = False
+
+    def handle_data(self, data):
+        if self._style:
+            self.refs.extend(css_loads(data))
+
+
+def css_loads(text):
+    """URLs a stylesheet loads: url() and @import."""
+    return [(a or b).strip() for a, b in CSS_URL_RE.findall(text) if (a or b).strip()]
+
+
+def _parse(data):
+    p = _LoadParser()
+    p.feed(data.decode("utf-8", "replace"))
+    p.close()
+    return p
+
+
+def loads(data, ext=".html"):
+    """Every URL a document or stylesheet loads: src=, object data=, href= on
+    elements that fetch it (link, SVG use/image/...), url() and @import in
+    style sheets, <style> and style attributes. Attributes may be unquoted;
+    data-* attributes and <a href> are not loads. Scripts are not parsed."""
+    if ext == ".css":
+        return css_loads(data.decode("utf-8", "replace"))
+    if ext == ".js":
+        return []
+    return [r.strip() for r in _parse(data).refs if r.strip()]
+
+
+def match_hrefs(data):
+    """hrefs of <link rel=match|mismatch> in a document."""
+    return _parse(data).match
 
 
 def file_loads(local, data):
-    """Corpus paths the file at local loads."""
+    """Corpus paths the file at local loads, including ones outside both
+    suites (callers report those as dangling)."""
     if not local.endswith(TEXT_EXT):
         return set()
-    return {t for t in (harness_resolve(local, r) for r in loads(data)) if t}
+    ext = posixpath.splitext(local)[1]
+    return {t for t in (harness_resolve(local, r) for r in loads(data, ext)) if t}
 
 
 def excluded(local, excludes):
@@ -251,8 +317,9 @@ def load_upstream(sha, out_tsv):
 
 
 def local_files():
+    """Tracked corpus files present in the worktree."""
     out = subprocess.check_output(["git", "ls-files", "-z"] + list(SUITES), cwd=REPO)
-    return [p for p in out.decode().split("\0") if p]
+    return [p for p in out.decode().split("\0") if p and os.path.exists(repo_path(p))]
 
 
 def blob_hashes(paths):
@@ -265,19 +332,32 @@ def git_blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def audit(sha, out_tsv):
-    index = UpstreamIndex(load_upstream(sha, out_tsv))
+def audit_rows(upstream):
+    """(local, status, upstream path, local blob, upstream blob) per file,
+    against the upstream path -> blob map."""
+    index = UpstreamIndex(upstream)
     locals_ = local_files()
-    rows = [(local,) + classify(upstream_path(local), lblob, index) + (lblob,)
-            for local, lblob in zip(locals_, blob_hashes(locals_))]
-    with open(out_tsv, "w") as f:
-        f.write("# wpt %s\n" % sha)
-        f.write("local_path\tstatus\tupstream_path\tlocal_blob\tupstream_blob\n")
-        for local, status, up, ublob, lblob in rows:
-            f.write("\t".join((local, status, up, lblob, ublob)) + "\n")
+    if not locals_:
+        return []
+    return [(local, status, up, lblob, ublob)
+            for local, lblob in zip(locals_, blob_hashes(locals_))
+            for status, up, ublob in [classify(upstream_path(local), lblob, index)]]
+
+
+def audit(sha, out_tsv):
+    rows = audit_rows(load_upstream(sha, out_tsv))
+    write_mapping(sha, out_tsv, rows)
     counts = collections.Counter(r[1] for r in rows)
     for k in sorted(counts):
         print("%-18s %d" % (k, counts[k]))
+
+
+def write_mapping(sha, out_tsv, rows):
+    with open(out_tsv, "w") as f:
+        f.write("# wpt %s\n" % sha)
+        f.write("local_path\tstatus\tupstream_path\tlocal_blob\tupstream_blob\n")
+        for row in rows:
+            f.write("\t".join(row) + "\n")
 
 
 def download(sha, up, ublob):
@@ -290,7 +370,8 @@ def download(sha, up, ublob):
         except urllib.error.HTTPError as e:
             if e.code not in (403, 429) or attempt == 3:
                 raise
-        except urllib.error.URLError:
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            # TimeoutError covers socket.timeout raised by read().
             if attempt == 3:
                 raise
         time.sleep(2 ** attempt)
@@ -329,119 +410,140 @@ def corpus_text_files(dirs):
                     yield os.path.relpath(os.path.join(d, name), REPO)
 
 
-MATCH_LINK_RE = re.compile(rb"""<link\b[^>]*\brel\s*=\s*["']?(?:mis)?match["']?[^>]*>""", re.I)
-HREF_RE = re.compile(rb"""href\s*=\s*["']([^"']+)["']""", re.I)
-
-
 def missing_refs(dirs):
     """Print reftests whose rel=match/mismatch target is missing locally."""
     for local in corpus_text_files(dirs):
-        for link in MATCH_LINK_RE.finditer(read_bytes(local)):
-            href = HREF_RE.search(link.group(0))
-            ref = href.group(1).decode("utf-8", "replace") if href else ""
+        if not local.endswith(DOC_EXT):
+            continue
+        for ref in match_hrefs(read_bytes(local)):
             target = harness_resolve(local, ref)
             if target and not os.path.exists(repo_path(target)):
                 print("%s\t%s" % (local, ref))
 
 
-def read_mapping(out_tsv):
-    with open(out_tsv) as f:
-        for line in f:
-            if not (line.startswith("#") or line.startswith("local_path")):
-                yield line.rstrip("\n").split("\t")
+def ignored(path):
+    """Whether git ignores path: such files cannot be committed."""
+    return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode == 0
 
 
 def plan(sha, out_tsv, prefix, excludes):
     """The actions --apply takes, with every download and hash check done.
-    Returns (actions, log): actions are ("write", path, bytes), ("mv", from,
-    to) and ("rm", path), in order."""
+    Audits the tree itself (so identical rows, which the committed mapping
+    leaves out, still seed the dependency walk) and writes that audit to
+    out_tsv. Returns (actions, log): actions are ("write", path, bytes),
+    ("mv", from, to) and ("rm", path), in order."""
     upstream = load_upstream(sha, out_tsv)
     reviewed = load_reviewed()
-    rows = [r for r in read_mapping(out_tsv)
-            if r[0].startswith(prefix) and not excluded(r[0], excludes)]
-    exists = {}  # planned existence overrides: path -> bool
+    all_rows = audit_rows(upstream)
+    write_mapping(sha, out_tsv, all_rows)
+    rows = [r for r in all_rows if r[0].startswith(prefix) and not excluded(r[0], excludes)]
+    planned = {}  # path -> planned bytes, or None once planned away
 
-    def present(path):
-        return exists.get(path, os.path.exists(repo_path(path)))
+    def content(path):
+        """The bytes path holds once the planned actions run, or None."""
+        if path in planned:
+            return planned[path]
+        return read_bytes(path) if os.path.exists(repo_path(path)) else None
 
     actions, log, walk = [], [], []
-    restored = {}  # path -> upstream bytes for the differs rows
+
+    def write(path, data):
+        actions.append(("write", path, data))
+        planned[path] = data
+
     for local, status, up, _, ublob in rows:
         if status == "identical":
-            walk.append((local, read_bytes(local)))
+            walk.append((local, content(local)))
         elif status == "differs":
             data = upstream_bytes(sha, up, ublob, local)
-            restored[local] = data
-            if data != read_bytes(local):
-                actions.append(("write", local, data))
+            if data != content(local):
+                write(local, data)
                 log.append(("restored", local, up))
             walk.append((local, data))
     # Every corpus file some local file loads, once the restores above are
     # in, stays where it is.
     loaded = set()
-    relocating = any(r[1] in ("relocated", "relocated-differs") for r in rows)
-    for local in corpus_text_files(SUITES) if relocating else ():
-        loaded |= file_loads(local, restored.get(local) or read_bytes(local))
+    if any(r[1] in ("relocated", "relocated-differs") for r in rows):
+        for local in corpus_text_files(SUITES):
+            loaded |= file_loads(local, content(local))
     for local, status, up, _, ublob in rows:
         if status in ("identical", "differs"):
             continue
         if status == "relocated-differs" and reviewed.get(local) != up:
             log.append(("unreviewed", local, up))
-        elif status in ("relocated", "relocated-differs"):
-            target = local_path(up, suite_root(local))
-            if target is None or excluded(target, excludes):
-                log.append(("skipped", local, up))
-                continue
-            if not present(local):
-                continue  # already moved or removed by an earlier run
-            data = upstream_bytes(sha, up, ublob, local)
-            target_has = present(target) and read_bytes(target) == data
-            if local in loaded:
-                # Some local file loads it: copy, never move or remove.
-                if not target_has:
-                    actions.append(("write", target, data))
-                log.append(("copied-loaded" if not target_has else "kept-loaded", local, target))
-            elif target_has:
-                actions.append(("rm", local))
-                log.append(("removed-duplicate", local, target))
-                exists[local] = False
-            else:
-                actions.append(("mv", local, target))
-                actions.append(("write", target, data))
-                log.append(("moved", local, target))
-                exists[local] = False
-            exists[target] = True
-            walk.append((target, data))
+            continue
+        if status not in ("relocated", "relocated-differs"):
+            continue
+        target = local_path(up, suite_root(local))
+        if target is None or excluded(target, excludes):
+            log.append(("skipped", local, up))
+            continue
+        if content(local) is None:
+            continue  # already moved or removed
+        data = upstream_bytes(sha, up, ublob, local)
+        there = content(target)
+        if local in loaded:
+            # Some local file loads it: copy, never move or remove.
+            if there != data:
+                write(target, data)
+            log.append(("copied-loaded" if there != data else "kept-loaded", local, target))
+        elif there is not None:
+            if there != data:
+                write(target, data)
+            actions.append(("rm", local))
+            planned[local] = None
+            log.append(("removed-duplicate", local, target))
+        else:
+            actions.append(("mv", local, target))
+            planned[local] = None
+            planned[target] = content(local)
+            if data != planned[target]:
+                write(target, data)
+            log.append(("moved", local, target))
+        walk.append((target, data))
     seen = set()
     while walk:
         local, data = walk.pop()
         for target in sorted(file_loads(local, data)):
-            if target in seen or present(target) or excluded(target, excludes):
+            if target in seen:
                 continue
             seen.add(target)
+            if suite_of(target) is None:
+                log.append(("dangling", local, target))
+                continue
+            if content(target) is not None or excluded(target, excludes):
+                continue
             up = upstream_path(target)
             if up not in upstream:
                 continue
+            if ignored(target):
+                # e.g. the corpus fonts, installed out of band.
+                log.append(("ignored", target, up))
+                continue
             tdata = download(sha, up, upstream[up])
-            actions.append(("write", target, tdata))
-            exists[target] = True
+            write(target, tdata)
             log.append(("fetched", target, up))
             walk.append((target, tdata))
     return actions, log
 
 
 def apply(sha, out_tsv, prefix, excludes):
+    """Run plan()'s actions and stage every path they touch."""
     actions, log = plan(sha, out_tsv, prefix, excludes)
+    written = []
     for action in actions:
         if action[0] == "write":
             os.makedirs(os.path.dirname(repo_path(action[1])), exist_ok=True)
             with open(repo_path(action[1]), "wb") as f:
                 f.write(action[2])
+            written.append(action[1])
         elif action[0] == "mv":
             os.makedirs(os.path.dirname(repo_path(action[2])), exist_ok=True)
             subprocess.check_call(["git", "mv", action[1], action[2]], cwd=REPO)
         else:
             subprocess.check_call(["git", "rm", "-q", action[1]], cwd=REPO)
+    for i in range(0, len(written), 500):
+        subprocess.check_call(["git", "add", "--"] + written[i:i + 500], cwd=REPO)
     for entry in log:
         print("\t".join(entry))
 

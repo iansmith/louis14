@@ -4,3 +4,13 @@
 # louis14-authored files that share a name with a different upstream test;
 # they are left alone and tracked on LOU-172.
 pkg/visualtest/testdata/wpt-css2/zindex/ref-filled-green-100px-square.xht	css/CSS2/reference/ref-filled-green-100px-square.xht	shared reference moved out of zindex/
+pkg/visualtest/testdata/wpt-css3/css-grid/display-inline-grid.html	css/css-grid/grid-model/display-inline-grid.html	match href rewritten
+pkg/visualtest/testdata/wpt-css3/css-grid/fr-unit-with-percentage.html	css/css-grid/grid-definition/fr-unit-with-percentage.html	hand-edited copy (same author and help)
+pkg/visualtest/testdata/wpt-css3/css-grid/fr-unit.html	css/css-grid/grid-definition/fr-unit.html	hand-edited copy
+pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-001.html	css/css-grid/alignment/grid-content-distribution-001.html	relocated, lightly edited
+pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-002.html	css/css-grid/alignment/grid-content-distribution-002.html	relocated, lightly edited
+pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-003.html	css/css-grid/alignment/grid-content-distribution-003.html	relocated, lightly edited
+pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-004.html	css/css-grid/alignment/grid-content-distribution-004.html	relocated, lightly edited
+pkg/visualtest/testdata/wpt-css3/css-grid/grid-layout-basic.html	css/css-grid/grid-definition/grid-layout-basic.html	reformatted copy
+pkg/visualtest/testdata/wpt-css3/css-text/reference/text-indent-length-001-ref.html	css/css-text/text-indent/reference/text-indent-length-001-ref.html	hand-written reference
+pkg/visualtest/testdata/wpt-css3/css-ui/outline-style-012-ref.html	css/css-ui/reference/outline-style-012-ref.html	hand-edited reference (8e531179)

@@ -1,18 +1,31 @@
 <!DOCTYPE html>
-<title>CSS column-rule draws line between columns</title>
+<html class="reftest-wait">
+<title>Column rule in scrollable multicol container</title>
+<link rel="author" title="Morten Stenshorne" href="mailto:mstensho@chromium.org">
+<link rel="help" href="https://drafts.csswg.org/css-multicol-1/#column-gaps-and-rules">
 <link rel="match" href="column-rule-001-ref.html">
 <style>
-  body { margin: 0; }
-  div {
-    width: 200px;
-    column-count: 2;
-    column-gap: 0;
-    column-rule: 4px solid green;
-    font: 16px/20px Ahem;
-    height: 20px;
+  body {
+    margin: 0;
+  }
+  .mc {
+    columns: 2;
+    column-gap: 110px;
+    column-rule: 100px solid;
+    height: 100px;
+    overflow: hidden;
   }
 </style>
-<!-- Two 100px columns with a 4px green rule between them.
-     The rule is centered in the column-gap (which is 0, so the rule
-     overlaps the content area by 2px on each side at x=98..102). -->
-<div>XXXXXX XXXXXX</div>
+<p>There should be <b>two</b> black squares below.</p>
+<div id="elm" class="mc">
+  <div style="height:600px;"></div>
+</div>
+<script>
+  elm.scrollLeft = 200;
+  requestAnimationFrame(()=> {
+    requestAnimationFrame(()=> {
+      document.documentElement.classList.remove("reftest-wait");
+    });
+  });
+</script>
+</html>

@@ -127,8 +127,24 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		SourceAlpha:  srcAlpha,
 		LastEffect:   prev,
 	}
-	f.FilterRegion = f.MapRect(b.ReferenceBox)
+	// A shorthand-only chain has no region; the caller sizes its buffer
+	// (filters.Filter.EnsureRegion). A chain with a url() stage keeps the
+	// region it has had: the reference box mapped through the chain, with no
+	// per-stage crop (LOU-704 ports the exact sizing).
+	if hasReferenceFilter(ops) {
+		f.FilterRegion = f.MapRect(b.ReferenceBox)
+	}
 	return f
+}
+
+// hasReferenceFilter reports whether a filter list has a url() stage.
+func hasReferenceFilter(ops []css.FilterFunction) bool {
+	for _, op := range ops {
+		if op.Name == "url" {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildReferenceFilter resolves a `filter: url(#id)` reference
