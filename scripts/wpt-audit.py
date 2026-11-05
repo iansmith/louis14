@@ -31,7 +31,8 @@ Usage:
   scripts/wpt-audit.py <wpt-sha> <out.tsv>
       audit: write the mapping.
   scripts/wpt-audit.py <wpt-sha> <out.tsv> --apply <local-prefix> [<exclude>...]
-      audit the tree afresh (writing the full mapping to out.tsv), then for
+      audit the tree afresh (out.tsv only places the upstream tree cache and
+      is not written), then for
       the rows under <local-prefix> (a path under pkg/visualtest/testdata),
       skipping local paths containing any <exclude>:
         differs            overwrite with the upstream bytes
@@ -48,6 +49,10 @@ Usage:
       Loads that resolve outside both suites are reported as "dangling", and
       missing files at gitignored paths (the corpus fonts) as "ignored".
       Prints one line per action.
+  scripts/wpt-audit.py <wpt-sha> <cache.tsv> --orphans
+      list files not at their upstream path (no-upstream, ambiguous, or a
+      relocated copy) that nothing loads and that are not reftests:
+      references left behind when their tests moved, and stale copies.
   scripts/wpt-audit.py --missing-refs <dir>...
       list reftests whose <link rel=match|mismatch> target is missing.
 
@@ -64,6 +69,7 @@ upstream blob hash before being written.
 
 import collections
 import hashlib
+import http.client
 import html.parser
 import json
 import os
@@ -81,9 +87,19 @@ REPO = os.environ.get("WPT_AUDIT_REPO") or os.path.dirname(os.path.dirname(os.pa
 TESTDATA = "pkg/visualtest/testdata"
 SUITES = (TESTDATA + "/wpt-css2", TESTDATA + "/wpt-css3")
 GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
-# Top-level wpt directories a suite serves at its own root ("/" mount).
-TOP_LEVEL = {"common", "fonts", "resources", "images", "media"}
-UPSTREAM_DIRS = ["css"] + sorted(TOP_LEVEL)
+# Top-level wpt directories a suite serves at its own root (the "/" mount):
+# every directory at the wpt root but css/, except names that are also
+# css/ sections (set_top_level, from the pinned root tree). This fallback is
+# the set the corpus is known to use, for callers that load no tree.
+TOP_LEVEL = {"common", "dom", "fonts", "resources", "images", "media"}
+
+
+def set_top_level(root_dirs, css_sections):
+    """Make every wpt root directory other than css/ (and other than a name
+    that is also a css/ section, which css/ shadows in wpt-css3) a top-level
+    directory the "/" mount serves."""
+    global TOP_LEVEL
+    TOP_LEVEL = {d for d in root_dirs if d != "css" and d not in css_sections}
 # Hosts the harness serves locally (stripWPTHost with DefaultWPTServerConfig,
 # pkg/visualtest/wpt_sub.go).
 WPT_HOSTS = {"web-platform.test", "www.web-platform.test",
@@ -168,40 +184,56 @@ DOC_EXT = (".html", ".htm", ".xht", ".xhtml", ".svg")
 TEXT_EXT = DOC_EXT + (".css", ".js", ".xml")
 CSS_URL_RE = re.compile(
     r"""url\(\s*["']?([^"')]*?)["']?\s*\)|@import\s+["']([^"']*)["']""", re.I)
-# Elements whose href fetches a resource (an <a> href is a navigation).
-HREF_LOAD_TAGS = {"link", "use", "image", "feimage", "script", "pattern", "lineargradient",
+# Elements whose href fetches a resource (an <a> href is a navigation; a
+# <link> loads only for the rels in LINK_LOAD_RELS).
+HREF_LOAD_TAGS = {"use", "image", "feimage", "script", "pattern", "lineargradient",
                   "radialgradient", "filter", "mask", "clippath", "textpath", "tref", "mpath"}
+LINK_LOAD_RELS = {"stylesheet", "match", "mismatch", "preload", "modulepreload", "prefetch", "icon",
+                  "import", "manifest", "prerender"}
+# Attributes whose value is one URL to load, on any element.
+URL_ATTRS = {"src", "poster", "background"}
+# A quoted relative path to a file in script text: the best a scanner can do
+# for URLs built in JavaScript.
+SCRIPT_URL_RE = re.compile(
+    r"""["'`]((?:\.{0,2}/)?[\w./-]*\.(?:js|css|png|jpe?g|gif|svg|webp|avif|ico|html?|xht|xhtml|xml|json|woff2?|ttf|otf|webm|mp4|ogg|wav|mp3|vtt)(?:[?#][^"'`$]*)?)["'`]""")
+# A template literal with a substitution: its URL cannot be resolved, so the
+# files it might name are protected from --orphans (template_patterns).
+TEMPLATE_RE = re.compile(r"`([^`]*\$\{[^`]*)`")
 
 
 class _LoadParser(html.parser.HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.refs, self.match, self._style = [], [], False
+        self.refs, self.match, self._text = [], [], None
 
     def handle_starttag(self, tag, attrs):
+        tag = tag.split(":")[-1]  # svg:image, svg:use
         attrs = [(k.lower(), v) for k, v in attrs if v is not None]
         named = dict(attrs)
+        rels = set((named.get("rel") or "").lower().split())
         for k, v in attrs:
-            if k == "src" or (k == "data" and tag == "object"):
+            if k in URL_ATTRS or (k == "data" and tag == "object"):
                 self.refs.append(v)
-            elif k in ("href", "xlink:href") and tag in HREF_LOAD_TAGS:
+            elif k == "srcset":
+                self.refs.extend(c.strip().split()[0] for c in v.split(",") if c.strip())
+            elif k in ("href", "xlink:href") and (tag in HREF_LOAD_TAGS or (tag == "link" and rels & LINK_LOAD_RELS)):
                 self.refs.append(v)
             elif k == "style":
                 self.refs.extend(css_loads(v))
-        if tag == "link":
-            rels = (named.get("rel") or "").lower().split()
-            if ("match" in rels or "mismatch" in rels) and named.get("href"):
-                self.match.append(named["href"])
-        self._style = tag == "style"
+        if tag == "link" and rels & {"match", "mismatch"} and named.get("href"):
+            self.match.append(named["href"])
+        self._text = tag if tag in ("style", "script") else None
 
     handle_startendtag = handle_starttag
 
     def handle_endtag(self, tag):
-        self._style = False
+        self._text = None
 
     def handle_data(self, data):
-        if self._style:
+        if self._text == "style":
             self.refs.extend(css_loads(data))
+        elif self._text == "script":
+            self.refs.extend(SCRIPT_URL_RE.findall(data))
 
 
 def css_loads(text):
@@ -220,11 +252,15 @@ def loads(data, ext=".html"):
     """Every URL a document or stylesheet loads: src=, object data=, href= on
     elements that fetch it (link, SVG use/image/...), url() and @import in
     style sheets, <style> and style attributes. Attributes may be unquoted;
-    data-* attributes and <a href> are not loads. Scripts are not parsed."""
+    data-* attributes, <a href> and <link rel=author|help> are not loads.
+    srcset, poster and background= count; namespaced SVG tags (svg:image)
+    count as their local names. Script text, inline or .js, is scanned for
+    quoted relative file paths, since a URL built in JavaScript cannot be
+    resolved statically."""
     if ext == ".css":
         return css_loads(data.decode("utf-8", "replace"))
     if ext == ".js":
-        return []
+        return SCRIPT_URL_RE.findall(data.decode("utf-8", "replace"))
     return [r.strip() for r in _parse(data).refs if r.strip()]
 
 
@@ -233,13 +269,51 @@ def match_hrefs(data):
     return _parse(data).match
 
 
-def file_loads(local, data):
+def file_loads(local, data, read=None):
     """Corpus paths the file at local loads, including ones outside both
-    suites (callers report those as dangling)."""
-    if not local.endswith(TEXT_EXT):
+    suites (callers report those as dangling). A URL in a .js file resolves
+    against the document that loads the script, not the script's own
+    directory: a document's loads include those of each script it loads,
+    read through read(path) -> bytes or None, and a .js file loads nothing
+    on its own."""
+    if not local.endswith(TEXT_EXT) or local.endswith(".js"):
         return set()
     ext = posixpath.splitext(local)[1]
-    return {t for t in (harness_resolve(local, r) for r in loads(data, ext)) if t}
+    out = {t for t in (harness_resolve(local, r) for r in loads(data, ext)) if t}
+    if read is not None:
+        for script in [t for t in out if t.endswith(".js")]:
+            sdata = read(script)
+            if sdata is not None:
+                out |= {t for t in (harness_resolve(local, r) for r in _script_refs(sdata)) if t}
+    return out
+
+
+_SCRIPT_REFS = {}
+
+
+def _script_refs(data):
+    """A script's raw URLs, cached by content: shared helpers such as
+    testharness.js are loaded by thousands of documents."""
+    key = hashlib.sha1(data).digest()
+    if key not in _SCRIPT_REFS:
+        _SCRIPT_REFS[key] = loads(data, ".js")
+    return _SCRIPT_REFS[key]
+
+
+def read_if_present(path):
+    return read_bytes(path) if os.path.exists(repo_path(path)) else None
+
+
+def template_patterns(data):
+    """Basename patterns of the template-literal URLs in script text: the
+    static parts of the last path segment, with each ${...} as a wildcard."""
+    out = []
+    for lit in TEMPLATE_RE.findall(data.decode("utf-8", "replace")):
+        last = re.split(r"[?#]", lit.rsplit("/", 1)[-1], maxsplit=1)[0]
+        parts = re.split(r"\$\{[^}]*\}", last)
+        if any(parts):
+            out.append(re.compile("^" + ".*".join(re.escape(p) for p in parts) + "$"))
+    return out
 
 
 def excluded(local, excludes):
@@ -292,27 +366,61 @@ def gh_tree(sha, recursive=False):
     return subprocess.check_output([GH, "api", url])
 
 
-def load_upstream(sha, out_tsv):
-    """Upstream path -> blob sha for UPSTREAM_DIRS, cached beside out_tsv."""
-    cache_dir = os.path.dirname(os.path.abspath(out_tsv))
-    root = None
-    upstream = {}
-    for top in UPSTREAM_DIRS:
-        cache = os.path.join(cache_dir, "wpt-tree-%s-%s.json" % (sha[:12], top))
+class Upstream(dict):
+    """Upstream path -> blob sha. css/ and the top-level directories the
+    corpus holds are loaded up front; any other top-level directory is loaded
+    the first time a path under it is looked up (`in` or [ ]), so a load from,
+    say, /html/ resolves without listing every wpt directory. Iteration sees
+    only what is loaded, which is what relocation search wants: the corpus's
+    own directories."""
+
+    def __init__(self, sha, cache_dir, root_entries):
+        super().__init__()
+        self.sha, self.cache_dir, self.root = sha, cache_dir, root_entries
+        self.loaded = set()
+
+    def load(self, top):
+        if top in self.loaded or top not in self.root:
+            return
+        self.loaded.add(top)
+        cache = os.path.join(self.cache_dir, "wpt-tree-%s-%s.json" % (self.sha[:12], top))
         if not os.path.exists(cache):
-            if root is None:
-                root = json.loads(gh_tree(sha))
-            sub = [t["sha"] for t in root["tree"] if t["path"] == top]
-            if not sub:
-                continue
-            data = gh_tree(sub[0], recursive=True)
+            data = gh_tree(self.root[top], recursive=True)
             if json.loads(data).get("truncated"):
                 sys.exit("tree for %s is truncated" % top)
             with open(cache, "wb") as f:
                 f.write(data)
         with open(cache) as f:
             tree = json.load(f)
-        upstream.update({top + "/" + t["path"]: t["sha"] for t in tree["tree"] if t["type"] == "blob"})
+        self.update({top + "/" + t["path"]: t["sha"] for t in tree["tree"] if t["type"] == "blob"})
+
+    def __contains__(self, path):
+        self.load(path.split("/", 1)[0])
+        return dict.__contains__(self, path)
+
+    def __getitem__(self, path):
+        self.load(path.split("/", 1)[0])
+        return dict.__getitem__(self, path)
+
+
+def load_upstream(sha, out_tsv):
+    """The upstream index at sha, with its tree listings cached beside
+    out_tsv. Sets TOP_LEVEL from the root tree."""
+    cache_dir = os.path.dirname(os.path.abspath(out_tsv))
+    cache = os.path.join(cache_dir, "wpt-tree-%s-root.json" % sha[:12])
+    if not os.path.exists(cache):
+        with open(cache, "wb") as f:
+            f.write(gh_tree(sha))
+    with open(cache) as f:
+        root = {t["path"]: t["sha"] for t in json.load(f)["tree"] if t["type"] == "tree"}
+    upstream = Upstream(sha, cache_dir, root)
+    upstream.load("css")
+    sections = {p.split("/")[1] for p in dict.keys(upstream) if p.count("/") >= 2}
+    set_top_level(root, sections)
+    for suite in SUITES:
+        for d in os.listdir(repo_path(suite)) if os.path.isdir(repo_path(suite)) else ():
+            if d in TOP_LEVEL:
+                upstream.load(d)
     return upstream
 
 
@@ -370,7 +478,7 @@ def download(sha, up, ublob):
         except urllib.error.HTTPError as e:
             if e.code not in (403, 429) or attempt == 3:
                 raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead):
             # TimeoutError covers socket.timeout raised by read().
             if attempt == 3:
                 raise
@@ -421,21 +529,75 @@ def missing_refs(dirs):
                 print("%s\t%s" % (local, ref))
 
 
+_IGNORED = {}
+
+
+def check_ignored(paths):
+    """Look up whether git ignores each path, one git call for those not yet
+    cached. Ignored files cannot be committed."""
+    todo = []
+    for p in paths:
+        if (REPO, p) in _IGNORED:
+            continue
+        if os.path.isabs(p) or ".." in p.split("/"):
+            _IGNORED[(REPO, p)] = False  # outside the repo: not git's to ignore
+            continue
+        todo.append(p)
+    if not todo:
+        return
+    run = subprocess.run(["git", "check-ignore", "--stdin", "-z"], cwd=REPO,
+                         input="\0".join(todo) + "\0", capture_output=True, text=True)
+    if run.returncode in (0, 1):  # 1: none ignored
+        hits = set(p for p in run.stdout.split("\0") if p)
+        for p in todo:
+            _IGNORED[(REPO, p)] = p in hits
+        return
+    # Any other status means git stopped early: ask path by path.
+    for p in todo:
+        _IGNORED[(REPO, p)] = subprocess.run(["git", "check-ignore", "-q", p], cwd=REPO).returncode == 0
+
+
 def ignored(path):
-    """Whether git ignores path: such files cannot be committed."""
-    return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode == 0
+    check_ignored([path])
+    return _IGNORED[(REPO, path)]
+
+
+def orphans(upstream):
+    """Corpus files not at their upstream path (no-upstream, ambiguous, or a
+    relocated copy) that no file loads and that are not reftests themselves:
+    references left behind when their tests moved, stale copies of upstream
+    files, and other dead local files."""
+    rows = audit_rows(upstream)
+    loaded, patterns = set(), set()
+    for local in corpus_text_files(SUITES):
+        data = read_bytes(local)
+        loaded |= file_loads(local, data, read_if_present)
+        if local.endswith((".js",) + DOC_EXT):
+            patterns |= {p.pattern for p in template_patterns(data)}
+    named = re.compile("|".join(sorted(patterns))) if patterns else None
+    out = []
+    for local, status, _, _, _ in rows:
+        if status in ("identical", "differs") or local in loaded:
+            continue
+        if named and named.match(posixpath.basename(local)):
+            continue  # maybe named by a template literal
+        if status in ("no-upstream", "ambiguous") and local.endswith(DOC_EXT) and match_hrefs(read_bytes(local)):
+            continue  # a louis14-authored reftest (LOU-172), not an orphan
+        out.append(local)
+    return out
 
 
 def plan(sha, out_tsv, prefix, excludes):
     """The actions --apply takes, with every download and hash check done.
     Audits the tree itself (so identical rows, which the committed mapping
-    leaves out, still seed the dependency walk) and writes that audit to
-    out_tsv. Returns (actions, log): actions are ("write", path, bytes),
-    ("mv", from, to) and ("rm", path), in order."""
+    leaves out, still seed the dependency walk); out_tsv only names the
+    directory the upstream tree cache lives in, and is not written. Returns
+    (actions, log): actions are ("write", path, bytes), ("mv", from, to) and
+    ("rm", path), in order. Nothing is written to a gitignored path, and no
+    relocation writes outside prefix."""
     upstream = load_upstream(sha, out_tsv)
     reviewed = load_reviewed()
     all_rows = audit_rows(upstream)
-    write_mapping(sha, out_tsv, all_rows)
     rows = [r for r in all_rows if r[0].startswith(prefix) and not excluded(r[0], excludes)]
     planned = {}  # path -> planned bytes, or None once planned away
 
@@ -443,29 +605,36 @@ def plan(sha, out_tsv, prefix, excludes):
         """The bytes path holds once the planned actions run, or None."""
         if path in planned:
             return planned[path]
-        return read_bytes(path) if os.path.exists(repo_path(path)) else None
+        return read_if_present(path)
 
     actions, log, walk = [], [], []
 
-    def write(path, data):
+    def write(path, data, up):
+        """Plan a write unless git ignores path; reports whether it did."""
+        if ignored(path):
+            log.append(("ignored", path, up))
+            return False
         actions.append(("write", path, data))
         planned[path] = data
+        return True
 
     for local, status, up, _, ublob in rows:
         if status == "identical":
             walk.append((local, content(local)))
         elif status == "differs":
             data = upstream_bytes(sha, up, ublob, local)
-            if data != content(local):
-                write(local, data)
+            if data != content(local) and write(local, data, up):
                 log.append(("restored", local, up))
             walk.append((local, data))
     # Every corpus file some local file loads, once the restores above are
     # in, stays where it is.
     loaded = set()
-    if any(r[1] in ("relocated", "relocated-differs") for r in rows):
+    relocating = [r for r in rows if r[1] in ("relocated", "relocated-differs")]
+    if relocating:
         for local in corpus_text_files(SUITES):
-            loaded |= file_loads(local, content(local))
+            loaded |= file_loads(local, content(local), content)
+        # One check-ignore call for every relocation target.
+        check_ignored([t for t in (local_path(r[2], suite_root(r[0])) for r in relocating) if t])
     for local, status, up, _, ublob in rows:
         if status in ("identical", "differs"):
             continue
@@ -478,33 +647,42 @@ def plan(sha, out_tsv, prefix, excludes):
         if target is None or excluded(target, excludes):
             log.append(("skipped", local, up))
             continue
-        if content(local) is None:
+        if not target.startswith(prefix):
+            log.append(("outside-prefix", local, target))
+            continue
+        local_bytes = content(local)
+        if local_bytes is None:
             continue  # already moved or removed
+        if ignored(target):
+            log.append(("ignored", target, up))
+            continue
         data = upstream_bytes(sha, up, ublob, local)
         there = content(target)
         if local in loaded:
             # Some local file loads it: copy, never move or remove.
             if there != data:
-                write(target, data)
+                write(target, data, up)
             log.append(("copied-loaded" if there != data else "kept-loaded", local, target))
         elif there is not None:
             if there != data:
-                write(target, data)
+                write(target, data, up)
             actions.append(("rm", local))
             planned[local] = None
             log.append(("removed-duplicate", local, target))
         else:
             actions.append(("mv", local, target))
             planned[local] = None
-            planned[target] = content(local)
-            if data != planned[target]:
-                write(target, data)
+            planned[target] = local_bytes
+            if data != local_bytes:
+                write(target, data, up)
             log.append(("moved", local, target))
         walk.append((target, data))
     seen = set()
     while walk:
         local, data = walk.pop()
-        for target in sorted(file_loads(local, data)):
+        targets = sorted(file_loads(local, data, content))
+        check_ignored([t for t in targets if suite_of(t) is not None])
+        for target in targets:
             if target in seen:
                 continue
             seen.add(target)
@@ -521,7 +699,7 @@ def plan(sha, out_tsv, prefix, excludes):
                 log.append(("ignored", target, up))
                 continue
             tdata = download(sha, up, upstream[up])
-            write(target, tdata)
+            write(target, tdata, up)
             log.append(("fetched", target, up))
             walk.append((target, tdata))
     return actions, log
@@ -549,7 +727,9 @@ def apply(sha, out_tsv, prefix, excludes):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--missing-refs":
+    if len(sys.argv) == 4 and sys.argv[3] == "--orphans":
+        print("\n".join(orphans(load_upstream(sys.argv[1], sys.argv[2]))))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--missing-refs":
         missing_refs(sys.argv[2:])
     elif len(sys.argv) == 3:
         audit(sys.argv[1], sys.argv[2])

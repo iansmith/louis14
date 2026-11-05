@@ -6,8 +6,9 @@ import (
 	"testing"
 )
 
-// TestComputeColumnWidths_LeftoverToAutoColumns reproduces the WPT
-// css-grid/fr-unit.html reference-table bug (campaign lane css-grid).
+// TestComputeColumnWidths_LeftoverToAutoColumns reproduces the table bug in
+// the reference of WPT css/css-grid/grid-definition/fr-unit.html
+// (css-grid/reference/fr-unit-ref.html; campaign lane css-grid).
 //
 // CSS 2.1 §17.5.2.2: in an auto table-layout with an explicit table width
 // larger than the sum of column max-content widths, the leftover space is
