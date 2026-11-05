@@ -2,10 +2,12 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
     <head>
         <title>CSS Test: No padding or margin, left edges touch</title>
-        <link rel="author" title="Microsoft" href="http://www.microsoft.com/"/>
-        <link rel="help" href="http://www.w3.org/TR/CSS21/visuren.html#block-formatting"/>
-        <link rel="match" href="block-formatting-contexts-005-ref.xht"/>
-        <meta name="assert" content="When there is no padding or margins on elements the left outer edge of the child box will touch the left edge of the containing block."/>
+        <link rel="author" title="Microsoft" href="http://www.microsoft.com/" />
+        <link rel="reviewer" title="Gérard Talbot" href="http://www.gtalbot.org/BrowserBugsSection/css21testsuite/" /> <!-- 2012-09-26 -->
+        <link rel="help" href="http://www.w3.org/TR/CSS21/visuren.html#block-formatting" />
+		<link rel="match" href="block-formatting-contexts-005-ref.xht" />
+
+        <meta name="assert" content="When there is no padding or margins on elements the left outer edge of the child box will touch the left edge of the containing block." />
         <style type="text/css">
             div
             {
