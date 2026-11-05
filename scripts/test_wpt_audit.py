@@ -125,6 +125,14 @@ class Loads(unittest.TestCase):
 <table background="bg.png"></table><svg:svg><svg:image xlink:href="i.png"/><svg:use href="u.svg#x"/></svg:svg>"""
         self.assertEqual(set(wa.loads(data)), {"a.png", "b.png", "p.png", "bg.png", "i.png", "u.svg#x"})
 
+    def test_script_urls_with_query_or_fragment(self):
+        self.assertEqual(set(wa.loads(b"""<script>a.src = "x.png?v=2"; b.href = 'y.svg#frag';</script>""")),
+                         {"x.png?v=2", "y.svg#frag"})
+
+    def test_link_import_manifest_prerender(self):
+        data = b"""<link rel=import href=i.html><link rel=manifest href=m.json><link rel=prerender href=p.html>"""
+        self.assertEqual(set(wa.loads(data)), {"i.html", "m.json", "p.html"})
+
     def test_scripts(self):
         self.assertEqual(set(wa.loads(b"""<script>img.src = "s.png"; load('/x/y.js');</script>""")),
                          {"s.png", "/x/y.js"})
@@ -243,16 +251,42 @@ class Plan(unittest.TestCase):
 
     def test_orphans(self):
         self.set_upstream({"css/css-a/t.html": b'<link rel=match href="t-ref.html">',
-                           "css/css-a/t-ref.html": b"R"})
+                           "css/css-a/t-ref.html": b"R", "css/css-a/reference/moved-ref.html": b"MV"})
         self.put(C3 + "/css-a/t.html", b'<link rel=match href="t-ref.html">')
         self.put(C3 + "/css-a/t-ref.html", b"R")
         self.put(C3 + "/css-a/old-ref.html", b"OLD")        # local-only, loaded by nothing
         self.put(C3 + "/css-a/mine.html", b'<link rel=match href="mine-ref.html">')  # louis14 test
         self.put(C3 + "/css-a/mine-ref.html", b"M")         # local-only, loaded
-        self.set_upstream({"css/css-a/t.html": b'<link rel=match href="t-ref.html">',
-                           "css/css-a/t-ref.html": b"R", "css/css-a/reference/moved-ref.html": b"MV"})
         self.put(C3 + "/css-a/moved-ref.html", b"MV")       # a stale copy of an upstream file
         self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/moved-ref.html", C3 + "/css-a/old-ref.html"])
+
+    def test_orphans_include_relocated_reftests(self):
+        # A stale copy of an upstream reftest is an orphan too; a
+        # louis14-authored reftest (no-upstream) is not.
+        self.set_upstream({"css/css-a/sub/t.html": b'<link rel=match href="r.html">'})
+        self.put(C3 + "/css-a/t.html", b'<link rel=match href="r.html">')
+        self.put(C3 + "/css-a/sub/t.html", b'<link rel=match href="r.html">')
+        self.put(C3 + "/css-a/r.html", b"R")
+        self.put(C3 + "/css-a/mine.html", b'<link rel=match href="r.html">')
+        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/t.html"])
+
+    def test_script_urls_resolve_against_the_loading_document(self):
+        # testHelper.js in support/ builds 'support/x.jpg': relative to the
+        # document that loads it, not to support/.
+        self.set_upstream({"css/css-a/t.html": b'<script src="support/h.js"></script>',
+                           "css/css-a/support/h.js": b"img.src = 'support/x.jpg';"})
+        self.put(C3 + "/css-a/t.html", b'<script src="support/h.js"></script>')
+        self.put(C3 + "/css-a/support/h.js", b"img.src = 'support/x.jpg';")
+        self.put(C3 + "/css-a/support/x.jpg", b"J")
+        self.put(C3 + "/css-a/support/support/x.jpg", b"WRONG")
+        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/support/support/x.jpg"])
+
+    def test_template_literal_names_protect_files(self):
+        self.set_upstream({"css/css-a/t.html": b"<script>load(`frame-${i}.html?x=1`)</script>"})
+        self.put(C3 + "/css-a/t.html", b"<script>load(`frame-${i}.html?x=1`)</script>")
+        self.put(C3 + "/css-a/frame-1.html", b"F")
+        self.put(C3 + "/css-a/other.html", b"O")
+        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/other.html"])
 
     def test_identical_files_walk_without_a_mapping(self):
         # plan() audits the tree itself, so dependencies of identical files
@@ -330,6 +364,34 @@ class DomDirectory(unittest.TestCase):
         local = C3 + "/dom/events/scrolling/scroll_support.js"
         self.assertEqual(wa.upstream_path(local), "dom/events/scrolling/scroll_support.js")
         self.assertEqual(wa.harness_resolve(C3 + "/css-position/t.html", "/dom/events/scrolling/scroll_support.js"), local)
+
+
+class CheckIgnored(unittest.TestCase):
+    def test_bad_path_does_not_poison_the_batch(self):
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.check_call(["git", "init", "-q", repo])
+            with open(os.path.join(repo, ".gitignore"), "w") as f:
+                f.write("fonts/\n")
+            saved = wa.REPO
+            wa.REPO = repo
+            try:
+                wa.check_ignored(["../outside/x", "a/fonts/f.ttf", "a/b.html"])
+                self.assertTrue(wa.ignored("a/fonts/f.ttf"))
+                self.assertFalse(wa.ignored("a/b.html"))
+            finally:
+                wa.REPO = saved
+
+
+class TopLevel(unittest.TestCase):
+    def test_any_upstream_top_level_directory_maps(self):
+        saved = wa.TOP_LEVEL
+        try:
+            wa.set_top_level({"css", "html", "fonts", "svg"}, {"css-a", "reference"})
+            self.assertEqual(wa.upstream_path(C3 + "/html/x.js"), "html/x.js")
+            self.assertEqual(wa.local_path("svg/y.svg", C3), C3 + "/svg/y.svg")
+            self.assertEqual(wa.upstream_path(C3 + "/css-a/t.html"), "css/css-a/t.html")
+        finally:
+            wa.TOP_LEVEL = saved
 
 
 class Classify(unittest.TestCase):
