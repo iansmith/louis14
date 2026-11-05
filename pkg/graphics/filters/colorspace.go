@@ -46,8 +46,9 @@ func linearToSRGB(c float64) float64 {
 
 // 256-entry lookup tables keyed by the 8-bit encoded component value. The
 // forward table (srgbToLinearLUT) is exact for byte input; the inverse table
-// is sampled at byte granularity and used only where a fast approximate path
-// is acceptable — the per-pixel conversion below uses the precise float path.
+// is sampled at byte granularity. ConvertImageSpace uses both for opaque pixels,
+// where a byte is the colour and the float path computes the same values, and the
+// float path for the rest.
 var (
 	srgbToLinearLUT [256]float64
 	linearToSRGBLUT [256]float64
@@ -100,33 +101,49 @@ func premultiply(r, g, b, a float64) [4]uint8 {
 	}
 }
 
-// convertImageSpace converts an image in place between interpolation spaces.
-// The conversion un-premultiplies, applies the transfer function to the colour
-// channels (alpha is space-independent), and re-premultiplies. It is a no-op
-// when from == to. This establishes the invariant that every filter primitive
-// works in its declared space with the graph edges doing the conversions.
-func convertImageSpace(img *image.RGBA, from, to InterpolationSpace) {
+// ConvertImageSpace converts an image in place between interpolation spaces,
+// over img's bounds. The conversion un-premultiplies, applies the transfer
+// function to the colour channels (alpha is space-independent), and
+// re-premultiplies. It is a no-op when from == to. This establishes the invariant
+// that every filter primitive works in its declared space with the graph edges
+// doing the conversions.
+func ConvertImageSpace(img *image.RGBA, from, to InterpolationSpace) {
 	if from == to || img == nil {
 		return
 	}
-	pix := img.Pix
-	for i := 0; i+3 < len(pix); i += 4 {
-		a := pix[i+3]
-		if a == 0 {
-			continue
+	lut := &linearToSRGBLUT
+	if to == InterpolationSpaceLinearRGB {
+		lut = &srgbToLinearLUT
+	}
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		pix := img.Pix[img.PixOffset(bounds.Min.X, y):][:bounds.Dx()*4]
+		for i := 0; i+3 < len(pix); i += 4 {
+			a := pix[i+3]
+			if a == 0 {
+				continue
+			}
+			if a == 255 {
+				// Opaque: premultiplied bytes are the colour. The tables hold
+				// exactly what the float path below computes for these bytes.
+				pix[i] = uint8(lut[pix[i]]*255 + 0.5)
+				pix[i+1] = uint8(lut[pix[i+1]]*255 + 0.5)
+				pix[i+2] = uint8(lut[pix[i+2]]*255 + 0.5)
+				continue
+			}
+			r, g, b, af := unpremultiply([4]uint8{pix[i], pix[i+1], pix[i+2], a})
+			switch {
+			case from == InterpolationSpaceSRGB && to == InterpolationSpaceLinearRGB:
+				r = srgbToLinear(r)
+				g = srgbToLinear(g)
+				b = srgbToLinear(b)
+			case from == InterpolationSpaceLinearRGB && to == InterpolationSpaceSRGB:
+				r = linearToSRGB(r)
+				g = linearToSRGB(g)
+				b = linearToSRGB(b)
+			}
+			out := premultiply(r, g, b, af)
+			pix[i], pix[i+1], pix[i+2], pix[i+3] = out[0], out[1], out[2], out[3]
 		}
-		r, g, b, af := unpremultiply([4]uint8{pix[i], pix[i+1], pix[i+2], a})
-		switch {
-		case from == InterpolationSpaceSRGB && to == InterpolationSpaceLinearRGB:
-			r = srgbToLinear(r)
-			g = srgbToLinear(g)
-			b = srgbToLinear(b)
-		case from == InterpolationSpaceLinearRGB && to == InterpolationSpaceSRGB:
-			r = linearToSRGB(r)
-			g = linearToSRGB(g)
-			b = linearToSRGB(b)
-		}
-		out := premultiply(r, g, b, af)
-		pix[i], pix[i+1], pix[i+2], pix[i+3] = out[0], out[1], out[2], out[3]
 	}
 }

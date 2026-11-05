@@ -767,13 +767,11 @@ func TestSVG_FilterFeFlood(t *testing.T) {
 }
 
 // TestSVG_FilterFeFloodWithOpacity — `<feFlood flood-color="red"
-// flood-opacity="0.5"/>` produces a half-transparent red flood. The
-// filter's output is composited onto the page via the louis14
-// straight-alpha-into-premultiplied-container convention (same shim
-// the SVG mask path uses); on a white background this produces a
-// mid-gray rather than the "correct" premultiplied-math (255,127,127).
-// Mirrors the well-known louis14 color-convention quirk — exhibits
-// pixel parity with the corresponding CSS-rendered ref.
+// flood-opacity="0.5"/>` is a half-transparent red flood composited with
+// premultiplied source-over, so on white it is (255,128,128).
+//
+// Blink: FEFlood::CreateImageFilter, platform/graphics/filters/fe_flood.cc:63-70
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<svg width="100" height="100">` +
@@ -784,21 +782,83 @@ func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="blue" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	// The reference rect uses the same color convention — `rgba(255,
-	// 0, 0, 0.5)` rendered via the gg pattern path. Sample the test
-	// against an equivalent CSS-rendered reference.
-	const refHTML = `<!DOCTYPE html><html><body style="margin:0">` +
-		`<svg width="100" height="100">` +
-		`<rect width="100" height="100" fill="red" fill-opacity="0.5"/>` +
-		`</svg></body></html>`
 	testImg := renderToImage(t, htmlContent, 200, 200)
-	refImg := renderToImage(t, refHTML, 200, 200)
-	// Match the CSS-path pixel value at the sample point — confirms
-	// the filter path uses the same straight-alpha convention.
-	rR, rG, rB, _ := refImg.At(50, 50).RGBA()
-	sampleColorClose(t, testImg, 50, 50,
-		uint8(rR>>8), uint8(rG>>8), uint8(rB>>8), 5,
-		"feFlood 50% pixel-matches CSS rgba(255,0,0,0.5)")
+	sampleColorClose(t, testImg, 50, 50, 255, 128, 128, 1, "feFlood 50% red over white")
+}
+
+// TestSVG_SolidFillOpacityPremultiplied — a semi-transparent solid fill goes
+// through the same premultiplied pipeline as HTML colours. Before LOU-657
+// setDCColor stored straight RGB in a premultiplied color.RGBA, so 50% red
+// over white rendered (127,128,128).
+//
+// Blink: SVGObjectPainter::PreparePaint, core/paint/svg_object_painter.cc:180-181
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestSVG_SolidFillOpacityPremultiplied(t *testing.T) {
+	for _, tc := range []struct {
+		name, attrs string
+		r, g, b     uint8
+	}{
+		{"fill-opacity", `fill="red" fill-opacity="0.5"`, 255, 128, 128},
+		{"fill rgba", `fill="rgba(255,0,0,0.5)"`, 255, 128, 128},
+		{"stroke-opacity", `fill="none" stroke="red" stroke-width="100" stroke-opacity="0.5"`, 255, 128, 128},
+		{"green 75%", `fill="green" fill-opacity="0.75"`, 64, 160, 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<!DOCTYPE html><html><body style="margin:0"><svg width="100" height="100">` +
+				`<rect width="100" height="100" ` + tc.attrs + `/></svg></body></html>`
+			img := renderToImage(t, html, 200, 200)
+			sampleColorClose(t, img, 50, 50, tc.r, tc.g, tc.b, 1, tc.name)
+		})
+	}
+}
+
+// TestSVG_FilterOverflowStaysInsideViewport — a filter region larger than the
+// <svg> viewport paints only inside it, including when the <svg> is offset on
+// the page. The composite bypasses the DC clip, so it must apply the viewport.
+func TestSVG_FilterOverflowStaysInsideViewport(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="50" height="50" style="position:absolute;left:20px;top:30px">` +
+		`<defs><filter id="f" x="-1" y="-1" width="3" height="3">` +
+		`<feFlood flood-color="blue"/></filter></defs>` +
+		`<rect x="10" y="10" width="30" height="30" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	for _, p := range []struct{ x, y int }{{20, 30}, {69, 30}, {20, 79}, {69, 79}, {45, 55}} {
+		sampleColorClose(t, img, p.x, p.y, 0, 0, 255, 0, "inside the viewport")
+	}
+	for _, p := range []struct{ x, y int }{{19, 55}, {70, 55}, {45, 29}, {45, 80}, {5, 5}, {100, 100}} {
+		sampleColorClose(t, img, p.x, p.y, 255, 255, 255, 0, "outside the viewport")
+	}
+}
+
+// TestSVG_FilterMaskRunsAfterSRGBConversion — the sRGB transform is the end of
+// the filter; clip and mask are outside it, so they scale sRGB bytes. Blink:
+// core/paint/filter_effect_builder.cc:500-505 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Gray 32 is linear 4, sRGB 34 after the
+// round trip; under a mask of 12/255 that is 2 on black. Masking the 8-bit linear
+// buffer first rounds 4*12/255 to 0, which no conversion can recover.
+func TestSVG_FilterMaskRunsAfterSRGBConversion(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0;background:black">` +
+		`<svg width="100" height="100"><defs>` +
+		`<filter id="f" x="0" y="0" width="1" height="1"><feOffset dx="0" dy="0"/></filter>` +
+		`<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">` +
+		`<rect width="100" height="100" fill="white" fill-opacity="0.05"/></mask>` +
+		`</defs><rect width="100" height="100" fill="rgb(32,32,32)" filter="url(#f)" mask="url(#m)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	sampleColorClose(t, img, 50, 50, 2, 2, 2, 0, "masked linearRGB filter result")
+}
+
+// TestSVG_ContainerFilterWithoutGraphKeepsSourceColours — when a <g>'s filter has
+// no result, the fallback composites the untouched source, which is sRGB device
+// content whatever the filter's color-interpolation-filters says.
+func TestSVG_ContainerFilterWithoutGraphKeepsSourceColours(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100"><defs><filter id="e"></filter></defs>` +
+		`<g filter="url(#e)"><rect width="100" height="100" fill="rgb(136,136,136)"/></g>` +
+		`</svg></body></html>`
+	img := renderToImage(t, html, 120, 120)
+	sampleColorClose(t, img, 50, 50, 136, 136, 136, 0, "unfiltered source")
 }
 
 // TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a

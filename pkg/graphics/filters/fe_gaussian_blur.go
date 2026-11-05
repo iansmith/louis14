@@ -72,8 +72,7 @@ func (e *FEGaussianBlur) MapRect(r image.Rectangle) image.Rectangle {
 // ApplyEffect runs the three-pass box blur on a copy of the input.
 func (e *FEGaussianBlur) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
 	in := firstInput(inputs, region)
-	out := image.NewRGBA(in.Bounds())
-	copy(out.Pix, in.Pix)
+	out := cloneRGBA(in)
 	if e.StdDevX <= 0 && e.StdDevY <= 0 {
 		return out
 	}

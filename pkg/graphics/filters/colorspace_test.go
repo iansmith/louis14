@@ -2,6 +2,7 @@ package filters
 
 import (
 	"image"
+	"image/color"
 	"math"
 	"testing"
 )
@@ -70,7 +71,7 @@ func TestConvertImageSpaceNoOp(t *testing.T) {
 	}
 	orig := make([]uint8, len(img.Pix))
 	copy(orig, img.Pix)
-	convertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceSRGB)
+	ConvertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceSRGB)
 	for i := range img.Pix {
 		if img.Pix[i] != orig[i] {
 			t.Fatalf("no-op conversion changed pixel %d: %d -> %d", i, orig[i], img.Pix[i])
@@ -90,8 +91,8 @@ func TestConvertImageSpaceRoundTrip(t *testing.T) {
 	}
 	orig := make([]uint8, len(img.Pix))
 	copy(orig, img.Pix)
-	convertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceLinearRGB)
-	convertImageSpace(img, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
+	ConvertImageSpace(img, InterpolationSpaceSRGB, InterpolationSpaceLinearRGB)
+	ConvertImageSpace(img, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
 	// The intermediate linearRGB image is stored at 8-bit depth, so dark
 	// colours lose precision (sRGB's gamma curve crowds many sRGB codes into
 	// a few linear codes near black). A few LSBs of error is expected and
@@ -101,5 +102,55 @@ func TestConvertImageSpaceRoundTrip(t *testing.T) {
 		if d < -6 || d > 6 {
 			t.Errorf("round-trip pixel %d: %d -> %d (delta %d)", i, orig[i], img.Pix[i], d)
 		}
+	}
+}
+
+// TestConvertImageSpace_SubImageOnly: a sub-image shares its parent's Pix, whose
+// rows are longer than the sub-image. Only pixels inside its bounds convert.
+func TestConvertImageSpace_SubImageOnly(t *testing.T) {
+	parent := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			parent.SetRGBA(x, y, color.RGBA{128, 128, 128, 255})
+		}
+	}
+	sub := parent.SubImage(image.Rect(1, 1, 3, 3)).(*image.RGBA)
+	ConvertImageSpace(sub, InterpolationSpaceLinearRGB, InterpolationSpaceSRGB)
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			inside := image.Pt(x, y).In(sub.Rect)
+			changed := parent.RGBAAt(x, y).R != 128
+			if inside != changed {
+				t.Errorf("pixel (%d,%d): inside=%v changed=%v", x, y, inside, changed)
+			}
+		}
+	}
+}
+
+// TestConvertImageSpace_OpaqueLUTMatchesFloatPath — opaque pixels go through the
+// byte tables, and must get the bytes the float path would give, for every byte in
+// both directions.
+func TestConvertImageSpace_OpaqueLUTMatchesFloatPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to InterpolationSpace
+		transfer func(float64) float64
+	}{
+		{"linear to sRGB", InterpolationSpaceLinearRGB, InterpolationSpaceSRGB, linearToSRGB},
+		{"sRGB to linear", InterpolationSpaceSRGB, InterpolationSpaceLinearRGB, srgbToLinear},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := 0; i < 256; i++ {
+				v := uint8(i)
+				img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+				img.SetRGBA(0, 0, color.RGBA{v, v, v, 255})
+				ConvertImageSpace(img, tc.from, tc.to)
+				r, _, _, a := unpremultiply([4]uint8{v, v, v, 255})
+				want := premultiply(tc.transfer(r), 0, 0, a)
+				if got := img.RGBAAt(0, 0); got.R != want[0] || got.G != want[0] || got.B != want[0] || got.A != 255 {
+					t.Errorf("byte %d: got %v, want %d", i, got, want[0])
+				}
+			}
+		})
 	}
 }
