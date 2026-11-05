@@ -121,14 +121,18 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		return nil
 	}
 
-	f := &filters.Filter{
+	// No FilterRegion: a shorthand chain is a SaveLayerOp with no bounds
+	// (ConversionContext::StartEffect, platform/graphics/compositing/
+	// paint_chunks_to_cc_layer.cc:737-743 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the caller sizes the
+	// buffer to what the content draws, mapped through the chain. Only a
+	// reference filter has a region (BuildReferenceFilter).
+	return &filters.Filter{
 		ReferenceBox: b.ReferenceBox,
 		Source:       src,
 		SourceAlpha:  srcAlpha,
 		LastEffect:   prev,
 	}
-	f.FilterRegion = f.MapRect(b.ReferenceBox)
-	return f
 }
 
 // BuildReferenceFilter resolves a `filter: url(#id)` reference

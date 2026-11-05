@@ -1343,32 +1343,14 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		builder.Mapping = mapping
 		filter = builder.BuildFilterEffect(layer.Filters)
 	}
-	sourceExtent := builder.ReferenceBox.Union(paintExtent)
-
-	// The filter region is the graph's forward-mapped bounds over the actual
-	// source extent (not just the border box) so the offscreen buffer covers
-	// every pixel the filter draws.
-	//
-	// When the element has zero painted extent (a 0x0 box with no
-	// descendants) the MapRect-of-source-extent yields empty — losing any
-	// SVG-resolved filter region from the referenced `<filter>` element
-	// (Filter Effects 1 §6.4: `<filter>` x/y/width/height define the
-	// result buffer for generators like feFlood whose output does not
-	// depend on the source extent). Fall back to the SVG-resolved region
-	// in that case so generator-only filters on empty elements still emit
-	// pixels — mirrors Blink's FilterPainter which treats the
-	// `<filter>` element's region as authoritative when MapRect(SourceGraphic)
-	// would otherwise collapse to zero.
-	mapped := filter.MapRect(sourceExtent)
+	// The buffer: a reference filter's SVG region, which crops its output
+	// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
+	// filter_effect_builder.cc:534-550 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); otherwise the content's paint
+	// extent mapped through the chain, since a shorthand chain is not cropped.
 	if filter.FilterRegion.Empty() {
-		// No SVG-specified region: size to the mapped content extent.
-		filter.FilterRegion = mapped
+		filter.FilterRegion = filter.MapRect(paintExtent)
 	}
-	// When the SVG <filter> element provided an explicit x/y/width/height,
-	// filter.FilterRegion is already set and is authoritative (Filter Effects 1
-	// §10.4). Do not override it with the source-extent mapping — doing so
-	// collapses the filter canvas to the element's border box, dropping the
-	// outer filter region that generators (feFlood, feConvolveMatrix bias) fill.
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
