@@ -187,3 +187,34 @@ func (r *Renderer) exitClipNodes(n int) {
 		r.popClipNode()
 	}
 }
+
+// localBorderBoxClipContains reports whether node is on the clip chain box's
+// painting enters under (its LocalBorderBoxProperties clip and the clips
+// above it).
+func (b *clipTreeBuilder) localBorderBoxClipContains(box *layout.Box, node *ClipPaintPropertyNode) bool {
+	for n := b.localBorderBoxClip(box); n != nil; n = n.Parent {
+		if n == node {
+			return true
+		}
+	}
+	return false
+}
+
+// paintZOrderChild paints a z-order child of layer while layer's overflow clip
+// node overflowClip is the innermost applied clip (paintLayerContent's
+// bracket; nil when layer does not clip). In Blink each
+// paint chunk carries its own clip state, and an out-of-flow box takes its
+// clip from its containing block (UpdateOutOfFlowContext and
+// SwitchToOOFContext, core/paint/paint_property_tree_builder.cc:3617-3622,
+// 3750-3754 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a stacking context's
+// z-order lists can hold such a box whose containing block is outside it. When
+// the child's clip chain does not pass through layer's overflow clip, the
+// clip is lifted while the child paints. The child stays inside layer's effect
+// (opacity, filter), which is not a clip.
+func (r *Renderer) paintZOrderChild(layer, child *PaintLayer, overflowClip *ClipPaintPropertyNode) {
+	if overflowClip != nil && child.Box != nil && !r.clipTree.localBorderBoxClipContains(child.Box, overflowClip) {
+		r.popClipNode()
+		defer r.pushClip(layer, clipNodeOverflowClip, overflowClip)
+	}
+	r.paintLayer(child)
+}
