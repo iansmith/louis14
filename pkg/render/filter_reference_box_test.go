@@ -91,3 +91,20 @@ func TestFilterReferenceBox_ChildOwnTransform(t *testing.T) {
 	img = renderToImage(t, fmt.Sprintf(page, "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-1);transform-origin:0 0"), 400, 400)
 	sampleColorClose(t, img, 150, 150, 0, 128, 0, 0, "w < 0: mapped child")
 }
+
+// TestShorthandFilter_NotCroppedToReferenceBox — a CSS shorthand filter is a
+// SaveLayerOp with no bounds (ConversionContext::StartEffect,
+// platform/graphics/compositing/paint_chunks_to_cc_layer.cc:737-743 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a descendant painted outside the
+// border box is filtered, not cropped. Geometry from WPT
+// filter-effects/backdrop-filter-backdrop-root-filter.
+func TestShorthandFilter_NotCroppedToReferenceBox(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="width:50px;height:50px;background:green;filter:invert(0.1)">` +
+		`<div style="position:relative;left:50px;width:50px;height:50px;border:1px solid black;box-sizing:border-box"></div>` +
+		`</div></body></html>`
+	img := renderToImage(t, page, 200, 100)
+	// Black inverted by 0.1 is 26.
+	sampleColorClose(t, img, 50, 20, 26, 26, 26, 1, "child's left border")
+	sampleColorClose(t, img, 99, 20, 26, 26, 26, 1, "child's right border")
+}
