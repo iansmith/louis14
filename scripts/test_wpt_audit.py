@@ -115,6 +115,22 @@ class Loads(unittest.TestCase):
         self.assertEqual(wa.match_hrefs(data), ["r.html", "n.html"])
 
 
+    def test_link_rel_author_and_help_are_not_loads(self):
+        data = b"""<link rel="author" href="mailto:a@b"><link rel=help href="spec.html">
+<link rel="stylesheet" href="s.css"><link rel=preload href="f.woff">"""
+        self.assertEqual(set(wa.loads(data)), {"s.css", "f.woff"})
+
+    def test_srcset_poster_background_and_namespaced_svg(self):
+        data = b"""<img srcset="a.png 1x, b.png 2x"><video poster="p.png"></video>
+<table background="bg.png"></table><svg:svg><svg:image xlink:href="i.png"/><svg:use href="u.svg#x"/></svg:svg>"""
+        self.assertEqual(set(wa.loads(data)), {"a.png", "b.png", "p.png", "bg.png", "i.png", "u.svg#x"})
+
+    def test_scripts(self):
+        self.assertEqual(set(wa.loads(b"""<script>img.src = "s.png"; load('/x/y.js');</script>""")),
+                         {"s.png", "/x/y.js"})
+        self.assertEqual(set(wa.loads(b"""fetch("data.json"); let n = "not a path";""", ".js")), {"data.json"})
+
+
 class SuiteOf(unittest.TestCase):
     def test_outside_both_suites(self):
         target = wa.harness_resolve(C3 + "/css-lists/t.html", "../../images/green-16x16.png")
@@ -190,6 +206,48 @@ class Plan(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertIn(("ignored", C3 + "/fonts/x.css", "fonts/x.css"), log)
 
+    def test_move_writes_nothing_more_when_bytes_match(self):
+        self.set_upstream({"css/css-a/reference/r.html": b"R"})
+        self.put(C3 + "/css-a/r.html", b"R")
+        actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/", [])
+        self.assertEqual(actions, [("mv", C3 + "/css-a/r.html", C3 + "/css-a/reference/r.html")], log)
+
+    def test_relocation_target_outside_prefix_is_left(self):
+        # Applying css-a/old/ must not write into css-a/new/.
+        self.set_upstream({"css/css-a/new/r.html": b"R"})
+        self.put(C3 + "/css-a/old/r.html", b"R")
+        actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/css-a/old/", [])
+        self.assertEqual(actions, [])
+        self.assertIn(("outside-prefix", C3 + "/css-a/old/r.html", C3 + "/css-a/new/r.html"), log)
+
+    def test_restore_into_ignored_path_is_skipped(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as f:
+            f.write("fonts/\n")
+        self.set_upstream({"css/css-a/fonts/x.css": b"NEW"})
+        self.put(C3 + "/css-a/fonts/x.css", b"OLD")
+        actions, log = wa.plan("sha", os.path.join(self.repo, "m.tsv"), C3 + "/", [])
+        self.assertEqual(actions, [])
+
+    def test_apply_leaves_the_mapping_file(self):
+        self.set_upstream({"css/css-a/t.html": b"T"})
+        self.put(C3 + "/css-a/t.html", b"T")
+        mapping = os.path.join(self.repo, "m.tsv")
+        with open(mapping, "w") as f:
+            f.write("committed\n")
+        wa.plan("sha", mapping, C3 + "/", [])
+        with open(mapping) as f:
+            self.assertEqual(f.read(), "committed\n")
+
+    def test_orphans(self):
+        self.set_upstream({"css/css-a/t.html": b'<link rel=match href="t-ref.html">',
+                           "css/css-a/t-ref.html": b"R"})
+        self.put(C3 + "/css-a/t.html", b'<link rel=match href="t-ref.html">')
+        self.put(C3 + "/css-a/t-ref.html", b"R")
+        self.put(C3 + "/css-a/old-ref.html", b"OLD")        # local-only, loaded by nothing
+        self.put(C3 + "/css-a/mine.html", b'<link rel=match href="mine-ref.html">')  # louis14 test
+        self.put(C3 + "/css-a/mine-ref.html", b"M")         # local-only, loaded
+        self.assertEqual(wa.orphans(self.upstream), [C3 + "/css-a/old-ref.html"])
+
     def test_identical_files_walk_without_a_mapping(self):
         # plan() audits the tree itself, so dependencies of identical files
         # are fetched even though a committed mapping leaves those rows out.
@@ -232,6 +290,40 @@ class Download(unittest.TestCase):
             self.assertEqual(wa.download("sha", "css/x", wa.git_blob_sha(b"X")), b"X")
         finally:
             wa.urllib.request.urlopen, wa.time.sleep = saved
+
+
+class DownloadIncompleteRead(unittest.TestCase):
+    def test_incomplete_read_is_retried(self):
+        import http.client
+        calls = []
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise http.client.IncompleteRead(b"X")
+                return b"X"
+
+        saved = (wa.urllib.request.urlopen, wa.time.sleep)
+        wa.urllib.request.urlopen = lambda url, timeout: Resp()
+        wa.time.sleep = lambda s: None
+        try:
+            self.assertEqual(wa.download("sha", "css/x", wa.git_blob_sha(b"X")), b"X")
+        finally:
+            wa.urllib.request.urlopen, wa.time.sleep = saved
+
+
+class DomDirectory(unittest.TestCase):
+    def test_dom_maps_like_other_top_level_dirs(self):
+        local = C3 + "/dom/events/scrolling/scroll_support.js"
+        self.assertEqual(wa.upstream_path(local), "dom/events/scrolling/scroll_support.js")
+        self.assertEqual(wa.harness_resolve(C3 + "/css-position/t.html", "/dom/events/scrolling/scroll_support.js"), local)
 
 
 class Classify(unittest.TestCase):
