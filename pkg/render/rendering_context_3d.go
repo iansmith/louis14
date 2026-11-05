@@ -108,7 +108,7 @@ func (r *Renderer) collectContextUnits(root *PaintLayer, node *TransformPaintPro
 	var walk func(layer *PaintLayer)
 	var visit func(c *PaintLayer, selfPainting bool)
 	member := func(l *PaintLayer, n *TransformPaintPropertyNode) {
-		u := contextUnit{layer: l, part: memberBackground, bounds: boxPaintBounds(l.Box), projection: projectionToRenderingContextBase(n)}
+		u := contextUnit{layer: l, part: memberBackground, bounds: r.boxPaintBounds(l), projection: projectionToRenderingContextBase(n)}
 		units = append(units, u)
 		for _, c := range l.NegativeZ {
 			visit(c, true)
@@ -147,7 +147,7 @@ func (r *Renderer) collectContextUnits(root *PaintLayer, node *TransformPaintPro
 // flattened into it when the layer is not the leaf.
 func (r *Renderer) leafUnit(l *PaintLayer, root *layout.Box) contextUnit {
 	plane := projectionToRenderingContextBase(r.transformTree.localBorderBoxTransform(r.sceneLeaf(l.Box, root)))
-	u := contextUnit{layer: l, bounds: boxPaintBounds(l.Box), projection: plane, plane: &plane}
+	u := contextUnit{layer: l, bounds: r.boxPaintBounds(l), projection: plane, plane: &plane}
 	switch n := r.transformTree.node(l.Box); {
 	case n.participatesInRenderingContext():
 		// The leaf itself: plane is its own node's projection, which it
@@ -199,10 +199,12 @@ func zeroScreenArea(p *viz.DrawPolygon) bool {
 }
 
 // boxPaintBounds is the rect in a unit's local (absolute) coordinates its
-// polygon is made from, the quad's visible rect in viz: the border boxes of
-// box and its descendants.
-func boxPaintBounds(box *layout.Box) geometry.RectF {
-	b := subtreeBorderBoxBounds(box)
+// polygon is made from, the quad's visible rect in viz: the layer's bounding
+// box including its self-painting descendants
+// (PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants), enclosed in
+// whole pixels as a cc layer's bounds are.
+func (r *Renderer) boxPaintBounds(l *PaintLayer) geometry.RectF {
+	b := snapRectFToDevice(r.localBoundingBoxIncludingSelfPaintingDescendants(l).ToRectF())
 	return rectFFromInts(b.Min.X, b.Min.Y, b.Dx(), b.Dy())
 }
 

@@ -24,7 +24,7 @@ func TestFilterReferenceBox_IncludesSelfPaintingDescendants(t *testing.T) {
 		`</div></body></html>`
 	img := renderToImage(t, page, 200, 200)
 	sampleColorClose(t, img, 60, 50, 128, 0, 0, 1, "inside the region from the descendants' bounds")
-	sampleColorClose(t, img, 30, 50, 128, 0, 0, 1, "inside both regions")
+	sampleColorClose(t, img, 30, 25, 128, 0, 0, 1, "inside both regions")
 	sampleColorClose(t, img, 15, 50, 255, 255, 255, 0, "left of the region")
 	sampleColorClose(t, img, 85, 50, 255, 255, 255, 0, "right of the region")
 }

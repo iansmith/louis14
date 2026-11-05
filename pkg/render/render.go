@@ -1293,14 +1293,19 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
 	// Phase 7: SVG `<filter>` resource registry is supplied so
 	// `filter: url(#id)` references resolve via BuildReferenceFilter.
-	builder := &FilterEffectBuilder{
-		CurrentColor:       layer.TextColor,
-		Resources:          r.lookupSVGResources(),
-		ExternalSVGFetcher: r.externalSVGFetcher,
-		ImageFetcher:       r.imageFetcher,
-	}
+	builder := r.newFilterEffectBuilder(layer)
+	// The reference box: the border box, or, for a filter that moves pixels,
+	// the bounding box of the layer and its self-painting descendants
+	// (PaintLayer::UpdateFilterReferenceBox, core/paint/paint_layer.cc:
+	// 2021-2044 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	paintBounds := r.localBoundingBoxIncludingSelfPaintingDescendants(layer).ToRectF()
 	borderBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
-	builder.ReferenceBox = snapRectFToDevice(borderBox)
+	referenceBox := borderBox
+	if layer.hasFilterThatMovesPixels() {
+		referenceBox = paintBounds
+	}
+	builder.ReferenceBox = snapRectFToDevice(referenceBox)
+	builder.FilterViewport = snapRectFToDevice(borderBox)
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
 		// No supported CSS filter functions (e.g. only url() references,
@@ -1315,35 +1320,34 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 	paramToLayer := mapping.ParamToLayer
 
-	// SourceGraphic extent: the element subtree's paint bounds, which can
-	// extend beyond the border box (positioned/overflowing descendants).
-	// Blink's filter SourceGraphic is the recorded layer contents including
-	// overflow; for drop-shadow especially the shadow is cast from the whole
-	// painted shape, so the source buffer must cover it. drop-shadow-clipped
-	// proves this: a descendant offset out of the border box still casts a
-	// shadow.
-	subtreeBounds := subtreeBorderBoxBounds(box)
+	// SourceGraphic extent: the layer's paint bounds, which can extend beyond
+	// the border box (positioned or overflowing descendants). For drop-shadow
+	// the shadow is cast from the whole painted shape, so the source buffer
+	// must cover it (drop-shadow-clipped).
+	paintExtent := snapRectFToDevice(paintBounds)
 	if !paramToLayer.IsIdentity() {
 		// The graph's geometry (reference box, filter region, primitive
 		// subregions) and its parameters are built in layer pixels, so
 		// rebuild it against the reference box mapped into the layer and
 		// with the parameter mapping. The box's corners are rounded to
 		// align with the pixel-snapped rasterization of the box.
-		ref, ok := mapRectToLayer(paramToLayer, borderBox)
-		sub, subOK := mapRectToLayer(paramToLayer, geometry.NewRectF(
-			float64(subtreeBounds.Min.X), float64(subtreeBounds.Min.Y),
-			float64(subtreeBounds.Dx()), float64(subtreeBounds.Dy())))
-		if !ok || !subOK {
+		ref, ok := mapRectToLayer(paramToLayer, referenceBox)
+		sub, subOK := mapRectToLayer(paramToLayer, paintBounds)
+		vp, vpOK := mapRectToLayer(paramToLayer, borderBox)
+		if !ok || !subOK || !vpOK {
 			return
 		}
+		builder.FilterViewport = image.Rect(
+			int(math.Round(vp.X())), int(math.Round(vp.Y())),
+			int(math.Round(vp.Right())), int(math.Round(vp.Bottom())))
 		builder.ReferenceBox = image.Rect(
 			int(math.Round(ref.X())), int(math.Round(ref.Y())),
 			int(math.Round(ref.Right())), int(math.Round(ref.Bottom())))
-		subtreeBounds = snapRectFToDevice(sub)
+		paintExtent = snapRectFToDevice(sub)
 		builder.Mapping = mapping
 		filter = builder.BuildFilterEffect(layer.Filters)
 	}
-	sourceExtent := builder.ReferenceBox.Union(subtreeBounds)
+	sourceExtent := builder.ReferenceBox.Union(paintExtent)
 
 	// The filter region is the graph's forward-mapped bounds over the actual
 	// source extent (not just the border box) so the offscreen buffer covers
@@ -1432,6 +1436,17 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	r.dc.Pop()
 }
 
+// newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
+// with the renderer's resources and fetchers; the caller sets the boxes.
+func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
+	return &FilterEffectBuilder{
+		CurrentColor:       layer.TextColor,
+		Resources:          r.lookupSVGResources(),
+		ExternalSVGFetcher: r.externalSVGFetcher,
+		ImageFetcher:       r.imageFetcher,
+	}
+}
+
 // ownLayerProjection is the transform applyTransforms paints layer's content
 // with on top of the draw context: its projection (layerProjection), or the
 // identity when it paints under no transform of its own.
@@ -1508,29 +1523,6 @@ func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, boo
 		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
 	}
 	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
-}
-
-// subtreeBorderBoxBounds returns the union of the border boxes of box and all
-// its descendants, in absolute device pixels. It is the conservative paint
-// extent the filter SourceGraphic must cover so that descendants painted
-// outside the element's own border box (relative/absolute positioned, or
-// simply overflowing) still feed the filter graph.
-func subtreeBorderBoxBounds(box *layout.Box) image.Rectangle {
-	if box == nil {
-		return image.Rectangle{}
-	}
-	x0 := int(math.Floor(box.X))
-	y0 := int(math.Floor(box.Y))
-	x1 := int(math.Ceil(box.X + box.Width))
-	y1 := int(math.Ceil(box.Y + box.Height))
-	bounds := image.Rect(x0, y0, x1, y1)
-	for _, child := range box.Children {
-		cb := subtreeBorderBoxBounds(child)
-		if !cb.Empty() {
-			bounds = bounds.Union(cb)
-		}
-	}
-	return bounds
 }
 
 // applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
@@ -1624,13 +1616,8 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 
 	// Run the filter graph over the backdrop image. backdrop-filter uses the
 	// same filter-function list as filter.
-	builder := &FilterEffectBuilder{
-		ReferenceBox:       borderBox,
-		CurrentColor:       layer.TextColor,
-		Resources:          r.lookupSVGResources(),
-		ExternalSVGFetcher: r.externalSVGFetcher,
-		ImageFetcher:       r.imageFetcher,
-	}
+	builder := r.newFilterEffectBuilder(layer)
+	builder.ReferenceBox = borderBox
 	filter := builder.BuildFilterEffect(layer.BackdropFilters)
 	if filter == nil {
 		return
@@ -1693,17 +1680,9 @@ func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 		return
 	}
 
-	// Buffer extent: the layer's own border box unioned with the
-	// subtree's border boxes so an overflowing blended descendant is
-	// fully captured. Matches paintLayerWithFilter's sourceExtent
-	// pattern.
-	selfBounds := image.Rect(
-		int(math.Floor(box.X)),
-		int(math.Floor(box.Y)),
-		int(math.Ceil(box.X+box.Width)),
-		int(math.Ceil(box.Y+box.Height)),
-	)
-	extent := selfBounds.Union(subtreeBorderBoxBounds(box))
+	// Buffer extent: the layer's paint bounds, so an overflowing blended
+	// descendant is fully captured.
+	extent := snapRectFToDevice(r.localBoundingBoxIncludingSelfPaintingDescendants(layer).ToRectF())
 	bx, by := extent.Min.X, extent.Min.Y
 	bw, bh := extent.Dx(), extent.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
@@ -2104,4 +2105,182 @@ func (layer *PaintLayer) sortZLists() {
 	for _, child := range layer.FloatChildren {
 		child.sortZLists()
 	}
+}
+
+// paintsWithFilters mirrors PaintLayer::PaintsWithFilters
+// (core/paint/paint_layer.cc:269-273 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the layer has a filter-inducing property. louis14 has no box-reflect.
+func (layer *PaintLayer) paintsWithFilters() bool {
+	return len(layer.Filters) > 0
+}
+
+// hasFilterThatMovesPixels mirrors PaintLayer::HasFilterThatMovesPixels
+// (ComputeHasFilterThatMovesPixels, paint_layer.cc:2653-2662 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): some operation moves pixels.
+// Reference, blur and drop-shadow operations do (FilterOperation::MovesPixels,
+// core/style/filter_operation.h:152, 336, 372 @ a9f50e52).
+func (layer *PaintLayer) hasFilterThatMovesPixels() bool {
+	for _, op := range layer.Filters {
+		switch op.Name {
+		case "url", "blur", "drop-shadow":
+			return true
+		}
+	}
+	return false
+}
+
+// forEachChild calls f on each child layer of layer in paint order, with
+// whether it is a self-painting layer: PaintLayerPaintOrderIterator(this,
+// kAllChildren) and IsSelfPaintingLayer (paint_layer.cc:2201-2206 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A flow child is self-painting when
+// paintDescendantPhase paints it through paintLayer (isSelfPaintingFlowChild).
+func (layer *PaintLayer) forEachChild(f func(c *PaintLayer, selfPainting bool)) {
+	for _, c := range layer.NegativeZ {
+		f(c, true)
+	}
+	for _, c := range layer.FlowChildren {
+		f(c, isSelfPaintingFlowChild(c))
+	}
+	for _, list := range [][]*PaintLayer{layer.FloatChildren, layer.AutoZero, layer.PositiveZ} {
+		for _, c := range list {
+			f(c, true)
+		}
+	}
+}
+
+// selfPaintingDescendantBoxes returns the boxes of layer's self-painting
+// descendant layers at any depth: the boxes visualOverflowRect leaves out.
+func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
+	boxes := map[*layout.Box]bool{}
+	var walk func(l *PaintLayer)
+	walk = func(l *PaintLayer) {
+		l.forEachChild(func(c *PaintLayer, selfPainting bool) {
+			if selfPainting && c.Box != nil {
+				boxes[c.Box] = true
+			}
+			walk(c)
+		})
+	}
+	walk(layer)
+	return boxes
+}
+
+// localBoundingBox mirrors PaintLayer::LocalBoundingBox (paint_layer.cc:
+// 2172-2179 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the layer box's visual
+// overflow rect. louis14 works in absolute coordinates, without the layer's own
+// transform.
+func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+	return visualOverflowRect(layer.Box, selfPainting)
+}
+
+// visualOverflowRect stands in for LayoutBox::VisualOverflowRect
+// (core/layout/layout_box.cc:3690-3728 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the border box united with the contents' overflow, which an overflow clip
+// cuts back to the border box on each clipped axis (ApplyOverflowClip). A
+// descendant painted by a self-painting layer of its own is left out, as Blink
+// leaves it out of its ancestors' visual overflow;
+// ExpandRectForSelfPaintingDescendants adds it.
+//
+// no Blink analog: louis14 keeps no visual overflow, so this is built from
+// border boxes alone, without ink overflow (shadows, outlines, glyph overflow)
+// and without overflow-clip-margin.
+func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+	border := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(box.X, box.Y, box.Width, box.Height))
+	var contents geometry.PhysicalRect
+	for _, child := range box.Children {
+		if !selfPainting[child] {
+			contents = contents.Unite(visualOverflowRect(child, selfPainting))
+		}
+	}
+	result := border.Unite(contents)
+	if box.OverflowClipAxes&layout.OverflowClipX != 0 {
+		result.Offset.Left, result.Size.Width = border.Offset.Left, border.Size.Width
+	}
+	if box.OverflowClipAxes&layout.OverflowClipY != 0 {
+		result.Offset.Top, result.Size.Height = border.Offset.Top, border.Size.Height
+	}
+	return result
+}
+
+// knownToClipSubtreeToPaddingBox mirrors PaintLayer::KnownToClipSubtreeToPaddingBox
+// (paint_layer.cc:2225-2242 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// layer clips its whole subtree on both axes. louis14 has no record of which
+// out-of-flow descendants escape the clip, so any absolute or fixed descendant
+// layer counts as escaping; that only makes the answer false more often, which
+// expands the rect. hasOutOfFlow reports a descendant out-of-flow layer.
+func (layer *PaintLayer) knownToClipSubtreeToPaddingBox(hasOutOfFlow bool) bool {
+	return layer.Box != nil && layer.Box.OverflowClipAxes == layout.OverflowClipBothAxis &&
+		!layer.HasClipMargin && !hasOutOfFlow
+}
+
+// localBoundingBoxIncludingSelfPaintingDescendants mirrors
+// PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants
+// (paint_layer.cc:2244-2249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) localBoundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer) geometry.PhysicalRect {
+	result, _ := r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.selfPaintingDescendantBoxes())
+	return result
+}
+
+// boundingBoxIncludingSelfPaintingDescendants is
+// localBoundingBoxIncludingSelfPaintingDescendants with the self-painting box
+// set of an ancestor, which serves every layer under it, and also reports
+// whether layer's subtree holds an out-of-flow layer, so one walk answers
+// knownToClipSubtreeToPaddingBox at every level.
+func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, selfPainting map[*layout.Box]bool) (geometry.PhysicalRect, bool) {
+	result := layer.localBoundingBox(selfPainting)
+	hasOutOfFlow := r.expandRectForSelfPaintingDescendants(layer, &result, selfPainting)
+	return result, hasOutOfFlow
+}
+
+// expandRectForSelfPaintingDescendants mirrors
+// PaintLayer::ExpandRectForSelfPaintingDescendants (paint_layer.cc:2181-2223 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): unite each self-painting child's
+// own bounding box, mapped through its filter and then its transform. louis14's
+// rects are absolute, so Blink's final offset to the parent is the identity.
+// Unlike Blink it visits every child before deciding to skip, to learn whether
+// the subtree holds an out-of-flow layer; it returns that.
+func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, selfPainting map[*layout.Box]bool) bool {
+	var expanded geometry.PhysicalRect
+	hasOutOfFlow := false
+	layer.forEachChild(func(child *PaintLayer, childSelfPainting bool) {
+		added, childOutOfFlow := r.boundingBoxIncludingSelfPaintingDescendants(child, selfPainting)
+		hasOutOfFlow = hasOutOfFlow || childOutOfFlow || isOutOfFlowForPaint(child)
+		if !childSelfPainting || child.Box == nil {
+			return
+		}
+		if child.paintsWithFilters() {
+			added = r.mapRectForFilter(child, added)
+		}
+		if child.HasTransform && r.transformTree != nil {
+			if n := r.transformTree.node(child.Box); n != nil {
+				if mapped, ok := mapRectToLayer(n.Matrix, added.ToRectF()); ok {
+					added = geometry.PhysicalRectEnclosingRect(mapped)
+				}
+			}
+		}
+		expanded = expanded.Unite(added)
+	})
+	if !layer.knownToClipSubtreeToPaddingBox(hasOutOfFlow) {
+		*result = result.Unite(expanded)
+	}
+	return hasOutOfFlow
+}
+
+// mapRectForFilter mirrors PaintLayer::MapRectForFilter (paint_layer.cc:
+// 2641-2651 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): FilterOperations::MapRect
+// over the layer's filter, built against rect as its reference box, which is
+// what Blink's FilterReferenceBox holds for this layer.
+func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRect) geometry.PhysicalRect {
+	if !layer.hasFilterThatMovesPixels() {
+		return rect
+	}
+	builder := r.newFilterEffectBuilder(layer)
+	builder.ReferenceBox = snapRectFToDevice(rect.ToRectF())
+	builder.FilterViewport = snapRectFToDevice(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height))
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		return rect
+	}
+	m := filter.MapRect(builder.ReferenceBox)
+	return geometry.PhysicalRectEnclosingRect(rectFFromInts(m.Min.X, m.Min.Y, m.Dx(), m.Dy()))
 }
