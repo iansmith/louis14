@@ -48,3 +48,21 @@ func TestFilterReferenceBox_NegativelyPositionedChild(t *testing.T) {
 	sampleColorClose(t, img, 50, 50, 255, 127, 255, 1, "child, inverted")
 	sampleColorClose(t, img, 50, 150, 0, 0, 0, 0, "parent, inverted")
 }
+
+// TestFilterViewport_EmptyBorderBox — userSpaceOnUse coordinates are relative
+// to the layer's origin and its border box is the viewport
+// (ComputeFilterViewport, core/paint/paint_layer.cc:164-174 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), even when the border box is 0x0
+// and the reference box, from a child, starts elsewhere.
+func TestFilterViewport_EmptyBorderBox(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="0" height="0" style="position:absolute"><defs>` +
+		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">` +
+		`<feFlood flood-color="green"/></filter></defs></svg>` +
+		`<div style="margin:50px;width:0;height:0;filter:url(#f)">` +
+		`<div style="position:relative;left:-50px;top:-50px;width:100px;height:100px;background:red"></div>` +
+		`</div></body></html>`
+	img := renderToImage(t, page, 200, 200)
+	sampleColorClose(t, img, 60, 60, 0, 128, 0, 0, "region at the 0x0 box's origin")
+	sampleColorClose(t, img, 10, 10, 255, 255, 255, 0, "outside the region")
+}
