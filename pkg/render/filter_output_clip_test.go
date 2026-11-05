@@ -59,13 +59,15 @@ func TestFilterOutputClip_ReplacedElement(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := `<!DOCTYPE html><html><body style="margin:0">` +
-		`<img style="position:absolute;left:0;top:0;width:100px;height:100px;clip:rect(0px,50px,100px,0px);` +
-		`filter:drop-shadow(-60px 0 0 green)" src="data:image/png;base64,` + base64.StdEncoding.EncodeToString(buf.Bytes()) + `">` +
+		`<img style="position:absolute;left:100px;top:0;width:100px;height:100px;clip:rect(0px,50px,100px,-100px);` +
+		`filter:drop-shadow(-100px 0 0 green)" src="data:image/png;base64,` + base64.StdEncoding.EncodeToString(buf.Bytes()) + `">` +
 		`</body></html>`
-	img := renderToImage(t, page, 200, 200)
-	// The right half (50..100) casts its shadow at -10..40, inside the clip.
-	sampleColorClose(t, img, 25, 50, 0, 128, 0, 0, "shadow of the clipped-away half")
-	sampleColorClose(t, img, 75, 50, 255, 255, 255, 0, "the image's right half is clipped")
+	img := renderToImage(t, page, 300, 200)
+	// The clip shows page x 0..150. The image's right half (150..200) is
+	// clipped away but feeds the filter: its shadow lands at 50..100.
+	sampleColorClose(t, img, 75, 50, 0, 128, 0, 0, "shadow of the clipped-away half")
+	sampleColorClose(t, img, 125, 50, 255, 0, 0, 0, "the image's visible half")
+	sampleColorClose(t, img, 175, 50, 255, 255, 255, 0, "the image's right half is clipped")
 }
 
 // TestFilterOutputClip_RootCanvasBackground — the canvas background is painted
