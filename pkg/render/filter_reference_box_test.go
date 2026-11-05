@@ -91,3 +91,96 @@ func TestFilterReferenceBox_ChildOwnTransform(t *testing.T) {
 	img = renderToImage(t, fmt.Sprintf(page, "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-1);transform-origin:0 0"), 400, 400)
 	sampleColorClose(t, img, 150, 150, 0, 128, 0, 0, "w < 0: mapped child")
 }
+
+// TestShorthandFilter_NotCroppedToReferenceBox — a CSS shorthand filter is a
+// SaveLayerOp with no bounds (ConversionContext::StartEffect,
+// platform/graphics/compositing/paint_chunks_to_cc_layer.cc:737-743 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a descendant painted outside the
+// border box is filtered, not cropped. Geometry from WPT
+// filter-effects/backdrop-filter-backdrop-root-filter.
+func TestShorthandFilter_NotCroppedToReferenceBox(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="width:50px;height:50px;background:green;filter:invert(0.1)">` +
+		`<div style="position:relative;left:50px;width:50px;height:50px;border:1px solid black;box-sizing:border-box"></div>` +
+		`</div></body></html>`
+	img := renderToImage(t, page, 200, 100)
+	// Black inverted by 0.1 is 26.
+	sampleColorClose(t, img, 50, 20, 26, 26, 26, 1, "child's left border")
+	sampleColorClose(t, img, 99, 20, 26, 26, 26, 1, "child's right border")
+}
+
+// TestShorthandFilter_OffscreenDescendant — a skip link far off-screen inside a
+// filtered box must not switch the filter off or size the buffer to it: Skia
+// clips a layer's bounds to the device clip (get_layer_mapping_and_bounds,
+// src/core/SkCanvas.cpp:570-600 @ d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func TestShorthandFilter_OffscreenDescendant(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
+		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
+		`</div></body></html>`
+	img := renderToImage(t, page, 300, 300)
+	// grayscale(1) of red: 0.2126 * 255.
+	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
+}
+
+// TestShorthandFilter_TransformedEdgeRowSurvives — a scaled and a rotated
+// filtered box keep their border-box edge rows: the buffer covers the paint
+// extent mapped into the filter layer.
+func TestShorthandFilter_TransformedEdgeRowSurvives(t *testing.T) {
+	const scaled = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:absolute;left:50px;top:50px;width:100px;height:100px;background:rgb(255,0,0);` +
+		`transform:scale(1.5);transform-origin:0 0;filter:grayscale(1)"></div></body></html>`
+	img := renderToImage(t, scaled, 300, 300)
+	for _, p := range [][2]int{{50, 50}, {199, 50}, {50, 199}, {199, 199}} {
+		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "scaled box edge")
+	}
+	const rotated = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="position:absolute;left:100px;top:100px;width:100px;height:100px;background:rgb(255,0,0);` +
+		`transform:rotate(90deg);filter:grayscale(1)"></div></body></html>`
+	img = renderToImage(t, rotated, 300, 300)
+	for _, p := range [][2]int{{100, 100}, {199, 100}, {100, 199}, {199, 199}} {
+		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "rotated box edge")
+	}
+}
+
+// TestShorthandFilter_ProjectiveAncestorSkipLink — under a perspective
+// ancestor the draw context's matrix cannot be read back, so the device clip
+// cannot bound the buffer; the box must still be filtered, as it was before
+// shorthand chains lost their crop.
+func TestShorthandFilter_ProjectiveAncestorSkipLink(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<div style="perspective:500px"><div style="transform:rotateY(20deg)">` +
+		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
+		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
+		`</div></div></div></body></html>`
+	img := renderToImage(t, page, 300, 300)
+	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
+}
+
+// TestSVGShapeFilterChain_RegionAsBefore — an SVG shape's shorthand chain keeps
+// its buffer at MapRect(reference box): a 2100px rect whose url() stage moves
+// it 2000px right must not grow the buffer past the cap and paint unfiltered.
+func TestSVGShapeFilterChain_RegionAsBefore(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="4200" height="50"><defs>` +
+		`<filter id="o" x="0" y="0" width="2" height="1" filterUnits="objectBoundingBox"><feOffset dx="2000" dy="0"/></filter>` +
+		`</defs><rect width="2100" height="50" fill="rgb(255,0,0)" style="filter:url(#o) grayscale(1)"/></svg>` +
+		`</body></html>`
+	img := renderToImage(t, page, 4200, 50)
+	sampleColorClose(t, img, 50, 25, 255, 255, 255, 0, "left of the offset rect stays empty")
+}
+
+// TestReferenceFilter_RegionOffClip — a url() filter whose SVG region lies off
+// screen draws nothing on screen, as on master: the SVG region is not clipped
+// to the device clip, which would leave it empty and paint the content
+// unfiltered.
+func TestReferenceFilter_RegionOffClip(t *testing.T) {
+	const page = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="0" height="0" style="position:absolute"><defs>` +
+		`<filter id="away" x="-3" y="0" width="1" height="1"><feOffset dx="0" dy="0"/></filter>` +
+		`</defs></svg>` +
+		`<div style="width:100px;height:100px;background:rgb(255,0,0);filter:url(#away)"></div>` +
+		`</body></html>`
+	img := renderToImage(t, page, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 255, 255, 0, "region off screen: nothing drawn")
+}

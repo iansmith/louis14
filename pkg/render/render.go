@@ -1293,10 +1293,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		ctm = dm.Mul(own)
 	}
 
-	// Build the filter graph. The builder computes the filter region by
-	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
-	// Phase 7: SVG `<filter>` resource registry is supplied so
-	// `filter: url(#id)` references resolve via BuildReferenceFilter.
+	// Build the filter graph; SVG `filter: url(#id)` references resolve
+	// through the renderer's resource registry (BuildReferenceFilter).
 	builder := r.newFilterEffectBuilder(layer)
 	// The reference box: the border box, or, for a filter that moves pixels,
 	// the bounding box of the layer and its self-painting descendants
@@ -1347,32 +1345,26 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		builder.Mapping = mapping
 		filter = builder.BuildFilterEffect(layer.Filters)
 	}
-	sourceExtent := builder.ReferenceBox.Union(paintExtent)
-
-	// The filter region is the graph's forward-mapped bounds over the actual
-	// source extent (not just the border box) so the offscreen buffer covers
-	// every pixel the filter draws.
-	//
-	// When the element has zero painted extent (a 0x0 box with no
-	// descendants) the MapRect-of-source-extent yields empty — losing any
-	// SVG-resolved filter region from the referenced `<filter>` element
-	// (Filter Effects 1 §6.4: `<filter>` x/y/width/height define the
-	// result buffer for generators like feFlood whose output does not
-	// depend on the source extent). Fall back to the SVG-resolved region
-	// in that case so generator-only filters on empty elements still emit
-	// pixels — mirrors Blink's FilterPainter which treats the
-	// `<filter>` element's region as authoritative when MapRect(SourceGraphic)
-	// would otherwise collapse to zero.
-	mapped := filter.MapRect(sourceExtent)
-	if filter.FilterRegion.Empty() {
-		// No SVG-specified region: size to the mapped content extent.
-		filter.FilterRegion = mapped
+	// The buffer. A reference filter keeps its SVG region and a chain with a
+	// url() stage the region its builder gave it; an empty SVG region falls
+	// back to the source extent mapped through the filter, as before (exact
+	// sizing for these is LOU-704). A shorthand-only chain is not cropped
+	// (filters.Filter.EnsureRegion): its buffer holds the content and what
+	// the chain draws from it, clipped to the device clip as Skia clips a
+	// layer's bounds (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:
+	// 570-600 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) and grown by
+	// the filter's reach (filterLayerClip). Without a clip (a projective ancestor, or the
+	// layer's own perspective) the chain keeps the region it had before.
+	switch {
+	case hasReferenceFilter(layer.Filters):
+		filter.EnsureRegion(builder.ReferenceBox.Union(paintExtent), false)
+	case dmKnown:
+		if clip, ok := r.filterLayerClip(filter, mapping); ok {
+			filter.EnsureRegion(paintExtent, true)
+			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
+		}
 	}
-	// When the SVG <filter> element provided an explicit x/y/width/height,
-	// filter.FilterRegion is already set and is authoritative (Filter Effects 1
-	// §10.4). Do not override it with the source-extent mapping — doing so
-	// collapses the filter canvas to the element's border box, dropping the
-	// outer filter region that generators (feFlood, feConvolveMatrix bias) fill.
+	filter.EnsureRegion(builder.ReferenceBox, false)
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
@@ -1460,6 +1452,36 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	r.dc.DrawImage(out, bx, by)
 	r.popOwnClips(layer)
 	r.dc.Pop()
+}
+
+// filterLayerClip returns the draw context's clip in the filter layer's pixels,
+// grown by the filter's reach so pixels just outside it still feed the
+// filtered pixels inside: the layer bounds Skia keeps, the device clip mapped
+// into the layer (fLayerToDevMatrix inverse) and expanded by the filter's
+// required input (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600
+// @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). louis14 has no reverse
+// MapRect (LOU-704), so the reach is the forward MapRect's largest outset per
+// axis; it serves shorthand-only chains, whose primitives all report their
+// reach that way.
+func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mapping) (image.Rectangle, bool) {
+	c := r.dc.ClipBounds()
+	var inv geometry.Transform
+	if !mapping.LayerToDev.GetInverse(&inv) {
+		return image.Rectangle{}, false
+	}
+	layerClip, ok := mapRectToLayer(inv, rectFFromInts(c.Min.X, c.Min.Y, c.Dx(), c.Dy()))
+	if !ok {
+		return image.Rectangle{}, false
+	}
+	clip := snapRectFToDevice(layerClip)
+	m := filter.MapRect(clip)
+	if m.Empty() {
+		// No reach to measure: leave the region unclipped.
+		return image.Rectangle{}, false
+	}
+	padX := max(clip.Min.X-m.Min.X, m.Max.X-clip.Max.X, 0)
+	padY := max(clip.Min.Y-m.Min.Y, m.Max.Y-clip.Max.Y, 0)
+	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true
 }
 
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
