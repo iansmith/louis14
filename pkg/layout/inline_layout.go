@@ -2358,9 +2358,21 @@ func createLineBoxEx(
 	// fix must nest enc inside flGroup per first line without polluting the
 	// shared (cross-line) enclosing group; deferred as a heavy lift. Not a
 	// regression: pre-LOU-305 that case double-blended too.
+	//
+	// enc takes precedence only when an OPACITY group encloses the fragment:
+	// when every enclosing paint group exists for another reason (relative
+	// position, filter, clip-path, ...; LOU-718), first-line fragments go to
+	// flGroup, as before those inlines were paint groups, so the
+	// ::first-line opacity still applies to them. They then skip those
+	// inlines' own layers on the first line (LOU-310).
 	flPaintGroup := func(enc *InlineItem) *InlineItem {
-		if enc != nil {
+		if flGroup == nil {
 			return enc
+		}
+		for g := enc; g != nil; g = g.EnclosingPaintGroup {
+			if g.Style.GetOpacity() < 1 {
+				return enc
+			}
 		}
 		return flGroup
 	}

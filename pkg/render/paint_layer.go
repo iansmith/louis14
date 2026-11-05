@@ -80,12 +80,16 @@ type PaintLayer struct {
 	// inlineBoxFragments are a LayoutInline layer's box fragments, gathered
 	// while the inline's members are routed and put in line order by
 	// finalizeInlineLayer (Blink walks them with an InlineCursor).
-	inlineBoxFragments []geometry.PhysicalRect
+	inlineBoxFragments []*layout.Box
 	// linesBoundingBox is LayoutInline::PhysicalLinesBoundingBox
 	// (layout_inline.cc:658-673 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 	// the union of inlineBoxFragments, skipping zero-size ones. Set by
 	// finalizeInlineLayer once the paint tree is built.
 	linesBoundingBox geometry.PhysicalRect
+	// linesBox is a copy of a LayoutInline layer's box with
+	// linesBoundingBox as its border box and the inline's border and
+	// padding; see linesOrBorderBox. Set by finalizeInlineLayer.
+	linesBox *layout.Box
 	// inlineMembersSC is the stacking context that collects the positioned
 	// and stacking descendants of a LayoutInline's layer: the layer itself
 	// when it is one, otherwise (a relatively or sticky positioned inline
@@ -1709,11 +1713,25 @@ func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, curr
 		return g
 	}
 	s := item.Style
-	g := newPaintLayer(&layout.Box{
+	// z-index applies only to a positioned inline: a non-atomic inline is
+	// never a flex or grid item (Blink's AllowsZIndex, style_adjuster.cc:
+	// 1245-1254 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	box := &layout.Box{
 		Node: item.Node, Style: s, Parent: container,
-		Position: s.GetPosition(), ZIndex: s.GetZIndex(), DOMIndex: item.DOMIndex,
-	})
+		Position: s.GetPosition(), DOMIndex: item.DOMIndex,
+		// The box is the inline's own: compositing reasons that need a paint
+		// layer (will-change) see it as one (Box.IsOwnPaintGroupFragment).
+		PaintGroup: item,
+	}
+	if box.Position != css.PositionStatic && s.HasExplicitZIndex() {
+		box.ZIndex = s.GetZIndex()
+	}
+	g := newPaintLayer(box)
 	g.inlinePaintGroup = item
+	// Visibility is per box, not per layer: the layer paints nothing of its
+	// own, and its members carry their own visibility, so a visible
+	// descendant of a hidden inline still paints.
+	g.Visible = true
 	groups[item] = g
 	sc, backdropRoot := currentSC, currentBackdropRoot
 	if item.EnclosingPaintGroup != nil {
@@ -1749,8 +1767,12 @@ func (sc *PaintLayer) addToZOrderList(child *PaintLayer) {
 
 // addInlineBoxFragment records one of the inline's own box fragments.
 func (g *PaintLayer) addInlineBoxFragment(frag *layout.Box) {
-	g.inlineBoxFragments = append(g.inlineBoxFragments,
-		geometry.PhysicalRectEnclosingRect(geometry.NewRectF(frag.X, frag.Y, frag.Width, frag.Height)))
+	g.inlineBoxFragments = append(g.inlineBoxFragments, frag)
+}
+
+// fragmentRect is a box's border box as an enclosing PhysicalRect.
+func fragmentRect(b *layout.Box) geometry.PhysicalRect {
+	return geometry.PhysicalRectEnclosingRect(geometry.NewRectF(b.X, b.Y, b.Width, b.Height))
 }
 
 // isLayoutInline reports whether the layer is a non-atomic inline's
@@ -1772,7 +1794,7 @@ func (layer *PaintLayer) clipPathReferenceBox() geometry.RectF {
 	if len(layer.inlineBoxFragments) == 0 {
 		return geometry.RectF{}
 	}
-	return layer.inlineBoxFragments[0].ToRectF()
+	return fragmentRect(layer.inlineBoxFragments[0]).ToRectF()
 }
 
 // linesOrBorderBox returns the layer's box, or for a LayoutInline's layer a
@@ -1781,14 +1803,13 @@ func (layer *PaintLayer) clipPathReferenceBox() geometry.RectF {
 // PaintLayer::BackdropFilterReferenceBox (paint_layer.cc:2065-2070),
 // ComputeFilterViewport (:164-168) and CSSMaskPainter::MaskBoundingBox
 // (css_mask_painter.cc:80-92), all @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+// The box carries the inline's border and padding, so insets taken from it
+// (mask-clip, the content box) are the inline's.
 func (layer *PaintLayer) linesOrBorderBox() *layout.Box {
-	if !layer.isLayoutInline() {
-		return layer.Box
+	if layer.linesBox != nil {
+		return layer.linesBox
 	}
-	b := *layer.Box
-	r := layer.linesBoundingBox.ToRectF()
-	b.X, b.Y, b.Width, b.Height = r.X(), r.Y(), r.Width(), r.Height()
-	return &b
+	return layer.Box
 }
 
 // finalizeInlineLayer sets a LayoutInline layer's linesBoundingBox from its
@@ -1805,24 +1826,38 @@ func (layer *PaintLayer) finalizeInlineLayer() {
 	// block-in-inline splits them across containers): order them by block
 	// offset, the order Blink's InlineCursor yields them in.
 	wdm := layout.NewWritingDirectionMode(layer.Box.Style)
-	blockOffset := func(r geometry.PhysicalRect) float64 {
+	blockOffset := func(b *layout.Box) float64 {
 		switch {
 		case wdm.IsHorizontal():
-			return r.Offset.Top.Float64()
+			return b.Y
 		case wdm.IsFlippedBlocks():
-			return -r.Right().Float64()
+			return -(b.X + b.Width)
 		}
-		return r.Offset.Left.Float64()
+		return b.X
 	}
 	sort.SliceStable(layer.inlineBoxFragments, func(i, j int) bool {
 		return blockOffset(layer.inlineBoxFragments[i]) < blockOffset(layer.inlineBoxFragments[j])
 	})
+	lines := *layer.Box
 	for _, f := range layer.inlineBoxFragments {
-		layer.linesBoundingBox = layer.linesBoundingBox.UniteIfNonZero(f)
+		layer.linesBoundingBox = layer.linesBoundingBox.UniteIfNonZero(fragmentRect(f))
+		// A fragment drops the inline-start or -end edges it does not
+		// carry on its line; together the fragments carry all four.
+		lines.Border = maxBoxEdges(lines.Border, f.Border)
+		lines.Padding = maxBoxEdges(lines.Padding, f.Padding)
 	}
 	r := layer.linesBoundingBox.ToRectF()
+	lines.X, lines.Y, lines.Width, lines.Height = r.X(), r.Y(), r.Width(), r.Height()
+	layer.linesBox = &lines
 	layer.BorderRadius = layer.Box.Style.GetBorderRadiiResolved(r.Width(), r.Height()).
 		ConstrainRadii(r.Width(), r.Height())
+}
+
+// maxBoxEdges is the per-side maximum of two box edges.
+func maxBoxEdges(a, b css.BoxEdge) css.BoxEdge {
+	a.Top, a.Right = max(a.Top, b.Top), max(a.Right, b.Right)
+	a.Bottom, a.Left = max(a.Bottom, b.Bottom), max(a.Left, b.Left)
+	return a
 }
 
 // clearGroupEffects drops the effects an inline's own fragment carries in
@@ -2368,7 +2403,7 @@ func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geo
 // no Blink analog: louis14 keeps no visual overflow, so this is built from
 // border boxes alone, without ink overflow (shadows, outlines, glyph overflow).
 func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
-	border := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(box.X, box.Y, box.Width, box.Height))
+	border := fragmentRect(box)
 	var contents geometry.PhysicalRect
 	for _, child := range box.Children {
 		if !selfPainting[child] {
