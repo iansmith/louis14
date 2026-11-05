@@ -172,9 +172,9 @@ func emptyRubyStyle(kv ...string) *css.Style {
 	return makeStyle(append(kv, "font-family", "Ahem", "font-size", "50px")...)
 }
 
-// TestBlockLayout_AbsposInEmptyRuby_Surfaced: a ruby column with no ruby-text
-// gets no column result; its base items break as ordinary items of the outer
-// line (LineBreaker::HandleRuby returns false, then AddItem + MoveToNextOf,
+// TestBlockLayout_AbsposInEmptyRuby_Surfaced: in Blink a ruby with no
+// ruby-text gets no column result; its base items break as ordinary items of
+// the outer line (LineBreaker::HandleRuby returns false, then AddItem + MoveToNextOf,
 // inline/line_breaker.cc:3328-3331, :1115-1131 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An abs-pos element in the base
 // is therefore an ordinary out-of-flow item of that line and is surfaced.
@@ -218,7 +218,7 @@ func TestBlockLayout_AbsposInEmptyRubyText_Surfaced(t *testing.T) {
 }
 
 // TestBlockLayout_EmptyRubyWithoutTextCreatesNoLineBox: with no ruby-text
-// there is no column result (line_breaker.cc:1115-1131, :3328-3331 @
+// Blink makes no column result (line_breaker.cc:1115-1131, :3328-3331 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so an empty ruby alone in a block
 // leaves the line empty and the block zero-height (css-inline
 // empty-span-size-002).

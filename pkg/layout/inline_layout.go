@@ -657,6 +657,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// after a <br> containing only positioned content collapses away.
 		if lineHasOnlyOutOfFlow(&line, itemsData, wdm) {
 			for _, r := range line.Results {
+				// An empty ruby column's base items are ordinary line
+				// items in Blink (no column without ruby-text,
+				// inline/line_breaker.cc:3328-3331 @ a9f50e522efa), so
+				// the OOFs buried in it are surfaced like this line's own.
+				if r.RubyColumn != nil {
+					surfaceRubyColumnOOFCandidates(r.RubyColumn, 0, blockOffset, positionedInlineMap, bla.containerBuilder)
+				}
 				if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
 						r.Item.LayoutNode, 0, blockOffset,
@@ -3605,10 +3612,11 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 }
 
 // lineHasOnlyOutOfFlow returns true if the given line contains no visible
-// in-flow content — i.e., no atomic inlines, no forced breaks, and no text
-// with non-whitespace characters. Out-of-flow candidates (abs/fixed), floats
-// (which are positioned separately in Phase 1c, not by line layout), and
-// collapsible whitespace are ignored for this determination.
+// in-flow content — i.e., no atomic inlines, no ruby columns, no forced
+// breaks, and no text with non-whitespace characters. Out-of-flow candidates
+// (abs/fixed), floats (which are positioned separately in Phase 1c, not by
+// line layout), and collapsible whitespace are ignored for this
+// determination.
 //
 // Such lines should not generate a line box: they would otherwise add a
 // line-height's worth of empty space, and — for inline-block baseline
@@ -3625,6 +3633,15 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm Writin
 		return false
 	}
 	for _, r := range line.Results {
+		// A ruby column with ruby-text creates the line box, empty or not
+		// (LineBreaker::HandleRuby sets column_result->
+		// should_create_line_box, inline/line_breaker.cc:3608 @
+		// a9f50e522efa). Blink makes no column for a ruby without
+		// ruby-text (:3328-3331); louis14 still does, and such a column,
+		// like Blink's ordinary base items, creates no line box by itself.
+		if r.RubyColumn != nil && len(r.RubyColumn.AnnotationLines) > 0 {
+			return false
+		}
 		switch r.Item.Type {
 		case InlineItemAtomicInline, InlineItemControl:
 			return false
