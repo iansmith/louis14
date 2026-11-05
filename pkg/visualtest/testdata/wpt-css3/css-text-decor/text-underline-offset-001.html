@@ -1,23 +1,42 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>CSS Test: text-underline-offset with transparent underline</title>
-  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
-  <link rel="help" href="https://www.w3.org/TR/css-text-decor-4/#underline-offset"/>
-  <link rel="match" href="text-underline-offset-001-ref.html"/>
-  <meta name="assert" content="text-underline-offset should be parsed without error. Combined with transparent underline color, the result is visually identical to no underline."/>
-  <style type="text/css">
-    body { margin: 0; background: white; }
-    p {
-      margin: 0;
-      font-size: 20px;
-      text-decoration: underline;
-      text-decoration-color: transparent;
-      text-underline-offset: 5px;
-    }
-  </style>
+    <meta charset="utf-8">
+    <title>text-underline-offset test case</title>
+    <meta name="assert" content="text-decoration:underline; there is a line at or under the alphabetic baseline">
+    <link rel="author" title="Charlie Marlow" href="mailto:cmarlow@mozilla.com">
+    <link rel="author" title="Mozilla" href="https://www.mozilla.org">
+    <link rel="help" href="https://drafts.csswg.org/css-text-decor-4/#underline-offset">
+    <link rel="mismatch" href="reference/text-underline-offset-001-notref.html">
+    <link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
+    <style>
+        #main {
+            margin: 2em;
+            display:flex
+        }
+        div span {
+            text-decoration: green underline;
+            text-decoration-skip-ink: none;
+            font: 20px/1 Ahem;
+            color: transparent;
+            padding-bottom: 20px;
+            border: 1px dotted transparent;
+            border-bottom-color: cyan;
+        }
+        #rightbox {
+            text-underline-offset: 24px;
+        }
+    </style>
 </head>
 <body>
-  <p>Test text here</p>
+    <p class="instructions">Test passes if the box on the right has a lower underline than the box on the left</p>
+    <div id="main">
+        <div>
+            <p>left<span>XXXX</span></p>
+        </div>
+        <div>
+            <p><span id="rightbox">XXXX</span>right</p>
+        </div>
+    </div>
 </body>
 </html>
