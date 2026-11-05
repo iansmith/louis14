@@ -1,5 +1,5 @@
 # wpt 07f0c2f18b29993422f371703de9d46d3eef3784
-# Rows with status identical are omitted (11891 files). Regenerate the full mapping with scripts/wpt-audit.py.
+# Rows with status identical are omitted (12872 files). Regenerate the full mapping with scripts/wpt-audit.py.
 local_path	status	upstream_path	local_blob	upstream_blob
 pkg/visualtest/testdata/wpt-css2/backgrounds/background-color-001.xht	no-upstream		7c1340686183571ee385afd1bffb0386961001fc	
 pkg/visualtest/testdata/wpt-css2/backgrounds/background-color-002-ref.xht	no-upstream		12bd20e49ce7d71bd75df012189b1a4b7153ca6a	
@@ -11,8 +11,6 @@ pkg/visualtest/testdata/wpt-css2/backgrounds/background-position-bottom-001.xht	
 pkg/visualtest/testdata/wpt-css2/backgrounds/background-shorthand-color-001-ref.xht	no-upstream		9e561742255dc1c84d05a9fa328e71d4f2c8ec37	
 pkg/visualtest/testdata/wpt-css2/backgrounds/background-shorthand-color-001.xht	no-upstream		900b4f7037e4de347393b4264d0130e325fb6376	
 pkg/visualtest/testdata/wpt-css2/borders/border-collapse-001.xht	relocated-differs	css/CSS2/tables/border-collapse-001.xht	7c1340686183571ee385afd1bffb0386961001fc	ab0367f7d58a95265db2920ef22c1bbf52975d76
-pkg/visualtest/testdata/wpt-css2/borders/border-style-002-ref.xht	no-upstream		d05a7fdf5ecbdd4c84cd63da529662e139cc19ff	
-pkg/visualtest/testdata/wpt-css2/box-display/display-none-001-ref.xht	no-upstream		c57bad5c4d8361c7edd0e4185f0bbc7e78c54c8c	
 pkg/visualtest/testdata/wpt-css2/box-display/visibility-hidden-001-ref.xht	no-upstream		aed8b79da79f687d2e2cbe38a5e610529360a69e	
 pkg/visualtest/testdata/wpt-css2/box-display/visibility-hidden-001.xht	no-upstream		d13b488cce3e65e3264218eaab9bd4475d3d67b9	
 pkg/visualtest/testdata/wpt-css2/dimension-constraints/max-height-001-ref.xht	no-upstream		367672f6418d0d1535aa9a856d2975705b03b7c3	
@@ -99,7 +97,6 @@ pkg/visualtest/testdata/wpt-css2/text/text-indent-002-ref.xht	no-upstream		aec99
 pkg/visualtest/testdata/wpt-css2/text/text-indent-002.xht	no-upstream		c70bdf1fbc0ddeb74425c1e5c7e6be9f29ae1dc8	
 pkg/visualtest/testdata/wpt-css2/text/word-spacing-001-ref.xht	no-upstream		da632891d3a5fa3596c520de46af006bdef35f88	
 pkg/visualtest/testdata/wpt-css2/text/word-spacing-001.xht	no-upstream		8472617d99d67ab187deb782117fd37f0cbd0f3f	
-pkg/visualtest/testdata/wpt-css3/common/reftest-wait.js	differs	common/reftest-wait.js	92cd976d6a39c8ea107dad50cae716cf568fb4ac	66106d5bdcf1e77cf3e3ec65fab7bdc2f8e6b393
 pkg/visualtest/testdata/wpt-css3/compositing/isolation-blend-001-ref.html	no-upstream		9ad8704a64ea8d3e708561c1e18dd6725847cd63	
 pkg/visualtest/testdata/wpt-css3/compositing/isolation-blend-001.html	no-upstream		1054495c65472a2867466a8077dbb23fc793ee5c	
 pkg/visualtest/testdata/wpt-css3/compositing/isolation-stacking-001-ref.html	no-upstream		cc5a7a4183c1dcee215ff7958f3a7a906ab19bdc	
@@ -121,54 +118,14 @@ pkg/visualtest/testdata/wpt-css3/css-align/place-items-002-ref.html	no-upstream	
 pkg/visualtest/testdata/wpt-css3/css-align/place-items-002.html	no-upstream		8421d93395176019fc4d7290490e21040f8f209e	
 pkg/visualtest/testdata/wpt-css3/css-align/place-self-001-ref.html	no-upstream		58b12ee8fafbd3ab8a050aba850edf3dda82d15c	
 pkg/visualtest/testdata/wpt-css3/css-align/place-self-001.html	no-upstream		5bf1975765d3969d1d0ad32db9142c2963df2405	
-pkg/visualtest/testdata/wpt-css3/css-animations/animationevent-interface.html	differs	css/css-animations/animationevent-interface.html	5b1bc4265f0f06b9b564d66ecc76fd6a11b6fef2	fea907b7740fb97a2763a0c61a82c1907b4e1258
-pkg/visualtest/testdata/wpt-css3/css-animations/animationevent-types.html	differs	css/css-animations/animationevent-types.html	77f514a297bfd271abb488f086723af7ed0c9ff6	aabc06724c35a668302810fdf594132385d50b0b
 pkg/visualtest/testdata/wpt-css3/css-animations/keyframes-parse-001-ref.html	no-upstream		a46c9ff0221d2dc1512bf4a22b15184e8c650add	
 pkg/visualtest/testdata/wpt-css3/css-animations/keyframes-parse-001.html	no-upstream		70fe64682c5c33fb32c2e539e4a237c477cc1560	
-pkg/visualtest/testdata/wpt-css3/css-animations/pass_if_pass_below.html	ambiguous	css/reference/pass_if_pass_below.html	7de44825c06294a6f32b8a07c1ee211e28d37fe0	
-pkg/visualtest/testdata/wpt-css3/css-animations/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-clip-color-ref.html	differs	css/css-backgrounds/background-clip-color-ref.html	0bd414cd067425b9604b67292fe0013b98b1b791	fdb7eb2b0dffdb98ebf25190c42c0f0d0ea55ccf
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-clip-content-box-001-ref.html	relocated	css/css-backgrounds/reference/background-clip-content-box-ref.html	dc6d9a00d53495e17f21adc8915176dd8c681e1e	dc6d9a00d53495e17f21adc8915176dd8c681e1e
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-clip-content-box-001.html	differs	css/css-backgrounds/background-clip-content-box-001.html	396ece52834c453261fb9c36041e447abc191a91	f0777e88c222e49db0572bbb21cd084e8ab76f97
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-clip-padding-box-with-border-radius.html	differs	css/css-backgrounds/background-clip-padding-box-with-border-radius.html	22d7bd9d297d25206834f93c78b27d9bc3b28039	d31dd101c42955e43dde73a98443588e10a7bd65
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-gradient-interpolation-002.html	differs	css/css-backgrounds/background-gradient-interpolation-002.html	44d1a5a5a1d0be8e64b91767da80656285d1832c	a8608700dd0bdae2e01662318a2a41e522558bb6
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-gradient-interpolation-003.html	differs	css/css-backgrounds/background-gradient-interpolation-003.html	32446b5e4e85554482b04718a1f1733d387f9a85	df995c0970d4b08cd099e4fb966b914026454bf0
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-image-centered-with-border-radius.html	differs	css/css-backgrounds/background-image-centered-with-border-radius.html	925903b9e5bd6e570cd978f013983ac6e664989e	2256b6a8ec135e8d828c24310cfe20ec7a3633c3
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-image-none-gradient-repaint.html	differs	css/css-backgrounds/background-image-none-gradient-repaint.html	1ddca5e21d9032a5658b08480f7b12e400b02b0a	6bd51a26a0e1d6e62fb16e06207a438da3fefd70
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-border-001-ref.html	no-upstream		fc4ba93b32c435cc836c357faee9ad90cc954bad	
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-border-001.html	no-upstream		2c43bd43bb47710b52ff6758f45acb9e907cd95f	
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-content-001-ref.html	no-upstream		ed7ef964dcc6e6128b4120d92aaf6aeb14c40d07	
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-content-001.html	no-upstream		e36665592aa01d3cca614c492f0fcdea2fec7747	
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-padding-001-ref.html	no-upstream		8cbdbeff9d87b21983b3d4e1e5c06b7c211096d1	
 pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-origin-padding-001.html	no-upstream		c8117c2e3079bda2fdb29879419dc9d7259f62c3	
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-1a.html	differs	css/css-backgrounds/background-repeat-space-1a.html	f2dfa9a0a6d83d51d9a94a7b2fca008809a515cc	6c371772abd720f20db947d66014088c11656f86
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-1b.html	differs	css/css-backgrounds/background-repeat-space-1b.html	b1e6777bf26a2690b9be0f182d8ea441a35678da	29dff17dab393854492d975edb51a53b9f5c04b0
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-1c.html	differs	css/css-backgrounds/background-repeat-space-1c.html	3f562042aeed0b9c2f5f86c10fa57ca511bd5625	67fab4b11c99a4c54961853c199c4778cfbb04cf
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-2.html	differs	css/css-backgrounds/background-repeat-space-2.html	ac9664482c576dd22243ba29fd7e5e1b28934e3f	753f0e45b461ae7227b9c4bdff853748cd7b1d11
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-3.html	differs	css/css-backgrounds/background-repeat-space-3.html	c55f918c175aa47d1d4c58b2bcb91ed84344a67e	f5840512136347e96fdb35242671221b57a5c476
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-4.html	differs	css/css-backgrounds/background-repeat-space-4.html	c3b35d6a6dacc0855349e7cbf534f3824d9739a7	5515c49a1e10357563885fb79a3ee5d2cd5d4394
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-5.html	differs	css/css-backgrounds/background-repeat-space-5.html	5594efb315a245a1f1282a782cc740d602407229	5caff1da94172893ec43892bef1a1cdb76256af0
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-6.html	differs	css/css-backgrounds/background-repeat-space-6.html	8d372dd2771dc4de9e357b6fd43359009a438459	26ac9c5b6e31715e651084fc53ddd5fde0e57b84
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-repeat-space-7.html	differs	css/css-backgrounds/background-repeat-space-7.html	d52f76fe5f4653a8a2b62d8cec74915ba4622bdd	3723671aac7976b993487c8d5942fc18b3bd4ac3
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/background-rounded-image-clip-001.html	differs	css/css-backgrounds/background-rounded-image-clip-001.html	e6222190c192c0fa3db307e2c0cecf6d9a99a13c	f41dbcbcf6b293de5e731b3bd5f90cf76f22af84
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-bottom-left-radius-004.xht	differs	css/css-backgrounds/border-bottom-left-radius-004.xht	ed444bfabe9c87277ca01f98c429d19467d9cc20	d91e95d577a340ffccdc11b41fde04f75962bd73
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-bottom-left-radius-005.xht	differs	css/css-backgrounds/border-bottom-left-radius-005.xht	bceaa3d9e9c7b6e2d567813f980333d9a2d1f3dd	fe589fc08cd233a47fd0541171ece1a089cfefa0
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-021.html	differs	css/css-backgrounds/border-image-021.html	5936fae0ef9a75b31a215225110bef1ae1cb0632	c1929f64fe3eb117f18a295cc49646aa16c8a31d
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-image-type-001.htm	differs	css/css-backgrounds/border-image-image-type-001.htm	2c8d5941a4dbc6166fabd5d16c0f2f5f6128a129	fa372c700735a42307e2bd271e12868d01a0b732
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-outset-004.html	differs	css/css-backgrounds/border-image-outset-004.html	e9cbe0b75565253d14dd781bee8c5841c093fb13	230a5a96fd3d08680ed4ec63225778f47abfcd80
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-repeat-round.html	differs	css/css-backgrounds/border-image-repeat-round.html	cf87e8d16306ed34a11b7e89f7d88fe1f1212c12	e476026cf2418bc1bdd9461d195b8f2f18f8c03d
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-slice-005.htm	differs	css/css-backgrounds/border-image-slice-005.htm	5d8bd7df1c3fe1b09a8a9387e355e2c7d111b805	cc2cfab1b3587a0c3818c2edcd8d1c42c026e399
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-image-slice-007.htm	differs	css/css-backgrounds/border-image-slice-007.htm	e9c1827fc76c00f0bb81a23f27335a2f2074ace2	3edf2b36c7adeef1b1de87f2d2fc09b0f2a2cc63
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-radius-clipping-with-transform-001.html	differs	css/css-backgrounds/border-radius-clipping-with-transform-001.html	b2187cf07abfe0b6b7ee24f35f35a57a5bf58789	01eceaac14f06329f20d2483bb20147755d36279
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-top-left-radius-004.xht	differs	css/css-backgrounds/border-top-left-radius-004.xht	71c98832404424f0d8ccdc2aadbc30bc6c23a206	7d733252035da2ac05ec3679258281cf9c117e2e
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-top-left-radius-005.xht	differs	css/css-backgrounds/border-top-left-radius-005.xht	68fd36d710933c6412f56a9fb0f8813ce360206c	6ca98225b4312bd9bb253d9428b0723841d19972
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/border-top-right-radius-004.xht	differs	css/css-backgrounds/border-top-right-radius-004.xht	3068a24d4368e84594e75082ac861039915360bc	f60f8b51016132e7dcc742d323ce866cd824a3aa
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/linear-gradient-currentcolor-first-line.html	differs	css/css-backgrounds/linear-gradient-currentcolor-first-line.html	7c8f8a8fda63982a7ded20fcdd25077ce4c73c39	c1171c4296a626ea3ccf5df6a158d2bf9688ddf3
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/ref-filled-green-100px-square.xht	relocated	css/css-backgrounds/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	05a13794482a94f6c10bd9d4c98704e63ef60331
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-backgrounds/ref-nothing-below.xht	ambiguous	css/CSS2/reference/ref-nothing-below.xht,css/reference/ref-nothing-below.xht	c87db8094bd4bbb7ba5f18816730fd40c198149d	
 pkg/visualtest/testdata/wpt-css3/css-box/box-sizing-border-box-001-ref.html	no-upstream		e0db04686dbabdb887fdef514730d73f7c355cd4	
 pkg/visualtest/testdata/wpt-css3/css-box/box-sizing-border-box-001.html	no-upstream		73816fb0736cd398ffd18e54c6a2c2d3cc721571	
 pkg/visualtest/testdata/wpt-css3/css-box/box-sizing-border-box-percent-001-ref.html	no-upstream		0159aa42593c4bd388048bf18d0828ba00dfdada	
@@ -179,20 +136,12 @@ pkg/visualtest/testdata/wpt-css3/css-box/margin-auto-center-001-ref.html	no-upst
 pkg/visualtest/testdata/wpt-css3/css-box/margin-auto-center-001.html	no-upstream		cf38733d33c03a3d0796ac29e3e7be630b7cc744	
 pkg/visualtest/testdata/wpt-css3/css-box/percentage-padding-001-ref.html	no-upstream		2da8d296e4aa9254fcca17191765ee261cd988de	
 pkg/visualtest/testdata/wpt-css3/css-box/percentage-padding-001.html	no-upstream		506aaf5a0ad2d907ab94d7bb3626715c7e1f292d	
-pkg/visualtest/testdata/wpt-css3/css-cascade/all-prop-initial-visited-ref.html	differs	css/css-cascade/all-prop-initial-visited-ref.html	f596b559b0e26b9c03d47b7dcab966a4d091308b	356d43f0db742193d71f5c529a11c5ffb9c59c45
-pkg/visualtest/testdata/wpt-css3/css-cascade/all-prop-revert-layer.html	differs	css/css-cascade/all-prop-revert-layer.html	a2e28d146124ba910bca7c14dd62de2c4335eaa0	2f304d33749412f0e3dc51d3ac1b2f4f0a0ed36c
-pkg/visualtest/testdata/wpt-css3/css-cascade/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-cascade/import-conditions.html	differs	css/css-cascade/import-conditions.html	fba3632bef331f41bf3602ff0af1e26f6a8c6f4a	7e6628dd84706d29cad723c51f9bb686fffb96eb
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-basic-001-ref.html	no-upstream		2b1d06ec47a115bdf6a184b6914c9da61ae79121	
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-basic-001.html	no-upstream		d38db19830bb1b79a17747f5bc03bd5128782695	
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-order-statement-001-ref.html	no-upstream		b56d08ed2fb045e8f964f811b01bdfe9f0005f3c	
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-order-statement-001.html	no-upstream		4e394730cf7c411d0c385832e8bce24e18703364	
-pkg/visualtest/testdata/wpt-css3/css-cascade/layer-slotted-rule.html	differs	css/css-cascade/layer-slotted-rule.html	a33a5a6787a3f26d12079ac03c915797d65bd48a	1eab7b4e9f8eac2aba1636edc38438a621f99e72
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-unlayered-001-ref.html	no-upstream		8611fcd6c7a14f5a36f34f7bd5d47b081e148ce0	
 pkg/visualtest/testdata/wpt-css3/css-cascade/layer-unlayered-001.html	no-upstream		0c46bd66c93532390924a3ae80bcb9a88364afbf	
-pkg/visualtest/testdata/wpt-css3/css-cascade/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-cascade/ref-filled-green-100px-square.xht	relocated	css/css-cascade/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	05a13794482a94f6c10bd9d4c98704e63ef60331
-pkg/visualtest/testdata/wpt-css3/css-cascade/scope-evaluation.html	differs	css/css-cascade/scope-evaluation.html	a70d2a59b7f54212b5e267182aac7dd5acdd1658	c09dc92fc9ae2535baa07b33aeb69f696d199ccc
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-implicit.tentative.html	no-upstream		3350afca77ce432d8fa931d17c40c1c6a6614cee	
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-inner-scope.tentative.html	no-upstream		d30c9991bda77476fc879b5da5c736bb6dc4d1ec	
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-multiple.tentative.html	no-upstream		5385c215cd30ac5fd8438957e2c9c3c12bfec6a3	
@@ -200,35 +149,18 @@ pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-parent-pseudo.tentativ
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-scope-end.tentative.html	no-upstream		98f2ac4adbf55ca6eb8be7abc558d8ad40b53017	
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-scope-pseudo.tentative.html	no-upstream		da35c2981b2148cbb38dd70a4edede1be03e178b	
 pkg/visualtest/testdata/wpt-css3/css-cascade/scope-import-scope-start.tentative.html	no-upstream		d1de75f8e1076bd65adf41307c3dfa9f3bcc647d	
-pkg/visualtest/testdata/wpt-css3/css-cascade/scope-invalidation.html	differs	css/css-cascade/scope-invalidation.html	19b8ce36d9f823ac06683db871919b35564eeb92	53b8e0ebbe664c5dc36c3c3b3a9aa4e6be4924d2
-pkg/visualtest/testdata/wpt-css3/css-cascade/scope-style-sharing-002.html	differs	css/css-cascade/scope-style-sharing-002.html	bd669cad9f0488e487f3770a1e4ff5cb9e07a29d	2f1cb727fa4153070a8824eba363bd2ea7f578bb
 pkg/visualtest/testdata/wpt-css3/css-color-adjust/color-scheme-light-001-ref.html	no-upstream		b547fe4d8fe77ffe7b42ae0434b00039312fd6d8	
 pkg/visualtest/testdata/wpt-css3/css-color-adjust/color-scheme-light-001.html	no-upstream		81cec3fff81b35f0360e2e6aa72d3cd194db044f	
-pkg/visualtest/testdata/wpt-css3/css-color/color-mix-missing-components.html	differs	css/css-color/color-mix-missing-components.html	3ce68eb2cae3720de1add821dc9d040284333ebe	5be856de9c7f6433698e3450a99f56d34f588cc5
-pkg/visualtest/testdata/wpt-css3/css-color/composited-filters-under-opacity-ref.html	differs	css/css-color/composited-filters-under-opacity-ref.html	73b420189ec8bc073e8b6a2e4bfd628653bd4a78	11867dbe5c69f95eba6d51d9a7f8ef2175eae205
-pkg/visualtest/testdata/wpt-css3/css-color/composited-filters-under-opacity.html	differs	css/css-color/composited-filters-under-opacity.html	f613748af3ac5bb59c9fa207937ae6207d71062e	d7e674c4ba9e37a635ee62de1c7069b82170a377
-pkg/visualtest/testdata/wpt-css3/css-color/nested-color-mix-with-currentcolor.html	differs	css/css-color/nested-color-mix-with-currentcolor.html	2f24d62b547fb24200fa659d27a9e55777303aa5	2407d5800e0934f5d055bad1e7dd6169a6f0af8b
-pkg/visualtest/testdata/wpt-css3/css-color/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-color/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-color/system-color-consistency.html	differs	css/css-color/system-color-consistency.html	fd73d1ab2f28984b3a229d0fb6b60718f9146f23	ecb5063467596b297d45042eae35fc28500025c4
-pkg/visualtest/testdata/wpt-css3/css-conditional/at-supports-named-feature-001.html	differs	css/css-conditional/at-supports-named-feature-001.html	61adda8c0ca1761549c8cac80c8cd18f7523e535	475feae8d14d730bfe26145ee2416c49daa70c16
 pkg/visualtest/testdata/wpt-css3/css-conditional/supports-basic-001-ref.html	no-upstream		7359e4147c5015773e4e605c692312ca96cfecdb	
 pkg/visualtest/testdata/wpt-css3/css-conditional/supports-basic-001.html	no-upstream		5976b74e6f343703970efc83e00fa78556de48eb	
 pkg/visualtest/testdata/wpt-css3/css-conditional/supports-not-001-ref.html	no-upstream		a728c6ebfbbf83f44f182097db103fd4b89c09f6	
 pkg/visualtest/testdata/wpt-css3/css-conditional/supports-not-001.html	no-upstream		a1be8b26b59a53fa7b51707e91a9c4de5f63b179	
-pkg/visualtest/testdata/wpt-css3/css-contain/contain-inline-size-grid-indefinite-height-min-height-flex-row.html	differs	css/css-contain/contain-inline-size-grid-indefinite-height-min-height-flex-row.html	4c27b1cc9f63a49fb66ab54c3eb6eed049398592	9b75afcefe1113684934806436aedb3c9797510a
-pkg/visualtest/testdata/wpt-css3/css-contain/contain-layout-baseline-005.html	differs	css/css-contain/contain-layout-baseline-005.html	407819794ad639233c6a5f89ab8a0ec26e7a6b01	514bef4ec666f2869db9da16a6d1b503920ba9a5
 pkg/visualtest/testdata/wpt-css3/css-contain/container-name-001-ref.html	no-upstream		76feece217f95d72307c5fddde675557e90cda66	
 pkg/visualtest/testdata/wpt-css3/css-contain/container-name-001.html	no-upstream		a22a0f15e79d9ea2a81b8bb6410271f284cf005b	
 pkg/visualtest/testdata/wpt-css3/css-contain/container-size-001-ref.html	no-upstream		44024e7eba079eb48ce31b1ab79bef7f4abc7611	
 pkg/visualtest/testdata/wpt-css3/css-contain/container-size-001.html	no-upstream		1811c68766606c93ed33b6ea2d3c565e54a7762a	
 pkg/visualtest/testdata/wpt-css3/css-contain/container-size-002-ref.html	no-upstream		ca2e39249f5d36ba70deeb9d2f19ea5e9cc9aaa0	
 pkg/visualtest/testdata/wpt-css3/css-contain/container-size-002.html	no-upstream		ecd938d5e5662d22c9f5bb27403e4ca1e20a46cf	
-pkg/visualtest/testdata/wpt-css3/css-contain/nothing.html	ambiguous	css/reference/nothing.html	98ee818a8468b73f29c6c3c8a60bb3b3a0f21fa8	
-pkg/visualtest/testdata/wpt-css3/css-contain/pass_if_pass_below.html	ambiguous	css/reference/pass_if_pass_below.html	7de44825c06294a6f32b8a07c1ee211e28d37fe0	
-pkg/visualtest/testdata/wpt-css3/css-contain/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-contain/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-contain/reference/contain-layout-baseline-005-ref.html	differs	css/css-contain/reference/contain-layout-baseline-005-ref.html	ad1e2df1db2fdc39a0a07da574283391b713a7c7	643ecebf919e75ba67143606b1865100681be16e
 pkg/visualtest/testdata/wpt-css3/css-counter-styles/counter-increment-001-ref.html	no-upstream		aff8a477ac227cc116f9878251209958c048f59a	
 pkg/visualtest/testdata/wpt-css3/css-counter-styles/counter-increment-001.html	no-upstream		a99b96d66bf63a7a3b19242d590b8e9d4c54a015	
 pkg/visualtest/testdata/wpt-css3/css-counter-styles/counter-style-cyclic-001-ref.html	no-upstream		34de9cdc18301a113a8010381808be84b1344731	
@@ -241,64 +173,14 @@ pkg/visualtest/testdata/wpt-css3/css-display/display-contents-flex-001-louis14-r
 pkg/visualtest/testdata/wpt-css3/css-display/display-contents-flex-001-louis14.html	no-upstream		7cd29f458d2cd901a9b9795412c488e67ed1497a	
 pkg/visualtest/testdata/wpt-css3/css-display/display-contents-grid-001-ref.html	no-upstream		fb91450ca42897201ade871348506d8b0c2fc400	
 pkg/visualtest/testdata/wpt-css3/css-display/display-contents-grid-001.html	no-upstream		67709d78bee061bad893bfc48b134249f847c540	
-pkg/visualtest/testdata/wpt-css3/css-display/display-contents-unusual-html-elements-none.html	differs	css/css-display/display-contents-unusual-html-elements-none.html	53f5f9e5c7f447bc87cc1ee460323b93df2cdc68	5e9593110e09fe40846f4d59696fa5df4cd7afb2
-pkg/visualtest/testdata/wpt-css3/css-display/empty-text-baseline-001.html	differs	css/css-display/empty-text-baseline-001.html	a3a34f1fd275ff11f19eac5c7366668ad6d109a8	96087a241bf8b88003237465f2db09d9cdd50c9d
-pkg/visualtest/testdata/wpt-css3/css-display/empty-text-baseline-002.html	differs	css/css-display/empty-text-baseline-002.html	ca9558a403a0f7d9ee7d6bcde43d55d880af128f	731741e77f60827003b8c889a98e279330d8856f
 pkg/visualtest/testdata/wpt-css3/css-display/flow-root-001-ref.html	no-upstream		0249db827fc2c4c7ef790e93dd1500d20fcc78a8	
 pkg/visualtest/testdata/wpt-css3/css-display/flow-root-001.html	no-upstream		af77012cf23292b47f6a377ac7275d68332dec65	
 pkg/visualtest/testdata/wpt-css3/css-display/flow-root-002-ref.html	no-upstream		1c4e1079adafa50cd4ea675baaa410959ea944f6	
 pkg/visualtest/testdata/wpt-css3/css-display/flow-root-002.html	no-upstream		0d93b37f3bab3aa13e94d3bfb74ddb291417f62a	
-pkg/visualtest/testdata/wpt-css3/css-display/pass_if_two_words.html	ambiguous	css/reference/pass_if_two_words.html	e33eea5e6ea237139f9d86da07a09ef2e4874789	
-pkg/visualtest/testdata/wpt-css3/css-display/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-display/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-display/select-4-option-optgroup-display-none-ref.html	differs	css/css-display/select-4-option-optgroup-display-none-ref.html	230c8a6d4f00157f934ea3bd1ff1d5090575767f	8fc87bdd269aeb6e74e185e73f92d5a9579d5ec5
-pkg/visualtest/testdata/wpt-css3/css-display/select-4-option-optgroup-display-none.html	differs	css/css-display/select-4-option-optgroup-display-none.html	a6da3d53c71c87a9774af3403ed9f38fb25f75c6	4c7af5eb45d15dc95ebef9a2520d2243b9fb64ba
 pkg/visualtest/testdata/wpt-css3/css-env/env-fallback-001-ref.html	no-upstream		d14c19f2d266598be79f57004b3bacbc997e7a3a	
 pkg/visualtest/testdata/wpt-css3/css-env/env-fallback-001.html	no-upstream		678e2ae4b25f0994459ec8615eb9bff81cb9ee60	
 pkg/visualtest/testdata/wpt-css3/css-env/env-safe-area-001-ref.html	no-upstream		df91ba596f7fb9cea956090fa517c01402bf83c9	
 pkg/visualtest/testdata/wpt-css3/css-env/env-safe-area-001.html	no-upstream		22784385631a7cccb211c5e8733e9c8a5a953621	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-content-001.htm	differs	css/css-flexbox/align-content-001.htm	5fd60351247f09e991ec5b361635397631ab4616	cfda721ee5208b1105b1192cc0c12d49a0483044
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-content-005.htm	differs	css/css-flexbox/align-content-005.htm	a9b70b742bf81181b7fd52531d4e79dfa11eb8df	b998063f153549518a09b7843e2d3305a797d52e
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-items-001.htm	differs	css/css-flexbox/align-items-001.htm	fcd9205ef41680031fc1b8f5428ac6febaa14393	231c16726bcf2ef176d1842b89ea17c67b34602f
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-items-003.htm	differs	css/css-flexbox/align-items-003.htm	e2ddd3c33449664ee397abcc7925119f2559cedf	e1bf6d8fc1ced6793b747d2e6974a07a079853f6
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-items-004.htm	differs	css/css-flexbox/align-items-004.htm	c1464e1e0a000bb7ea27cf634b0c7876cf405978	426cd1c58c95d797fa880b7e1cdf13f8606d0bdc
-pkg/visualtest/testdata/wpt-css3/css-flexbox/align-items-baseline-row-horz.html	differs	css/css-flexbox/align-items-baseline-row-horz.html	54487f303d95197bd6093bcc7b21ce34cd67cdbf	43e3bea5834cb50f3501264514240019ad29e727
-pkg/visualtest/testdata/wpt-css3/css-flexbox/anonymous-flex-item-restyle.html	differs	css/css-flexbox/anonymous-flex-item-restyle.html	1dffdba02b460cbd7cedb05c2e5d57c84d930154	6c7b8a7aebf5e97cd9145bde0f613b6cc5da4a1d
-pkg/visualtest/testdata/wpt-css3/css-flexbox/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flex-aspect-ratio-img-column-011.html	differs	css/css-flexbox/flex-aspect-ratio-img-column-011.html	f716d5ad6c896624577b253ea37e66954c08c358	9219438e9fb9e109494f62d9aa531b638c5e878e
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flex-aspect-ratio-img-column-017.html	differs	css/css-flexbox/flex-aspect-ratio-img-column-017.html	b2b97f0a31cfc7e67a67946b1cbad6ef0fbdbda8	1c507f1dacebbb849ad1077e7f00011ed58875cc
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flex-item-compressible-001.html	differs	css/css-flexbox/flex-item-compressible-001.html	9725512cd8027b8b8fe4bd966f96db1b5242456e	2fa71d0ceec0e8f40183738e5b7289ba50e44ef4
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flex-item-z-ordering-001.html	differs	css/css-flexbox/flex-item-z-ordering-001.html	d7344eb93c5e1336cdc42691f16832155ca86855	5f8aaa967b3ecbd9dcddd237b185b843adbaa434
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-collapsed-item-horiz-001-ref.html	differs	css/css-flexbox/flexbox-collapsed-item-horiz-001-ref.html	90131878421d0cea156226866bff2974342eb708	c941c64c805a5830f71b771ae5e4f9cb383402de
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-flex-wrap-horiz-002-ref.html	differs	css/css-flexbox/flexbox-flex-wrap-horiz-002-ref.html	1cfb46ce2b17705789e7f559bd8fab0e9738fbb9	88c3beb19e90a3731a7da8aed3ef7170ea3fca07
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-justify-content-horiz-004-ref.xhtml	differs	css/css-flexbox/flexbox-justify-content-horiz-004-ref.xhtml	fe519ad1033fa54a2d65a4b99683df9a35ebfa82	23a6d98904d2753f9d768506238921fcfbdc47bd
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-min-height-auto-003-ref.html	no-upstream		ff1ced0c03517681c46f05f74aa93283f3587a9e	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-min-height-auto-003.html	differs	css/css-flexbox/flexbox-min-height-auto-003.html	15ef35d9cd7f46078af9084832f841ed9a3e2e80	5177ed062b570c2c157da537ae788107737ccff9
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-min-height-auto-004-ref.html	no-upstream		768185d43194279b5648092715a1846fdfb917a5	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/flexbox-min-height-auto-004.html	differs	css/css-flexbox/flexbox-min-height-auto-004.html	a04b9b573e2b9c8c8a44f10ee35ecc7c711f5e7f	bcc6adcbac25295dc810086314f2b9a6f832a589
-pkg/visualtest/testdata/wpt-css3/css-flexbox/justify-content-001.htm	differs	css/css-flexbox/justify-content-001.htm	75ba056bf3615ecc38c8cef162f70a2ecd51ac41	7679525d457701603925145449d9bfd2539c1ef2
-pkg/visualtest/testdata/wpt-css3/css-flexbox/justify-content-002.htm	differs	css/css-flexbox/justify-content-002.htm	e3c671a53faf491f8015551594fe055e549b2d61	0ccf7f0c927c7c16c954dd4280a42cf20686a5b6
-pkg/visualtest/testdata/wpt-css3/css-flexbox/justify-content-004.htm	differs	css/css-flexbox/justify-content-004.htm	88dcfe8c026bd2fcef003f644c8b12a097b0331d	be81ca3b0bc1cc32347cd8dae9491deb7c2b498c
-pkg/visualtest/testdata/wpt-css3/css-flexbox/justify-content-005.htm	differs	css/css-flexbox/justify-content-005.htm	7203d7f1d17ce9b7de7f8abd26f2bbb3686c358f	9716d529087bc4d470e34a9a5556f586d79d6e33
-pkg/visualtest/testdata/wpt-css3/css-flexbox/pass_if_two_words.html	ambiguous	css/reference/pass_if_two_words.html	e33eea5e6ea237139f9d86da07a09ef2e4874789	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-flexbox/reference/flex-item-z-ordering-001-ref.html	differs	css/css-flexbox/reference/flex-item-z-ordering-001-ref.html	a97de6e826a08e09a1f1a7aa770831d5fbe0441b	dd7963b2d1550871198843035e015a5f2fb0099d
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/100x100-green.png	differs	css/css-flexbox/support/100x100-green.png	843c159adf3fcc173113f69636788dff5f847c06	25b76c3c6f216793a36b1f29287dafd993898c67
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/10x10-green.png	differs	css/css-flexbox/support/10x10-green.png	700f747085f4cdcb568ea1e9e4558914d06df3a2	8c39b0d02d342bbf1edd2ebbcc2ff4ff8b032e10
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/1x1-green.png	differs	css/css-flexbox/support/1x1-green.png	ee7e8bbc9a987b3d612a4e1b510651788e852c0d	b98ca0ba0a03c580ac339e4a3653539cfa8edc71
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/200x200-green.png	differs	css/css-flexbox/support/200x200-green.png	ef5d05e51d50af5364990cdb6272bbb7e5db18b2	1dcc392a6ef71e55302c40d41a547cf3f75a8f24
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/20x50-green.png	differs	css/css-flexbox/support/20x50-green.png	8675b7edc9717398c54badc30e94b80fd7a4a1c1	f7f6e67feee0079f21791cf050baffd87b67f8ab
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/300x150-green.png	differs	css/css-flexbox/support/300x150-green.png	368e358e93e12b50cd9ff29553ee5603f3b0f6e9	57ece824a40be3d5d42d1ae53fa505cd1b8f237d
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/40x20-green.png	differs	css/css-flexbox/support/40x20-green.png	51c20d3d83fa7a1c730e03f9369f7c2b5f3e7aa5	c372de1dbd264ede31344915236b9420147586e4
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/60x60-green.png	differs	css/css-flexbox/support/60x60-green.png	5f9e11f8c129f2e9b7c2b63f95217bb8b810a5d5	b3c8cf3eb4c89bd8f2d1ffde051856f375e3a3de
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/flexbox.css	differs	css/css-flexbox/support/flexbox.css	bb586a2516a93bee51136cb16aadf481c008b67a	83502cd144a56c39cf85433342170899881855bd
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/large-green-rectangle.svg	differs	css/css-flexbox/support/large-green-rectangle.svg	01cf32041132a522dd98039c94d8c1525ab1dd0f	228bb275c591f482ff8cd900491eaf8b1dd7b66d
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/solidblue.png	differs	css/css-flexbox/support/solidblue.png	97f8a04111ec92825ccbd29a42fd46b9dce7c0a4	8584a701a807d681ef09585229ec16ce59b50666
-pkg/visualtest/testdata/wpt-css3/css-flexbox/support/test-style.css	differs	css/css-flexbox/support/test-style.css	52880bb811e701333355b0e6edc547b323c5ff01	17f44c11796764f13a1569ab39d59ba66700d1ef
-pkg/visualtest/testdata/wpt-css3/css-fonts/cjk-kerning.html	differs	css/css-fonts/cjk-kerning.html	5851757c84868e5c814202a9bab6bd21bd580592	e8da775531e4a3acd9e31a5c50a08eab476a0e66
-pkg/visualtest/testdata/wpt-css3/css-fonts/font-family-src-quoted.html	differs	css/css-fonts/font-family-src-quoted.html	a279e99153f20533d3eb8b0f5340df15c2ff3f87	2a37def4453b8ea10fefc1f86966d79bf65273fe
 pkg/visualtest/testdata/wpt-css3/css-fonts/font-synthesis-none-001-ref.html	no-upstream		0f26b8ad97a20529ade874e317130fa182faa6d9	
 pkg/visualtest/testdata/wpt-css3/css-fonts/font-synthesis-none-001.html	no-upstream		6a80d92a24aa5dbcb4c3f1a1842b4db27ffe0122	
 pkg/visualtest/testdata/wpt-css3/css-fonts/font-synthesis-normal-001-ref.html	no-upstream		5c1177ce3e6602565b902e21718003a64ab94cdc	
@@ -307,33 +189,15 @@ pkg/visualtest/testdata/wpt-css3/css-fonts/font-variant-ligatures-none-001-ref.h
 pkg/visualtest/testdata/wpt-css3/css-fonts/font-variant-ligatures-none-001.html	no-upstream		f0b6cf60cb34d142fcb9d45462572294437e7b83	
 pkg/visualtest/testdata/wpt-css3/css-fonts/font-variant-numeric-001.html	no-upstream		4a735dd3b423bdb8a19f3f6e3a9700fe5e99454e	
 pkg/visualtest/testdata/wpt-css3/css-fonts/palette-mix-computed.html	relocated-differs	css/css-fonts/parsing/palette-mix-computed.html	c82678e0ec571b7490f8b8176faa52bb802c7e38	8dd3b1d66f011b21ba31ba78b4dd44058174e43a
-pkg/visualtest/testdata/wpt-css3/css-fonts/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-fonts/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-fonts/ref-if-there-is-no-red.xht	ambiguous	css/CSS2/reference/ref-if-there-is-no-red.xht,css/css-backgrounds/reference/ref-if-there-is-no-red.xht,css/css-contain/reference/ref-if-there-is-no-red.xht,css/css-overflow/reference/ref-if-there-is-no-red.xht	a5b4e9f47a8e60ad0bede1ac81e02b3542c80f3b	
 pkg/visualtest/testdata/wpt-css3/css-fonts/reference/font-variant-numeric-001-ref.html	no-upstream		ae656200894301c1cf50c6523919464bf57a3d44	
 pkg/visualtest/testdata/wpt-css3/css-fonts/reference/small-caps-001-ref.html	no-upstream		37d83e41c78fa014b65de90a96b2dd0d62d31eba	
 pkg/visualtest/testdata/wpt-css3/css-fonts/reference/small-caps-002-ref.html	no-upstream		c11a9c52a16e0c5a69aaa26e1f28918524b35966	
 pkg/visualtest/testdata/wpt-css3/css-fonts/small-caps-001.html	no-upstream		010a0f5c3a650af0f067ef8588f7de67675326b7	
 pkg/visualtest/testdata/wpt-css3/css-fonts/small-caps-002.html	no-upstream		bc645fc2bd2ff5830120724d58ace2aa177c0a8b	
-pkg/visualtest/testdata/wpt-css3/css-fonts/synthetic-bold-space-width-ref.html	differs	css/css-fonts/synthetic-bold-space-width-ref.html	6345defe68153186ffbbcf65f16675804c3834ef	1d150f07bba1decbffd64b369118ebe188408916
-pkg/visualtest/testdata/wpt-css3/css-fonts/synthetic-bold-space-width.html	differs	css/css-fonts/synthetic-bold-space-width.html	ecb0dd1c912d5a82d694f163586c0d3cdbf003e2	562d9fd67f70ba74303e7a22d80717991b3e339d
-pkg/visualtest/testdata/wpt-css3/css-fonts/test_font_feature_values_parsing.html	differs	css/css-fonts/test_font_feature_values_parsing.html	08c20142449646123ebdecde6f023511b45feed4	6b6f8b224b9b52819209b31b8da67c640cb432dd
-pkg/visualtest/testdata/wpt-css3/css-grid/display-inline-grid-ref.html	relocated	css/css-grid/reference/display-inline-grid-ref.html	422185a8e3f855cfffa1cb4b8b91b1ef6dc5cb42	422185a8e3f855cfffa1cb4b8b91b1ef6dc5cb42
-pkg/visualtest/testdata/wpt-css3/css-grid/display-inline-grid.html	relocated-differs	css/css-grid/grid-model/display-inline-grid.html	cca1ada993edad4bbd0a767f70b05e44ad3410cc	e080ed8c95ce5ab8e1f9d89a3ef8523de8bd88cc
-pkg/visualtest/testdata/wpt-css3/css-grid/fr-unit-with-percentage.html	relocated-differs	css/css-grid/grid-definition/fr-unit-with-percentage.html	e64c6eb0eb1e04d2a8057d2cbc4d23d80b2ee4d8	82c97abdd5740d466f049d8b45b67e241f204899
-pkg/visualtest/testdata/wpt-css3/css-grid/fr-unit.html	relocated-differs	css/css-grid/grid-definition/fr-unit.html	9f242b57351e696685ae98cbbf7add874212e9dc	00ef5a5974423967dadf26a594539ab2eb65526c
-pkg/visualtest/testdata/wpt-css3/css-grid/green-100px-square-no-red.html	no-upstream		159d9a52a01a0b328680a530603cb496ab2d5fcf	
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-001.html	relocated-differs	css/css-grid/alignment/grid-content-distribution-001.html	fa7208a6a452732752ddbdd3fabdd8015030812a	7b53a2897b83d20ff7cd12db85f576830953b56e
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-002.html	relocated-differs	css/css-grid/alignment/grid-content-distribution-002.html	1975a06942ae9c55012720d5d4317cf6a964bb64	194934bb93e5fdfdc57f573a6ef6235c19a99ed9
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-003.html	relocated-differs	css/css-grid/alignment/grid-content-distribution-003.html	1f9e8785449e0eea8dc97313b54ae2303b84420b	ed6e32263906647ee56f2003a64412846e593436
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-content-distribution-004.html	relocated-differs	css/css-grid/alignment/grid-content-distribution-004.html	e1f30fc32ca3ccf293850f45aa03573da2dc0f08	419d0fb1bd3064e1ff39c8eb204fccde696f5a05
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-explicit-placement-001-ref.html	no-upstream		85bd5054b9ef1274ef1f96ed6b597c1c57f3a200	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-explicit-placement-001.html	no-upstream		41e3ef176c650ce408fef486bbe9903c421c6dcb	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-gap-001-ref.html	relocated-differs	css/css-grid/subgrid/grid-gap-001-ref.html	781db30328a18e732eed3d6c41b4e11072346ee4	e7909fc2064e4d3498ab90da179cf4ad0d0e9c79
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-gap-001.html	relocated-differs	css/css-grid/subgrid/grid-gap-001.html	207ec59b44d7f0d2f562d8e746d978d1689aa35d	0bc8eed4d8e408b18211b38095eecc0d983a96f4
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-items/support/100x100-green.png	differs	css/css-grid/grid-items/support/100x100-green.png	c1842f68be0dfced5b58556493b4e74b33f01270	25b76c3c6f216793a36b1f29287dafd993898c67
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-items/support/200x200-green.png	differs	css/css-grid/grid-items/support/200x200-green.png	56d745e4e12953e6bb52464657068931d15ca070	e8b591f05b5e052e562443050898abc734c9b153
-pkg/visualtest/testdata/wpt-css3/css-grid/grid-layout-basic.html	relocated-differs	css/css-grid/grid-definition/grid-layout-basic.html	1ed5f611c5e833dc84f39af05972ec6a623a0851	578f70173b015497db2e13a3c06d6ed14d23d659
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-named-lines-001-ref.html	no-upstream		694d8779207492ae94a98552f71312f6bbe5d4d3	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-named-lines-001.html	no-upstream		d9d20c211a486281e9cfc33a322c4f3656d5156c	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-placement-span-rows-001-ref.html	no-upstream		ec44b0b16e094f4789c99d71d9af8623166cba6b	
@@ -342,98 +206,16 @@ pkg/visualtest/testdata/wpt-css3/css-grid/grid-span-column-001-ref.html	no-upstr
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-span-column-001.html	no-upstream		a0f92625274cb97be65a6f717692ae58a7e701d5	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-template-areas-001-ref.html	no-upstream		f3405e4bd73622555db6d8457d74537e710101c7	
 pkg/visualtest/testdata/wpt-css3/css-grid/grid-template-areas-001.html	no-upstream		3c499f63d271f0f339de822ab14a41d8a8d7c361	
-pkg/visualtest/testdata/wpt-css3/css-grid/layout-algorithm/grid-template-flexible-rerun-track-sizing.html	differs	css/css-grid/layout-algorithm/grid-template-flexible-rerun-track-sizing.html	c466e5426e7475570618a407007c1c72a1f3789b	2dc178f88d12a9e244149780ad6313f443a4c1cf
-pkg/visualtest/testdata/wpt-css3/css-grid/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-grid/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-grid/ref-filled-green-200px-square.html	no-upstream		3e334ba280144fbce3f8dfcc9286586b68dc171e	
 pkg/visualtest/testdata/wpt-css3/css-hyphens/hyphens-manual-001-ref.html	no-upstream		b48e51b67e4c0e7161bf94aee30f5af21dba0577	
 pkg/visualtest/testdata/wpt-css3/css-hyphens/hyphens-manual-001.html	no-upstream		072334ce474c3a7e615b4bbb6f95151d6f7e8186	
 pkg/visualtest/testdata/wpt-css3/css-hyphens/hyphens-none-001-ref.html	no-upstream		3b77b6807c18b614aab3893176d57ba806676662	
 pkg/visualtest/testdata/wpt-css3/css-hyphens/hyphens-none-001.html	no-upstream		e2bb51def611a7ed4253eae1df6b099f7985f76e	
-pkg/visualtest/testdata/wpt-css3/css-images/200x200-blue-black-green-red.html	relocated	css/css-images/reference/200x200-blue-black-green-red.html	04322b066c316b8b89c73d966e00f607447edd8e	04322b066c316b8b89c73d966e00f607447edd8e
-pkg/visualtest/testdata/wpt-css3/css-images/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-angle-negative.html	differs	css/css-images/conic-gradient-angle-negative.html	faf9a2d20336159b7cd0ae0d552a9392eea21287	7f29f376d3494637c857334b238e4f6f5f0f0280
-pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-angle.html	differs	css/css-images/conic-gradient-angle.html	500d39366c9f39e63632f46de3f7637194799a14	85b1f1bdbe89fa1bd4908c6449f4413df72c0806
 pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-basic-001-ref.html	no-upstream		2e4514e0d3adeac2b679e25ab9d4a5948ef8d810	
 pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-basic-001.html	no-upstream		e035d47d1d73dd471987955ce404c47b9be2e083	
-pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-center.html	differs	css/css-images/conic-gradient-center.html	fb2fcd994c4799e5436b93df091aef72aa86e355	8f7354840f584b79455e7e016ab73cb1f8f2babe
 pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-from-001-ref.html	no-upstream		da2030199a8dc35e78a00fb99a68389d73af77a8	
 pkg/visualtest/testdata/wpt-css3/css-images/conic-gradient-from-001.html	no-upstream		89588a2d5e0b825e4645535fbfe176cea7f459ba	
-pkg/visualtest/testdata/wpt-css3/css-images/gradient-border-box.html	differs	css/css-images/gradient-border-box.html	2938c5ea99e1e41c64c1d58e69806270318bccf9	d12968a40b7ef77dd80674c4a6cf673fd718a461
 pkg/visualtest/testdata/wpt-css3/css-images/gradient-move-stops-001-ref.html	no-upstream		6249a6104224206d479e4dba1f24554e5493a503	
 pkg/visualtest/testdata/wpt-css3/css-images/gradient-move-stops-001.html	no-upstream		dec9f09d781b181ac21c1838c6862a4cf3a09fd9	
-pkg/visualtest/testdata/wpt-css3/css-images/gradients-with-border.html	differs	css/css-images/gradients-with-border.html	51a5412d2a25e7191f920828bfc392a39b07f266	0637d20861600f6820d993f88e108ead4a7dddd2
-pkg/visualtest/testdata/wpt-css3/css-images/image-orientation/image-orientation-background-properties.html	differs	css/css-images/image-orientation/image-orientation-background-properties.html	431fba1330eb0a37ff3aae7ee2bcd4835edfb79e	81876c6ecc1de43f5e3d2a386c5af15f25c7500d
-pkg/visualtest/testdata/wpt-css3/css-images/image-set-rendering.html	relocated	css/css-images/image-set/image-set-rendering.html	a105438cc4b3fa121d63d9f33ae42a74c4add73b	a105438cc4b3fa121d63d9f33ae42a74c4add73b
-pkg/visualtest/testdata/wpt-css3/css-images/linear-gradient-non-square-ref.html	relocated	css/css-images/reference/linear-gradient-non-square-ref.html	1ad3c75747e05768a3e79d879e535e8b3980f1a4	1ad3c75747e05768a3e79d879e535e8b3980f1a4
-pkg/visualtest/testdata/wpt-css3/css-images/multiple-position-color-stop-conic-2.html	differs	css/css-images/multiple-position-color-stop-conic-2.html	f3171bf3fb9823095312ab080ee3d0481a8545f6	566f3f5b8a9643114320582c2dcc226378e7fd90
-pkg/visualtest/testdata/wpt-css3/css-images/multiple-position-color-stop-linear.html	differs	css/css-images/multiple-position-color-stop-linear.html	206fbed20928eb434694f96b675b1de460224870	02c87477b8addb9b73f441003d9e93f17a4ab4d5
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-conic-2.html	differs	css/css-images/normalization-conic-2.html	a42829537adea01832a84a97446be73a0e7de520	4eb2c3b4c7be753627d701b5f6c1c2bb65416adc
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-conic-degenerate.html	differs	css/css-images/normalization-conic-degenerate.html	047aaecd46fd3384f465e4b2ed2863804d9e2462	f02c904fc4a52a791ae4b56a8cafd9db24db17fa
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-conic.html	differs	css/css-images/normalization-conic.html	3631c8e0df346c64ae9570debc9eb582e668da25	db829400f2d218711daf829591946b8440087764
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-linear-2.html	differs	css/css-images/normalization-linear-2.html	9f914cd1240727f367d4607fa158f55be1bb4872	2bb762b5290cff94cd8a7ea9f09f61a4f0304fb2
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-linear-degenerate.html	differs	css/css-images/normalization-linear-degenerate.html	c485f111a1f26605d12a80d33e0c1fc6f380892e	98a33fd7dac9d74a635c687a4d8a067b0f271e31
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-linear.html	differs	css/css-images/normalization-linear.html	8a4e74ddab383beaaf6b8c420da140034ea0c14f	d59dd037761bf2af17d951115d1cdb9bc617af9a
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-radial-2.html	differs	css/css-images/normalization-radial-2.html	a7ae26865f8f616d773f4cb1f17d3e682b3d5690	256971e80346fc7278e20e9e2221e98f3e5e9a30
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-radial-degenerate.html	differs	css/css-images/normalization-radial-degenerate.html	04f04c40bb533d1e42fba31ceedd0dca29b6007d	04846d33bba745be7cb9a6e6ac7330fa3484c81c
-pkg/visualtest/testdata/wpt-css3/css-images/normalization-radial.html	differs	css/css-images/normalization-radial.html	e8bab92afb46a43c1b14afd7f0c24371b04f72f2	7110bb360ac1212de4b7bc8514c37bb61d6d21be
-pkg/visualtest/testdata/wpt-css3/css-images/object-fit-containcontainintrinsicsize-png-001e.tentative.html	differs	css/css-images/object-fit-containcontainintrinsicsize-png-001e.tentative.html	1b121f4eee394f5e6d150574f7b1f83fce4d5cbc	ba2d2552acba29ff4ba0ea0af83601ca3a61cf2d
-pkg/visualtest/testdata/wpt-css3/css-images/object-fit-containsize-png-001e.tentative.html	differs	css/css-images/object-fit-containsize-png-001e.tentative.html	37e0f1e447110327fd4901a225b255155a5f473a	96a463eba50b297a72d9ec8ffcff2d076fdc596f
-pkg/visualtest/testdata/wpt-css3/css-images/object-position-svg-001i.html	differs	css/css-images/object-position-svg-001i.html	eecf0f4330c1038c9b734a314fae1ed2a2e600dd	e474c66c5456c9a240982e6bcc9b0560d526a28b
-pkg/visualtest/testdata/wpt-css3/css-images/object-position-svg-001p.html	differs	css/css-images/object-position-svg-001p.html	8b0b468b2fdf2c6cfcccc8aa3b9b11ad484b7ade	b28c9f6261444de7f6f298d12602f223a53c21e0
-pkg/visualtest/testdata/wpt-css3/css-images/object-position-svg-002i.html	differs	css/css-images/object-position-svg-002i.html	202b171c3a54762d86c8d4c6797b966f5087bb5c	449c193cbaf0dc081e6cf4da7175f07ba6ff334d
-pkg/visualtest/testdata/wpt-css3/css-images/object-position-svg-002p.html	differs	css/css-images/object-position-svg-002p.html	3c6b7a3d400b11e4b444d6dbc5437216b3581021	61590fae0690eaf4827677ba8705a3cf1f81d902
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-contain-intrinsic-size-ref.html	differs	css/css-images/object-view-box-contain-intrinsic-size-ref.html	da77fd4001a141eced2f9224ff44c6fe38a63f1a	9c51541f64661e50a2a42128e48e8e84f50af602
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-contain-intrinsic-size.html	differs	css/css-images/object-view-box-contain-intrinsic-size.html	411aff11a49191ed785a937057182e51eff6ea85	fd87e8f38dcd36db4a00a0b5be8d33c2ec2d9890
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-empty-bounds-ref.html	differs	css/css-images/object-view-box-empty-bounds-ref.html	9cc48196d81b4ea1143b669e6c41c56a60259a46	f33ee2788326552fb5adbc14ea75dce8091f6960
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-empty-bounds.html	differs	css/css-images/object-view-box-empty-bounds.html	b793182a9d1fc5bdf37ca1de65a49131536feb68	352fef82b552940c4d0147de665f9d804d0bf231
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-contain-img-ref.html	differs	css/css-images/object-view-box-fit-contain-img-ref.html	7a4ac607d501463a03e4670c71b984bf0234f12e	c282bc446dba304702cd1077f765bc36d0059569
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-contain-img.html	differs	css/css-images/object-view-box-fit-contain-img.html	d2e4c08a0512d3984e5403af9422babf0436264b	1bd58aa627456c17f9f31803b2161dcd4324c959
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-contain-svg-ref.html	differs	css/css-images/object-view-box-fit-contain-svg-ref.html	b6fea8087bc7912d8a1338eaf1ee8d311272a70c	a09d350c7a1e60edead7f93e09a1721faf240cf9
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-contain-svg.html	differs	css/css-images/object-view-box-fit-contain-svg.html	cfe711fb10c088224e5350a1b2f78c864eb5eb2e	80e1ebcc54cfadf637d5f69833dfb83de2f52f2a
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-cover-img-ref.html	differs	css/css-images/object-view-box-fit-cover-img-ref.html	7e2bdc754dce11e71526847759794ff38865d4fc	e4979db4871390f7265c01777c379a83f14b0ce4
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-cover-img.html	differs	css/css-images/object-view-box-fit-cover-img.html	1103788435ec32dec923a7440267b59f28f51fc7	52b8368ee4a50fe7adb91d509fced67a25f5dc07
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-cover-svg-ref.html	differs	css/css-images/object-view-box-fit-cover-svg-ref.html	e449c60f5eb7ec515f6b95f7a0c17f19a50cd97a	84423e45becdcfb42e046da48907c72d6e989569
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-cover-svg.html	differs	css/css-images/object-view-box-fit-cover-svg.html	4efe28574ca8bac2aeaa1c004f0b82d4d4b663b2	5a631edc1be5eef6e7da24dfe21ccc71bd9af024
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-fill-img-ref.html	differs	css/css-images/object-view-box-fit-fill-img-ref.html	32c97c8312f4eb78faa9018b0cf8a5f791d451bc	ca499f33f8ddc901358b078f32b1662f6cc2b7ee
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-fill-img.html	differs	css/css-images/object-view-box-fit-fill-img.html	c9d938bfa3a46e4f586889ac03d2e99897d7a5b0	e806010db7c629ba232e4e157069f7760bd29186
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-fill-svg-ref.html	differs	css/css-images/object-view-box-fit-fill-svg-ref.html	74c98d6fd3a6865848154dbbebfc10beb1070c14	107f060700426c79bd8e8af36e8d32c3e124646d
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-fill-svg.html	differs	css/css-images/object-view-box-fit-fill-svg.html	38c54e961863132f349eb033b85d0511a7e6c9f6	9751c9f1d363a03e261fc53fbb33655e0c20d0d2
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-none-img-ref.html	differs	css/css-images/object-view-box-fit-none-img-ref.html	74d5fc737f06783f276a493cce790394974cd440	6fef5171b95b3d43baab7244a8735e970bb332f4
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-none-img.html	differs	css/css-images/object-view-box-fit-none-img.html	f4a7412297fc432b535697ab26d41d88477143b7	4630509507456ac4b56daa81ae95e5ea7ebf582b
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-none-svg-ref.html	differs	css/css-images/object-view-box-fit-none-svg-ref.html	da14fa024dde348295546ab8ac692716c6e12baf	cecac38c4a62b581699318c5487ec11d395a26df
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-fit-none-svg.html	differs	css/css-images/object-view-box-fit-none-svg.html	c1036921651d2da738baf33aac781927f578ae7e	6446549505423924f2ade6bc571176843b415943
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-negative-bounds-ref.html	differs	css/css-images/object-view-box-negative-bounds-ref.html	3b4eaac30ee62eae8011070d6f06c6c2ad87a6ed	8203f6e58b636843e35a9c38ec3f2e2d8e0b76e3
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-negative-bounds.html	differs	css/css-images/object-view-box-negative-bounds.html	34dd6075b40311ff149c6cb596a5ddd3f752750f	326f3d58cbccf2891c02fe868ab248175635d668
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-property-changed-ref.html	differs	css/css-images/object-view-box-property-changed-ref.html	8974dfd6630725730444e0bcccb0fd13c95f5b6d	19b86df0cef19a743f59740b1ab1959e7308ad0a
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-property-changed.html	differs	css/css-images/object-view-box-property-changed.html	2574558ea1e5e6b66e3b4b5a1b3e906e1325eb4f	a404bf2dd72a42c07ed1474d77811417bb90b404
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect-auto-ref.html	differs	css/css-images/object-view-box-rect-auto-ref.html	54e90777fa8025c2d1de343b78ee18b5595f507d	d64859bd6ded0432461a80778be41a1625018ae1
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect-auto.html	differs	css/css-images/object-view-box-rect-auto.html	97f18c781a03514fbec548302016deff80e6b2b1	035a73e7fbb27345614ce7aa087b7d465d3698a8
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect-percentage-ref.html	differs	css/css-images/object-view-box-rect-percentage-ref.html	3d413fb5ce90cb45ed68f1400c8eadc6a51e7b91	49b7e4055360f2b2e4a256fc77e44379338147fd
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect-percentage.html	differs	css/css-images/object-view-box-rect-percentage.html	45f05938d2024bbb062cc16176cb76739d2b4ebc	6d358051e5bb1348f4975bf55715e16d254dc427
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect-ref.html	differs	css/css-images/object-view-box-rect-ref.html	b27a5b8f83c51b48f3b2008da3ec2ecbea4c1c6d	cadb9bd66ed9da86c14727b625cbca43111f7225
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-rect.html	differs	css/css-images/object-view-box-rect.html	2a0a8d307bda7c850e330568fdcf76d63548ad07	0e4e800a2c955d13b9ccf88a395fba22e6be8744
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-same-size.html	differs	css/css-images/object-view-box-same-size.html	0daa360155744c17267fbcc4db5a952c150b5017	b5c189e1979747f9a3e6ca1d4af1b670e388117f
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-size-containment-ref.html	differs	css/css-images/object-view-box-size-containment-ref.html	24097c6883aaee85fb2fb99c646273b22d366d9d	7475f3b1ed3e48fdcdb59694097ca576aee476f8
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-size-containment.html	differs	css/css-images/object-view-box-size-containment.html	c58e6735bf4070c03336c32a788f7bf0c163624f	aaedc6f6267b7b4269850bb94e41ce956ec125e7
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-svg-img-no-size-ref.html	differs	css/css-images/object-view-box-svg-img-no-size-ref.html	ca1ea59e278b2fd631d81944dcc5f6541da3780d	a3e4ed4c16fa4b30c00a48dd8c8b0044bacb3595
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-svg-img-no-size.html	differs	css/css-images/object-view-box-svg-img-no-size.html	1d1c97a6e5f85cee31dfd47c79fc160f7596957d	69c14c3db6830d9d8dc5cf904468f5f62f80110e
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-writing-mode-img-ref.html	differs	css/css-images/object-view-box-writing-mode-img-ref.html	9bcdb8ba0b83392fd0c8567b1b3ee8d64deea19b	0ac36391325057a117a8b2044c8521fe9d12bc42
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-writing-mode-img.html	differs	css/css-images/object-view-box-writing-mode-img.html	547a2ed331769229bb0df381373a01e3b9b52ed5	ac7ab57604b377b699cf0e72aaaad455e8386ca9
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-writing-mode-svg-ref.html	differs	css/css-images/object-view-box-writing-mode-svg-ref.html	c350dcfe5f36b191e9a107a8b5739922babce2da	8b0d8e99f33060037bd7292e6d6c95fe93196469
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-writing-mode-svg.html	differs	css/css-images/object-view-box-writing-mode-svg.html	5d90bb6026a3535614551e8170f0d874fea52460	ff57d4afce274bc5e214f73f143959ef39e3be8f
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-xywh-percentage-ref.html	differs	css/css-images/object-view-box-xywh-percentage-ref.html	23d2e063162f63ea603241e0a53a1925504c9c78	1ad88082186e3dbaed8b92c0d4e5c2538d22f299
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-xywh-percentage.html	differs	css/css-images/object-view-box-xywh-percentage.html	0f1d59343efa29eb048d0ec9dde9c9baf03f7a0d	cac0ac4fa38ed7a5467856d834085ab5ad7684ab
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-xywh-ref.html	differs	css/css-images/object-view-box-xywh-ref.html	85ca9d368a270c45752aaeb43ea336f40da02647	66473ce71b422a0168b06064568eadb3743b22b9
-pkg/visualtest/testdata/wpt-css3/css-images/object-view-box-xywh.html	differs	css/css-images/object-view-box-xywh.html	258ff6f083eac3e653a060125aeb81e47d82a862	c8f2f3ae020a1e82ca06646624a49885bd28ab42
-pkg/visualtest/testdata/wpt-css3/css-images/out-of-range-color-stop-conic.html	differs	css/css-images/out-of-range-color-stop-conic.html	16bdccb948ce5bb0011e83022c550cb8015f4c9b	07c8f897247776801bb5a79e0ab12d7b6c24baca
-pkg/visualtest/testdata/wpt-css3/css-images/reference/image-set-rendering-ref.html	relocated	css/css-images/image-set/reference/image-set-rendering-ref.html	8a56bbf4d29b3373a72b4edf93058e2238c76be5	8a56bbf4d29b3373a72b4edf93058e2238c76be5
-pkg/visualtest/testdata/wpt-css3/css-images/repeating-conic-gradient.html	differs	css/css-images/repeating-conic-gradient.html	9a9587f29f6b491461d9df96d76072cbe13efe9a	73645c3566f0638500eb28c31c9f42b84e47cb22
-pkg/visualtest/testdata/wpt-css3/css-images/support/testHelper.js	differs	css/css-images/support/testHelper.js	e2806336e1b7d020141ca692a74ef5cf5f9834b7	090882825d037ef0bb26f4c92523a7144bf78ac3
-pkg/visualtest/testdata/wpt-css3/css-images/svg-images-are-ignored.html	differs	css/css-images/svg-images-are-ignored.html	99d86f366cae594889a38e8df9bc6ca2026d8189	d8f1c23e5e699f0778e17a683fb7b41f14514ca5
-pkg/visualtest/testdata/wpt-css3/css-images/svg-script-is-ignored.html	differs	css/css-images/svg-script-is-ignored.html	e57f22d6b8af9e9ea44e3d0196e9e2100b14aa7e	1f18bba34cb85fe20428e5a41692c9ac41980528
-pkg/visualtest/testdata/wpt-css3/css-images/tiled-conic-gradients.html	differs	css/css-images/tiled-conic-gradients.html	c5902c07c9afc0d070405b414456f0d763657038	0c0ed49fc5da3e8298176706fb8f5804c00fb7f0
-pkg/visualtest/testdata/wpt-css3/css-images/tiled-radial-gradients.html	differs	css/css-images/tiled-radial-gradients.html	f644a6e294c757742d9b3f4846fd1fcd8dff9aca	0ad23c1cfec28135d8ab993f16c09afd194ea832
 pkg/visualtest/testdata/wpt-css3/css-inline/line-height-em-001-ref.html	no-upstream		6d2a8478c1a02f07ea4660364282fefc76be28ca	
 pkg/visualtest/testdata/wpt-css3/css-inline/line-height-em-001.html	no-upstream		e347850872f2dad3f2d3b801bfc4abfdf9f764ca	
 pkg/visualtest/testdata/wpt-css3/css-inline/line-height-inherit-001-ref.html	no-upstream		df76453b0f1992b92f713b508c834c7a37fa10e5	
@@ -446,12 +228,8 @@ pkg/visualtest/testdata/wpt-css3/css-inline/vertical-align-length-001-ref.html	n
 pkg/visualtest/testdata/wpt-css3/css-inline/vertical-align-length-001.html	no-upstream		edebee0111b5eca557d96689c0356359b2d2d9d6	
 pkg/visualtest/testdata/wpt-css3/css-inline/vertical-align-middle-001-ref.html	no-upstream		7b9f2fd0cade7d6a5d41ba63fb9afb27599f4a6b	
 pkg/visualtest/testdata/wpt-css3/css-inline/vertical-align-middle-001.html	no-upstream		4afb2434f6d7bdf0ae32bbf5f31a4d0ab35c5340	
-pkg/visualtest/testdata/wpt-css3/css-lists/li-with-overflow-hidden-change-list-style-position-001.html	differs	css/css-lists/li-with-overflow-hidden-change-list-style-position-001.html	992ed83cedaa50208a3870707ecbcb18da337bbc	1918f8382b503bcce3db0544ede5b758fb5d7dfc
-pkg/visualtest/testdata/wpt-css3/css-lists/list-and-flex-001.html	differs	css/css-lists/list-and-flex-001.html	98ab9c400b683932021d84127438d564b0b49bfc	9ceb9e32bbc68a2bb60f605b2b5c6474404d4f92
-pkg/visualtest/testdata/wpt-css3/css-lists/list-and-grid-001.html	differs	css/css-lists/list-and-grid-001.html	562961d5a98cfc53f6bfc8daa7f912b174eecc73	1a30d27c8cb67612e8d3aa3cdfab2a9490985082
 pkg/visualtest/testdata/wpt-css3/css-lists/list-style-position-inside-001-ref.html	no-upstream		3c0d7a35885c9694a80caa05065e059cc39adc0f	
 pkg/visualtest/testdata/wpt-css3/css-lists/list-style-position-inside-001.html	no-upstream		6b34febf8f08d1313df10dacb88ff4140964c918	
-pkg/visualtest/testdata/wpt-css3/css-lists/list-style-type-string-003.html	differs	css/css-lists/list-style-type-string-003.html	94467ca1f21c8807a57b3ecd10a6ba0d86ae5049	b876c87eab253ad6e1a8f9bbb729e8873bf3471e
 pkg/visualtest/testdata/wpt-css3/css-lists/marker-color-001-ref.html	no-upstream		5566355bc103a6fdd2637975dd0796861d301c16	
 pkg/visualtest/testdata/wpt-css3/css-lists/marker-color-001.html	no-upstream		9d6c56d0b4e46f75ba2f45218d8604ecda348ec7	
 pkg/visualtest/testdata/wpt-css3/css-lists/marker-content-001-ref.html	no-upstream		d9c078441284e66dd59a1ec7b14becaddc29a630	
@@ -496,132 +274,45 @@ pkg/visualtest/testdata/wpt-css3/css-masking/mask-opacity-1d.html	relocated	css/
 pkg/visualtest/testdata/wpt-css3/css-masking/reference/clip-path-circle-ref.html	relocated	css/css-masking/clip-path/reference/clip-path-circle-ref.html	c427e696bfd64a7fb550d777ce8a8c3d28598245	c427e696bfd64a7fb550d777ce8a8c3d28598245
 pkg/visualtest/testdata/wpt-css3/css-masking/reference/clip-path-ellipse-ref.html	relocated	css/css-masking/clip-path/reference/clip-path-ellipse-ref.html	5adc91a5c00f27f0d3225c99a6c2534b5b868a8d	5adc91a5c00f27f0d3225c99a6c2534b5b868a8d
 pkg/visualtest/testdata/wpt-css3/css-masking/reference/clip-path-rectangle-ref.html	relocated	css/css-masking/clip-path/reference/clip-path-rectangle-ref.html	1d3810a7781c11f54ede46052fa1ba2bf50f4698	1d3810a7781c11f54ede46052fa1ba2bf50f4698
-pkg/visualtest/testdata/wpt-css3/css-multicol/column-rule-001-ref.html	differs	css/css-multicol/column-rule-001-ref.html	0d072815f1f6da1506d1145763a1173415449df2	a0b3fea8ff3b198d8044d98ae957f0a428aab971
-pkg/visualtest/testdata/wpt-css3/css-multicol/column-rule-001.html	differs	css/css-multicol/column-rule-001.html	47a514b3570b62c57a4a174a2c454457023ff1ae	bd31a0d152be27690374cdc9c4bd5e789d5d5f4f
 pkg/visualtest/testdata/wpt-css3/css-multicol/column-span-all-001-ref.html	no-upstream		d45c86cbd4ca5a3672d316dbc2b46664ab5dad6e	
 pkg/visualtest/testdata/wpt-css3/css-multicol/column-span-all-001.html	no-upstream		a1df335df9a27a8a615212c2ec91312205caa542	
 pkg/visualtest/testdata/wpt-css3/css-multicol/column-span-none-001-ref.html	no-upstream		937ad612ae33d16421a4e36eb45e20d98f54716b	
 pkg/visualtest/testdata/wpt-css3/css-multicol/column-span-none-001.html	no-upstream		feccb441f39f1e3b83faf1c3256446abc4284795	
-pkg/visualtest/testdata/wpt-css3/css-multicol/getclientrects-005.html	differs	css/css-multicol/getclientrects-005.html	ee60a607dccb3fdba2ed7dc99cb344071f5bb34a	af852ea0242a2a8a60f57966969231fa6c1a6f8e
-pkg/visualtest/testdata/wpt-css3/css-multicol/getclientrects-006.html	differs	css/css-multicol/getclientrects-006.html	9f07a7de7444de7a2f91f97ff0a4fe44b7e177af	cea04008a88948e23e5a85497dcec3b1e5ca2f27
-pkg/visualtest/testdata/wpt-css3/css-multicol/getclientrects-007.html	differs	css/css-multicol/getclientrects-007.html	0791c5b931fe3fade4c7b4483ef2469435ffbd77	e8a449ae4a64b784167bf9984f3353f043c5e9c9
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-001-ref.html	no-upstream		85c71ef7318d4b957ab7f3c965f2e42129a1cf59	
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-001.html	no-upstream		7267d7a6e5a485de1ebc1393275bcca223af5267	
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-count-basic-001-ref.html	no-upstream		45006c16c673547d46fc47daebc7c245205e767e	
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-count-basic-001.html	no-upstream		cb380a836d8e641443921cfb10fb16d15102e7fa	
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-gap-001-ref.html	no-upstream		2c4a4d42e58bdd4479b51c7fd2e8259c7c6c7d33	
 pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-gap-001.html	no-upstream		30d84807eeb6de14b853d39a9e878824e5285d24	
-pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-gap-percentage-001.html	differs	css/css-multicol/multicol-gap-percentage-001.html	4cd0f42bcae84b3df5e925363423781a0dcaa292	c7d5fa1e67fe9f0bb478a73a8bd5c723c56e17f6
-pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-list-item-006.html	differs	css/css-multicol/multicol-list-item-006.html	1cf609adf02a2f0c3fc8c12286ade9917fdc708f	bcd16816298e36199c31ef1f2e06b475fe72afad
-pkg/visualtest/testdata/wpt-css3/css-multicol/multicol-scroll-content-ref.html	differs	css/css-multicol/multicol-scroll-content-ref.html	320e425dbd16a5736e6a1ca9ae93bfb06bfbcaac	b7273649284d0ea1f60e648fd995af1048df3376
-pkg/visualtest/testdata/wpt-css3/css-multicol/nested-past-fragmentation-line.html	differs	css/css-multicol/nested-past-fragmentation-line.html	77f91f4a23d802bdfe1d94072825cf25b5aeb10f	389f31073a432c28f3904de17f21f6b1f5f98a3b
-pkg/visualtest/testdata/wpt-css3/css-multicol/nothing.html	ambiguous	css/reference/nothing.html	98ee818a8468b73f29c6c3c8a60bb3b3a0f21fa8	
-pkg/visualtest/testdata/wpt-css3/css-multicol/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-multicol/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-multicol/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/black20x20.png	differs	css/css-multicol/support/black20x20.png	4675ad6b62b5868cb1c8608e87bce950053af0b4	ebf7027ee785af8acf0bf6c213c616b4055ee10f
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-blue.png	differs	css/css-multicol/support/swatch-blue.png	21a8d56a452dbe86822a70f74db76493ecfae759	bf2759634d45dbe3df13868341eddb7e4bf24172
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-gray.png	differs	css/css-multicol/support/swatch-gray.png	f5f583e35e2e0c8aebc150617c32d3c6ec9bb8cb	92c73561f3a8b74b279c2859a0b13145ef12f40a
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-green.png	differs	css/css-multicol/support/swatch-green.png	f0ebdc08cae39f65bc4e57c319179b9bf9bbb76b	0aa79b0c86bd72c2220ecce39b9553e2cd3605b9
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-lime.png	differs	css/css-multicol/support/swatch-lime.png	9b9f34bbb58faf44116b49fe76847ab5d8f73885	55fd7fdaedfc1ed505b111f20fabbca568c68fa5
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-navy.png	differs	css/css-multicol/support/swatch-navy.png	ef6cc18ddbbda7caaa94ee6c82eaeef0082c3f44	28dae8a3e12bea03cf41b020bf05540adf9da17f
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-orange.png	differs	css/css-multicol/support/swatch-orange.png	aed530651f236b530136e35299dae0fe9ba92656	d3cd498b52bd88ea6c991f050f1ecb1cfdd136bb
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-pink.png	differs	css/css-multicol/support/swatch-pink.png	5143563e849e108cba32e93df69231644dc37d72	95b84499a3d849cfd74eb8711f5d2a1bc45d0c39
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-purple.png	differs	css/css-multicol/support/swatch-purple.png	ac5ba86115323f5058d47f735b8698719892d0cf	73bea775175e9bab0dfe664eaea9ceaa566de787
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-white.png	differs	css/css-multicol/support/swatch-white.png	852b141b71033813f369b058c45cde81b30bfe8e	1a7d4323d77287d8eb03a89c635b09d099d94869
-pkg/visualtest/testdata/wpt-css3/css-multicol/support/swatch-yellow.png	differs	css/css-multicol/support/swatch-yellow.png	331e60583e42d01fcaa449751691cca58c4cbea3	1591aa0e2e274854ed836cf582235ea0202f9c8e
-pkg/visualtest/testdata/wpt-css3/css-nesting/mixed-declarations-rules.html	differs	css/css-nesting/mixed-declarations-rules.html	fbc9b54717c91d74b20d5739e746e2287871c92b	1107381273d8418d662152b57ba26c93fde85f9a
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-basic-001-ref.html	no-upstream		e3402801b20fe4a31facfc0c1bf36d79b64eeef7	
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-basic-001.html	no-upstream		c2d87c71ca7d1fc7ce1683355c02ea7bf74fe05e	
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-implicit-001-ref.html	no-upstream		e830fce0b4df65bf966bdb46d8511168d45dd41e	
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-implicit-001.html	no-upstream		1814caa7400fbb51bbf9ba24ae7cef6a7e7cd339	
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-media-001-ref.html	no-upstream		cd0b7d4ec1afc355d0e5ca2def2b694f11b4277b	
 pkg/visualtest/testdata/wpt-css3/css-nesting/nesting-media-001.html	no-upstream		eaf52ea6b6bc42b70908d1b5768c7ae33da32ed8	
-pkg/visualtest/testdata/wpt-css3/css-nesting/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-overflow/about-blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-overflow/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-overflow/hit-test-stacking-context-parent-border-radius.html	differs	css/css-overflow/hit-test-stacking-context-parent-border-radius.html	7e0820f0b5730c053e0dfb9aa5fb9af3cc3aeac0	00176783f2126a47e4afb811785a91ddb36178db
-pkg/visualtest/testdata/wpt-css3/css-overflow/inheritance.html	differs	css/css-overflow/inheritance.html	ced9fa1b6995da1ba4284598d9581da2597c1bf8	e817ffd771ebb6ff99ab9a5ab709ac784a77c0a8
-pkg/visualtest/testdata/wpt-css3/css-overflow/input-scrollable-region-001-ref.html	relocated	css/css-overflow/reference/input-scrollable-region-001-ref.html	d7125ee2ef3285d461b2172208e23d8d4cc27a64	d7125ee2ef3285d461b2172208e23d8d4cc27a64
 pkg/visualtest/testdata/wpt-css3/css-overflow/line-clamp-basic-001-ref.html	no-upstream		6170ffe880bc3410ca5996fa482a6dce363124df	
 pkg/visualtest/testdata/wpt-css3/css-overflow/line-clamp-basic-001.html	no-upstream		3e6110932d85afecd6a5b5ae694783abaa6265ef	
 pkg/visualtest/testdata/wpt-css3/css-overflow/line-clamp-ellipsis-001-ref.html	no-upstream		689881780a53230d589a33511db290812a53686e	
 pkg/visualtest/testdata/wpt-css3/css-overflow/line-clamp-ellipsis-001.html	no-upstream		6029365c77e90b63482337edb9e44524252b4866	
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-body-no-propagation-ref.html	relocated	css/css-overflow/reference/overflow-body-no-propagation-ref.html	9795d1f5861f0affaeb3a36b3644d17fd60e1f4d	9795d1f5861f0affaeb3a36b3644d17fd60e1f4d
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-body-propagation-ref.html	relocated	css/css-overflow/reference/overflow-body-propagation-ref.html	340bda9de92352fe1ef6633610da31e867013299	340bda9de92352fe1ef6633610da31e867013299
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-001-ref.html	relocated	css/css-overflow/clip-001-ref.html	9ccdbf93c615f6078b82add5362e6032e9efe583	9ccdbf93c615f6078b82add5362e6032e9efe583
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-001.html	no-upstream		8e3fe8a13e52c9d3e970172baa285ae445d66145	
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-003-ref.html	no-upstream		626d29e134c45303da9f3aa635c6228595121057	
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-003.html	no-upstream		8f1af20a9f1b3c7570220a726a99dca4eb9462b1	
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-content-visual-overflow-ref.html	differs	css/css-overflow/overflow-clip-content-visual-overflow-ref.html	378da736ecfcec921fa257273f7369cb253e3b81	f3aa3676f2e8974b69f10ba1e2fb0256c4710251
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-content-visual-overflow.html	differs	css/css-overflow/overflow-clip-content-visual-overflow.html	8ea8e2c3334e17cfa5c5225df837135e64546f7d	3af937a10e00c430ce6061065b477390eab6bfe3
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-hit-testing.html	differs	css/css-overflow/overflow-clip-hit-testing.html	b22497601c2af66492958703df8f46c6756724ac	b819e3dc00a47357ac4bd0a0da7bb05f73d18261
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-margin-003-ref.html	differs	css/css-overflow/overflow-clip-margin-003-ref.html	cf6b55a2f91d52a669ab64ce7f2ee66ae3abb139	3c69cc7c061ce3bd6fc5cb64305879542da983c9
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-margin-003.html	differs	css/css-overflow/overflow-clip-margin-003.html	52625e90977f1e3ab87037a0bd4f48343b026fc8	5b74fefd952e1f77d098fd5be12b104217ee78ad
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-margin-006-ref.html	differs	css/css-overflow/overflow-clip-margin-006-ref.html	cf6b55a2f91d52a669ab64ce7f2ee66ae3abb139	3c69cc7c061ce3bd6fc5cb64305879542da983c9
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-clip-margin-006.html	differs	css/css-overflow/overflow-clip-margin-006.html	493bcee29f65c6890cec5472ac277adaa662a546	48602c685a6c0f790bd38b2fcdc2bda0f653e5c6
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-ellipsis-dynamic-001-ref.html	relocated	css/css-overflow/reference/overflow-ellipsis-dynamic-001-ref.html	85f8c50a8d639b760bd981ebea6bf3481983e072	85f8c50a8d639b760bd981ebea6bf3481983e072
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-hidden-resize-with-stacking-context-child.html	differs	css/css-overflow/overflow-hidden-resize-with-stacking-context-child.html	8569ac153329c96b5dd27f43fd549163380694e8	c76cce507aa5feef156a41914406d4ac24c2005d
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-border-radius.html	differs	css/css-overflow/overflow-img-border-radius.html	cec70d6b942b426864b9a1a2648ebf1f71514c4b	ee4518fd8a7abcfdaeee40b9521479158be3e455
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-display-table-ref.html	differs	css/css-overflow/overflow-img-display-table-ref.html	4552cb06da9ad3eebaf06de531219b7e021d6281	6730bfd8b27726f744c9b2caa91581b1d6f2c18a
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-display-table.html	differs	css/css-overflow/overflow-img-display-table.html	b7e19aa616dc42674e33e399729986d5316ecb13	245a10d53d937c62e775069bdbb610afd49a65db
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-object-position-ref.html	differs	css/css-overflow/overflow-img-object-position-ref.html	dde966c99174c4d82fa4f6e1d7d10da0c301f087	2b00f637b42246271a180356921a2cd58240f957
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-object-position.html	differs	css/css-overflow/overflow-img-object-position.html	67e6febef275ccd07957db6687bdbefddf02c23b	81e250634a0b6532e41f03d13d451f5ba5c45260
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-ref.html	differs	css/css-overflow/overflow-img-ref.html	7764371702dc018e0911d1c90de12c1f23af9655	69d23ba7b16cc2e8148c7fb79aa9faa4378f767f
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-scroll-non-replaced-ref.html	differs	css/css-overflow/overflow-img-scroll-non-replaced-ref.html	426cb2be6609cfb2656da4240d132f2cde7544b0	b2973f025ff66cf9c3f1f02d80dadf113d74dfe7
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-scroll-non-replaced.html	differs	css/css-overflow/overflow-img-scroll-non-replaced.html	6468c73068894979a8585191eb7358f0ee241880	d067d544e116ba9e3dd00ba5059e76af887892bb
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-scroll-replaced-ref.html	differs	css/css-overflow/overflow-img-scroll-replaced-ref.html	50793440a5254e81ea049de4e2213c0d6f23a7de	75a43be8ea077324dd1266edabf629326fefe60b
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-scroll-replaced.html	differs	css/css-overflow/overflow-img-scroll-replaced.html	0657596d4f19ff91d0074918334eba5de8f00ffe	1dd76960caa34f873a6f449ebcf44d1a8261901b
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-svg-ref.html	differs	css/css-overflow/overflow-img-svg-ref.html	e81f5c158a91b87f7c9d385331842ed56f09e4b3	b209847e9d20cf0771df599e34bbcc3e429ddec9
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img-svg.html	differs	css/css-overflow/overflow-img-svg.html	15285ca3b67451daf3deb7ed17249f1efe279d79	efede0af2e81bfe2c0bc70eea3d4aa0036bae04c
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-img.html	differs	css/css-overflow/overflow-img.html	cd9d30ffaa3318d7c9df288260c104c4cd7f0bbe	945e337e00b254602808a371d93880ddfd23e47b
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-inline-block-with-opacity-ref.html	relocated	css/css-overflow/reference/overflow-inline-block-with-opacity-ref.html	1b37bfffb7842c20ceddc5204aaa2b52c1a40904	1b37bfffb7842c20ceddc5204aaa2b52c1a40904
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-overlay-001-ref.html	relocated	css/css-overflow/overflow-overlay-ref.html	3d88b75890c0e20a6beda2f4607ed0ae6ef49d4a	3d88b75890c0e20a6beda2f4607ed0ae6ef49d4a
 pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-overlay-001.html	no-upstream		b2779ec0517d53a62c4143b26f9a9612cb5e3803	
-pkg/visualtest/testdata/wpt-css3/css-overflow/overflow-recalc-001-ref.html	relocated	css/css-overflow/reference/overflow-recalc-001-ref.html	b18dee8caf1864dc30fe656750fe81a8863f1e90	b18dee8caf1864dc30fe656750fe81a8863f1e90
-pkg/visualtest/testdata/wpt-css3/css-overflow/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-overflow/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-overflow/ref-if-there-is-no-red.xht	relocated	css/css-overflow/reference/ref-if-there-is-no-red.xht	a5b4e9f47a8e60ad0bede1ac81e02b3542c80f3b	a5b4e9f47a8e60ad0bede1ac81e02b3542c80f3b
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-padding-inline.html	differs	css/css-overflow/scrollable-overflow-padding-inline.html	38b02e99dce5e325c0248e76386569850558a7c9	d94df5b117562bd18e26bfd8ee629cce4210b13f
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-padding-input.html	differs	css/css-overflow/scrollable-overflow-padding-input.html	6f19af1c1bf973b6e74766dc4571a1d33c49e598	5dbe13520d20b75180577fc8795a7466d7cac32d
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-textarea.html	differs	css/css-overflow/scrollable-overflow-textarea.html	2be500bc8b0397c5e7b18ed2a7da6fb6be078532	798a697b440aabcf0f1553267754efad7ac6fa4b
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-transform-005.tentative.html	differs	css/css-overflow/scrollable-overflow-transform-005.tentative.html	837b95ba96db71e7d696edfe4bb6c7c489e7a411	370a90c429c942705fd6b4d9c7422856ffbc69d8
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-transform-007.html	differs	css/css-overflow/scrollable-overflow-transform-007.html	8aa6e5f17d8633e759d5b52b5096057c367d7b58	b0b471f92c37a86b0f70261635703757c9a64ff7
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollable-overflow-transform-010.tentative.html	differs	css/css-overflow/scrollable-overflow-transform-010.tentative.html	e2c62cb4474ecbd486360fdd4aeb1c306a433f2d	99c19bb16fdb87d9bd129ff4aae88909ee040f11
-pkg/visualtest/testdata/wpt-css3/css-overflow/scrollbar-empty-002.html	differs	css/css-overflow/scrollbar-empty-002.html	1a8d370a461a153ab8b8ef793379a3b0f76b407b	490146cad20d171b3ac3608ba676765bc41ea923
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-ellipsis-001-ref.html	relocated	css/css-overflow/reference/text-overflow-ellipsis-001-ref.html	814bfd6a2f8149e97709471510b3f77f0f72b756	814bfd6a2f8149e97709471510b3f77f0f72b756
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-ellipsis-002-ref.html	relocated	css/css-overflow/reference/text-overflow-ellipsis-002-ref.html	cf26b6b8c848521940936165002eb6aab46c068d	cf26b6b8c848521940936165002eb6aab46c068d
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-ellipsis-rtl-001-ref.html	relocated	css/css-overflow/reference/text-overflow-ellipsis-rtl-001-ref.html	5c75e38d8308ac81dcfe5eef7e18fd7ad56d6b3b	5c75e38d8308ac81dcfe5eef7e18fd7ad56d6b3b
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-ellipsis-vertical-001-ref.html	relocated	css/css-overflow/reference/text-overflow-ellipsis-vertical-001-ref.html	18f8a1beaefc9ae6109d62555f1c5c61dccf4105	18f8a1beaefc9ae6109d62555f1c5c61dccf4105
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-ellipsis-vertical-rtl-001-ref.html	relocated	css/css-overflow/reference/text-overflow-ellipsis-vertical-rtl-001-ref.html	1c9e660331992b7377f52b86c9dc87b8b0980ae9	1c9e660331992b7377f52b86c9dc87b8b0980ae9
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-scroll-001-ref.html	relocated	css/css-overflow/reference/text-overflow-scroll-001-ref.html	18836f32040913e370410cd4f6cf6e96d0befdee	18836f32040913e370410cd4f6cf6e96d0befdee
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-scroll-rtl-001-ref.html	relocated	css/css-overflow/reference/text-overflow-scroll-rtl-001-ref.html	4be95f4fb9e5ebd7f10f3d67fefcd160e936d4c4	4be95f4fb9e5ebd7f10f3d67fefcd160e936d4c4
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-scroll-vertical-lr-001-ref.html	relocated	css/css-overflow/reference/text-overflow-scroll-vertical-lr-001-ref.html	8b671171e612401df3476812ce6b95fe92c75658	8b671171e612401df3476812ce6b95fe92c75658
-pkg/visualtest/testdata/wpt-css3/css-overflow/text-overflow-scroll-vertical-lr-rtl-001-ref.html	relocated	css/css-overflow/reference/text-overflow-scroll-vertical-lr-rtl-001-ref.html	fff3dec59cb494d98ee87660ded2b9ee05a5e198	fff3dec59cb494d98ee87660ded2b9ee05a5e198
 pkg/visualtest/testdata/wpt-css3/css-position/clear-001-ref.xht	ambiguous	css/CSS2/floats-clear/clear-001-ref.xht	e607591a9049fe56e71f29c548de3aa1e79e81d5	
 pkg/visualtest/testdata/wpt-css3/css-position/clear-001.xht	ambiguous	css/CSS2/floats-clear/clear-001.xht	e6922414284ec2e2c4961c9e684c2cb7135b4aea	
 pkg/visualtest/testdata/wpt-css3/css-position/clear-002-ref.xht	ambiguous	css/CSS2/floats-clear/clear-002-ref.xht	2e2b0b6c4a2c8d1b1a64353698ddce94156c1a34	
 pkg/visualtest/testdata/wpt-css3/css-position/clear-002.xht	ambiguous	css/CSS2/floats-clear/clear-002.xht	f64848f910d52d4a035162028362a26eb004f268	
 pkg/visualtest/testdata/wpt-css3/css-position/clear-003-ref.xht	ambiguous	css/CSS2/floats-clear/clear-003-ref.xht	38b152c320c19d8c53818fcb2d1a0d4887a1ec60	
 pkg/visualtest/testdata/wpt-css3/css-position/clear-003.xht	ambiguous	css/CSS2/floats-clear/clear-003.xht	7e5d19baa26f3cf136f58a28f876aa08497e2e9a	
-pkg/visualtest/testdata/wpt-css3/css-position/fixed-z-index-blend.html	differs	css/css-position/fixed-z-index-blend.html	c532a5870f05c29603266cb6a2d2ad285446a627	7b9789d360584ad317106c1daea6b273160a8d4f
-pkg/visualtest/testdata/wpt-css3/css-position/green.html	relocated	css/css-position/overlay/green-ref.html	bef7405e96f8181f88fb073ebd212b4af6382e33	bef7405e96f8181f88fb073ebd212b4af6382e33
-pkg/visualtest/testdata/wpt-css3/css-position/pass_if_pass_below.html	ambiguous	css/reference/pass_if_pass_below.html	7de44825c06294a6f32b8a07c1ee211e28d37fe0	
-pkg/visualtest/testdata/wpt-css3/css-position/position-absolute-in-inline-002.html	differs	css/css-position/position-absolute-in-inline-002.html	8ec3838fc773f92fdaa27b73e1bf604ec7001078	585ecccb9ac61698dd6d6d332baf903c89ed45b6
-pkg/visualtest/testdata/wpt-css3/css-position/position-absolute-replaced-minmax.html	differs	css/css-position/position-absolute-replaced-minmax.html	6e5c1f2be5340f027081f22a81dfb4796ab861c1	324e910e42aaa9bae38f4e526552f6937cad2d7b
 pkg/visualtest/testdata/wpt-css3/css-position/position-fixed-001-ref.html	no-upstream		6fc72f3a24bdeca42de2a3654a729ece12b225c6	
 pkg/visualtest/testdata/wpt-css3/css-position/position-fixed-001.html	no-upstream		f42b49aa1237b3d121deb8baebc667ac53c32f14	
-pkg/visualtest/testdata/wpt-css3/css-position/position-fixed-scroll-overlap-ref.html	differs	css/css-position/position-fixed-scroll-overlap-ref.html	b9535e04e89d2b30089da6a2a79b152401f0af0c	6408b9620409daf8edea5ba931e0efd29f808c08
-pkg/visualtest/testdata/wpt-css3/css-position/position-fixed-scroll-overlap.html	differs	css/css-position/position-fixed-scroll-overlap.html	3bfcf83761f3fec82589374ee4e3daa220a69e2c	1f8f421431a417c40bb8539410d3e1f88a6baaeb
 pkg/visualtest/testdata/wpt-css3/css-position/position-sticky-viewport-left-001-ref.html	no-upstream		171503e254d98aebead33adf289f0a956d41b144	
 pkg/visualtest/testdata/wpt-css3/css-position/position-sticky-viewport-left-001.html	no-upstream		5d4fafd9446960e72d6ae10cd13d77ee5dc64fac	
 pkg/visualtest/testdata/wpt-css3/css-position/position-sticky-viewport-top-001-ref.html	no-upstream		3db8ecf622da88a964a96e9d5d7549a1b6d5a925	
 pkg/visualtest/testdata/wpt-css3/css-position/position-sticky-viewport-top-001.html	no-upstream		afdeaa2379156f36ba483f0918508e399188669c	
-pkg/visualtest/testdata/wpt-css3/css-position/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
 pkg/visualtest/testdata/wpt-css3/css-position/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-position/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-position/resources/position-absolute-iframe-child-002.sub.html	differs	css/css-position/resources/position-absolute-iframe-child-002.sub.html	1da4adb226c8c247494deb427febd6ba1010ee1c	745a95ff9881fb63f53c9ee9eda52f939b1c625c
-pkg/visualtest/testdata/wpt-css3/css-position/resources/position-absolute-iframe-child.html	differs	css/css-position/resources/position-absolute-iframe-child.html	1da4adb226c8c247494deb427febd6ba1010ee1c	3169cac0af3bf42f8236a2eb276f29a24c95d977
 pkg/visualtest/testdata/wpt-css3/css-position/stack-floats-001-ref.xht	ambiguous	css/CSS2/zindex/stack-floats-001-ref.xht	066b803d4b8e65c7837d6241643b314f243314e2	
 pkg/visualtest/testdata/wpt-css3/css-position/stack-floats-001.xht	ambiguous	css/CSS2/zindex/stack-floats-001.xht	739a6c3b498687fe1afb82c13655ca562761daba	
 pkg/visualtest/testdata/wpt-css3/css-position/sticky-basic-001-ref.html	no-upstream		b9edc5654f15eb611a6cc9227343ff42a5e4eff6	
@@ -638,83 +329,38 @@ pkg/visualtest/testdata/wpt-css3/css-position/z-index-abspos-001-ref.xht	ambiguo
 pkg/visualtest/testdata/wpt-css3/css-position/z-index-abspos-001.xht	ambiguous	css/CSS2/zindex/z-index-abspos-001.xht	63a44d15a7dce6e1a2df6124ff1064d0a68392ab	
 pkg/visualtest/testdata/wpt-css3/css-position/zindex-nested-001-ref.html	no-upstream		2a9da60d434705e711e2a393b74dc7437317ef0a	
 pkg/visualtest/testdata/wpt-css3/css-position/zindex-nested-001.html	no-upstream		10db20d0eef9dfebf908cd9f265d284d82381ec0	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/active-selection-021.html	differs	css/css-pseudo/active-selection-021.html	767366b8c4e5c5217ef8ab3d28f0759604dc38ec	0b0ccbc5f6ee9f94550befd122d31f9de186b2a6
-pkg/visualtest/testdata/wpt-css3/css-pseudo/active-selection-051-ref.html	differs	css/css-pseudo/active-selection-051-ref.html	77e2d2817f66adb707e506c46a1eed948a2e92e3	161daa54a134bb56773bca82dd4775f928f98c28
 pkg/visualtest/testdata/wpt-css3/css-pseudo/any-link-001-ref.html	no-upstream		22e39f9951adf899ae3cabe6ece584bdde01c744	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/any-link-001.html	no-upstream		cf19f6f653a0d726425297c4c3336c552228d560	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/backdrop-animate-002.html	differs	css/css-pseudo/backdrop-animate-002.html	910807a7a63081e0bedaffd262bb261bccf611aa	20670f5737000c657d2f45077d6412bba9b5c47b
-pkg/visualtest/testdata/wpt-css3/css-pseudo/backdrop-animate.html	differs	css/css-pseudo/backdrop-animate.html	73bf6bf6f6d36be498d7934cf6b623d0a762b2f7	cfa4738c2a3ba384e91270824e15d0a8e516b789
-pkg/visualtest/testdata/wpt-css3/css-pseudo/before-as-flex-container-ref.html	differs	css/css-pseudo/before-as-flex-container-ref.html	8b8fd28b3f380e4eecb213bfc3873eeab364a9ba	d6f95fe4a465ccfe75e8e37e1ae9a327b9323154
-pkg/visualtest/testdata/wpt-css3/css-pseudo/before-as-flex-container.html	differs	css/css-pseudo/before-as-flex-container.html	d4cd4dd43a3d3ae37a9ae5f021cd90b270ce38cb	7c60761bdae4c8c10c0d44e9bae4a72b41f45773
 pkg/visualtest/testdata/wpt-css3/css-pseudo/checked-001-ref.html	no-upstream		818fb0fffbbba7310ea075ff34c3511c936e3a4f	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/checked-001.html	no-upstream		55d0ff804f07da44d7022908b2504cff953fdade	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/disabled-001-ref.html	no-upstream		c1592adabbcd8d3a92f952fdd952eb6f4d10d6c9	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/disabled-001.html	no-upstream		48346ff9a06524221cbb011aada13ac1b32847c1	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/enabled-001-ref.html	no-upstream		daed4542cc519cba8cbde51e9585f8622b109e96	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/enabled-001.html	no-upstream		3d9e1d4d825cb9da5367a196b63cb2516800b007	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/first-letter-allowed-properties.html	differs	css/css-pseudo/first-letter-allowed-properties.html	3adc772d44487e0a48881ac880bb041f7f01e1e6	3d866c4c03b8e85fb5bd0666aa18fcc745ea1dcb
-pkg/visualtest/testdata/wpt-css3/css-pseudo/first-letter-punctuation-and-space-ref.html	no-upstream		fe9d6b03bcccaf9d3707fae27e01950a43abba35	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/first-letter-punctuation-and-space.html	differs	css/css-pseudo/first-letter-punctuation-and-space.html	2e5a353c175e171f52514906cd3ef6dc8747c086	882dc161e81515628ff565381cbe5eb2c1235f35
-pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-allowed-properties.html	differs	css/css-pseudo/first-line-allowed-properties.html	57aab39d3757003239daee9c533fad0e731cfe17	28cc075ded27aba47c015351416b1bca149101ae
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-background-001-ref.html	no-upstream		81148a85b5c25fb82f5deeeede11022a492f3258	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-background-001.html	no-upstream		9937c4b31c44f29865e1640265e62996d1fdcf24	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-color-001-ref.html	no-upstream		c2d29d8c5800601ae98b871a424e363b7a84acf2	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-color-001.html	no-upstream		a8abf1997d6b095df34297879e9822ea60ab508c	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-color-002-ref.html	no-upstream		06592a112a42613f889a1e18345c860fe9f32027	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-color-002.html	no-upstream		73c20e694cdd53aaf161274530ee7a8c2ee3db8c	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-line-height-002-ref.html	differs	css/css-pseudo/first-line-line-height-002-ref.html	904d5dad1823840780cc4ea881d7c4bf2b2afbb8	5e287d74db0ad7b898fd54afb46d3b32921eed38
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-line-height-003-ref.html	no-upstream		6935d3d97c1cdf1818c722cbf519b656f6cf9765	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/first-line-line-height-003.html	no-upstream		7ae7fe20168bec6032f7e2b101367d8d301361df	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/focus-visible-001-ref.html	no-upstream		f1b1e2165f4cb8c207f94fb5d34b06b294cda7c5	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/focus-visible-001.html	no-upstream		cf2b8c0f9f068fe9d58712d40c0fdc5e6740fead	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/highlight-painting-currentcolor-003b-ref.html	differs	css/css-pseudo/highlight-painting-currentcolor-003b-ref.html	cfdb46597272c3c73166f99e875ddf00d3d95879	22f92d0a7805e2ae62bbbccc69e0ac9b4a4b823c
-pkg/visualtest/testdata/wpt-css3/css-pseudo/highlight-painting-shadows-vertical-ref.html	differs	css/css-pseudo/highlight-painting-shadows-vertical-ref.html	00a6f1c80885d61fdada7ea17f8376b63ec14090	118b507627debdf94b12ba35b98502016f3cdfb9
-pkg/visualtest/testdata/wpt-css3/css-pseudo/highlight-painting-shadows-vertical.html	differs	css/css-pseudo/highlight-painting-shadows-vertical.html	7187c34da4495fbaded9b9986e5a26889fde6beb	66a500adce7eebca807f39dace988c4421f89844
-pkg/visualtest/testdata/wpt-css3/css-pseudo/highlight-styling-004-ref.html	differs	css/css-pseudo/highlight-styling-004-ref.html	bd023b6128e460384e3e79daeec9ca8c924fdc47	a59e0550c970d104613d3a4654f503b9b58ba401
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-002.html	differs	css/css-pseudo/marker-content-002.html	4c46c4b0b01bfeae7c473f3507d920d7229a64cb	540a4635edc31f282d63828f9285318d5bd0eb33
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-003.html	differs	css/css-pseudo/marker-content-003.html	b4a41ce6d87ef464a525a9252c2ffc8d824bf901	9a675e727bc295f86f14a40f2e734c65e3e0cf64
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-003b.html	differs	css/css-pseudo/marker-content-003b.html	da7a2723ce32fae72092795cb30cd2e33709ca5d	a30bfcde29a15129539804c4a270a150cfaa6a4f
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-006.html	differs	css/css-pseudo/marker-content-006.html	bf941ef3b1e83d36daa912f1cd7d3259a6519211	b1fe363594315b732683f70f017c8929575c0ace
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-007-ref.html	no-upstream		8cec2799c2e0218e2e0c796ee4589b64d732cb39	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-007.tentative.html	no-upstream		fb452666e3c16094945ea5212e66cf04914f47f4	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-008.tentative.html	differs	css/css-pseudo/marker-content-008.tentative.html	155b50ab6f0a9f633adbb65aaac0fd5fbdebb066	0d6d5b8781e59716e3c116c2cd7a9388b8040d66
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-009-ref.html	no-upstream		a3db09f078148cdfe8105bc0d12186e15cf33d48	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-009.tentative.html	no-upstream		b3627cca7554076f85d59869eec7bc80e39b82be	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-011-ref.html	no-upstream		62a64a1e5e16ac7d90ada265317235cfb6dbe64f	
 pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-011.tentative.html	no-upstream		0cc20b0cdcd242021bc37b9e2d3500ed21c5b35f	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-015.html	differs	css/css-pseudo/marker-content-015.html	6e1ec40af1d85c9f34ccb315649b67438a5dcf37	e9cfbf37e92e07a4208ba1aadbd4c6cac70d69a6
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-016.html	differs	css/css-pseudo/marker-content-016.html	9a0585db72206768e2a7ed77f9245f67103d587b	fc42556d40befc975ae24156ce266b9ed1561434
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-024-ref.html	differs	css/css-pseudo/marker-content-024-ref.html	9ee03ee9f3294a79aa3f6ede717ce21a6aaa9b85	1e237e2b4c344028dae0a0cdc6626f058bc36b8d
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-content-024.html	differs	css/css-pseudo/marker-content-024.html	8a6ab0b5a7cc8516f5e2d4abbbd6e41fe8acd8b5	758438a819269d93daf06853fbaaec2eea5dbc26
-pkg/visualtest/testdata/wpt-css3/css-pseudo/marker-unicode-bidi-default.html	differs	css/css-pseudo/marker-unicode-bidi-default.html	e732009a57b993d4063d9e498f52670bfc78f1a1	56da1828d8b95cc5d3845f72ed7a088e563e04a7
-pkg/visualtest/testdata/wpt-css3/css-pseudo/pass_if_letter_uppercase.html	ambiguous	css/reference/pass_if_letter_uppercase.html	a5472e0e603a91cb63bf9872dbc8a54bb176bfeb	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/pass_if_pass_below.html	ambiguous	css/reference/pass_if_pass_below.html	7de44825c06294a6f32b8a07c1ee211e28d37fe0	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/pass_if_two_words.html	ambiguous	css/reference/pass_if_two_words.html	e33eea5e6ea237139f9d86da07a09ef2e4874789	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/ref-nothing-below.xht	ambiguous	css/CSS2/reference/ref-nothing-below.xht,css/reference/ref-nothing-below.xht	c87db8094bd4bbb7ba5f18816730fd40c198149d	
-pkg/visualtest/testdata/wpt-css3/css-pseudo/support/selections.js	differs	css/css-pseudo/support/selections.js	dacce0bca66872db0cf225d01115847e27d9e8ce	4396bfa326b1d55b0b0e1786ad345d9754de1a35
-pkg/visualtest/testdata/wpt-css3/css-ruby/inheritance.html	differs	css/css-ruby/inheritance.html	3120e92a7af8bc5f55eb9417a00e78c02e2346d5	fd678a1d768b73df2ae0ce2b9303f85faa62506d
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-annotation-with-margin-ref.html	differs	css/css-ruby/ruby-annotation-with-margin-ref.html	e26aa3faa125d39be5df3601e04c9769d8211f6c	04f8e1fc511669206035a937360c665c1a8cddbb
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-annotation-with-margin.html	differs	css/css-ruby/ruby-annotation-with-margin.html	fd9b3adfd3c0577398f1a2fedb04c2aa460dd8af	41b5ebb1598bc1235db47e8e97f7326dab7356f3
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-inline-001-ref.html	no-upstream		58cef291c78b0c322bd5d1011365be1db9c5e8b6	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-inline-001.html	no-upstream		fe2a3593cf072d6a55270142ba94d18d5a4528a4	
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-overhang-dynamic.html	differs	css/css-ruby/ruby-overhang-dynamic.html	cd138bbca3d9255acac79c34733257ad68e72b67	b41cd2b740666f2c521dee27c7dd715a0cdf82b7
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-overhang-ref.html	no-upstream		09b3d4608a77546739bee3b9cd4a5862057a6c03	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-overhang.html	no-upstream		5c8cfd1685427b32dcc08e12c45a257f6aa7fbec	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-rp-hidden-001-ref.html	no-upstream		676e310a32e6472ea3d6101f4b86754cf3ca9511	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-rp-hidden-001.html	no-upstream		7b8d545e2722e23fb080027b46d048afee7a80bf	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-rt-fontsize-001-ref.html	no-upstream		ad6d7a5e522e2419ffccf222d8469a97c91a2a1a	
 pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-rt-fontsize-001.html	no-upstream		3db8e1131aa7c7704da50e2d0bfe5e32f4baa662	
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-001-ref.html	differs	css/css-ruby/ruby-text-combine-upright-001-ref.html	db4f23c886c44282afc27fd09475ade0c189e6f8	a14b68e046542b4b3b8abc61896eb9118efadf02
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-001a.html	differs	css/css-ruby/ruby-text-combine-upright-001a.html	bdb87e29b9b1b011868a6c03082fc60f80f72e36	3469e734afb61dbf3e3d52cee64e48217007dc7b
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-001b.html	differs	css/css-ruby/ruby-text-combine-upright-001b.html	8aed0146b5493d2219129ff02de11daa68820d94	e4bca9029a6b470da5fb80768b8121377e8c621e
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-002-ref.html	differs	css/css-ruby/ruby-text-combine-upright-002-ref.html	1bb4386e7abfb468de92edcb9a2633d5ceb96174	de1611cd047ab0f0be81d5c0dc6684302297e357
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-002a.html	differs	css/css-ruby/ruby-text-combine-upright-002a.html	6c95c169e240f99d145506d3df854ed9d9fb6509	34a4ea08b6581e33ecb2cd8d489ee0ae75bd0b3c
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-text-combine-upright-002b.html	differs	css/css-ruby/ruby-text-combine-upright-002b.html	ed7dabb0269789e73d1073fbf1a9af2a68d1d1d6	2b68cf9478984d2a94fbd70158a4faa867516ba8
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-with-floats-001-ref.html	differs	css/css-ruby/ruby-with-floats-001-ref.html	c041e3f9930219379bd32cebe3281e427061a954	1ba9d713d3358804e47cd3ec9d00e4d0079383d8
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-with-floats-001.html	differs	css/css-ruby/ruby-with-floats-001.html	a49c1b255ff6afc6227d2ad603a68f7eeae0656a	ff8814afdc6b0f803b6e1bf1cc3158ff561ad4a3
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-with-floats-002-ref.html	differs	css/css-ruby/ruby-with-floats-002-ref.html	aa07f344e468e8eafa03ccd43f143c68d0270cc8	6656346efae7b406cd5f4b37430043c382feea30
-pkg/visualtest/testdata/wpt-css3/css-ruby/ruby-with-floats-002.html	differs	css/css-ruby/ruby-with-floats-002.html	190089d3340394e0aa82d17979b6efdad0f961f4	8056224e425f6b2dc99398ede549dee0224f1d2f
 pkg/visualtest/testdata/wpt-css3/css-scrollbars/scrollbar-color-auto-001-ref.html	no-upstream		05efeee55851aa5cfa2eb3af7fc9128c6c8dcc1d	
 pkg/visualtest/testdata/wpt-css3/css-scrollbars/scrollbar-color-auto-001.html	no-upstream		fc2e242a6f44c95b2770044b3edbb84da84d04b5	
 pkg/visualtest/testdata/wpt-css3/css-scrollbars/scrollbar-color-custom-001-ref.html	no-upstream		ef3839a4da1d1eb83373ba963de13cdbdac7d624	
@@ -727,18 +373,12 @@ pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio-block-001-ref.html	no-u
 pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio-block-001.html	no-upstream		ba50aaab268358aea05cc75fe971bde3c039cfbe	
 pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio-width-height-001-ref.html	no-upstream		ccd33bd8c1e8dc4297a20b889943e23687bb535c	
 pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio-width-height-001.html	no-upstream		7f8059989db9c2e863b20a2017e22864894f512b	
-pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio/support/1x1-green.png	differs	css/css-sizing/aspect-ratio/support/1x1-green.png	b7f51b04e12e119b4004de994b464ca7acdca6bf	b98ca0ba0a03c580ac339e4a3653539cfa8edc71
-pkg/visualtest/testdata/wpt-css3/css-sizing/aspect-ratio/support/200x200-green.png	differs	css/css-sizing/aspect-ratio/support/200x200-green.png	ef5d05e51d50af5364990cdb6272bbb7e5db18b2	1dcc392a6ef71e55302c40d41a547cf3f75a8f24
 pkg/visualtest/testdata/wpt-css3/css-sizing/max-height-overflow-001-ref.html	no-upstream		ae5147400ed1cf71f341a2f844cc8bc9bc0b4698	
 pkg/visualtest/testdata/wpt-css3/css-sizing/max-height-overflow-001.html	no-upstream		cd2665bdf5f544e97ea14e6938331a52df89663d	
 pkg/visualtest/testdata/wpt-css3/css-sizing/min-content-width-001-ref.html	no-upstream		e88d15796f5a64d51b3e7ad094e848dcc6da6a04	
 pkg/visualtest/testdata/wpt-css3/css-sizing/min-content-width-001.html	no-upstream		5f9d4e5de73ee8d782c68173260a36a1a7ed842b	
 pkg/visualtest/testdata/wpt-css3/css-sizing/percent-height-001-ref.html	no-upstream		0be6784dca66ac1f9c4c18a7118a9e958e9f10fb	
 pkg/visualtest/testdata/wpt-css3/css-sizing/percent-height-001.html	no-upstream		22418d18f8b9a85954345c6871a2970bfc2f6a01	
-pkg/visualtest/testdata/wpt-css3/css-sizing/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-sizing/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-sizing/replaced-aspect-ratio-intrinsic-size-001.html	differs	css/css-sizing/replaced-aspect-ratio-intrinsic-size-001.html	8c1f213dec9b200ad874e449aca38deb46d6bd91	73225bb03574d3aedc59e44eda246f1f6a57439a
-pkg/visualtest/testdata/wpt-css3/css-sizing/replaced-aspect-ratio-intrinsic-size-002.html	differs	css/css-sizing/replaced-aspect-ratio-intrinsic-size-002.html	daf6f36022d9cbda58fe7d758863617c5acf646f	4365a5b36c7caa41b753810d2dff53fbfafb1ade
 pkg/visualtest/testdata/wpt-css3/css-sizing/vendor-fill-001-ref.html	no-upstream		97a7b61cc5ba25af2feee883cc580b613965beba	
 pkg/visualtest/testdata/wpt-css3/css-sizing/vendor-fill-001.html	no-upstream		bdea599bdb1bdd05e54e4fd9385181b64ac4139b	
 pkg/visualtest/testdata/wpt-css3/css-sizing/vendor-fit-content-001-ref.html	no-upstream		7608bde57f8c2614fb9734ffe26a5d978ae1846e	
@@ -752,116 +392,21 @@ pkg/visualtest/testdata/wpt-css3/css-tables/collapsed-border-positioned-001-ref.
 pkg/visualtest/testdata/wpt-css3/css-tables/collapsed-border-positioned-001.html	no-upstream		ca344dec90f3abe5044e679e67ea6a1f4f0fb841	
 pkg/visualtest/testdata/wpt-css3/css-tables/empty-cells-hide-001-ref.html	no-upstream		659a39ef9b8fc85e2ec51c00a7b042a2efb7aeb9	
 pkg/visualtest/testdata/wpt-css3/css-tables/empty-cells-hide-001.html	no-upstream		5523ee93626bdf28ae9476aaf6860a0456c3bbed	
-pkg/visualtest/testdata/wpt-css3/css-tables/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
 pkg/visualtest/testdata/wpt-css3/css-tables/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-tables/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
 pkg/visualtest/testdata/wpt-css3/css-tables/table-layout-fixed-001-ref.html	no-upstream		14d418307c51cede0f6fac938c0dab0b3fe41729	
 pkg/visualtest/testdata/wpt-css3/css-tables/table-layout-fixed-001.html	no-upstream		ff0515ffc560e716c0843f0aaa290e850b969789	
-pkg/visualtest/testdata/wpt-css3/css-text-decor/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-011-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-011-ref.html	d7360ac8643dcf53601cfc57049a836d6c33bfaf	9e2e35076de9e7537a245e43eed48394f3d86d72
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-017-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-017-ref.html	772a456b53083ab7e8de82351924dfdaa35e155e	a8cf0a71798810bcf1e6b53c20f358c21201047e
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-018-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-018-ref.html	2c6d5b79bd099cbbbe143f589aa9f1a324f2164b	5c37beafd1e51d95147ed797c2d9c4b6405c274e
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-019-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-019-ref.html	34331a64049de29873a8c0a7910b8eeb8b61d78f	823c3a98fd9a0206bfbf25c646d489f9ced52119
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-020-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-020-ref.html	1dc5e84fd91f52e299cf02aa55309fa539651012	660df74225dac63939ada8c3847cb14b6cffdef2
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-021-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-021-ref.html	62f4d61181c75648f85b53217b18d45597435c5f	cbd1c44e5c5c59a7c14f119f609a894973cd83d6
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-022-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-022-ref.html	37be38ca8acae806d8349032f99ca1587dcb44e0	d7f8457a1dcc95553253610989b7a7e53b32aefe
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-decoration-inset-023-ref.html	differs	css/css-text-decor/reference/text-decoration-inset-023-ref.html	f8ff20d1072172f774f0511eaec0764aea1faf4b	02d41f04d262d6f30ee0fb6c3e549988fe74669a
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-emphasis-style-002-ref.html	differs	css/css-text-decor/reference/text-emphasis-style-002-ref.html	627ae004b8620cb6fa777a7fa08e9ead10bd1b85	edd1110d5ce4bf690a98c34809f2661314e4bd18
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-emphasis-style-010-ref.html	differs	css/css-text-decor/reference/text-emphasis-style-010-ref.html	d4ca0620d17c3539a01ba142a3cc55ed5bc56083	390e2fe5439d3c2f00155d53445d1fcf073be343
-pkg/visualtest/testdata/wpt-css3/css-text-decor/reference/text-emphasis-style-012-ref.html	differs	css/css-text-decor/reference/text-emphasis-style-012-ref.html	49d07e18ab4e77ca2a51f3705bcb323fd3cba260	2df2c67a9e22881832b6f33420078a1477611b9c
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-040-manual.html	differs	css/css-text-decor/text-decoration-040-manual.html	63b63759197870f9a0616b853a4dd58e282876b1	e408a82050ea6872bc6d3042a884800dee31b8fa
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-090a-manual.html	differs	css/css-text-decor/text-decoration-090a-manual.html	d9ac430079b621104da62a11fca6b0bd3d6cff57	c4a54564d104da0761eee3299b75b7ada0e0da0e
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-091a-manual.html	differs	css/css-text-decor/text-decoration-091a-manual.html	ee2464c5263e1cd7eb1389d4b052bc08633a78e8	769afba08e1cfdde274e0e62f8b777968682b119
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-092a-manual.html	differs	css/css-text-decor/text-decoration-092a-manual.html	5f034b3e729955dbc4c0be3c1787745423f224ff	13a1bf4cf0eb2d4c919097313ceda1717f88d82e
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-095a-manual.html	differs	css/css-text-decor/text-decoration-095a-manual.html	dc4ae513d125b9cb065875ecd2b5155ff2169fe2	f5a527ba23b7fe97e1db0204d7863f8c98d2978a
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-096a-manual.html	differs	css/css-text-decor/text-decoration-096a-manual.html	a1f13e57cafd437805633587bdcc1190c18fb26a	7f33cf9f7bfbc563813ab9e223aed90825ee7c2b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-097a-manual.html	differs	css/css-text-decor/text-decoration-097a-manual.html	64b3249dd6be2cf4364c3ebe62ff256a0373a29d	0564ccf654a508bc8825272cef91a1bb82d0bd15
 pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-color-001-ref.html	no-upstream		aecd452fbbb2ecf030385ddcebd1588e64813f02	
 pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-color-001.html	no-upstream		b6332d9f3952a69aea108fda00a87e954a50f09a	
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-003.html	differs	css/css-text-decor/text-decoration-inset-003.html	e73f8fa6e48d65b95e98c18595f6c0a31fb9408f	bd029443eda335b40e6be7bf8d2f05bd70854e69
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-007.html	differs	css/css-text-decor/text-decoration-inset-007.html	7ee28f7db301dc0901831b3655d351919047a7da	61324458f13822531519d992d6d5bc3acd79bf10
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-008.html	differs	css/css-text-decor/text-decoration-inset-008.html	ba2f8a22da85a083d0003cba2fdac2211b6b1783	9140d3109151d2f553986822ef2c8c1b61d7c6dc
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-009.html	differs	css/css-text-decor/text-decoration-inset-009.html	3f4c229e67d96b16a97ab68509de78a4019a0bfc	bd16b9b31d006cf08c60ca2b46b5e15fb8e8cda1
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-011.html	differs	css/css-text-decor/text-decoration-inset-011.html	f9bcbafadd3b1afb6ef026b3b42bd959e583e4c2	8f44e0cca502721a05e4234762b26b3efac9949b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-inset-014.html	differs	css/css-text-decor/text-decoration-inset-014.html	ef2f2007762f7bf75a154215a0219ea05017705e	170645a2025bcbbedb9ff4e54eeaaac842c8c32b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-040-manual.html	differs	css/css-text-decor/text-decoration-line-040-manual.html	c93f4b99084a9c8f54dee6130493c3cc631b434a	6d701069313105ab45112748351ce109194c61b1
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-090a-manual.html	differs	css/css-text-decor/text-decoration-line-090a-manual.html	e98688521ffcc4508befe9b9dc019339d6f9c08b	748c46bce5a7af6ca6b1b3771799a1303adee52e
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-091a-manual.html	differs	css/css-text-decor/text-decoration-line-091a-manual.html	e1ba036c257eb4bc4670c3856f86381146641cf0	2c43893be81743e07256140c4089ac1c8e4a3166
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-092a-manual.html	differs	css/css-text-decor/text-decoration-line-092a-manual.html	7f803a35f1603795a6709ee052cd9e544dfabd3d	15ec4958543eeba62e1b11b405b62be67b17c806
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-095a-manual.html	differs	css/css-text-decor/text-decoration-line-095a-manual.html	f5bab19374f94fe60c07f7742222ec27180d5881	eaf5a1f25bb63b714b2567398653d75e38874e19
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-096a-manual.html	differs	css/css-text-decor/text-decoration-line-096a-manual.html	233006c904ebc8568ca18547f48749315847727a	b85423be96a74df49bcae6b8190a8230412138f0
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-line-097a-manual.html	differs	css/css-text-decor/text-decoration-line-097a-manual.html	e037e15d73c445a72bd81e5fd4971c9e17eba456	af0a8011dd2eed0fa1eec5858f16ce461e21b7f8
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-propagation-04.html	differs	css/css-text-decor/text-decoration-propagation-04.html	8c9bb9b7e72bcb261eac5840f024a5cdacdc7fe3	fe901822874057633010b955b3463e1ea155afbf
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-skip-spaces-001.html	differs	css/css-text-decor/text-decoration-skip-spaces-001.html	151887c8d5062dd92ff2d7776cba679b7412ac69	af473a79c4d5cbac0fa9459d0a2e10bf8db097e4
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-skip-spaces-002.html	differs	css/css-text-decor/text-decoration-skip-spaces-002.html	ba12899798b5ed57b4846e7839b84120e68be83d	39023f5afb7e4e9b3d594d62a3080476e3ce5672
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-skip-spaces-003.html	differs	css/css-text-decor/text-decoration-skip-spaces-003.html	bde91c76051fa13002f67a7e911eeb56c78aec45	fd716d588bae24eb5fa2580110274f29aeec7985
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-skip-spaces-004.html	differs	css/css-text-decor/text-decoration-skip-spaces-004.html	39f6d329a5a1ca87233082e4b82865acf5466edf	83e1a777a75f1c3b735f4841db72b5d8c1a206b3
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-decoration-thickness-from-font-variable.html	differs	css/css-text-decor/text-decoration-thickness-from-font-variable.html	025f910e1248cd9b2bb7ecdf31464d6fe624d8e9	7f10681f1ea5bf94efa57430c31594738e96d1de
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-001-ref.html	differs	css/css-text-decor/text-emphasis-line-height-001-ref.html	31fa47f31c3bf512115603a65a3cfe6a8da334e4	17d9d17c9efa36b27a451b58d042f8a19520f1ae
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-001a.html	differs	css/css-text-decor/text-emphasis-line-height-001a.html	cfcd45cb01981fd1bc9db232b4b0e10ca77bf7ac	5b0c0ea6098a5fbb3a6ecbd5a2e1596217b8bc2b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-001b.html	differs	css/css-text-decor/text-emphasis-line-height-001b.html	e586b73429ae63b0b47db7c23d5c0244fb5f28ee	dced07ab143c9ce86182a301efa196baa11db271
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-001z.html	differs	css/css-text-decor/text-emphasis-line-height-001z.html	21530cc8f2b4b3848bbbb38ddcba2fd30c76ef19	3cbd2031e779f722bffa410563b718015acf075d
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-002-ref.html	differs	css/css-text-decor/text-emphasis-line-height-002-ref.html	101f74a85f1c494bca73a148423a95b94e423e63	9e1ac6516b68734c7c8947ff3c0bae60e2455aa2
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-002a.html	differs	css/css-text-decor/text-emphasis-line-height-002a.html	43b190723c6a421c2b0824051d5a0072b377d28f	4a12c4b9ce82f23a816fbd5eb243707a98a0860a
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-002b.html	differs	css/css-text-decor/text-emphasis-line-height-002b.html	57c7c99b9b15d947a868313d4f89deb5d059e304	472347854b8dfb6233597eb117bd131a2c04d154
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-003-ref.html	differs	css/css-text-decor/text-emphasis-line-height-003-ref.html	d427c76c969714631b89f67c55b57763aa52b5d4	f5c3f6ec164552de83df7be9074dc8a9d41a1d65
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-003a.html	differs	css/css-text-decor/text-emphasis-line-height-003a.html	2b0684a78d10cbc002d75c392f89fea995205521	3cbb9c847826680a76d73d280d9667e60079e744
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-003b.html	differs	css/css-text-decor/text-emphasis-line-height-003b.html	a8a6e1f6c1d1c92d8062327be7edf410abf4a010	7429474aa517039f5cb0fd5d9b5e652278bdc108
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-003c.html	differs	css/css-text-decor/text-emphasis-line-height-003c.html	35589cb8d7b2b3ce4fb4840da19a3fc00f0076e0	fa6f6ee0afba780a2164de32db4837d30ac55b60
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-003d.html	differs	css/css-text-decor/text-emphasis-line-height-003d.html	b02990774e23f3d0f0d95c10ddc5a35d088353b3	20ed3acd7ceec1e1307e2697a222e70cc430ff21
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-004-ref.html	differs	css/css-text-decor/text-emphasis-line-height-004-ref.html	b88ca7c3a35a8e6d2e12e38ef8eef4dccbdf5b9d	bca033f3a3cdd7ee317a0cfec80ab3bee634c98b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-004a.html	differs	css/css-text-decor/text-emphasis-line-height-004a.html	e8922e97d2a3ecf55ce752774ef1140b61c4a985	bc8ed59adabf508fa2cdb46cff4d064ea41a5744
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-004b.html	differs	css/css-text-decor/text-emphasis-line-height-004b.html	f6ad46dec4261566ee2bb19f501e6dc217a40fc4	18a0dd97c1563d05fa60870ff34cd3a1a8b1a863
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-004c.html	differs	css/css-text-decor/text-emphasis-line-height-004c.html	d572de3f18b9ba0fe2f4dc49c895304d909e0f66	a98fc9a55cb6f86208776d940ccada5760ea8e5c
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-line-height-004d.html	differs	css/css-text-decor/text-emphasis-line-height-004d.html	3010b9510eb5442c71eb7176a254bf7d8fee12e7	d73e9cefafcb93b677ee741e0a748539ddf3e886
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-position-under-left-001.xht	differs	css/css-text-decor/text-emphasis-position-under-left-001.xht	84b779b9fcce512961183373e622324257554893	03616aceb871a3fbc59a8a8dd8374dad4af95138
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-position-under-right-001.xht	differs	css/css-text-decor/text-emphasis-position-under-right-001.xht	9dd8d5661db81b745180624c01b5e9a8a34b93f2	7cbfe2ac2fbf2c3a59efec2e987b914f4c81e2ea
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-punctuation-2.html	differs	css/css-text-decor/text-emphasis-punctuation-2.html	890cedca4bbc3f5bdcfbed70a85216369fb0dea2	1208a7f6638e2c8c91f6f20dce4464fca915649b
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-001-ref.html	differs	css/css-text-decor/text-emphasis-ruby-001-ref.html	6b1d6bd2f0e11f74b0065f39ef4ad0a73a434755	426df807b0653a9e7943bf7a9a961491cb7aa97d
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-001.html	differs	css/css-text-decor/text-emphasis-ruby-001.html	03f562bc8db13c7a6ade9724878c937cded47837	73d7068d9ce90914e2d54be0bad589e775ef408c
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-002-ref.html	differs	css/css-text-decor/text-emphasis-ruby-002-ref.html	a3ecaf6c69e5bb49b05a49b647f982a90c8644d6	c974346778b2c9d021da21e5b8d98cd7cdbaa8b6
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-002.html	differs	css/css-text-decor/text-emphasis-ruby-002.html	c43a2a6d11206781c1f6cd1c01eae93786d685e0	0109432eba5190fb16ab19ddd8d08dbbd7d5e8d5
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-003-ref.html	differs	css/css-text-decor/text-emphasis-ruby-003-ref.html	31cb1e6a0d08b9b0eb6c44c922657bd654ad7fa5	ea7d6857312354ccc60a7a3c8e3a3178af62644f
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-003.html	differs	css/css-text-decor/text-emphasis-ruby-003.html	2ac104077d19fda1c12fd616668b7477fce5eb7d	73b4a32496d15f25d0bfd7e7ec290b821e0ecb64
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-003a.html	differs	css/css-text-decor/text-emphasis-ruby-003a.html	6d49877fddf1dd952933cca15feea753b23684de	436adaa03d5fde5a58fa5f85d4f9cbee80e87402
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-004-ref.html	differs	css/css-text-decor/text-emphasis-ruby-004-ref.html	22b628d964145295d533013a908454e24862603c	7e67b9668b113ba76496b9a6ecaa04f7dca54c86
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-004.html	differs	css/css-text-decor/text-emphasis-ruby-004.html	d32dcb55cefc1c605b9d45b5c6823d24d842d500	976068ec2959db49618f603ad5ef837efb172315
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-emphasis-ruby-004a.html	differs	css/css-text-decor/text-emphasis-ruby-004a.html	75146654054430e2c9921f58211d21895d0bbf0f	24402a49e2908b9bae5951df8b9313733b1ac38a
 pkg/visualtest/testdata/wpt-css3/css-text-decor/text-shadow-basic-001-ref.html	relocated	css/css-text-decor/text-shadow/basic-negcoord-ref.html	79c3d996cff4f212d9f9c8ec5818bece45734805	79c3d996cff4f212d9f9c8ec5818bece45734805
 pkg/visualtest/testdata/wpt-css3/css-text-decor/text-shadow-basic-001.html	no-upstream		37993d21664879fd66d2a72f9f37d493ec23e2f4	
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-underline-offset-001-ref.html	no-upstream		f618f2f76b3547e116d11e500a0d4ea9efcbcf31	
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-underline-offset-001.html	differs	css/css-text-decor/text-underline-offset-001.html	8795bc66c2608e5afbd8a6f4d142a58976dadf3b	88de83a0cfc60b66c09cafb8e4d3dcf1cdcdacb3
-pkg/visualtest/testdata/wpt-css3/css-text-decor/text-underline-offset-variable.html	differs	css/css-text-decor/text-underline-offset-variable.html	cb08fbcb77b06a5df36338185221e20075960e8a	0aae8f65714fdc5ca8ab39228e56be7a434fcbd1
 pkg/visualtest/testdata/wpt-css3/css-text/balance-basic-001.html	no-upstream		5f1b256c7445cf0d945a6f48857bae59fa9197af	
-pkg/visualtest/testdata/wpt-css3/css-text/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
-pkg/visualtest/testdata/wpt-css3/css-text/inheritance.html	differs	css/css-text/inheritance.html	f41a5edcaf594a87149fc9f875453c3b87f1805c	6679d16e8e86843e57acfcb0e88d9ddd061eef29
 pkg/visualtest/testdata/wpt-css3/css-text/nowrap-001.html	no-upstream		afa3efab40f957aa80ae108356f7600c1a25dc60	
-pkg/visualtest/testdata/wpt-css3/css-text/overflow-wrap-001-ref.html	relocated	css/css-text/overflow-wrap/overflow-wrap-001-ref.html	92f18552688e2f50cb57e4e69e96369e631b3b9f	92f18552688e2f50cb57e4e69e96369e631b3b9f
-pkg/visualtest/testdata/wpt-css3/css-text/overflow-wrap-001.html	relocated	css/css-text/overflow-wrap/overflow-wrap-001.html	65d46f3a98f821f81c3c3f72ad4b1ae498dbe7ea	65d46f3a98f821f81c3c3f72ad4b1ae498dbe7ea
 pkg/visualtest/testdata/wpt-css3/css-text/pretty-parse-001.html	no-upstream		8cd599d466ca063d006fa505b32a78db6653d54b	
 pkg/visualtest/testdata/wpt-css3/css-text/reference/balance-basic-001-ref.html	no-upstream		52311fae3ae0f24e61330556cf5e606327cf0c6d	
 pkg/visualtest/testdata/wpt-css3/css-text/reference/nowrap-001-ref.html	no-upstream		f7e1af26b1132e2c245b3cf1765203019bde7635	
 pkg/visualtest/testdata/wpt-css3/css-text/reference/pretty-parse-001-ref.html	no-upstream		cb01551dd806b79d92ba9609e8ad8df04f6ca095	
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-align-end-ref-001.html	relocated	css/css-text/text-align/reference/text-align-end-ref-001.html	480b5681710c9be671bb225ad8e1a9e70f3b8cc6	480b5681710c9be671bb225ad8e1a9e70f3b8cc6
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-align-justify-ref-001.html	relocated	css/css-text/text-align/reference/text-align-justify-ref-001.html	f13a49481906f992f9ab36c8bdcf93c5ed0f6aa8	f13a49481906f992f9ab36c8bdcf93c5ed0f6aa8
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-indent-length-001-ref.html	relocated-differs	css/css-text/text-indent/reference/text-indent-length-001-ref.html	a6508db1f023992366ed3bdbbbae9b9641d3bbc9	3d3df4e031bc4f866ea37df80303c5d9d0551a19
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-indent-percentage-001-ref.xht	relocated	css/css-text/text-indent/reference/text-indent-percentage-001-ref.xht	5b065d1db7ac1e399668e8588727be09922bf62b	5b065d1db7ac1e399668e8588727be09922bf62b
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-transform-capitalize-032-ref.xht	relocated	css/css-text/text-transform/reference/text-transform-capitalize-032-ref.xht	22687d2111777c468fc6887ad63a7cdf9250ae44	22687d2111777c468fc6887ad63a7cdf9250ae44
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-transform-lowercase-101-ref.xht	relocated	css/css-text/text-transform/reference/text-transform-lowercase-101-ref.xht	3d6eb4af8ac5aeb7fd54e1b2e2aec325886ddca0	3d6eb4af8ac5aeb7fd54e1b2e2aec325886ddca0
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-transform-none-001-ref.xht	relocated	css/css-text/text-transform/reference/text-transform-none-001-ref.xht	8f822c62df79ac90de8602a6dd8266211c2cece8	8f822c62df79ac90de8602a6dd8266211c2cece8
-pkg/visualtest/testdata/wpt-css3/css-text/reference/text-transform-uppercase-101-ref.xht	relocated	css/css-text/text-transform/reference/text-transform-uppercase-101-ref.xht	e80ca4ed7bae07256ba664850a59e21a7f55dfeb	e80ca4ed7bae07256ba664850a59e21a7f55dfeb
-pkg/visualtest/testdata/wpt-css3/css-text/tab-size-length-001-ref.html	relocated	css/css-text/tab-size/tab-size-length-001-ref.html	8b574c694f3122059fb25777dfd19962df2aaee5	8b574c694f3122059fb25777dfd19962df2aaee5
-pkg/visualtest/testdata/wpt-css3/css-text/tab-size-length-001.html	relocated	css/css-text/tab-size/tab-size-length-001.html	2e466da025959ae1e82d773240116aa87a7e51fe	2e466da025959ae1e82d773240116aa87a7e51fe
-pkg/visualtest/testdata/wpt-css3/css-text/text-align-end-001.html	relocated	css/css-text/text-align/text-align-end-001.html	4570b22708a8b9a82687ee8d7cbeeb9acf1cc565	4570b22708a8b9a82687ee8d7cbeeb9acf1cc565
-pkg/visualtest/testdata/wpt-css3/css-text/text-align-justify-001.html	relocated	css/css-text/text-align/text-align-justify-001.html	9e1319e91ee07252b9d5d40666d0c65b1f0671b6	9e1319e91ee07252b9d5d40666d0c65b1f0671b6
 pkg/visualtest/testdata/wpt-css3/css-text/text-align-start-001-ref.html	no-upstream		a1a8ebf7e318e0ee76d9257fcd87fa30e649cd06	
 pkg/visualtest/testdata/wpt-css3/css-text/text-align-start-001.html	relocated-differs	css/css-text/text-align/text-align-start-001.html	e3296b35d4655b0aaf5e50fbf188dbbb2168c23f	3af1130f2c3d582114fed052b597895c5eaa419b
-pkg/visualtest/testdata/wpt-css3/css-text/text-indent-length-001.html	relocated	css/css-text/text-indent/text-indent-length-001.html	49fe68733a01543a82299ca407d21d70aec4f80d	49fe68733a01543a82299ca407d21d70aec4f80d
-pkg/visualtest/testdata/wpt-css3/css-text/text-indent-percentage-001.xht	relocated	css/css-text/text-indent/text-indent-percentage-001.xht	6da26308b266e6d1574d78238f9d12cf5a404b25	6da26308b266e6d1574d78238f9d12cf5a404b25
-pkg/visualtest/testdata/wpt-css3/css-text/text-transform-capitalize-032.xht	relocated	css/css-text/text-transform/text-transform-capitalize-032.xht	3a133933b0f0e5fe8aab6c89793d5f6efe8f7754	3a133933b0f0e5fe8aab6c89793d5f6efe8f7754
-pkg/visualtest/testdata/wpt-css3/css-text/text-transform-lowercase-101.xht	relocated	css/css-text/text-transform/text-transform-lowercase-101.xht	e3b2faf66b1a29bb68ca49f6ec42509327976e8c	e3b2faf66b1a29bb68ca49f6ec42509327976e8c
-pkg/visualtest/testdata/wpt-css3/css-text/text-transform-none-001.xht	relocated	css/css-text/text-transform/text-transform-none-001.xht	81214e9a541e4f96285c40c6030935d731f4602c	81214e9a541e4f96285c40c6030935d731f4602c
-pkg/visualtest/testdata/wpt-css3/css-text/text-transform-uppercase-101.xht	relocated	css/css-text/text-transform/text-transform-uppercase-101.xht	ffe3715a5ecc9be7ee726cad87c3f9df6316eabc	ffe3715a5ecc9be7ee726cad87c3f9df6316eabc
 pkg/visualtest/testdata/wpt-css3/css-text/white-space-nowrap-001-ref.html	no-upstream		5746665b5dd4f7bd74c688f62e96287632c3a882	
 pkg/visualtest/testdata/wpt-css3/css-text/white-space-nowrap-001.html	no-upstream		04db14c945d54be6e33fc8a2c1721d79d813a93a	
 pkg/visualtest/testdata/wpt-css3/css-text/white-space-preline-001-ref.html	no-upstream		63af3a47de0fb62ede80b2726c3c102c41b9d74e	
@@ -870,44 +415,18 @@ pkg/visualtest/testdata/wpt-css3/css-text/white-space-prewrap-001-ref.html	no-up
 pkg/visualtest/testdata/wpt-css3/css-text/white-space-prewrap-001.html	no-upstream		a4d85b1184ff812402db4d5885649491c6ff37c3	
 pkg/visualtest/testdata/wpt-css3/css-text/word-spacing-001-ref.html	relocated-differs	css/css-text/word-spacing/word-spacing-001-ref.html	67964671897431040651ec1f5765e3777a0fed73	d4cdb54d116ec7de73135c97866badacc42ba7be
 pkg/visualtest/testdata/wpt-css3/css-text/word-spacing-001.html	relocated-differs	css/css-text/word-spacing/word-spacing-001.html	5803551b637e21b628173316fb1b2c05dc6cee1e	f9ffc9c323d2b46c69ad181f61244bb95b3cc30e
-pkg/visualtest/testdata/wpt-css3/css-transforms/blank.html	ambiguous	common/__init__.py,common/blank-with-cors.html,common/blank.html,common/empty.css,common/empty.js,common/security-features/__init__.py,common/security-features/scope/__init__.py,common/security-features/subresource/__init__.py,css/CSS2/css1/support/LOCK,css/CSS2/generated-content/support/content-attr-002.css,css/css-animations/support/empty-sheet.css,css/css-backgrounds/animations/background-color-animation-non-zero-size-element-change-to-zero-ref.html,css/css-backgrounds/animations/background-color-animation-zero-size-element-ref.html,css/css-backgrounds/justfortest.html,css/css-typed-om/stylevalue-subclasses/numeric-objects/resources/testhelper.js,resources/testdriver-vendor.js	e69de29bb2d1d6434b8b29ae775ad8c2e48c5391	
-pkg/visualtest/testdata/wpt-css3/css-transforms/perspective-transforms-equivalence.html	differs	css/css-transforms/perspective-transforms-equivalence.html	da6046fe50cb27dc8bcf28acfd723bcb4350a327	860b3c29da907451e757bec80a4dd6270e9f0299
-pkg/visualtest/testdata/wpt-css3/css-transforms/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-transforms/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-transforms/ref-filled-green-200px-square.html	ambiguous	css/reference/ref-filled-green-200px-square.html	d8d71f86201219171c2a6f84eab9cfb987da879e	
-pkg/visualtest/testdata/wpt-css3/css-transforms/reference/ttwf-css-3d-polygon-cycle-ref.html	differs	css/css-transforms/reference/ttwf-css-3d-polygon-cycle-ref.html	e5c99eae722d3d35c7294ad3d68c424e6b9734ff	f0a7776aedfb8531837e3400699524f1690e7d81
 pkg/visualtest/testdata/wpt-css3/css-transforms/rotate-001-ref.html	no-upstream		f788436be5b7b99628e515572c68989986925673	
 pkg/visualtest/testdata/wpt-css3/css-transforms/rotate-001.html	no-upstream		a1db74f3667f4a7811945f77fd82c416eba1d2ef	
-pkg/visualtest/testdata/wpt-css3/css-transforms/rotate_x_45deg.html	differs	css/css-transforms/rotate_x_45deg.html	5d66279bcffafe313d5b5b91dd1ccefe88e8d5c8	81f814ea2d432b4e44df2d116dd013fd0d2cbbc4
 pkg/visualtest/testdata/wpt-css3/css-transforms/scale-001-ref.html	no-upstream		8b297f43bb3217e6f0bb29acd413d60c1e5e0852	
 pkg/visualtest/testdata/wpt-css3/css-transforms/scale-001.html	no-upstream		b73b72d10cfeaa6a2b6ae78431afe352ac168e79	
-pkg/visualtest/testdata/wpt-css3/css-transforms/scale-transform-filtered-text.html	differs	css/css-transforms/scale-transform-filtered-text.html	a479b12528a0bb6903d58d46a4b2a0d073b9ee97	b4d285dd6aef1870bd69ac4031539b5a3f8d6e8b
 pkg/visualtest/testdata/wpt-css3/css-transforms/skew-transform-basic-001-ref.html	no-upstream		491326f9aa30ad7e91e39d8a977892b3950f0089	
 pkg/visualtest/testdata/wpt-css3/css-transforms/skew-transform-basic-001.html	no-upstream		eda485c74ef7437c8917adb15082716be411037b	
 pkg/visualtest/testdata/wpt-css3/css-transforms/skew-transform-visual-001-ref.html	no-upstream		dfdaf780eb06f1d486499a8dfab46481819b4754	
 pkg/visualtest/testdata/wpt-css3/css-transforms/skew-transform-visual-001.html	no-upstream		74a1d868e9ccea9bde5232ec1d1a2bd4774c24ae	
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-background-001.html	differs	css/css-transforms/transform-background-001.html	d58b0380bf149dbd06da9b582084cebbcdad879f	9a8b971cc83323210974974729e82c6f2de48956
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-background-002.html	differs	css/css-transforms/transform-background-002.html	46dc0b8d3da6b75dcaf7411719a6833a94be96b2	b92ac74c281d0dc8f8b69d8d6e5486b123abef99
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-containing-block-and-scrolling-area-for-fixed.html	differs	css/css-transforms/transform-containing-block-and-scrolling-area-for-fixed.html	2fd5f3873a211fc3a0970fabc9e1d23873bf2afe	ee523a1d342c9f866c5f4f1fa2bd7cfab56b42d1
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-containing-block-dynamic-1a.html	differs	css/css-transforms/transform-containing-block-dynamic-1a.html	7e6a10dda1c24e86f7635bd202efec48e6089fbd	3644b97e9993e6f4385e995546e1be84139e3288
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-containing-block-dynamic-1b.html	differs	css/css-transforms/transform-containing-block-dynamic-1b.html	61266f02e265ebc0db1aa742aff74b8f70cbe30f	e86a4dc8812c33e8fd24c9ecde5b2c6d00342616
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-input-017.html	differs	css/css-transforms/transform-input-017.html	8c180bbe8f572a7f5ba92d4710c3625e5b850543	f260407f2089bff8b32c8756cb5d24597ff7684b
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-matrix-001-ref.html	differs	css/css-transforms/transform-matrix-001-ref.html	61653b094ff9b47aa08acfe835ee747bd742e8a6	60273af9f323fb4b7b02d297f25397838a6131c3
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-matrix-001.html	differs	css/css-transforms/transform-matrix-001.html	5e04a3bc535c32f3edfaed39cf7c15a78ff512aa	e523ea67832ee4557f619434a4baf5afab33bce5
 pkg/visualtest/testdata/wpt-css3/css-transforms/transform-matrix-scale-001-ref.html	no-upstream		cf21abaec8d499becb793b5f2586904d8d140afa	
 pkg/visualtest/testdata/wpt-css3/css-transforms/transform-matrix-scale-001.html	no-upstream		36915d6443f337674caab395d0c8b6f676436a9c	
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-rotate-001.html	differs	css/css-transforms/transform-rotate-001.html	e53852fc264397e07de4fe5775c4a9c26c9b145b	f157b83f2ecf27b5b43b939a1038a975f5936ab7
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-scale-001-ref.html	no-upstream		99b9093e0d7066691f3fd2e53201a3efd28dc90f	
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-scale-001.html	differs	css/css-transforms/transform-scale-001.html	fcad601640295839f1df3fa0dfd8733389b7ce0c	d046cc3fb313dae2719fcc7fe1a0c0f98d6fad6d
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-translate-001-ref.html	no-upstream		6ae8b84e30106bf5dadaa62f0fdca40b4cf6cf78	
-pkg/visualtest/testdata/wpt-css3/css-transforms/transform-translate-001.html	differs	css/css-transforms/transform-translate-001.html	4440da4b9d9c4e3e6567c1bea68654159988c2cf	70e0388a409e42d9a744d0a0aff6564660d48e80
-pkg/visualtest/testdata/wpt-css3/css-transitions/custom-property-and-allow-discrete.html	differs	css/css-transitions/custom-property-and-allow-discrete.html	509b939cce269063a198902287fb4611ed4a991a	33a971f17db8355b7b1291cbd4fd27ac074995f6
-pkg/visualtest/testdata/wpt-css3/css-transitions/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
 pkg/visualtest/testdata/wpt-css3/css-transitions/transition-parse-001-ref.html	no-upstream		9a726c45f272d16c94d4a95c3c82076dbee62928	
 pkg/visualtest/testdata/wpt-css3/css-transitions/transition-parse-001.html	no-upstream		787411d7e4ffee3f0c651130cb7a2dd3ca57a452	
-pkg/visualtest/testdata/wpt-css3/css-transitions/transitionevent-interface.html	differs	css/css-transitions/transitionevent-interface.html	a40ba4537518361c13aab1d9b0648387f7c88aaa	2c45abde6c49b9ec0b8c75e005a6129c2ce7307a
-pkg/visualtest/testdata/wpt-css3/css-ui/caret-color-010.html	differs	css/css-ui/caret-color-010.html	a734f8a2b7d2b95d840a6ae53653dae8647b9d47	583292edf090b9dbe98aa2039f5ef99f3982b48d
-pkg/visualtest/testdata/wpt-css3/css-ui/cgitor-image-png-016-manual.html	relocated	css/css-ui/cursor-image-png-016-manual.html	3d7ad76b25957528bf6ef0f8b7e331674bcfe599	3d7ad76b25957528bf6ef0f8b7e331674bcfe599
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-auto-sensitive-text-input-ref.html	no-upstream		7eb15e32c22ac50f79ed7cfad86c9fbd99ecb1c5	
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-auto-sensitive-text-input.html	no-upstream		3031094055aecf7d3306037d0d40cff1c1cb48a2	
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-computed.html	no-upstream		60a58f94188a33603b631b464fbb402a0c04ae34	
@@ -916,20 +435,12 @@ pkg/visualtest/testdata/wpt-css3/css-ui/input-security-non-sensitive-elements.ht
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-none-sensitive-text-input-ref.html	no-upstream		d02c20cb3e7c75ca0a1e3be94405d276a73360f3	
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-none-sensitive-text-input.html	no-upstream		46af8fdc981d3c261c0d9a1c3dccc8c117f3b93b	
 pkg/visualtest/testdata/wpt-css3/css-ui/input-security-parsing.html	no-upstream		4de9619f82d754199067728518369203aca964fc	
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-009.html	differs	css/css-ui/outline-009.html	f4ba90078343aac39cd82af7f32820869d56a6ff	26b2068f70d68fe74ff81571ac11634b95cfed5f
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-027.html	differs	css/css-ui/outline-027.html	e5ffc7527f6cc21469e626cae04f6abc57d9fd22	c412cdd0c696121fa66c4f72eefa72109b2a692f
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-basic-001-ref.html	no-upstream		ecf035975585bbfdee40f772304156dddd27a422	
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-basic-001.html	no-upstream		5fb19f70da055d9d09fec4f52776a911957b59f7	
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-001-ref.html	no-upstream		15e7ab48eeacf12b9f70ba5f3045e9208d45c086	
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-001.html	differs	css/css-ui/outline-offset-001.html	34188bd99d93e19c558a0f53a63cebb46e35e705	8f82eb64804cf1fc15c62b279b3f08383745261c
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-negative-001-ref.html	no-upstream		6a04b74b3871d1d00d0d6798c5a52d40167231b5	
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-negative-001.html	no-upstream		da70ecd898afcf5fea657480c2a5e7a648fea372	
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-positive-001-ref.html	no-upstream		76b85a8a9170024c83488ff657d8cc021d7644cc	
 pkg/visualtest/testdata/wpt-css3/css-ui/outline-offset-positive-001.html	no-upstream		2fcc43526e2c2a1307172bedcc572cce1a6e20ca	
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-style-012-ref.html	relocated-differs	css/css-ui/reference/outline-style-012-ref.html	53987d68ab67187522a0682e0d5d2fbde14a6a2a	efdb182974f78d7458c21164af7cc2c79baaec58
-pkg/visualtest/testdata/wpt-css3/css-ui/outline-style-012.html	differs	css/css-ui/outline-style-012.html	f51264a72e97047e8d1a0df5238d55f2c639ef31	30b7f955481bfff38026bb959906f9558984e9fb
-pkg/visualtest/testdata/wpt-css3/css-ui/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-ui/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
 pkg/visualtest/testdata/wpt-css3/css-ui/reference/text-overflow-001-ref.html	ambiguous	css/css-overflow/reference/text-overflow-001-ref.html	9e9303106a82dea9433ec61fa9ec0df8950ae38f	
 pkg/visualtest/testdata/wpt-css3/css-ui/reference/text-overflow-002-ref.html	ambiguous	css/css-overflow/reference/text-overflow-002-ref.html	21bf0afd5426049a2d8b267eede05c3a435ddb58	
 pkg/visualtest/testdata/wpt-css3/css-ui/reference/text-overflow-005-ref.html	ambiguous	css/css-overflow/reference/text-overflow-005-ref.html	1ad5eabed7789717efbce6c76cf5000da0d07eb6	
@@ -1005,19 +516,10 @@ pkg/visualtest/testdata/wpt-css3/css-ui/text-overflow-string-005.html	no-upstrea
 pkg/visualtest/testdata/wpt-css3/css-ui/text-overflow-string-006.html	no-upstream		b8686b9f7b4a46aca73a63a3b9679616c27d2214	
 pkg/visualtest/testdata/wpt-css3/css-ui/text-overflow-string-007.html	no-upstream		1dd8ff57cd976e32df393b44487ec536c7f055d5	
 pkg/visualtest/testdata/wpt-css3/css-ui/text-overflow.html	no-upstream		88bc91157b40c2588e61f17ef73bee86402bf64a	
-pkg/visualtest/testdata/wpt-css3/css-values/200-200-green.html	relocated	css/css-values/reference/200-200-green.html	f3da3ddb3b8d90df91aa60d88f0c13d28eccef09	f3da3ddb3b8d90df91aa60d88f0c13d28eccef09
-pkg/visualtest/testdata/wpt-css3/css-values/acos-asin-atan-atan2-computed.html	differs	css/css-values/acos-asin-atan-atan2-computed.html	cacee588f3cbd6c6342960fab8d7e37f061ca906	804c457b520d83e5ffa8c60c429b6b1f6cc7d741
-pkg/visualtest/testdata/wpt-css3/css-values/all-green.html	relocated	css/css-values/reference/all-green.html	c70532129ad86b81faad3e98093084d644100bfb	c70532129ad86b81faad3e98093084d644100bfb
-pkg/visualtest/testdata/wpt-css3/css-values/attr-all-types.html	differs	css/css-values/attr-all-types.html	54078e6e68ee373aadd74c07b8c24d5660dc5895	068f622e406929e3d8628e2ede273d61a45ab6ee
-pkg/visualtest/testdata/wpt-css3/css-values/attr-cycle.html	differs	css/css-values/attr-cycle.html	f0535920938f0842a5365d21447df803f6f1e699	8a8b811bdab6baafda54a0e74a51c938aba6faec
-pkg/visualtest/testdata/wpt-css3/css-values/attr-security.html	differs	css/css-values/attr-security.html	8d7a2af6f9df1a0faec075187b3e23a96244ef17	1a2f5d7953eb579d464e675f2d690243ef93a68c
-pkg/visualtest/testdata/wpt-css3/css-values/attr-style-sharing-2.html	differs	css/css-values/attr-style-sharing-2.html	0c886227d67c3565b6277c79645623eacbc4b62a	1f24ac12b1871ad685ba734d9fd804151c2d9403
 pkg/visualtest/testdata/wpt-css3/css-values/calc-border-radius-001-ref.html	relocated	css/css-values/calc-border-radius-1-ref.html	b5b4997f42dd1b10d7c29534546ec7443f7a5316	b5b4997f42dd1b10d7c29534546ec7443f7a5316
 pkg/visualtest/testdata/wpt-css3/css-values/calc-border-radius-001.html	no-upstream		bbbfe1dd23fc9cae2634f458650ba1e7842c6a50	
 pkg/visualtest/testdata/wpt-css3/css-values/calc-height-001-ref.html	relocated	css/css-values/calc-height-block-1-ref.html	ffdf9ecbce82823522d5088a97efcb3d0d05f22e	ffdf9ecbce82823522d5088a97efcb3d0d05f22e
 pkg/visualtest/testdata/wpt-css3/css-values/calc-height-001.html	no-upstream		8b6aac3f4e529560179fa950d643f669fc3f7c4f	
-pkg/visualtest/testdata/wpt-css3/css-values/calc-infinity-nan-computed.html	differs	css/css-values/calc-infinity-nan-computed.html	9ceee7a0bb2c78c80675bd17a105d356e65bdfd8	f8d79fec847a658f27fb9b45d3e530e2c161bd19
-pkg/visualtest/testdata/wpt-css3/css-values/calc-infinity-nan-serialize-length.html	differs	css/css-values/calc-infinity-nan-serialize-length.html	be21e45ee12e5d3656914d2711cf0515a25fcc4d	766ab15e7339697ff9df0721dc59578b51afb872
 pkg/visualtest/testdata/wpt-css3/css-values/calc-margin-001-ref.html	relocated	css/css-values/calc-margin-block-1-ref.html	954187dfd7cd8a8c46cb4368803fd0735349541e	954187dfd7cd8a8c46cb4368803fd0735349541e
 pkg/visualtest/testdata/wpt-css3/css-values/calc-margin-001.html	no-upstream		12fb54f6a32d2882c9513a2fa856d8b9b187ac73	
 pkg/visualtest/testdata/wpt-css3/css-values/calc-max-width-001.html	no-upstream		b9c4e7d88e66e620e0719c1f2063a03b500328c6	
@@ -1028,53 +530,15 @@ pkg/visualtest/testdata/wpt-css3/css-values/calc-min-height-001.html	no-upstream
 pkg/visualtest/testdata/wpt-css3/css-values/calc-min-width-001.html	no-upstream		4aaf505b5e26a354fbcf6d3d8d94e1a01ceea1b0	
 pkg/visualtest/testdata/wpt-css3/css-values/calc-min-width-intrinsic-001-ref.html	relocated	css/css-values/calc-min-width-block-intrinsic-1-ref.html	88dfccc7db43150a8c647b4a47ec9383b78733a9	88dfccc7db43150a8c647b4a47ec9383b78733a9
 pkg/visualtest/testdata/wpt-css3/css-values/calc-min-width-intrinsic-001.html	no-upstream		078fb2cad34c004eb42a32c1a2f9552ed2e3c2d8	
-pkg/visualtest/testdata/wpt-css3/css-values/calc-nesting-002.html	differs	css/css-values/calc-nesting-002.html	564d6067fb2cdc8305ea5a3c19e0ad3c49878c98	026287ada5dfaaf27bc132edf445de0e768784b0
 pkg/visualtest/testdata/wpt-css3/css-values/calc-width-block-001-ref.html	relocated	css/css-values/calc-width-block-1-ref.html	6ab403568f800aa25dfd6f1fe18e0a05a010b97e	6ab403568f800aa25dfd6f1fe18e0a05a010b97e
-pkg/visualtest/testdata/wpt-css3/css-values/exp-log-compute.html	differs	css/css-values/exp-log-compute.html	9b11fe25b3256b7d04766c9ac74fca02c050b80c	08bd4472d493e547fb768f239acb922de3dab1c4
-pkg/visualtest/testdata/wpt-css3/css-values/hypot-pow-sqrt-computed.html	differs	css/css-values/hypot-pow-sqrt-computed.html	19ce1c2d49dfe015126ba5c11a3f4058b7401ebb	3abbb53641646922be4d214e88fe7e656caa06d4
-pkg/visualtest/testdata/wpt-css3/css-values/ident-function-computed.html	differs	css/css-values/ident-function-computed.html	0a4068702e48f4faea3e95e7be783907fa9e78ed	c6ca4407596057d701bf2945cc2e3f5baa7518d9
-pkg/visualtest/testdata/wpt-css3/css-values/ident-function-parsing.html	differs	css/css-values/ident-function-parsing.html	615051c78d5257a0e74c5aa97ca57a64f18afec7	29730c27c0bc8bc6b9954eb2ce0637461aa7393f
-pkg/visualtest/testdata/wpt-css3/css-values/if-conditionals.html	differs	css/css-values/if-conditionals.html	2cb544a2b3cddf2cb5ec43a65c7f7742eb052528	9bf852e24d5fff2b567e1895e26da2c811225352
-pkg/visualtest/testdata/wpt-css3/css-values/progress-computed.html	differs	css/css-values/progress-computed.html	06846103442df98787d60508caff4ada8ebe66f2	648ad10b2511cc098f279a94c1393edb7ce1766a
-pkg/visualtest/testdata/wpt-css3/css-values/progress-invalid.html	differs	css/css-values/progress-invalid.html	1d6993a895429df956965df108ae02421b980bf0	63eb26f721f5c43fb9ddc0a6c7a24f3ccc188866
-pkg/visualtest/testdata/wpt-css3/css-values/progress-serialize.html	differs	css/css-values/progress-serialize.html	bb16280e17d1421deb486c682d1945c52d94f744	88d6b44604db0f797c580727a0b408fcb7d92c89
-pkg/visualtest/testdata/wpt-css3/css-values/random-computed.tentative.html	differs	css/css-values/random-computed.tentative.html	f2866969e7e651a141944b775278f5edc2ad943d	98073c4833facd598842328f213248e4a829a953
-pkg/visualtest/testdata/wpt-css3/css-values/random-in-container-query.tentative.html	differs	css/css-values/random-in-container-query.tentative.html	a46343c013cd059f9b54f9ca8a24addf778b8404	0b466247aebaebdc9a4be35b728f4976fa7ce1f7
-pkg/visualtest/testdata/wpt-css3/css-values/random-in-descriptors.tentative.html	differs	css/css-values/random-in-descriptors.tentative.html	08c83e4bcfc093ee33de92f1f5bc6565b94189b8	99e0a37c9c0eefdbf80bc41d32f3ef9f66220894
-pkg/visualtest/testdata/wpt-css3/css-values/random-in-keyframe.html	differs	css/css-values/random-in-keyframe.html	82df6e99da8424e08f2328dbfb73730ae40dec6e	70465dab111ef9f0a31ead3107c7fcaf65c64256
-pkg/visualtest/testdata/wpt-css3/css-values/random-in-media.tentative.html	differs	css/css-values/random-in-media.tentative.html	8560ebe3d7ff75cc897826a94e5a17b78f00943b	960698ef25f441528be2c8070be8f5b111d42fd6
-pkg/visualtest/testdata/wpt-css3/css-values/random-invalid.tentative.html	differs	css/css-values/random-invalid.tentative.html	81c33d88063a15947461acc6c07035a4351648e3	cb574460174bfa6e964e61241b2ab40ba038f397
-pkg/visualtest/testdata/wpt-css3/css-values/random-serialize.tentative.html	differs	css/css-values/random-serialize.tentative.html	e112d80b2731ad3cffdd541a189a37caf4ddfbf6	2c6db54797a6331d7e95a8f320fb66a26e32c2c7
-pkg/visualtest/testdata/wpt-css3/css-values/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-values/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-values/round-function.html	differs	css/css-values/round-function.html	fd35567a575b3dfee00fa2ff60cb9ebec163485e	c9a1af8f7ac08e9f8637bebb20ccb13961479196
-pkg/visualtest/testdata/wpt-css3/css-values/round-mod-rem-computed.html	differs	css/css-values/round-mod-rem-computed.html	eb6dfe4e8ce50d54322fbef7f211ebe3febf5cb6	012508c621150fcd684735ebb217614a384af744
-pkg/visualtest/testdata/wpt-css3/css-values/sign-in-keyframes-with-relative-units.html	differs	css/css-values/sign-in-keyframes-with-relative-units.html	2b5b73332ee048aa684b7f08c110c1f985a49b80	29e976400e91fa365a588b88903b6ea019033e04
-pkg/visualtest/testdata/wpt-css3/css-values/signs-abs-computed.html	differs	css/css-values/signs-abs-computed.html	fe4b938c5b44bc7071486121ef641fb4270a6e8a	70b07886032626fb6e427e2ea9cff74c851e56f5
-pkg/visualtest/testdata/wpt-css3/css-values/signs-abs-invalid.html	differs	css/css-values/signs-abs-invalid.html	f0e88adb517b8dc1fa38c594aa39594a3e760ff4	4cedfc99b06435457b7ed8add07a46c9889ca7cb
-pkg/visualtest/testdata/wpt-css3/css-values/sin-cos-tan-computed.html	differs	css/css-values/sin-cos-tan-computed.html	80b4d1972f6b2c0ac38baba22ba7d1cc94eb321e	1a3f2e4594363d077bbc85cfe920b7b8f9424366
-pkg/visualtest/testdata/wpt-css3/css-values/typed_arithmetic.html	differs	css/css-values/typed_arithmetic.html	37f560d241ec58c22a895f64515f37f6aac3dd14	5d96543d8c011d184d1025771624571d7b8e00cc
-pkg/visualtest/testdata/wpt-css3/css-values/update-subpixel-rem-unit.html	differs	css/css-values/update-subpixel-rem-unit.html	98d4f00f92ae90165dd9b0c82cf0496523bc9c2a	b205a4575382b01cc7e1ff2e67c716460d38fff6
-pkg/visualtest/testdata/wpt-css3/css-variables/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-basic-001-ref.html	no-upstream		59cbe9efc964f4c2314d1ff6502656abf580e93e	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-basic-001.html	no-upstream		730d1e3cfa434c45c05db2b59b28e02ebebb76c1	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-fallback-001-ref.html	no-upstream		59cbe9efc964f4c2314d1ff6502656abf580e93e	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-fallback-001.html	no-upstream		168cee650b3c0892d1817ced3f1cea1448d04422	
-pkg/visualtest/testdata/wpt-css3/css-variables/var-ident-function.html	differs	css/css-variables/var-ident-function.html	3453cd5b64942b9d7bccdde418baa50e8018205a	38bcb7aaf43e4cabfc1544e3d0c9182c0f193d7c
 pkg/visualtest/testdata/wpt-css3/css-variables/var-inherit-001-ref.html	no-upstream		4e3f0e023fa88d8a4ec1e1821ef0aa50170bedc6	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-inherit-001.html	no-upstream		3e3eec4758602db52fed009dde550783b2c77214	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-inherited-001-ref.html	no-upstream		7e27b2d6009a9eea6cf1715c5ca7553ab40cca84	
 pkg/visualtest/testdata/wpt-css3/css-variables/var-inherited-001.html	no-upstream		c3c3ba59a59c0728566d05bf0719e600627f376d	
-pkg/visualtest/testdata/wpt-css3/css-variables/var-parsing.html	differs	css/css-variables/var-parsing.html	0c69342f2ee11bdfdbe991be375a70732956bee7	24b935cc49fb6010dab2e95f1f258988f0a4106f
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-declaration-29.html	differs	css/css-variables/variable-declaration-29.html	2dbe0183fed61c6dbbb9dde9b858030de41ddb88	9f0bb54fbd5c16348500e36cef917418f64c52ee
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-first-letter.html	differs	css/css-variables/variable-first-letter.html	da6daba42f6d3bd2297ea7e0e5dfe9365c4090c9	42333351c0ba47b9d7d732af51983a08f03937b5
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-first-line.html	differs	css/css-variables/variable-first-line.html	d439a51bf9aef11590f47e9fc4bc587532ddede4	9ce16f9dbd39000c613c960233849eda581867e2
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-presentation-attribute.html	differs	css/css-variables/variable-presentation-attribute.html	cc93b1b9b314ef9631fc50ccd2383a9eaf11f9e8	37d24bab00e30dced0e7767173e3ecdca286ec4a
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-reference.html	differs	css/css-variables/variable-reference.html	fb3ae56ebcb318c0c9de1701da306328f00da155	5bed1ade9352fcdabb7b4906ffba0365041e577f
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-supports-30.html	differs	css/css-variables/variable-supports-30.html	937b7613e6131c9116ef3381888194beb8791885	a7aa505061377596db8bc833dfef030efaae4a72
-pkg/visualtest/testdata/wpt-css3/css-variables/variable-supports-64.html	differs	css/css-variables/variable-supports-64.html	2b3eadf24f09a4749ba688cd89bad94bfe37ff9e	56ace9ea9b3fd02b9dcf240284fb7846966430f2
-pkg/visualtest/testdata/wpt-css3/css-will-change/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/bidi-line-break-001.html	differs	css/css-writing-modes/bidi-line-break-001.html	f46b56b76cc011126055bd7327edb4ec4963f9ad	cf04688c81d7ec346bf6458209a5774cd69c3852
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_float_clear_vrl.html	no-upstream		ea85c1e0189dac885a17c94459dc5d4f1296c336	
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_float_vlr_014.html	no-upstream		c4bce75556aa40bae9870e6addc6bb8907afff05	
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_mini_vrl.html	no-upstream		d3d288da7c27820743cac7e06d0fac244f63071a	
@@ -1082,69 +546,6 @@ pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_vlr007.html	no-upstream
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_vlr_table.html	no-upstream		fb83ad6f3be0501653c8b8c51c02a0fa5d1abd79	
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_vrl_relpos.html	no-upstream		38a0b2bbbd8cf53d564d67dc2ed9464403c98688	
 pkg/visualtest/testdata/wpt-css3/css-writing-modes/debug_vrl_relpos2.html	no-upstream		b2ba01088c6ee67073218042fa70547a607aa502	
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/float-vlr-014.html	differs	css/css-writing-modes/float-vlr-014.html	3f0d9046c8905502c63752734dd0ec455d626f49	2028e9d548aa2219d0e2d9c552665806b668039e
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/inline-block-alignment-002-ref.xht	differs	css/css-writing-modes/inline-block-alignment-002-ref.xht	3e856dda734cc2adbd53b40c0c5212ca2aa36cc9	ce478e7499247e6277482b9c16c9dd2b1b76f275
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/inline-block-alignment-003-ref.xht	differs	css/css-writing-modes/inline-block-alignment-003-ref.xht	ed8d939c5eb9c2f5d5188c965f2e94e0e8fe1b75	1867adcc0c75554369b56f2e02183d799adec4f4
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/inline-table-alignment-002-ref.xht	differs	css/css-writing-modes/inline-table-alignment-002-ref.xht	2088fe28669bed833b9b13a966af7a71fa9c4d2f	cc5ae6f4f8df1b672730381977f1ea43b1e29cda
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/inline-table-alignment-003-ref.xht	differs	css/css-writing-modes/inline-table-alignment-003-ref.xht	1a267dbc2c6f49a43bd6a0f66bacd03b69362d19	6687f7eeca4f396225dcc733df3c692f374e7c92
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-003.xht	differs	css/css-writing-modes/line-box-height-vlr-003.xht	40ac9fca129522d6d225c18ced6d2b580cb6cdcd	fdaca89390e8d061ac7d9f4b586883531702a388
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-005.xht	differs	css/css-writing-modes/line-box-height-vlr-005.xht	a40a1dd5c5af53a2bf5d9f26fcd4a9f4f28fb9f2	39caae31e3ecd21cf7ad2c93889dac5e9097a532
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-007.xht	differs	css/css-writing-modes/line-box-height-vlr-007.xht	eb65d2c18d2eb5b6e87b25097d359cd511890da9	5bb763df9cfc3d0a9c73745f420aace44d78c777
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-009.xht	differs	css/css-writing-modes/line-box-height-vlr-009.xht	444f53e2e7f36272ddbd175ad39a1c9b2a71dda9	2fa2881c1c11e552de653932dffb02ab7532b1bd
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-011.xht	differs	css/css-writing-modes/line-box-height-vlr-011.xht	3d4ecdf9fa48d516a2f5506320cf8d35b4019132	73626a0e909ad655f74f270caf5ea1f7f0682a70
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-013.xht	differs	css/css-writing-modes/line-box-height-vlr-013.xht	c617555a53c2be29522c4e3a248d79d2330ce64d	2e340b4a4d9a05fd09426dd5e9f9227bf3dfa176
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-021.xht	differs	css/css-writing-modes/line-box-height-vlr-021.xht	b3fe884fb229c815eeeeecc3318f1dedaca05505	c23c8b9e147bd75a35c8194aefaea1f9cd31d1ff
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vlr-023.xht	differs	css/css-writing-modes/line-box-height-vlr-023.xht	235125b52ef83af34fb812ad41fbf0d62df9e705	8e8e4522c224d02b74c92550112c300e89a32d12
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-002.xht	differs	css/css-writing-modes/line-box-height-vrl-002.xht	726385e485c2612e8f61ba9ecd15f7e66f9ffe9d	6fdad5aa3d6170185bb5659cec0cab1ae94f6720
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-004.xht	differs	css/css-writing-modes/line-box-height-vrl-004.xht	2755c555e4489454ed436b4b1ebad019e0724c7f	ada7956c2e3e99ed5f35cee4a10875a78bfb214d
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-006.xht	differs	css/css-writing-modes/line-box-height-vrl-006.xht	24f2c464526e0a39eb7219c9ced551039614b931	717c47c03df8c456b7c25abeca5c5683355fb4b4
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-008.xht	differs	css/css-writing-modes/line-box-height-vrl-008.xht	afcf6f7eddcabf328568a04aa388e814fe21843f	0bdc43781c02a442ba90ff95e305d2cec054ebc3
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-010.xht	differs	css/css-writing-modes/line-box-height-vrl-010.xht	5c361efa3c9dc8acc73934d21f93bce2ff2b799b	3e71230d9dd70804e75a81908f6dcb54c91ab5b1
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/line-box-height-vrl-012.xht	differs	css/css-writing-modes/line-box-height-vrl-012.xht	6e1b687b039ec6ea6496e515ac932907121b1099	5ef21dbd1c1aebe3f532211f897de84358cdebfd
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/nothing.html	ambiguous	css/reference/nothing.html	98ee818a8468b73f29c6c3c8a60bb3b3a0f21fa8	
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001.html	a72def565939a436150d460d4cef409b408e6dd1	6e0820f03938697bda100609981c9774ac6fdcdd
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001a.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001a.html	87ae82b08b5d6c9a1df0ed5aabe446ff38d74736	93303f9ea1910a56dd465a8c6de2a4f1a4712a95
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001b.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001b.html	1c79978ee1d0a972660cb83a30d2f162d1e03543	17fd632d9bfe954f9fe0aae29b59b5bd5f798a78
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001c.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001c.html	29a951573cf54c8f21b84cf046cbad2267460075	5fa7cdd50efa61c69853497654079a6447b8c0ae
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001d.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001d.html	4d8291f30a771170cdf10b4bc6b710f4c5849849	ba4253a7961462b807d8e0d956769388d78f96b7
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001e.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001e.html	bed139f23fad7ee68c697baf0d791c9298f57f33	03efbf507ef9022917bd3bfa164e87a6d817db74
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001f.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001f.html	2201c354aa95e950f2bfeb0112a530697d84b193	8d5a67c1ea276eaf498d8e5ce0f805cb4286ab73
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001g.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001g.html	bdd7cf65699ffe61d7e3c3763a2c228c47164b17	14dcfa5df07b768ea42bcd1522b7a7824d3719b4
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001h.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001h.html	8ec86ed004c35dda18336b7cf342ad3022b2b5a2	141f9a89bb01556021589e2298af3154bdf6efa2
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001i.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001i.html	27c24b8790e1eebe82057cffdd4c9565e2213960	d2614d6ce3b00a4e5ae98fe2f24d091594047978
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001j.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001j.html	75a773470722256b2d830fc44f32662011e5e3d8	d58d125643eb61c8315c1cda8b50e2e815de5939
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001k.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001k.html	628e39b53631cf77851e6bc2745c65a42c9ddfa5	50dc371aac3894efecab80c083bfe07919ba1a0e
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001l.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001l.html	820b48177ad38a2a9770cb49215de2cb4a4b19d6	138e0824931b795c55ff67a9a36069b859c04473
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001m.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001m.html	3b883fc5e8cddf6ccd692bd68ceac12798a7e77d	569de64d6cec628039c7cb67052b5b9cc1e18120
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001n.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001n.html	05b1700a706cf648df064d5731dfc7bcffedbc22	09c8d372202d65cd62b850380ca66665d0dabc9c
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001o.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001o.html	7fea260cc07501aa620f5e2eed49c4020f30565d	3a7c829174093add8ef2bfb947958a6c0915f519
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001p.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001p.html	598810c388cb213a6e64ce8562d43e10303ccd37	3b025d87674c8890ce1e18cf99c5d2fe865683be
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001q.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001q.html	98e988949d5f0ae29f4cd56d295d00ee1c9bead9	350dfd9d64be35c5203ce0309ed6750af1e81cb1
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001r.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001r.html	0f42c92338535969ae79167a27826adcc5ff521c	a278a9d952373dfb867e78f8deeb0a7c950033b4
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001s.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001s.html	283776111a7d1b91f8b90ceccdf13882a4fff2ff	3bdd491141398b29ca32c7fee6789495902b864c
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001t.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001t.html	85fe15065a5146eaeb15f84dd52aa3f1b81212a9	c40926d6d5e39566790352d3818f54ad5006f3bf
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001u.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001u.html	61232e835550e7054b4dda327942d2aec0ed0648	1e2e7aaec9a49d777cce2b40764857b7b4844dca
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001v.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001v.html	0c6207ff5cbb4b852cfe09a75fd058497f98fe08	a580ee575f445a82a45276f8937f6c8a9b994934
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001w.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001w.html	9eaf4f871a326a6ffb10bdc3757717b74bf49223	bb464c4ffe1152cc8a11ac64ef395a7537df133f
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/orthogonal-parent-shrink-to-fit-001x.html	differs	css/css-writing-modes/orthogonal-parent-shrink-to-fit-001x.html	09dd171ed7a08bd07491394e683f0d1c4c9cbb64	a3a72ac0d23aa75e315c3d1588592954b4dfac5e
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/reference/margin-collapse-022-023-2.xht	differs	css/css-writing-modes/reference/margin-collapse-022-023-2.xht	961d332927227d5f056e883e021531b7d05f4aa1	dab33c3937369f4b2e79edabd41ed74207ba1378
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/blue-yellow-206w-165h.png	differs	css/css-writing-modes/support/blue-yellow-206w-165h.png	50c780dbe10effef7ce26b45797fa351c27432e0	47ceb84d3fbd2b09831616b9b53f565cf18bec07
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/cat.png	differs	css/css-writing-modes/support/cat.png	a9a566e5d5581092ae12948ae4ae6222bdd11292	85dd7324815b8f8ef1a1d0496224c1a0661db9d8
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pass-cdts-horiz-rule.png	differs	css/css-writing-modes/support/pass-cdts-horiz-rule.png	4d347916d70cfc58853432325b8fe7411da66950	f9cc0b1eeff1654d91f104a1522a80083ff39474
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gg-gr-100x100.png	differs	css/css-writing-modes/support/pattern-gg-gr-100x100.png	96a40952cab34bc1db86e54967eec9d5a89a6ea9	fd9b7e1ef20c952088dad95eafc74609b066774d
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gg-rg-100x100.png	differs	css/css-writing-modes/support/pattern-gg-rg-100x100.png	6e7eb9014ec930a350ceff034a1d6ada80538725	80c7035f1fc3482e6b84dfb0e7d601b1eb527bae
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gr-gg-100x100.png	differs	css/css-writing-modes/support/pattern-gr-gg-100x100.png	578cd9a8e9420b0d4369580159c1e26546d37d44	fd1f7a7b50acc4c30258a745ec4659476cdad6b8
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gr-gr-100x100.png	differs	css/css-writing-modes/support/pattern-gr-gr-100x100.png	f5a46633a94a7af83c9b707de405391786a509eb	431b99f933a69b054f42e7c952b37e884ca0c7a2
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gr-rg-100x100.png	differs	css/css-writing-modes/support/pattern-gr-rg-100x100.png	a54a72a7ace107e07c5bd01d536611daece26e75	63248d4dd1f0d5f3781eaecc89f34991208b5f44
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-gr-rr-100x100.png	differs	css/css-writing-modes/support/pattern-gr-rr-100x100.png	5b89755413e18a3f9d4be6e2672147805f000da7	6fba8358309f73b463120f862e093eb8d30d64cc
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rg-gg-100x100.png	differs	css/css-writing-modes/support/pattern-rg-gg-100x100.png	d398db61406bf4ce78c67cfa3fbaf2ae6e7ec050	47ee743880e3b6c2c70a8d6289790d277c375240
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rg-gr-100x100.png	differs	css/css-writing-modes/support/pattern-rg-gr-100x100.png	18a1f4ac2570a224df96493af72ba14cfc9723ba	6b19ec9a4e77b2f3b817d6f1e20b6b16e0610e86
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rg-rg-100x100.png	differs	css/css-writing-modes/support/pattern-rg-rg-100x100.png	8f707ea47842a478ff2b7006c9239dec904d65bb	e28bdba9dd623dba3605c512f5418ce8f2fd10e4
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rg-rr-100x100.png	differs	css/css-writing-modes/support/pattern-rg-rr-100x100.png	06f3f639ff07ee820a83ec07b1784e26e3e073d0	797e289e059e513b032e83408d6765ada161290e
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rr-gr-100x100.png	differs	css/css-writing-modes/support/pattern-rr-gr-100x100.png	9e74765c590afa79e178ce0c497f73f4ff3bd305	97aac24065ca67dee25c6f50fb74bf36bb3a75d5
-pkg/visualtest/testdata/wpt-css3/css-writing-modes/support/pattern-rr-rg-100x100.png	differs	css/css-writing-modes/support/pattern-rr-rg-100x100.png	8be0d4edcd89b4e82c92fdbd18fd615db5b78bbc	177743874e289c608f3acc1a84d0b5f1574b032a
 pkg/visualtest/testdata/wpt-css3/filter-effects/at-import-relative-urls-001.html	no-upstream		6e7ab032c2ae14533298d0d1d0ca9a66b9282b7b	
 pkg/visualtest/testdata/wpt-css3/filter-effects/backdrop-filter-brightness-001-ref.html	no-upstream		63d67f81a663dc58a382313d09368e66a7b44490	
 pkg/visualtest/testdata/wpt-css3/filter-effects/backdrop-filter-brightness-001.html	no-upstream		569a63e98b4e2ebd01241512146b901a34339a03	
@@ -1232,10 +633,6 @@ pkg/visualtest/testdata/wpt-css3/filter-effects/support/imports/hueRotate.svg	re
 pkg/visualtest/testdata/wpt-css3/filter-effects/svgfeblendelement-mode-001.html	differs	css/filter-effects/svgfeblendelement-mode-001.html	f27a23f51a2976ec2cdd875319c4227029cf6dea	7d0ab6e7193109bdf6a9a5300e6ef3668186555e
 pkg/visualtest/testdata/wpt-css3/filter-effects/tainting-fediffuselighting-dynamic.html	relocated	css/filter-effects/tainting-fediffuselighting-dynamic-001.html	89674095a0cab68653690b543b70c3385c69d0fe	89674095a0cab68653690b543b70c3385c69d0fe
 pkg/visualtest/testdata/wpt-css3/filter-effects/tainting-feflood-dynamic.html	relocated	css/filter-effects/tainting-feflood-dynamic-001.html	fc9b3354fab77cdcccb10a42e9dac73a35236587	fc9b3354fab77cdcccb10a42e9dac73a35236587
-pkg/visualtest/testdata/wpt-css3/images/green-256x256.png	differs	images/green-256x256.png	911f79a9653c99dd9298505f51f0822a71a83d95	b06945c31016208951192322a448d2f34acc47ab
-pkg/visualtest/testdata/wpt-css3/mediaqueries/display-mode.tentative.html	differs	css/mediaqueries/display-mode.tentative.html	0762d065c339e0c962692ca07e4575e631f7fa3c	3847429cefe29f19b6863fac20b436ff4a939951
-pkg/visualtest/testdata/wpt-css3/mediaqueries/dynamic-range.html	differs	css/mediaqueries/dynamic-range.html	75b3015b8e76298767c19dfbaf775a53c8d9b706	82293f2cbbd1d18ae105abc0c858fba283282e4e
-pkg/visualtest/testdata/wpt-css3/mediaqueries/green.html	ambiguous	css/css-position/overlay/green-ref.html,css/reference/green.html	bef7405e96f8181f88fb073ebd212b4af6382e33	
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-hover-001-ref.html	no-upstream		cd0b7d4ec1afc355d0e5ca2def2b694f11b4277b	
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-hover-001.html	no-upstream		1c87bf6a659cdd07de4f5f9176a241dd38f3f398	
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-orientation-001-ref.html	no-upstream		cd0b7d4ec1afc355d0e5ca2def2b694f11b4277b	
@@ -1246,39 +643,11 @@ pkg/visualtest/testdata/wpt-css3/mediaqueries/media-prefers-color-scheme-001-ref
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-prefers-color-scheme-001.html	no-upstream		d4184b36e24c76cf064f308f64449113f90b84a1	
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-print-001-ref.html	no-upstream		cd0b7d4ec1afc355d0e5ca2def2b694f11b4277b	
 pkg/visualtest/testdata/wpt-css3/mediaqueries/media-print-001.html	no-upstream		25eb98c536d109d499b0c200a34abc1a3932d2cb	
-pkg/visualtest/testdata/wpt-css3/mediaqueries/mq-calc-001.html	differs	css/mediaqueries/mq-calc-001.html	50ba57f876de5de705dcd36fad58a82d4019059c	a4e4d4d9c657eb0731f933e57d31a9ef61259fb0
-pkg/visualtest/testdata/wpt-css3/mediaqueries/mq-calc-002.html	differs	css/mediaqueries/mq-calc-002.html	20336f4a65bf28dd6cffcb59fd8174d51d3ecafe	9c04b181d777d23c6b61e9092f7959c25089d854
-pkg/visualtest/testdata/wpt-css3/mediaqueries/mq-calc-005.html	differs	css/mediaqueries/mq-calc-005.html	9619ee18d24b0e04ae4c2a219abee16bdf7b73e3	dc33f1e85df9c233bc1f26e974789ce36e9de4ae
-pkg/visualtest/testdata/wpt-css3/mediaqueries/mq-calc-007.html	differs	css/mediaqueries/mq-calc-007.html	9c87c27b556802e901d1b56b90968b158ae20cf1	5f846ca083bfd35c500f854f810984250d36b700
-pkg/visualtest/testdata/wpt-css3/mediaqueries/mq-invalid-media-type-006.html	differs	css/mediaqueries/mq-invalid-media-type-006.html	430c3a36a37b097ca8db6d491c3f2f2fc82e227f	c31de01d99d3a6293073fa08a942184747bab5c2
-pkg/visualtest/testdata/wpt-css3/mediaqueries/preferences-colorScheme.tentative.https.html	differs	css/mediaqueries/preferences-colorScheme.tentative.https.html	ae1655ab23b320e76ad1c43ddf67785ae63c6725	75787cfa7a5cf1be59d3db25b96d59e06e88863a
-pkg/visualtest/testdata/wpt-css3/mediaqueries/preferences-contrast.tentative.https.html	differs	css/mediaqueries/preferences-contrast.tentative.https.html	51c4d278349cfccd3043c6857b4b2645ab7bb34e	bd5b02dec5b03cc4acd673cf1df53d5206d47e9b
-pkg/visualtest/testdata/wpt-css3/mediaqueries/preferences-reducedData.tentative.https.html	differs	css/mediaqueries/preferences-reducedData.tentative.https.html	5fe50ef240562ee7ba226f73809b277ff84f3001	8971d23c377adbb2525d1fbbb44c5a13d5daa446
-pkg/visualtest/testdata/wpt-css3/mediaqueries/preferences-reducedMotion.tentative.https.html	differs	css/mediaqueries/preferences-reducedMotion.tentative.https.html	2f2f7a40857f26df080b2efe909803cb1b935424	2b5ac1578a963b1e1ac9cdc685ef712b17322fd0
-pkg/visualtest/testdata/wpt-css3/mediaqueries/preferences-reducedTransparency.tentative.https.html	differs	css/mediaqueries/preferences-reducedTransparency.tentative.https.html	73900069abc07da395386ff447aabe7d5cec0c4b	bc0399364b683360898ee9326bd081024ac63933
-pkg/visualtest/testdata/wpt-css3/mediaqueries/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/mediaqueries/relative-units-001.html	differs	css/mediaqueries/relative-units-001.html	cf648f6a8d0d7c21de322244581beff6f167a1d2	4e526fbf2ef7e4c3eca48862cd692bff99acd88d
-pkg/visualtest/testdata/wpt-css3/mediaqueries/relative-units-002.html	differs	css/mediaqueries/relative-units-002.html	3724de9c80fa109d887bbccc2a4d1aaae5f6c1f0	b0b533f81fdc2670e39736829f1bd6d66b7efa97
-pkg/visualtest/testdata/wpt-css3/reference/fr-unit-ref.html	no-upstream		fd36bb4343e40dba4f681de7e20c5a942ea2d988	
-pkg/visualtest/testdata/wpt-css3/reference/fr-unit-with-percentage-ref.html	no-upstream		caab8abcc264da5bb856d69ec87b2820b5de910e	
-pkg/visualtest/testdata/wpt-css3/reference/grid-layout-basic-ref.html	no-upstream		ae9b56838fcaf68b1658ad8fdc620316406104ad	
 pkg/visualtest/testdata/wpt-css3/selectors/attribute-selector-001.xht	no-upstream		2731238a5a778e9beef6da10ad587a030508849e	
 pkg/visualtest/testdata/wpt-css3/selectors/attribute-selector-002.xht	no-upstream		6969511e5c663028e0f3fd741fde5952f84b9318	
 pkg/visualtest/testdata/wpt-css3/selectors/attribute-value-selector-001-ref.xht	ambiguous	css/CSS2/selectors/attribute-value-selector-001-ref.xht	1aaf21d22e4ace3ad1fc3f59391ac4df155a40cd	
 pkg/visualtest/testdata/wpt-css3/selectors/attribute-value-selector-001.xht	ambiguous	css/CSS2/selectors/attribute-value-selector-001.xht	0363f4ac53965571da8c26680ceebb1563c0a906	
-pkg/visualtest/testdata/wpt-css3/selectors/blank.html	ambiguous	css/reference/blank.html	f2fab5a3b178970297c50cd3655dba0ff7cc11bc	
 pkg/visualtest/testdata/wpt-css3/selectors/case-insensitive-parent-ref.html	no-upstream		0138b79972c3e1c2689df30ec72150e5993269f4	
 pkg/visualtest/testdata/wpt-css3/selectors/case-insensitive-parent.html	no-upstream		a684bbb97c870b587b73e616ca1bfa4fa423f4ff	
-pkg/visualtest/testdata/wpt-css3/selectors/child-indexed-pseudo-class.html	differs	css/selectors/child-indexed-pseudo-class.html	2e496d854184796be55d66566af8739fd4a7f776	0cd025fa535f7474cce6b358529f74d703f676df
 pkg/visualtest/testdata/wpt-css3/selectors/filler-text-below-green.xht	ambiguous	css/CSS2/reference/filler-text-below-green.xht	f9609b1d8ac99b5ba5f98934e9097118beb7f0e8	
-pkg/visualtest/testdata/wpt-css3/selectors/focus-visible-002.html	differs	css/selectors/focus-visible-002.html	850645efe97d09c28ae27ae3caf9c7c355339a73	96182d2d0e83bdd2ec70c5deb4e7d1fea1cad22a
-pkg/visualtest/testdata/wpt-css3/selectors/focus-visible-003.html	differs	css/selectors/focus-visible-003.html	73f8fac55a5e982c1126e574f8e03d7c034eeb96	d246fd27396429466766aa24bebe26e2bc3e3d96
-pkg/visualtest/testdata/wpt-css3/selectors/focus-visible-004.html	differs	css/selectors/focus-visible-004.html	075ee83393f2ac8c46454f2e7191454dad5b7b08	1bd1f9c3bdcbdb2c2e6c7ccf797bf8fe7fdb9733
-pkg/visualtest/testdata/wpt-css3/selectors/focus-visible-014.html	differs	css/selectors/focus-visible-014.html	1b80c666949a5aa7e5390bc449f62150b8990a34	a67ef1bd197dd874deac72ffbad12ae140698f9f
 pkg/visualtest/testdata/wpt-css3/selectors/no-red-filler-text-ref.xht	ambiguous	css/CSS2/reference/no-red-filler-text-ref.xht	73c348f151af1f556c30e972bf6f87e2107fe25e	
-pkg/visualtest/testdata/wpt-css3/selectors/ref-filled-green-100px-square-only.html	ambiguous	css/reference/ref-filled-green-100px-square-only.html	82fcaa3b2aa4a271db14feb00256d0aedbce2d85	
-pkg/visualtest/testdata/wpt-css3/selectors/ref-filled-green-100px-square.xht	ambiguous	css/CSS2/reference/ref-filled-green-100px-square.xht,css/css-backgrounds/reference/ref-filled-green-100px-square.xht,css/css-cascade/reference/ref-filled-green-100px-square.xht,css/css-text/word-spacing/reference/ref-filled-green-100px-square.xht,css/reference/ref-filled-green-100px-square.xht	05a13794482a94f6c10bd9d4c98704e63ef60331	
-pkg/visualtest/testdata/wpt-css3/selectors/user-invalid.html	differs	css/selectors/user-invalid.html	c57e764831290886de7651735bda731ed4819e35	56f7239e164cb97f84595fba64a641bd93b27b85
-pkg/visualtest/testdata/wpt-css3/selectors/user-valid.html	differs	css/selectors/user-valid.html	402003ba5e63266071a9c3aa474f017ddb131049	8f30fd9b82f860a3eb3daa2f8fb3223355b75b99
-pkg/visualtest/testdata/wpt-css3/selectors/webkit-pseudo-element.html	differs	css/selectors/webkit-pseudo-element.html	30103fa72bf479fb80e75c03058f33a150119be8	babf2301143256ee0005dcbfbd3aafb5624b3e84
-pkg/visualtest/testdata/wpt-css3/support/1x1-green.png	differs	css/support/1x1-green.png	b7f51b04e12e119b4004de994b464ca7acdca6bf	b98ca0ba0a03c580ac339e4a3653539cfa8edc71
