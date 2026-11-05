@@ -1381,6 +1381,15 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// descendants, so the simple "skip the whole subtree" matches Blink's
 	// ApplyFilterIfNecessary path where the element's content draw is gated by
 	// the same Visible bit before the filter runs.)
+	// The layer's own clips are its filter's output clip when the filter
+	// moves pixels: the descendants then paint under the
+	// PixelMovingFilterClipExpander, not under those clips. A filter that does
+	// not move pixels has no expander, so its source is clipped as usual, as
+	// is a layer whose own homography is singular, which has no local space
+	// to clip the output in.
+	ownH := homographyTransform(own)
+	clipsOnOutput := layer.needsPixelMovingFilterClipExpander() &&
+		(layer.HasCSSClip || layer.ClipPath != nil) && ownH.IsInvertible()
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	if layer.Visible {
 		origDC := r.dc
@@ -1391,7 +1400,10 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		// its local space mapped into the layer.
 		r.dc.Translate(float64(-bx), float64(-by))
 		r.multiplyHomography(projectiveHomography(paramToLayer))
-		r.paintFilterSourceGraphic(layer)
+		// Ancestors' clips are not on the offscreen draw context, but they stay
+		// marked applied on the shared clip stack (LOU-700 ports per-chunk
+		// clip states).
+		r.paintFilterSourceGraphic(layer, clipsOnOutput)
 		r.dc = origDC
 		r.target = origTarget
 	}
@@ -1410,7 +1422,9 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 
 	// Draw the layer through the remainder (fLayerToDevMatrix) on top of the
 	// draw context's matrix: own ∘ paramToLayer⁻¹, which is dm⁻¹ when the
-	// layer is device space.
+	// layer is device space. With the layer's own clips, the filter's output
+	// clip, it is split as own ∘ fromLocal so they apply in between, in its
+	// local space.
 	var onDC geometry.Transform
 	switch {
 	case !mapping.LayerToDev.IsIdentity():
@@ -1418,9 +1432,23 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	case dmKnown:
 		onDC = dm.InverseOrIdentity()
 	}
+	if !clipsOnOutput {
+		// The own clips, if any, clipped the source.
+		r.dc.Push()
+		r.multiplyHomography(projectiveHomography(onDC))
+		r.dc.DrawImage(out, bx, by)
+		r.dc.Pop()
+		return
+	}
+	// The split is taken on the z=0 homographies the draw context uses, so
+	// own ∘ fromLocal is exactly onDC there even when own is 3D.
+	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
 	r.dc.Push()
-	r.multiplyHomography(projectiveHomography(onDC))
+	r.multiplyHomography(projectiveHomography(own))
+	r.pushOwnClips(layer)
+	r.multiplyHomography(projectiveHomography(fromLocal))
 	r.dc.DrawImage(out, bx, by)
+	r.popOwnClips(layer)
 	r.dc.Pop()
 }
 
@@ -1454,6 +1482,18 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true
 }
 
+// homographyTransform returns m's z=0 homography (projectiveHomography) as a
+// transform with no z terms, so products and inverses of it match those of the
+// homographies the draw context composes.
+func homographyTransform(m geometry.Transform) geometry.Transform {
+	h := projectiveHomography(m)
+	return geometry.TransformRowMajor(
+		h[0], h[1], 0, h[2],
+		h[3], h[4], 0, h[5],
+		0, 0, 1, 0,
+		h[6], h[7], 0, h[8])
+}
+
 // newFilterEffectBuilder returns a FilterEffectBuilder for layer's filters,
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
@@ -1481,14 +1521,31 @@ func (r *Renderer) ownLayerProjection(layer *PaintLayer) geometry.Transform {
 
 // paintFilterSourceGraphic paints layer's content as its filter's
 // SourceGraphic: in the layer's local space, which the caller has already
-// mapped into the filter layer. It does what enterLayerTransform does short
-// of applying the transform.
-func (r *Renderer) paintFilterSourceGraphic(layer *PaintLayer) {
+// mapped into the filter layer. With clipsOnOutput the layer's own clips are
+// left to the filter output (UpdateCssClip and UpdateClipPathClip run before
+// UpdateFilter, whose output_clip is the clip they leave,
+// core/paint/paint_property_tree_builder.cc:4079-4082, 2485 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and the descendants paint under
+// the PixelMovingFilterClipExpander (:2512-2532).
+func (r *Renderer) paintFilterSourceGraphic(layer *PaintLayer, clipsOnOutput bool) {
+	// The canvas background is in the root's effect: the view paints it in
+	// the root's LocalBorderBoxProperties with its PreTransform
+	// (ViewPainter::PaintBoxDecorationBackground, view_painter.cc:183-188 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the root's filter
+	// applies to it (compositing/root-element-filter).
 	r.paintViewBackground(layer)
 	if layer.HasTransformPaint {
 		r.transformDepth++
 	}
-	r.paintLayerContent(layer)
+	if clipsOnOutput {
+		expander := r.pushPixelMovingFilterClipExpander(layer)
+		r.paintLayerContentWithoutOwnClips(layer)
+		if expander {
+			r.popClipNode()
+		}
+	} else {
+		r.paintLayerContent(layer)
+	}
 	if layer.HasTransformPaint {
 		r.transformDepth--
 	}
@@ -2132,20 +2189,18 @@ func (r *Renderer) parentPerspectiveContext(box *layout.Box) (d, opx, opy float6
 // inline content — a constraint that a single DOM-order walk cannot
 // satisfy for block-in-inline structures.
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
-	// CSS clip: rect() — clips everything including backgrounds and borders.
-	// Purely physical coordinates per CSS Writing Modes §7.6.
-	if layer.HasCSSClip {
-		r.pushClipNode(layer, clipNodeCssClip)
-		defer r.popClipNode()
+	r.pushOwnClips(layer)
+	expander := r.pushPixelMovingFilterClipExpander(layer)
+	r.paintLayerContentWithoutOwnClips(layer)
+	if expander {
+		r.popClipNode()
 	}
+	r.popOwnClips(layer)
+}
 
-	// CSS clip-path: clips all content to a shape.
-	if layer.ClipPath != nil {
-		r.dc.Push()
-		r.applyClipPath(layer)
-		defer r.dc.Pop()
-	}
-
+// paintLayerContentWithoutOwnClips is paintLayerContent without the layer's
+// own CSS clip and clip-path: a filter's source, whose output they clip.
+func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	// A backface-culled layer reaching here has unculled descendants to
 	// paint; its own content is skipped (skipsBackfaceCulledSubtree).
 	own := !r.isBackfaceCulled(layer)
@@ -2563,6 +2618,29 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 	sw := float64(layoutunit.SnapSizeToPixel(luW, luX))
 	sh := float64(layoutunit.SnapSizeToPixel(luH, luY))
 	return sx, sy, sw, sh
+}
+
+// pushOwnClips applies layer's CSS clip (rect(), physical coordinates per CSS
+// Writing Modes §7.6) and clip-path, which clip everything the layer paints.
+// Pair with popOwnClips.
+func (r *Renderer) pushOwnClips(layer *PaintLayer) {
+	if layer.HasCSSClip {
+		r.pushClipNode(layer, clipNodeCssClip)
+	}
+	if layer.ClipPath != nil {
+		r.dc.Push()
+		r.applyClipPath(layer)
+	}
+}
+
+// popOwnClips undoes pushOwnClips.
+func (r *Renderer) popOwnClips(layer *PaintLayer) {
+	if layer.ClipPath != nil {
+		r.dc.Pop()
+	}
+	if layer.HasCSSClip {
+		r.popClipNode()
+	}
 }
 
 // applyClipPath builds the clip-path shape and calls Clip().
@@ -3597,52 +3675,6 @@ func (r *Renderer) paintImageIntoRect(layer *PaintLayer, img image.Image, destRe
 		SubImage(image.Rectangle) image.Image
 	}).SubImage(drawRect.Sub(pixelSnappedDestRect.Min))
 	finalX, finalY := drawRect.Min.X, drawRect.Min.Y
-
-	// CSS clip: rect() — DrawImage bypasses the clip mask, so we must
-	// manually crop the image to the CSS clip region.
-	if layer.HasCSSClip {
-		// CSSClipRect is [x, y, w, h] in absolute coordinates.
-		cx := int(math.Round(layer.CSSClipRect[0]))
-		cy := int(math.Round(layer.CSSClipRect[1]))
-		ccw := int(math.Round(layer.CSSClipRect[2]))
-		cch := int(math.Round(layer.CSSClipRect[3]))
-
-		imgBounds := finalImg.Bounds()
-		imgW := imgBounds.Dx()
-		imgH := imgBounds.Dy()
-
-		// Intersect clip region with image draw area.
-		ix0 := finalX
-		if cx > ix0 {
-			ix0 = cx
-		}
-		iy0 := finalY
-		if cy > iy0 {
-			iy0 = cy
-		}
-		ix1 := finalX + imgW
-		if cx+ccw < ix1 {
-			ix1 = cx + ccw
-		}
-		iy1 := finalY + imgH
-		if cy+cch < iy1 {
-			iy1 = cy + cch
-		}
-		if ix1 <= ix0 || iy1 <= iy0 {
-			return // Entirely clipped
-		}
-		// Extract the visible sub-image.
-		sub := finalImg.(interface {
-			SubImage(image.Rectangle) image.Image
-		}).SubImage(image.Rect(
-			imgBounds.Min.X+(ix0-finalX),
-			imgBounds.Min.Y+(iy0-finalY),
-			imgBounds.Min.X+(ix1-finalX),
-			imgBounds.Min.Y+(iy1-finalY),
-		))
-		r.dc.DrawImage(sub, ix0, iy0)
-		return
-	}
 
 	r.dc.DrawImage(finalImg, finalX, finalY)
 }
