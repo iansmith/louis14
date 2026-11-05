@@ -1,5 +1,16 @@
 <!doctype html>
 <style>
-  body { margin: 0 }
+  body {
+    margin: 0;
+  }
+  iframe {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
 </style>
-<div style="position:absolute; top:0; left:0;">This text should be visible in the first page</div>
+<div style="height:200vh;"></div>
+<iframe frameborder=0 scrolling=no
+        src="//{{hosts[][]}}:{{ports[http][0]}}{{location[path]}}/../position-absolute-iframe-child.html"></iframe>
