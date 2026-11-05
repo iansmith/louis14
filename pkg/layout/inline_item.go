@@ -92,7 +92,8 @@ type InlineItem struct {
 	ParagraphLevel int
 
 	// EnclosingPaintGroup points to the OpenTag item of the nearest enclosing
-	// non-atomic inline with a self-painting layer (see IsInlinePaintGroup). Nil when no such ancestor exists. For the group
+	// non-atomic inline with a self-painting layer (see IsInlinePaintGroup).
+	// Nil when no such ancestor exists. For the group
 	// inline's own Open/CloseTag items this is the next-OUTER group, so nested
 	// groups chain. The louis14 analog of Blink's
 	// LayoutObject::PaintingLayer (layout_object.cc:1218 @

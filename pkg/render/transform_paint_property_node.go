@@ -127,13 +127,11 @@ func hasWillChangeTransformHint(s *css.Style) bool {
 // inlineHasPaintLayer reports whether a non-atomic inline box has a paint
 // layer, which CompositingReasonFinder::DirectReasonsForPaintProperties
 // requires before it adds will-change reasons (compositing_reason_finder.cc:
-// 411-419): LayoutInline::LayerTypeRequired (layout_inline.cc:760-767 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — relative or sticky
-// positioning, or a grouping property. louis14 bakes animations, and paint
-// containment does not apply to a non-atomic inline.
+// 411-419 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the box is one of the
+// fragments inline layout stamped as the inline's own paint group
+// (layout.IsInlinePaintGroup, LayoutInline::LayerTypeRequired).
 func inlineHasPaintLayer(box *layout.Box) bool {
-	return box.Position == css.PositionRelative || box.Position == css.PositionSticky ||
-		box.Style.HasGroupingProperty(false)
+	return box.IsOwnPaintGroupFragment()
 }
 
 // perspectiveLookup returns the perspective matrix the DOM parent of box

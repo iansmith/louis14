@@ -72,14 +72,14 @@ type PaintLayer struct {
 	// Floats are separated from FlowChildren so they paint above block backgrounds.
 	FloatChildren []*PaintLayer
 
-	// isLayoutInline marks the self-painting layer of a non-atomic inline
-	// (an inline paint group, see layout.IsInlinePaintGroup), whose Box is
-	// synthesized and has no geometry of its own. Blink reaches the
-	// equivalent through DynamicTo<LayoutInline>(GetLayoutObject()).
-	isLayoutInline bool
-	// inlineBoxFragments are a LayoutInline layer's box fragments in line
-	// order (Blink walks them with an InlineCursor), gathered while the
-	// inline's members are routed.
+	// inlinePaintGroup is the OpenTag item of the inline paint group this
+	// layer is (see layout.IsInlinePaintGroup and ensureInlinePaintGroup), nil
+	// for every other layer. Its Box is synthesized, with no geometry and no
+	// box of its own to paint.
+	inlinePaintGroup *layout.InlineItem
+	// inlineBoxFragments are a LayoutInline layer's box fragments, gathered
+	// while the inline's members are routed and put in line order by
+	// finalizeInlineLayer (Blink walks them with an InlineCursor).
 	inlineBoxFragments []geometry.PhysicalRect
 	// linesBoundingBox is LayoutInline::PhysicalLinesBoundingBox
 	// (layout_inline.cc:658-673 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
@@ -1713,7 +1713,7 @@ func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, curr
 		Node: item.Node, Style: s, Parent: container,
 		Position: s.GetPosition(), ZIndex: s.GetZIndex(), DOMIndex: item.DOMIndex,
 	})
-	g.isLayoutInline = item.Node != nil
+	g.inlinePaintGroup = item
 	groups[item] = g
 	sc, backdropRoot := currentSC, currentBackdropRoot
 	if item.EnclosingPaintGroup != nil {
@@ -1753,12 +1753,20 @@ func (g *PaintLayer) addInlineBoxFragment(frag *layout.Box) {
 		geometry.PhysicalRectEnclosingRect(geometry.NewRectF(frag.X, frag.Y, frag.Width, frag.Height)))
 }
 
+// isLayoutInline reports whether the layer is a non-atomic inline's
+// self-painting layer; Blink reaches the equivalent through
+// DynamicTo<LayoutInline>(GetLayoutObject()). A synthetic ::first-line paint
+// group is a paint group but no LayoutInline.
+func (layer *PaintLayer) isLayoutInline() bool {
+	return layer.inlinePaintGroup != nil && layer.inlinePaintGroup.Node != nil
+}
+
 // clipPathReferenceBox returns the clip-path reference box: the border box,
 // or an inline's first box fragment (ClipPathClipper's BorderBoxRect,
 // clip_path_clipper.cc:97-107 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b;
 // empty when it has none).
 func (layer *PaintLayer) clipPathReferenceBox() geometry.RectF {
-	if !layer.isLayoutInline {
+	if !layer.isLayoutInline() {
 		return geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)
 	}
 	if len(layer.inlineBoxFragments) == 0 {
@@ -1774,7 +1782,7 @@ func (layer *PaintLayer) clipPathReferenceBox() geometry.RectF {
 // ComputeFilterViewport (:164-168) and CSSMaskPainter::MaskBoundingBox
 // (css_mask_painter.cc:80-92), all @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func (layer *PaintLayer) linesOrBorderBox() *layout.Box {
-	if !layer.isLayoutInline {
+	if !layer.isLayoutInline() {
 		return layer.Box
 	}
 	b := *layer.Box
@@ -1790,9 +1798,25 @@ func (layer *PaintLayer) linesOrBorderBox() *layout.Box {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). newPaintLayer resolved them
 // against the synthesized box, which has no size.
 func (layer *PaintLayer) finalizeInlineLayer() {
-	if !layer.isLayoutInline {
+	if !layer.isLayoutInline() {
 		return
 	}
+	// The paint-tree walk does not visit the fragments in line order (a
+	// block-in-inline splits them across containers): order them by block
+	// offset, the order Blink's InlineCursor yields them in.
+	wdm := layout.NewWritingDirectionMode(layer.Box.Style)
+	blockOffset := func(r geometry.PhysicalRect) float64 {
+		switch {
+		case wdm.IsHorizontal():
+			return r.Offset.Top.Float64()
+		case wdm.IsFlippedBlocks():
+			return -r.Right().Float64()
+		}
+		return r.Offset.Left.Float64()
+	}
+	sort.SliceStable(layer.inlineBoxFragments, func(i, j int) bool {
+		return blockOffset(layer.inlineBoxFragments[i]) < blockOffset(layer.inlineBoxFragments[j])
+	})
 	for _, f := range layer.inlineBoxFragments {
 		layer.linesBoundingBox = layer.linesBoundingBox.UniteIfNonZero(f)
 	}
@@ -1863,13 +1887,26 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 			// the first-line text/atomic fragments each carry the merged
 			// ::first-line opacity, so every one must drop to 1.0 and let the
 			// group composite it once.
-			ownFragment := child.PaintGroup.Node == nil ||
-				(child.Node != nil && child.Node == child.PaintGroup.Node)
+			firstLine := child.PaintGroup.Node == nil
+			ownFragment := firstLine || child.IsOwnPaintGroupFragment()
 			if ownFragment {
 				childLayer := newPaintLayer(child)
-				childLayer.clearGroupEffects()
-				if groupLayer.isLayoutInline && child.Text == "" {
-					groupLayer.addInlineBoxFragment(child)
+				memberSC := groupSC
+				if firstLine {
+					// The ::first-line group takes over only the merged
+					// ::first-line opacity. A member that is a stacking
+					// context of its own (an atomic inline with z-index,
+					// opacity, a filter, ...) keeps its own effects and
+					// collects its own stacking descendants.
+					childLayer.Opacity = 1.0
+					if child.CreatesStackingContext() {
+						memberSC = childLayer
+					}
+				} else {
+					childLayer.clearGroupEffects()
+					if child.Text == "" {
+						groupLayer.addInlineBoxFragment(child)
+					}
 				}
 				childBackdropRoot := noteCompositingDescendants(childLayer, groupSC, groupLayer.inlineMembersBackdropRoot)
 				if isFloat(child) {
@@ -1877,7 +1914,7 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC, currentBackdropR
 				} else {
 					groupLayer.FlowChildren = append(groupLayer.FlowChildren, childLayer)
 				}
-				buildPaintSubtree(child, childLayer, groupSC, childBackdropRoot, groups)
+				buildPaintSubtree(child, childLayer, memberSC, childBackdropRoot, groups)
 				continue
 			}
 			// Any other member (text, atomic inlines, floats, positioned
@@ -2307,7 +2344,7 @@ func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
 // contents. In louis14 those hang under the inline's layer as its
 // non-self-painting children.
 func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
-	if !layer.isLayoutInline {
+	if !layer.isLayoutInline() {
 		return visualOverflowRect(layer.Box, selfPainting)
 	}
 	rect := layer.linesBoundingBox

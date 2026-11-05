@@ -2251,6 +2251,9 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 // dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
+	if layer.inlinePaintGroup != nil {
+		return // its fragments paint it (see paintSelfDecorations)
+	}
 	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
 		r.drawOutline(layer)
 	}
@@ -2261,7 +2264,17 @@ func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
 // painting that precedes descendant painting in CSS 2.1 Appendix E.
 // The outline is NOT painted here; it has its own post-content phase
 // (see paintSelfOutline). Called once per layer (not once per phase).
+//
+// An inline paint group's layer paints no box of its own: its box fragments
+// paint the inline's background, borders, shadows and outline, as Blink's
+// InlineBoxFragmentPainter::Paint does per fragment
+// (inline_box_fragment_painter.cc:61-77 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); BoxFragmentPainter never paints
+// an inline box (box_fragment_painter.cc:594).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
+	if layer.inlinePaintGroup != nil {
+		return
+	}
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
 	// The cell still occupies space; only painting is suppressed.

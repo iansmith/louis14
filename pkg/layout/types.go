@@ -152,6 +152,13 @@ type Box struct {
 	TableCollapsedBordersGeometry *CollapsedTableBordersGeometry
 }
 
+// IsOwnPaintGroupFragment reports whether the box is one of an inline paint
+// group's own fragments (its box fragments and text), stamped with the
+// group's own item rather than an enclosing one.
+func (b *Box) IsOwnPaintGroupFragment() bool {
+	return b.PaintGroup != nil && b.Node != nil && b.PaintGroup.Node == b.Node
+}
+
 // CreatesStackingContext returns true if this box establishes a new
 // stacking context per CSS 2.1 Appendix E / CSS Compositing §2.
 //

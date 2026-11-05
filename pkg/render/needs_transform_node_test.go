@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
@@ -15,6 +16,8 @@ import (
 // finder.cc:411-419). A non-atomic inline has a layer when it is relatively
 // positioned or has a grouping property (LayoutInline::LayerTypeRequired),
 // so will-change: transform gives it a node; without a layer it gets none.
+// The boxes are stamped as inline layout stamps an inline's box fragments:
+// PaintGroup is the inline's own item when it has a paint layer.
 func TestNeedsTransformNode_WillChangeOnInline(t *testing.T) {
 	inline := func(props map[string]string, pos css.PositionType) *layout.Box {
 		s := css.NewStyle()
@@ -22,7 +25,12 @@ func TestNeedsTransformNode_WillChangeOnInline(t *testing.T) {
 		for k, v := range props {
 			s.Properties[k] = v
 		}
-		return &layout.Box{Style: s, Position: pos}
+		node := &html.Node{Type: html.ElementNode, TagName: "span"}
+		box := &layout.Box{Style: s, Node: node, Position: pos}
+		if layout.IsInlinePaintGroup(s, node) {
+			box.PaintGroup = &layout.InlineItem{Node: node, Style: s}
+		}
+		return box
 	}
 	for _, tc := range []struct {
 		name string
