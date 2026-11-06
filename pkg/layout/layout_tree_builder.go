@@ -1489,19 +1489,17 @@ func (b *LayoutTreeBuilder) buildMarkerContentChildren(contentVals []css.Content
 
 // formatCounterValues renders a slice of counter values (outermost-first
 // for counters(), single-entry for counter()) using the given separator
-// and CSS counter style. Phase 1 implements decimal and
+// and CSS counter style. Every value is joined, even with an empty
+// separator: counter() passes a single value (GetCounterValues onlyLast), so
+// the separator never decides how many levels are shown
+// (LayoutCounter::GenerateCounterText, core/layout/layout_counter.cc:82-95 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Phase 1 implements decimal and
 // decimal-leading-zero only — those are the styles exercised by the B1
 // test bucket. Phase 5 will route through CounterStyle for the full
 // predefined / @counter-style set.
 func formatCounterValues(values []int, sep, style string) string {
 	if len(values) == 0 {
 		return ""
-	}
-	if sep == "" && len(values) > 1 {
-		// counter() with the inner counter that returned multiple
-		// (shouldn't happen — onlyLast=true returns at most one), but
-		// guard anyway.
-		values = values[len(values)-1:]
 	}
 	var b strings.Builder
 	for i, v := range values {
