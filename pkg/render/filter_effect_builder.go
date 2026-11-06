@@ -26,13 +26,16 @@ type FilterEffectBuilder struct {
 	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
 	// pixel-snapped border box (BackdropFilterBounds).
 	ReferenceBox geometry.RectF
-	// FilterViewport is the element's border box in absolute device pixels.
-	// Its size is Blink's FilterViewport (ComputeFilterViewport, core/paint/
-	// paint_layer.cc:164-174 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the
-	// viewport userSpaceOnUse percentages resolve against
-	// (filter_effect_builder.cc:528-537 @ a9f50e52); its origin is the
-	// layer's local origin, which userSpaceOnUse coordinates are relative
-	// to. It may be empty: a 0x0 box keeps its 0x0 viewport.
+	// FilterViewport is, in absolute device pixels, a layer's border box or
+	// an SVG shape's <svg> viewport: the viewport userSpaceOnUse percentages
+	// resolve against (filter_effect_builder.cc:528-537 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For a layer its size is
+	// Blink's FilterViewport (ComputeFilterViewport, core/paint/
+	// paint_layer.cc:164-174 @ a9f50e52), and its origin is the layer's local
+	// origin, which userSpaceOnUse coordinates are relative to; an SVG shape
+	// sets UserSpaceOrigin instead (SVGViewportResolver, svg_resources.cc:
+	// 375-381 @ a9f50e52). It may be empty: a 0x0 box keeps its 0x0
+	// viewport.
 	FilterViewport image.Rectangle
 	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
 	// are relative to in place of FilterViewport.Min: an SVG shape's user
@@ -142,9 +145,11 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		LastEffect:  prev,
 	}
 	// A shorthand-only chain has no region; the caller sizes its buffer
-	// (filters.Filter.EnsureRegion). A chain with a url() stage keeps the
-	// region it has had: the reference box mapped through the chain, with no
-	// per-stage crop (LOU-704 ports the exact sizing).
+	// (filters.Filter.EnsureRegion). A chain with a url() stage starts from
+	// the reference box mapped through the chain, with no per-stage crop
+	// (LOU-704 ports the exact sizing). An SVG shape's chain then unites its
+	// paint extent into it (paintWithFilterChain); the HTML layer path keeps
+	// it as is (LOU-780).
 	if hasReferenceFilter(ops) {
 		f.FilterRegion = f.MapRect(snapRectFToDevice(b.ReferenceBox))
 	}

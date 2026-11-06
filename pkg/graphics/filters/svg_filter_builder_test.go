@@ -365,3 +365,15 @@ func TestBuildPrimitive_NumberOptionalNumberGrammar(t *testing.T) {
 		}
 	}
 }
+
+// A negative baseFrequency still builds a turbulence primitive, which runs at
+// the initial "0 0": SVGFETurbulenceElement::Build always builds one
+// (svg_fe_turbulence_element.cc:138-146 @ a9f50e52), and FETurbulence::CreateImageFilter
+// treats a negative frequency as unspecified (fe_turbulence.cc:116-124 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBuildPrimitive_TurbulenceNegativeBaseFrequency(t *testing.T) {
+	f := buildPrimitive(refBoxElement(false), &mockSVGFilterPrimitive{tag: "feturbulence", attrs: map[string]string{"baseFrequency": "-0.1 0.2"}})
+	if e, ok := f.(*FETurbulence); !ok || e.BaseFreqX != 0 || e.BaseFreqY != 0 {
+		t.Errorf("feTurbulence baseFrequency=\"-0.1 0.2\" built %#v, want a turbulence at 0 0", f)
+	}
+}

@@ -13,7 +13,7 @@ func TestFEOffset_ObjectBoundingBoxUnitsUseFloatReferenceBox(t *testing.T) {
 <svg width="100" height="40">
 <filter id="o" primitiveUnits="objectBoundingBox" x="0" y="0" width="4" height="1" color-interpolation-filters="sRGB"><feOffset dx="2" dy="0"/></filter>
 <rect x="0.25" y="0" width="20.5" height="20" fill="green" filter="url(#o)"/></svg>`, 100, 40)
-	wantNotPixel(t, img, 41, 10, canvasWhite, "the shape's left edge (it starts at x 41.25)")
+	assertNotWhite(t, img, 41, 10, "the shape's left edge (it starts at x 41.25)")
 	wantPixel(t, img, 62, 10, canvasWhite, "past the shape's right edge at x 61.75")
 }
 
@@ -38,7 +38,7 @@ func TestFEOffset_ObjectBoundingBoxUnitsUseFillBox(t *testing.T) {
 // reference box. The rect's stroke spans x 10..90; its left half-stroke
 // (x 10..20) lies outside the fill box (Blink crops a url() stage to its
 // own filter region only: FilterEffectBuilder::BuildReferenceFilter,
-// filter_effect_builder.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// filter_effect_builder.cc:514 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func TestFilterChain_URLAndShorthandKeepsStroke(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
@@ -55,7 +55,7 @@ func TestFilterChain_ShorthandKeepsMiterJoin(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <path d="M20,80 L50,20 L80,80 Z" fill="green" stroke="green" stroke-width="10" style="filter:blur(0.5px)"/></svg>`, 100, 100)
-	wantNotPixel(t, img, 50, 12, canvasWhite, "the apex miter (it reaches y 8.8)")
+	assertNotWhite(t, img, 50, 12, "the apex miter (it reaches y 8.8)")
 }
 
 // A shorthand-only chain needs no reference box, so a shape with an empty
@@ -65,7 +65,7 @@ func TestFilterChain_ShorthandOnEmptyFillBox(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <line x1="10" y1="50" x2="90" y2="50" stroke="green" stroke-width="10" style="filter:blur(2px)"/></svg>`, 100, 100)
-	wantNotPixel(t, img, 50, 43, canvasWhite, "the blurred stroke past its edge at y 45")
+	assertNotWhite(t, img, 50, 43, "the blurred stroke past its edge at y 45")
 }
 
 // A url() stage of a chain on an SVG shape resolves userSpaceOnUse

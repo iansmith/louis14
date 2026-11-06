@@ -276,7 +276,9 @@ func newFETurbulenceFromPrimitive(space InterpolationSpace, prim SVGFilterPrimit
 		kind = TurbulenceTurbulence
 	}
 	// baseFrequency: one or two numbers (fx [fy]). A negative value is
-	// invalid → treat the whole attribute as unspecified (default 0, 0).
+	// treated as unspecified, the initial "0 0" (FETurbulence::
+	// CreateImageFilter, fe_turbulence.cc:116-124 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the primitive is still built.
 	fx, fy := NumberOptionalNumberAttr(prim, "baseFrequency", 0)
 	if fx < 0 || fy < 0 {
 		fx, fy = 0, 0
