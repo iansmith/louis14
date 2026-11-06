@@ -115,3 +115,24 @@ func TestGridLinesOutsideTheExplicitGrid(t *testing.T) {
 		}
 	}
 }
+
+// The explicit grid's tracks exist whatever is placed, the template areas
+// included (GridLineResolver::ExplicitGridColumnCount / RowCount,
+// grid_line_resolver.cc:525-555 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// areas 'a b c' make three columns, so three auto-placed children share one
+// row, and an out-of-flow grid-column:1/2 with no in-flow child is the first
+// of the three 30px columns.
+func TestExplicitGridTracksFromAreasExist(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; width:90px; grid-auto-rows:10px; grid-template-areas:'a b c'">`+
+		`<div id=a></div><div id=b></div><div id=c></div></div></body>`, nil)
+	for i, id := range []string{"a", "b", "c"} {
+		if b := findBox(fl.root, byID(id)); b == nil || b.X != float64(30*i) || b.Y != 0 {
+			t.Errorf("auto-placed #%s %s, want at (%d,0)", id, boxDims(b), 30*i)
+		}
+	}
+	fl = layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; position:relative; width:90px; height:10px; grid-template-areas:'a b c'">`+
+		`<div id=o style="position:absolute; inset:0; grid-column:1 / 2"></div></div></body>`, nil)
+	if o := findBox(fl.root, byID("o")); o == nil || o.X != 0 || o.Width != 30 {
+		t.Errorf("abspos grid-column:1/2 %s, want x=0 width=30", boxDims(o))
+	}
+}

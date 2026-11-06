@@ -21,6 +21,10 @@ func TestParseGridLineGrammarAndClamp(t *testing.T) {
 		{"span 20000000", true, GridLine{Span: true, Integer: GridMaxTracks}},
 		{"-20000000", true, GridLine{Integer: -GridMaxTracks}},
 		{"20000000 foo", true, GridLine{Integer: GridMaxTracks, Name: "foo"}},
+		// An integer too large for an int still parses, and clamps.
+		{"99999999999999999999", true, GridLine{Integer: GridMaxTracks}},
+		{"span 99999999999999999999", true, GridLine{Span: true, Integer: GridMaxTracks}},
+		{"-99999999999999999999 foo", true, GridLine{Integer: -GridMaxTracks, Name: "foo"}},
 	} {
 		got, ok := ParseGridLine(tc.v)
 		if ok != tc.ok || (ok && got != tc.want) {
