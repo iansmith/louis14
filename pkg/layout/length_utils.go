@@ -375,48 +375,57 @@ func isEmptyAspectRatio(r LogicalSize) bool {
 	return r.InlineSize <= 0 || r.BlockSize <= 0
 }
 
-// styleAspectRatioIsAutoAndRatio reports whether `aspect-ratio` is
-// `auto && <ratio>` (EAspectRatioType::kAutoAndRatio) rather than a bare
-// <ratio> (kRatio).
-func styleAspectRatioIsAutoAndRatio(style *css.Style) bool {
-	v, _ := style.Get("aspect-ratio")
-	for _, f := range strings.Fields(v) {
-		if f == "auto" {
-			return true
-		}
-	}
-	return false
-}
-
 // boxSizingForAspectRatio reports whether the aspect-ratio of style
 // applies to the border box: only a bare `aspect-ratio: <ratio>` uses
 // box-sizing. Mirrors ComputedStyle::BoxSizingForAspectRatio
 // (computed_style.h:2623-2628 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func boxSizingForAspectRatio(style *css.Style) bool {
-	if !style.GetAspectRatio().IsSet || styleAspectRatioIsAutoAndRatio(style) {
+	if ar := style.GetAspectRatio(); !ar.IsSet || ar.Auto {
 		return false
 	}
 	return style.GetBoxSizing() == "border-box"
 }
 
-// replacedAspectRatio is the logical aspect ratio of a replaced box with
-// natural sizing info: a bare `aspect-ratio: <ratio>`, else its natural
-// ratio when no size containment applies, else the ratio of
-// `auto && <ratio>`. Mirrors Blink's BlockNode::GetReplacedAspectRatio
-// (block_node.cc:1329-1354 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func replacedAspectRatio(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode) LogicalSize {
+// replacedPhysicalAspectRatio is the preferred aspect ratio (physical
+// width / height) of a replaced box with natural sizing info: a bare
+// `aspect-ratio: <ratio>`, else its natural ratio when no size containment
+// applies, else the ratio of `auto && <ratio>`. Mirrors Blink's
+// BlockNode::GetReplacedAspectRatio (block_node.cc:1329-1354 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func replacedPhysicalAspectRatio(style *css.Style, info NaturalSizingInfo) css.AspectRatio {
 	ar := style.GetAspectRatio()
-	if ar.IsSet && !styleAspectRatioIsAutoAndRatio(style) {
-		return logicalAspectRatio(ar.Width, ar.Height, wdm)
+	if ar.IsSet && !ar.Auto {
+		return ar
 	}
 	if !style.ShouldApplySizeContainment() && !style.ShouldApplyInlineSizeContainment() &&
 		!info.AspectRatio.IsEmpty() {
-		return logicalAspectRatio(info.ratio(), 1, wdm)
+		return css.AspectRatio{IsSet: true, Width: info.ratio(), Height: 1}
 	}
-	if ar.IsSet {
+	return ar
+}
+
+// replacedAspectRatio is replacedPhysicalAspectRatio as a logical size.
+func replacedAspectRatio(style *css.Style, info NaturalSizingInfo, wdm WritingDirectionMode) LogicalSize {
+	if ar := replacedPhysicalAspectRatio(style, info); ar.IsSet {
 		return logicalAspectRatio(ar.Width, ar.Height, wdm)
 	}
 	return LogicalSize{}
+}
+
+// boxAspectRatio is the preferred aspect ratio (physical width / height) the
+// layout algorithms size node with: a replaced box's from
+// replacedPhysicalAspectRatio, where `auto && <ratio>` yields to a natural
+// ratio; any other box's from its aspect-ratio <ratio> (`auto && <ratio>`
+// included, as it has no natural ratio). Blink's algorithms read the
+// replaced form through ComputeReplacedSize and the style form otherwise
+// (e.g. FlexLayoutAlgorithm's BlockSizeFunc, flex_layout_algorithm.cc:894-910
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); this is the one accessor for
+// callers that need the ratio itself.
+func boxAspectRatio(ctx *LayoutContext, node *LayoutInputNode, style *css.Style) css.AspectRatio {
+	if node != nil && node.IsReplaced() {
+		return replacedPhysicalAspectRatio(style, GetNaturalSizingInfo(ctx, node))
+	}
+	return style.GetAspectRatio()
 }
 
 // replacedIntrinsicSize is the content-box natural size of a replaced box

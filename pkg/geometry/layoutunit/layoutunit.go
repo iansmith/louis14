@@ -12,8 +12,9 @@
 // integer fixed-point eliminates.
 //
 // Mirror of third_party/blink/renderer/platform/geometry/layout_unit.h:
-//   using LayoutUnit = FixedPoint<6, int32_t>;
-//   inline constexpr LayoutUnit kIndefiniteSize(-1);
+//
+//	using LayoutUnit = FixedPoint<6, int32_t>;
+//	inline constexpr LayoutUnit kIndefiniteSize(-1);
 //
 // All arithmetic saturates to the int32 range. Float entry must go
 // through one of FromFloat64Round/Ceil/Floor — Go has no implicit
@@ -140,15 +141,12 @@ func (a LayoutUnit) ToInt() int32 {
 	return a.raw / FixedPointDenominator
 }
 
-// Round returns the integer-pixel value using round-half-away-from-zero.
-// Mirrors Blink's Round() ((value + denom/2) >> bits for non-negative;
-// -((-value + denom/2) >> bits) for negative).
+// Round returns the integer-pixel value, rounding halves toward +infinity.
+// Mirrors Blink's Round(): ToInt() + ((Fraction() + denom/2) >> bits)
+// (layout_unit.h:294-297 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with
+// the fraction keeping the value's sign, so -0.5 rounds to 0 and -1.5 to -1.
 func (a LayoutUnit) Round() int32 {
-	r := int64(a.raw)
-	if r >= 0 {
-		return int32((r + FixedPointDenominator/2) >> FractionalBits)
-	}
-	return -int32((-r + FixedPointDenominator/2) >> FractionalBits)
+	return a.ToInt() + (a.Fraction().raw+FixedPointDenominator/2)>>FractionalBits
 }
 
 // Floor returns the integer-pixel value rounded toward -infinity.
