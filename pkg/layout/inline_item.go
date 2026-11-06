@@ -76,6 +76,10 @@ type InlineItem struct {
 	// LayoutNode is the layout tree node for atomic inlines that need
 	// recursive layout. Nil for text items.
 	LayoutNode *LayoutInputNode
+	// DOMIndex is the element's pre-order DOM index (LayoutInputNode.DOMIndex)
+	// on an OpenTag item: the tree order its inline paint layer sorts by in
+	// a stacking context's z-order lists.
+	DOMIndex int
 	// Style is the computed style for this item's content.
 	Style *css.Style
 
@@ -88,8 +92,8 @@ type InlineItem struct {
 	ParagraphLevel int
 
 	// EnclosingPaintGroup points to the OpenTag item of the nearest enclosing
-	// non-atomic inline whose opacity requires group compositing (see
-	// IsInlinePaintGroup). Nil when no such ancestor exists. For the group
+	// non-atomic inline with a self-painting layer (see IsInlinePaintGroup).
+	// Nil when no such ancestor exists. For the group
 	// inline's own Open/CloseTag items this is the next-OUTER group, so nested
 	// groups chain. The louis14 analog of Blink's
 	// LayoutObject::PaintingLayer (layout_object.cc:1218 @
@@ -111,16 +115,37 @@ type InlineItem struct {
 	inAnonymousInline bool
 }
 
-// IsInlinePaintGroup reports whether an inline element with the given style
-// must composite its fragments as ONE group at paint time. True for
-// non-atomic inlines (display: inline | ruby | ruby-text, non-replaced — the
-// boxes Blink models as LayoutInline) with opacity < 1: CSS Color 3 §3.2
-// makes opacity GROUP opacity over the element, and a multi-line inline's
-// per-line fragments would otherwise each apply alpha independently.
+// IsInlinePaintGroup reports whether a non-atomic inline (display: inline |
+// ruby | ruby-text, non-replaced — the boxes Blink models as LayoutInline)
+// gets its own self-painting PaintLayer, so that all of its fragments, text
+// and inline-contained floats paint inside ONE layer and the element's
+// effects (opacity, filter, clip-path, mask, blend mode, backdrop-filter)
+// apply once to the whole element rather than per line fragment.
 // Atomic inlines (IsTransformableBox true) produce a single box and take the
-// ordinary stacking-context path in buildPaintSubtree.
+// ordinary paint-layer path in buildPaintSubtree.
+//
+// Mirrors LayoutInline::LayerTypeRequired (layout_inline.cc:759-765 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//
+//	IsRelPositioned() || IsStickyPositioned() || CreatesGroup() ||
+//	ShouldCompositeForCurrentAnimations() || ShouldApplyPaintContainment()
+//
+// CreatesGroup is ComputedStyle::HasGroupingProperty(HasReflection())
+// (layout_object.h:2724-2728 @ a9f50e52). ShouldCompositeForCurrentAnimations
+// has no louis14 counterpart: louis14 bakes running animations into the
+// style, so an animated opacity or filter is already a grouping property.
+// ShouldApplyPaintContainment is always false for a LayoutInline: only
+// LayoutBox overrides IsEligibleForPaintOrLayoutContainment (layout_box.h:1178;
+// the LayoutObject default is false, layout_object.h:621-624 @ a9f50e52).
+// css.Style.ShouldApplyPaintContainment cannot tell, as it does not know the
+// box is a non-atomic inline.
 func IsInlinePaintGroup(s *css.Style, node *html.Node) bool {
-	return s != nil && !IsTransformableBox(s, node) && s.GetOpacity() < 1
+	if s == nil || IsTransformableBox(s, node) {
+		return false
+	}
+	p := s.GetPosition()
+	return p == css.PositionRelative || p == css.PositionSticky ||
+		s.HasGroupingProperty(s.HasBoxReflect())
 }
 
 // annotatePaintGroups walks the flat item sequence once, maintaining the
@@ -406,6 +431,7 @@ func collectInlinesRecursive(
 			StartOffset: openOffset,
 			EndOffset:   openOffset,
 			Node:        child.DOMNode,
+			DOMIndex:    child.DOMIndex,
 			Style:       childStyle,
 		}
 		data.Items = append(data.Items, openTag)

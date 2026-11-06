@@ -580,7 +580,7 @@ type PhysicalFragment struct {
 
 	// PaintGroup identifies the inline paint group this fragment must
 	// composite inside: the OpenTag InlineItem of the nearest enclosing
-	// opacity-group inline (or the fragment's OWN inline, for a group span's
+	// self-painting inline (or the fragment's OWN inline, for a group span's
 	// background fragments). Nil for fragments outside any group. Stamped by
 	// inline layout (where the open-span stack is live) and copied to
 	// Box.PaintGroup; pkg/render's buildPaintSubtree routes annotated boxes

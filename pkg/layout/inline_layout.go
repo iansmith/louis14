@@ -1355,7 +1355,7 @@ func (bla *BlockLayoutAlgorithm) placeInlineFloat(
 ) (*ExclusionSpace, bool) {
 	positioned := PositionFloat(uf, &es)
 	if positioned.BreakBeforeToken == nil {
-		// A float paints inside the opacity group of its nearest enclosing
+		// A float paints inside the paint group of its nearest enclosing
 		// group inline (Blink: LayoutObject::PaintingLayer returns the
 		// enclosing self-painting layer, layout_object.cc:1218 @ 4883d11f).
 		positioned.LayoutResult.Fragment.PaintGroup = item.EnclosingPaintGroup
@@ -2362,9 +2362,21 @@ func createLineBoxEx(
 	// fix must nest enc inside flGroup per first line without polluting the
 	// shared (cross-line) enclosing group; deferred as a heavy lift. Not a
 	// regression: pre-LOU-305 that case double-blended too.
+	//
+	// enc takes precedence only when an OPACITY group encloses the fragment:
+	// when every enclosing paint group exists for another reason (relative
+	// position, filter, clip-path, ...; LOU-718), first-line fragments go to
+	// flGroup, as before those inlines were paint groups, so the
+	// ::first-line opacity still applies to them. They then skip those
+	// inlines' own layers on the first line (LOU-310).
 	flPaintGroup := func(enc *InlineItem) *InlineItem {
-		if enc != nil {
+		if flGroup == nil {
 			return enc
+		}
+		for g := enc; g != nil; g = g.EnclosingPaintGroup {
+			if g.Style.GetOpacity() < 1 {
+				return enc
+			}
 		}
 		return flGroup
 	}
@@ -2487,8 +2499,15 @@ func createLineBoxEx(
 			// a fragment per line so descendant abspos children can derive
 			// their inline containing block from the union of these rects
 			// (CSS 2.1 §10.1.4 / CSS Position 3 §def-cb). The fragment is
-			// also what the span's relative offset shifts.
-			if !(hasVisibleInlinePaint(span.style) || inlineEstablishesContainingBlock(span.style)) {
+			// also what the span's relative offset shifts. An inline with a
+			// self-painting layer (IsInlinePaintGroup) always gets its box
+			// fragments: they are what its layer's reference boxes
+			// (PhysicalLinesBoundingBox, the clip-path reference box) are
+			// built from. Mirrors LayoutInline::ComputeInitialShouldCreateBoxFragment
+			// (layout_inline.cc:211-216 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+			// whose first term is HasSelfPaintingLayer().
+			if !(hasVisibleInlinePaint(span.style) || inlineEstablishesContainingBlock(span.style) ||
+				IsInlinePaintGroup(span.style, span.node)) {
 				return
 			}
 			geom := ComputeFragmentGeometry(span.style, wdm)
@@ -3103,7 +3122,7 @@ func createLineBoxEx(
 				if blockPos < 0 {
 					blockPos = 0
 				}
-				// Atomic inlines composite inside the opacity group of their
+				// Atomic inlines composite inside the paint group of their
 				// nearest enclosing group inline, like text runs and floats.
 				// On a ::first-line with group opacity, the synthetic first-line
 				// group is that enclosing group (LOU-305).
