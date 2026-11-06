@@ -451,42 +451,30 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 		applySVGMaskToBuffer(buf, maskBuf, masker.MaskType)
 	}
 
-	// Composite the masked buffer back onto the page DC. The page DC
-	// currently has all the ancestor transforms pushed (SVG root's
-	// LocalToBorderBoxTransform + any container transforms). The
-	// buffer was rasterized in device-pixel space at (bx, by) →
-	// (bx+bw, by+bh); we need to draw it back at those absolute
-	// device coords, NOT in user-space. Push a temporary identity
-	// transform via dc.Push so DrawImage targets device pixels
-	// directly.
-	//
-	// In louis14 the DrawContext.DrawImage takes raw integer pixel
-	// coordinates (no transform applied), so we can simply call it
-	// — but we still need to make sure no in-flight path lives on
-	// the DC. ClearPath defensively.
+	// Composite the masked buffer back at (bx, by), the device position
+	// it was rasterized at; compositeMaskedShapeOnto undoes the draw
+	// context's user→device transform for the blit. Clear any in-flight
+	// path first.
 	sp.ctx.dc.ClearPath()
 	sp.ctx.Renderer.compositeMaskedShapeOnto(sp.ctx, buf, bx, by)
 }
 
-// compositeMaskedShapeOnto draws a pre-rasterized RGBA buffer
-// (already in device pixels) onto the renderer's target image. The
-// dc.DrawImage call route is fine, but we need to bypass any
-// currently-active SVG transform stack since `buf`'s pixels already
-// represent the device-space rasterization.
+// compositeMaskedShapeOnto draws a pre-rasterized RGBA buffer onto the
+// paint context's draw context at (bx, by). The buffer was rasterized
+// through DeviceFromUser, so its pixels are in the space DeviceFromUser maps
+// into; the draw context's matrix carries DeviceFromUser too (the SVG root's
+// content offset and the user transforms), so it is undone for the blit —
+// otherwise an <svg> offset on the page applies twice.
 //
-// Mirrors what paintLayerWithMask does at the end of its CSS branch
-// (r.dc.DrawImage(buf, bx, by)); separated into a helper so the SVG
-// shape mask path can call it without depending on render.go's
-// internals.
+// no Blink analog: Blink records the masked content into the paint
+// operation stream under the mask's effect; louis14 composites a
+// pre-rasterized buffer.
 func (r *Renderer) compositeMaskedShapeOnto(pctx *svgPaintContext, buf *image.RGBA, bx, by int) {
-	// DrawImage's pixel offsets are in the target image's
-	// coordinate system, which is the device-pixel framebuffer.
-	// They're NOT routed through the DC's transform stack
-	// (mazarin's DrawImage is a pixel blit). So `bx, by` go in
-	// directly. The buffer was sized big enough to absorb sub-
-	// pixel rounding; some of its pixels may fall outside the
-	// page-DC clip, which the underlying DrawImage handles via
-	// alpha-blend (out-of-bounds pixels are ignored).
+	pctx.dc.Push()
+	defer pctx.dc.Pop()
+	if inv, ok := pctx.DeviceFromUser.Invert(); ok && !inv.IsIdentity() {
+		pctx.dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
+	}
 	pctx.dc.DrawImage(buf, bx, by)
 }
 
