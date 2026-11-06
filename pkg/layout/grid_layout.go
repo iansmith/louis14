@@ -76,6 +76,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	colTracks, rowTracks := tree.colTracks, tree.rowTracks
 	numCols, numRows := tree.numCols, tree.numRows
 	colLineNames, rowLineNames, namedAreas := tree.colLineNames, tree.rowLineNames, tree.namedAreas
+	// Layout keeps one column in a grid with no column at all, as before
+	// buildGridSizingTree stopped synthesizing one for its intrinsic size.
+	// Blink has none there; dropping it from layout is out of this scope.
+	if numCols == 0 {
+		numCols = 1
+		colTracks = gla.extendTracks(colTracks, 1, gla.autoColumnTrack())
+	}
 
 	// --- Track sizing: columns ---
 	colSizes := gla.resolveTrackSizes(colTracks, contentInlineSize, colGap, true, items, numCols, numRows, wdm, geom)
@@ -579,8 +586,9 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 			numRows = item.rowEnd
 		}
 	}
-	// Ensure at least 1 column.
-	if numCols == 0 {
+	// Auto-placement needs a column to place into. An itemless grid gets
+	// no implicit track, as Blink places no item there.
+	if numCols == 0 && len(items) > 0 {
 		numCols = 1
 	}
 
@@ -588,10 +596,7 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	gla.autoPlace(items, &numCols, &numRows, autoFlow)
 
 	// Extend track definitions to cover all rows/columns.
-	autoColTrack := css.GridTrack{Auto: true}
-	if t := gla.style.GetGridAutoColumns(); t != nil {
-		autoColTrack = *t
-	}
+	autoColTrack := gla.autoColumnTrack()
 	autoRowTrack := css.GridTrack{Auto: true}
 	if t := gla.style.GetGridAutoRows(); t != nil {
 		autoRowTrack = *t
@@ -960,24 +965,65 @@ func collapseAutoFitEmptyTracks(tracks []css.GridTrack, items []*gridItem, isCol
 	return tracks
 }
 
-// columnContributions returns, for each of n column tracks, the largest
+// autoColumnTrack is the sizing function of an implicit column:
+// grid-auto-columns, or auto.
+func (gla *GridLayoutAlgorithm) autoColumnTrack() css.GridTrack {
+	if t := gla.style.GetGridAutoColumns(); t != nil {
+		return *t
+	}
+	return css.GridTrack{Auto: true}
+}
+
+// gridTrackIsFixed reports whether t is a plain length, a collapsed auto-fit
+// track included: no intrinsic, flexible, percentage or minmax() part.
+func gridTrackIsFixed(t css.GridTrack) bool {
+	return !t.Auto && t.Fr == 0 && t.Percent == 0 && !t.IsMinMax && !t.MinContent && !t.MaxContent && !t.IsFitContent
+}
+
+// gridTrackIsCollapsed reports whether t is an auto-fit track that
+// collapsed for holding no item (collapseAutoFitEmptyTracks).
+func gridTrackIsCollapsed(t css.GridTrack) bool {
+	return t.AutoFitExpanded && gridTrackIsFixed(t) && t.Size == 0
+}
+
+// columnContributions returns, for each column track, the largest
 // min-content and max-content inline contribution among the items placed in
-// it, a spanning item's split evenly over its tracks. Mirrors the
-// contributions GridTrackSizingAlgorithm::ResolveIntrinsicTrackSizes takes
-// from ContributionSizeForGridItem (grid_track_sizing_algorithm.cc:911,
-// grid_layout_algorithm.cc:577 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
-// Blink distributes a spanning item's contribution rather than splitting it.
-func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, n int) (minC, maxC []float64) {
+// it. Only items spanning a track for which measure reports true are
+// measured (all, when measure is nil). Contributions are what
+// GridTrackSizingAlgorithm::ResolveIntrinsicTrackSizes takes from
+// ContributionSizeForGridItem (grid_track_sizing_algorithm.cc:911,
+// grid_layout_algorithm.cc:577 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// Divergence until LOU-691 ports Blink's distribution: a spanning item's
+// contribution, less the gaps and fixed tracks it crosses, is split evenly
+// over the other tracks it spans, where Blink distributes it over the
+// intrinsic tracks by their growth potential.
+func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, tracks []css.GridTrack, gap float64, measure func(css.GridTrack) bool) (minC, maxC []float64) {
+	n := len(tracks)
 	minC, maxC = make([]float64, n), make([]float64, n)
 	for _, item := range items {
-		span := item.colEnd - item.colStart
-		if item.colStart < 0 || span <= 0 {
+		start, end := item.colStart, min(item.colEnd, n)
+		if start < 0 || end <= start {
+			continue
+		}
+		fixed, receivers, wanted := gap*float64(end-start-1), 0, measure == nil
+		for _, t := range tracks[start:end] {
+			if gridTrackIsFixed(t) {
+				fixed += t.Size
+			} else {
+				receivers++
+				wanted = wanted || measure(t)
+			}
+		}
+		if receivers == 0 || !wanted {
 			continue
 		}
 		lo, hi := gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
-		for i := item.colStart; i < item.colEnd && i < n; i++ {
-			minC[i] = max(minC[i], lo/float64(span))
-			maxC[i] = max(maxC[i], hi/float64(span))
+		lo, hi = max(0, lo-fixed)/float64(receivers), max(0, hi-fixed)/float64(receivers)
+		for i := start; i < end; i++ {
+			if !gridTrackIsFixed(tracks[i]) {
+				minC[i], maxC[i] = max(minC[i], lo), max(maxC[i], hi)
+			}
 		}
 	}
 	return minC, maxC
@@ -1027,7 +1073,7 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		measureContrib := isInline && t.IsFitContent
 		if measureContrib && !skipItemContrib {
 			if colMin == nil {
-				colMin, colMax = gla.columnContributions(items, n)
+				colMin, colMax = gla.columnContributions(items, tracks, gap, func(t css.GridTrack) bool { return t.IsFitContent })
 			}
 			minContentSize, maxSize = colMin[i], colMax[i]
 		} else if !skipItemContrib {

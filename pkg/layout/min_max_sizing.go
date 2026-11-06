@@ -1266,8 +1266,8 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	// had no content; fixed tracks and gaps still contribute.
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
-	trackMin, trackMax := gla.columnContributions(tree.items, len(tree.colTracks))
 	_, colGap := style.GetGridGap()
+	trackMin, trackMax := gla.columnContributions(tree.items, tree.colTracks, colGap, nil)
 
 	var minSum, maxSum float64
 	for i, t := range tree.colTracks {
@@ -1301,7 +1301,15 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			maxSum += hi
 		}
 	}
-	if n := len(tree.colTracks); n > 1 && colGap > 0 {
+	// Gutters beside collapsed auto-fit tracks collapse too (CSS Grid 2
+	// §7.2.2.1), so only the remaining tracks are separated by gaps.
+	n := 0
+	for _, t := range tree.colTracks {
+		if !gridTrackIsCollapsed(t) {
+			n++
+		}
+	}
+	if n > 1 && colGap > 0 {
 		gaps := colGap * float64(n-1)
 		minSum += gaps
 		maxSum += gaps
