@@ -3,6 +3,7 @@ package render
 import (
 	"image"
 	"math"
+	"sync/atomic"
 
 	"mazarin/textshape"
 
@@ -36,7 +37,10 @@ var identityHomography = [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1}
 // trackDrawContext wraps dc, starting from its current matrix, which is
 // read once with an affine probe. dc must not already be projective: a
 // fourth probe that the affine fit does not map panics, as a wrong tracked
-// matrix would mis-paint silently.
+// matrix would mis-paint silently. A projective host whose probe points
+// (0, 0), (1, 0), (0, 1) and (1, 1) are all behind its camera is not
+// caught: TransformPoint returns undivided numerators there, which fit an
+// affine map, and the DrawContext interface exposes no w (LOU-784).
 func trackDrawContext(dc textshape.DrawContext) *trackingDrawContext {
 	if t, ok := dc.(*trackingDrawContext); ok {
 		return t
@@ -62,12 +66,19 @@ func (t *trackingDrawContext) Push() {
 	t.DrawContext.Push()
 }
 
-// Pop restores the renderer's last Push. With none, it does nothing: the
-// draw context's own stack may hold its host's state, which the tracked
-// matrix does not, and the two must stay in lockstep.
+// trackingPopUnderflows counts Pops with no renderer Push behind them: a
+// Push/Pop imbalance in the renderer, which tests assert never happens
+// (RenderDocument).
+var trackingPopUnderflows atomic.Int64
+
+// Pop restores the renderer's last Push. With none, it pops nothing and
+// counts the underflow: the draw context's own stack may hold its host's
+// state, which the tracked matrix does not, and the two must stay in
+// lockstep.
 func (t *trackingDrawContext) Pop() {
 	n := len(t.stack)
 	if n == 0 {
+		trackingPopUnderflows.Add(1)
 		return
 	}
 	t.m, t.stack = t.stack[n-1], t.stack[:n-1]
@@ -122,28 +133,49 @@ func mul3x3(a, b [9]float64) [9]float64 {
 	return r
 }
 
-// drawContextTransform is dc's current device matrix, as its z=0 homography
-// (transformFromHomography's layout). Every draw context the renderer paints
-// through is tracking: NewRendererForDrawContext wraps it and NewChildContext
-// keeps it wrapped; another is a programming error, and panics.
-func drawContextTransform(dc textshape.DrawContext) geometry.Transform {
-	return transformFromHomography(dc.(*trackingDrawContext).m)
-}
-
-// drawContextAffine is dc's device matrix when it is affine, and whether it
-// is. A homography whose w is the same everywhere (h6 = h7 = 0, h8 > 0: a
-// translateZ under perspective) is affine up to that scale; it is reported
-// affine, normalized by h8. A projective one returns the zero transform.
-func drawContextAffine(dc textshape.DrawContext) (geometry.Transform, bool) {
+// constantW reports whether homography h has the same w at every point, in
+// front of the camera (h6 = h7 = 0, h8 > projectNearEpsilon): a translateZ
+// under perspective, an affine map up to the scale h8. On or behind the near
+// plane, where mazzy clips, it is not.
+func constantW(h [9]float64) bool {
 	// constantWTolerance bounds h6 and h7 relative to h8: composed affine
 	// steps leave them exactly zero, so only rounding is allowed.
 	const constantWTolerance = 1e-12
+	return h[8] > projectNearEpsilon && math.Abs(h[6]) <= constantWTolerance*h[8] && math.Abs(h[7]) <= constantWTolerance*h[8]
+}
+
+// deviceHomography is dc's current device matrix. A constant-w one is
+// normalized to w = 1, which is exactly affine and maps every point the
+// same, so every reader — the full matrix, its affine part — sees one device
+// matrix; its w is in front of the camera everywhere either way, so the
+// near-plane rule (projectRectInFront) is unaffected. A projective one is
+// returned as composed, with the raw w mazzy clips against. Every draw
+// context the renderer paints through is tracking: NewRendererForDrawContext
+// wraps it and NewChildContext keeps it wrapped; another is a programming
+// error, and panics.
+func deviceHomography(dc textshape.DrawContext) [9]float64 {
 	h := dc.(*trackingDrawContext).m
-	if h[8] <= 0 || math.Abs(h[6]) > constantWTolerance*h[8] || math.Abs(h[7]) > constantWTolerance*h[8] {
+	if constantW(h) {
+		w := h[8]
+		h = [9]float64{h[0] / w, h[1] / w, h[2] / w, h[3] / w, h[4] / w, h[5] / w, 0, 0, 1}
+	}
+	return h
+}
+
+// drawContextTransform is dc's device matrix (deviceHomography), as its z=0
+// homography in transformFromHomography's layout.
+func drawContextTransform(dc textshape.DrawContext) geometry.Transform {
+	return transformFromHomography(deviceHomography(dc))
+}
+
+// drawContextAffine is dc's device matrix when it is affine (constantW,
+// normalized), and whether it is; a projective one returns the identity.
+func drawContextAffine(dc textshape.DrawContext) (geometry.Transform, bool) {
+	h := deviceHomography(dc)
+	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
 		return geometry.Transform{}, false
 	}
-	w := h[8]
-	return transformFromHomography([9]float64{h[0] / w, h[1] / w, h[2] / w, h[3] / w, h[4] / w, h[5] / w, 0, 0, 1}), true
+	return transformFromHomography(h), true
 }
 
 // projectNearEpsilon is the w plane the near-plane clip cuts at: mazzy's

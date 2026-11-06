@@ -278,9 +278,10 @@ func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.Glyp
 // with an affine probe: dc must not already be projective, and it panics if
 // it is.
 func NewRendererForDrawContext(dc textshape.DrawContext) *Renderer {
+	tracked := trackDrawContext(dc) // validates dc before any global state changes
 	text.SetTextLayout(dc.TextLayout())
 	return &Renderer{
-		dc:        trackDrawContext(dc),
+		dc:        tracked,
 		target:    dc.Image().(*image.RGBA),
 		fonts:     text.DefaultFontConfig(),
 		fontCache: make(map[fontCacheKey]int32),
@@ -1596,7 +1597,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
 	// CTM's scale), which LayerToDev maps onto the target. Under a projective
 	// draw context the backdrop is sampled untransformed.
-	ctm, _ := drawContextAffine(r.dc) // the zero transform when projective
+	ctm, _ := drawContextAffine(r.dc) // the identity when projective
 
 	// Element's border-box region, pixel-snapped: Blink's backdrop-filter
 	// bounds are the reference box's PixelSnappedContouredBorder
