@@ -1729,8 +1729,11 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
+			// The line space's available inline size, which a ruby sub-line
+			// breaker shares, not its own unbounded width (Blink's
+			// BlockNode::LayoutAtomicInline lays out in the parent space).
 			SetAvailableSize(LogicalSize{
-				InlineSize: lb.availableWidth,
+				InlineSize: lb.space.AvailableSize.InlineSize.Float64(),
 				BlockSize:  availBlock,
 			}).
 			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
@@ -2539,22 +2542,31 @@ func (lb *LineBreaker) measureTextWithTabs(
 // in max-content mode during layout too (LineBreaker, inline/
 // line_breaker.cc:3092-3096 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (lb *LineBreaker) isIntrinsicSizing() bool {
+	root := lb.root()
+	return root.mode == LineBreakerMinContent || root.mode == LineBreakerMaxContent
+}
+
+// root is the breaker a ruby sub-line breaker ultimately serves, or lb.
+func (lb *LineBreaker) root() *LineBreaker {
 	root := lb
 	for root.parent != nil {
 		root = root.parent
 	}
-	return root.mode == LineBreakerMinContent || root.mode == LineBreakerMaxContent
+	return root
 }
 
 // percentageMarginBase is what an inline item's percentage margins resolve
 // against: zero while computing intrinsic sizes, as cyclic percentages do
 // in intrinsic size contributions (CSS Sizing 3 §5.2.1), else the line's
-// available width (LOU-771 for the containing block).
+// available width (LOU-771 for the containing block). A ruby sub-line
+// breaker shares its parent's constraint space (LineBreaker, inline/
+// line_breaker.cc:3066-3067 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// so it takes the root line's width, not its own unbounded one.
 func (lb *LineBreaker) percentageMarginBase() float64 {
 	if lb.isIntrinsicSizing() {
 		return 0
 	}
-	return lb.availableWidth
+	return lb.root().availableWidth
 }
 
 // atomicAvailableBlock is the available block size an atomic inline is laid
@@ -2573,19 +2585,10 @@ func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
 	} else if lb.space.AvailableSize.BlockSize.Float64() >= 0 {
 		availBlock = lb.space.AvailableSize.BlockSize.Float64()
 	}
-	if orthogonal && lb.space.OrthogonalAvailableBlock > 0 {
+	if orthogonal && lb.space.HasOrthogonalAvailableBlock {
 		availBlock = lb.space.OrthogonalAvailableBlock
 	}
 	return availBlock
-}
-
-// definiteOrIndefinite treats a non-positive (zero or unset) percentage
-// resolution base as indefinite.
-func definiteOrIndefinite(v float64) float64 {
-	if v > 0 {
-		return v
-	}
-	return Indefinite
 }
 
 // orthogonalAtomicInlineContribution is an orthogonal atomic inline's
@@ -2595,8 +2598,7 @@ func definiteOrIndefinite(v float64) float64 {
 // 3182-3194; BlockNode::ComputeMinMaxSizes for an orthogonal flow root,
 // block_node.cc:981-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its
 // available inline size follows atomicAvailableBlock, and the line's
-// percentage resolution size carries over, swapped, a zero or unset base
-// staying indefinite. Margins are not included. The layout stores nothing
+// percentage block size is its percentage inline size. Margins are not included. The layout stores nothing
 // on the box (DisableLayoutSideEffects), and its result is cached so the
 // min-content and max-content passes share it.
 func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
@@ -2613,10 +2615,12 @@ func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, chil
 		SetOrthogonalFallbackBlockSize(lb.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: availBlock}).
 		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
-		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: definiteOrIndefinite(pct.InlineSize.Float64()),
-			BlockSize:  definiteOrIndefinite(pct.BlockSize.Float64()),
-		}).
+		// Only the line's percentage block size carries over, which becomes
+		// the child's percentage inline size; its percentage block size is
+		// indefinite (MinMaxConstraintSpaceBuilder::
+		// SetPercentageResolutionBlockSize, constraint_space_builder.h:
+		// 743-745, as LineBreaker sets it, inline/line_breaker.cc:3185-3190).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: pct.BlockSize.Float64()}).
 		Build()
 	enableSideEffects := lb.ctx.DisableLayoutSideEffects()
 	result := layoutElement(lb.ctx, item.LayoutNode, space)

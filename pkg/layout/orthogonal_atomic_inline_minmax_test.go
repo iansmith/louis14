@@ -49,32 +49,64 @@ func TestOrthogonalAtomicInlineContributionCases(t *testing.T) {
 	}
 }
 
-// A percentage block size on an orthogonal atomic resolves while sizing
-// against its containing block's size in that axis, which is the parent's
-// inline percentage resolution size: the line breaker passes the parent's
-// percentage resolution size on to it (inline/line_breaker.cc:3185-3190 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). height:50% of 200 is 100.
-func TestOrthogonalAtomicInlinePercentageBlockSize(t *testing.T) {
-	img := makeNode("img")
-	img.Attributes = map[string]string{"src": "x.png"}
-	parent := makeNode("div", img)
-	ps := css.NewStyle()
-	ps.Properties["writing-mode"] = "vertical-lr"
-	ps.Properties["font-size"] = "0"
-	ps.Properties["line-height"] = "0"
-	is := css.NewStyle()
-	is.Properties["writing-mode"] = "horizontal-tb"
-	is.Properties["width"] = "40px"
-	is.Properties["height"] = "50%"
-	is.Properties["display"] = "inline"
-	root := buildTestTree(parent, map[*html.Node]*css.Style{parent: ps, img: is})
-	wdm := WritingDirectionMode{WritingModeVerticalLR, DirectionLTR}
-	space := NewConstraintSpaceBuilder(wdm, wdm, true).
-		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
-		SetPercentageResolutionInlineSize(200).Build()
-	if mm := ComputeMinMaxSizes(testContext(), root, space); mm.MinContent != 100 || mm.MaxContent != 100 {
-		t.Errorf("min/max %+v, want 100/100", mm)
+// While sizing, an orthogonal atomic gets only the line's percentage block
+// size, as its percentage inline size; its percentage block size is
+// indefinite (LineBreaker's MinMaxConstraintSpaceBuilder::
+// SetPercentageResolutionBlockSize, inline/line_breaker.cc:3185-3190;
+// constraint_space_builder.h:743-745 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So under a vertical-lr parent
+// with a 300px percentage block size, width:50% is 150 (three 40px children
+// per line, two lines: 40 tall), and height:50% is auto (its 30px child).
+func TestOrthogonalAtomicInlinePercentageSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name, prop string
+		kids       int
+		want       float64
+	}{
+		{"width:50% of the line's block size", "width", 5, 40},
+		{"height:50% is auto", "height", 0, 30},
+	} {
+		var kids []*html.Node
+		styles := map[*html.Node]*css.Style{}
+		for range tc.kids {
+			k := makeNode("span")
+			ks := css.NewStyle()
+			ks.Properties["display"] = "inline-block"
+			ks.Properties["width"] = "40px"
+			ks.Properties["height"] = "20px"
+			styles[k] = ks
+			kids = append(kids, k)
+		}
+		if tc.kids == 0 {
+			k := makeNode("div")
+			ks := css.NewStyle()
+			ks.Properties["width"] = "10px"
+			ks.Properties["height"] = "30px"
+			styles[k] = ks
+			kids = append(kids, k)
+		}
+		child := makeNode("span", kids...)
+		parent := makeNode("div", child)
+		ps := css.NewStyle()
+		ps.Properties["writing-mode"] = "vertical-lr"
+		ps.Properties["font-size"] = "0"
+		ps.Properties["line-height"] = "0"
+		cs := css.NewStyle()
+		cs.Properties["display"] = "inline-block"
+		cs.Properties["writing-mode"] = "horizontal-tb"
+		cs.Properties["font-size"] = "0"
+		cs.Properties["line-height"] = "0"
+		cs.Properties[tc.prop] = "50%"
+		styles[parent], styles[child] = ps, cs
+		root := buildTestTree(parent, styles)
+		wdm := WritingDirectionMode{WritingModeVerticalLR, DirectionLTR}
+		space := NewConstraintSpaceBuilder(wdm, wdm, true).
+			SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
+			SetPercentageResolutionInlineSize(200).Build()
+		if mm := ComputeMinMaxSizes(testContext(), root, space); mm.MinContent != tc.want || mm.MaxContent != tc.want {
+			t.Errorf("%s: min/max %+v, want %v", tc.name, mm, tc.want)
+		}
 	}
 }
 
@@ -227,7 +259,8 @@ func rubyBaseAtomicResult(t *testing.T, atomStyle *css.Style, atomChildren ...*h
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a percentage margin resolves
 // against the line's 100px, not the sub-breaker's unbounded width, and an
 // atomic is laid out at the line's available inline size, so an auto-width
-// inline-block wraps its five 40px children at 100px.
+// inline-block shrink-to-fits to 100px and wraps its five 40px children onto
+// three lines.
 func TestRubyBaseAtomicUsesTheLineSpace(t *testing.T) {
 	img := css.NewStyle()
 	img.Properties["display"] = "inline-block"
@@ -244,12 +277,12 @@ func TestRubyBaseAtomicUsesTheLineSpace(t *testing.T) {
 	for range 5 {
 		kids = append(kids, makeNode("span"))
 	}
-	if r := rubyBaseAtomicResult(t, ib, kids...); r.LayoutResult == nil || r.LayoutResult.Fragment.Size.WidthF64() != 80 {
+	if r := rubyBaseAtomicResult(t, ib, kids...); r.LayoutResult == nil || r.LayoutResult.Fragment.Size.WidthF64() != 100 || r.LayoutResult.Fragment.Size.HeightF64() != 60 {
 		var w float64
 		if r.LayoutResult != nil {
 			w = r.LayoutResult.Fragment.Size.WidthF64()
 		}
-		t.Errorf("auto-width inline-block in a ruby base is %v wide, want 80 (two 40px per line at 100px)", w)
+		t.Errorf("auto-width inline-block in a ruby base is %v wide, want 100x60 (shrink-to-fit at 100px: two 40px per line, three lines)", w)
 	}
 }
 

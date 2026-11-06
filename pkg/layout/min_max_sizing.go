@@ -673,25 +673,26 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	if blockForPct != Indefinite {
 		minAvailBlock = blockForPct
 	}
-	minBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-		SetAvailableSize(LogicalSize{InlineSize: minAvailable, BlockSize: minAvailBlock}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-	if blockForPct != Indefinite {
-		minBuilder.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: space.PercentageResolutionInlineSize,
-			BlockSize:  blockForPct,
-		})
+	// The lines' percentage resolution size: the container's inline size,
+	// and its block size or Indefinite. And the orthogonal sizes
+	// layoutInlineChildren gives its lines (orthogonalLineSizes), so an
+	// orthogonal atomic is sized against what it is laid out against.
+	linePercentageSize := LogicalSize{InlineSize: space.PercentageResolutionInlineSize, BlockSize: blockForPct}
+	lineGeom := ComputeFragmentGeometry(node.Style(), wdm, space.PercentageResolutionInlineSize)
+	lineGeom.BorderBoxSize.BlockSize = resolveInitialBorderBoxBlockSize(node.Style(), wdm, space, lineGeom)
+	orthogonalAvailable, orthogonalFallback := orthogonalLineSizes(ctx, node.Style(), wdm, space, lineGeom, minAvailBlock)
+	lineSpace := func(availableInline float64) ConstraintSpace {
+		s := NewConstraintSpaceBuilder(wdm, wdm, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+			SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: minAvailBlock}).
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+			SetPercentageResolutionSize(linePercentageSize).
+			Build()
+		s.OrthogonalAvailableBlock, s.HasOrthogonalAvailableBlock = orthogonalAvailable, true
+		s.OrthogonalFallbackBlockSize = orthogonalFallback
+		return s
 	}
-	minSpace := minBuilder.Build()
-	// The same orthogonal available block size layoutInlineChildren gives
-	// the line (computeOrthogonalAvailableBlock, from the container's own
-	// block size), so an orthogonal atomic is sized against what it is laid
-	// out against.
-	nodeGeom := ComputeFragmentGeometry(node.Style(), wdm, space.PercentageResolutionInlineSize)
-	ownBlock, hasOwnBlock := ResolveBlockSize(node.Style(), wdm, space, nodeGeom)
-	minSpace.OrthogonalAvailableBlock = computeOrthogonalAvailableBlock(node.Style(), wdm, space, nodeGeom, ctx,
-		minAvailBlock, hasOwnBlock, ownBlock.Float64())
+	minSpace := lineSpace(minAvailable)
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
 	var line LineInfo
@@ -721,18 +722,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	// Max-content: never wrap.
-	maxBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: minAvailBlock}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-	if blockForPct != Indefinite {
-		maxBuilder.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: space.PercentageResolutionInlineSize,
-			BlockSize:  blockForPct,
-		})
-	}
-	maxSpace := maxBuilder.Build()
-	maxSpace.OrthogonalAvailableBlock = minSpace.OrthogonalAvailableBlock
+	maxSpace := lineSpace(1e9)
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	cbDirection := node.Style().GetDirection()
