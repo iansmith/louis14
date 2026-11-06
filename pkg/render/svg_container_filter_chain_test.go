@@ -36,3 +36,18 @@ func TestSVGContainer_URLFilterUnderGroupTransform(t *testing.T) {
 <g transform="translate(50, 0)" filter="url(#f)"><rect width="50" height="100" fill="green"/></g></svg>`, 120, 120)
 	sampleColorClose(t, img, 75, 50, 0, 128, 0, 2, "the translated group's rect")
 }
+
+// A url() stage of a container's chain resolves userSpaceOnUse coordinates
+// in the container's user space and percentages against its <svg>'s
+// viewport, as a lone url() and a shape's chain do (SVGViewportResolver,
+// svg_resources.cc:375-381 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// flood's (0, 0, 10, 10) subregion is at the <svg>'s origin, not at the
+// group's reference box.
+func TestSVGContainer_ChainURLUserSpaceOnUseAnchorsAtUserOrigin(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" color-interpolation-filters="sRGB"><feFlood flood-color="green" x="0" y="0" width="10" height="10"/></filter>
+<g style="filter:url(#f) blur(0px)"><rect x="50" y="50" width="20" height="20" fill="red"/></g></svg>`, 100, 100)
+	wantPixel(t, img, 5, 5, canvasGreen, "the flood at the user-space origin")
+	wantPixel(t, img, 55, 55, canvasWhite, "not at the group's reference box")
+}
