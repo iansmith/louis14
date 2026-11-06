@@ -1,6 +1,8 @@
 package render_test
 
 import (
+	"fmt"
+	"image"
 	"image/color"
 	"testing"
 
@@ -151,17 +153,68 @@ div{position:absolute;left:0;top:0;height:100px}</style>
 
 // LOU-769: an effect layer under a perspective ancestor paints under the
 // draw context's whole matrix even when the draw context's origin is behind
-// the camera: the matrix is read back at the layer's own box, which is in
-// front. Here the perspective origin is 600px to the left of the rotated
-// box, so its local (0, 0) projects behind the eye. An identity backdrop
-// filter with opacity leaves the box as it paints without them.
+// the camera. Here the perspective origin is 600px to the left of the
+// rotated box, so its local (0, 0) projects behind the eye. A half-opaque
+// box over grey with backdrop-filter: invert(1) shows the inverted backdrop
+// exactly where the box is, and nowhere else.
 func TestEffectLayer_PerspectiveOriginBehindCamera(t *testing.T) {
 	page := func(effect string) string {
-		return `<!DOCTYPE html><style>body{margin:0}</style>
-<div style="position:absolute;left:600px;top:0;width:200px;height:200px;perspective:200px">
-<div style="width:200px;height:200px;transform:rotateY(50deg)">
-<div style="width:100px;height:100px;background:green;` + effect + `"></div></div></div>`
+		return perspectiveBoxPage(900, 600, "200px", "rotateY(50deg)", "rgba(0,128,0,0.5)", effect)
 	}
-	wantImagesWithin(t, render.RenderPage(t, page("backdrop-filter:invert(0);opacity:0.999"), 900, 220),
-		render.RenderPage(t, page(""), 900, 220), 2, "the box without its effect layer")
+	plain := render.RenderPage(t, page(""), 900, 220)
+	img := render.RenderPage(t, page("backdrop-filter:invert(1)"), 900, 220)
+	box := pixelBounds(plain, func(c color.RGBA) bool { return c.G > c.R+20 })
+	inverted := pixelBounds(img, func(c color.RGBA) bool { return c.R < 70 && c.B < 70 })
+	if box.Empty() || inverted != box {
+		t.Errorf("inverted backdrop covers %v, want the box's %v", inverted, box)
+	}
+}
+
+// LOU-769: an effect layer under a perspective ancestor whose camera plane
+// cuts the box paints as the box paints without it: the review's cases of a
+// box straddling the camera with its centre behind, the camera line through
+// its centre, and a corner on the near plane (perspective p, the box's
+// centre at 50px and its far edge at 100px from the rotation axis).
+func TestEffectLayer_PerspectiveCameraPlaneCutsBox(t *testing.T) {
+	for _, c := range []struct{ name, perspective, rotate string }{
+		{"centre behind", "40px", "rotateY(75deg)"},
+		{"centre behind, mirrored", "40px", "rotateY(-75deg)"},
+		{"camera line through centre", "43.3px", "rotateY(60deg)"},
+		{"camera line through centre, mirrored", "43.3px", "rotateY(-60deg)"},
+		{"near-plane corner", "86.6px", "rotateY(60deg)"},
+		{"near-plane corner, mirrored", "86.6px", "rotateY(-60deg)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			page := func(effect string) string {
+				return perspectiveBoxPage(400, 100, c.perspective, c.rotate, "green", effect)
+			}
+			wantImagesWithin(t, render.RenderPage(t, page("backdrop-filter:invert(0);opacity:0.999"), 420, 220),
+				render.RenderPage(t, page(""), 420, 220), 2, "the box without its effect layer")
+		})
+	}
+}
+
+// perspectiveBoxPage is a 100px box with background box and style effect,
+// in a 200px square rotated by rotate under perspective, at left over a
+// grey backdrop width wide.
+func perspectiveBoxPage(width, left int, perspective, rotate, box, effect string) string {
+	return fmt.Sprintf(`<!DOCTYPE html><style>body{margin:0}</style>
+<div style="position:absolute;left:0;top:0;width:%dpx;height:220px;background:rgb(200,200,200)"></div>
+<div style="position:absolute;left:%dpx;top:0;width:200px;height:200px;perspective:%s">
+<div style="width:200px;height:200px;transform:%s">
+<div style="width:100px;height:100px;background:%s;%s"></div></div></div>`, width, left, perspective, rotate, box, effect)
+}
+
+// pixelBounds is the bounding rect of img's pixels matching f.
+func pixelBounds(img *image.RGBA, f func(color.RGBA) bool) image.Rectangle {
+	var bb image.Rectangle
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if f(img.RGBAAt(x, y)) {
+				bb = bb.Union(image.Rect(x, y, x+1, y+1))
+			}
+		}
+	}
+	return bb
 }
