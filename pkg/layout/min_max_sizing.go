@@ -156,11 +156,12 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 
 	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
 	// Inline-size containment also zeroes intrinsic inline sizes.
-	// Grid containers are exempt: their intrinsic size includes fixed tracks and
-	// gaps even when item contributions are zeroed. measureGridMinMax handles the
-	// per-track containment gate internally.
+	// Grid and multicol containers are exempt: their intrinsic size still
+	// includes fixed tracks / the column formula and gaps with the content
+	// zeroed. measureGridMinMax and measureMulticolMinMax handle the
+	// containment gate internally.
 	isGrid := disp == css.DisplayGrid || disp == css.DisplayInlineGrid
-	if !isGrid && (style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()) {
+	if !isGrid && !measuresAsMulticol(node, style) && (style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()) {
 		return MinMaxSizes{}
 	}
 
@@ -392,6 +393,20 @@ func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, res
 	}
 }
 
+// measuresAsMulticol reports whether node is a multicol container for
+// intrinsic sizing: multicol containers exist only on block-container
+// displays — mirror layoutElement's dispatch (block_layout.go), which routes
+// to MulticolLayoutAlgorithm only from its block-display cases (flex/grid/
+// table displays with column-* properties are NOT multicol containers).
+func measuresAsMulticol(node *LayoutInputNode, style *css.Style) bool {
+	switch style.GetDisplay() {
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
+		css.DisplayInlineBlock, css.DisplayInlineListItem:
+		return shouldBeMulticol(node, style)
+	}
+	return false
+}
+
 // measureNodeContentMinMax measures the content-based min/max intrinsic sizes
 // of a node (ignoring its own declared inline-size, min-width, and max-width).
 // Single dispatch point for the per-display-type measurement, shared by
@@ -410,12 +425,8 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 	// layoutElement's dispatch (block_layout.go), which routes to
 	// MulticolLayoutAlgorithm only from its block-display cases (flex/grid/
 	// table displays with column-* properties are NOT multicol containers).
-	switch display {
-	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
-		css.DisplayInlineBlock, css.DisplayInlineListItem:
-		if shouldBeMulticol(node, style) {
-			return measureMulticolMinMax(node, ctx, space)
-		}
+	if measuresAsMulticol(node, style) {
+		return measureMulticolMinMax(node, ctx, space)
 	}
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
 		// Flex containers: use flex-specific min/max computation.
@@ -454,11 +465,18 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	style := node.Style()
 
-	// 1. Column content min/max, excluding spanners.
+	// 1. Column content min/max, excluding spanners. Under size
+	// containment the content counts as empty (the inner
+	// BlockLayoutAlgorithm::ComputeMinMaxSizes stops at
+	// CalculateMinMaxSizesIgnoringChildren, length_utils.cc:1929-1934); the
+	// column formula below still applies.
+	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	var result MinMaxSizes
-	if hasOnlyInlineChildren(node) {
+	switch {
+	case contained:
+	case hasOnlyInlineChildren(node):
 		result = measureInlineMinMax(node, ctx, space)
-	} else {
+	default:
 		result = measureBlockMinMax(node, ctx, space, true)
 	}
 
@@ -491,12 +509,14 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 	result.MaxContent = result.MaxContent*float64(count) + gapExtra
 
 	// 4. Spanners aren't part of the count multiplication above; encompass
-	// their contributions now (cla.cc:490-494). Inline-size containment
-	// (which suppresses this in Blink, cla.cc:493) is handled by the
-	// containment early-returns in this file's callers. The multicol's own
+	// their contributions now (cla.cc:490-494), except under inline-size
+	// containment (cla.cc:493). The multicol's own
 	// resolved block-size rides along so spanner percentage block-sizes can
 	// resolve (Blink: SetAvailableBlockSize(ChildAvailableSize().block_size),
 	// cla.cc:544).
+	if contained {
+		return result
+	}
 	spanners := ComputeSpannersMinMaxSizes(node, ctx, space, resolveNodeBlockSizeForPercent(node, space))
 	result.MinContent = math.Max(result.MinContent, spanners.MinContent)
 	result.MaxContent = math.Max(result.MaxContent, spanners.MaxContent)
