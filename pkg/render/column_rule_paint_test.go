@@ -17,23 +17,14 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
-	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
 // renderColumnRuleHTML lays out and paints src on a white w x h canvas.
 func renderColumnRuleHTML(t *testing.T, src string, w, h int) *image.RGBA {
 	t.Helper()
-	doc, err := html.Parse(src)
-	if err != nil {
-		t.Fatalf("html.Parse: %v", err)
-	}
-	engine := layout.NewLayoutEngine(float64(w), float64(h))
-	boxes := engine.Layout(doc)
-	target := image.NewRGBA(image.Rect(0, 0, w, h))
-	r := NewRendererForImage(target)
-	r.Render(boxes)
-	return target
+	img, _ := RenderPage(t, src, w, h)
+	return img
 }
 
 func rgbAt(img *image.RGBA, x, y int) (uint8, uint8, uint8) {
