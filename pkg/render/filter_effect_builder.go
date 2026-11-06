@@ -269,20 +269,19 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 	return builder.BuildGraph(adapter)
 }
 
-// buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
-// is a cross-document URL (data:, file://, http(s)://, or a relative
-// path resolved by the harness). Fetches the document via
-// ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
-// builds the FilterEffect graph. Returns nil on any failure — Blink's
-// behavior for tainted/unreachable external filters is a null filter
-// (caller paints source unfiltered) per Filter Effects 1 §3.1. When
-// chainSource is non-nil, SourceGraphic references inside the fetched
-// filter are rewired to it (CSS filter-value-list chain composition).
-func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
-	if fragID == "" || b.ExternalSVGFetcher == nil {
+// externalSVGFilter fetches docURL, parses it and builds its
+// <filter id="fragID">: nil on any failure. External documents don't share
+// the host page's computed-style cascade, so the filter and its primitives
+// read their presentation attributes (a nil style resolver). The fetched
+// document is never laid out, so the filter has no layout object
+// (ColorInterpolationForElement's "used by external SVG files",
+// svg_filter_builder.cc:142-155 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Shared by the CSS filter path and an SVG shape's filter attribute.
+func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string, lengthCtx svg.SVGLengthContext) *svg.SVGResourceFilter {
+	if fragID == "" || fetch == nil {
 		return nil
 	}
-	data, err := b.ExternalSVGFetcher(docURL)
+	data, err := fetch(docURL)
 	if err != nil || len(data) == 0 {
 		return nil
 	}
@@ -294,21 +293,27 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	if !ok || target.TagName() != "filter" {
 		return nil
 	}
+	filter := svg.NewSVGResourceFilter(target, lengthCtx, nil)
+	if filter != nil {
+		filter.NoLayoutObject = true
+	}
+	return filter
+}
 
-	// Build the SVGResourceFilter from the external `<filter>` element.
-	// External documents don't share the host page's computed-style
-	// cascade, so styleResolver is nil — filter primitives fall back to
-	// raw attribute lookup, which is what the external-resource tests
-	// exercise (`flood-color="green"`, `type="hueRotate" values="..."`).
-	resource := svg.NewSVGResourceFilter(target, b.viewportLengthContext(), nil)
+// buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
+// is a cross-document URL (data:, file://, http(s)://, or a relative
+// path resolved by the harness). Fetches the document via
+// ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
+// builds the FilterEffect graph. Returns nil on any failure — Blink's
+// behavior for tainted/unreachable external filters is a null filter
+// (caller paints source unfiltered) per Filter Effects 1 §3.1. When
+// chainSource is non-nil, SourceGraphic references inside the fetched
+// filter are rewired to it (CSS filter-value-list chain composition).
+func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
+	resource := externalSVGFilter(b.ExternalSVGFetcher, docURL, fragID, b.viewportLengthContext())
 	if resource == nil {
 		return nil
 	}
-	// The fetched document is never laid out: its <filter> has no layout
-	// object (ColorInterpolationForElement's "used by external SVG files",
-	// svg_filter_builder.cc:142-155 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	resource.NoLayoutObject = true
 	space := filterInterpolationSpace(resource)
 
 	// Resolve the filter region — same logic as the same-doc path.

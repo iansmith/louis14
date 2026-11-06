@@ -288,26 +288,10 @@ func (sp *svgShapePainter) resolveSVGFilter(filterVal string) *svg.SVGResourceFi
 	}
 
 	// External: fetch + parse + build SVGResourceFilter on the fly.
-	// External documents don't share the host page's CSS cascade, so
-	// the styleResolver passed to NewSVGResourceFilter is nil — filter
-	// primitives read presentational attributes directly.
-	if sp.ctx.Renderer == nil || sp.ctx.Renderer.externalSVGFetcher == nil {
+	if sp.ctx.Renderer == nil {
 		return nil
 	}
-	data, err := sp.ctx.Renderer.externalSVGFetcher(docURL)
-	if err != nil || len(data) == 0 {
-		return nil
-	}
-	root, err := svg.ParseExternalSVG(data)
-	if err != nil {
-		return nil
-	}
-	target, ok := svg.FindElementByID(root, fragID)
-	if !ok || target.TagName() != "filter" {
-		return nil
-	}
-	return svg.NewSVGResourceFilter(target,
-		svg.NewSVGLengthContext(sp.ctx.viewport.Size), nil)
+	return externalSVGFilter(sp.ctx.Renderer.externalSVGFetcher, docURL, fragID, svg.NewSVGLengthContext(sp.ctx.viewport.Size))
 }
 
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
