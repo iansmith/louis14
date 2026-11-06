@@ -76,3 +76,16 @@ div{position:absolute;left:0;top:0;width:100px;height:100px}</style>
 	// (0,128,0) inverted is (255,127,255), greyscaled (163,163,163).
 	wantPixelWithinOne(t, img, 50, 50, color.RGBA{163, 163, 163, 255}, "the inverted green backdrop greyscaled")
 }
+
+// A blurred backdrop mirrors at the box's edges (Blink's compositor crops
+// the input to the bounds with a mirror edge mode): a 2px red strip along
+// the box's left edge, over a lime backdrop, is not smeared across the
+// blur's pad, so next to the edge lime still dominates.
+func TestBackdropFilter_BlurMirrorsAtTheEdge(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:lime}</style>
+<div style="position:absolute;left:0;top:0;width:2px;height:100px;background:red"></div>
+<div style="position:absolute;left:0;top:0;width:100px;height:100px;backdrop-filter:blur(10px)"></div>`, 120, 120)
+	if c := img.RGBAAt(1, 50); c.G <= c.R || c.R == 0 {
+		t.Errorf("pixel (1,50) = %v: want lime dominating with the red edge blurred in (mirrored, not duplicated)", c)
+	}
+}
