@@ -34,7 +34,9 @@ type trackingDrawContext struct {
 var identityHomography = [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1}
 
 // trackDrawContext wraps dc, starting from its current matrix, which is
-// read once with an affine probe: dc must not already be projective.
+// read once with an affine probe. dc must not already be projective: a
+// fourth probe that the affine fit does not map panics, as a wrong tracked
+// matrix would mis-paint silently.
 func trackDrawContext(dc textshape.DrawContext) *trackingDrawContext {
 	if t, ok := dc.(*trackingDrawContext); ok {
 		return t
@@ -42,6 +44,14 @@ func trackDrawContext(dc textshape.DrawContext) *trackingDrawContext {
 	ox, oy := dc.TransformPoint(0, 0)
 	xx, yx := dc.TransformPoint(1, 0)
 	xy, yy := dc.TransformPoint(0, 1)
+	// probeTolerance is relative: the affine fit and the draw context's own
+	// map of (1, 1) differ only by rounding when the matrix is affine.
+	const probeTolerance = 1e-9
+	near := func(a, b float64) bool { return math.Abs(a-b) <= probeTolerance*math.Max(1, math.Abs(b)) }
+	px, py := dc.TransformPoint(1, 1)
+	if !near(px, xx+xy-ox) || !near(py, yx+yy-oy) {
+		panic("render: the host draw context's matrix is projective; it must be affine")
+	}
 	return &trackingDrawContext{DrawContext: dc, m: [9]float64{xx - ox, xy - ox, ox, yx - oy, yy - oy, oy, 0, 0, 1}}
 }
 
@@ -52,10 +62,15 @@ func (t *trackingDrawContext) Push() {
 	t.DrawContext.Push()
 }
 
+// Pop restores the renderer's last Push. With none, it does nothing: the
+// draw context's own stack may hold its host's state, which the tracked
+// matrix does not, and the two must stay in lockstep.
 func (t *trackingDrawContext) Pop() {
-	if n := len(t.stack); n > 0 {
-		t.m, t.stack = t.stack[n-1], t.stack[:n-1]
+	n := len(t.stack)
+	if n == 0 {
+		return
 	}
+	t.m, t.stack = t.stack[n-1], t.stack[:n-1]
 	t.DrawContext.Pop()
 }
 
@@ -115,10 +130,20 @@ func drawContextTransform(dc textshape.DrawContext) geometry.Transform {
 	return transformFromHomography(dc.(*trackingDrawContext).m)
 }
 
-// drawContextAffine is drawContextTransform and whether it is affine.
+// drawContextAffine is dc's device matrix when it is affine, and whether it
+// is. A homography whose w is the same everywhere (h6 = h7 = 0, h8 > 0: a
+// translateZ under perspective) is affine up to that scale; it is reported
+// affine, normalized by h8. A projective one returns the zero transform.
 func drawContextAffine(dc textshape.DrawContext) (geometry.Transform, bool) {
+	// constantWTolerance bounds h6 and h7 relative to h8: composed affine
+	// steps leave them exactly zero, so only rounding is allowed.
+	const constantWTolerance = 1e-12
 	h := dc.(*trackingDrawContext).m
-	return transformFromHomography(h), h[6] == 0 && h[7] == 0 && h[8] == 1
+	if h[8] <= 0 || math.Abs(h[6]) > constantWTolerance*h[8] || math.Abs(h[7]) > constantWTolerance*h[8] {
+		return geometry.Transform{}, false
+	}
+	w := h[8]
+	return transformFromHomography([9]float64{h[0] / w, h[1] / w, h[2] / w, h[3] / w, h[4] / w, h[5] / w, 0, 0, 1}), true
 }
 
 // projectNearEpsilon is the w plane the near-plane clip cuts at: mazzy's

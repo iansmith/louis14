@@ -275,7 +275,8 @@ func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.Glyp
 // Use this when the caller already owns the drawing surface (e.g.,
 // mancini interactor framework). The renderer tracks the draw context's
 // matrix from here on (trackDrawContext), reading its starting matrix once
-// with an affine probe: dc must not already be projective.
+// with an affine probe: dc must not already be projective, and it panics if
+// it is.
 func NewRendererForDrawContext(dc textshape.DrawContext) *Renderer {
 	text.SetTextLayout(dc.TextLayout())
 	return &Renderer{
@@ -1595,10 +1596,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
 	// CTM's scale), which LayerToDev maps onto the target. Under a projective
 	// draw context the backdrop is sampled untransformed.
-	ctm, affine := drawContextAffine(r.dc)
-	if !affine {
-		ctm = geometry.Transform{}
-	}
+	ctm, _ := drawContextAffine(r.dc) // the zero transform when projective
 
 	// Element's border-box region, pixel-snapped: Blink's backdrop-filter
 	// bounds are the reference box's PixelSnappedContouredBorder
