@@ -57,7 +57,10 @@ func TestButtonBaselineContentBoxEdge(t *testing.T) {
 		{"percentage padding", "padding:10%", 5 + 20},
 		{"asymmetric padding", "padding:0 0 7px 0", 5 + 7},
 		{"overflow hidden", "padding:0; overflow:hidden", 5},
-		{"scrollbar", "padding:0; overflow-x:scroll; overflow-y:hidden; height:20px; width:40px", 5 + 15},
+		// The 20px border-box height leaves no content once the borders
+		// and the horizontal scrollbar are taken, so the box is
+		// 10 + scrollbar tall; endInset < 0 asks for border + scrollbar.
+		{"scrollbar", "padding:0; overflow-x:scroll; overflow-y:hidden; height:20px; width:40px", -1},
 		// An orthogonal button has no baseline in the line's writing mode
 		// and still synthesizes off its content box.
 		{"orthogonal", "padding:0 0 3px 0; writing-mode:vertical-lr", 5 + 3},
@@ -65,7 +68,11 @@ func TestButtonBaselineContentBoxEdge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b, baseline := layoutBaselineCase(t, `<button id=b style="`+base+`; `+tc.style+`">b</button>`, nil)
-			if got := b.Y + b.Height - tc.endInset; got != baseline {
+			endInset := tc.endInset
+			if endInset < 0 {
+				endInset = 5 + (b.Height - 10)
+			}
+			if got := b.Y + b.Height - endInset; got != baseline {
 				t.Errorf("%s: content-box end at %v, baseline at %v (button %s)", tc.name, got, baseline, boxDims(b))
 			}
 		})

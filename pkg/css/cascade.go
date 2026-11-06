@@ -458,6 +458,16 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			style.Set("display", "inline-block")
 		}
 		style.Set(InternalAlignContentBlockProperty, "center")
+		// HTMLButtonElement::AdjustStyle (core/html/forms/
+		// html_button_element.cc:76-80 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a baseline-less
+		// <button> synthesizes off its content box, and its overflow does
+		// not force synthesis. Button-type <input>s keep the defaults
+		// (InputTypeView::AdjustStyle is empty, input_type_view.h:116).
+		if node.HasHTMLTagName("button") {
+			style.Set(InternalInlineBlockBaselineEdgeProperty, "content-box")
+			style.Set(InternalIgnoreOverflowForInlineBlockBaselineProperty, "true")
+		}
 		style.Set("box-sizing", "border-box")
 		setFormPadding(style, "1px", "6px", "1px", "6px")
 		setFormBorder(style, "2px", "solid", "#767676")

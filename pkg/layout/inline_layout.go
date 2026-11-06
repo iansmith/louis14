@@ -91,8 +91,12 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 		// follows the same rule (pure inline list items never reach the
 		// atomic baseline path).
 		css.DisplayInlineListItem:
-		// These displays synthesize from margin box when they are scroll containers.
-		return st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible
+		// These displays synthesize from margin box when they are scroll
+		// containers, unless the style ignores overflow for the inline-block
+		// baseline (ForceInlineBaselineSynthesis, physical_box_fragment.h:
+		// 169-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return (st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible) &&
+			!st.ShouldIgnoreOverflowPropertyForInlineBlockBaseline()
 	}
 	// Flex, grid, and other displays derive from content baseline regardless of overflow.
 	return false
@@ -117,7 +121,7 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 func atomicInlineBaseline(r *InlineItemResult, display css.DisplayType, blockSize float64, wdm WritingDirectionMode) float64 {
 	if (r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)) ||
 		useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
-		return blockSize + r.Margins.BlockEnd
+		return synthesizedInlineBaseline(r, blockSize, wdm, false)
 	}
 	switch display {
 	case css.DisplayInlineFlex, css.DisplayFlex, css.DisplayInlineGrid, css.DisplayGrid,
@@ -130,19 +134,51 @@ func atomicInlineBaseline(r *InlineItemResult, display css.DisplayType, blockSiz
 }
 
 // synthesizedInlineBaseline is the baseline, measured from the border-box
-// block-start, that an atomic inline with no baseline of its own exports:
-// its block-end margin edge (CSS 2.1 §10.8.1), except that an HTML <button>
-// synthesizes off its content box (HTMLButtonElement::AdjustStyle sets
-// InlineBlockBaselineEdge to kContentBox, core/html/forms/
-// html_button_element.cc:76-80; LogicalBoxFragment::BaselineMetrics,
-// layout/logical_box_fragment.cc:52-83 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func synthesizedInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode) float64 {
-	if r.Item.Node != nil && r.Item.Node.HasHTMLTagName("button") && r.Item.Style != nil {
-		geom := ComputeFragmentGeometry(r.Item.Style, wdm)
-		return blockSize - geom.Border.BlockEnd - geom.Padding.BlockEnd
+// block-start, that an atomic inline with no baseline of its own exports,
+// synthesized off the edge its style names (LogicalBoxFragment::
+// BaselineMetrics, layout/logical_box_fragment.cc:52-83 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the block-end margin edge by
+// default (CSS 2.1 §10.8.1), the content box for a <button>
+// (InlineBlockBaselineEdge, set by HTMLButtonElement::AdjustStyle). The
+// content box is the fragment's resolved border, scrollbar and padding in.
+// With a central baseline the box is centred instead; louis14 centres the
+// border box for the margin-box edge (Blink centres the margin box).
+// louis14's line layout measures ascent from the block-start, with no
+// line-over/under (LineBoxStrut) model for flipped lines.
+func synthesizedInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode, central bool) float64 {
+	edge := "margin-box"
+	if r.Item.Style != nil {
+		edge = r.Item.Style.InlineBlockBaselineEdge()
+	}
+	switch edge {
+	case "content-box":
+		start, end := contentBoxBlockInsets(r, wdm)
+		if central {
+			return start + (blockSize-start-end)/2
+		}
+		return blockSize - end
+	case "border-box":
+		if central {
+			return blockSize / 2
+		}
+		return blockSize
+	}
+	if central {
+		return blockSize / 2
 	}
 	return blockSize + r.Margins.BlockEnd
+}
+
+// contentBoxBlockInsets returns the atomic inline's border + scrollbar +
+// padding at its block-start and block-end in the line's writing mode, from
+// the fragment's resolved box data (percentages already resolved).
+func contentBoxBlockInsets(r *InlineItemResult, wdm WritingDirectionMode) (start, end float64) {
+	if r.LayoutResult == nil || r.LayoutResult.Fragment == nil || r.LayoutResult.Fragment.BoxData == nil {
+		return 0, 0
+	}
+	bd := r.LayoutResult.Fragment.BoxData
+	b, sb, pd := ToLogicalEdges(bd.Border, wdm), ToLogicalEdges(bd.Scrollbar, wdm), ToLogicalEdges(bd.Padding, wdm)
+	return b.BlockStart + sb.BlockStart + pd.BlockStart, b.BlockEnd + sb.BlockEnd + pd.BlockEnd
 }
 
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
@@ -3103,10 +3139,8 @@ func createLineBoxEx(
 						var ibAscent float64
 						if atomicBaseline > 0 {
 							ibAscent = atomicBaseline
-						} else if centralBaseline {
-							ibAscent = blockSize / 2
 						} else {
-							ibAscent = synthesizedInlineBaseline(r, blockSize, wdm)
+							ibAscent = synthesizedInlineBaseline(r, blockSize, wdm, false)
 						}
 						blockPos = maxAscent - ibAscent
 					} else if centralBaseline {
@@ -3115,7 +3149,7 @@ func createLineBoxEx(
 						// explicit baselines are centered on the central baseline.
 						// For tables/inline-tables, center on the content area
 						// (excluding padding), not the padded box.
-						blockPos = maxAscent - blockSize/2
+						blockPos = maxAscent - synthesizedInlineBaseline(r, blockSize, wdm, true)
 					} else {
 						// Default: bottom-align to baseline.
 						blockPos = maxAscent - blockSize
@@ -3516,12 +3550,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 						// layout result. This is the distance from the border-box
 						// block-start to the baseline.
 						ibAscent = atomicBaseline
-					} else if centralBaseline {
-						// CSS Writing Modes 3 §4.3: fallback for empty inline-blocks
-						// in vertical modes with central baseline: blockSize / 2.
-						ibAscent = blockSize / 2
 					} else {
-						ibAscent = synthesizedInlineBaseline(r, blockSize, wdm)
+						ibAscent = synthesizedInlineBaseline(r, blockSize, wdm, false)
 					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
@@ -3539,8 +3569,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					}
 				} else if centralBaseline {
 					// CSS Writing Modes 3 §4.3: In vertical modes with central
-					// baseline, replaced elements are centered on the central baseline.
-					ascent := blockSize / 2
+					// baseline, replaced elements are centered on the central
+					// baseline (a <button> on its content box).
+					ascent := synthesizedInlineBaseline(r, blockSize, wdm, true)
 					descent := blockSize - ascent
 					if ascent > maxAscent {
 						maxAscent = ascent
