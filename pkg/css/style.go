@@ -8531,6 +8531,36 @@ func (s *Style) AlignContentBlockCenter() bool {
 	return ok && v == "center"
 }
 
+// InternalInlineBlockBaselineEdgeProperty is the UA-only edge a
+// baseline-less inline-level box synthesizes its baseline from:
+// "margin-box" (the default), "border-box" or "content-box". Mirrors
+// ComputedStyle's InlineBlockBaselineEdge field (style/
+// computed_style_extra_fields.json5:1060-1064 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which only AdjustStyle sets.
+const InternalInlineBlockBaselineEdgeProperty = "-internal-inline-block-baseline-edge"
+
+// InlineBlockBaselineEdge returns the synthesis edge; see
+// InternalInlineBlockBaselineEdgeProperty.
+func (s *Style) InlineBlockBaselineEdge() string {
+	switch v := s.Properties[InternalInlineBlockBaselineEdgeProperty]; v {
+	case "border-box", "content-box":
+		return v
+	}
+	return "margin-box"
+}
+
+// InternalIgnoreOverflowForInlineBlockBaselineProperty is the UA-only flag
+// that keeps a non-visible overflow from forcing an inline-block's baseline
+// to be synthesized. Mirrors ComputedStyle::
+// ShouldIgnoreOverflowPropertyForInlineBlockBaseline.
+const InternalIgnoreOverflowForInlineBlockBaselineProperty = "-internal-ignore-overflow-for-inline-block-baseline"
+
+// ShouldIgnoreOverflowPropertyForInlineBlockBaseline reports the flag; see
+// InternalIgnoreOverflowForInlineBlockBaselineProperty.
+func (s *Style) ShouldIgnoreOverflowPropertyForInlineBlockBaseline() bool {
+	return s.Properties[InternalIgnoreOverflowForInlineBlockBaselineProperty] == "true"
+}
+
 // GetAlignContent returns the align-content value (default: normal, which acts as stretch in flex).
 // Strips any "safe"/"unsafe" prefix; use IsSafeAlignContent to check the safe flag.
 func (s *Style) GetAlignContent() AlignContent {
