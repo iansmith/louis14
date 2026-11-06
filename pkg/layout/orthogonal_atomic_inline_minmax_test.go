@@ -67,11 +67,13 @@ func TestOrthogonalAtomicInlinePercentageBlockSize(t *testing.T) {
 	is.Properties["writing-mode"] = "horizontal-tb"
 	is.Properties["width"] = "40px"
 	is.Properties["height"] = "50%"
+	is.Properties["display"] = "inline"
 	root := buildTestTree(parent, map[*html.Node]*css.Style{parent: ps, img: is})
 	wdm := WritingDirectionMode{WritingModeVerticalLR, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 300}).Build()
+		SetPercentageResolutionSize(LogicalSize{InlineSize: 200, BlockSize: 300}).
+		SetPercentageResolutionInlineSize(200).Build()
 	if mm := ComputeMinMaxSizes(testContext(), root, space); mm.MinContent != 100 || mm.MaxContent != 100 {
 		t.Errorf("min/max %+v, want 100/100", mm)
 	}

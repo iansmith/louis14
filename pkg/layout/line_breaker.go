@@ -1674,10 +1674,16 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 // handleAtomicInline lays out an atomic inline element (inline-block, replaced).
 // Returns true if the line should end.
 func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool {
-	// Resolve margins for the atomic inline.
+	// Resolve margins for the atomic inline. While sizing, percentage
+	// margins resolve against zero, as cyclic percentages do in intrinsic
+	// size contributions (CSS Sizing 3 §5.2.1).
 	margins := LogicalEdges{}
 	if item.Style != nil {
-		margins = ResolveMargins(item.Style, lb.space.WritingDirection, lb.availableWidth)
+		marginBase := lb.availableWidth
+		if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
+			marginBase = 0
+		}
+		margins = ResolveMargins(item.Style, lb.space.WritingDirection, marginBase)
 	}
 
 	var inlineSize float64
@@ -1686,36 +1692,28 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	childWDM := NewWritingDirectionMode(item.Style)
 
 	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
-		// In sizing mode: compute the child's intrinsic size instead of
-		// doing full layout. Mirrors Blink's recursive min/max sizing.
-		csBuilder := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
-			SetOrthogonalFallbackInlineSize(
-				orthogonalFallbackSize(childWDM, lb.ctx)).
-			SetOrthogonalFallbackBlockSize(
-				lb.space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(geomLogicalToOld(lb.space.AvailableSize)).
-			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
-		// Propagate percentage resolution block-size from parent so that
-		// percentage-height replaced elements (e.g., img { height: 100% })
-		// can resolve against their containing block's definite height.
-		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-			csBuilder.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
-		}
-		childSpace := csBuilder.Build()
+		// In sizing mode, the atomic contributes its min/max-content
+		// contribution: Blink's ComputeMinAndMaxContentContribution
+		// (LineBreaker, inline/line_breaker.cc:3182-3194 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which lays an
+		// orthogonal child out for its block size.
 		if lb.space.WritingDirection.IsOrthogonalTo(childWDM) {
-			// An orthogonal atomic contributes its block size: Blink's
-			// ComputeMinAndMaxContentContribution lays it out
-			// (LineBreaker, inline/line_breaker.cc:3182-3194 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			// measureOrthogonalChild includes the margins, added below.
-			oMin, oMax := measureOrthogonalChild(item.LayoutNode, item.Style, childWDM, lb.space.WritingDirection, lb.ctx, childSpace)
-			inlineSize = oMax
-			if lb.mode == LineBreakerMinContent {
-				inlineSize = oMin
-			}
-			inlineSize -= margins.InlineSum()
+			inlineSize = lb.orthogonalAtomicInlineContribution(item, childWDM)
 		} else {
-			childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
+			csBuilder := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(childWDM, lb.ctx)).
+				SetOrthogonalFallbackBlockSize(
+					lb.space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(geomLogicalToOld(lb.space.AvailableSize)).
+				SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
+			// Propagate percentage resolution block-size from parent so that
+			// percentage-height replaced elements (e.g., img { height: 100% })
+			// can resolve against their containing block's definite height.
+			if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+				csBuilder.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
+			}
+			childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, csBuilder.Build())
 			// ComputeMinMaxSizes returns content-box; convert to border-box
 			// for the atomic inline's contribution to the line.
 			childBP := ComputeFragmentGeometry(item.Style, childWDM).InlineBorderPadding()
@@ -2551,4 +2549,36 @@ func (lb *LineBreaker) measureTextWithTabs(
 	}
 	// Return the width consumed by this text (difference from where we started).
 	return pos - lb.position
+}
+
+// orthogonalAtomicInlineContribution is an orthogonal atomic inline's
+// min-content and max-content contribution to the line, which are equal:
+// its border-box block size, laid out once in a space built from the line's
+// (MinMaxConstraintSpaceBuilder in LineBreaker, inline/line_breaker.cc:
+// 3182-3194; BlockNode::ComputeMinMaxSizes for an orthogonal flow root,
+// block_node.cc:981-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its
+// available inline size is the line's available block size (or the
+// orthogonal fallback), and the line's percentage resolution size carries
+// over, swapped. Margins are not included. The result is cached on the
+// LayoutContext, so the min-content and max-content passes share it.
+func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
+	pct := lb.space.PercentageResolutionSize
+	key := orthogonalContributionSpace{lb.space.AvailableSize.BlockSize.Float64(),
+		orthogonalFallbackSize(childWDM, lb.ctx), lb.space.OrthogonalFallbackBlockSize,
+		pct.InlineSize.Float64(), pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
+	if e := lb.ctx.OrthogonalLayoutCache[item.LayoutNode]; e != nil && e.HasContribution && e.ContributionSpace == key {
+		return e.AtomicContribution
+	}
+	b := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, lb.ctx)).
+		SetOrthogonalFallbackBlockSize(lb.space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: lb.space.AvailableSize.BlockSize.Float64()}).
+		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
+		SetPercentageResolutionSize(geomLogicalToOld(pct))
+	result := layoutElement(lb.ctx, item.LayoutNode, b.Build())
+	contribution := NewLogicalFragment(lb.space.WritingDirection, result.Fragment).InlineSize()
+	lb.ctx.SetOrthogonalResult(item.LayoutNode, result)
+	e := lb.ctx.OrthogonalLayoutCache[item.LayoutNode]
+	e.HasContribution, e.ContributionSpace, e.AtomicContribution = true, key, contribution
+	return contribution
 }
