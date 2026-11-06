@@ -10,11 +10,9 @@ import (
 // block-size (not inline-size) to the grid's inline-axis min-content sizing.
 //
 // Test case: A grid container (default horizontal-tb) with an orthogonal
-// (vertical-rl) child containing two inline-blocks (50px x 100px each).
-// In vertical-rl: the two blocks stack in the inline direction (100px each),
-// giving logical-inline-size=100px, logical-block-size=100px.
-// When viewed from the parent's horizontal-tb, the child's physical width=100px
-// (the logical-block-size). The grid's min-content inline size should be 100px.
+// (vertical-rl) child containing two vertical-rl inline-blocks (50px wide,
+// 100px tall), in the child's own flow. Each is 100px along the child's
+// inline (vertical) axis and 50px along its block (horizontal) axis.
 //
 // This isolates the defect in measureGridMinMax where orthogonal children's
 // block-sizes do not feed the inline track contributions correctly.
@@ -40,12 +38,18 @@ func TestMeasureGridMinMax_OrthogonalChildBlockSize(t *testing.T) {
 	ib1Style.Properties["display"] = "inline-block"
 	ib1Style.Properties["width"] = "50px"
 	ib1Style.Properties["height"] = "100px"
+	// The test tree does not inherit writing-mode: set it, so the
+	// inline-blocks are in the vertical-rl child's own (parallel) flow.
+	ib1Style.Properties["writing-mode"] = "vertical-rl"
 
 	// Second inline-block: 50px width, 100px height
 	ib2Style := css.NewStyle()
 	ib2Style.Properties["display"] = "inline-block"
 	ib2Style.Properties["width"] = "50px"
 	ib2Style.Properties["height"] = "100px"
+	// The test tree does not inherit writing-mode: set it, so the
+	// inline-blocks are in the vertical-rl child's own (parallel) flow.
+	ib2Style.Properties["writing-mode"] = "vertical-rl"
 
 	styles := map[*html.Node]*css.Style{
 		gridContainer: gridStyle,
@@ -67,20 +71,20 @@ func TestMeasureGridMinMax_OrthogonalChildBlockSize(t *testing.T) {
 	// Call measureGridMinMax on the grid container.
 	mm := measureGridMinMax(layoutRoot, ctx, space)
 
-	// Assert: the grid's min-content inline size must be 100px
-	// The orthogonal child (vertical-rl) with two 50px-wide inline-blocks stacked
-	// has logical-block-size=100px. Viewed from parent's horizontal-tb, this
-	// becomes physical-width=100px, which is the contribution to the grid's inline
-	// min-content (the implicit column track).
+	// The orthogonal child contributes its block size (its physical width)
+	// to the grid's inline axis. louis14's measureOrthogonalChild lays it out
+	// at its min-content inline size (100: one inline-block per line, two
+	// lines, 100 wide) for the min contribution, and at its max-content
+	// inline size (200: both on one line, 50 wide) for the max. Blink lays an
+	// orthogonal grid item out once and gives 50 for both
+	// (GridLayoutAlgorithm::ContributionSizeForGridItem's
+	// BlockContributionSize, grid_layout_algorithm.cc:662-715;
+	// BlockNode::ComputeMinMaxSizes, block_node.cc:981-1008 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); that gap is LOU-770.
 	if mm.MinContent != 100 {
-		t.Errorf("MinContent: got %.2f, want 100 (orthogonal child's block-size)", mm.MinContent)
+		t.Errorf("MinContent: got %.2f, want 100 (block size at the child's min-content)", mm.MinContent)
 	}
-	// The test tree does not inherit writing-mode, so the inline-blocks are
-	// horizontal-tb inside the vertical-rl child: orthogonal atomics, each
-	// contributing its block size (100) to the vertical line (LOU-765). At
-	// its max-content inline size (200) the child is one line, 50 wide, and
-	// that block size is its max-content contribution.
 	if mm.MaxContent != 50 {
-		t.Errorf("MaxContent: got %.2f, want 50 (orthogonal child's block-size at its max-content)", mm.MaxContent)
+		t.Errorf("MaxContent: got %.2f, want 50 (block size at the child's max-content)", mm.MaxContent)
 	}
 }
