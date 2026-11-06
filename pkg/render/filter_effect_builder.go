@@ -198,13 +198,18 @@ func (b *FilterEffectBuilder) buildReferenceFilterWithSource(id string, prev fil
 func filterInterpolationSpace(filter *svg.SVGResourceFilter) filters.InterpolationSpace {
 	if filter.NoLayoutObject {
 		if v, ok := filter.Attribute("color-interpolation-filters"); ok {
-			return filters.ResolveInterpolationSpace(v)
+			if space, valid := filters.ResolveInterpolationSpace(v); valid {
+				return space
+			}
 		}
 		return filters.InterpolationSpaceSRGB
 	}
+	// An invalid declaration is dropped, leaving the initial linearRGB.
 	if st := filter.Style(); st != nil {
 		if v, ok := st.Get("color-interpolation-filters"); ok {
-			return filters.ResolveInterpolationSpace(v)
+			if space, valid := filters.ResolveInterpolationSpace(v); valid {
+				return space
+			}
 		}
 	}
 	return filters.InterpolationSpaceLinearRGB
@@ -299,14 +304,12 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	if resource == nil {
 		return nil
 	}
-
-	// color-interpolation-filters defaults to linearRGB per SVG 1.1
-	// §4.2. For external filters we read it as an attribute (no
-	// cascade in the fetched document).
-	space := filters.InterpolationSpaceLinearRGB
-	if v, ok := target.Attribute("color-interpolation-filters"); ok {
-		space = filters.ResolveInterpolationSpace(v)
-	}
+	// The fetched document is never laid out: its <filter> has no layout
+	// object (ColorInterpolationForElement's "used by external SVG files",
+	// svg_filter_builder.cc:142-155 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	resource.NoLayoutObject = true
+	space := filterInterpolationSpace(resource)
 
 	// Resolve the filter region — same logic as the same-doc path.
 	refBoxF := geometry.NewRectF(

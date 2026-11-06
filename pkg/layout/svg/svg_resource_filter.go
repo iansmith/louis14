@@ -70,9 +70,9 @@ type SVGResourceFilter struct {
 	// §4.2).
 	elementStyle *css.Style
 
-	// NoLayoutObject marks a filter registered from the document tree
-	// scope outside any laid-out <svg> (layout's treeScopeSVGFilters): Blink
-	// builds it from the DOM with no layout object, so its
+	// NoLayoutObject marks a filter with no layout object (layout's
+	// treeScopeSVGResources), e.g. in a display:none <svg>: Blink builds it
+	// from the DOM, so its
 	// color-interpolation-filters is its presentation attribute
 	// (Attribute), else auto (ColorInterpolationForElement,
 	// svg_filter_builder.cc:136-170 @

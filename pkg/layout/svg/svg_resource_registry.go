@@ -36,6 +36,9 @@ type SVGResourceRegistry struct {
 	// renderer paths use the typed resource maps directly via
 	// LookupAs* helpers.
 	elements map[string]ElementAdapter
+	// sources maps each id to the element its resource was built from
+	// (RegisterBuiltFrom).
+	sources map[string]ElementAdapter
 }
 
 // NewSVGResourceRegistry builds an empty registry.
@@ -43,6 +46,7 @@ func NewSVGResourceRegistry() *SVGResourceRegistry {
 	return &SVGResourceRegistry{
 		resources: make(map[string]SVGResource),
 		elements:  make(map[string]ElementAdapter),
+		sources:   make(map[string]ElementAdapter),
 	}
 }
 
@@ -51,22 +55,23 @@ func NewSVGResourceRegistry() *SVGResourceRegistry {
 // First-wins, like Register. Mirrors Blink's per-tree-scope id-to-
 // Element map maintained at parse time (the same map that backs
 // document.getElementById).
-func (r *SVGResourceRegistry) RegisterElement(elt ElementAdapter) {
+func (r *SVGResourceRegistry) RegisterElement(elt ElementAdapter) (stored bool) {
 	if r == nil || elt == nil {
-		return
+		return false
 	}
 	id, ok := elt.Attribute("id")
 	if !ok {
-		return
+		return false
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return
+		return false
 	}
 	if _, exists := r.elements[id]; exists {
-		return
+		return false
 	}
 	r.elements[id] = elt
+	return true
 }
 
 // LookupElement returns the ElementAdapter registered under `id` via
@@ -103,32 +108,6 @@ func (r *SVGResourceRegistry) Register(res SVGResource) {
 	r.resources[id] = res
 }
 
-// RegisterPaintServer attaches a paint-server resource (gradient or
-// pattern) by ID. Thin compatibility wrapper kept so Phase 4/5 callsites
-// in svg_root.go don't need to drop their typed signatures.
-func (r *SVGResourceRegistry) RegisterPaintServer(server SVGResourcePaintServer) {
-	if server == nil {
-		return
-	}
-	r.Register(server)
-}
-
-// RegisterClipper attaches a `<clipPath>` resource by ID.
-func (r *SVGResourceRegistry) RegisterClipper(c *SVGResourceClipper) {
-	if c == nil {
-		return
-	}
-	r.Register(c)
-}
-
-// RegisterMasker attaches a `<mask>` resource by ID.
-func (r *SVGResourceRegistry) RegisterMasker(m *SVGResourceMasker) {
-	if m == nil {
-		return
-	}
-	r.Register(m)
-}
-
 // RegisterFilter attaches a `<filter>` resource by ID.
 func (r *SVGResourceRegistry) RegisterFilter(f *SVGResourceFilter) {
 	if f == nil {
@@ -137,18 +116,34 @@ func (r *SVGResourceRegistry) RegisterFilter(f *SVGResourceFilter) {
 	r.Register(f)
 }
 
-// ReplaceFilter registers f under its id, replacing a filter already
-// registered there; another kind of resource under the id stays.
-func (r *SVGResourceRegistry) ReplaceFilter(f *SVGResourceFilter) {
-	if r == nil || f == nil || f.ID() == "" {
+// RegisterBuiltFrom registers res, built from elt, by ID (first-wins, as
+// Register) and records elt as its source.
+func (r *SVGResourceRegistry) RegisterBuiltFrom(res SVGResource, elt ElementAdapter) {
+	if r == nil || res == nil || res.ID() == "" {
 		return
 	}
-	if existing, ok := r.resources[f.ID()]; ok {
-		if _, isFilter := existing.(*SVGResourceFilter); !isFilter {
-			return
-		}
+	if _, exists := r.resources[res.ID()]; exists {
+		return
 	}
-	r.resources[f.ID()] = f
+	r.resources[res.ID()] = res
+	r.sources[res.ID()] = elt
+}
+
+// ResourceBuiltFrom returns the resource registered from elt
+// (RegisterBuiltFrom), if any.
+func (r *SVGResourceRegistry) ResourceBuiltFrom(elt ElementAdapter) (SVGResource, bool) {
+	if r == nil || elt == nil {
+		return nil, false
+	}
+	id, ok := elt.Attribute("id")
+	if !ok {
+		return nil, false
+	}
+	id = strings.TrimSpace(id)
+	if src, ok := r.sources[id]; !ok || src != elt {
+		return nil, false
+	}
+	return r.resources[id], true
 }
 
 // Lookup returns the resource registered under `id`. Returns (nil,
@@ -232,56 +227,6 @@ func (r *SVGResourceRegistry) ForEach(fn func(SVGResource)) {
 	}
 	for _, res := range r.resources {
 		fn(res)
-	}
-}
-
-// ForEachPaintServer invokes `fn` for each registered paint server.
-// Retained for Phase 4/5 callsites; new code should use ForEach +
-// type assertion, or LookupAsPaintServer at the resolution site.
-func (r *SVGResourceRegistry) ForEachPaintServer(fn func(SVGResourcePaintServer)) {
-	if r == nil || fn == nil {
-		return
-	}
-	for _, res := range r.resources {
-		if ps, ok := res.(SVGResourcePaintServer); ok {
-			fn(ps)
-		}
-	}
-}
-
-// ForEachClipper invokes `fn` for each registered `<clipPath>`.
-func (r *SVGResourceRegistry) ForEachClipper(fn func(*SVGResourceClipper)) {
-	if r == nil || fn == nil {
-		return
-	}
-	for _, res := range r.resources {
-		if c, ok := res.(*SVGResourceClipper); ok {
-			fn(c)
-		}
-	}
-}
-
-// ForEachMasker invokes `fn` for each registered `<mask>`.
-func (r *SVGResourceRegistry) ForEachMasker(fn func(*SVGResourceMasker)) {
-	if r == nil || fn == nil {
-		return
-	}
-	for _, res := range r.resources {
-		if m, ok := res.(*SVGResourceMasker); ok {
-			fn(m)
-		}
-	}
-}
-
-// ForEachFilter invokes `fn` for each registered `<filter>`.
-func (r *SVGResourceRegistry) ForEachFilter(fn func(*SVGResourceFilter)) {
-	if r == nil || fn == nil {
-		return
-	}
-	for _, res := range r.resources {
-		if f, ok := res.(*SVGResourceFilter); ok {
-			fn(f)
-		}
 	}
 }
 

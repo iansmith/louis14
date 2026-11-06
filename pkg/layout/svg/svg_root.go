@@ -294,44 +294,35 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	if elt == nil {
 		return nil
 	}
-	// Track ALL id-bearing elements so feImage (and any future
-	// reference primitive) can resolve `href="#id"` to the underlying
-	// DOM element. Resource elements (gradients, filters, …) ALSO end
-	// up in this map, but the typed lookups via LookupAs* still apply
-	// for those. Mirrors Blink's per-tree-scope id→Element table.
-	resources.RegisterElement(elt)
 	tag := elt.TagName()
 	switch tag {
 	case "lineargradient":
 		// HTML tokenizer lowercases SVG element names — `<linearGradient>`
 		// arrives here as "lineargradient". Same for radialgradient.
 		g := NewSVGLinearGradient(elt, styleResolver)
-		resources.RegisterPaintServer(g)
+		resources.RegisterBuiltFrom(g, elt)
 		return nil
 	case "radialgradient":
 		g := NewSVGRadialGradient(elt, styleResolver)
-		resources.RegisterPaintServer(g)
+		resources.RegisterBuiltFrom(g, elt)
 		return nil
 	case "pattern":
 		p := NewSVGPattern(elt, lengthCtx, styleResolver)
-		resources.RegisterPaintServer(p)
+		resources.RegisterBuiltFrom(p, elt)
 		return nil
 	case "clippath":
 		// HTML tokenizer lowercases SVG element names —
 		// `<clipPath>` arrives here as "clippath".
 		c := NewSVGResourceClipper(elt, lengthCtx, styleResolver)
-		resources.RegisterClipper(c)
+		resources.RegisterBuiltFrom(c, elt)
 		return nil
 	case "mask":
 		m := NewSVGResourceMasker(elt, lengthCtx, styleResolver)
-		resources.RegisterMasker(m)
+		resources.RegisterBuiltFrom(m, elt)
 		return nil
 	case "filter":
-		// HTML tokenizer lowercases SVG element names — `<filter>`
-		// arrives here as "filter". Phase 7 routes it through
-		// NewSVGResourceFilter and into the registry.
-		f := NewSVGResourceFilter(elt, lengthCtx, styleResolver)
-		resources.RegisterFilter(f)
+		// A <filter> is a document resource built from the DOM, laid out
+		// or not (layout's treeScopeSVGResources); it paints nothing here.
 		return nil
 	case "defs":
 		// `<defs>` is a non-rendering grouping element (SVG 2 §5.5);

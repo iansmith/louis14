@@ -9,7 +9,7 @@ import (
 )
 
 // svgMaskPainter resolves a `mask-image: url(#id)` (and the
-// `mask: url(#id)` shorthand) reference against the renderer-wide SVG
+// `mask: url(#id)` shorthand) reference against the document's SVG
 // resource registry and rasterizes the resolved `<mask>` element's
 // children into an alpha buffer suitable for kDstIn compositing
 // (dst.A *= mask.A) onto the masked element's offscreen buffer.
@@ -155,7 +155,7 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 		DeviceFromUser:   deviceFromUser,
 		// The mask's children may reference paint servers
 		// (gradients, etc.) declared at the page scope — feed them
-		// the renderer-wide registry.
+		// the document's id map (lookupSVGResources).
 		Resources: r.lookupSVGResources(),
 		Renderer:  tmpR,
 	}

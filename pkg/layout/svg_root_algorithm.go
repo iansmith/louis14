@@ -88,6 +88,12 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 
 	// Step 5: stash the SVGRoot on the LayoutInputNode for the painter.
 	sra.node.SVGRoot = root
+	if sra.node.DOMNode != nil {
+		if sra.ctx.SVGRoots == nil {
+			sra.ctx.SVGRoots = make(map[*html.Node]*svg.SVGRoot)
+		}
+		sra.ctx.SVGRoots[sra.node.DOMNode] = root
+	}
 
 	return result
 }
@@ -138,36 +144,90 @@ func computedStyleResolver(styles map[*html.Node]*css.Style) svg.StyleResolver {
 	}
 }
 
-// treeScopeSVGFilters registers every SVG <filter> element under root in
-// one tree-order pass, so the first with an id wins. A url() filter
-// reference resolves to the first <filter> element with that id in the tree
-// scope, laid out or not (FilterEffectBuilder::BuildReferenceFilter,
-// core/paint/filter_effect_builder.cc:514-521; LocalSVGResource,
-// core/svg/svg_resource.cc:196 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// A <filter> outside every laid-out <svg> (one whose box in nodeBoxes has
-// an SVGRoot; e.g. in a display:none <svg>) is marked NoLayoutObject.
-func treeScopeSVGFilters(root *html.Node, styles map[*html.Node]*css.Style, nodeBoxes map[*html.Node]*Box) *svg.SVGResourceRegistry {
+// treeScopeSVGResources builds the document's id map for url()
+// references and makes it every laid-out <svg>'s registry. Blink resolves an
+// id in the document's tree scope (TreeScope::getElementById; a resource's
+// target, LocalSVGResource, core/svg/svg_resource.cc:196 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the first element with the id
+// in tree order, whatever its kind, and the referencing property then checks
+// the kind, so a wrong kind resolves to no resource. The first element
+// provides:
+//   - a <filter>: built from the DOM, laid out or not
+//     (FilterEffectBuilder::BuildReferenceFilter, core/paint/
+//     filter_effect_builder.cc:514-521), NoLayoutObject when it has none;
+//   - a gradient, pattern, clipPath or mask: the resource its laid-out
+//     <svg> built from it (Blink's need a LayoutSVGResourceContainer);
+//   - anything else: no resource.
+//
+// roots are the document's laid-out <svg> elements (LayoutContext.SVGRoots).
+func treeScopeSVGResources(root *html.Node, styles map[*html.Node]*css.Style, roots map[*html.Node]*svg.SVGRoot) *svg.SVGResourceRegistry {
 	reg := svg.NewSVGResourceRegistry()
 	resolve := computedStyleResolver(styles)
-	var walk func(n *html.Node, laidOut bool)
-	walk = func(n *html.Node, laidOut bool) {
-		if b := nodeBoxes[n]; b != nil && b.LayoutNode != nil && b.LayoutNode.SVGRoot != nil {
-			laidOut = true
-		}
-		if n.Type == html.ElementNode && n.TagName == "filter" && n.NamespaceURI() == html.SVGNamespaceURI {
-			if f := svg.NewSVGResourceFilter(svgElementAdapter{node: n}, svg.SVGLengthContext{}, resolve); f != nil {
-				f.NoLayoutObject = !laidOut
-				reg.RegisterFilter(f)
+	// svgRoot is the laid-out <svg> n is in; hasLayoutObject reports
+	// whether n has a layout object in it.
+	var walk func(n *html.Node, svgRoot *svg.SVGRoot, hasLayoutObject bool)
+	walk = func(n *html.Node, svgRoot *svg.SVGRoot, hasLayoutObject bool) {
+		if n.Type != html.ElementNode {
+			for _, c := range n.Children {
+				walk(c, svgRoot, hasLayoutObject)
 			}
+			return
+		}
+		switch r := roots[n]; {
+		case r != nil:
+			svgRoot, hasLayoutObject = r, true
+		case svgRoot != nil:
+			hasLayoutObject = hasLayoutObject && svgCreatesLayoutObject(n, styles)
+		}
+		// The first element with its id only (RegisterElement is
+		// first-wins).
+		if elt := (svgElementAdapter{node: n}); reg.RegisterElement(elt) && n.NamespaceURI() == html.SVGNamespaceURI {
+			registerTreeScopeResource(reg, elt, svgRoot, hasLayoutObject, resolve)
 		}
 		for _, c := range n.Children {
-			walk(c, laidOut)
+			walk(c, svgRoot, hasLayoutObject)
 		}
 	}
-	walk(root, false)
+	walk(root, nil, false)
+	for _, r := range roots {
+		r.Resources = reg
+	}
 	return reg
 }
 
+// registerTreeScopeResource registers the resource elt, the first element
+// with its id, provides (treeScopeSVGResources).
+func registerTreeScopeResource(reg *svg.SVGResourceRegistry, elt svgElementAdapter, svgRoot *svg.SVGRoot, hasLayoutObject bool, resolve svg.StyleResolver) {
+	if elt.node.TagName == "filter" {
+		if f := svg.NewSVGResourceFilter(elt, svg.SVGLengthContext{}, resolve); f != nil {
+			f.NoLayoutObject = !hasLayoutObject
+			reg.RegisterFilter(f)
+		}
+		return
+	}
+	if svgRoot == nil {
+		return
+	}
+	if res, ok := svgRoot.Resources.ResourceBuiltFrom(elt); ok {
+		reg.Register(res)
+	}
+}
+
+// svgCreatesLayoutObject reports whether the SVG element n, under a parent
+// with a layout object, creates one: <defs> and <g> always do, as hidden
+// containers when not rendered (SVGDefsElement::CreateLayoutObject,
+// svg_defs_element.cc:31-33; SVGGElement, svg_g_element.cc:32-50 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); any other element unless its
+// display is none (SVGElement::LayoutObjectIsNeeded, svg_element.cc:873-875).
+// A display:contents element's children are hoisted to its parent, so it
+// passes its parent's layout object on.
+func svgCreatesLayoutObject(n *html.Node, styles map[*html.Node]*css.Style) bool {
+	if n.TagName == "defs" || n.TagName == "g" {
+		return true
+	}
+	st := styles[n]
+	return st == nil || st.GetDisplay() != css.DisplayNone
+}
 
 func newSVGElementAdapter(n *html.Node) svg.ElementAdapter {
 	if n == nil {

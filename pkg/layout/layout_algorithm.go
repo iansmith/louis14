@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"louis14/pkg/layout/svg"
 	"louis14/pkg/text"
 )
 
@@ -78,6 +79,11 @@ type LayoutContext struct {
 	// Nil-tolerant: SVG descendants without a style entry fall back
 	// to SVG property defaults.
 	ComputedStyles map[*html.Node]*css.Style
+
+	// SVGRoots maps each outermost <svg> laid out in this document to its
+	// latest SVGRoot (recorded by SVGRootAlgorithm), for the document's id
+	// map (treeScopeSVGResources).
+	SVGRoots map[*html.Node]*svg.SVGRoot
 }
 
 // orthogonalCacheEntry stores a cached layout result or a "computing" sentinel.
