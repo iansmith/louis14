@@ -263,15 +263,35 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style, m
 	if disp, ok := style.Get("display"); ok && strings.EqualFold(strings.TrimSpace(disp), "contents") {
 		c.displayContents[node] = true
 	}
-	for _, d := range c.parseCounterDirectives(node, style) {
+	directives := c.parseCounterDirectives(node, style)
+	for _, d := range directives {
 		c.ProcessCounter(node, d)
 	}
 	if maybeCreateListItemCounter != nil {
 		maybeCreateListItemCounter()
 	}
 	if style.ShouldApplyStyleContainment() {
-		c.EnterStyleContainmentScope()
+		c.EnterStyleContainmentScope(ownListCounter(node, directives))
 	}
+}
+
+// ownListCounter returns "list-item" when node is a list (<ol>, <ul> or
+// <menu>) that resets list-item itself, else "". Such a list's style
+// containment does not cut its own items off from it: they are its list
+// (ListItemOrdinal::EnclosingList returns the list itself,
+// html/list_item_ordinal.cc:84-115; IsInReversedOrderedList reads its
+// reversed attribute, :46-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// so its containment boundary is not pushed on the list-item stack.
+func ownListCounter(node *html.Node, directives []CounterDirective) string {
+	switch node.TagName {
+	case "ol", "ul", "menu":
+		for _, d := range directives {
+			if d.Name == "list-item" && d.Type.IsReset() {
+				return "list-item"
+			}
+		}
+	}
+	return ""
 }
 
 // LeaveObject runs the Blink LeaveObject step: pop the style-containment
@@ -288,10 +308,11 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	if node == nil || style == nil {
 		return
 	}
+	directives := c.parseCounterDirectives(node, style)
 	if style.ShouldApplyStyleContainment() {
-		c.LeaveStyleContainmentScope()
+		c.LeaveStyleContainmentScope(ownListCounter(node, directives))
 	}
-	for _, d := range c.parseCounterDirectives(node, style) {
+	for _, d := range directives {
 		if d.Type.IsReset() {
 			c.RemoveCounterIfAncestorExists(node, d.Name)
 		}
@@ -312,9 +333,14 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 // boundary), and causes RemoveStaleCounters to stop walking. Counter
 // reads via GetCounterValues SKIP the sentinel rather than stopping
 // at it — the boundary gates writes, not reads.
-func (c *CountersAttachmentContext) EnterStyleContainmentScope() {
-	for _, stack := range c.table {
-		*stack = append(*stack, nil)
+//
+// The stack of counter except, when non-empty, gets no boundary (see
+// ownListCounter); LeaveStyleContainmentScope must be given the same name.
+func (c *CountersAttachmentContext) EnterStyleContainmentScope(except string) {
+	for name, stack := range c.table {
+		if name != except {
+			*stack = append(*stack, nil)
+		}
 	}
 }
 
@@ -325,8 +351,14 @@ func (c *CountersAttachmentContext) EnterStyleContainmentScope() {
 // the sentinel itself. Entries created INSIDE the containment scope
 // (after the matching EnterStyleContainmentScope) are discarded;
 // entries below the sentinel remain.
-func (c *CountersAttachmentContext) LeaveStyleContainmentScope() {
-	for _, stack := range c.table {
+//
+// except names the stack EnterStyleContainmentScope left without a boundary;
+// it is not popped.
+func (c *CountersAttachmentContext) LeaveStyleContainmentScope(except string) {
+	for name, stack := range c.table {
+		if name == except {
+			continue
+		}
 		for len(*stack) > 0 && (*stack)[len(*stack)-1] != nil {
 			*stack = (*stack)[:len(*stack)-1]
 		}

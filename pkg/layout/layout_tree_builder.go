@@ -319,11 +319,11 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		// The implicit step is applied via UpdateCounterValue inside EnterObject,
 		// after the element's own directives and before any style-containment
 		// boundary, so a style-contained list item still steps the outer list.
-		b.counterCtx.EnterObject(node, style, func() {
-			if disp := style.GetDisplay(); disp == css.DisplayListItem || disp == css.DisplayInlineListItem {
-				b.applyImplicitListItemStep(node, style)
-			}
-		})
+		var listItemStep func()
+		if disp := style.GetDisplay(); disp == css.DisplayListItem || disp == css.DisplayInlineListItem {
+			listItemStep = func() { b.applyImplicitListItemStep(node, style) }
+		}
+		b.counterCtx.EnterObject(node, style, listItemStep)
 		defer b.counterCtx.LeaveObject(node, style)
 
 		if style.ShouldApplyStyleContainment() {
@@ -1167,11 +1167,11 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// then drop out of scope when we leave below. We pair this with
 	// LeaveObject before returning the LayoutInputNode.
 	isListItem := pseudoStyle != nil && pseudoStyle.IsListItemDisplay()
-	b.counterCtx.EnterObject(pseudoNode, pseudoStyle, func() {
-		if isListItem {
-			b.applyImplicitListItemStep(pseudoNode, pseudoStyle)
-		}
-	})
+	var listItemStep func()
+	if isListItem {
+		listItemStep = func() { b.applyImplicitListItemStep(pseudoNode, pseudoStyle) }
+	}
+	b.counterCtx.EnterObject(pseudoNode, pseudoStyle, listItemStep)
 	defer b.counterCtx.LeaveObject(pseudoNode, pseudoStyle)
 
 	// A display:list-item pseudo-element is a real list item: it takes the
@@ -1624,10 +1624,6 @@ func (b *LayoutTreeBuilder) precomputeReversedCounterInitials(node *html.Node, s
 // <span class="li"> style="display:list-item" is counted —
 // see counter-reset-reversed-list-item.html).
 func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, name string) int {
-	// Inside an <ol>'s own descendants, list-item counting skips nested list
-	// owners (see visit); Blink's ordered-list count walks only those
-	// descendants, so the skip ends before the following siblings.
-	skipListOwners := name == "list-item" && resetNode.TagName == "ol"
 	initialValue := 0
 	lastNonZeroIncrementNegated := 0
 
@@ -1675,10 +1671,12 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 	// visit handles one descendant or sibling element in pre-order: the
 	// element itself, then its ::before pseudo, then its DOM children
 	// (recursive), then its ::after pseudo. A descendant counter-reset
-	// for the same name terminates that branch. Returns true if a hard
-	// stop (counter-set) was hit and the entire walk must end.
-	var visit func(n *html.Node) bool
-	visit = func(n *html.Node) bool {
+	// for the same name terminates that branch. skipListOwners drops nested
+	// <ol>/<ul>/<menu> lists entirely (an <ol>'s list-item count over its
+	// own descendants). Returns true if a hard stop (counter-set) was hit
+	// and the entire walk must end.
+	var visit func(n *html.Node, skipListOwners bool) bool
+	visit = func(n *html.Node, skipListOwners bool) bool {
 		if n == nil || n.Type != html.ElementNode {
 			return false
 		}
@@ -1697,18 +1695,27 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 		}
 
 		// An <ol>'s list-item count over its own descendants skips nested
-		// list owners, style-contained elements included: their items form
-		// their own lists
+		// lists: their items form their own lists
 		// (ListItemOrdinal::InitialCounterForReversedOrderedList,
 		// html/list_item_ordinal.cc:359-425 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if skipListOwners && b.isListOwner(n) {
+		if skipListOwners && b.isListOwnerElement(n) {
 			return false
 		}
 
 		// Visit the element itself.
 		if processStyle(st, listItemImplicitOf(st)) {
 			return true
+		}
+
+		// Style containment cuts the counter off below the element: its
+		// pseudo-elements and descendants increment a fresh counter instead
+		// (EnterStyleContainmentScope after the element's own counters,
+		// css/counters_attachment_context.cc:252-256; UpdateCounterValue
+		// :622-627 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The element's
+		// own step above still counts.
+		if st != nil && st.ShouldApplyStyleContainment() {
+			return false
 		}
 
 		// ::before pseudo-element (layout-tree child appearing before
@@ -1722,7 +1729,7 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 		// Real DOM children, in document order.
 		for _, child := range n.Children {
 			if child.Type == html.ElementNode {
-				if visit(child) {
+				if visit(child, skipListOwners) {
 					return true
 				}
 			}
@@ -1767,11 +1774,14 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 		}
 	}
 
-	// Phase 1: resetNode's DOM descendants in document order.
+	// Phase 1: resetNode's DOM descendants in document order. An <ol>'s
+	// list-item count skips nested lists here only: Blink's ordered-list
+	// count walks just these descendants, never the following siblings.
 	if !stopped {
+		skipListOwners := name == "list-item" && resetNode.TagName == "ol"
 		for _, child := range resetNode.Children {
 			if child.Type == html.ElementNode {
-				if visit(child) {
+				if visit(child, skipListOwners) {
 					stopped = true
 					break
 				}
@@ -1787,8 +1797,6 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 			}
 		}
 	}
-
-	skipListOwners = false
 
 	// Phase 2: resetNode's following siblings. A following sibling that
 	// has a counter-reset for the same name at the SAME parent ends the
@@ -1815,7 +1823,7 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 			if hasCounterReset(sibSt, name) {
 				break
 			}
-			if visit(sib) {
+			if visit(sib, false) {
 				stopped = true
 				break
 			}
@@ -2277,6 +2285,9 @@ func (b *LayoutTreeBuilder) applyImplicitListItemStep(node *html.Node, style *cs
 	if _, ok := counterSetValue(style, "list-item"); ok {
 		return
 	}
+	// Prune first: the direction is the counter this step updates, and a
+	// stale entry left by an exited scope is not it.
+	b.counterCtx.RemoveStaleCounters(node, "list-item")
 	step := 1
 	if b.counterCtx.IsCounterReversed("list-item") {
 		if b.counterCtx.HasAutoReversedCounter(node, "list-item") {
@@ -2284,28 +2295,26 @@ func (b *LayoutTreeBuilder) applyImplicitListItemStep(node *html.Node, style *cs
 		}
 		step = -1
 	}
-	b.counterCtx.RemoveStaleCounters(node, "list-item")
 	b.counterCtx.UpdateCounterValue(node, "list-item", css.CounterIncrementType, step)
 }
 
-// isListOwner reports whether n bounds a list: an <ol>, <ul> or <menu> that
-// generates a box, or any element with style containment, whose items then
-// form their own list (ListItemOrdinal::IsListOwner / HasStyleContainment,
-// html/list_item_ordinal.cc:21-36, :76-81 @
+// isListOwnerElement reports whether n is an <ol>, <ul> or <menu> that
+// generates a box, whose items form their own list (ListItemOrdinal::
+// IsListOwner, html/list_item_ordinal.cc:21-36 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; ListOwnerMustHaveCSSBox is
-// stable).
-func (b *LayoutTreeBuilder) isListOwner(n *html.Node) bool {
-	st := b.styles[n]
-	if st == nil {
-		return false
-	}
+// stable). Style containment, which Blink also counts as a list owner, is
+// handled by the callers' containment checks.
+func (b *LayoutTreeBuilder) isListOwnerElement(n *html.Node) bool {
 	switch n.TagName {
 	case "ol", "ul", "menu":
-		if d := st.GetDisplay(); d != css.DisplayNone && d != css.DisplayContents {
-			return true
+		st := b.styles[n]
+		if st == nil {
+			return false
 		}
+		d := st.GetDisplay()
+		return d != css.DisplayNone && d != css.DisplayContents
 	}
-	return st.ShouldApplyStyleContainment()
+	return false
 }
 
 // listItemOrdinal returns the list-item counter value for a marker.
