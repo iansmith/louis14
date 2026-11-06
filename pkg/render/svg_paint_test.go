@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"testing"
 
-	"louis14/pkg/html"
-	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
 
@@ -16,25 +14,10 @@ import (
 // a fresh in-memory RGBA so tests can inspect pixels without going
 // through the on-disk PNG path. Mirrors how render.NewRendererForImage
 // is used by the reftest harness.
-func renderToImage(t *testing.T, htmlContent string, w, h int) *image.RGBA {
+func renderToImage(t *testing.T, htmlContent string, w, h int, opts ...render.RenderOption) *image.RGBA {
 	t.Helper()
-	doc, err := html.Parse(htmlContent)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	return renderDocToImage(doc, w, h)
-}
-
-// renderDocToImage lays out and renders a parsed (and possibly mutated)
-// document.
-func renderDocToImage(doc *html.Document, w, h int) *image.RGBA {
-	eng := layout.NewLayoutEngine(float64(w), float64(h))
-	boxes := eng.Layout(doc)
-
-	target := image.NewRGBA(image.Rect(0, 0, w, h))
-	r := render.NewRendererForImage(target)
-	r.Render(boxes)
-	return target
+	img, _ := render.RenderPage(t, htmlContent, w, h, opts...)
+	return img
 }
 
 // TestSVG_RedRectInsideSVG hand-verifies the Phase-2 painter: a
