@@ -370,6 +370,14 @@ type ResolvedTiming struct {
 	Forwards         bool // current direction is forwards
 }
 
+// IsCurrent mirrors AnimationEffect::IsCurrent (timing.cc:263-269 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): in play, or before the active
+// interval while playing forwards. louis14 plays every animation at rate 1,
+// so the reversed-playback (after phase) case never applies.
+func (rt ResolvedTiming) IsCurrent() bool {
+	return rt.Phase == PhaseActive || rt.Phase == PhaseBefore
+}
+
 // Resolve evaluates the full static-snapshot timing pipeline at localTime, the
 // animation's local time in seconds: 0 for an animation held since load, or
 // the document timeline's time for one started after frames advanced it. The

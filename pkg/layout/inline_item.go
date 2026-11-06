@@ -132,8 +132,8 @@ type InlineItem struct {
 //
 // CreatesGroup is ComputedStyle::HasGroupingProperty(HasReflection())
 // (layout_object.h:2724-2728 @ a9f50e52). ShouldCompositeForCurrentAnimations
-// has no louis14 counterpart: louis14 bakes running animations into the
-// style, so an animated opacity or filter is already a grouping property.
+// is css.Style's: a current animation of opacity, a transform-related
+// property, filter or backdrop-filter.
 // ShouldApplyPaintContainment is always false for a LayoutInline: only
 // LayoutBox overrides IsEligibleForPaintOrLayoutContainment (layout_box.h:1178;
 // the LayoutObject default is false, layout_object.h:621-624 @ a9f50e52).
@@ -145,7 +145,7 @@ func IsInlinePaintGroup(s *css.Style, node *html.Node) bool {
 	}
 	p := s.GetPosition()
 	return p == css.PositionRelative || p == css.PositionSticky ||
-		s.HasGroupingProperty(s.HasBoxReflect())
+		s.HasGroupingProperty(s.HasBoxReflect()) || s.ShouldCompositeForCurrentAnimations()
 }
 
 // annotatePaintGroups walks the flat item sequence once, maintaining the

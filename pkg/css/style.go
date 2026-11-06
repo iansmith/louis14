@@ -234,6 +234,76 @@ type Style struct {
 	// properties (ComputedStyle::Translate / Rotate / Scale) on the same
 	// terms.
 	independent [3]*computedIndependentTransform
+
+	// currentAnimations holds ComputedStyle's HasCurrent*Animation bits
+	// that are compositing reasons, set by applyCSSAnimations.
+	currentAnimations currentAnimationFlags
+}
+
+// currentAnimationFlags is the set of properties a current or in-effect CSS
+// animation affects, of those whose animation is a compositing reason.
+// Mirrors ComputedStyle's HasCurrentOpacityAnimation /
+// HasCurrentFilterAnimation / HasCurrentBackdropFilterAnimation /
+// HasCurrentTransformRelatedAnimation, set by UpdateAnimationFlagsForEffect
+// (core/animation/css/css_animations.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type currentAnimationFlags uint8
+
+const (
+	currentOpacityAnimation currentAnimationFlags = 1 << iota
+	currentFilterAnimation
+	currentBackdropFilterAnimation
+	// transform, translate, rotate or scale.
+	currentTransformRelatedAnimation
+)
+
+// currentAnimationFlagsByProperty maps each property whose current animation
+// sets a currentAnimationFlags bit to that bit (UpdateAnimationFlagsForEffect,
+// css_animations.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var currentAnimationFlagsByProperty = map[string]currentAnimationFlags{
+	"opacity":         currentOpacityAnimation,
+	"filter":          currentFilterAnimation,
+	"backdrop-filter": currentBackdropFilterAnimation,
+	"transform":       currentTransformRelatedAnimation,
+	"translate":       currentTransformRelatedAnimation,
+	"rotate":          currentTransformRelatedAnimation,
+	"scale":           currentTransformRelatedAnimation,
+}
+
+// ShouldCompositeForCurrentAnimations mirrors ComputedStyle::
+// ShouldCompositeForCurrentAnimations (computed_style.h:2071-2077 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a current animation of opacity,
+// a transform-related property, filter or backdrop-filter.
+func (s *Style) ShouldCompositeForCurrentAnimations() bool {
+	return s.currentAnimations != 0
+}
+
+// hasCurrentFilterOrBackdropFilterAnimation reports a current animation of
+// filter or backdrop-filter: with opacity's (HasNonInitialOpacity), the
+// animations that are direct compositing reasons for the element's effect or
+// filter node, which a transform-related one is not
+// (kDirectReasonsForEffectProperty / kDirectReasonsForFilterProperty,
+// platform/graphics/compositing_reasons.h:164-175 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's HasNonInitialFilter and
+// HasNonInitialBackdropFilter do not read them (computed_style.h:2192-2201).
+func (s *Style) hasCurrentFilterOrBackdropFilterAnimation() bool {
+	return s.currentAnimations&(currentFilterAnimation|currentBackdropFilterAnimation) != 0
+}
+
+// CloneInFlowFragment returns the style a fragment of this element that is
+// not the element itself paints with: position static, so it paints in flow
+// order, and none of the element's current-animation compositing reasons.
+func (s *Style) CloneInFlowFragment() *Style {
+	c := s.Clone()
+	c.Set("position", "static")
+	c.currentAnimations = 0
+	return c
+}
+
+// HasCurrentOpacityAnimation reports a current or in-effect animation of
+// opacity (ComputedStyle::HasCurrentOpacityAnimation).
+func (s *Style) HasCurrentOpacityAnimation() bool {
+	return s.currentAnimations&currentOpacityAnimation != 0
 }
 
 // computedTransform is a computed transform list with the property text it
@@ -275,6 +345,7 @@ func (s *Style) Clone() *Style {
 	dst.transform = s.transform
 	dst.transformOrigin = s.transformOrigin
 	dst.independent = s.independent
+	dst.currentAnimations = s.currentAnimations
 	return dst
 }
 
@@ -10062,10 +10133,8 @@ func (s *Style) HasOutOfFlowPosition() bool {
 
 // HasNonInitialOpacity mirrors Blink's ComputedStyle::HasNonInitialOpacity
 // (computed_style.h:2205-2208 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// louis14 bakes running animations into the style, so GetOpacity covers
-// HasCurrentOpacityAnimation.
 func (s *Style) HasNonInitialOpacity() bool {
-	return s.GetOpacity() < 1 || s.HasWillChangeProperty("opacity")
+	return s.GetOpacity() < 1 || s.HasCurrentOpacityAnimation() || s.HasWillChangeProperty("opacity")
 }
 
 // HasNonInitialFilter mirrors Blink's ComputedStyle::HasNonInitialFilter
@@ -12234,6 +12303,11 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 //   - mix-blend-mode is not "normal"
 //   - will-change names any property whose non-initial value would itself
 //     create a Backdrop Root
+//   - a current or in-effect animation of opacity, filter or backdrop-filter,
+//     whatever its value: Blink makes it a compositing reason
+//     (compositing_reason_finder.cc:576-588 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the element's effect node
+//     is a render surface
 //
 // The root element is also a Backdrop Root, but that is handled separately
 // by the renderer (the canvas itself is the implicit backdrop), so it is not
@@ -12249,13 +12323,8 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 // `effect_paint_property_node.cc::DetermineBackdropRoot()` at Chromium
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (s *Style) IsBackdropRoot() bool {
-	if s.GetOpacity() < 1.0 {
-		return true
-	}
-	if len(s.GetFilter()) > 0 {
-		return true
-	}
-	if len(s.GetBackdropFilter()) > 0 {
+	if s.HasNonInitialOpacity() || s.HasNonInitialFilter() || s.HasNonInitialBackdropFilter() ||
+		s.hasCurrentFilterOrBackdropFilterAnimation() {
 		return true
 	}
 	if s.HasMask() {
@@ -12960,13 +13029,12 @@ var willChangeBroadTransformSet = map[string]bool{
 	"offset-position": true,
 }
 
-// willChangeAliasMap normalizes vendor-prefixed will-change idents to their
-// unprefixed longhand. Mirrors Blink's CSS property alias resolution that
-// happens before resolved_longhand_ids is built.
-//
-// Only aliases known to appear in WPT css-will-change tests + Blink's
-// canonical SC set are listed.
-var willChangeAliasMap = map[string]string{
+// propertyAliases maps vendor-prefixed property names to the property they
+// are an alias for (css_properties.json5 alias_for @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the will-change idents and
+// keyframe properties louis14 resolves before matching. Partial: only the
+// aliases of properties those consumers care about are listed.
+var propertyAliases = map[string]string{
 	"-webkit-perspective": "perspective",
 	"-webkit-transform":   "transform",
 	"-webkit-filter":      "filter",
@@ -13062,7 +13130,7 @@ func (s *Style) GetWillChangeData() *WillChange {
 			continue
 		}
 		// Alias normalization (-webkit-* → unprefixed where applicable).
-		if canon, isAlias := willChangeAliasMap[ident]; isAlias {
+		if canon, isAlias := propertyAliases[ident]; isAlias {
 			ident = canon
 		}
 		// Shorthand expansion: replace the shorthand ident with its
