@@ -1702,15 +1702,27 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			csBuilder.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
 		}
 		childSpace := csBuilder.Build()
-		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
-		// ComputeMinMaxSizes returns content-box; convert to border-box
-		// for the atomic inline's contribution to the line.
-		childGeom := ComputeFragmentGeometry(item.Style, childWDM)
-		childBP := childGeom.InlineBorderPadding()
-		if lb.mode == LineBreakerMinContent {
-			inlineSize = childMM.MinContent + childBP
+		if lb.space.WritingDirection.IsOrthogonalTo(childWDM) {
+			// An orthogonal atomic contributes its block size: Blink's
+			// ComputeMinAndMaxContentContribution lays it out
+			// (LineBreaker, inline/line_breaker.cc:3182-3194 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			// measureOrthogonalChild includes the margins, added below.
+			oMin, oMax := measureOrthogonalChild(item.LayoutNode, item.Style, childWDM, lb.space.WritingDirection, lb.ctx, childSpace)
+			inlineSize = oMax
+			if lb.mode == LineBreakerMinContent {
+				inlineSize = oMin
+			}
+			inlineSize -= margins.InlineSum()
 		} else {
+			childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
+			// ComputeMinMaxSizes returns content-box; convert to border-box
+			// for the atomic inline's contribution to the line.
+			childBP := ComputeFragmentGeometry(item.Style, childWDM).InlineBorderPadding()
 			inlineSize = childMM.MaxContent + childBP
+			if lb.mode == LineBreakerMinContent {
+				inlineSize = childMM.MinContent + childBP
+			}
 		}
 	} else {
 		// Normal layout: lay out the atomic inline with shrink-to-fit.

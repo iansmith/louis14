@@ -75,7 +75,12 @@ func TestMeasureGridMinMax_OrthogonalChildBlockSize(t *testing.T) {
 	if mm.MinContent != 100 {
 		t.Errorf("MinContent: got %.2f, want 100 (orthogonal child's block-size)", mm.MinContent)
 	}
-	if mm.MaxContent != 100 {
-		t.Errorf("MaxContent: got %.2f, want 100 (orthogonal child's block-size)", mm.MaxContent)
+	// The test tree does not inherit writing-mode, so the inline-blocks are
+	// horizontal-tb inside the vertical-rl child: orthogonal atomics, each
+	// contributing its block size (100) to the vertical line (LOU-765). At
+	// its max-content inline size (200) the child is one line, 50 wide, and
+	// that block size is its max-content contribution.
+	if mm.MaxContent != 50 {
+		t.Errorf("MaxContent: got %.2f, want 50 (orthogonal child's block-size at its max-content)", mm.MaxContent)
 	}
 }
