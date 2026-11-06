@@ -462,7 +462,9 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")
 		stdX, stdY := parseStdDeviation(prim)
-		return NewFEGaussianBlur(in, b.space, stdX, stdY)
+		// FEGaussianBlur scales its stdDeviation (fe_gaussian_blur.cc:74-83
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return NewFEGaussianBlur(in, b.space, applyHorizontalScale(elt, stdX), applyVerticalScale(elt, stdY))
 	case "fecolormatrix":
 		in := b.resolveInputAttr(prim, "in")
 		t, values := parseColorMatrixAttrs(prim)
@@ -471,7 +473,9 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		in := b.resolveInputAttr(prim, "in")
 		dx, _ := parseFloatAttr(prim, "dx", 0)
 		dy, _ := parseFloatAttr(prim, "dy", 0)
-		return NewFEOffset(in, b.space, dx, dy)
+		// FEOffset scales its offset (fe_offset.cc:55-65 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return NewFEOffset(in, b.space, applyHorizontalScale(elt, dx), applyVerticalScale(elt, dy))
 	case "feblend":
 		in := b.resolveInputAttr(prim, "in")
 		in2 := b.resolveInputAttr(prim, "in2")
@@ -523,9 +527,14 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		in := b.resolveInputAttr(prim, "in")
 		dx, _ := parseFloatAttr(prim, "dx", 2)
 		dy, _ := parseFloatAttr(prim, "dy", 2)
-		stdX, stdY := parseStdDeviation1(prim)
+		stdX, stdY := parseStdDeviation(prim)
 		r, g, bb, a := prim.FloodColor()
-		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, stdY, r, g, bb, a)
+		// FEDropShadow scales its offset and stdDeviation
+		// (fe_drop_shadow.cc:59-72 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return NewFEDropShadow(in, b.sourceAlpha, b.space,
+			applyHorizontalScale(elt, dx), applyVerticalScale(elt, dy),
+			applyHorizontalScale(elt, stdX), applyVerticalScale(elt, stdY), r, g, bb, a)
 	case "fedisplacementmap":
 		// Per SVG Filter Effects 1 §feDisplacementMap. `in` defaults to
 		// the chain default (handled by resolveInputAttr). `in2` has no
@@ -537,7 +546,10 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		xChan := parseChannelSelector(prim, "xChannelSelector")
 		yChan := parseChannelSelector(prim, "yChannelSelector")
 		scale, _ := parseFloatAttr(prim, "scale", 0)
-		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scale)
+		// FEDisplacementMap scales its scale horizontally, for both axes
+		// (fe_displacement_map.cc:126 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, applyHorizontalScale(elt, scale))
 	case "fediffuselighting":
 		// Per SVG Filter Effects 1 §feDiffuseLighting. The primitive
 		// reads its alpha-bump input (default chain), computes the
@@ -786,11 +798,6 @@ func parseStdDeviation(prim SVGFilterPrimitive) (float64, float64) {
 	}
 	y, _ := strconv.ParseFloat(parts[1], 64)
 	return x, y
-}
-
-// parseStdDeviation1 returns one axis (X) from feDropShadow.
-func parseStdDeviation1(prim SVGFilterPrimitive) (float64, float64) {
-	return parseStdDeviation(prim)
 }
 
 // parseFloatAttr reads a single float attribute with a default
