@@ -51,12 +51,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	// DeviceFromUser. (Mirrors the same fix in svg_filter_painter.go.)
 	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
 	regionF := filter.ResourceBoundingBox(deviceBBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
-	region := image.Rect(
-		int(math.Floor(regionF.X())),
-		int(math.Floor(regionF.Y())),
-		int(math.Ceil(regionF.X()+regionF.Width())),
-		int(math.Ceil(regionF.Y()+regionF.Height())),
-	)
+	region := snapRectFToDevice(regionF)
 	bw := region.Dx()
 	bh := region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {

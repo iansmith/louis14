@@ -225,11 +225,7 @@ func (r *Renderer) strokePathWithShader(pctx *svgPaintContext, path *svg.Path, s
 	// outside the fill bbox. Account for joins/miters by adding
 	// stroke-width on each side (conservative).
 	sw := style.GetStrokeWidth()
-	half := sw
-	userBBox = geometry.NewRectF(
-		userBBox.X()-half, userBBox.Y()-half,
-		userBBox.Width()+2*half, userBBox.Height()+2*half,
-	)
+	userBBox = userBBox.Outset(sw)
 	deviceBBox := pctx.DeviceFromUser.MapRect(userBBox)
 	if deviceBBox.IsEmpty() {
 		return

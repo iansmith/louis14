@@ -550,11 +550,12 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		xChan := parseChannelSelector(prim, "xChannelSelector")
 		yChan := parseChannelSelector(prim, "yChannelSelector")
 		scale, _ := parseFloatAttr(prim, "scale", 0)
-		// FEDisplacementMap scales its scale horizontally, for both axes
-		// (fe_displacement_map.cc:126 @
+		// FEDisplacementMap's kernel scales its scale horizontally, for both
+		// axes (fe_displacement_map.cc:126); MapEffect pads each axis by
+		// its own scaled scale (fe_displacement_map.cc:43-48 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		scale, _ = applyScale(elt, scale, 0)
-		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scale)
+		scaleX, scaleY := applyScale(elt, scale, scale)
+		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scaleX, scaleY)
 	case "fediffuselighting":
 		// Per SVG Filter Effects 1 §feDiffuseLighting. The primitive
 		// reads its alpha-bump input (default chain), computes the
@@ -810,8 +811,11 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 
 // parseStdDeviation parses a `stdDeviation` attribute: one number (both
 // axes) or two (x, y). def is the primitive's initial value for both axes,
-// used when the attribute is missing or empty: 0 for feGaussianBlur, 2 for
-// feDropShadow.
+// used when the attribute is missing, empty or malformed: 0 for
+// feGaussianBlur, 2 for feDropShadow. A parse error resets the value to its
+// initial one (ParseNumberOptionalNumber, svg_parser_utilities.cc:189-207;
+// SVGAnimatedPropertyBase, svg_animated_property.h:177-179 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func parseStdDeviation(prim SVGFilterPrimitive, def float64) (float64, float64) {
 	v, ok := prim.Attribute("stdDeviation")
 	if !ok {
@@ -821,14 +825,20 @@ func parseStdDeviation(prim SVGFilterPrimitive, def float64) (float64, float64) 
 		return def, def
 	}
 	parts := splitSVGList(v)
-	if len(parts) == 0 {
+	if len(parts) == 0 || len(parts) > 2 {
 		return def, def
 	}
-	x, _ := strconv.ParseFloat(parts[0], 64)
+	x, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return def, def
+	}
 	if len(parts) == 1 {
 		return x, x
 	}
-	y, _ := strconv.ParseFloat(parts[1], 64)
+	y, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		return def, def
+	}
 	return x, y
 }
 

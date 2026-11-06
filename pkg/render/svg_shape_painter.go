@@ -340,11 +340,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	}
 	// Expand for stroke geometry if needed.
 	if willStroke && sp.shape.Style != nil {
-		half := sp.shape.Style.GetStrokeWidth()
-		userBBox = geometry.NewRectF(
-			userBBox.X()-half, userBBox.Y()-half,
-			userBBox.Width()+2*half, userBBox.Height()+2*half,
-		)
+		userBBox = userBBox.Outset(sp.shape.Style.GetStrokeWidth())
 	}
 	// The shape and its mask rasterize in device pixels, through the draw
 	// context's whole matrix (an ancestor CSS transform included), so the

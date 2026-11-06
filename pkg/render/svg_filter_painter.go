@@ -57,12 +57,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// device-pixel size to use as percent base.
 	viewportDeviceSize := sp.ctx.DeviceFromUser.MapRect(sp.ctx.viewport).Size
 	regionF := filter.ResourceBoundingBox(referenceBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
-	region := image.Rect(
-		int(math.Floor(regionF.X())),
-		int(math.Floor(regionF.Y())),
-		int(math.Ceil(regionF.X()+regionF.Width())),
-		int(math.Ceil(regionF.Y()+regionF.Height())),
-	)
+	region := snapRectFToDevice(regionF)
 	bw := region.Dx()
 	bh := region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
@@ -261,12 +256,14 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 	rasterPipelineSpriteBlit(r.target, dest, buf, dest.Min.Sub(offset), 1)
 }
 
-// shapeDeviceReferenceBox computes the shape's stroke-inflated user-space
-// bbox and maps it through DeviceFromUser, unsnapped (Blink's reference box
-// is a gfx::RectF).
-// Returns the reference box, willFill, willStroke, and ok=false when the
-// shape has no paintable extent (empty user or device bbox). Shared by
-// both filter paint paths (single-url and chain).
+// shapeDeviceReferenceBox maps the shape's filter reference box, its fill
+// box (SVGResources::ReferenceBoxForEffects defaults to GeometryBox::kFillBox,
+// the ObjectBoundingBox: svg_resources.h:65-68, svg_resources.cc:53-75 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), through DeviceFromUser,
+// unsnapped (Blink's reference box is a gfx::RectF). Returns the reference
+// box, willFill, willStroke, and ok=false when the shape has no paintable
+// extent (empty user or device bbox). Shared by both filter paint paths
+// (single-url and chain).
 func (sp *svgShapePainter) shapeDeviceReferenceBox() (geometry.RectF, bool, bool, bool) {
 	style := sp.shape.Style
 	userBBox := sp.shape.FillBoundingBox
@@ -275,18 +272,21 @@ func (sp *svgShapePainter) shapeDeviceReferenceBox() (geometry.RectF, bool, bool
 	}
 	willFill := style == nil || style.GetFill().Kind != css.SVGPaintNone
 	willStroke := style != nil && style.GetStroke().Kind != css.SVGPaintNone
-	if willStroke {
-		half := style.GetStrokeWidth() / 2
-		userBBox = geometry.NewRectF(
-			userBBox.X()-half, userBBox.Y()-half,
-			userBBox.Width()+2*half, userBBox.Height()+2*half,
-		)
-	}
 	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
 	if deviceBBox.IsEmpty() {
 		return geometry.RectF{}, false, false, false
 	}
 	return deviceBBox, willFill, willStroke, true
+}
+
+// shapeDevicePaintBox is the shape's paint extent in device pixels: its
+// fill box, outset by half the stroke width when it strokes.
+func (sp *svgShapePainter) shapeDevicePaintBox(willStroke bool) geometry.RectF {
+	userBBox := sp.shape.FillBoundingBox
+	if willStroke { // willStroke implies a style
+		userBBox = userBBox.Outset(sp.shape.Style.GetStrokeWidth() / 2)
+	}
+	return sp.ctx.DeviceFromUser.MapRect(userBBox)
 }
 
 // compositeFilterResultOntoTarget writes either the filter output (out)
@@ -439,9 +439,10 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if graph == nil {
 		return false
 	}
-	// A shorthand-only chain has no region; this path keeps the reference
-	// box mapped through the chain, under the 4000px cap below.
-	region := graph.EnsureRegion(deviceBox, false)
+	// A shorthand-only chain has no region; it is the shape's paint extent
+	// (its stroke included) mapped through the chain, under the 4000px cap
+	// below.
+	region := graph.EnsureRegion(snapRectFToDevice(sp.shapeDevicePaintBox(willStroke)), false)
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return false
