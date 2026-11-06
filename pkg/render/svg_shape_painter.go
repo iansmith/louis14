@@ -348,23 +348,21 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	}
 	// The shape and its mask rasterize in device pixels, through the draw
 	// context's whole matrix (an ancestor CSS transform or perspective
-	// included), read back at the shape's bbox, so the buffer composites as
-	// is. A matrix that is degenerate or cannot be read back in front of the
-	// camera paints nothing. Paint servers map user space through its affine
-	// part, which is exact only for an affine matrix (LOU-778).
-	toDevice, _, readBack := deviceTransformAt(sp.ctx.dc, userBBox)
-	if !readBack {
-		return
-	}
+	// included), so the buffer composites as is. Its device bbox is the part
+	// of the shape in front of the camera (projectRectInFront), under the
+	// clip. Paint servers map user space through the matrix's affine part,
+	// which is exact only for an affine matrix (LOU-778).
+	toDevice := drawContextTransform(sp.ctx.dc)
 	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
-	deviceBBox, ok := mapRectToLayer(toDevice, userBBox)
-	if !ok || deviceBBox.IsEmpty() {
+	deviceBBox, ok := projectRectInFront(toDevice, userBBox)
+	if !ok {
 		return
 	}
-	bx := int(math.Floor(deviceBBox.X()))
-	by := int(math.Floor(deviceBBox.Y()))
-	bw := int(math.Ceil(deviceBBox.Right())) - bx + 1
-	bh := int(math.Ceil(deviceBBox.Bottom())) - by + 1
+	buffer := image.Rect(
+		int(math.Floor(deviceBBox.X())), int(math.Floor(deviceBBox.Y())),
+		int(math.Ceil(deviceBBox.Right()))+1, int(math.Ceil(deviceBBox.Bottom()))+1,
+	).Intersect(sp.ctx.dc.ClipBounds())
+	bx, by, bw, bh := buffer.Min.X, buffer.Min.Y, buffer.Dx(), buffer.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return
 	}

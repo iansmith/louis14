@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -131,20 +130,14 @@ func newBufferPaintContext(tmpR *Renderer, viewport geometry.SizeF, deviceFromUs
 }
 
 // dcRegionClip returns region, in dc's current coordinates, as the device
-// pixels its corners map to through dc's whole matrix (a projective one
-// included): a mask region's regionClip.
+// pixels the part of it in front of the camera covers through dc's whole
+// matrix (projectRectInFront): a mask region's regionClip. A region wholly
+// behind the camera clips everything.
 func dcRegionClip(dc textshape.DrawContext, region geometry.RectF) *image.Rectangle {
-	minX, minY := math.Inf(1), math.Inf(1)
-	maxX, maxY := math.Inf(-1), math.Inf(-1)
-	for _, p := range [4]geometry.PointF{
-		{X: region.X(), Y: region.Y()}, {X: region.Right(), Y: region.Y()},
-		{X: region.X(), Y: region.Bottom()}, {X: region.Right(), Y: region.Bottom()},
-	} {
-		x, y := dc.TransformPoint(p.X, p.Y)
-		minX, minY = math.Min(minX, x), math.Min(minY, y)
-		maxX, maxY = math.Max(maxX, x), math.Max(maxY, y)
+	clip := image.Rectangle{}
+	if r, ok := projectRectInFront(drawContextTransform(dc), region); ok {
+		clip = snapRectFToDevice(r)
 	}
-	clip := snapRectFToDevice(geometry.NewRectF(minX, minY, maxX-minX, maxY-minY))
 	return &clip
 }
 
