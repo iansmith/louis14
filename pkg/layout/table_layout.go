@@ -1615,11 +1615,7 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 	if style == nil {
 		return Indefinite
 	}
-	prop := "height"
-	if wdm.IsVertical() {
-		prop = "width"
-	}
-	if v, ok := style.GetLength(prop); ok {
+	if v, ok := style.GetLength(logicalBlockSizeProperty(wdm)); ok {
 		return v
 	}
 	return Indefinite
@@ -2324,10 +2320,7 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 			// the table has no definite height (Percent path goes
 			// through priority 1 only when Percent > 0 and the table
 			// block size is known).
-			prop := "height"
-			if wdm.IsVertical() {
-				prop = "width"
-			}
+			prop := logicalBlockSizeProperty(wdm)
 			if pct, ok := s.GetPercentage(prop); ok && pct > 0 {
 				row.Percent = pct
 			}

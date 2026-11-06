@@ -133,6 +133,10 @@ type ConstraintSpace struct {
 	// block-child path (block_layout.go:368-370). Zero means "use the
 	// constraint space's AvailableSize.BlockSize" (parallel child default).
 	OrthogonalAvailableBlock float64
+	// HasOrthogonalAvailableBlock: OrthogonalAvailableBlock is set, a
+	// definite 0 included. layoutInlineChildren sets both on its line space
+	// from orthogonalChildBlockSizes.
+	HasOrthogonalAvailableBlock bool
 
 	// PercentageResolutionInlineSize is the containing block's inline-size
 	// used for resolving percentage margins and padding (CSS 2.1 §8.3, §8.4).

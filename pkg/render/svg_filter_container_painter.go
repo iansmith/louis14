@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -42,8 +41,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// `bw <= 0 || bh <= 0` guard on the resolved region is the
 	// authoritative "nothing to render" exit here.
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
-	referenceBox := snapRectFToDevice(deviceFromLocal.MapRect(c.ObjectBoundingBox()))
-	refBoxF := rectFFromInts(referenceBox.Min.X, referenceBox.Min.Y, referenceBox.Dx(), referenceBox.Dy())
+	deviceBBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
 	userOriginF := deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0})
 	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
 	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
@@ -51,7 +49,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// not move, mapped to device pixels via DeviceFromUser. (Mirrors the
 	// same fix in svg_filter_painter.go.)
 	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
+	regionF := filter.ResourceBoundingBox(deviceBBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
 	region := snapRectFToDevice(regionF)
 	bw := region.Dx()
 	bh := region.Dy()
@@ -67,8 +65,8 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	adapter := &svgFilterElementAdapter{
 		filter:             filter,
 		filterRegion:       region,
-		referenceBox:       referenceBox,
-		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		referenceBox:       deviceBBox,
+		userSpaceOrigin:    roundPoint(userOriginF),
 		space:              space,
 		resources:          pctx.Resources,
 		imageFetcher:       pctx.Renderer.imageFetcher,
@@ -100,8 +98,8 @@ func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer
 		return false // a lone url() that did not resolve: paint unfiltered
 	}
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
-	referenceBox := snapRectFToDevice(deviceFromLocal.MapRect(c.ObjectBoundingBox()))
-	if referenceBox.Empty() && hasReferenceFilter(ops) {
+	referenceBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
+	if referenceBox.IsEmpty() && hasReferenceFilter(ops) {
 		return false
 	}
 	// The chain's source extent is the children's paint: their stroke
@@ -112,7 +110,7 @@ func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer
 	}
 	builder := &FilterEffectBuilder{
 		ReferenceBox:       referenceBox,
-		FilterViewport:     referenceBox,
+		FilterViewport:     snapRectFToDevice(referenceBox),
 		CurrentColor:       c.Style.GetColor(),
 		Resources:          pctx.Resources,
 		ExternalSVGFetcher: pctx.Renderer.externalSVGFetcher,

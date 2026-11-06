@@ -226,10 +226,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 		// Check if item needs full block-size (stretch or percentage block-size).
 		// The logical block-size CSS property is "height" in HTB and "width" in vertical modes.
-		blockSizeProp := "height"
-		if wdm.IsVertical() {
-			blockSizeProp = "width"
-		}
+		blockSizeProp := logicalBlockSizeProperty(wdm)
 		needsRelayout := false
 		if _, ok := item.style.GetPercentage(blockSizeProp); ok {
 			needsRelayout = true

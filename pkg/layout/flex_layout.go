@@ -4645,22 +4645,7 @@ func (fla *FlexLayoutAlgorithm) hasExplicitCrossSize(style *css.Style, wdm Writi
 	if style == nil {
 		return false
 	}
-	var prop string
-	if isRow {
-		// cross axis = block = height
-		if wdm.IsVertical() {
-			prop = "width"
-		} else {
-			prop = "height"
-		}
-	} else {
-		// cross axis = inline = width
-		if wdm.IsVertical() {
-			prop = "height"
-		} else {
-			prop = "width"
-		}
-	}
+	prop := flexCrossSizeProperty(wdm, isRow)
 	if _, ok := style.GetLength(prop); ok {
 		return true
 	}
@@ -4668,6 +4653,16 @@ func (fla *FlexLayoutAlgorithm) hasExplicitCrossSize(style *css.Style, wdm Writi
 		return true
 	}
 	return false
+}
+
+// flexCrossSizeProperty is the physical property that is a flex item's
+// cross size: its block size in a row container, its inline size in a
+// column one.
+func flexCrossSizeProperty(wdm WritingDirectionMode, isRow bool) string {
+	if isRow {
+		return logicalBlockSizeProperty(wdm)
+	}
+	return logicalInlineSizeProperty(wdm)
 }
 
 // hasExplicitPercentCrossSize reports whether the item has a percentage
@@ -4678,20 +4673,7 @@ func (fla *FlexLayoutAlgorithm) hasExplicitPercentCrossSize(style *css.Style, wd
 	if style == nil {
 		return false
 	}
-	var prop string
-	if isRow {
-		if wdm.IsVertical() {
-			prop = "width"
-		} else {
-			prop = "height"
-		}
-	} else {
-		if wdm.IsVertical() {
-			prop = "height"
-		} else {
-			prop = "width"
-		}
-	}
+	prop := flexCrossSizeProperty(wdm, isRow)
 	if _, ok := style.GetPercentage(prop); ok {
 		return true
 	}

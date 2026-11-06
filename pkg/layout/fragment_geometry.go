@@ -612,11 +612,7 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 		return layoutunit.LayoutUnit{}, false
 	}
 
-	prop := "height"
-	if wdm.IsVertical() {
-		prop = "width"
-	}
-
+	prop := logicalBlockSizeProperty(wdm)
 	val, _ := style.Get(prop)
 
 	// CSS Values 4 §10: math functions (calc/min/max/clamp) with a %
@@ -848,61 +844,8 @@ func CalculateInitialFragmentGeometry(
 	// effectively mean "auto" for block-level layout — the element sizes to its
 	// content. We detect them here and leave borderBoxBlock = Indefinite so that
 	// the layout algorithm determines the block-size from content.
-	blockProp := "height"
-	if wdm.IsVertical() {
-		blockProp = "width"
-	}
-	blockVal, _ := style.Get(blockProp)
-
-	var borderBoxBlock float64 = Indefinite
-	if IsIntrinsicKeyword(blockVal) || css.IsFitContentFunction(blockVal) {
-		// Treat as auto — layout will determine block-size from content.
-		// fit-content(<L>) on the block axis resolves against the natural content
-		// block-size (same as min-content/max-content/fit-content bare keyword).
-		// The clamping is applied post-layout via ResolveMinBlockSizeWithIntrinsic /
-		// ResolveMaxBlockSizeWithIntrinsic when the result feeds min/max-block-size.
-	} else if space.IsContentSuggestionLayout {
-		// §4.5 content suggestion: ignore the element's own explicit CSS
-		// block-size — only content determines the size.
-	} else if space.IsBlockSizeOverride && space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
-		// Parent algorithm (e.g., flex column) has determined the block-size
-		// authoritatively — it overrides the child's own CSS block-size.
-		// This is checked BEFORE ResolveBlockSize so the flex-resolved main
-		// size takes priority over the item's explicit CSS block property.
-		// Critical for sideways-lr: the CSS block property is 'width', and
-		// without this override, the item's explicit width would replace the
-		// flex-resolved size.
-		//
-		// Mirrors Blink's handling of ConstraintSpace::IsBlockSizeOverride.
-		borderBoxBlock = space.AvailableSize.BlockSize.Float64()
-	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
-		// CSS Tables: browsers (Blink, WebKit, Gecko) treat table/inline-table
-		// height as border-box — the specified height already includes borders.
-		// Per Blink's TableLayoutAlgorithm, table height is resolved with
-		// kIncludingBorderPadding (border-box semantics).
-		// Blink's UA sheet applies `box-sizing: border-box` to <table> elements
-		// at the cascade level (element-name gated, not display-gated).
-		// louis14 mirrors this in cascade.go:454-460, so all real tables have
-		// border-box applied before author rules. For display:table divs or
-		// content-box tables, box-sizing determines the semantic.
-		borderBoxBlock = explicitBlock.Float64() + geom.BlockBorderPadding()
-	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
-		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
-		// that override the fixed constraint (e.g. max-height: min-content).
-		maxProp := "max-height"
-		if wdm.IsVertical() {
-			maxProp = "max-width"
-		}
-		useFixed := true
-		if v, ok := style.Get(maxProp); ok && v != "" && v != "none" {
-			if _, resolved := ResolveMaxBlockSize(style, wdm, space, geom); !resolved {
-				useFixed = false
-			}
-		}
-		if useFixed {
-			borderBoxBlock = space.AvailableSize.BlockSize.Float64()
-		}
-	}
+	blockVal := logicalBlockSizeValue(style, wdm)
+	borderBoxBlock := resolveInitialBorderBoxBlockSize(style, wdm, space, geom, blockVal)
 
 	// CSS Box Sizing 4 §5.1: aspect-ratio — when one dimension is definite
 	// and the other is auto, compute the auto dimension from the ratio.
@@ -960,25 +903,7 @@ func CalculateInitialFragmentGeometry(
 		}
 	}
 
-	// Apply min/max block constraints only when block-size is definite.
-	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
-	if borderBoxBlock != Indefinite {
-		contentBlock := borderBoxBlock - geom.BlockBorderPadding()
-		if contentBlock < 0 {
-			contentBlock = 0
-		}
-		if maxBlockLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
-			maxBlock := maxBlockLU.Float64()
-			if contentBlock > maxBlock {
-				contentBlock = maxBlock
-			}
-		}
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
-		if contentBlock < minBlock {
-			contentBlock = minBlock
-		}
-		borderBoxBlock = contentBlock + geom.BlockBorderPadding()
-	}
+	borderBoxBlock = clampDefiniteBorderBoxBlock(style, wdm, space, geom, borderBoxBlock)
 
 	geom.BorderBoxSize = LogicalSize{InlineSize: borderBoxInline, BlockSize: borderBoxBlock}
 	return geom
@@ -1079,4 +1004,103 @@ func ResolveFitContentInlineSize(fitContentVal string, style *css.Style, minMax 
 		result = minMax.MaxContent
 	}
 	return result
+}
+
+// resolveInitialBorderBoxBlockSize is the border-box block size
+// CalculateInitialFragmentGeometry starts from, before aspect-ratio, or
+// Indefinite: the element's own block size, or one its parent fixed
+// (an override, a fixed block size such as an abspos box's from its
+// insets). It needs no inline size, so intrinsic sizing can use it too
+// (measureInlineMinMax, measureBlockMinMax).
+// blockVal is the element's block-size value (logicalBlockSizeValue).
+func resolveInitialBorderBoxBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, blockVal string) float64 {
+	var borderBoxBlock float64 = Indefinite
+	if IsIntrinsicKeyword(blockVal) || css.IsFitContentFunction(blockVal) {
+		// Treat as auto — layout will determine block-size from content.
+		// fit-content(<L>) on the block axis resolves against the natural content
+		// block-size (same as min-content/max-content/fit-content bare keyword).
+		// The clamping is applied post-layout via ResolveMinBlockSizeWithIntrinsic /
+		// ResolveMaxBlockSizeWithIntrinsic when the result feeds min/max-block-size.
+	} else if space.IsContentSuggestionLayout {
+		// §4.5 content suggestion: ignore the element's own explicit CSS
+		// block-size — only content determines the size.
+	} else if space.IsBlockSizeOverride && space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
+		// Parent algorithm (e.g., flex column) has determined the block-size
+		// authoritatively — it overrides the child's own CSS block-size.
+		// This is checked BEFORE ResolveBlockSize so the flex-resolved main
+		// size takes priority over the item's explicit CSS block property.
+		// Critical for sideways-lr: the CSS block property is 'width', and
+		// without this override, the item's explicit width would replace the
+		// flex-resolved size.
+		//
+		// Mirrors Blink's handling of ConstraintSpace::IsBlockSizeOverride.
+		borderBoxBlock = space.AvailableSize.BlockSize.Float64()
+	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+		// CSS Tables: browsers (Blink, WebKit, Gecko) treat table/inline-table
+		// height as border-box — the specified height already includes borders.
+		// Per Blink's TableLayoutAlgorithm, table height is resolved with
+		// kIncludingBorderPadding (border-box semantics).
+		// Blink's UA sheet applies `box-sizing: border-box` to <table> elements
+		// at the cascade level (element-name gated, not display-gated).
+		// louis14 mirrors this in cascade.go:454-460, so all real tables have
+		// border-box applied before author rules. For display:table divs or
+		// content-box tables, box-sizing determines the semantic.
+		borderBoxBlock = explicitBlock.Float64() + geom.BlockBorderPadding()
+	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
+		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
+		// that override the fixed constraint (e.g. max-height: min-content).
+		maxProp := "max-height"
+		if wdm.IsVertical() {
+			maxProp = "max-width"
+		}
+		useFixed := true
+		if v, ok := style.Get(maxProp); ok && v != "" && v != "none" {
+			if _, resolved := ResolveMaxBlockSize(style, wdm, space, geom); !resolved {
+				useFixed = false
+			}
+		}
+		if useFixed {
+			borderBoxBlock = space.AvailableSize.BlockSize.Float64()
+		}
+	}
+	return borderBoxBlock
+}
+
+// logicalBlockSizeProperty is the physical property that is the block
+// size: height, or width in a vertical writing mode.
+func logicalBlockSizeProperty(wdm WritingDirectionMode) string {
+	if wdm.IsVertical() {
+		return "width"
+	}
+	return "height"
+}
+
+// logicalInlineSizeProperty is the physical property that is the inline
+// size: width, or height in a vertical writing mode.
+func logicalInlineSizeProperty(wdm WritingDirectionMode) string {
+	if wdm.IsVertical() {
+		return "height"
+	}
+	return "width"
+}
+
+// logicalBlockSizeValue is the element's block-size property value.
+func logicalBlockSizeValue(style *css.Style, wdm WritingDirectionMode) string {
+	v, _ := style.Get(logicalBlockSizeProperty(wdm))
+	return v
+}
+
+// clampDefiniteBorderBoxBlock clamps a definite border-box block size by
+// min/max-block-size, max first so min wins (CSS 2.1 §10.7); Indefinite
+// stays Indefinite.
+func clampDefiniteBorderBoxBlock(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, borderBoxBlock float64) float64 {
+	if borderBoxBlock == Indefinite {
+		return borderBoxBlock
+	}
+	contentBlock := max(0, borderBoxBlock-geom.BlockBorderPadding())
+	if maxBlockLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+		contentBlock = min(contentBlock, maxBlockLU.Float64())
+	}
+	contentBlock = max(contentBlock, ResolveMinBlockSize(style, wdm, space, geom).Float64())
+	return contentBlock + geom.BlockBorderPadding()
 }
