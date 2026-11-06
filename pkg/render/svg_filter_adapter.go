@@ -545,31 +545,7 @@ func (p *svgFilterPrimitiveAdapter) KernelUnitLength() (float64, float64) {
 	if p.elt == nil {
 		return 1, 1
 	}
-	v, ok := p.elt.Attribute("kernelUnitLength")
-	if !ok {
-		v, ok = p.elt.Attribute("kernelunitlength")
-	}
-	if !ok {
-		return 1, 1
-	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
-	if len(parts) == 0 {
-		return 1, 1
-	}
-	x, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 1, 1
-	}
-	if len(parts) == 1 {
-		return x, x
-	}
-	y, err := strconv.ParseFloat(parts[1], 64)
-	if err != nil {
-		return x, x
-	}
-	return x, y
+	return filters.NumberOptionalNumberAttr(p.elt, "kernelUnitLength", 1)
 }
 
 // LightSource implements filters.SVGFilterPrimitive. Walks the

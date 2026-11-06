@@ -34,6 +34,10 @@ type FilterEffectBuilder struct {
 	// layer's local origin, which userSpaceOnUse coordinates are relative
 	// to. It may be empty: a 0x0 box keeps its 0x0 viewport.
 	FilterViewport image.Rectangle
+	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
+	// are relative to in place of FilterViewport.Min: an SVG shape's user
+	// space origin in device pixels, whose viewport is its <svg>'s.
+	UserSpaceOrigin *geometry.PointF
 	// CurrentColor resolves currentColor for drop-shadow.
 	CurrentColor css.Color
 	// Resources, when non-nil, supplies the SVG resource registry so
@@ -75,10 +79,19 @@ func (b *FilterEffectBuilder) viewportLengthContext() svg.SVGLengthContext {
 	})
 }
 
-// userSpaceOrigin is the layer's local origin, which userSpaceOnUse
-// coordinates are relative to.
+// userSpaceOrigin is the origin userSpaceOnUse coordinates are relative
+// to: UserSpaceOrigin, else the layer's local origin.
 func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
+	if b.UserSpaceOrigin != nil {
+		return *b.UserSpaceOrigin
+	}
 	return geometry.PointF{X: float64(b.FilterViewport.Min.X), Y: float64(b.FilterViewport.Min.Y)}
+}
+
+// userSpaceOriginPixel is userSpaceOrigin rounded to a device pixel, as the
+// filter element adapter takes it.
+func (b *FilterEffectBuilder) userSpaceOriginPixel() image.Point {
+	return roundPoint(b.userSpaceOrigin())
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -248,7 +261,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		// The primitive subregion percentage viewport is FilterViewport,
 		// not the filter region, which can carry the default 10% expansion.
 		subregionViewport:  b.FilterViewport,
-		userSpaceOrigin:    b.FilterViewport.Min,
+		userSpaceOrigin:    b.userSpaceOriginPixel(),
 		space:              space,
 		resolveStyle:       b.ResolveStyle,
 		resources:          b.Resources,
@@ -316,7 +329,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		filterRegion:      region,
 		referenceBox:      b.ReferenceBox,
 		subregionViewport: b.FilterViewport,
-		userSpaceOrigin:   b.FilterViewport.Min,
+		userSpaceOrigin:   b.userSpaceOriginPixel(),
 		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.

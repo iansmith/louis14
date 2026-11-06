@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -44,7 +43,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	// authoritative "nothing to render" exit here.
 	userBBox := c.ObjectBoundingBox()
 	deviceBBox := pctx.DeviceFromUser.MapRect(userBBox)
-	userOriginF := pctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
+	userOriginF := pctx.userSpaceOriginDevice()
 	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
 	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
 	// box. Map the user-space viewport to device pixels via
@@ -100,7 +99,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		filter:             filter,
 		filterRegion:       region,
 		referenceBox:       deviceBBox,
-		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		userSpaceOrigin:    roundPoint(userOriginF),
 		space:              space,
 		resources:          pctx.Resources,
 		imageFetcher:       pctx.Renderer.imageFetcher,

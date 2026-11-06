@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"louis14/pkg/geometry"
+	"louis14/pkg/layout/svg"
 )
 
 // SVGFilterPrimitive is the abstract view of a single filter primitive
@@ -465,7 +466,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		in := b.resolveInputAttr(prim, "in")
 		// FEGaussianBlur scales its stdDeviation (fe_gaussian_blur.cc:74-83
 		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		stdX, stdY := parseStdDeviation(prim, 0)
+		stdX, stdY := NumberOptionalNumberAttr(prim, "stdDeviation", 0)
 		stdX, stdY = applyScale(elt, stdX, stdY)
 		return NewFEGaussianBlur(in, b.space, stdX, stdY)
 	case "fecolormatrix":
@@ -535,7 +536,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		dx, _ := parseFloatAttr(prim, "dx", 2)
 		dy, _ := parseFloatAttr(prim, "dy", 2)
 		dx, dy = applyScale(elt, dx, dy)
-		stdX, stdY := parseStdDeviation(prim, 2)
+		stdX, stdY := NumberOptionalNumberAttr(prim, "stdDeviation", 2)
 		stdX, stdY = applyScale(elt, stdX, stdY)
 		r, g, bb, a := prim.FloodColor()
 		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, stdY, r, g, bb, a)
@@ -595,16 +596,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		targetX, _ := parseIntAttr(prim, "targetX", order/2)
 		targetY, _ := parseIntAttr(prim, "targetY", order/2)
 		edgeMode := parseStringAttr(prim, "edgeMode", "duplicate")
-		kULx, _ := parseFloatAttr(prim, "kernelUnitLength", 1)
-		kULy := kULx // kernelUnitLength is a single number or two numbers
-		if s, ok := prim.Attribute("kernelUnitLength"); ok {
-			parts := splitSVGList(s)
-			if len(parts) >= 2 {
-				if f, err := strconv.ParseFloat(parts[1], 64); err == nil {
-					kULy = f
-				}
-			}
-		}
+		kULx, kULy := prim.KernelUnitLength()
 		preserveAlpha := false
 		if s, ok := prim.Attribute("preserveAlpha"); ok {
 			preserveAlpha = strings.TrimSpace(s) == "true"
@@ -624,17 +616,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// `radius` is one or two numbers (rx [ry]); default 0 (disabled).
 		// A single value applies to both axes. Mirrors
 		// SVGFEMorphologyElement::radiusX/radiusY (default 0, 0).
-		rx, ry := 0.0, 0.0
-		if s, ok := prim.Attribute("radius"); ok {
-			parts := splitSVGList(s)
-			if len(parts) >= 1 {
-				rx, _ = strconv.ParseFloat(parts[0], 64)
-				ry = rx
-			}
-			if len(parts) >= 2 {
-				ry, _ = strconv.ParseFloat(parts[1], 64)
-			}
-		}
+		rx, ry := NumberOptionalNumberAttr(prim, "radius", 0)
 		// FEMorphology scales its radii (fe_morphology.cc:86-97 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		rx, ry = applyScale(elt, rx, ry)
@@ -809,34 +791,24 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	)
 }
 
-// parseStdDeviation parses a `stdDeviation` attribute: one number (both
-// axes) or two (x, y). def is the primitive's initial value for both axes,
-// used when the attribute is missing, empty or malformed: 0 for
-// feGaussianBlur, 2 for feDropShadow. A parse error resets the value to its
-// initial one (ParseNumberOptionalNumber, svg_parser_utilities.cc:189-207;
-// SVGAnimatedPropertyBase, svg_animated_property.h:177-179 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func parseStdDeviation(prim SVGFilterPrimitive, def float64) (float64, float64) {
-	v, ok := prim.Attribute("stdDeviation")
+// NumberOptionalNumberAttr reads a number-optional-number attribute
+// (stdDeviation, radius, baseFrequency, kernelUnitLength): one number for
+// both axes, or two. def is the attribute's initial value for both axes,
+// taken when it is missing or does not parse: a parse error resets the
+// value to its initial one (SVGNumberOptionalNumber::SetValueAsString,
+// svg_number_optional_number.cc:64-75, and SVGAnimatedPropertyBase,
+// svg_animated_property.h:177-179 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// The HTML tokenizer may have lowercased the name.
+func NumberOptionalNumberAttr(prim interface{ Attribute(string) (string, bool) }, name string, def float64) (float64, float64) {
+	v, ok := prim.Attribute(name)
 	if !ok {
-		v, ok = prim.Attribute("stddeviation")
+		v, ok = prim.Attribute(strings.ToLower(name))
 	}
 	if !ok {
 		return def, def
 	}
-	parts := splitSVGList(v)
-	if len(parts) == 0 || len(parts) > 2 {
-		return def, def
-	}
-	x, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return def, def
-	}
-	if len(parts) == 1 {
-		return x, x
-	}
-	y, err := strconv.ParseFloat(parts[1], 64)
-	if err != nil {
+	x, y, ok := svg.ParseNumberOptionalNumber(v)
+	if !ok {
 		return def, def
 	}
 	return x, y

@@ -145,12 +145,7 @@ func (sp *svgShapePainter) paint() {
 		}
 	}
 
-	willFill := op.style != nil && op.style.GetFill().Kind != css.SVGPaintNone
-	willStroke := op.style != nil && op.style.GetStroke().Kind != css.SVGPaintNone
-	// Style was nil → defaults apply: fill: black, stroke: none.
-	if op.style == nil {
-		willFill = true
-	}
+	willFill, willStroke := svgPaints(op.style)
 	if !willFill && !willStroke {
 		return
 	}

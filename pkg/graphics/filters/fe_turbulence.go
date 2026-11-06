@@ -3,7 +3,6 @@ package filters
 import (
 	"image"
 	"math"
-	"strconv"
 )
 
 // TurbulenceKind selects the fractal-sum mode, mirroring Blink's
@@ -278,26 +277,9 @@ func newFETurbulenceFromPrimitive(space InterpolationSpace, prim SVGFilterPrimit
 	}
 	// baseFrequency: one or two numbers (fx [fy]). A negative value is
 	// invalid → treat the whole attribute as unspecified (default 0, 0).
-	fx, fy := 0.0, 0.0
-	if s, ok := prim.Attribute("baseFrequency"); ok {
-		parts := splitSVGList(s)
-		valid := true
-		vals := make([]float64, 0, 2)
-		for _, p := range parts {
-			v, err := strconv.ParseFloat(p, 64)
-			if err != nil || v < 0 {
-				valid = false
-				break
-			}
-			vals = append(vals, v)
-		}
-		if valid && len(vals) >= 1 {
-			fx = vals[0]
-			fy = vals[0]
-			if len(vals) >= 2 {
-				fy = vals[1]
-			}
-		}
+	fx, fy := NumberOptionalNumberAttr(prim, "baseFrequency", 0)
+	if fx < 0 || fy < 0 {
+		fx, fy = 0, 0
 	}
 	numOctaves, _ := parseIntAttr(prim, "numOctaves", 1)
 	seed, _ := parseFloatAttr(prim, "seed", 0)

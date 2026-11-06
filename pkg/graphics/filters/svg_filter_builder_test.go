@@ -336,14 +336,16 @@ func TestBuildPrimitive_DisplacementMapPadsEachAxis(t *testing.T) {
 // Number-optional-number attributes parse with the SVG number grammar:
 // no inf, NaN or hex floats, and one optional comma between the numbers
 // (GenericParseNumber and ParseNumberOptionalNumber,
-// svg_parser_utilities.cc:42-207 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// A parse error resets the attribute to its initial value.
+// svg_parser_utilities.cc:42-207 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// a trailing delimiter after the last number is skipped
+// (SkipOptionalSVGSpacesOrDelimiter, svg_parser_utilities.h:71-86). A parse
+// error resets the attribute to its initial value.
 func TestBuildPrimitive_NumberOptionalNumberGrammar(t *testing.T) {
 	elt := refBoxElement(false)
 	build := func(tag, attr, v string) FilterEffect {
 		return buildPrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: map[string]string{attr: v}})
 	}
-	for _, v := range []string{"inf", "NaN", "0x1p1", "1,,2", ",3", "1 2,"} {
+	for _, v := range []string{"inf", "NaN", "0x1p1", "1,,2", ",3", "1e"} {
 		if e, ok := build("fedropshadow", "stdDeviation", v).(*FEDropShadow); !ok || e.StdDevX != 2 || e.StdDevY != 2 {
 			t.Errorf("feDropShadow stdDeviation=%q: %+v, want 2 2", v, e)
 		}
@@ -357,7 +359,7 @@ func TestBuildPrimitive_NumberOptionalNumberGrammar(t *testing.T) {
 	for _, c := range []struct {
 		v    string
 		x, y float64
-	}{{"1,2", 1, 2}, {" 1 , 2 ", 1, 2}, {"3", 3, 3}, {"1e1 .5", 10, 0.5}} {
+	}{{"1,2", 1, 2}, {" 1 , 2 ", 1, 2}, {"3", 3, 3}, {"1e1 .5", 10, 0.5}, {"1 2,", 1, 2}} {
 		if e, ok := build("fedropshadow", "stdDeviation", c.v).(*FEDropShadow); !ok || e.StdDevX != c.x || e.StdDevY != c.y {
 			t.Errorf("feDropShadow stdDeviation=%q: %+v, want %v %v", c.v, e, c.x, c.y)
 		}

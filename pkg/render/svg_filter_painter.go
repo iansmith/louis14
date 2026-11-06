@@ -35,10 +35,11 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	style := sp.shape.Style
 
-	referenceBox, willFill, willStroke, ok := sp.shapeDeviceReferenceBox()
-	if !ok {
+	referenceBox := sp.shapeDeviceReferenceBox()
+	if referenceBox.IsEmpty() {
 		return
 	}
+	willFill, willStroke := svgPaints(sp.shape.Style)
 
 	// Resolve the filter region against the device-space reference
 	// box. ResourceBoundingBox returns a user-space rect; with the
@@ -49,7 +50,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// ResourceBoundingBox to shift explicit userSpaceOnUse x/y values
 	// from user space into target's (device) coord space, per SVG
 	// Filter Effects 1 §6.5.
-	userOriginF := sp.ctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
+	userOriginF := sp.ctx.userSpaceOriginDevice()
 	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
 	// userSpaceOnUse percent base is the SVG VIEWPORT (mapped to device
 	// pixels), NOT the reference box. The SVG viewport in user-space is
@@ -84,7 +85,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 		filter:             filter,
 		filterRegion:       region,
 		referenceBox:       referenceBox,
-		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		userSpaceOrigin:    roundPoint(userOriginF),
 		space:              space,
 		resources:          sp.ctx.Resources,
 		imageFetcher:       sp.ctx.Renderer.imageFetcher,
@@ -260,33 +261,36 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 // box (SVGResources::ReferenceBoxForEffects defaults to GeometryBox::kFillBox,
 // the ObjectBoundingBox: svg_resources.h:65-68, svg_resources.cc:53-75 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), through DeviceFromUser,
-// unsnapped (Blink's reference box is a gfx::RectF). Returns the reference
-// box, willFill, willStroke, and ok=false when the shape has no paintable
-// extent (empty user or device bbox). Shared by both filter paint paths
-// (single-url and chain).
-func (sp *svgShapePainter) shapeDeviceReferenceBox() (geometry.RectF, bool, bool, bool) {
-	style := sp.shape.Style
-	userBBox := sp.shape.FillBoundingBox
-	if userBBox.IsEmpty() {
-		return geometry.RectF{}, false, false, false
-	}
-	willFill := style == nil || style.GetFill().Kind != css.SVGPaintNone
-	willStroke := style != nil && style.GetStroke().Kind != css.SVGPaintNone
-	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
-	if deviceBBox.IsEmpty() {
-		return geometry.RectF{}, false, false, false
-	}
-	return deviceBBox, willFill, willStroke, true
+// unsnapped (Blink's reference box is a gfx::RectF). It is empty for a
+// shape with an empty fill box, such as a horizontal <line>.
+func (sp *svgShapePainter) shapeDeviceReferenceBox() geometry.RectF {
+	return sp.ctx.DeviceFromUser.MapRect(sp.shape.FillBoundingBox)
+}
+
+// svgPaints reports whether a shape with style fills and whether it
+// strokes; a nil style takes the defaults, fill black and stroke none.
+func svgPaints(style *css.Style) (willFill, willStroke bool) {
+	return style == nil || style.GetFill().Kind != css.SVGPaintNone,
+		style != nil && style.GetStroke().Kind != css.SVGPaintNone
 }
 
 // shapeDevicePaintBox is the shape's paint extent in device pixels: its
-// fill box, outset by half the stroke width when it strokes.
-func (sp *svgShapePainter) shapeDevicePaintBox(willStroke bool) geometry.RectF {
-	userBBox := sp.shape.FillBoundingBox
-	if willStroke { // willStroke implies a style
-		userBBox = userBBox.Outset(sp.shape.Style.GetStrokeWidth() / 2)
-	}
-	return sp.ctx.DeviceFromUser.MapRect(userBBox)
+// stroke bounding box, miter joins and square caps included
+// (LayoutSVGShape::StrokeBoundingBox via svg.SVGShape.StrokeBoundingBox).
+func (sp *svgShapePainter) shapeDevicePaintBox() geometry.RectF {
+	return sp.ctx.DeviceFromUser.MapRect(sp.shape.StrokeBoundingBox())
+}
+
+// userSpaceOriginDevice is the user-space origin in device pixels, which
+// userSpaceOnUse filter coordinates are relative to (SVG Filter Effects 1
+// §6.5).
+func (c *svgPaintContext) userSpaceOriginDevice() geometry.PointF {
+	return c.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
+}
+
+// roundPoint rounds p to the nearest device pixel.
+func roundPoint(p geometry.PointF) image.Point {
+	return image.Pt(int(math.Round(p.X)), int(math.Round(p.Y)))
 }
 
 // compositeFilterResultOntoTarget writes either the filter output (out)
@@ -409,10 +413,18 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if len(ops) == 1 && ops[0].Name == "url" {
 		return false
 	}
-	referenceBox, willFill, willStroke, ok := sp.shapeDeviceReferenceBox()
-	if !ok {
+	// A shorthand stage needs no reference box, so only a url() stage
+	// rejects a shape whose fill box is empty (a horizontal <line>); whether
+	// even that should render is LOU-777.
+	referenceBox := sp.shapeDeviceReferenceBox()
+	if referenceBox.IsEmpty() && hasReferenceFilter(ops) {
 		return false
 	}
+	paintBox := snapRectFToDevice(sp.shapeDevicePaintBox())
+	if paintBox.Empty() {
+		return false
+	}
+	willFill, willStroke := svgPaints(sp.shape.Style)
 	// `drop-shadow(... currentcolor)` resolves to the shape's computed CSS
 	// `color` at paint time (Filter Effects 1 §3, mirroring Blink's
 	// FEDropShadow currentColor resolution via the element's
@@ -424,12 +436,15 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if sp.shape != nil && sp.shape.Style != nil {
 		currentColor = sp.shape.Style.GetColor()
 	}
-	// The shape's chain has no layer: its viewport and origin for
-	// userSpaceOnUse lengths are the reference box snapped to device pixels.
-	deviceBox := snapRectFToDevice(referenceBox)
+	// The shape's chain has no layer: as for a lone url(), userSpaceOnUse
+	// coordinates are relative to its user-space origin and percentages to
+	// its <svg>'s viewport (SVGViewportResolver, svg_resources.cc:375-381 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	userOrigin := sp.ctx.userSpaceOriginDevice()
 	builder := &FilterEffectBuilder{
 		ReferenceBox:       referenceBox,
-		FilterViewport:     deviceBox,
+		FilterViewport:     snapRectFToDevice(sp.ctx.DeviceFromUser.MapRect(sp.ctx.viewport)),
+		UserSpaceOrigin:    &userOrigin,
 		CurrentColor:       currentColor,
 		Resources:          sp.ctx.Resources,
 		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
@@ -439,10 +454,15 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if graph == nil {
 		return false
 	}
-	// A shorthand-only chain has no region; it is the shape's paint extent
-	// (its stroke included) mapped through the chain, under the 4000px cap
-	// below.
-	region := graph.EnsureRegion(snapRectFToDevice(sp.shapeDevicePaintBox(willStroke)), false)
+	// The chain's region is the shape's paint extent (its stroke included)
+	// mapped through the chain, under the 4000px cap below. A chain with a
+	// url() stage has the reference box mapped through it already; the
+	// paint extent is united in, so the stroke outside the fill box stays
+	// (Blink crops only a url() stage, to its own filter region).
+	if !graph.FilterRegion.Empty() {
+		graph.FilterRegion = graph.FilterRegion.Union(graph.MapRect(paintBox))
+	}
+	region := graph.EnsureRegion(paintBox, false)
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return false
