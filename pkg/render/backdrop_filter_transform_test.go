@@ -218,3 +218,19 @@ func pixelBounds(img *image.RGBA, f func(color.RGBA) bool) image.Rectangle {
 	}
 	return bb
 }
+
+// LOU-769: translateZ(50px) under perspective:100px is a homography with a
+// constant w of 0.5, a 2× scale about the perspective origin. It is affine
+// up to scale, so a backdrop filter runs in its 2× layer space and blurs as
+// under scale(2).
+func TestBackdropFilter_TranslateZUnderPerspectiveScales(t *testing.T) {
+	page := func(perspective, transform string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style>
+<div style="position:absolute;left:0;top:0;width:200px;height:200px;background:white"></div>
+<div style="position:absolute;left:96px;top:0;width:8px;height:200px;background:black"></div>
+<div style="position:absolute;left:0;top:0;width:200px;height:200px;` + perspective + `">
+<div style="position:absolute;left:50px;top:50px;width:100px;height:100px;transform:` + transform + `;backdrop-filter:blur(2px)"></div></div>`
+	}
+	wantImagesWithin(t, render.RenderPage(t, page("perspective:100px", "translateZ(50px)"), 220, 220),
+		render.RenderPage(t, page("", "scale(2)"), 220, 220), 2, "the backdrop blurred under scale(2)")
+}

@@ -66,7 +66,7 @@ func TestTrackingDrawContext_MatchesDrawContext(t *testing.T) {
 // An external draw context's starting matrix is read once, with an affine
 // probe: it must not be projective.
 func TestTrackingDrawContext_ExternalStartingMatrix(t *testing.T) {
-	ext := textshape.NewDrawContextForImage(image.NewRGBA(image.Rect(0, 0, 8, 8)), newProvider())
+	ext := newHostDrawContext()
 	ext.Translate(7, -3)
 	ext.Scale(2, 3)
 	ext.Rotate(0.4)
@@ -74,4 +74,53 @@ func TestTrackingDrawContext_ExternalStartingMatrix(t *testing.T) {
 	wantTrackedMatches(t, r.dc, "external")
 	r.dc.MultiplyProjectiveMatrix(1, 0, 0, 0, 1, 0, 0.003, 0.001, 1)
 	wantTrackedMatches(t, r.dc, "external projective")
+}
+
+// A host draw context that is already projective cannot be tracked from an
+// affine probe: NewRendererForDrawContext panics rather than track a wrong
+// matrix.
+func TestTrackingDrawContext_ProjectiveHostPanics(t *testing.T) {
+	ext := newHostDrawContext()
+	ext.MultiplyProjectiveMatrix(1, 0, 0, 0, 1, 0, 0.01, 0, 1)
+	defer func() {
+		if recover() == nil {
+			t.Error("a projective host draw context did not panic")
+		}
+	}()
+	NewRendererForDrawContext(ext)
+}
+
+// A Pop with no Push of the renderer's own does not pop the host's state:
+// the tracked matrix and the draw context stay in lockstep.
+func TestTrackingDrawContext_PopPastOwnPushes(t *testing.T) {
+	ext := newHostDrawContext()
+	ext.Translate(5, 5)
+	ext.Push()
+	ext.Scale(3, 3)
+	r := NewRendererForDrawContext(ext)
+	r.dc.Pop()
+	wantTrackedMatches(t, r.dc, "after a Pop past the renderer's pushes")
+	if x, _ := ext.TransformPoint(1, 0); x != 8 {
+		t.Errorf("the host's state was popped: (1, 0) maps to x %v, want 8", x)
+	}
+}
+
+// A constant-w homography (translateZ under perspective) is affine up to
+// scale: drawContextAffine reports it affine, normalized by w.
+func TestTrackingDrawContext_ConstantWIsAffine(t *testing.T) {
+	r := NewRendererForImage(image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	r.dc.MultiplyProjectiveMatrix(1, 0, 4, 0, 1, 6, 0, 0, 0.5)
+	m, affine := drawContextAffine(r.dc)
+	if !affine {
+		t.Fatal("a constant-w homography reported projective")
+	}
+	if h, want := projectiveHomography(m), [9]float64{2, 0, 8, 0, 2, 12, 0, 0, 1}; h != want {
+		t.Errorf("normalized homography = %v, want %v", h, want)
+	}
+}
+
+// newHostDrawContext is a draw context a host owns, as NewRendererForDrawContext
+// receives one.
+func newHostDrawContext() textshape.DrawContext {
+	return textshape.NewDrawContextForImage(image.NewRGBA(image.Rect(0, 0, 8, 8)), newProvider())
 }
