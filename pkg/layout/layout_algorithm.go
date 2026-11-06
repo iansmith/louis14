@@ -107,8 +107,9 @@ type orthogonalAtomicContribution struct {
 
 // orthogonalContributionSpace is the line-space inputs an orthogonal atomic
 // inline's contribution depends on: its available inline size, the
-// orthogonal fallback sizes, and the percentage resolution sizes.
-type orthogonalContributionSpace [6]float64
+// orthogonal fallback sizes, the line's percentage block size (its
+// percentage inline size), and the percentage resolution inline size.
+type orthogonalContributionSpace [5]float64
 
 // GetOrthogonalLayout returns a cached layout result for an orthogonal child,
 // or nil if not cached. Returns (nil, true) if a cycle is detected.

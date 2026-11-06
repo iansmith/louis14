@@ -165,8 +165,18 @@ type LineBreaker struct {
 	mode      LineBreakerMode
 	// parent is the breaker a ruby sub-line breaker serves (Blink's
 	// parent_breaker_); nil for a root breaker.
-	parent         *LineBreaker
-	availableWidth float64
+	parent *LineBreaker
+	// containerInlineSize is the container's content inline size, the
+	// available inline size its atomics are laid out at (Blink's
+	// LayoutAtomicInline lays out in the container's space). The line's
+	// availableWidth (balance, nowrap, floats, text-indent) shapes only the
+	// line opportunity.
+	containerInlineSize float64
+	// orthogonalSizes, when set (intrinsic sizing), lazily gives the
+	// container's orthogonal available and fallback block sizes in place of
+	// the space's.
+	orthogonalSizes func() orthogonalSizes
+	availableWidth  float64
 
 	// Current position in the item list.
 	currentItemIndex int
@@ -271,6 +281,9 @@ func NewLineBreaker(
 		fonts:          fonts,
 		mode:           mode,
 		availableWidth: availableWidth,
+		// Callers that narrow the line (layoutInlineChildren) set the
+		// container's content inline size explicitly.
+		containerInlineSize: space.AvailableSize.InlineSize.Float64(),
 	}
 }
 
@@ -1700,8 +1713,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			csBuilder := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, lb.ctx)).
-				SetOrthogonalFallbackBlockSize(
-					lb.space.OrthogonalFallbackBlockSize).
+				SetOrthogonalFallbackBlockSize(lb.orthogonalFallbackBlockSize()).
 				SetAvailableSize(geomLogicalToOld(lb.space.AvailableSize)).
 				SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
 			// Propagate percentage resolution block-size from parent so that
@@ -1729,11 +1741,11 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
-			// The line space's available inline size, which a ruby sub-line
-			// breaker shares, not its own unbounded width (Blink's
-			// BlockNode::LayoutAtomicInline lays out in the parent space).
+			// The container's content inline size, which a ruby sub-line
+			// breaker shares (Blink's BlockNode::LayoutAtomicInline lays out
+			// in the container's space).
 			SetAvailableSize(LogicalSize{
-				InlineSize: lb.space.AvailableSize.InlineSize.Float64(),
+				InlineSize: lb.root().containerInlineSize,
 				BlockSize:  availBlock,
 			}).
 			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
@@ -2537,6 +2549,20 @@ func (lb *LineBreaker) measureTextWithTabs(
 	return pos - lb.position
 }
 
+// orthogonalSizes is a container's orthogonal available and fallback block
+// sizes (orthogonalChildBlockSizes).
+type orthogonalSizes struct{ available, fallback float64 }
+
+// orthogonalFallbackBlockSize is the fallback block size an atomic's
+// descendants inherit: the lazily computed one while sizing, else the
+// space's.
+func (lb *LineBreaker) orthogonalFallbackBlockSize() float64 {
+	if f := lb.root().orthogonalSizes; f != nil {
+		return f().fallback
+	}
+	return lb.space.OrthogonalFallbackBlockSize
+}
+
 // isIntrinsicSizing reports whether this line breaking computes intrinsic
 // sizes: the root breaker's mode decides, since a ruby sub-line breaker runs
 // in max-content mode during layout too (LineBreaker, inline/
@@ -2579,6 +2605,11 @@ func (lb *LineBreaker) percentageMarginBase() float64 {
 // block_node.cc:1469 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). One rule
 // for sizing and layout.
 func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
+	if orthogonal {
+		if f := lb.root().orthogonalSizes; f != nil {
+			return f().available
+		}
+	}
 	availBlock := Indefinite
 	if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 		availBlock = lb.space.PercentageResolutionSize.BlockSize.Float64()
@@ -2605,14 +2636,15 @@ func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, chil
 	pct := lb.space.PercentageResolutionSize
 	fallback := orthogonalFallbackSize(childWDM, lb.ctx)
 	availBlock := lb.atomicAvailableBlock(true)
-	key := orthogonalContributionSpace{availBlock, fallback, lb.space.OrthogonalFallbackBlockSize,
-		pct.InlineSize.Float64(), pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
+	fallbackBlock := lb.orthogonalFallbackBlockSize()
+	key := orthogonalContributionSpace{availBlock, fallback, fallbackBlock,
+		pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
 	if c, ok := lb.ctx.orthogonalAtomicContributions[item.LayoutNode]; ok && c.space == key {
 		return c.contribution
 	}
 	space := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 		SetOrthogonalFallbackInlineSize(fallback).
-		SetOrthogonalFallbackBlockSize(lb.space.OrthogonalFallbackBlockSize).
+		SetOrthogonalFallbackBlockSize(fallbackBlock).
 		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: availBlock}).
 		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
 		// Only the line's percentage block size carries over, which becomes

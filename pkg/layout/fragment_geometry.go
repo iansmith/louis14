@@ -848,12 +848,8 @@ func CalculateInitialFragmentGeometry(
 	// effectively mean "auto" for block-level layout — the element sizes to its
 	// content. We detect them here and leave borderBoxBlock = Indefinite so that
 	// the layout algorithm determines the block-size from content.
-	borderBoxBlock := resolveInitialBorderBoxBlockSize(style, wdm, space, geom)
-	blockProp := "height"
-	if wdm.IsVertical() {
-		blockProp = "width"
-	}
-	blockVal, _ := style.Get(blockProp)
+	blockVal := logicalBlockSizeValue(style, wdm)
+	borderBoxBlock := resolveInitialBorderBoxBlockSize(style, wdm, space, geom, blockVal)
 
 	// CSS Box Sizing 4 §5.1: aspect-ratio — when one dimension is definite
 	// and the other is auto, compute the auto dimension from the ratio.
@@ -1037,14 +1033,9 @@ func ResolveFitContentInlineSize(fitContentVal string, style *css.Style, minMax 
 // Indefinite: the element's own block size, or one its parent fixed
 // (an override, a fixed block size such as an abspos box's from its
 // insets). It needs no inline size, so intrinsic sizing can use it too
-// (orthogonalLineSizes).
-func resolveInitialBorderBoxBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) float64 {
-	blockProp := "height"
-	if wdm.IsVertical() {
-		blockProp = "width"
-	}
-	blockVal, _ := style.Get(blockProp)
-
+// (measureInlineMinMax, measureBlockMinMax).
+// blockVal is the element's block-size value (logicalBlockSizeValue).
+func resolveInitialBorderBoxBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, blockVal string) float64 {
 	var borderBoxBlock float64 = Indefinite
 	if IsIntrinsicKeyword(blockVal) || css.IsFitContentFunction(blockVal) {
 		// Treat as auto — layout will determine block-size from content.
@@ -1095,4 +1086,15 @@ func resolveInitialBorderBoxBlockSize(style *css.Style, wdm WritingDirectionMode
 		}
 	}
 	return borderBoxBlock
+}
+
+// logicalBlockSizeValue is the element's block-size property value: height,
+// or width in a vertical writing mode.
+func logicalBlockSizeValue(style *css.Style, wdm WritingDirectionMode) string {
+	prop := "height"
+	if wdm.IsVertical() {
+		prop = "width"
+	}
+	v, _ := style.Get(prop)
+	return v
 }

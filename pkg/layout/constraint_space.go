@@ -134,7 +134,7 @@ type ConstraintSpace struct {
 	// constraint space's AvailableSize.BlockSize" (parallel child default).
 	OrthogonalAvailableBlock float64
 	// HasOrthogonalAvailableBlock: OrthogonalAvailableBlock is set (a
-	// definite 0 included), by orthogonalLineSizes.
+	// definite 0 included), by orthogonalChildBlockSizes.
 	HasOrthogonalAvailableBlock bool
 
 	// PercentageResolutionInlineSize is the containing block's inline-size

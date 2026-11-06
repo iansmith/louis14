@@ -102,28 +102,6 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 	return false
 }
 
-// orthogonalLineSizes is what a block container's lines give their
-// orthogonal atomic inlines, the same for layout (layoutInlineChildren) and
-// for intrinsic sizing (measureInlineMinMax): the available block size an
-// orthogonal atomic takes as its available inline size (§10.3.2: the
-// container's definite block size, else its min/max or the nearest scroller,
-// capped at the ICB; Blink's orthogonal fallback,
-// SetOrthogonalFallbackInlineSizeIfNeeded, block_node.cc:1469 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the fallback block size its
-// descendants inherit. Both come from geom, the container's initial fragment
-// geometry, so a block size fixed by the parent or by abspos insets counts,
-// and a definite 0 is definite.
-func orthogonalLineSizes(ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, lineAvailBlock float64) (available, fallback float64) {
-	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
-	var explicitBlockSize float64
-	if hasExplicitBlock {
-		explicitBlockSize = max(0, geom.BorderBoxSize.BlockSize-geom.BlockBorderPadding())
-	}
-	available = computeOrthogonalAvailableBlock(style, wdm, space, geom, ctx, lineAvailBlock, hasExplicitBlock, explicitBlockSize)
-	fallback = computeOrthogonalFallbackBlockForChildren(style, wdm, space, geom, ctx, hasExplicitBlock, explicitBlockSize)
-	return available, fallback
-}
-
 // atomicInlineBaseline returns the baseline (distance from the border-box
 // block-start) a non-replaced atomic inline exports to its line box, or 0
 // when it has none (the caller then synthesizes one). The line-box ascent
@@ -460,11 +438,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// at lines 40-48 + 374-376.
 	geomForPct := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
 	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize.Float64()
-	if geomForPct.BorderBoxSize.BlockSize != Indefinite {
-		ownContentBlock := geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
-		if ownContentBlock < 0 {
-			ownContentBlock = 0
-		}
+	ownContentBlock, hasOwnBlock := explicitContentBlockSize(geomForPct.BorderBoxSize.BlockSize, geomForPct.BlockBorderPadding())
+	if hasOwnBlock {
 		pctBlockSize = ownContentBlock
 	}
 
@@ -475,7 +450,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineAvailBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 
-	orthogonalAvailableBlock, orthogonalFallbackBlock := orthogonalLineSizes(bla.ctx, bla.style, wdm, bla.space, geomForPct, lineAvailBlock)
+	orthogonalAvailableBlock, orthogonalFallbackBlock := orthogonalChildBlockSizes(bla.ctx, bla.style, wdm, bla.space, geomForPct, hasOwnBlock, ownContentBlock)
 
 	lineSpace := ConstraintSpace{
 		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
@@ -499,6 +474,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
+	lb.containerInlineSize = contentInlineSize
 	// Resume cursor from incoming break token. Mirrors Blink's
 	// `InlineBreakToken::start_` which carries both item-index AND
 	// text-offset. Restore when EITHER advances past 0 — a single-text-
