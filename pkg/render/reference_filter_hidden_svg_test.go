@@ -43,3 +43,16 @@ func TestReferenceFilter_InsideDisplayNoneSVG(t *testing.T) {
 		})
 	}
 }
+
+// A url() filter resolves to the first <filter> with the id in tree order,
+// laid out or not (TreeScope id lookup; LocalSVGResource, svg_resource.cc:196
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a hidden #inv before a
+// laid-out #inv that floods red wins, from CSS and from SVG content alike.
+func TestReferenceFilter_FirstInTreeOrderWins(t *testing.T) {
+	const laidOut = `<svg width="100" height="100" style="position:absolute;left:0;top:100px">
+<filter id="inv"><feFlood flood-color="red"/></filter>
+<rect width="100" height="100" fill="green" filter="url(#inv)"/></svg>`
+	img := renderToImage(t, backdropPage("green", "backdrop-filter:url(#inv)", hiddenSVGInvertFilter("")+laidOut), 120, 220)
+	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "CSS backdrop-filter: the hidden <filter>, first in tree order")
+	wantPixelWithinOne(t, img, 50, 150, invertedGreen, "SVG content filter: the hidden <filter>, first in tree order")
+}
