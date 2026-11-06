@@ -142,6 +142,11 @@ type SVGFilterElement interface {
 	// InterpolationSpace returns the effect operating space (linearRGB
 	// default per SVG; the wrapper reads color-interpolation-filters).
 	InterpolationSpace() InterpolationSpace
+	// PrimitiveInterpolationSpace returns the operating space of the
+	// primitive prim (Blink's ColorInterpolationForElement for it,
+	// svg_filter_builder.cc:136-155, 189-192 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	PrimitiveInterpolationSpace(prim SVGFilterPrimitive) InterpolationSpace
 	// Primitives returns the filter primitive children in DOM order.
 	Primitives() []SVGFilterPrimitive
 	// FillPaintEffect returns a FilterEffect that paints the
@@ -347,7 +352,10 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 	if sp := elt.StrokePaintEffect(); sp != nil {
 		b.builtins["StrokePaint"] = sp
 	}
+	filterSpace := b.space
+	defer func() { b.space = filterSpace }()
 	for _, prim := range elt.Primitives() {
+		b.space = elt.PrimitiveInterpolationSpace(prim)
 		eff := b.buildOnePrimitive(elt, prim)
 		if eff == nil {
 			continue
@@ -1062,23 +1070,19 @@ func parseLength(s string, def float64) (float64, bool) {
 	return f, false
 }
 
-// ResolveInterpolationSpace returns the InterpolationSpace that
-// matches a `color-interpolation-filters` CSS value. Mirrors Blink's
-// SVGFilterBuilder::ResolveInterpolationSpace.
-//
-// Per SVG 1.1 §4.2 the initial value of `color-interpolation-filters`
-// is `linearRGB` — this is the SVG-specific default that differs from
-// `color-interpolation` (whose default is sRGB).
-func ResolveInterpolationSpace(value string) InterpolationSpace {
+// ResolveInterpolationSpace returns the InterpolationSpace a
+// `color-interpolation-filters` value selects: linearRGB for linearRGB,
+// sRGB for sRGB and auto. Mirrors Blink's
+// SVGFilterBuilder::ResolveInterpolationSpace (svg_filter_builder.cc:157-162
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which maps everything but
+// kLinearrgb to sRGB. ok is false for any other value, which Blink's parser
+// drops: the caller falls back to what applies without it.
+func ResolveInterpolationSpace(value string) (space InterpolationSpace, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "srgb":
-		return InterpolationSpaceSRGB
-	case "linearrgb", "":
-		return InterpolationSpaceLinearRGB
-	case "auto":
-		// Per spec, `auto` maps to the implementation's choice; SVG 1.1
-		// recommends linearRGB. Mirrors Blink's mapping.
-		return InterpolationSpaceLinearRGB
+	case "linearrgb":
+		return InterpolationSpaceLinearRGB, true
+	case "srgb", "auto":
+		return InterpolationSpaceSRGB, true
 	}
-	return InterpolationSpaceLinearRGB
+	return InterpolationSpaceLinearRGB, false
 }

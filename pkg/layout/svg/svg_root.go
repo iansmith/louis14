@@ -3,6 +3,7 @@ package svg
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"strings"
 )
 
 // ElementAdapter is the abstract DOM-element view consumed by the SVG
@@ -228,7 +229,7 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 // Element::LayoutObjectIsNeeded (core/dom/element.cc:4226-4229 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The only SVG elements whose
 // display can still be contents here are nested <svg>, <g>, <use> and
-// <tspan> (css.AdjustStyleForSvgElement); see svgDisplayContents.
+// <tspan> (css.AdjustStyleForSvgElement); see DisplayContents.
 func layoutObjectIsNeeded(elt ElementAdapter, styleResolver StyleResolver) bool {
 	if styleResolver == nil {
 		return true
@@ -241,14 +242,67 @@ func layoutObjectIsNeeded(elt ElementAdapter, styleResolver StyleResolver) bool 
 	return d != css.DisplayNone && d != css.DisplayContents
 }
 
-// svgDisplayContents reports whether elt is a display:contents element
+// svgLayoutObjectTags are the SVG elements that create an SVG layout object
+// (their Blink classes override CreateLayoutObject). Any other element —
+// <title>, <desc>, <metadata>, an unknown element — gets none a parent
+// accepts (SVGContentContainer::IsChildAllowed requires an SVG layout
+// object, core/layout/svg/svg_content_container.cc:136-148 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var svgLayoutObjectTags = map[string]bool{
+	"svg": true, "g": true, "defs": true, "a": true, "switch": true, "symbol": true, "use": true,
+	"image": true, "foreignobject": true, "text": true, "tspan": true, "textpath": true,
+	"marker": true, "clippath": true, "mask": true, "pattern": true, "lineargradient": true,
+	"radialgradient": true, "stop": true, "filter": true,
+}
+
+// svgLeafTag reports whether tag's layout object takes no children: a
+// shape, <image> or <stop> has no child list (LayoutObject::CanHaveChildren,
+// core/layout/layout_object.h:531-534 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func svgLeafTag(tag string) bool {
+	return svgShapeTags[tag] || tag == "image" || tag == "stop"
+}
+
+// svgShapeTags are the basic shapes and <path>.
+var svgShapeTags = map[string]bool{
+	"rect": true, "circle": true, "ellipse": true, "line": true, "polyline": true, "polygon": true, "path": true,
+}
+
+// CreatesLayoutObject reports whether the SVG element elt, under a parent
+// whose layout object takes children (TakesSVGChildren), creates a layout
+// object: <defs> and <g> always do, as hidden containers when not rendered
+// (SVGDefsElement::CreateLayoutObject, svg_defs_element.cc:31-33;
+// SVGGElement, svg_g_element.cc:32-50 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an element that creates an SVG
+// layout object (svgLayoutObjectTags; a filter primitive's is
+// LayoutSVGFilterPrimitive) does unless layoutObjectIsNeeded says not; any
+// other never. A display:contents element creates none, and its children
+// are its parent's (DisplayContents).
+func CreatesLayoutObject(elt ElementAdapter, styleResolver StyleResolver) bool {
+	tag := elt.TagName()
+	if tag == "defs" || tag == "g" {
+		return true
+	}
+	if !svgLayoutObjectTags[tag] && !svgShapeTags[tag] && !strings.HasPrefix(tag, "fe") {
+		return false
+	}
+	return layoutObjectIsNeeded(elt, styleResolver)
+}
+
+// TakesSVGChildren reports whether the layout object of the SVG element
+// named tag takes children (svgLeafTag).
+func TakesSVGChildren(tag string) bool {
+	return !svgLeafTag(tag)
+}
+
+// DisplayContents reports whether elt is a display:contents element
 // whose children are hoisted into its parent (css-display "Unboxing in
 // SVG"): it has no layout object of its own, but Blink attaches its
 // children to the nearest layout-parent ancestor
 // (LayoutTreeBuilderTraversal::LayoutParent,
 // core/dom/layout_tree_builder_traversal.cc:65-80 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func svgDisplayContents(elt ElementAdapter, styleResolver StyleResolver) bool {
+func DisplayContents(elt ElementAdapter, styleResolver StyleResolver) bool {
 	if styleResolver == nil {
 		return false
 	}
@@ -294,44 +348,35 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	if elt == nil {
 		return nil
 	}
-	// Track ALL id-bearing elements so feImage (and any future
-	// reference primitive) can resolve `href="#id"` to the underlying
-	// DOM element. Resource elements (gradients, filters, …) ALSO end
-	// up in this map, but the typed lookups via LookupAs* still apply
-	// for those. Mirrors Blink's per-tree-scope id→Element table.
-	resources.RegisterElement(elt)
 	tag := elt.TagName()
 	switch tag {
 	case "lineargradient":
 		// HTML tokenizer lowercases SVG element names — `<linearGradient>`
 		// arrives here as "lineargradient". Same for radialgradient.
 		g := NewSVGLinearGradient(elt, styleResolver)
-		resources.RegisterPaintServer(g)
+		resources.RegisterBuiltFrom(g, elt)
 		return nil
 	case "radialgradient":
 		g := NewSVGRadialGradient(elt, styleResolver)
-		resources.RegisterPaintServer(g)
+		resources.RegisterBuiltFrom(g, elt)
 		return nil
 	case "pattern":
 		p := NewSVGPattern(elt, lengthCtx, styleResolver)
-		resources.RegisterPaintServer(p)
+		resources.RegisterBuiltFrom(p, elt)
 		return nil
 	case "clippath":
 		// HTML tokenizer lowercases SVG element names —
 		// `<clipPath>` arrives here as "clippath".
 		c := NewSVGResourceClipper(elt, lengthCtx, styleResolver)
-		resources.RegisterClipper(c)
+		resources.RegisterBuiltFrom(c, elt)
 		return nil
 	case "mask":
 		m := NewSVGResourceMasker(elt, lengthCtx, styleResolver)
-		resources.RegisterMasker(m)
+		resources.RegisterBuiltFrom(m, elt)
 		return nil
 	case "filter":
-		// HTML tokenizer lowercases SVG element names — `<filter>`
-		// arrives here as "filter". Phase 7 routes it through
-		// NewSVGResourceFilter and into the registry.
-		f := NewSVGResourceFilter(elt, lengthCtx, styleResolver)
-		resources.RegisterFilter(f)
+		// A <filter> is a document resource built from the DOM, laid out
+		// or not (layout's treeScopeSVGResources); it paints nothing here.
 		return nil
 	case "defs":
 		// `<defs>` is a non-rendering grouping element (SVG 2 §5.5);
@@ -348,7 +393,7 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	// LayoutSVGHiddenContainer for display:none,
 	// core/svg/svg_g_element.cc:32-50 @
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
-	if svgDisplayContents(elt, styleResolver) {
+	if DisplayContents(elt, styleResolver) {
 		return buildSVGHoistedChildren(elt, lengthCtx, styleResolver, resources)
 	}
 	if !layoutObjectIsNeeded(elt, styleResolver) {
@@ -361,13 +406,14 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	// we recurse with the resource-aware variant so a paint server
 	// declared inside a `<g>` is still registered. SVGShape leaves
 	// don't recurse (they have no SVG-element children).
-	switch tag {
-	case "rect", "circle", "ellipse", "line", "polyline", "polygon", "path":
+	if svgShapeTags[tag] {
 		shape := NewSVGShape(elt, lengthCtx)
 		if shape != nil && styleResolver != nil {
 			shape.Style = styleResolver(elt)
 		}
 		return shape
+	}
+	switch tag {
 	case "text":
 		if svgText := tryBuildSVGText(elt, lengthCtx, styleResolver); svgText != nil {
 			return svgText
@@ -488,8 +534,7 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 		return nil
 	}
 	tag := elt.TagName()
-	switch tag {
-	case "rect", "circle", "ellipse", "line", "polyline", "polygon", "path":
+	if svgShapeTags[tag] {
 		// Shape leaves do not have SVG-element children (text content
 		// inside a <rect> is ignored per SVG 1.1 §5.6). Skip the
 		// recursive child walk.
@@ -498,6 +543,8 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 			shape.Style = styleResolver(elt)
 		}
 		return shape
+	}
+	switch tag {
 	case "text":
 		// `<text>` is a leaf for this ticket's scope (no `<tspan>`
 		// support — see SVGText's doc comment), so it skips the

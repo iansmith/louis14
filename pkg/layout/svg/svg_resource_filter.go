@@ -70,6 +70,18 @@ type SVGResourceFilter struct {
 	// §4.2).
 	elementStyle *css.Style
 
+	// NoLayoutObject marks a filter with no layout object (layout's
+	// treeScopeSVGResources), e.g. in a display:none <svg>: Blink builds it
+	// from the DOM, so its
+	// color-interpolation-filters is its presentation attribute
+	// (Attribute), else auto (ColorInterpolationForElement,
+	// svg_filter_builder.cc:136-170 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	NoLayoutObject bool
+
+	// element is the <filter> element.
+	element ElementAdapter
+
 	// cycleState carries the cycle-detection state machine; flipped
 	// by the SVGResourcesCycleSolver DFS once per paint frame.
 	cycleState SVGCycleState
@@ -115,6 +127,15 @@ func (f *SVGResourceFilter) Paint(*SVGPaintContext) {}
 // Style returns the filter element's resolved style (or nil). Used by
 // the render-side builder to read `color-interpolation-filters`.
 func (f *SVGResourceFilter) Style() *css.Style { return f.elementStyle }
+
+// Attribute returns the <filter> element's attribute name and whether it is
+// set.
+func (f *SVGResourceFilter) Attribute(name string) (string, bool) {
+	if f.element == nil {
+		return "", false
+	}
+	return f.element.Attribute(name)
+}
 
 // ResourceBoundingBox returns the filter region's user-space rect for
 // the given referencing target. Mirrors Blink's
@@ -315,6 +336,7 @@ func NewSVGResourceFilter(elt ElementAdapter, parentCtx SVGLengthContext, styleR
 	} else if v, ok := elt.Attribute("primitiveunits"); ok {
 		f.PrimitiveUnits = ParseGradientUnits(v, SVGUnitUserSpaceOnUse)
 	}
+	f.element = elt
 	if styleResolver != nil {
 		f.elementStyle = styleResolver(elt)
 	}

@@ -5,6 +5,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/layout/svg"
 )
 
 // LayoutInputNode is louis14's single layout-tree node type. It wraps a
@@ -160,6 +161,12 @@ type LayoutInputNode struct {
 	// (pkg/layout/svg imports pkg/geometry; pkg/layout imports
 	// pkg/layout/svg). Callers in pkg/render cast to *svg.SVGRoot.
 	SVGRoot any
+
+	// TreeScopeSVGResources, on a document element's node, is the
+	// document's id map for url() references (treeScopeSVGResources):
+	// Blink's TreeScope::getElementById, with the resource each first
+	// element provides.
+	TreeScopeSVGResources *svg.SVGResourceRegistry
 }
 
 // Style returns the computed style for this node.

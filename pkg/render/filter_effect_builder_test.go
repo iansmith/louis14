@@ -222,3 +222,35 @@ func TestParseSVGFilterURL(t *testing.T) {
 		}
 	}
 }
+
+// A <filter> from an external document has no layout object: with no
+// color-interpolation-filters attribute it runs in sRGB, auto
+// (ColorInterpolationForElement, svg_filter_builder.cc:136-170 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, "used by external SVG files"):
+// the inverting matrix turns green (0,128,0) into (255,127,255).
+func TestBuildReferenceFilter_ExternalSVG_DefaultsToSRGB(t *testing.T) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="10" height="10">` +
+		`<feColorMatrix type="matrix" values="-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 0 0 0 1 0"/></filter></svg>`
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 10, 10),
+		ExternalSVGFetcher: func(string) ([]byte, error) {
+			return []byte(svg), nil
+		},
+	}
+	f := b.BuildReferenceFilter("x.svg#f")
+	if f == nil {
+		t.Fatal("BuildReferenceFilter returned nil")
+	}
+	src := image.NewRGBA(f.FilterRegion)
+	for i := 0; i < len(src.Pix); i += 4 {
+		src.Pix[i+1], src.Pix[i+3] = 128, 255
+	}
+	f.SetSourceImage(src)
+	out := f.ApplyToSRGB()
+	if out == nil {
+		t.Fatal("ApplyToSRGB returned nil")
+	}
+	if got := out.RGBAAt(out.Rect.Min.X+5, out.Rect.Min.Y+5); got.G < 126 || got.G > 128 {
+		t.Errorf("green channel = %d, want 127 (sRGB): %v", got.G, got)
+	}
+}

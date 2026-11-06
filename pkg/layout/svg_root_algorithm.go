@@ -79,17 +79,7 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 	// each SVGShape its computed style by looking up the cascade map
 	// supplied on LayoutContext (LayoutEngine.Layout populates this
 	// with the same per-node styles ApplyStylesToDocument produced).
-	styles := sra.ctx.ComputedStyles
-	styleResolver := func(elt svg.ElementAdapter) *css.Style {
-		if styles == nil {
-			return nil
-		}
-		if adapter, ok := elt.(svgElementAdapter); ok && adapter.node != nil {
-			return styles[adapter.node]
-		}
-		return nil
-	}
-	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize, styleResolver)
+	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize, computedStyleResolver(sra.ctx.ComputedStyles))
 
 	// Step 4: run the SVG layout pass. Phase 1: this is a recursive
 	// no-op (every node returns an empty SVGLayoutResult), but wiring
@@ -98,6 +88,12 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 
 	// Step 5: stash the SVGRoot on the LayoutInputNode for the painter.
 	sra.node.SVGRoot = root
+	if sra.node.DOMNode != nil {
+		if sra.ctx.SVGRoots == nil {
+			sra.ctx.SVGRoots = make(map[*html.Node]*svg.SVGRoot)
+		}
+		sra.ctx.SVGRoots[sra.node.DOMNode] = root
+	}
 
 	return result
 }
@@ -132,6 +128,131 @@ func IsInlineSVG(node *LayoutInputNode) bool {
 // stateless — every call walks the underlying DOM directly.
 type svgElementAdapter struct {
 	node *html.Node
+}
+
+// computedStyleResolver resolves an SVG element's style from the
+// document's computed styles.
+func computedStyleResolver(styles map[*html.Node]*css.Style) svg.StyleResolver {
+	return func(elt svg.ElementAdapter) *css.Style {
+		if styles == nil {
+			return nil
+		}
+		if adapter, ok := elt.(svgElementAdapter); ok && adapter.node != nil {
+			return styles[adapter.node]
+		}
+		return nil
+	}
+}
+
+// treeScopeSVGResources builds the document's id map for url()
+// references and makes it every laid-out <svg>'s registry. Blink resolves an
+// id in the document's tree scope (TreeScope::getElementById; a resource's
+// target, LocalSVGResource, core/svg/svg_resource.cc:196 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the first element with the id
+// in tree order, whatever its kind, and the referencing property then checks
+// the kind, so a wrong kind resolves to no resource. The first element
+// provides:
+//   - a <filter>: built from the DOM, laid out or not
+//     (FilterEffectBuilder::BuildReferenceFilter, core/paint/
+//     filter_effect_builder.cc:514-521), NoLayoutObject when it has none;
+//   - a gradient, pattern, clipPath or mask: the resource its laid-out
+//     <svg> built from it (Blink's need a LayoutSVGResourceContainer);
+//   - anything else: no resource.
+//
+// roots are the document's laid-out <svg> elements (LayoutContext.SVGRoots).
+func treeScopeSVGResources(root *html.Node, styles map[*html.Node]*css.Style, roots map[*html.Node]*svg.SVGRoot) *svg.SVGResourceRegistry {
+	if !hasSVGElement(root) {
+		return nil
+	}
+	w := treeScopeWalker{reg: svg.NewSVGResourceRegistry(), resolve: computedStyleResolver(styles), roots: roots}
+	w.walk(root, treeScopeState{})
+	for _, r := range roots {
+		r.Resources = w.reg
+	}
+	return w.reg
+}
+
+// treeScopeState is an element's place in the document for its id map: in an
+// <svg> (an SVG element by its <svg> ancestor and tag, as the SVG build
+// decides; louis14's createElementNS records no namespace), the laid-out
+// <svg> it is in, and whether it has a layout object there.
+type treeScopeState struct {
+	inSVG           bool
+	svgRoot         *svg.SVGRoot
+	hasLayoutObject bool
+	// takesChildren reports whether this element's layout object takes
+	// children.
+	takesChildren bool
+}
+
+// treeScopeWalker builds a document's id map (treeScopeSVGResources).
+type treeScopeWalker struct {
+	reg     *svg.SVGResourceRegistry
+	resolve svg.StyleResolver
+	roots   map[*html.Node]*svg.SVGRoot
+}
+
+// walk visits the elements under n in tree order, skipping <template>
+// content, which is not in the document's tree (TreeScope::getElementById
+// does not see it), and registers the first element with each id.
+func (w *treeScopeWalker) walk(n *html.Node, parent treeScopeState) {
+	st := parent
+	if n.Type == html.ElementNode {
+		if n.TagName == "template" && !parent.inSVG {
+			return
+		}
+		elt := svgElementAdapter{node: n}
+		if n.TagName == "svg" {
+			st.inSVG = true
+		}
+		switch r := w.roots[n]; {
+		case r != nil:
+			st = treeScopeState{inSVG: true, svgRoot: r, hasLayoutObject: true, takesChildren: true}
+		case st.inSVG && !svg.DisplayContents(elt, w.resolve):
+			// A display:contents element hands its parent's state on.
+			st.hasLayoutObject = parent.hasLayoutObject && parent.takesChildren && svg.CreatesLayoutObject(elt, w.resolve)
+			st.takesChildren = svg.TakesSVGChildren(n.TagName)
+		}
+		// The first element with its id only (RegisterElement is
+		// first-wins).
+		if w.reg.RegisterElement(elt) && st.inSVG {
+			w.registerResource(elt, st)
+		}
+	}
+	for _, c := range n.Children {
+		w.walk(c, st)
+	}
+}
+
+// hasSVGElement reports whether there is an <svg> element under n.
+func hasSVGElement(n *html.Node) bool {
+	if n.Type == html.ElementNode && n.TagName == "svg" {
+		return true
+	}
+	for _, c := range n.Children {
+		if hasSVGElement(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// registerResource registers the resource elt, the first element with its
+// id, provides (treeScopeSVGResources).
+func (w *treeScopeWalker) registerResource(elt svgElementAdapter, st treeScopeState) {
+	if elt.node.TagName == "filter" {
+		if f := svg.NewSVGResourceFilter(elt, svg.SVGLengthContext{}, w.resolve); f != nil {
+			f.NoLayoutObject = !st.hasLayoutObject
+			w.reg.Register(f)
+		}
+		return
+	}
+	if st.svgRoot == nil {
+		return
+	}
+	if res, ok := st.svgRoot.Resources.ResourceBuiltFrom(elt); ok {
+		w.reg.Register(res)
+	}
 }
 
 func newSVGElementAdapter(n *html.Node) svg.ElementAdapter {
