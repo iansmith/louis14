@@ -389,13 +389,18 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// Compute final block-size.
 	intrinsicBlockSize := totalRowSize
 
-	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
-	// when no explicit block-size is set. For grid containers, resolveTrackSizes
-	// already zeroes item contributions under containment, so totalRowSize is
-	// the correct "as-if-empty" value (fixed tracks + gaps + any stretch/fr
-	// distribution from a definite available size). The generic
-	// sizeContainedIntrinsicBlockSize would incorrectly zero even fixed row tracks.
-	if !sizeContained {
+	// CSS Contain 1 §4.2: under size containment the intrinsic block size is
+	// the grid's as if empty: its explicit rows sized with no items, plus
+	// gaps (its rows for layout still size from its items). Mirrors
+	// GridLayoutAlgorithm::ComputeIntrinsicBlockSizeIgnoringChildren
+	// (grid_layout_algorithm.cc:508-530 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The generic
+	// sizeContainedIntrinsicBlockSize would zero even fixed row tracks.
+	if sizeContained {
+		explicitRows := rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]
+		emptyRows := gla.resolveTrackSizes(explicitRows, rowAvailable, rowGap, false, nil, numCols, len(explicitRows), wdm, geom)
+		intrinsicBlockSize = gla.totalTrackSize(emptyRows, rowGap)
+	} else {
 		intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
 	}
 
@@ -950,51 +955,17 @@ func gridTrackIsCollapsed(t css.GridTrack) bool {
 	return t.AutoFitExpanded && gridTrackIsFixed(t) && t.Size == 0
 }
 
-// columnContributions returns, for each column track, the largest
-// min-content and max-content inline contribution among the items placed in
-// it. Only items spanning a track for which measure reports true are
-// measured (all, when measure is nil). Contributions are what
-// GridTrackSizingAlgorithm::ResolveIntrinsicTrackSizes takes from
-// ContributionSizeForGridItem (grid_track_sizing_algorithm.cc:911,
-// grid_layout_algorithm.cc:577 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-//
-// Divergence until LOU-691 ports Blink's distribution: a spanning item's
-// contribution, less the gaps and fixed tracks it crosses, is split evenly
-// over the other tracks it spans, where Blink distributes it over the
-// intrinsic tracks by their growth potential.
-func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, tracks []css.GridTrack, gap float64, measure func(css.GridTrack) bool) (minC, maxC []float64) {
-	n := len(tracks)
-	minC, maxC = make([]float64, n), make([]float64, n)
-	for _, item := range items {
-		start, end := item.colStart, min(item.colEnd, n)
-		if start < 0 || end <= start {
-			continue
-		}
-		fixed, receivers, wanted := gap*float64(end-start-1), 0, measure == nil
-		for _, t := range tracks[start:end] {
-			if gridTrackIsFixed(t) {
-				fixed += t.Size
-			} else {
-				receivers++
-				wanted = wanted || measure(t)
-			}
-		}
-		if receivers == 0 || !wanted {
-			continue
-		}
-		lo, hi := gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
-		lo, hi = max(0, lo-fixed)/float64(receivers), max(0, hi-fixed)/float64(receivers)
-		for i := start; i < end; i++ {
-			if !gridTrackIsFixed(tracks[i]) {
-				minC[i], maxC[i] = max(minC[i], lo), max(maxC[i], hi)
-			}
-		}
-	}
-	return minC, maxC
-}
-
 // resolveTrackSizes resolves track sizes from track definitions.
 func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
+	// Columns are sized by the GridTrackSizingAlgorithm port; rows below
+	// keep louis14's fragment-based sizing (LOU-757 for its stretch).
+	// Size containment sizes only the container as if empty: its columns
+	// still size from its items, as GridLayoutAlgorithm::Layout builds the
+	// sizing tree with its children (grid_layout_algorithm.cc:416-422 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if isInline {
+		return gla.computeColumnSizes(tracks, available, gap, items, false, gridSizingLayout)
+	}
 	n := len(tracks)
 	sizes := make([]float64, n)
 
@@ -1013,71 +984,32 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		}
 	}
 
-	// Under size/inline-size containment, item contributions are zero — the
-	// container is sized as if it had no content. Fixed tracks and gaps still
-	// contribute. ShouldApplySizeContainment covers both axes; inline-size
-	// containment only applies to the inline (column) pass.
-	skipItemContrib := gla.style != nil &&
-		(gla.style.ShouldApplySizeContainment() ||
-			(isInline && gla.style.ShouldApplyInlineSizeContainment()))
+	// Size containment sizes the container as if empty, not its rows: they
+	// still size from its items, as the columns do (computeColumnSizes).
 
 	// Resolve min-content/max-content/auto tracks from item content sizes.
-	var colMin, colMax []float64 // fit-content column contributions, measured once
 	for i, t := range tracks {
 		if !t.Auto && !t.MinContent && !t.MaxContent && t.Fr == 0 && !t.IsFitContent && !(t.IsMinMax && t.MaxAuto) {
 			continue
 		}
 		maxSize := 0.0
-		minContentSize := 0.0
-		// In the inline (column) pass, items are not yet laid out — column sizing
-		// precedes item layout, so item.result is nil. fit-content tracks need
-		// real min-content (base, never clamped) and max-content (growth limit,
-		// clamped to the argument) contributions, so measure them directly via
-		// ComputeMinMaxSizes (columnContributions).
-		measureContrib := isInline && t.IsFitContent
-		if measureContrib && !skipItemContrib {
-			if colMin == nil {
-				colMin, colMax = gla.columnContributions(items, tracks, gap, func(t css.GridTrack) bool { return t.IsFitContent })
-			}
-			minContentSize, maxSize = colMin[i], colMax[i]
-		} else if !skipItemContrib {
-			for _, item := range items {
-				var start, end int
-				if isInline {
-					start, end = item.colStart, item.colEnd
-				} else {
-					start, end = item.rowStart, item.rowEnd
-				}
-				if start <= i && end > i {
-					span := end - start
-					if span <= 0 {
-						span = 1
+		for _, item := range items {
+			start, end := item.rowStart, item.rowEnd
+			if start <= i && end > i {
+				span := max(end-start, 1)
+				if item.result != nil {
+					var itemSize float64
+					if wdm.IsVertical() {
+						itemSize = item.result.Fragment.Size.WidthF64()
+					} else {
+						itemSize = item.result.Fragment.Size.HeightF64()
 					}
-					var itemMax, itemMin float64
-					if item.result != nil {
-						if isInline != wdm.IsVertical() {
-							itemMax = item.result.Fragment.Size.WidthF64()
-						} else {
-							itemMax = item.result.Fragment.Size.HeightF64()
-						}
-						itemMin = itemMax
-					}
-					if c := itemMax / float64(span); c > maxSize {
-						maxSize = c
-					}
-					if c := itemMin / float64(span); c > minContentSize {
-						minContentSize = c
-					}
+					maxSize = max(maxSize, itemSize/float64(span))
 				}
 			}
 		}
-		if t.IsFitContent {
-			if measureContrib {
-				maxSize = fitContentTrackSize(minContentSize, maxSize, t.FitContentMax)
-			} else if maxSize > t.FitContentMax {
-				// Row pass: existing fragment-based clamp to the argument.
-				maxSize = t.FitContentMax
-			}
+		if t.IsFitContent && maxSize > t.FitContentMax {
+			maxSize = t.FitContentMax
 		}
 		if t.IsMinMax {
 			if maxSize < t.MinSize {
