@@ -768,29 +768,31 @@ func (r *Renderer) lookupSVGResources() *svg.SVGResourceRegistry {
 // don't yet have a Document-lifetime renderer (the layout pass owns
 // the SVGRoot lifetime; the renderer is recreated per paint).
 //
-// Conflicts (same id registered by two different SVGs) follow the
-// first-wins rule from each per-root RegisterXxx; the renderer
-// preserves that ordering by walking boxes in pre-order, which
-// matches document order for HTML.
+// Conflicts (same id registered twice) are first-wins: the document's
+// <filter> elements are merged first, in tree order (the root box's
+// TreeScopeSVGFilters), then the roots' other resources in box pre-order,
+// which matches document order for HTML.
 func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
 	merged := svg.NewSVGResourceRegistry()
-	for _, b := range boxes {
-		mergeSVGResourcesFromBox(b, merged)
-	}
-	// Then the document's other <filter> elements: first-wins keeps a
-	// laid-out root's own, so these fill only ids no root defines.
+	// The document's <filter> elements first, in tree order, laid out or
+	// not: first-wins then resolves a filter id to the first in tree order.
 	for _, b := range boxes {
 		if b.TreeScopeSVGFilters != nil {
 			mergeSVGRegistries(merged, b.TreeScopeSVGFilters)
 		}
 	}
+	for _, b := range boxes {
+		mergeSVGResourcesFromBox(b, merged)
+	}
 	return merged
 }
 
 // redistributeSVGResources copies the merged document-scope registry
-// back into every inline `<svg>` SVGRoot's per-root registry. Because
-// mergeSVGRegistries uses the first-wins RegisterXxx methods, ids a root
-// already owns are preserved; ids from other roots are added. This makes
+// back into every inline `<svg>` SVGRoot's per-root registry. The
+// document's filters replace a root's own (a filter id resolves in tree
+// order across the document); for the other kinds mergeSVGRegistries's
+// first-wins RegisterXxx keeps ids a root already owns and adds ids from
+// other roots. This makes
 // cross-SVG `url(#id)` references (e.g. a `<rect>` in one svg referencing
 // a `<filter>` in another) resolve via the SVG paint context's local
 // `root.Resources` lookup. Mirrors Blink's per-Document tree-scope
@@ -813,6 +815,9 @@ func redistributeSVGResourcesToBox(box *layout.Box, merged *svg.SVGResourceRegis
 	}
 	if box.LayoutNode != nil {
 		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
+			// A filter id resolves in tree order across the document, so
+			// the document's filter replaces the root's own.
+			merged.ForEachFilter(root.Resources.ReplaceFilter)
 			mergeSVGRegistries(root.Resources, merged)
 		}
 	}

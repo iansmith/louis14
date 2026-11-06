@@ -31,8 +31,9 @@ type Box struct {
 	Children []*Box
 
 	// TreeScopeSVGFilters, on the root box only, holds the document's SVG
-	// <filter> elements (treeScopeSVGFilters), for url() references the
-	// laid-out <svg> roots do not register.
+	// <filter> elements in tree order (treeScopeSVGFilters): url() filter
+	// references resolve against it before the laid-out <svg> roots'
+	// registries.
 	TreeScopeSVGFilters *svg.SVGResourceRegistry
 	Parent              *Box
 

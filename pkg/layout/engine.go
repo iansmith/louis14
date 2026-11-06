@@ -186,10 +186,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// computation, applied post-layout because absolute positions are not known
 	// until the full box tree is built.
 	applyStickyOffsets(rootBox, le.viewport.width, le.viewport.height)
-	rootBox.TreeScopeSVGFilters = treeScopeSVGFilters(doc.Root, computedStyles)
-
 	le.lastStyles = computedStyles
 	le.lastNodeBoxes = buildNodeBoxIndex([]*Box{rootBox})
+	rootBox.TreeScopeSVGFilters = treeScopeSVGFilters(doc.Root, computedStyles, le.lastNodeBoxes)
 	le.lastNodeBoxes[doc.Root] = viewBox
 
 	return []*Box{rootBox}

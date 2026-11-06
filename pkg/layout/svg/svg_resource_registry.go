@@ -137,6 +137,20 @@ func (r *SVGResourceRegistry) RegisterFilter(f *SVGResourceFilter) {
 	r.Register(f)
 }
 
+// ReplaceFilter registers f under its id, replacing a filter already
+// registered there; another kind of resource under the id stays.
+func (r *SVGResourceRegistry) ReplaceFilter(f *SVGResourceFilter) {
+	if r == nil || f == nil || f.ID() == "" {
+		return
+	}
+	if existing, ok := r.resources[f.ID()]; ok {
+		if _, isFilter := existing.(*SVGResourceFilter); !isFilter {
+			return
+		}
+	}
+	r.resources[f.ID()] = f
+}
+
 // Lookup returns the resource registered under `id`. Returns (nil,
 // false) for an unknown id. The id is matched case-sensitively per the
 // HTML/SVG id-attribute model. Callers that want a kind-typed result

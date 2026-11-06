@@ -138,32 +138,36 @@ func computedStyleResolver(styles map[*html.Node]*css.Style) svg.StyleResolver {
 	}
 }
 
-// treeScopeSVGFilters registers every SVG <filter> element under root, in
-// tree order, marked NoLayoutObject. A url() filter reference resolves to
-// the <filter> element with that id in the tree scope, laid out or not
-// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
-// filter_effect_builder.cc:514-521; LocalSVGResource, core/svg/
-// svg_resource.cc:196 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a
-// <filter> in a display:none <svg>, which no SVGRoot registers, still
-// resolves.
-func treeScopeSVGFilters(root *html.Node, styles map[*html.Node]*css.Style) *svg.SVGResourceRegistry {
+// treeScopeSVGFilters registers every SVG <filter> element under root in
+// one tree-order pass, so the first with an id wins. A url() filter
+// reference resolves to the first <filter> element with that id in the tree
+// scope, laid out or not (FilterEffectBuilder::BuildReferenceFilter,
+// core/paint/filter_effect_builder.cc:514-521; LocalSVGResource,
+// core/svg/svg_resource.cc:196 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// A <filter> outside every laid-out <svg> (one whose box in nodeBoxes has
+// an SVGRoot; e.g. in a display:none <svg>) is marked NoLayoutObject.
+func treeScopeSVGFilters(root *html.Node, styles map[*html.Node]*css.Style, nodeBoxes map[*html.Node]*Box) *svg.SVGResourceRegistry {
 	reg := svg.NewSVGResourceRegistry()
 	resolve := computedStyleResolver(styles)
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	var walk func(n *html.Node, laidOut bool)
+	walk = func(n *html.Node, laidOut bool) {
+		if b := nodeBoxes[n]; b != nil && b.LayoutNode != nil && b.LayoutNode.SVGRoot != nil {
+			laidOut = true
+		}
 		if n.Type == html.ElementNode && n.TagName == "filter" && n.NamespaceURI() == html.SVGNamespaceURI {
 			if f := svg.NewSVGResourceFilter(svgElementAdapter{node: n}, svg.SVGLengthContext{}, resolve); f != nil {
-				f.NoLayoutObject = true
+				f.NoLayoutObject = !laidOut
 				reg.RegisterFilter(f)
 			}
 		}
 		for _, c := range n.Children {
-			walk(c)
+			walk(c, laidOut)
 		}
 	}
-	walk(root)
+	walk(root, false)
 	return reg
 }
+
 
 func newSVGElementAdapter(n *html.Node) svg.ElementAdapter {
 	if n == nil {
