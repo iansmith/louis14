@@ -389,13 +389,18 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// Compute final block-size.
 	intrinsicBlockSize := totalRowSize
 
-	// CSS Contain 1 §4.2: size containment — collapse intrinsic block-size to 0
-	// when no explicit block-size is set. For grid containers, resolveTrackSizes
-	// already zeroes item contributions under containment, so totalRowSize is
-	// the correct "as-if-empty" value (fixed tracks + gaps + any stretch/fr
-	// distribution from a definite available size). The generic
-	// sizeContainedIntrinsicBlockSize would incorrectly zero even fixed row tracks.
-	if !sizeContained {
+	// CSS Contain 1 §4.2: under size containment the intrinsic block size is
+	// the grid's as if empty: its explicit rows sized with no items, plus
+	// gaps (its rows for layout still size from its items). Mirrors
+	// GridLayoutAlgorithm::ComputeIntrinsicBlockSizeIgnoringChildren
+	// (grid_layout_algorithm.cc:508-530 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The generic
+	// sizeContainedIntrinsicBlockSize would zero even fixed row tracks.
+	if sizeContained {
+		explicitRows := rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]
+		emptyRows := gla.resolveTrackSizes(explicitRows, rowAvailable, rowGap, false, nil, numCols, len(explicitRows), wdm, geom)
+		intrinsicBlockSize = gla.totalTrackSize(emptyRows, rowGap)
+	} else {
 		intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
 	}
 
@@ -1022,10 +1027,8 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		}
 	}
 
-	// Under size containment, item contributions are zero — the container
-	// is sized as if it had no content. Fixed tracks and gaps still
-	// contribute.
-	skipItemContrib := gla.style != nil && gla.style.ShouldApplySizeContainment()
+	// Size containment sizes the container as if empty, not its rows: they
+	// still size from its items, as the columns do (computeColumnSizes).
 
 	// Resolve min-content/max-content/auto tracks from item content sizes.
 	for i, t := range tracks {
@@ -1033,20 +1036,18 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 			continue
 		}
 		maxSize := 0.0
-		if !skipItemContrib {
-			for _, item := range items {
-				start, end := item.rowStart, item.rowEnd
-				if start <= i && end > i {
-					span := max(end-start, 1)
-					if item.result != nil {
-						var itemSize float64
-						if wdm.IsVertical() {
-							itemSize = item.result.Fragment.Size.WidthF64()
-						} else {
-							itemSize = item.result.Fragment.Size.HeightF64()
-						}
-						maxSize = max(maxSize, itemSize/float64(span))
+		for _, item := range items {
+			start, end := item.rowStart, item.rowEnd
+			if start <= i && end > i {
+				span := max(end-start, 1)
+				if item.result != nil {
+					var itemSize float64
+					if wdm.IsVertical() {
+						itemSize = item.result.Fragment.Size.WidthF64()
+					} else {
+						itemSize = item.result.Fragment.Size.HeightF64()
 					}
+					maxSize = max(maxSize, itemSize/float64(span))
 				}
 			}
 		}
