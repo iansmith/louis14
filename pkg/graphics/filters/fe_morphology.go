@@ -2,6 +2,7 @@ package filters
 
 import (
 	"image"
+	"image/draw"
 	"math"
 )
 
@@ -69,9 +70,15 @@ const maxMorphologyRadius = 256
 // LayerSpace<SkISize>::round, and capped at maxMorphologyRadius
 // (SkMorphologyImageFilter::radii, SkMorphologyImageFilter.cpp:72-79 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+// The radius is clamped as a float first, so the conversion is defined on
+// every platform: NaN is no radius (std::max(0.0f, NaN) is 0 in Blink's
+// FEMorphology), and +Inf or a huge value is the cap.
 func (e *FEMorphology) layerRadii() (rx, ry int) {
 	round := func(r float64) int {
-		return min(int(math.Floor(r+0.5)), maxMorphologyRadius)
+		if math.IsNaN(r) {
+			return 0
+		}
+		return int(math.Floor(math.Min(r, maxMorphologyRadius) + 0.5))
 	}
 	return round(e.RadiusX), round(e.RadiusY)
 }
@@ -89,65 +96,73 @@ func (e *FEMorphology) MapRect(r image.Rectangle) image.Rectangle {
 // Skia does (SkMorphologyImageFilter::onFilterImage, morphology_pass,
 // SkMorphologyImageFilter.cpp:187-220, 260-275 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e): a zero radius skips its pass,
-// and both zero is the input itself.
+// and both zero is the input itself. Like every primitive it returns a
+// 0-origin buffer the size of region.
 func (e *FEMorphology) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
 	in := firstInput(inputs, region)
+	out := newRGBA(region)
+	draw.Draw(out, out.Bounds(), in, in.Bounds().Min, draw.Src)
 	rx, ry := e.layerRadii()
-	if rx == 0 && ry == 0 {
-		return cloneRGBA(in)
-	}
-	out := in
 	if rx > 0 {
-		out = e.pass(out, rx, 4)
+		out = e.pass(out, rx, axisX)
 	}
 	if ry > 0 {
-		out = e.pass(out, ry, out.Stride)
+		out = e.pass(out, ry, axisY)
 	}
 	return out
 }
 
+// morphologyAxis is the axis a morphology pass runs along.
+type morphologyAxis int
+
+const (
+	axisX morphologyAxis = iota
+	axisY
+)
+
 // pass runs the min (erode) or max (dilate) over a window of radius pixels
-// either side along one axis, step bytes apart (4 for X, the stride for Y),
-// on the premultiplied bytes — min/max are monotone per channel. Samples
-// outside the buffer are transparent black: they leave a dilate's max
-// unchanged and pull an erode's min to zero.
-func (e *FEMorphology) pass(src *image.RGBA, radius, step int) *image.RGBA {
-	out := newRGBA(src.Rect)
+// either side along axis, on the premultiplied bytes — min/max are monotone
+// per channel. Samples outside the buffer are transparent black: they leave
+// a dilate's max unchanged and pull an erode's min to zero. src and the
+// result are 0-origin.
+func (e *FEMorphology) pass(src *image.RGBA, radius int, axis morphologyAxis) *image.RGBA {
+	out := image.NewRGBA(src.Rect)
 	w, h := src.Rect.Dx(), src.Rect.Dy()
-	n := w // pixels along the axis
-	if step != 4 {
-		n = h
+	n, step := w, 4 // pixels along the axis, bytes between them
+	if axis == axisY {
+		n, step = h, src.Stride
+	}
+	erode := e.Operator == MorphologyErode
+	pick, seed := maxByte, uint8(0)
+	if erode {
+		pick, seed = minByte, 255
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			pos := x
-			if step != 4 {
+			if axis == axisY {
 				pos = y
 			}
 			lo, hi := pos-radius, pos+radius
-			di := y*out.Stride + x*4
-			if e.Operator == MorphologyErode && (lo < 0 || hi >= n) {
+			if erode && (lo < 0 || hi >= n) {
 				continue // the window reaches transparent black
 			}
 			lo, hi = max(lo, 0), min(hi, n-1)
 			base := y*src.Stride + x*4 - pos*step
-			var acc [4]uint8
-			if e.Operator == MorphologyErode {
-				acc = [4]uint8{255, 255, 255, 255}
-			}
+			acc := [4]uint8{seed, seed, seed, seed}
 			for k := lo; k <= hi; k++ {
 				si := base + k*step
-				for c := 0; c < 4; c++ {
-					v := src.Pix[si+c]
-					if e.Operator == MorphologyDilate {
-						acc[c] = max(acc[c], v)
-					} else {
-						acc[c] = min(acc[c], v)
-					}
+				for c := range acc {
+					acc[c] = pick(acc[c], src.Pix[si+c])
 				}
 			}
+			di := y*out.Stride + x*4
 			copy(out.Pix[di:di+4], acc[:])
 		}
 	}
 	return out
 }
+
+// minByte and maxByte are the per-channel erode and dilate operations.
+func minByte(a, b uint8) uint8 { return min(a, b) }
+func maxByte(a, b uint8) uint8 { return max(a, b) }

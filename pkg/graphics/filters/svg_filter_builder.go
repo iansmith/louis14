@@ -609,7 +609,9 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 				ry, _ = strconv.ParseFloat(parts[1], 64)
 			}
 		}
-		return NewFEMorphology(in, b.space, op, rx, ry)
+		// FEMorphology scales its radii (fe_morphology.cc:86-97 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return NewFEMorphology(in, b.space, op, applyHorizontalScale(elt, rx), applyVerticalScale(elt, ry))
 	case "feturbulence":
 		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
 		// image. `in` is ignored (this is a generator). Mirrors Blink
@@ -622,6 +624,24 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	// flowing so partially-supported filters still render something
 	// reasonable.
 	return nil
+}
+
+// applyHorizontalScale and applyVerticalScale scale a primitive length by
+// the reference box under primitiveUnits="objectBoundingBox", as
+// Filter::ApplyHorizontalScale / ApplyVerticalScale do (filter.cc:65-75 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; their zoom factor is C1's).
+func applyHorizontalScale(elt SVGFilterElement, v float64) float64 {
+	if elt.PrimitiveUnitsObjectBoundingBox() {
+		return v * float64(elt.ReferenceBox().Dx())
+	}
+	return v
+}
+
+func applyVerticalScale(elt SVGFilterElement, v float64) float64 {
+	if elt.PrimitiveUnitsObjectBoundingBox() {
+		return v * float64(elt.ReferenceBox().Dy())
+	}
+	return v
 }
 
 // resolveInputAttr reads the named attribute (`in` or `in2`) and
