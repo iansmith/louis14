@@ -2546,11 +2546,9 @@ func expandShorthand(style *Style, property, value string) {
 	// (var() will be resolved later when the property is read).
 	// Case-insensitive per CSS Syntax §4.3.10.
 	if containsVarFunction(value) {
-		switch property {
-		case "margin", "padding", "border", "border-top", "border-right",
-			"border-bottom", "border-left", "border-width", "border-style",
-			"border-color", "font", "flex", "flex-flow", "list-style", "gap":
-			// Store as the shorthand property — var() resolved at read time
+		if slices.Contains(varDeferredShorthands, property) {
+			// Store as the shorthand property; reexpandVarShorthands
+			// expands it once var() is substituted.
 			style.Set(property, value)
 			return
 		}
@@ -2998,6 +2996,12 @@ func expandShorthand(style *Style, property, value string) {
 		expandOutlineShorthand(style, value)
 	case "column-rule":
 		expandColumnRuleShorthand(style, value)
+	case "grid-area":
+		// Omitted: grid-column-start copies grid-row-start, grid-row-end
+		// copies grid-row-start, grid-column-end copies grid-column-start.
+		expandGridLineShorthand(style, value, shorthandLonghands[property], []int{0, 0, 0, 1})
+	case "grid-row", "grid-column":
+		expandGridLineShorthand(style, value, shorthandLonghands[property], []int{0, 0})
 	case "grid-template":
 		// grid-template shorthand: <row-tracks> / <col-tracks>
 		// Also handles: grid-template: none
@@ -9531,138 +9535,6 @@ func (s *Style) GetGridGap() (rowGap, columnGap float64) {
 	return rowGap, columnGap
 }
 
-// GridPlacement represents grid-column or grid-row placement
-type GridPlacement struct {
-	Start     int  // Starting line (1-indexed), 0 if auto
-	End       int  // Ending line (1-indexed, exclusive), 0 if auto
-	IsSpan    bool // true if this is a span-only placement (no explicit start)
-	SpanCount int  // number of tracks to span (used when IsSpan=true or end is "span N")
-}
-
-// GetGridColumn parses grid-column property (e.g., "1 / 3" or "1 / span 2")
-func (s *Style) GetGridColumn() *GridPlacement {
-	if val, ok := s.Get("grid-column"); ok {
-		return parseGridPlacement(val)
-	}
-	return nil
-}
-
-// GetGridColumnWithNames parses grid-column (or individual grid-column-start/end) with named line resolution.
-func (s *Style) GetGridColumnWithNames(colLineNames map[string]int) *GridPlacement {
-	// Check for individual properties first (grid-column-start / grid-column-end)
-	startVal, hasStart := s.Get("grid-column-start")
-	endVal, hasEnd := s.Get("grid-column-end")
-	if hasStart || hasEnd {
-		p := &GridPlacement{}
-		if hasStart && startVal != "auto" {
-			if strings.HasPrefix(startVal, "span ") {
-				var n int
-				fmt.Sscanf(strings.TrimSpace(startVal[5:]), "%d", &n)
-				if n <= 0 {
-					n = 1
-				}
-				p.IsSpan = true
-				p.SpanCount = n
-			} else {
-				p.Start = resolveLineName(startVal, colLineNames)
-			}
-		}
-		if hasEnd && endVal != "auto" {
-			if strings.HasPrefix(endVal, "span ") {
-				var n int
-				fmt.Sscanf(strings.TrimSpace(endVal[5:]), "%d", &n)
-				if n <= 0 {
-					n = 1
-				}
-				p.SpanCount = n
-				if p.Start > 0 {
-					p.End = p.Start + n
-				} else {
-					p.IsSpan = true
-				}
-			} else {
-				p.End = resolveLineName(endVal, colLineNames)
-			}
-		}
-		if p.Start == 0 && p.End == 0 && !p.IsSpan {
-			return nil
-		}
-		if p.Start > 0 && p.End == 0 && !p.IsSpan {
-			p.End = p.Start + 1
-		}
-		return p
-	}
-	if val, ok := s.Get("grid-column"); ok {
-		return parseGridPlacementWithNames(val, colLineNames, nil)
-	}
-	if val, ok := s.gridAreaAxis(true); ok {
-		return parseGridPlacementWithNames(val, colLineNames, nil)
-	}
-	return nil
-}
-
-// GetGridRow parses grid-row property (e.g., "2 / 4")
-func (s *Style) GetGridRow() *GridPlacement {
-	if val, ok := s.Get("grid-row"); ok {
-		return parseGridPlacement(val)
-	}
-	return nil
-}
-
-// GetGridRowWithNames parses grid-row (or individual grid-row-start/end) with named line resolution.
-func (s *Style) GetGridRowWithNames(rowLineNames map[string]int) *GridPlacement {
-	// Check for individual properties first (grid-row-start / grid-row-end)
-	startVal, hasStart := s.Get("grid-row-start")
-	endVal, hasEnd := s.Get("grid-row-end")
-	if hasStart || hasEnd {
-		p := &GridPlacement{}
-		if hasStart && startVal != "auto" {
-			if strings.HasPrefix(startVal, "span ") {
-				var n int
-				fmt.Sscanf(strings.TrimSpace(startVal[5:]), "%d", &n)
-				if n <= 0 {
-					n = 1
-				}
-				p.IsSpan = true
-				p.SpanCount = n
-			} else {
-				p.Start = resolveLineName(startVal, rowLineNames)
-			}
-		}
-		if hasEnd && endVal != "auto" {
-			if strings.HasPrefix(endVal, "span ") {
-				var n int
-				fmt.Sscanf(strings.TrimSpace(endVal[5:]), "%d", &n)
-				if n <= 0 {
-					n = 1
-				}
-				p.SpanCount = n
-				if p.Start > 0 {
-					p.End = p.Start + n
-				} else {
-					p.IsSpan = true
-				}
-			} else {
-				p.End = resolveLineName(endVal, rowLineNames)
-			}
-		}
-		if p.Start == 0 && p.End == 0 && !p.IsSpan {
-			return nil
-		}
-		if p.Start > 0 && p.End == 0 && !p.IsSpan {
-			p.End = p.Start + 1
-		}
-		return p
-	}
-	if val, ok := s.Get("grid-row"); ok {
-		return parseGridPlacementWithNames(val, rowLineNames, nil)
-	}
-	if val, ok := s.gridAreaAxis(false); ok {
-		return parseGridPlacementWithNames(val, rowLineNames, nil)
-	}
-	return nil
-}
-
 // GridAreaInfo holds grid area placement (1-indexed, end exclusive)
 type GridAreaInfo struct {
 	RowStart, RowEnd, ColStart, ColEnd int
@@ -9733,158 +9605,122 @@ func (s *Style) GetGridTemplateAreas() map[string]GridAreaInfo {
 	return areas
 }
 
-// GetGridArea returns the grid-area value (a named area or "row-start/col-start/row-end/col-end")
-func (s *Style) GetGridArea() string {
-	if v, ok := s.Get("grid-area"); ok {
-		return strings.TrimSpace(v)
-	}
-	return ""
+// GridLine is a parsed <grid-line>: auto, a span (a count and/or a
+// name), or an explicit line (an integer and/or a name). Mirrors
+// css_parsing_utils::ConsumeGridLine (core/css/properties/
+// css_parsing_utils.cc:7282-7374 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type GridLine struct {
+	Auto    bool
+	Span    bool
+	Integer int    // the line number, or the span count; 0 when absent
+	Name    string // the <custom-ident>; "" when absent
 }
 
-// gridAreaAxis returns the "start / end" value the column (or row) axis
-// takes from the grid-area shorthand, expanded into grid-row-start /
-// grid-column-start / grid-row-end / grid-column-end as Blink's
-// GridArea::ParseShorthand does: an omitted grid-column-start or
-// grid-row-end copies a <custom-ident> grid-row-start, an omitted
-// grid-column-end copies a <custom-ident> grid-column-start, and any other
-// omitted value is auto (css/properties/shorthands/shorthands_custom.cc:
-// 3620-3675 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (s *Style) gridAreaAxis(column bool) (string, bool) {
-	v, ok := s.Get("grid-area")
-	if !ok {
-		return "", false
+// IsCustomIdent reports whether the line is a lone <custom-ident>, the
+// value a grid shorthand copies to an omitted end (IsCustomIdentValue in
+// GridArea::ParseShorthand and ConsumeGridItemPositionShorthand).
+func (l GridLine) IsCustomIdent() bool {
+	return !l.Auto && !l.Span && l.Integer == 0 && l.Name != ""
+}
+
+// ParseGridLine parses a <grid-line> value: `auto`; `span` with an integer
+// of at least 1 and/or a <custom-ident>, in any order; or a non-zero
+// integer and/or a <custom-ident>, in any order. A bare `span`, a repeated
+// part or any other token is invalid.
+func ParseGridLine(v string) (GridLine, bool) {
+	tokens := strings.Fields(v)
+	if len(tokens) == 1 && strings.EqualFold(tokens[0], "auto") {
+		return GridLine{Auto: true}, true
 	}
-	parts := strings.Split(v, "/")
-	if len(parts) > 4 {
-		return "", false
-	}
-	var lines [4]string
-	for i, p := range parts {
-		lines[i] = strings.TrimSpace(p)
-	}
-	for _, omitted := range [][2]int{{1, 0}, {2, 0}, {3, 1}} {
-		if i, from := omitted[0], omitted[1]; lines[i] == "" {
-			lines[i] = "auto"
-			if isGridLineCustomIdent(lines[from]) {
-				lines[i] = lines[from]
+	var l GridLine
+	hasInteger := false
+	for _, tok := range tokens {
+		switch n, err := strconv.Atoi(tok); {
+		case strings.EqualFold(tok, "span"):
+			if l.Span {
+				return GridLine{}, false
 			}
+			l.Span = true
+		case err == nil:
+			if hasInteger {
+				return GridLine{}, false
+			}
+			l.Integer, hasInteger = n, true
+		case isGridLineIdent(tok):
+			if l.Name != "" {
+				return GridLine{}, false
+			}
+			l.Name = tok
+		default:
+			return GridLine{}, false
 		}
 	}
-	if column {
-		return lines[1] + " / " + lines[3], true
+	switch {
+	case !hasInteger && l.Name == "":
+		return GridLine{}, false
+	case l.Span && hasInteger && l.Integer < 1:
+		return GridLine{}, false
+	case l.Span && !hasInteger:
+		l.Integer = 1
+	case !l.Span && hasInteger && l.Integer == 0:
+		return GridLine{}, false
 	}
-	return lines[0] + " / " + lines[2], true
+	return l, true
 }
 
-// isGridLineCustomIdent reports whether a <grid-line> value is a lone
-// <custom-ident>: not auto, not a span, not an integer.
-func isGridLineCustomIdent(v string) bool {
-	if v == "" || v == "auto" || strings.HasPrefix(v, "span") {
+// isGridLineIdent reports whether tok is a <custom-ident> a grid line may
+// name: an identifier other than the CSS-wide keywords, auto and span
+// (ConsumeCustomIdentForGridLine).
+func isGridLineIdent(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "auto", "span", "initial", "inherit", "unset", "revert", "revert-layer", "default":
 		return false
 	}
-	_, err := strconv.Atoi(v)
-	return err != nil
+	return isIdentToken(tok)
 }
 
-// resolveLineName resolves a grid line token to a line number.
-// If the token is a number, it returns that number directly.
-// If it's a named line (and lineNames is non-nil), it looks it up in the map.
-// Returns 0 if unresolvable.
-func resolveLineName(token string, lineNames map[string]int) int {
-	token = strings.TrimSpace(token)
-	if token == "" || token == "auto" {
-		return 0
-	}
-	var n int
-	if _, err := fmt.Sscanf(token, "%d", &n); err == nil && n != 0 {
-		return n
-	}
-	if lineNames != nil {
-		if lineNum, ok := lineNames[token]; ok {
-			return lineNum
+// GetGridLine is the parsed value of a grid placement longhand
+// (grid-row-start and the like); unset or invalid is auto.
+func (s *Style) GetGridLine(prop string) GridLine {
+	if v, ok := s.Get(prop); ok {
+		if l, ok := ParseGridLine(v); ok {
+			return l
 		}
 	}
-	return 0
+	return GridLine{Auto: true}
 }
 
-// parseGridPlacement parses grid line placement (e.g., "1 / 3", "1 / span 2", "span 4", "1")
-// lineNames optionally maps named grid lines to 1-indexed line numbers.
-func parseGridPlacement(val string) *GridPlacement {
-	return parseGridPlacementWithNames(val, nil, nil)
-}
-
-// parseGridPlacementWithNames parses grid line placement with optional named line resolution.
-// colLineNames is for column (grid-column) placements; rowLineNames for row (grid-row) placements.
-// Only one of the two is used depending on which axis is being parsed — pass the relevant one.
-func parseGridPlacementWithNames(val string, lineNames map[string]int, _ map[string]int) *GridPlacement {
-	val = strings.TrimSpace(val)
-	if val == "" || val == "auto" {
-		return nil
+// expandGridLineShorthand expands grid-area, grid-row or grid-column into
+// its longhands, in its order. An omitted value copies the value at from[i]
+// when that is a lone <custom-ident>, and is auto otherwise. An invalid
+// value sets nothing. Mirrors GridArea::ParseShorthand
+// (core/css/properties/shorthands/shorthands_custom.cc:3620-3690) and
+// ConsumeGridItemPositionShorthand (css_parsing_utils.cc:7569-7595) @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func expandGridLineShorthand(style *Style, value string, longhands []string, from []int) {
+	parts := strings.Split(value, "/")
+	if len(parts) > len(longhands) {
+		return
 	}
-
-	parts := strings.Split(val, "/")
-
-	start := strings.TrimSpace(parts[0])
-
-	// Single value cases
-	if len(parts) == 1 {
-		// "span N" — auto start, span N tracks
-		if strings.HasPrefix(start, "span ") {
-			spanStr := strings.TrimSpace(start[5:])
-			var n int
-			fmt.Sscanf(spanStr, "%d", &n)
-			if n <= 0 {
-				n = 1
-			}
-			return &GridPlacement{IsSpan: true, SpanCount: n}
+	lines := make([]GridLine, len(longhands))
+	values := make([]string, len(longhands))
+	for i, part := range parts {
+		l, ok := ParseGridLine(part)
+		if !ok {
+			return
 		}
-		// Try as number or named line
-		startNum := resolveLineName(start, lineNames)
-		if startNum == 0 {
-			return nil
+		lines[i], values[i] = l, strings.TrimSpace(part)
+	}
+	for i := len(parts); i < len(longhands); i++ {
+		if src := lines[from[i]]; src.IsCustomIdent() {
+			lines[i], values[i] = src, values[from[i]]
+		} else {
+			lines[i], values[i] = GridLine{Auto: true}, "auto"
 		}
-		return &GridPlacement{Start: startNum, End: startNum + 1}
 	}
-
-	// Two-part: "start / end"
-	end := strings.TrimSpace(parts[1])
-
-	// Parse start
-	startNum := 0
-	if start != "auto" {
-		startNum = resolveLineName(start, lineNames)
+	for i, prop := range longhands {
+		style.Set(prop, values[i])
 	}
-
-	// Parse end: may be "span N" or a line number / named line
-	if strings.HasPrefix(end, "span ") {
-		spanStr := strings.TrimSpace(end[5:])
-		var n int
-		fmt.Sscanf(spanStr, "%d", &n)
-		if n <= 0 {
-			n = 1
-		}
-		if startNum > 0 {
-			return &GridPlacement{Start: startNum, End: startNum + n, SpanCount: n}
-		}
-		// auto start + span N
-		return &GridPlacement{IsSpan: true, SpanCount: n}
-	}
-
-	endNum := 0
-	if end != "auto" {
-		endNum = resolveLineName(end, lineNames)
-	}
-	if startNum == 0 && endNum == 0 {
-		return nil
-	}
-	if startNum == 0 {
-		// auto / N — treat as line N, span 1 back
-		return &GridPlacement{Start: endNum - 1, End: endNum}
-	}
-	if endNum == 0 {
-		return &GridPlacement{Start: startNum, End: startNum + 1}
-	}
-	return &GridPlacement{Start: startNum, End: endNum}
 }
 
 // JustifyItems represents the justify-items property value for grid
