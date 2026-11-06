@@ -3518,6 +3518,23 @@ func pxValue(s string) string {
 	return strings.TrimSuffix(s, "px") + "px"
 }
 
+// addHTMLLengthToStyle maps a dimension attribute value to property as px,
+// or % for a percentage; a relative ('*') or unparsable value adds nothing
+// (HTMLElement::AddHTMLLengthToStyle with percentages and zero allowed,
+// core/html/html_element.cc:3811-3834; ParseDimensionValue @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func addHTMLLengthToStyle(style *Style, property, value string) {
+	d, ok := html.ParseDimensionValue(value)
+	if !ok || d.Type == html.HTMLDimensionRelative {
+		return
+	}
+	unit := "px"
+	if d.Type == html.HTMLDimensionPercentage {
+		unit = "%"
+	}
+	style.Set(property, strconv.FormatFloat(d.Value, 'g', -1, 64)+unit)
+}
+
 // applyAspectRatioToStyle sets the presentational hint
 // `aspect-ratio: auto w / h` (HTMLElement::ApplyAspectRatioToStyle,
 // core/html/html_element.cc:1082-1098 @
@@ -3546,7 +3563,9 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// through the aspect ratio correctly.
 	if val, ok := node.GetAttribute("width"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "col", "colgroup", "img", "input", "object", "embed", "hr":
+		case "img":
+			addHTMLLengthToStyle(style, "width", val)
+		case "table", "td", "th", "col", "colgroup", "input", "object", "embed", "hr":
 			if strings.HasSuffix(val, "%") {
 				style.Set("width", val)
 			} else {
@@ -3565,7 +3584,9 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// to determine block-size from an author-set inline-size.
 	if val, ok := node.GetAttribute("height"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "tr", "img", "input", "object", "embed":
+		case "img":
+			addHTMLLengthToStyle(style, "height", val)
+		case "table", "td", "th", "tr", "input", "object", "embed":
 			if strings.HasSuffix(val, "%") {
 				style.Set("height", val)
 			} else {

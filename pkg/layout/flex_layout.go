@@ -2128,15 +2128,11 @@ func (fla *FlexLayoutAlgorithm) crossConstraintSpace(
 func (fla *FlexLayoutAlgorithm) itemEffectiveAspectRatio(
 	child *LayoutInputNode, style *css.Style, childWDM WritingDirectionMode,
 ) css.AspectRatio {
-	ar := style.GetAspectRatio()
-	if !ar.IsSet && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetNaturalSizingInfo(fla.ctx, child)
-		if !info.AspectRatio.IsEmpty() {
-			ar = css.AspectRatio{IsSet: true, Width: info.ratio(), Height: 1}
-			if childWDM.IsVertical() {
-				ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.ratio()}
-			}
-		}
+	ar := boxAspectRatio(fla.ctx, child, style)
+	// A natural ratio (anything but the style's own) is physical; swap it
+	// into the item's writing mode as the style ratio already is here.
+	if ar != style.GetAspectRatio() && childWDM.IsVertical() {
+		ar.Width, ar.Height = ar.Height, ar.Width
 	}
 	return ar
 }
@@ -2337,17 +2333,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		// only use explicit cross-size, not stretch-predicted cross-size.
 		var arW, arH float64
 		var hasAR bool
-		if ar := style.GetAspectRatio(); ar.IsSet {
+		if ar := fla.itemEffectiveAspectRatio(child, style, childWDM); ar.IsSet {
 			arW, arH, hasAR = ar.Width, ar.Height, true
-		} else if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-			info := GetNaturalSizingInfo(fla.ctx, child)
-			if !info.AspectRatio.IsEmpty() {
-				if childWDM.IsVertical() {
-					arW, arH, hasAR = info.Size.Height, info.Size.Width, true
-				} else {
-					arW, arH, hasAR = info.Size.Width, info.Size.Height, true
-				}
-			}
 		}
 		isReplacedB := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 		if hasAR {
@@ -4507,7 +4494,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 	// Also check CSS aspect-ratio property for non-replaced elements.
 	if transferredSuggestion < 0 {
-		if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+		if ar := boxAspectRatio(fla.ctx, child, style); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
 			crossContentSize := -1.0
 			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
@@ -4822,7 +4809,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 					if !info.AspectRatio.IsEmpty() {
 						useAspectRatioStretch = true
 					}
-				} else if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+				} else if ar := boxAspectRatio(fla.ctx, item.node, item.style); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
 					// CSS aspect-ratio property on non-replaced elements.
 					// Only apply when flex-grow is 0 — if the item grew via flex,
 					// its main-size is already determined and shouldn't be overridden.

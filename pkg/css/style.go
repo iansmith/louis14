@@ -12107,18 +12107,31 @@ func convertPositionLength(a positionAxis, edgeFor0, edgeFor100 string, ctx calc
 type AspectRatio struct {
 	Width  float64 // Numerator (e.g., 16 in 16/9)
 	Height float64 // Denominator (e.g., 9 in 16/9)
-	IsSet  bool    // True if aspect-ratio was explicitly set
+	IsSet  bool    // True if aspect-ratio has a <ratio>
+	// Auto is true for `auto && <ratio>` (EAspectRatioType::kAutoAndRatio):
+	// a replaced element with a natural ratio uses that instead
+	// (BlockNode::GetReplacedAspectRatio).
+	Auto bool
 }
 
-// GetAspectRatio parses the aspect-ratio property.
-// Formats: "auto", "16/9", "16 / 9", "1.5", "auto 16/9"
+// GetAspectRatio parses the aspect-ratio property: `auto`, `<ratio>`, or
+// `auto && <ratio>` in either order. Formats of <ratio>: "16/9", "16 / 9",
+// "1.5".
 func (s *Style) GetAspectRatio() AspectRatio {
 	val, ok := s.Get("aspect-ratio")
-	if !ok || val == "auto" {
+	if !ok {
 		return AspectRatio{}
 	}
-	// Strip "auto" prefix (e.g., "auto 16/9")
-	val = strings.TrimSpace(strings.TrimPrefix(val, "auto"))
+	auto := false
+	var rest []string
+	for _, f := range strings.Fields(val) {
+		if !auto && strings.EqualFold(f, "auto") {
+			auto = true
+			continue
+		}
+		rest = append(rest, f)
+	}
+	val = strings.Join(rest, " ")
 	if val == "" {
 		return AspectRatio{}
 	}
@@ -12129,12 +12142,12 @@ func (s *Style) GetAspectRatio() AspectRatio {
 		w, errW := strconv.ParseFloat(wStr, 64)
 		h, errH := strconv.ParseFloat(hStr, 64)
 		if errW == nil && errH == nil && w > 0 && h > 0 {
-			return AspectRatio{Width: w, Height: h, IsSet: true}
+			return AspectRatio{Width: w, Height: h, IsSet: true, Auto: auto}
 		}
 	}
 	// Try single number (e.g., "1.5" means 1.5/1)
 	if f, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil && f > 0 {
-		return AspectRatio{Width: f, Height: 1, IsSet: true}
+		return AspectRatio{Width: f, Height: 1, IsSet: true, Auto: auto}
 	}
 	return AspectRatio{}
 }
