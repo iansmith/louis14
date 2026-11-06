@@ -44,6 +44,11 @@ type Renderer struct {
 	externalSVGFetcher func(uri string) ([]byte, error)
 	scrollY            float64
 
+	// paintingLayer is the layer being painted: url() references resolve
+	// in its document (lookupSVGResources). Set on every path into a
+	// layer's paint (paintLayer, paintLayerContents), restored on leaving.
+	paintingLayer *PaintLayer
+
 	// opacityLayer is the layer whose opacity paintLayerWithBackdrop's
 	// layer applies: its effects paint without it (effectOpacity).
 	opacityLayer *PaintLayer
@@ -51,20 +56,6 @@ type Renderer struct {
 	// svgImagesForContainer keeps each SVG image drawn at a container size
 	// for this renderer's paint pass (svgImageForContainer).
 	svgImagesForContainer map[svgImageForContainerKey]image.Image
-
-	// svgResources aggregates the SVG resource registries from every
-	// inline `<svg>` in the current paint frame. Populated by Render
-	// (and RenderEmbedded) just before the paint walk by
-	// collectSVGResources, which walks the layout-box tree gathering
-	// every SVGRoot.Resources. Read by paint-time `url(#id)` resolvers
-	// for `mask-image: url(#id)` and `clip-path: url(#id)` on non-SVG
-	// elements — the document fragment id space is shared across the
-	// page per SVG 2 §3.1, so an inline `<svg height="0">` declaring a
-	// `<mask id="m">` is reachable from any CSS box's `mask-image:
-	// url(#m)`. Mirrors Blink's per-Document SVGTreeScopeResources
-	// (core/svg/svg_resource.h) — louis14 aggregates per-render-frame
-	// because we don't have a Document-lifetime renderer.
-	svgResources *svg.SVGResourceRegistry
 
 	// Font ID cache: (path, size) → fontID
 	fontCache   map[fontCacheKey]int32
@@ -646,27 +637,12 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	r.transformTree = newTransformTreeBuilder(r.parentPerspective, r.domParentBox)
 	r.context3D = nil
 	r.unculledBelow = make(map[*PaintLayer]bool)
-	// Build the renderer-wide SVG resource registry by walking every
-	// box subtree for inline `<svg>` SVGRoots and merging their
-	// per-root registries. `url(#id)` references on any element on
-	// the page can then resolve against this single registry. See
-	// svgResources comment on the Renderer type.
-	r.svgResources = collectSVGResources(boxes)
-	// `url(#id)` references resolve in the DOCUMENT tree scope, not the
-	// local `<svg>`: a `<rect>` in one inline SVG can reference a
-	// `<filter>` (or gradient/clip/mask) declared in a different inline
-	// SVG on the same page. The SVG paint context uses each SVGRoot's
-	// own per-root registry (svg_root_painter.go), so redistribute the
-	// merged document-scope registry back into every SVGRoot's registry.
-	// Mirrors Blink's SVGTreeScopeResources being a per-Document (tree
-	// scope) namespace, not per outermost-svg.
-	redistributeSVGResources(boxes, r.svgResources)
-	// Phase 6: detect reference cycles. Cycle-flagged resources
-	// (a self-referential `<mask>`, two masks pointing at each other,
-	// etc.) are treated as `none` at paint time so the painters don't
-	// infinite-loop. Mirrors Blink's SVGResourcesCycleSolver pass that
-	// runs after the registry is built and before any paint dispatch.
-	svg.SolveResourceCycles(r.svgResources)
+	// Phase 6: detect reference cycles in each document's id map.
+	// Cycle-flagged resources (a self-referential `<mask>`, two masks
+	// pointing at each other, etc.) are treated as `none` at paint time so
+	// the painters don't infinite-loop. Mirrors Blink's
+	// SVGResourcesCycleSolver pass that runs before any paint dispatch.
+	solveSVGResourceCycles(boxes)
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order). The
 	// view paints the canvas background from inside the root layer's paint
 	// (paintViewBackground); the root and a propagating body skip their own
@@ -749,116 +725,39 @@ func clampColor(rv, g, b, a float64) color.RGBA {
 	return color.RGBA{R: clamp(rv), G: clamp(g), B: clamp(b), A: clamp(a)}
 }
 
-// lookupSVGResources returns the renderer-wide aggregated SVG
-// resource registry. Built by collectSVGResources at the top of every
-// Render/RenderEmbedded call. Returns nil when there are no inline
-// SVGs on the page — callers must guard against nil before Lookup*.
+// lookupSVGResources returns the id map of the painting layer's document
+// (LayoutInputNode.TreeScopeSVGResources on its document element, the
+// nearest one up its box's ancestors): url() references resolve per
+// document, as in Blink's TreeScope. nil outside a layer's paint or in a
+// document without SVG. A layer without a box takes the view's document.
 func (r *Renderer) lookupSVGResources() *svg.SVGResourceRegistry {
 	if r == nil {
 		return nil
 	}
-	return r.svgResources
-}
-
-// collectSVGResources walks `boxes` and every descendant box,
-// gathering each inline `<svg>` element's SVGRoot.Resources into a
-// single merged registry that the renderer exposes to `url(#id)`
-// resolvers. Mirrors how Blink's SVGTreeScopeResources is a per-
-// Document namespace — louis14 builds it per render frame because we
-// don't yet have a Document-lifetime renderer (the layout pass owns
-// the SVGRoot lifetime; the renderer is recreated per paint).
-//
-// Conflicts (same id registered by two different SVGs) follow the
-// first-wins rule from each per-root RegisterXxx; the renderer
-// preserves that ordering by walking boxes in pre-order, which
-// matches document order for HTML.
-func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
-	merged := svg.NewSVGResourceRegistry()
-	for _, b := range boxes {
-		mergeSVGResourcesFromBox(b, merged)
+	var box *layout.Box
+	switch {
+	case r.paintingLayer != nil && r.paintingLayer.Box != nil:
+		box = r.paintingLayer.Box
+	case r.view != nil && r.view.rootLayer != nil:
+		box = r.view.rootLayer.Box
 	}
-	return merged
-}
-
-// redistributeSVGResources copies the merged document-scope registry
-// back into every inline `<svg>` SVGRoot's per-root registry. Because
-// mergeSVGRegistries uses the first-wins RegisterXxx methods, ids a root
-// already owns are preserved; ids from other roots are added. This makes
-// cross-SVG `url(#id)` references (e.g. a `<rect>` in one svg referencing
-// a `<filter>` in another) resolve via the SVG paint context's local
-// `root.Resources` lookup. Mirrors Blink's per-Document tree-scope
-// resource namespace.
-func redistributeSVGResources(boxes []*layout.Box, merged *svg.SVGResourceRegistry) {
-	if merged == nil {
-		return
-	}
-	for _, b := range boxes {
-		redistributeSVGResourcesToBox(b, merged)
-	}
-}
-
-// redistributeSVGResourcesToBox is the recursive worker for
-// redistributeSVGResources: pre-order walk that back-merges the merged
-// document-scope registry into each SVGRoot's per-root registry.
-func redistributeSVGResourcesToBox(box *layout.Box, merged *svg.SVGResourceRegistry) {
-	if box == nil {
-		return
-	}
-	if box.LayoutNode != nil {
-		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
-			mergeSVGRegistries(root.Resources, merged)
+	for ; box != nil; box = box.Parent {
+		if box.LayoutNode != nil && box.LayoutNode.IsDocumentElement() {
+			return box.LayoutNode.TreeScopeSVGResources
 		}
 	}
-	for _, child := range box.Children {
-		redistributeSVGResourcesToBox(child, merged)
-	}
+	return nil
 }
 
-// mergeSVGResourcesFromBox is the recursive worker for
-// collectSVGResources: pre-order walk that copies each SVGRoot's
-// per-root registry contents into `dst`.
-func mergeSVGResourcesFromBox(box *layout.Box, dst *svg.SVGResourceRegistry) {
-	if box == nil {
-		return
-	}
-	if box.LayoutNode != nil {
-		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
-			mergeSVGRegistries(dst, root.Resources)
+// solveSVGResourceCycles flags the reference cycles in the id map of every
+// document under boxes, nested ones included.
+func solveSVGResourceCycles(boxes []*layout.Box) {
+	for _, b := range boxes {
+		if b.LayoutNode != nil && b.LayoutNode.TreeScopeSVGResources != nil {
+			svg.SolveResourceCycles(b.LayoutNode.TreeScopeSVGResources)
 		}
+		solveSVGResourceCycles(b.Children)
 	}
-	for _, child := range box.Children {
-		mergeSVGResourcesFromBox(child, dst)
-	}
-}
-
-// mergeSVGRegistries copies `src`'s contents into `dst` using the
-// public RegisterXxx methods so the first-wins rule is preserved.
-// Phase 5 needs this because each SVGRoot has its own per-root
-// registry — gradient/pattern paint servers and Phase 5's clippers/
-// maskers — and the renderer needs a single namespace across all
-// SVGs on the page.
-//
-// Implementation detail: the per-root maps are unexported, so this
-// helper relies on the per-root registry exposing iteration via the
-// kind-specific Lookup paths. To avoid widening the API surface
-// beyond what Phase 5 needs, we add a per-kind drain helper on the
-// registry. See svg_resource_registry.go.
-func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
-	if dst == nil || src == nil {
-		return
-	}
-	src.ForEachPaintServer(func(s svg.SVGResourcePaintServer) {
-		dst.RegisterPaintServer(s)
-	})
-	src.ForEachClipper(func(c *svg.SVGResourceClipper) {
-		dst.RegisterClipper(c)
-	})
-	src.ForEachMasker(func(m *svg.SVGResourceMasker) {
-		dst.RegisterMasker(m)
-	})
-	src.ForEachFilter(func(f *svg.SVGResourceFilter) {
-		dst.RegisterFilter(f)
-	})
 }
 
 // paintLayer paints a PaintLayer and its descendants using the pre-built
@@ -871,6 +770,9 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
+	outerLayer := r.paintingLayer
+	r.paintingLayer = layer
+	defer func() { r.paintingLayer = outerLayer }()
 	if c := r.context3D; c != nil && c.units[layer] {
 		if layer == c.drawing.layer {
 			r.paintLayerContents(layer)
@@ -892,6 +794,9 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	if layer.HiddenFrameDocument {
 		return
 	}
+	outerLayer := r.paintingLayer
+	r.paintingLayer = layer
+	defer func() { r.paintingLayer = outerLayer }()
 	if outer, ok := r.enterFrameView(layer); ok {
 		defer func() { r.view = outer }()
 	}
@@ -1101,7 +1006,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	var maskImg *image.RGBA
 
 	// SVG fast path: if mask-image is `url(#id)` and the id resolves to
-	// an SVG `<mask>` element in the renderer-wide SVG resource
+	// an SVG `<mask>` element in the document's SVG resource
 	// registry, rasterize that mask's children into an alpha buffer and
 	// apply with kDstIn directly. Mirrors Blink's
 	// SVGMaskPainter::PaintSVGMaskForCSS dispatch (when the mask
@@ -2895,7 +2800,7 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 	ref := layer.clipPathReferenceBox()
 	bx, by, bw, bh := pixelSnap(ref.X(), ref.Y(), ref.Width(), ref.Height())
 
-	// Reference variant: resolve `url(#id)` against the renderer-wide
+	// Reference variant: resolve `url(#id)` against the document's
 	// SVG resource registry and install the resolved clip directly.
 	// Mirrors Blink's ClipPathClipper::ApplyReferenceClipPath dispatch
 	// (core/paint/clip_path_clipper.cc).

@@ -149,6 +149,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phases 5-7: Lay the root out in the view, then convert the fragment
 	// tree to the box tree with the root at its place in the view.
 	result, rootSpace, rootOffset := layoutRootInView(ctx, layoutRoot, le.viewport.width, le.viewport.height)
+	layoutRoot.TreeScopeSVGResources = treeScopeSVGResources(doc.Root, computedStyles, ctx.SVGRoots)
 	rootWDM := rootSpace.WritingDirection
 	// A position:relative root is shifted by the LayoutView when it adds the
 	// root against the initial containing block, as any parent does
@@ -186,7 +187,6 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// computation, applied post-layout because absolute positions are not known
 	// until the full box tree is built.
 	applyStickyOffsets(rootBox, le.viewport.width, le.viewport.height)
-
 	le.lastStyles = computedStyles
 	le.lastNodeBoxes = buildNodeBoxIndex([]*Box{rootBox})
 	le.lastNodeBoxes[doc.Root] = viewBox
@@ -374,6 +374,7 @@ func layoutNestedDocument(ctx *LayoutContext, doc *html.Document, vpWidth, vpHei
 	if result == nil || result.Fragment == nil {
 		return nil
 	}
+	layoutRoot.TreeScopeSVGResources = treeScopeSVGResources(doc.Root, computedStyles, nestedCtx.SVGRoots)
 
 	return &NestedDocumentResult{
 		Result:     result,

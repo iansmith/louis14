@@ -102,6 +102,23 @@ func (a *svgFilterElementAdapter) InterpolationSpace() filters.InterpolationSpac
 	return a.space
 }
 
+// PrimitiveInterpolationSpace implements filters.SVGFilterElement: a
+// primitive of a filter with no layout object takes its own
+// color-interpolation-filters attribute, else the filter's
+// (ColorInterpolationForElement, svg_filter_builder.cc:136-155, 189-192 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); one with a layout object runs
+// in the filter's.
+func (a *svgFilterElementAdapter) PrimitiveInterpolationSpace(prim filters.SVGFilterPrimitive) filters.InterpolationSpace {
+	if a.filter != nil && a.filter.NoLayoutObject {
+		if v, ok := prim.Attribute("color-interpolation-filters"); ok {
+			if space, valid := filters.ResolveInterpolationSpace(v); valid {
+				return space
+			}
+		}
+	}
+	return a.space
+}
+
 // FillPaintEffect implements filters.SVGFilterElement. Returns the
 // referencing element's resolved fill paint as a PaintFilterEffect, or
 // nil when the element has no fill (`fill="none"` or no fill at all).
