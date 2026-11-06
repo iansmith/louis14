@@ -2577,12 +2577,12 @@ func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRec
 		return rect
 	}
 	builder := r.newFilterEffectBuilder(layer)
-	builder.ReferenceBox = snapRectFToDevice(rect.ToRectF())
+	builder.ReferenceBox = rect.ToRectF()
 	builder.FilterViewport = snapRectFToDevice(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height))
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
 		return rect
 	}
-	m := filter.MapRect(builder.ReferenceBox)
-	return geometry.PhysicalRectEnclosingRect(rectFFromInts(m.Min.X, m.Min.Y, m.Dx(), m.Dy()))
+	m := filter.MapRect(snapRectFToDevice(builder.ReferenceBox))
+	return geometry.PhysicalRectEnclosingRect(rectFFromRect(m))
 }

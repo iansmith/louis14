@@ -1,6 +1,8 @@
 package render
 
 import (
+	"image"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
@@ -88,6 +90,11 @@ func rectFFromInts(x, y, w, h int) geometry.RectF {
 	return geometry.NewRectF(float64(x), float64(y), float64(w), float64(h))
 }
 
+// rectFFromRect converts a snapped image.Rectangle to a RectF.
+func rectFFromRect(r image.Rectangle) geometry.RectF {
+	return rectFFromInts(r.Min.X, r.Min.Y, r.Dx(), r.Dy())
+}
+
 // PixelSnappedContouredBorder returns the pixel-snapped border-box rrect:
 // the snapped rect with the style radii constrained to fit it. radii are
 // the style's corner radii already resolved against border_rect's size
@@ -97,7 +104,7 @@ func rectFFromInts(x, y, w, h int) geometry.RectF {
 // :135-176 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func PixelSnappedContouredBorder(radii css.EllipticalRadii, borderRect geometry.PhysicalRect) FloatRoundedRect {
 	s := geometry.ToPixelSnappedRect(borderRect)
-	rr := FloatRoundedRect{Rect: rectFFromInts(s.Min.X, s.Min.Y, s.Dx(), s.Dy())}
+	rr := FloatRoundedRect{Rect: rectFFromRect(s)}
 	if !radii.IsZero() {
 		rr.Radii = radii
 		rr.ConstrainRadii()
