@@ -103,7 +103,7 @@ type PaintLayer struct {
 	// Pre-computed paint properties — no Style access needed during paint.
 
 	// Compositing:
-	Visible bool    // false = visibility:hidden, skip subtree
+	Visible bool    // false = visibility:hidden: the layer's own content does not paint
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
