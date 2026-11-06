@@ -44,6 +44,10 @@ type Renderer struct {
 	externalSVGFetcher func(uri string) ([]byte, error)
 	scrollY            float64
 
+	// opacityLayer is the layer whose opacity paintLayerWithBackdrop's
+	// layer applies: its effects paint without it (effectOpacity).
+	opacityLayer *PaintLayer
+
 	// svgImagesForContainer keeps each SVG image drawn at a container size
 	// for this renderer's paint pass (svgImageForContainer).
 	svgImagesForContainer map[svgImageForContainerKey]image.Image
@@ -904,7 +908,16 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	if r.skipsBackfaceCulledSubtree(layer) {
 		return
 	}
+	if r.paintsBackdrop(layer) {
+		r.paintLayerWithBackdrop(layer)
+		return
+	}
+	r.paintLayerEffects(layer, r.paintLayerWithFilter)
+}
 
+// paintLayerEffects paints layer through its own effects: mask, filter
+// (paintFilter), blending, isolation, transform and opacity.
+func (r *Renderer) paintLayerEffects(layer *PaintLayer, paintFilter func(*PaintLayer)) {
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
 	// A hidden box paints no mask image, so nothing masks its visible
 	// descendants: PaintLayerPainter paints the kMask phase only for a layer
@@ -918,7 +931,7 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 
 	// CSS Filters, inside the layer's effect node (opacity, mix-blend-mode).
 	if layer.HasFilter {
-		r.paintLayerWithEffect(layer, r.paintLayerWithFilter)
+		r.paintLayerWithEffect(layer, paintFilter)
 		return
 	}
 
@@ -974,11 +987,11 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	transformSingular := r.enterLayerTransform(layer)
 
 	if !transformSingular {
-		if layer.Opacity < 1.0 {
+		if r.effectOpacity(layer) < 1.0 {
 			// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
 			r.dc.PushGroup()
 			r.paintLayerContent(layer)
-			r.dc.PopGroupWithAlpha(layer.Opacity)
+			r.dc.PopGroupWithAlpha(r.effectOpacity(layer))
 		} else {
 			r.paintLayerContent(layer)
 		}
@@ -1064,10 +1077,10 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 
 	// Paint with transforms and opacity in the offscreen buffer.
 	r.enterLayerTransform(layer)
-	if layer.Opacity < 1.0 {
+	if r.effectOpacity(layer) < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
-		r.dc.PopGroupWithAlpha(layer.Opacity)
+		r.dc.PopGroupWithAlpha(r.effectOpacity(layer))
 	} else {
 		r.paintLayerContent(layer)
 	}
@@ -1127,7 +1140,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 					applySVGMaskToBuffer(freshBuf, maskBuf, masker.MaskType)
 					// CSS Masking 1 §3.7 rendering order: filter → mask →
 					// opacity → composite.
-					compositeBufferWithOpacityOnto(r.target, freshBuf, bx, by, layer.Opacity)
+					compositeBufferWithOpacityOnto(r.target, freshBuf, bx, by, r.effectOpacity(layer))
 					return
 				}
 			}
@@ -1234,25 +1247,26 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	r.dc.DrawImage(buf, bx, by)
 }
 
-// paintLayerWithFilter paints layer through its filter node: the subtree is
-// recorded into a layer as the graph's SourceGraphic, the graph runs over it,
-// and the output is drawn into the canvas.
-//
-// The filter node's local transform space is the layer's own transform
-// (FragmentPaintPropertyTreeBuilder::UpdateFilter sets local_transform_space
-// to context_.current.transform, paint_property_tree_builder.cc:2453 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and ConversionContext::
-// StartEffect switches to it before pushing the filter's SaveLayerOp
-// (paint_chunks_to_cc_layer.cc:690-731 @ a9f50e52). Skia then splits that
-// CTM into the layer the graph runs in and the remainder the layer is drawn
-// with (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600; skif::
-// Mapping::decomposeCTM, src/core/SkImageFilterTypes.cpp:259-298 @ skia
-// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e — see filters.Mapping). Opacity
-// and blending belong to the parent effect node (paintLayerWithEffect).
-func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+// layerFilter is a filtered layer's filter graph, its region set to the
+// buffer the layer's content paints into, and the CTM split it was built
+// for (prepareLayerFilter).
+type layerFilter struct {
+	filter  *filters.Filter
+	mapping filters.Mapping
+	// own is the layer's own projection, dm the draw context's device
+	// matrix (dmKnown false when it is projective).
+	own, dm geometry.Transform
+	dmKnown bool
+}
+
+// prepareLayerFilter builds layer's filter graph and sizes its buffer. paints
+// is false when the layer paints nothing (its transform is singular or its
+// CTM does not decompose); a nil layerFilter that paints falls back to
+// unfiltered paint: no supported filter functions, or a buffer too large.
+func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paints bool) {
 	// Cull edge-on or non-invertible transforms before setting up the offscreen buffer.
 	if r.isLayerTransformSingular(layer) {
-		return
+		return nil, false
 	}
 	box := layer.linesOrBorderBox()
 
@@ -1307,16 +1321,14 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		return builder.BuildFilterEffect(layer.Filters)
 	})
 	if !ok {
-		return
+		return nil, false
 	}
 	if filter == nil {
 		// No supported CSS filter functions (e.g. only url() references,
 		// not yet handled) — paint without filtering rather than dropping
 		// the element.
-		r.paintLayerContentDirectNoOpacityGroup(layer)
-		return
+		return nil, true
 	}
-	paramToLayer := mapping.ParamToLayer
 
 	// The buffer. A reference filter keeps its SVG region and a chain with a
 	// url() stage the region its builder gave it; an empty SVG region falls
@@ -1338,14 +1350,50 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		}
 	}
 	filter.EnsureRegion(builder.ReferenceBox, false)
-	region := filter.FilterRegion
-	bx, by := region.Min.X, region.Min.Y
-	bw, bh := region.Dx(), region.Dy()
-	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
+	if region := filter.FilterRegion; region.Empty() || region.Dx() > 8000 || region.Dy() > 8000 {
 		// Fallback: render without filters to avoid OOM.
+		return nil, true
+	}
+	return &layerFilter{filter: filter, mapping: mapping, own: own, dm: dm, dmKnown: dmKnown}, true
+}
+
+// paintLayerWithFilter paints layer through its filter node: the subtree is
+// recorded into a layer as the graph's SourceGraphic, the graph runs over it,
+// and the output is drawn into the canvas.
+//
+// The filter node's local transform space is the layer's own transform
+// (FragmentPaintPropertyTreeBuilder::UpdateFilter sets local_transform_space
+// to context_.current.transform, paint_property_tree_builder.cc:2453 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and ConversionContext::
+// StartEffect switches to it before pushing the filter's SaveLayerOp
+// (paint_chunks_to_cc_layer.cc:690-731 @ a9f50e52). Skia then splits that
+// CTM into the layer the graph runs in and the remainder the layer is drawn
+// with (get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600; skif::
+// Mapping::decomposeCTM, src/core/SkImageFilterTypes.cpp:259-298 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e — see filters.Mapping). Opacity
+// and blending belong to the parent effect node (paintLayerWithEffect).
+func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+	lf, paints := r.prepareLayerFilter(layer)
+	r.paintPreparedFilter(layer, lf, paints)
+}
+
+// paintPreparedFilter is paintLayerWithFilter with the filter prepared
+// (prepareLayerFilter).
+func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paints bool) {
+	switch {
+	case !paints:
+		return
+	case lf == nil:
+		// No filter to run, or a buffer too large: the content paints
+		// unfiltered, and so does its backdrop (paintLayerWithBackdrop).
 		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
+	filter, mapping, own, dm, dmKnown := lf.filter, lf.mapping, lf.own, lf.dm, lf.dmKnown
+	paramToLayer := mapping.ParamToLayer
+	region := filter.FilterRegion
+	bx, by := region.Min.X, region.Min.Y
+	bw, bh := region.Dx(), region.Dy()
 
 	// Render the layer subtree into the source buffer (filter-region sized).
 	// Filter Effects 1 §3.3: a `visibility: hidden` element paints none of
@@ -1381,10 +1429,8 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	filter.SetSourceImage(buf)
 	out := filter.ApplyToSRGB()
 	if out == nil {
-		// Match the two earlier failure paths (filter == nil, oversize buffer):
-		// fall back to unfiltered paint so the element still renders rather
-		// than vanishing into an invisible hole.
-		r.paintLayerContentDirectNoOpacityGroup(layer)
+		// The graph and its region are set (prepareLayerFilter), so only an
+		// effect producing nothing gets here: the filtered output is empty.
 		return
 	}
 
@@ -1411,11 +1457,19 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// The split is taken on the z=0 homographies the draw context uses, so
 	// own ∘ fromLocal is exactly onDC there even when own is 3D.
 	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
+	r.inOwnSpaceAndClips(layer, own, func() {
+		r.multiplyHomography(projectiveHomography(fromLocal))
+		r.dc.DrawImage(out, bx, by)
+	})
+}
+
+// inOwnSpaceAndClips runs paint with the layer's own projection on the draw
+// context and its own clips (CSS clip, clip-path) applied.
+func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform, paint func()) {
 	r.dc.Push()
 	r.multiplyHomography(projectiveHomography(own))
 	r.pushOwnClips(layer)
-	r.multiplyHomography(projectiveHomography(fromLocal))
-	r.dc.DrawImage(out, bx, by)
+	paint()
 	r.popOwnClips(layer)
 	r.dc.Pop()
 }
@@ -1465,15 +1519,22 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	if !ok {
 		return image.Rectangle{}, false
 	}
-	clip := snapRectFToDevice(layerClip)
-	m := filter.MapRect(clip)
+	// No reach to measure leaves the region unclipped.
+	return outsetByReach(filter, snapRectFToDevice(layerClip))
+}
+
+// outsetByReach outsets rect by the filter's reach: on each axis, the larger
+// distance its forward bounds mapping (Filter.MapRect) moves either edge, so
+// the result covers both what the filter draws from rect and what it reads
+// for rect. ok is false when the mapping is empty.
+func outsetByReach(filter *filters.Filter, rect image.Rectangle) (image.Rectangle, bool) {
+	m := filter.MapRect(rect)
 	if m.Empty() {
-		// No reach to measure: leave the region unclipped.
 		return image.Rectangle{}, false
 	}
-	padX := max(clip.Min.X-m.Min.X, m.Max.X-clip.Max.X, 0)
-	padY := max(clip.Min.Y-m.Min.Y, m.Max.Y-clip.Max.Y, 0)
-	return image.Rect(clip.Min.X-padX, clip.Min.Y-padY, clip.Max.X+padX, clip.Max.Y+padY), true
+	padX := max(rect.Min.X-m.Min.X, m.Max.X-rect.Max.X, 0)
+	padY := max(rect.Min.Y-m.Min.Y, m.Max.Y-rect.Max.Y, 0)
+	return image.Rect(rect.Min.X-padX, rect.Min.Y-padY, rect.Max.X+padX, rect.Max.Y+padY), true
 }
 
 // homographyTransform returns m's z=0 homography (projectiveHomography) as a
@@ -1594,18 +1655,27 @@ func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, boo
 	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
 }
 
-// applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
-// snapshots the backdrop image (everything painted behind the element's
-// border box), runs the filter graph over it, clips the result to the
-// element's border box including border-radius, and draws it back. The
-// element then paints its own decorations and content on top.
+// backdropFilterOperations returns the operations the layer's backdrop is
+// filtered with: its backdrop-filter followed by its filter, which Blink
+// appends because the backdrop's effect node comes before the filter's
+// (PaintLayer::UpdateBackdropFilters, paint_layer.cc:2601-2614 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (layer *PaintLayer) backdropFilterOperations() []css.FilterFunction {
+	return append(slices.Clip(layer.BackdropFilters), layer.Filters...)
+}
+
+// applyBackdropFilter draws layer's filtered backdrop (CSS Filter Effects 2
+// backdrop-filter): it reads the backdrop under the element's border box
+// from r.target, runs ops over it, clips the result to the border box,
+// honouring border-radius, and draws it through r.dc. ops is the
+// backdrop-filter's, followed by the element's filter's when its content is
+// filtered (backdropFilterOperations).
 //
-// applyBackdropFilter is invoked from paintLayerContent before
-// paintSelfDecorations, so r.target already holds the backdrop content. This
-// matches the Filter Effects 2 algorithm's "backdrop root image" for the
-// common case; isolation: isolate does not form a backdrop root, which is
-// consistent here because r.target is the shared canvas.
-func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
+// paintLayerWithBackdrop calls it in the layer's own space, under its own
+// clips, before the layer's effects paint: r.target is then the canvas the
+// layer composites onto, and r.dc draws into it or into the layer's effect
+// layer.
+func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFunction) {
 	box := layer.linesOrBorderBox()
 
 	// A logically zero-area border box paints no backdrop. Skip before
@@ -1650,7 +1720,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 			builder.Mapping = *m
 		}
 		builder.ReferenceBox, builder.FilterViewport = layerBox, layerBox
-		return builder.BuildFilterEffect(layer.BackdropFilters)
+		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {
 		return
@@ -1665,19 +1735,16 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// bounds with a mirror edge mode (paint_layer.cc:2612-2614 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	//
-	// Our model: snapshot the backdrop for the padded region in layer space,
+	// Our model: snapshot the backdrop for the region the chain reads in
+	// layer space — the box outset by the chain's reach (outsetByReach) —
 	// reflecting each sample into the border box, in local space, before
 	// reading the target (sampleBackdrop). Pixels in the pad area thus
 	// mirror the border box — as WPT's simulate-backdrop-blur.js reference
 	// builds it.
-	pad := 0
-	scale := math.Max(mapping.ParamToLayerSize(1, 1))
-	for _, f := range layer.BackdropFilters {
-		if f.Name == "blur" {
-			pad = max(pad, int(math.Ceil(f.Value*scale*3))+2)
-		}
+	region, ok := outsetByReach(filter, layerBox)
+	if !ok {
+		region = layerBox
 	}
-	region := layerBox.Inset(-pad)
 	// Only the part that can reach the device clip is read and filtered, as
 	// for a filter (filterLayerClip): a scaled-up box is not refused for its
 	// layer-space size.
@@ -1691,7 +1758,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 
 	filter.FilterRegion = region
 	filter.SetSourceImage(backdrop)
-	out := filter.Apply()
+	out := filter.ApplyToSRGB()
 	if out == nil {
 		return
 	}
@@ -1873,8 +1940,8 @@ func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 	// opacity since the inner paint skipped the PushGroup wrap.
 	r.dc = origDC
 	r.target = origTarget
-	if layer.Opacity < 1.0 {
-		compositeBufferWithOpacityOnto(r.target, buf, 0, 0, layer.Opacity)
+	if r.effectOpacity(layer) < 1.0 {
+		compositeBufferWithOpacityOnto(r.target, buf, 0, 0, r.effectOpacity(layer))
 	} else {
 		r.dc.DrawImage(buf, bx, by)
 	}
@@ -1903,10 +1970,10 @@ func (r *Renderer) paintLayerContentDirectNoOpacityGroup(layer *PaintLayer) {
 func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
 	r.enterLayerTransform(layer)
 
-	if layer.Opacity < 1.0 {
+	if r.effectOpacity(layer) < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
-		r.dc.PopGroupWithAlpha(layer.Opacity)
+		r.dc.PopGroupWithAlpha(r.effectOpacity(layer))
 	} else {
 		r.paintLayerContent(layer)
 	}
@@ -1935,41 +2002,127 @@ func hasBlendMode(layer *PaintLayer) bool {
 // effect, paintContents paints directly.
 func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*PaintLayer)) {
 	blend := hasBlendMode(layer)
-	if layer.Opacity >= 1 && !blend {
+	if r.effectOpacity(layer) >= 1 && !blend {
 		paintContents(layer)
 		return
 	}
 	if r.isLayerTransformSingular(layer) {
 		return
 	}
-	parent, ok := r.dc.Image().(*image.RGBA)
-	if !ok {
+	buf, parent, ok := r.paintIntoEffectLayer(func() { paintContents(layer) })
+	switch {
+	case !ok:
 		paintContents(layer)
 		return
-	}
-	// A projective draw context cannot be read back (deviceTransformFromDC);
-	// its affine part is used.
-	dm, _ := deviceTransformFromDC(r.dc)
-	clip := parent.Bounds().Intersect(r.dc.ClipBounds())
-	if clip.Empty() {
+	case buf == nil:
 		return
 	}
-	buf := image.NewRGBA(clip)
-	origDC, origTarget := r.dc, r.target
-	r.dc = origDC.NewChildContext(buf)
-	r.target = buf
-	r.multiplyHomography(projectiveHomography(dm))
-	paintContents(layer)
-	r.dc, r.target = origDC, origTarget
 
 	// The layer covers the clip in effect here (its bounds; a rounded clip
 	// is not reapplied).
 	if !blend {
-		compositeBufferWithOpacityOnto(parent, buf, 0, 0, layer.Opacity)
+		compositeBufferWithOpacityOnto(parent, buf, 0, 0, r.effectOpacity(layer))
 		return
 	}
-	applyConstantAlphaToBuffer(buf, layer.Opacity)
-	blendComposite(parent, buf, clip.Min.X, clip.Min.Y, layer.BlendMode)
+	applyConstantAlphaToBuffer(buf, r.effectOpacity(layer))
+	blendComposite(parent, buf, buf.Rect.Min.X, buf.Rect.Min.Y, layer.BlendMode)
+}
+
+// paintIntoEffectLayer runs paint into a layer of its own: a buffer covering
+// the current clip, addressed like the current canvas and drawn under the
+// same device matrix (Skia's saveLayer keeps the CTM). It returns the layer
+// and the canvas to composite it onto. ok is false, and nothing paints, when
+// the canvas is not a bitmap; an empty clip paints nothing and returns no
+// layer.
+func (r *Renderer) paintIntoEffectLayer(paint func()) (buf, parent *image.RGBA, ok bool) {
+	parent, ok = r.dc.Image().(*image.RGBA)
+	if !ok {
+		return nil, nil, false
+	}
+	clip := parent.Bounds().Intersect(r.dc.ClipBounds())
+	if clip.Empty() {
+		return nil, parent, true
+	}
+	// A projective draw context cannot be read back (deviceTransformFromDC);
+	// its affine part is used.
+	dm, _ := deviceTransformFromDC(r.dc)
+	buf = image.NewRGBA(clip)
+	origDC, origTarget := r.dc, r.target
+	r.dc = origDC.NewChildContext(buf)
+	r.target = buf
+	r.multiplyHomography(projectiveHomography(dm))
+	paint()
+	r.dc, r.target = origDC, origTarget
+	return buf, parent, true
+}
+
+// paintsBackdrop reports whether layer paints a backdrop-filter: its own
+// content paints, and it is not a 3D-context member's content polygon.
+func (r *Renderer) paintsBackdrop(layer *PaintLayer) bool {
+	return layer.HasBackdropFilter && r.paintsOwnContent(layer) && r.context3D.partOf(layer) != memberContent
+}
+
+// paintLayerWithBackdrop paints a layer with a backdrop-filter. viz draws the
+// element into a layer initialized with its filtered backdrop: the content
+// draws into it with the element's mix-blend-mode, and the layer restores
+// source-over with the element's opacity (SkiaRenderer::PrepareCanvasForRPDQ,
+// components/viz/service/display/skia_renderer.cc:1736-1773 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So the backdrop is read from the
+// canvas the element composites onto, before its mask, filter and blending
+// paint, and is inside its opacity. With neither opacity nor blending, that
+// layer is the canvas itself.
+func (r *Renderer) paintLayerWithBackdrop(layer *PaintLayer) {
+	if r.isLayerTransformSingular(layer) {
+		return
+	}
+	// The element's filter ops are appended only when its content is
+	// filtered (backdropFilterOperations), so a filter that falls back to
+	// unfiltered paint leaves the backdrop unfiltered by it too. The filter
+	// is prepared once, for both: the effect layer keeps the device matrix.
+	ops := layer.BackdropFilters
+	paintFilter := r.paintLayerWithFilter
+	if layer.HasFilter {
+		lf, paints := r.prepareLayerFilter(layer)
+		if lf != nil {
+			ops = layer.backdropFilterOperations()
+		}
+		paintFilter = func(l *PaintLayer) { r.paintPreparedFilter(l, lf, paints) }
+	}
+	applyBackdrop := func() {
+		r.inOwnSpaceAndClips(layer, r.ownLayerProjection(layer), func() { r.applyBackdropFilter(layer, ops) })
+	}
+	if r.effectOpacity(layer) < 1 || hasBlendMode(layer) {
+		canvas := r.target
+		buf, parent, ok := r.paintIntoEffectLayer(func() {
+			layerBuf := r.target
+			r.target = canvas
+			applyBackdrop()
+			r.target = layerBuf
+			// The layer takes the opacity; a blend mode blends the content
+			// against the backdrop in the layer.
+			outer := r.opacityLayer
+			r.opacityLayer = layer
+			r.paintLayerEffects(layer, paintFilter)
+			r.opacityLayer = outer
+		})
+		if ok {
+			if buf != nil {
+				compositeBufferWithOpacityOnto(parent, buf, 0, 0, layer.Opacity)
+			}
+			return
+		}
+	}
+	applyBackdrop()
+	r.paintLayerEffects(layer, paintFilter)
+}
+
+// effectOpacity is the opacity layer's effects paint with: none when
+// paintLayerWithBackdrop's layer applies it.
+func (r *Renderer) effectOpacity(layer *PaintLayer) float64 {
+	if layer == r.opacityLayer {
+		return 1
+	}
+	return layer.Opacity
 }
 
 // blendComposite performs pixel-level blend compositing of src onto dst
@@ -2285,10 +2438,6 @@ func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	part := r.context3D.partOf(layer)
 
 	if own && part != memberContent {
-		// CSS backdrop-filter: filter the region behind the element before painting.
-		if layer.HasBackdropFilter {
-			r.applyBackdropFilter(layer)
-		}
 		// Self decorations: bg, borders, shadows, outline, list marker.
 		r.paintSelfDecorations(layer)
 	}
