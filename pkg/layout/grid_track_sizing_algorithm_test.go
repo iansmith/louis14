@@ -143,3 +143,17 @@ func TestMaximizeTracks(t *testing.T) {
 		}
 	}
 }
+
+// Size containment sizes the grid container as if empty, but its tracks
+// still size from its items in layout: GridLayoutAlgorithm::Layout builds
+// the sizing tree with its children, ignoring them only for display locks
+// (grid_layout_algorithm.cc:416-422 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Mirrors WPT
+// css-contain/contain-size-064.
+func TestSizeContainedGridSizesColumnsFromItems(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0"><div style="display:grid; width:300px; contain:size; grid-template-columns:max-content auto">`+
+		`<div style="width:70px;height:10px"></div><div id=b style="height:10px"></div></div></body>`, nil)
+	if b := findBox(fl.root, byID("b")); b == nil || b.X != 70 {
+		t.Errorf("#b %s, want at x=70", boxDims(b))
+	}
+}
