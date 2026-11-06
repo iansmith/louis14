@@ -22,6 +22,12 @@ func renderToImage(t *testing.T, htmlContent string, w, h int) *image.RGBA {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	return renderDocToImage(doc, w, h)
+}
+
+// renderDocToImage lays out and renders a parsed (and possibly mutated)
+// document.
+func renderDocToImage(doc *html.Document, w, h int) *image.RGBA {
 	eng := layout.NewLayoutEngine(float64(w), float64(h))
 	boxes := eng.Layout(doc)
 

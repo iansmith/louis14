@@ -3,6 +3,8 @@ package render_test
 import (
 	"image/color"
 	"testing"
+
+	"louis14/pkg/html"
 )
 
 // LOU-747 (filter-effects worklist B8): a url() filter resolves to the
@@ -21,7 +23,9 @@ import (
 
 // invertMatrix inverts each colour channel; invertedGreenLinear is green
 // (0,128,0) through it run in linearRGB.
-const invertMatrix = `<feColorMatrix type="matrix" values="-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 0 0 0 1 0"/>`
+const invertMatrixValues = "-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 0 0 0 1 0"
+
+const invertMatrix = `<feColorMatrix type="matrix" values="` + invertMatrixValues + `"/>`
 
 var invertedGreenLinear = color.RGBA{255, 229, 255, 255}
 
@@ -120,4 +124,84 @@ func TestReferenceFilter_InterpolationSpace(t *testing.T) {
 			wantPixelWithinOne(t, img, 50, 50, tc.want, "green through the inverting filter")
 		})
 	}
+}
+
+// findTag returns the first element named tag under n, in tree order.
+func findTag(n *html.Node, tag string) *html.Node {
+	if n.Type == html.ElementNode && n.TagName == tag {
+		return n
+	}
+	for _, c := range n.Children {
+		if f := findTag(c, tag); f != nil {
+			return f
+		}
+	}
+	return nil
+}
+
+// A script-built resource element resolves as a parsed one does. louis14's
+// createElementNS records no namespace (its node reports XHTML), so an
+// element inside an <svg> is SVG by its <svg> ancestor and its tag, as the
+// SVG build decides.
+func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
+	doc, err := html.Parse(`<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect width="100" height="100" fill="url(#g)"/></svg>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newElt := func(tag string, attrs map[string]string) *html.Node {
+		return &html.Node{Type: html.ElementNode, TagName: tag, Attributes: attrs}
+	}
+	grad := newElt("lineargradient", map[string]string{"id": "g"})
+	grad.AddChild(newElt("stop", map[string]string{"stop-color": "blue"}))
+	svgElt := findTag(doc.Root, "svg")
+	svgElt.InsertBefore(grad, svgElt.Children[0])
+	img := renderDocToImage(doc, 120, 120)
+	wantPixel(t, img, 50, 50, color.RGBA{0, 0, 255, 255}, "fill:url(#g), a script-built gradient")
+}
+
+// getElementById does not look into <template> content (TreeScope's id map
+// holds the tree's elements only): an inert #inv in a template does not
+// shadow the real one after it.
+func TestReferenceFilter_TemplateContentIsInert(t *testing.T) {
+	const inert = `<template><svg><filter id="inv"><feFlood flood-color="red"/></filter></svg></template>`
+	img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", inert+hiddenSVGInvertFilter("")), 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the real hidden <filter>, not the template's")
+}
+
+// An iframe document whose root is a 3D rendering-context root paints its
+// layers through the 3D path; its url() references still resolve in its
+// own document, not the outer page's.
+func TestReferenceFilter_PerDocumentUnder3DRoot(t *testing.T) {
+	const outer = `<svg width="0" height="0"><filter id="inv"><feFlood flood-color="red"/></filter></svg>`
+	frame := `<iframe style="position:absolute;left:0;top:0;width:100px;height:100px;border:0" srcdoc='<html style="transform-style:preserve-3d;transform:translateZ(0)"><style>body{margin:0}</style>` +
+		hiddenSVGInvertFilter("") + `<div style="width:100px;height:100px;background:green;filter:url(#inv)"></div></html>'></iframe>`
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+outer+frame, 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the iframe document's own hidden <filter>")
+}
+
+// A <filter> under an element with no layout object (<metadata>, SVGElement::
+// LayoutObjectIsNeeded false) or under a shape (whose layout object takes no
+// children) has none itself: it runs in sRGB, auto.
+func TestReferenceFilter_NoLayoutObjectUnderNonContainer(t *testing.T) {
+	for _, tc := range []struct{ name, svg string }{
+		{"metadata", `<svg width="0" height="0"><metadata><filter id="inv">` + invertMatrix + `</filter></metadata></svg>`},
+		{"rect", `<svg width="0" height="0"><rect><filter id="inv">` + invertMatrix + `</filter></rect></svg>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", tc.svg), 120, 120)
+			wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the filter, in sRGB")
+		})
+	}
+}
+
+// A primitive of a filter with no layout object takes its own
+// color-interpolation-filters attribute, else the filter's
+// (ColorInterpolationForElement, svg_filter_builder.cc:136-155, 189-192 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a linearRGB matrix in a hidden
+// filter runs in linearRGB.
+func TestReferenceFilter_PrimitiveInterpolationSpace(t *testing.T) {
+	svgFilter := `<svg style="display:none"><filter id="inv"><feColorMatrix color-interpolation-filters="linearRGB" type="matrix" values="` + invertMatrixValues + `"/></filter></svg>`
+	img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", svgFilter), 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, invertedGreenLinear, "the primitive's own linearRGB")
 }
