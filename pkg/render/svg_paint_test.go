@@ -1331,3 +1331,17 @@ func TestSVG_MaskFilteredChildPaints(t *testing.T) {
 <rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
 	wantPixel(t, img, 50, 50, canvasGreen, "the green square under an opaque, filtered mask")
 }
+
+// A masked shape's device-space buffer composites at its device position:
+// the 8px body margin is in the <svg>'s user→device transform, and must not
+// be applied to the buffer a second time (svg-mutation-filter-used-by-mask's
+// page has that margin).
+func TestSVG_MaskedShapeUnderPageOffset(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html>
+<svg width="100" height="100">
+<mask id="m"><rect width="100%" height="100%" fill="white"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 140, 140)
+	wantPixel(t, img, 10, 50, canvasGreen, "the masked square's left edge, at the margin")
+	wantPixel(t, img, 112, 50, canvasWhite, "past the masked square's right edge")
+}
