@@ -405,15 +405,7 @@ func applySpreadMethod(t float64, method svg.SVGSpreadMethod) float64 {
 		}
 		return t
 	case svg.SVGSpreadReflect:
-		// Fold into [0, 2), then mirror the upper half to [0, 1].
-		t = math.Mod(t, 2)
-		if t < 0 {
-			t += 2
-		}
-		if t > 1 {
-			return 2 - t
-		}
-		return t
+		return mirrorCoord(t, 0, 1)
 	case svg.SVGSpreadRepeat:
 		t = math.Mod(t, 1)
 		if t < 0 {
