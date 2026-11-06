@@ -162,3 +162,22 @@ func TestMappingParamToLayer(t *testing.T) {
 		t.Errorf("rotated ParamToLayerSize = (%v,%v), want (5,4)", w, h)
 	}
 }
+
+// An integer translation in ParamToLayer moves into LayerToDev, so the graph
+// is built once, in parameter space; a fractional one stays.
+func TestMapping_FoldIntegerTranslation(t *testing.T) {
+	var tr geometry.Transform
+	tr.Translate(3, -4)
+	m := Mapping{ParamToLayer: tr}
+	m.FoldIntegerTranslation()
+	if !m.ParamToLayer.IsIdentity() || m.LayerToDev != tr {
+		t.Errorf("integer translation: ParamToLayer %v, LayerToDev %v; want identity and the translation", m.ParamToLayer, m.LayerToDev)
+	}
+	var frac geometry.Transform
+	frac.Translate(0.5, 0)
+	m = Mapping{ParamToLayer: frac}
+	m.FoldIntegerTranslation()
+	if m.ParamToLayer != frac {
+		t.Errorf("fractional translation folded: ParamToLayer %v", m.ParamToLayer)
+	}
+}
