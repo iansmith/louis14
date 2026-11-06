@@ -70,104 +70,12 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	sizeContained := gla.style != nil && gla.style.ShouldApplySizeContainment()
 
-	// Parse grid template definitions with named lines.
-	colTracks, colLineNames := gla.style.GetGridTemplateColumnsWithNames()
-	rowTracks, rowLineNames := gla.style.GetGridTemplateRowsWithNames()
 	rowGap, colGap := gla.style.GetGridGap()
-	autoFlow := gla.style.GetGridAutoFlow()
-
-	// Parse grid-template-areas for named area placement.
-	namedAreas := gla.style.GetGridTemplateAreas()
-
-	// Build list of grid children (skip OOF and whitespace-only text nodes).
-	// CSS Grid §6.1: contiguous runs of non-whitespace text directly inside
-	// the grid container are wrapped into anonymous block-level grid items so
-	// that they can be placed by the auto-placement algorithm. Mirrors the
-	// flex container's buildFlexChildren behaviour (CSS Flexbox §4).
-	gridChildren := buildGridChildren(gla.node, gla.style)
-
-	var items []*gridItem
-	// oofChildren are the out-of-flow children, placed once the grid's
-	// geometry is known (PlaceOutOfFlowItems).
-	var oofChildren []*LayoutInputNode
-	for _, child := range gridChildren {
-		// Anonymous wrappers created by buildGridChildren have a style,
-		// but original children that lost theirs (e.g. broken DOM) are
-		// skipped defensively.
-		childStyle := child.Style()
-		if childStyle == nil {
-			continue
-		}
-		pos := childStyle.GetPosition()
-		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			oofChildren = append(oofChildren, child)
-			continue
-		}
-		if childStyle.GetDisplay() == css.DisplayNone {
-			continue
-		}
-		items = append(items, &gridItem{
-			node:     child,
-			style:    childStyle,
-			wdm:      wdm,
-			colStart: -1,
-			colEnd:   -1,
-			rowStart: -1,
-			rowEnd:   -1,
-			colSpan:  1,
-			rowSpan:  1,
-		})
-	}
-
-	// Handle auto-fill/auto-fit BEFORE placement: repeat(auto-fill, …) /
-	// repeat(auto-fit, …) is resolved against the container's free space
-	// at layout time (CSS Grid 2 §7.2.2.1). Auto-placement and explicit
-	// line resolution both depend on the final row and column counts, so we expand
-	// the sentinels in both axes. Both axes expand auto-fill; when the available
-	// size is indefinite, the repetition count resolves to 1 per CSS Grid 2 §7.2.2.1.
-	colTracks = gla.expandAutoFillFit(colTracks, contentInlineSize, colGap)
-	rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
-
-	// Resolve explicit placements from grid-column/grid-row/grid-area.
-	for _, item := range items {
-		gla.resolveItemPlacement(item, namedAreas, colLineNames, rowLineNames, len(colTracks), len(rowTracks))
-	}
-
-	// Auto-place items that don't have explicit positions.
-	numCols := len(colTracks)
-	numRows := len(rowTracks)
-	// First, compute grid dimensions from explicit placements.
-	for _, item := range items {
-		if item.colEnd >= 0 && item.colEnd > numCols {
-			numCols = item.colEnd
-		}
-		if item.rowEnd >= 0 && item.rowEnd > numRows {
-			numRows = item.rowEnd
-		}
-	}
-	// Ensure at least 1 column.
-	if numCols == 0 {
-		numCols = 1
-	}
-
-	// Auto-placement: fill unplaced items into the grid.
-	gla.autoPlace(items, &numCols, &numRows, autoFlow)
-
-	// Extend track definitions to cover all rows/columns.
-	autoColTrack := css.GridTrack{Auto: true}
-	if t := gla.style.GetGridAutoColumns(); t != nil {
-		autoColTrack = *t
-	}
-	autoRowTrack := css.GridTrack{Auto: true}
-	if t := gla.style.GetGridAutoRows(); t != nil {
-		autoRowTrack = *t
-	}
-	colTracks = gla.extendTracks(colTracks, numCols, autoColTrack)
-	rowTracks = gla.extendTracks(rowTracks, numRows, autoRowTrack)
-
-	// CSS Grid §7.2.2.1: auto-fit collapses empty tracks to 0px.
-	colTracks = collapseAutoFitEmptyTracks(colTracks, items, true)
-	rowTracks = collapseAutoFitEmptyTracks(rowTracks, items, false)
+	tree := gla.buildGridSizingTree(contentInlineSize, explicitBlockSize, false)
+	items, oofChildren := tree.items, tree.oofChildren
+	colTracks, rowTracks := tree.colTracks, tree.rowTracks
+	numCols, numRows := tree.numCols, tree.numRows
+	colLineNames, rowLineNames, namedAreas := tree.colLineNames, tree.rowLineNames, tree.namedAreas
 
 	// --- Track sizing: columns ---
 	colSizes := gla.resolveTrackSizes(colTracks, contentInlineSize, colGap, true, items, numCols, numRows, wdm, geom)
@@ -571,6 +479,139 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
+// gridSizingTree is a placed grid: its in-flow items with resolved lines,
+// its out-of-flow children, and its track lists extended over the implicit
+// grid. Layout and the intrinsic inline size computation both size it, so
+// implicit tracks take part in each. Mirrors Blink's GridSizingTree, which
+// GridLayoutAlgorithm::ComputeMinMaxSizes builds, running placement, before
+// sizing columns (layout/grid/grid_layout_algorithm.cc:279-284 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Layout does.
+type gridSizingTree struct {
+	items                      []*gridItem
+	oofChildren                []*LayoutInputNode
+	colTracks, rowTracks       []css.GridTrack
+	numCols, numRows           int
+	colLineNames, rowLineNames map[string]int
+	namedAreas                 map[string]css.GridAreaInfo
+}
+
+// buildGridSizingTree places the grid's items. contentInlineSize and
+// explicitBlockSize resolve repeat(auto-fill/auto-fit); a size of 0 or
+// Indefinite gives one repetition. ignoreChildren places no items, as
+// Blink's BuildGridSizingTreeIgnoringChildren.
+func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitBlockSize float64, ignoreChildren bool) gridSizingTree {
+	wdm := gla.space.WritingDirection
+	// Parse grid template definitions with named lines.
+	colTracks, colLineNames := gla.style.GetGridTemplateColumnsWithNames()
+	rowTracks, rowLineNames := gla.style.GetGridTemplateRowsWithNames()
+	rowGap, colGap := gla.style.GetGridGap()
+	autoFlow := gla.style.GetGridAutoFlow()
+
+	// Parse grid-template-areas for named area placement.
+	namedAreas := gla.style.GetGridTemplateAreas()
+
+	// Build list of grid children (skip OOF and whitespace-only text nodes).
+	// CSS Grid §6.1: contiguous runs of non-whitespace text directly inside
+	// the grid container are wrapped into anonymous block-level grid items so
+	// that they can be placed by the auto-placement algorithm. Mirrors the
+	// flex container's buildFlexChildren behaviour (CSS Flexbox §4).
+	var gridChildren []*LayoutInputNode
+	if !ignoreChildren {
+		gridChildren = buildGridChildren(gla.node, gla.style)
+	}
+
+	var items []*gridItem
+	// oofChildren are the out-of-flow children, placed once the grid's
+	// geometry is known (PlaceOutOfFlowItems).
+	var oofChildren []*LayoutInputNode
+	for _, child := range gridChildren {
+		// Anonymous wrappers created by buildGridChildren have a style,
+		// but original children that lost theirs (e.g. broken DOM) are
+		// skipped defensively.
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+		pos := childStyle.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			oofChildren = append(oofChildren, child)
+			continue
+		}
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+		items = append(items, &gridItem{
+			node:     child,
+			style:    childStyle,
+			wdm:      wdm,
+			colStart: -1,
+			colEnd:   -1,
+			rowStart: -1,
+			rowEnd:   -1,
+			colSpan:  1,
+			rowSpan:  1,
+		})
+	}
+
+	// Handle auto-fill/auto-fit BEFORE placement: repeat(auto-fill, …) /
+	// repeat(auto-fit, …) is resolved against the container's free space
+	// at layout time (CSS Grid 2 §7.2.2.1). Auto-placement and explicit
+	// line resolution both depend on the final row and column counts, so we expand
+	// the sentinels in both axes. Both axes expand auto-fill; when the available
+	// size is indefinite, the repetition count resolves to 1 per CSS Grid 2 §7.2.2.1.
+	colTracks = gla.expandAutoFillFit(colTracks, contentInlineSize, colGap)
+	rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
+
+	// Resolve explicit placements from grid-column/grid-row/grid-area.
+	for _, item := range items {
+		gla.resolveItemPlacement(item, namedAreas, colLineNames, rowLineNames, len(colTracks), len(rowTracks))
+	}
+
+	// Auto-place items that don't have explicit positions.
+	numCols := len(colTracks)
+	numRows := len(rowTracks)
+	// First, compute grid dimensions from explicit placements.
+	for _, item := range items {
+		if item.colEnd >= 0 && item.colEnd > numCols {
+			numCols = item.colEnd
+		}
+		if item.rowEnd >= 0 && item.rowEnd > numRows {
+			numRows = item.rowEnd
+		}
+	}
+	// Ensure at least 1 column.
+	if numCols == 0 {
+		numCols = 1
+	}
+
+	// Auto-placement: fill unplaced items into the grid.
+	gla.autoPlace(items, &numCols, &numRows, autoFlow)
+
+	// Extend track definitions to cover all rows/columns.
+	autoColTrack := css.GridTrack{Auto: true}
+	if t := gla.style.GetGridAutoColumns(); t != nil {
+		autoColTrack = *t
+	}
+	autoRowTrack := css.GridTrack{Auto: true}
+	if t := gla.style.GetGridAutoRows(); t != nil {
+		autoRowTrack = *t
+	}
+	colTracks = gla.extendTracks(colTracks, numCols, autoColTrack)
+	rowTracks = gla.extendTracks(rowTracks, numRows, autoRowTrack)
+
+	// CSS Grid §7.2.2.1: auto-fit collapses empty tracks to 0px.
+	colTracks = collapseAutoFitEmptyTracks(colTracks, items, true)
+	rowTracks = collapseAutoFitEmptyTracks(rowTracks, items, false)
+
+	return gridSizingTree{
+		items: items, oofChildren: oofChildren,
+		colTracks: colTracks, rowTracks: rowTracks,
+		numCols: numCols, numRows: numRows,
+		colLineNames: colLineNames, rowLineNames: rowLineNames,
+		namedAreas: namedAreas,
+	}
+}
+
 // resolveItemPlacement resolves grid-column, grid-row, and grid-area for an item.
 func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, namedAreas map[string]css.GridAreaInfo, colLineNames, rowLineNames map[string]int, numCols, numRows int) {
 	s := item.style
@@ -919,6 +960,29 @@ func collapseAutoFitEmptyTracks(tracks []css.GridTrack, items []*gridItem, isCol
 	return tracks
 }
 
+// columnContributions returns, for each of n column tracks, the largest
+// min-content and max-content inline contribution among the items placed in
+// it, a spanning item's split evenly over its tracks. Mirrors the
+// contributions GridTrackSizingAlgorithm::ResolveIntrinsicTrackSizes takes
+// from ContributionSizeForGridItem (grid_track_sizing_algorithm.cc:911,
+// grid_layout_algorithm.cc:577 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// Blink distributes a spanning item's contribution rather than splitting it.
+func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, n int) (minC, maxC []float64) {
+	minC, maxC = make([]float64, n), make([]float64, n)
+	for _, item := range items {
+		span := item.colEnd - item.colStart
+		if item.colStart < 0 || span <= 0 {
+			continue
+		}
+		lo, hi := gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
+		for i := item.colStart; i < item.colEnd && i < n; i++ {
+			minC[i] = max(minC[i], lo/float64(span))
+			maxC[i] = max(maxC[i], hi/float64(span))
+		}
+	}
+	return minC, maxC
+}
+
 // resolveTrackSizes resolves track sizes from track definitions.
 func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
 	n := len(tracks)
@@ -948,6 +1012,7 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 			(isInline && gla.style.ShouldApplyInlineSizeContainment()))
 
 	// Resolve min-content/max-content/auto tracks from item content sizes.
+	var colMin, colMax []float64 // fit-content column contributions, measured once
 	for i, t := range tracks {
 		if !t.Auto && !t.MinContent && !t.MaxContent && t.Fr == 0 && !t.IsFitContent && !(t.IsMinMax && t.MaxAuto) {
 			continue
@@ -958,10 +1023,14 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		// precedes item layout, so item.result is nil. fit-content tracks need
 		// real min-content (base, never clamped) and max-content (growth limit,
 		// clamped to the argument) contributions, so measure them directly via
-		// ComputeMinMaxSizes. Mirrors Blink's ResolveIntrinsicTrackSizes
-		// (grid_track_sizing_algorithm.cc:911, SHA 4883d11fef).
+		// ComputeMinMaxSizes (columnContributions).
 		measureContrib := isInline && t.IsFitContent
-		if !skipItemContrib {
+		if measureContrib && !skipItemContrib {
+			if colMin == nil {
+				colMin, colMax = gla.columnContributions(items, n)
+			}
+			minContentSize, maxSize = colMin[i], colMax[i]
+		} else if !skipItemContrib {
 			for _, item := range items {
 				var start, end int
 				if isInline {
@@ -975,9 +1044,7 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 						span = 1
 					}
 					var itemMax, itemMin float64
-					if measureContrib {
-						itemMin, itemMax = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
-					} else if item.result != nil {
+					if item.result != nil {
 						if isInline != wdm.IsVertical() {
 							itemMax = item.result.Fragment.Size.WidthF64()
 						} else {
