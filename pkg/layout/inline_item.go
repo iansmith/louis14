@@ -132,7 +132,8 @@ type InlineItem struct {
 //
 // CreatesGroup is ComputedStyle::HasGroupingProperty(HasReflection())
 // (layout_object.h:2724-2728 @ a9f50e52). ShouldCompositeForCurrentAnimations
-// covers the animations css.Style flags (opacity, filter, backdrop-filter).
+// is css.Style's: a current animation of opacity, a transform-related
+// property, filter or backdrop-filter.
 // ShouldApplyPaintContainment is always false for a LayoutInline: only
 // LayoutBox overrides IsEligibleForPaintOrLayoutContainment (layout_box.h:1178;
 // the LayoutObject default is false, layout_object.h:621-624 @ a9f50e52).

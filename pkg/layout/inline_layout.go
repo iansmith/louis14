@@ -2561,8 +2561,7 @@ func createLineBoxEx(
 			// text. Reset the copy's position to static for paint purposes.
 			bgStyle := span.style
 			if span.style.GetPosition() != css.PositionStatic {
-				bgStyle = span.style.Clone()
-				bgStyle.Set("position", "static")
+				bgStyle = span.style.CloneInFlowFragment()
 			}
 			bgFrag := &PhysicalFragment{
 				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
