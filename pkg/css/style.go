@@ -9595,6 +9595,9 @@ func (s *Style) GetGridColumnWithNames(colLineNames map[string]int) *GridPlaceme
 	if val, ok := s.Get("grid-column"); ok {
 		return parseGridPlacementWithNames(val, colLineNames, nil)
 	}
+	if val, ok := s.gridAreaAxis(true); ok {
+		return parseGridPlacementWithNames(val, colLineNames, nil)
+	}
 	return nil
 }
 
@@ -9652,6 +9655,9 @@ func (s *Style) GetGridRowWithNames(rowLineNames map[string]int) *GridPlacement 
 		return p
 	}
 	if val, ok := s.Get("grid-row"); ok {
+		return parseGridPlacementWithNames(val, rowLineNames, nil)
+	}
+	if val, ok := s.gridAreaAxis(false); ok {
 		return parseGridPlacementWithNames(val, rowLineNames, nil)
 	}
 	return nil
@@ -9733,6 +9739,51 @@ func (s *Style) GetGridArea() string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+// gridAreaAxis returns the "start / end" value the column (or row) axis
+// takes from the grid-area shorthand, expanded into grid-row-start /
+// grid-column-start / grid-row-end / grid-column-end as Blink's
+// GridArea::ParseShorthand does: an omitted grid-column-start or
+// grid-row-end copies a <custom-ident> grid-row-start, an omitted
+// grid-column-end copies a <custom-ident> grid-column-start, and any other
+// omitted value is auto (css/properties/shorthands/shorthands_custom.cc:
+// 3620-3675 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) gridAreaAxis(column bool) (string, bool) {
+	v, ok := s.Get("grid-area")
+	if !ok {
+		return "", false
+	}
+	parts := strings.Split(v, "/")
+	if len(parts) > 4 {
+		return "", false
+	}
+	var lines [4]string
+	for i, p := range parts {
+		lines[i] = strings.TrimSpace(p)
+	}
+	for _, omitted := range [][2]int{{1, 0}, {2, 0}, {3, 1}} {
+		if i, from := omitted[0], omitted[1]; lines[i] == "" {
+			lines[i] = "auto"
+			if isGridLineCustomIdent(lines[from]) {
+				lines[i] = lines[from]
+			}
+		}
+	}
+	if column {
+		return lines[1] + " / " + lines[3], true
+	}
+	return lines[0] + " / " + lines[2], true
+}
+
+// isGridLineCustomIdent reports whether a <grid-line> value is a lone
+// <custom-ident>: not auto, not a span, not an integer.
+func isGridLineCustomIdent(v string) bool {
+	if v == "" || v == "auto" || strings.HasPrefix(v, "span") {
+		return false
+	}
+	_, err := strconv.Atoi(v)
+	return err != nil
 }
 
 // resolveLineName resolves a grid line token to a line number.
