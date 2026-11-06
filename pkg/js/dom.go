@@ -928,10 +928,13 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return goja.Undefined()
 		})
 
+	case "offsetParent":
+		if p := e.offsetParentNode(); p != nil {
+			return e.ctx.elementProxy(p)
+		}
+		return goja.Null()
 	case "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
-		// Layout-flush idiom: scripts access these to force a synchronous layout.
-		// We return 0; the actual value is not used by tests that call these.
-		return vm.ToValue(0)
+		return vm.ToValue(e.offsetInt(key))
 
 	case "focus":
 		// HTMLElement.focus(): make this element the document's focused

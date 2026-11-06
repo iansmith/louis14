@@ -72,3 +72,18 @@ func TestElementOffsetGeometry(t *testing.T) {
 		expect("rel.offsetWidth", id("rel").offsetWidth, 210);
 	`)
 }
+
+// Scrolling does not move an element's offsets: Blink sums unscrolled
+// locations, while louis14's boxes inside a scroller are translated by its
+// scroll offset.
+func TestElementOffsetIgnoresScroll(t *testing.T) {
+	runWithLayout(t, `<!DOCTYPE html><body style="margin:0">
+<div id="sc" style="position:relative;overflow:auto;width:100px;height:100px">
+<div style="height:50px"></div><div id="child" style="height:500px"></div></div>
+</body>`, `
+		var sc = document.getElementById("sc"), child = document.getElementById("child");
+		sc.scrollTop = 40;
+		if (sc.scrollTop !== 40) throw new Error("scrollTop = " + sc.scrollTop);
+		if (child.offsetTop !== 50) throw new Error("offsetTop = " + child.offsetTop);
+	`)
+}
