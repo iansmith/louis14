@@ -129,6 +129,22 @@ func atomicInlineBaseline(r *InlineItemResult, display css.DisplayType, blockSiz
 	return r.LayoutResult.LastBaseline
 }
 
+// synthesizedInlineBaseline is the baseline, measured from the border-box
+// block-start, that an atomic inline with no baseline of its own exports:
+// its block-end margin edge (CSS 2.1 §10.8.1), except that an HTML <button>
+// synthesizes off its content box (HTMLButtonElement::AdjustStyle sets
+// InlineBlockBaselineEdge to kContentBox, core/html/forms/
+// html_button_element.cc:76-80; LogicalBoxFragment::BaselineMetrics,
+// layout/logical_box_fragment.cc:52-83 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func synthesizedInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode) float64 {
+	if r.Item.Node != nil && r.Item.Node.HasHTMLTagName("button") && r.Item.Style != nil {
+		geom := ComputeFragmentGeometry(r.Item.Style, wdm)
+		return blockSize - geom.Border.BlockEnd - geom.Padding.BlockEnd
+	}
+	return blockSize + r.Margins.BlockEnd
+}
+
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
@@ -3091,9 +3107,7 @@ func createLineBoxEx(
 						} else if centralBaseline {
 							ibAscent = blockSize / 2
 						} else {
-							// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
-							// with no line boxes, baseline = bottom margin edge.
-							ibAscent = blockSize + r.Margins.BlockEnd
+							ibAscent = synthesizedInlineBaseline(r, blockSize, wdm)
 						}
 						blockPos = maxAscent - ibAscent
 					} else if centralBaseline {
@@ -3508,9 +3522,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 						// in vertical modes with central baseline: blockSize / 2.
 						ibAscent = blockSize / 2
 					} else {
-						// CSS 2.1 §10.8.1: For replaced elements and inline-blocks
-						// with no line boxes, baseline = bottom margin edge.
-						ibAscent = blockSize + r.Margins.BlockEnd
+						ibAscent = synthesizedInlineBaseline(r, blockSize, wdm)
 					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
