@@ -178,3 +178,102 @@ func TestAtomicInRubyBaseIsLaidOut(t *testing.T) {
 		}
 	}
 }
+
+// rubyBaseAtomicResult lays a line out at a definite 400px over
+// <div><ruby>ATOM<rt>a</rt></ruby></div> and returns the base sub-line's
+// atomic item result.
+func rubyBaseAtomicResult(t *testing.T, atomStyle *css.Style, atomChildren ...*html.Node) *InlineItemResult {
+	t.Helper()
+	atom := makeNode("span", atomChildren...)
+	rt := makeNode("rt", &html.Node{Type: html.TextNode, Text: "a"})
+	ruby := makeNode("ruby", atom, rt)
+	root := makeNode("div", ruby)
+	rubyStyle, rtStyle := css.NewStyle(), css.NewStyle()
+	rubyStyle.Properties["display"] = "ruby"
+	rtStyle.Properties["display"] = "ruby-text"
+	styles := map[*html.Node]*css.Style{root: css.NewStyle(), ruby: rubyStyle, atom: atomStyle, rt: rtStyle}
+	for _, c := range atomChildren {
+		cs := css.NewStyle()
+		cs.Properties["display"] = "inline-block"
+		cs.Properties["width"] = "40px"
+		cs.Properties["height"] = "20px"
+		styles[c] = cs
+	}
+	data := collectForNodes(t, root, styles)
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	space := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 100, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(100).Build()
+	lb := NewLineBreaker(data, testContext(), space, text.DefaultFontConfig(), LineBreakerContent)
+	for range 5 {
+		var line LineInfo
+		if !lb.NextLine(&line) {
+			break
+		}
+		for _, col := range line.RubyColumns {
+			for i, r := range col.BaseLine.Results {
+				if r.Item != nil && r.Item.Type == InlineItemAtomicInline {
+					return &col.BaseLine.Results[i]
+				}
+			}
+		}
+	}
+	t.Fatal("no atomic in the ruby base sub-line")
+	return nil
+}
+
+// A ruby base sub-line breaker shares its parent's constraint space
+// (LineBreaker, inline/line_breaker.cc:3066-3067, 3532-3560 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a percentage margin resolves
+// against the line's 100px, not the sub-breaker's unbounded width, and an
+// atomic is laid out at the line's available inline size, so an auto-width
+// inline-block wraps its five 40px children at 100px.
+func TestRubyBaseAtomicUsesTheLineSpace(t *testing.T) {
+	img := css.NewStyle()
+	img.Properties["display"] = "inline-block"
+	img.Properties["width"] = "10px"
+	img.Properties["height"] = "10px"
+	img.Properties["margin-left"] = "10%"
+	if r := rubyBaseAtomicResult(t, img); r.Margins.InlineStart != 10 {
+		t.Errorf("margin-left:10%% in a ruby base resolved to %v, want 10", r.Margins.InlineStart)
+	}
+	ib := css.NewStyle()
+	ib.Properties["display"] = "inline-block"
+	ib.Properties["font-size"] = "0"
+	var kids []*html.Node
+	for range 5 {
+		kids = append(kids, makeNode("span"))
+	}
+	if r := rubyBaseAtomicResult(t, ib, kids...); r.LayoutResult == nil || r.LayoutResult.Fragment.Size.WidthF64() != 80 {
+		var w float64
+		if r.LayoutResult != nil {
+			w = r.LayoutResult.Fragment.Size.WidthF64()
+		}
+		t.Errorf("auto-width inline-block in a ruby base is %v wide, want 80 (two 40px per line at 100px)", w)
+	}
+}
+
+// One derivation of an orthogonal atomic's available inline size for sizing
+// and layout, from the container's initial fragment geometry: an abspos
+// container's block size from its insets counts (left:0; right:700px is
+// 100 wide), and a definite 0 is definite.
+func TestOrthogonalAvailableBlockFromContainerGeometry(t *testing.T) {
+	atoms := ""
+	for range 5 {
+		atoms += `<span style="display:inline-block;width:40px;height:20px"></span>`
+	}
+	child := `<div id=c style="display:inline-block; writing-mode:horizontal-tb">` + atoms + `</div>`
+	for _, tc := range []struct {
+		name, parent string
+		want         float64
+	}{
+		{"abspos insets", `position:absolute; left:0; right:700px`, 60},
+		{"definite width 0", `display:inline-block; width:0`, 100},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><html style="writing-mode:vertical-lr"><body style="margin:0; font-size:0; line-height:0">`+
+			`<div id=p style="`+tc.parent+`">`+child+`</div></body></html>`, nil)
+		if msg := sameHeight(tc.want)(fl); msg != "" {
+			t.Errorf("%s: %s", tc.name, msg)
+		}
+	}
+}
