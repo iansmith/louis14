@@ -1,6 +1,10 @@
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/css"
+)
 
 // Column track sizing, as Blink's GridTrackSizingAlgorithm::
 // ComputeUsedTrackSizes runs it: each track's base size and growth limit are
@@ -51,5 +55,28 @@ func TestGridColumnTrackSizing(t *testing.T) {
 		if g == nil || b == nil || b.X != tc.wantX || g.Width != tc.wantGridW {
 			t.Errorf("%s: grid %s, #%s %s; want grid width %v, #%s at x=%v", tc.name, boxDims(g), tc.id, boxDims(b), tc.wantGridW, tc.id, tc.wantX)
 		}
+	}
+}
+
+// GridSizingTrackCollection::InitializeSets: a fixed minimum is the initial
+// base size and a fixed maximum the initial growth limit; intrinsic minimums
+// start at 0 and intrinsic or flexible maximums are infinite
+// (grid_track_collection.cc:1207-1252 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestNewGridSetsInitialSizes(t *testing.T) {
+	inf := gridIndefinite
+	sets := newGridSets([]css.GridTrack{
+		{Size: 40}, {Auto: true}, {Fr: 1}, {IsMinMax: true, MinSize: 10, MaxSize: 30},
+		{IsMinMax: true, MinSize: 50, MaxSize: 30}, {IsFitContent: true, FitContentMax: 60},
+		{Percent: 50}, {Percent: 50},
+	}, 200)
+	sets = append(sets, newGridSets([]css.GridTrack{{Percent: 50}}, gridIndefinite)...)
+	for i, want := range [][2]float64{{40, 40}, {0, inf}, {0, inf}, {10, 30}, {50, 50}, {0, inf}, {100, 100}, {100, 100}, {0, inf}} {
+		if got := [2]float64{sets[i].baseSize, sets[i].growthLimit}; got != want {
+			t.Errorf("set %d: base, growth limit %v, want %v", i, got, want)
+		}
+	}
+	if sets[5].fitContentLimit != 60 {
+		t.Errorf("fit-content limit %v, want 60", sets[5].fitContentLimit)
 	}
 }
