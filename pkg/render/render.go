@@ -1719,41 +1719,30 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	r.dc.Pop()
 }
 
-// mirrorCoord reflects v into [lo, hi] about the edges, repeating with
-// period 2(hi - lo): Skia's SkTileMode::kMirror, the edge mode Blink's
-// compositor crops a backdrop filter's input with.
-func mirrorCoord(v, lo, hi float64) float64 {
-	w := hi - lo
-	if w <= 0 {
+// mirrorPixelCentre mirrors the pixel-centre coordinate v into the pixel
+// centres of [lo, hi): mirrorCoord, kept off the edge line by half a pixel,
+// so a sample never sits on the edge. An empty range returns lo.
+func mirrorPixelCentre(v, lo, hi float64) float64 {
+	if hi <= lo {
 		return lo
 	}
-	t := wrapIntoPeriod(v-lo, 2*w)
-	if t > w {
-		t = 2*w - t
-	}
-	return lo + t
+	return min(max(mirrorCoord(v, lo, hi), lo+0.5), hi-0.5)
 }
 
-// mirrorPixel is mirrorCoord for the pixel v in [lo, hi): the pixel the
-// reflection of v's centre lands on, so the edge pixel repeats once.
+// mirrorPixel is the pixel of [lo, hi) the mirrored centre of pixel v lands
+// on: the edge pixel repeats once (Skia's SkTileMode::kMirror).
 func mirrorPixel(v, lo, hi int) int {
-	n := hi - lo
-	if n <= 0 {
-		return lo
-	}
-	t := ((v-lo)%(2*n) + 2*n) % (2 * n)
-	if t >= n {
-		t = 2*n - 1 - t
-	}
-	return lo + t
+	return int(math.Floor(mirrorPixelCentre(float64(v)+0.5, float64(lo), float64(hi))))
 }
 
 // sampleBackdrop returns the backdrop for region, in layer space. Each layer
-// pixel's centre is mapped back to local space and mirrored into box
-// (mirrorCoord, in local space, so a rotated box reflects only its own
-// pixels), then read from the target through ctm, bilinearly with its taps
-// clamped to box's device bounds so no pixel outside the box bleeds in. An
-// integer translation reads target pixels directly.
+// pixel's centre is mapped back to local space and mirrored onto the box's
+// pixel centres (mirrorPixelCentre, in local space, so a rotated box reflects
+// only its own pixels), then read from the target through ctm bilinearly,
+// with the taps clamped to the box's device bounds. An integer translation
+// reads target pixels directly, so nothing outside the box is read; under a
+// rotation or skew a tap can still reach a pixel within half a pixel of the
+// box's edge, as any bilinear read of the edge does.
 func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.Mapping, ctm geometry.Transform) *image.RGBA {
 	out := image.NewRGBA(image.Rect(0, 0, region.Dx(), region.Dy()))
 	tb := r.target.Bounds()
@@ -1799,8 +1788,8 @@ func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.M
 		py := float64(region.Min.Y+y) + 0.5
 		for x := 0; x < region.Dx(); x++ {
 			px := float64(region.Min.X+x) + 0.5
-			qx := mirrorCoord(la*px+lb*py+lc, minX, maxX)
-			qy := mirrorCoord(ld*px+le*py+lf, minY, maxY)
+			qx := mirrorPixelCentre(la*px+lb*py+lc, minX, maxX)
+			qy := mirrorPixelCentre(ld*px+le*py+lf, minY, maxY)
 			out.SetRGBA(x, y, graphics.SampleBilinearPremultiplied(r.target, a*qx+b*qy+c, d*qx+e*qy+f, tap.Min.X, tap.Min.Y, tap.Max.X-1, tap.Max.Y-1))
 		}
 	}
@@ -7449,6 +7438,24 @@ func wrapIntoPeriod(v, period float64) float64 {
 		v += period
 	}
 	return v
+}
+
+// mirrorCoord reflects v into [lo, hi] about the edges, repeating with
+// period 2(hi - lo) (a triangle wave). It is SVG spreadMethod="reflect" and
+// Skia's SkTileMode::kMirror.
+func mirrorCoord(v, lo, hi float64) float64 {
+	if lo <= v && v <= hi {
+		return v
+	}
+	w := hi - lo
+	if w <= 0 {
+		return lo
+	}
+	t := wrapIntoPeriod(v-lo, 2*w)
+	if t > w {
+		t = 2*w - t
+	}
+	return lo + t
 }
 
 // drawDottedLinePhased, drawDashedLinePhased, and drawWavyLinePhased are the

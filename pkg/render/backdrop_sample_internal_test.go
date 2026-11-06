@@ -31,9 +31,10 @@ func sampleTarget(w, h int, inside func(x, y float64) bool) *Renderer {
 	return NewRendererForImage(img)
 }
 
-// The edge mode works in local space, on the box itself: a layer pixel
-// in the corner of a rotated box's device AABB (a Complex graph's layer is
-// device space) reads the box's edge, not the red outside it.
+// The edge mode works in local space, on the box itself: every layer pixel
+// of a 45° box's device AABB, its corners included (a Complex graph's layer
+// is device space), reads the box's lime, not the red outside it. The
+// tolerance is the bilinear read of the rotated edge itself, a few levels.
 func TestSampleBackdrop_ClampsToTheRotatedBox(t *testing.T) {
 	r := sampleTarget(60, 60, func(x, y float64) bool { return math.Abs(x-30)+math.Abs(y-30) <= 10*math.Sqrt2 })
 	ctm := geometry.Transform{}
@@ -42,8 +43,29 @@ func TestSampleBackdrop_ClampsToTheRotatedBox(t *testing.T) {
 	ctm.Translate(-30, -30)
 	m := filters.Mapping{ParamToLayer: ctm}
 	out := r.sampleBackdrop(image.Rect(16, 16, 44, 44), image.Rect(20, 20, 40, 40), m, ctm)
-	if got := out.RGBAAt(0, 0); got.G < 100 {
-		t.Errorf("AABB corner = %v, want the box's lime edge, not the red outside", got)
+	for y := range out.Bounds().Dy() {
+		for x := range out.Bounds().Dx() {
+			if got := out.RGBAAt(x, y); !colorWithin(got, sampleLime, 8) {
+				t.Fatalf("layer pixel (%d,%d) = %v, want lime within 8: red outside the box read", x, y, got)
+			}
+		}
+	}
+}
+
+// Mirrored samples land on the box's pixel centres, never on its edge line:
+// a centre just past the edge reflects onto the edge pixel's centre.
+func TestMirrorPixelCentre(t *testing.T) {
+	for _, tc := range []struct{ v, want float64 }{
+		{19.5, 19.5}, {20.1, 19.5}, {20.5, 19.5}, {21.5, 18.5}, {9.5, 10.5}, {9.9, 10.5}, {8.5, 11.5}, {15.25, 15.25},
+	} {
+		if got := mirrorPixelCentre(tc.v, 10, 20); got != tc.want {
+			t.Errorf("mirrorPixelCentre(%v, 10, 20) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+	for _, tc := range []struct{ v, want int }{{9, 10}, {8, 11}, {20, 19}, {21, 18}, {4, 15}, {25, 14}, {15, 15}} {
+		if got := mirrorPixel(tc.v, 10, 20); got != tc.want {
+			t.Errorf("mirrorPixel(%d, 10, 20) = %d, want %d", tc.v, got, tc.want)
+		}
 	}
 }
 
