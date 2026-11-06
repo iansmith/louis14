@@ -129,23 +129,24 @@ func NewCountersAttachmentContext() *CountersAttachmentContext {
 	}
 }
 
-// IsCounterReversed reports whether the innermost in-scope entry for name was
-// created by a counter-reset: reversed(name) declaration. Called by the
-// layout-tree builder to decide whether to apply the implicit list-item -1
-// decrement (reversed list items count downward, normal list items count up).
+// IsCounterReversed reports whether the counter an increment of name would
+// update now was created by a counter-reset: reversed(name) declaration.
+// Called by the layout-tree builder to decide whether to apply the implicit
+// list-item -1 decrement (reversed list items count downward, normal list
+// items count up). When the top of the stack is a style-containment
+// boundary, the increment creates a fresh counter instead
+// (CountersAttachmentContext::UpdateCounterValue,
+// css/counters_attachment_context.cc:622-627 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which is not reversed: the
+// items of a style-contained element count up, as their own list
+// (ListItemOrdinal::IsListOwner, html/list_item_ordinal.cc:21-36).
 func (c *CountersAttachmentContext) IsCounterReversed(name string) bool {
 	stack := c.table[name]
 	if stack == nil || len(*stack) == 0 {
 		return false
 	}
-	for i := len(*stack) - 1; i >= 0; i-- {
-		top := (*stack)[i]
-		if top == nil {
-			continue // style containment boundary — skip
-		}
-		return top.Reversed
-	}
-	return false
+	top := (*stack)[len(*stack)-1]
+	return top != nil && top.Reversed
 }
 
 // HasAutoReversedCounter reports whether node has a reversed(name)
@@ -239,9 +240,16 @@ type CounterDirective struct {
 // the counters the element declared, but real descendants see a fresh
 // counter scope.
 //
+// maybeCreateListItemCounter, when non-nil, runs after the element's own
+// directives and before the containment boundary, where Blink calls
+// MaybeCreateListItemCounter (counters_attachment_context.cc:226-232 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a list item's implicit
+// list-item step belongs to the outer scope even when the item has style
+// containment.
+//
 // Stamps `node`'s entry order so CreateCounter can identify
 // previous-sibling relationships in layout-tree order.
-func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
+func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style, maybeCreateListItemCounter func()) {
 	if node == nil || style == nil {
 		return
 	}
@@ -257,6 +265,9 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 	}
 	for _, d := range c.parseCounterDirectives(node, style) {
 		c.ProcessCounter(node, d)
+	}
+	if maybeCreateListItemCounter != nil {
+		maybeCreateListItemCounter()
 	}
 	if style.ShouldApplyStyleContainment() {
 		c.EnterStyleContainmentScope()
