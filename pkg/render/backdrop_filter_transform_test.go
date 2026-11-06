@@ -17,7 +17,7 @@ div{position:absolute;width:100px;height:100px;left:100px;top:100px}</style>
 <div style="top:140px;backdrop-filter:invert(1);transform:rotate(30deg)"></div>`, 300, 300)
 	// (120,195) is inside the rotated box and over the green box: green
 	// inverted. (160,230) is inside the rotated box, over white: black.
-	wantPixelWithinOne(t, img, 120, 195, color.RGBA{255, 127, 255, 255}, "green under the rotated box, inverted")
+	wantPixelWithinOne(t, img, 120, 195, invertedGreen, "green under the rotated box, inverted")
 	wantPixelWithinOne(t, img, 160, 230, color.RGBA{0, 0, 0, 255}, "white under the rotated box, inverted")
 }
 
@@ -27,7 +27,20 @@ div{position:absolute;width:100px;height:100px;left:100px;top:100px}</style>
 func TestBackdropFilter_ScaledElementPastBufferLimit(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:green}</style>
 <div style="position:absolute;left:0;top:0;width:1000px;height:1000px;transform-origin:0 0;transform:scale(10);backdrop-filter:invert(1)"></div>`, 100, 100)
-	wantPixelWithinOne(t, img, 50, 50, color.RGBA{255, 127, 255, 255}, "green under the scaled box, inverted")
+	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green under the scaled box, inverted")
+}
+
+// invertedGreen is green (0,128,0) inverted.
+var invertedGreen = color.RGBA{255, 127, 255, 255}
+
+// backdropPage puts a 100×100 element styled effect over a box of the same
+// size and background backdrop, at the page origin; extra (an <svg> of
+// filters) goes first.
+func backdropPage(backdrop, effect, extra string) string {
+	return `<!DOCTYPE html><style>body{margin:0}
+div{position:absolute;left:0;top:0;width:100px;height:100px}</style>
+` + extra + `<div style="background:` + backdrop + `"></div>
+<div style="` + effect + `"></div>`
 }
 
 // rotatedBlurPage puts a rotated backdrop-filtered box over a larger lime
@@ -69,10 +82,7 @@ func TestBackdropFilter_RotatedBlurReadsOnlyInsideTheBox(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), read from the real backdrop: a
 // green backdrop inverted, then greyscaled, is grey.
 func TestBackdropFilter_PlusFilterFiltersTheBackdrop(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}
-div{position:absolute;left:0;top:0;width:100px;height:100px}</style>
-<div style="background:green"></div>
-<div style="backdrop-filter:invert(1);filter:grayscale(1)"></div>`, 120, 120)
+	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1)", ""), 120, 120)
 	// (0,128,0) inverted is (255,127,255), greyscaled (163,163,163).
 	wantPixelWithinOne(t, img, 50, 50, color.RGBA{163, 163, 163, 255}, "the inverted green backdrop greyscaled")
 }
@@ -88,4 +98,51 @@ func TestBackdropFilter_BlurMirrorsAtTheEdge(t *testing.T) {
 	if c := img.RGBAAt(1, 50); c.G <= c.R || c.R == 0 {
 		t.Errorf("pixel (1,50) = %v: want lime dominating with the red edge blurred in (mirrored, not duplicated)", c)
 	}
+}
+
+// The backdrop is the initial content of the layer the element composites
+// in, which restores with the element's opacity (SkiaRenderer::
+// PrepareCanvasForRPDQ, components/viz/service/display/skia_renderer.cc:
+// 1736-1773 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): it is read from the
+// page under the element even when the element paints into a buffer of its
+// own, as for a filter inside opacity. The grey backdrop at half opacity over
+// green (0,128,0) is (82,146,82).
+func TestBackdropFilter_PlusFilterInsideOpacity(t *testing.T) {
+	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1);opacity:.5", ""), 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, color.RGBA{82, 146, 82, 255}, "the greyscaled backdrop at half opacity")
+}
+
+// A blended element's backdrop is the initial content of its layer too: the
+// layer paint composites source-over, and the element's blend mode applies
+// only to its content drawn into the layer (PrepareCanvasForRPDQ,
+// skia_renderer.cc:1743-1751 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
+// the inverted green backdrop is not multiplied with the page.
+func TestBackdropFilter_InsideMixBlendMode(t *testing.T) {
+	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);mix-blend-mode:multiply", ""), 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the inverted backdrop")
+}
+
+// The filtered backdrop is converted back to sRGB (FilterEffectBuilder
+// appends TransformInterpolationSpace, filter_effect_builder.cc:500-505 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an identity url() filter, which
+// runs in linearRGB, leaves the grey backdrop grey.
+func TestBackdropFilter_URLFilterEndsInSRGB(t *testing.T) {
+	img := renderToImage(t, backdropPage("rgb(128,128,128)", "backdrop-filter:invert(0);filter:url(#f)",
+		`<svg width="0" height="0" style="position:absolute"><filter id="f"><feColorMatrix type="saturate" values="1"/></filter></svg>`), 120, 120)
+	wantPixelWithinOne(t, img, 50, 50, color.RGBA{128, 128, 128, 255}, "the grey backdrop through an identity url() filter")
+}
+
+// The backdrop is read padded by the whole chain's reach, mirrored at the
+// box's edges: an offset appended from filter shifts mirrored backdrop pixels
+// in at the box's left edge. A 2px red strip along that edge comes back only
+// where the mirror lands on it, next to the edge: a clamped pad would repeat
+// it across the offset, a transparent one show the page.
+func TestBackdropFilter_OffsetReadsTheMirroredPad(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:green}
+div{position:absolute;left:0;top:0;height:100px}</style>
+<svg width="0" height="0" style="position:absolute"><filter id="off" x="-50%" width="200%"><feOffset dx="20"/></filter></svg>
+<div style="width:2px;background:red"></div>
+<div style="width:100px;backdrop-filter:invert(1);filter:url(#off)"></div>`, 120, 120)
+	wantPixelWithinOne(t, img, 10, 50, invertedGreen, "green mirrored in from x=10, inverted")
+	wantPixelWithinOne(t, img, 19, 50, color.RGBA{0, 255, 255, 255}, "the red strip mirrored in from x=0, inverted")
 }
