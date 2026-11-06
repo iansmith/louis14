@@ -195,7 +195,11 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",
 		"code", "dfn", "kbd", "mark", "q", "samp", "small", "sub", "sup",
-		"var", "time", "label", "br", "wbr", "img", "object",
+		"var", "time", "label", "br", "wbr", "img", "object", "audio",
+		// Replaced elements take the initial display too: html.css sets no
+		// display for any of them (Blink html.css @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		"canvas", "video", "embed", "iframe",
 		"first-letter", "first-line":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
@@ -213,12 +217,16 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
-	// Replaced inline elements: behave as inline-block for layout purposes
-	// (they are replaced elements that honor width/height attributes)
-	switch node.TagName {
-	case "canvas", "video", "embed", "iframe":
-		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "inline-block")
+	// Blink html.css:170-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+	//   audio { width: 300px; height: 54px; }
+	// (its `audio:not([controls])` rule is !important, applied by
+	// applyUserAgentImportantStyles).
+	if node.HasHTMLTagName("audio") {
+		if _, ok := style.Get("width"); !ok {
+			style.Set("width", "300px")
+		}
+		if _, ok := style.Get("height"); !ok {
+			style.Set("height", "54px")
 		}
 	}
 
@@ -606,24 +614,37 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // applyUserAgentImportantStyles applies the user-agent stylesheet's
 // !important declarations after the author cascade: important user-agent
 // declarations outrank every author declaration, important or not (CSS
-// Cascade 5 §6.1 origin order). Only Blink html.css:180-183 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b is ported here:
+// Cascade 5 §6.1 origin order). Ported from Blink html.css @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
 //
-//	iframe, embed, object, fencedframe {
+//	audio:not([controls]) { display: none !important; }      (:160-162)
+//	iframe, embed, object, fencedframe {                      (:180-183)
 //	  overflow: clip !important;
 //	  overflow-clip-margin: content-box !important;
 //	}
 //
 // `overflow` sets both longhands, so an author overflow-x/-y is overridden
 // too.
-func applyUserAgentImportantStyles(node *html.Node, style *Style) {
+//
+// It returns the properties it set: user-agent !important outranks the
+// animation origin too (CSS Cascade 5 §6.1), so the caller keeps animations
+// off them.
+func applyUserAgentImportantStyles(node *html.Node, style *Style) []string {
+	var set []string
 	switch node.TagName {
+	case "audio":
+		if _, controls := node.GetAttribute("controls"); !controls && node.HasHTMLTagName("audio") {
+			set = []string{"display"}
+			style.Set("display", "none")
+		}
 	case "iframe", "embed", "object", "fencedframe":
-		for _, p := range []string{"overflow", "overflow-x", "overflow-y"} {
+		set = []string{"overflow", "overflow-x", "overflow-y", "overflow-clip-margin"}
+		for _, p := range set[:3] {
 			style.Set(p, "clip")
 		}
 		style.Set("overflow-clip-margin", "content-box")
 	}
+	return set
 }
 
 // ComputeStyle computes the final style for a node by applying the cascade.
@@ -863,7 +884,12 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// default differs from spec.
 	resolveCSSWideKeywords(finalStyle, revertSnap, layerSnap)
 
-	applyUserAgentImportantStyles(node, finalStyle)
+	// User-agent !important declarations also outrank the animation origin,
+	// so they join the author !important properties applyCSSAnimations
+	// skips.
+	for _, p := range applyUserAgentImportantStyles(node, finalStyle) {
+		importantProps[p] = true
+	}
 
 	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin,
 	// vmax). Must precede ApplyAnimations: keyframe interpolation resolves
@@ -874,8 +900,9 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	finalStyle.ViewportHeight = viewportHeight
 
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
-	// cascade origin sits below author !important (CSS Cascade §6.3), so
-	// applyCSSAnimations skips any property in importantProps. animation-name
+	// cascade origin sits below author and user-agent !important (CSS
+	// Cascade §6.3), so applyCSSAnimations skips any property in
+	// importantProps. animation-name
 	// and the other animation-* longhands have already been resolved (via rule
 	// declarations / inline style) into finalStyle by this point. With a
 	// clock, calculateAnimationUpdate supplies each animation's timeline local
