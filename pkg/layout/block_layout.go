@@ -262,14 +262,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Block-size: use geom if definite, else auto.
-	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
-	var explicitBlockSize float64
-	if hasExplicitBlock {
-		explicitBlockSize = geom.BorderBoxSize.BlockSize - declaredBlockBorderPadding
-		if explicitBlockSize < 0 {
-			explicitBlockSize = 0
-		}
-	}
+	explicitBlockSize, hasExplicitBlock := explicitContentBlockSize(geom.BorderBoxSize.BlockSize, declaredBlockBorderPadding)
 
 	// fragmentsBorderPadding is the block border/padding of all fragments
 	// up to this one: cloned decorations repeat in every fragment, so the
@@ -408,9 +401,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// §10.3.2: Compute the available block-size for orthogonal children.
 	// This accounts for the parent's height/min-height/max-height constraints
 	// and walks up to the nearest ancestor scroller or ICB when needed.
-	orthogonalAvailableBlock := computeOrthogonalAvailableBlock(
-		bla.style, wdm, bla.space, geom, bla.ctx,
-		childAvailableBlock, hasExplicitBlock, explicitBlockSize)
+	orthogonalAvailableBlock, orthogonalFallbackBlock := orthogonalChildBlockSizes(
+		bla.ctx, bla.style, wdm, bla.space, geom, hasExplicitBlock, explicitBlockSize)
 
 	// Float exclusion tracking.
 	// Inherit exclusion space from parent, or start fresh for new BFCs.
@@ -1172,10 +1164,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
 						orthogonalFallbackSize(childWDM, bla.ctx)).
-					SetOrthogonalFallbackBlockSize(
-						computeOrthogonalFallbackBlockForChildren(
-							bla.style, wdm, bla.space, geom, bla.ctx,
-							hasExplicitBlock, explicitBlockSize)).
+					SetOrthogonalFallbackBlockSize(orthogonalFallbackBlock).
 					SetAvailableSize(LogicalSize{
 						InlineSize: childInlineForSpace,
 						BlockSize:  blockForChild,
@@ -2796,6 +2785,30 @@ func icbBlockSize(parentWDM WritingDirectionMode, ctx *LayoutContext) float64 {
 	return ctx.ViewportWidth
 }
 
+// explicitContentBlockSize is a box's definite content block size, from its
+// initial border-box block size (Indefinite when auto) less its block border
+// and padding, floored at 0.
+func explicitContentBlockSize(borderBoxBlock, blockBorderPadding float64) (float64, bool) {
+	if borderBoxBlock == Indefinite {
+		return 0, false
+	}
+	return max(0, borderBoxBlock-blockBorderPadding), true
+}
+
+// orthogonalChildBlockSizes is what a block container gives its orthogonal
+// children, the same in layout (block and inline children) and intrinsic
+// sizing: the available block size an orthogonal child takes as its
+// available inline size (§10.3.2: the container's definite block size, else
+// its min/max or the nearest scroller, capped at the ICB; Blink's orthogonal
+// fallback, SetOrthogonalFallbackInlineSizeIfNeeded, block_node.cc:1469 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the fallback block size its
+// descendants inherit.
+func orthogonalChildBlockSizes(ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, hasExplicitBlock bool, explicitBlockSize float64) (available, fallback float64) {
+	available = computeOrthogonalAvailableBlock(style, wdm, space, geom, ctx, hasExplicitBlock, explicitBlockSize)
+	fallback = computeOrthogonalFallbackBlockForChildren(style, wdm, space, geom, ctx, hasExplicitBlock, explicitBlockSize)
+	return available, fallback
+}
+
 // computeOrthogonalAvailableBlock computes the available block-size that
 // should be used for orthogonal children per CSS Writing Modes §10.3.2.
 //
@@ -2812,7 +2825,6 @@ func computeOrthogonalAvailableBlock(
 	space ConstraintSpace,
 	geom FragmentGeometry,
 	ctx *LayoutContext,
-	childAvailableBlock float64,
 	hasExplicitBlock bool,
 	explicitBlockSize float64,
 ) float64 {

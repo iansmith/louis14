@@ -20,18 +20,27 @@ import (
 // do not clip to a primitive subregion (Filter Effects 1 §13, and Blink's
 // filter_effect_builder.cc).
 type FilterEffectBuilder struct {
-	// ReferenceBox is the filter reference box in absolute device pixels:
-	// the border box, or for a filter that moves pixels the layer's bounding
-	// box including its self-painting descendants (UpdateFilterReferenceBox).
-	ReferenceBox image.Rectangle
-	// FilterViewport is the element's border box in absolute device pixels.
-	// Its size is Blink's FilterViewport (ComputeFilterViewport, core/paint/
-	// paint_layer.cc:164-174 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the
-	// viewport userSpaceOnUse percentages resolve against
-	// (filter_effect_builder.cc:528-537 @ a9f50e52); its origin is the
-	// layer's local origin, which userSpaceOnUse coordinates are relative
-	// to. It may be empty: a 0x0 box keeps its 0x0 viewport.
+	// ReferenceBox is the filter reference box in absolute device pixels,
+	// unsnapped (Blink's gfx::RectF): the border box, or for a filter that
+	// moves pixels the layer's bounding box including its self-painting
+	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
+	// pixel-snapped border box (BackdropFilterBounds).
+	ReferenceBox geometry.RectF
+	// FilterViewport is, in absolute device pixels, a layer's border box or
+	// an SVG shape's <svg> viewport: the viewport userSpaceOnUse percentages
+	// resolve against (filter_effect_builder.cc:528-537 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For a layer its size is
+	// Blink's FilterViewport (ComputeFilterViewport, core/paint/
+	// paint_layer.cc:164-174 @ a9f50e52), and its origin is the layer's local
+	// origin, which userSpaceOnUse coordinates are relative to; an SVG shape
+	// sets UserSpaceOrigin instead (SVGViewportResolver, svg_resources.cc:
+	// 375-381 @ a9f50e52). It may be empty: a 0x0 box keeps its 0x0
+	// viewport.
 	FilterViewport image.Rectangle
+	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
+	// are relative to in place of FilterViewport.Min: an SVG shape's user
+	// space origin in device pixels, whose viewport is its <svg>'s.
+	UserSpaceOrigin *geometry.PointF
 	// CurrentColor resolves currentColor for drop-shadow.
 	CurrentColor css.Color
 	// Resources, when non-nil, supplies the SVG resource registry so
@@ -73,10 +82,19 @@ func (b *FilterEffectBuilder) viewportLengthContext() svg.SVGLengthContext {
 	})
 }
 
-// userSpaceOrigin is the layer's local origin, which userSpaceOnUse
-// coordinates are relative to.
+// userSpaceOrigin is the origin userSpaceOnUse coordinates are relative
+// to: UserSpaceOrigin, else the layer's local origin.
 func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
+	if b.UserSpaceOrigin != nil {
+		return *b.UserSpaceOrigin
+	}
 	return geometry.PointF{X: float64(b.FilterViewport.Min.X), Y: float64(b.FilterViewport.Min.Y)}
+}
+
+// userSpaceOriginPixel is userSpaceOrigin rounded to a device pixel, as the
+// filter element adapter takes it.
+func (b *FilterEffectBuilder) userSpaceOriginPixel() image.Point {
+	return roundPoint(b.userSpaceOrigin())
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -122,17 +140,18 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	}
 
 	f := &filters.Filter{
-		ReferenceBox: b.ReferenceBox,
-		Source:       src,
-		SourceAlpha:  srcAlpha,
-		LastEffect:   prev,
+		Source:      src,
+		SourceAlpha: srcAlpha,
+		LastEffect:  prev,
 	}
 	// A shorthand-only chain has no region; the caller sizes its buffer
-	// (filters.Filter.EnsureRegion). A chain with a url() stage keeps the
-	// region it has had: the reference box mapped through the chain, with no
-	// per-stage crop (LOU-704 ports the exact sizing).
+	// (filters.Filter.EnsureRegion). A chain with a url() stage starts from
+	// the reference box mapped through the chain, with no per-stage crop
+	// (LOU-704 ports the exact sizing). An SVG shape's chain then unites its
+	// paint extent into it (paintWithFilterChain); the HTML layer path keeps
+	// it as is (LOU-780).
 	if hasReferenceFilter(ops) {
-		f.FilterRegion = f.MapRect(b.ReferenceBox)
+		f.FilterRegion = f.MapRect(snapRectFToDevice(b.ReferenceBox))
 	}
 	return f
 }
@@ -235,20 +254,10 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 
 	space := filterInterpolationSpace(filter)
 
-	// Resolve the filter region from filterUnits + the reference box.
-	// Both inputs are in absolute device pixels. The
-	// SVGResourceFilter.ResourceBoundingBox operates on float rects
-	// so wrap b.ReferenceBox into a geometry.RectF, run resolution,
-	// and convert back.
-	refBoxF := geometry.NewRectF(
-		float64(b.ReferenceBox.Min.X),
-		float64(b.ReferenceBox.Min.Y),
-		float64(b.ReferenceBox.Dx()),
-		float64(b.ReferenceBox.Dy()),
-	)
-	// userSpaceOnUse x/y are relative to the layer's local origin,
-	// FilterViewport.Min.
-	regionF := filter.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
+	// Resolve the filter region from filterUnits + the reference box, both
+	// in absolute device pixels. userSpaceOnUse x/y are relative to the
+	// layer's local origin, FilterViewport.Min.
+	regionF := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{
@@ -258,7 +267,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		// The primitive subregion percentage viewport is FilterViewport,
 		// not the filter region, which can carry the default 10% expansion.
 		subregionViewport:  b.FilterViewport,
-		userSpaceOrigin:    b.FilterViewport.Min,
+		userSpaceOrigin:    b.userSpaceOriginPixel(),
 		space:              space,
 		resolveStyle:       b.ResolveStyle,
 		resources:          b.Resources,
@@ -318,13 +327,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	space := filterInterpolationSpace(resource)
 
 	// Resolve the filter region — same logic as the same-doc path.
-	refBoxF := geometry.NewRectF(
-		float64(b.ReferenceBox.Min.X),
-		float64(b.ReferenceBox.Min.Y),
-		float64(b.ReferenceBox.Dx()),
-		float64(b.ReferenceBox.Dy()),
-	)
-	regionF := resource.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
+	regionF := resource.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{
@@ -332,7 +335,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		filterRegion:      region,
 		referenceBox:      b.ReferenceBox,
 		subregionViewport: b.FilterViewport,
-		userSpaceOrigin:   b.FilterViewport.Min,
+		userSpaceOrigin:   b.userSpaceOriginPixel(),
 		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.

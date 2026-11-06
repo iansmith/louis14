@@ -165,6 +165,12 @@ func (r RectF) Right() float64 { return r.Origin.X + r.Size.Width }
 // Bottom returns r.Y() + r.Height().
 func (r RectF) Bottom() float64 { return r.Origin.Y + r.Size.Height }
 
+// Outset returns r grown by d on every side. Mirrors gfx::RectF::Outset(float)
+// (ui/gfx/geometry/rect_f.h:101 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r RectF) Outset(d float64) RectF {
+	return NewRectF(r.X()-d, r.Y()-d, r.Width()+2*d, r.Height()+2*d)
+}
+
 // IsEmpty reports whether the rect has zero or negative width or height.
 func (r RectF) IsEmpty() bool {
 	return r.Size.IsEmpty()

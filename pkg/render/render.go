@@ -1200,7 +1200,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	if layer.hasFilterThatMovesPixels() {
 		referenceBox = paintBounds
 	}
-	builder.ReferenceBox = snapRectFToDevice(referenceBox)
+	builder.ReferenceBox = referenceBox
 	builder.FilterViewport = snapRectFToDevice(borderBox)
 	// SourceGraphic extent: the layer's paint bounds, which can extend beyond
 	// the border box (positioned or overflowing descendants). For drop-shadow
@@ -1211,8 +1211,11 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		if m != nil {
 			// The graph's geometry (reference box, filter region, primitive
 			// subregions) and its parameters are built in layer pixels: the
-			// boxes are mapped into the layer, their corners rounded to align
-			// with the pixel-snapped rasterization of the box.
+			// boxes are mapped into the layer. The viewport's corners are
+			// rounded to align with the pixel-snapped rasterization of the
+			// box; the reference box stays unsnapped, as Blink scales
+			// objectBoundingBox lengths by the float box (filter.cc:65-87 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			ref, ok := mapRectToLayer(m.ParamToLayer, referenceBox)
 			sub, subOK := mapRectToLayer(m.ParamToLayer, paintBounds)
 			vp, vpOK := mapRectToLayer(m.ParamToLayer, borderBox)
@@ -1220,7 +1223,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 				return nil
 			}
 			builder.FilterViewport = snapRectF(vp)
-			builder.ReferenceBox = snapRectF(ref)
+			builder.ReferenceBox = ref
 			paintExtent = snapRectFToDevice(sub)
 			builder.Mapping = *m
 		}
@@ -1246,16 +1249,17 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// 570-600 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) and grown by
 	// the filter's reach (filterLayerClip). Without a clip (a projective ancestor, or the
 	// layer's own perspective) the chain keeps the region it had before.
+	refPixels := snapRectFToDevice(builder.ReferenceBox)
 	switch {
 	case hasReferenceFilter(layer.Filters):
-		filter.EnsureRegion(builder.ReferenceBox.Union(paintExtent), false)
+		filter.EnsureRegion(refPixels.Union(paintExtent), false)
 	case dmAffine:
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
 			filter.EnsureRegion(paintExtent, true)
 			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
 		}
 	}
-	filter.EnsureRegion(builder.ReferenceBox, false)
+	filter.EnsureRegion(refPixels, false)
 	if region := filter.FilterRegion; region.Empty() || region.Dx() > 8000 || region.Dy() > 8000 {
 		// Fallback: render without filters to avoid OOM.
 		return nil, true
@@ -1421,7 +1425,7 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	if !mapping.LayerToDev.GetInverse(&inv) {
 		return image.Rectangle{}, false
 	}
-	layerClip, ok := mapRectToLayer(inv, rectFFromInts(c.Min.X, c.Min.Y, c.Dx(), c.Dy()))
+	layerClip, ok := mapRectToLayer(inv, rectFFromRect(c))
 	if !ok {
 		return image.Rectangle{}, false
 	}
@@ -1615,7 +1619,8 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 			layerBox = snapRectF(lb)
 			builder.Mapping = *m
 		}
-		builder.ReferenceBox, builder.FilterViewport = layerBox, layerBox
+		builder.ReferenceBox = rectFFromRect(layerBox)
+		builder.FilterViewport = layerBox
 		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {
@@ -1736,7 +1741,7 @@ func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.M
 	toLocal := mapping.ParamToLayer.InverseOrIdentity()
 	la, lb, lc := toLocal.Rc(0, 0), toLocal.Rc(0, 1), toLocal.Rc(0, 3)
 	ld, le, lf := toLocal.Rc(1, 0), toLocal.Rc(1, 1), toLocal.Rc(1, 3)
-	devBox, ok := mapRectToLayer(ctm, rectFFromInts(box.Min.X, box.Min.Y, box.Dx(), box.Dy()))
+	devBox, ok := mapRectToLayer(ctm, rectFFromRect(box))
 	if !ok {
 		return out
 	}

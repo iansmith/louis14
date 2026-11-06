@@ -219,7 +219,7 @@ func (r *Renderer) boxPaintBounds(l *PaintLayer, member bool) geometry.RectF {
 		bounds = r.localBoundingBoxIncludingSelfPaintingDescendants(l)
 	}
 	b := snapRectFToDevice(bounds.ToRectF())
-	return rectFFromInts(b.Min.X, b.Min.Y, b.Dx(), b.Dy())
+	return rectFFromRect(b)
 }
 
 // drawPolygon draws one sorted polygon: its unit drawn from the context
