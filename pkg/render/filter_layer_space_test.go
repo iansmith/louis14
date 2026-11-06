@@ -5,6 +5,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-665 (filter-effects worklist B13 + C4).
@@ -29,7 +31,7 @@ const filterTestW, filterTestH = 800, 600
 
 func renderFilterTestPage(t *testing.T, html string) *image.RGBA {
 	t.Helper()
-	return renderToImage(t, html, filterTestW, filterTestH)
+	return render.RenderPage(t, html, filterTestW, filterTestH)
 }
 
 func TestFilterLayerSpace_NoOpFilterMatchesUnfiltered(t *testing.T) {

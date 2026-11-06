@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // Participants of a 3D rendering context are painted with their own
 // projection to the context base, unflattened through their preserve-3d
@@ -20,7 +24,7 @@ body { margin: 0 }
 div { width: 200px; height: 200px; transform: rotateX(90deg); transform-style: preserve-3d; }
 div::before { display: inline-block; width: 200px; height: 200px; transform: rotateX(90deg); content: ''; background-color: green; }
 </style></head><body><div></div></body></html>`
-	img := renderToImage(t, src, 300, 300)
+	img := render.RenderPage(t, src, 300, 300)
 	if c := img.RGBAAt(100, 100); !(c.G > 100 && c.R < 60 && c.B < 60) {
 		t.Errorf("pixel (100,100) = %v, want green: the ::before composes with its preserve-3d parent", c)
 	}
@@ -38,7 +42,7 @@ body { margin: 0 }
 .parent > div { width: 100px; height: 100px; position: absolute; }
 .child-3d { background: green; transform: translateZ(0.5px); }
 </style></head><body><div class="parent"><div class="child-3d"></div></div></body></html>`
-	img := renderToImage(t, src, 300, 300)
+	img := render.RenderPage(t, src, 300, 300)
 	if c := img.RGBAAt(150, 150); !(c.G > 100 && c.R < 60 && c.B < 60) {
 		t.Errorf("pixel (150,150) = %v, want green: translateZ(0.5px) under perspective(1px) scales 2×", c)
 	}

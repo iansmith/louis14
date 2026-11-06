@@ -32,7 +32,7 @@ func TestBackgroundSVG_NoNaturalSize_DrawnAtTileSize(t *testing.T) {
 <div style="background-color:red; background-image:url(` + uri + `);
  background-origin:content-box; background-position:center; background-repeat:no-repeat;
  background-size:200px auto; border:solid 40px transparent; width:400px; height:400px"></div>`
-	img := renderColumnRuleHTML(t, src, 500, 500)
+	img := RenderPage(t, src, 500, 500)
 	// Tile spans x 140..340, y 40..440.
 	wantRGB(t, img, 150, 240, 0, 0, 255, "left stroke is 16px wide (x 140..156)")
 	wantRGB(t, img, 330, 240, 0, 0, 255, "right stroke is 16px wide (x 324..340)")

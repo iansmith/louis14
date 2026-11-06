@@ -125,7 +125,7 @@ func (sp *svgShapePainter) applyClipMaskToFilterOutput(out *image.RGBA, region i
 				maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
 					masker, sp.shape.FillBoundingBox,
 					region.Dx(), region.Dy(), region.Min.X, region.Min.Y,
-					sp.ctx.DeviceFromUser,
+					sp.ctx.DeviceFromUser.ToTransform(),
 				)
 				if maskBuf != nil {
 					applySVGMaskToBuffer(out, maskBuf, masker.MaskType)
@@ -297,8 +297,9 @@ func newSVGFilterSource(pctx *svgPaintContext, region image.Rectangle) (*image.R
 	childCtx.Renderer = tmpR
 	childCtx.DeviceFromUser = toBuffer.Compose(pctx.DeviceFromUser)
 	childCtx.contentToDevice = toBuffer.Compose(pctx.contentToDevice)
-	if !pctx.regionClip.Empty() {
-		childCtx.regionClip = pctx.regionClip.Sub(region.Min)
+	if pctx.regionClip != nil {
+		clip := pctx.regionClip.Sub(region.Min)
+		childCtx.regionClip = &clip
 	}
 	return srcBuf, childCtx
 }

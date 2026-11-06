@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // TestSVGTransform_PercentagesResolveAgainstViewBox: an SVG element's CSS
 // transform resolves percentages against its reference box, which for the
@@ -12,7 +16,7 @@ func TestSVGTransform_PercentagesResolveAgainstViewBox(t *testing.T) {
 	src := `<!DOCTYPE html><html><body style="margin:0"><svg width="200" height="200" style="position:absolute;top:0;left:0">` +
 		`<g style="transform:translate(50%, 50%)"><rect x="-100" y="-100" width="100" height="100" style="fill:lime"></rect></g>` +
 		`</svg></body></html>`
-	img := renderToImage(t, src, 300, 300)
+	img := render.RenderPage(t, src, 300, 300)
 	if c := img.RGBAAt(50, 50); c.G < 200 || c.R > 60 {
 		t.Errorf("pixel (50,50) = %v, want the group moved by half the viewport", c)
 	}
@@ -26,7 +30,7 @@ func TestSVGTransform_OriginDefaultsToViewBoxOrigin(t *testing.T) {
 	src := `<!DOCTYPE html><html><body style="margin:0"><svg width="200" height="200" style="position:absolute;top:0;left:0">` +
 		`<rect x="0" y="0" width="100" height="100" style="fill:lime;transform:rotate(180deg);transform-origin:50% 50%"></rect>` +
 		`</svg></body></html>`
-	img := renderToImage(t, src, 300, 300)
+	img := render.RenderPage(t, src, 300, 300)
 	// rotate(180deg) about the viewport center (100,100) moves the
 	// rect to 100..200.
 	if c := img.RGBAAt(150, 150); c.G < 200 || c.R > 60 {

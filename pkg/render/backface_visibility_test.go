@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // countRed returns the number of red pixels in img.
@@ -33,10 +35,10 @@ func TestBackface_ParentPerspectiveRevealsBackFace(t *testing.T) {
 		`<div style="width:400px;height:100px;perspective:100px">` +
 		`<div style="width:50px;height:50px;background:red;transform:rotateY(-60deg);backface-visibility:%s"></div>` +
 		`</div></body></html>`
-	if n := countRed(renderToImage(t, fmt.Sprintf(page, "visible"), 400, 100)); n == 0 {
+	if n := countRed(render.RenderPage(t, fmt.Sprintf(page, "visible"), 400, 100)); n == 0 {
 		t.Fatal("control: the backface-visibility:visible element painted nothing")
 	}
-	if n := countRed(renderToImage(t, fmt.Sprintf(page, "hidden"), 400, 100)); n != 0 {
+	if n := countRed(render.RenderPage(t, fmt.Sprintf(page, "hidden"), 400, 100)); n != 0 {
 		t.Errorf("%d red pixels: the hidden back face painted", n)
 	}
 }
@@ -54,7 +56,7 @@ func TestBackface_VisibleNodeUnderHiddenParentPaints(t *testing.T) {
 		`<div style="transform:rotateY(180deg);width:100px;backface-visibility:hidden;transform-style:preserve-3d">` +
 		`<div style="width:100px;height:100px;background:red;will-change:transform"></div>` +
 		`</div></body></html>`
-	if n := countRed(renderToImage(t, src, 200, 200)); n == 0 {
+	if n := countRed(render.RenderPage(t, src, 200, 200)); n == 0 {
 		t.Error("the child with its own transform node did not paint")
 	}
 }
@@ -70,7 +72,7 @@ func TestBackface_HiddenInlineInRotatedContext(t *testing.T) {
 		`<div style="transform:rotateY(180deg);transform-style:preserve-3d;width:100px">` +
 		`<span style="backface-visibility:hidden;background:red">XXXX</span>` +
 		`</div></body></html>`
-	if n := countRed(renderToImage(t, src, 200, 100)); n != 0 {
+	if n := countRed(render.RenderPage(t, src, 200, 100)); n != 0 {
 		t.Errorf("%d red pixels: the inline's hidden back face painted", n)
 	}
 }
@@ -85,7 +87,7 @@ func TestBackface_HiddenInlineTextInRotatedContext(t *testing.T) {
 		`<div style="transform:rotateY(180deg);transform-style:preserve-3d;width:100px;font-size:20px">` +
 		`<span style="backface-visibility:hidden;color:red">XXXX <b>YYYY</b></span>` +
 		`</div></body></html>`
-	if n := countRed(renderToImage(t, src, 200, 100)); n != 0 {
+	if n := countRed(render.RenderPage(t, src, 200, 100)); n != 0 {
 		t.Errorf("%d red pixels: the hidden inline's text painted", n)
 	}
 }

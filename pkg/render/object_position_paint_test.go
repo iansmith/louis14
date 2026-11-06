@@ -32,7 +32,7 @@ func renderObjectPositionImg(t *testing.T, w, h int, c color.RGBA, decls string)
 	uri := splitPNGDataURI(t, w, h, c, c)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:40px; ` + decls + `}</style>
 <img src="` + uri + `">`
-	return renderColumnRuleHTML(t, src, 100, 100)
+	return RenderPage(t, src, 100, 100)
 }
 
 // "top right": a vertical keyword first is swapped onto the y axis

@@ -273,12 +273,21 @@ func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.Glyp
 // existing DrawContext. The DrawContext's image, translation, and
 // clipping state are used directly — no intermediate buffer is created.
 // Use this when the caller already owns the drawing surface (e.g.,
-// mancini interactor framework).
+// mancini interactor framework). The renderer tracks the draw context's
+// matrix from here on (trackDrawContext), reading its starting matrix once
+// with an affine probe: dc must not already be projective, and it panics if
+// it is.
 func NewRendererForDrawContext(dc textshape.DrawContext) *Renderer {
+	// dc is validated before any global state changes.
+	tracked := trackDrawContext(dc)
+	target, ok := dc.Image().(*image.RGBA)
+	if !ok {
+		panic("render: the host draw context's image is not an *image.RGBA")
+	}
 	text.SetTextLayout(dc.TextLayout())
 	return &Renderer{
-		dc:        dc,
-		target:    dc.Image().(*image.RGBA),
+		dc:        tracked,
+		target:    target,
 		fonts:     text.DefaultFontConfig(),
 		fontCache: make(map[fontCacheKey]int32),
 	}
@@ -531,6 +540,18 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.renderOnBase(boxes, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 }
 
+// paintPassDoneHook, when set, runs at the end of each paint pass
+// (endPaintPass). Tests set it to assert the renderer's passes left no
+// Push/Pop imbalance.
+var paintPassDoneHook func(*Renderer)
+
+// endPaintPass ends a paint pass (paintPassDoneHook).
+func (r *Renderer) endPaintPass() {
+	if paintPassDoneHook != nil {
+		paintPassDoneHook(r)
+	}
+}
+
 // beginPaintPass starts a paint pass over an embedder viewport of
 // viewportW×viewportH (0×0: the target is the viewport), dropping what the
 // previous pass kept. Callers defer closeTempFonts.
@@ -548,6 +569,7 @@ func (r *Renderer) beginPaintPass(viewportW, viewportH float64) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so only the document's own
 // backgrounds paint there. Each call is a new paint pass.
 func (r *Renderer) renderOnBase(boxes []*layout.Box, base color.RGBA) {
+	defer r.endPaintPass()
 	r.beginPaintPass(0, 0)
 	defer r.closeTempFonts()
 
@@ -569,6 +591,7 @@ func (r *Renderer) renderOnBase(boxes []*layout.Box, base color.RGBA) {
 // The viewport is also recorded so the view background
 // (ViewPainter.PaintRootElementGroup) covers only that rectangle.
 func (r *Renderer) RenderEmbedded(boxes []*layout.Box, viewportW, viewportH float64) {
+	defer r.endPaintPass()
 	r.beginPaintPass(viewportW, viewportH)
 	defer r.closeTempFonts()
 
@@ -1159,9 +1182,9 @@ type layerFilter struct {
 	filter  *filters.Filter
 	mapping filters.Mapping
 	// own is the layer's own projection, dm the draw context's device
-	// matrix (dmKnown false when it is projective).
-	own, dm geometry.Transform
-	dmKnown bool
+	// matrix (dmAffine false when it is projective).
+	own, dm  geometry.Transform
+	dmAffine bool
 }
 
 // prepareLayerFilter builds layer's filter graph and sizes its buffer. paints
@@ -1176,13 +1199,12 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	box := layer.linesOrBorderBox()
 
 	// The SaveLayer's CTM: the draw context's matrix (the ancestors') ∘ the
-	// layer's own projection. A projective draw context cannot be read back;
-	// the CTM is then taken relative to it, and the remainder is still drawn
-	// through it.
+	// layer's own projection. Under a projective draw context the CTM is
+	// taken relative to it, and the remainder is still drawn through it.
 	own := r.ownLayerProjection(layer)
-	dm, dmKnown := deviceTransformFromDC(r.dc)
+	dm, dmAffine := drawContextAffine(r.dc)
 	ctm := own
-	if dmKnown {
+	if dmAffine {
 		ctm = dm.Mul(own)
 	}
 
@@ -1252,7 +1274,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	switch {
 	case hasReferenceFilter(layer.Filters):
 		filter.EnsureRegion(refPixels.Union(paintExtent), false)
-	case dmKnown:
+	case dmAffine:
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
 			filter.EnsureRegion(paintExtent, true)
 			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
@@ -1263,7 +1285,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		// Fallback: render without filters to avoid OOM.
 		return nil, true
 	}
-	return &layerFilter{filter: filter, mapping: mapping, own: own, dm: dm, dmKnown: dmKnown}, true
+	return &layerFilter{filter: filter, mapping: mapping, own: own, dm: dm, dmAffine: dmAffine}, true
 }
 
 // paintLayerWithFilter paints layer through its filter node: the subtree is
@@ -1298,7 +1320,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
-	filter, mapping, own, dm, dmKnown := lf.filter, lf.mapping, lf.own, lf.dm, lf.dmKnown
+	filter, mapping, own, dm, dmAffine := lf.filter, lf.mapping, lf.own, lf.dm, lf.dmAffine
 	paramToLayer := mapping.ParamToLayer
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
@@ -1325,7 +1347,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	// Layer pixel (bx, by) is buffer pixel (0, 0); the content paints in
 	// its local space mapped into the layer.
 	r.dc.Translate(float64(-bx), float64(-by))
-	r.multiplyHomography(projectiveHomography(paramToLayer))
+	multiplyDCHomography(r.dc, projectiveHomography(paramToLayer))
 	// Ancestors' clips are not on the offscreen draw context, but they stay
 	// marked applied on the shared clip stack (LOU-700 ports per-chunk
 	// clip states).
@@ -1352,13 +1374,13 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	switch {
 	case !mapping.LayerToDev.IsIdentity():
 		onDC = own.Mul(paramToLayer.InverseOrIdentity())
-	case dmKnown:
+	case dmAffine:
 		onDC = dm.InverseOrIdentity()
 	}
 	if !clipsOnOutput {
 		// The own clips, if any, clipped the source.
 		r.dc.Push()
-		r.multiplyHomography(projectiveHomography(onDC))
+		multiplyDCHomography(r.dc, projectiveHomography(onDC))
 		r.dc.DrawImage(out, bx, by)
 		r.dc.Pop()
 		return
@@ -1367,7 +1389,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	// own ∘ fromLocal is exactly onDC there even when own is 3D.
 	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
 	r.inOwnSpaceAndClips(layer, own, func() {
-		r.multiplyHomography(projectiveHomography(fromLocal))
+		multiplyDCHomography(r.dc, projectiveHomography(fromLocal))
 		r.dc.DrawImage(out, bx, by)
 	})
 }
@@ -1376,7 +1398,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 // context and its own clips (CSS clip, clip-path) applied.
 func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform, paint func()) {
 	r.dc.Push()
-	r.multiplyHomography(projectiveHomography(own))
+	multiplyDCHomography(r.dc, projectiveHomography(own))
 	r.pushOwnClips(layer)
 	paint()
 	r.popOwnClips(layer)
@@ -1460,7 +1482,12 @@ func effectBufferUsable(w, h int) bool {
 // transform with no z terms, so products and inverses of it match those of the
 // homographies the draw context composes.
 func homographyTransform(m geometry.Transform) geometry.Transform {
-	h := projectiveHomography(m)
+	return transformFromHomography(projectiveHomography(m))
+}
+
+// transformFromHomography is a 3×3 row-major z=0 homography as a transform
+// with no z terms (projectiveHomography's inverse).
+func transformFromHomography(h [9]float64) geometry.Transform {
 	return geometry.TransformRowMajor(
 		h[0], h[1], 0, h[2],
 		h[3], h[4], 0, h[5],
@@ -1536,21 +1563,6 @@ func (r *Renderer) filterDecompositionCenter(ctm geometry.Transform) geometry.Po
 	return geometry.PointF{X: v[0] / v[3], Y: v[1] / v[3]}
 }
 
-// deviceTransformFromDC reconstructs the draw context's current matrix by
-// probing TransformPoint (the DrawContext interface does not expose it). It
-// reports false when the matrix is projective, which three probes cannot
-// recover.
-func deviceTransformFromDC(dc textshape.DrawContext) (geometry.Transform, bool) {
-	ox, oy := dc.TransformPoint(0, 0)
-	xx, yx := dc.TransformPoint(1, 0)
-	xy, yy := dc.TransformPoint(0, 1)
-	m := geometry.TransformAffine(xx-ox, yx-oy, xy-ox, yy-oy, ox, oy)
-	px, py := dc.TransformPoint(1, 1)
-	const eps = 1e-6
-	affine := math.Abs(px-(xx+xy-ox)) < eps && math.Abs(py-(yx+yy-oy)) < eps
-	return m, affine
-}
-
 // mapRectToLayer maps r's corners through t (with the perspective divide)
 // and returns their bounds. It reports false when a corner maps behind the
 // eye (w ≤ 0). The divide is done in float64; geometry.Transform.MapPoint
@@ -1612,12 +1624,9 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// transformed bounds is read from the target, filtered in that space and
 	// drawn back through the transform. The CTM splits as for a filter
 	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
-	// CTM's scale), which LayerToDev maps onto the target. A projective draw
-	// context cannot be read back; its backdrop is then sampled untransformed.
-	ctm, affine := deviceTransformFromDC(r.dc)
-	if !affine {
-		ctm = geometry.Transform{}
-	}
+	// CTM's scale), which LayerToDev maps onto the target. Under a projective
+	// draw context the backdrop is sampled untransformed.
+	ctm, _ := drawContextAffine(r.dc) // the identity when projective
 
 	// Element's border-box region, pixel-snapped: Blink's backdrop-filter
 	// bounds are the reference box's PixelSnappedContouredBorder
@@ -1700,7 +1709,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// filtered backdrop to it anti-aliased (viz-side, not in Blink's tree).
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	if !mapping.ParamToLayer.IsIdentity() {
-		r.multiplyHomography(projectiveHomography(mapping.ParamToLayer.InverseOrIdentity()))
+		multiplyDCHomography(r.dc, projectiveHomography(mapping.ParamToLayer.InverseOrIdentity()))
 	}
 	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
@@ -1963,14 +1972,15 @@ func (r *Renderer) paintIntoEffectLayer(paint func()) (buf, parent *image.RGBA, 
 	if clip.Empty() {
 		return nil, parent, true
 	}
-	// A projective draw context cannot be read back (deviceTransformFromDC);
-	// its affine part is used.
-	dm, _ := deviceTransformFromDC(r.dc)
+	// The buffer is painted under the draw context's whole matrix, a
+	// projective one included; the content's near-plane clipping happens as
+	// it paints.
+	dm := drawContextTransform(r.dc)
 	buf = image.NewRGBA(clip)
 	origDC, origTarget := r.dc, r.target
 	r.dc = origDC.NewChildContext(buf)
 	r.target = buf
-	r.multiplyHomography(projectiveHomography(dm))
+	multiplyDCHomography(r.dc, projectiveHomography(dm))
 	paint()
 	r.dc, r.target = origDC, origTarget
 	return buf, parent, true
@@ -2176,22 +2186,22 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	}
 	h := projectiveHomography(r.layerProjection(layer, node))
 	singular := !layer.Box.Preserves3D() && isSingularProjection(h[0], h[3], h[1], h[4])
-	if !r.multiplyHomography(h) {
+	if !multiplyDCHomography(r.dc, h) {
 		return false
 	}
 	return singular
 }
 
-// multiplyHomography composes a 3×3 row-major homography onto the draw
-// context: as an affine matrix when its bottom row is [0 0 1] (reported
-// true), else in projective mode with the perspective divide.
-func (r *Renderer) multiplyHomography(h [9]float64) (affine bool) {
+// multiplyDCHomography composes a 3×3 row-major homography onto dc: as an
+// affine matrix when its bottom row is [0 0 1] (reported true), else in
+// projective mode with the perspective divide.
+func multiplyDCHomography(dc textshape.DrawContext, h [9]float64) (affine bool) {
 	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
-		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
 		return false
 	}
 	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
-	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
+	dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
 	return true
 }
 

@@ -75,7 +75,7 @@ type SVGResourceFilter struct {
 	// from the DOM, so its
 	// color-interpolation-filters is its presentation attribute
 	// (Attribute), else auto (ColorInterpolationForElement,
-	// svg_filter_builder.cc:136-170 @
+	// svg_filter_builder.cc:136-155 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	NoLayoutObject bool
 

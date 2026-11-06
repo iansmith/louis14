@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
-	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	"louis14/pkg/render"
 )
 
 // LOU-742 (filter-effects worklist B7): an element with a current or
@@ -51,7 +51,7 @@ func TestBackdropRoot_Animation(t *testing.T) {
 		{"active transform at none", "from{transform:none} to{transform:none}", "k 10s", white},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, animatedBackdropRootPage(tc.keyframes, tc.animation), 120, 120)
+			img := render.RenderPage(t, animatedBackdropRootPage(tc.keyframes, tc.animation), 120, 120)
 			wantPixel(t, img, 50, 50, tc.want, "the box's backdrop, inverted")
 		})
 	}
@@ -73,7 +73,7 @@ func TestStackingContext_CurrentAnimation(t *testing.T) {
 		{"-webkit-filter", "from{-webkit-filter:none} to{-webkit-filter:none}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}
+			img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}
 @keyframes k {`+tc.keyframes+`}
 div{width:100px;height:100px}</style>
 <div style="background:green;animation:k 10s"><div style="position:relative;z-index:-1;background:red"></div></div>`, 120, 120)
@@ -90,13 +90,10 @@ div{width:100px;height:100px}</style>
 // the fragment paints inside the span's own paint group, so this checks the
 // fragment itself.
 func TestStackingContext_AnimatedSpanBackgroundFragmentIsNoStackingContext(t *testing.T) {
-	doc, err := html.Parse(`<!DOCTYPE html><style>@keyframes k {0%{opacity:1} 100%{opacity:1}}</style>
-<span style="position:relative;background:grey;animation:k 1s -2s forwards">WWW</span>`)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	_, roots := render.RenderDocument(t, render.ParsePage(t, `<!DOCTYPE html><style>@keyframes k {0%{opacity:1} 100%{opacity:1}}</style>
+<span style="position:relative;background:grey;animation:k 1s -2s forwards">WWW</span>`), 200, 100)
 	var bg *layout.Box
-	for _, root := range layout.NewLayoutEngine(200, 100).Layout(doc) {
+	for _, root := range roots {
 		if bg = findSpanBackgroundFragment(root); bg != nil {
 			break
 		}

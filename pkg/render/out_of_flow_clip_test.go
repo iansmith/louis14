@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // TestOutOfFlowEscapesStackingContextOverflowClip — an absolutely positioned
 // box whose containing block is outside an opacity layer's overflow clip is
@@ -16,7 +20,7 @@ func TestOutOfFlowEscapesStackingContextOverflowClip(t *testing.T) {
 		`<div style="height:0;overflow:hidden;opacity:0.5;margin:50px">` +
 		`<div style="width:100px;height:100px;position:absolute;background:rgb(0,128,0)"></div>` +
 		`</div></div></body></html>`
-	img := renderToImage(t, page, 300, 300)
+	img := render.RenderPage(t, page, 300, 300)
 	sampleColorClose(t, img, 100, 100, 128, 192, 128, 2, "absolute box at half opacity")
 }
 
@@ -32,7 +36,7 @@ func TestOutOfFlowClipLift_KeepsOtherContentClipped(t *testing.T) {
 		`<div style="width:100px;height:100px;position:absolute;background:rgb(0,128,0)"></div>` +
 		`<div style="position:relative;z-index:1;margin-left:150px;width:100px;height:100px;background:blue"></div>` +
 		`</div></div></body></html>`
-	img := renderToImage(t, later, 400, 400)
+	img := render.RenderPage(t, later, 400, 400)
 	sampleColorClose(t, img, 100, 100, 128, 192, 128, 2, "lifted absolute box")
 	sampleColorClose(t, img, 250, 100, 255, 255, 255, 0, "later positive z-index child stays clipped")
 
@@ -41,6 +45,6 @@ func TestOutOfFlowClipLift_KeepsOtherContentClipped(t *testing.T) {
 		`<div style="position:relative;height:0;overflow:hidden;opacity:0.5;margin:50px">` +
 		`<div style="width:100px;height:100px;position:absolute;background:rgb(0,128,0)"></div>` +
 		`</div></body></html>`
-	img = renderToImage(t, contained, 300, 300)
+	img = render.RenderPage(t, contained, 300, 300)
 	sampleColorClose(t, img, 100, 100, 255, 255, 255, 0, "contained absolute box stays clipped")
 }

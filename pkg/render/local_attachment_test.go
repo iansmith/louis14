@@ -13,10 +13,7 @@ import (
 // requested scroll offset (as Element.scrollTo would) and renders it.
 func renderScrolled(t *testing.T, htmlContent string, offset html.ScrollOffset) *image.RGBA {
 	t.Helper()
-	doc, err := html.Parse(htmlContent)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	doc := render.ParsePage(t, htmlContent)
 	var find func(n *html.Node)
 	find = func(n *html.Node) {
 		if id, ok := n.GetAttribute("id"); ok && id == "s" {
@@ -27,7 +24,7 @@ func renderScrolled(t *testing.T, htmlContent string, offset html.ScrollOffset) 
 		}
 	}
 	find(doc.Root)
-	img, _ := render.RenderDocument(doc, 200, 200)
+	img, _ := render.RenderDocument(t, doc, 200, 200)
 	return img
 }
 

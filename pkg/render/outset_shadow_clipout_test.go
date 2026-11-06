@@ -2,6 +2,8 @@ package render_test
 
 import (
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestOutsetBoxShadow_NoLeakInsideBorderBox is the reproduction for the
@@ -26,7 +28,7 @@ func TestOutsetBoxShadow_NoLeakInsideBorderBox(t *testing.T) {
 		`box-shadow:20px 20px 10px 0 #888888"></div>` +
 		`</body></html>`
 
-	img := renderToImage(t, htmlContent, 220, 220)
+	img := render.RenderPage(t, htmlContent, 220, 220)
 
 	// Scan the border-box interior, inset by 2px on every side to skip the
 	// boundary anti-aliasing at the box edges. Every interior pixel must be

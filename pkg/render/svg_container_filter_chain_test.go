@@ -20,7 +20,7 @@ func TestSVGContainer_ShorthandFilter(t *testing.T) {
 		{"transform", `transform="translate(50, 0)" filter="drop-shadow(-50px 0 green)"`, `width="50" height="100"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+			img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg><rect width="100" height="100" fill="red"/>
 <g `+c.group+`><rect `+c.rect+` fill="green"/></g></svg>`, 120, 120)
 			for _, x := range []int{25, 75} {
@@ -34,7 +34,7 @@ func TestSVGContainer_ShorthandFilter(t *testing.T) {
 // transformed frame, where its children paint: under translate(50, 0) the
 // group's rect at user x 0..50 is at device x 50..100, inside the region.
 func TestSVGContainer_URLFilterUnderGroupTransform(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg><filter id="f" color-interpolation-filters="sRGB"><feOffset dx="0" dy="0"/></filter>
 <rect x="50" width="50" height="100" fill="red"/>
 <g transform="translate(50, 0)" filter="url(#f)"><rect width="50" height="100" fill="green"/></g></svg>`, 120, 120)
@@ -48,7 +48,7 @@ func TestSVGContainer_URLFilterUnderGroupTransform(t *testing.T) {
 // flood's (0, 0, 10, 10) subregion is at the <svg>'s origin, not at the
 // group's reference box.
 func TestSVGContainer_ChainURLUserSpaceOnUseAnchorsAtUserOrigin(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" color-interpolation-filters="sRGB"><feFlood flood-color="green" x="0" y="0" width="10" height="10"/></filter>
 <g style="filter:url(#f) blur(0px)"><rect x="50" y="50" width="20" height="20" fill="red"/></g></svg>`, 100, 100)
@@ -60,7 +60,7 @@ func TestSVGContainer_ChainURLUserSpaceOnUseAnchorsAtUserOrigin(t *testing.T) {
 // buffer, so its viewport clip is translated with the buffer: with the <svg>
 // at (8, 200) on the page, the child's rect still shows.
 func TestSVGContainer_NestedFilterOffPageOrigin(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><div style="height:192px"></div>
+	img := render.RenderPage(t, `<!DOCTYPE html><div style="height:192px"></div>
 <svg width="100" height="100" style="display:block">
 <filter id="f" color-interpolation-filters="sRGB"><feOffset dx="0" dy="0"/></filter>
 <g style="filter:opacity(1)"><rect width="100" height="100" fill="green" filter="url(#f)"/></g></svg>`, 140, 320)
@@ -73,7 +73,7 @@ func TestSVGContainer_NestedFilterOffPageOrigin(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a group's drop-shadow of a
 // horizontal <line> paints the shadow.
 func TestSVGContainer_ChainOnHorizontalLine(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><g style="filter:drop-shadow(0 20px 0 green)">
 <line x1="10" y1="20" x2="90" y2="20" stroke="green" stroke-width="10"/></g></svg>`, 100, 100)
 	wantPixel(t, img, 50, 20, canvasGreen, "the line")
@@ -85,7 +85,7 @@ func TestSVGContainer_ChainOnHorizontalLine(t *testing.T) {
 // the userSpaceOnUse flood covers the filter region around a horizontal
 // <line>.
 func TestSVGContainer_ChainURLWithEmptyFillBox(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
 <g style="filter:url(#f) blur(0px)"><line x1="10" y1="20" x2="90" y2="20" stroke="red" stroke-width="10"/></g></svg>`, 100, 100)
@@ -97,7 +97,7 @@ func TestSVGContainer_ChainURLWithEmptyFillBox(t *testing.T) {
 // shape's does (resolveSVGFilterValue).
 func TestSVGContainer_ExternalURLFilter(t *testing.T) {
 	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="red"/></filter>
 <g filter="url(other.svg#f)"><rect x="20" y="20" width="60" height="60" fill="blue"/></g></svg>`, 100, 100,

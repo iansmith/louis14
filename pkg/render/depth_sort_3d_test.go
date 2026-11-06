@@ -3,6 +3,8 @@ package render_test
 import (
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 func isGreen(c color.RGBA) bool { return c.G > 100 && c.R < 60 && c.B < 60 }
@@ -20,7 +22,7 @@ func TestDepthSort3D_CloserPlanePaintsOnTop(t *testing.T) {
 		`<div style="position:absolute;width:100px;height:100px;background:lime;transform:translateZ(10px)"></div>` +
 		`<div style="position:absolute;width:100px;height:100px;background:red;transform:translateZ(0)"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	if c := img.RGBAAt(50, 50); !isGreen(c) {
 		t.Errorf("pixel (50,50) = %v, want the nearer lime plane", c)
 	}
@@ -36,7 +38,7 @@ func TestDepthSort3D_IntersectingPlanesSplit(t *testing.T) {
 		`<div style="position:absolute;width:200px;height:100px;background:lime;transform:rotateY(30deg)"></div>` +
 		`<div style="position:absolute;width:200px;height:100px;background:blue;transform:rotateY(-30deg)"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, src, 300, 200)
+	img := render.RenderPage(t, src, 300, 200)
 	// rotateY(30deg) brings the left edge toward the viewer (+z), so the
 	// lime plane is in front on the left and the blue one on the right.
 	left, right := img.RGBAAt(40, 50), img.RGBAAt(160, 50)
@@ -58,7 +60,7 @@ func TestDepthSort3D_PlaneBehindCameraIsDropped(t *testing.T) {
 		`<div style="position:absolute;width:100px;height:100px;background:red;transform:translateZ(500px)"></div>` +
 		`<div style="position:absolute;width:100px;height:100px;background:lime"></div>` +
 		`</div></div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	if c := img.RGBAAt(50, 50); !isGreen(c) {
 		t.Errorf("pixel (50,50) = %v, want lime with the behind-camera plane dropped", c)
 	}
@@ -74,7 +76,7 @@ func TestDepthSort3D_RootBehindCameraIsDropped(t *testing.T) {
 		`<div style="transform-style:preserve-3d;transform:translateZ(500px);width:100px;height:100px;position:relative;background:red">` +
 		`<div style="position:absolute;width:100px;height:100px;background:lime;transform:translateZ(-450px)"></div>` +
 		`</div></div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	if c := img.RGBAAt(50, 50); !isGreen(c) {
 		t.Errorf("pixel (50,50) = %v, want the lime participant in front of the camera", c)
 	}
