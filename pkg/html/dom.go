@@ -811,9 +811,18 @@ func IsReplacedElementTag(tag string) bool {
 // than a LayoutImage (HTMLImageElement::CreateLayoutObject,
 // html_image_element.cc:517-543 @ d4ecdfed88f962439247c2ad36b8fe47805b1520),
 // so it is an ordinary block container holding its alt text.
+//
+// An HTML <audio> is replaced too (a LayoutMedia); it is matched by node so
+// an <audio> in another namespace is not.
 func IsReplacedElement(n *Node) bool {
-	return IsReplacedElementTag(n.TagName) &&
+	return (IsReplacedElementTag(n.TagName) || n.HasHTMLTagName("audio")) &&
 		!(n.TagName == "img" && n.LayoutDisposition == LayoutDispositionFallbackContent)
+}
+
+// HasHTMLTagName reports whether n is the HTML element named tag, in the
+// HTML namespace (Node::HasTagName with an HTML qualified name).
+func (n *Node) HasHTMLTagName(tag string) bool {
+	return n != nil && n.Type == ElementNode && n.TagName == tag && n.NamespaceURI() == XHTMLNamespaceURI
 }
 
 // ImageSourceURL returns the URL an element's ImageLoader loads: <img> src,
