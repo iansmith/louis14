@@ -89,17 +89,17 @@ func TestFromFloat64Round(t *testing.T) {
 func TestFromFloat64CeilFloor(t *testing.T) {
 	// 1/64 = 0.015625; values just above/below quanta.
 	cases := []struct {
-		v          float64
-		wantCeil   int32
-		wantFloor  int32
-		wantRound  int32
+		v         float64
+		wantCeil  int32
+		wantFloor int32
+		wantRound int32
 	}{
 		{0.0, 0, 0, 0},
-		{0.01, 1, 0, 1},     // 0.01 * 64 = 0.64 → ceil=1, floor=0, round=1
-		{0.005, 1, 0, 0},    // 0.005 * 64 = 0.32 → ceil=1, floor=0, round=0
-		{-0.01, 0, -1, -1},  // -0.01 * 64 = -0.64 → ceil=0, floor=-1, round=-1
+		{0.01, 1, 0, 1},    // 0.01 * 64 = 0.64 → ceil=1, floor=0, round=1
+		{0.005, 1, 0, 0},   // 0.005 * 64 = 0.32 → ceil=1, floor=0, round=0
+		{-0.01, 0, -1, -1}, // -0.01 * 64 = -0.64 → ceil=0, floor=-1, round=-1
 		{1.0, 64, 64, 64},
-		{1.5, 96, 96, 96},   // exact-on-quantum
+		{1.5, 96, 96, 96},     // exact-on-quantum
 		{1.50001, 97, 96, 96}, // 1.50001 * 64 = 96.0006 → ceil=97, floor=96, round=96
 	}
 	for _, c := range cases {
@@ -163,20 +163,22 @@ func TestFloat64RoundTrip(t *testing.T) {
 
 func TestRoundFloorCeil(t *testing.T) {
 	cases := []struct {
-		raw                 int32
+		raw                            int32
 		wantRound, wantFloor, wantCeil int32
 	}{
 		{0, 0, 0, 0},
-		{32, 1, 0, 1},     // 0.5 → round=1, floor=0, ceil=1
-		{31, 0, 0, 1},     // 0.484 → round=0, floor=0, ceil=1
-		{33, 1, 0, 1},     // 0.515 → round=1
+		{32, 1, 0, 1}, // 0.5 → round=1, floor=0, ceil=1
+		{31, 0, 0, 1}, // 0.484 → round=0, floor=0, ceil=1
+		{33, 1, 0, 1}, // 0.515 → round=1
 		{64, 1, 1, 1},
-		{96, 2, 1, 2},     // 1.5 → round=2, floor=1, ceil=2
-		{-32, -1, -1, 0},  // -0.5 → round=-1 (half-away-from-zero), floor=-1, ceil=0
-		{-31, 0, -1, 0},   // -0.484 → round=0
-		{-33, -1, -1, 0},  // -0.515 → round=-1
+		{96, 2, 1, 2},    // 1.5 → round=2, floor=1, ceil=2
+		{-32, 0, -1, 0},  // -0.5 → round=0 (halves toward +inf, layout_unit.h:294-297), floor=-1, ceil=0
+		{-31, 0, -1, 0},  // -0.484 → round=0
+		{-33, -1, -1, 0}, // -0.515 → round=-1
 		{-64, -1, -1, -1},
-		{-96, -2, -2, -1}, // -1.5 → round=-2 (half-away), floor=-2, ceil=-1
+		{-96, -1, -2, -1}, // -1.5 → round=-1 (halves toward +inf), floor=-2, ceil=-1
+		{-48, -1, -1, 0},  // -0.75 → round=-1
+		{-16, 0, -1, 0},   // -0.25 → round=0
 	}
 	for _, c := range cases {
 		u := LayoutUnit{raw: c.raw}
@@ -367,7 +369,7 @@ func TestFromFloat64Trunc(t *testing.T) {
 		{0.0, 0},
 		{1.0, 64},
 		{-1.0, -64},
-		{0.5, 32},        // 0.5 * 64 = 32 (exact)
+		{0.5, 32},         // 0.5 * 64 = 32 (exact)
 		{50.5, 50.5 * 64}, // 3232 raw
 		// 0.498 px → raw 0.498*64 = 31.872 → trunc=31 (Round would give 32).
 		{0.498, 31},
@@ -562,7 +564,10 @@ func TestSnapSizeToPixelAllowingZero(t *testing.T) {
 		{"half-px origin, half-px size — ZERO, no clause", FromFloat64Round(0.5), FromFloat64Round(0.5), 0},
 		{"half-px origin, 0.4px size — ZERO, no clause", FromFloat64Round(0.4), FromFloat64Round(0.5), 0},
 		{"int origin, 0.4px size — ZERO, no clause", FromFloat64Round(0.4), New(0), 0},
-		{"neg origin, neg 0.4px size — ZERO, no clause", FromFloat64Round(-0.4), FromFloat64Round(-0.5), 0},
+		// (-0.5 + -0.40625).Round() - (-0.5).Round() = -1 - 0: Round takes
+		// halves toward +infinity (layout_unit.h:294-297, 817 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		{"neg origin, neg 0.4px size", FromFloat64Round(-0.4), FromFloat64Round(-0.5), -1},
 
 		// Sub-threshold cases that already returned 0 in SnapSizeToPixel.
 		{"raw=4 sub-threshold, half-px origin", LayoutUnit{raw: 4}, FromFloat64Round(0.5), 0},

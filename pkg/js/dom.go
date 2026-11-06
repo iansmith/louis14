@@ -928,10 +928,19 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return goja.Undefined()
 		})
 
-	case "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
-		// Layout-flush idiom: scripts access these to force a synchronous layout.
-		// We return 0; the actual value is not used by tests that call these.
-		return vm.ToValue(0)
+	case "offsetParent", "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
+		// HTMLElement attributes (html_element.idl): undefined on SVG and
+		// MathML elements.
+		if e.node.NamespaceURI() != html.XHTMLNamespaceURI {
+			return goja.Undefined()
+		}
+		if key != "offsetParent" {
+			return vm.ToValue(e.offsetInt(key))
+		}
+		if p := e.offsetParentNode(); p != nil {
+			return e.ctx.elementProxy(p)
+		}
+		return goja.Null()
 
 	case "focus":
 		// HTMLElement.focus(): make this element the document's focused
