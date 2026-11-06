@@ -140,41 +140,47 @@ func (es *ExclusionSpace) InitialLetterClearanceOffset(physicalSide css.FloatTyp
 // Content should be placed starting at startOffset and ending at
 // (containerInlineSize - endOffset).
 func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent, containerInlineSize float64) (startOffset, endOffset float64) {
-	if es == nil {
-		return 0, 0
+	startEdge, hasStart, endEdge, hasEnd := es.exclusionEdges(blockOffset, blockExtent)
+	if hasStart {
+		startOffset = max(0, startEdge)
 	}
+	if hasEnd {
+		// The consumed space from the inline-end edge; stacked end floats
+		// move endEdge inward, so this accumulates.
+		endOffset = max(0, containerInlineSize-endEdge)
+	}
+	return startOffset, endOffset
+}
 
+// exclusionEdges returns, in BFC inline coordinates and unclamped, the
+// inline-end edge of the start-side exclusions and the inline-start edge of
+// the end-side exclusions that overlap the given block range, with whether
+// each side has one. An exclusion past the BFC container's edge still
+// counts. When blockExtent is 0, the range is the single offset blockOffset.
+func (es *ExclusionSpace) exclusionEdges(blockOffset, blockExtent float64) (startEdge float64, hasStart bool, endEdge float64, hasEnd bool) {
+	if es == nil {
+		return
+	}
 	for _, e := range es.exclusions {
-		// Check if this exclusion overlaps the given block range.
-		// When blockExtent is 0, check if blockOffset falls within the exclusion.
 		if blockExtent > 0 {
 			if blockOffset >= e.BlockEnd() || blockOffset+blockExtent <= e.BlockOffset {
 				continue
 			}
-		} else {
-			if blockOffset < e.BlockOffset || blockOffset >= e.BlockEnd() {
-				continue
-			}
+		} else if blockOffset < e.BlockOffset || blockOffset >= e.BlockEnd() {
+			continue
 		}
-
-		if e.Side == ExclusionInlineStart {
-			// Start-side float: accumulate inline offset from start.
-			endEdge := e.InlineOffset + e.InlineSize
-			if endEdge > startOffset {
-				startOffset = endEdge
+		switch e.Side {
+		case ExclusionInlineStart:
+			if edge := e.InlineOffset + e.InlineSize; !hasStart || edge > startEdge {
+				startEdge, hasStart = edge, true
 			}
-		} else if e.Side == ExclusionInlineEnd {
-			// End-side float: the consumed space from the inline-end edge
-			// is (containerInlineSize - e.InlineOffset). This correctly
-			// accumulates when multiple right-floats stack inward.
-			consumed := containerInlineSize - e.InlineOffset
-			if consumed > endOffset {
-				endOffset = consumed
+		case ExclusionInlineEnd:
+			if !hasEnd || e.InlineOffset < endEdge {
+				endEdge, hasEnd = e.InlineOffset, true
 			}
 		}
 	}
-
-	return startOffset, endOffset
+	return
 }
 
 // ClearanceOffset returns the block position needed to clear past floats
@@ -234,33 +240,25 @@ func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize,
 // at [bfcInlineOrigin, bfcInlineOrigin+contentInlineSize] in BFC space.
 //
 // This is the BFC-to-local conversion companion to FindAvailableInlineSize.
-// For BFC roots (bfcInlineOrigin=0, bfcContainerInlineSize=contentInlineSize)
-// it returns the same values as a direct FindAvailableInlineSize call.
-func (es *ExclusionSpace) FindLocalFloatOffsets(blockOffset, blockExtent, bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize float64) (localStart, localEnd float64) {
-	bfcStart, bfcEnd := es.FindAvailableInlineSize(blockOffset, blockExtent, bfcContainerInlineSize)
-
-	localStart = bfcStart - bfcInlineOrigin
-	if localStart < 0 {
-		localStart = 0
-	}
-
-	// Only end-side floats narrow the content box from its end. Without
-	// one, the BFC container's own end edge is not an exclusion: a content
-	// box that overflows the BFC keeps its whole inline size, as Blink's
-	// layout opportunity spans the child available inline size
+// For BFC roots (bfcInlineOrigin=0, content inline size = the BFC
+// container's) it returns the same values as a direct
+// FindAvailableInlineSize call. The BFC container's inline size does not
+// bound the result, so its parameter is unused.
+func (es *ExclusionSpace) FindLocalFloatOffsets(blockOffset, blockExtent, bfcInlineOrigin, contentInlineSize, _ float64) (localStart, localEnd float64) {
+	// Only exclusions narrow the content box, on either side. The BFC
+	// container's own edges are not exclusions: a content box that
+	// overflows the BFC, or starts before it, keeps its whole inline size,
+	// as Blink's layout opportunity spans the child available inline size
 	// (ExclusionSpace::FindLayoutOpportunity, layout/exclusions/
 	// exclusion_space.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if bfcEnd <= 0 {
-		return localStart, 0
+	startEdge, hasStart, endEdge, hasEnd := es.exclusionEdges(blockOffset, blockExtent)
+	if hasStart {
+		localStart = max(0, startEdge-bfcInlineOrigin)
 	}
-	rightFloatLeftEdge := bfcContainerInlineSize - bfcEnd
-	contentRightEdge := bfcInlineOrigin + contentInlineSize
-	localEnd = contentRightEdge - rightFloatLeftEdge
-	if localEnd < 0 {
-		localEnd = 0
+	if hasEnd {
+		localEnd = max(0, bfcInlineOrigin+contentInlineSize-endEdge)
 	}
-
-	return
+	return localStart, localEnd
 }
 
 // FindFloatPositionLocal finds the block offset where a float of the given
