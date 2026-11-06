@@ -5,6 +5,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/layout/svg"
 )
 
 // Box represents a CSS box in the fragment tree.
@@ -28,7 +29,12 @@ type Box struct {
 	Scrollbar css.BoxEdge
 
 	Children []*Box
-	Parent   *Box
+
+	// TreeScopeSVGFilters, on the root box only, holds the document's SVG
+	// <filter> elements (treeScopeSVGFilters), for url() references the
+	// laid-out <svg> roots do not register.
+	TreeScopeSVGFilters *svg.SVGResourceRegistry
+	Parent              *Box
 
 	Position css.PositionType
 	ZIndex   int

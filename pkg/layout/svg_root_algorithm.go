@@ -79,17 +79,7 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 	// each SVGShape its computed style by looking up the cascade map
 	// supplied on LayoutContext (LayoutEngine.Layout populates this
 	// with the same per-node styles ApplyStylesToDocument produced).
-	styles := sra.ctx.ComputedStyles
-	styleResolver := func(elt svg.ElementAdapter) *css.Style {
-		if styles == nil {
-			return nil
-		}
-		if adapter, ok := elt.(svgElementAdapter); ok && adapter.node != nil {
-			return styles[adapter.node]
-		}
-		return nil
-	}
-	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize, styleResolver)
+	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize, computedStyleResolver(sra.ctx.ComputedStyles))
 
 	// Step 4: run the SVG layout pass. Phase 1: this is a recursive
 	// no-op (every node returns an empty SVGLayoutResult), but wiring
@@ -132,6 +122,47 @@ func IsInlineSVG(node *LayoutInputNode) bool {
 // stateless — every call walks the underlying DOM directly.
 type svgElementAdapter struct {
 	node *html.Node
+}
+
+// computedStyleResolver resolves an SVG element's style from the
+// document's computed styles.
+func computedStyleResolver(styles map[*html.Node]*css.Style) svg.StyleResolver {
+	return func(elt svg.ElementAdapter) *css.Style {
+		if styles == nil {
+			return nil
+		}
+		if adapter, ok := elt.(svgElementAdapter); ok && adapter.node != nil {
+			return styles[adapter.node]
+		}
+		return nil
+	}
+}
+
+// treeScopeSVGFilters registers every SVG <filter> element under root, in
+// tree order, marked NoLayoutObject. A url() filter reference resolves to
+// the <filter> element with that id in the tree scope, laid out or not
+// (FilterEffectBuilder::BuildReferenceFilter, core/paint/
+// filter_effect_builder.cc:514-521; LocalSVGResource, core/svg/
+// svg_resource.cc:196 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a
+// <filter> in a display:none <svg>, which no SVGRoot registers, still
+// resolves.
+func treeScopeSVGFilters(root *html.Node, styles map[*html.Node]*css.Style) *svg.SVGResourceRegistry {
+	reg := svg.NewSVGResourceRegistry()
+	resolve := computedStyleResolver(styles)
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.TagName == "filter" && n.NamespaceURI() == html.SVGNamespaceURI {
+			if f := svg.NewSVGResourceFilter(svgElementAdapter{node: n}, svg.SVGLengthContext{}, resolve); f != nil {
+				f.NoLayoutObject = true
+				reg.RegisterFilter(f)
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	return reg
 }
 
 func newSVGElementAdapter(n *html.Node) svg.ElementAdapter {

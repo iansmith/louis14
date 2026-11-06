@@ -777,6 +777,13 @@ func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
 	for _, b := range boxes {
 		mergeSVGResourcesFromBox(b, merged)
 	}
+	// Then the document's other <filter> elements: first-wins keeps a
+	// laid-out root's own, so these fill only ids no root defines.
+	for _, b := range boxes {
+		if b.TreeScopeSVGFilters != nil {
+			mergeSVGRegistries(merged, b.TreeScopeSVGFilters)
+		}
+	}
 	return merged
 }
 
