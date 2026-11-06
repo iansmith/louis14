@@ -609,7 +609,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 				ry, _ = strconv.ParseFloat(parts[1], 64)
 			}
 		}
-		return NewFEMorphology(in, b.space, op, int(rx), int(ry))
+		return NewFEMorphology(in, b.space, op, rx, ry)
 	case "feturbulence":
 		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
 		// image. `in` is ignored (this is a generator). Mirrors Blink
