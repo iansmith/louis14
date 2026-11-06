@@ -211,3 +211,11 @@ func (t AffineTransform) MapRect(r RectF) RectF {
 func AffineTransformFromTransform(t Transform) AffineTransform {
 	return AffineTransform{A: t.Rc(0, 0), B: t.Rc(1, 0), C: t.Rc(0, 1), D: t.Rc(1, 1), E: t.Rc(0, 3), F: t.Rc(1, 3)}
 }
+
+// ToTransform returns a as a 4×4 transform. Mirrors
+// blink::AffineTransform::ToTransform
+// (platform/transforms/affine_transform.cc:232-234 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (a AffineTransform) ToTransform() Transform {
+	return TransformAffine(a.A, a.B, a.C, a.D, a.E, a.F)
+}

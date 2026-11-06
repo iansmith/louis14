@@ -1179,7 +1179,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// layer's own projection. Under a projective draw context the CTM is
 	// taken relative to it, and the remainder is still drawn through it.
 	own := r.ownLayerProjection(layer)
-	dm, dmAffine := deviceTransformFromDC(r.dc)
+	dm, dmAffine, _ := deviceTransformAt(r.dc, unitProbe)
 	ctm := own
 	if dmAffine {
 		ctm = dm.Mul(own)
@@ -1320,7 +1320,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	// Layer pixel (bx, by) is buffer pixel (0, 0); the content paints in
 	// its local space mapped into the layer.
 	r.dc.Translate(float64(-bx), float64(-by))
-	r.multiplyHomography(projectiveHomography(paramToLayer))
+	multiplyDCHomography(r.dc, projectiveHomography(paramToLayer))
 	// Ancestors' clips are not on the offscreen draw context, but they stay
 	// marked applied on the shared clip stack (LOU-700 ports per-chunk
 	// clip states).
@@ -1353,7 +1353,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	if !clipsOnOutput {
 		// The own clips, if any, clipped the source.
 		r.dc.Push()
-		r.multiplyHomography(projectiveHomography(onDC))
+		multiplyDCHomography(r.dc, projectiveHomography(onDC))
 		r.dc.DrawImage(out, bx, by)
 		r.dc.Pop()
 		return
@@ -1362,7 +1362,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	// own ∘ fromLocal is exactly onDC there even when own is 3D.
 	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
 	r.inOwnSpaceAndClips(layer, own, func() {
-		r.multiplyHomography(projectiveHomography(fromLocal))
+		multiplyDCHomography(r.dc, projectiveHomography(fromLocal))
 		r.dc.DrawImage(out, bx, by)
 	})
 }
@@ -1371,7 +1371,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 // context and its own clips (CSS clip, clip-path) applied.
 func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform, paint func()) {
 	r.dc.Push()
-	r.multiplyHomography(projectiveHomography(own))
+	multiplyDCHomography(r.dc, projectiveHomography(own))
 	r.pushOwnClips(layer)
 	paint()
 	r.popOwnClips(layer)
@@ -1521,37 +1521,81 @@ func (r *Renderer) filterDecompositionCenter(ctm geometry.Transform) geometry.Po
 	return geometry.PointF{X: v[0] / v[3], Y: v[1] / v[3]}
 }
 
-// deviceTransformFromDC reconstructs the draw context's current matrix by
-// probing TransformPoint (the DrawContext interface does not expose it): the
-// images of the unit square's corners fix it, a homography being determined
-// by four points (Heckbert's square-to-quad mapping). It reports whether the
-// matrix is affine; a projective one is returned as its z=0 homography
-// (homographyTransform's layout).
-func deviceTransformFromDC(dc textshape.DrawContext) (geometry.Transform, bool) {
-	x0, y0 := dc.TransformPoint(0, 0)
-	x1, y1 := dc.TransformPoint(1, 0)
-	x2, y2 := dc.TransformPoint(1, 1)
-	x3, y3 := dc.TransformPoint(0, 1)
-	const eps = 1e-6
-	dx3, dy3 := x0-x1+x2-x3, y0-y1+y2-y3
-	if math.Abs(dx3) < eps && math.Abs(dy3) < eps {
-		return geometry.TransformAffine(x1-x0, y1-y0, x3-x0, y3-y0, x0, y0), true
+// unitProbe is the probe rect for callers that only use an affine matrix
+// read back from the draw context.
+var unitProbe = geometry.NewRectF(0, 0, 1, 1)
+
+// deviceTransformAt reconstructs the draw context's current matrix by probing
+// TransformPoint (the DrawContext interface does not expose it) at probe's
+// corners: a homography is determined by four points (Heckbert's
+// square-to-quad mapping, composed with the map from probe onto the unit
+// square). It reports whether the matrix is affine; a projective one is
+// returned as its z=0 homography (homographyTransform's layout).
+//
+// A probe point behind the camera reads back as its undivided numerators.
+// When the probe straddles the camera, a fifth probe at the centre exposes
+// them and the probe shrinks toward its centre, so a probe near the content
+// finds the points of it in front. A probe wholly behind the camera reads
+// back as an affine map, which this cannot tell apart: TransformPoint does
+// not expose the homogeneous coordinate.
+// ok is false when no probe in front is found or the projection is
+// degenerate (edge-on): Blink paints nothing under a non-invertible
+// transform.
+func deviceTransformAt(dc textshape.DrawContext, probe geometry.RectF) (m geometry.Transform, affine, ok bool) {
+	for range 8 {
+		m, affine, ok, consistent := homographyAtProbe(dc, probe)
+		if !ok {
+			return m, false, false
+		}
+		if consistent {
+			return m, affine, true
+		}
+		probe = geometry.NewRectF(probe.X()+probe.Width()/4, probe.Y()+probe.Height()/4, probe.Width()/2, probe.Height()/2)
 	}
+	return geometry.Transform{}, false, false
+}
+
+// homographyAtProbe fits the homography mapping probe's corners where the
+// draw context maps them, and checks it at probe's centre.
+func homographyAtProbe(dc textshape.DrawContext, probe geometry.RectF) (m geometry.Transform, affine, ok, consistent bool) {
+	px, py, pw, ph := probe.X(), probe.Y(), probe.Width(), probe.Height()
+	if pw <= 0 || ph <= 0 {
+		return geometry.Transform{}, false, false, false
+	}
+	x0, y0 := dc.TransformPoint(px, py)
+	x1, y1 := dc.TransformPoint(px+pw, py)
+	x2, y2 := dc.TransformPoint(px+pw, py+ph)
+	x3, y3 := dc.TransformPoint(px, py+ph)
+	// Thresholds are relative to the quad's size, so a tiny legitimate scale
+	// is neither affine by accident nor degenerate.
+	size := math.Abs(x1-x0) + math.Abs(y1-y0) + math.Abs(x3-x0) + math.Abs(y3-y0)
+	const eps = 1e-9
 	dx1, dy1 := x1-x2, y1-y2
 	dx2, dy2 := x3-x2, y3-y2
+	dx3, dy3 := x0-x1+x2-x3, y0-y1+y2-y3
 	det := dx1*dy2 - dx2*dy1
-	if math.Abs(det) < eps {
-		// The unit square collapses (an edge-on projection): no homography
-		// maps onto it, so report its affine part.
-		return geometry.TransformAffine(x1-x0, y1-y0, x3-x0, y3-y0, x0, y0), false
+	if size == 0 || math.Abs(det) <= eps*size*size {
+		return geometry.Transform{}, false, false, false
 	}
-	g := (dx3*dy2 - dx2*dy3) / det
-	h := (dx1*dy3 - dx3*dy1) / det
-	return geometry.TransformRowMajor(
-		x1-x0+g*x1, x3-x0+h*x3, 0, x0,
-		y1-y0+g*y1, y3-y0+h*y3, 0, y0,
-		0, 0, 1, 0,
-		g, h, 0, 1), false
+	// sq maps the unit square onto the quad; fromProbe maps probe onto it.
+	var sq geometry.Transform
+	if affine = math.Abs(dx3) <= eps*size && math.Abs(dy3) <= eps*size; affine {
+		sq = geometry.TransformAffine(x1-x0, y1-y0, x3-x0, y3-y0, x0, y0)
+	} else {
+		g := (dx3*dy2 - dx2*dy3) / det
+		h := (dx1*dy3 - dx3*dy1) / det
+		sq = geometry.TransformRowMajor(
+			x1-x0+g*x1, x3-x0+h*x3, 0, x0,
+			y1-y0+g*y1, y3-y0+h*y3, 0, y0,
+			0, 0, 1, 0,
+			g, h, 0, 1)
+	}
+	m = sq.Mul(geometry.TransformAffine(1/pw, 0, 0, 1/ph, -px/pw, -py/ph))
+	cx, cy := px+pw/2, py+ph/2
+	wx, wy := dc.TransformPoint(cx, cy)
+	got, front := mapRectToLayer(m, geometry.NewRectF(cx, cy, 0, 0))
+	near := func(a, b float64) bool { return math.Abs(a-b) <= 1e-6*math.Max(1, math.Abs(b)) }
+	return m, affine, true, front && near(got.X(), wx) && near(got.Y(), wy)
 }
 
 // mapRectToLayer maps r's corners through t (with the perspective divide)
@@ -1617,7 +1661,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
 	// CTM's scale), which LayerToDev maps onto the target. Under a projective
 	// draw context the backdrop is sampled untransformed.
-	ctm, affine := deviceTransformFromDC(r.dc)
+	ctm, affine, _ := deviceTransformAt(r.dc, unitProbe)
 	if !affine {
 		ctm = geometry.Transform{}
 	}
@@ -1702,7 +1746,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// filtered backdrop to it anti-aliased (viz-side, not in Blink's tree).
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	if !mapping.ParamToLayer.IsIdentity() {
-		r.multiplyHomography(projectiveHomography(mapping.ParamToLayer.InverseOrIdentity()))
+		multiplyDCHomography(r.dc, projectiveHomography(mapping.ParamToLayer.InverseOrIdentity()))
 	}
 	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
@@ -1931,7 +1975,7 @@ func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*P
 	if r.isLayerTransformSingular(layer) {
 		return
 	}
-	buf, parent, ok := r.paintIntoEffectLayer(func() { paintContents(layer) })
+	buf, parent, ok := r.paintIntoEffectLayer(layerProbe(layer), func() { paintContents(layer) })
 	switch {
 	case !ok:
 		paintContents(layer)
@@ -1950,13 +1994,26 @@ func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*P
 	blendComposite(parent, buf, buf.Rect.Min.X, buf.Rect.Min.Y, layer.BlendMode)
 }
 
+// layerProbe is the rect a layer's effect layer reads the draw context's
+// matrix back at (deviceTransformAt): its box, near its content, or the
+// unit square at its origin when the box is empty (a height:0 box can still
+// paint overflowing children).
+func layerProbe(layer *PaintLayer) geometry.RectF {
+	b := layer.linesOrBorderBox()
+	if b.Width <= 0 || b.Height <= 0 {
+		return geometry.NewRectF(b.X, b.Y, 1, 1)
+	}
+	return geometry.NewRectF(b.X, b.Y, b.Width, b.Height)
+}
+
 // paintIntoEffectLayer runs paint into a layer of its own: a buffer covering
 // the current clip, addressed like the current canvas and drawn under the
-// same device matrix (Skia's saveLayer keeps the CTM). It returns the layer
-// and the canvas to composite it onto. ok is false, and nothing paints, when
-// the canvas is not a bitmap; an empty clip paints nothing and returns no
-// layer.
-func (r *Renderer) paintIntoEffectLayer(paint func()) (buf, parent *image.RGBA, ok bool) {
+// same device matrix (Skia's saveLayer keeps the CTM), read back at probe.
+// It returns the layer and the canvas to composite it onto. ok is false, and
+// nothing paints, when the canvas is not a bitmap; an empty clip, or a
+// matrix that cannot be read back in front of the camera or is degenerate,
+// paints nothing and returns no layer.
+func (r *Renderer) paintIntoEffectLayer(probe geometry.RectF, paint func()) (buf, parent *image.RGBA, ok bool) {
 	parent, ok = r.dc.Image().(*image.RGBA)
 	if !ok {
 		return nil, nil, false
@@ -1966,13 +2023,16 @@ func (r *Renderer) paintIntoEffectLayer(paint func()) (buf, parent *image.RGBA, 
 		return nil, parent, true
 	}
 	// The buffer is painted under the draw context's whole matrix, a
-	// projective one included (deviceTransformFromDC).
-	dm, _ := deviceTransformFromDC(r.dc)
+	// projective one included.
+	dm, _, readBack := deviceTransformAt(r.dc, probe)
+	if !readBack {
+		return nil, parent, true
+	}
 	buf = image.NewRGBA(clip)
 	origDC, origTarget := r.dc, r.target
 	r.dc = origDC.NewChildContext(buf)
 	r.target = buf
-	r.multiplyHomography(projectiveHomography(dm))
+	multiplyDCHomography(r.dc, projectiveHomography(dm))
 	paint()
 	r.dc, r.target = origDC, origTarget
 	return buf, parent, true
@@ -2015,7 +2075,7 @@ func (r *Renderer) paintLayerWithBackdrop(layer *PaintLayer) {
 	}
 	if r.effectOpacity(layer) < 1 || hasBlendMode(layer) {
 		canvas := r.target
-		buf, parent, ok := r.paintIntoEffectLayer(func() {
+		buf, parent, ok := r.paintIntoEffectLayer(layerProbe(layer), func() {
 			layerBuf := r.target
 			r.target = canvas
 			applyBackdrop()
@@ -2178,16 +2238,10 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	}
 	h := projectiveHomography(r.layerProjection(layer, node))
 	singular := !layer.Box.Preserves3D() && isSingularProjection(h[0], h[3], h[1], h[4])
-	if !r.multiplyHomography(h) {
+	if !multiplyDCHomography(r.dc, h) {
 		return false
 	}
 	return singular
-}
-
-// multiplyHomography composes a 3×3 row-major homography onto the
-// renderer's draw context (multiplyDCHomography).
-func (r *Renderer) multiplyHomography(h [9]float64) (affine bool) {
-	return multiplyDCHomography(r.dc, h)
 }
 
 // multiplyDCHomography composes a 3×3 row-major homography onto dc: as an

@@ -239,7 +239,7 @@ func (r *Renderer) drawPolygon(p *viz.DrawPolygon) {
 		r.clipToPolygon(p.Points(), u)
 	}
 	if u.plane != nil {
-		r.multiplyHomography(projectiveHomography(*u.plane))
+		multiplyDCHomography(r.dc, projectiveHomography(*u.plane))
 	}
 	outer := r.context3D.drawing
 	r.context3D.drawing = u

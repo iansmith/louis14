@@ -348,14 +348,15 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	}
 	// The shape and its mask rasterize in device pixels, through the draw
 	// context's whole matrix (an ancestor CSS transform or perspective
-	// included), so the buffer composites as is. Paint servers and the mask
-	// content map user space through its affine form; under a projective
-	// matrix they keep DeviceFromUser.
-	toDevice, affine := deviceTransformFromDC(sp.ctx.dc)
-	deviceFromUser := sp.ctx.DeviceFromUser
-	if affine {
-		deviceFromUser = geometry.AffineTransformFromTransform(toDevice)
+	// included), read back at the shape's bbox, so the buffer composites as
+	// is. A matrix that is degenerate or cannot be read back in front of the
+	// camera paints nothing. Paint servers map user space through its affine
+	// part, which is exact only for an affine matrix (LOU-778).
+	toDevice, _, readBack := deviceTransformAt(sp.ctx.dc, userBBox)
+	if !readBack {
+		return
 	}
+	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
 	deviceBBox, ok := mapRectToLayer(toDevice, userBBox)
 	if !ok || deviceBBox.IsEmpty() {
 		return
@@ -375,7 +376,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	tmpR := NewRendererForImage(buf)
 	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
 	tmpR.dc.Translate(float64(-bx), float64(-by))
-	tmpR.multiplyHomography(projectiveHomography(toDevice))
+	multiplyDCHomography(tmpR.dc, projectiveHomography(toDevice))
 	// Run a child paint context targeting the temp DC + renderer so
 	// fill-shader / stroke-shader fall back onto the temp buffer
 	// instead of the page target.
@@ -437,7 +438,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// the buffer extent and the page-pixel offset (bx, by) so the
 	// buffer alignment is consistent.
 	maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-		masker, userBBox, bw, bh, bx, by, toDevice, deviceFromUser,
+		masker, userBBox, bw, bh, bx, by, toDevice,
 	)
 	if maskBuf != nil {
 		applySVGMaskToBuffer(buf, maskBuf, masker.MaskType)
@@ -451,8 +452,11 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 
 // compositeMaskedShapeOnto draws buf, rasterized through toDevice (dc's
 // whole matrix), onto dc at device (bx, by). toDevice is undone for the
-// blit, so what is left is the identity to rounding and the blit is a pixel
-// copy (under the clip) rather than a resampling.
+// blit, so what is left is the identity to rounding: an affine one makes the
+// blit a pixel copy (under the clip); under a projective dc the blit is
+// still a homography resample, through a near-identity one, which matches
+// the unmasked shape to within a unit per channel
+// (TestSVG_PerspectiveMaskedShapeUnchanged).
 //
 // no Blink analog: Blink records the masked content into the paint
 // operation stream under the mask's effect; louis14 composites a
@@ -472,7 +476,7 @@ func compositeMaskedShapeOnto(dc textshape.DrawContext, toDevice geometry.Transf
 //
 // Mirrors the CSS-box rasterizeSVGMask but operates in the SVG paint
 // walk's user-space coordinate system.
-func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, refBoxUser geometry.RectF, bufW, bufH, bx, by int, toDevice geometry.Transform, deviceFromUser geometry.AffineTransform) *image.RGBA {
+func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, refBoxUser geometry.RectF, bufW, bufH, bx, by int, toDevice geometry.Transform) *image.RGBA {
 	if masker == nil || bufW <= 0 || bufH <= 0 {
 		return nil
 	}
@@ -492,7 +496,10 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	// device-pixel translate with the user→device map so the mask
 	// children rasterize where the shape did.
 	tmpR.dc.Translate(float64(-bx), float64(-by))
-	tmpR.multiplyHomography(projectiveHomography(toDevice))
+	multiplyDCHomography(tmpR.dc, projectiveHomography(toDevice))
+	// The mask content's paint servers map user space through the matrix's
+	// affine part (LOU-778 under a projective one).
+	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
 	// Box-local frame inside the user-space DC.
 	tmpR.dc.Translate(refBoxUser.X(), refBoxUser.Y())
 
