@@ -9643,13 +9643,13 @@ func ParseGridLine(v string) (GridLine, bool) {
 	var l GridLine
 	hasInteger := false
 	for i, tok := range tokens {
-		switch n, err := strconv.Atoi(tok); {
+		switch n, isInt := gridLineInteger(tok); {
 		case strings.EqualFold(tok, "span"):
 			if l.Span || (i != 0 && i != len(tokens)-1) {
 				return GridLine{}, false
 			}
 			l.Span = true
-		case err == nil:
+		case isInt:
 			if hasInteger {
 				return GridLine{}, false
 			}
@@ -9673,8 +9673,24 @@ func ParseGridLine(v string) (GridLine, bool) {
 	case !l.Span && hasInteger && l.Integer == 0:
 		return GridLine{}, false
 	}
-	l.Integer = max(-GridMaxTracks, min(l.Integer, GridMaxTracks))
 	return l, true
+}
+
+// gridLineInteger parses an <integer> token, clamped to GridMaxTracks: one
+// too large for an int is still an integer, and clamps like any other.
+func gridLineInteger(tok string) (int, bool) {
+	digits := strings.TrimLeft(tok, "+-")
+	if digits == "" || len(tok)-len(digits) > 1 || strings.Trim(digits, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(tok)
+	if err != nil { // out of range: only the sign matters
+		n = GridMaxTracks
+		if tok[0] == '-' {
+			n = -GridMaxTracks
+		}
+	}
+	return max(-GridMaxTracks, min(n, GridMaxTracks)), true
 }
 
 // isGridLineIdent reports whether tok is a <custom-ident> a grid line may

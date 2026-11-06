@@ -571,6 +571,7 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	for _, area := range namedAreas {
 		explicitCols, explicitRows = max(explicitCols, area.ColEnd-1), max(explicitRows, area.RowEnd-1)
 	}
+	explicitCols, explicitRows = min(explicitCols, css.GridMaxTracks), min(explicitRows, css.GridMaxTracks)
 	lines := gridLineResolver{
 		explicitCols: explicitCols, explicitRows: explicitRows,
 		colLineNames: colLineNames, rowLineNames: rowLineNames, namedAreas: namedAreas,
@@ -580,8 +581,9 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	}
 
 	// Auto-place items that don't have explicit positions.
-	numCols := len(colTracks)
-	numRows := len(rowTracks)
+	// The explicit grid's tracks always exist, its areas' included.
+	numCols := explicitCols
+	numRows := explicitRows
 	// First, compute grid dimensions from explicit placements.
 	for _, item := range items {
 		if item.colEnd >= 0 && item.colEnd > numCols {
@@ -1467,12 +1469,9 @@ func isPlacedWithinGridArea(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
-	for _, property := range []string{"grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end"} {
-		if !style.GetGridLine(property).Auto {
-			return true
-		}
-	}
-	return false
+	colStart, colEnd := placementLonghands(style, true)
+	rowStart, rowEnd := placementLonghands(style, false)
+	return !colStart.Auto || !colEnd.Auto || !rowStart.Auto || !rowEnd.Auto
 }
 
 // trackStartOffset is the offset of grid line `line` used as a start edge:
