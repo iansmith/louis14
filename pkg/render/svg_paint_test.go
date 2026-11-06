@@ -1353,12 +1353,7 @@ func TestSVG_MaskedShapeUnderPageOffset(t *testing.T) {
 // filter region spans (the child's bbox ±10%) does not reach past
 // <mask width="50">, so the green square shows only in the region's half.
 func TestSVG_MaskFilteredChildClippedToMaskRegion(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
-<svg width="100" height="100">
-<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
-<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="50" height="100"><rect width="100" height="100" fill="red" filter="url(#f)"/></mask>
-<rect width="100" height="100" fill="red"/>
-<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
+	img := renderToImage(t, filteredMaskRegionPage("0", "50"), 120, 120)
 	wantPixel(t, img, 48, 50, canvasGreen, "inside the mask region's edge")
 	wantPixel(t, img, 52, 50, canvasRed, "outside the mask region: the red under it")
 }
@@ -1408,4 +1403,56 @@ func TestSVG_PatternFilteredChildFillsTile(t *testing.T) {
 	// units is not scaled onto the box yet, so the 1×1 rect paints one
 	// pixel, which its filter region widens by 10%.)
 	wantPixel(t, img, 1, 1, canvasGreen, "the flood past the tile's first pixel")
+}
+
+// LOU-769: a mask region that snaps to an empty device rect clips everything
+// its filtered children composite, not nothing: the region is the mask's
+// clip (LayoutSVGResourceMasker::CreatePaintRecord clips the content to the
+// mask region, layout_svg_resource_masker.cc:47-66 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the green square stays
+// masked out over the red one.
+func TestSVG_MaskEmptyDeviceRegionClipsFilteredChild(t *testing.T) {
+	img := renderToImage(t, filteredMaskRegionPage("10", "0.0000001"), 120, 120)
+	wantPixel(t, img, 50, 50, canvasRed, "outside the empty mask region: the red under it")
+}
+
+// filteredMaskRegionPage is a green square over a red one, masked by a
+// userSpaceOnUse <mask> region at x with the given width, whose child is
+// filtered to an opaque white flood.
+func filteredMaskRegionPage(x, width string) string {
+	return `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
+<mask id="m" maskUnits="userSpaceOnUse" x="` + x + `" y="0" width="` + width + `" height="100"><rect width="100" height="100" fill="red" filter="url(#f)"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`
+}
+
+// LOU-769: under a perspective ancestor, a masked shape rasterizes through
+// the draw context's whole projective matrix and blits as is, so a fully
+// opaque mask leaves the shape exactly as the unmasked shape paints
+// (TestSVG_RotatedMaskedShapeEdgesUnchanged's projective case).
+func TestSVG_PerspectiveMaskedShapeUnchanged(t *testing.T) {
+	page := func(mask string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style><div style="perspective:200px;width:140px;height:140px">
+<svg width="100" height="100" style="margin:20px;transform:rotateY(30deg)">
+<mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
+<rect x="25" y="25" width="50" height="50" fill="green" ` + mask + `/></svg></div>`
+	}
+	wantImagesWithin(t, renderToImage(t, page(`mask="url(#m)"`), 160, 160), renderToImage(t, page(""), 160, 160), 1, "the unmasked shape")
+}
+
+// LOU-769: a pattern tile at 2x (a viewBox scale) composites a filtered child
+// once at the tile's scale. The child rect is user 10..30 in a 50-unit tile;
+// its filter region (bbox ±10%) is user 8..32, device 16..64.
+func TestSVG_PatternFilteredChildAt2xScale(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="200" height="200" viewBox="0 0 100 100">
+<filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
+<pattern id="p" width="50" height="50" patternUnits="userSpaceOnUse"><rect x="10" y="10" width="20" height="20" fill="red" filter="url(#g)"/></pattern>
+<rect width="100" height="100" fill="url(#p)"/></svg>`, 220, 220)
+	wantPixel(t, img, 17, 17, canvasGreen, "inside the filter region's top-left edge")
+	wantPixel(t, img, 62, 62, canvasGreen, "inside the filter region's bottom-right edge")
+	wantPixel(t, img, 66, 66, canvasWhite, "past the filter region")
+	wantPixel(t, img, 117, 117, canvasGreen, "the next tile's filter region")
 }
