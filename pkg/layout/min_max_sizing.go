@@ -673,18 +673,24 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	if blockForPct != Indefinite {
 		minAvailBlock = blockForPct
 	}
-	minBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-		SetAvailableSize(LogicalSize{InlineSize: minAvailable, BlockSize: minAvailBlock}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-	if blockForPct != Indefinite {
-		minBuilder.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: space.PercentageResolutionInlineSize,
-			BlockSize:  blockForPct,
-		})
+	// The lines' percentage resolution size: the container's inline size,
+	// and its block size or Indefinite.
+	linePercentageSize := LogicalSize{InlineSize: space.PercentageResolutionInlineSize, BlockSize: blockForPct}
+	lineSpace := func(availableInline float64) ConstraintSpace {
+		return NewConstraintSpaceBuilder(wdm, wdm, false).
+			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+			SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: minAvailBlock}).
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+			SetPercentageResolutionSize(linePercentageSize).
+			Build()
 	}
-	minSpace := minBuilder.Build()
+	// The orthogonal sizes layoutInlineChildren gives its lines
+	// (orthogonalChildBlockSizes), so an atomic is sized against what it is
+	// laid out against: computed on the first atomic that needs them.
+	orthogonal := newLazyOrthogonalSizes(ctx, node.Style(), wdm, space)
+	minSpace := lineSpace(minAvailable)
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
+	minLB.orthogonalSizes = orthogonal
 	var minContent float64
 	var line LineInfo
 	// The max-content of each block-in-inline, measured with its min.
@@ -713,18 +719,9 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	// Max-content: never wrap.
-	maxBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: minAvailBlock}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
-	if blockForPct != Indefinite {
-		maxBuilder.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: space.PercentageResolutionInlineSize,
-			BlockSize:  blockForPct,
-		})
-	}
-	maxSpace := maxBuilder.Build()
+	maxSpace := lineSpace(1e9)
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
+	maxLB.orthogonalSizes = orthogonal
 	var maxContent float64
 	cbDirection := node.Style().GetDirection()
 	for maxLB.NextLine(&line) {
@@ -1747,4 +1744,53 @@ func nodeIsNoWrap(node *LayoutInputNode, itemsData *InlineItemsData) bool {
 		}
 	}
 	return false
+}
+
+// intrinsicContainerBlockGeometry is a container's geometry while it is
+// intrinsically sized: its edges and its initial border-box block size
+// (resolveInitialBorderBoxBlockSize, which needs no inline size) clamped by
+// min/max-block-size as CalculateInitialFragmentGeometry clamps it, with its
+// definite content block size if it has one.
+func intrinsicContainerBlockGeometry(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) (geom FragmentGeometry, explicit float64, has bool) {
+	geom = ComputeFragmentGeometry(style, wdm, space.PercentageResolutionInlineSize)
+	geom.BorderBoxSize.BlockSize = clampDefiniteBorderBoxBlock(style, wdm, space, geom,
+		resolveInitialBorderBoxBlockSize(style, wdm, space, geom, logicalBlockSizeValue(style, wdm)))
+	explicit, has = explicitContentBlockSize(geom.BorderBoxSize.BlockSize, geom.BlockBorderPadding())
+	return geom, explicit, has
+}
+
+// lazyOrthogonalSizes computes a container's orthogonal available and
+// fallback block sizes (orthogonalChildBlockSizes) once, on first use.
+type lazyOrthogonalSizes struct {
+	ctx                 *LayoutContext
+	style               *css.Style
+	wdm                 WritingDirectionMode
+	space               ConstraintSpace
+	done                bool
+	available, fallback float64
+}
+
+func newLazyOrthogonalSizes(ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) *lazyOrthogonalSizes {
+	return &lazyOrthogonalSizes{ctx: ctx, style: style, wdm: wdm, space: space}
+}
+
+func (l *lazyOrthogonalSizes) compute() {
+	if !l.done {
+		geom, explicit, has := intrinsicContainerBlockGeometry(l.style, l.wdm, l.space)
+		l.available, l.fallback = orthogonalChildBlockSizes(l.ctx, l.style, l.wdm, l.space, geom, has, explicit)
+		l.done = true
+	}
+}
+
+// Available is the available block size an orthogonal atomic takes as its
+// available inline size.
+func (l *lazyOrthogonalSizes) Available() float64 {
+	l.compute()
+	return l.available
+}
+
+// Fallback is the fallback block size an atomic's descendants inherit.
+func (l *lazyOrthogonalSizes) Fallback() float64 {
+	l.compute()
+	return l.fallback
 }

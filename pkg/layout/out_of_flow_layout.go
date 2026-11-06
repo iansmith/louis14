@@ -677,16 +677,10 @@ func isAutoSizeInDirection(childStyle interface {
 	var prop string
 	if inline {
 		// CB's inline axis: width in HTB, height in vertical.
-		prop = "width"
-		if cbWDM.IsVertical() {
-			prop = "height"
-		}
+		prop = logicalInlineSizeProperty(cbWDM)
 	} else {
 		// CB's block axis: height in HTB, width in vertical.
-		prop = "height"
-		if cbWDM.IsVertical() {
-			prop = "width"
-		}
+		prop = logicalBlockSizeProperty(cbWDM)
 	}
 
 	if _, ok := childStyle.GetLength(prop); ok {

@@ -15,19 +15,24 @@ import (
 // countLinesForWidth runs a dry-run line break at the given available width and
 // returns the number of lines produced. This is used by text-wrap: balance to
 // binary-search for the narrowest width that still yields the same line count.
+// It breaks in the lines' own space (newLineSpace), narrowing only its
+// available inline size: as in final layout, atomics are laid out at
+// containerInlineSize, the content box.
 func countLinesForWidth(
 	itemsData *InlineItemsData,
 	ctx *LayoutContext,
-	wdm WritingDirectionMode,
+	lineSpace ConstraintSpace,
 	width float64,
 	fonts text.FontConfig,
+	containerInlineSize float64,
 ) int {
-	space := ConstraintSpace{
-		AvailableSize:    oldLogicalToGeom(LogicalSize{InlineSize: width, BlockSize: Indefinite}),
-		WritingDirection: wdm,
-	}
+	space := lineSpace
+	space.AvailableSize.InlineSize = oldLogicalToGeom(LogicalSize{InlineSize: width}).InlineSize
 	lb := NewLineBreaker(itemsData, ctx, space, fonts, LineBreakerContent)
 	lb.availableWidth = width
+	// Atomics are laid out at the container's content inline size, as in
+	// final layout; only the line opportunity is narrowed.
+	lb.containerInlineSize = containerInlineSize
 	var line LineInfo
 	count := 0
 	for lb.NextLine(&line) {
@@ -405,13 +410,17 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineAvailableWidth = 1e9
 	}
 
+	// The lines' space; the balance probe breaks lines in it too, only
+	// narrowing its available inline size.
+	lineSpace := bla.newLineSpace(contentInlineSize, lineAvailableWidth, exclusionSpace)
+
 	// CSS Text 4 §3.4: text-wrap: balance — make all lines approximately
 	// equal width by binary-searching for the narrowest available width
 	// that still produces the same number of lines. Per spec, only apply
 	// when the line count is ≤ 4. This mirrors Blink's text balancing in
 	// InlineLayoutAlgorithm.
 	if !noWrap && bla.style != nil && bla.style.GetTextWrap() == "balance" {
-		normalLineCount := countLinesForWidth(itemsData, bla.ctx, wdm, lineAvailableWidth, fonts)
+		normalLineCount := countLinesForWidth(itemsData, bla.ctx, lineSpace, lineAvailableWidth, fonts, contentInlineSize)
 		if normalLineCount >= 2 && normalLineCount <= 4 {
 			// Binary search: find the narrowest width that still yields
 			// normalLineCount lines. The lower bound is 0 (would produce
@@ -420,79 +429,20 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			hi := lineAvailableWidth
 			for hi-lo > 0.5 { // 0.5px precision
 				mid := (lo + hi) / 2
-				if countLinesForWidth(itemsData, bla.ctx, wdm, mid, fonts) <= normalLineCount {
+				if countLinesForWidth(itemsData, bla.ctx, lineSpace, mid, fonts, contentInlineSize) <= normalLineCount {
 					hi = mid
 				} else {
 					lo = mid
 				}
 			}
 			lineAvailableWidth = hi
+			lineSpace.AvailableSize.InlineSize = oldLogicalToGeom(LogicalSize{InlineSize: hi}).InlineSize
 		}
 	}
 
-	// Compute the percentage resolution block-size for inline children.
-	// CSS 2.1 §10.5: percentage heights resolve against the containing block's
-	// content height. The containing block is THIS element, so if it has a
-	// definite (explicit) block-size, use that — not the parent's percentage
-	// resolution size. This mirrors what block_layout.go does for block children
-	// at lines 40-48 + 374-376.
-	geomForPct := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
-	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize.Float64()
-	if geomForPct.BorderBoxSize.BlockSize != Indefinite {
-		ownContentBlock := geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
-		if ownContentBlock < 0 {
-			ownContentBlock = 0
-		}
-		pctBlockSize = ownContentBlock
-	}
-
-	lineAvailBlock := Indefinite
-	if pctBlockSize > 0 {
-		lineAvailBlock = pctBlockSize
-	} else if bla.space.AvailableSize.BlockSize.Float64() >= 0 {
-		lineAvailBlock = bla.space.AvailableSize.BlockSize.Float64()
-	}
-
-	// §10.3.2: Pre-resolve the available block-size that orthogonal
-	// atomic-inline children (inline-block with perpendicular writing mode)
-	// should use. Mirrors block_layout.go:94-96 so the atomic-inline path in
-	// line_breaker.handleAtomicInline gets the same ancestor-walk + ICB cap
-	// as the block-child path at block_layout.go:368-370.
-	hasExplicitBlock := geomForPct.BorderBoxSize.BlockSize != Indefinite
-	var explicitBlockSize float64
-	if hasExplicitBlock {
-		explicitBlockSize = geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
-		if explicitBlockSize < 0 {
-			explicitBlockSize = 0
-		}
-	}
-	orthogonalAvailableBlock := computeOrthogonalAvailableBlock(
-		bla.style, wdm, bla.space, geomForPct, bla.ctx,
-		lineAvailBlock, hasExplicitBlock, explicitBlockSize)
-
-	lineSpace := ConstraintSpace{
-		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
-		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
-		PercentageResolutionInlineSize: contentInlineSize,
-		WritingDirection:               wdm,
-		// An inline child in a parallel flow stretches (Blink's
-		// CreateConstraintSpaceForChild, block_layout_algorithm.cc:
-		// 3422-3425 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		InlineAutoBehavior: AutoSizeBehaviorStretchImplicit,
-		ExclusionSpace:     exclusionSpace,
-		// The line breaker splits a line before a <br> that needs
-		// clearance past the fragmentainer (LineBreaker::
-		// HandleForcedLineBreak reads the line's space,
-		// inline/line_breaker.cc:2895 @ a9f50e522efa).
-		HasBlockFragmentation:        bla.space.HasBlockFragmentation,
-		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,
-		OrthogonalFallbackBlockSize: computeOrthogonalFallbackBlockForChildren(
-			bla.style, wdm, bla.space, geomForPct, bla.ctx,
-			hasExplicitBlock, explicitBlockSize),
-		OrthogonalAvailableBlock: orthogonalAvailableBlock,
-	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
+	lb.containerInlineSize = contentInlineSize
 	// Resume cursor from incoming break token. Mirrors Blink's
 	// `InlineBreakToken::start_` which carries both item-index AND
 	// text-offset. Restore when EITHER advances past 0 — a single-text-
@@ -3766,4 +3716,54 @@ func isInlineBoxEdgeEmpty(style *css.Style, wdm WritingDirectionMode, percentage
 		return geom.Border.InlineStart == 0 && geom.Padding.InlineStart == 0 && margins.InlineStart == 0
 	}
 	return geom.Border.InlineEnd == 0 && geom.Padding.InlineEnd == 0 && margins.InlineEnd == 0
+}
+
+// newLineSpace is the constraint space of a block container's lines: the
+// line's available inline size, the container's percentage resolution
+// sizes, its orthogonal sizes (orthogonalChildBlockSizes), and its
+// exclusions.
+func (bla *BlockLayoutAlgorithm) newLineSpace(contentInlineSize, lineAvailableWidth float64, exclusionSpace *ExclusionSpace) ConstraintSpace {
+	wdm := bla.space.WritingDirection
+	// Compute the percentage resolution block-size for inline children.
+	// CSS 2.1 §10.5: percentage heights resolve against the containing block's
+	// content height. The containing block is THIS element, so if it has a
+	// definite (explicit) block-size, use that — not the parent's percentage
+	// resolution size. This mirrors what block_layout.go does for block children
+	// at lines 40-48 + 374-376.
+	geomForPct := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
+	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize.Float64()
+	ownContentBlock, hasOwnBlock := explicitContentBlockSize(geomForPct.BorderBoxSize.BlockSize, geomForPct.BlockBorderPadding())
+	if hasOwnBlock {
+		pctBlockSize = ownContentBlock
+	}
+
+	lineAvailBlock := Indefinite
+	if pctBlockSize > 0 {
+		lineAvailBlock = pctBlockSize
+	} else if bla.space.AvailableSize.BlockSize.Float64() >= 0 {
+		lineAvailBlock = bla.space.AvailableSize.BlockSize.Float64()
+	}
+
+	orthogonalAvailableBlock, orthogonalFallbackBlock := orthogonalChildBlockSizes(bla.ctx, bla.style, wdm, bla.space, geomForPct, hasOwnBlock, ownContentBlock)
+
+	return ConstraintSpace{
+		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
+		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
+		PercentageResolutionInlineSize: contentInlineSize,
+		WritingDirection:               wdm,
+		// An inline child in a parallel flow stretches (Blink's
+		// CreateConstraintSpaceForChild, block_layout_algorithm.cc:
+		// 3422-3425 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		InlineAutoBehavior: AutoSizeBehaviorStretchImplicit,
+		ExclusionSpace:     exclusionSpace,
+		// The line breaker splits a line before a <br> that needs
+		// clearance past the fragmentainer (LineBreaker::
+		// HandleForcedLineBreak reads the line's space,
+		// inline/line_breaker.cc:2895 @ a9f50e522efa).
+		HasBlockFragmentation:        bla.space.HasBlockFragmentation,
+		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,
+		OrthogonalFallbackBlockSize:  orthogonalFallbackBlock,
+		OrthogonalAvailableBlock:     orthogonalAvailableBlock,
+		HasOrthogonalAvailableBlock:  true,
+	}
 }

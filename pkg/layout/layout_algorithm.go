@@ -65,6 +65,11 @@ type LayoutContext struct {
 	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
 	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
 
+	// orthogonalAtomicContributions caches orthogonal atomic inlines'
+	// min/max contributions, so a line's min-content and max-content passes
+	// share one layout.
+	orthogonalAtomicContributions map[*LayoutInputNode]orthogonalAtomicContribution
+
 	// layoutSideEffectsDisabled counts the open DisableLayoutSideEffects
 	// scopes (layout_box.go).
 	layoutSideEffectsDisabled int
@@ -91,6 +96,20 @@ type orthogonalCacheEntry struct {
 	Computing bool          // true while layout is in progress (cycle detection)
 	Result    *LayoutResult // cached result, nil if still computing
 }
+
+// orthogonalAtomicContribution is an orthogonal atomic inline's min/max
+// contribution (min equals max), for the line-space inputs in space
+// (LineBreaker.orthogonalAtomicInlineContribution).
+type orthogonalAtomicContribution struct {
+	space        orthogonalContributionSpace
+	contribution float64
+}
+
+// orthogonalContributionSpace is the line-space inputs an orthogonal atomic
+// inline's contribution depends on: its available inline size, the
+// orthogonal fallback sizes, the line's percentage block size (its
+// percentage inline size), and the percentage resolution inline size.
+type orthogonalContributionSpace [5]float64
 
 // GetOrthogonalLayout returns a cached layout result for an orthogonal child,
 // or nil if not cached. Returns (nil, true) if a cycle is detected.

@@ -66,6 +66,7 @@ func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int) *LineInfo {
 		ParagraphLevels: lb.itemsData.ParagraphLevels,
 	}
 	subLB := NewLineBreaker(subData, lb.ctx, lb.space, lb.fonts, LineBreakerMaxContent)
+	subLB.parent = lb
 	sub := &LineInfo{}
 	subLB.NextLine(sub)
 	return sub
