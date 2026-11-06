@@ -56,7 +56,7 @@ func (tp *svgTextPainter) paint() {
 		return
 	}
 	style := tp.text.Style
-	if !svgIsVisible(style) {
+	if !styleIsVisible(style) {
 		return
 	}
 

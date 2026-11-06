@@ -94,7 +94,7 @@ func (sp *svgShapePainter) paint() {
 	// SVG 1.1 §11.3.3 (visibility): visibility:hidden on a shape
 	// inhibits paint but its children still hit-test. There are no
 	// shape children in Phase 2, so a hidden shape is a no-op.
-	if !svgIsVisible(style) {
+	if !styleIsVisible(style) {
 		return
 	}
 
