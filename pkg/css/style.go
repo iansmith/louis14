@@ -234,6 +234,39 @@ type Style struct {
 	// properties (ComputedStyle::Translate / Rotate / Scale) on the same
 	// terms.
 	independent [3]*computedIndependentTransform
+
+	// currentAnimations holds ComputedStyle's HasCurrent*Animation bits for
+	// opacity, filter and backdrop-filter, set by applyCSSAnimations.
+	currentAnimations currentAnimationFlags
+}
+
+// currentAnimationFlags is the set of properties a current or in-effect CSS
+// animation affects, of those whose animation is a compositing reason.
+// Mirrors ComputedStyle's HasCurrentOpacityAnimation /
+// HasCurrentFilterAnimation / HasCurrentBackdropFilterAnimation, set by
+// UpdateAnimationFlagsForEffect (core/animation/css/css_animations.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type currentAnimationFlags uint8
+
+const (
+	currentOpacityAnimation currentAnimationFlags = 1 << iota
+	currentFilterAnimation
+	currentBackdropFilterAnimation
+)
+
+// ShouldCompositeForCurrentAnimations mirrors ComputedStyle::
+// ShouldCompositeForCurrentAnimations (computed_style.h:2071-2077 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the animations
+// currentAnimationFlags models; transform-related animations are not
+// flagged.
+func (s *Style) ShouldCompositeForCurrentAnimations() bool {
+	return s.currentAnimations != 0
+}
+
+// HasCurrentOpacityAnimation reports a current or in-effect animation of
+// opacity (ComputedStyle::HasCurrentOpacityAnimation).
+func (s *Style) HasCurrentOpacityAnimation() bool {
+	return s.currentAnimations&currentOpacityAnimation != 0
 }
 
 // computedTransform is a computed transform list with the property text it
@@ -275,6 +308,7 @@ func (s *Style) Clone() *Style {
 	dst.transform = s.transform
 	dst.transformOrigin = s.transformOrigin
 	dst.independent = s.independent
+	dst.currentAnimations = s.currentAnimations
 	return dst
 }
 
@@ -10062,10 +10096,8 @@ func (s *Style) HasOutOfFlowPosition() bool {
 
 // HasNonInitialOpacity mirrors Blink's ComputedStyle::HasNonInitialOpacity
 // (computed_style.h:2205-2208 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// louis14 bakes running animations into the style, so GetOpacity covers
-// HasCurrentOpacityAnimation.
 func (s *Style) HasNonInitialOpacity() bool {
-	return s.GetOpacity() < 1 || s.HasWillChangeProperty("opacity")
+	return s.GetOpacity() < 1 || s.HasCurrentOpacityAnimation() || s.HasWillChangeProperty("opacity")
 }
 
 // HasNonInitialFilter mirrors Blink's ComputedStyle::HasNonInitialFilter
@@ -12234,6 +12266,11 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 //   - mix-blend-mode is not "normal"
 //   - will-change names any property whose non-initial value would itself
 //     create a Backdrop Root
+//   - a current or in-effect animation of opacity, filter or backdrop-filter,
+//     whatever its value: Blink makes it a compositing reason
+//     (compositing_reason_finder.cc:576-588 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the element's effect node
+//     is a render surface
 //
 // The root element is also a Backdrop Root, but that is handled separately
 // by the renderer (the canvas itself is the implicit backdrop), so it is not
@@ -12249,13 +12286,8 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 // `effect_paint_property_node.cc::DetermineBackdropRoot()` at Chromium
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (s *Style) IsBackdropRoot() bool {
-	if s.GetOpacity() < 1.0 {
-		return true
-	}
-	if len(s.GetFilter()) > 0 {
-		return true
-	}
-	if len(s.GetBackdropFilter()) > 0 {
+	if s.HasNonInitialOpacity() || s.HasNonInitialFilter() || s.HasNonInitialBackdropFilter() ||
+		s.ShouldCompositeForCurrentAnimations() {
 		return true
 	}
 	if s.HasMask() {

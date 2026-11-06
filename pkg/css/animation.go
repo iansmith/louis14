@@ -45,6 +45,23 @@ type KeyframeEffect struct {
 	Properties map[string]bool
 }
 
+// currentAnimationFlags returns the properties the effect affects that set
+// a currentAnimationFlags bit (UpdateAnimationFlagsForEffect,
+// css_animations.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (e *KeyframeEffect) currentAnimationFlags() currentAnimationFlags {
+	var f currentAnimationFlags
+	if e.Properties["opacity"] {
+		f |= currentOpacityAnimation
+	}
+	if e.Properties["filter"] {
+		f |= currentFilterAnimation
+	}
+	if e.Properties["backdrop-filter"] {
+		f |= currentBackdropFilterAnimation
+	}
+	return f
+}
+
 // ResolvedAnimation pairs a parsed Timing with the keyframe effect for one
 // entry of the animation-name list.
 type ResolvedAnimation struct {
@@ -749,6 +766,12 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 			localTime = localTimes[i]
 		}
 		rt := a.Timing.Resolve(localTime)
+		// A current or in-effect animation flags the style
+		// (UpdateAnimationFlagsForAnimation, css_animations.cc @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if rt.IsCurrent() || rt.InEffect {
+			style.currentAnimations |= a.Effect.currentAnimationFlags()
+		}
 		if !rt.InEffect {
 			continue
 		}
