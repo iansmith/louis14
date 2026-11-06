@@ -177,3 +177,347 @@ func (s *gridSet) increaseBaseSize(v float64) {
 
 // flexFactor mirrors GridSet::FlexFactor (:424-427).
 func (s *gridSet) flexFactor() float64 { return s.trackSize.max.flex }
+
+// gridContributionType mirrors Blink's GridItemContributionType: which
+// contribution an item gives in a step, and which size it grows.
+type gridContributionType int
+
+const (
+	gridForIntrinsicMinimums gridContributionType = iota
+	gridForContentBasedMinimums
+	gridForMaxContentMinimums
+	gridForIntrinsicMaximums
+	gridForMaxContentMaximums
+	gridForFreeSpace
+)
+
+// gridSizingItem is an in-flow item as the column sizing sees it: the
+// tracks [start, end) it spans and its min-content and max-content inline
+// contributions, margins included.
+type gridSizingItem struct {
+	start, end             int
+	minContent, maxContent float64
+	// isScrollContainer: the item's automatic minimum size is 0.
+	isScrollContainer bool
+}
+
+func (it *gridSizingItem) span() int { return it.end - it.start }
+
+// gridTrackSizingAlgorithm mirrors Blink's GridTrackSizingAlgorithm for one
+// axis.
+type gridTrackSizingAlgorithm struct {
+	sets       []gridSet
+	gutter     float64
+	constraint gridSizingConstraint
+	available  float64 // gridIndefinite when indefinite
+}
+
+func (a *gridTrackSizingAlgorithm) spansAny(it *gridSizingItem, pred func(gridTrackSize) bool) bool {
+	for i := it.start; i < it.end; i++ {
+		if pred(a.sets[i].trackSize) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *gridTrackSizingAlgorithm) spansIntrinsic(it *gridSizingItem) bool {
+	return a.spansAny(it, func(s gridTrackSize) bool { return s.hasIntrinsicMin() || s.hasIntrinsicMax() })
+}
+
+func (a *gridTrackSizingAlgorithm) spansFlexible(it *gridSizingItem) bool {
+	return a.spansAny(it, gridTrackSize.hasFlexMax)
+}
+
+// contribution mirrors GridLayoutAlgorithm::ContributionSizeForGridItem
+// (grid_layout_algorithm.cc:577-815). An intrinsic minimum is the item's
+// automatic minimum: its min-content contribution when it spans an auto
+// minimum and no flexible track with a span over 1, and is not a scroll
+// container; otherwise 0 (CalculateIntrinsicMinimumContribution, with no
+// explicit min-size or fixed-maximum clamp in louis14 yet).
+func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *gridSizingItem) float64 {
+	switch t {
+	case gridForContentBasedMinimums, gridForIntrinsicMaximums:
+		return it.minContent
+	case gridForIntrinsicMinimums:
+		special := !a.spansAny(it, gridTrackSize.hasAutoMin) || (a.spansFlexible(it) && it.span() > 1)
+		if special || it.isScrollContainer {
+			return 0
+		}
+		return it.minContent
+	}
+	return it.maxContent
+}
+
+// affectedSize mirrors AffectedSizeForContribution (:360-375).
+func affectedSize(s *gridSet, t gridContributionType) float64 {
+	if isDistributionForGrowthLimits(t) {
+		return s.definiteGrowthLimit()
+	}
+	return s.baseSize
+}
+
+// isContributionAppliedToSet mirrors IsContributionAppliedToSet (:410-428).
+func isContributionAppliedToSet(s *gridSet, t gridContributionType) bool {
+	switch t {
+	case gridForIntrinsicMinimums:
+		return s.trackSize.hasIntrinsicMin()
+	case gridForContentBasedMinimums:
+		return s.trackSize.hasMinOrMaxContentMin()
+	case gridForMaxContentMinimums:
+		return s.trackSize.hasMaxContentMin()
+	case gridForIntrinsicMaximums:
+		return s.trackSize.hasIntrinsicMax()
+	case gridForMaxContentMaximums:
+		return s.trackSize.hasMaxContentOrAutoMax()
+	}
+	return true
+}
+
+// shouldUsedSizeGrowBeyondLimit mirrors ShouldUsedSizeGrowBeyondLimit
+// (:434-447).
+func shouldUsedSizeGrowBeyondLimit(s *gridSet, t gridContributionType) bool {
+	switch t {
+	case gridForIntrinsicMinimums, gridForContentBasedMinimums:
+		return s.trackSize.hasIntrinsicMax()
+	case gridForMaxContentMinimums:
+		return s.trackSize.hasMaxContentOrAutoMax()
+	}
+	return false
+}
+
+// isDistributionForGrowthLimits mirrors IsDistributionForGrowthLimits
+// (:449-460).
+func isDistributionForGrowthLimits(t gridContributionType) bool {
+	return t == gridForIntrinsicMaximums || t == gridForMaxContentMaximums
+}
+
+// growthPotential mirrors GrowthPotentialForSet (:467-516).
+// ignoreInfinitelyGrowable is InfinitelyGrowableBehavior::kIgnore.
+func growthPotential(s *gridSet, t gridContributionType, ignoreInfinitelyGrowable bool) float64 {
+	switch t {
+	case gridForIntrinsicMinimums, gridForContentBasedMinimums, gridForMaxContentMinimums:
+		if s.growthLimit == gridIndefinite {
+			return gridIndefinite
+		}
+		return s.growthLimit - (s.baseSize + s.itemIncurredIncrease)
+	case gridForIntrinsicMaximums, gridForMaxContentMaximums:
+		if !ignoreInfinitelyGrowable && s.growthLimit != gridIndefinite && !s.isInfinitelyGrowable {
+			return 0
+		}
+		if s.fitContentLimit != gridIndefinite {
+			return max(0, s.fitContentLimit-s.definiteGrowthLimit()-s.itemIncurredIncrease)
+		}
+		return gridIndefinite
+	}
+	return s.growthLimit - s.baseSize
+}
+
+// distributeExtraSpaceToSets mirrors DistributeExtraSpaceToSets (:527-761):
+// equally when flexFactorSum is 0, else by flex factor. Each set's share
+// lands in its itemIncurredIncrease.
+func distributeExtraSpaceToSets(extra, flexFactorSum float64, t gridContributionType, toGrow, beyondLimit []*gridSet) {
+	if extra == gridIndefinite {
+		for _, s := range toGrow {
+			s.itemIncurredIncrease = growthPotential(s, t, false)
+		}
+		return
+	}
+	equal := flexFactorSum == 0
+	growable := 0
+	for _, s := range toGrow {
+		s.itemIncurredIncrease = 0
+		if growthPotential(s, t, false) != 0 {
+			growable++
+		}
+	}
+	shareRatioSum := flexFactorSum
+	if equal {
+		shareRatioSum = float64(growable)
+		if growable > 0 || isDistributionForGrowthLimits(t) {
+			// Least growth potential first, infinite last.
+			sortStable(toGrow, func(l, r *gridSet) bool {
+				gl, gr := growthPotential(l, t, true), growthPotential(r, t, true)
+				if gl == gridIndefinite || gr == gridIndefinite {
+					return gl != gridIndefinite
+				}
+				return gl < gr
+			})
+		}
+	}
+	share := func(s *gridSet, potential float64) float64 {
+		if potential == 0 {
+			return 0
+		}
+		ratio := 1.0
+		if !equal {
+			ratio = s.flexFactor()
+		}
+		var v float64
+		if ratio >= shareRatioSum {
+			ratio, v = shareRatioSum, extra
+			growable = 0
+		} else {
+			v = extra * ratio / shareRatioSum
+			growable--
+		}
+		if potential != gridIndefinite {
+			v = min(v, potential)
+		}
+		shareRatioSum -= ratio
+		extra -= v
+		return v
+	}
+	for _, s := range toGrow {
+		if growable == 0 {
+			break
+		}
+		s.itemIncurredIncrease = share(s, growthPotential(s, t, false))
+	}
+	if beyondLimit == nil || extra <= 0 {
+		return
+	}
+	beyond := func(s *gridSet) float64 {
+		if !isDistributionForGrowthLimits(t) {
+			return gridIndefinite
+		}
+		return growthPotential(s, t, true)
+	}
+	growable = 0
+	for _, s := range beyondLimit {
+		if beyond(s) != 0 {
+			growable++
+		}
+	}
+	shareRatioSum = float64(growable)
+	for _, s := range beyondLimit {
+		if growable == 0 {
+			break
+		}
+		s.itemIncurredIncrease += share(s, beyond(s))
+	}
+}
+
+// sortStable is an insertion sort by less, stable as the small set lists
+// here need.
+func sortStable(sets []*gridSet, less func(l, r *gridSet) bool) {
+	for i := 1; i < len(sets); i++ {
+		for j := i; j > 0 && less(sets[j], sets[j-1]); j-- {
+			sets[j], sets[j-1] = sets[j-1], sets[j]
+		}
+	}
+}
+
+// growAffectedSizeByPlannedIncrease mirrors
+// GrowAffectedSizeByPlannedIncrease (:377-405).
+func growAffectedSizeByPlannedIncrease(s *gridSet, t gridContributionType) {
+	s.isInfinitelyGrowable = false
+	if s.plannedIncrease == gridIndefinite {
+		return
+	}
+	switch t {
+	case gridForIntrinsicMinimums, gridForContentBasedMinimums, gridForMaxContentMinimums:
+		s.increaseBaseSize(s.baseSize + s.plannedIncrease)
+	case gridForIntrinsicMaximums:
+		s.isInfinitelyGrowable = s.growthLimit == gridIndefinite
+		s.growthLimit = s.definiteGrowthLimit() + s.plannedIncrease
+	case gridForMaxContentMaximums:
+		s.growthLimit = s.definiteGrowthLimit() + s.plannedIncrease
+	}
+}
+
+// increaseTrackSizesToAccommodateGridItems mirrors
+// IncreaseTrackSizesToAccommodateGridItems (:798-909).
+func (a *gridTrackSizingAlgorithm) increaseTrackSizesToAccommodateGridItems(group []*gridSizingItem, t gridContributionType, spanningFlex bool) {
+	for i := range a.sets {
+		a.sets[i].plannedIncrease = gridIndefinite
+	}
+	for _, it := range group {
+		var toGrow, beyondLimit []*gridSet
+		flexFactorSum := 0.0
+		spanned := a.gutter * float64(it.span()-1)
+		for i := it.start; i < it.end; i++ {
+			s := &a.sets[i]
+			spanned += affectedSize(s, t)
+			if spanningFlex && !s.trackSize.hasFlexMax() {
+				continue
+			}
+			if isContributionAppliedToSet(s, t) {
+				if s.plannedIncrease == gridIndefinite {
+					s.plannedIncrease = 0
+				}
+				if spanningFlex {
+					flexFactorSum += s.flexFactor()
+				}
+				toGrow = append(toGrow, s)
+				if shouldUsedSizeGrowBeyondLimit(s, t) {
+					beyondLimit = append(beyondLimit, s)
+				}
+			}
+		}
+		if len(toGrow) == 0 {
+			continue
+		}
+		extra := max(0, a.contribution(t, it)-spanned)
+		if extra == 0 {
+			continue
+		}
+		if !spanningFlex || flexFactorSum == 0 {
+			if len(beyondLimit) == 0 {
+				beyondLimit = toGrow
+			}
+			distributeExtraSpaceToSets(extra, 0, t, toGrow, beyondLimit)
+		} else {
+			distributeExtraSpaceToSets(extra, flexFactorSum, t, toGrow, nil)
+		}
+		for _, s := range toGrow {
+			s.plannedIncrease = max(s.itemIncurredIncrease, s.plannedIncrease)
+		}
+	}
+	for i := range a.sets {
+		growAffectedSizeByPlannedIncrease(&a.sets[i], t)
+	}
+}
+
+// resolveIntrinsicTrackSizes mirrors ResolveIntrinsicTrackSizes
+// (:911-1022): items spanning an intrinsic track, those not spanning a
+// flexible track first, grouped by span size, then all items spanning a
+// flexible track together.
+func (a *gridTrackSizingAlgorithm) resolveIntrinsicTrackSizes(items []*gridSizingItem) {
+	var ordered []*gridSizingItem
+	for _, it := range items {
+		if a.spansIntrinsic(it) {
+			ordered = append(ordered, it)
+		}
+	}
+	flexLess := func(i, j int) bool {
+		fi, fj := a.spansFlexible(ordered[i]), a.spansFlexible(ordered[j])
+		if fi || fj {
+			return !fi && fj
+		}
+		return ordered[i].span() < ordered[j].span()
+	}
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && flexLess(j, j-1); j-- {
+			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		}
+	}
+	begin := 0
+	for begin < len(ordered) && !a.spansFlexible(ordered[begin]) {
+		end := begin + 1
+		for end < len(ordered) && !a.spansFlexible(ordered[end]) && ordered[end].span() == ordered[begin].span() {
+			end++
+		}
+		group := ordered[begin:end]
+		for _, t := range []gridContributionType{gridForIntrinsicMinimums, gridForContentBasedMinimums,
+			gridForMaxContentMinimums, gridForIntrinsicMaximums, gridForMaxContentMaximums} {
+			a.increaseTrackSizesToAccommodateGridItems(group, t, false)
+		}
+		begin = end
+	}
+	if begin < len(ordered) {
+		for _, t := range []gridContributionType{gridForIntrinsicMinimums, gridForContentBasedMinimums, gridForMaxContentMinimums} {
+			a.increaseTrackSizesToAccommodateGridItems(ordered[begin:], t, true)
+		}
+	}
+}

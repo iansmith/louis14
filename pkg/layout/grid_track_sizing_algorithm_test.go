@@ -80,3 +80,38 @@ func TestNewGridSetsInitialSizes(t *testing.T) {
 		t.Errorf("fit-content limit %v, want 60", sets[5].fitContentLimit)
 	}
 }
+
+// ResolveIntrinsicTrackSizes (grid_track_sizing_algorithm.cc:911-1022 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): single-span items set each
+// track's base size and growth limit, then a spanner's extra space goes to
+// the tracks with growth potential; a fit-content track's growth limit stops
+// at its argument.
+func TestResolveIntrinsicTrackSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tracks []css.GridTrack
+		items  []*gridSizingItem
+		want   [][2]float64 // base size, growth limit per track
+	}{
+		{"spanner", []css.GridTrack{{Auto: true}, {Auto: true}},
+			[]*gridSizingItem{{start: 0, end: 1, minContent: 30, maxContent: 30}, {start: 0, end: 2, minContent: 100, maxContent: 100}},
+			[][2]float64{{30, 30}, {70, 70}}},
+		{"spanner across a gap and a fixed track", []css.GridTrack{{Size: 100}, {Auto: true}},
+			[]*gridSizingItem{{start: 0, end: 2, minContent: 150, maxContent: 150}},
+			[][2]float64{{100, 100}, {50, 50}}},
+		{"fit-content", []css.GridTrack{{IsFitContent: true, FitContentMax: 60}},
+			[]*gridSizingItem{{start: 0, end: 1, minContent: 40, maxContent: 100}},
+			[][2]float64{{40, 60}}},
+		{"min-content and max-content", []css.GridTrack{{Auto: true}},
+			[]*gridSizingItem{{start: 0, end: 1, minContent: 40, maxContent: 100}},
+			[][2]float64{{40, 100}}},
+	} {
+		a := &gridTrackSizingAlgorithm{sets: newGridSets(tc.tracks, 500), available: 500}
+		a.resolveIntrinsicTrackSizes(tc.items)
+		for i, w := range tc.want {
+			if got := [2]float64{a.sets[i].baseSize, a.sets[i].growthLimit}; got != w {
+				t.Errorf("%s: track %d base, growth limit %v, want %v", tc.name, i, got, w)
+			}
+		}
+	}
+}
