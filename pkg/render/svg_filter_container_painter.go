@@ -38,10 +38,10 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// effect node unconditionally when the element has a filter; the
 	// source bbox only affects objectBoundingBox-unit resolution inside
 	// the filter region computation, not dispatch. The downstream
-	// `bw <= 0 || bh <= 0` guard on the resolved region is the
-	// authoritative "nothing to render" exit here.
+	// buffer-size guard on the resolved region is the authoritative
+	// "nothing to render" exit here.
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
-	deviceBBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
+	referenceBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
 	userOriginF := deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0})
 	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
 	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
@@ -49,11 +49,9 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// not move, mapped to device pixels via DeviceFromUser. (Mirrors the
 	// same fix in svg_filter_painter.go.)
 	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
-	regionF := filter.ResourceBoundingBox(deviceBBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
+	regionF := filter.ResourceBoundingBox(referenceBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
 	region := snapRectFToDevice(regionF)
-	bw := region.Dx()
-	bh := region.Dy()
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if !effectBufferUsable(region.Dx(), region.Dy()) {
 		return false
 	}
 
@@ -65,23 +63,20 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	adapter := &svgFilterElementAdapter{
 		filter:             filter,
 		filterRegion:       region,
-		referenceBox:       deviceBBox,
+		referenceBox:       referenceBox,
 		userSpaceOrigin:    roundPoint(userOriginF),
 		space:              space,
 		resources:          pctx.Resources,
 		imageFetcher:       pctx.Renderer.imageFetcher,
 		externalSVGFetcher: pctx.Renderer.externalSVGFetcher,
 	}
-	builder := filters.NewSVGFilterBuilder(space)
-	graph := builder.BuildGraph(adapter)
-	toComposite := srcBuf
+	graph := filters.NewSVGFilterBuilder(space).BuildGraph(adapter)
+	var out *image.RGBA
 	if graph != nil {
 		graph.SetSourceImage(srcBuf)
-		if out := graph.ApplyToSRGB(); out != nil {
-			toComposite = out
-		}
+		out = graph.ApplyToSRGB()
 	}
-	compositeFilterOutputOntoTarget(pctx.Renderer, toComposite, region.Min.X, region.Min.Y, pctx.viewportDeviceClip())
+	compositeSVGFilterResult(pctx, srcBuf, out, region)
 	return true
 }
 
@@ -91,52 +86,22 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 // (SVGElementResourceClient::UpdateFilterData → FilterEffectBuilder::
 // BuildFilterOperations, svg_resources.cc:371-422 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with the container's fill box
-// as the reference box (ReferenceBoxForEffects). Returns false when no graph
-// is produced, so the caller paints the children unfiltered.
+// as the reference box (ReferenceBoxForEffects) and its children's stroke
+// bounding boxes as the paint extent (SVGContentContainer::
+// ComputeStrokeBoundingBox). Returns false when no graph is produced, so
+// the caller paints the children unfiltered.
 func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform, ops []css.FilterFunction) bool {
-	if len(ops) == 1 && ops[0].Name == "url" {
-		return false // a lone url() that did not resolve: paint unfiltered
-	}
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
-	referenceBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
-	if referenceBox.IsEmpty() && hasReferenceFilter(ops) {
-		return false
-	}
-	// The chain's source extent is the children's paint: their stroke
-	// bounding boxes (SVGContentContainer::ComputeStrokeBoundingBox).
-	paintBox := snapRectFToDevice(deviceFromLocal.MapRect(c.StrokeBoundingBox()))
-	if paintBox.Empty() {
-		return false
-	}
-	builder := &FilterEffectBuilder{
-		ReferenceBox:       referenceBox,
-		FilterViewport:     snapRectFToDevice(referenceBox),
-		CurrentColor:       c.Style.GetColor(),
-		Resources:          pctx.Resources,
-		ExternalSVGFetcher: pctx.Renderer.externalSVGFetcher,
-		ImageFetcher:       pctx.Renderer.imageFetcher,
-	}
-	graph := builder.BuildFilterEffect(ops)
-	if graph == nil {
-		return false
-	}
-	// A url() stage's region is the reference box mapped through the
-	// chain; the paint extent is united in, so the children's paint
-	// outside the fill box stays.
-	if !graph.FilterRegion.Empty() {
-		graph.FilterRegion = graph.FilterRegion.Union(graph.MapRect(paintBox))
-	}
-	region := graph.EnsureRegion(paintBox, false)
-	if bw, bh := region.Dx(), region.Dy(); bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	graph, region, ok := buildSVGFilterChain(pctx, ops,
+		deviceFromLocal.MapRect(c.ObjectBoundingBox()),
+		snapRectFToDevice(deviceFromLocal.MapRect(c.StrokeBoundingBox())),
+		deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}), c.Style.GetColor())
+	if !ok {
 		return false
 	}
 	srcBuf := paintSVGContainerFilterSource(pctx, c, effective, region)
 	graph.SetSourceImage(srcBuf)
-	toComposite := srcBuf
-	if out := graph.ApplyToSRGB(); out != nil {
-		toComposite = out
-	}
-	compositeFilterOutputOntoTarget(pctx.Renderer, toComposite, region.Min.X, region.Min.Y, pctx.viewportDeviceClip())
+	compositeSVGFilterResult(pctx, srcBuf, graph.ApplyToSRGB(), region)
 	return true
 }
 
@@ -144,31 +109,9 @@ func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer
 // own transform effective, into a buffer covering region (device pixels):
 // the filter's SourceGraphic, the union of its children's painted output.
 func paintSVGContainerFilterSource(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform, region image.Rectangle) *image.RGBA {
-	// The Translate(-region.Min) shift makes the buffer-local (0, 0)
-	// correspond to region.Min in device space.
-	srcBuf := image.NewRGBA(image.Rect(0, 0, region.Dx(), region.Dy()))
-	tmpR := NewRendererForImage(srcBuf)
-	tmpR.dc.Translate(float64(-region.Min.X), float64(-region.Min.Y))
-	t := pctx.DeviceFromUser
-	if !t.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
-	}
-
-	// Recurse into the container's children with a copy of the paint
-	// context retargeted at the offscreen buffer, with the same
-	// DeviceFromUser-plus-region-translate composition the shape-filter
-	// path uses.
-	childCtx := *pctx
-	childCtx.dc = tmpR.dc
-	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = geometry.Translate(
-		float64(-region.Min.X), float64(-region.Min.Y),
-	).Compose(pctx.DeviceFromUser)
-
-	// Apply the container's own transform (ElementTransform) inside the
-	// buffer. Mirrors paintSVGContainer's pushScopedSVGTransform — the
-	// container's transform stack participates in the source-graphic
-	// painting just like in the un-filtered path.
+	srcBuf, childCtx := newSVGFilterSource(pctx, region)
+	// Apply the container's own transform inside the buffer, as
+	// paintSVGContainer's pushScopedSVGTransform does unfiltered.
 	guard := pushScopedSVGTransform(&childCtx, effective, geometry.RectF{})
 	for _, child := range c.Children {
 		paintSVGNode(&childCtx, child)

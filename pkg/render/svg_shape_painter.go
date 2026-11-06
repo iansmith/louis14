@@ -353,7 +353,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	by := int(math.Floor(deviceBBox.Y()))
 	bw := int(math.Ceil(deviceBBox.Right())) - bx + 1
 	bh := int(math.Ceil(deviceBBox.Bottom())) - by + 1
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if !effectBufferUsable(bw, bh) {
 		return
 	}
 
