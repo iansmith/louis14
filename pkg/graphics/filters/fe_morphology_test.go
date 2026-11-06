@@ -71,18 +71,23 @@ func TestFEMorphology_Erode_ShrinksOpaqueBlock(t *testing.T) {
 	}
 }
 
-// TestFEMorphology_ZeroRadius_TransparentBlack verifies the spec rule that a
-// zero radius disables the effect, producing a transparent black image.
-func TestFEMorphology_ZeroRadius_TransparentBlack(t *testing.T) {
+// TestFEMorphology_ZeroRadius_PassesInputThrough: "A negative or zero value
+// disables the effect of the given filter primitive (i.e., the result is the
+// filter input image)" (SVGFEMorphologyElement::Build,
+// svg_fe_morphology_element.cc:118-121 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); Skia's make_morphology returns
+// the input when both radii are 0 (SkMorphologyImageFilter.cpp:113-118 @
+// skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func TestFEMorphology_ZeroRadius_PassesInputThrough(t *testing.T) {
 	region := image.Rect(0, 0, 4, 4)
 	in := solidInput(region, 0, 255, 0, 255) // opaque green
 	src := newPixelInputEffect(in, InterpolationSpaceSRGB)
-	fe := NewFEMorphology(src, InterpolationSpaceSRGB, MorphologyDilate, 0, 0)
+	fe := NewFEMorphology(src, InterpolationSpaceSRGB, MorphologyErode, 0, 0)
 	f := &Filter{FilterRegion: region, LastEffect: fe}
 	out := f.Apply()
 	for i := 0; i+3 < len(out.Pix); i += 4 {
-		if out.Pix[i] != 0 || out.Pix[i+1] != 0 || out.Pix[i+2] != 0 || out.Pix[i+3] != 0 {
-			t.Fatalf("zero radius: pixel %d expected transparent black, got %v", i/4, out.Pix[i:i+4])
+		if out.Pix[i] != 0 || out.Pix[i+1] != 255 || out.Pix[i+2] != 0 || out.Pix[i+3] != 255 {
+			t.Fatalf("zero radius: pixel %d = %v, want the opaque green input", i/4, out.Pix[i:i+4])
 		}
 	}
 }
