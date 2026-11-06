@@ -3,6 +3,8 @@ package render_test
 import (
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-725: visibility is per box, not per layer. Blink paints a hidden
@@ -19,7 +21,7 @@ func TestHiddenLayer_PaintsVisibleDescendants(t *testing.T) {
 		{"flow block", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+			img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="`+tc.outer+`;visibility:hidden;background:red;padding-left:50px;width:50px;height:50px">
 <div style="visibility:visible;background:green;width:50px;height:50px"></div></div>`, 200, 100)
 			wantPixel(t, img, 75, 25, canvasGreen, "the visible child")
@@ -41,7 +43,7 @@ func TestHiddenLayer_FrameOwnerHidesItsDocument(t *testing.T) {
 		{"visible", canvasGreen}, // control: the frame's document renders
 		{"hidden", canvasWhite},
 	} {
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+
 			`<iframe style="visibility:`+tc.visibility+`;border:0;width:100px;height:80px" srcdoc="`+
 			`<html style='background:green'><body style='margin:0'></body></html>"></iframe>`, 100, 100)
 		wantPixel(t, img, 50, 40, tc.want, tc.visibility+" iframe's document")
@@ -61,7 +63,7 @@ func TestHiddenLayer_MaskOfHiddenBoxDoesNotApply(t *testing.T) {
 		{"visible", canvasWhite}, // control: the transparent mask applies
 		{"hidden", canvasGreen},
 	} {
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="visibility:`+tc.visibility+`;mask-image:linear-gradient(transparent,transparent);width:50px;height:50px">
 <div style="visibility:visible;background:green;width:50px;height:50px"></div></div>`, 100, 100)
 		wantPixel(t, img, 25, 25, tc.want, "the visible child of a "+tc.visibility+" masked box")
@@ -80,7 +82,7 @@ func TestHiddenLayer_HiddenSVGPaintsVisibleChild(t *testing.T) {
 		{`visibility="visible"`, canvasGreen},
 		{"", canvasWhite}, // control: the rect inherits hidden
 	} {
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg style="visibility:hidden;display:block" width="100" height="100"><rect `+tc.rect+` width="50" height="50" fill="green"/></svg>`, 100, 100)
 		wantPixel(t, img, 25, 25, tc.want, "a hidden svg's rect "+tc.rect)
 	}

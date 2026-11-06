@@ -18,7 +18,8 @@ import (
 
 func renderWithErroringFetcher(t *testing.T, src string, w, h int) (*image.RGBA, *layout.Box) {
 	t.Helper()
-	return RenderPage(t, src, w, h, WithImageFetcher(func(uri string) ([]byte, error) { return nil, errors.New("404: " + uri) }))
+	img, boxes := RenderDocument(t, ParsePage(t, src), w, h, WithImageFetcher(func(uri string) ([]byte, error) { return nil, errors.New("404: " + uri) }))
+	return img, boxes[0]
 }
 
 func findImgBox(b *layout.Box) *layout.Box {

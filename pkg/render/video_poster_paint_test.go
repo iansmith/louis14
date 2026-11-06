@@ -19,7 +19,7 @@ func TestVideoPoster_PaintsPosterWithObjectFit(t *testing.T) {
 	uri := splitPNGDataURI(t, 4, 2, c, c)
 	src := `<!DOCTYPE html><style>body{margin:0} video{display:block; width:40px; height:40px; object-fit:none; object-position:right bottom}</style>
 <video poster="` + uri + `"></video>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 36, 38, c.R, c.G, c.B, "poster at the bottom-right corner")
 	wantRGB(t, img, 39, 39, c.R, c.G, c.B, "poster at the bottom-right corner")
 	wantRGB(t, img, 35, 38, 255, 255, 255, "left of the poster")
@@ -32,7 +32,7 @@ func TestVideoPoster_NaturalSizeFromPoster(t *testing.T) {
 	uri := splitPNGDataURI(t, 16, 8, c, c)
 	src := `<!DOCTYPE html><style>body{margin:0} video{display:block} div{width:10px; height:10px; background:blue}</style>
 <video poster="` + uri + `"></video><div></div>`
-	img := renderColumnRuleHTML(t, src, 400, 300)
+	img := RenderPage(t, src, 400, 300)
 	wantRGB(t, img, 8, 4, c.R, c.G, c.B, "poster at its natural size")
 	wantRGB(t, img, 5, 9, 0, 0, 255, "sibling right below the 8px-tall video")
 }
@@ -45,7 +45,7 @@ func TestVideoPoster_NaturalSizeFromPoster(t *testing.T) {
 func TestVideo_NoPosterHasNoNaturalRatio(t *testing.T) {
 	src := `<!DOCTYPE html><style>body{margin:0} video{display:block; background:rgb(0,0,255)}</style>
 <video style="width:100px"></video><video style="height:60px"></video>`
-	img := renderColumnRuleHTML(t, src, 400, 300)
+	img := RenderPage(t, src, 400, 300)
 	// First video: x 0..99, y 0..149. Second: x 0..299, y 150..209.
 	wantRGB(t, img, 50, 140, 0, 0, 255, "100px-wide video is 150px tall")
 	wantRGB(t, img, 150, 100, 255, 255, 255, "right of the 100px-wide video")

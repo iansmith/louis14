@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"testing"
 
@@ -28,20 +29,28 @@ func WithExternalSVGFetcher(f func(uri string) ([]byte, error)) RenderOption {
 	return func(c *renderPageConfig) { c.externalSVGFetcher = f }
 }
 
-// RenderPage parses src, lays it out in a w×h viewport and renders it onto a
-// fresh image, returning the image and the root box.
-func RenderPage(t testing.TB, src string, w, h int, opts ...RenderOption) (*image.RGBA, *layout.Box) {
+// ParsePage parses src, failing t on a parse error.
+func ParsePage(t testing.TB, src string) *html.Document {
 	t.Helper()
 	doc, err := html.Parse(src)
 	if err != nil {
 		t.Fatalf("html.Parse: %v", err)
 	}
-	return RenderDocument(doc, w, h, opts...)
+	return doc
 }
 
-// RenderDocument is RenderPage for a parsed (and possibly mutated)
-// document.
-func RenderDocument(doc *html.Document, w, h int, opts ...RenderOption) (*image.RGBA, *layout.Box) {
+// RenderPage parses src, lays it out in a w×h viewport and renders it onto a
+// fresh image.
+func RenderPage(t testing.TB, src string, w, h int, opts ...RenderOption) *image.RGBA {
+	t.Helper()
+	img, _ := RenderDocument(t, ParsePage(t, src), w, h, opts...)
+	return img
+}
+
+// RenderDocument is RenderPage for a parsed (and possibly mutated or
+// scripted) document; it also returns the laid-out root boxes.
+func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOption) (*image.RGBA, []*layout.Box) {
+	t.Helper()
 	var c renderPageConfig
 	for _, o := range opts {
 		o(&c)
@@ -57,5 +66,16 @@ func RenderDocument(doc *html.Document, w, h int, opts ...RenderOption) (*image.
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
 	}
 	r.Render(boxes)
-	return target, boxes[0]
+	return target, boxes
+}
+
+// Every paint pass in this package's tests asserts it left no Push/Pop
+// imbalance: a Pop past the renderer's own pushes panics the test that
+// rendered, so it is attributed to that test even under t.Parallel.
+func init() {
+	paintPassDoneHook = func(r *Renderer) {
+		if n := r.popUnderflows(); n != 0 {
+			panic(fmt.Sprintf("render: this renderer's paint passes popped its draw context past its own pushes %d time(s): a Push/Pop imbalance", n))
+		}
+	}
 }

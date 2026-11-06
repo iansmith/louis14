@@ -23,7 +23,7 @@ func renderPositionedBackground(t *testing.T, c color.RGBA, pos string) *image.R
 	uri := splitPNGDataURI(t, 10, 10, c, c)
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="width:20px; height:20px; background:url(` + uri + `) no-repeat; background-size:10px 10px; background-position:` + pos + `"></div>`
-	return renderColumnRuleHTML(t, src, 50, 50)
+	return RenderPage(t, src, 50, 50)
 }
 
 // A negative percentage is a percentage of (area - tile): -50% of 10px is

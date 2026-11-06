@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // TestClipPathInset_ClipsToInsetRect: clip-path: inset(20px 30px 40px 10px)
 // on a 100x100 red box keeps only the inset rectangle x∈[10,70), y∈[20,60).
@@ -11,7 +15,7 @@ func TestClipPathInset_ClipsToInsetRect(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="width:100px;height:100px;background:red;clip-path:inset(20px 30px 40px 10px)"></div>` +
 		`</body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	sampleColorClose(t, img, 40, 40, 255, 0, 0, 0, "inside inset rect (40,40)")
 	sampleColorClose(t, img, 5, 40, 255, 255, 255, 0, "left of inset (5,40)")
 	sampleColorClose(t, img, 80, 40, 255, 255, 255, 0, "right of inset (80,40)")
@@ -26,7 +30,7 @@ func TestClipPathInset_EmptyRectClipsEverything(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="width:100px;height:100px;background:red;clip-path:inset(60px 0 60px 0)"></div>` +
 		`</body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	for _, y := range []int{1, 50, 59, 60, 99} {
 		sampleColorClose(t, img, 50, y, 255, 255, 255, 0, "zero-height inset")
 	}

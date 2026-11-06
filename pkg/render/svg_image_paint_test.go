@@ -16,7 +16,7 @@ import "testing"
 func TestSVGImage_DrawnAtDestinationSize(t *testing.T) {
 	uri := svgDataURI(`<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1" viewBox="0 0 2 1" preserveAspectRatio="none"><rect width="1" height="1" fill="rgb(255,0,0)"/><rect x="1" width="1" height="1" fill="rgb(0,0,255)"/></svg>`)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:20px}</style><img src="` + uri + `">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 19, 10, 255, 0, 0, "left half is pure red at the edge")
 	wantRGB(t, img, 20, 10, 0, 0, 255, "right half is pure blue at the edge")
 }
@@ -27,7 +27,7 @@ func TestSVGImage_DrawnAtDestinationSize(t *testing.T) {
 func TestSVGImage_NoNaturalSizeUsesConcreteObjectSize(t *testing.T) {
 	uri := svgDataURI(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 8"><rect width="16" height="8" fill="rgb(0,128,0)"/></svg>`)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:40px; object-fit:none}</style><img src="` + uri + `">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 1, 11, 0, 128, 0, "left edge of the 40×20 concrete object")
 	wantRGB(t, img, 38, 28, 0, 128, 0, "right edge of the 40×20 concrete object")
 	wantRGB(t, img, 20, 5, 255, 255, 255, "above the concrete object")
@@ -43,7 +43,7 @@ const centredSquareSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1
 
 func TestSVGImage_ImgLaidOutWithPreserveAspectRatio(t *testing.T) {
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:20px}</style><img src="` + svgDataURI(centredSquareSVG) + `">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 4, 10, 255, 255, 255, "left band outside the centred viewBox stays unpainted")
 	wantRGB(t, img, 20, 10, 255, 0, 0, "centre is the viewBox content")
 	wantRGB(t, img, 35, 10, 255, 255, 255, "right band outside the centred viewBox stays unpainted")
@@ -51,7 +51,7 @@ func TestSVGImage_ImgLaidOutWithPreserveAspectRatio(t *testing.T) {
 
 func TestSVGImage_BackgroundLaidOutWithPreserveAspectRatio(t *testing.T) {
 	src := `<!DOCTYPE html><style>body{margin:0} div{width:40px; height:20px; background:url("` + svgDataURI(centredSquareSVG) + `") no-repeat; background-size:40px 20px}</style><div></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 4, 10, 255, 255, 255, "left band outside the centred viewBox stays unpainted")
 	wantRGB(t, img, 20, 10, 255, 0, 0, "centre is the viewBox content")
 	wantRGB(t, img, 35, 10, 255, 255, 255, "right band outside the centred viewBox stays unpainted")
@@ -64,7 +64,7 @@ func TestSVGImage_BackgroundLaidOutWithPreserveAspectRatio(t *testing.T) {
 func TestSVGImage_TransparentBaseBackground(t *testing.T) {
 	uri := svgDataURI(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="10" height="20" fill="rgb(255,0,0)"/></svg>`)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; background:rgb(0,0,255)}</style><img src="` + uri + `">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 5, 10, 255, 0, 0, "the document's rect")
 	wantRGB(t, img, 30, 10, 0, 0, 255, "unpainted document area shows the img background")
 }

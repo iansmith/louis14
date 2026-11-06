@@ -20,13 +20,6 @@ import (
 	"louis14/pkg/layout"
 )
 
-// renderColumnRuleHTML lays out and paints src on a white w x h canvas.
-func renderColumnRuleHTML(t *testing.T, src string, w, h int) *image.RGBA {
-	t.Helper()
-	img, _ := RenderPage(t, src, w, h)
-	return img
-}
-
 func rgbAt(img *image.RGBA, x, y int) (uint8, uint8, uint8) {
 	c := img.RGBAAt(x, y)
 	return c.R, c.G, c.B
@@ -44,7 +37,7 @@ func TestColumnRule_FractionalCenter_SnappedEdges(t *testing.T) {
 <div style="width:101px; height:50px; columns:2; column-gap:7px; column-rule:3px solid blue; column-fill:auto;">
   <div style="height:200px"></div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 300, 100)
+	img := RenderPage(t, src, 300, 100)
 
 	// Scan the row through the first rule (logical rect x 49..52 unsnapped).
 	const y = 25
@@ -82,7 +75,7 @@ func TestColumnRule_HTBSpanner_PerRowSegments(t *testing.T) {
   <div style="column-span:all; height:20px"></div>
   <div style="height:80px"></div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 300, 150)
+	img := RenderPage(t, src, 300, 150)
 
 	assertColor := func(x, y int, wantR, wantG, wantB uint8, what string) {
 		t.Helper()
@@ -116,7 +109,7 @@ func TestColumnRule_VerticalLR_PhysicalHorizontalSegments(t *testing.T) {
 <div style="column-span:all; block-size:20px"></div>
 <div style="block-size:80px"></div>
 </section>`
-	img := renderColumnRuleHTML(t, src, 300, 450)
+	img := RenderPage(t, src, 300, 450)
 
 	orange := color.RGBA{255, 165, 0, 255}
 	assertColor := func(x, y int, want color.RGBA, what string) {
@@ -153,7 +146,7 @@ func TestColumnRule_FractionalWidth_ClampedLikeBorderWidth(t *testing.T) {
 <div style="width:100px; height:50px; columns:2; column-gap:10px; column-rule:3.9px solid blue; column-fill:auto;">
   <div style="height:200px"></div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 300, 200)
+	img := RenderPage(t, src, 300, 200)
 
 	for _, tc := range []struct {
 		name      string
@@ -241,7 +234,7 @@ func TestColumnRule_HiddenStyle_PaintsNothing(t *testing.T) {
 <div style="width:101px; height:50px; columns:2; column-gap:7px; column-rule-width:3px; column-rule-style:hidden; column-rule-color:blue; column-fill:auto;">
   <div style="height:200px"></div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 300, 100)
+	img := RenderPage(t, src, 300, 100)
 
 	const y = 25
 	for x := 40; x < 64; x++ {
@@ -275,7 +268,7 @@ func TestColumnRule_RowWrap_RuleBreaksAtRowGaps(t *testing.T) {
     ` + strings.Repeat(`<div style="width:50px; height:20px; background:cyan;"></div>`, 16) + `
   </div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 400, 200)
+	img := RenderPage(t, src, 400, 200)
 
 	isBlack := func(x, y int) bool {
 		r, g, b := rgbAt(img, x, y)
@@ -326,7 +319,7 @@ func TestColumnRule_NestedFragment_NoRuleAfterLastColumn(t *testing.T) {
     <div style="height:340px"></div>
   </div>
 </div>`
-	img := renderColumnRuleHTML(t, src, 820, 120)
+	img := RenderPage(t, src, 820, 120)
 
 	for _, tc := range []struct {
 		x       int

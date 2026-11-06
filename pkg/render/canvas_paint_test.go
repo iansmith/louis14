@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"testing"
 
-	"louis14/pkg/html"
 	"louis14/pkg/js"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
@@ -18,10 +17,7 @@ import (
 // paints, as the reftest harness does.
 func renderScripted(t *testing.T, src string, w, h int) (*image.RGBA, []*layout.Box) {
 	t.Helper()
-	doc, err := html.Parse(src)
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := render.ParsePage(t, src)
 	first := layout.NewLayoutEngine(float64(w), float64(h))
 	first.Layout(doc)
 	eng := js.New()
@@ -29,10 +25,7 @@ func renderScripted(t *testing.T, src string, w, h int) (*image.RGBA, []*layout.
 	if err := eng.Execute(doc); err != nil {
 		t.Fatal(err)
 	}
-	boxes := layout.NewLayoutEngine(float64(w), float64(h)).Layout(doc)
-	target := image.NewRGBA(image.Rect(0, 0, w, h))
-	render.NewRendererForImage(target).Render(boxes)
-	return target, boxes
+	return render.RenderDocument(t, doc, w, h)
 }
 
 func wantPixel(t *testing.T, img *image.RGBA, x, y int, want color.RGBA, why string) {

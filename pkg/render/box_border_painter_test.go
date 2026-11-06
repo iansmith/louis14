@@ -3,6 +3,8 @@ package render_test
 import (
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-552: BoxBorderPainter port (box_border_painter.cc @
@@ -28,7 +30,7 @@ var (
 // stays empty: the inner stripe starts at the inner-third rect's corner,
 // not at the box edge.
 func TestBoxBorderPainter_DoubleBorderCornerGap(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 		`<div style="width:50px;height:50px;border:9px double black"></div></body></html>`, 100, 100)
 	assertPixel(t, img, 1, 1, black, "outer stripe corner")
 	assertPixel(t, img, 7, 7, black, "inner stripe corner")
@@ -42,7 +44,7 @@ func TestBoxBorderPainter_DoubleBorderCornerGap(t *testing.T) {
 // CalculateAdjustedInnerBorder :170-260), which leaves no hole in the
 // square bottom-right corner.
 func TestBoxBorderPainter_NonRenderableInnerFillsSquareCorner(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 		`<div style="width:50px;height:50px;border:25px solid black;border-radius:100% 0 0 0"></div></body></html>`, 150, 150)
 	assertPixel(t, img, 98, 98, black, "square bottom-right border corner")
 	assertPixel(t, img, 90, 90, black, "bottom-right border corner")
@@ -55,7 +57,7 @@ func TestBoxBorderPainter_NonRenderableInnerFillsSquareCorner(t *testing.T) {
 // is clipped by a radius-150 arc centred on the border box's far corner
 // (200,200), not by the radius-100 arc ConstrainRadii would give.
 func TestRoundedInnerRectClipper_NonRenderableBackgroundClip(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 		`<div style="width:100px;height:100px;padding:25px;border:25px solid transparent;`+
 		`border-radius:100% 0 0 0;background-color:black;background-clip:content-box"></div></body></html>`, 250, 250)
 	assertPixel(t, img, 110, 70, white, "outside the radius-150 corner arc")

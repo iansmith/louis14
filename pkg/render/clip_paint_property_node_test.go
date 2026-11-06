@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 func isRed(c color.RGBA) bool { return c.R > 200 && c.G < 60 }
@@ -29,7 +31,7 @@ func TestClipNode_EscapingLayersInheritAncestorClips(t *testing.T) {
 		{"isolated relpos z-index", `<div style="position:relative;z-index:1;top:-40px;` + red + `"><div style="mix-blend-mode:multiply;width:10px;height:10px"></div></div>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, fmt.Sprintf(page, tc.child), 100, 150)
+			img := render.RenderPage(t, fmt.Sprintf(page, tc.child), 100, 150)
 			// (10, 40) is above the clipping box (which starts at y=60).
 			if c := img.RGBAAt(10, 40); isRed(c) {
 				t.Errorf("pixel (10,40) = %v: the child escaped the ancestor overflow clip", c)
@@ -48,7 +50,7 @@ func TestClipNode_InlineOpacityGroupIsClipped(t *testing.T) {
 		`<div style="width:50px;height:50px;overflow:hidden"><span style="opacity:0.99">` +
 		`<span style="display:inline-block;width:100px;height:20px;background:red"></span>` +
 		`</span></div></body></html>`
-	img := renderToImage(t, src, 150, 100)
+	img := render.RenderPage(t, src, 150, 100)
 	if c := img.RGBAAt(70, 10); isRed(c) {
 		t.Errorf("pixel (70,10) = %v: the opacity group escaped the overflow clip", c)
 	}
@@ -69,7 +71,7 @@ func TestClipNode_RelposAutoPaintsAtStep6InsideClip(t *testing.T) {
 		`<div style="position:relative;width:50px;height:50px;background:red"></div>` +
 		`<div style="margin-top:-50px;width:50px;height:50px;background:lime"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, src, 100, 150)
+	img := render.RenderPage(t, src, 100, 150)
 	if c := img.RGBAAt(10, 10); !isRed(c) {
 		t.Errorf("pixel (10,10) = %v, want the relpos box painted over the later block", c)
 	}

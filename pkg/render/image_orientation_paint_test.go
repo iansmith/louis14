@@ -84,7 +84,7 @@ func TestImageOrientation_FromImageRotatesAndTransposes(t *testing.T) {
 	uri := jpegWithExifOrientation(t, 32, 16, orientRed, orientBlue, 6)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block} div{width:10px;height:10px;background:rgb(0,255,0)}</style>
 <img src="` + uri + `"><div></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	assertNear(t, img, 8, 6, orientRed, "rotated left half on top")
 	assertNear(t, img, 8, 26, orientBlue, "rotated right half at the bottom")
 	wantRGB(t, img, 5, 34, 0, 255, 0, "sibling below the 32px-tall image")
@@ -96,7 +96,7 @@ func TestImageOrientation_NoneIgnoresExif(t *testing.T) {
 	uri := jpegWithExifOrientation(t, 32, 16, orientBlue, orientRed, 6)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; image-orientation:none} div{width:10px;height:10px;background:rgb(0,255,0)}</style>
 <img src="` + uri + `"><div></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	assertNear(t, img, 6, 8, orientBlue, "unrotated left half")
 	assertNear(t, img, 26, 8, orientRed, "unrotated right half")
 	wantRGB(t, img, 5, 18, 0, 255, 0, "sibling below the 16px-tall image")

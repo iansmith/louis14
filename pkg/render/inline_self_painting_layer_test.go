@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-718 (filter-effects worklist D2): a non-atomic inline gets its own
@@ -27,7 +29,7 @@ var (
 // (LayoutObject::PaintingLayer), so the inline's filter applies to it: blue
 // inverts to yellow.
 func TestInlineLayer_FilterAppliesToFloat(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div><span style="filter: invert(1)"><div style="float:left;width:100px;height:100px;background:blue"></div></span></div>`, 200, 150)
 	wantPixel(t, img, 50, 50, inlineLayerYellow, "float under the inverted inline")
 }
@@ -37,7 +39,7 @@ func TestInlineLayer_FilterAppliesToFloat(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the clip applies once to the
 // inline's layer: inset(0) keeps the first line and cuts away the second.
 func TestInlineLayer_ClipPathReferenceBoxIsFirstFragment(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;font-size:20px;line-height:40px}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;font-size:20px;line-height:40px}</style>
 <div style="width:100px"><span style="clip-path: inset(0); background: red; color: red">aaaaaaa aaaaaaa aaaaaaa</span></div>`, 200, 150)
 	wantPixel(t, img, 5, 20, canvasRed, "first line, inside the reference box")
 	wantPixel(t, img, 5, 60, canvasWhite, "second line, outside the reference box")
@@ -46,7 +48,7 @@ func TestInlineLayer_ClipPathReferenceBoxIsFirstFragment(t *testing.T) {
 // A relatively positioned inline paints at Appendix E step 6 in tree order,
 // as a positioned layer: after an earlier absolutely positioned sibling.
 func TestInlineLayer_RelativeInlinePaintsAfterEarlierPositioned(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="position:absolute;left:0;top:0;width:200px;height:100px;background:red"></div>
 <div><span style="position:relative;background:green;padding:0 100px;font-size:50px">x</span></div>`, 250, 150)
 	wantPixel(t, img, 20, 20, canvasGreen, "relative inline over the earlier abspos box")
@@ -58,7 +60,7 @@ func TestInlineLayer_RelativeInlinePaintsAfterEarlierPositioned(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): at y=10.6 the box starts at row
 // 11, as its background would.
 func TestBackdropFilter_BoundsArePixelSnapped(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:orange}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;background:orange}</style>
 <div style="position:absolute;left:10px;top:10.6px;width:50px;height:50px;backdrop-filter:invert(1)"></div>`, 100, 100)
 	wantPixel(t, img, 30, 10, inlineLayerOrange, "row above the snapped backdrop bounds")
 	wantPixel(t, img, 30, 11, inlineLayerAzure, "first row inside: orange inverted")
@@ -70,7 +72,7 @@ func TestBackdropFilter_BoundsArePixelSnapped(t *testing.T) {
 // to lime, the yellow outside it is left alone. The abspos layer joins the
 // inline's layer after the paint-tree walk (reparentZOrderByAncestorSC).
 func TestInlineLayer_BackdropRootForReparentedAbspos(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="background:yellow;padding:100px">
 <div style="position:relative;clip-path:inset(-50px);background:rgb(255,0,255);padding:100px;display:inline">
 <div style="backdrop-filter:invert(1);position:absolute;top:-50px;left:-50px;width:400px;height:400px"></div>
@@ -85,7 +87,7 @@ func TestInlineLayer_BackdropRootForReparentedAbspos(t *testing.T) {
 func TestInlineLayer_PaintsNoDecorationsOfItsOwn(t *testing.T) {
 	for _, decl := range []string{"outline:10px solid red", "box-shadow:0 0 0 10px red"} {
 		t.Run(decl, func(t *testing.T) {
-			img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+			img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="padding:50px"><span style="position:relative;`+decl+`">x</span></div>`, 200, 150)
 			wantPixel(t, img, 0, 0, canvasWhite, "nothing at the layer box origin")
 			wantPixel(t, img, 45, 58, canvasRed, "the fragment's own ring, left of the span")
@@ -112,14 +114,14 @@ func wantPixelWithinOne(t *testing.T, img *image.RGBA, x, y int, want color.RGBA
 // opacity from its members: an inline-block's own filter still applies
 // (blue inverts to yellow).
 func TestInlineLayer_FirstLineGroupKeepsAtomicMemberEffects(t *testing.T) {
-	img := renderToImage(t, firstLinePage("background:blue;filter:invert(1)", ""), 200, 150)
+	img := render.RenderPage(t, firstLinePage("background:blue;filter:invert(1)", ""), 200, 150)
 	wantPixelWithinOne(t, img, 25, 25, inlineLayerYellow, "inline-block's own filter inside a ::first-line group")
 }
 
 // A ::first-line member that is a stacking context collects its own
 // stacking descendants: its z-index:-1 child paints above its background.
 func TestInlineLayer_FirstLineStackingMemberKeepsItsDescendants(t *testing.T) {
-	img := renderToImage(t, firstLinePage("background:green;filter:hue-rotate(0deg)",
+	img := render.RenderPage(t, firstLinePage("background:green;filter:hue-rotate(0deg)",
 		`<span style="display:block;position:relative;z-index:-1;width:50px;height:50px;background:red"></span>`), 200, 150)
 	wantPixelWithinOne(t, img, 25, 25, canvasRed, "the member's z-index:-1 child above its background")
 }
@@ -127,7 +129,7 @@ func TestInlineLayer_FirstLineStackingMemberKeepsItsDescendants(t *testing.T) {
 // The clip-path reference box is the inline's first line's fragment, also
 // when a block-in-inline splits the inline.
 func TestInlineLayer_ClipPathReferenceBoxFirstLineWithBlockInInline(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;font-size:20px;line-height:40px}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;font-size:20px;line-height:40px}</style>
 <div style="width:200px"><span style="clip-path: inset(0); background: red; color: red">aaa<div>bbb</div>ccc</span></div>`, 200, 150)
 	wantPixel(t, img, 5, 20, canvasRed, "first line, inside the reference box")
 	wantPixel(t, img, 5, 100, canvasWhite, "last line, outside the reference box")
@@ -152,7 +154,7 @@ func minChannel(img *image.RGBA, r image.Rectangle) uint8 {
 // static inline's layer stays in z-order auto even with a z-index, so its
 // background is not hidden under its parent's.
 func TestInlineLayer_StaticInlineIgnoresZIndex(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <div style="background:white"><span style="opacity:.5;z-index:-1;background:black;padding:0 50px">x</span></div>`, 200, 100)
 	if m := minChannel(img, image.Rect(0, 0, 40, 20)); m > 200 {
 		t.Errorf("the inline's background is hidden under its parent's (darkest channel %d)", m)
@@ -163,7 +165,7 @@ func TestInlineLayer_StaticInlineIgnoresZIndex(t *testing.T) {
 // positioned span (master's routing, LOU-310): the text is at most half
 // dark.
 func TestInlineLayer_FirstLineOpacityInsideRelativeSpan(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0} p{margin:0;font-size:40px} p::first-line{opacity:.5}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0} p{margin:0;font-size:40px} p::first-line{opacity:.5}</style>
 <p><span style="position:relative;color:black">WWWW</span></p>`, 200, 100)
 	switch m := minChannel(img, image.Rect(0, 0, 200, 50)); {
 	case m < 100:
@@ -176,7 +178,7 @@ func TestInlineLayer_FirstLineOpacityInsideRelativeSpan(t *testing.T) {
 // Visibility is per box, not per layer: a visible descendant of a hidden
 // inline with a layer still paints.
 func TestInlineLayer_HiddenInlinePaintsVisibleDescendants(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;font-size:40px}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;font-size:40px}</style>
 <span style="position:relative;visibility:hidden">a <b style="visibility:visible;color:black">WWW</b></span>`, 200, 100)
 	if m := minChannel(img, image.Rect(0, 0, 200, 50)); m > 50 {
 		t.Errorf("the visible descendant did not paint (darkest channel %d)", m)

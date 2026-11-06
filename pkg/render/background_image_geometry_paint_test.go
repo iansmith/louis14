@@ -55,7 +55,7 @@ func TestBackgroundGeometry_RoundBothAxes_AutoWidthNotRescaledByY(t *testing.T) 
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="width:210px; height:210px; background-color:red; background-image:url(` + uri + `);
  background-repeat:round; background-size:auto 61px"></div>`
-	img := renderColumnRuleHTML(t, src, 300, 300)
+	img := RenderPage(t, src, 300, 300)
 	wantRGB(t, img, 75, 5, 0, 0, 255, "second 70px tile starts with its blue half at x=70")
 	wantRGB(t, img, 60, 5, 255, 165, 0, "first tile's orange half spans x 35..70")
 	wantRGB(t, img, 205, 205, 255, 165, 0, "third tile ends flush at 210 (orange half)")
@@ -71,7 +71,7 @@ func TestBackgroundGeometry_GradientNoRepeat_SizedAndPositioned(t *testing.T) {
 <div style="background-color:red; background-image:linear-gradient(lime, lime);
  background-origin:content-box; background-position:center; background-repeat:no-repeat;
  background-size:200px auto; border:solid 40px transparent; width:400px; height:400px"></div>`
-	img := renderColumnRuleHTML(t, src, 500, 500)
+	img := RenderPage(t, src, 500, 500)
 	wantRGB(t, img, 200, 200, 0, 255, 0, "inside the 200x400 tile at x 140..340")
 	wantRGB(t, img, 100, 200, 255, 0, 0, "left of the tile: background-color only")
 	wantRGB(t, img, 360, 200, 255, 0, 0, "right of the tile: background-color only")
@@ -88,7 +88,7 @@ func TestBackgroundGeometry_GradientHonorsRoundedClip(t *testing.T) {
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="width:300px; height:200px; background-image:linear-gradient(lime, lime);
  background-clip:content-box; border-top-left-radius:90px; border:10px solid transparent"></div>`
-	img := renderColumnRuleHTML(t, src, 400, 300)
+	img := RenderPage(t, src, 400, 300)
 	wantRGB(t, img, 14, 14, 255, 255, 255, "outside the rounded content-box clip")
 	wantRGB(t, img, 150, 100, 0, 255, 0, "inside the content box")
 }
@@ -103,7 +103,7 @@ func TestBackgroundGeometry_TransformedBoxImageNotDoubleOffset(t *testing.T) {
 	uri := splitPNGDataURI(t, 40, 40, blue, orange)
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="margin-left:100px; margin-top:20px; width:40px; height:40px; background:url(` + uri + `); transform:rotate(180deg)"></div>`
-	img := renderColumnRuleHTML(t, src, 300, 100)
+	img := RenderPage(t, src, 300, 100)
 	wantRGB(t, img, 110, 40, 255, 165, 0, "rotated: orange half now on the left")
 	wantRGB(t, img, 130, 40, 0, 0, 255, "rotated: blue half now on the right")
 }
