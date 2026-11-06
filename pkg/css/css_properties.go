@@ -296,6 +296,9 @@ var cssProperties = []cssProperty{
 	{"inset", false, []string{"top", "right", "bottom", "left"}},                                                                                 // :9744
 	{"inset-inline", false, []string{"inset-inline-start", "inset-inline-end"}},                                                                  // :9758
 	{"inset-block", false, []string{"inset-block-start", "inset-block-end"}},                                                                     // :9751
+	{"grid-area", false, []string{"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"}},                                     // :9710
+	{"grid-column", false, []string{"grid-column-start", "grid-column-end"}},                                                                     // :9718
+	{"grid-row", false, []string{"grid-row-start", "grid-row-end"}},                                                                              // :9730
 	{"grid-template", false, []string{"grid-template-rows", "grid-template-columns", "grid-template-areas"}},                                     // :9735
 	{"animation", false, []string{"animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-name", "animation-timeline", "animation-range-start", "animation-range-end"}}, // :9036
 	{"text-emphasis", false, []string{"text-emphasis-style", "text-emphasis-color"}},                                                            // :10137
