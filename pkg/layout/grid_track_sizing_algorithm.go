@@ -606,35 +606,79 @@ func (a *gridTrackSizingAlgorithm) stretchAutoTracks() {
 	}
 }
 
-// expandFlexibleTracks sizes the flexible tracks. Interim until the
-// ExpandFlexibleTracks port: louis14's former distributeFr rule, the space
-// left after the inflexible tracks split by flex factor, applied only
-// under a definite available size.
-func (a *gridTrackSizingAlgorithm) expandFlexibleTracks() {
-	if a.constraint != gridSizingLayout || a.available == gridIndefinite {
-		return
-	}
-	used, totalFr := 0.0, 0.0
-	for i := range a.sets {
-		if s := &a.sets[i]; s.trackSize.hasFlexMax() {
-			totalFr += s.flexFactor()
+// findFrSize is the size of one fr over the sets [start, end) filling
+// leftover, treating as inflexible each flexible set whose fr share would
+// fall below its base size (FindFrSize in ExpandFlexibleTracks,
+// grid_track_sizing_algorithm.cc:1121-1209). A flex factor sum below 1
+// counts as 1.
+func (a *gridTrackSizingAlgorithm) findFrSize(start, end int, leftover float64) float64 {
+	flexSum := 0.0
+	var flexible []*gridSet
+	for i := start; i < end; i++ {
+		if s := &a.sets[i]; s.trackSize.hasFlexMax() && s.flexFactor() != 0 {
+			flexSum += s.flexFactor()
+			flexible = append(flexible, s)
 		} else {
-			used += s.baseSize
+			leftover -= s.baseSize
 		}
 	}
-	if totalFr <= 0 {
+	leftover -= a.gutter * float64(end-start-1)
+	if leftover < 0 || len(flexible) == 0 {
+		return 0
+	}
+	// Largest base size per flex factor first.
+	sortStable(flexible, func(l, r *gridSet) bool {
+		return l.baseSize*r.flexFactor() > r.baseSize*l.flexFactor()
+	})
+	for cur := 0; leftover > 0 && cur < len(flexible); {
+		flexSum = max(flexSum, 1)
+		next := cur
+		for next < len(flexible) && flexible[next].flexFactor()*leftover < flexible[next].baseSize*flexSum {
+			next++
+		}
+		if next == cur {
+			return leftover / flexSum
+		}
+		for _, s := range flexible[cur:next] {
+			flexSum -= s.flexFactor()
+			leftover -= s.baseSize
+		}
+		cur = next
+	}
+	return 0
+}
+
+// expandFlexibleTracks mirrors ExpandFlexibleTracks (:1110-1301): with no
+// free space, or under a min-content constraint, flexible tracks keep their
+// base sizes; with definite free space the fr size fills the available
+// size; with indefinite free space it is the largest of each item's
+// max-content contribution over the tracks it spans and each flexible
+// track's base size per flex factor (a factor below 1 counting as 1). Each
+// flexible track then grows to its fr share when that is not smaller.
+func (a *gridTrackSizingAlgorithm) expandFlexibleTracks(items []*gridSizingItem) {
+	free := a.determineFreeSpace()
+	if free == 0 {
 		return
 	}
-	free := a.available - used
-	if n := len(a.sets); n > 1 {
-		free -= a.gutter * float64(n-1)
+	frSize := 0.0
+	if free != gridIndefinite {
+		frSize = a.findFrSize(0, len(a.sets), a.available)
+	} else {
+		for _, it := range items {
+			if a.spansFlexible(it) {
+				frSize = max(frSize, a.findFrSize(it.start, it.end, a.contribution(gridForMaxContentMaximums, it)))
+			}
+		}
+		for i := range a.sets {
+			if s := &a.sets[i]; s.trackSize.hasFlexMax() {
+				frSize = max(frSize, s.baseSize/max(s.flexFactor(), 1))
+			}
+		}
 	}
-	frSize := max(0, free) / totalFr
 	for i := range a.sets {
 		if s := &a.sets[i]; s.trackSize.hasFlexMax() {
-			s.baseSize = s.flexFactor() * frSize
-			if s.trackSize.hasFixedMin() {
-				s.baseSize = max(s.baseSize, s.trackSize.min.length)
+			if expanded := frSize * s.flexFactor(); expanded >= s.baseSize {
+				s.increaseBaseSize(expanded)
 			}
 		}
 	}
@@ -645,7 +689,7 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 	a.resolveIntrinsicTrackSizes(items)
 	a.setIndefiniteGrowthLimitsToBaseSize()
 	a.maximizeTracks()
-	a.expandFlexibleTracks()
+	a.expandFlexibleTracks(items)
 	a.stretchAutoTracks()
 }
 
