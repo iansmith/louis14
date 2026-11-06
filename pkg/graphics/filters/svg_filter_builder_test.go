@@ -209,3 +209,34 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
 	}
 }
+
+// With primitiveUnits="objectBoundingBox" a primitive's lengths are fractions
+// of the reference box, scaled by its width (x lengths) and height (y
+// lengths): Filter::ApplyHorizontalScale / ApplyVerticalScale (filter.cc:
+// 65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), applied by FEOffset
+// (fe_offset.cc:55-65), FEGaussianBlur (fe_gaussian_blur.cc:74-83),
+// FEDropShadow (fe_drop_shadow.cc:59-72) and FEDisplacementMap's scale
+// (fe_displacement_map.cc:126, horizontally). The reference box here is
+// 100×50.
+func TestBuildPrimitive_ObjectBoundingBoxUnitsScaleLengths(t *testing.T) {
+	elt := &mockSVGFilterElement{
+		region:           image.Rect(0, 0, 200, 200),
+		refBox:           image.Rect(10, 10, 110, 60),
+		primUnitsObjBBox: true,
+	}
+	build := func(tag string, attrs map[string]string) FilterEffect {
+		return NewSVGFilterBuilder(InterpolationSpaceSRGB).buildOnePrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: attrs})
+	}
+	if e, ok := build("feoffset", map[string]string{"dx": "0.2", "dy": "0.3"}).(*FEOffset); !ok || e.DX != 20 || e.DY != 15 {
+		t.Errorf("feOffset = %+v, want dx 20, dy 15", e)
+	}
+	if e, ok := build("fegaussianblur", map[string]string{"stdDeviation": "0.1 0.2"}).(*FEGaussianBlur); !ok || e.StdDevX != 10 || e.StdDevY != 10 {
+		t.Errorf("feGaussianBlur = %+v, want stdDeviation 10 10", e)
+	}
+	if e, ok := build("fedropshadow", map[string]string{"dx": "0.1", "dy": "0.1", "stdDeviation": "0.02"}).(*FEDropShadow); !ok || e.DX != 10 || e.DY != 5 || e.StdDevX != 2 || e.StdDevY != 1 {
+		t.Errorf("feDropShadow = %+v, want dx 10, dy 5, stdDeviation 2 1", e)
+	}
+	if e, ok := build("fedisplacementmap", map[string]string{"scale": "0.1"}).(*FEDisplacementMap); !ok || e.Scale != 10 {
+		t.Errorf("feDisplacementMap = %+v, want scale 10", e)
+	}
+}
