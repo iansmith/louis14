@@ -59,7 +59,7 @@ func (sp *svgShapePainter) paint() {
 	// from the in-page registry, or — LOU-130 Phase 2 — by fetching an
 	// external SVG document), paintWithSVGFilter routes through it;
 	// otherwise we fall through to the regular paint path.
-	if style := sp.shape.Style; style != nil {
+	if style := sp.shape.Style; style != nil && !sp.ctx.clipPathContent {
 		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
 			if filter := sp.resolveSVGFilter(filterVal); filter != nil {
 				sp.paintWithSVGFilter(filter)
@@ -169,7 +169,7 @@ func (sp *svgShapePainter) paint() {
 	// apply the mask, and DrawImage the buffer back. Mirrors Blink's
 	// SVGShapePainter dispatch to SVGMaskPainter when the shape
 	// carries a mask.
-	if style != nil {
+	if style != nil && !sp.ctx.clipPathContent {
 		if maskVal := style.GetMaskImage(); maskVal != "" && maskVal != "none" {
 			if id, ok := css.ParseURLReference(maskVal); ok {
 				if sp.ctx.Resources != nil {
@@ -362,7 +362,15 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 			userBBox.Width()+2*half, userBBox.Height()+2*half,
 		)
 	}
-	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
+	// The shape and its mask rasterize in device pixels, through the draw
+	// context's whole matrix (an ancestor CSS transform included), so the
+	// buffer composites as is. A projective draw context cannot be read
+	// back: its DeviceFromUser part is used, and undone for the blit.
+	toDevice, ok := dcAffineTransform(sp.ctx.dc)
+	if !ok {
+		toDevice = sp.ctx.DeviceFromUser
+	}
+	deviceBBox := toDevice.MapRect(userBBox)
 	if deviceBBox.IsEmpty() {
 		return
 	}
@@ -381,9 +389,8 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	tmpR := NewRendererForImage(buf)
 	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
 	tmpR.dc.Translate(float64(-bx), float64(-by))
-	t := sp.ctx.DeviceFromUser
-	if !t.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
+	if !toDevice.IsIdentity() {
+		tmpR.dc.MultiplyMatrix(toDevice.A, toDevice.B, toDevice.C, toDevice.D, toDevice.E, toDevice.F)
 	}
 	// Run a child paint context targeting the temp DC + renderer so
 	// fill-shader / stroke-shader fall back onto the temp buffer
@@ -391,6 +398,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	childCtx := *sp.ctx // shallow copy
 	childCtx.dc = tmpR.dc
 	childCtx.Renderer = tmpR
+	childCtx.DeviceFromUser = geometry.Translate(float64(-bx), float64(-by)).Compose(toDevice)
 	childOp := newSVGObjectPainter(tmpR.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
@@ -445,37 +453,41 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// the buffer extent and the page-pixel offset (bx, by) so the
 	// buffer alignment is consistent.
 	maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-		masker, userBBox, bw, bh, bx, by, sp.ctx.DeviceFromUser,
+		masker, userBBox, bw, bh, bx, by, toDevice,
 	)
 	if maskBuf != nil {
 		applySVGMaskToBuffer(buf, maskBuf, masker.MaskType)
 	}
 
 	// Composite the masked buffer back at (bx, by), the device position
-	// it was rasterized at; compositeMaskedShapeOnto undoes the draw
-	// context's user→device transform for the blit. Clear any in-flight
-	// path first.
+	// it was rasterized at. Clear any in-flight path first.
 	sp.ctx.dc.ClearPath()
-	sp.ctx.Renderer.compositeMaskedShapeOnto(sp.ctx, buf, bx, by)
+	compositeMaskedShapeOnto(sp.ctx.dc, toDevice, buf, bx, by)
 }
 
-// compositeMaskedShapeOnto draws a pre-rasterized RGBA buffer onto the
-// paint context's draw context at (bx, by). The buffer was rasterized
-// through DeviceFromUser, so its pixels are in the space DeviceFromUser maps
-// into; the draw context's matrix carries DeviceFromUser too (the SVG root's
-// content offset and the user transforms), so it is undone for the blit —
-// otherwise an <svg> offset on the page applies twice.
+// compositeMaskedShapeOnto draws buf, rasterized through toDevice, onto dc
+// at (bx, by) of the space toDevice maps into. dc's matrix carries toDevice,
+// which is undone for the blit: when toDevice is the whole matrix, what is
+// left is the identity to rounding, so the blit is a pixel copy (under the
+// clip) rather than a resampling.
 //
 // no Blink analog: Blink records the masked content into the paint
 // operation stream under the mask's effect; louis14 composites a
 // pre-rasterized buffer.
-func (r *Renderer) compositeMaskedShapeOnto(pctx *svgPaintContext, buf *image.RGBA, bx, by int) {
-	pctx.dc.Push()
-	defer pctx.dc.Pop()
-	if inv, ok := pctx.DeviceFromUser.Invert(); ok && !inv.IsIdentity() {
-		pctx.dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
+func compositeMaskedShapeOnto(dc textshape.DrawContext, toDevice geometry.AffineTransform, buf *image.RGBA, bx, by int) {
+	dc.Push()
+	defer dc.Pop()
+	if inv, ok := toDevice.Invert(); ok && !inv.IsIdentity() {
+		dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
 	}
-	pctx.dc.DrawImage(buf, bx, by)
+	dc.DrawImage(buf, bx, by)
+}
+
+// dcAffineTransform returns dc's current matrix (deviceTransformFromDC) as
+// an affine transform; ok is false when it is projective.
+func dcAffineTransform(dc textshape.DrawContext) (geometry.AffineTransform, bool) {
+	m, ok := deviceTransformFromDC(dc)
+	return geometry.NewAffineTransform(m.Rc(0, 0), m.Rc(1, 0), m.Rc(0, 1), m.Rc(1, 1), m.Rc(0, 3), m.Rc(1, 3)), ok
 }
 
 // rasterizeSVGMaskAtDeviceBBox is the SVG-shape variant of
@@ -545,7 +557,8 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	tmpR.dc.DrawRectangle(regionLocal.X(), regionLocal.Y(), regionLocal.Width(), regionLocal.Height())
 	tmpR.dc.Clip()
 
-	pctx := newBufferPaintContext(tmpR, bufW, bufH, dfu, r.lookupSVGResources())
+	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, dfu, r.lookupSVGResources())
+	pctx.regionClip = deviceRegionClip(dfu, regionLocal)
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

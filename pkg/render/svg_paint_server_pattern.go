@@ -259,19 +259,10 @@ func renderTileContent(p *svg.SVGPattern, tile *image.RGBA, pxW, pxH int, tileUs
 		ctxSize = geometry.SizeF{Width: tileUserW, Height: tileUserH}
 	}
 
-	pctx := &svgPaintContext{
-		dc:               tileR.dc,
-		contentToDevice:  geometry.Identity(),
-		viewport:         geometry.NewRectF(0, 0, ctxSize.Width, ctxSize.Height),
-		CurrentTransform: geometry.Identity(),
-		DeviceFromUser:   deviceFromUser,
-		// Phase 6: thread the umbrella registry so nested url(#…)
-		// references inside `<pattern>` children resolve (gradients,
-		// clippers, masks, other patterns).
-		Resources: resources,
-		Renderer:  tileR,
-	}
-	_ = pctx
+	// Phase 6: thread the umbrella registry so nested url(#…) references
+	// inside `<pattern>` children resolve (gradients, clippers, masks,
+	// other patterns).
+	pctx := newBufferPaintContext(tileR, ctxSize, deviceFromUser, resources)
 	_ = referenceBox
 
 	for _, child := range p.Children {

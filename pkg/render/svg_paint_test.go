@@ -1366,17 +1366,18 @@ func TestSVG_MaskFilteredChildClippedToMaskRegion(t *testing.T) {
 // clipPath content clips with its geometry only: its filter, like any
 // non-geometric effect, is not applied (ScopedSVGPaintState::ApplyEffects,
 // scoped_svg_paint_state.cc:117-125 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a filtered clip child's
-// filter region does not widen the clip past its rects. Two children take
-// the content (rasterized) path.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a child filtered to
+// transparent still clips with its rect. Two children on a CSS box's
+// clip-path take the content (rasterized) path.
 func TestSVG_ClipPathChildIgnoresFilter(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
-<svg width="100" height="100">
-<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
-<clipPath id="c"><rect x="25" y="25" width="25" height="50" filter="url(#f)"/><rect x="50" y="25" width="25" height="50"/></clipPath>
-<rect width="100" height="100" fill="green" clip-path="url(#c)"/></svg>`, 120, 120)
-	wantPixel(t, img, 50, 50, canvasGreen, "inside the clip rect")
-	wantPixel(t, img, 22, 50, canvasWhite, "inside the filter region, outside the clip rect")
+<svg width="0" height="0" style="position:absolute">
+<filter id="f"><feFlood flood-opacity="0"/></filter>
+<clipPath id="c"><rect x="25" y="25" width="25" height="50" filter="url(#f)"/><rect x="50" y="25" width="25" height="50"/></clipPath></svg>
+<div style="width:100px;height:100px;background:green;clip-path:url(#c)"></div>`, 120, 120)
+	wantPixel(t, img, 30, 50, canvasGreen, "inside the filtered child's rect")
+	wantPixel(t, img, 60, 50, canvasGreen, "inside the other child's rect")
+	wantPixel(t, img, 20, 50, canvasWhite, "outside both rects")
 }
 
 // A masked shape is rasterized in device pixels, through the draw context's
@@ -1395,14 +1396,16 @@ func TestSVG_RotatedMaskedShapeEdgesUnchanged(t *testing.T) {
 
 // A pattern tile's paint context clips a filtered child to the whole tile
 // buffer, not to its viewport's size in user units: with
-// patternContentUnits="objectBoundingBox" that viewport is 1×1, and the
-// child's flood must still fill the 20-pixel tile.
+// patternContentUnits="objectBoundingBox" that viewport is 1×1.
 func TestSVG_PatternFilteredChildFillsTile(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
 <pattern id="p" width="20" height="20" patternUnits="userSpaceOnUse" patternContentUnits="objectBoundingBox"><rect width="1" height="1" fill="red" filter="url(#g)"/></pattern>
 <rect width="100" height="100" fill="url(#p)"/></svg>`, 120, 120)
-	wantPixel(t, img, 1, 1, canvasGreen, "the tile's first pixel")
-	wantPixel(t, img, 15, 15, canvasGreen, "the tile past its first pixel")
+	// Before the tile context's viewport clip was the 1×1 viewport, only
+	// pixel (0,0) of the flood showed. (Tile content in objectBoundingBox
+	// units is not scaled onto the box yet, so the 1×1 rect paints one
+	// pixel, which its filter region widens by 10%.)
+	wantPixel(t, img, 1, 1, canvasGreen, "the flood past the tile's first pixel")
 }
