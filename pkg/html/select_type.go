@@ -64,7 +64,7 @@ func (n *Node) UsesMenuList() bool {
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func ParseHTMLNonNegativeInteger(s string) (uint32, bool) {
 	i := 0
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\f' || s[i] == '\r') {
+	for i < len(s) && isHTMLSpace(s[i]) {
 		i++
 	}
 	negative := false

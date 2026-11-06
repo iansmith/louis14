@@ -3518,6 +3518,31 @@ func pxValue(s string) string {
 	return strings.TrimSuffix(s, "px") + "px"
 }
 
+// addHTMLLengthToStyle maps a dimension attribute value to property as px,
+// or % for a percentage; a relative ('*') or unparsable value adds nothing
+// (HTMLElement::AddHTMLLengthToStyle with percentages and zero allowed,
+// core/html/html_element.cc:3811-3834; ParseDimensionValue @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func addHTMLLengthToStyle(style *Style, property, value string) {
+	d, ok := html.ParseDimensionValue(value)
+	if !ok || d.Type == html.HTMLDimensionRelative {
+		return
+	}
+	unit := "px"
+	if d.Type == html.HTMLDimensionPercentage {
+		unit = "%"
+	}
+	style.Set(property, strconv.FormatFloat(d.Value, 'g', -1, 64)+unit)
+}
+
+// applyAspectRatioToStyle sets the presentational hint
+// `aspect-ratio: auto w / h` (HTMLElement::ApplyAspectRatioToStyle,
+// core/html/html_element.cc:1082-1098 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func applyAspectRatioToStyle(style *Style, w, h float64) {
+	style.Set("aspect-ratio", "auto "+strconv.FormatFloat(w, 'g', -1, 64)+" / "+strconv.FormatFloat(h, 'g', -1, 64))
+}
+
 // applyPresentationalAttributes maps HTML presentational attributes to CSS properties.
 // These have lower priority than author CSS — they're applied before stylesheet rules
 // and inline styles, so CSS can override them.
@@ -3538,7 +3563,9 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// through the aspect ratio correctly.
 	if val, ok := node.GetAttribute("width"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "col", "colgroup", "img", "input", "object", "embed", "hr":
+		case "img":
+			addHTMLLengthToStyle(style, "width", val)
+		case "table", "td", "th", "col", "colgroup", "input", "object", "embed", "hr":
 			if strings.HasSuffix(val, "%") {
 				style.Set("width", val)
 			} else {
@@ -3557,7 +3584,9 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// to determine block-size from an author-set inline-size.
 	if val, ok := node.GetAttribute("height"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "tr", "img", "input", "object", "embed":
+		case "img":
+			addHTMLLengthToStyle(style, "height", val)
+		case "table", "td", "th", "tr", "input", "object", "embed":
 			if strings.HasSuffix(val, "%") {
 				style.Set("height", val)
 			} else {
@@ -3566,29 +3595,36 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
-	// canvas and video: width+height attributes → CSS aspect-ratio
-	// presentational hint.
-	switch node.TagName {
-	case "canvas":
-		// HTMLCanvasElement::CollectStyleForPresentationAttribute →
-		// ApplyIntegerAspectRatioToStyle (core/html/canvas/
-		// html_canvas_element.cc:1426-1440, core/html/html_element.cc:
-		// 1069-1097 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): both
-		// attributes non-negative integers → `aspect-ratio: auto w / h`, so
-		// a natural ratio (e.g. under object-view-box) still wins.
-		wVal, _ := node.GetAttribute("width")
-		hVal, _ := node.GetAttribute("height")
-		w, wOk := html.ParseHTMLNonNegativeInteger(wVal)
-		h, hOk := html.ParseHTMLNonNegativeInteger(hVal)
-		if wOk && hOk {
-			style.Set("aspect-ratio", fmt.Sprintf("auto %d / %d", w, h))
-		}
-	case "video":
-		wVal, wOk := node.GetAttribute("width")
-		hVal, hOk := node.GetAttribute("height")
-		if wOk && hOk && !strings.HasSuffix(wVal, "%") && !strings.HasSuffix(hVal, "%") {
-			// Both numeric attributes present → set aspect-ratio presentational hint.
-			style.Set("aspect-ratio", wVal+"/"+hVal)
+	// canvas, img and video: width+height attributes → the presentational
+	// hint `aspect-ratio: auto w / h`, so a natural ratio (e.g. under
+	// object-view-box) still wins and a size-contained element, whose
+	// natural ratio is ignored, falls back to it.
+	wVal, wOk := node.GetAttribute("width")
+	hVal, hOk := node.GetAttribute("height")
+	if wOk && hOk {
+		switch node.TagName {
+		case "canvas":
+			// HTMLCanvasElement::CollectStyleForPresentationAttribute →
+			// ApplyIntegerAspectRatioToStyle (core/html/canvas/
+			// html_canvas_element.cc:1426-1440, core/html/html_element.cc:
+			// 1069-1080 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): both
+			// attributes non-negative integers.
+			w, wOk := html.ParseHTMLNonNegativeInteger(wVal)
+			h, hOk := html.ParseHTMLNonNegativeInteger(hVal)
+			if wOk && hOk {
+				applyAspectRatioToStyle(style, float64(w), float64(h))
+			}
+		case "img", "video":
+			// HTMLImageElement / HTMLVideoElement::
+			// CollectStyleForPresentationAttribute → ApplyAspectRatioToStyle
+			// (html_image_element.cc:183-198, html_video_element.cc:312-330,
+			// html_element.cc:1056-1067): both attributes absolute dimension
+			// values.
+			w, wOk := html.ParseDimensionValue(wVal)
+			h, hOk := html.ParseDimensionValue(hVal)
+			if wOk && hOk && w.IsAbsolute() && h.IsAbsolute() {
+				applyAspectRatioToStyle(style, w.Value, h.Value)
+			}
 		}
 	}
 
