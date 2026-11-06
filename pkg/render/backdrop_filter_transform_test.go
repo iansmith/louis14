@@ -73,8 +73,6 @@ func TestBackdropFilter_PlusFilterFiltersTheBackdrop(t *testing.T) {
 div{position:absolute;left:0;top:0;width:100px;height:100px}</style>
 <div style="background:green"></div>
 <div style="backdrop-filter:invert(1);filter:grayscale(1)"></div>`, 120, 120)
-	c := img.RGBAAt(50, 50)
-	if d := int(c.R) - int(c.G); c.R < 100 || d < -4 || d > 4 || c.B != c.R {
-		t.Errorf("pixel (50,50) = %v, want the inverted green backdrop greyscaled (grey)", c)
-	}
+	// (0,128,0) inverted is (255,127,255), greyscaled (163,163,163).
+	wantPixelWithinOne(t, img, 50, 50, color.RGBA{163, 163, 163, 255}, "the inverted green backdrop greyscaled")
 }

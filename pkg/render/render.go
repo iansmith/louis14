@@ -37,12 +37,16 @@ type fontCacheKey struct {
 
 // Renderer paints a tree of layout boxes onto an image.
 type Renderer struct {
-	dc                 textshape.DrawContext
-	target             *image.RGBA
-	fonts              text.FontConfig
-	imageFetcher       images.ImageFetcher
-	externalSVGFetcher func(uri string) ([]byte, error)
-	scrollY            float64
+	dc textshape.DrawContext
+	// filterBackdropLayer is the filtered layer paintLayerWithFilter has
+	// already applied the backdrop filter of, on the target, so painting
+	// its content into the filter's source buffer does not apply it again.
+	filterBackdropLayer *PaintLayer
+	target              *image.RGBA
+	fonts               text.FontConfig
+	imageFetcher        images.ImageFetcher
+	externalSVGFetcher  func(uri string) ([]byte, error)
+	scrollY             float64
 
 	// svgImagesForContainer keeps each SVG image drawn at a container size
 	// for this renderer's paint pass (svgImageForContainer).
@@ -1318,6 +1322,19 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	}
 	paramToLayer := mapping.ParamToLayer
 
+	// The backdrop effect node comes before the filter's (Blink makes two
+	// effect nodes for an element with both, the backdrop one first;
+	// paint_layer.cc:2601-2614 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// the backdrop is read from the target, not from the filter's source
+	// buffer, in the layer's own space and under its own clips, as in
+	// paintLayerContent, which then skips it (filterBackdropLayer).
+	if layer.HasBackdropFilter && r.paintsOwnContent(layer) && r.context3D.partOf(layer) != memberContent {
+		r.inOwnSpaceAndClips(layer, own, func() { r.applyBackdropFilter(layer) })
+		outer := r.filterBackdropLayer
+		r.filterBackdropLayer = layer
+		defer func() { r.filterBackdropLayer = outer }()
+	}
+
 	// The buffer. A reference filter keeps its SVG region and a chain with a
 	// url() stage the region its builder gave it; an empty SVG region falls
 	// back to the source extent mapped through the filter, as before (exact
@@ -1411,11 +1428,19 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// The split is taken on the z=0 homographies the draw context uses, so
 	// own ∘ fromLocal is exactly onDC there even when own is 3D.
 	fromLocal := ownH.InverseOrIdentity().Mul(homographyTransform(onDC))
+	r.inOwnSpaceAndClips(layer, own, func() {
+		r.multiplyHomography(projectiveHomography(fromLocal))
+		r.dc.DrawImage(out, bx, by)
+	})
+}
+
+// inOwnSpaceAndClips runs paint with the layer's own projection on the draw
+// context and its own clips (CSS clip, clip-path) applied.
+func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform, paint func()) {
 	r.dc.Push()
 	r.multiplyHomography(projectiveHomography(own))
 	r.pushOwnClips(layer)
-	r.multiplyHomography(projectiveHomography(fromLocal))
-	r.dc.DrawImage(out, bx, by)
+	paint()
 	r.popOwnClips(layer)
 	r.dc.Pop()
 }
@@ -1594,6 +1619,15 @@ func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, boo
 	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
 }
 
+// backdropFilterOperations returns the operations the layer's backdrop is
+// filtered with: its backdrop-filter followed by its filter, which Blink
+// appends because the backdrop's effect node comes before the filter's
+// (PaintLayer::UpdateBackdropFilters, paint_layer.cc:2601-2614 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (layer *PaintLayer) backdropFilterOperations() []css.FilterFunction {
+	return append(slices.Clip(layer.BackdropFilters), layer.Filters...)
+}
+
 // applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
 // snapshots the backdrop image (everything painted behind the element's
 // border box), runs the filter graph over it, clips the result to the
@@ -1606,6 +1640,7 @@ func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, boo
 // common case; isolation: isolate does not form a backdrop root, which is
 // consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
+	ops := layer.backdropFilterOperations()
 	box := layer.linesOrBorderBox()
 
 	// A logically zero-area border box paints no backdrop. Skip before
@@ -1650,7 +1685,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 			builder.Mapping = *m
 		}
 		builder.ReferenceBox, builder.FilterViewport = layerBox, layerBox
-		return builder.BuildFilterEffect(layer.BackdropFilters)
+		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {
 		return
@@ -1673,7 +1708,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// backdrop-filter-edge-clipping reference asserts.
 	pad := 0
 	scale := math.Max(mapping.ParamToLayerSize(1, 1))
-	for _, f := range layer.BackdropFilters {
+	for _, f := range ops {
 		if f.Name == "blur" {
 			pad = max(pad, int(math.Ceil(f.Value*scale*3))+2)
 		}
@@ -2265,8 +2300,11 @@ func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	part := r.context3D.partOf(layer)
 
 	if own && part != memberContent {
-		// CSS backdrop-filter: filter the region behind the element before painting.
-		if layer.HasBackdropFilter {
+		// CSS backdrop-filter: filter the region behind the element before
+		// painting. A filtered layer's backdrop is applied by
+		// paintLayerWithFilter, before this content is painted into the
+		// filter's source buffer.
+		if layer.HasBackdropFilter && r.filterBackdropLayer != layer {
 			r.applyBackdropFilter(layer)
 		}
 		// Self decorations: bg, borders, shadows, outline, list marker.
