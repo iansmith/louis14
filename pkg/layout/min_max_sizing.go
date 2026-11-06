@@ -1241,172 +1241,37 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 }
 
 // measureGridMinMax computes the min/max-content inline-size contributions
-// for a grid container. Mirrors Blink's
-// GridLayoutAlgorithm::ComputeMinMaxSizes
-// (third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc) at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: the contribution is the sum of the
-// inline-axis track sizes plus inter-track gaps.
+// for a grid container: the sum of its column track sizes plus gaps.
+// Mirrors Blink's GridLayoutAlgorithm::ComputeMinMaxSizes, which builds the
+// grid sizing tree first, so placement and its implicit tracks take part,
+// and builds it ignoring children under inline-size containment
+// (layout/grid/grid_layout_algorithm.cc:279-284 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
-// For each track template entry on the inline axis:
+// Each column then contributes, from the items placed in it:
 //   - Fixed length → its size.
-//   - <percentage> → 0 for min-content; treated as 0 for max-content as well
-//     (Blink only resolves percentages once an outer size is known).
-//   - <flex> (fr) → 0 (fr distributes only when a definite size exists).
-//   - auto / min-content / max-content → the maximum corresponding intrinsic
-//     contribution among items placed in that track.
-//
-// Items without explicit placement count toward the implicit-track count using
-// the same auto-flow row/column count the layout algorithm derives. For the
-// narrow scope of LOU baseline-synthesis work we treat the explicit track count
-// as authoritative; implicit-track contributions degrade gracefully because the
-// auto-placement assigns leftover items into existing tracks.
+//   - <percentage> → 0 (Blink only resolves percentages once an outer
+//     size is known).
+//   - <flex> (fr) → 0 for min-content, its items' max-content for
+//     max-content (CSS Grid §12.7.1).
+//   - auto / min-content / max-content / fit-content / minmax(…, auto) →
+//     its items' corresponding intrinsic contributions.
 func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	style := node.Style()
 	if style == nil {
 		return MinMaxSizes{}
 	}
-	wdm := space.WritingDirection
-
-	// Inline-axis tracks: grid-template-columns when the container is in a
-	// horizontal-writing-mode (parent's inline = container's inline); for a
-	// vertical container the column tracks still run in the container's inline
-	// axis, so the columns template is correct in both modes (Blink uses the
-	// container's writing mode for "columns are inline-axis tracks").
-	cols, _ := style.GetGridTemplateColumnsWithNames()
-	_, colGap := style.GetGridGap()
-
-	// Implicit-track expansion for auto-placement.
-	// Mirrors Blink's GridLayoutAlgorithm::ComputeMinMaxSizes which folds
-	// implicit tracks into the intrinsic size computation. @ SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	autoFlow := style.GetGridAutoFlow()
-	autoCols := style.GetGridAutoColumns()
-
-	if len(cols) == 0 {
-		if autoFlow == "column" && autoCols != nil {
-			// Implicit-track expansion for `grid-auto-flow: column` auto-placement.
-			// When the container has no explicit template-columns AND items are auto-
-			// placed via `grid-auto-flow: column`, each item creates one implicit
-			// column track using `grid-auto-columns`. Without this expansion, the
-			// max-content of a grid like `width: max-content; grid-auto-columns: 1fr;
-			// grid-auto-flow: column` collapses to 0 because no template tracks exist
-			// to absorb item contributions.
-			implicitCount := 0
-			for _, c := range node.Children() {
-				if c.IsText() {
-					continue
-				}
-				cs := c.Style()
-				if cs == nil || cs.GetDisplay() == css.DisplayNone {
-					continue
-				}
-				pos := cs.GetPosition()
-				if pos == css.PositionAbsolute || pos == css.PositionFixed {
-					continue
-				}
-				implicitCount++
-			}
-			for j := 0; j < implicitCount; j++ {
-				cols = append(cols, *autoCols)
-			}
-		} else {
-			// Implicit-track expansion for row-flow (default) auto-placement.
-			// When the container has no explicit template-columns AND items are
-			// auto-placed via row-flow (default or `grid-auto-flow: row`), the grid
-			// synthesizes exactly ONE implicit column track per the auto-placed items'
-			// contributions. This is different from column-flow (which creates one
-			// track per item); row-flow reuses the same track for all items.
-			// Use grid-auto-columns if set, else a default auto() track.
-			hasItem := false
-			for _, c := range node.Children() {
-				if c.IsText() {
-					continue
-				}
-				cs := c.Style()
-				if cs == nil || cs.GetDisplay() == css.DisplayNone {
-					continue
-				}
-				pos := cs.GetPosition()
-				if pos == css.PositionAbsolute || pos == css.PositionFixed {
-					continue
-				}
-				hasItem = true
-				break
-			}
-			if hasItem {
-				if autoCols != nil {
-					cols = append(cols, *autoCols)
-				} else {
-					cols = append(cols, css.GridTrack{Auto: true})
-				}
-			}
-		}
-	}
-
-	// Gather items so auto/intrinsic tracks can be resolved from item sizes.
-	items := node.Children()
-	hasItem := false
-	for _, c := range items {
-		if c.IsText() {
-			continue
-		}
-		if cs := c.Style(); cs != nil && cs.GetDisplay() != css.DisplayNone {
-			hasItem = true
-			break
-		}
-	}
-
-	// Per-item min/max contributions sized once and reused for every
-	// auto/intrinsic track that the item may occupy.
-	// Under size/inline-size containment, item contributions are zero — the
-	// container is sized as if it had no content. Fixed tracks and gaps still
-	// contribute. Mirrors Blink's CalculateMinMaxSizesIgnoringChildren gate.
+	gla := NewGridLayoutAlgorithm(ctx, node, space)
+	// Under size/inline-size containment, the container is sized as if it
+	// had no content; fixed tracks and gaps still contribute.
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
-	type itemContrib struct{ min, max float64 }
-	var itemSizes []itemContrib
-	if hasItem && !contained {
-		itemSizes = make([]itemContrib, 0, len(items))
-		for _, c := range items {
-			if c.IsText() {
-				continue
-			}
-			cs := c.Style()
-			if cs == nil || cs.GetDisplay() == css.DisplayNone {
-				continue
-			}
-			minContrib, maxContrib := gridItemInlineContribution(c, cs, wdm, ctx, space)
-			itemSizes = append(itemSizes, itemContrib{
-				min: minContrib,
-				max: maxContrib,
-			})
-		}
-	}
-
-	// Helper to fold all items' max into a single auto-track contribution
-	// (max-content). The min-content side uses min.
-	maxAutoMin, maxAutoMax := 0.0, 0.0
-	for _, it := range itemSizes {
-		if it.min > maxAutoMin {
-			maxAutoMin = it.min
-		}
-		if it.max > maxAutoMax {
-			maxAutoMax = it.max
-		}
-	}
+	tree := gla.buildGridSizingTree(0, 0, contained)
+	_, colGap := style.GetGridGap()
+	trackMin, trackMax := gla.columnContributions(tree.items, tree.colTracks, colGap, nil)
 
 	var minSum, maxSum float64
-	trackCount := 0
-	for _, t := range cols {
-		if t.AutoFill || t.AutoFit {
-			// repeat(auto-fill/auto-fit, <track>): contribute one nominal
-			// instance using the inner template. For nested templates we
-			// approximate with the inner-template's first track.
-			if len(t.AutoTemplate) > 0 {
-				t = t.AutoTemplate[0]
-			} else {
-				continue
-			}
-		}
+	for i, t := range tree.colTracks {
+		lo, hi := trackMin[i], trackMax[i]
 		switch {
 		case t.Size > 0:
 			minSum += t.Size
@@ -1416,7 +1281,7 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			// (or the corresponding intrinsic when MaxAuto).
 			minSum += t.MinSize
 			if t.MaxAuto {
-				maxSum += maxAutoMax
+				maxSum += max(t.MinSize, hi)
 			} else if t.MaxSize > 0 {
 				maxSum += t.MaxSize
 			} else {
@@ -1424,36 +1289,31 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			}
 		case t.IsFitContent:
 			// fit-content(arg) used size = max(min-content, min(max-content, arg)).
-			minSum += maxAutoMin
-			maxSum += fitContentTrackSize(maxAutoMin, maxAutoMax, t.FitContentMax)
+			minSum += lo
+			maxSum += fitContentTrackSize(lo, hi, t.FitContentMax)
 		case t.MinContent:
-			minSum += maxAutoMin
-			maxSum += maxAutoMin
+			minSum += lo
+			maxSum += lo
 		case t.MaxContent, t.Auto:
-			minSum += maxAutoMin
-			maxSum += maxAutoMax
+			minSum += lo
+			maxSum += hi
 		case t.Fr > 0:
-			// CSS Grid §12.7.1: when the container is being sized under a
-			// max-content constraint, each flexible track contributes the
-			// max-content size of items occupying it (divided by the fr
-			// factor). For min-content sizing, fr tracks contribute their
-			// base size (0 here, since there's no minmax minimum). Without
-			// this contribution, a grid like
-			// `width: max-content; grid-auto-columns: 1fr` collapses to 0
-			// width, breaking spec-correct intrinsic sizing of grid items.
-			maxSum += maxAutoMax
-		case t.Percent > 0:
-			// Percentages resolve to 0 when no outer size is known.
+			maxSum += hi
 		}
-		trackCount++
 	}
-
-	if trackCount > 1 && colGap > 0 {
-		gaps := colGap * float64(trackCount-1)
+	// Gutters beside collapsed auto-fit tracks collapse too (CSS Grid 2
+	// §7.2.2.1), so only the remaining tracks are separated by gaps.
+	n := 0
+	for _, t := range tree.colTracks {
+		if !gridTrackIsCollapsed(t) {
+			n++
+		}
+	}
+	if n > 1 && colGap > 0 {
+		gaps := colGap * float64(n-1)
 		minSum += gaps
 		maxSum += gaps
 	}
-
 	return MinMaxSizes{MinContent: minSum, MaxContent: maxSum}
 }
 
