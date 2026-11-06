@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -44,32 +43,14 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	// authoritative "nothing to render" exit here.
 	userBBox := c.ObjectBoundingBox()
 	deviceBBox := pctx.DeviceFromUser.MapRect(userBBox)
-	referenceBox := image.Rect(
-		int(math.Floor(deviceBBox.X())),
-		int(math.Floor(deviceBBox.Y())),
-		int(math.Ceil(deviceBBox.Right())),
-		int(math.Ceil(deviceBBox.Bottom())),
-	)
-
-	refBoxF := geometry.NewRectF(
-		float64(referenceBox.Min.X),
-		float64(referenceBox.Min.Y),
-		float64(referenceBox.Dx()),
-		float64(referenceBox.Dy()),
-	)
-	userOriginF := pctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
+	userOriginF := pctx.userSpaceOriginDevice()
 	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
 	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
 	// box. Map the user-space viewport to device pixels via
 	// DeviceFromUser. (Mirrors the same fix in svg_filter_painter.go.)
 	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
-	region := image.Rect(
-		int(math.Floor(regionF.X())),
-		int(math.Floor(regionF.Y())),
-		int(math.Ceil(regionF.X()+regionF.Width())),
-		int(math.Ceil(regionF.Y()+regionF.Height())),
-	)
+	regionF := filter.ResourceBoundingBox(deviceBBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
+	region := snapRectFToDevice(regionF)
 	bw := region.Dx()
 	bh := region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
@@ -117,8 +98,8 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	adapter := &svgFilterElementAdapter{
 		filter:             filter,
 		filterRegion:       region,
-		referenceBox:       referenceBox,
-		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		referenceBox:       deviceBBox,
+		userSpaceOrigin:    roundPoint(userOriginF),
 		space:              space,
 		resources:          pctx.Resources,
 		imageFetcher:       pctx.Renderer.imageFetcher,
@@ -148,7 +129,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 // shapes through paintWithSVGFilter — same lookup chain
 // (ParseURLReference → registry.LookupAsFilter → cycle-state check).
 func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer) bool {
-	if c == nil || c.Style == nil {
+	if c == nil || c.Style == nil || pctx.clipPathContent {
 		return false
 	}
 	filterVal, ok := c.Style.Get("filter")

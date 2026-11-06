@@ -64,7 +64,12 @@ type FEDisplacementMap struct {
 	baseEffect
 	XChannel ChannelSelector
 	YChannel ChannelSelector
-	Scale    float64
+	// Scale is the horizontally scaled scale the kernel displaces both
+	// axes by (Blink's FIXME, fe_displacement_map.cc:120-126); ScaleY, the
+	// vertically scaled one, pads MapRect's y axis only (MapEffect,
+	// fe_displacement_map.cc:43-48 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	Scale  float64
+	ScaleY float64
 }
 
 // NewFEDisplacementMap creates a displacement-map effect.
@@ -74,30 +79,27 @@ type FEDisplacementMap struct {
 // attribute is missing is `A`; the builder applies that — this ctor
 // records whatever the caller passes.
 func NewFEDisplacementMap(in1, in2 FilterEffect, space InterpolationSpace,
-	xChan, yChan ChannelSelector, scale float64) *FEDisplacementMap {
+	xChan, yChan ChannelSelector, scale, scaleY float64) *FEDisplacementMap {
 	return &FEDisplacementMap{
 		baseEffect: baseEffect{inputs: []FilterEffect{in1, in2}, space: space},
 		XChannel:   xChan,
 		YChannel:   yChan,
 		Scale:      scale,
+		ScaleY:     scaleY,
 	}
 }
 
-// MapRect overrides the default pass-through. Because displacement can
-// pull pixels from up to ±(|scale|/2) away on each axis, the output
-// rect inflates by that amount. Mirrors Blink's
-// FEDisplacementMap::MapEffect (fe_displacement_map.cc), which adds
-// `scale * 0.5` to each side. `MapInputs` differs (only input 1
-// inflates), but our graph's MapRect already pre-unions inputs through
-// `mapRectThrough`, so the symmetric inflation is correct for the
-// downstream bounds calculation.
+// MapRect overrides the default pass-through: displacement can pull pixels
+// from up to |scale|/2 away, so the output rect inflates by half of each
+// axis's scale. Mirrors Blink's FEDisplacementMap::MapEffect
+// (fe_displacement_map.cc:43-48 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// `MapInputs` differs (only input 1 inflates), but our graph's MapRect
+// already pre-unions inputs through `mapRectThrough`, so inflating the
+// union is correct for the downstream bounds calculation.
 func (e *FEDisplacementMap) MapRect(r image.Rectangle) image.Rectangle {
-	half := math.Abs(e.Scale) * 0.5
-	pad := int(math.Ceil(half))
-	if pad <= 0 {
-		return r
-	}
-	return image.Rect(r.Min.X-pad, r.Min.Y-pad, r.Max.X+pad, r.Max.Y+pad)
+	padX := int(math.Ceil(math.Abs(e.Scale) * 0.5))
+	padY := int(math.Ceil(math.Abs(e.ScaleY) * 0.5))
+	return image.Rect(r.Min.X-padX, r.Min.Y-padY, r.Max.X+padX, r.Max.Y+padY)
 }
 
 // channelByteOffset returns the byte offset within a 4-byte RGBA pixel

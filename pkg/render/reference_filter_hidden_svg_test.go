@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"louis14/pkg/html"
+	"louis14/pkg/render"
 )
 
 // LOU-747 (filter-effects worklist B8): a url() filter resolves to the
@@ -156,7 +157,7 @@ func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
 	grad.AddChild(newElt("stop", map[string]string{"stop-color": "blue"}))
 	svgElt := findTag(doc.Root, "svg")
 	svgElt.InsertBefore(grad, svgElt.Children[0])
-	img := renderDocToImage(doc, 120, 120)
+	img, _ := render.RenderDocument(doc, 120, 120)
 	wantPixel(t, img, 50, 50, color.RGBA{0, 0, 255, 255}, "fill:url(#g), a script-built gradient")
 }
 
@@ -204,4 +205,20 @@ func TestReferenceFilter_PrimitiveInterpolationSpace(t *testing.T) {
 	svgFilter := `<svg style="display:none"><filter id="inv"><feColorMatrix color-interpolation-filters="linearRGB" type="matrix" values="` + invertMatrixValues + `"/></filter></svg>`
 	img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", svgFilter), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreenLinear, "the primitive's own linearRGB")
+}
+
+// An SVG shape's filter in an external document has no layout object, as on
+// the CSS filter path: its color-interpolation-filters attribute applies,
+// else auto, sRGB (ColorInterpolationForElement, svg_filter_builder.cc:
+// 136-170 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b — "used by external
+// SVG files"). The inverting matrix turns the green rect into (255,127,255)
+// either way (svg-external-filter-resource).
+func TestReferenceFilter_ExternalOnSVGShape(t *testing.T) {
+	for _, attrs := range []string{`color-interpolation-filters="sRGB"`, ""} {
+		external := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="inv" ` + attrs + `>` + invertMatrix + `</filter></svg>`
+		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect width="100" height="100" fill="green" filter="url(ext.svg#inv)"/></svg>`, 120, 120,
+			render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(external), nil }))
+		wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the external inverting filter, in sRGB ("+attrs+")")
+	}
 }

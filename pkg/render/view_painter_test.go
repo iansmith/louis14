@@ -5,21 +5,13 @@ import (
 	"image/color"
 	"testing"
 
-	"louis14/pkg/html"
-	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
 
 func renderView(t *testing.T, src string) *image.RGBA {
 	t.Helper()
-	doc, err := html.Parse(src)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	boxes := layout.NewLayoutEngine(200, 200).Layout(doc)
-	target := image.NewRGBA(image.Rect(0, 0, 200, 200))
-	render.NewRendererForImage(target).Render(boxes)
-	return target
+	img, _ := render.RenderPage(t, src, 200, 200)
+	return img
 }
 
 // TestViewBackgroundPaintsUnderInlineBodyContent pins the paint order of

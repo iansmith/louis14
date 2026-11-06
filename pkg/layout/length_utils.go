@@ -172,13 +172,6 @@ func (r replacedLengthResolver) inlineProperty(kind string) string {
 	return kind + "width"
 }
 
-func (r replacedLengthResolver) blockProperty() string {
-	if r.wdm.IsVertical() {
-		return "width"
-	}
-	return "height"
-}
-
 // kind is the classified value of prop, an auto value taking autoKind.
 func (r replacedLengthResolver) kind(prop string, autoKind replacedLengthKind) replacedLengthKind {
 	v, _ := r.style.Get(prop)
@@ -613,7 +606,7 @@ func (s replacedSizer) computeReplacedSizeInternal(mode ReplacedSizeMode) Logica
 			if space.BlockAutoBehavior != AutoSizeBehaviorFitContent {
 				autoBlock = replacedLengthStretch
 			}
-			if blockSize := r.resolveBlock(r.blockProperty(), replacedLengthTypeMain, autoBlock, blockSizeFunc); blockSize != Indefinite {
+			if blockSize := r.resolveBlock(logicalBlockSizeProperty(r.wdm), replacedLengthTypeMain, autoBlock, blockSizeFunc); blockSize != Indefinite {
 				replacedBlock, hasReplacedBlock = blockMinMax.ClampSizeToMinAndMax(blockSize), true
 			}
 		}

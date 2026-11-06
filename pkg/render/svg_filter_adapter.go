@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics/filters"
 	"louis14/pkg/layout/svg"
 )
@@ -23,7 +24,7 @@ import (
 type svgFilterElementAdapter struct {
 	filter       *svg.SVGResourceFilter
 	filterRegion image.Rectangle
-	referenceBox image.Rectangle
+	referenceBox geometry.RectF
 	// subregionViewport is the device-pixel rect whose width/height are
 	// the percentage basis for filter primitive subregion attrs in
 	// primitiveUnits=userSpaceOnUse (per SVG Filter Effects 1 §7.11,
@@ -76,7 +77,7 @@ type svgFilterElementAdapter struct {
 func (a *svgFilterElementAdapter) FilterRegion() image.Rectangle { return a.filterRegion }
 
 // ReferenceBox implements filters.SVGFilterElement.
-func (a *svgFilterElementAdapter) ReferenceBox() image.Rectangle { return a.referenceBox }
+func (a *svgFilterElementAdapter) ReferenceBox() geometry.RectF { return a.referenceBox }
 
 // SubregionViewport implements filters.SVGFilterElement. Returns the
 // explicit subregion viewport when set, otherwise falls back to the
@@ -544,31 +545,7 @@ func (p *svgFilterPrimitiveAdapter) KernelUnitLength() (float64, float64) {
 	if p.elt == nil {
 		return 1, 1
 	}
-	v, ok := p.elt.Attribute("kernelUnitLength")
-	if !ok {
-		v, ok = p.elt.Attribute("kernelunitlength")
-	}
-	if !ok {
-		return 1, 1
-	}
-	parts := strings.FieldsFunc(v, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '\t' || r == '\n'
-	})
-	if len(parts) == 0 {
-		return 1, 1
-	}
-	x, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 1, 1
-	}
-	if len(parts) == 1 {
-		return x, x
-	}
-	y, err := strconv.ParseFloat(parts[1], 64)
-	if err != nil {
-		return x, x
-	}
-	return x, y
+	return filters.NumberOptionalNumberAttr(p.elt, "kernelUnitLength", 1)
 }
 
 // LightSource implements filters.SVGFilterPrimitive. Walks the

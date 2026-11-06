@@ -2,6 +2,7 @@ package filters
 
 import (
 	"image"
+	"math"
 	"testing"
 )
 
@@ -71,18 +72,23 @@ func TestFEMorphology_Erode_ShrinksOpaqueBlock(t *testing.T) {
 	}
 }
 
-// TestFEMorphology_ZeroRadius_TransparentBlack verifies the spec rule that a
-// zero radius disables the effect, producing a transparent black image.
-func TestFEMorphology_ZeroRadius_TransparentBlack(t *testing.T) {
+// TestFEMorphology_ZeroRadius_PassesInputThrough: "A negative or zero value
+// disables the effect of the given filter primitive (i.e., the result is the
+// filter input image)" (SVGFEMorphologyElement::Build,
+// svg_fe_morphology_element.cc:118-121 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); Skia's make_morphology returns
+// the input when both radii are 0 (SkMorphologyImageFilter.cpp:113-118 @
+// skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func TestFEMorphology_ZeroRadius_PassesInputThrough(t *testing.T) {
 	region := image.Rect(0, 0, 4, 4)
 	in := solidInput(region, 0, 255, 0, 255) // opaque green
-	src := newPixelInputEffect(in, InterpolationSpaceSRGB)
-	fe := NewFEMorphology(src, InterpolationSpaceSRGB, MorphologyDilate, 0, 0)
-	f := &Filter{FilterRegion: region, LastEffect: fe}
-	out := f.Apply()
-	for i := 0; i+3 < len(out.Pix); i += 4 {
-		if out.Pix[i] != 0 || out.Pix[i+1] != 0 || out.Pix[i+2] != 0 || out.Pix[i+3] != 0 {
-			t.Fatalf("zero radius: pixel %d expected transparent black, got %v", i/4, out.Pix[i:i+4])
+	for _, op := range []MorphologyOperator{MorphologyErode, MorphologyDilate} {
+		fe := NewFEMorphology(newPixelInputEffect(in, InterpolationSpaceSRGB), InterpolationSpaceSRGB, op, 0, 0)
+		out := (&Filter{FilterRegion: region, LastEffect: fe}).Apply()
+		for i := 0; i+3 < len(out.Pix); i += 4 {
+			if out.Pix[i] != 0 || out.Pix[i+1] != 255 || out.Pix[i+2] != 0 || out.Pix[i+3] != 255 {
+				t.Fatalf("operator %d, zero radius: pixel %d = %v, want the opaque green input", op, i/4, out.Pix[i:i+4])
+			}
 		}
 	}
 }
@@ -96,5 +102,53 @@ func TestFEMorphology_MapRect_InflatesByRadius(t *testing.T) {
 	want := image.Rect(7, 8, 23, 22)
 	if got != want {
 		t.Fatalf("MapRect: got %v want %v", got, want)
+	}
+}
+
+// TestFEMorphology_VerticalPassOnOnePixelWideRegion: the Y pass runs along
+// the Y axis whatever the region's width; a 1-pixel-wide region's stride is
+// one pixel, which must not turn it into an X pass.
+func TestFEMorphology_VerticalPassOnOnePixelWideRegion(t *testing.T) {
+	region := image.Rect(0, 0, 1, 5)
+	in := image.NewRGBA(region)
+	in.Pix[2*in.Stride+3] = 255 // opaque black at (0,2)
+	fe := NewFEMorphology(newPixelInputEffect(in, InterpolationSpaceSRGB), InterpolationSpaceSRGB, MorphologyDilate, 0, 1)
+	out := (&Filter{FilterRegion: region, LastEffect: fe}).Apply()
+	for y, want := range []uint8{0, 255, 255, 255, 0} {
+		if got := out.Pix[y*out.Stride+3]; got != want {
+			t.Errorf("row %d alpha = %d, want %d", y, got, want)
+		}
+	}
+}
+
+// TestFEMorphology_OutOfRangeRadius: a radius beyond the 256 cap, infinite or
+// NaN is clamped before it becomes an integer: the cap, the cap, and no
+// radius (std::max(0.0f, NaN) is 0 in Blink's FEMorphology).
+func TestFEMorphology_OutOfRangeRadius(t *testing.T) {
+	for _, tc := range []struct {
+		radius float64
+		want   int
+	}{{1e30, 256}, {math.Inf(1), 256}, {math.NaN(), 0}} {
+		fe := NewFEMorphology(newPixelInputEffect(nil, InterpolationSpaceSRGB), InterpolationSpaceSRGB, MorphologyDilate, tc.radius, tc.radius)
+		r := image.Rect(1000, 1000, 1010, 1010)
+		want := r.Inset(-tc.want)
+		if got := fe.MapRect(r); got != want {
+			t.Errorf("radius %v: MapRect = %v, want %v", tc.radius, got, want)
+		}
+	}
+}
+
+// TestFEMorphology_OutputIsRegionSized: every primitive returns a 0-origin
+// buffer the size of the region, the zero-radius pass-through and a single
+// pass included, whatever its input's bounds.
+func TestFEMorphology_OutputIsRegionSized(t *testing.T) {
+	region := image.Rect(10, 10, 14, 13)
+	in := image.NewRGBA(region) // bounds at the region's origin, not 0
+	for _, r := range [][2]float64{{0, 0}, {1, 0}} {
+		fe := NewFEMorphology(newPixelInputEffect(in, InterpolationSpaceSRGB), InterpolationSpaceSRGB, MorphologyDilate, r[0], r[1])
+		out := fe.ApplyEffect([]*image.RGBA{in}, region)
+		if want := image.Rect(0, 0, 4, 3); out.Bounds() != want {
+			t.Errorf("radius %v: output bounds %v, want %v", r, out.Bounds(), want)
+		}
 	}
 }
