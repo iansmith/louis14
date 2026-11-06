@@ -303,7 +303,10 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.Style.WillChangeCreatesStackingContext(allowsZIndex) {
 		return true
 	}
-	return false
+	// A current animation that is a compositing reason
+	// (CalculateIsStackingContextWithoutContainment, computed_style.cc:
+	// 2941-2945 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	return b.Style.ShouldCompositeForCurrentAnimations()
 }
 
 // Preserves3D reports whether this box's children share its 3D rendering

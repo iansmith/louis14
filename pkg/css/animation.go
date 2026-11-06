@@ -43,6 +43,9 @@ type KeyframeEffect struct {
 	// Properties is the set of every property mentioned anywhere in the
 	// keyframes (used to know which properties this animation contributes).
 	Properties map[string]bool
+	// currentAnimations is the currentAnimationFlags the effect sets on a
+	// style while it is current or in effect.
+	currentAnimations currentAnimationFlags
 }
 
 // ResolvedAnimation pairs a parsed Timing with the keyframe effect for one
@@ -111,8 +114,15 @@ func BuildKeyframeEffect(frames []KeyframeRule, defaultEasing TimingFunction) *K
 			kf.Easing = r.easing
 		}
 		for p, v := range r.decls {
+			// An alias names the property it is an alias for, as Blink's
+			// parser resolves it (css_properties.json5 alias_for @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if canon, isAlias := propertyAliases[p]; isAlias {
+				p = canon
+			}
 			kf.Declarations[p] = v
 			eff.Properties[p] = true
+			eff.currentAnimations |= currentAnimationFlagsByProperty[p]
 		}
 	}
 
@@ -749,6 +759,12 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 			localTime = localTimes[i]
 		}
 		rt := a.Timing.Resolve(localTime)
+		// A current or in-effect animation flags the style
+		// (UpdateAnimationFlagsForAnimation, css_animations.cc @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if rt.IsCurrent() || rt.InEffect {
+			style.currentAnimations |= a.Effect.currentAnimations
+		}
 		if !rt.InEffect {
 			continue
 		}
