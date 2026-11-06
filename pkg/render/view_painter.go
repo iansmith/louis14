@@ -97,7 +97,7 @@ func (r *Renderer) backgroundTransfersToView(layer *PaintLayer) bool {
 // switched.
 func (r *Renderer) enterFrameView(layer *PaintLayer) (outer *ViewPainter, entered bool) {
 	box := layer.Box
-	if box == nil || box.Parent == nil || box.LayoutNode == nil || !box.LayoutNode.IsDocumentElement() {
+	if !isFrameDocumentRoot(box) {
 		return nil, false
 	}
 	if r.view != nil && layer == r.view.rootLayer {
@@ -106,6 +106,12 @@ func (r *Renderer) enterFrameView(layer *PaintLayer) (outer *ViewPainter, entere
 	outer = r.view
 	r.view = newViewPainter(r, box, layer)
 	return outer, true
+}
+
+// isFrameDocumentRoot reports whether box is the root of a frame's
+// document: a document element with a parent box, its frame owner.
+func isFrameDocumentRoot(box *layout.Box) bool {
+	return box != nil && box.Parent != nil && box.LayoutNode != nil && box.LayoutNode.IsDocumentElement()
 }
 
 // paintViewBackground paints the view background when layer is the
