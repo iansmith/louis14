@@ -1728,10 +1728,6 @@ func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, curr
 	}
 	g := newPaintLayer(box)
 	g.inlinePaintGroup = item
-	// Visibility is per box, not per layer: the layer paints nothing of its
-	// own, and its members carry their own visibility, so a visible
-	// descendant of a hidden inline still paints.
-	g.Visible = true
 	groups[item] = g
 	sc, backdropRoot := currentSC, currentBackdropRoot
 	if item.EnclosingPaintGroup != nil {
