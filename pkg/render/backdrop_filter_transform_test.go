@@ -148,3 +148,20 @@ div{position:absolute;left:0;top:0;height:100px}</style>
 	wantPixelWithinOne(t, img, 10, 50, invertedGreen, "green mirrored in from x=10, inverted")
 	wantPixelWithinOne(t, img, 19, 50, color.RGBA{0, 255, 255, 255}, "the red strip mirrored in from x=0, inverted")
 }
+
+// LOU-769: an effect layer under a perspective ancestor paints under the
+// draw context's whole matrix even when the draw context's origin is behind
+// the camera: the matrix is read back at the layer's own box, which is in
+// front. Here the perspective origin is 600px to the left of the rotated
+// box, so its local (0, 0) projects behind the eye. An identity backdrop
+// filter with opacity leaves the box as it paints without them.
+func TestEffectLayer_PerspectiveOriginBehindCamera(t *testing.T) {
+	page := func(effect string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style>
+<div style="position:absolute;left:600px;top:0;width:200px;height:200px;perspective:200px">
+<div style="width:200px;height:200px;transform:rotateY(50deg)">
+<div style="width:100px;height:100px;background:green;` + effect + `"></div></div></div>`
+	}
+	wantImagesWithin(t, render.RenderPage(t, page("backdrop-filter:invert(0);opacity:0.999"), 900, 220),
+		render.RenderPage(t, page(""), 900, 220), 2, "the box without its effect layer")
+}
