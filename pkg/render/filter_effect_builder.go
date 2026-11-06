@@ -20,10 +20,12 @@ import (
 // do not clip to a primitive subregion (Filter Effects 1 §13, and Blink's
 // filter_effect_builder.cc).
 type FilterEffectBuilder struct {
-	// ReferenceBox is the filter reference box in absolute device pixels:
-	// the border box, or for a filter that moves pixels the layer's bounding
-	// box including its self-painting descendants (UpdateFilterReferenceBox).
-	ReferenceBox image.Rectangle
+	// ReferenceBox is the filter reference box in absolute device pixels,
+	// unsnapped (Blink's gfx::RectF): the border box, or for a filter that
+	// moves pixels the layer's bounding box including its self-painting
+	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
+	// pixel-snapped border box (BackdropFilterBounds).
+	ReferenceBox geometry.RectF
 	// FilterViewport is the element's border box in absolute device pixels.
 	// Its size is Blink's FilterViewport (ComputeFilterViewport, core/paint/
 	// paint_layer.cc:164-174 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the
@@ -122,17 +124,16 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	}
 
 	f := &filters.Filter{
-		ReferenceBox: b.ReferenceBox,
-		Source:       src,
-		SourceAlpha:  srcAlpha,
-		LastEffect:   prev,
+		Source:      src,
+		SourceAlpha: srcAlpha,
+		LastEffect:  prev,
 	}
 	// A shorthand-only chain has no region; the caller sizes its buffer
 	// (filters.Filter.EnsureRegion). A chain with a url() stage keeps the
 	// region it has had: the reference box mapped through the chain, with no
 	// per-stage crop (LOU-704 ports the exact sizing).
 	if hasReferenceFilter(ops) {
-		f.FilterRegion = f.MapRect(b.ReferenceBox)
+		f.FilterRegion = f.MapRect(snapRectFToDevice(b.ReferenceBox))
 	}
 	return f
 }
@@ -234,20 +235,10 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 
 	space := filterInterpolationSpace(filter)
 
-	// Resolve the filter region from filterUnits + the reference box.
-	// Both inputs are in absolute device pixels. The
-	// SVGResourceFilter.ResourceBoundingBox operates on float rects
-	// so wrap b.ReferenceBox into a geometry.RectF, run resolution,
-	// and convert back.
-	refBoxF := geometry.NewRectF(
-		float64(b.ReferenceBox.Min.X),
-		float64(b.ReferenceBox.Min.Y),
-		float64(b.ReferenceBox.Dx()),
-		float64(b.ReferenceBox.Dy()),
-	)
-	// userSpaceOnUse x/y are relative to the layer's local origin,
-	// FilterViewport.Min.
-	regionF := filter.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
+	// Resolve the filter region from filterUnits + the reference box, both
+	// in absolute device pixels. userSpaceOnUse x/y are relative to the
+	// layer's local origin, FilterViewport.Min.
+	regionF := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{
@@ -317,13 +308,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	space := filterInterpolationSpace(resource)
 
 	// Resolve the filter region — same logic as the same-doc path.
-	refBoxF := geometry.NewRectF(
-		float64(b.ReferenceBox.Min.X),
-		float64(b.ReferenceBox.Min.Y),
-		float64(b.ReferenceBox.Dx()),
-		float64(b.ReferenceBox.Dy()),
-	)
-	regionF := resource.ResourceBoundingBox(refBoxF, b.userSpaceOrigin(), b.viewportLengthContext())
+	regionF := resource.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
 	adapter := &svgFilterElementAdapter{

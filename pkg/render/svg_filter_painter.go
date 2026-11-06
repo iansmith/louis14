@@ -45,12 +45,6 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// reference box in device pixels, the result is in device
 	// pixels too (filterUnits=objectBoundingBox treats x/y/w/h as
 	// fractions of the reference box).
-	refBoxF := geometry.NewRectF(
-		float64(referenceBox.Min.X),
-		float64(referenceBox.Min.Y),
-		float64(referenceBox.Dx()),
-		float64(referenceBox.Dy()),
-	)
 	// SVG element's user-space origin in device coords — needed by
 	// ResourceBoundingBox to shift explicit userSpaceOnUse x/y values
 	// from user space into target's (device) coord space, per SVG
@@ -62,7 +56,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// sp.ctx.viewport; mapping it through DeviceFromUser gives the
 	// device-pixel size to use as percent base.
 	viewportDeviceSize := sp.ctx.DeviceFromUser.MapRect(sp.ctx.viewport).Size
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
+	regionF := filter.ResourceBoundingBox(referenceBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
 	region := image.Rect(
 		int(math.Floor(regionF.X())),
 		int(math.Floor(regionF.Y())),
@@ -268,15 +262,16 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, c
 }
 
 // shapeDeviceReferenceBox computes the shape's stroke-inflated user-space
-// bbox, maps it through DeviceFromUser, and snaps it to an integer rect.
+// bbox and maps it through DeviceFromUser, unsnapped (Blink's reference box
+// is a gfx::RectF).
 // Returns the reference box, willFill, willStroke, and ok=false when the
 // shape has no paintable extent (empty user or device bbox). Shared by
 // both filter paint paths (single-url and chain).
-func (sp *svgShapePainter) shapeDeviceReferenceBox() (image.Rectangle, bool, bool, bool) {
+func (sp *svgShapePainter) shapeDeviceReferenceBox() (geometry.RectF, bool, bool, bool) {
 	style := sp.shape.Style
 	userBBox := sp.shape.FillBoundingBox
 	if userBBox.IsEmpty() {
-		return image.Rectangle{}, false, false, false
+		return geometry.RectF{}, false, false, false
 	}
 	willFill := style == nil || style.GetFill().Kind != css.SVGPaintNone
 	willStroke := style != nil && style.GetStroke().Kind != css.SVGPaintNone
@@ -289,14 +284,9 @@ func (sp *svgShapePainter) shapeDeviceReferenceBox() (image.Rectangle, bool, boo
 	}
 	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
 	if deviceBBox.IsEmpty() {
-		return image.Rectangle{}, false, false, false
+		return geometry.RectF{}, false, false, false
 	}
-	return image.Rect(
-		int(math.Floor(deviceBBox.X())),
-		int(math.Floor(deviceBBox.Y())),
-		int(math.Ceil(deviceBBox.Right())),
-		int(math.Ceil(deviceBBox.Bottom())),
-	), willFill, willStroke, true
+	return deviceBBox, willFill, willStroke, true
 }
 
 // compositeFilterResultOntoTarget writes either the filter output (out)
@@ -434,12 +424,12 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	if sp.shape != nil && sp.shape.Style != nil {
 		currentColor = sp.shape.Style.GetColor()
 	}
-	// The shape's chain has no layer: its reference box is also the
-	// viewport and origin for userSpaceOnUse lengths, as before
-	// FilterViewport existed.
+	// The shape's chain has no layer: its viewport and origin for
+	// userSpaceOnUse lengths are the reference box snapped to device pixels.
+	deviceBox := snapRectFToDevice(referenceBox)
 	builder := &FilterEffectBuilder{
 		ReferenceBox:       referenceBox,
-		FilterViewport:     referenceBox,
+		FilterViewport:     deviceBox,
 		CurrentColor:       currentColor,
 		Resources:          sp.ctx.Resources,
 		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
@@ -451,7 +441,7 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 	}
 	// A shorthand-only chain has no region; this path keeps the reference
 	// box mapped through the chain, under the 4000px cap below.
-	region := graph.EnsureRegion(referenceBox, false)
+	region := graph.EnsureRegion(deviceBox, false)
 	bw, bh := region.Dx(), region.Dy()
 	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
 		return false

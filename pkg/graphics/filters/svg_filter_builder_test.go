@@ -4,6 +4,8 @@ import (
 	"image"
 	"math"
 	"testing"
+
+	"louis14/pkg/geometry"
 )
 
 // mockSVGFilterElement is a minimal stub of SVGFilterElement for unit
@@ -12,7 +14,7 @@ import (
 // and the primitiveUnits flag.
 type mockSVGFilterElement struct {
 	region           image.Rectangle
-	refBox           image.Rectangle
+	refBox           geometry.RectF
 	subregionVp      image.Rectangle
 	userSpaceOrigin  image.Point
 	primUnitsObjBBox bool
@@ -25,7 +27,7 @@ func (m *mockSVGFilterElement) SubregionViewport() image.Rectangle {
 	}
 	return m.subregionVp
 }
-func (m *mockSVGFilterElement) ReferenceBox() image.Rectangle          { return m.refBox }
+func (m *mockSVGFilterElement) ReferenceBox() geometry.RectF           { return m.refBox }
 func (m *mockSVGFilterElement) PrimitiveUnitsObjectBoundingBox() bool  { return m.primUnitsObjBBox }
 func (m *mockSVGFilterElement) UserSpaceOrigin() image.Point           { return m.userSpaceOrigin }
 func (m *mockSVGFilterElement) InterpolationSpace() InterpolationSpace { return InterpolationSpaceSRGB }
@@ -80,7 +82,7 @@ func (p *mockSVGFilterPrimitive) ResolveImageSource(filterRegion, subregion imag
 func TestResolvePrimitiveSubregion_UserSpaceOnUseAnchoredAtUserOrigin(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-2, -2, 110, 110),
-		refBox:          image.Rect(8, 8, 108, 108),
+		refBox:          geometry.NewRectF(8, 8, 100, 100),
 		userSpaceOrigin: image.Point{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
@@ -105,7 +107,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseAnchoredAtUserOrigin(t *testing
 func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(40, 40, 150, 150),
-		refBox:          image.Rect(50, 50, 150, 150),
+		refBox:          geometry.NewRectF(50, 50, 100, 100),
 		userSpaceOrigin: image.Point{X: 50, Y: 50},
 	}
 	prim := &mockSVGFilterPrimitive{
@@ -137,7 +139,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-10, -10, 110, 110),
-		refBox:          image.Rect(0, 0, 100, 100),
+		refBox:          geometry.NewRectF(0, 0, 100, 100),
 		subregionVp:     image.Rect(0, 0, 100, 100),
 		userSpaceOrigin: image.Point{X: 0, Y: 0},
 	}
@@ -163,7 +165,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(8, 8, 208, 208),
-		refBox:          image.Rect(8, 8, 208, 208),
+		refBox:          geometry.NewRectF(8, 8, 200, 200),
 		userSpaceOrigin: image.Point{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
@@ -193,7 +195,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes(t *testing.T) {
 func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-2, -2, 110, 110),
-		refBox:          image.Rect(8, 8, 108, 108),
+		refBox:          geometry.NewRectF(8, 8, 100, 100),
 		userSpaceOrigin: image.Point{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
@@ -223,7 +225,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 // refBoxElement is a filter element with a 100×50 reference box at (10, 10),
 // in objectBoundingBox primitive units when obb is set.
 func refBoxElement(obb bool) *mockSVGFilterElement {
-	return &mockSVGFilterElement{region: image.Rect(0, 0, 200, 200), refBox: image.Rect(10, 10, 110, 60), primUnitsObjBBox: obb}
+	return &mockSVGFilterElement{region: image.Rect(0, 0, 200, 200), refBox: geometry.NewRectF(10, 10, 100, 50), primUnitsObjBBox: obb}
 }
 
 // buildPrimitive builds one primitive of elt's filter.

@@ -18,6 +18,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"louis14/pkg/geometry"
 )
 
 // SVGFilterPrimitive is the abstract view of a single filter primitive
@@ -123,9 +125,10 @@ type SVGFilterElement interface {
 	// behaviour, exact whenever region == viewport).
 	SubregionViewport() image.Rectangle
 	// ReferenceBox returns the referencing element's reference box in
-	// absolute device pixels. For objectBoundingBox primitive units
-	// the builder maps primitive subregion coords through this.
-	ReferenceBox() image.Rectangle
+	// absolute device pixels, unsnapped, as Blink's Filter::ReferenceBox
+	// (a gfx::RectF). For objectBoundingBox primitive units the builder
+	// maps primitive subregions, lengths and light positions through it.
+	ReferenceBox() geometry.RectF
 	// UserSpaceOrigin returns the SVG element's user-space (0, 0)
 	// point in absolute device pixels. The userSpaceOnUse coordinate
 	// space for filter primitive subregion attributes anchors here —
@@ -399,7 +402,6 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		b.lastEffect = eff
 	}
 	return &Filter{
-		ReferenceBox: elt.ReferenceBox(),
 		FilterRegion: elt.FilterRegion(),
 		Source:       b.source,
 		SourceAlpha:  b.sourceAlpha,
@@ -461,10 +463,11 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		return fe
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")
-		stdX, stdY := parseStdDeviation(prim)
 		// FEGaussianBlur scales its stdDeviation (fe_gaussian_blur.cc:74-83
 		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return NewFEGaussianBlur(in, b.space, applyHorizontalScale(elt, stdX), applyVerticalScale(elt, stdY))
+		stdX, stdY := parseStdDeviation(prim, 0)
+		stdX, stdY = applyScale(elt, stdX, stdY)
+		return NewFEGaussianBlur(in, b.space, stdX, stdY)
 	case "fecolormatrix":
 		in := b.resolveInputAttr(prim, "in")
 		t, values := parseColorMatrixAttrs(prim)
@@ -475,7 +478,8 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		dy, _ := parseFloatAttr(prim, "dy", 0)
 		// FEOffset scales its offset (fe_offset.cc:55-65 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return NewFEOffset(in, b.space, applyHorizontalScale(elt, dx), applyVerticalScale(elt, dy))
+		dx, dy = applyScale(elt, dx, dy)
+		return NewFEOffset(in, b.space, dx, dy)
 	case "feblend":
 		in := b.resolveInputAttr(prim, "in")
 		in2 := b.resolveInputAttr(prim, "in2")
@@ -525,16 +529,16 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		return NewFEComponentTransfer(in, b.space, funcs)
 	case "fedropshadow":
 		in := b.resolveInputAttr(prim, "in")
+		// dx, dy and stdDeviation all default to 2 (SVGFEDropShadowElement,
+		// svg_fe_drop_shadow_element.cc:40-45), and FEDropShadow scales them
+		// (fe_drop_shadow.cc:59-72 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		dx, _ := parseFloatAttr(prim, "dx", 2)
 		dy, _ := parseFloatAttr(prim, "dy", 2)
-		stdX, stdY := parseStdDeviation(prim)
+		dx, dy = applyScale(elt, dx, dy)
+		stdX, stdY := parseStdDeviation(prim, 2)
+		stdX, stdY = applyScale(elt, stdX, stdY)
 		r, g, bb, a := prim.FloodColor()
-		// FEDropShadow scales its offset and stdDeviation
-		// (fe_drop_shadow.cc:59-72 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return NewFEDropShadow(in, b.sourceAlpha, b.space,
-			applyHorizontalScale(elt, dx), applyVerticalScale(elt, dy),
-			applyHorizontalScale(elt, stdX), applyVerticalScale(elt, stdY), r, g, bb, a)
+		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, stdY, r, g, bb, a)
 	case "fedisplacementmap":
 		// Per SVG Filter Effects 1 §feDisplacementMap. `in` defaults to
 		// the chain default (handled by resolveInputAttr). `in2` has no
@@ -549,7 +553,8 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// FEDisplacementMap scales its scale horizontally, for both axes
 		// (fe_displacement_map.cc:126 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, applyHorizontalScale(elt, scale))
+		scale, _ = applyScale(elt, scale, 0)
+		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scale)
 	case "fediffuselighting":
 		// Per SVG Filter Effects 1 §feDiffuseLighting. The primitive
 		// reads its alpha-bump input (default chain), computes the
@@ -562,7 +567,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		diffuseConstant := prim.DiffuseConstant()
 		kULx, kULy := prim.KernelUnitLength()
 		return NewFEDiffuseLighting(in, b.space, r, g, bb, a,
-			surfaceScale, diffuseConstant, kULx, kULy, prim.LightSource())
+			surfaceScale, diffuseConstant, kULx, kULy, resolveLightSource(elt, prim.LightSource()))
 	case "fespecularlighting":
 		// Per SVG Filter Effects 1 §feSpecularLighting. Same setup as
 		// diffuse but with the Phong specular BRDF (halfway vector +
@@ -574,7 +579,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		specularExponent := prim.SpecularExponent()
 		kULx, kULy := prim.KernelUnitLength()
 		return NewFESpecularLighting(in, b.space, r, g, bb, a,
-			surfaceScale, specularConstant, specularExponent, kULx, kULy, prim.LightSource())
+			surfaceScale, specularConstant, specularExponent, kULx, kULy, resolveLightSource(elt, prim.LightSource()))
 	case "feconvolvematrix":
 		// Per SVG Filter Effects 1 §feConvolveMatrix. Applies a 2D kernel
 		// convolution to the input image. The kernel is supplied as a
@@ -631,7 +636,8 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		}
 		// FEMorphology scales its radii (fe_morphology.cc:86-97 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return NewFEMorphology(in, b.space, op, applyHorizontalScale(elt, rx), applyVerticalScale(elt, ry))
+		rx, ry = applyScale(elt, rx, ry)
+		return NewFEMorphology(in, b.space, op, rx, ry)
 	case "feturbulence":
 		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
 		// image. `in` is ignored (this is a generator). Mirrors Blink
@@ -646,22 +652,47 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 	return nil
 }
 
-// applyHorizontalScale and applyVerticalScale scale a primitive length by
-// the reference box under primitiveUnits="objectBoundingBox", as
+// applyScale scales a primitive's horizontal length x and vertical length y
+// by the reference box under primitiveUnits="objectBoundingBox", as
 // Filter::ApplyHorizontalScale / ApplyVerticalScale do (filter.cc:65-75 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; their zoom factor is C1's).
-func applyHorizontalScale(elt SVGFilterElement, v float64) float64 {
-	if elt.PrimitiveUnitsObjectBoundingBox() {
-		return v * float64(elt.ReferenceBox().Dx())
+func applyScale(elt SVGFilterElement, x, y float64) (float64, float64) {
+	if !elt.PrimitiveUnitsObjectBoundingBox() {
+		return x, y
 	}
-	return v
+	ref := elt.ReferenceBox()
+	return x * ref.Width(), y * ref.Height()
 }
 
-func applyVerticalScale(elt SVGFilterElement, v float64) float64 {
-	if elt.PrimitiveUnitsObjectBoundingBox() {
-		return v * float64(elt.ReferenceBox().Dy())
+// resolve3dPoint maps a light position under primitiveUnits=
+// "objectBoundingBox": x and y are fractions of the reference box, and z of
+// its diagonal over sqrt(2) (Filter::Resolve3dPoint, filter.cc:77-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func resolve3dPoint(elt SVGFilterElement, x, y, z float64) (float64, float64, float64) {
+	if !elt.PrimitiveUnitsObjectBoundingBox() {
+		return x, y, z
 	}
-	return v
+	ref := elt.ReferenceBox()
+	w, h := ref.Width(), ref.Height()
+	return x*w + ref.X(), y*h + ref.Y(), z * math.Sqrt((w*w+h*h)/2)
+}
+
+// resolveLightSource returns ls with its positions resolved
+// (resolve3dPoint), as SVGFEPointLightElement and SVGFESpotLightElement
+// ::GetLightSource build their sources (svg_fe_point_light_element.cc:33,
+// svg_fe_spot_light_element.cc:33-34 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A distant light has no
+// position.
+func resolveLightSource(elt SVGFilterElement, ls LightSource) LightSource {
+	switch l := ls.(type) {
+	case *PointLightSource:
+		return NewPointLightSource(resolve3dPoint(elt, l.X, l.Y, l.Z))
+	case *SpotLightSource:
+		x, y, z := resolve3dPoint(elt, l.X, l.Y, l.Z)
+		px, py, pz := resolve3dPoint(elt, l.PointsAtX, l.PointsAtY, l.PointsAtZ)
+		return NewSpotLightSource(x, y, z, px, py, pz, l.SpecularExponent, l.LimitingConeAngle)
+	}
+	return ls
 }
 
 // resolveInputAttr reads the named attribute (`in` or `in2`) and
@@ -698,8 +729,8 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	}
 	if elt.PrimitiveUnitsObjectBoundingBox() {
 		ref := elt.ReferenceBox()
-		refW := float64(ref.Dx())
-		refH := float64(ref.Dy())
+		refW := ref.Width()
+		refH := ref.Height()
 		// Defaults: x=0%, y=0%, width=100%, height=100% of the bbox.
 		x := parseFracPercent(xStr, 0.0) * refW
 		y := parseFracPercent(yStr, 0.0) * refH
@@ -712,10 +743,10 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 			h = parseFracPercent(hStr, 1.0) * refH
 		}
 		return image.Rect(
-			ref.Min.X+int(math.Floor(x)),
-			ref.Min.Y+int(math.Floor(y)),
-			ref.Min.X+int(math.Ceil(x+w)),
-			ref.Min.Y+int(math.Ceil(y+h)),
+			int(math.Floor(ref.X()+x)),
+			int(math.Floor(ref.Y()+y)),
+			int(math.Ceil(ref.X()+x+w)),
+			int(math.Ceil(ref.Y()+y+h)),
 		)
 	}
 	// userSpaceOnUse: x/y/w/h are in user-space units. Per SVG Filter
@@ -777,20 +808,21 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	)
 }
 
-// parseStdDeviation parses an feGaussianBlur `stdDeviation` attribute.
-// The value is either one number (both axes) or two numbers (x, y).
-// Default: 0, 0.
-func parseStdDeviation(prim SVGFilterPrimitive) (float64, float64) {
+// parseStdDeviation parses a `stdDeviation` attribute: one number (both
+// axes) or two (x, y). def is the primitive's initial value for both axes,
+// used when the attribute is missing or empty: 0 for feGaussianBlur, 2 for
+// feDropShadow.
+func parseStdDeviation(prim SVGFilterPrimitive, def float64) (float64, float64) {
 	v, ok := prim.Attribute("stdDeviation")
 	if !ok {
 		v, ok = prim.Attribute("stddeviation")
 	}
 	if !ok {
-		return 0, 0
+		return def, def
 	}
 	parts := splitSVGList(v)
 	if len(parts) == 0 {
-		return 0, 0
+		return def, def
 	}
 	x, _ := strconv.ParseFloat(parts[0], 64)
 	if len(parts) == 1 {

@@ -187,8 +187,7 @@ func (g *NinePieceImageGrid) imageRect() geometry.RectF {
 }
 
 func (g *NinePieceImageGrid) areaRect() geometry.RectF {
-	a := g.borderImageArea
-	return geometry.NewRectF(float64(a.Min.X), float64(a.Min.Y), float64(a.Dx()), float64(a.Dy()))
+	return rectFFromRect(g.borderImageArea)
 }
 
 // setDrawInfoCorner mirrors SetDrawInfoCorner (nine_piece_image_grid.cc:205-238).

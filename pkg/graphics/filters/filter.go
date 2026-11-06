@@ -10,11 +10,9 @@ import (
 // the reference box, the filter region, the SourceGraphic / SourceAlpha
 // builtins, and the last effect (the graph root).
 //
-// Coordinates are absolute device pixels. ReferenceBox is the element's
-// border box; FilterRegion is the rectangle the graph is evaluated over and
-// the size of every intermediate buffer.
+// Coordinates are absolute device pixels. FilterRegion is the rectangle the
+// graph is evaluated over and the size of every intermediate buffer.
 type Filter struct {
-	ReferenceBox image.Rectangle
 	FilterRegion image.Rectangle
 
 	Source      *SourceGraphic
