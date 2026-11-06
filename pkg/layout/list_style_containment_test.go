@@ -38,9 +38,10 @@ func pseudoTexts(b *Box, tag string) []string {
 //   - the step's direction comes from the counter it updates, and past a
 //     containment boundary that is a fresh counter (UpdateCounterValue,
 //     :622-627), which is not reversed;
-//   - the reversed start count skips contained subtrees and nested list
-//     owners (as InitialCounterForReversedOrderedList does,
-//     list_item_ordinal.cc:359-425).
+//   - an <ol>'s reversed start count skips list owners whole, nested lists
+//     and style-contained elements alike (InitialCounterForReversedOrderedList,
+//     list_item_ordinal.cc:359-425); other reversed counters skip only a
+//     contained element's subtree.
 // Mirrors WPT css-contain/contain-style-ol-ordinal-*.
 func TestListItemOrdinalsUnderStyleContainment(t *testing.T) {
 	cases := []struct {
@@ -77,10 +78,13 @@ func TestStyleContainmentCounterEdges(t *testing.T) {
 		pseudo string
 		want   []string
 	}{
-		// A style-contained <li> steps the outer list itself, so the
-		// reversed start value counts it; only its subtree is cut off.
-		{"contained li counted in reversed start", `<ol reversed><li>A</li><li style="contain:style">B</li><li>C</li></ol>`,
-			"::marker", []string{"3.", "2.", "1."}},
+		// A style-contained <li> is a list owner, so the reversed start
+		// count skips it whole (InitialCounterForReversedOrderedList walks
+		// NextListItem, html/list_item_ordinal.cc:366-372), yet it still
+		// steps the outer list (PreviousListItem does not skip owners). As
+		// in Chrome: count 2, numbered 2, 1, 0.
+		{"contained li skipped in reversed start", `<ol reversed><li>A</li><li style="contain:style">B</li><li>C</li></ol>`,
+			"::marker", []string{"2.", "1.", "0."}},
 		// Style containment cuts off every counter's descendants, not only
 		// list-item under an <ol>: the auto-initial count of reversed(c)
 		// skips the contained subtree, whose increments make a fresh c.
