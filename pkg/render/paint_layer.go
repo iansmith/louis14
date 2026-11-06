@@ -131,8 +131,11 @@ type PaintLayer struct {
 	// Pre-computed paint properties — no Style access needed during paint.
 
 	// Compositing:
-	Visible bool    // false = visibility:hidden, skip subtree
-	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
+	Visible bool // false = visibility:hidden: the layer's own content does not paint
+	// HiddenFrameDocument marks the root layer of a frame's document whose
+	// frame owner is hidden: nothing in it paints.
+	HiddenFrameDocument bool
+	Opacity             float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
 	ImageSrc string // <img> src completed against its owning document's base; empty if not an img element
@@ -1045,9 +1048,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// Compositing.
-	if vis, ok := s.Get("visibility"); ok && (vis == "hidden" || vis == "collapse") {
+	if !styleIsVisible(s) {
 		layer.Visible = false
 	}
+	// A hidden frame owner paints none of its frame's document, whose own
+	// styles may be visible: ReplacedPainter::ShouldPaint bails for an
+	// invisible replaced box before EmbeddedContentPainter paints the child
+	// frame (replaced_painter.cc:270-276 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	layer.HiddenFrameDocument = isFrameDocumentRoot(box) && !styleIsVisible(box.Parent.Style)
+
 	layer.Opacity = s.GetOpacity()
 
 	// Replaced element (img): capture src for paint-time image loading.
@@ -1728,10 +1738,6 @@ func ensureInlinePaintGroup(item *layout.InlineItem, container *layout.Box, curr
 	}
 	g := newPaintLayer(box)
 	g.inlinePaintGroup = item
-	// Visibility is per box, not per layer: the layer paints nothing of its
-	// own, and its members carry their own visibility, so a visible
-	// descendant of a hidden inline still paints.
-	g.Visible = true
 	groups[item] = g
 	sc, backdropRoot := currentSC, currentBackdropRoot
 	if item.EnclosingPaintGroup != nil {
