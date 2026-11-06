@@ -30,3 +30,24 @@ func TestAudioDefaultSize(t *testing.T) {
 		t.Errorf("audio controls: %s, want 300x54", boxDims(a))
 	}
 }
+
+// With the UA size overridden, <audio> takes the LayoutReplaced default
+// natural size, 300x150 with no ratio.
+func TestAudioNaturalSize(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><audio id=a controls style="width:auto; height:auto"></audio></body>`, nil)
+	if a := findBox(fl.root, byID("a")); a == nil || a.Width != 300 || a.Height != 150 {
+		t.Errorf("audio with auto size: %s, want 300x150", boxDims(a))
+	}
+}
+
+// LayoutMedia renders none of the element's DOM children, so the fallback
+// content of <audio> neither lays out nor paints.
+func TestAudioFallbackContentNotRendered(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><audio id=a controls><source src="a.ogg">fallback text</audio></body>`, nil)
+	if texts := collectTextBoxes(fl.root, nil); len(texts) != 0 {
+		t.Errorf("audio fallback content rendered: %d text boxes, first %q", len(texts), texts[0].Text)
+	}
+	if a := findBox(fl.root, byID("a")); a == nil || a.Width != 300 || a.Height != 54 {
+		t.Errorf("audio: %s, want 300x54", boxDims(a))
+	}
+}
