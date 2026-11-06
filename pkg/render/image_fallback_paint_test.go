@@ -13,22 +13,12 @@ import (
 	"image"
 	"testing"
 
-	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
 func renderWithErroringFetcher(t *testing.T, src string, w, h int) (*image.RGBA, *layout.Box) {
 	t.Helper()
-	doc, err := html.Parse(src)
-	if err != nil {
-		t.Fatalf("html.Parse: %v", err)
-	}
-	engine := layout.NewLayoutEngine(float64(w), float64(h))
-	engine.SetImageFetcher(func(uri string) ([]byte, error) { return nil, errors.New("404: " + uri) })
-	boxes := engine.Layout(doc)
-	target := image.NewRGBA(image.Rect(0, 0, w, h))
-	NewRendererForImage(target).Render(boxes)
-	return target, boxes[0]
+	return RenderPage(t, src, w, h, WithImageFetcher(func(uri string) ([]byte, error) { return nil, errors.New("404: " + uri) }))
 }
 
 func findImgBox(b *layout.Box) *layout.Box {

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"louis14/pkg/html"
-	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
 
@@ -28,10 +27,8 @@ func renderScrolled(t *testing.T, htmlContent string, offset html.ScrollOffset) 
 		}
 	}
 	find(doc.Root)
-	boxes := layout.NewLayoutEngine(200, 200).Layout(doc)
-	target := image.NewRGBA(image.Rect(0, 0, 200, 200))
-	render.NewRendererForImage(target).Render(boxes)
-	return target
+	img, _ := render.RenderDocument(doc, 200, 200)
+	return img
 }
 
 func rgbAt(img *image.RGBA, x, y int) color.RGBA {
