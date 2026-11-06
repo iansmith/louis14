@@ -210,6 +210,8 @@ type gridTrackSizingAlgorithm struct {
 	gutter     float64
 	constraint gridSizingConstraint
 	available  float64 // gridIndefinite when indefinite
+	// stretchAuto: the content distribution lets auto tracks stretch.
+	stretchAuto bool
 }
 
 func (a *gridTrackSizingAlgorithm) spansAny(it *gridSizingItem, pred func(gridTrackSize) bool) bool {
@@ -577,4 +579,115 @@ func (a *gridTrackSizingAlgorithm) maximizeTracks() {
 	for _, s := range toGrow {
 		s.increaseBaseSize(s.baseSize + s.itemIncurredIncrease)
 	}
+}
+
+// stretchAutoTracks mirrors StretchAutoTracks (:1054-1107): under a stretch
+// (or normal) content distribution, positive definite free space is added
+// equally to the tracks with an auto maximum, fit-content excluded.
+func (a *gridTrackSizingAlgorithm) stretchAutoTracks() {
+	if !a.stretchAuto {
+		return
+	}
+	var toGrow []*gridSet
+	for i := range a.sets {
+		if a.sets[i].trackSize.hasAutoMax() {
+			toGrow = append(toGrow, &a.sets[i])
+		}
+	}
+	// An indefinite free space would fall back to the container's definite
+	// min size, which louis14 does not pass in; nothing stretches then.
+	free := a.determineFreeSpace()
+	if len(toGrow) == 0 || free == gridIndefinite || free <= 0 {
+		return
+	}
+	distributeExtraSpaceToSets(free, 0, gridForFreeSpace, toGrow, toGrow)
+	for _, s := range toGrow {
+		s.increaseBaseSize(s.baseSize + s.itemIncurredIncrease)
+	}
+}
+
+// expandFlexibleTracks sizes the flexible tracks. Interim until the
+// ExpandFlexibleTracks port: louis14's former distributeFr rule, the space
+// left after the inflexible tracks split by flex factor, applied only
+// under a definite available size.
+func (a *gridTrackSizingAlgorithm) expandFlexibleTracks() {
+	if a.constraint != gridSizingLayout || a.available == gridIndefinite {
+		return
+	}
+	used, totalFr := 0.0, 0.0
+	for i := range a.sets {
+		if s := &a.sets[i]; s.trackSize.hasFlexMax() {
+			totalFr += s.flexFactor()
+		} else {
+			used += s.baseSize
+		}
+	}
+	if totalFr <= 0 {
+		return
+	}
+	free := a.available - used
+	if n := len(a.sets); n > 1 {
+		free -= a.gutter * float64(n-1)
+	}
+	frSize := max(0, free) / totalFr
+	for i := range a.sets {
+		if s := &a.sets[i]; s.trackSize.hasFlexMax() {
+			s.baseSize = s.flexFactor() * frSize
+			if s.trackSize.hasFixedMin() {
+				s.baseSize = max(s.baseSize, s.trackSize.min.length)
+			}
+		}
+	}
+}
+
+// computeUsedTrackSizes mirrors ComputeUsedTrackSizes (:305-347).
+func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem) {
+	a.resolveIntrinsicTrackSizes(items)
+	a.setIndefiniteGrowthLimitsToBaseSize()
+	a.maximizeTracks()
+	a.expandFlexibleTracks()
+	a.stretchAutoTracks()
+}
+
+// computeColumnSizes sizes a placed grid's columns under constraint and
+// returns their used sizes: Blink's GridLayoutAlgorithm::ComputeUsedTrackSizes
+// for kForColumns (grid_layout_algorithm.cc:1164-1189 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's
+// content inline size, or Indefinite. Only items spanning an intrinsic
+// track are measured.
+func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, ignoreItems bool, constraint gridSizingConstraint) []float64 {
+	if available < 0 {
+		available = gridIndefinite
+	}
+	a := &gridTrackSizingAlgorithm{
+		sets: newGridSets(tracks, available), gutter: gap,
+		constraint: constraint, available: available,
+		stretchAuto: gla.stretchesAutoColumns(),
+	}
+	var sizing []*gridSizingItem
+	for _, item := range items {
+		if ignoreItems {
+			break
+		}
+		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(tracks))}
+		if it.start < 0 || it.end <= it.start || !a.spansIntrinsic(it) {
+			continue
+		}
+		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
+		it.isScrollContainer = item.style.IsScrollContainer()
+		sizing = append(sizing, it)
+	}
+	a.computeUsedTrackSizes(sizing)
+	sizes := make([]float64, len(a.sets))
+	for i := range a.sets {
+		sizes[i] = a.sets[i].baseSize
+	}
+	return sizes
+}
+
+// stretchesAutoColumns reports whether justify-content lets auto columns
+// stretch: stretch, or normal (StretchAutoTracks, :1062-1070).
+func (gla *GridLayoutAlgorithm) stretchesAutoColumns() bool {
+	v, _ := gla.style.Get("justify-content")
+	return v == "" || v == "normal" || v == "stretch"
 }

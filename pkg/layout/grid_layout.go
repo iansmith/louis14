@@ -1031,6 +1031,12 @@ func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, tracks []
 
 // resolveTrackSizes resolves track sizes from track definitions.
 func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
+	// Columns are sized by the GridTrackSizingAlgorithm port; rows below
+	// keep louis14's fragment-based sizing (LOU-757 for its stretch).
+	if isInline {
+		ignoreItems := gla.style != nil && (gla.style.ShouldApplySizeContainment() || gla.style.ShouldApplyInlineSizeContainment())
+		return gla.computeColumnSizes(tracks, available, gap, items, ignoreItems, gridSizingLayout)
+	}
 	n := len(tracks)
 	sizes := make([]float64, n)
 
@@ -1049,71 +1055,36 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 		}
 	}
 
-	// Under size/inline-size containment, item contributions are zero — the
-	// container is sized as if it had no content. Fixed tracks and gaps still
-	// contribute. ShouldApplySizeContainment covers both axes; inline-size
-	// containment only applies to the inline (column) pass.
-	skipItemContrib := gla.style != nil &&
-		(gla.style.ShouldApplySizeContainment() ||
-			(isInline && gla.style.ShouldApplyInlineSizeContainment()))
+	// Under size containment, item contributions are zero — the container
+	// is sized as if it had no content. Fixed tracks and gaps still
+	// contribute.
+	skipItemContrib := gla.style != nil && gla.style.ShouldApplySizeContainment()
 
 	// Resolve min-content/max-content/auto tracks from item content sizes.
-	var colMin, colMax []float64 // fit-content column contributions, measured once
 	for i, t := range tracks {
 		if !t.Auto && !t.MinContent && !t.MaxContent && t.Fr == 0 && !t.IsFitContent && !(t.IsMinMax && t.MaxAuto) {
 			continue
 		}
 		maxSize := 0.0
-		minContentSize := 0.0
-		// In the inline (column) pass, items are not yet laid out — column sizing
-		// precedes item layout, so item.result is nil. fit-content tracks need
-		// real min-content (base, never clamped) and max-content (growth limit,
-		// clamped to the argument) contributions, so measure them directly via
-		// ComputeMinMaxSizes (columnContributions).
-		measureContrib := isInline && t.IsFitContent
-		if measureContrib && !skipItemContrib {
-			if colMin == nil {
-				colMin, colMax = gla.columnContributions(items, tracks, gap, func(t css.GridTrack) bool { return t.IsFitContent })
-			}
-			minContentSize, maxSize = colMin[i], colMax[i]
-		} else if !skipItemContrib {
+		if !skipItemContrib {
 			for _, item := range items {
-				var start, end int
-				if isInline {
-					start, end = item.colStart, item.colEnd
-				} else {
-					start, end = item.rowStart, item.rowEnd
-				}
+				start, end := item.rowStart, item.rowEnd
 				if start <= i && end > i {
-					span := end - start
-					if span <= 0 {
-						span = 1
-					}
-					var itemMax, itemMin float64
+					span := max(end-start, 1)
 					if item.result != nil {
-						if isInline != wdm.IsVertical() {
-							itemMax = item.result.Fragment.Size.WidthF64()
+						var itemSize float64
+						if wdm.IsVertical() {
+							itemSize = item.result.Fragment.Size.WidthF64()
 						} else {
-							itemMax = item.result.Fragment.Size.HeightF64()
+							itemSize = item.result.Fragment.Size.HeightF64()
 						}
-						itemMin = itemMax
-					}
-					if c := itemMax / float64(span); c > maxSize {
-						maxSize = c
-					}
-					if c := itemMin / float64(span); c > minContentSize {
-						minContentSize = c
+						maxSize = max(maxSize, itemSize/float64(span))
 					}
 				}
 			}
 		}
-		if t.IsFitContent {
-			if measureContrib {
-				maxSize = fitContentTrackSize(minContentSize, maxSize, t.FitContentMax)
-			} else if maxSize > t.FitContentMax {
-				// Row pass: existing fragment-based clamp to the argument.
-				maxSize = t.FitContentMax
-			}
+		if t.IsFitContent && maxSize > t.FitContentMax {
+			maxSize = t.FitContentMax
 		}
 		if t.IsMinMax {
 			if maxSize < t.MinSize {

@@ -28,11 +28,12 @@ func TestGridColumnTrackSizing(t *testing.T) {
 		// columns 50 and 80.
 		{"auto columns, unequal items", `display:inline-grid; grid-auto-flow:column`,
 			item("a", "width:50px") + item("b", "width:80px"), "b", 50, 130},
-		// A spanning item's extra space goes to the track that can still
-		// grow: column 1 is 30 from its own item, so column 2 takes the
-		// spanner's remaining 70.
-		{"spanner fills the growable track", `display:inline-grid; grid-template-columns:auto auto`,
-			item("a", "width:30px") + item("s", "grid-column:1/3; width:100px") + item("c", "grid-column:2; width:10px"), "c", 30, 100},
+		// A spanning item's extra space goes past the growth limits once
+		// every spanned track has reached its own: columns 30 and 10 from
+		// their items, then the spanner's remaining 60 is shared equally
+		// (distribute space beyond limits), so 60 and 40.
+		{"spanner beyond limits", `display:inline-grid; grid-template-columns:auto auto`,
+			item("a", "width:30px") + item("s", "grid-column:1/3; width:100px") + item("c", "grid-column:2; width:10px"), "c", 60, 100},
 		// Free space in a definite 300px grid: columns 50 and 80 reach their
 		// growth limits, then the remaining 170 is added equally, so 135
 		// and 165.
