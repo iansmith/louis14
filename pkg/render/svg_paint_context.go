@@ -72,6 +72,17 @@ type svgPaintContext struct {
 	// 4 (and harmless in Phase 1-3 because no painter dereferences it).
 	Resources *svg.SVGResourceRegistry
 
+	// regionClip, when not empty, further clips what composites in
+	// device pixels (viewportDeviceClip): a <mask>'s region.
+	regionClip image.Rectangle
+
+	// clipPathContent is set while painting <clipPath> content, which
+	// clips with its geometry only: its filters, masks and other
+	// non-geometric effects are not applied
+	// (ScopedSVGPaintState::ApplyEffects, scoped_svg_paint_state.cc:
+	// 117-125 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	clipPathContent bool
+
 	// Renderer is the host Renderer used by paint-server fills to
 	// composite onto the same *image.RGBA the rest of the renderer
 	// writes to. The DC doesn't expose pattern fills, so paint
@@ -93,6 +104,36 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 	dc.SetColor(premultipliedRGBA(c))
 }
 
+// newBufferPaintContext returns the paint context for resource content
+// painted into tmpR's buffer, whose content is the viewport (user units)
+// scaled onto the whole buffer: <mask> and <clipPath> children (their
+// viewport is the buffer, in pixels) and <pattern> tile content.
+// contentToDevice is that scale, so a filtered child composites inside the
+// buffer (viewportDeviceClip). A mask also sets regionClip; <clipPath>
+// content sets clipPathContent, as it paints its geometry without effects.
+func newBufferPaintContext(tmpR *Renderer, viewport geometry.SizeF, deviceFromUser geometry.AffineTransform, resources *svg.SVGResourceRegistry) *svgPaintContext {
+	size := tmpR.target.Bounds().Size()
+	contentToDevice := geometry.Identity()
+	if viewport.Width > 0 && viewport.Height > 0 {
+		contentToDevice = geometry.Scale(float64(size.X)/viewport.Width, float64(size.Y)/viewport.Height)
+	}
+	return &svgPaintContext{
+		dc:               tmpR.dc,
+		contentToDevice:  contentToDevice,
+		viewport:         geometry.NewRectF(0, 0, viewport.Width, viewport.Height),
+		CurrentTransform: geometry.Identity(),
+		DeviceFromUser:   deviceFromUser,
+		Resources:        resources,
+		Renderer:         tmpR,
+	}
+}
+
+// deviceRegionClip returns region, in the coordinates deviceFromUser maps
+// from, as the device pixels it covers: a mask region's regionClip.
+func deviceRegionClip(deviceFromUser geometry.AffineTransform, region geometry.RectF) image.Rectangle {
+	return snapRectFToDevice(deviceFromUser.MapRect(region))
+}
+
 // viewportDeviceClip returns the SVG root viewport in device pixels, for the
 // filter composite paths that write straight to the target image and so
 // bypass the DrawContext clip stack. The edges are int()-truncated, while
@@ -104,5 +145,9 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 // content clip property node; louis14's filter composite bypasses the DC.
 func (c *svgPaintContext) viewportDeviceClip() image.Rectangle {
 	d := c.contentToDevice.MapRect(c.viewport)
-	return image.Rect(int(d.X()), int(d.Y()), int(d.X()+d.Width()), int(d.Y()+d.Height()))
+	clip := image.Rect(int(d.X()), int(d.Y()), int(d.X()+d.Width()), int(d.Y()+d.Height()))
+	if !c.regionClip.Empty() {
+		clip = clip.Intersect(c.regionClip)
+	}
+	return clip
 }

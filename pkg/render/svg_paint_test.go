@@ -1315,3 +1315,97 @@ func TestSVG_RootPaintServerFollowsSnappedOrigin(t *testing.T) {
 	sampleColorClose(t, img, 81, 81, 255, 0, 0, 12, "row 81 (above the stop)")
 	sampleColorClose(t, img, 81, 82, 0, 0, 255, 12, "row 82 (below the stop)")
 }
+
+// LOU-758 (filter-effects worklist B11): a <mask>'s children paint with their
+// full effects, filters included (LayoutSVGResourceMasker::CreatePaintRecord →
+// SVGObjectPainter::PaintResourceSubtree, layout_svg_resource_masker.cc:47-66
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a red mask child filtered to a
+// white flood makes an opaque luminance mask, so the masked green square
+// covers the red one under it (svg-mutation-filter-used-by-mask).
+func TestSVG_MaskFilteredChildPaints(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
+<mask id="m"><rect width="100%" height="100%" fill="red" filter="url(#f)"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
+	wantPixel(t, img, 50, 50, canvasGreen, "the green square under an opaque, filtered mask")
+	wantPixel(t, img, 1, 1, canvasGreen, "the mask's top-left edge")
+	wantPixel(t, img, 98, 98, canvasGreen, "the mask's bottom-right edge")
+	wantPixel(t, img, 102, 50, canvasWhite, "past the masked square")
+}
+
+// A masked shape's device-space buffer composites at its device position:
+// the 8px body margin is in the <svg>'s user→device transform, and must not
+// be applied to the buffer a second time (svg-mutation-filter-used-by-mask's
+// page has that margin).
+func TestSVG_MaskedShapeUnderPageOffset(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html>
+<svg width="100" height="100">
+<mask id="m"><rect width="100%" height="100%" fill="white"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 140, 140)
+	wantPixel(t, img, 10, 50, canvasGreen, "the masked square's left edge, at the margin")
+	wantPixel(t, img, 112, 50, canvasWhite, "past the masked square's right edge")
+}
+
+// A filtered mask child is clipped to the mask region: the white flood its
+// filter region spans (the child's bbox ±10%) does not reach past
+// <mask width="50">, so the green square shows only in the region's half.
+func TestSVG_MaskFilteredChildClippedToMaskRegion(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
+<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="50" height="100"><rect width="100" height="100" fill="red" filter="url(#f)"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
+	wantPixel(t, img, 48, 50, canvasGreen, "inside the mask region's edge")
+	wantPixel(t, img, 52, 50, canvasRed, "outside the mask region: the red under it")
+}
+
+// clipPath content clips with its geometry only: its filter, like any
+// non-geometric effect, is not applied (ScopedSVGPaintState::ApplyEffects,
+// scoped_svg_paint_state.cc:117-125 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a child filtered to
+// transparent still clips with its rect. Two children on a CSS box's
+// clip-path take the content (rasterized) path.
+func TestSVG_ClipPathChildIgnoresFilter(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="0" height="0" style="position:absolute">
+<filter id="f"><feFlood flood-opacity="0"/></filter>
+<clipPath id="c"><rect x="25" y="25" width="25" height="50" filter="url(#f)"/><rect x="50" y="25" width="25" height="50"/></clipPath></svg>
+<div style="width:100px;height:100px;background:green;clip-path:url(#c)"></div>`, 120, 120)
+	wantPixel(t, img, 30, 50, canvasGreen, "inside the filtered child's rect")
+	wantPixel(t, img, 60, 50, canvasGreen, "inside the other child's rect")
+	wantPixel(t, img, 20, 50, canvasWhite, "outside both rects")
+}
+
+// A masked shape is rasterized in device pixels, through the draw context's
+// whole transform, and its buffer blitted as is: under a CSS rotation of the
+// <svg>, a fully opaque mask leaves the shape's anti-aliased edges exactly as
+// the unmasked shape paints them (no resampling of a pre-rotation buffer).
+func TestSVG_RotatedMaskedShapeEdgesUnchanged(t *testing.T) {
+	page := func(mask string) string {
+		return `<!DOCTYPE html>
+<svg width="100" height="100" style="transform:rotate(30deg)">
+<mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
+<rect x="25" y="25" width="50" height="50" fill="green" ` + mask + `/></svg>`
+	}
+	wantImagesWithin(t, renderToImage(t, page(`mask="url(#m)"`), 140, 140), renderToImage(t, page(""), 140, 140), 1, "the unmasked shape")
+}
+
+// A pattern tile's paint context clips a filtered child to the whole tile
+// buffer, not to its viewport's size in user units: with
+// patternContentUnits="objectBoundingBox" that viewport is 1×1.
+func TestSVG_PatternFilteredChildFillsTile(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
+<pattern id="p" width="20" height="20" patternUnits="userSpaceOnUse" patternContentUnits="objectBoundingBox"><rect width="1" height="1" fill="red" filter="url(#g)"/></pattern>
+<rect width="100" height="100" fill="url(#p)"/></svg>`, 120, 120)
+	// Before the tile context's viewport clip was the 1×1 viewport, only
+	// pixel (0,0) of the flood showed. (Tile content in objectBoundingBox
+	// units is not scaled onto the box yet, so the 1×1 rect paints one
+	// pixel, which its filter region widens by 10%.)
+	wantPixel(t, img, 1, 1, canvasGreen, "the flood past the tile's first pixel")
+}

@@ -148,7 +148,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 // shapes through paintWithSVGFilter — same lookup chain
 // (ParseURLReference → registry.LookupAsFilter → cycle-state check).
 func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer) bool {
-	if c == nil || c.Style == nil {
+	if c == nil || c.Style == nil || pctx.clipPathContent {
 		return false
 	}
 	filterVal, ok := c.Style.Get("filter")
