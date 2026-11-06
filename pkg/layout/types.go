@@ -17,7 +17,7 @@ type Box struct {
 	Width  float64
 	Height float64
 
-	// PaintGroup identifies the inline opacity group this box must composite
+	// PaintGroup identifies the inline paint group this box must composite
 	// inside (copied from PhysicalFragment.PaintGroup by fragmentToBox).
 	// Nil for boxes outside any group. See InlineItem.EnclosingPaintGroup.
 	PaintGroup *InlineItem
@@ -150,6 +150,13 @@ type Box struct {
 	// PhysicalFragment for pkg/render's TablePainter.
 	TableCollapsedBorders         *TableBorders
 	TableCollapsedBordersGeometry *CollapsedTableBordersGeometry
+}
+
+// IsOwnPaintGroupFragment reports whether the box is one of an inline paint
+// group's own fragments (its box fragments and text), stamped with the
+// group's own item rather than an enclosing one.
+func (b *Box) IsOwnPaintGroupFragment() bool {
+	return b.PaintGroup != nil && b.Node != nil && b.PaintGroup.Node == b.Node
 }
 
 // CreatesStackingContext returns true if this box establishes a new

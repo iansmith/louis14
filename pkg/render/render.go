@@ -1032,7 +1032,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	if r.isLayerTransformSingular(layer) {
 		return
 	}
-	box := layer.Box
+	box := layer.linesOrBorderBox()
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
 	bw := int(math.Ceil(box.X+box.Width)) - bx + 1
@@ -1246,7 +1246,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if r.isLayerTransformSingular(layer) {
 		return
 	}
-	box := layer.Box
+	box := layer.linesOrBorderBox()
 
 	// The SaveLayer's CTM: the draw context's matrix (the ancestors') ∘ the
 	// layer's own projection. A projective draw context cannot be read back;
@@ -1573,7 +1573,7 @@ func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, boo
 // common case; isolation: isolate does not form a backdrop root, which is
 // consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
-	box := layer.Box
+	box := layer.linesOrBorderBox()
 
 	// A logically zero-area border box paints no backdrop. Skip before
 	// snapping to device pixels — otherwise floor/ceil on fractional Y
@@ -1583,11 +1583,13 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		return
 	}
 
-	// Element's border-box region in absolute device pixels.
-	bx := int(math.Floor(box.X))
-	by := int(math.Floor(box.Y))
-	bw := int(math.Ceil(box.X+box.Width)) - bx
-	bh := int(math.Ceil(box.Y+box.Height)) - by
+	// Element's border-box region in absolute device pixels, pixel-snapped:
+	// Blink's backdrop-filter bounds are the reference box's
+	// PixelSnappedContouredBorder (PaintLayer::BackdropFilterBounds,
+	// paint_layer.cc:2072-2078 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// the same snapping as the box's background.
+	sx, sy, sw, sh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	bx, by, bw, bh := int(sx), int(sy), int(sw), int(sh)
 
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		return
@@ -2281,6 +2283,9 @@ func (r *Renderer) paintsOwnContent(layer *PaintLayer) bool {
 // dedicated PaintPhase::kSelfOutlineOnly phase (paint_phase.h @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
+	if layer.inlinePaintGroup != nil {
+		return // its fragments paint it (see paintSelfDecorations)
+	}
 	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
 		r.drawOutline(layer)
 	}
@@ -2291,7 +2296,17 @@ func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
 // painting that precedes descendant painting in CSS 2.1 Appendix E.
 // The outline is NOT painted here; it has its own post-content phase
 // (see paintSelfOutline). Called once per layer (not once per phase).
+//
+// An inline paint group's layer paints no box of its own: its box fragments
+// paint the inline's background, borders, shadows and outline, as Blink's
+// InlineBoxFragmentPainter::Paint does per fragment
+// (inline_box_fragment_painter.cc:61-77 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); BoxFragmentPainter never paints
+// an inline box (box_fragment_painter.cc:594).
 func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
+	if layer.inlinePaintGroup != nil {
+		return
+	}
 	// empty-cells: hide — skip background, borders, and box shadows for
 	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
 	// The cell still occupies space; only painting is suppressed.
@@ -2615,9 +2630,9 @@ func (r *Renderer) popOwnClips(layer *PaintLayer) {
 // painting, so a clip-path shape lands on the same pixel grid as the
 // element's background and borders.
 func (r *Renderer) applyClipPath(layer *PaintLayer) {
-	box := layer.Box
-	// Pixel-snapped border box — the clip-path reference box.
-	bx, by, bw, bh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	// Pixel-snapped clip-path reference box.
+	ref := layer.clipPathReferenceBox()
+	bx, by, bw, bh := pixelSnap(ref.X(), ref.Y(), ref.Width(), ref.Height())
 
 	// Reference variant: resolve `url(#id)` against the renderer-wide
 	// SVG resource registry and install the resolved clip directly.

@@ -103,7 +103,13 @@ func needsTransformNode(box *layout.Box) bool {
 	if box.Text != "" {
 		return false
 	}
-	if hasWillChangeTransformHint(box.Style) && (transformable || inlineHasPaintLayer(box)) {
+	// CompositingReasonFinder::DirectReasonsForPaintProperties adds
+	// will-change reasons only to an object with a paint layer
+	// (compositing_reason_finder.cc:411-419 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a non-atomic inline has one
+	// when it is a paint group (layout.IsInlinePaintGroup,
+	// LayoutInline::LayerTypeRequired), which its own boxes are stamped with.
+	if hasWillChangeTransformHint(box.Style) && (transformable || box.IsOwnPaintGroupFragment()) {
 		return true
 	}
 	return transformable && (box.Style.HasTransform() || box.Preserves3D())
@@ -122,18 +128,6 @@ func hasWillChangeTransformHint(s *css.Style) bool {
 		}
 	}
 	return false
-}
-
-// inlineHasPaintLayer reports whether a non-atomic inline box has a paint
-// layer, which CompositingReasonFinder::DirectReasonsForPaintProperties
-// requires before it adds will-change reasons (compositing_reason_finder.cc:
-// 411-419): LayoutInline::LayerTypeRequired (layout_inline.cc:760-767 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — relative or sticky
-// positioning, or a grouping property. louis14 bakes animations, and paint
-// containment does not apply to a non-atomic inline.
-func inlineHasPaintLayer(box *layout.Box) bool {
-	return box.Position == css.PositionRelative || box.Position == css.PositionSticky ||
-		box.Style.HasGroupingProperty(false)
 }
 
 // perspectiveLookup returns the perspective matrix the DOM parent of box
