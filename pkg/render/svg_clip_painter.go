@@ -130,13 +130,7 @@ func (r *Renderer) applySVGClipPathContent(clipper *svg.SVGResourceClipper, targ
 		deviceFromUser.C, deviceFromUser.D,
 		deviceFromUser.E, deviceFromUser.F,
 	)
-	pctx := &svgPaintContext{
-		dc:               tmpR.dc,
-		viewport:         geometry.NewRectF(0, 0, float64(bw), float64(bh)),
-		CurrentTransform: geometry.Identity(),
-		DeviceFromUser:   deviceFromUser,
-		Renderer:         tmpR,
-	}
+	pctx := newBufferPaintContext(tmpR, bw, bh, deviceFromUser, nil)
 	for _, child := range clipper.Children {
 		paintSVGNode(pctx, child)
 	}

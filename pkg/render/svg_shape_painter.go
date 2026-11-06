@@ -557,14 +557,7 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	tmpR.dc.DrawRectangle(regionLocal.X(), regionLocal.Y(), regionLocal.Width(), regionLocal.Height())
 	tmpR.dc.Clip()
 
-	pctx := &svgPaintContext{
-		dc:               tmpR.dc,
-		viewport:         geometry.NewRectF(0, 0, float64(bufW), float64(bufH)),
-		CurrentTransform: geometry.Identity(),
-		DeviceFromUser:   dfu,
-		Resources:        r.lookupSVGResources(),
-		Renderer:         tmpR,
-	}
+	pctx := newBufferPaintContext(tmpR, bufW, bufH, dfu, r.lookupSVGResources())
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

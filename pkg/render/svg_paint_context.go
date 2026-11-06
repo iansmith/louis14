@@ -93,6 +93,25 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 	dc.SetColor(premultipliedRGBA(c))
 }
 
+// newBufferPaintContext returns the paint context for resource content
+// painted into a w×h device-pixel buffer through tmpR: <mask> and
+// <clipPath> children, which paint with their full effects
+// (LayoutSVGResourceMasker::CreatePaintRecord, layout_svg_resource_masker.cc:
+// 47-66 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The buffer is the
+// viewport and is already in device pixels, so contentToDevice is the
+// identity and a filtered child composites inside it (viewportDeviceClip).
+func newBufferPaintContext(tmpR *Renderer, w, h int, deviceFromUser geometry.AffineTransform, resources *svg.SVGResourceRegistry) *svgPaintContext {
+	return &svgPaintContext{
+		dc:               tmpR.dc,
+		contentToDevice:  geometry.Identity(),
+		viewport:         geometry.NewRectF(0, 0, float64(w), float64(h)),
+		CurrentTransform: geometry.Identity(),
+		DeviceFromUser:   deviceFromUser,
+		Resources:        resources,
+		Renderer:         tmpR,
+	}
+}
+
 // viewportDeviceClip returns the SVG root viewport in device pixels, for the
 // filter composite paths that write straight to the target image and so
 // bypass the DrawContext clip stack. The edges are int()-truncated, while
