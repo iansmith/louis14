@@ -2,7 +2,6 @@ package layout
 
 import (
 	"math"
-	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -75,7 +74,6 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	items, oofChildren := tree.items, tree.oofChildren
 	colTracks, rowTracks := tree.colTracks, tree.rowTracks
 	numCols, numRows := tree.numCols, tree.numRows
-	colLineNames, rowLineNames, namedAreas := tree.colLineNames, tree.rowLineNames, tree.namedAreas
 	// Layout keeps one column in a grid with no column at all, as before
 	// buildGridSizingTree stopped synthesizing one for its intrinsic size.
 	// Blink has none there; dropping it from layout is out of this scope.
@@ -449,8 +447,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	tracks := gridTrackGeometry{
 		colOffsets: colOffsets, colSizes: colSizes,
 		rowOffsets: rowOffsets, rowSizes: rowSizes,
-		colLineNames: colLineNames, rowLineNames: rowLineNames,
-		namedAreas: namedAreas,
+		lines: tree.lines,
 	}
 	gla.PlaceOutOfFlowItems(builder, oofChildren, tracks, paddingBox)
 
@@ -491,12 +488,12 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 // sizing columns (layout/grid/grid_layout_algorithm.cc:279-284 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Layout does.
 type gridSizingTree struct {
-	items                      []*gridItem
-	oofChildren                []*LayoutInputNode
-	colTracks, rowTracks       []css.GridTrack
-	numCols, numRows           int
-	colLineNames, rowLineNames map[string]int
-	namedAreas                 map[string]css.GridAreaInfo
+	items                []*gridItem
+	oofChildren          []*LayoutInputNode
+	colTracks, rowTracks []css.GridTrack
+	numCols, numRows     int
+	// lines resolves placement longhands against the explicit grid.
+	lines gridLineResolver
 }
 
 // buildGridSizingTree places the grid's items. contentInlineSize and
@@ -567,13 +564,26 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
 
 	// Resolve explicit placements from grid-column/grid-row/grid-area.
+	// The explicit grid is as large as its template areas too
+	// (GridLineResolver::ExplicitGridColumnCount / RowCount,
+	// grid_line_resolver.cc:525-555 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	explicitCols, explicitRows := len(colTracks), len(rowTracks)
+	for _, area := range namedAreas {
+		explicitCols, explicitRows = max(explicitCols, area.ColEnd-1), max(explicitRows, area.RowEnd-1)
+	}
+	explicitCols, explicitRows = min(explicitCols, css.GridMaxTracks), min(explicitRows, css.GridMaxTracks)
+	lines := gridLineResolver{
+		explicitCols: explicitCols, explicitRows: explicitRows,
+		colLineNames: colLineNames, rowLineNames: rowLineNames, namedAreas: namedAreas,
+	}
 	for _, item := range items {
-		gla.resolveItemPlacement(item, namedAreas, colLineNames, rowLineNames, len(colTracks), len(rowTracks))
+		gla.resolveItemPlacement(item, lines)
 	}
 
 	// Auto-place items that don't have explicit positions.
-	numCols := len(colTracks)
-	numRows := len(rowTracks)
+	// The explicit grid's tracks always exist, its areas' included.
+	numCols := explicitCols
+	numRows := explicitRows
 	// First, compute grid dimensions from explicit placements.
 	for _, item := range items {
 		if item.colEnd >= 0 && item.colEnd > numCols {
@@ -609,66 +619,23 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 		items: items, oofChildren: oofChildren,
 		colTracks: colTracks, rowTracks: rowTracks,
 		numCols: numCols, numRows: numRows,
-		colLineNames: colLineNames, rowLineNames: rowLineNames,
-		namedAreas: namedAreas,
+		lines: lines,
 	}
 }
 
-// resolveItemPlacement resolves grid-column, grid-row, and grid-area for an item.
-func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, namedAreas map[string]css.GridAreaInfo, colLineNames, rowLineNames map[string]int, numCols, numRows int) {
-	s := item.style
-
-	// Check grid-area first (it sets both row and column).
-	if area := s.GetGridArea(); area != "" {
-		if info, ok := namedAreas[area]; ok {
-			item.colStart = info.ColStart - 1
-			item.colEnd = info.ColEnd - 1
-			item.rowStart = info.RowStart - 1
-			item.rowEnd = info.RowEnd - 1
-			return
-		}
+// resolveItemPlacement resolves an item's lines from its placement
+// longhands (gridLineResolver): a definite axis gets its lines, an
+// indefinite one its span size for auto-placement.
+func (gla *GridLayoutAlgorithm) resolveItemPlacement(item *gridItem, r gridLineResolver) {
+	if col := r.resolve(item.style, true); col.definite {
+		item.colStart, item.colEnd = col.start, col.end
+	} else {
+		item.colSpan = col.size
 	}
-
-	// grid-column placement (handles grid-column, grid-column-start/end, named lines).
-	// Per CSS Grid 2 §8.3, `span N` with no start defers placement to the
-	// auto-placement algorithm; we capture SpanCount on the item so autoPlace
-	// can size the slot correctly. With an explicit start, we resolve the
-	// span immediately into an explicit end.
-	if col := s.GetGridColumnWithNames(colLineNames); col != nil {
-		if col.Start > 0 || col.End > 0 || col.IsSpan {
-			if col.Start > 0 {
-				item.colStart = col.Start - 1
-			}
-			if col.End > 0 {
-				item.colEnd = col.End - 1
-			} else if col.IsSpan && col.SpanCount > 0 && col.Start > 0 {
-				item.colEnd = item.colStart + col.SpanCount
-			} else if col.Start > 0 {
-				item.colEnd = item.colStart + 1
-			}
-			if col.SpanCount > 0 {
-				item.colSpan = col.SpanCount
-			}
-		}
-	}
-
-	// grid-row placement (handles grid-row, grid-row-start/end, named lines).
-	if row := s.GetGridRowWithNames(rowLineNames); row != nil {
-		if row.Start > 0 || row.End > 0 || row.IsSpan {
-			if row.Start > 0 {
-				item.rowStart = row.Start - 1
-			}
-			if row.End > 0 {
-				item.rowEnd = row.End - 1
-			} else if row.IsSpan && row.SpanCount > 0 && row.Start > 0 {
-				item.rowEnd = item.rowStart + row.SpanCount
-			} else if row.Start > 0 {
-				item.rowEnd = item.rowStart + 1
-			}
-			if row.SpanCount > 0 {
-				item.rowSpan = row.SpanCount
-			}
-		}
+	if row := r.resolve(item.style, false); row.definite {
+		item.rowStart, item.rowEnd = row.start, row.end
+	} else {
+		item.rowSpan = row.size
 	}
 }
 
@@ -1490,9 +1457,7 @@ type gridArea struct {
 type gridTrackGeometry struct {
 	colOffsets, colSizes []float64
 	rowOffsets, rowSizes []float64
-	colLineNames         map[string]int
-	rowLineNames         map[string]int
-	namedAreas           map[string]css.GridAreaInfo
+	lines                gridLineResolver
 }
 
 // isPlacedWithinGridArea reports whether an out-of-flow box has a
@@ -1504,51 +1469,9 @@ func isPlacedWithinGridArea(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
-	for _, property := range []string{"grid-area", "grid-column", "grid-row",
-		"grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end"} {
-		v, ok := style.Get(property)
-		if !ok {
-			continue
-		}
-		for _, part := range strings.Split(v, "/") {
-			if p := strings.TrimSpace(part); p != "" && p != "auto" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// outOfFlowLines resolves an out-of-flow box's grid lines in one axis to
-// 0-based line indices; -1 is an auto line, which for an out-of-flow box is
-// the padding edge (CSS Grid 1 §9.1). A start line with a span gives the end
-// line; a line past the grid is treated as auto. Mirrors
-// GridItemData::ComputeOutOfFlowItemPlacement (grid_item.cc @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for the explicit-line cases
-// louis14's placement parser exposes.
-func outOfFlowLines(p *css.GridPlacement, endIsAuto bool, trackCount int) (start, end int) {
-	start, end = -1, -1
-	if p == nil {
-		return start, end
-	}
-	if p.Start > 0 {
-		start = p.Start - 1
-	}
-	if endIsAuto && p.SpanCount == 0 {
-		// css.GridPlacement gives an in-flow item's implied span-1 end; an
-		// out-of-flow box's auto end is the padding edge.
-	} else if p.End > 0 {
-		end = p.End - 1
-	} else if start >= 0 && p.SpanCount > 0 {
-		end = start + p.SpanCount
-	}
-	if start > trackCount {
-		start = -1
-	}
-	if end > trackCount || end <= start && start >= 0 {
-		end = -1
-	}
-	return start, end
+	colStart, colEnd := placementLonghands(style, true)
+	rowStart, rowEnd := placementLonghands(style, false)
+	return !colStart.Auto || !colEnd.Auto || !rowStart.Auto || !rowEnd.Auto
 }
 
 // trackStartOffset is the offset of grid line `line` used as a start edge:
@@ -1580,15 +1503,8 @@ func trackEndOffset(offsets, sizes []float64, line int) float64 {
 // ComputeOutOfFlowItemContainingRect (grid_layout_algorithm.cc:2742-2791 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (g gridTrackGeometry) ComputeOutOfFlowItemContainingRect(style *css.Style, paddingBox gridArea) gridArea {
-	colStart, colEnd, rowStart, rowEnd := -1, -1, -1, -1
-	if info, ok := g.namedAreas[style.GetGridArea()]; ok && style.GetGridArea() != "" {
-		colStart, colEnd, rowStart, rowEnd = info.ColStart-1, info.ColEnd-1, info.RowStart-1, info.RowEnd-1
-	} else {
-		colStart, colEnd = outOfFlowLines(style.GetGridColumnWithNames(g.colLineNames),
-			gridEndLineIsAuto(style, "grid-column-end", "grid-column"), len(g.colOffsets))
-		rowStart, rowEnd = outOfFlowLines(style.GetGridRowWithNames(g.rowLineNames),
-			gridEndLineIsAuto(style, "grid-row-end", "grid-row"), len(g.rowOffsets))
-	}
+	colStart, colEnd := g.outOfFlowLines(style, true, len(g.colOffsets))
+	rowStart, rowEnd := g.outOfFlowLines(style, false, len(g.rowOffsets))
 	inlineStart, inlineEnd := paddingBox.offset.InlineOffset, paddingBox.offset.InlineOffset+paddingBox.size.InlineSize
 	blockStart, blockEnd := paddingBox.offset.BlockOffset, paddingBox.offset.BlockOffset+paddingBox.size.BlockSize
 	if len(g.colOffsets) > 0 {
@@ -1640,28 +1556,24 @@ func (gla *GridLayoutAlgorithm) PlaceOutOfFlowItems(builder *BoxFragmentBuilder,
 	}
 }
 
-// gridEndLineIsAuto reports whether the end line of a grid placement is
-// auto: the longhand's value, else the shorthand's second value, which,
-// when omitted, copies a <custom-ident> start and is auto otherwise (CSS
-// Grid 1 §8.4).
-func gridEndLineIsAuto(style *css.Style, endLonghand, shorthand string) bool {
-	if v, ok := style.Get(endLonghand); ok {
-		return strings.TrimSpace(v) == "auto"
+// outOfFlowLines resolves an out-of-flow box's lines in one axis to 0-based
+// indices, -1 for the padding edge: a line is kept when its longhand is not
+// auto and it lies within the grid; a line before the grid is the padding
+// edge, the other line kept. Mirrors
+// GridPlacement::ResolveOutOfFlowItemGridLines (core/layout/grid/
+// grid_placement.cc:659-703 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (g gridTrackGeometry) outOfFlowLines(style *css.Style, columns bool, trackCount int) (start, end int) {
+	start, end = -1, -1
+	initial, final := placementLonghands(style, columns)
+	span := g.lines.resolveLines(initial, final, columns)
+	if !span.definite {
+		return start, end
 	}
-	v, ok := style.Get(shorthand)
-	if !ok {
-		return true
+	if !initial.Auto && span.start >= 0 && span.start <= trackCount {
+		start = span.start
 	}
-	parts := strings.Split(v, "/")
-	if len(parts) >= 2 {
-		return strings.TrimSpace(parts[1]) == "auto"
+	if !final.Auto && span.end >= 0 && span.end <= trackCount {
+		end = span.end
 	}
-	start := strings.Fields(parts[0])
-	if len(start) != 1 {
-		return true
-	}
-	if _, err := strconv.Atoi(start[0]); err == nil || start[0] == "auto" {
-		return true
-	}
-	return false
+	return start, end
 }
