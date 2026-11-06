@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // LOU-751 (filter-effects worklist B10): an feMorphology radius is a float,
 // rounded half up in layer space (SkMorphologyImageFilter::radii,
@@ -30,7 +34,7 @@ func TestFEMorphology_Radius(t *testing.T) {
 		{"zero on one axis", "2 0", [][2]int{{50, 50}, {38, 50}, {61, 50}}, [][2]int{{37, 50}, {62, 50}, {50, 39}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, morphologyPage(tc.radius), 120, 120)
+			img := render.RenderPage(t, morphologyPage(tc.radius), 120, 120)
 			for _, p := range tc.green {
 				wantPixel(t, img, p[0], p[1], canvasGreen, "inside the dilated square")
 			}
@@ -46,7 +50,7 @@ func TestFEMorphology_Radius(t *testing.T) {
 // 65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): radius 0.1 on a 100px
 // square dilates it by 10px.
 func TestFEMorphology_RadiusObjectBoundingBoxUnits(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="140" height="140"><filter id="m" color-interpolation-filters="sRGB" primitiveUnits="objectBoundingBox">
 <feMorphology operator="dilate" radius="0.1"/></filter>
 <rect x="20" y="20" width="100" height="100" fill="green" filter="url(#m)"/></svg>`, 140, 140)

@@ -3,6 +3,8 @@ package render_test
 import (
 	"fmt"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestOverflowClip_RelativeAtomicInlineIsClipped: an `overflow: hidden`
@@ -26,7 +28,7 @@ func TestOverflowClip_RelativeAtomicInlineIsClipped(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := fmt.Sprintf(container, tc.display, tc.child)
-			img := renderToImage(t, src, 100, 150)
+			img := render.RenderPage(t, src, 100, 150)
 			// (10, 40) is above the container (which starts at y=60): the
 			// child shifted up by 40px must not paint there.
 			if c := img.RGBAAt(10, 40); isRed(c) {
@@ -51,7 +53,7 @@ func TestOverflowClip_RelativeInsideEscapingAbsposIsNotClipped(t *testing.T) {
 		`<div style="position:absolute;top:0;left:0">` +
 		`<span style="position:relative;display:inline-block;width:50px;height:50px;background:red"></span>` +
 		`</div></div></div></body></html>`
-	img := renderToImage(t, src, 100, 150)
+	img := render.RenderPage(t, src, 100, 150)
 	if c := img.RGBAAt(10, 10); !isRed(c) {
 		t.Errorf("pixel (10,10) = %v: the relpos box inside the escaping abspos box was clipped", c)
 	}

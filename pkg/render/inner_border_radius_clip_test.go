@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // TestInnerBorderRadiusClip_UsesInnerRadii: overflow:hidden on a box with
 // border:10px and border-radius:60px clips its content to the padding box
@@ -19,7 +23,7 @@ func TestInnerBorderRadiusClip_UsesInnerRadii(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="border:10px solid #000;border-radius:60px;width:200px;height:200px;overflow:hidden;position:absolute;top:10px;left:10px">` +
 		`<div style="width:100%;height:100%;background:blue"></div></div></body></html>`
-	img := renderToImage(t, src, 300, 300)
+	img := render.RenderPage(t, src, 300, 300)
 	sampleColorClose(t, img, 44, 30, 0, 0, 255, 0, "inside inner radius (44,30)")
 	sampleColorClose(t, img, 120, 120, 0, 0, 255, 0, "centre (120,120)")
 	// Just outside the inner curve (centre (70,70), r=50): ~53px away.
@@ -40,7 +44,7 @@ func TestInnerBorderRadiusClip_ClipMarginBorderBoxZero(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="width:20px;height:20px;padding:20px;border:20px solid transparent;border-radius:40px;overflow:clip;overflow-clip-margin:border-box 0px">` +
 		`<div style="width:180px;height:180px;margin:-80px 0 0 -80px;background:black"></div></div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	sampleColorClose(t, img, 20, 15, 0, 0, 0, 0, "border area inside border edge (20,15)")
 	sampleColorClose(t, img, 3, 3, 255, 255, 255, 0, "outside border-edge corner (3,3)")
 }

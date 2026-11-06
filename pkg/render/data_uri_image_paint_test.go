@@ -43,7 +43,7 @@ func TestDataURIImage_NoFetcher_Background(t *testing.T) {
 	uri := solidRedPNGDataURI(t)
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="width:40px; height:40px; background-image:url(` + uri + `)"></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	assertRedAt(t, img, 20, 20)
 }
 
@@ -51,7 +51,7 @@ func TestDataURIImage_NoFetcher_Img(t *testing.T) {
 	uri := solidRedPNGDataURI(t)
 	src := `<!DOCTYPE html><body style="margin:0">
 <img src="` + uri + `" style="display:block; width:40px; height:40px">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	assertRedAt(t, img, 20, 20)
 }
 
@@ -59,7 +59,7 @@ func TestDataURIImage_NoFetcher_BorderImage(t *testing.T) {
 	uri := solidRedPNGDataURI(t)
 	src := `<!DOCTYPE html><body style="margin:0">
 <div style="width:20px; height:20px; border:10px solid blue; border-image:url(` + uri + `) 1"></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	// Middle of the top border: border-image replaces the blue border.
 	assertRedAt(t, img, 20, 5)
 }

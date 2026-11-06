@@ -9,6 +9,8 @@ import (
 	"image/png"
 	"math"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-654: Blink's per-call anti-aliasing choices (all @
@@ -70,7 +72,7 @@ func assertRingAA(t *testing.T, img *image.RGBA, cx, cy, r float64, what string)
 
 func renderAA(t *testing.T, body string) *image.RGBA {
 	t.Helper()
-	return renderToImage(t, `<!DOCTYPE html><html><body style="margin:0;background:white">`+body+`</body></html>`, 120, 120)
+	return render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0;background:white">`+body+`</body></html>`, 120, 120)
 }
 
 // A rounded background fill (GraphicsContext::FillRoundedRect with

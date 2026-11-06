@@ -10,16 +10,6 @@ import (
 	"louis14/pkg/render"
 )
 
-// renderToImage is a tiny harness that wires layout → render against
-// a fresh in-memory RGBA so tests can inspect pixels without going
-// through the on-disk PNG path. Mirrors how render.NewRendererForImage
-// is used by the reftest harness.
-func renderToImage(t *testing.T, htmlContent string, w, h int, opts ...render.RenderOption) *image.RGBA {
-	t.Helper()
-	img, _ := render.RenderPage(t, htmlContent, w, h, opts...)
-	return img
-}
-
 // TestSVG_RedRectInsideSVG hand-verifies the Phase-2 painter: a
 // <rect fill="red"> inside an inline <svg> should produce a red
 // square at the rect's user-coords (10,10)–(90,90) on the page.
@@ -35,7 +25,7 @@ func TestSVG_RedRectInsideSVG(t *testing.T) {
 		`<rect x="10" y="10" width="80" height="80" fill="red"/>` +
 		`</svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 
 	// Sample inside the rect: (50, 50) should be red.
 	rRed, gRed, bRed, aRed := img.At(50, 50).RGBA()
@@ -60,7 +50,7 @@ func TestSVG_DefaultBlackFill(t *testing.T) {
 		`<rect x="0" y="0" width="50" height="50"/>` +
 		`</svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	rC, gC, bC, aC := img.At(25, 25).RGBA()
 	if rC>>8 > 30 || gC>>8 > 30 || bC>>8 > 30 || aC == 0 {
 		t.Errorf("default fill at (25,25): RGBA=(%d,%d,%d,%d), want approx black",
@@ -77,7 +67,7 @@ func TestSVG_FillNoneSkipped(t *testing.T) {
 		`<rect x="0" y="0" width="50" height="50" fill="none"/>` +
 		`</svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	rC, gC, bC, _ := img.At(25, 25).RGBA()
 	if rC>>8 < 200 || gC>>8 < 200 || bC>>8 < 200 {
 		t.Errorf("fill:none at (25,25): RGBA=(%d,%d,%d), expected near-white background",
@@ -97,7 +87,7 @@ func TestSVG_GroupTransformTranslate(t *testing.T) {
 		`<rect width="40" height="40" fill="red"/>` +
 		`</g></svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	rR, gR, bR, aR := img.At(40, 50).RGBA()
 	if rR>>8 < 200 || gR>>8 > 50 || bR>>8 > 50 || aR == 0 {
 		t.Errorf("<g translate> center at (40,50): RGBA=(%d,%d,%d,%d), want red",
@@ -124,7 +114,7 @@ func TestSVG_NestedViewBox(t *testing.T) {
 		`<rect width="1" height="1" fill="red"/>` +
 		`</svg></svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	rR, gR, bR, aR := img.At(30, 30).RGBA()
 	if rR>>8 < 200 || gR>>8 > 50 || bR>>8 > 50 || aR == 0 {
 		t.Errorf("nested viewport center at (30,30): RGBA=(%d,%d,%d,%d), want red",
@@ -152,7 +142,7 @@ func TestSVG_CombinedTransforms(t *testing.T) {
 		`<rect x="-10" y="-10" width="20" height="20" fill="red"/>` +
 		`</g></g></svg></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Center: invariant under rotation around the center.
 	rC, gC, bC, aC := img.At(50, 50).RGBA()
 	if rC>>8 < 200 || gC>>8 > 50 || bC>>8 > 50 || aC == 0 {
@@ -231,7 +221,7 @@ func TestSVG_LinearGradientObjectBBox(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Left edge: black.
 	sampleColorClose(t, img, 2, 50, 5, 5, 5, 8, "left edge")
 	// Right edge: white.
@@ -256,7 +246,7 @@ func TestSVG_LinearGradientUserSpaceOnUse(t *testing.T) {
 		`</defs>` +
 		`<rect x="10" y="10" width="80" height="80" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// At user-space x=10 (just inside the gradient start): black.
 	sampleColorClose(t, img, 12, 50, 5, 5, 5, 12, "left start")
 	// At user-space x=90 (just inside the gradient end): white.
@@ -283,7 +273,7 @@ func TestSVG_LinearGradientWithTransform(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Top edge: black.
 	sampleColorClose(t, img, 50, 2, 5, 5, 5, 12, "top edge")
 	// Bottom edge: white.
@@ -306,7 +296,7 @@ func TestSVG_RadialGradient(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#rg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Center: black.
 	sampleColorClose(t, img, 50, 50, 5, 5, 5, 8, "center")
 	// Edge (distance ~r from center, along x axis): white.
@@ -322,7 +312,7 @@ func TestSVG_GradientFallbackColor(t *testing.T) {
 		`<svg width="50" height="50">` +
 		`<rect width="50" height="50" fill="url(#missing) red"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Sample the rect center — should be opaque red.
 	sampleColorClose(t, img, 25, 25, 255, 0, 0, 8, "fallback red")
 }
@@ -336,7 +326,7 @@ func TestSVG_GradientNoneIfNotFound(t *testing.T) {
 		`<svg width="50" height="50">` +
 		`<rect width="50" height="50" fill="url(#missing)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Sample the rect center — should be the canvas background
 	// (white). Tolerance is wider here because the canvas is a clear
 	// 255/255/255/255 RGBA, with no anti-aliasing concerns.
@@ -359,7 +349,7 @@ func TestSVG_GradientStopOpacity(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Left edge: fully opaque red.
 	sampleColorClose(t, img, 2, 50, 255, 0, 0, 8, "left opaque red")
 	// Midpoint: ~50% red over white background → (255, 127, 127).
@@ -383,7 +373,7 @@ func TestSVG_SpreadMethodPad(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Left edge: still black (clamped at first stop).
 	sampleColorClose(t, img, 5, 50, 5, 5, 5, 8, "left pad clamp")
 	// Right edge: white (clamped at last stop).
@@ -407,7 +397,7 @@ func TestSVG_SpreadMethodReflect(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Far right edge: t=2 → reflects to t=0 → first-stop color (black).
 	sampleColorClose(t, img, 97, 50, 5, 5, 5, 12, "right reflect to black")
 	// At 50% (gradient end): white.
@@ -431,7 +421,7 @@ func TestSVG_SpreadMethodRepeat(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#lg)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// At x=25 (t=0.5 → mid-gray).
 	sampleColorClose(t, img, 25, 50, 127, 127, 127, 12, "tile-1 midpoint")
 	// At x=75 (t=1.5 → mod 1 = 0.5 → mid-gray again).
@@ -457,7 +447,7 @@ func TestSVG_Pattern(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#p)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Sample a few points — all should be black because every tile
 	// pixel is black.
 	sampleColorClose(t, img, 5, 5, 5, 5, 5, 12, "tile (0,0)")
@@ -492,7 +482,7 @@ func TestSVG_ClipPathShapeRect(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Inside the clip — visible red.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "clip interior (50,50)")
 	// Outside the clip rect (top-left corner of element, outside clip).
@@ -513,7 +503,7 @@ func TestSVG_ClipPathCircle(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Center — inside the circle.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "circle center (50,50)")
 	// Just inside the bottom of the circle (radius 30, sample at y=79).
@@ -539,7 +529,7 @@ func TestSVG_ClipPathUserSpaceOnUse(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "clip interior (50,50)")
 	sampleColorClose(t, img, 10, 10, 255, 255, 255, 8, "outside clip (10,10)")
 }
@@ -560,7 +550,7 @@ func TestSVG_ClipPathObjectBBox(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "bbox clip center (50,50)")
 	sampleColorClose(t, img, 10, 50, 255, 255, 255, 8, "bbox clip left-of (10,50)")
 	sampleColorClose(t, img, 90, 50, 255, 255, 255, 8, "bbox clip right-of (90,50)")
@@ -579,7 +569,7 @@ func TestSVG_MaskLuminance(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "white mask (50,50)")
 }
 
@@ -596,7 +586,7 @@ func TestSVG_MaskLuminanceBlack(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 255, 255, 8, "black mask (50,50)")
 }
 
@@ -615,7 +605,7 @@ func TestSVG_MaskAlpha(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// 50% red over white: r = 255*0.5 + 255*0.5 = 255; g = 0*0.5 +
 	// 255*0.5 = 127; b = 0*0.5 + 255*0.5 = 127.
 	sampleColorClose(t, img, 50, 50, 255, 127, 127, 14, "alpha mask (50,50)")
@@ -635,7 +625,7 @@ func TestSVG_CyclicMaskReference(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" mask="url(#m1)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Cycle → mask dropped → red rect paints unmasked. Center is red.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "self-cyclic mask (50,50)")
 }
@@ -657,7 +647,7 @@ func TestSVG_MutualMaskCycle(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" mask="url(#ma)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "mutual mask cycle (50,50)")
 }
 
@@ -676,7 +666,7 @@ func TestSVG_CyclicClipPath(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" clip-path="url(#c1)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Cycle → no clipping → red rect paints fully.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "self-cyclic clip-path (50,50)")
 }
@@ -697,7 +687,7 @@ func TestSVG_ResourceLookupAfterRegistryMerge(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="url(#g)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Left edge ≈ black, right edge ≈ white (same expectation as the
 	// pre-Phase-6 LinearGradientObjectBBox test, just routed through
 	// the umbrella Lookup).
@@ -729,7 +719,7 @@ func TestSVG_FilterFloodOnEmptyHiddenForeignObject(t *testing.T) {
 		`</defs>` +
 		`<foreignObject style="visibility: hidden;" x="0" y="0" width="0" height="0" filter="url(#f)"></foreignObject>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Filter region is (0, 0, 100, 100). Center of that region must be green.
 	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "flood center")
 	sampleColorClose(t, img, 10, 10, 0, 128, 0, 12, "flood corner")
@@ -748,7 +738,7 @@ func TestSVG_FilterFeFlood(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Center should be green (0,128,0 = CSS "green"), not red.
 	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "feFlood center")
 	// Corner inside filter region should also be green.
@@ -771,7 +761,7 @@ func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="blue" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	testImg := renderToImage(t, htmlContent, 200, 200)
+	testImg := render.RenderPage(t, htmlContent, 200, 200)
 	sampleColorClose(t, testImg, 50, 50, 255, 128, 128, 1, "feFlood 50% red over white")
 }
 
@@ -795,7 +785,7 @@ func TestSVG_SolidFillOpacityPremultiplied(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			html := `<!DOCTYPE html><html><body style="margin:0"><svg width="100" height="100">` +
 				`<rect width="100" height="100" ` + tc.attrs + `/></svg></body></html>`
-			img := renderToImage(t, html, 200, 200)
+			img := render.RenderPage(t, html, 200, 200)
 			sampleColorClose(t, img, 50, 50, tc.r, tc.g, tc.b, 1, tc.name)
 		})
 	}
@@ -811,7 +801,7 @@ func TestSVG_FilterOverflowStaysInsideViewport(t *testing.T) {
 		`<feFlood flood-color="blue"/></filter></defs>` +
 		`<rect x="10" y="10" width="30" height="30" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, html, 120, 120)
+	img := render.RenderPage(t, html, 120, 120)
 	for _, p := range []struct{ x, y int }{{20, 30}, {69, 30}, {20, 79}, {69, 79}, {45, 55}} {
 		sampleColorClose(t, img, p.x, p.y, 0, 0, 255, 0, "inside the viewport")
 	}
@@ -834,7 +824,7 @@ func TestSVG_FilterMaskRunsAfterSRGBConversion(t *testing.T) {
 		`<rect width="100" height="100" fill="white" fill-opacity="0.05"/></mask>` +
 		`</defs><rect width="100" height="100" fill="rgb(32,32,32)" filter="url(#f)" mask="url(#m)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, html, 120, 120)
+	img := render.RenderPage(t, html, 120, 120)
 	sampleColorClose(t, img, 50, 50, 2, 2, 2, 0, "masked linearRGB filter result")
 }
 
@@ -846,7 +836,7 @@ func TestSVG_ContainerFilterWithoutGraphKeepsSourceColours(t *testing.T) {
 		`<svg width="100" height="100"><defs><filter id="e"></filter></defs>` +
 		`<g filter="url(#e)"><rect width="100" height="100" fill="rgb(136,136,136)"/></g>` +
 		`</svg></body></html>`
-	img := renderToImage(t, html, 120, 120)
+	img := render.RenderPage(t, html, 120, 120)
 	sampleColorClose(t, img, 50, 50, 136, 136, 136, 0, "unfiltered source")
 }
 
@@ -863,7 +853,7 @@ func TestSVG_FilterFeGaussianBlur(t *testing.T) {
 		`</defs>` +
 		`<rect x="50" y="50" width="100" height="100" fill="red" filter="url(#b)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 300, 300)
+	img := render.RenderPage(t, htmlContent, 300, 300)
 	// Center of the rect: should be approximately solid red after
 	// blurring (the interior pixels' neighbourhoods are all red).
 	sampleColorClose(t, img, 100, 100, 255, 0, 0, 60, "blur interior")
@@ -898,7 +888,7 @@ func TestSVG_FilterCycleReference(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="red" filter="url(#f1)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Cycle → filter treated as none → the rect renders as plain red.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "cycle fallback (red)")
 }
@@ -919,8 +909,8 @@ func TestSVG_FilterPositioningWithP(t *testing.T) {
 		`<svg>` +
 		`<rect width="300" height="300" fill="black"/>` +
 		`</svg></body></html>`
-	testImg := renderToImage(t, tHTML, 800, 600)
-	refImg := renderToImage(t, rHTML, 800, 600)
+	testImg := render.RenderPage(t, tHTML, 800, 600)
+	refImg := render.RenderPage(t, rHTML, 800, 600)
 	// Sample at several rect positions. Both should produce black.
 	for _, p := range []struct{ x, y int }{
 		{50, 50},
@@ -950,8 +940,8 @@ func TestSVG_FilterPositioningSimple(t *testing.T) {
 		`<svg width="200" height="200">` +
 		`<rect x="50" y="50" width="100" height="100" fill="green"/>` +
 		`</svg></body></html>`
-	testImg := renderToImage(t, tHTML, 300, 300)
-	refImg := renderToImage(t, rHTML, 300, 300)
+	testImg := render.RenderPage(t, tHTML, 300, 300)
+	refImg := render.RenderPage(t, rHTML, 300, 300)
 	// Sample at the rect corners and center.
 	for _, p := range []struct{ x, y int }{
 		{60, 60},
@@ -988,8 +978,8 @@ func TestSVG_FilterPositioningParity(t *testing.T) {
 		`<svg>` +
 		`<rect width="300" height="300" fill="black"/>` +
 		`</svg></body></html>`
-	testImg := renderToImage(t, testHTML, 800, 600)
-	refImg := renderToImage(t, refHTML, 800, 600)
+	testImg := render.RenderPage(t, testHTML, 800, 600)
+	refImg := render.RenderPage(t, refHTML, 800, 600)
 
 	// Sample at a few interior points and compare. The test must
 	// produce black where the ref produces black, and vice versa.
@@ -1027,7 +1017,7 @@ func TestSVG_FilterFeBlendDoesNotMakeBackgroundBlack(t *testing.T) {
 		`</defs>` +
 		`<rect x="50" y="50" width="60" height="60" fill="green" filter="url(#b)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 300, 300)
+	img := render.RenderPage(t, htmlContent, 300, 300)
 	// Inside the rect: should be green-ish.
 	sampleColorClose(t, img, 80, 80, 0, 60, 0, 50, "feBlend interior (green)")
 	// OUTSIDE the rect's bbox (well outside any reasonable filter region): white.
@@ -1059,8 +1049,8 @@ func TestSVG_FilterFloodOpacity_ConfirmPremultiplied(t *testing.T) {
 		`<svg width="200" height="200">` +
 		`<rect x="60" y="60" width="80" height="80" fill="green" fill-opacity="0.75"/>` +
 		`</svg></body></html>`
-	testImg := renderToImage(t, tHTML, 300, 300)
-	refImg := renderToImage(t, rHTML, 300, 300)
+	testImg := render.RenderPage(t, tHTML, 300, 300)
+	refImg := render.RenderPage(t, rHTML, 300, 300)
 	// Sample the flood square center.
 	for _, p := range []struct{ x, y int }{
 		{80, 80},
@@ -1093,7 +1083,7 @@ func TestSVG_FilterFallbackOnUnknownID(t *testing.T) {
 		`<svg width="100" height="100">` +
 		`<rect width="100" height="100" fill="red" filter="url(#missing)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 	// Unknown filter → rect renders as plain red.
 	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "unknown filter fallback (red)")
 }
@@ -1150,7 +1140,7 @@ func TestSVG_OverflowClipPerAxis(t *testing.T) {
 				`<svg width="100" height="100" style="` + tc.css + `">` +
 				`<rect width="150" height="150" fill="green"/>` +
 				`</svg></body></html>`
-			img := renderToImage(t, html, 200, 200)
+			img := render.RenderPage(t, html, 200, 200)
 			for _, p := range tc.pts {
 				sampleColorClose(t, img, p.x, p.y, p.wantR, p.wantG, p.wantB, 12, p.where)
 			}
@@ -1181,7 +1171,7 @@ var fractionalSVGOffsets = []float64{40, 40.3, 40.5, 40.7, 48.9375}
 // and SVG content on a white page.
 func fractionalSVGPage(t *testing.T, style, content string) *image.RGBA {
 	t.Helper()
-	return renderToImage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+	return render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 		`<svg width="80" height="80" style="display:block;`+style+`">`+content+
 		`</svg></body></html>`, 200, 200)
 }
@@ -1306,7 +1296,7 @@ func TestSVG_RootPaintServerFollowsSnappedOrigin(t *testing.T) {
 // white flood makes an opaque luminance mask, so the masked green square
 // covers the red one under it (svg-mutation-filter-used-by-mask).
 func TestSVG_MaskFilteredChildPaints(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
 <mask id="m"><rect width="100%" height="100%" fill="red" filter="url(#f)"/></mask>
@@ -1323,7 +1313,7 @@ func TestSVG_MaskFilteredChildPaints(t *testing.T) {
 // be applied to the buffer a second time (svg-mutation-filter-used-by-mask's
 // page has that margin).
 func TestSVG_MaskedShapeUnderPageOffset(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html>
+	img := render.RenderPage(t, `<!DOCTYPE html>
 <svg width="100" height="100">
 <mask id="m"><rect width="100%" height="100%" fill="white"/></mask>
 <rect width="100" height="100" fill="red"/>
@@ -1336,12 +1326,7 @@ func TestSVG_MaskedShapeUnderPageOffset(t *testing.T) {
 // filter region spans (the child's bbox ±10%) does not reach past
 // <mask width="50">, so the green square shows only in the region's half.
 func TestSVG_MaskFilteredChildClippedToMaskRegion(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
-<svg width="100" height="100">
-<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
-<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="50" height="100"><rect width="100" height="100" fill="red" filter="url(#f)"/></mask>
-<rect width="100" height="100" fill="red"/>
-<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
+	img := render.RenderPage(t, filteredMaskRegionPage("0", "50"), 120, 120)
 	wantPixel(t, img, 48, 50, canvasGreen, "inside the mask region's edge")
 	wantPixel(t, img, 52, 50, canvasRed, "outside the mask region: the red under it")
 }
@@ -1353,7 +1338,7 @@ func TestSVG_MaskFilteredChildClippedToMaskRegion(t *testing.T) {
 // transparent still clips with its rect. Two children on a CSS box's
 // clip-path take the content (rasterized) path.
 func TestSVG_ClipPathChildIgnoresFilter(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="0" height="0" style="position:absolute">
 <filter id="f"><feFlood flood-opacity="0"/></filter>
 <clipPath id="c"><rect x="25" y="25" width="25" height="50" filter="url(#f)"/><rect x="50" y="25" width="25" height="50"/></clipPath></svg>
@@ -1374,14 +1359,14 @@ func TestSVG_RotatedMaskedShapeEdgesUnchanged(t *testing.T) {
 <mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
 <rect x="25" y="25" width="50" height="50" fill="green" ` + mask + `/></svg>`
 	}
-	wantImagesWithin(t, renderToImage(t, page(`mask="url(#m)"`), 140, 140), renderToImage(t, page(""), 140, 140), 1, "the unmasked shape")
+	wantImagesWithin(t, render.RenderPage(t, page(`mask="url(#m)"`), 140, 140), render.RenderPage(t, page(""), 140, 140), 1, "the unmasked shape")
 }
 
 // A pattern tile's paint context clips a filtered child to the whole tile
 // buffer, not to its viewport's size in user units: with
 // patternContentUnits="objectBoundingBox" that viewport is 1×1.
 func TestSVG_PatternFilteredChildFillsTile(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
 <pattern id="p" width="20" height="20" patternUnits="userSpaceOnUse" patternContentUnits="objectBoundingBox"><rect width="1" height="1" fill="red" filter="url(#g)"/></pattern>
@@ -1391,4 +1376,71 @@ func TestSVG_PatternFilteredChildFillsTile(t *testing.T) {
 	// units is not scaled onto the box yet, so the 1×1 rect paints one
 	// pixel, which its filter region widens by 10%.)
 	wantPixel(t, img, 1, 1, canvasGreen, "the flood past the tile's first pixel")
+}
+
+// LOU-769: a mask region that snaps to an empty device rect clips everything
+// its filtered children composite, not nothing: the region is the mask's
+// clip (LayoutSVGResourceMasker::CreatePaintRecord clips the content to the
+// mask region, layout_svg_resource_masker.cc:47-66 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the green square stays
+// masked out over the red one.
+func TestSVG_MaskEmptyDeviceRegionClipsFilteredChild(t *testing.T) {
+	img := render.RenderPage(t, filteredMaskRegionPage("10", "0.0000001"), 120, 120)
+	wantPixel(t, img, 50, 50, canvasRed, "outside the empty mask region: the red under it")
+}
+
+// filteredMaskRegionPage is a green square over a red one, masked by a
+// userSpaceOnUse <mask> region at x with the given width, whose child is
+// filtered to an opaque white flood.
+func filteredMaskRegionPage(x, width string) string {
+	return `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
+<mask id="m" maskUnits="userSpaceOnUse" x="` + x + `" y="0" width="` + width + `" height="100"><rect width="100" height="100" fill="red" filter="url(#f)"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`
+}
+
+// LOU-769: under a perspective ancestor, a masked shape rasterizes through
+// the draw context's whole projective matrix and blits as is, so a fully
+// opaque mask leaves the shape exactly as the unmasked shape paints
+// (TestSVG_RotatedMaskedShapeEdgesUnchanged's projective case).
+func TestSVG_PerspectiveMaskedShapeUnchanged(t *testing.T) {
+	page := func(mask string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style><div style="perspective:200px;width:140px;height:140px">
+<svg width="100" height="100" style="margin:20px;transform:rotateY(30deg)">
+<mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
+<rect x="25" y="25" width="50" height="50" fill="green" ` + mask + `/></svg></div>`
+	}
+	wantImagesWithin(t, render.RenderPage(t, page(`mask="url(#m)"`), 160, 160), render.RenderPage(t, page(""), 160, 160), 1, "the unmasked shape")
+}
+
+// LOU-769: a pattern tile at 2x (a viewBox scale) composites a filtered child
+// once at the tile's scale. The child rect is user 10..30 in a 50-unit tile;
+// its filter region (bbox ±10%) is user 8..32, device 16..64.
+func TestSVG_PatternFilteredChildAt2xScale(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="200" height="200" viewBox="0 0 100 100">
+<filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
+<pattern id="p" width="50" height="50" patternUnits="userSpaceOnUse"><rect x="10" y="10" width="20" height="20" fill="red" filter="url(#g)"/></pattern>
+<rect width="100" height="100" fill="url(#p)"/></svg>`, 220, 220)
+	wantPixel(t, img, 17, 17, canvasGreen, "inside the filter region's top-left edge")
+	wantPixel(t, img, 62, 62, canvasGreen, "inside the filter region's bottom-right edge")
+	wantPixel(t, img, 66, 66, canvasWhite, "past the filter region")
+	wantPixel(t, img, 117, 117, canvasGreen, "the next tile's filter region")
+}
+
+// LOU-769: translateZ(50px) under perspective:100px is a 2× scale (a
+// constant w of 0.5); every reader of the draw context's matrix sees it
+// normalized, so a masked shape's gradient fill maps as under scale(2).
+func TestSVG_MaskedGradientUnderTranslateZ(t *testing.T) {
+	page := func(perspective, transform string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style>
+<div style="position:relative;width:200px;height:200px;` + perspective + `">
+<svg width="100" height="100" style="position:absolute;left:50px;top:50px;transform:` + transform + `">
+<linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="blue"/><stop offset="1" stop-color="yellow"/></linearGradient>
+<mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
+<rect width="100" height="100" fill="url(#lg)" mask="url(#m)"/></svg></div>`
+	}
+	wantTranslateZMatchesScale2(t, page, "the masked gradient under scale(2)")
 }
