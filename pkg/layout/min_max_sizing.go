@@ -686,9 +686,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 	// The orthogonal sizes layoutInlineChildren gives its lines
 	// (orthogonalChildBlockSizes), so an atomic is sized against what it is
-	// laid out against. Each is computed on the first atomic that needs it:
-	// any atomic needs the fallback for its descendants, only an orthogonal
-	// one the available block size.
+	// laid out against: computed on the first atomic that needs them.
 	orthogonal := newLazyOrthogonalSizes(ctx, node.Style(), wdm, space)
 	minSpace := lineSpace(minAvailable)
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
@@ -1762,49 +1760,37 @@ func intrinsicContainerBlockGeometry(style *css.Style, wdm WritingDirectionMode,
 }
 
 // lazyOrthogonalSizes computes a container's orthogonal available and
-// fallback block sizes (orthogonalChildBlockSizes) on first use, each on its
-// own, sharing the container geometry.
+// fallback block sizes (orthogonalChildBlockSizes) once, on first use.
 type lazyOrthogonalSizes struct {
 	ctx                 *LayoutContext
 	style               *css.Style
 	wdm                 WritingDirectionMode
 	space               ConstraintSpace
-	geom                *FragmentGeometry
-	explicit            float64
-	hasExplicit         bool
-	available, fallback *float64
+	done                bool
+	available, fallback float64
 }
 
 func newLazyOrthogonalSizes(ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) *lazyOrthogonalSizes {
 	return &lazyOrthogonalSizes{ctx: ctx, style: style, wdm: wdm, space: space}
 }
 
-func (l *lazyOrthogonalSizes) geometry() FragmentGeometry {
-	if l.geom == nil {
-		g, explicit, has := intrinsicContainerBlockGeometry(l.style, l.wdm, l.space)
-		l.geom, l.explicit, l.hasExplicit = &g, explicit, has
+func (l *lazyOrthogonalSizes) compute() {
+	if !l.done {
+		geom, explicit, has := intrinsicContainerBlockGeometry(l.style, l.wdm, l.space)
+		l.available, l.fallback = orthogonalChildBlockSizes(l.ctx, l.style, l.wdm, l.space, geom, has, explicit)
+		l.done = true
 	}
-	return *l.geom
 }
 
 // Available is the available block size an orthogonal atomic takes as its
-// available inline size (computeOrthogonalAvailableBlock).
+// available inline size.
 func (l *lazyOrthogonalSizes) Available() float64 {
-	if l.available == nil {
-		g := l.geometry()
-		v := computeOrthogonalAvailableBlock(l.style, l.wdm, l.space, g, l.ctx, l.hasExplicit, l.explicit)
-		l.available = &v
-	}
-	return *l.available
+	l.compute()
+	return l.available
 }
 
-// Fallback is the fallback block size an atomic's descendants inherit
-// (computeOrthogonalFallbackBlockForChildren).
+// Fallback is the fallback block size an atomic's descendants inherit.
 func (l *lazyOrthogonalSizes) Fallback() float64 {
-	if l.fallback == nil {
-		g := l.geometry()
-		v := computeOrthogonalFallbackBlockForChildren(l.style, l.wdm, l.space, g, l.ctx, l.hasExplicit, l.explicit)
-		l.fallback = &v
-	}
-	return *l.fallback
+	l.compute()
+	return l.fallback
 }

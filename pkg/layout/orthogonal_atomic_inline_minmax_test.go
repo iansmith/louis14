@@ -358,20 +358,21 @@ func TestBalanceProbeLaysAtomicsOutInContentBox(t *testing.T) {
 	cs.Properties["width"] = "50%"
 	cs.Properties["height"] = "10px"
 	rs.Properties["font-size"] = "0"
-	data := collectForNodes(t, root, map[*html.Node]*css.Style{root: rs, a: as, c: cs})
+	tree := buildTestTree(root, map[*html.Node]*css.Style{root: rs, a: as, c: cs})
+	data := CollectInlines(tree)
 	ctx := testContext()
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	fonts := text.DefaultFontConfig()
+	space := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(400).Build()
+	// The container's own line space, as layoutInlineChildren builds it.
+	lineSpace := NewBlockLayoutAlgorithm(ctx, tree, space).newLineSpace(400, 400, nil)
 
-	probe := countLinesForWidth(data, ctx, wdm, 250, fonts, 400)
-	// As layoutInlineChildren sets the line up: the line width narrowed,
-	// the content box the atomics' space.
-	lineSpace := ConstraintSpace{
-		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: 250, BlockSize: Indefinite}),
-		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: 400, BlockSize: Indefinite}),
-		PercentageResolutionInlineSize: 400,
-		WritingDirection:               wdm,
-	}
+	probe := countLinesForWidth(data, ctx, lineSpace, 250, fonts, 400)
+	// Final layout with the line narrowed to 250, as layoutInlineChildren
+	// narrows it after balancing.
+	lineSpace.AvailableSize.InlineSize = oldLogicalToGeom(LogicalSize{InlineSize: 250}).InlineSize
 	lb := NewLineBreaker(data, ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth, lb.containerInlineSize = 250, 400
 	layout := 0

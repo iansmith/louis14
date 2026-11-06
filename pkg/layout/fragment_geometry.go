@@ -1075,6 +1075,15 @@ func logicalBlockSizeProperty(wdm WritingDirectionMode) string {
 	return "height"
 }
 
+// logicalInlineSizeProperty is the physical property that is the inline
+// size: width, or height in a vertical writing mode.
+func logicalInlineSizeProperty(wdm WritingDirectionMode) string {
+	if wdm.IsVertical() {
+		return "height"
+	}
+	return "width"
+}
+
 // logicalBlockSizeValue is the element's block-size property value.
 func logicalBlockSizeValue(style *css.Style, wdm WritingDirectionMode) string {
 	v, _ := style.Get(logicalBlockSizeProperty(wdm))
