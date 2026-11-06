@@ -244,6 +244,15 @@ func (es *ExclusionSpace) FindLocalFloatOffsets(blockOffset, blockExtent, bfcInl
 		localStart = 0
 	}
 
+	// Only end-side floats narrow the content box from its end. Without
+	// one, the BFC container's own end edge is not an exclusion: a content
+	// box that overflows the BFC keeps its whole inline size, as Blink's
+	// layout opportunity spans the child available inline size
+	// (ExclusionSpace::FindLayoutOpportunity, layout/exclusions/
+	// exclusion_space.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if bfcEnd <= 0 {
+		return localStart, 0
+	}
 	rightFloatLeftEdge := bfcContainerInlineSize - bfcEnd
 	contentRightEdge := bfcInlineOrigin + contentInlineSize
 	localEnd = contentRightEdge - rightFloatLeftEdge
