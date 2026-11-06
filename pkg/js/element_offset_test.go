@@ -75,15 +75,79 @@ func TestElementOffsetGeometry(t *testing.T) {
 
 // Scrolling does not move an element's offsets: Blink sums unscrolled
 // locations, while louis14's boxes inside a scroller are translated by its
-// scroll offset.
+// floored scroll offset (LayoutBox::ScrolledContentOffset, layout_box.cc:
+// 1781-1787 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which is added
+// back; a fractional scrollTop included.
 func TestElementOffsetIgnoresScroll(t *testing.T) {
-	runWithLayout(t, `<!DOCTYPE html><body style="margin:0">
+	for _, scroll := range []string{"40", "40.5"} {
+		t.Run(scroll, func(t *testing.T) {
+			runWithLayout(t, `<!DOCTYPE html><body style="margin:0">
 <div id="sc" style="position:relative;overflow:auto;width:100px;height:100px">
 <div style="height:50px"></div><div id="child" style="height:500px"></div></div>
 </body>`, `
-		var sc = document.getElementById("sc"), child = document.getElementById("child");
-		sc.scrollTop = 40;
-		if (sc.scrollTop !== 40) throw new Error("scrollTop = " + sc.scrollTop);
-		if (child.offsetTop !== 50) throw new Error("offsetTop = " + child.offsetTop);
+				var sc = document.getElementById("sc"), child = document.getElementById("child");
+				sc.scrollTop = `+scroll+`;
+				if (sc.scrollTop !== `+scroll+`) throw new Error("scrollTop = " + sc.scrollTop);
+				if (child.offsetTop !== 50) throw new Error("offsetTop = " + child.offsetTop);
+			`)
+		})
+	}
+}
+
+// The document element has no offsetParent and its offsets are its location
+// in the LayoutView (AdjustedPositionRelativeTo returns zero only for body
+// or an object without a layout parent).
+func TestElementOffsetDocumentElement(t *testing.T) {
+	runWithLayout(t, `<!DOCTYPE html><html style="margin:20px 0 0 30px"><body></body></html>`, `
+		var html = document.documentElement;
+		if (html.offsetParent !== null) throw new Error("offsetParent = " + html.offsetParent);
+		if (html.offsetTop !== 20) throw new Error("offsetTop = " + html.offsetTop);
+		if (html.offsetLeft !== 30) throw new Error("offsetLeft = " + html.offsetLeft);
+	`)
+}
+
+// A transformed document element contains fixed-position descendants, a
+// filtered one does not (LayoutObject::ComputeIsFixedContainer,
+// layout_object.cc:1849-1897 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a
+// fixed element's offsetParent is the document element, or null.
+func TestElementOffsetParentFixedUnderRoot(t *testing.T) {
+	for _, tc := range []struct{ root, want string }{
+		{"transform:translateX(0)", "document.documentElement"},
+		{"filter:invert(0)", "null"},
+		{"", "null"},
+	} {
+		t.Run(tc.root, func(t *testing.T) {
+			runWithLayout(t, `<!DOCTYPE html><html style="`+tc.root+`"><body><div id="f" style="position:fixed"></div></body></html>`, `
+			var got = document.getElementById("f").offsetParent;
+			if (got !== `+tc.want+`) throw new Error("`+tc.root+`: offsetParent = " + (got && got.tagName));
+		`)
+		})
+	}
+}
+
+// Offsets are LayoutUnits rounded as LayoutUnit::Round does, halves toward
+// +infinity (layout_unit.h:294-297 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): -0.5px reads 0, a 10.5px width
+// 11.
+func TestElementOffsetRounding(t *testing.T) {
+	runWithLayout(t, `<!DOCTYPE html><body style="margin:0">
+<div style="position:relative;left:10px">
+<div id="a" style="position:absolute;left:-0.5px;top:-1.5px;width:10.5px;height:10px"></div></div>
+</body>`, `
+		var a = document.getElementById("a");
+		if (a.offsetLeft !== 0) throw new Error("offsetLeft = " + a.offsetLeft);
+		if (a.offsetTop !== -1) throw new Error("offsetTop = " + a.offsetTop);
+		if (a.offsetWidth !== 11) throw new Error("offsetWidth = " + a.offsetWidth);
+	`)
+}
+
+// offsetParent and offset* are HTMLElement attributes (html_element.idl):
+// an SVG element has none of them.
+func TestElementOffsetHTMLOnly(t *testing.T) {
+	runWithLayout(t, `<!DOCTYPE html><body><svg width="50" height="50"><rect id="r" width="10" height="10"/></svg></body>`, `
+		var r = document.getElementById("r");
+		["offsetParent", "offsetLeft", "offsetTop", "offsetWidth", "offsetHeight"].forEach(function (k) {
+			if (r[k] !== undefined) throw new Error("svg rect " + k + " = " + r[k]);
+		});
 	`)
 }
