@@ -341,20 +341,64 @@ func TestAtomicInlineLaidOutInContainerContentBox(t *testing.T) {
 	}
 }
 
-// Intrinsic sizing gives a block container's children the orthogonal
-// fallback block size layout gives them (computeOrthogonalFallbackBlockForChildren):
-// below a 200px-tall scroller, an orthogonal inline-block's available
-// inline size is 200, so its five 50px-tall atoms wrap onto two 20px
-// columns, 40 wide, in sizing (the float's shrink-to-fit) as in layout.
-func TestOrthogonalFallbackBlockSizeThroughBlockSizing(t *testing.T) {
+// The text-wrap:balance probe breaks lines as final layout does: its
+// atomics are laid out at the container's content inline size, with the
+// content box as their percentage base, not at the probe width. A 100px
+// inline-block then a width:50% one, in a 400px container probed at 250: the
+// second is 200 wide, does not fit beside the first, so two lines in the
+// probe as in layout.
+func TestBalanceProbeLaysAtomicsOutInContentBox(t *testing.T) {
+	a, c := makeNode("span"), makeNode("span")
+	root := makeNode("div", a, c)
+	as, cs, rs := css.NewStyle(), css.NewStyle(), css.NewStyle()
+	as.Properties["display"] = "inline-block"
+	as.Properties["width"] = "100px"
+	as.Properties["height"] = "10px"
+	cs.Properties["display"] = "inline-block"
+	cs.Properties["width"] = "50%"
+	cs.Properties["height"] = "10px"
+	rs.Properties["font-size"] = "0"
+	data := collectForNodes(t, root, map[*html.Node]*css.Style{root: rs, a: as, c: cs})
+	ctx := testContext()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	fonts := text.DefaultFontConfig()
+
+	probe := countLinesForWidth(data, ctx, wdm, 250, fonts, 400)
+	// As layoutInlineChildren sets the line up: the line width narrowed,
+	// the content box the atomics' space.
+	lineSpace := ConstraintSpace{
+		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: 250, BlockSize: Indefinite}),
+		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: 400, BlockSize: Indefinite}),
+		PercentageResolutionInlineSize: 400,
+		WritingDirection:               wdm,
+	}
+	lb := NewLineBreaker(data, ctx, lineSpace, fonts, LineBreakerContent)
+	lb.availableWidth, lb.containerInlineSize = 250, 400
+	layout := 0
+	var line LineInfo
+	for lb.NextLine(&line) {
+		layout++
+	}
+	if probe != 2 || layout != 2 {
+		t.Errorf("lines at 250 in a 400px container: probe %d, layout %d, want 2 and 2", probe, layout)
+	}
+}
+
+// The container geometry intrinsic sizing reads for its orthogonal atomics
+// clamps a definite block size by min/max-block-size, as
+// CalculateInitialFragmentGeometry does: a scroller with height:300px and
+// max-height:200px passes 200 down as the orthogonal fallback block size, so
+// the orthogonal inline-block inside its inline-block child wraps five
+// 50px-tall atoms onto two 20px columns, 40 wide, in sizing as in layout.
+func TestIntrinsicContainerBlockSizeIsClamped(t *testing.T) {
 	atoms := ""
 	for range 5 {
 		atoms += `<span style="display:inline-block;width:20px;height:50px"></span>`
 	}
-	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0; line-height:0"><div id=f style="float:left">`+
-		`<div style="overflow:auto; height:200px"><div><div id=b style="display:inline-block; writing-mode:vertical-rl">`+atoms+`</div></div></div></div></body>`, nil)
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0; line-height:0"><div id=f style="float:left; overflow:auto; height:300px; max-height:200px">`+
+		`<div style="display:inline-block"><div id=b style="display:inline-block; writing-mode:vertical-rl">`+atoms+`</div></div></div></body>`, nil)
 	f, b := findBox(fl.root, byID("f")), findBox(fl.root, byID("b"))
 	if f == nil || b == nil || b.Width != 40 || f.Width != b.Width {
-		t.Errorf("float %s, orthogonal inline-block %s, want both 40 wide", boxDims(f), boxDims(b))
+		t.Errorf("scroller %s, orthogonal inline-block %s, want both 40 wide", boxDims(f), boxDims(b))
 	}
 }

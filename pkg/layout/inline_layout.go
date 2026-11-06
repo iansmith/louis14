@@ -15,19 +15,25 @@ import (
 // countLinesForWidth runs a dry-run line break at the given available width and
 // returns the number of lines produced. This is used by text-wrap: balance to
 // binary-search for the narrowest width that still yields the same line count.
+// Only the line opportunity is narrowed: as in final layout, atomics are laid
+// out at containerInlineSize, the content box, which is also their
+// percentage base.
 func countLinesForWidth(
 	itemsData *InlineItemsData,
 	ctx *LayoutContext,
 	wdm WritingDirectionMode,
 	width float64,
 	fonts text.FontConfig,
+	_ float64, // containerInlineSize, wired by the fix
 ) int {
 	space := ConstraintSpace{
-		AvailableSize:    oldLogicalToGeom(LogicalSize{InlineSize: width, BlockSize: Indefinite}),
+		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: width, BlockSize: Indefinite}),
 		WritingDirection: wdm,
 	}
 	lb := NewLineBreaker(itemsData, ctx, space, fonts, LineBreakerContent)
 	lb.availableWidth = width
+	// Atomics are laid out at the container's content inline size, as in
+	// final layout; only the line opportunity is narrowed.
 	var line LineInfo
 	count := 0
 	for lb.NextLine(&line) {
@@ -411,7 +417,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// when the line count is ≤ 4. This mirrors Blink's text balancing in
 	// InlineLayoutAlgorithm.
 	if !noWrap && bla.style != nil && bla.style.GetTextWrap() == "balance" {
-		normalLineCount := countLinesForWidth(itemsData, bla.ctx, wdm, lineAvailableWidth, fonts)
+		normalLineCount := countLinesForWidth(itemsData, bla.ctx, wdm, lineAvailableWidth, fonts, contentInlineSize)
 		if normalLineCount >= 2 && normalLineCount <= 4 {
 			// Binary search: find the narrowest width that still yields
 			// normalLineCount lines. The lower bound is 0 (would produce
@@ -420,7 +426,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			hi := lineAvailableWidth
 			for hi-lo > 0.5 { // 0.5px precision
 				mid := (lo + hi) / 2
-				if countLinesForWidth(itemsData, bla.ctx, wdm, mid, fonts) <= normalLineCount {
+				if countLinesForWidth(itemsData, bla.ctx, wdm, mid, fonts, contentInlineSize) <= normalLineCount {
 					hi = mid
 				} else {
 					lo = mid
