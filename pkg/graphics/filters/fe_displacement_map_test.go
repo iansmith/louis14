@@ -42,7 +42,7 @@ func TestFEDisplacementMap_ShiftRight(t *testing.T) {
 			mp.Pix[i+3] = 255
 		}
 	}
-	fe := NewFEDisplacementMap(nil, nil, InterpolationSpaceSRGB, ChannelG, ChannelB, 100)
+	fe := NewFEDisplacementMap(nil, nil, InterpolationSpaceSRGB, ChannelG, ChannelB, 100, 100)
 	out := fe.ApplyEffect([]*image.RGBA{src, mp}, region)
 
 	// With G=255 → dx = +50, with B=128 → dy ≈ 0.196 (≈ 0).
@@ -121,7 +121,7 @@ func TestFEDisplacementMap_TaintedIn2_PassThrough(t *testing.T) {
 	in1 := NewSourceGraphic(InterpolationSpaceSRGB)
 	in1.image = src
 
-	fe := NewFEDisplacementMap(in1, in2, InterpolationSpaceSRGB, ChannelG, ChannelB, 100)
+	fe := NewFEDisplacementMap(in1, in2, InterpolationSpaceSRGB, ChannelG, ChannelB, 100, 100)
 
 	// Provide an in2 raw buffer matching the FEFlood values. The
 	// ApplyEffect's tainting check is on the EFFECT (FilterEffect.OriginTainted),
@@ -205,7 +205,7 @@ func TestFEDisplacementMap_IntegerBoundaryNoBleed(t *testing.T) {
 			mp.Pix[i+3] = 255
 		}
 	}
-	fe := NewFEDisplacementMap(nil, nil, InterpolationSpaceSRGB, ChannelG, ChannelB, 100)
+	fe := NewFEDisplacementMap(nil, nil, InterpolationSpaceSRGB, ChannelG, ChannelB, 100, 100)
 	out := fe.ApplyEffect([]*image.RGBA{src, mp}, region)
 
 	// Output(0, 50) reads source(50.0, 50.196). Source(50, 50) is green.

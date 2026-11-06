@@ -10,11 +10,9 @@ import (
 // the reference box, the filter region, the SourceGraphic / SourceAlpha
 // builtins, and the last effect (the graph root).
 //
-// Coordinates are absolute device pixels. ReferenceBox is the element's
-// border box; FilterRegion is the rectangle the graph is evaluated over and
-// the size of every intermediate buffer.
+// Coordinates are absolute device pixels. FilterRegion is the rectangle the
+// graph is evaluated over and the size of every intermediate buffer.
 type Filter struct {
-	ReferenceBox image.Rectangle
 	FilterRegion image.Rectangle
 
 	Source      *SourceGraphic
@@ -27,7 +25,9 @@ type Filter struct {
 
 // EnsureRegion sets an unset FilterRegion from extent, the content's paint
 // extent, and returns the region; a region already set (an SVG filter's, or
-// a chain with a url() stage) is kept.
+// a chain with a url() stage) is kept. An SVG shape's chain with a url()
+// stage unites its paint extent into that region before calling this; the
+// HTML layer path does not yet (LOU-780).
 //
 // withSource selects the buffer of a CSS shorthand chain, which is a
 // SaveLayerOp with no bounds (ConversionContext::StartEffect,

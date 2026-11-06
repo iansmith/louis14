@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 )
 
 // TestBuildReferenceFilter_ExternalSVG_DataURL feeds a data: URL
@@ -19,7 +20,7 @@ func TestBuildReferenceFilter_ExternalSVG_DataURL(t *testing.T) {
 	dataURL := "data:image/svg+xml;utf8," + svg + "#f"
 
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 100, 100),
+		ReferenceBox: geometry.NewRectF(0, 0, 100, 100),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			// The fetcher receives docURL (no fragment).
 			return []byte(svg), nil
@@ -47,7 +48,7 @@ func TestBuildReferenceFilter_ExternalSVG_FileURL(t *testing.T) {
 	uri := "file://" + p + "#f"
 
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			// In the file:// case the docURL is file://path (no
 			// fragment), and the test harness reads it via os.ReadFile.
@@ -65,7 +66,7 @@ func TestBuildReferenceFilter_ExternalSVG_FileURL(t *testing.T) {
 // unfiltered paint).
 func TestBuildReferenceFilter_ExternalSVG_FetcherError(t *testing.T) {
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			return nil, os.ErrNotExist
 		},
@@ -81,7 +82,7 @@ func TestBuildReferenceFilter_ExternalSVG_FetcherError(t *testing.T) {
 func TestBuildReferenceFilter_ExternalSVG_BadID(t *testing.T) {
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="real"><feFlood/></filter></svg>`
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			return []byte(svg), nil
 		},
@@ -96,7 +97,7 @@ func TestBuildReferenceFilter_ExternalSVG_BadID(t *testing.T) {
 // no fetcher returns nil (null-filter fallback).
 func TestBuildReferenceFilter_ExternalSVG_NoFetcher(t *testing.T) {
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
 	}
 	if got := b.BuildReferenceFilter("doc.svg#f"); got != nil {
 		t.Error("expected nil filter when no ExternalSVGFetcher is configured")
@@ -114,7 +115,7 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 	const fLeft = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f_left"><feFlood flood-color="red"/></filter></svg>`
 	const fRight = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f_right"><feFlood flood-color="blue"/></filter></svg>`
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 100, 100),
+		ReferenceBox: geometry.NewRectF(0, 0, 100, 100),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			switch uri {
 			case "left.svg":
@@ -153,7 +154,7 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 // per Filter Effects 1 §3.1, but the rest of the chain still runs.
 func TestBuildFilterEffect_UnresolvableUrlInChainIsSkipped(t *testing.T) {
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
 		ExternalSVGFetcher: func(uri string) ([]byte, error) {
 			return nil, os.ErrNotExist
 		},
@@ -232,7 +233,7 @@ func TestBuildReferenceFilter_ExternalSVG_DefaultsToSRGB(t *testing.T) {
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="10" height="10">` +
 		`<feColorMatrix type="matrix" values="-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 0 0 0 1 0"/></filter></svg>`
 	b := &FilterEffectBuilder{
-		ReferenceBox: image.Rect(0, 0, 10, 10),
+		ReferenceBox: geometry.NewRectF(0, 0, 10, 10),
 		ExternalSVGFetcher: func(string) ([]byte, error) {
 			return []byte(svg), nil
 		},
