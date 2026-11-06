@@ -1692,12 +1692,16 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 			return false
 		}
 
-		// An <ol>'s list-item count over its own descendants skips nested
-		// lists: their items form their own lists
-		// (ListItemOrdinal::InitialCounterForReversedOrderedList,
-		// html/list_item_ordinal.cc:359-425 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if skipListOwners && b.isListOwnerElement(n) {
+		// An <ol>'s list-item count over its own descendants skips list
+		// owners whole — nested <ol>/<ul>/<menu> lists and style-contained
+		// elements, a contained <li> included: the legacy count walks
+		// NextListItem, which skips IsListOwner subtrees with the owner
+		// itself (ListItemOrdinal::InitialCounterForReversedOrderedList,
+		// html/list_item_ordinal.cc:366-372; IsListOwner :21-36;
+		// NextListItem :118-142 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		// So <ol reversed><li>A<li style=contain:style>B<li>C counts 2 and
+		// numbers 2, 1, 0, as Chrome does.
+		if skipListOwners && (b.isListOwnerElement(n) || (st != nil && st.ShouldApplyStyleContainment())) {
 			return false
 		}
 
@@ -1710,8 +1714,8 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 		// pseudo-elements and descendants increment a fresh counter instead
 		// (EnterStyleContainmentScope after the element's own counters,
 		// css/counters_attachment_context.cc:252-256; UpdateCounterValue
-		// :622-627 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The element's
-		// own step above still counts.
+		// :622-627 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Outside an
+		// <ol>'s list-item count, the element's own step above still counts.
 		if st != nil && st.ShouldApplyStyleContainment() {
 			return false
 		}
