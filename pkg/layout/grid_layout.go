@@ -1033,9 +1033,12 @@ func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, tracks []
 func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
 	// Columns are sized by the GridTrackSizingAlgorithm port; rows below
 	// keep louis14's fragment-based sizing (LOU-757 for its stretch).
+	// Size containment sizes only the container as if empty: its columns
+	// still size from its items, as GridLayoutAlgorithm::Layout builds the
+	// sizing tree with its children (grid_layout_algorithm.cc:416-422 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if isInline {
-		ignoreItems := gla.style != nil && (gla.style.ShouldApplySizeContainment() || gla.style.ShouldApplyInlineSizeContainment())
-		return gla.computeColumnSizes(tracks, available, gap, items, ignoreItems, gridSizingLayout)
+		return gla.computeColumnSizes(tracks, available, gap, items, false, gridSizingLayout)
 	}
 	n := len(tracks)
 	sizes := make([]float64, n)
