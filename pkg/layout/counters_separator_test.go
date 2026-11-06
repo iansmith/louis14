@@ -23,22 +23,8 @@ func TestCountersEmptySeparatorJoinsAllLevels(t *testing.T) {
 		<div class="increment"></div>
 		<div class="reset"><div class="increment"></div><div class="increment dot"></div><div class="increment one"></div></div>
 	</body>`, nil)
-	var got []string
-	var walk func(b *Box)
-	walk = func(b *Box) {
-		if b == nil {
-			return
-		}
-		if b.Node != nil && b.Node.TagName == "::before" && strings.TrimSpace(b.Text) != "" {
-			got = append(got, strings.TrimSpace(b.Text))
-		}
-		for _, c := range b.Children {
-			walk(c)
-		}
-	}
-	walk(fl.root)
 	want := []string{"1", "11", "1.2", "3"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
+	if got := pseudoTexts(fl.root, "::before"); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("::before texts %v, want %v", got, want)
 	}
 }
