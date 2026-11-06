@@ -1315,3 +1315,19 @@ func TestSVG_RootPaintServerFollowsSnappedOrigin(t *testing.T) {
 	sampleColorClose(t, img, 81, 81, 255, 0, 0, 12, "row 81 (above the stop)")
 	sampleColorClose(t, img, 81, 82, 0, 0, 255, 12, "row 82 (below the stop)")
 }
+
+// LOU-758 (filter-effects worklist B11): a <mask>'s children paint with their
+// full effects, filters included (LayoutSVGResourceMasker::CreatePaintRecord →
+// SVGObjectPainter::PaintResourceSubtree, layout_svg_resource_masker.cc:47-66
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a red mask child filtered to a
+// white flood makes an opaque luminance mask, so the masked green square
+// covers the red one under it (svg-mutation-filter-used-by-mask).
+func TestSVG_MaskFilteredChildPaints(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="white"/></filter>
+<mask id="m"><rect width="100%" height="100%" fill="red" filter="url(#f)"/></mask>
+<rect width="100" height="100" fill="red"/>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 120, 120)
+	wantPixel(t, img, 50, 50, canvasGreen, "the green square under an opaque, filtered mask")
+}
