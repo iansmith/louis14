@@ -1429,3 +1429,18 @@ func TestSVG_PatternFilteredChildAt2xScale(t *testing.T) {
 	wantPixel(t, img, 66, 66, canvasWhite, "past the filter region")
 	wantPixel(t, img, 117, 117, canvasGreen, "the next tile's filter region")
 }
+
+// LOU-769: translateZ(50px) under perspective:100px is a 2× scale (a
+// constant w of 0.5); every reader of the draw context's matrix sees it
+// normalized, so a masked shape's gradient fill maps as under scale(2).
+func TestSVG_MaskedGradientUnderTranslateZ(t *testing.T) {
+	page := func(perspective, transform string) string {
+		return `<!DOCTYPE html><style>body{margin:0}</style>
+<div style="width:200px;height:200px;` + perspective + `">
+<svg width="100" height="100" style="position:absolute;left:50px;top:50px;transform:` + transform + `">
+<linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="blue"/><stop offset="1" stop-color="yellow"/></linearGradient>
+<mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
+<rect width="100" height="100" fill="url(#lg)" mask="url(#m)"/></svg></div>`
+	}
+	wantTranslateZMatchesScale2(t, page, "the masked gradient under scale(2)")
+}

@@ -98,7 +98,11 @@ func TestTrackingDrawContext_PopPastOwnPushes(t *testing.T) {
 	ext.Push()
 	ext.Scale(3, 3)
 	r := NewRendererForDrawContext(ext)
+	before := trackingPopUnderflows.Load()
 	r.dc.Pop()
+	if n := trackingPopUnderflows.Load() - before; n != 1 {
+		t.Errorf("Pop underflows counted %d, want 1", n)
+	}
 	wantTrackedMatches(t, r.dc, "after a Pop past the renderer's pushes")
 	if x, _ := ext.TransformPoint(1, 0); x != 8 {
 		t.Errorf("the host's state was popped: (1, 0) maps to x %v, want 8", x)
@@ -123,4 +127,14 @@ func TestTrackingDrawContext_ConstantWIsAffine(t *testing.T) {
 // receives one.
 func newHostDrawContext() textshape.DrawContext {
 	return textshape.NewDrawContextForImage(image.NewRGBA(image.Rect(0, 0, 8, 8)), newProvider())
+}
+
+// A homography whose constant w sits on the near plane (w <= projNearEpsilon)
+// is not an affine scale: it is where mazzy clips, not a 20000x magnification.
+func TestTrackingDrawContext_NearPlaneWIsNotAffine(t *testing.T) {
+	r := NewRendererForImage(image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	r.dc.MultiplyProjectiveMatrix(1, 0, 0, 0, 1, 0, 0, 0, 5e-5)
+	if _, affine := drawContextAffine(r.dc); affine {
+		t.Error("a near-plane constant w reported affine")
+	}
 }

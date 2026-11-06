@@ -64,6 +64,10 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	if c.externalSVGFetcher != nil {
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
 	}
+	underflows := trackingPopUnderflows.Load()
 	r.Render(boxes)
+	if n := trackingPopUnderflows.Load() - underflows; n != 0 {
+		t.Errorf("the renderer popped its draw context past its own pushes %d time(s): a Push/Pop imbalance", n)
+	}
 	return target, boxes
 }
