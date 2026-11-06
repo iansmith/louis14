@@ -955,49 +955,6 @@ func gridTrackIsCollapsed(t css.GridTrack) bool {
 	return t.AutoFitExpanded && gridTrackIsFixed(t) && t.Size == 0
 }
 
-// columnContributions returns, for each column track, the largest
-// min-content and max-content inline contribution among the items placed in
-// it. Only items spanning a track for which measure reports true are
-// measured (all, when measure is nil). Contributions are what
-// GridTrackSizingAlgorithm::ResolveIntrinsicTrackSizes takes from
-// ContributionSizeForGridItem (grid_track_sizing_algorithm.cc:911,
-// grid_layout_algorithm.cc:577 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-//
-// Divergence until LOU-691 ports Blink's distribution: a spanning item's
-// contribution, less the gaps and fixed tracks it crosses, is split evenly
-// over the other tracks it spans, where Blink distributes it over the
-// intrinsic tracks by their growth potential.
-func (gla *GridLayoutAlgorithm) columnContributions(items []*gridItem, tracks []css.GridTrack, gap float64, measure func(css.GridTrack) bool) (minC, maxC []float64) {
-	n := len(tracks)
-	minC, maxC = make([]float64, n), make([]float64, n)
-	for _, item := range items {
-		start, end := item.colStart, min(item.colEnd, n)
-		if start < 0 || end <= start {
-			continue
-		}
-		fixed, receivers, wanted := gap*float64(end-start-1), 0, measure == nil
-		for _, t := range tracks[start:end] {
-			if gridTrackIsFixed(t) {
-				fixed += t.Size
-			} else {
-				receivers++
-				wanted = wanted || measure(t)
-			}
-		}
-		if receivers == 0 || !wanted {
-			continue
-		}
-		lo, hi := gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
-		lo, hi = max(0, lo-fixed)/float64(receivers), max(0, hi-fixed)/float64(receivers)
-		for i := start; i < end; i++ {
-			if !gridTrackIsFixed(tracks[i]) {
-				minC[i], maxC[i] = max(minC[i], lo), max(maxC[i], hi)
-			}
-		}
-	}
-	return minC, maxC
-}
-
 // resolveTrackSizes resolves track sizes from track definitions.
 func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
 	// Columns are sized by the GridTrackSizingAlgorithm port; rows below

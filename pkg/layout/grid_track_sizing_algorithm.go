@@ -697,8 +697,8 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 // returns their used sizes: Blink's GridLayoutAlgorithm::ComputeUsedTrackSizes
 // for kForColumns (grid_layout_algorithm.cc:1164-1189 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's
-// content inline size, or Indefinite. Only items spanning an intrinsic
-// track are measured.
+// content inline size, or Indefinite. Only items spanning an intrinsic or
+// flexible track are measured.
 func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, ignoreItems bool, constraint gridSizingConstraint) []float64 {
 	if available < 0 {
 		available = gridIndefinite
@@ -714,7 +714,10 @@ func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, avail
 			break
 		}
 		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(tracks))}
-		if it.start < 0 || it.end <= it.start || !a.spansIntrinsic(it) {
+		// Intrinsic tracks take contributions (ResolveIntrinsicTrackSizes),
+		// and flexible ones under indefinite free space
+		// (ExpandFlexibleTracks, :1236-1251).
+		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
 			continue
 		}
 		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
