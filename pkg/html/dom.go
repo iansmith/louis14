@@ -798,7 +798,7 @@ func isVoidElement(tag string) bool {
 // form control (IsSemiReplacedElementTag).
 func IsReplacedElementTag(tag string) bool {
 	switch tag {
-	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
+	case "img", "video", "audio", "canvas", "svg", "iframe", "embed", "object",
 		"input", "textarea", "select":
 		return true
 	}

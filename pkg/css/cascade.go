@@ -195,7 +195,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",
 		"code", "dfn", "kbd", "mark", "q", "samp", "small", "sub", "sup",
-		"var", "time", "label", "br", "wbr", "img", "object",
+		"var", "time", "label", "br", "wbr", "img", "object", "audio",
 		"first-letter", "first-line":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
@@ -219,6 +219,19 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	case "canvas", "video", "embed", "iframe":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline-block")
+		}
+	}
+
+	// Blink html.css:170-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+	//   audio { width: 300px; height: 54px; }
+	// (its `audio:not([controls])` rule is !important, applied by
+	// applyUserAgentImportantStyles).
+	if node.TagName == "audio" {
+		if _, ok := style.Get("width"); !ok {
+			style.Set("width", "300px")
+		}
+		if _, ok := style.Get("height"); !ok {
+			style.Set("height", "54px")
 		}
 	}
 
@@ -606,10 +619,11 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // applyUserAgentImportantStyles applies the user-agent stylesheet's
 // !important declarations after the author cascade: important user-agent
 // declarations outrank every author declaration, important or not (CSS
-// Cascade 5 §6.1 origin order). Only Blink html.css:180-183 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b is ported here:
+// Cascade 5 §6.1 origin order). Ported from Blink html.css @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
 //
-//	iframe, embed, object, fencedframe {
+//	audio:not([controls]) { display: none !important; }      (:160-162)
+//	iframe, embed, object, fencedframe {                      (:180-183)
 //	  overflow: clip !important;
 //	  overflow-clip-margin: content-box !important;
 //	}
@@ -618,6 +632,10 @@ func importantLayerPriority(layerName string, layerOrder []string) int {
 // too.
 func applyUserAgentImportantStyles(node *html.Node, style *Style) {
 	switch node.TagName {
+	case "audio":
+		if _, controls := node.GetAttribute("controls"); !controls {
+			style.Set("display", "none")
+		}
 	case "iframe", "embed", "object", "fencedframe":
 		for _, p := range []string{"overflow", "overflow-x", "overflow-y"} {
 			style.Set(p, "clip")
