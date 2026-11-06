@@ -40,3 +40,16 @@ func TestFEMorphology_Radius(t *testing.T) {
 		})
 	}
 }
+
+// With primitiveUnits="objectBoundingBox" the radius is a fraction of the
+// reference box (Filter::ApplyHorizontalScale / ApplyVerticalScale, filter.cc:
+// 65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): radius 0.1 on a 100px
+// square dilates it by 10px.
+func TestFEMorphology_RadiusObjectBoundingBoxUnits(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="140" height="140"><filter id="m" color-interpolation-filters="sRGB" primitiveUnits="objectBoundingBox">
+<feMorphology operator="dilate" radius="0.1"/></filter>
+<rect x="20" y="20" width="100" height="100" fill="green" filter="url(#m)"/></svg>`, 140, 140)
+	wantPixel(t, img, 11, 70, canvasGreen, "10px left of the square, inside the dilation")
+	wantPixel(t, img, 9, 70, canvasWhite, "past the dilation")
+}
