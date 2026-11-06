@@ -1,6 +1,10 @@
 package render_test
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/render"
+)
 
 // TestRenderingContext3D_RowGroupBreaksContext: a 3D rendering context
 // follows the DOM ancestor chain, and a non-anonymous element that does
@@ -23,7 +27,7 @@ func TestRenderingContext3D_RowGroupBreaksContext(t *testing.T) {
 			`</style></head><body style="margin:0"><div><table><tr><td><div class="box"></div></td></tr></table></div></body></html>`
 	}
 	red := func(src string) int {
-		img := renderToImage(t, src, 200, 200)
+		img := render.RenderPage(t, src, 200, 200)
 		n := 0
 		for y := 0; y < 200; y++ {
 			for x := 0; x < 200; x++ {
@@ -52,7 +56,7 @@ func TestRenderingContext3D_DisplayContentsKeepsContext(t *testing.T) {
 		`<div style="transform:rotateX(90deg);transform-style:preserve-3d;width:100px">` +
 		`<span style="display:contents"><div style="transform:rotateX(90deg);width:50px;height:50px;background:red"></div></span>` +
 		`</div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	n := 0
 	for y := 0; y < 200; y++ {
 		for x := 0; x < 200; x++ {

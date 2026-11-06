@@ -2,6 +2,8 @@ package render_test
 
 import (
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestUsedTransformStyle3D_GroupingPropertyFlattens: a grouping property on a
@@ -38,7 +40,7 @@ func TestUsedTransformStyle3D_GroupingPropertyFlattens(t *testing.T) {
 				`<div style="transform: rotateX(45deg); transform-origin: top; transform-style: preserve-3d; ` + tc.grouping + `">` +
 				`<div style="transform: rotateX(-45deg); transform-origin: top; height: 200px; width: 100px; background: lime"></div>` +
 				`</div></body></html>`
-			img := renderToImage(t, src, 200, 300)
+			img := render.RenderPage(t, src, 200, 300)
 			c := img.RGBAAt(50, probeY)
 			isLime := c.R < 40 && c.G > 200 && c.B < 40
 			if isLime != tc.wantLime {
@@ -57,7 +59,7 @@ func TestPreserve3D_EdgeOnParentComposesWithChild(t *testing.T) {
 		`<div style="transform: rotatex(90deg); transform-style: preserve-3d; margin: 50px">` +
 		`<div style="transform: rotatex(90deg) scale(2); width: 50px; height: 50px; background: lime"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	c := img.RGBAAt(75, 75)
 	if !(c.R < 40 && c.G > 200 && c.B < 40) {
 		t.Errorf("pixel (75,75) = %v, want lime", c)
@@ -75,7 +77,7 @@ func TestNonInvertibleTransformIsNotDrawn(t *testing.T) {
 	src := `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="transform: scale3d(2, 2, 0); transform-origin: 0 0; width: 100px; height: 100px">` +
 		`<div style="background: blue; width: 50px; height: 50px"></div></div></body></html>`
-	img := renderToImage(t, src, 200, 200)
+	img := render.RenderPage(t, src, 200, 200)
 	if c := img.RGBAAt(20, 20); c.B > 200 && c.R < 60 {
 		t.Errorf("pixel (20,20) = %v: a non-invertible scale3d(2,2,0) layer was drawn", c)
 	}

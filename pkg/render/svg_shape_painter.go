@@ -347,15 +347,17 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 		)
 	}
 	// The shape and its mask rasterize in device pixels, through the draw
-	// context's whole matrix (an ancestor CSS transform included), so the
-	// buffer composites as is. A projective draw context cannot be read
-	// back: its DeviceFromUser part is used, and undone for the blit.
-	toDevice, ok := dcAffineTransform(sp.ctx.dc)
-	if !ok {
-		toDevice = sp.ctx.DeviceFromUser
+	// context's whole matrix (an ancestor CSS transform or perspective
+	// included), so the buffer composites as is. Paint servers and the mask
+	// content map user space through its affine form; under a projective
+	// matrix they keep DeviceFromUser.
+	toDevice, affine := deviceTransformFromDC(sp.ctx.dc)
+	deviceFromUser := sp.ctx.DeviceFromUser
+	if affine {
+		deviceFromUser = geometry.AffineTransformFromTransform(toDevice)
 	}
-	deviceBBox := toDevice.MapRect(userBBox)
-	if deviceBBox.IsEmpty() {
+	deviceBBox, ok := mapRectToLayer(toDevice, userBBox)
+	if !ok || deviceBBox.IsEmpty() {
 		return
 	}
 	bx := int(math.Floor(deviceBBox.X()))
@@ -373,16 +375,14 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	tmpR := NewRendererForImage(buf)
 	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
 	tmpR.dc.Translate(float64(-bx), float64(-by))
-	if !toDevice.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(toDevice.A, toDevice.B, toDevice.C, toDevice.D, toDevice.E, toDevice.F)
-	}
+	tmpR.multiplyHomography(projectiveHomography(toDevice))
 	// Run a child paint context targeting the temp DC + renderer so
 	// fill-shader / stroke-shader fall back onto the temp buffer
 	// instead of the page target.
 	childCtx := *sp.ctx // shallow copy
 	childCtx.dc = tmpR.dc
 	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = geometry.Translate(float64(-bx), float64(-by)).Compose(toDevice)
+	childCtx.DeviceFromUser = geometry.Translate(float64(-bx), float64(-by)).Compose(deviceFromUser)
 	childOp := newSVGObjectPainter(tmpR.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
@@ -437,7 +437,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// the buffer extent and the page-pixel offset (bx, by) so the
 	// buffer alignment is consistent.
 	maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-		masker, userBBox, bw, bh, bx, by, toDevice,
+		masker, userBBox, bw, bh, bx, by, toDevice, deviceFromUser,
 	)
 	if maskBuf != nil {
 		applySVGMaskToBuffer(buf, maskBuf, masker.MaskType)
@@ -449,29 +449,19 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	compositeMaskedShapeOnto(sp.ctx.dc, toDevice, buf, bx, by)
 }
 
-// compositeMaskedShapeOnto draws buf, rasterized through toDevice, onto dc
-// at (bx, by) of the space toDevice maps into. dc's matrix carries toDevice,
-// which is undone for the blit: when toDevice is the whole matrix, what is
-// left is the identity to rounding, so the blit is a pixel copy (under the
-// clip) rather than a resampling.
+// compositeMaskedShapeOnto draws buf, rasterized through toDevice (dc's
+// whole matrix), onto dc at device (bx, by). toDevice is undone for the
+// blit, so what is left is the identity to rounding and the blit is a pixel
+// copy (under the clip) rather than a resampling.
 //
 // no Blink analog: Blink records the masked content into the paint
 // operation stream under the mask's effect; louis14 composites a
 // pre-rasterized buffer.
-func compositeMaskedShapeOnto(dc textshape.DrawContext, toDevice geometry.AffineTransform, buf *image.RGBA, bx, by int) {
+func compositeMaskedShapeOnto(dc textshape.DrawContext, toDevice geometry.Transform, buf *image.RGBA, bx, by int) {
 	dc.Push()
 	defer dc.Pop()
-	if inv, ok := toDevice.Invert(); ok && !inv.IsIdentity() {
-		dc.MultiplyMatrix(inv.A, inv.B, inv.C, inv.D, inv.E, inv.F)
-	}
+	multiplyDCHomography(dc, projectiveHomography(homographyTransform(toDevice).InverseOrIdentity()))
 	dc.DrawImage(buf, bx, by)
-}
-
-// dcAffineTransform returns dc's current matrix (deviceTransformFromDC) as
-// an affine transform; ok is false when it is projective.
-func dcAffineTransform(dc textshape.DrawContext) (geometry.AffineTransform, bool) {
-	m, ok := deviceTransformFromDC(dc)
-	return geometry.NewAffineTransform(m.Rc(0, 0), m.Rc(1, 0), m.Rc(0, 1), m.Rc(1, 1), m.Rc(0, 3), m.Rc(1, 3)), ok
 }
 
 // rasterizeSVGMaskAtDeviceBBox is the SVG-shape variant of
@@ -482,7 +472,7 @@ func dcAffineTransform(dc textshape.DrawContext) (geometry.AffineTransform, bool
 //
 // Mirrors the CSS-box rasterizeSVGMask but operates in the SVG paint
 // walk's user-space coordinate system.
-func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, refBoxUser geometry.RectF, bufW, bufH, bx, by int, deviceFromUser geometry.AffineTransform) *image.RGBA {
+func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, refBoxUser geometry.RectF, bufW, bufH, bx, by int, toDevice geometry.Transform, deviceFromUser geometry.AffineTransform) *image.RGBA {
 	if masker == nil || bufW <= 0 || bufH <= 0 {
 		return nil
 	}
@@ -500,15 +490,9 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	tmpR := NewRendererForImage(maskBuf)
 	// Buffer pixel (0, 0) = device pixel (bx, by). Compose the
 	// device-pixel translate with the user→device map so the mask
-	// children rasterize at the shape's effective scale.
+	// children rasterize where the shape did.
 	tmpR.dc.Translate(float64(-bx), float64(-by))
-	if !deviceFromUser.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(
-			deviceFromUser.A, deviceFromUser.B,
-			deviceFromUser.C, deviceFromUser.D,
-			deviceFromUser.E, deviceFromUser.F,
-		)
-	}
+	tmpR.multiplyHomography(projectiveHomography(toDevice))
 	// Box-local frame inside the user-space DC.
 	tmpR.dc.Translate(refBoxUser.X(), refBoxUser.Y())
 
@@ -542,7 +526,7 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	tmpR.dc.Clip()
 
 	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, dfu, r.lookupSVGResources())
-	pctx.regionClip = deviceRegionClip(dfu, regionLocal)
+	pctx.regionClip = dcRegionClip(tmpR.dc, regionLocal)
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

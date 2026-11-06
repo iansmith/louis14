@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/png"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestFilterOutputClip_OwnClipsClipTheOutput — a filtered element's own
@@ -20,7 +22,7 @@ func TestFilterOutputClip_OwnClipsClipTheOutput(t *testing.T) {
 			page := `<!DOCTYPE html><html><body style="margin:0">` +
 				`<div style="` + c + `;width:100px;height:100px;background:blue;filter:drop-shadow(150px 0 0 green)"></div>` +
 				`</body></html>`
-			img := renderToImage(t, page, 400, 200)
+			img := render.RenderPage(t, page, 400, 200)
 			sampleColorClose(t, img, 50, 50, 0, 0, 255, 0, "content")
 			sampleColorClose(t, img, 200, 50, 255, 255, 255, 0, "shadow outside the clip")
 		})
@@ -39,7 +41,7 @@ func TestFilterOutputClip_ExpanderKeepsInput(t *testing.T) {
 		`<div style="position:absolute;clip:rect(0px,100px,100px,0px);width:100px;height:100px;filter:drop-shadow(-125px 0 0 green)">` +
 		`<div style="position:absolute;left:150px;top:0;width:50px;height:100px;background:blue"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 400, 200)
+	img := render.RenderPage(t, page, 400, 200)
 	// The child (150..200) casts its shadow at 25..75, inside the clip.
 	sampleColorClose(t, img, 50, 50, 0, 128, 0, 0, "shadow of the child outside the clip")
 	sampleColorClose(t, img, 175, 50, 255, 255, 255, 0, "the child itself is clipped")
@@ -62,7 +64,7 @@ func TestFilterOutputClip_ReplacedElement(t *testing.T) {
 		`<img style="position:absolute;left:100px;top:0;width:100px;height:100px;clip:rect(0px,50px,100px,-100px);` +
 		`filter:drop-shadow(-100px 0 0 green)" src="data:image/png;base64,` + base64.StdEncoding.EncodeToString(buf.Bytes()) + `">` +
 		`</body></html>`
-	img := renderToImage(t, page, 300, 200)
+	img := render.RenderPage(t, page, 300, 200)
 	// The clip shows page x 0..150. The image's right half (150..200) is
 	// clipped away but feeds the filter: its shadow lands at 50..100.
 	sampleColorClose(t, img, 75, 50, 0, 128, 0, 0, "shadow of the clipped-away half")
@@ -78,7 +80,7 @@ func TestFilterOutputClip_ReplacedElement(t *testing.T) {
 func TestFilterOutputClip_RootCanvasBackgroundIsFiltered(t *testing.T) {
 	const page = `<!DOCTYPE html><html style="background:yellow;filter:grayscale(1)">` +
 		`<body style="margin:0"><div style="width:50px;height:50px;background:rgb(255,0,0)"></div></body></html>`
-	img := renderToImage(t, page, 200, 200)
+	img := render.RenderPage(t, page, 200, 200)
 	// grayscale(1) of yellow: (0.2126 + 0.7152) * 255.
 	// Inside the root's box: the buffer covers the root's paint extent only
 	// (the canvas beyond it is LOU-704's sizing).
@@ -95,7 +97,7 @@ func TestFilterOutputClip_ClipPathWithDescendants(t *testing.T) {
 		`<div style="position:relative;width:100px;height:100px;clip-path:inset(0);filter:drop-shadow(-125px 0 0 green)">` +
 		`<div style="position:absolute;left:150px;top:0;width:50px;height:100px;background:blue"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 400, 200)
+	img := render.RenderPage(t, page, 400, 200)
 	// The child (150..200) casts its shadow at 25..75.
 	sampleColorClose(t, img, 50, 50, 0, 128, 0, 0, "shadow of the child outside the clip-path")
 	sampleColorClose(t, img, 175, 50, 255, 255, 255, 0, "child outside the clip-path")
@@ -116,7 +118,7 @@ func TestReplacedElementCSSClip_Transformed(t *testing.T) {
 		`<img style="position:absolute;left:0;top:0;width:50px;height:50px;clip:rect(0px,25px,50px,0px);` +
 		`transform:scale(2);transform-origin:0 0" src="data:image/png;base64,` + base64.StdEncoding.EncodeToString(buf.Bytes()) + `">` +
 		`</body></html>`
-	img := renderToImage(t, page, 200, 200)
+	img := render.RenderPage(t, page, 200, 200)
 	sampleColorClose(t, img, 25, 50, 255, 0, 0, 0, "inside the clip")
 	sampleColorClose(t, img, 75, 50, 255, 255, 255, 0, "outside the clip")
 }
@@ -129,7 +131,7 @@ func TestFilterOutputClip_NonPixelMovingFilter(t *testing.T) {
 		`<div style="position:absolute;clip:rect(0px,100px,100px,0px);width:100px;height:100px;background:rgb(255,0,0);filter:grayscale(1)">` +
 		`<div style="position:absolute;left:50px;top:50px;width:100px;height:100px;background:rgb(0,0,255)"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 300, 300)
+	img := render.RenderPage(t, page, 300, 300)
 	sampleColorClose(t, img, 25, 25, 54, 54, 54, 2, "filtered content")
 	sampleColorClose(t, img, 75, 75, 18, 18, 18, 2, "positioned child inside the clip")
 	sampleColorClose(t, img, 125, 125, 255, 255, 255, 0, "positioned child outside the clip")

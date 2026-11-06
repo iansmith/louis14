@@ -1,18 +1,11 @@
 package render_test
 
 import (
-	"image"
 	"image/color"
 	"testing"
 
 	"louis14/pkg/render"
 )
-
-func renderView(t *testing.T, src string) *image.RGBA {
-	t.Helper()
-	img, _ := render.RenderPage(t, src, 200, 200)
-	return img
-}
 
 // TestViewBackgroundPaintsUnderInlineBodyContent pins the paint order of
 // ViewPainter::PaintRootElementGroup (view_painter.cc:264 @
@@ -26,7 +19,7 @@ func renderView(t *testing.T, src string) *image.RGBA {
 func TestViewBackgroundPaintsUnderInlineBodyContent(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0;display:inline;background:green">` +
 		`<div style="width:50px;height:50px;background:blue"></div></body></html>`
-	img := renderView(t, src)
+	img := render.RenderPage(t, src, 200, 200)
 	if got, want := rgbAt(img, 25, 25), (color.RGBA{0, 0, 255, 255}); got != want {
 		t.Errorf("block child at (25,25) = %v, want %v (view background painted over it)", got, want)
 	}
@@ -42,7 +35,7 @@ func TestViewBackgroundPaintsUnderInlineBodyContent(t *testing.T) {
 // its own (BackgroundTransfersToView).
 func TestViewBackgroundTranslucentRootPaintsOnce(t *testing.T) {
 	const src = `<!DOCTYPE html><html style="background:rgba(0,0,255,0.5)"><body style="margin:0"></body></html>`
-	img := renderView(t, src)
+	img := render.RenderPage(t, src, 200, 200)
 	got := img.RGBAAt(100, 100)
 	// White blended with 50% blue: (127|128, 127|128, 255).
 	if got.B != 255 || got.R < 126 || got.R > 129 || got.G < 126 || got.G > 129 || got.A != 255 {
@@ -60,7 +53,7 @@ func TestViewBackgroundTranslucentRootPaintsOnce(t *testing.T) {
 func TestViewBackgroundPaintsUnderNegativeZChildren(t *testing.T) {
 	const src = `<!DOCTYPE html><html><body style="margin:0;perspective:500px;background:green">` +
 		`<p style="margin:0;position:absolute;z-index:-1;left:0;top:0;width:50px;height:50px;background:blue"></p></body></html>`
-	img := renderView(t, src)
+	img := render.RenderPage(t, src, 200, 200)
 	if got, want := rgbAt(img, 25, 25), (color.RGBA{0, 0, 255, 255}); got != want {
 		t.Errorf("negative-z child at (25,25) = %v, want %v", got, want)
 	}
@@ -78,7 +71,7 @@ func TestRootOverflowDoesNotClipRootBox(t *testing.T) {
 	const src = `<!DOCTYPE html><html style="overflow:hidden"><body style="margin:0">` +
 		`<div style="height:20px"></div>` +
 		`<div style="position:relative;top:30px;width:50px;height:50px;background:blue"></div></body></html>`
-	img := renderView(t, src)
+	img := render.RenderPage(t, src, 200, 200)
 	if got, want := rgbAt(img, 25, 90), (color.RGBA{0, 0, 255, 255}); got != want {
 		t.Errorf("content below the root box at (25,90) = %v, want %v", got, want)
 	}
@@ -100,7 +93,7 @@ func TestViewBackgroundNestedDocument(t *testing.T) {
 		`<iframe style="border:0;width:100px;height:80px;margin:10px" srcdoc="` +
 		`<html style='background:green;margin:30px;height:10px'><body style='margin:0'></body></html>` +
 		`"></iframe></body></html>`
-	img := renderView(t, src)
+	img := render.RenderPage(t, src, 200, 200)
 	if got, want := rgbAt(img, 15, 15), (color.RGBA{0, 128, 0, 255}); got != want {
 		t.Errorf("frame viewport at (15,15), outside the nested root's border box = %v, want %v", got, want)
 	}

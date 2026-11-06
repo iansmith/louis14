@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -72,9 +73,10 @@ type svgPaintContext struct {
 	// 4 (and harmless in Phase 1-3 because no painter dereferences it).
 	Resources *svg.SVGResourceRegistry
 
-	// regionClip, when not empty, further clips what composites in
-	// device pixels (viewportDeviceClip): a <mask>'s region.
-	regionClip image.Rectangle
+	// regionClip, when set, further clips what composites in device pixels
+	// (viewportDeviceClip): a <mask>'s region. An empty region clips
+	// everything.
+	regionClip *image.Rectangle
 
 	// clipPathContent is set while painting <clipPath> content, which
 	// clips with its geometry only: its filters, masks and other
@@ -128,10 +130,22 @@ func newBufferPaintContext(tmpR *Renderer, viewport geometry.SizeF, deviceFromUs
 	}
 }
 
-// deviceRegionClip returns region, in the coordinates deviceFromUser maps
-// from, as the device pixels it covers: a mask region's regionClip.
-func deviceRegionClip(deviceFromUser geometry.AffineTransform, region geometry.RectF) image.Rectangle {
-	return snapRectFToDevice(deviceFromUser.MapRect(region))
+// dcRegionClip returns region, in dc's current coordinates, as the device
+// pixels its corners map to through dc's whole matrix (a projective one
+// included): a mask region's regionClip.
+func dcRegionClip(dc textshape.DrawContext, region geometry.RectF) *image.Rectangle {
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for _, p := range [4]geometry.PointF{
+		{X: region.X(), Y: region.Y()}, {X: region.Right(), Y: region.Y()},
+		{X: region.X(), Y: region.Bottom()}, {X: region.Right(), Y: region.Bottom()},
+	} {
+		x, y := dc.TransformPoint(p.X, p.Y)
+		minX, minY = math.Min(minX, x), math.Min(minY, y)
+		maxX, maxY = math.Max(maxX, x), math.Max(maxY, y)
+	}
+	clip := snapRectFToDevice(geometry.NewRectF(minX, minY, maxX-minX, maxY-minY))
+	return &clip
 }
 
 // viewportDeviceClip returns the SVG root viewport in device pixels, for the
@@ -146,8 +160,8 @@ func deviceRegionClip(deviceFromUser geometry.AffineTransform, region geometry.R
 func (c *svgPaintContext) viewportDeviceClip() image.Rectangle {
 	d := c.contentToDevice.MapRect(c.viewport)
 	clip := image.Rect(int(d.X()), int(d.Y()), int(d.X()+d.Width()), int(d.Y()+d.Height()))
-	if !c.regionClip.Empty() {
-		clip = clip.Intersect(c.regionClip)
+	if c.regionClip != nil {
+		clip = clip.Intersect(*c.regionClip)
 	}
 	return clip
 }

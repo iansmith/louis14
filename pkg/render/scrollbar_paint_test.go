@@ -2,6 +2,8 @@ package render_test
 
 import (
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestScrollbar_CustomColorTrackAndThumb pins the classic-scrollbar widget
@@ -25,7 +27,7 @@ func TestScrollbar_CustomColorTrackAndThumb(t *testing.T) {
 		`div{width:50px;height:50px;overflow:scroll;scrollbar-color:blue white;background:yellow}` +
 		`</style></head><body><div></div></body></html>`
 
-	img := renderToImage(t, htmlContent, 200, 200)
+	img := render.RenderPage(t, htmlContent, 200, 200)
 
 	isBlue := func(x, y int) bool {
 		r, g, b, a := img.At(x, y).RGBA()

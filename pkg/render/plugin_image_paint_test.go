@@ -24,7 +24,7 @@ func renderPluginImage(t *testing.T, tag, attr string, w, h int, c color.RGBA, e
 	uri := splitPNGDataURI(t, w, h, c, c)
 	src := `<!DOCTYPE html><style>body{margin:0} ` + tag + `{display:block; width:40px; height:40px; padding:5px; object-fit:none; ` + extra + `}</style>
 <` + tag + ` type="image/png" ` + attr + `="` + uri + `"></` + tag + `>`
-	return renderColumnRuleHTML(t, src, 100, 100)
+	return RenderPage(t, src, 100, 100)
 }
 
 func TestPluginImage_ObjectPaintsImage(t *testing.T) {

@@ -3,6 +3,8 @@ package render_test
 import (
 	"image/color"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // LOU-730 (filter-effects worklist D3): a backdrop filter lives on an effect
@@ -11,7 +13,7 @@ import (
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a rotated element inverts the
 // backdrop under its rotated box, not under its untransformed border box.
 func TestBackdropFilter_RotatedElementSamplesUnderItsRotatedBox(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}
 div{position:absolute;width:100px;height:100px;left:100px;top:100px}</style>
 <div style="background:green"></div>
 <div style="top:140px;backdrop-filter:invert(1);transform:rotate(30deg)"></div>`, 300, 300)
@@ -25,7 +27,7 @@ div{position:absolute;width:100px;height:100px;left:100px;top:100px}</style>
 // the 8000px buffer limit: the region is clamped to the device clip mapped
 // into layer space, as a filter's is (filterLayerClip).
 func TestBackdropFilter_ScaledElementPastBufferLimit(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:green}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;background:green}</style>
 <div style="position:absolute;left:0;top:0;width:1000px;height:1000px;transform-origin:0 0;transform:scale(10);backdrop-filter:invert(1)"></div>`, 100, 100)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green under the scaled box, inverted")
 }
@@ -65,7 +67,7 @@ func TestBackdropFilter_RotatedBlurReadsOnlyInsideTheBox(t *testing.T) {
 		{"blur(4px) invert(1)", color.RGBA{255, 0, 255, 255}},
 	} {
 		t.Run(tc.filter, func(t *testing.T) {
-			img := renderToImage(t, rotatedBlurPage(tc.filter), 200, 200)
+			img := render.RenderPage(t, rotatedBlurPage(tc.filter), 200, 200)
 			// The centre, and 4px inside the top corner (100, 29.3).
 			for _, p := range [][2]int{{100, 100}, {100, 34}} {
 				if got := img.RGBAAt(p[0], p[1]); !colorWithin(got, tc.want, 2) {
@@ -82,7 +84,7 @@ func TestBackdropFilter_RotatedBlurReadsOnlyInsideTheBox(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), read from the real backdrop: a
 // green backdrop inverted, then greyscaled, is grey.
 func TestBackdropFilter_PlusFilterFiltersTheBackdrop(t *testing.T) {
-	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1)", ""), 120, 120)
+	img := render.RenderPage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1)", ""), 120, 120)
 	// (0,128,0) inverted is (255,127,255), greyscaled (163,163,163).
 	wantPixelWithinOne(t, img, 50, 50, color.RGBA{163, 163, 163, 255}, "the inverted green backdrop greyscaled")
 }
@@ -92,7 +94,7 @@ func TestBackdropFilter_PlusFilterFiltersTheBackdrop(t *testing.T) {
 // the box's left edge, over a lime backdrop, is not smeared across the
 // blur's pad, so next to the edge lime still dominates.
 func TestBackdropFilter_BlurMirrorsAtTheEdge(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:lime}</style>
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;background:lime}</style>
 <div style="position:absolute;left:0;top:0;width:2px;height:100px;background:red"></div>
 <div style="position:absolute;left:0;top:0;width:100px;height:100px;backdrop-filter:blur(10px)"></div>`, 120, 120)
 	if c := img.RGBAAt(1, 50); c.G <= c.R || c.R == 0 {
@@ -108,7 +110,7 @@ func TestBackdropFilter_BlurMirrorsAtTheEdge(t *testing.T) {
 // own, as for a filter inside opacity. The grey backdrop at half opacity over
 // green (0,128,0) is (82,146,82).
 func TestBackdropFilter_PlusFilterInsideOpacity(t *testing.T) {
-	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1);opacity:.5", ""), 120, 120)
+	img := render.RenderPage(t, backdropPage("green", "backdrop-filter:invert(1);filter:grayscale(1);opacity:.5", ""), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, color.RGBA{82, 146, 82, 255}, "the greyscaled backdrop at half opacity")
 }
 
@@ -118,7 +120,7 @@ func TestBackdropFilter_PlusFilterInsideOpacity(t *testing.T) {
 // skia_renderer.cc:1743-1751 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
 // the inverted green backdrop is not multiplied with the page.
 func TestBackdropFilter_InsideMixBlendMode(t *testing.T) {
-	img := renderToImage(t, backdropPage("green", "backdrop-filter:invert(1);mix-blend-mode:multiply", ""), 120, 120)
+	img := render.RenderPage(t, backdropPage("green", "backdrop-filter:invert(1);mix-blend-mode:multiply", ""), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the inverted backdrop")
 }
 
@@ -127,7 +129,7 @@ func TestBackdropFilter_InsideMixBlendMode(t *testing.T) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an identity url() filter, which
 // runs in linearRGB, leaves the grey backdrop grey.
 func TestBackdropFilter_URLFilterEndsInSRGB(t *testing.T) {
-	img := renderToImage(t, backdropPage("rgb(128,128,128)", "backdrop-filter:invert(0);filter:url(#f)",
+	img := render.RenderPage(t, backdropPage("rgb(128,128,128)", "backdrop-filter:invert(0);filter:url(#f)",
 		`<svg width="0" height="0" style="position:absolute"><filter id="f"><feColorMatrix type="saturate" values="1"/></filter></svg>`), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, color.RGBA{128, 128, 128, 255}, "the grey backdrop through an identity url() filter")
 }
@@ -138,7 +140,7 @@ func TestBackdropFilter_URLFilterEndsInSRGB(t *testing.T) {
 // where the mirror lands on it, next to the edge: a clamped pad would repeat
 // it across the offset, a transparent one show the page.
 func TestBackdropFilter_OffsetReadsTheMirroredPad(t *testing.T) {
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0;background:green}
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0;background:green}
 div{position:absolute;left:0;top:0;height:100px}</style>
 <svg width="0" height="0" style="position:absolute"><filter id="off" x="-50%" width="200%"><feOffset dx="20"/></filter></svg>
 <div style="width:2px;background:red"></div>

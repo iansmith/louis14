@@ -22,7 +22,7 @@ func TestObjectViewBox_InsetSelectsSubsetForFill(t *testing.T) {
 	uri := splitPNGDataURI(t, 4, 2, red, blue)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; width:40px; height:20px; object-fit:fill; object-view-box:inset(0 50% 0 0)}</style>
 <img src="` + uri + `">`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 5, 10, red.R, red.G, red.B, "left of the box shows the view box")
 	wantRGB(t, img, 35, 10, red.R, red.G, red.B, "right of the box shows the view box too")
 }
@@ -34,7 +34,7 @@ func TestObjectViewBox_IsNaturalSize(t *testing.T) {
 	uri := splitPNGDataURI(t, 4, 2, red, blue)
 	src := `<!DOCTYPE html><style>body{margin:0} img{display:block; object-view-box:xywh(0 0 2px 2px)} div{width:10px;height:10px;background:rgb(0,255,0)}</style>
 <img src="` + uri + `"><div></div>`
-	img := renderColumnRuleHTML(t, src, 100, 100)
+	img := RenderPage(t, src, 100, 100)
 	wantRGB(t, img, 0, 0, red.R, red.G, red.B, "view box at the origin")
 	wantRGB(t, img, 3, 0, 255, 255, 255, "right of the 2px-wide img")
 	wantRGB(t, img, 1, 3, 0, 255, 0, "sibling right below the 2px-tall img")

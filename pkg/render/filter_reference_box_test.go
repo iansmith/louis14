@@ -3,6 +3,8 @@ package render_test
 import (
 	"fmt"
 	"testing"
+
+	"louis14/pkg/render"
 )
 
 // TestFilterReferenceBox_IncludesSelfPaintingDescendants — a filter that moves
@@ -25,7 +27,7 @@ func TestFilterReferenceBox_IncludesSelfPaintingDescendants(t *testing.T) {
 		`<div style="display:inline-block;filter:url(#f)">` +
 		`<div style="width:50px;height:50px;background:rgb(128,128,128);transform:translate(25px,25px) scale(2)"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 200, 200)
+	img := render.RenderPage(t, page, 200, 200)
 	sampleColorClose(t, img, 60, 50, 128, 0, 0, 1, "inside the region from the descendants' bounds")
 	sampleColorClose(t, img, 30, 25, 128, 0, 0, 1, "inside both regions")
 	sampleColorClose(t, img, 15, 50, 255, 255, 255, 0, "left of the region")
@@ -45,7 +47,7 @@ func TestFilterReferenceBox_NegativelyPositionedChild(t *testing.T) {
 		`<div style="filter:url(#inv);position:relative;top:100px;width:100px;height:100px;background:white">` +
 		`<div style="position:absolute;top:-100px;width:100px;height:100px;background:rgb(0,128,0)"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 200, 250)
+	img := render.RenderPage(t, page, 200, 250)
 	// The default region (-10%..120%) of the 100x100 border box only reaches
 	// 10px above it; with the child included it covers the child.
 	sampleColorClose(t, img, 50, 50, 255, 127, 255, 1, "child, inverted")
@@ -65,7 +67,7 @@ func TestFilterViewport_EmptyBorderBox(t *testing.T) {
 		`<div style="margin:50px;width:0;height:0;filter:url(#f)">` +
 		`<div style="position:relative;left:-50px;top:-50px;width:100px;height:100px;background:red"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 200, 200)
+	img := render.RenderPage(t, page, 200, 200)
 	sampleColorClose(t, img, 60, 60, 0, 128, 0, 0, "region at the 0x0 box's origin")
 	sampleColorClose(t, img, 10, 10, 255, 255, 255, 0, "outside the region")
 }
@@ -83,12 +85,12 @@ func TestFilterReferenceBox_ChildOwnTransform(t *testing.T) {
 		`<div style="width:100px;height:100px;transform:%s"></div></div></body></html>`
 	// translateZ under the parent's perspective would double the box about
 	// (250,250) to (150,150)-(350,350); its own transform leaves it in place.
-	img := renderToImage(t, fmt.Sprintf(page, "translateZ(50px)"), 400, 400)
+	img := render.RenderPage(t, fmt.Sprintf(page, "translateZ(50px)"), 400, 400)
 	sampleColorClose(t, img, 250, 250, 0, 128, 0, 0, "translateZ: inside the box")
 	sampleColorClose(t, img, 160, 250, 255, 255, 255, 0, "translateZ: outside the box")
 	// w = -1 about origin (200,200): x maps to 400 - x, so the child lands on
 	// (100,100)-(200,200) and the reference box is (100,100)-(300,300).
-	img = renderToImage(t, fmt.Sprintf(page, "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-1);transform-origin:0 0"), 400, 400)
+	img = render.RenderPage(t, fmt.Sprintf(page, "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-1);transform-origin:0 0"), 400, 400)
 	sampleColorClose(t, img, 150, 150, 0, 128, 0, 0, "w < 0: mapped child")
 }
 
@@ -103,7 +105,7 @@ func TestShorthandFilter_NotCroppedToReferenceBox(t *testing.T) {
 		`<div style="width:50px;height:50px;background:green;filter:invert(0.1)">` +
 		`<div style="position:relative;left:50px;width:50px;height:50px;border:1px solid black;box-sizing:border-box"></div>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 200, 100)
+	img := render.RenderPage(t, page, 200, 100)
 	// Black inverted by 0.1 is 26.
 	sampleColorClose(t, img, 50, 20, 26, 26, 26, 1, "child's left border")
 	sampleColorClose(t, img, 99, 20, 26, 26, 26, 1, "child's right border")
@@ -118,7 +120,7 @@ func TestShorthandFilter_OffscreenDescendant(t *testing.T) {
 		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
 		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
 		`</div></body></html>`
-	img := renderToImage(t, page, 300, 300)
+	img := render.RenderPage(t, page, 300, 300)
 	// grayscale(1) of red: 0.2126 * 255.
 	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
 }
@@ -130,14 +132,14 @@ func TestShorthandFilter_TransformedEdgeRowSurvives(t *testing.T) {
 	const scaled = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="position:absolute;left:50px;top:50px;width:100px;height:100px;background:rgb(255,0,0);` +
 		`transform:scale(1.5);transform-origin:0 0;filter:grayscale(1)"></div></body></html>`
-	img := renderToImage(t, scaled, 300, 300)
+	img := render.RenderPage(t, scaled, 300, 300)
 	for _, p := range [][2]int{{50, 50}, {199, 50}, {50, 199}, {199, 199}} {
 		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "scaled box edge")
 	}
 	const rotated = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<div style="position:absolute;left:100px;top:100px;width:100px;height:100px;background:rgb(255,0,0);` +
 		`transform:rotate(90deg);filter:grayscale(1)"></div></body></html>`
-	img = renderToImage(t, rotated, 300, 300)
+	img = render.RenderPage(t, rotated, 300, 300)
 	for _, p := range [][2]int{{100, 100}, {199, 100}, {100, 199}, {199, 199}} {
 		sampleColorClose(t, img, p[0], p[1], 54, 54, 54, 2, "rotated box edge")
 	}
@@ -153,7 +155,7 @@ func TestShorthandFilter_ProjectiveAncestorSkipLink(t *testing.T) {
 		`<div style="position:relative;width:200px;height:200px;background:rgb(255,0,0);filter:grayscale(1)">` +
 		`<a href="#main" style="position:absolute;left:-9999px">Skip to content</a>` +
 		`</div></div></div></body></html>`
-	img := renderToImage(t, page, 300, 300)
+	img := render.RenderPage(t, page, 300, 300)
 	sampleColorClose(t, img, 100, 100, 54, 54, 54, 2, "filtered box")
 }
 
@@ -166,7 +168,7 @@ func TestSVGShapeFilterChain_RegionAsBefore(t *testing.T) {
 		`<filter id="o" x="0" y="0" width="2" height="1" filterUnits="objectBoundingBox"><feOffset dx="2000" dy="0"/></filter>` +
 		`</defs><rect width="2100" height="50" fill="rgb(255,0,0)" style="filter:url(#o) grayscale(1)"/></svg>` +
 		`</body></html>`
-	img := renderToImage(t, page, 4200, 50)
+	img := render.RenderPage(t, page, 4200, 50)
 	sampleColorClose(t, img, 50, 25, 255, 255, 255, 0, "left of the offset rect stays empty")
 }
 
@@ -181,6 +183,6 @@ func TestReferenceFilter_RegionOffClip(t *testing.T) {
 		`</defs></svg>` +
 		`<div style="width:100px;height:100px;background:rgb(255,0,0);filter:url(#away)"></div>` +
 		`</body></html>`
-	img := renderToImage(t, page, 200, 200)
+	img := render.RenderPage(t, page, 200, 200)
 	sampleColorClose(t, img, 50, 50, 255, 255, 255, 0, "region off screen: nothing drawn")
 }

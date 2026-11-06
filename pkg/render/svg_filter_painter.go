@@ -178,10 +178,11 @@ func (sp *svgShapePainter) applyClipMaskToFilterOutput(out *image.RGBA, region i
 		if id, ok := css.ParseURLReference(maskVal); ok && sp.ctx.Resources != nil {
 			if masker, found := sp.ctx.Resources.LookupMasker(id); found &&
 				masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
+				dfu := sp.ctx.DeviceFromUser
 				maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
 					masker, sp.shape.FillBoundingBox,
 					region.Dx(), region.Dy(), region.Min.X, region.Min.Y,
-					sp.ctx.DeviceFromUser,
+					geometry.TransformAffine(dfu.A, dfu.B, dfu.C, dfu.D, dfu.E, dfu.F), dfu,
 				)
 				if maskBuf != nil {
 					applySVGMaskToBuffer(out, maskBuf, masker.MaskType)

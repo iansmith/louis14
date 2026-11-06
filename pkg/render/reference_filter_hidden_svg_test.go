@@ -18,7 +18,8 @@ import (
 //
 // With no layout object, its color-interpolation-filters comes from its
 // presentation attribute, else auto, which runs in sRGB
-// (ColorInterpolationForElement, svg_filter_builder.cc:136-170 @ a9f50e52):
+// (ColorInterpolationForElement and ResolveInterpolationSpace,
+// svg_filter_builder.cc:136-155 and 157-162 @ a9f50e52):
 // the hidden inverting matrix inverts green (0,128,0) to (255,127,255) as
 // invert(1) does, and to (255,229,255) in linearRGB.
 
@@ -49,7 +50,7 @@ func TestReferenceFilter_InsideDisplayNoneSVG(t *testing.T) {
 		{"linearRGB attribute", `color-interpolation-filters="linearRGB"`, "green", "backdrop-filter:url(#inv)", invertedGreenLinear},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, backdropPage(tc.backdrop, tc.effect, hiddenSVGInvertFilter(tc.filterAttrs)), 120, 120)
+			img := render.RenderPage(t, backdropPage(tc.backdrop, tc.effect, hiddenSVGInvertFilter(tc.filterAttrs)), 120, 120)
 			wantPixelWithinOne(t, img, 50, 50, tc.want, "green through the hidden <svg>'s filter")
 		})
 	}
@@ -63,7 +64,7 @@ func TestReferenceFilter_FirstInTreeOrderWins(t *testing.T) {
 	const laidOut = `<svg width="100" height="100" style="position:absolute;left:0;top:100px">
 <filter id="inv"><feFlood flood-color="red"/></filter>
 <rect width="100" height="100" fill="green" filter="url(#inv)"/></svg>`
-	img := renderToImage(t, backdropPage("green", "backdrop-filter:url(#inv)", hiddenSVGInvertFilter("")+laidOut), 120, 220)
+	img := render.RenderPage(t, backdropPage("green", "backdrop-filter:url(#inv)", hiddenSVGInvertFilter("")+laidOut), 120, 220)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "CSS backdrop-filter: the hidden <filter>, first in tree order")
 	wantPixelWithinOne(t, img, 50, 150, invertedGreen, "SVG content filter: the hidden <filter>, first in tree order")
 }
@@ -75,7 +76,7 @@ func TestReferenceFilter_PerDocument(t *testing.T) {
 	const outer = `<svg width="0" height="0"><filter id="inv"><feFlood flood-color="red"/></filter></svg>`
 	frame := `<iframe style="position:absolute;left:0;top:0;width:100px;height:100px;border:0" srcdoc='<style>body{margin:0}</style>` +
 		hiddenSVGInvertFilter("") + `<div style="width:100px;height:100px;background:green;filter:url(#inv)"></div>'></iframe>`
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+outer+frame, 120, 120)
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+outer+frame, 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the iframe document's own hidden <filter>")
 }
 
@@ -91,12 +92,12 @@ func TestReferenceFilter_MixedKindIDs(t *testing.T) {
 	hidden := `<svg style="display:none"><filter id="a">` + invertMatrix + `</filter></svg>`
 	blue := color.RGBA{0, 0, 255, 255}
 	t.Run("gradient first", func(t *testing.T) {
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+gradient+hidden+filtered, 120, 220)
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+gradient+hidden+filtered, 120, 220)
 		wantPixel(t, img, 50, 50, blue, "fill:url(#a) gets the gradient")
 		wantPixel(t, img, 50, 150, canvasGreen, "filter:url(#a) names a gradient: no filter")
 	})
 	t.Run("hidden filter first", func(t *testing.T) {
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+hidden+gradient+filtered, 120, 220)
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+hidden+gradient+filtered, 120, 220)
 		wantPixel(t, img, 50, 50, canvasWhite, "fill:url(#a) names a filter: no paint")
 		wantPixelWithinOne(t, img, 50, 150, invertedGreen, "filter:url(#a) gets the hidden filter")
 	})
@@ -121,7 +122,7 @@ func TestReferenceFilter_InterpolationSpace(t *testing.T) {
 		{"under defs", `<svg width="0" height="0"><defs><filter id="inv">` + invertMatrix + `</filter></defs></svg>`, invertedGreenLinear},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", tc.svg), 120, 120)
+			img := render.RenderPage(t, backdropPage("transparent", "background:green;filter:url(#inv)", tc.svg), 120, 120)
 			wantPixelWithinOne(t, img, 50, 50, tc.want, "green through the inverting filter")
 		})
 	}
@@ -145,11 +146,8 @@ func findTag(n *html.Node, tag string) *html.Node {
 // element inside an <svg> is SVG by its <svg> ancestor and its tag, as the
 // SVG build decides.
 func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
-	doc, err := html.Parse(`<!DOCTYPE html><style>body{margin:0}</style>
+	doc := render.ParsePage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect width="100" height="100" fill="url(#g)"/></svg>`)
-	if err != nil {
-		t.Fatal(err)
-	}
 	newElt := func(tag string, attrs map[string]string) *html.Node {
 		return &html.Node{Type: html.ElementNode, TagName: tag, Attributes: attrs}
 	}
@@ -157,7 +155,7 @@ func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
 	grad.AddChild(newElt("stop", map[string]string{"stop-color": "blue"}))
 	svgElt := findTag(doc.Root, "svg")
 	svgElt.InsertBefore(grad, svgElt.Children[0])
-	img, _ := render.RenderDocument(doc, 120, 120)
+	img, _ := render.RenderDocument(t, doc, 120, 120)
 	wantPixel(t, img, 50, 50, color.RGBA{0, 0, 255, 255}, "fill:url(#g), a script-built gradient")
 }
 
@@ -166,7 +164,7 @@ func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
 // shadow the real one after it.
 func TestReferenceFilter_TemplateContentIsInert(t *testing.T) {
 	const inert = `<template><svg><filter id="inv"><feFlood flood-color="red"/></filter></svg></template>`
-	img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", inert+hiddenSVGInvertFilter("")), 120, 120)
+	img := render.RenderPage(t, backdropPage("transparent", "background:green;filter:url(#inv)", inert+hiddenSVGInvertFilter("")), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the real hidden <filter>, not the template's")
 }
 
@@ -177,7 +175,7 @@ func TestReferenceFilter_PerDocumentUnder3DRoot(t *testing.T) {
 	const outer = `<svg width="0" height="0"><filter id="inv"><feFlood flood-color="red"/></filter></svg>`
 	frame := `<iframe style="position:absolute;left:0;top:0;width:100px;height:100px;border:0" srcdoc='<html style="transform-style:preserve-3d;transform:translateZ(0)"><style>body{margin:0}</style>` +
 		hiddenSVGInvertFilter("") + `<div style="width:100px;height:100px;background:green;filter:url(#inv)"></div></html>'></iframe>`
-	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+outer+frame, 120, 120)
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>`+outer+frame, 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreen, "the iframe document's own hidden <filter>")
 }
 
@@ -190,7 +188,7 @@ func TestReferenceFilter_NoLayoutObjectUnderNonContainer(t *testing.T) {
 		{"rect", `<svg width="0" height="0"><rect><filter id="inv">` + invertMatrix + `</filter></rect></svg>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", tc.svg), 120, 120)
+			img := render.RenderPage(t, backdropPage("transparent", "background:green;filter:url(#inv)", tc.svg), 120, 120)
 			wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the filter, in sRGB")
 		})
 	}
@@ -203,20 +201,20 @@ func TestReferenceFilter_NoLayoutObjectUnderNonContainer(t *testing.T) {
 // filter runs in linearRGB.
 func TestReferenceFilter_PrimitiveInterpolationSpace(t *testing.T) {
 	svgFilter := `<svg style="display:none"><filter id="inv"><feColorMatrix color-interpolation-filters="linearRGB" type="matrix" values="` + invertMatrixValues + `"/></filter></svg>`
-	img := renderToImage(t, backdropPage("transparent", "background:green;filter:url(#inv)", svgFilter), 120, 120)
+	img := render.RenderPage(t, backdropPage("transparent", "background:green;filter:url(#inv)", svgFilter), 120, 120)
 	wantPixelWithinOne(t, img, 50, 50, invertedGreenLinear, "the primitive's own linearRGB")
 }
 
 // An SVG shape's filter in an external document has no layout object, as on
 // the CSS filter path: its color-interpolation-filters attribute applies,
-// else auto, sRGB (ColorInterpolationForElement, svg_filter_builder.cc:
-// 136-170 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b — "used by external
-// SVG files"). The inverting matrix turns the green rect into (255,127,255)
+// else auto, sRGB (ColorInterpolationForElement and
+// ResolveInterpolationSpace, svg_filter_builder.cc:136-155 and 157-162 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b — "used by external SVG files"). The inverting matrix turns the green rect into (255,127,255)
 // either way (svg-external-filter-resource).
 func TestReferenceFilter_ExternalOnSVGShape(t *testing.T) {
 	for _, attrs := range []string{`color-interpolation-filters="sRGB"`, ""} {
 		external := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="inv" ` + attrs + `>` + invertMatrix + `</filter></svg>`
-		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect width="100" height="100" fill="green" filter="url(ext.svg#inv)"/></svg>`, 120, 120,
 			render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(external), nil }))
 		wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the external inverting filter, in sRGB ("+attrs+")")

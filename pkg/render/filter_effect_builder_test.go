@@ -225,7 +225,8 @@ func TestParseSVGFilterURL(t *testing.T) {
 
 // A <filter> from an external document has no layout object: with no
 // color-interpolation-filters attribute it runs in sRGB, auto
-// (ColorInterpolationForElement, svg_filter_builder.cc:136-170 @
+// (ColorInterpolationForElement and ResolveInterpolationSpace,
+// svg_filter_builder.cc:136-155 and 157-162 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b, "used by external SVG files"):
 // the inverting matrix turns green (0,128,0) into (255,127,255).
 func TestBuildReferenceFilter_ExternalSVG_DefaultsToSRGB(t *testing.T) {

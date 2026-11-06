@@ -1159,9 +1159,9 @@ type layerFilter struct {
 	filter  *filters.Filter
 	mapping filters.Mapping
 	// own is the layer's own projection, dm the draw context's device
-	// matrix (dmKnown false when it is projective).
-	own, dm geometry.Transform
-	dmKnown bool
+	// matrix (dmAffine false when it is projective).
+	own, dm  geometry.Transform
+	dmAffine bool
 }
 
 // prepareLayerFilter builds layer's filter graph and sizes its buffer. paints
@@ -1176,13 +1176,12 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	box := layer.linesOrBorderBox()
 
 	// The SaveLayer's CTM: the draw context's matrix (the ancestors') ∘ the
-	// layer's own projection. A projective draw context cannot be read back;
-	// the CTM is then taken relative to it, and the remainder is still drawn
-	// through it.
+	// layer's own projection. Under a projective draw context the CTM is
+	// taken relative to it, and the remainder is still drawn through it.
 	own := r.ownLayerProjection(layer)
-	dm, dmKnown := deviceTransformFromDC(r.dc)
+	dm, dmAffine := deviceTransformFromDC(r.dc)
 	ctm := own
-	if dmKnown {
+	if dmAffine {
 		ctm = dm.Mul(own)
 	}
 
@@ -1248,7 +1247,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	switch {
 	case hasReferenceFilter(layer.Filters):
 		filter.EnsureRegion(builder.ReferenceBox.Union(paintExtent), false)
-	case dmKnown:
+	case dmAffine:
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
 			filter.EnsureRegion(paintExtent, true)
 			filter.FilterRegion = filter.FilterRegion.Intersect(clip)
@@ -1259,7 +1258,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		// Fallback: render without filters to avoid OOM.
 		return nil, true
 	}
-	return &layerFilter{filter: filter, mapping: mapping, own: own, dm: dm, dmKnown: dmKnown}, true
+	return &layerFilter{filter: filter, mapping: mapping, own: own, dm: dm, dmAffine: dmAffine}, true
 }
 
 // paintLayerWithFilter paints layer through its filter node: the subtree is
@@ -1294,7 +1293,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 		r.paintLayerContentDirectNoOpacityGroup(layer)
 		return
 	}
-	filter, mapping, own, dm, dmKnown := lf.filter, lf.mapping, lf.own, lf.dm, lf.dmKnown
+	filter, mapping, own, dm, dmAffine := lf.filter, lf.mapping, lf.own, lf.dm, lf.dmAffine
 	paramToLayer := mapping.ParamToLayer
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
@@ -1348,7 +1347,7 @@ func (r *Renderer) paintPreparedFilter(layer *PaintLayer, lf *layerFilter, paint
 	switch {
 	case !mapping.LayerToDev.IsIdentity():
 		onDC = own.Mul(paramToLayer.InverseOrIdentity())
-	case dmKnown:
+	case dmAffine:
 		onDC = dm.InverseOrIdentity()
 	}
 	if !clipsOnOutput {
@@ -1523,18 +1522,36 @@ func (r *Renderer) filterDecompositionCenter(ctm geometry.Transform) geometry.Po
 }
 
 // deviceTransformFromDC reconstructs the draw context's current matrix by
-// probing TransformPoint (the DrawContext interface does not expose it). It
-// reports false when the matrix is projective, which three probes cannot
-// recover.
+// probing TransformPoint (the DrawContext interface does not expose it): the
+// images of the unit square's corners fix it, a homography being determined
+// by four points (Heckbert's square-to-quad mapping). It reports whether the
+// matrix is affine; a projective one is returned as its z=0 homography
+// (homographyTransform's layout).
 func deviceTransformFromDC(dc textshape.DrawContext) (geometry.Transform, bool) {
-	ox, oy := dc.TransformPoint(0, 0)
-	xx, yx := dc.TransformPoint(1, 0)
-	xy, yy := dc.TransformPoint(0, 1)
-	m := geometry.TransformAffine(xx-ox, yx-oy, xy-ox, yy-oy, ox, oy)
-	px, py := dc.TransformPoint(1, 1)
+	x0, y0 := dc.TransformPoint(0, 0)
+	x1, y1 := dc.TransformPoint(1, 0)
+	x2, y2 := dc.TransformPoint(1, 1)
+	x3, y3 := dc.TransformPoint(0, 1)
 	const eps = 1e-6
-	affine := math.Abs(px-(xx+xy-ox)) < eps && math.Abs(py-(yx+yy-oy)) < eps
-	return m, affine
+	dx3, dy3 := x0-x1+x2-x3, y0-y1+y2-y3
+	if math.Abs(dx3) < eps && math.Abs(dy3) < eps {
+		return geometry.TransformAffine(x1-x0, y1-y0, x3-x0, y3-y0, x0, y0), true
+	}
+	dx1, dy1 := x1-x2, y1-y2
+	dx2, dy2 := x3-x2, y3-y2
+	det := dx1*dy2 - dx2*dy1
+	if math.Abs(det) < eps {
+		// The unit square collapses (an edge-on projection): no homography
+		// maps onto it, so report its affine part.
+		return geometry.TransformAffine(x1-x0, y1-y0, x3-x0, y3-y0, x0, y0), false
+	}
+	g := (dx3*dy2 - dx2*dy3) / det
+	h := (dx1*dy3 - dx3*dy1) / det
+	return geometry.TransformRowMajor(
+		x1-x0+g*x1, x3-x0+h*x3, 0, x0,
+		y1-y0+g*y1, y3-y0+h*y3, 0, y0,
+		0, 0, 1, 0,
+		g, h, 0, 1), false
 }
 
 // mapRectToLayer maps r's corners through t (with the perspective divide)
@@ -1598,8 +1615,8 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	// transformed bounds is read from the target, filtered in that space and
 	// drawn back through the transform. The CTM splits as for a filter
 	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
-	// CTM's scale), which LayerToDev maps onto the target. A projective draw
-	// context cannot be read back; its backdrop is then sampled untransformed.
+	// CTM's scale), which LayerToDev maps onto the target. Under a projective
+	// draw context the backdrop is sampled untransformed.
 	ctm, affine := deviceTransformFromDC(r.dc)
 	if !affine {
 		ctm = geometry.Transform{}
@@ -1948,8 +1965,8 @@ func (r *Renderer) paintIntoEffectLayer(paint func()) (buf, parent *image.RGBA, 
 	if clip.Empty() {
 		return nil, parent, true
 	}
-	// A projective draw context cannot be read back (deviceTransformFromDC);
-	// its affine part is used.
+	// The buffer is painted under the draw context's whole matrix, a
+	// projective one included (deviceTransformFromDC).
 	dm, _ := deviceTransformFromDC(r.dc)
 	buf = image.NewRGBA(clip)
 	origDC, origTarget := r.dc, r.target
@@ -2167,16 +2184,22 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) bool {
 	return singular
 }
 
-// multiplyHomography composes a 3×3 row-major homography onto the draw
-// context: as an affine matrix when its bottom row is [0 0 1] (reported
-// true), else in projective mode with the perspective divide.
+// multiplyHomography composes a 3×3 row-major homography onto the
+// renderer's draw context (multiplyDCHomography).
 func (r *Renderer) multiplyHomography(h [9]float64) (affine bool) {
+	return multiplyDCHomography(r.dc, h)
+}
+
+// multiplyDCHomography composes a 3×3 row-major homography onto dc: as an
+// affine matrix when its bottom row is [0 0 1] (reported true), else in
+// projective mode with the perspective divide.
+func multiplyDCHomography(dc textshape.DrawContext, h [9]float64) (affine bool) {
 	if h[6] != 0 || h[7] != 0 || h[8] != 1 {
-		r.dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+		dc.MultiplyProjectiveMatrix(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
 		return false
 	}
 	// h = [xx xy x0 / yx yy y0 / 0 0 1]; MultiplyMatrix expects (xx,yx,xy,yy,x0,y0).
-	r.dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
+	dc.MultiplyMatrix(h[0], h[3], h[1], h[4], h[2], h[5])
 	return true
 }
 
