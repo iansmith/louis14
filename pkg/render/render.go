@@ -1661,16 +1661,15 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// kernel would pull from outside the border box are NOT canvas pixels
 	// — that would import content the spec excludes from the backdrop
 	// (e.g. green boxes painted before but outside the filter element).
-	// Mirrors Blink's `core/paint/filter_painter.cc` at
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which clips the source to
-	// the filter region and edge-extends pixels for the blur kernel.
+	// Blink's compositor crops a backdrop filter's input to the layer
+	// bounds with a mirror edge mode (paint_layer.cc:2612-2614 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	//
-	// Our model: snapshot the backdrop for the padded region in layer space
-	// but clamp each sample into the border box, in local space, before
-	// reading the target. Pixels in the pad area thus replicate the nearest
-	// border-box pixel — equivalent to SVG `feGaussianBlur
-	// edgeMode="duplicate"`, which is the behaviour WPT's
-	// backdrop-filter-edge-clipping reference asserts.
+	// Our model: snapshot the backdrop for the padded region in layer space,
+	// reflecting each sample into the border box, in local space, before
+	// reading the target (sampleBackdrop). Pixels in the pad area thus
+	// mirror the border box — as WPT's simulate-backdrop-blur.js reference
+	// builds it.
 	pad := 0
 	scale := math.Max(mapping.ParamToLayerSize(1, 1))
 	for _, f := range layer.BackdropFilters {
@@ -1720,9 +1719,38 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	r.dc.Pop()
 }
 
+// mirrorCoord reflects v into [lo, hi] about the edges, repeating with
+// period 2(hi - lo): Skia's SkTileMode::kMirror, the edge mode Blink's
+// compositor crops a backdrop filter's input with.
+func mirrorCoord(v, lo, hi float64) float64 {
+	w := hi - lo
+	if w <= 0 {
+		return lo
+	}
+	t := wrapIntoPeriod(v-lo, 2*w)
+	if t > w {
+		t = 2*w - t
+	}
+	return lo + t
+}
+
+// mirrorPixel is mirrorCoord for the pixel v in [lo, hi): the pixel the
+// reflection of v's centre lands on, so the edge pixel repeats once.
+func mirrorPixel(v, lo, hi int) int {
+	n := hi - lo
+	if n <= 0 {
+		return lo
+	}
+	t := ((v-lo)%(2*n) + 2*n) % (2 * n)
+	if t >= n {
+		t = 2*n - 1 - t
+	}
+	return lo + t
+}
+
 // sampleBackdrop returns the backdrop for region, in layer space. Each layer
-// pixel's centre is mapped back to local space and clamped into box (edge
-// duplicate, in local space, so a rotated box duplicates only its own
+// pixel's centre is mapped back to local space and mirrored into box
+// (mirrorCoord, in local space, so a rotated box reflects only its own
 // pixels), then read from the target through ctm, bilinearly with its taps
 // clamped to box's device bounds so no pixel outside the box bleeds in. An
 // integer translation reads target pixels directly.
@@ -1735,13 +1763,16 @@ func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.M
 		// Exact pixel centres: copy. Unlike the general path, which clamps
 		// its taps to the target, a pixel off the target stays transparent.
 		tx, ty := int(c), int(f)
+		cols := make([]int, region.Dx())
+		for x := range cols {
+			cols[x] = mirrorPixel(region.Min.X+x, box.Min.X, box.Max.X) + tx
+		}
 		for y := 0; y < region.Dy(); y++ {
-			sy := min(max(region.Min.Y+y, box.Min.Y), box.Max.Y-1) + ty
+			sy := mirrorPixel(region.Min.Y+y, box.Min.Y, box.Max.Y) + ty
 			if sy < tb.Min.Y || sy >= tb.Max.Y {
 				continue
 			}
-			for x := 0; x < region.Dx(); x++ {
-				sx := min(max(region.Min.X+x, box.Min.X), box.Max.X-1) + tx
+			for x, sx := range cols {
 				if sx < tb.Min.X || sx >= tb.Max.X {
 					continue
 				}
@@ -1762,14 +1793,14 @@ func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.M
 	if tap.Empty() {
 		return out
 	}
-	minX, maxX := float64(box.Min.X)+0.5, float64(box.Max.X)-0.5
-	minY, maxY := float64(box.Min.Y)+0.5, float64(box.Max.Y)-0.5
+	minX, maxX := float64(box.Min.X), float64(box.Max.X)
+	minY, maxY := float64(box.Min.Y), float64(box.Max.Y)
 	for y := 0; y < region.Dy(); y++ {
 		py := float64(region.Min.Y+y) + 0.5
 		for x := 0; x < region.Dx(); x++ {
 			px := float64(region.Min.X+x) + 0.5
-			qx := min(max(la*px+lb*py+lc, minX), maxX)
-			qy := min(max(ld*px+le*py+lf, minY), maxY)
+			qx := mirrorCoord(la*px+lb*py+lc, minX, maxX)
+			qy := mirrorCoord(ld*px+le*py+lf, minY, maxY)
 			out.SetRGBA(x, y, graphics.SampleBilinearPremultiplied(r.target, a*qx+b*qy+c, d*qx+e*qy+f, tap.Min.X, tap.Min.Y, tap.Max.X-1, tap.Max.Y-1))
 		}
 	}
