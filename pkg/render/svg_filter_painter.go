@@ -262,16 +262,22 @@ func compositeSVGFilterResult(pctx *svgPaintContext, srcBuf, out *image.RGBA, re
 }
 
 // newSVGFilterSource returns a source buffer covering region (device
-// pixels) and a copy of pctx painting into it: the buffer's pixel (0, 0) is
-// region.Min. Shared by the shape and container filter paths.
+// pixels) and a copy of pctx painting into it through pctx's DeviceFromUser:
+// the buffer's pixel (0, 0) is region.Min. Shared by the shape and container
+// filter paths.
 func newSVGFilterSource(pctx *svgPaintContext, region image.Rectangle) (*image.RGBA, svgPaintContext) {
+	return newSVGEffectSource(pctx, region, pctx.DeviceFromUser.ToTransform())
+}
+
+// newSVGEffectSource is newSVGFilterSource painting through toDevice, which
+// may be projective (a masked shape rasterizes through the draw context's
+// whole matrix); the paint context's DeviceFromUser is its affine part
+// (exact only for an affine matrix: LOU-778).
+func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toDevice geometry.Transform) (*image.RGBA, svgPaintContext) {
 	srcBuf := image.NewRGBA(image.Rect(0, 0, region.Dx(), region.Dy()))
 	tmpR := NewRendererForImage(srcBuf)
 	tmpR.dc.Translate(float64(-region.Min.X), float64(-region.Min.Y))
-	t := pctx.DeviceFromUser
-	if !t.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
-	}
+	multiplyDCHomography(tmpR.dc, projectiveHomography(toDevice))
 
 	// childCtx.DeviceFromUser maps a user-space point to a pixel in the
 	// source buffer (not the page). tmpR.dc carries
@@ -295,7 +301,7 @@ func newSVGFilterSource(pctx *svgPaintContext, region image.Rectangle) (*image.R
 	childCtx := *pctx
 	childCtx.dc = tmpR.dc
 	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = toBuffer.Compose(pctx.DeviceFromUser)
+	childCtx.DeviceFromUser = toBuffer.Compose(geometry.AffineTransformFromTransform(toDevice))
 	childCtx.contentToDevice = toBuffer.Compose(pctx.contentToDevice)
 	if pctx.regionClip != nil {
 		clip := pctx.regionClip.Sub(region.Min)
@@ -389,50 +395,55 @@ func (sp *svgShapePainter) paintSVGShapeFilterSource(region image.Rectangle, wil
 		svg.NewSVGLengthContext(sp.ctx.viewport.Size),
 	)
 
+	sp.rasterizeShape(&childCtx, childOp, willFill, willStroke, style)
+	return srcBuf
+}
+
+// rasterizeShape fills and strokes the shape onto pctx's draw context with
+// childOp's paints, running paint-server fills and strokes through pctx. It
+// reports false when the shape has no path. Shared by the filter source and
+// the masked-shape buffer.
+func (sp *svgShapePainter) rasterizeShape(pctx *svgPaintContext, childOp *svgObjectPainter, willFill, willStroke bool, style *css.Style) bool {
+	tmpR := pctx.Renderer
 	evenOdd := style != nil && style.GetFillRule() == css.SVGFillRuleEvenOdd
-	if buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-		if willFill {
-			fillRes := childOp.applyFill()
-			switch fillRes.mode {
-			case svgPaintSolid:
-				if willStroke {
-					tmpR.dc.FillPreserve()
-				} else {
-					tmpR.dc.Fill()
-				}
-			case svgPaintShader:
-				tmpR.fillPathWithShader(&childCtx, &sp.shape.Path, fillRes.shader, evenOdd)
-				if willStroke {
-					tmpR.dc.ClearPath()
-					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-						return srcBuf
-					}
-				} else {
-					tmpR.dc.ClearPath()
-				}
-			case svgPaintSkip:
-				if willStroke {
-					tmpR.dc.ClearPath()
-					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-						return srcBuf
-					}
-				}
+	if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
+		return false
+	}
+	if willFill {
+		fillRes := childOp.applyFill()
+		switch fillRes.mode {
+		case svgPaintSolid:
+			if willStroke {
+				tmpR.dc.FillPreserve()
+			} else {
+				tmpR.dc.Fill()
 			}
-		}
-		if willStroke {
-			strokeRes := childOp.applyStroke()
-			switch strokeRes.mode {
-			case svgPaintSolid:
-				tmpR.dc.Stroke()
-			case svgPaintShader:
-				tmpR.strokePathWithShader(&childCtx, &sp.shape.Path, strokeRes.shader, style)
+		case svgPaintShader:
+			tmpR.fillPathWithShader(pctx, &sp.shape.Path, fillRes.shader, evenOdd)
+			tmpR.dc.ClearPath()
+			if willStroke {
+				buildPathOnDC(tmpR.dc, &sp.shape.Path)
+			}
+		case svgPaintSkip:
+			if willStroke {
 				tmpR.dc.ClearPath()
-			case svgPaintSkip:
-				tmpR.dc.ClearPath()
+				buildPathOnDC(tmpR.dc, &sp.shape.Path)
 			}
 		}
 	}
-	return srcBuf
+	if willStroke {
+		strokeRes := childOp.applyStroke()
+		switch strokeRes.mode {
+		case svgPaintSolid:
+			tmpR.dc.Stroke()
+		case svgPaintShader:
+			tmpR.strokePathWithShader(pctx, &sp.shape.Path, strokeRes.shader, style)
+			tmpR.dc.ClearPath()
+		case svgPaintSkip:
+			tmpR.dc.ClearPath()
+		}
+	}
+	return true
 }
 
 // paintWithFilterChain handles a CSS filter-value-list that isn't a single
