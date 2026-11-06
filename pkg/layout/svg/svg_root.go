@@ -92,6 +92,9 @@ type SVGRoot struct {
 
 	// bbox accumulated by UpdateSVGLayout. Phase 1: always empty.
 	bbox geometry.RectF
+	// strokeBBox is the children's stroke bounding boxes, cached by
+	// UpdateSVGLayout (StrokeBoundingBox).
+	strokeBBox geometry.RectF
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes (in
@@ -101,7 +104,7 @@ func (r *SVGRoot) ObjectBoundingBox() geometry.RectF { return r.bbox }
 // StrokeBoundingBox returns the union of the children's stroke bounding
 // boxes (SVGContentContainer::ComputeStrokeBoundingBox).
 func (r *SVGRoot) StrokeBoundingBox() geometry.RectF {
-	return computeStrokeBoundingBox(r.Children)
+	return r.strokeBBox
 }
 
 // LocalTransform returns the viewBox→viewport mapping. Phase 1: this is
@@ -126,6 +129,7 @@ func (r *SVGRoot) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
 		}
 	}
 	r.bbox = geometry.RectF{} // Phase 1.
+	r.strokeBBox = computeStrokeBoundingBox(r.Children)
 	return combined
 }
 
@@ -496,7 +500,7 @@ func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolv
 // there. `<text>` falling back to the generic SVGContainer path
 // instead of becoming an SVGText preserves the pre-existing (and
 // still-correct) container-level filter dispatch
-// (trySVGContainerFilterDispatch in pkg/render/svg_container_painter.go),
+// (trySVGContainerFilterDispatch in pkg/render/svg_filter_container_painter.go),
 // which runs even for an empty/childless container — exactly what a
 // filtered `<text>` degrades to under SVGContainer, and exactly the
 // case svg-visibility-hidden-element-with-filter-003.html exercises

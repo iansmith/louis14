@@ -5,7 +5,6 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
-	"louis14/pkg/graphics/filters"
 	"louis14/pkg/layout/svg"
 )
 
@@ -41,41 +40,14 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// buffer-size guard on the resolved region is the authoritative
 	// "nothing to render" exit here.
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
-	referenceBox := deviceFromLocal.MapRect(c.ObjectBoundingBox())
-	userOriginF := deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0})
-	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
-	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
-	// box: the <svg>'s viewport, which the container's own transform does
-	// not move, mapped to device pixels via DeviceFromUser. (Mirrors the
-	// same fix in svg_filter_painter.go.)
-	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
-	regionF := filter.ResourceBoundingBox(referenceBox, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
-	region := snapRectFToDevice(regionF)
-	if !effectBufferUsable(region.Dx(), region.Dy()) {
+	graph, region, ok := buildSVGFilterElementGraph(pctx, filter,
+		deviceFromLocal.MapRect(c.ObjectBoundingBox()), deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}))
+	if !ok {
 		return false
 	}
-
-	space := filterInterpolationSpace(filter)
 	srcBuf := paintSVGContainerFilterSource(pctx, c, effective, region)
-
-	// Build + apply the filter graph. Mirrors paintWithSVGFilter's
-	// post-source-render steps.
-	adapter := &svgFilterElementAdapter{
-		filter:             filter,
-		filterRegion:       region,
-		referenceBox:       referenceBox,
-		userSpaceOrigin:    roundPoint(userOriginF),
-		space:              space,
-		resources:          pctx.Resources,
-		imageFetcher:       pctx.Renderer.imageFetcher,
-		externalSVGFetcher: pctx.Renderer.externalSVGFetcher,
-	}
-	graph := filters.NewSVGFilterBuilder(space).BuildGraph(adapter)
-	var out *image.RGBA
-	if graph != nil {
-		graph.SetSourceImage(srcBuf)
-		out = graph.ApplyToSRGB()
-	}
+	graph.SetSourceImage(srcBuf)
+	out := graph.ApplyToSRGB()
 	compositeSVGFilterResult(pctx, srcBuf, out, region)
 	return true
 }
@@ -134,11 +106,8 @@ func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer, e
 	if !ok || filterVal == "" || filterVal == "none" {
 		return false
 	}
-	if id, ok := css.ParseURLReference(filterVal); ok && pctx.Resources != nil {
-		if filter, found := pctx.Resources.LookupAsFilter(id); found && filter != nil &&
-			filter.CycleState() != svg.SVGCycleHasCycle {
-			return paintSVGContainerWithFilter(pctx, c, effective, filter)
-		}
+	if filter := resolveSVGFilterValue(pctx, filterVal); filter != nil {
+		return paintSVGContainerWithFilter(pctx, c, effective, filter)
 	}
 	// Anything else — CSS filter functions, or url() mixed with them —
 	// goes through the filter chain, as for an SVG shape.

@@ -138,6 +138,7 @@ func TestSVGContainer_StrokeBoundingBox(t *testing.T) {
 	c := &SVGContainer{}
 	c.AppendChild(a)
 	c.AppendChild(b)
+	c.UpdateSVGLayout(SVGLayoutInfo{}) // the stroke box is cached at layout, as the object box is
 	if got, want := c.StrokeBoundingBox(), geometry.NewRectF(90, 0, 220, 160); got != want {
 		t.Errorf("container stroke bbox %v, want %v", got, want)
 	}

@@ -61,7 +61,7 @@ func (sp *svgShapePainter) paint() {
 	// otherwise we fall through to the regular paint path.
 	if style := sp.shape.Style; style != nil && !sp.ctx.clipPathContent {
 		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
-			if filter := sp.resolveSVGFilter(filterVal); filter != nil {
+			if filter := resolveSVGFilterValue(sp.ctx, filterVal); filter != nil {
 				sp.paintWithSVGFilter(filter)
 				return
 			}
@@ -256,8 +256,8 @@ func (sp *svgShapePainter) paint() {
 	}
 }
 
-// resolveSVGFilter parses a shape's `filter` value and resolves it to
-// an SVGResourceFilter. Handles both same-document (`url(#id)`) and
+// resolveSVGFilterValue parses an SVG element's `filter` value and resolves
+// it to an SVGResourceFilter. Handles both same-document (`url(#id)`) and
 // external (`url(doc#id)`, where doc is data:/file://, relative path,
 // etc) references — the latter via the renderer's ExternalSVGFetcher
 // (LOU-130 Phase 2). Returns nil when:
@@ -265,17 +265,17 @@ func (sp *svgShapePainter) paint() {
 //   - the same-doc registry lookup misses,
 //   - the external fetch / parse / id-lookup fails,
 //   - the filter is part of a reference cycle.
-func (sp *svgShapePainter) resolveSVGFilter(filterVal string) *svg.SVGResourceFilter {
+func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGResourceFilter {
 	docURL, fragID, ok := parseSVGFilterURL(filterVal)
 	if !ok || fragID == "" {
 		return nil
 	}
 	if docURL == "" {
 		// Same-document fast path: registry lookup.
-		if sp.ctx.Resources == nil {
+		if pctx.Resources == nil {
 			return nil
 		}
-		filter, found := sp.ctx.Resources.LookupAsFilter(fragID)
+		filter, found := pctx.Resources.LookupAsFilter(fragID)
 		if !found || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
 			return nil
 		}
@@ -283,10 +283,10 @@ func (sp *svgShapePainter) resolveSVGFilter(filterVal string) *svg.SVGResourceFi
 	}
 
 	// External: fetch + parse + build SVGResourceFilter on the fly.
-	if sp.ctx.Renderer == nil {
+	if pctx.Renderer == nil {
 		return nil
 	}
-	return externalSVGFilter(sp.ctx.Renderer.externalSVGFetcher, docURL, fragID, svg.NewSVGLengthContext(sp.ctx.viewport.Size))
+	return externalSVGFilter(pctx.Renderer.externalSVGFetcher, docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
 }
 
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
