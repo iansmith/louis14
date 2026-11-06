@@ -42,6 +42,13 @@ func wantPixel(t *testing.T, img *image.RGBA, x, y int, want color.RGBA, why str
 	}
 }
 
+func wantNotPixel(t *testing.T, img *image.RGBA, x, y int, notWant color.RGBA, why string) {
+	t.Helper()
+	if got := img.RGBAAt(x, y); got == notWant {
+		t.Errorf("pixel (%d,%d) = %v, want anything else: %s", x, y, got, why)
+	}
+}
+
 var (
 	canvasWhite = color.RGBA{255, 255, 255, 255}
 	canvasGreen = color.RGBA{0, 128, 0, 255}

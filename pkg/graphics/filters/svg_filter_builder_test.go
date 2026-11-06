@@ -332,3 +332,34 @@ func TestBuildPrimitive_DisplacementMapPadsEachAxis(t *testing.T) {
 		t.Errorf("MapRect = %v, want %v", got, want)
 	}
 }
+
+// Number-optional-number attributes parse with the SVG number grammar:
+// no inf, NaN or hex floats, and one optional comma between the numbers
+// (GenericParseNumber and ParseNumberOptionalNumber,
+// svg_parser_utilities.cc:42-207 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// A parse error resets the attribute to its initial value.
+func TestBuildPrimitive_NumberOptionalNumberGrammar(t *testing.T) {
+	elt := refBoxElement(false)
+	build := func(tag, attr, v string) FilterEffect {
+		return buildPrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: map[string]string{attr: v}})
+	}
+	for _, v := range []string{"inf", "NaN", "0x1p1", "1,,2", ",3", "1 2,"} {
+		if e, ok := build("fedropshadow", "stdDeviation", v).(*FEDropShadow); !ok || e.StdDevX != 2 || e.StdDevY != 2 {
+			t.Errorf("feDropShadow stdDeviation=%q: %+v, want 2 2", v, e)
+		}
+		if e, ok := build("femorphology", "radius", v).(*FEMorphology); !ok || e.RadiusX != 0 || e.RadiusY != 0 {
+			t.Errorf("feMorphology radius=%q: %+v, want 0 0", v, e)
+		}
+		if e, ok := build("feturbulence", "baseFrequency", v).(*FETurbulence); !ok || e.BaseFreqX != 0 || e.BaseFreqY != 0 {
+			t.Errorf("feTurbulence baseFrequency=%q: %+v, want 0 0", v, e)
+		}
+	}
+	for _, c := range []struct {
+		v    string
+		x, y float64
+	}{{"1,2", 1, 2}, {" 1 , 2 ", 1, 2}, {"3", 3, 3}, {"1e1 .5", 10, 0.5}} {
+		if e, ok := build("fedropshadow", "stdDeviation", c.v).(*FEDropShadow); !ok || e.StdDevX != c.x || e.StdDevY != c.y {
+			t.Errorf("feDropShadow stdDeviation=%q: %+v, want %v %v", c.v, e, c.x, c.y)
+		}
+	}
+}
