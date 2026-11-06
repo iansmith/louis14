@@ -157,3 +157,16 @@ func TestSizeContainedGridSizesColumnsFromItems(t *testing.T) {
 		t.Errorf("#b %s, want at x=70", boxDims(b))
 	}
 }
+
+// Size containment sizes the grid container as if empty, but its rows still
+// size from its items, as its columns do (GridLayoutAlgorithm::Layout builds
+// the sizing tree with its children, grid_layout_algorithm.cc:416-422 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the second auto row starts
+// below the first item's 20px. Mirrors WPT css-contain/contain-size-064.
+func TestSizeContainedGridSizesRowsFromItems(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; width:100px; contain:size; grid-template-rows:auto auto">`+
+		`<div style="height:20px"></div><div id=b style="height:30px"></div></div></body>`, nil)
+	if b := findBox(fl.root, byID("b")); b == nil || b.Y != 20 {
+		t.Errorf("#b %s, want at y=20", boxDims(b))
+	}
+}
