@@ -2,13 +2,19 @@ package render_test
 
 import "testing"
 
-// effect-reference-obb-dimensions: an feOffset of 0.2 in objectBoundingBox
-// primitive units moves a 100px box by 20px (Filter::ApplyHorizontalScale,
-// filter.cc:65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func TestFEOffset_ObjectBoundingBoxUnits(t *testing.T) {
+// Under primitiveUnits="objectBoundingBox" a length scales by the float
+// reference box (Filter::ApplyHorizontalScale, filter.cc:65-75 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not its pixel-snapped
+// enclosing rect: a shape spanning x 0.25..20.75 (width 20.5) offset by
+// dx="2" moves 41px, to 41.25..61.75. The snapped width 21 would move it to
+// 42.25..62.75. (effect-reference-obb-dimensions covers the integral box.)
+func TestFEOffset_ObjectBoundingBoxUnitsUseFloatReferenceBox(t *testing.T) {
 	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
-<div style="position:absolute;width:100px;height:100px;background:green;filter:url(#o)"></div>
-<svg height="0"><filter id="o" primitiveUnits="objectBoundingBox" x="0" y="0" width="1.25" height="1.25"><feOffset dx="0.2" dy="0.2"/></filter></svg>`, 140, 140)
-	wantPixel(t, img, 10, 10, canvasWhite, "the box's old corner, offset away")
-	wantPixel(t, img, 115, 115, canvasGreen, "the box offset by 20px")
+<svg width="100" height="40">
+<filter id="o" primitiveUnits="objectBoundingBox" x="0" y="0" width="4" height="1" color-interpolation-filters="sRGB"><feOffset dx="2" dy="0"/></filter>
+<rect x="0.25" y="0" width="20.5" height="20" fill="green" filter="url(#o)"/></svg>`, 100, 40)
+	if c := img.RGBAAt(41, 10); c == canvasWhite {
+		t.Errorf("pixel (41,10) = %v, want the shape's left edge (it starts at x 41.25)", c)
+	}
+	wantPixel(t, img, 62, 10, canvasWhite, "past the shape's right edge at x 61.75")
 }

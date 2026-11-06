@@ -2,6 +2,7 @@ package filters
 
 import (
 	"image"
+	"math"
 	"testing"
 )
 
@@ -41,6 +42,7 @@ func (m *mockSVGFilterElement) StrokePaintEffect() FilterEffect  { return nil }
 type mockSVGFilterPrimitive struct {
 	tag   string
 	attrs map[string]string
+	light LightSource
 }
 
 func (p *mockSVGFilterPrimitive) TagName() string { return p.tag }
@@ -59,7 +61,7 @@ func (p *mockSVGFilterPrimitive) DiffuseConstant() float64             { return 
 func (p *mockSVGFilterPrimitive) SpecularConstant() float64            { return 1 }
 func (p *mockSVGFilterPrimitive) SpecularExponent() float64            { return 1 }
 func (p *mockSVGFilterPrimitive) KernelUnitLength() (float64, float64) { return 1, 1 }
-func (p *mockSVGFilterPrimitive) LightSource() LightSource             { return nil }
+func (p *mockSVGFilterPrimitive) LightSource() LightSource             { return p.light }
 func (p *mockSVGFilterPrimitive) ResolveImageSource(filterRegion, subregion image.Rectangle) (*image.RGBA, image.Rectangle, bool) {
 	return nil, image.Rectangle{}, false
 }
@@ -218,14 +220,21 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 // FEDropShadow (fe_drop_shadow.cc:59-72) and FEDisplacementMap's scale
 // (fe_displacement_map.cc:126, horizontally). The reference box here is
 // 100×50.
+// refBoxElement is a filter element with a 100×50 reference box at (10, 10),
+// in objectBoundingBox primitive units when obb is set.
+func refBoxElement(obb bool) *mockSVGFilterElement {
+	return &mockSVGFilterElement{region: image.Rect(0, 0, 200, 200), refBox: image.Rect(10, 10, 110, 60), primUnitsObjBBox: obb}
+}
+
+// buildPrimitive builds one primitive of elt's filter.
+func buildPrimitive(elt SVGFilterElement, prim *mockSVGFilterPrimitive) FilterEffect {
+	return NewSVGFilterBuilder(InterpolationSpaceSRGB).buildOnePrimitive(elt, prim)
+}
+
 func TestBuildPrimitive_ObjectBoundingBoxUnitsScaleLengths(t *testing.T) {
-	elt := &mockSVGFilterElement{
-		region:           image.Rect(0, 0, 200, 200),
-		refBox:           image.Rect(10, 10, 110, 60),
-		primUnitsObjBBox: true,
-	}
+	elt := refBoxElement(true)
 	build := func(tag string, attrs map[string]string) FilterEffect {
-		return NewSVGFilterBuilder(InterpolationSpaceSRGB).buildOnePrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: attrs})
+		return buildPrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: attrs})
 	}
 	if e, ok := build("feoffset", map[string]string{"dx": "0.2", "dy": "0.3"}).(*FEOffset); !ok || e.DX != 20 || e.DY != 15 {
 		t.Errorf("feOffset = %+v, want dx 20, dy 15", e)
@@ -238,5 +247,46 @@ func TestBuildPrimitive_ObjectBoundingBoxUnitsScaleLengths(t *testing.T) {
 	}
 	if e, ok := build("fedisplacementmap", map[string]string{"scale": "0.1"}).(*FEDisplacementMap); !ok || e.Scale != 10 {
 		t.Errorf("feDisplacementMap = %+v, want scale 10", e)
+	}
+}
+
+// feDropShadow's stdDeviation defaults to 2, like its dx and dy
+// (SVGFEDropShadowElement, svg_fe_drop_shadow_element.cc:40-45 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and scales by the reference box
+// under objectBoundingBox units.
+func TestBuildPrimitive_DropShadowStdDeviationDefault(t *testing.T) {
+	for _, c := range []struct {
+		obb          bool
+		wantX, wantY float64
+	}{{false, 2, 2}, {true, 200, 100}} {
+		if e, ok := buildPrimitive(refBoxElement(c.obb), &mockSVGFilterPrimitive{tag: "fedropshadow"}).(*FEDropShadow); !ok || e.StdDevX != c.wantX || e.StdDevY != c.wantY {
+			t.Errorf("objectBoundingBox=%v: feDropShadow = %+v, want stdDeviation %v %v", c.obb, e, c.wantX, c.wantY)
+		}
+	}
+}
+
+// Under objectBoundingBox units, light positions and spot-light targets are
+// fractions of the reference box: x*w+ref.x, y*h+ref.y and
+// z*sqrt((w²+h²)/2) (Filter::Resolve3dPoint, filter.cc:77-87, called from
+// SVGFEPointLightElement / SVGFESpotLightElement::GetLightSource,
+// svg_fe_point_light_element.cc:33 and svg_fe_spot_light_element.cc:33-34 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBuildPrimitive_ObjectBoundingBoxUnitsResolveLightPositions(t *testing.T) {
+	elt := refBoxElement(true)
+	z := 0.1 * math.Sqrt((100*100+50*50)/2.0)
+
+	point := &mockSVGFilterPrimitive{tag: "fediffuselighting", light: NewPointLightSource(0.5, 0.2, 0.1)}
+	if d, ok := buildPrimitive(elt, point).(*FEDiffuseLighting); !ok {
+		t.Errorf("fediffuselighting built %T", d)
+	} else if p, ok := d.LightSource.(*PointLightSource); !ok || !approxEq(p.X, 60) || !approxEq(p.Y, 20) || !approxEq(p.Z, z) {
+		t.Errorf("point light = %+v, want (60, 20, %v)", d.LightSource, z)
+	}
+
+	spot := &mockSVGFilterPrimitive{tag: "fespecularlighting", light: NewSpotLightSource(0.5, 0.2, 0.1, 1, 1, 0, 1, 90)}
+	if s, ok := buildPrimitive(elt, spot).(*FESpecularLighting); !ok {
+		t.Errorf("fespecularlighting built %T", s)
+	} else if l, ok := s.LightSource.(*SpotLightSource); !ok || !approxEq(l.X, 60) || !approxEq(l.Y, 20) || !approxEq(l.Z, z) ||
+		!approxEq(l.PointsAtX, 110) || !approxEq(l.PointsAtY, 60) || l.PointsAtZ != 0 {
+		t.Errorf("spot light = %+v, want (60, 20, %v) pointing at (110, 60, 0)", s.LightSource, z)
 	}
 }
