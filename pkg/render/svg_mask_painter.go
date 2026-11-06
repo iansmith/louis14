@@ -147,18 +147,11 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 
 	// Paint the mask's children into the buffer. They're SVG nodes,
 	// so we run them through the SVG paint dispatch.
-	pctx := &svgPaintContext{
-		dc: tmpR.dc,
-		viewport: geometry.NewRectF(0, 0,
-			float64(bufW), float64(bufH)),
-		CurrentTransform: geometry.Identity(),
-		DeviceFromUser:   deviceFromUser,
-		// The mask's children may reference paint servers
-		// (gradients, etc.) declared at the page scope — feed them
-		// the document's id map (lookupSVGResources).
-		Resources: r.lookupSVGResources(),
-		Renderer:  tmpR,
-	}
+	// The mask's children may reference paint servers (gradients, etc.)
+	// declared at the page scope — feed them the document's id map
+	// (lookupSVGResources).
+	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, deviceFromUser, r.lookupSVGResources())
+	pctx.regionClip = deviceRegionClip(deviceFromUser, regionLocal)
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

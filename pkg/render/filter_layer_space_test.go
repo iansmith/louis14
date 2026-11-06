@@ -119,21 +119,7 @@ div{width:100px;height:100px}.f{background:red;filter:%s}.e{%s}</style>%s`
 				sampleColorClose(t, want, 50, 50, 255, 128, 128, 2, "reference overlap")
 				sampleColorClose(t, want, 110, 110, 128, 128, 128, 2, "reference shadow-only")
 			}
-			diff, first := 0, image.Point{}
-			for y := 0; y < filterTestH; y++ {
-				for x := 0; x < filterTestW; x++ {
-					if !colorWithin(got.RGBAAt(x, y), want.RGBAAt(x, y), 1) {
-						if diff == 0 {
-							first = image.Pt(x, y)
-						}
-						diff++
-					}
-				}
-			}
-			if diff > 0 {
-				t.Errorf("%d pixels differ from the nested reference; first at %v: got %v, want %v",
-					diff, first, got.RGBAAt(first.X, first.Y), want.RGBAAt(first.X, first.Y))
-			}
+			wantImagesWithin(t, got, want, 1, "the nested reference")
 		})
 	}
 }
@@ -153,4 +139,26 @@ transform:rotate(90deg);filter:drop-shadow(20px 0 0 black)}</style><div></div>`
 	img := renderFilterTestPage(t, page)
 	wantPixel(t, img, 250, 310, color.RGBA{0, 0, 0, 255}, "local +x offset lands below the box after rotate(90deg)")
 	wantPixel(t, img, 310, 250, color.RGBA{255, 255, 255, 255}, "no shadow to the right of the box")
+}
+
+// wantImagesWithin reports the pixels of got that differ from want by more
+// than tol on any channel: how many, and the first.
+func wantImagesWithin(t *testing.T, got, want *image.RGBA, tol int, why string) {
+	t.Helper()
+	diff, first := 0, image.Point{}
+	b := want.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if !colorWithin(got.RGBAAt(x, y), want.RGBAAt(x, y), tol) {
+				if diff == 0 {
+					first = image.Pt(x, y)
+				}
+				diff++
+			}
+		}
+	}
+	if diff > 0 {
+		t.Errorf("%d pixels differ from %s; first at %v: got %v, want %v",
+			diff, why, first, got.RGBAAt(first.X, first.Y), want.RGBAAt(first.X, first.Y))
+	}
 }
