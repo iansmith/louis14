@@ -928,13 +928,19 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return goja.Undefined()
 		})
 
-	case "offsetParent":
+	case "offsetParent", "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
+		// HTMLElement attributes (html_element.idl): undefined on SVG and
+		// MathML elements.
+		if e.node.NamespaceURI() != html.XHTMLNamespaceURI {
+			return goja.Undefined()
+		}
+		if key != "offsetParent" {
+			return vm.ToValue(e.offsetInt(key))
+		}
 		if p := e.offsetParentNode(); p != nil {
 			return e.ctx.elementProxy(p)
 		}
 		return goja.Null()
-	case "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight":
-		return vm.ToValue(e.offsetInt(key))
 
 	case "focus":
 		// HTMLElement.focus(): make this element the document's focused

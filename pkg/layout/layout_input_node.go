@@ -203,11 +203,11 @@ func (n *LayoutInputNode) NextSibling() *LayoutInputNode {
 // containment, a transform-related property (transform, preserve-3d,
 // backface-visibility:hidden, will-change of one), a filter or
 // backdrop-filter. Mirrors Blink's LayoutObject::ComputeIsFixedContainer
-// (layout_object.cc:1849-1900 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// Not ported: view-transition roots, foreignObject and text controls (the
-// fieldset content box is handled below); the document element's filter
-// exclusion is moot
-// because the root resolves every candidate.
+// (layout_object.cc:1849-1900 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// including its exclusion of the document element's filter and
+// backdrop-filter (:1854-1863), which offsetParent sees. Not ported:
+// view-transition roots, foreignObject and text controls (the fieldset
+// content box is handled below).
 func (n *LayoutInputNode) IsFixedContainer() bool {
 	style := n.Style()
 	if style == nil {
@@ -220,8 +220,7 @@ func (n *LayoutInputNode) IsFixedContainer() bool {
 	}
 	return style.ShouldApplyLayoutContainment() || style.ShouldApplyPaintContainment() ||
 		style.HasTransform() ||
-		len(style.GetFilter()) > 0 ||
-		len(style.GetBackdropFilter()) > 0 ||
+		(!n.IsDocumentElement() && (len(style.GetFilter()) > 0 || len(style.GetBackdropFilter()) > 0)) ||
 		style.WillChangeEstablishesContainingBlock(true) ||
 		style.GetTransformStyle() == css.TransformStylePreserve3D ||
 		// Blink's HasTransformRelatedProperty treats

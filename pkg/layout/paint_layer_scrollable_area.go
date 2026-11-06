@@ -186,14 +186,14 @@ func (a *PaintLayerScrollableArea) ClampScrollOffset(offset html.ScrollOffset) h
 	}
 }
 
-// scrolledContentOffset returns how far contents are translated by
+// ScrolledContentOffset returns how far contents are translated by
 // scrolling at the clamped scroll offset: the offset floored. Mirrors
 // LayoutBox::ScrolledContentOffset (layout_box.cc:1781-1787 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); fragmentToBox subtracts it
 // from the contents' paint offset, the effect of the ScrollTranslation
 // paint property node (-ScrollPosition) combined with the ScrollOrigin
 // already in the contents' paint offset.
-func scrolledContentOffset(offset html.ScrollOffset) (dx, dy float64) {
+func ScrolledContentOffset(offset html.ScrollOffset) (dx, dy float64) {
 	return math.Floor(offset.X), math.Floor(offset.Y)
 }
 
@@ -223,7 +223,7 @@ func (a *PaintLayerScrollableArea) applyTo(box *Box, requested html.ScrollOffset
 	box.MinimumScrollOffset = a.MinimumScrollOffset()
 	box.MaximumScrollOffset = a.MaximumScrollOffset()
 	box.ScrollOffset = a.ClampScrollOffset(requested)
-	return scrolledContentOffset(box.ScrollOffset)
+	return ScrolledContentOffset(box.ScrollOffset)
 }
 
 // ScrollPosition mirrors ScrollableArea::ScrollPosition

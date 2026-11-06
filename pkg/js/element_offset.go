@@ -1,9 +1,8 @@
 package js
 
 import (
-	"math"
-
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
@@ -64,9 +63,9 @@ func offsetParent(box *layout.Box) *html.Node {
 				return node
 			}
 		}
-		inFixed = inFixed || (anc.Style() != nil && anc.Style().GetPosition() == css.PositionFixed)
 	}
-	// The walk ends at the LayoutView, whose node is the document.
+	// Blink's walk ends at the LayoutView, whose node is the document, not an
+	// element; louis14's layout tree ends at the document element.
 	return nil
 }
 
@@ -79,13 +78,16 @@ func offsetParent(box *layout.Box) *html.Node {
 // Blink's locations are unscrolled: the scroll offsets of the scrollers from
 // box's container up to and including parent are added back.
 func (e *elementAccessor) offsetPoint(boxes map[*html.Node]*layout.Box, box *layout.Box, parent *html.Node) (x, y float64) {
-	if isBodyElement(box.Node) || box.Parent == nil {
+	// Only body and the LayoutView (louis14 has none) read zero; the
+	// document element, with no offsetParent, reads its location.
+	if isBodyElement(box.Node) {
 		return 0, 0
 	}
 	pbox := boxes[parent]
 	x, y = box.X, box.Y
 	for c := box.Parent; c != nil && c.Parent != nil; c = c.Parent {
-		x, y = x+c.ScrollOffset.X, y+c.ScrollOffset.Y
+		dx, dy := layout.ScrolledContentOffset(c.ScrollOffset)
+		x, y = x+dx, y+dy
 		if c == pbox {
 			break
 		}
@@ -111,7 +113,11 @@ func (e *elementAccessor) offsetParentNode() *html.Node {
 }
 
 // offsetInt is HTMLElement.offsetLeft, offsetTop, offsetWidth or
-// offsetHeight, rounded.
+// offsetHeight: the LayoutUnit value rounded as LayoutUnit::Round does
+// (Element::OffsetLeft … OffsetHeight, dom/element.cc:2477-2522 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The size is not snapped against
+// the position: OffsetWidth/OffsetHeight are the bounding box size
+// (layout_box_model_object.h:147-154 @ a9f50e52).
 func (e *elementAccessor) offsetInt(name string) int {
 	boxes, box := e.offsetLayout()
 	if box == nil {
@@ -130,7 +136,7 @@ func (e *elementAccessor) offsetInt(name string) int {
 			v = x
 		}
 	}
-	return int(math.Round(v))
+	return int(layoutunit.FromFloat64Round(v).Round())
 }
 
 func isBodyElement(n *html.Node) bool {
