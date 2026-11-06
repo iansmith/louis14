@@ -75,13 +75,7 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 		return
 	}
 
-	// Resolve operating space from color-interpolation-filters.
-	space := filters.InterpolationSpaceLinearRGB
-	if st := filter.Style(); st != nil {
-		if v, ok := st.Get("color-interpolation-filters"); ok {
-			space = filters.ResolveInterpolationSpace(v)
-		}
-	}
+	space := filterInterpolationSpace(filter)
 
 	// Render the shape's fill/stroke into a source buffer sized to the
 	// filter region. The shared helper centralises this for both the

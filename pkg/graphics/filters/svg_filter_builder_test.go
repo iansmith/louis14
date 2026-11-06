@@ -28,9 +28,12 @@ func (m *mockSVGFilterElement) ReferenceBox() image.Rectangle          { return 
 func (m *mockSVGFilterElement) PrimitiveUnitsObjectBoundingBox() bool  { return m.primUnitsObjBBox }
 func (m *mockSVGFilterElement) UserSpaceOrigin() image.Point           { return m.userSpaceOrigin }
 func (m *mockSVGFilterElement) InterpolationSpace() InterpolationSpace { return InterpolationSpaceSRGB }
-func (m *mockSVGFilterElement) Primitives() []SVGFilterPrimitive       { return nil }
-func (m *mockSVGFilterElement) FillPaintEffect() FilterEffect          { return nil }
-func (m *mockSVGFilterElement) StrokePaintEffect() FilterEffect        { return nil }
+func (m *mockSVGFilterElement) PrimitiveInterpolationSpace(SVGFilterPrimitive) InterpolationSpace {
+	return InterpolationSpaceSRGB
+}
+func (m *mockSVGFilterElement) Primitives() []SVGFilterPrimitive { return nil }
+func (m *mockSVGFilterElement) FillPaintEffect() FilterEffect    { return nil }
+func (m *mockSVGFilterElement) StrokePaintEffect() FilterEffect  { return nil }
 
 // mockSVGFilterPrimitive is a minimal SVGFilterPrimitive stub holding
 // raw attribute strings. resolvePrimitiveSubregion only calls

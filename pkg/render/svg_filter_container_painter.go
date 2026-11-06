@@ -76,13 +76,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		return false
 	}
 
-	// Resolve operating space from color-interpolation-filters.
-	space := filters.InterpolationSpaceLinearRGB
-	if st := filter.Style(); st != nil {
-		if v, ok := st.Get("color-interpolation-filters"); ok {
-			space = filters.ResolveInterpolationSpace(v)
-		}
-	}
+	space := filterInterpolationSpace(filter)
 
 	// Allocate the source buffer + a child renderer whose target is
 	// that buffer. The Translate(-region.Min) shift makes the
