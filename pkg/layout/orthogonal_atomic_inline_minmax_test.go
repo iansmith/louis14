@@ -310,3 +310,51 @@ func TestOrthogonalAvailableBlockFromContainerGeometry(t *testing.T) {
 		}
 	}
 }
+
+// An atomic inline is laid out in its container's space, the content box:
+// the line's own width (text-wrap:balance narrowing, nowrap's unbounded
+// width, a float beside it, text-indent) shapes only the line opportunity
+// (BlockNode::LayoutAtomicInline in the parent space, block_node.cc;
+// LineBreaker::HandleAtomicInline, inline/line_breaker.cc:3042-3160 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its ten 40px children wrap at
+// 300, so it is 300 wide, and the line places it.
+func TestAtomicInlineLaidOutInContainerContentBox(t *testing.T) {
+	atoms := ""
+	for range 10 {
+		atoms += `<span style="display:inline-block;width:40px;height:20px"></span>`
+	}
+	ib := `<div id=b style="display:inline-block; white-space:normal; text-wrap:wrap">` + atoms + `</div>`
+	for _, tc := range []struct {
+		name, container, before string
+		wantX, wantY            float64
+	}{
+		{"text-wrap:balance", `text-wrap:balance`, `<span style="display:inline-block;width:10px;height:20px"></span> `, -1, -1},
+		{"nowrap", `white-space:nowrap`, ``, 0, 0},
+		{"beside a float, moved below it", ``, `<div style="float:left;width:100px;height:50px"></div>`, 0, 50},
+		{"text-indent", `text-indent:100px`, ``, 100, 0},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0; line-height:0"><div style="width:300px; `+tc.container+`">`+tc.before+ib+`</div></body>`, nil)
+		b := findBox(fl.root, byID("b"))
+		if b == nil || b.Width != 300 || (tc.wantX >= 0 && (b.X != tc.wantX || b.Y != tc.wantY)) {
+			t.Errorf("%s: #b %s, want 300 wide at (%v,%v)", tc.name, boxDims(b), tc.wantX, tc.wantY)
+		}
+	}
+}
+
+// Intrinsic sizing gives a block container's children the orthogonal
+// fallback block size layout gives them (computeOrthogonalFallbackBlockForChildren):
+// below a 200px-tall scroller, an orthogonal inline-block's available
+// inline size is 200, so its five 50px-tall atoms wrap onto two 20px
+// columns, 40 wide, in sizing (the float's shrink-to-fit) as in layout.
+func TestOrthogonalFallbackBlockSizeThroughBlockSizing(t *testing.T) {
+	atoms := ""
+	for range 5 {
+		atoms += `<span style="display:inline-block;width:20px;height:50px"></span>`
+	}
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0; line-height:0"><div id=f style="float:left">`+
+		`<div style="overflow:auto; height:200px"><div><div id=b style="display:inline-block; writing-mode:vertical-rl">`+atoms+`</div></div></div></div></body>`, nil)
+	f, b := findBox(fl.root, byID("f")), findBox(fl.root, byID("b"))
+	if f == nil || b == nil || b.Width != 40 || f.Width != b.Width {
+		t.Errorf("float %s, orthogonal inline-block %s, want both 40 wide", boxDims(f), boxDims(b))
+	}
+}
