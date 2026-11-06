@@ -1,12 +1,10 @@
 package render_test
 
 import (
-	"image"
 	"image/color"
 	"testing"
 
 	"louis14/pkg/html"
-	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
 
@@ -159,7 +157,7 @@ func TestReferenceResolve_ScriptBuiltGradient(t *testing.T) {
 	grad.AddChild(newElt("stop", map[string]string{"stop-color": "blue"}))
 	svgElt := findTag(doc.Root, "svg")
 	svgElt.InsertBefore(grad, svgElt.Children[0])
-	img := renderDocToImage(doc, 120, 120)
+	img, _ := render.RenderDocument(doc, 120, 120)
 	wantPixel(t, img, 50, 50, color.RGBA{0, 0, 255, 255}, "fill:url(#g), a script-built gradient")
 }
 
@@ -218,16 +216,9 @@ func TestReferenceFilter_PrimitiveInterpolationSpace(t *testing.T) {
 func TestReferenceFilter_ExternalOnSVGShape(t *testing.T) {
 	for _, attrs := range []string{`color-interpolation-filters="sRGB"`, ""} {
 		external := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="inv" ` + attrs + `>` + invertMatrix + `</filter></svg>`
-		doc, err := html.Parse(`<!DOCTYPE html><style>body{margin:0}</style>
-<svg width="100" height="100"><rect width="100" height="100" fill="green" filter="url(ext.svg#inv)"/></svg>`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		boxes := layout.NewLayoutEngine(120, 120).Layout(doc)
-		img := image.NewRGBA(image.Rect(0, 0, 120, 120))
-		r := render.NewRendererForImage(img)
-		r.SetExternalSVGFetcher(func(string) ([]byte, error) { return []byte(external), nil })
-		r.Render(boxes)
+		img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect width="100" height="100" fill="green" filter="url(ext.svg#inv)"/></svg>`, 120, 120,
+			render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(external), nil }))
 		wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the external inverting filter, in sRGB ("+attrs+")")
 	}
 }

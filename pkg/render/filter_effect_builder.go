@@ -275,7 +275,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 // read their presentation attributes (a nil style resolver). The fetched
 // document is never laid out, so the filter has no layout object
 // (ColorInterpolationForElement's "used by external SVG files",
-// svg_filter_builder.cc:142-155 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// svg_filter_builder.cc:136-170 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // Shared by the CSS filter path and an SVG shape's filter attribute.
 func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string, lengthCtx svg.SVGLengthContext) *svg.SVGResourceFilter {
 	if fragID == "" || fetch == nil {
