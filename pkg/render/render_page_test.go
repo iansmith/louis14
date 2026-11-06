@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"testing"
 
@@ -64,10 +65,17 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	if c.externalSVGFetcher != nil {
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
 	}
-	underflows := trackingPopUnderflows.Load()
 	r.Render(boxes)
-	if n := trackingPopUnderflows.Load() - underflows; n != 0 {
-		t.Errorf("the renderer popped its draw context past its own pushes %d time(s): a Push/Pop imbalance", n)
-	}
 	return target, boxes
+}
+
+// Every paint pass in this package's tests asserts it left no Push/Pop
+// imbalance: a Pop past the renderer's own pushes panics the test that
+// rendered, so it is attributed to that test even under t.Parallel.
+func init() {
+	paintPassDoneHook = func(r *Renderer) {
+		if n := r.popUnderflows(); n != 0 {
+			panic(fmt.Sprintf("render: this renderer's paint passes popped its draw context past its own pushes %d time(s): a Push/Pop imbalance", n))
+		}
+	}
 }

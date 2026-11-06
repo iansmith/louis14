@@ -278,11 +278,16 @@ func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.Glyp
 // with an affine probe: dc must not already be projective, and it panics if
 // it is.
 func NewRendererForDrawContext(dc textshape.DrawContext) *Renderer {
-	tracked := trackDrawContext(dc) // validates dc before any global state changes
+	// dc is validated before any global state changes.
+	tracked := trackDrawContext(dc)
+	target, ok := dc.Image().(*image.RGBA)
+	if !ok {
+		panic("render: the host draw context's image is not an *image.RGBA")
+	}
 	text.SetTextLayout(dc.TextLayout())
 	return &Renderer{
 		dc:        tracked,
-		target:    dc.Image().(*image.RGBA),
+		target:    target,
 		fonts:     text.DefaultFontConfig(),
 		fontCache: make(map[fontCacheKey]int32),
 	}
@@ -535,6 +540,18 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.renderOnBase(boxes, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 }
 
+// paintPassDoneHook, when set, runs at the end of each paint pass
+// (endPaintPass). Tests set it to assert the renderer's passes left no
+// Push/Pop imbalance.
+var paintPassDoneHook func(*Renderer)
+
+// endPaintPass ends a paint pass (paintPassDoneHook).
+func (r *Renderer) endPaintPass() {
+	if paintPassDoneHook != nil {
+		paintPassDoneHook(r)
+	}
+}
+
 // beginPaintPass starts a paint pass over an embedder viewport of
 // viewportW×viewportH (0×0: the target is the viewport), dropping what the
 // previous pass kept. Callers defer closeTempFonts.
@@ -552,6 +569,7 @@ func (r *Renderer) beginPaintPass(viewportW, viewportH float64) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so only the document's own
 // backgrounds paint there. Each call is a new paint pass.
 func (r *Renderer) renderOnBase(boxes []*layout.Box, base color.RGBA) {
+	defer r.endPaintPass()
 	r.beginPaintPass(0, 0)
 	defer r.closeTempFonts()
 
@@ -573,6 +591,7 @@ func (r *Renderer) renderOnBase(boxes []*layout.Box, base color.RGBA) {
 // The viewport is also recorded so the view background
 // (ViewPainter.PaintRootElementGroup) covers only that rectangle.
 func (r *Renderer) RenderEmbedded(boxes []*layout.Box, viewportW, viewportH float64) {
+	defer r.endPaintPass()
 	r.beginPaintPass(viewportW, viewportH)
 	defer r.closeTempFonts()
 

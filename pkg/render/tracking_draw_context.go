@@ -30,6 +30,10 @@ type trackingDrawContext struct {
 	textshape.DrawContext
 	m     [9]float64
 	stack [][9]float64
+	// underflows counts Pops with no renderer Push behind them, for this
+	// draw context and every child context made from it: a Push/Pop
+	// imbalance in the renderer (Renderer.popUnderflows).
+	underflows *atomic.Int64
 }
 
 var identityHomography = [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1}
@@ -56,7 +60,7 @@ func trackDrawContext(dc textshape.DrawContext) *trackingDrawContext {
 	if !near(px, xx+xy-ox) || !near(py, yx+yy-oy) {
 		panic("render: the host draw context's matrix is projective; it must be affine")
 	}
-	return &trackingDrawContext{DrawContext: dc, m: [9]float64{xx - ox, xy - ox, ox, yx - oy, yy - oy, oy, 0, 0, 1}}
+	return &trackingDrawContext{DrawContext: dc, m: [9]float64{xx - ox, xy - ox, ox, yx - oy, yy - oy, oy, 0, 0, 1}, underflows: new(atomic.Int64)}
 }
 
 func (t *trackingDrawContext) compose(n [9]float64) { t.m = mul3x3(t.m, n) }
@@ -66,11 +70,6 @@ func (t *trackingDrawContext) Push() {
 	t.DrawContext.Push()
 }
 
-// trackingPopUnderflows counts Pops with no renderer Push behind them: a
-// Push/Pop imbalance in the renderer, which tests assert never happens
-// (RenderDocument).
-var trackingPopUnderflows atomic.Int64
-
 // Pop restores the renderer's last Push. With none, it pops nothing and
 // counts the underflow: the draw context's own stack may hold its host's
 // state, which the tracked matrix does not, and the two must stay in
@@ -78,7 +77,7 @@ var trackingPopUnderflows atomic.Int64
 func (t *trackingDrawContext) Pop() {
 	n := len(t.stack)
 	if n == 0 {
-		trackingPopUnderflows.Add(1)
+		t.underflows.Add(1)
 		return
 	}
 	t.m, t.stack = t.stack[n-1], t.stack[:n-1]
@@ -120,7 +119,7 @@ func (t *trackingDrawContext) MultiplyProjectiveMatrix(m00, m01, m02, m10, m11, 
 
 // NewChildContext's child starts at the identity (draw_impl.go:162-172).
 func (t *trackingDrawContext) NewChildContext(target *image.RGBA) textshape.DrawContext {
-	return &trackingDrawContext{DrawContext: t.DrawContext.NewChildContext(target), m: identityHomography}
+	return &trackingDrawContext{DrawContext: t.DrawContext.NewChildContext(target), m: identityHomography, underflows: t.underflows}
 }
 
 func mul3x3(a, b [9]float64) [9]float64 {
@@ -219,4 +218,10 @@ func projectRectInFront(t geometry.Transform, r geometry.RectF) (geometry.RectF,
 		maxX, maxY = math.Max(maxX, x), math.Max(maxY, y)
 	}
 	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
+}
+
+// popUnderflows is how many times the renderer's draw contexts were popped
+// past its own pushes.
+func (r *Renderer) popUnderflows() int64 {
+	return r.dc.(*trackingDrawContext).underflows.Load()
 }

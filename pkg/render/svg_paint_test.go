@@ -1436,7 +1436,7 @@ func TestSVG_PatternFilteredChildAt2xScale(t *testing.T) {
 func TestSVG_MaskedGradientUnderTranslateZ(t *testing.T) {
 	page := func(perspective, transform string) string {
 		return `<!DOCTYPE html><style>body{margin:0}</style>
-<div style="width:200px;height:200px;` + perspective + `">
+<div style="position:relative;width:200px;height:200px;` + perspective + `">
 <svg width="100" height="100" style="position:absolute;left:50px;top:50px;transform:` + transform + `">
 <linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="blue"/><stop offset="1" stop-color="yellow"/></linearGradient>
 <mask id="m"><rect x="-50" y="-50" width="200" height="200" fill="white"/></mask>
