@@ -2563,14 +2563,15 @@ func (lb *LineBreaker) measureTextWithTabs(
 // LayoutContext, so the min-content and max-content passes share it.
 func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
 	pct := lb.space.PercentageResolutionSize
+	fallback := orthogonalFallbackSize(childWDM, lb.ctx)
 	key := orthogonalContributionSpace{lb.space.AvailableSize.BlockSize.Float64(),
-		orthogonalFallbackSize(childWDM, lb.ctx), lb.space.OrthogonalFallbackBlockSize,
+		fallback, lb.space.OrthogonalFallbackBlockSize,
 		pct.InlineSize.Float64(), pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
 	if e := lb.ctx.OrthogonalLayoutCache[item.LayoutNode]; e != nil && e.HasContribution && e.ContributionSpace == key {
 		return e.AtomicContribution
 	}
 	b := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
-		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, lb.ctx)).
+		SetOrthogonalFallbackInlineSize(fallback).
 		SetOrthogonalFallbackBlockSize(lb.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: lb.space.AvailableSize.BlockSize.Float64()}).
 		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
