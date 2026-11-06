@@ -65,10 +65,10 @@ type LayoutContext struct {
 	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
 	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
 
-	// orthogonalAtomicContributions caches orthogonal atomic inlines'
-	// min/max contributions, so a line's min-content and max-content passes
-	// share one layout.
-	orthogonalAtomicContributions map[*LayoutInputNode]orthogonalAtomicContribution
+	// orthogonalContributions caches orthogonal flow roots' min/max
+	// contributions, so a min-content and a max-content pass share one
+	// layout.
+	orthogonalContributions map[*LayoutInputNode]orthogonalContribution
 
 	// layoutSideEffectsDisabled counts the open DisableLayoutSideEffects
 	// scopes (layout_box.go).
@@ -97,17 +97,17 @@ type orthogonalCacheEntry struct {
 	Result    *LayoutResult // cached result, nil if still computing
 }
 
-// orthogonalAtomicContribution is an orthogonal atomic inline's min/max
-// contribution (min equals max), for the line-space inputs in space
-// (LineBreaker.orthogonalAtomicInlineContribution).
-type orthogonalAtomicContribution struct {
+// orthogonalContribution is an orthogonal flow root's min/max contribution
+// (min equals max), for the parent-space inputs in space
+// (orthogonalFlowRootContribution).
+type orthogonalContribution struct {
 	space        orthogonalContributionSpace
 	contribution float64
 }
 
-// orthogonalContributionSpace is the line-space inputs an orthogonal atomic
-// inline's contribution depends on: its available inline size, the
-// orthogonal fallback sizes, the line's percentage block size (its
+// orthogonalContributionSpace is the parent-space inputs an orthogonal flow
+// root's contribution depends on: its available inline size, the
+// orthogonal fallback sizes, the parent's percentage block size (its
 // percentage inline size), and the percentage resolution inline size.
 type orthogonalContributionSpace [5]float64
 

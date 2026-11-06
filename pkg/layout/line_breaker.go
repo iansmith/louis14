@@ -2622,44 +2622,10 @@ func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
 }
 
 // orthogonalAtomicInlineContribution is an orthogonal atomic inline's
-// min-content and max-content contribution to the line, which are equal:
-// its border-box block size, laid out once in a space built from the line's
-// (MinMaxConstraintSpaceBuilder in LineBreaker, inline/line_breaker.cc:
-// 3182-3194; BlockNode::ComputeMinMaxSizes for an orthogonal flow root,
-// block_node.cc:981-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its
-// available inline size follows atomicAvailableBlock, and the line's
-// percentage block size is its percentage inline size. Margins are not included. The layout stores nothing
-// on the box (DisableLayoutSideEffects), and its result is cached so the
-// min-content and max-content passes share it.
+// min-content and max-content contribution to the line, which are equal
+// (orthogonalFlowRootContribution), at the available inline size
+// atomicAvailableBlock gives it.
 func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
-	pct := lb.space.PercentageResolutionSize
-	fallback := orthogonalFallbackSize(childWDM, lb.ctx)
-	availBlock := lb.atomicAvailableBlock(true)
-	fallbackBlock := lb.orthogonalFallbackBlockSize()
-	key := orthogonalContributionSpace{availBlock, fallback, fallbackBlock,
-		pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
-	if c, ok := lb.ctx.orthogonalAtomicContributions[item.LayoutNode]; ok && c.space == key {
-		return c.contribution
-	}
-	space := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
-		SetOrthogonalFallbackInlineSize(fallback).
-		SetOrthogonalFallbackBlockSize(fallbackBlock).
-		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: availBlock}).
-		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
-		// Only the line's percentage block size carries over, which becomes
-		// the child's percentage inline size; its percentage block size is
-		// indefinite (MinMaxConstraintSpaceBuilder::
-		// SetPercentageResolutionBlockSize, constraint_space_builder.h:
-		// 743-745, as LineBreaker sets it, inline/line_breaker.cc:3185-3190).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: pct.BlockSize.Float64()}).
-		Build()
-	enableSideEffects := lb.ctx.DisableLayoutSideEffects()
-	result := layoutElement(lb.ctx, item.LayoutNode, space)
-	enableSideEffects()
-	contribution := NewLogicalFragment(lb.space.WritingDirection, result.Fragment).InlineSize()
-	if lb.ctx.orthogonalAtomicContributions == nil {
-		lb.ctx.orthogonalAtomicContributions = map[*LayoutInputNode]orthogonalAtomicContribution{}
-	}
-	lb.ctx.orthogonalAtomicContributions[item.LayoutNode] = orthogonalAtomicContribution{key, contribution}
-	return contribution
+	return orthogonalFlowRootContribution(lb.ctx, item.LayoutNode, childWDM, lb.space,
+		lb.atomicAvailableBlock(true), lb.orthogonalFallbackBlockSize())
 }
