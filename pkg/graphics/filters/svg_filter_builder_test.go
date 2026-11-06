@@ -214,14 +214,6 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 	}
 }
 
-// With primitiveUnits="objectBoundingBox" a primitive's lengths are fractions
-// of the reference box, scaled by its width (x lengths) and height (y
-// lengths): Filter::ApplyHorizontalScale / ApplyVerticalScale (filter.cc:
-// 65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), applied by FEOffset
-// (fe_offset.cc:55-65), FEGaussianBlur (fe_gaussian_blur.cc:74-83),
-// FEDropShadow (fe_drop_shadow.cc:59-72) and FEDisplacementMap's scale
-// (fe_displacement_map.cc:126, horizontally). The reference box here is
-// 100×50.
 // refBoxElement is a filter element with a 100×50 reference box at (10, 10),
 // in objectBoundingBox primitive units when obb is set.
 func refBoxElement(obb bool) *mockSVGFilterElement {
@@ -233,6 +225,14 @@ func buildPrimitive(elt SVGFilterElement, prim *mockSVGFilterPrimitive) FilterEf
 	return NewSVGFilterBuilder(InterpolationSpaceSRGB).buildOnePrimitive(elt, prim)
 }
 
+// With primitiveUnits="objectBoundingBox" a primitive's lengths are fractions
+// of the reference box, scaled by its width (x lengths) and height (y
+// lengths): Filter::ApplyHorizontalScale / ApplyVerticalScale (filter.cc:
+// 65-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), applied by FEOffset
+// (fe_offset.cc:55-65), FEGaussianBlur (fe_gaussian_blur.cc:74-83),
+// FEDropShadow (fe_drop_shadow.cc:59-72) and FEDisplacementMap's scale
+// (fe_displacement_map.cc:126, horizontally). The reference box here is
+// 100×50.
 func TestBuildPrimitive_ObjectBoundingBoxUnitsScaleLengths(t *testing.T) {
 	elt := refBoxElement(true)
 	build := func(tag string, attrs map[string]string) FilterEffect {
@@ -278,17 +278,57 @@ func TestBuildPrimitive_ObjectBoundingBoxUnitsResolveLightPositions(t *testing.T
 	z := 0.1 * math.Sqrt((100*100+50*50)/2.0)
 
 	point := &mockSVGFilterPrimitive{tag: "fediffuselighting", light: NewPointLightSource(0.5, 0.2, 0.1)}
-	if d, ok := buildPrimitive(elt, point).(*FEDiffuseLighting); !ok {
-		t.Errorf("fediffuselighting built %T", d)
+	if f := buildPrimitive(elt, point); f == nil {
+		t.Errorf("fediffuselighting built nothing")
+	} else if d, ok := f.(*FEDiffuseLighting); !ok {
+		t.Errorf("fediffuselighting built %T", f)
 	} else if p, ok := d.LightSource.(*PointLightSource); !ok || !approxEq(p.X, 60) || !approxEq(p.Y, 20) || !approxEq(p.Z, z) {
 		t.Errorf("point light = %+v, want (60, 20, %v)", d.LightSource, z)
 	}
 
 	spot := &mockSVGFilterPrimitive{tag: "fespecularlighting", light: NewSpotLightSource(0.5, 0.2, 0.1, 1, 1, 0, 1, 90)}
-	if s, ok := buildPrimitive(elt, spot).(*FESpecularLighting); !ok {
-		t.Errorf("fespecularlighting built %T", s)
+	if f := buildPrimitive(elt, spot); f == nil {
+		t.Errorf("fespecularlighting built nothing")
+	} else if s, ok := f.(*FESpecularLighting); !ok {
+		t.Errorf("fespecularlighting built %T", f)
 	} else if l, ok := s.LightSource.(*SpotLightSource); !ok || !approxEq(l.X, 60) || !approxEq(l.Y, 20) || !approxEq(l.Z, z) ||
 		!approxEq(l.PointsAtX, 110) || !approxEq(l.PointsAtY, 60) || l.PointsAtZ != 0 {
 		t.Errorf("spot light = %+v, want (60, 20, %v) pointing at (110, 60, 0)", s.LightSource, z)
+	}
+}
+
+// A malformed stdDeviation (not one or two numbers) resets to the
+// primitive's initial value: SVGNumberOptionalNumber::SetValueAsString
+// reports a parse error (svg_number_optional_number.cc:64-75), and the
+// animated property then calls SetInitial (svg_animated_property.h:177-179
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBuildPrimitive_MalformedStdDeviationResetsToInitial(t *testing.T) {
+	elt := refBoxElement(false)
+	for _, v := range []string{"abc", "3 x", "1 2 3"} {
+		build := func(tag string) FilterEffect {
+			return buildPrimitive(elt, &mockSVGFilterPrimitive{tag: tag, attrs: map[string]string{"stdDeviation": v}})
+		}
+		if e, ok := build("fedropshadow").(*FEDropShadow); !ok || e.StdDevX != 2 || e.StdDevY != 2 {
+			t.Errorf("feDropShadow stdDeviation=%q: %+v, want 2 2", v, e)
+		}
+		if e, ok := build("fegaussianblur").(*FEGaussianBlur); !ok || e.StdDevX != 0 || e.StdDevY != 0 {
+			t.Errorf("feGaussianBlur stdDeviation=%q: %+v, want 0 0", v, e)
+		}
+	}
+}
+
+// FEDisplacementMap::MapEffect pads each axis by half the scale scaled for
+// that axis (fe_displacement_map.cc:43-48 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), though the kernel applies the
+// horizontal scale to both: 0.2 of a 100×50 box pads 10px across and 5px
+// down.
+func TestBuildPrimitive_DisplacementMapPadsEachAxis(t *testing.T) {
+	f := buildPrimitive(refBoxElement(true), &mockSVGFilterPrimitive{tag: "fedisplacementmap", attrs: map[string]string{"scale": "0.2"}})
+	e, ok := f.(*FEDisplacementMap)
+	if !ok {
+		t.Fatalf("fedisplacementmap built %T", f)
+	}
+	if got, want := e.MapRect(image.Rect(0, 0, 10, 10)), image.Rect(-10, -5, 20, 15); got != want {
+		t.Errorf("MapRect = %v, want %v", got, want)
 	}
 }
