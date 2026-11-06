@@ -1995,14 +1995,9 @@ func (r *Renderer) paintLayerWithEffect(layer *PaintLayer, paintContents func(*P
 }
 
 // layerProbe is the rect a layer's effect layer reads the draw context's
-// matrix back at (deviceTransformAt): its box, near its content, or the
-// unit square at its origin when the box is empty (a height:0 box can still
-// paint overflowing children).
+// matrix back at (deviceTransformAt): its box, near its content.
 func layerProbe(layer *PaintLayer) geometry.RectF {
 	b := layer.linesOrBorderBox()
-	if b.Width <= 0 || b.Height <= 0 {
-		return geometry.NewRectF(b.X, b.Y, 1, 1)
-	}
 	return geometry.NewRectF(b.X, b.Y, b.Width, b.Height)
 }
 
