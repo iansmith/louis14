@@ -172,10 +172,10 @@ type LineBreaker struct {
 	// availableWidth (balance, nowrap, floats, text-indent) shapes only the
 	// line opportunity.
 	containerInlineSize float64
-	// orthogonalSizes, when set (intrinsic sizing), lazily gives the
-	// container's orthogonal available and fallback block sizes in place of
-	// the space's.
-	orthogonalSizes func() orthogonalSizes
+	// orthogonalSizes, set by measureInlineMinMax for intrinsic sizing,
+	// lazily gives the container's orthogonal available and fallback block
+	// sizes; it takes precedence over the space's (layout sets those).
+	orthogonalSizes *lazyOrthogonalSizes
 	availableWidth  float64
 
 	// Current position in the item list.
@@ -2549,16 +2549,12 @@ func (lb *LineBreaker) measureTextWithTabs(
 	return pos - lb.position
 }
 
-// orthogonalSizes is a container's orthogonal available and fallback block
-// sizes (orthogonalChildBlockSizes).
-type orthogonalSizes struct{ available, fallback float64 }
-
 // orthogonalFallbackBlockSize is the fallback block size an atomic's
 // descendants inherit: the lazily computed one while sizing, else the
 // space's.
 func (lb *LineBreaker) orthogonalFallbackBlockSize() float64 {
-	if f := lb.root().orthogonalSizes; f != nil {
-		return f().fallback
+	if l := lb.root().orthogonalSizes; l != nil {
+		return l.Fallback()
 	}
 	return lb.space.OrthogonalFallbackBlockSize
 }
@@ -2597,17 +2593,20 @@ func (lb *LineBreaker) percentageMarginBase() float64 {
 
 // atomicAvailableBlock is the available block size an atomic inline is laid
 // out or sized against: the line's percentage resolution or available block
-// size, or for an orthogonal atomic, which takes it as its available inline
-// size, OrthogonalAvailableBlock when set: the container's definite block
-// size or the ICB (computeOrthogonalAvailableBlock), Blink's orthogonal
-// fallback (ConstraintSpaceBuilder::AdjustInlineSizeIfNeeded,
+// size. An orthogonal atomic, which takes it as its available inline size,
+// gets the container's orthogonal available block size instead, from
+// computeOrthogonalAvailableBlock (the container's definite block size, else
+// its min/max or the nearest scroller, capped at the ICB: Blink's orthogonal
+// fallback, ConstraintSpaceBuilder::AdjustInlineSizeIfNeeded,
 // constraint_space_builder.h:83-110; SetOrthogonalFallbackInlineSizeIfNeeded,
-// block_node.cc:1469 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). One rule
-// for sizing and layout.
+// block_node.cc:1469 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): while
+// sizing, the lazy orthogonalSizes measureInlineMinMax sets, which takes
+// precedence; in layout, the line space's OrthogonalAvailableBlock when
+// HasOrthogonalAvailableBlock. One rule for sizing and layout.
 func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
 	if orthogonal {
-		if f := lb.root().orthogonalSizes; f != nil {
-			return f().available
+		if l := lb.root().orthogonalSizes; l != nil {
+			return l.Available()
 		}
 	}
 	availBlock := Indefinite

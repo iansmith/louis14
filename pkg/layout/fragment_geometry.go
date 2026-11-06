@@ -612,11 +612,7 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 		return layoutunit.LayoutUnit{}, false
 	}
 
-	prop := "height"
-	if wdm.IsVertical() {
-		prop = "width"
-	}
-
+	prop := logicalBlockSizeProperty(wdm)
 	val, _ := style.Get(prop)
 
 	// CSS Values 4 §10: math functions (calc/min/max/clamp) with a %
@@ -907,25 +903,7 @@ func CalculateInitialFragmentGeometry(
 		}
 	}
 
-	// Apply min/max block constraints only when block-size is definite.
-	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
-	if borderBoxBlock != Indefinite {
-		contentBlock := borderBoxBlock - geom.BlockBorderPadding()
-		if contentBlock < 0 {
-			contentBlock = 0
-		}
-		if maxBlockLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
-			maxBlock := maxBlockLU.Float64()
-			if contentBlock > maxBlock {
-				contentBlock = maxBlock
-			}
-		}
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
-		if contentBlock < minBlock {
-			contentBlock = minBlock
-		}
-		borderBoxBlock = contentBlock + geom.BlockBorderPadding()
-	}
+	borderBoxBlock = clampDefiniteBorderBoxBlock(style, wdm, space, geom, borderBoxBlock)
 
 	geom.BorderBoxSize = LogicalSize{InlineSize: borderBoxInline, BlockSize: borderBoxBlock}
 	return geom
@@ -1088,13 +1066,32 @@ func resolveInitialBorderBoxBlockSize(style *css.Style, wdm WritingDirectionMode
 	return borderBoxBlock
 }
 
-// logicalBlockSizeValue is the element's block-size property value: height,
-// or width in a vertical writing mode.
-func logicalBlockSizeValue(style *css.Style, wdm WritingDirectionMode) string {
-	prop := "height"
+// logicalBlockSizeProperty is the physical property that is the block
+// size: height, or width in a vertical writing mode.
+func logicalBlockSizeProperty(wdm WritingDirectionMode) string {
 	if wdm.IsVertical() {
-		prop = "width"
+		return "width"
 	}
-	v, _ := style.Get(prop)
+	return "height"
+}
+
+// logicalBlockSizeValue is the element's block-size property value.
+func logicalBlockSizeValue(style *css.Style, wdm WritingDirectionMode) string {
+	v, _ := style.Get(logicalBlockSizeProperty(wdm))
 	return v
+}
+
+// clampDefiniteBorderBoxBlock clamps a definite border-box block size by
+// min/max-block-size, max first so min wins (CSS 2.1 §10.7); Indefinite
+// stays Indefinite.
+func clampDefiniteBorderBoxBlock(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, borderBoxBlock float64) float64 {
+	if borderBoxBlock == Indefinite {
+		return borderBoxBlock
+	}
+	contentBlock := max(0, borderBoxBlock-geom.BlockBorderPadding())
+	if maxBlockLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+		contentBlock = min(contentBlock, maxBlockLU.Float64())
+	}
+	contentBlock = max(contentBlock, ResolveMinBlockSize(style, wdm, space, geom).Float64())
+	return contentBlock + geom.BlockBorderPadding()
 }

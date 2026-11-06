@@ -24,16 +24,19 @@ func countLinesForWidth(
 	wdm WritingDirectionMode,
 	width float64,
 	fonts text.FontConfig,
-	_ float64, // containerInlineSize, wired by the fix
+	containerInlineSize float64,
 ) int {
 	space := ConstraintSpace{
 		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: width, BlockSize: Indefinite}),
-		WritingDirection: wdm,
+		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}),
+		PercentageResolutionInlineSize: containerInlineSize,
+		WritingDirection:               wdm,
 	}
 	lb := NewLineBreaker(itemsData, ctx, space, fonts, LineBreakerContent)
 	lb.availableWidth = width
 	// Atomics are laid out at the container's content inline size, as in
 	// final layout; only the line opportunity is narrowed.
+	lb.containerInlineSize = containerInlineSize
 	var line LineInfo
 	count := 0
 	for lb.NextLine(&line) {
