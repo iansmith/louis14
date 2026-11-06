@@ -1622,18 +1622,57 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		return
 	}
 
-	// Element's border-box region in absolute device pixels, pixel-snapped:
-	// Blink's backdrop-filter bounds are the reference box's
-	// PixelSnappedContouredBorder (PaintLayer::BackdropFilterBounds,
-	// paint_layer.cc:2072-2078 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-	// the same snapping as the box's background.
-	sx, sy, sw, sh := pixelSnap(box.X, box.Y, box.Width, box.Height)
-	bx, by, bw, bh := int(sx), int(sy), int(sw), int(sh)
+	// The backdrop filter lives on an effect node in the element's local
+	// transform space (PropertyTreeManager::PopulateCcEffectNode,
+	// property_tree_manager.cc:1346-1360 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the backdrop under the
+	// transformed bounds is read from the target, filtered in that space and
+	// drawn back through the transform. The CTM splits as for a filter
+	// (filters.Mapping): the graph runs in layer space (ParamToLayer, the
+	// CTM's scale), which LayerToDev maps onto the target. A projective draw
+	// context cannot be read back; its backdrop is then sampled untransformed.
+	ctm, affine := deviceTransformFromDC(r.dc)
+	if !affine {
+		ctm = geometry.Transform{}
+	}
 
+	// Element's border-box region, pixel-snapped: Blink's backdrop-filter
+	// bounds are the reference box's PixelSnappedContouredBorder
+	// (PaintLayer::BackdropFilterBounds, paint_layer.cc:2072-2078 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the same snapping as the
+	// box's background.
+	sx, sy, sw, sh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	localBox := image.Rect(int(sx), int(sy), int(sx+sw), int(sy+sh))
+
+	builder := r.newFilterEffectBuilder(layer)
+	builder.ReferenceBox = localBox
+	builder.FilterViewport = localBox
+	filter := builder.BuildFilterEffect(layer.BackdropFilters)
+	if filter == nil {
+		return
+	}
+	var mapping filters.Mapping
+	if !mapping.DecomposeCTM(ctm, filters.CTMCapability(filter.LastEffect), r.filterDecompositionCenter(ctm)) {
+		return
+	}
+	paramToLayer, layerToDev := mapping.ParamToLayer, mapping.LayerToDev
+	layerBox := localBox
+	if !paramToLayer.IsIdentity() {
+		lb, ok := mapRectToLayer(paramToLayer, geometry.NewRectF(sx, sy, sw, sh))
+		if !ok {
+			return
+		}
+		layerBox = snapRectF(lb)
+		builder.ReferenceBox, builder.FilterViewport = layerBox, layerBox
+		builder.Mapping = mapping
+		if filter = builder.BuildFilterEffect(layer.BackdropFilters); filter == nil {
+			return
+		}
+	}
+	bx, by, bw, bh := layerBox.Min.X, layerBox.Min.Y, layerBox.Dx(), layerBox.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		return
 	}
-	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
 	// CSS Filter Effects 2 §3.4: the filter input is the backdrop content
 	// within the element's filter region (border box). Samples the blur
@@ -1644,62 +1683,22 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which clips the source to
 	// the filter region and edge-extends pixels for the blur kernel.
 	//
-	// Our model: snapshot the canvas pixels for the padded region but
-	// clamp (sx,sy) into the border-box rect before reading from r.target.
-	// Pixels in the pad area thus replicate the nearest border-box pixel
-	// — equivalent to SVG `feGaussianBlur edgeMode="duplicate"`, which is
-	// the behaviour WPT's backdrop-filter-edge-clipping reference asserts.
+	// Our model: snapshot the backdrop for the padded region in layer space
+	// but clamp each sample into the border-box rect before reading the
+	// target through LayerToDev. Pixels in the pad area thus replicate the
+	// nearest border-box pixel — equivalent to SVG `feGaussianBlur
+	// edgeMode="duplicate"`, which is the behaviour WPT's
+	// backdrop-filter-edge-clipping reference asserts.
 	pad := 0
+	scale := math.Max(mapping.ParamToLayerSize(1, 1))
 	for _, f := range layer.BackdropFilters {
 		if f.Name == "blur" {
-			pad = max(pad, int(math.Ceil(f.Value*3))+2)
+			pad = max(pad, int(math.Ceil(f.Value*scale*3))+2)
 		}
 	}
 	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
-	rw, rh := region.Dx(), region.Dy()
+	backdrop := r.sampleBackdrop(region, image.Rect(bx, by, bx+bw, by+bh), layerToDev)
 
-	// Snapshot the backdrop image, edge-clamped to the border box so blur
-	// padding does not import canvas content from outside the filter region.
-	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
-	targetBounds := r.target.Bounds()
-	for y := 0; y < rh; y++ {
-		sy := region.Min.Y + y
-		if sy < by {
-			sy = by
-		} else if sy >= by+bh {
-			sy = by + bh - 1
-		}
-		if sy < targetBounds.Min.Y || sy >= targetBounds.Max.Y {
-			continue
-		}
-		for x := 0; x < rw; x++ {
-			sx := region.Min.X + x
-			if sx < bx {
-				sx = bx
-			} else if sx >= bx+bw {
-				sx = bx + bw - 1
-			}
-			if sx < targetBounds.Min.X || sx >= targetBounds.Max.X {
-				continue
-			}
-			si := r.target.PixOffset(sx, sy)
-			di := backdrop.PixOffset(x, y)
-			backdrop.Pix[di+0] = r.target.Pix[si+0]
-			backdrop.Pix[di+1] = r.target.Pix[si+1]
-			backdrop.Pix[di+2] = r.target.Pix[si+2]
-			backdrop.Pix[di+3] = r.target.Pix[si+3]
-		}
-	}
-
-	// Run the filter graph over the backdrop image. backdrop-filter uses the
-	// same filter-function list as filter.
-	builder := r.newFilterEffectBuilder(layer)
-	builder.ReferenceBox = borderBox
-	builder.FilterViewport = borderBox
-	filter := builder.BuildFilterEffect(layer.BackdropFilters)
-	if filter == nil {
-		return
-	}
 	filter.FilterRegion = region
 	filter.SetSourceImage(backdrop)
 	out := filter.Apply()
@@ -1710,21 +1709,86 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// Clip the filtered backdrop to the element's border box, honouring
 	// border-radius, then draw it back. The clip is the reason a
 	// backdrop-filter element with rounded corners does not tint outside
-	// its rounded shape.
+	// its rounded shape. The clip is built in local space, under the CTM;
+	// the backdrop is drawn in layer space.
 	r.dc.Push()
-	bxf, byf, bwf, bhf := float64(bx), float64(by), float64(bw), float64(bh)
 	if hasBorderRadius(layer) {
-		r.buildRoundedRectPath(bxf, byf, bwf, bhf, layer.BorderRadius)
+		r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
 	} else {
-		r.dc.DrawRectangle(bxf, byf, bwf, bhf)
+		r.dc.DrawRectangle(sx, sy, sw, sh)
 	}
 	// Blink hands this shape to cc as BackdropFilterInfo::bounds
 	// (PopulateBackdropFilterIfNeeded, paint_property_tree_builder.cc:
 	// 4186-4212 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); viz clips the
 	// filtered backdrop to it anti-aliased (viz-side, not in Blink's tree).
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
+	if !paramToLayer.IsIdentity() {
+		r.multiplyHomography(projectiveHomography(paramToLayer.InverseOrIdentity()))
+	}
 	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
+}
+
+// sampleBackdrop returns the backdrop for region, in layer space: each
+// layer pixel, clamped into bounds (edge duplicate), reads the target at its
+// centre mapped through layerToDev, bilinearly. Integer translations read
+// target pixels exactly.
+func (r *Renderer) sampleBackdrop(region, bounds image.Rectangle, layerToDev geometry.Transform) *image.RGBA {
+	out := image.NewRGBA(image.Rect(0, 0, region.Dx(), region.Dy()))
+	a, b, c := layerToDev.Rc(0, 0), layerToDev.Rc(0, 1), layerToDev.Rc(0, 3)
+	d, e, f := layerToDev.Rc(1, 0), layerToDev.Rc(1, 1), layerToDev.Rc(1, 3)
+	if a == 1 && b == 0 && d == 0 && e == 1 && c == math.Trunc(c) && f == math.Trunc(f) {
+		// An integer translation reads target pixels directly.
+		tx, ty := int(c), int(f)
+		tb := r.target.Bounds()
+		for y := 0; y < region.Dy(); y++ {
+			sy := min(max(region.Min.Y+y, bounds.Min.Y), bounds.Max.Y-1) + ty
+			if sy < tb.Min.Y || sy >= tb.Max.Y {
+				continue
+			}
+			for x := 0; x < region.Dx(); x++ {
+				sx := min(max(region.Min.X+x, bounds.Min.X), bounds.Max.X-1) + tx
+				if sx < tb.Min.X || sx >= tb.Max.X {
+					continue
+				}
+				copy(out.Pix[out.PixOffset(x, y):][:4], r.target.Pix[r.target.PixOffset(sx, sy):][:4])
+			}
+		}
+		return out
+	}
+	for y := 0; y < region.Dy(); y++ {
+		ly := min(max(region.Min.Y+y, bounds.Min.Y), bounds.Max.Y-1)
+		for x := 0; x < region.Dx(); x++ {
+			lx := min(max(region.Min.X+x, bounds.Min.X), bounds.Max.X-1)
+			px, py := float64(lx)+0.5, float64(ly)+0.5
+			out.SetRGBA(x, y, sampleBilinear(r.target, a*px+b*py+c-0.5, d*px+e*py+f-0.5))
+		}
+	}
+	return out
+}
+
+// sampleBilinear reads img at (x, y), in pixel-centre coordinates, by
+// bilinear interpolation of its premultiplied channels; samples outside
+// img are transparent.
+func sampleBilinear(img *image.RGBA, x, y float64) color.RGBA {
+	x0, y0 := math.Floor(x), math.Floor(y)
+	fx, fy := x-x0, y-y0
+	ix, iy := int(x0), int(y0)
+	var acc [4]float64
+	for _, s := range [4]struct {
+		dx, dy int
+		w      float64
+	}{{0, 0, (1 - fx) * (1 - fy)}, {1, 0, fx * (1 - fy)}, {0, 1, (1 - fx) * fy}, {1, 1, fx * fy}} {
+		if s.w == 0 || !image.Pt(ix+s.dx, iy+s.dy).In(img.Bounds()) {
+			continue
+		}
+		c := img.RGBAAt(ix+s.dx, iy+s.dy)
+		acc[0] += s.w * float64(c.R)
+		acc[1] += s.w * float64(c.G)
+		acc[2] += s.w * float64(c.B)
+		acc[3] += s.w * float64(c.A)
+	}
+	return color.RGBA{uint8(math.Round(acc[0])), uint8(math.Round(acc[1])), uint8(math.Round(acc[2])), uint8(math.Round(acc[3]))}
 }
 
 // paintLayerIsolated renders a stacking-context layer's full subtree into an
