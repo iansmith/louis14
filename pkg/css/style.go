@@ -9616,6 +9616,11 @@ type GridLine struct {
 	Name    string // the <custom-ident>; "" when absent
 }
 
+// GridMaxTracks is the largest line number or span count a grid line
+// keeps: Blink's kGridMaxTracks (core/style/grid_position.h:45 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const GridMaxTracks = 10000000
+
 // IsCustomIdent reports whether the line is a lone <custom-ident>, the
 // value a grid shorthand copies to an omitted end (IsCustomIdentValue in
 // GridArea::ParseShorthand and ConsumeGridItemPositionShorthand).

@@ -86,3 +86,32 @@ func TestOutOfFlowGridAreaLines(t *testing.T) {
 		t.Errorf("abspos grid-area:2/2/3/3 %s, want (10,10) 20x10", boxDims(c))
 	}
 }
+
+// Round 2: lines before the explicit grid, and the explicit grid's size.
+// An in-flow item with a line before line 1 starts at line 1 and keeps its
+// end line (louis14 has no implicit tracks before the explicit grid); an
+// out-of-flow item's start line before the grid is its padding edge, with
+// its end line kept (GridPlacement::ResolveOutOfFlowItemGridLines,
+// grid_placement.cc:684-700). The explicit grid is as large as its
+// template areas (GridLineResolver::ExplicitGridColumnCount,
+// grid_line_resolver.cc:525-539) @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestGridLinesOutsideTheExplicitGrid(t *testing.T) {
+	for _, tc := range []struct {
+		name, grid, item string
+		wantX, wantW     float64
+	}{
+		{"in-flow -5 / 2", `grid-template-columns:10px 20px 30px`, `grid-column:-5 / 2`, 0, 10},
+		{"in-flow span 2 / 2", `grid-template-columns:10px 20px 30px`, `grid-column:span 2 / 2`, 0, 10},
+		{"abspos -5 / 2", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:-5 / 2`, 0, 10},
+		{"abspos span 2 / 1", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:span 2 / 1`, 0, 0},
+		{"abspos 2 / -5", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:2 / -5`, 0, 10},
+		{"areas widen the explicit grid", `width:100px; grid-template-columns:10px; grid-template-areas:"a b c"`, `grid-column:2 / -1`, 10, 90},
+		{"areas alone", `width:90px; grid-template-areas:"a b c"`, `grid-column:-2 / -1`, 60, 30},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="width:200px"><div style="display:grid; grid-auto-rows:10px; `+tc.grid+`">`+
+			`<div id=c style="height:10px; `+tc.item+`"></div></div></div></body>`, nil)
+		if c := findBox(fl.root, byID("c")); c == nil || c.X != tc.wantX || c.Width != tc.wantW {
+			t.Errorf("%s: #c %s, want x=%v width=%v", tc.name, boxDims(c), tc.wantX, tc.wantW)
+		}
+	}
+}
