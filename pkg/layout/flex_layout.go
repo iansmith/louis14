@@ -4809,7 +4809,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 					if !info.AspectRatio.IsEmpty() {
 						useAspectRatioStretch = true
 					}
-				} else if ar := boxAspectRatio(fla.ctx, item.node, item.style); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+				} else if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
 					// CSS aspect-ratio property on non-replaced elements.
 					// Only apply when flex-grow is 0 — if the item grew via flex,
 					// its main-size is already determined and shouldn't be overridden.
