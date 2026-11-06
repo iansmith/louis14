@@ -71,9 +71,11 @@ type SVGViewportContainer struct {
 	// Children are the SVG children of the nested <svg> in DOM order.
 	Children []SVGNode
 
-	// bbox is the accumulated bbox of children mapped through the
-	// nested viewport's local transform.
-	bbox geometry.RectF
+	// bbox and strokeBBox are the children's object and stroke bounding
+	// boxes, each mapped through the child's transform, in the nested
+	// viewport's local (viewBox) space: inside its LocalTransform. They are
+	// cached by UpdateSVGLayout.
+	bbox, strokeBBox geometry.RectF
 }
 
 // NewSVGViewportContainer constructs a nested-<svg> container by
@@ -166,12 +168,12 @@ func (v *SVGViewportContainer) ChildLengthContext() SVGLengthContext {
 	return NewSVGLengthContext(v.ViewBox.viewportSizeOr(geometry.SizeF{Width: v.Width, Height: v.Height}))
 }
 
-// ObjectBoundingBox returns the union of children's bounding boxes
-// mapped through the nested viewport's local transform. Mirrors
-// Blink's LayoutSVGContainer::ObjectBoundingBox (which is the union
-// of children, transformed by each child's local transform — for a
-// viewport container, the viewBox transform applies between the
-// child-space union and the parent-space bbox).
+// ObjectBoundingBox returns the union of children's bounding boxes, each
+// mapped through the child's own transform, in the nested viewport's local
+// space (inside its LocalTransform). Mirrors Blink's
+// LayoutSVGContainer::ObjectBoundingBox, the union of children transformed
+// by each child's local transform; the viewBox transform applies between
+// that union and the parent's space.
 func (v *SVGViewportContainer) ObjectBoundingBox() geometry.RectF {
 	return v.bbox
 }
@@ -180,7 +182,7 @@ func (v *SVGViewportContainer) ObjectBoundingBox() geometry.RectF {
 // boxes, in the same space as ObjectBoundingBox
 // (SVGContentContainer::ComputeStrokeBoundingBox).
 func (v *SVGViewportContainer) StrokeBoundingBox() geometry.RectF {
-	return computeStrokeBoundingBox(v.Children)
+	return v.strokeBBox
 }
 
 // LocalTransform returns the transform that maps a point in this
@@ -202,11 +204,12 @@ func (v *SVGViewportContainer) LocalTransform() geometry.AffineTransform {
 	return geometry.Translate(v.X, v.Y).Compose(v.LocalToBorderBoxTransform)
 }
 
-// UpdateSVGLayout walks children and accumulates their bbox under
-// this viewport's local transform.
+// UpdateSVGLayout walks children and caches the union of their object and
+// stroke bounding boxes in this viewport's local space.
 func (v *SVGViewportContainer) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
 	combined := layoutSVGChildren(v.Children, info)
 	v.bbox = unionChildBoxes(v.Children, SVGNode.ObjectBoundingBox)
+	v.strokeBBox = computeStrokeBoundingBox(v.Children)
 	return combined
 }
 
@@ -249,9 +252,11 @@ type SVGContainer struct {
 	// Children are the SVG children of this container in DOM order.
 	Children []SVGNode
 
-	// bbox is the accumulated bbox of children mapped through
-	// this.transform.
-	bbox geometry.RectF
+	// bbox and strokeBBox are the children's object and stroke bounding
+	// boxes, each mapped through the child's transform, in this
+	// container's local space: inside its own transform. They are cached
+	// by UpdateSVGLayout.
+	bbox, strokeBBox geometry.RectF
 }
 
 // NewSVGContainer constructs a container with the identity transform.
@@ -279,8 +284,9 @@ func (c *SVGContainer) AppendChild(child SVGNode) {
 	c.Children = append(c.Children, child)
 }
 
-// ObjectBoundingBox returns the union of children's bounding boxes
-// mapped through this container's local transform.
+// ObjectBoundingBox returns the union of children's bounding boxes, each
+// mapped through the child's own transform, in this container's local space:
+// inside its own transform, where its children paint.
 func (c *SVGContainer) ObjectBoundingBox() geometry.RectF {
 	return c.bbox
 }
@@ -288,7 +294,7 @@ func (c *SVGContainer) ObjectBoundingBox() geometry.RectF {
 // StrokeBoundingBox returns the union of the children's stroke bounding
 // boxes (SVGContentContainer::ComputeStrokeBoundingBox).
 func (c *SVGContainer) StrokeBoundingBox() geometry.RectF {
-	return computeStrokeBoundingBox(c.Children)
+	return c.strokeBBox
 }
 
 // computeStrokeBoundingBox unions each rendered child's stroke bounding box
@@ -301,15 +307,12 @@ func computeStrokeBoundingBox(children []SVGNode) geometry.RectF {
 }
 
 // unionChildBoxes unions box(child) over the rendered children, each mapped
-// through the child's transform into the container's space. A child with an
-// empty object bounding box stands in for Blink's
-// HasValidBoundingBoxForContainer (svg_content_container.cc:88-106 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the child's transform is
-// its attribute (LocalTransform; LOU-648).
+// through the child's transform into the container's space (the child's
+// transform is its attribute: LocalTransform; LOU-648).
 func unionChildBoxes(children []SVGNode, box func(SVGNode) geometry.RectF) geometry.RectF {
 	var union geometry.RectF
 	for _, child := range children {
-		if child.ObjectBoundingBox().IsEmpty() {
+		if !hasValidBoundingBoxForContainer(child) {
 			continue
 		}
 		union = unionRects(union, child.LocalTransform().MapRect(box(child)))
@@ -337,11 +340,12 @@ func (c *SVGContainer) LocalTransform() geometry.AffineTransform {
 	return c.transform
 }
 
-// UpdateSVGLayout walks children and unions their bbox under this
-// container's local transform.
+// UpdateSVGLayout walks children and caches the union of their object and
+// stroke bounding boxes in this container's local space.
 func (c *SVGContainer) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
 	combined := layoutSVGChildren(c.Children, info)
 	c.bbox = unionChildBoxes(c.Children, SVGNode.ObjectBoundingBox)
+	c.strokeBBox = computeStrokeBoundingBox(c.Children)
 	return combined
 }
 
@@ -376,4 +380,18 @@ func unionRects(a, b geometry.RectF) geometry.RectF {
 		maxY = b.Bottom()
 	}
 	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY)
+}
+
+// hasValidBoundingBoxForContainer reports whether child counts toward its
+// container's boxes. Mirrors HasValidBoundingBoxForContainer
+// (svg_content_container.cc:88-106 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a shape counts unless it has no
+// geometry (IsShapeEmpty), so a horizontal <line>, whose fill box is empty,
+// still adds its stroke. Any other node stands in with a non-empty object
+// bounding box.
+func hasValidBoundingBoxForContainer(child SVGNode) bool {
+	if shape, ok := child.(*SVGShape); ok {
+		return !shape.Path.Empty()
+	}
+	return !child.ObjectBoundingBox().IsEmpty()
 }

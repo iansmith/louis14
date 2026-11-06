@@ -987,7 +987,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	bw := int(math.Ceil(box.X+box.Width)) - bx + 1
 	bh := int(math.Ceil(box.Y+box.Height)) - by + 1
 
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if !effectBufferUsable(bw, bh) {
 		// Fallback: render without mask to avoid OOM.
 		r.paintViewBackground(layer)
 		r.paintLayerContent(layer)
@@ -1466,6 +1466,16 @@ func outsetByReach(filter *filters.Filter, rect image.Rectangle) (image.Rectangl
 	padX := max(rect.Min.X-m.Min.X, m.Max.X-rect.Max.X, 0)
 	padY := max(rect.Min.Y-m.Min.Y, m.Max.Y-rect.Max.Y, 0)
 	return image.Rect(rect.Min.X-padX, rect.Min.Y-padY, rect.Max.X+padX, rect.Max.Y+padY), true
+}
+
+// maxEffectBufferDimension caps an offscreen effect buffer's width and
+// height, in device pixels; a larger one paints without the effect.
+const maxEffectBufferDimension = 4000
+
+// effectBufferUsable reports whether an offscreen effect buffer w×h is
+// non-empty and within maxEffectBufferDimension.
+func effectBufferUsable(w, h int) bool {
+	return w > 0 && h > 0 && w <= maxEffectBufferDimension && h <= maxEffectBufferDimension
 }
 
 // homographyTransform returns m's z=0 homography (projectiveHomography) as a
@@ -7756,7 +7766,7 @@ func (r *Renderer) drawOutsetShadowBuffer(
 
 	bufW := int(math.Ceil(maxX - minX))
 	bufH := int(math.Ceil(maxY - minY))
-	if bufW <= 0 || bufH <= 0 || bufW > 4000 || bufH > 4000 {
+	if !effectBufferUsable(bufW, bufH) {
 		return
 	}
 
