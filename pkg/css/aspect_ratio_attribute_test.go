@@ -38,3 +38,26 @@ func TestPresentationalAspectRatioHint(t *testing.T) {
 		}
 	}
 }
+
+// <img> width/height attributes map to CSS width/height through the same
+// dimension parser as the aspect-ratio hint (AddHTMLLengthToStyle →
+// ParseDimensionValue, html_element.cc:3810-3830 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): leading spaces are skipped and a
+// garbage suffix is ignored.
+func TestImageAttributeLengths(t *testing.T) {
+	cases := []struct{ width, height, wantW, wantH string }{
+		{" 60", "60abc", "60px", "60px"},
+		{"50%", "12.5", "50%", "12.5px"},
+		{"abc", "-4", "", ""},
+	}
+	for _, tc := range cases {
+		n := &html.Node{Type: html.ElementNode, TagName: "img", Attributes: map[string]string{"width": tc.width, "height": tc.height}}
+		st := NewStyle()
+		applyPresentationalAttributes(n, st)
+		w, _ := st.Get("width")
+		h, _ := st.Get("height")
+		if w != tc.wantW || h != tc.wantH {
+			t.Errorf("<img width=%q height=%q>: width %q height %q, want %q %q", tc.width, tc.height, w, h, tc.wantW, tc.wantH)
+		}
+	}
+}

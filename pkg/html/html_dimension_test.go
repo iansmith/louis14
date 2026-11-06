@@ -14,6 +14,10 @@ func TestParseDimensionValue(t *testing.T) {
 		typ   HTMLDimensionType
 	}{
 		{"60", true, 60, HTMLDimensionAbsolute},
+		{"0", true, 0, HTMLDimensionAbsolute},
+		{" 60", true, 60, HTMLDimensionAbsolute},
+		{"60px", true, 60, HTMLDimensionAbsolute},
+		{"60abc", true, 60, HTMLDimensionAbsolute},
 		{"  60px", true, 60, HTMLDimensionAbsolute},
 		{"12.5", true, 12.5, HTMLDimensionAbsolute},
 		{"12.", true, 12, HTMLDimensionAbsolute},
