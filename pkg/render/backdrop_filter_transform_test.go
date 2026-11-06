@@ -62,3 +62,19 @@ func TestBackdropFilter_RotatedBlurReadsOnlyInsideTheBox(t *testing.T) {
 		})
 	}
 }
+
+// An element with both backdrop-filter and filter filters its backdrop with
+// the backdrop ops followed by the filter ops (PaintLayer::
+// UpdateBackdropFilters, paint_layer.cc:2601-2614 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), read from the real backdrop: a
+// green backdrop inverted, then greyscaled, is grey.
+func TestBackdropFilter_PlusFilterFiltersTheBackdrop(t *testing.T) {
+	img := renderToImage(t, `<!DOCTYPE html><style>body{margin:0}
+div{position:absolute;left:0;top:0;width:100px;height:100px}</style>
+<div style="background:green"></div>
+<div style="backdrop-filter:invert(1);filter:grayscale(1)"></div>`, 120, 120)
+	c := img.RGBAAt(50, 50)
+	if d := int(c.R) - int(c.G); c.R < 100 || d < -4 || d > 4 || c.B != c.R {
+		t.Errorf("pixel (50,50) = %v, want the inverted green backdrop greyscaled (grey)", c)
+	}
+}
