@@ -43,7 +43,7 @@ func DrawImageRect(dst *image.NRGBA, src image.Image, srcRect, dstRect geometry.
 		v := srcRect.Y() + (float64(y)+0.5-dstRect.Y())*sy
 		var c color.NRGBA
 		if smooth {
-			c = sampleBilinear(src, u, v, minX, minY, maxX, maxY)
+			c = SampleBilinear(src, u, v, minX, minY, maxX, maxY)
 		} else {
 			r, g, b, a := premultipliedAt(src, clampInt(int(math.Floor(u)), minX, maxX), clampInt(int(math.Floor(v)), minY, maxY))
 			c = unpremultiply(float64(r), float64(g), float64(b), float64(a))
@@ -109,13 +109,26 @@ func unpremultiply(r, g, b, a float64) color.NRGBA {
 	}
 }
 
-// sampleBilinear samples src at (u, v) (pixel centres at +0.5), clamping
+// SampleBilinear samples src at (u, v) (pixel centres at +0.5), clamping
 // taps to [minX, maxX] × [minY, maxY]; it interpolates premultiplied.
-func sampleBilinear(src image.Image, u, v float64, minX, minY, maxX, maxY int) color.NRGBA {
+func SampleBilinear(src image.Image, u, v float64, minX, minY, maxX, maxY int) color.NRGBA {
+	r, g, b, a := sampleBilinearPremultiplied(src, u, v, minX, minY, maxX, maxY)
+	return unpremultiply(r, g, b, a)
+}
+
+// SampleBilinearPremultiplied is SampleBilinear returning the premultiplied
+// colour, as an image.RGBA stores it.
+func SampleBilinearPremultiplied(src image.Image, u, v float64, minX, minY, maxX, maxY int) color.RGBA {
+	r, g, b, a := sampleBilinearPremultiplied(src, u, v, minX, minY, maxX, maxY)
+	return color.RGBA{uint8(math.Round(r / 0x101)), uint8(math.Round(g / 0x101)), uint8(math.Round(b / 0x101)), uint8(math.Round(a / 0x101))}
+}
+
+// sampleBilinearPremultiplied interpolates src's four premultiplied 16-bit
+// taps around (u, v).
+func sampleBilinearPremultiplied(src image.Image, u, v float64, minX, minY, maxX, maxY int) (r, g, b, a float64) {
 	fx, fy := u-0.5, v-0.5
 	ix, iy := int(math.Floor(fx)), int(math.Floor(fy))
 	tx, ty := fx-float64(ix), fy-float64(iy)
-	var r, g, b, a float64
 	for _, tap := range [4]struct {
 		dx, dy int
 		w      float64
@@ -129,7 +142,7 @@ func sampleBilinear(src image.Image, u, v float64, minX, minY, maxX, maxY int) c
 		b += float64(pb) * tap.w
 		a += float64(pa) * tap.w
 	}
-	return unpremultiply(r, g, b, a)
+	return r, g, b, a
 }
 
 // blendSourceOver composites c, scaled by coverage, over dst's pixel.
