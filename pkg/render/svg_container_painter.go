@@ -129,7 +129,7 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		return
 	}
 
-	if !svgIsVisible(c.Style) {
+	if !styleIsVisible(c.Style) {
 		// visibility: hidden inhibits paint of this element and its
 		// descendants (no painted output, but the subtree is still
 		// laid out — relevant for future hit-testing and bbox use,
@@ -168,7 +168,7 @@ func paintSVGViewportContainer(pctx *svgPaintContext, vc *svg.SVGViewportContain
 	if vc == nil {
 		return
 	}
-	if !svgIsVisible(vc.Style) {
+	if !styleIsVisible(vc.Style) {
 		return
 	}
 	if vc.Width <= 0 || vc.Height <= 0 {
@@ -200,10 +200,10 @@ func paintSVGViewportContainer(pctx *svgPaintContext, vc *svg.SVGViewportContain
 	}
 }
 
-// svgIsVisible reports whether an SVG element's `visibility` allows
-// it to paint. Mirrors Blink's StyleSVGResource visibility check.
-// A nil style is treated as visible (the SVG default).
-func svgIsVisible(style *css.Style) bool {
+// styleIsVisible reports whether a box's or SVG element's `visibility`
+// allows it to paint (EVisibility::kVisible). A nil style is treated as
+// visible.
+func styleIsVisible(style *css.Style) bool {
 	if style == nil {
 		return true
 	}

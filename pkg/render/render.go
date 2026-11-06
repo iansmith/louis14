@@ -885,6 +885,9 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 // paintLayerContents paints one layer at its place in the stacking order.
 // All paint decisions use pre-computed fields — no Style access.
 func (r *Renderer) paintLayerContents(layer *PaintLayer) {
+	if layer.HiddenFrameDocument {
+		return
+	}
 	if outer, ok := r.enterFrameView(layer); ok {
 		defer func() { r.view = outer }()
 	}
@@ -903,7 +906,12 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	}
 
 	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
-	if layer.HasMaskImage {
+	// A hidden box paints no mask image, so nothing masks its visible
+	// descendants: PaintLayerPainter paints the kMask phase only for a layer
+	// with visible content (paint_layer_painter.cc:525-531) and
+	// BoxFragmentPainter::PaintObject paints the mask only for a visible box
+	// (box_fragment_painter.cc:876 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if layer.HasMaskImage && layer.Visible {
 		r.paintLayerWithMask(layer)
 		return
 	}
@@ -2214,14 +2222,9 @@ func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	// Step 4: Floats (each runs its own full phase loop).
 	r.paintDescendantsPhase(layer, PhaseFloat)
 
-	// Step 5a: Self foreground — text + image content. A hidden inline
-	// <svg> still walks its content: SVG checks visibility per element, and
-	// a filtered descendant still applies its filter (svg_shape_painter.go,
-	// svg-visibility-hidden-element-with-filter-002/003).
-	if own {
+	// Step 5a: Self foreground — text + image content.
+	if !r.isBackfaceCulled(layer) {
 		r.paintSelfForeground(layer)
-	} else if !layer.Visible && !r.isBackfaceCulled(layer) && isInlineSVGLayer(layer) {
-		r.paintSVGRoot(layer)
 	}
 
 	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
@@ -2350,13 +2353,22 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 // through paintSVGRoot in the same slot as <img>'s drawImage.
 // Mirrors Blink's ReplacedPainter::PaintReplacedContent dispatch on
 // LayoutSVGRoot.
+//
+// An inline <svg> walks its content even when hidden: ReplacedPainter::
+// ShouldPaint lets an SVG root through (replaced_painter.cc:270-273 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as SVG checks visibility per
+// element and a filtered descendant still applies its filter. Text, image
+// and canvas paint only for a visible box.
 func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
-	if layer.Box != nil && layer.Box.Text != "" {
-		r.drawText(layer)
-	}
 	if isInlineSVGLayer(layer) {
 		r.paintSVGRoot(layer)
 		return
+	}
+	if !layer.Visible {
+		return
+	}
+	if layer.Box != nil && layer.Box.Text != "" {
+		r.drawText(layer)
 	}
 	// An <img> / image-typed <object>/<embed> paints through
 	// ImagePainter::PaintReplaced; a <video> through VideoPainter::
@@ -2442,25 +2454,25 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	if r.skipsBackfaceCulledSubtree(child) {
 		return
 	}
-	// A hidden child paints only its descendants, like a culled one (see
-	// paintLayerContent).
-	own := r.paintsOwnContent(child)
+	// A hidden child paints its descendants but not its own decorations or
+	// outline (paintSelfForeground checks visibility itself).
+	culled := r.isBackfaceCulled(child)
 	pureInline := isPureInlineForPaint(child)
 
 	switch {
-	case !own:
-		// Backface culled or hidden: only descendants paint.
+	case culled:
+		// Backface culled: only descendants paint.
 	case phase == PhaseBackground:
-		if !pureInline {
+		if child.Visible && !pureInline {
 			r.paintSelfDecorations(child)
 		}
 		// Pure inline defers self decorations to PhaseForeground.
 	case phase == PhaseForeground:
-		if pureInline {
+		if child.Visible && pureInline {
 			r.paintSelfDecorations(child)
 		}
 		r.paintSelfForeground(child)
-	case phase == PhaseOutline:
+	case phase == PhaseOutline && child.Visible:
 		r.paintSelfOutline(child)
 		// PhaseFloat: skip self — floats paint their own bg during their
 		// paintLayer.
@@ -2480,7 +2492,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 
 	// A collapsed table's borders, after its descendants' backgrounds
 	// (see paintLayerContent).
-	if own && phase == PhaseBackground {
+	if !culled && child.Visible && phase == PhaseBackground {
 		r.PaintCollapsedBorders(child)
 	}
 
@@ -2493,7 +2505,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	// OUTSIDE the box's overflow clip, mirroring the self-painting-layer
 	// path in paintLayerContent. A box reaches exactly one of the two
 	// paths, so the scrollbar paints once.
-	if own && phase == PhaseForeground {
+	if !culled && child.Visible && phase == PhaseForeground {
 		r.paintScrollbars(child)
 	}
 }
