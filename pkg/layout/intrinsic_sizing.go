@@ -66,9 +66,10 @@ func getNaturalDimensions(ctx *LayoutContext, node *LayoutInputNode) NaturalSizi
 		return getCanvasIntrinsicInfo(node)
 	case "video":
 		return getVideoNaturalDimensions(ctx, node)
-	case "iframe", "embed", "object":
+	case "iframe", "embed", "object", "audio":
 		// Per CSS 2.1 §10.3.2, these have a default 300×150 size but NO
-		// intrinsic aspect ratio. Unlike images/video, their content doesn't
+		// intrinsic aspect ratio (an <audio>'s LayoutMedia takes the
+		// LayoutReplaced default size). Unlike images/video, their content doesn't
 		// define a natural ratio between width and height.
 		return MakeSizeNaturalSizingInfo(geometry.SizeF{Width: 300, Height: 150})
 	case "textarea":
