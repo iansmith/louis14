@@ -108,14 +108,6 @@ func (r *SVGResourceRegistry) Register(res SVGResource) {
 	r.resources[id] = res
 }
 
-// RegisterFilter attaches a `<filter>` resource by ID.
-func (r *SVGResourceRegistry) RegisterFilter(f *SVGResourceFilter) {
-	if f == nil {
-		return
-	}
-	r.Register(f)
-}
-
 // RegisterBuiltFrom registers res, built from elt, by ID (first-wins, as
 // Register) and records elt as its source.
 func (r *SVGResourceRegistry) RegisterBuiltFrom(res SVGResource, elt ElementAdapter) {

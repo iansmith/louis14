@@ -44,6 +44,11 @@ type Renderer struct {
 	externalSVGFetcher func(uri string) ([]byte, error)
 	scrollY            float64
 
+	// paintingLayer is the layer being painted: url() references resolve
+	// in its document (lookupSVGResources). Set on every path into a
+	// layer's paint (paintLayer, paintLayerContents), restored on leaving.
+	paintingLayer *PaintLayer
+
 	// opacityLayer is the layer whose opacity paintLayerWithBackdrop's
 	// layer applies: its effects paint without it (effectOpacity).
 	opacityLayer *PaintLayer
@@ -720,16 +725,26 @@ func clampColor(rv, g, b, a float64) color.RGBA {
 	return color.RGBA{R: clamp(rv), G: clamp(g), B: clamp(b), A: clamp(a)}
 }
 
-// lookupSVGResources returns the id map of the document being painted
-// (LayoutInputNode.TreeScopeSVGResources on its document element): url()
-// references resolve per document, as in Blink's TreeScope. nil before the
-// paint walk enters a view.
+// lookupSVGResources returns the id map of the painting layer's document
+// (LayoutInputNode.TreeScopeSVGResources on its document element, the
+// nearest one up its box's ancestors): url() references resolve per
+// document, as in Blink's TreeScope. nil outside a layer's paint or in a
+// document without SVG. A layer without a box takes the view's document.
 func (r *Renderer) lookupSVGResources() *svg.SVGResourceRegistry {
-	if r == nil || r.view == nil || r.view.rootLayer == nil {
+	if r == nil {
 		return nil
 	}
-	if box := r.view.rootLayer.Box; box != nil && box.LayoutNode != nil {
-		return box.LayoutNode.TreeScopeSVGResources
+	var box *layout.Box
+	switch {
+	case r.paintingLayer != nil && r.paintingLayer.Box != nil:
+		box = r.paintingLayer.Box
+	case r.view != nil && r.view.rootLayer != nil:
+		box = r.view.rootLayer.Box
+	}
+	for ; box != nil; box = box.Parent {
+		if box.LayoutNode != nil && box.LayoutNode.IsDocumentElement() {
+			return box.LayoutNode.TreeScopeSVGResources
+		}
 	}
 	return nil
 }
@@ -755,6 +770,9 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
+	outerLayer := r.paintingLayer
+	r.paintingLayer = layer
+	defer func() { r.paintingLayer = outerLayer }()
 	if c := r.context3D; c != nil && c.units[layer] {
 		if layer == c.drawing.layer {
 			r.paintLayerContents(layer)
@@ -776,6 +794,9 @@ func (r *Renderer) paintLayerContents(layer *PaintLayer) {
 	if layer.HiddenFrameDocument {
 		return
 	}
+	outerLayer := r.paintingLayer
+	r.paintingLayer = layer
+	defer func() { r.paintingLayer = outerLayer }()
 	if outer, ok := r.enterFrameView(layer); ok {
 		defer func() { r.view = outer }()
 	}

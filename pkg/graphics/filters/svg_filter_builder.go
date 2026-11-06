@@ -142,6 +142,11 @@ type SVGFilterElement interface {
 	// InterpolationSpace returns the effect operating space (linearRGB
 	// default per SVG; the wrapper reads color-interpolation-filters).
 	InterpolationSpace() InterpolationSpace
+	// PrimitiveInterpolationSpace returns the operating space of the
+	// primitive prim (Blink's ColorInterpolationForElement for it,
+	// svg_filter_builder.cc:136-155, 189-192 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	PrimitiveInterpolationSpace(prim SVGFilterPrimitive) InterpolationSpace
 	// Primitives returns the filter primitive children in DOM order.
 	Primitives() []SVGFilterPrimitive
 	// FillPaintEffect returns a FilterEffect that paints the
@@ -347,7 +352,10 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 	if sp := elt.StrokePaintEffect(); sp != nil {
 		b.builtins["StrokePaint"] = sp
 	}
+	filterSpace := b.space
+	defer func() { b.space = filterSpace }()
 	for _, prim := range elt.Primitives() {
+		b.space = elt.PrimitiveInterpolationSpace(prim)
 		eff := b.buildOnePrimitive(elt, prim)
 		if eff == nil {
 			continue

@@ -131,6 +131,9 @@ func (f *SVGResourceFilter) Style() *css.Style { return f.elementStyle }
 // Attribute returns the <filter> element's attribute name and whether it is
 // set.
 func (f *SVGResourceFilter) Attribute(name string) (string, bool) {
+	if f.element == nil {
+		return "", false
+	}
 	return f.element.Attribute(name)
 }
 
