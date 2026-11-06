@@ -158,11 +158,14 @@ type LineInfo struct {
 //
 // Ported from Blink's LineBreaker (line_breaker.h).
 type LineBreaker struct {
-	itemsData      *InlineItemsData
-	ctx            *LayoutContext
-	space          ConstraintSpace
-	fonts          text.FontConfig
-	mode           LineBreakerMode
+	itemsData *InlineItemsData
+	ctx       *LayoutContext
+	space     ConstraintSpace
+	fonts     text.FontConfig
+	mode      LineBreakerMode
+	// parent is the breaker a ruby sub-line breaker serves (Blink's
+	// parent_breaker_); nil for a root breaker.
+	parent         *LineBreaker
 	availableWidth float64
 
 	// Current position in the item list.
@@ -1619,7 +1622,7 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	}
 
 	wdm := lb.space.WritingDirection
-	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
+	margins := ResolveMargins(item.Style, wdm, lb.percentageMarginBase())
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
 	// Add inline-start margin + border + padding.
@@ -1641,7 +1644,7 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	}
 
 	wdm := lb.space.WritingDirection
-	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
+	margins := ResolveMargins(item.Style, wdm, lb.percentageMarginBase())
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
 	// Add inline-end border + padding + margin.
@@ -1674,16 +1677,10 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 // handleAtomicInline lays out an atomic inline element (inline-block, replaced).
 // Returns true if the line should end.
 func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool {
-	// Resolve margins for the atomic inline. While sizing, percentage
-	// margins resolve against zero, as cyclic percentages do in intrinsic
-	// size contributions (CSS Sizing 3 §5.2.1).
+	// Resolve margins for the atomic inline.
 	margins := LogicalEdges{}
 	if item.Style != nil {
-		marginBase := lb.availableWidth
-		if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
-			marginBase = 0
-		}
-		margins = ResolveMargins(item.Style, lb.space.WritingDirection, marginBase)
+		margins = ResolveMargins(item.Style, lb.space.WritingDirection, lb.percentageMarginBase())
 	}
 
 	var inlineSize float64
@@ -1691,7 +1688,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 
 	childWDM := NewWritingDirectionMode(item.Style)
 
-	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
+	if lb.isIntrinsicSizing() {
 		// In sizing mode, the atomic contributes its min/max-content
 		// contribution: Blink's ComputeMinAndMaxContentContribution
 		// (LineBreaker, inline/line_breaker.cc:3182-3194 @
@@ -1726,21 +1723,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		// Normal layout: lay out the atomic inline with shrink-to-fit.
 		// Propagate the percentage resolution block-size from the parent's space
 		// so that percentage-height children can resolve.
-		availBlock := Indefinite
-		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-			availBlock = lb.space.PercentageResolutionSize.BlockSize.Float64()
-		} else if lb.space.AvailableSize.BlockSize.Float64() >= 0 {
-			availBlock = lb.space.AvailableSize.BlockSize.Float64()
-		}
-		// §10.3.2: For an atomic-inline orthogonal root, the available block-size
-		// that becomes the child's (axis-swapped) inline-size must come from the
-		// parent's own constraints — walked up to the nearest definite ancestor
-		// or ICB — not from whatever block-size happened to flow down. Mirrors
-		// the block-child path at block_layout.go:368-370 using the value
-		// pre-computed in layoutInlineChildren.
-		if lb.space.WritingDirection.IsOrthogonalTo(childWDM) && lb.space.OrthogonalAvailableBlock > 0 {
-			availBlock = lb.space.OrthogonalAvailableBlock
-		}
+		availBlock := lb.atomicAvailableBlock(lb.space.WritingDirection.IsOrthogonalTo(childWDM))
 		csb := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).
@@ -2551,35 +2534,97 @@ func (lb *LineBreaker) measureTextWithTabs(
 	return pos - lb.position
 }
 
+// isIntrinsicSizing reports whether this line breaking computes intrinsic
+// sizes: the root breaker's mode decides, since a ruby sub-line breaker runs
+// in max-content mode during layout too (LineBreaker, inline/
+// line_breaker.cc:3092-3096 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) isIntrinsicSizing() bool {
+	root := lb
+	for root.parent != nil {
+		root = root.parent
+	}
+	return root.mode == LineBreakerMinContent || root.mode == LineBreakerMaxContent
+}
+
+// percentageMarginBase is what an inline item's percentage margins resolve
+// against: zero while computing intrinsic sizes, as cyclic percentages do
+// in intrinsic size contributions (CSS Sizing 3 §5.2.1), else the line's
+// available width (LOU-771 for the containing block).
+func (lb *LineBreaker) percentageMarginBase() float64 {
+	if lb.isIntrinsicSizing() {
+		return 0
+	}
+	return lb.availableWidth
+}
+
+// atomicAvailableBlock is the available block size an atomic inline is laid
+// out or sized against: the line's percentage resolution or available block
+// size, or for an orthogonal atomic, which takes it as its available inline
+// size, OrthogonalAvailableBlock when set: the container's definite block
+// size or the ICB (computeOrthogonalAvailableBlock), Blink's orthogonal
+// fallback (ConstraintSpaceBuilder::AdjustInlineSizeIfNeeded,
+// constraint_space_builder.h:83-110; SetOrthogonalFallbackInlineSizeIfNeeded,
+// block_node.cc:1469 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). One rule
+// for sizing and layout.
+func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
+	availBlock := Indefinite
+	if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+		availBlock = lb.space.PercentageResolutionSize.BlockSize.Float64()
+	} else if lb.space.AvailableSize.BlockSize.Float64() >= 0 {
+		availBlock = lb.space.AvailableSize.BlockSize.Float64()
+	}
+	if orthogonal && lb.space.OrthogonalAvailableBlock > 0 {
+		availBlock = lb.space.OrthogonalAvailableBlock
+	}
+	return availBlock
+}
+
+// definiteOrIndefinite treats a non-positive (zero or unset) percentage
+// resolution base as indefinite.
+func definiteOrIndefinite(v float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return Indefinite
+}
+
 // orthogonalAtomicInlineContribution is an orthogonal atomic inline's
 // min-content and max-content contribution to the line, which are equal:
 // its border-box block size, laid out once in a space built from the line's
 // (MinMaxConstraintSpaceBuilder in LineBreaker, inline/line_breaker.cc:
 // 3182-3194; BlockNode::ComputeMinMaxSizes for an orthogonal flow root,
 // block_node.cc:981-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its
-// available inline size is the line's available block size (or the
-// orthogonal fallback), and the line's percentage resolution size carries
-// over, swapped. Margins are not included. The result is cached on the
-// LayoutContext, so the min-content and max-content passes share it.
+// available inline size follows atomicAvailableBlock, and the line's
+// percentage resolution size carries over, swapped, a zero or unset base
+// staying indefinite. Margins are not included. The layout stores nothing
+// on the box (DisableLayoutSideEffects), and its result is cached so the
+// min-content and max-content passes share it.
 func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
 	pct := lb.space.PercentageResolutionSize
 	fallback := orthogonalFallbackSize(childWDM, lb.ctx)
-	key := orthogonalContributionSpace{lb.space.AvailableSize.BlockSize.Float64(),
-		fallback, lb.space.OrthogonalFallbackBlockSize,
+	availBlock := lb.atomicAvailableBlock(true)
+	key := orthogonalContributionSpace{availBlock, fallback, lb.space.OrthogonalFallbackBlockSize,
 		pct.InlineSize.Float64(), pct.BlockSize.Float64(), lb.space.PercentageResolutionInlineSize}
-	if e := lb.ctx.OrthogonalLayoutCache[item.LayoutNode]; e != nil && e.HasContribution && e.ContributionSpace == key {
-		return e.AtomicContribution
+	if c, ok := lb.ctx.orthogonalAtomicContributions[item.LayoutNode]; ok && c.space == key {
+		return c.contribution
 	}
-	b := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+	space := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 		SetOrthogonalFallbackInlineSize(fallback).
 		SetOrthogonalFallbackBlockSize(lb.space.OrthogonalFallbackBlockSize).
-		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: lb.space.AvailableSize.BlockSize.Float64()}).
+		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: availBlock}).
 		SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
-		SetPercentageResolutionSize(geomLogicalToOld(pct))
-	result := layoutElement(lb.ctx, item.LayoutNode, b.Build())
+		SetPercentageResolutionSize(LogicalSize{
+			InlineSize: definiteOrIndefinite(pct.InlineSize.Float64()),
+			BlockSize:  definiteOrIndefinite(pct.BlockSize.Float64()),
+		}).
+		Build()
+	enableSideEffects := lb.ctx.DisableLayoutSideEffects()
+	result := layoutElement(lb.ctx, item.LayoutNode, space)
+	enableSideEffects()
 	contribution := NewLogicalFragment(lb.space.WritingDirection, result.Fragment).InlineSize()
-	lb.ctx.SetOrthogonalResult(item.LayoutNode, result)
-	e := lb.ctx.OrthogonalLayoutCache[item.LayoutNode]
-	e.HasContribution, e.ContributionSpace, e.AtomicContribution = true, key, contribution
+	if lb.ctx.orthogonalAtomicContributions == nil {
+		lb.ctx.orthogonalAtomicContributions = map[*LayoutInputNode]orthogonalAtomicContribution{}
+	}
+	lb.ctx.orthogonalAtomicContributions[item.LayoutNode] = orthogonalAtomicContribution{key, contribution}
 	return contribution
 }

@@ -81,7 +81,7 @@ func TestMeasureGridMinMax_OrthogonalChildBlockSize(t *testing.T) {
 	// BlockContributionSize, grid_layout_algorithm.cc:662-715;
 	// BlockNode::ComputeMinMaxSizes, block_node.cc:981-1008 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); that gap is LOU-770.
-	if mm.MinContent != 100 {
+	if mm.MinContent != 100 { // LOU-770: expect 50 once ported
 		t.Errorf("MinContent: got %.2f, want 100 (block size at the child's min-content)", mm.MinContent)
 	}
 	if mm.MaxContent != 50 {

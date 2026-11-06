@@ -684,6 +684,14 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		})
 	}
 	minSpace := minBuilder.Build()
+	// The same orthogonal available block size layoutInlineChildren gives
+	// the line (computeOrthogonalAvailableBlock, from the container's own
+	// block size), so an orthogonal atomic is sized against what it is laid
+	// out against.
+	nodeGeom := ComputeFragmentGeometry(node.Style(), wdm, space.PercentageResolutionInlineSize)
+	ownBlock, hasOwnBlock := ResolveBlockSize(node.Style(), wdm, space, nodeGeom)
+	minSpace.OrthogonalAvailableBlock = computeOrthogonalAvailableBlock(node.Style(), wdm, space, nodeGeom, ctx,
+		minAvailBlock, hasOwnBlock, ownBlock.Float64())
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
 	var line LineInfo
@@ -724,6 +732,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		})
 	}
 	maxSpace := maxBuilder.Build()
+	maxSpace.OrthogonalAvailableBlock = minSpace.OrthogonalAvailableBlock
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	cbDirection := node.Style().GetDirection()

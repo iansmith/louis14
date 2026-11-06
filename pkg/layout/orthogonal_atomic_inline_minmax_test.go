@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 )
 
 // An orthogonal atomic inline contributes its block size to its line's
@@ -98,18 +99,19 @@ func TestOrthogonalAtomicInlineRound2(t *testing.T) {
 				}
 				return ""
 			}},
-		// Sizing and layout give the orthogonal child the same available
-		// inline size (the 100px-wide vertical-lr ancestor's block size), so
-		// its text wraps the same way in both: three lines, 60 tall, and the
-		// parent sized to that.
-		{"same available inline size", `<div style="width:100px"><div id=p style="display:inline-block"><div id=c style="display:inline-block; writing-mode:horizontal-tb">` + atoms + `</div></div></div>`,
-			func(fl fallbackLayout) string {
-				p, c := findBox(fl.root, byID("p")), findBox(fl.root, byID("c"))
-				if p == nil || c == nil || c.Height != 60 || p.Height != c.Height {
-					return "parent " + boxDims(p) + ", child " + boxDims(c) + ", want both 60 tall"
-				}
-				return ""
-			}},
+		// Sizing and layout give the orthogonal child one available inline
+		// size, so its atoms wrap the same way in both and the parent's
+		// inline size (height) is the child's height. With the parent's
+		// block size indefinite that is Blink's orthogonal fallback, the ICB
+		// clamped by the parent's own fixed block size
+		// (SetOrthogonalFallbackInlineSizeIfNeeded, block_node.cc:1469 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a 100px-wide ancestor
+		// does not narrow it (one line, 20), the parent's own width:100px
+		// does (three lines, 60).
+		{"100px ancestor", `<div style="width:100px"><div id=p style="display:inline-block"><div id=c style="display:inline-block; writing-mode:horizontal-tb">` + atoms + `</div></div></div>`,
+			sameHeight(20)},
+		{"100px parent", `<div id=p style="display:inline-block; width:100px"><div id=c style="display:inline-block; writing-mode:horizontal-tb">` + atoms + `</div></div>`,
+			sameHeight(60)},
 	} {
 		fl := layoutFallbackHTML(t, `<!DOCTYPE html><html style="writing-mode:vertical-lr"><body style="margin:0; font-size:0; line-height:0">`+tc.html+`</body></html>`, nil)
 		if msg := tc.check(fl); msg != "" {
@@ -118,21 +120,61 @@ func TestOrthogonalAtomicInlineRound2(t *testing.T) {
 	}
 }
 
+// sameHeight checks that the parent #p, sized to its orthogonal child #c,
+// is as tall as #c, and that both are want tall.
+func sameHeight(want float64) func(fl fallbackLayout) string {
+	return func(fl fallbackLayout) string {
+		p, c := findBox(fl.root, byID("p")), findBox(fl.root, byID("c"))
+		if p == nil || c == nil || c.Height != want || p.Height != c.Height {
+			return "parent " + boxDims(p) + ", child " + boxDims(c) + ", want both " + strconv.FormatFloat(want, 'f', -1, 64) + " tall"
+		}
+		return ""
+	}
+}
+
 // A ruby base is broken by a max-content sub-line breaker during layout,
 // but that is not an intrinsic-sizing pass: Blink keys sizing on the root
 // breaker's mode (LineBreaker, inline/line_breaker.cc:3092-3096 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So an orthogonal atomic in a
-// ruby base is laid out, and margins resolve as in layout.
-func TestOrthogonalAtomicInRubyBaseIsLaidOut(t *testing.T) {
-	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:20px"><div style="width:400px"><ruby>`+
-		`<span id=o style="display:inline-block; writing-mode:vertical-rl; width:30px; height:20px"></span>`+
-		`<span id=m style="display:inline-block; width:10px; height:10px; margin-left:10%"></span>`+
-		`<rt>a</rt></ruby></div></body>`, nil)
-	o, m := findBox(fl.root, byID("o")), findBox(fl.root, byID("m"))
-	if o == nil || o.Width != 30 || o.Height != 20 {
-		t.Errorf("orthogonal atomic in a ruby base %s, want laid out 30x20", boxDims(o))
-	}
-	if o != nil && m != nil && m.X-(o.X+o.Width) == 0 {
-		t.Errorf("atomic after it at %s: its 10%% margin-left resolved to 0", boxDims(m))
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So during layout an atomic in
+// a ruby base, orthogonal or not, is laid out: its item result carries a
+// layout result.
+func TestAtomicInRubyBaseIsLaidOut(t *testing.T) {
+	for _, wm := range []string{"horizontal-tb", "vertical-rl"} {
+		atom := makeNode("span")
+		rtText := &html.Node{Type: html.TextNode, Text: "a"}
+		rt := makeNode("rt", rtText)
+		ruby := makeNode("ruby", atom, rt)
+		root := makeNode("div", ruby)
+		atomStyle := css.NewStyle()
+		atomStyle.Properties["display"] = "inline-block"
+		atomStyle.Properties["writing-mode"] = wm
+		atomStyle.Properties["width"] = "30px"
+		atomStyle.Properties["height"] = "20px"
+		rubyStyle := css.NewStyle()
+		rubyStyle.Properties["display"] = "ruby"
+		rtStyle := css.NewStyle()
+		rtStyle.Properties["display"] = "ruby-text"
+		data := collectForNodes(t, root, map[*html.Node]*css.Style{root: css.NewStyle(), ruby: rubyStyle, atom: atomStyle, rt: rtStyle})
+		wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+		space := NewConstraintSpaceBuilder(wdm, wdm, false).
+			SetAvailableSize(LogicalSize{InlineSize: 400, BlockSize: Indefinite}).
+			SetPercentageResolutionInlineSize(400).Build()
+		lb := NewLineBreaker(data, testContext(), space, text.DefaultFontConfig(), LineBreakerContent)
+		var line LineInfo
+		lb.NextLine(&line)
+		found := false
+		for _, col := range line.RubyColumns {
+			for _, r := range col.BaseLine.Results {
+				if r.Item != nil && r.Item.Type == InlineItemAtomicInline {
+					found = true
+					if r.LayoutResult == nil {
+						t.Errorf("%s atomic in a ruby base has no layout result", wm)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: no atomic in a ruby base sub-line", wm)
+		}
 	}
 }
