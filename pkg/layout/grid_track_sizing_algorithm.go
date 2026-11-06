@@ -521,3 +521,60 @@ func (a *gridTrackSizingAlgorithm) resolveIntrinsicTrackSizes(items []*gridSizin
 		}
 	}
 }
+
+// totalTrackSize is the sum of the base sizes and the gutters between
+// them (GridSizingTrackCollection::TotalTrackSize).
+func (a *gridTrackSizingAlgorithm) totalTrackSize() float64 {
+	total := 0.0
+	for i := range a.sets {
+		total += a.sets[i].baseSize
+	}
+	if n := len(a.sets); n > 1 {
+		total += a.gutter * float64(n-1)
+	}
+	return total
+}
+
+// determineFreeSpace mirrors DetermineFreeSpace (:1303-1329): what is left
+// of a definite available size when sizing for layout, infinite under a
+// max-content constraint, and zero under a min-content constraint.
+func (a *gridTrackSizingAlgorithm) determineFreeSpace() float64 {
+	switch a.constraint {
+	case gridSizingMaxContent:
+		return gridIndefinite
+	case gridSizingMinContent:
+		return 0
+	}
+	if a.available == gridIndefinite {
+		return gridIndefinite
+	}
+	return max(0, a.available-a.totalTrackSize())
+}
+
+// setIndefiniteGrowthLimitsToBaseSize mirrors
+// GridSizingTrackCollection::SetIndefiniteGrowthLimitsToBaseSize
+// (grid_track_collection.cc:1073-1078).
+func (a *gridTrackSizingAlgorithm) setIndefiniteGrowthLimitsToBaseSize() {
+	for i := range a.sets {
+		if a.sets[i].growthLimit == gridIndefinite {
+			a.sets[i].growthLimit = a.sets[i].baseSize
+		}
+	}
+}
+
+// maximizeTracks mirrors MaximizeTracks (:1024-1052): positive free space is
+// distributed equally to the base sizes, each freezing at its growth limit.
+func (a *gridTrackSizingAlgorithm) maximizeTracks() {
+	free := a.determineFreeSpace()
+	if free == 0 {
+		return
+	}
+	toGrow := make([]*gridSet, len(a.sets))
+	for i := range a.sets {
+		toGrow[i] = &a.sets[i]
+	}
+	distributeExtraSpaceToSets(free, 0, gridForFreeSpace, toGrow, nil)
+	for _, s := range toGrow {
+		s.increaseBaseSize(s.baseSize + s.itemIncurredIncrease)
+	}
+}

@@ -115,3 +115,30 @@ func TestResolveIntrinsicTrackSizes(t *testing.T) {
 		}
 	}
 }
+
+// MaximizeTracks (grid_track_sizing_algorithm.cc:1024-1052 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): free space grows base sizes
+// equally up to their growth limits; under a max-content constraint they
+// reach their limits, and under a min-content one they stay.
+func TestMaximizeTracks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		constraint gridSizingConstraint
+		available  float64
+		want       [2]float64
+	}{
+		{"layout, room for both", gridSizingLayout, 500, [2]float64{100, 60}},
+		{"layout, the smaller freezes", gridSizingLayout, 150, [2]float64{90, 60}},
+		{"max-content", gridSizingMaxContent, gridIndefinite, [2]float64{100, 60}},
+		{"min-content", gridSizingMinContent, gridIndefinite, [2]float64{20, 20}},
+	} {
+		a := &gridTrackSizingAlgorithm{sets: newGridSets([]css.GridTrack{{Auto: true}, {Auto: true}}, tc.available),
+			constraint: tc.constraint, available: tc.available}
+		a.resolveIntrinsicTrackSizes([]*gridSizingItem{{start: 0, end: 1, minContent: 20, maxContent: 100}, {start: 1, end: 2, minContent: 20, maxContent: 60}})
+		a.setIndefiniteGrowthLimitsToBaseSize()
+		a.maximizeTracks()
+		if got := [2]float64{a.sets[0].baseSize, a.sets[1].baseSize}; got != tc.want {
+			t.Errorf("%s: base sizes %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
