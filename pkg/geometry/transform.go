@@ -296,6 +296,22 @@ func (t Transform) IsIdentityOrTranslation() bool {
 	return !t.fullMatrix || t.matrix.IsIdentityOrTranslation()
 }
 
+// IsIdentityOrIntegerTranslation mirrors
+// gfx::Transform::IsIdentityOrIntegerTranslation (ui/gfx/geometry/
+// transform.cc:391-410 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a
+// translation whose x, y and z are all integers.
+func (t Transform) IsIdentityOrIntegerTranslation() bool {
+	if !t.IsIdentityOrTranslation() {
+		return false
+	}
+	for _, v := range [3]float64{t.Rc(0, 3), t.Rc(1, 3), t.Rc(2, 3)} {
+		if v != math.Trunc(v) || math.Abs(v) > math.MaxInt32 {
+			return false
+		}
+	}
+	return true
+}
+
 // IsScaleOrTranslation mirrors gfx::Transform::IsScaleOrTranslation.
 func (t Transform) IsScaleOrTranslation() bool {
 	return !t.fullMatrix || t.matrix.IsScaleOrTranslation()
