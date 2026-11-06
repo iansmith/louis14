@@ -564,8 +564,15 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	rowTracks = gla.expandAutoFillFit(rowTracks, explicitBlockSize, rowGap)
 
 	// Resolve explicit placements from grid-column/grid-row/grid-area.
+	// The explicit grid is as large as its template areas too
+	// (GridLineResolver::ExplicitGridColumnCount / RowCount,
+	// grid_line_resolver.cc:525-555 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	explicitCols, explicitRows := len(colTracks), len(rowTracks)
+	for _, area := range namedAreas {
+		explicitCols, explicitRows = max(explicitCols, area.ColEnd-1), max(explicitRows, area.RowEnd-1)
+	}
 	lines := gridLineResolver{
-		explicitCols: len(colTracks), explicitRows: len(rowTracks),
+		explicitCols: explicitCols, explicitRows: explicitRows,
 		colLineNames: colLineNames, rowLineNames: rowLineNames, namedAreas: namedAreas,
 	}
 	for _, item := range items {
@@ -1552,23 +1559,21 @@ func (gla *GridLayoutAlgorithm) PlaceOutOfFlowItems(builder *BoxFragmentBuilder,
 
 // outOfFlowLines resolves an out-of-flow box's lines in one axis to 0-based
 // indices, -1 for the padding edge: a line is kept when its longhand is not
-// auto and it lies within the grid. Mirrors
+// auto and it lies within the grid; a line before the grid is the padding
+// edge, the other line kept. Mirrors
 // GridPlacement::ResolveOutOfFlowItemGridLines (core/layout/grid/
 // grid_placement.cc:659-703 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (g gridTrackGeometry) outOfFlowLines(style *css.Style, columns bool, trackCount int) (start, end int) {
 	start, end = -1, -1
-	span := g.lines.resolve(style, columns)
+	initial, final := placementLonghands(style, columns)
+	span := g.lines.resolveLines(initial, final, columns)
 	if !span.definite {
 		return start, end
 	}
-	startProp, endProp := "grid-row-start", "grid-row-end"
-	if columns {
-		startProp, endProp = "grid-column-start", "grid-column-end"
-	}
-	if !style.GetGridLine(startProp).Auto && span.start <= trackCount {
+	if !initial.Auto && span.start >= 0 && span.start <= trackCount {
 		start = span.start
 	}
-	if !style.GetGridLine(endProp).Auto && span.end <= trackCount {
+	if !final.Auto && span.end >= 0 && span.end <= trackCount {
 		end = span.end
 	}
 	return start, end

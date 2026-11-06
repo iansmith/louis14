@@ -3146,7 +3146,7 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 // varDeferredShorthands lists the shorthands expandShorthand leaves
 // unexpanded when their declared value contains var() — substitution can't
 // happen at parse time because custom properties resolve in the cascade.
-// Must stay in sync with the var() switch at the top of expandShorthand.
+// expandShorthand and reexpandVarShorthands both read this list.
 var varDeferredShorthands = []string{
 	"margin", "padding", "border", "border-top", "border-right",
 	"border-bottom", "border-left", "border-width", "border-style",

@@ -10,7 +10,7 @@ import "louis14/pkg/css"
 // ported: a name with more than one line (louis14 keeps the first; an nth
 // line past it counts on into the implicit grid), named spans (as an
 // unnamed span of the same count), and implicit tracks before the explicit
-// grid (lines before line 0 clamp to it).
+// grid (resolve clamps an in-flow span to start at line 0).
 type gridLineResolver struct {
 	explicitCols, explicitRows int
 	colLineNames, rowLineNames map[string]int // 1-based lines
@@ -112,15 +112,19 @@ func resolveAgainstOpposite(opposite int, p css.GridLine, startSide bool) gridSp
 	return gridSpan{start: opposite, end: opposite + n, definite: true}
 }
 
-// resolve is the item's placement in one axis
-// (ResolveGridPositionsFromStyle, :827-877, with
-// InitialAndFinalPositionsFromStyle's error handling, :417-440).
-func (r gridLineResolver) resolve(style *css.Style, columns bool) gridSpan {
-	startProp, endProp := "grid-row-start", "grid-row-end"
+// placementLonghands is an item's start and end lines in one axis.
+func placementLonghands(style *css.Style, columns bool) (start, end css.GridLine) {
 	if columns {
-		startProp, endProp = "grid-column-start", "grid-column-end"
+		return style.GetGridLine("grid-column-start"), style.GetGridLine("grid-column-end")
 	}
-	initial, final := style.GetGridLine(startProp), style.GetGridLine(endProp)
+	return style.GetGridLine("grid-row-start"), style.GetGridLine("grid-row-end")
+}
+
+// resolveLines is a placement in one axis, its lines untranslated: one
+// before the explicit grid is negative (ResolveGridPositionsFromStyle,
+// :827-877, with InitialAndFinalPositionsFromStyle's error handling,
+// :417-440).
+func (r gridLineResolver) resolveLines(initial, final css.GridLine, columns bool) gridSpan {
 	if initial.Span && final.Span {
 		final = css.GridLine{Auto: true}
 	}
@@ -156,10 +160,19 @@ func (r gridLineResolver) resolve(style *css.Style, columns bool) gridSpan {
 		}
 		span = gridSpan{start: start, end: end, definite: true}
 	}
-	// No implicit tracks before the explicit grid in louis14.
-	if span.start < 0 {
-		span.end, span.start = max(span.end-span.start, 1), 0
-	}
 	span.size = span.end - span.start
+	return span
+}
+
+// resolve is an in-flow item's placement in one axis. louis14 has no
+// implicit tracks before the explicit grid, so a definite span is clamped
+// to [0, end), and to one track when its end is before line 0.
+func (r gridLineResolver) resolve(style *css.Style, columns bool) gridSpan {
+	initial, final := placementLonghands(style, columns)
+	span := r.resolveLines(initial, final, columns)
+	if span.definite && span.start < 0 {
+		span.start, span.end = 0, max(span.end, 1)
+		span.size = span.end
+	}
 	return span
 }

@@ -9628,10 +9628,13 @@ func (l GridLine) IsCustomIdent() bool {
 	return !l.Auto && !l.Span && l.Integer == 0 && l.Name != ""
 }
 
-// ParseGridLine parses a <grid-line> value: `auto`; `span` with an integer
-// of at least 1 and/or a <custom-ident>, in any order; or a non-zero
-// integer and/or a <custom-ident>, in any order. A bare `span`, a repeated
-// part or any other token is invalid.
+// ParseGridLine parses a <grid-line> value: `auto`; `span`, first or last,
+// with an integer of at least 1 and/or a <custom-ident> in any order; or a
+// non-zero integer and/or a <custom-ident> in any order. A bare `span`, a
+// repeated part or any other token is invalid. Integers clamp to
+// GridMaxTracks, as StyleBuilderConverter::ConvertGridPosition clamps them
+// (core/css/resolver/style_builder_converter.cc:1586-1591 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func ParseGridLine(v string) (GridLine, bool) {
 	tokens := strings.Fields(v)
 	if len(tokens) == 1 && strings.EqualFold(tokens[0], "auto") {
@@ -9639,10 +9642,10 @@ func ParseGridLine(v string) (GridLine, bool) {
 	}
 	var l GridLine
 	hasInteger := false
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		switch n, err := strconv.Atoi(tok); {
 		case strings.EqualFold(tok, "span"):
-			if l.Span {
+			if l.Span || (i != 0 && i != len(tokens)-1) {
 				return GridLine{}, false
 			}
 			l.Span = true
@@ -9670,6 +9673,7 @@ func ParseGridLine(v string) (GridLine, bool) {
 	case !l.Span && hasInteger && l.Integer == 0:
 		return GridLine{}, false
 	}
+	l.Integer = max(-GridMaxTracks, min(l.Integer, GridMaxTracks))
 	return l, true
 }
 

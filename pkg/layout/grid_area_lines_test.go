@@ -105,8 +105,8 @@ func TestGridLinesOutsideTheExplicitGrid(t *testing.T) {
 		{"abspos -5 / 2", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:-5 / 2`, 0, 10},
 		{"abspos span 2 / 1", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:span 2 / 1`, 0, 0},
 		{"abspos 2 / -5", `grid-template-columns:10px 20px 30px; position:relative`, `position:absolute; inset:0; grid-column:2 / -5`, 0, 10},
-		{"areas widen the explicit grid", `width:100px; grid-template-columns:10px; grid-template-areas:"a b c"`, `grid-column:2 / -1`, 10, 90},
-		{"areas alone", `width:90px; grid-template-areas:"a b c"`, `grid-column:-2 / -1`, 60, 30},
+		{"areas widen the explicit grid", `width:100px; grid-template-columns:10px; grid-template-areas:'a b c'`, `grid-column:2 / -1`, 10, 90},
+		{"areas alone", `width:90px; grid-template-areas:'a b c'`, `grid-column:-2 / -1`, 60, 30},
 	} {
 		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="width:200px"><div style="display:grid; grid-auto-rows:10px; `+tc.grid+`">`+
 			`<div id=c style="height:10px; `+tc.item+`"></div></div></div></body>`, nil)
