@@ -366,7 +366,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// 200px wide instead of becoming a 100px square (grid-in-table-cell-with-img).
 			if !stretchInline && isAutoOrUnsetInline(item.style, wdm) &&
 				!gla.replacedHasNaturalSize(item.node, wdm, true) {
-				ar := item.style.GetAspectRatio()
+				ar := boxAspectRatio(gla.ctx, item.node, item.style)
 				if !ar.IsSet {
 					// Reuse the ShrinkToFit inline size from the first-pass fragment.
 					// Aspect-ratio items are excluded: CalculateInitialFragmentGeometry

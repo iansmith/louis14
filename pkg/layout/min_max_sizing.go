@@ -1038,17 +1038,9 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		transferred := false
 		var childMin, childMax float64
 		if willStretch && isRow && hasDefiniteCross {
-			ar := childStyle.GetAspectRatio()
+			// A replaced item's natural ratio wins over `auto && <ratio>`.
+			ar := boxAspectRatio(ctx, child, childStyle)
 			hasAR := ar.IsSet && ar.Width > 0 && ar.Height > 0
-
-			// Also check replaced elements for intrinsic aspect ratio.
-			if !hasAR && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-				info := GetNaturalSizingInfo(ctx, child)
-				if !info.AspectRatio.IsEmpty() {
-					hasAR = true
-					ar = css.AspectRatio{IsSet: true, Width: info.ratio(), Height: 1}
-				}
-			}
 
 			if hasAR {
 				// Cross content size = container cross - item cross border/padding/margins.
