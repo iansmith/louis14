@@ -988,7 +988,10 @@ func (gla *GridLayoutAlgorithm) remeasureBlockSizeDependentItems(items []*gridIt
 	for _, it := range colSizing {
 		if childWDM := NewWritingDirectionMode(it.item.style); wdm.IsOrthogonalTo(childWDM) {
 			rows := gla.spannedSize(rowSizes, it.item.rowStart, min(it.item.rowEnd, len(rowSizes)), rowGap)
-			c := orthogonalFlowRootContribution(gla.ctx, it.item.node, childWDM, gla.space, rows, gla.space.OrthogonalFallbackBlockSize) +
+			// Against its grid area: its rows' span is its available and
+			// percentage block size (CreateConstraintSpaceForMeasure,
+			// grid_layout_algorithm.cc:1460-1500).
+			c := orthogonalFlowRootContribution(gla.ctx, it.item.node, childWDM, gla.space, rows, rows, gla.space.OrthogonalFallbackBlockSize) +
 				ResolveMargins(it.item.style, wdm, 0).InlineSum()
 			cp := *it
 			cp.minContent, cp.maxContent = c, c

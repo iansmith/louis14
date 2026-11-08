@@ -878,6 +878,11 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 //   - max-content = max of items' max-content inline sizes (cross = inline)
 //   - min-content = max of items' min-content inline sizes
 func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	// An orthogonal item is measured against the flex container's own
+	// available and percentage block size (BuildSpaceForIntrinsicInlineSize,
+	// flex_layout_algorithm.cc:672-682 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	flexChildBlock := resolveNodeBlockSizeForPercent(node, space)
 	style := node.Style()
 	wdm := space.WritingDirection
 
@@ -1068,7 +1073,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				// block-axis. Use measureOrthogonalChild, which lays out the
 				// child and returns its block-size (+ parent-WDM inline margins)
 				// as the contribution to the parent's inline/main axis.
-				oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space)
+				oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildBlock, flexChildBlock)
 				childMin = oMin
 				childMax = oMax
 			} else if isRow {
@@ -1146,7 +1151,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				// parent's inline-size, so we need measureOrthogonalChild.
 				isOrthogonal := wdm.IsOrthogonalTo(childWDM)
 				if isOrthogonal {
-					oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space)
+					oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildBlock, flexChildBlock)
 					childMin = oMin
 					childMax = oMax
 				} else {
@@ -1204,7 +1209,11 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 	if containerWDM.IsOrthogonalTo(childWDM) {
 		// Orthogonal: block-size becomes inline contribution to parent.
 		// measureOrthogonalChild already includes margins in its return value.
-		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+		// Measured against the item's grid area, whose rows are not sized
+		// yet: indefinite (CreateConstraintSpaceForMeasure,
+		// grid_layout_algorithm.cc:1460-1500); the additional column pass
+		// measures it again against its rows.
+		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
 		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
@@ -1552,7 +1561,11 @@ func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space C
 	parentWDM := space.WritingDirection
 	childWDM := NewWritingDirectionMode(childStyle)
 	if parentWDM.IsOrthogonalTo(childWDM) {
-		return measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
+		// The block's own available and percentage block size
+		// (MinMaxConstraintSpaceBuilder with ChildAvailableSize() and
+		// PercentageSizeForChild(), block_layout_algorithm.cc:459-462 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space, nodeBlockSize, nodeBlockSize)
 	}
 	childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
 	childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)
@@ -1571,9 +1584,10 @@ func measureOrthogonalChild(
 	childWDM, parentWDM WritingDirectionMode,
 	ctx *LayoutContext,
 	space ConstraintSpace,
+	availBlock, pctBlock float64,
 ) (minContrib, maxContrib float64) {
 	contribution := orthogonalFlowRootContribution(ctx, child, childWDM, space,
-		space.AvailableSize.BlockSize.Float64(), space.OrthogonalFallbackBlockSize)
+		availBlock, pctBlock, space.OrthogonalFallbackBlockSize)
 	contribution += ResolveMargins(childStyle, parentWDM, 0).InlineSum()
 	return contribution, contribution
 }
@@ -1593,14 +1607,13 @@ func measureOrthogonalChild(
 // are not included. The layout stores nothing on the box, and its result is
 // cached per space, which also detects cycles: on one, the orthogonal
 // fallback size stands in.
-func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, childWDM WritingDirectionMode, parentSpace ConstraintSpace, availBlock, fallbackBlock float64) float64 {
+func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, childWDM WritingDirectionMode, parentSpace ConstraintSpace, availBlock, pctBlock, fallbackBlock float64) float64 {
 	fallback := orthogonalFallbackSize(childWDM, ctx)
 	if _, isCycle := ctx.GetOrthogonalLayout(node); isCycle {
 		return fallback
 	}
-	pct := parentSpace.PercentageResolutionSize
 	key := orthogonalContributionSpace{availBlock, fallback, fallbackBlock,
-		pct.BlockSize.Float64(), parentSpace.PercentageResolutionInlineSize}
+		pctBlock, parentSpace.PercentageResolutionInlineSize}
 	if c, ok := ctx.orthogonalContributions[node]; ok && c.space == key {
 		return c.contribution
 	}
@@ -1611,7 +1624,7 @@ func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, c
 		SetPercentageResolutionInlineSize(parentSpace.PercentageResolutionInlineSize).
 		// MinMaxConstraintSpaceBuilder::SetPercentageResolutionBlockSize,
 		// constraint_space_builder.h:743-745.
-		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: pct.BlockSize.Float64()}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: pctBlock}).
 		Build()
 	ctx.SetOrthogonalComputing(node)
 	enableSideEffects := ctx.DisableLayoutSideEffects()

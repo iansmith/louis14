@@ -2627,5 +2627,5 @@ func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
 // atomicAvailableBlock gives it.
 func (lb *LineBreaker) orthogonalAtomicInlineContribution(item *InlineItem, childWDM WritingDirectionMode) float64 {
 	return orthogonalFlowRootContribution(lb.ctx, item.LayoutNode, childWDM, lb.space,
-		lb.atomicAvailableBlock(true), lb.orthogonalFallbackBlockSize())
+		lb.atomicAvailableBlock(true), lb.space.PercentageResolutionSize.BlockSize.Float64(), lb.orthogonalFallbackBlockSize())
 }
