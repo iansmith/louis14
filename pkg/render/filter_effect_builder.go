@@ -370,13 +370,18 @@ func splitFilterRef(raw string) (docURL, fragID string) {
 			v = v[1 : len(v)-1]
 		}
 	}
+	return splitURLFragment(v)
+}
+
+// splitURLFragment splits a URL at its fragment: the document part (empty
+// for a same-document reference) and the fragment id (empty when there is
+// none, which no filter reference resolves).
+func splitURLFragment(v string) (docURL, fragID string) {
 	if v == "" {
 		return "", ""
 	}
 	hashIdx := strings.IndexByte(v, '#')
 	if hashIdx < 0 {
-		// No fragment — for filter references, the fragment is required;
-		// caller will fail to find a `<filter>` element and return nil.
 		return v, ""
 	}
 	return v[:hashIdx], v[hashIdx+1:]

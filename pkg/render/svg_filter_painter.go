@@ -358,16 +358,37 @@ func buildSVGFilterElementGraph(pctx *svgPaintContext, filter *svg.SVGResourceFi
 	return graph, region, graph != nil
 }
 
+// memoizeFetch returns fetch remembering each URI's result, for one paint;
+// nil stays nil.
+func memoizeFetch(fetch func(string) ([]byte, error)) func(string) ([]byte, error) {
+	if fetch == nil {
+		return nil
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	seen := map[string]result{}
+	return func(uri string) ([]byte, error) {
+		if r, ok := seen[uri]; ok {
+			return r.data, r.err
+		}
+		data, err := fetch(uri)
+		seen[uri] = result{data, err}
+		return data, err
+	}
+}
+
 // hasUserSpaceFilterRegion reports whether a url() stage of ops resolves to
 // a <filter> whose region is userSpaceOnUse, independent of the element's
 // box.
-func hasUserSpaceFilterRegion(pctx *svgPaintContext, ops []css.FilterFunction) bool {
+func hasUserSpaceFilterRegion(pctx *svgPaintContext, ops []css.FilterFunction, fetch func(string) ([]byte, error)) bool {
 	for _, op := range ops {
 		if op.Name != "url" {
 			continue
 		}
 		docURL, fragID := splitFilterRef(op.URL.Absolute)
-		if f := resolveSVGFilterRef(pctx, docURL, fragID); f != nil && f.FilterUnits == svg.SVGUnitUserSpaceOnUse {
+		if f := resolveSVGFilterRefWith(pctx, fetch, docURL, fragID); f != nil && f.FilterUnits == svg.SVGUnitUserSpaceOnUse {
 			return true
 		}
 	}
@@ -397,7 +418,10 @@ func buildSVGFilterChain(pctx *svgPaintContext, ops []css.FilterFunction, refere
 	// a few pixels wide, unless a url() stage has a region of its own:
 	// Blink installs a filter on any element, and a userSpaceOnUse
 	// <filter> region does not depend on the element's box.
-	if paintBox.Empty() && !hasUserSpaceFilterRegion(pctx, ops) {
+	// The guard and the chain fetch an external document through one
+	// memoized fetcher, so each is fetched once.
+	fetch := memoizeFetch(pctx.Renderer.externalSVGFetcher)
+	if paintBox.Empty() && !hasUserSpaceFilterRegion(pctx, ops, fetch) {
 		return nil, image.Rectangle{}, false
 	}
 	builder := &FilterEffectBuilder{
@@ -406,7 +430,7 @@ func buildSVGFilterChain(pctx *svgPaintContext, ops []css.FilterFunction, refere
 		UserSpaceOrigin:    &userOrigin,
 		CurrentColor:       currentColor,
 		Resources:          pctx.Resources,
-		ExternalSVGFetcher: pctx.Renderer.externalSVGFetcher,
+		ExternalSVGFetcher: fetch,
 		ImageFetcher:       pctx.Renderer.imageFetcher,
 	}
 	graph = builder.BuildFilterEffect(ops)

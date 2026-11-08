@@ -3,7 +3,6 @@ package render
 import (
 	"image"
 	"math"
-	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -279,6 +278,15 @@ func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGReso
 // resolveSVGFilterRef resolves a url()'s document and fragment to an
 // SVGResourceFilter, as resolveSVGFilterValue does.
 func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
+	if pctx.Renderer == nil {
+		return resolveSVGFilterRefWith(pctx, nil, docURL, fragID)
+	}
+	return resolveSVGFilterRefWith(pctx, pctx.Renderer.externalSVGFetcher, docURL, fragID)
+}
+
+// resolveSVGFilterRefWith is resolveSVGFilterRef fetching an external
+// document through fetch.
+func resolveSVGFilterRefWith(pctx *svgPaintContext, fetch func(string) ([]byte, error), docURL, fragID string) *svg.SVGResourceFilter {
 	if fragID == "" {
 		return nil
 	}
@@ -295,10 +303,10 @@ func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGR
 	}
 
 	// External: fetch + parse + build SVGResourceFilter on the fly.
-	if pctx.Renderer == nil {
+	if fetch == nil {
 		return nil
 	}
-	return externalSVGFilter(pctx.Renderer.externalSVGFetcher, docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
+	return externalSVGFilter(fetch, docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
 }
 
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
@@ -306,41 +314,14 @@ func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGR
 // `url(support/x.svg#f)`). Returns docURL and fragID; ok=false if the
 // value isn't a lone `url(...)`.
 func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
-	v := strings.TrimSpace(val)
-	// Case-insensitive `url(` prefix without allocating a lowered copy.
-	if len(v) < 4 || !strings.EqualFold(v[:4], "url(") {
+	// A lone url() is the whole value; anything after it makes a filter
+	// list (url() followed by functions), which the chain path builds. A
+	// malformed url() is a bad-url token: no filter.
+	url, rest, ok := css.ConsumeURL(val)
+	if !ok || rest != "" {
 		return "", "", false
 	}
-	// The url() token ends at its first ')' outside quotes and not escaped
-	// by a backslash (CSS Syntax 3 §4.3.6). A backslash escapes the next
-	// character literally; hex escapes (§4.3.7) are not decoded. Anything after it makes
-	// the value a filter list (url() followed by functions), which the
-	// chain path builds; a lone url() is the whole value.
-	var inner strings.Builder
-	closeIdx, quote := -1, byte(0)
-	for i := 4; i < len(v) && closeIdx < 0; i++ {
-		switch c := v[i]; {
-		case c == '\\' && i+1 < len(v):
-			i++
-			inner.WriteByte(v[i])
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			} else {
-				inner.WriteByte(c)
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == ')':
-			closeIdx = i
-		default:
-			inner.WriteByte(c)
-		}
-	}
-	if closeIdx < 0 || strings.TrimSpace(v[closeIdx+1:]) != "" {
-		return "", "", false
-	}
-	docURL, fragID = splitFilterRef(strings.TrimSpace(inner.String()))
+	docURL, fragID = splitURLFragment(url)
 	return docURL, fragID, true
 }
 

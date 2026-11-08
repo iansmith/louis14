@@ -4800,41 +4800,15 @@ func splitDeclarationParts(declStr string) []string {
 // - Trailing whitespace after hex escape is consumed
 func unescapeCSS(s string) string {
 	var result strings.Builder
-	i := 0
-	for i < len(s) {
+	for i := 0; i < len(s); {
 		if s[i] != '\\' || i+1 >= len(s) {
 			result.WriteByte(s[i])
 			i++
 			continue
 		}
-		// Found backslash - check what follows
-		i++ // skip backslash
-		// Check for hex escape (1-6 hex digits)
-		hexStart := i
-		for i < len(s) && i-hexStart < 6 && isHexDigit(s[i]) {
-			i++
-		}
-		if i > hexStart {
-			// Parse hex value
-			hexStr := s[hexStart:i]
-			codePoint, _ := strconv.ParseInt(hexStr, 16, 32)
-			// CSS Syntax §4.3.8 "Consume an escaped code point": if the number
-			// is zero, a surrogate (0xD800-0xDFFF), or greater than the maximum
-			// allowed code point (0x10FFFF), return U+FFFD REPLACEMENT CHARACTER.
-			if codePoint == 0 || (codePoint >= 0xD800 && codePoint <= 0xDFFF) || codePoint > 0x10FFFF {
-				result.WriteRune('�')
-			} else {
-				result.WriteRune(rune(codePoint))
-			}
-			// Consume one trailing whitespace if present
-			if i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f') {
-				i++
-			}
-		} else {
-			// Single character escape - just output the character
-			result.WriteByte(s[i])
-			i++
-		}
+		r, n := consumeEscape(s[i+1:])
+		result.WriteRune(r)
+		i += 1 + n
 	}
 	return result.String()
 }

@@ -74,6 +74,9 @@ type SVGViewportContainer struct {
 	// boxes caches the children's bounding boxes in the nested viewport's
 	// local (viewBox) space: inside its LocalTransform.
 	boxes containerBoxes
+	// parent is the node this one was appended to, whose boxes depend on
+	// its own (invalidateBoxes).
+	parent boxCache
 }
 
 // NewSVGViewportContainer constructs a nested-<svg> container by
@@ -154,8 +157,18 @@ func (v *SVGViewportContainer) AppendChild(child SVGNode) {
 		return
 	}
 	v.Children = append(v.Children, child)
-	v.boxes.filled = false
+	setBoxParent(child, v)
+	v.invalidateBoxes()
 }
+
+func (v *SVGViewportContainer) invalidateBoxes() {
+	v.boxes.filled = false
+	if v.parent != nil {
+		v.parent.invalidateBoxes()
+	}
+}
+
+func (v *SVGViewportContainer) setParent(p boxCache) { v.parent = p }
 
 // ChildLengthContext returns the SVGLengthContext that the nested
 // <svg>'s children should use for resolving percentage lengths: the
@@ -253,6 +266,9 @@ type SVGContainer struct {
 	// boxes caches the children's bounding boxes in this container's
 	// local space: inside its own transform.
 	boxes containerBoxes
+	// parent is the node this one was appended to, whose boxes depend on
+	// its own (invalidateBoxes).
+	parent boxCache
 }
 
 // NewSVGContainer constructs a container with the identity transform.
@@ -278,7 +294,30 @@ func (c *SVGContainer) AppendChild(child SVGNode) {
 		return
 	}
 	c.Children = append(c.Children, child)
+	setBoxParent(child, c)
+	c.invalidateBoxes()
+}
+
+func (c *SVGContainer) invalidateBoxes() {
 	c.boxes.filled = false
+	if c.parent != nil {
+		c.parent.invalidateBoxes()
+	}
+}
+
+func (c *SVGContainer) setParent(p boxCache) { c.parent = p }
+
+// boxCache is a node caching boxes that depend on its children's
+// (SVGContainer, SVGViewportContainer, SVGRoot): a change below it
+// invalidates them, up to the root.
+type boxCache interface{ invalidateBoxes() }
+
+// setBoxParent records parent on child when child caches boxes of its own,
+// so a change below child invalidates parent's too.
+func setBoxParent(child SVGNode, parent boxCache) {
+	if c, ok := child.(interface{ setParent(boxCache) }); ok {
+		c.setParent(parent)
+	}
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes, each

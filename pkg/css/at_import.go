@@ -60,39 +60,22 @@ func statementAtRulePrelude(rule, keyword string) string {
 	return strings.TrimSpace(rule)
 }
 
-// consumeStringOrURI consumes a leading `url(...)` or quoted string from s
-// (already trimmed), returning its value and the trimmed remainder. The
-// `url` name is ASCII case-insensitive (Blink EqualIgnoringAsciiCase(
-// token.Value(), "url")). Quotes inside `url("...")` are stripped. ok is
-// false when s starts with neither form or the form is unterminated.
-// Shared by @import and @namespace, as Blink's ConsumeStringOrURI is
-// (core/css/parser/css_parser_impl.cc:80, url check :90-91 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
+// consumeStringOrURI consumes a leading url() or quoted string from s
+// (already trimmed), returning its value and the trimmed remainder, as
+// Blink's ConsumeStringOrURI does (core/css/parser/css_parser_impl.cc:80,
+// url check :90-91 @ d4ecdfed88f962439247c2ad36b8fe47805b1520) on its
+// tokenizer's url and string tokens (ConsumeURL, consumeStringToken). ok is
+// false when s starts with neither, or the url() is malformed. Shared by
+// @import and @namespace.
 func consumeStringOrURI(s string) (value, rest string, ok bool) {
-	// url(...) form.
-	if len(s) >= 4 && strings.EqualFold(s[:4], "url(") {
-		closeIdx := strings.Index(s, ")")
-		if closeIdx == -1 {
-			return "", "", false
-		}
-		inner := strings.TrimSpace(s[4:closeIdx])
-		if len(inner) >= 2 {
-			if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
-				(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
-				inner = inner[1 : len(inner)-1]
-			}
-		}
-		return inner, strings.TrimSpace(s[closeIdx+1:]), true
+	if value, rest, ok := ConsumeURL(s); ok {
+		return value, rest, true
 	}
-
-	// Bare string form: "foo" or 'foo', optionally followed by more
-	// prelude (everything after the closing quote).
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
-		if endQuote := strings.IndexByte(s[1:], s[0]); endQuote >= 0 {
-			return s[1 : endQuote+1], strings.TrimSpace(s[endQuote+2:]), true
+		if value, rest, ok := consumeStringToken(s[1:], s[0]); ok {
+			return value, strings.TrimSpace(rest), true
 		}
 	}
-
 	return "", "", false
 }
 

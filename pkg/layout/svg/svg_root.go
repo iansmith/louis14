@@ -103,6 +103,9 @@ type SVGRoot struct {
 // viewBox / user-unit coordinates). Phase 1: empty.
 func (r *SVGRoot) ObjectBoundingBox() geometry.RectF { return r.bbox }
 
+// invalidateBoxes drops the cached stroke box (boxCache).
+func (r *SVGRoot) invalidateBoxes() { r.strokeBoxFilled = false }
+
 // StrokeBoundingBox returns the union of the children's stroke bounding
 // boxes (SVGContentContainer::ComputeStrokeBoundingBox).
 func (r *SVGRoot) StrokeBoundingBox() geometry.RectF {
@@ -223,6 +226,7 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 		node := buildSVGTreeWithResources(child, lengthCtx, styleResolver, root.Resources)
 		if node != nil {
 			root.Children = append(root.Children, node)
+			setBoxParent(node, root)
 		}
 	}
 
