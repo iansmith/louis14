@@ -95,3 +95,24 @@ func TestFETurbulence_SamplesInParameterSpace(t *testing.T) {
 		}
 	}
 }
+
+// A primitive subregion that maps behind the eye (w <= 0) is empty, not
+// absent: the primitive's output is clipped away. Treating it as "no
+// subregion" would flood the whole filter region.
+func TestSVGFilterBuilder_SubregionBehindEyeIsEmpty(t *testing.T) {
+	elt := refBoxElement(false)
+	// w = 1 - x/50: parameter x >= 50 is at or behind the eye.
+	elt.mapping = Mapping{ParamToLayer: geometry.TransformRowMajor(
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, 0,
+		-1.0/50, 0, 0, 1,
+	)}
+	prim := &mockSVGFilterPrimitive{tag: "feflood", attrs: map[string]string{"x": "60", "y": "0", "width": "10", "height": "10"}}
+	out := buildPrimitive(elt, prim).ApplyEffect(nil, elt.region)
+	for i := 3; i < len(out.Pix); i += 4 {
+		if out.Pix[i] != 0 {
+			t.Fatalf("flood painted pixel %d (alpha %d): want nothing for a subregion behind the eye", i/4, out.Pix[i])
+		}
+	}
+}
