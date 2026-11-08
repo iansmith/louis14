@@ -52,3 +52,29 @@ func TestGridRowContributionPercentageHeightIsAuto(t *testing.T) {
 		t.Errorf("#b %s, want y=30 height=70", boxDims(b))
 	}
 }
+
+// With an indefinite block size, rows that depend on the available size
+// (flexible or percentage rows) are sized again at the grid's resolved
+// block size (NeedsAdditionalLayoutPass, grid_layout_utils.cc; the
+// additional pass, grid_layout_algorithm.cc:443-490); under size
+// containment that block size is resolved before rows are sized (:41-55) @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+//   - minmax(0, .5fr) rows: the first pass sizes the row to half the
+//     item's 200 (100); at that 100, the rerun gives the row 50.
+//   - a 1fr row with min-height:100px: 100 at the resolved block size.
+//   - the same contained: 100 too.
+func TestGridRowsRerunAtResolvedBlockSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, grid, items string
+		wantRow2          float64 // #b's y: the first row's size
+	}{
+		{"flexible rerun", `grid-template-rows:minmax(0, .5fr) auto`, `<div style="height:200px"></div><div id=b></div>`, 50},
+		{"1fr into min-height", `min-height:100px; grid-template-rows:1fr auto`, `<div style="height:10px"></div><div id=b></div>`, 100},
+		{"contained 1fr into min-height", `contain:size; min-height:100px; grid-template-rows:1fr auto`, `<div style="height:10px"></div><div id=b></div>`, 100},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; width:100px; `+tc.grid+`">`+tc.items+`</div></body>`, nil)
+		if b := findBox(fl.root, byID("b")); b == nil || b.Y != tc.wantRow2 {
+			t.Errorf("%s: #b %s, want y=%v", tc.name, boxDims(b), tc.wantRow2)
+		}
+	}
+}
