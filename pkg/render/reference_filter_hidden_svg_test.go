@@ -216,7 +216,7 @@ func TestReferenceFilter_ExternalOnSVGShape(t *testing.T) {
 		external := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="inv" ` + attrs + `>` + invertMatrix + `</filter></svg>`
 		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect width="100" height="100" fill="green" filter="url(ext.svg#inv)"/></svg>`, 120, 120,
-			render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(external), nil }))
+			fixedSVGFetcher(external, nil))
 		wantPixelWithinOne(t, img, 50, 50, invertedGreen, "green through the external inverting filter, in sRGB ("+attrs+")")
 	}
 }

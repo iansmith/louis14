@@ -125,7 +125,8 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 	// carries a filter reference. CSS Filter Effects 1 §7 does not
 	// normatively state this; it's implementation behavior the WPT
 	// reftest svg-empty-hidden-foreignobject-with-filter-001 asserts.
-	if trySVGContainerFilterDispatch(pctx, c) {
+	effective := svg.ElementTransform(c, c.Style, c.Viewport)
+	if trySVGContainerFilterDispatch(pctx, c, effective) {
 		return
 	}
 
@@ -136,8 +137,6 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		// which already happened at layout time).
 		return
 	}
-
-	effective := svg.ElementTransform(c, c.Style, c.Viewport)
 
 	guard := pushScopedSVGTransform(pctx, effective, geometry.RectF{})
 	defer guard.Close()

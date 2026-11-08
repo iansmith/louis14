@@ -21,10 +21,10 @@ func TestBuildReferenceFilter_ExternalSVG_DataURL(t *testing.T) {
 
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 100, 100),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			// The fetcher receives docURL (no fragment).
 			return []byte(svg), nil
-		},
+		}),
 	}
 	f := b.BuildReferenceFilter(dataURL)
 	if f == nil {
@@ -49,11 +49,11 @@ func TestBuildReferenceFilter_ExternalSVG_FileURL(t *testing.T) {
 
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			// In the file:// case the docURL is file://path (no
 			// fragment), and the test harness reads it via os.ReadFile.
 			return os.ReadFile(p)
-		},
+		}),
 	}
 	f := b.BuildReferenceFilter(uri)
 	if f == nil {
@@ -67,9 +67,9 @@ func TestBuildReferenceFilter_ExternalSVG_FileURL(t *testing.T) {
 func TestBuildReferenceFilter_ExternalSVG_FetcherError(t *testing.T) {
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			return nil, os.ErrNotExist
-		},
+		}),
 	}
 	f := b.BuildReferenceFilter("foo.svg#missing")
 	if f != nil {
@@ -83,9 +83,9 @@ func TestBuildReferenceFilter_ExternalSVG_BadID(t *testing.T) {
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="real"><feFlood/></filter></svg>`
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			return []byte(svg), nil
-		},
+		}),
 	}
 	f := b.BuildReferenceFilter("doc.svg#nope")
 	if f != nil {
@@ -116,7 +116,7 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 	const fRight = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f_right"><feFlood flood-color="blue"/></filter></svg>`
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 100, 100),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			switch uri {
 			case "left.svg":
 				return []byte(fLeft), nil
@@ -124,7 +124,7 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 				return []byte(fRight), nil
 			}
 			return nil, os.ErrNotExist
-		},
+		}),
 	}
 	ops := []css.FilterFunction{
 		{Name: "url", URL: css.URLData{Absolute: "left.svg#f_left"}},
@@ -155,9 +155,9 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 func TestBuildFilterEffect_UnresolvableUrlInChainIsSkipped(t *testing.T) {
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 50, 50),
-		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(uri string) ([]byte, error) {
 			return nil, os.ErrNotExist
-		},
+		}),
 	}
 	ops := []css.FilterFunction{
 		{Name: "url", URL: css.URLData{Absolute: "missing.svg#x"}},
@@ -235,9 +235,9 @@ func TestBuildReferenceFilter_ExternalSVG_DefaultsToSRGB(t *testing.T) {
 		`<feColorMatrix type="matrix" values="-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 0 0 0 1 0"/></filter></svg>`
 	b := &FilterEffectBuilder{
 		ReferenceBox: geometry.NewRectF(0, 0, 10, 10),
-		ExternalSVGFetcher: func(string) ([]byte, error) {
+		ExternalSVG: newExternalSVGCache(func(string) ([]byte, error) {
 			return []byte(svg), nil
-		},
+		}),
 	}
 	f := b.BuildReferenceFilter("x.svg#f")
 	if f == nil {

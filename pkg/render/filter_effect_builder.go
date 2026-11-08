@@ -26,8 +26,9 @@ type FilterEffectBuilder struct {
 	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
 	// pixel-snapped border box (BackdropFilterBounds).
 	ReferenceBox geometry.RectF
-	// FilterViewport is, in absolute device pixels, a layer's border box or
-	// an SVG shape's <svg> viewport: the viewport userSpaceOnUse percentages
+	// FilterViewport is, in absolute device pixels, a layer's pixel-snapped
+	// border box or an SVG element's <svg> viewport (unsnapped, as Blink
+	// resolves it in floats): the viewport userSpaceOnUse percentages
 	// resolve against (filter_effect_builder.cc:528-537 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For a layer its size is
 	// Blink's FilterViewport (ComputeFilterViewport, core/paint/
@@ -36,9 +37,9 @@ type FilterEffectBuilder struct {
 	// sets UserSpaceOrigin instead (SVGViewportResolver, svg_resources.cc:
 	// 375-381 @ a9f50e52). It may be empty: a 0x0 box keeps its 0x0
 	// viewport.
-	FilterViewport image.Rectangle
+	FilterViewport geometry.RectF
 	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
-	// are relative to in place of FilterViewport.Min: an SVG shape's user
+	// are relative to in place of FilterViewport's origin: an SVG shape's user
 	// space origin in device pixels, whose viewport is its <svg>'s.
 	UserSpaceOrigin *geometry.PointF
 	// CurrentColor resolves currentColor for drop-shadow.
@@ -53,13 +54,12 @@ type FilterEffectBuilder struct {
 	// `color-interpolation-filters`). May be nil — the builder then
 	// falls back to raw attribute lookup.
 	ResolveStyle func(svg.ElementAdapter) *css.Style
-	// ExternalSVGFetcher resolves `filter: url(doc#id)` where doc is a
-	// data: / file:// / http(s):// URL pointing at an external SVG
-	// document. Returns the raw document bytes. May be nil — in that
-	// case external references fall back to a null filter (caller
-	// paints unfiltered, matching Blink's tainted-resource behavior
-	// per Filter Effects 1 §3.1). LOU-130 Phase 2 wiring.
-	ExternalSVGFetcher func(uri string) ([]byte, error)
+	// ExternalSVG resolves `filter: url(doc#id)` where doc is another
+	// document (data:, file://, relative, http(s)), sharing the paint
+	// pass's fetched documents and built filters (externalSVGCache). Nil
+	// means external references produce no filter (Filter Effects 1 §3.1
+	// null filter).
+	ExternalSVG *externalSVGCache
 	// ImageFetcher resolves `<feImage href="path.png">` external image
 	// references. May be nil — feImage falls back to LoadImage which
 	// handles data: URIs and absolute filesystem paths without a
@@ -78,7 +78,7 @@ type FilterEffectBuilder struct {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *FilterEffectBuilder) viewportLengthContext() svg.SVGLengthContext {
 	return svg.NewSVGLengthContext(geometry.SizeF{
-		Width: float64(b.FilterViewport.Dx()), Height: float64(b.FilterViewport.Dy()),
+		Width: b.FilterViewport.Width(), Height: b.FilterViewport.Height(),
 	})
 }
 
@@ -88,7 +88,7 @@ func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
 	if b.UserSpaceOrigin != nil {
 		return *b.UserSpaceOrigin
 	}
-	return geometry.PointF{X: float64(b.FilterViewport.Min.X), Y: float64(b.FilterViewport.Min.Y)}
+	return geometry.PointF{X: b.FilterViewport.X(), Y: b.FilterViewport.Y()}
 }
 
 // userSpaceOriginPixel is userSpaceOrigin rounded to a device pixel, as the
@@ -256,7 +256,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 
 	// Resolve the filter region from filterUnits + the reference box, both
 	// in absolute device pixels. userSpaceOnUse x/y are relative to the
-	// layer's local origin, FilterViewport.Min.
+	// layer's local origin, FilterViewport's origin.
 	regionF := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 
@@ -266,13 +266,12 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		referenceBox: b.ReferenceBox,
 		// The primitive subregion percentage viewport is FilterViewport,
 		// not the filter region, which can carry the default 10% expansion.
-		subregionViewport:  b.FilterViewport,
-		userSpaceOrigin:    b.userSpaceOriginPixel(),
-		space:              space,
-		resolveStyle:       b.ResolveStyle,
-		resources:          b.Resources,
-		imageFetcher:       b.ImageFetcher,
-		externalSVGFetcher: b.ExternalSVGFetcher,
+		subregionViewport: b.FilterViewport,
+		userSpaceOrigin:   b.userSpaceOriginPixel(),
+		space:             space,
+		resolveStyle:      b.ResolveStyle,
+		resources:         b.Resources,
+		imageFetcher:      b.ImageFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)
@@ -288,9 +287,6 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 // svg_filter_builder.cc:136-155 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // Shared by the CSS filter path and an SVG shape's filter attribute.
 func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string, lengthCtx svg.SVGLengthContext) *svg.SVGResourceFilter {
-	if fragID == "" || fetch == nil {
-		return nil
-	}
 	data, err := fetch(docURL)
 	if err != nil || len(data) == 0 {
 		return nil
@@ -312,15 +308,15 @@ func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string
 
 // buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
 // is a cross-document URL (data:, file://, http(s)://, or a relative
-// path resolved by the harness). Fetches the document via
-// ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
-// builds the FilterEffect graph. Returns nil on any failure — Blink's
+// path resolved by the harness). Resolves `<filter id="fragID">` through
+// the paint pass's external SVG cache (ExternalSVG), which fetches and
+// parses the document once, and builds the FilterEffect graph. Returns nil on any failure — Blink's
 // behavior for tainted/unreachable external filters is a null filter
 // (caller paints source unfiltered) per Filter Effects 1 §3.1. When
 // chainSource is non-nil, SourceGraphic references inside the fetched
 // filter are rewired to it (CSS filter-value-list chain composition).
 func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
-	resource := externalSVGFilter(b.ExternalSVGFetcher, docURL, fragID, b.viewportLengthContext())
+	resource := b.ExternalSVG.filter(docURL, fragID, b.viewportLengthContext())
 	if resource == nil {
 		return nil
 	}
@@ -339,10 +335,9 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.
-		resolveStyle:       nil,
-		resources:          b.Resources,
-		imageFetcher:       b.ImageFetcher,
-		externalSVGFetcher: b.ExternalSVGFetcher,
+		resolveStyle: nil,
+		resources:    b.Resources,
+		imageFetcher: b.ImageFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)
@@ -369,13 +364,18 @@ func splitFilterRef(raw string) (docURL, fragID string) {
 			v = v[1 : len(v)-1]
 		}
 	}
+	return splitURLFragment(v)
+}
+
+// splitURLFragment splits a URL at its fragment: the document part (empty
+// for a same-document reference) and the fragment id (empty when there is
+// none, which no filter reference resolves).
+func splitURLFragment(v string) (docURL, fragID string) {
 	if v == "" {
 		return "", ""
 	}
 	hashIdx := strings.IndexByte(v, '#')
 	if hashIdx < 0 {
-		// No fragment — for filter references, the fragment is required;
-		// caller will fail to find a `<filter>` element and return nil.
 		return v, ""
 	}
 	return v[:hashIdx], v[hashIdx+1:]

@@ -66,8 +66,9 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	deviceFromUser := contentToDevice.Compose(root.LocalToBorderBoxTransform)
 
 	pctx := &svgPaintContext{
-		dc:              r.dc,
-		contentToDevice: contentToDevice,
+		dc:               r.dc,
+		ancestorToDevice: drawContextTransform(r.dc),
+		contentToDevice:  contentToDevice,
 		viewport: geometry.NewRectF(0, 0,
 			root.ContainerSize.Width, root.ContainerSize.Height),
 		CurrentTransform: geometry.Identity(),

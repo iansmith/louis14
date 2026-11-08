@@ -42,7 +42,10 @@ type Renderer struct {
 	fonts              text.FontConfig
 	imageFetcher       images.ImageFetcher
 	externalSVGFetcher func(uri string) ([]byte, error)
-	scrollY            float64
+	// externalSVG caches external SVG documents and the filters built from
+	// them for the current paint pass (beginPaintPass resets it).
+	externalSVG *externalSVGCache
+	scrollY     float64
 
 	// paintingLayer is the layer being painted: url() references resolve
 	// in its document (lookupSVGResources). Set on every path into a
@@ -349,6 +352,7 @@ func (r *Renderer) SetCustomHighlights(highlights map[string][]*html.Range, orde
 // branch. LOU-130 Phase 2 wiring.
 func (r *Renderer) SetExternalSVGFetcher(fetcher func(uri string) ([]byte, error)) {
 	r.externalSVGFetcher = fetcher
+	r.externalSVG = nil // the next use builds a cache over the new fetcher
 }
 
 // SetScrollY sets the vertical scroll offset.
@@ -560,6 +564,29 @@ func (r *Renderer) beginPaintPass(viewportW, viewportH float64) {
 	r.embeddedViewport.H = viewportH
 	r.svgImagesForContainer = nil
 	r.tempFontIDs = r.tempFontIDs[:0]
+	r.externalSVG = newExternalSVGCache(r.externalSVGFetcher)
+}
+
+// newChildRenderer returns a renderer painting into buf for an offscreen
+// effect or resource buffer (a filter source, a mask, a clip), sharing the
+// paint pass's external SVG cache, so a filter nested there fetches and
+// builds its documents once with the rest of the paint.
+func (r *Renderer) newChildRenderer(buf *image.RGBA) *Renderer {
+	c := NewRendererForImage(buf)
+	c.externalSVG = r.externalSVGs()
+	return c
+}
+
+// externalSVGs is the paint pass's external SVG cache, made on first use
+// outside a paint pass (a filter built directly).
+func (r *Renderer) externalSVGs() *externalSVGCache {
+	if r == nil {
+		return nil
+	}
+	if r.externalSVG == nil {
+		r.externalSVG = newExternalSVGCache(r.externalSVGFetcher)
+	}
+	return r.externalSVG
 }
 
 // renderOnBase paints a whole document over the frame view's base
@@ -987,7 +1014,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	bw := int(math.Ceil(box.X+box.Width)) - bx + 1
 	bh := int(math.Ceil(box.Y+box.Height)) - by + 1
 
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if !effectBufferUsable(bw, bh) {
 		// Fallback: render without mask to avoid OOM.
 		r.paintViewBackground(layer)
 		r.paintLayerContent(layer)
@@ -1222,7 +1249,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		referenceBox = paintBounds
 	}
 	builder.ReferenceBox = referenceBox
-	builder.FilterViewport = snapRectFToDevice(borderBox)
+	builder.FilterViewport = rectFFromRect(snapRectFToDevice(borderBox))
 	// SourceGraphic extent: the layer's paint bounds, which can extend beyond
 	// the border box (positioned or overflowing descendants). For drop-shadow
 	// the shadow is cast from the whole painted shape, so the source buffer
@@ -1243,7 +1270,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 			if !ok || !subOK || !vpOK {
 				return nil
 			}
-			builder.FilterViewport = snapRectF(vp)
+			builder.FilterViewport = rectFFromRect(snapRectF(vp))
 			builder.ReferenceBox = ref
 			paintExtent = snapRectFToDevice(sub)
 			builder.Mapping = *m
@@ -1468,6 +1495,16 @@ func outsetByReach(filter *filters.Filter, rect image.Rectangle) (image.Rectangl
 	return image.Rect(rect.Min.X-padX, rect.Min.Y-padY, rect.Max.X+padX, rect.Max.Y+padY), true
 }
 
+// maxEffectBufferDimension caps an offscreen effect buffer's width and
+// height, in device pixels; a larger one paints without the effect.
+const maxEffectBufferDimension = 4000
+
+// effectBufferUsable reports whether an offscreen effect buffer w×h is
+// non-empty and within maxEffectBufferDimension.
+func effectBufferUsable(w, h int) bool {
+	return w > 0 && h > 0 && w <= maxEffectBufferDimension && h <= maxEffectBufferDimension
+}
+
 // homographyTransform returns m's z=0 homography (projectiveHomography) as a
 // transform with no z terms, so products and inverses of it match those of the
 // homographies the draw context composes.
@@ -1489,10 +1526,10 @@ func transformFromHomography(h [9]float64) geometry.Transform {
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
 	return &FilterEffectBuilder{
-		CurrentColor:       layer.TextColor,
-		Resources:          r.lookupSVGResources(),
-		ExternalSVGFetcher: r.externalSVGFetcher,
-		ImageFetcher:       r.imageFetcher,
+		CurrentColor: layer.TextColor,
+		Resources:    r.lookupSVGResources(),
+		ExternalSVG:  r.externalSVGs(),
+		ImageFetcher: r.imageFetcher,
 	}
 }
 
@@ -1638,7 +1675,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 			builder.Mapping = *m
 		}
 		builder.ReferenceBox = rectFFromRect(layerBox)
-		builder.FilterViewport = layerBox
+		builder.FilterViewport = rectFFromRect(layerBox)
 		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {
@@ -7756,7 +7793,7 @@ func (r *Renderer) drawOutsetShadowBuffer(
 
 	bufW := int(math.Ceil(maxX - minX))
 	bufH := int(math.Ceil(maxY - minY))
-	if bufW <= 0 || bufH <= 0 || bufW > 4000 || bufH > 4000 {
+	if !effectBufferUsable(bufW, bufH) {
 		return
 	}
 

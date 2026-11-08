@@ -117,7 +117,7 @@ func (r *Renderer) applySVGClipPathContent(clipper *svg.SVGResourceClipper, targ
 	}
 	// Rasterize each child shape into a coverage buffer.
 	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	tmpR := NewRendererForImage(buf)
+	tmpR := r.newChildRenderer(buf)
 	deviceFromUser := geometry.Translate(-float64(bx), -float64(by))
 	if clipper.ClipPathUnits == svg.SVGUnitObjectBoundingBox {
 		deviceFromUser = deviceFromUser.Compose(
