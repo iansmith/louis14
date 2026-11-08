@@ -209,3 +209,42 @@ func TestGridSizingReviewRound2(t *testing.T) {
 		}
 	}
 }
+
+// Round 3 of the #410 review: the minimum contribution's inputs
+// (CalculateIntrinsicMinimumContribution, grid_layout_utils.cc:506-600;
+// StyleBuilderConverter::ConvertLengthSizing, style_builder_converter.cc:
+// 2130-2156 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A scroll
+// container's minimum is its min-width: a percentage one is unresolvable
+// against the indefinite grid area (0); min-content is its min-content
+// size. A width of calc(50px) is fixed, so the min-content contribution
+// applies; -webkit-fill-available is stretch, so auto-like. And the
+// contained intrinsic block size has no gap beside collapsed auto-fit rows.
+func TestGridSizingReviewRound3(t *testing.T) {
+	kid := `<div style="width:100px;height:10px"></div>`
+	for _, tc := range []struct {
+		name, html, id string
+		check          func(b *Box) bool
+		want           string
+	}{
+		{"percentage min-width is unresolvable",
+			`<div style="width:800px"><div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; min-width:50%">` + kid + `</div></div></div>`,
+			"g", func(b *Box) bool { return b.Width == 0 }, "0 wide"},
+		{"min-width:min-content",
+			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; min-width:min-content">` + kid + `</div></div>`,
+			"g", func(b *Box) bool { return b.Width == 100 }, "100 wide"},
+		{"calc(50px) is fixed",
+			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; width:calc(50px)">` + kid + `</div></div>`,
+			"g", func(b *Box) bool { return b.Width == 50 }, "50 wide"},
+		{"-webkit-fill-available is stretch",
+			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; width:-webkit-fill-available">` + kid + `</div></div>`,
+			"g", func(b *Box) bool { return b.Width == 0 }, "0 wide"},
+		{"contained auto-fit gutter collapses",
+			`<div style="display:grid; contain:size; row-gap:10px; grid-template-rows:repeat(auto-fit, 100px) 50px"><div style="height:10px"></div></div><div id=after style="height:5px"></div>`,
+			"after", func(b *Box) bool { return b.Y == 50 }, "at y=50"},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0">`+tc.html+`</body>`, nil)
+		if b := findBox(fl.root, byID(tc.id)); b == nil || !tc.check(b) {
+			t.Errorf("%s: #%s %s, want %s", tc.name, tc.id, boxDims(b), tc.want)
+		}
+	}
+}
