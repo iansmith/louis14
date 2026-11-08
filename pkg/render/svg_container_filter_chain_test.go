@@ -226,3 +226,20 @@ func TestSVGShape_BadURLTokenFetchesNothing(t *testing.T) {
 
 // extGreenFlood is an external SVG document whose #f floods green.
 const extGreenFlood = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
+
+// One paint pass fetches each external SVG document once, however many
+// elements reference it.
+func TestSVGShape_ExternalDocumentFetchedOncePerPaint(t *testing.T) {
+	const ext = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter><filter id="g" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
+	var fetches []string
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect width="40" height="40" fill="red" filter="url(a.svg#f)"/>
+<rect x="50" width="40" height="40" fill="red" filter="url(a.svg#g)"/>
+<g filter="url(a.svg#f)"><rect y="50" width="40" height="40" fill="red"/></g></svg>`, 100, 100,
+		fixedSVGFetcher(ext, &fetches))
+	wantPixel(t, img, 20, 20, canvasGreen, "the first rect's filter")
+	wantPixel(t, img, 70, 20, canvasGreen, "the second rect's filter")
+	if len(fetches) != 1 {
+		t.Errorf("fetched %q, want a.svg once", fetches)
+	}
+}

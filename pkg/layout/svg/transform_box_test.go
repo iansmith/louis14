@@ -244,3 +244,17 @@ func TestSVGContainer_AppendChildRefillsAncestors(t *testing.T) {
 		t.Errorf("outer stroke bbox after a nested AppendChild %v, want %v", got, want)
 	}
 }
+
+// Setting a container's transform invalidates its ancestors' boxes, which
+// map its boxes through it.
+func TestSVGContainer_SetSVGTransformRefillsAncestors(t *testing.T) {
+	inner := NewSVGContainer("g")
+	inner.AppendChild(rectShape(10, 10, 10, 10, map[string]string{}))
+	outer := NewSVGContainer("g")
+	outer.AppendChild(inner)
+	_ = outer.StrokeBoundingBox()
+	inner.SetSVGTransform(geometry.Translate(100, 0))
+	if got, want := outer.StrokeBoundingBox(), geometry.NewRectF(110, 10, 10, 10); got != want {
+		t.Errorf("outer stroke bbox after SetSVGTransform %v, want %v", got, want)
+	}
+}
