@@ -80,7 +80,7 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 	//   - userSpaceOnUse: children coords are in the referencing
 	//     element's user-space (= page coords for a CSS box).
 	//   - objectBoundingBox: children coords are fractions of refBox.
-	tmpR := NewRendererForImage(maskBuf)
+	tmpR := r.newChildRenderer(maskBuf)
 	tmpR.dc.Push()
 	defer tmpR.dc.Pop()
 	// Translate so refBox.X/refBox.Y in user-space maps to (-bx, -by)

@@ -23,22 +23,11 @@ import (
 
 // isGray reports whether a pixel of a black-on-white render is partially
 // covered.
-func isGray(img *image.RGBA, x, y int) bool {
-	c := img.RGBAAt(x, y)
-	return c.R > 0 && c.R < 255 && c.R == c.G && c.G == c.B
-}
+func isGray(img *image.RGBA, x, y int) bool { return grayPixel(img.RGBAAt(x, y)) }
 
-func countGray(img *image.RGBA) int {
-	n := 0
-	b := img.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			if isGray(img, x, y) {
-				n++
-			}
-		}
-	}
-	return n
+// grayPixel reports a partly covered black-on-white pixel.
+func grayPixel(c color.RGBA) bool {
+	return c.R > 0 && c.R < 255 && c.R == c.G && c.G == c.B
 }
 
 // assertRingAA checks that a circular edge of radius r centred on (cx, cy)
@@ -85,7 +74,7 @@ func TestAntialias_RoundedBackgroundFill(t *testing.T) {
 // A rotated box's edges anti-alias (a guard: the default fill flags).
 func TestAntialias_RotatedBox(t *testing.T) {
 	img := renderAA(t, `<div style="margin:30px;width:50px;height:50px;background:black;transform:rotate(30deg)"></div>`)
-	if countGray(img) == 0 {
+	if countPixels(img, grayPixel) == 0 {
 		t.Fatal("rotated box has no anti-aliased edge pixels")
 	}
 }
@@ -175,7 +164,7 @@ func TestAntialias_RotatedImage(t *testing.T) {
 	}
 	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 	img := renderAA(t, `<img src="`+uri+`" style="margin:30px;width:49px;height:49px;transform:rotate(30deg)">`)
-	if countGray(img) == 0 {
+	if countPixels(img, grayPixel) == 0 {
 		t.Fatal("rotated image has no anti-aliased edge pixels")
 	}
 }
@@ -191,7 +180,7 @@ func TestAntialias_SVGShapeRendering(t *testing.T) {
 		"inherited crispEdges": `<svg width="100" height="100" style="shape-rendering:crispEdges">` + fmt.Sprintf(circle, "") + `</svg>`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if n := countGray(renderAA(t, svg)); n != 0 {
+			if n := countPixels(renderAA(t, svg), grayPixel); n != 0 {
 				t.Errorf("%d anti-aliased pixels; want none", n)
 			}
 		})

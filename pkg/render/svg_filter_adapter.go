@@ -28,12 +28,12 @@ type svgFilterElementAdapter struct {
 	// subregionViewport is the device-pixel rect whose width/height are
 	// the percentage basis for filter primitive subregion attrs in
 	// primitiveUnits=userSpaceOnUse (per SVG Filter Effects 1 §7.11,
-	// these resolve against the nearest viewport, NOT the filter region).
-	// When zero it falls back to filterRegion via SubregionViewport(),
-	// preserving the historical behaviour for callers that haven't set
-	// it. The CSS `filter: url(...)` HTML-box path sets it to the
-	// element's reference (border) box.
-	subregionViewport image.Rectangle
+	// these resolve against the nearest viewport, NOT the filter region):
+	// the <svg> viewport on the SVG-element paths, the element's reference
+	// (border) box on the CSS `filter: url(...)` HTML-box path. An empty
+	// one (a degenerate viewport) falls back to filterRegion via
+	// SubregionViewport().
+	subregionViewport geometry.RectF
 	// userSpaceOrigin is the SVG element's user-space (0, 0) point
 	// mapped to absolute device pixels. The userSpaceOnUse subregion
 	// anchor for filter primitives uses this — NOT filterRegion.Min,
@@ -64,13 +64,6 @@ type svgFilterElementAdapter struct {
 	// href="path.png">` or data: URLs. May be nil — feImage then
 	// falls back to transparent output for external hrefs.
 	imageFetcher func(string) ([]byte, error)
-
-	// externalSVGFetcher loads external SVG documents referenced by
-	// `<feImage href="path.svg">` or `<feImage href="path.svg#id">`.
-	// May be nil — feImage then falls back to the imageFetcher for
-	// those URIs (which may also fail if the content type is SVG and
-	// the image decoder doesn't handle it).
-	externalSVGFetcher func(string) ([]byte, error)
 }
 
 // FilterRegion implements filters.SVGFilterElement.
@@ -80,12 +73,11 @@ func (a *svgFilterElementAdapter) FilterRegion() image.Rectangle { return a.filt
 func (a *svgFilterElementAdapter) ReferenceBox() geometry.RectF { return a.referenceBox }
 
 // SubregionViewport implements filters.SVGFilterElement. Returns the
-// explicit subregion viewport when set, otherwise falls back to the
-// filter region (the historical basis, exact whenever region == viewport,
-// which holds for the SVG-element filter paths).
-func (a *svgFilterElementAdapter) SubregionViewport() image.Rectangle {
-	if a.subregionViewport.Empty() {
-		return a.filterRegion
+// subregion viewport, or the filter region when it is empty (a degenerate
+// viewport).
+func (a *svgFilterElementAdapter) SubregionViewport() geometry.RectF {
+	if a.subregionViewport.IsEmpty() {
+		return rectFFromRect(a.filterRegion)
 	}
 	return a.subregionViewport
 }
@@ -148,12 +140,11 @@ func (a *svgFilterElementAdapter) Primitives() []filters.SVGFilterPrimitive {
 	out := make([]filters.SVGFilterPrimitive, 0, len(a.filter.FePrimitives))
 	for _, p := range a.filter.FePrimitives {
 		out = append(out, &svgFilterPrimitiveAdapter{
-			elt:                p,
-			resolveStyle:       a.resolveStyle,
-			space:              a.space,
-			resources:          a.resources,
-			imageFetcher:       a.imageFetcher,
-			externalSVGFetcher: a.externalSVGFetcher,
+			elt:          p,
+			resolveStyle: a.resolveStyle,
+			space:        a.space,
+			resources:    a.resources,
+			imageFetcher: a.imageFetcher,
 		})
 	}
 	return out
@@ -176,14 +167,13 @@ type svgFilterPrimitiveAdapter struct {
 	// composite double-applies a linear→sRGB transfer.
 	space filters.InterpolationSpace
 
-	// resources / imageFetcher / externalSVGFetcher are propagated
+	// resources / imageFetcher are propagated
 	// from the parent svgFilterElementAdapter so the feImage adapter
 	// can resolve internal `href="#id"` and external href references
 	// without a back-reference to the host renderer. See the parent
 	// struct's fields for the full doc.
-	resources          *svg.SVGResourceRegistry
-	imageFetcher       func(string) ([]byte, error)
-	externalSVGFetcher func(string) ([]byte, error)
+	resources    *svg.SVGResourceRegistry
+	imageFetcher func(string) ([]byte, error)
 }
 
 // TagName implements filters.SVGFilterPrimitive.
@@ -211,12 +201,11 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 	out := make([]filters.SVGFilterPrimitive, 0, len(kids))
 	for _, c := range kids {
 		out = append(out, &svgFilterPrimitiveAdapter{
-			elt:                c,
-			resolveStyle:       p.resolveStyle,
-			space:              p.space,
-			resources:          p.resources,
-			imageFetcher:       p.imageFetcher,
-			externalSVGFetcher: p.externalSVGFetcher,
+			elt:          c,
+			resolveStyle: p.resolveStyle,
+			space:        p.space,
+			resources:    p.resources,
+			imageFetcher: p.imageFetcher,
 		})
 	}
 	return out

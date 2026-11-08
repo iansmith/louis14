@@ -11702,6 +11702,20 @@ func parseFilterList(val string) []FilterFunction {
 			break
 		}
 		name := strings.ToLower(strings.TrimSpace(val[:parenIdx]))
+		if name == "url" {
+			// A url() stage tokenizes as a lone url() does (ConsumeURL). A
+			// malformed one makes the whole list invalid, as Blink's
+			// ConsumeFilterFunctionList stops there and the declaration then
+			// fails (css_parsing_utils.cc:3993-4017 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			u, rest, ok := ConsumeURL(val)
+			if !ok {
+				return nil
+			}
+			filters = append(filters, FilterFunction{Name: "url", URL: URLData{Relative: u, Absolute: u}})
+			val = rest
+			continue
+		}
 		// Find matching close paren (handles nested parens like rgb() in drop-shadow).
 		closeIdx := findMatchingParen(val[parenIdx:])
 		if closeIdx < 0 {
@@ -11709,13 +11723,6 @@ func parseFilterList(val string) []FilterFunction {
 		}
 		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
 		switch name {
-		case "url":
-			u := strings.TrimSpace(arg)
-			u = strings.Trim(u, "\"'")
-			filters = append(filters, FilterFunction{
-				Name: "url",
-				URL:  URLData{Relative: u, Absolute: u},
-			})
 		case "drop-shadow":
 			filters = append(filters, parseDropShadowFunction(arg))
 		case "blur":

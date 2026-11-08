@@ -92,16 +92,27 @@ type SVGRoot struct {
 
 	// bbox accumulated by UpdateSVGLayout. Phase 1: always empty.
 	bbox geometry.RectF
+	// strokeBox caches the children's stroke bounding box
+	// (StrokeBoundingBox) once strokeBoxFilled: at UpdateSVGLayout, or on
+	// first read. The root's object box is bbox.
+	strokeBox       geometry.RectF
+	strokeBoxFilled bool
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes (in
 // viewBox / user-unit coordinates). Phase 1: empty.
 func (r *SVGRoot) ObjectBoundingBox() geometry.RectF { return r.bbox }
 
+// invalidateBoxes drops the cached stroke box (boxCache).
+func (r *SVGRoot) invalidateBoxes() { r.strokeBoxFilled = false }
+
 // StrokeBoundingBox returns the union of the children's stroke bounding
 // boxes (SVGContentContainer::ComputeStrokeBoundingBox).
 func (r *SVGRoot) StrokeBoundingBox() geometry.RectF {
-	return computeStrokeBoundingBox(r.Children)
+	if !r.strokeBoxFilled {
+		r.strokeBox, r.strokeBoxFilled = computeStrokeBoundingBox(r.Children), true
+	}
+	return r.strokeBox
 }
 
 // LocalTransform returns the viewBox→viewport mapping. Phase 1: this is
@@ -126,6 +137,7 @@ func (r *SVGRoot) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
 		}
 	}
 	r.bbox = geometry.RectF{} // Phase 1.
+	r.strokeBox, r.strokeBoxFilled = computeStrokeBoundingBox(r.Children), true
 	return combined
 }
 
@@ -214,6 +226,7 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 		node := buildSVGTreeWithResources(child, lengthCtx, styleResolver, root.Resources)
 		if node != nil {
 			root.Children = append(root.Children, node)
+			setBoxParent(node, root)
 		}
 	}
 
@@ -496,7 +509,7 @@ func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolv
 // there. `<text>` falling back to the generic SVGContainer path
 // instead of becoming an SVGText preserves the pre-existing (and
 // still-correct) container-level filter dispatch
-// (trySVGContainerFilterDispatch in pkg/render/svg_container_painter.go),
+// (trySVGContainerFilterDispatch in pkg/render/svg_filter_container_painter.go),
 // which runs even for an empty/childless container — exactly what a
 // filtered `<text>` degrades to under SVGContainer, and exactly the
 // case svg-visibility-hidden-element-with-filter-003.html exercises

@@ -3,7 +3,6 @@ package render
 import (
 	"image"
 	"math"
-	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -47,7 +46,10 @@ func shouldAntiAliasSVGShape(style *css.Style) bool {
 // StrokePreserve when both passes are active, so the path
 // rasterizer's work is shared.
 func (sp *svgShapePainter) paint() {
-	if sp.shape == nil {
+	// An empty shape paints nothing, its filters included, as
+	// SVGShapePainter::Paint returns for IsShapeEmpty (svg_shape_painter.cc:
+	// 47 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if sp.shape == nil || sp.shape.Path.Empty() {
 		return
 	}
 
@@ -61,7 +63,7 @@ func (sp *svgShapePainter) paint() {
 	// otherwise we fall through to the regular paint path.
 	if style := sp.shape.Style; style != nil && !sp.ctx.clipPathContent {
 		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
-			if filter := sp.resolveSVGFilter(filterVal); filter != nil {
+			if filter := resolveSVGFilterValue(sp.ctx, filterVal); filter != nil {
 				sp.paintWithSVGFilter(filter)
 				return
 			}
@@ -256,62 +258,57 @@ func (sp *svgShapePainter) paint() {
 	}
 }
 
-// resolveSVGFilter parses a shape's `filter` value and resolves it to
-// an SVGResourceFilter. Handles both same-document (`url(#id)`) and
+// resolveSVGFilterValue parses an SVG element's `filter` value and resolves
+// it to an SVGResourceFilter. Handles both same-document (`url(#id)`) and
 // external (`url(doc#id)`, where doc is data:/file://, relative path,
-// etc) references — the latter via the renderer's ExternalSVGFetcher
-// (LOU-130 Phase 2). Returns nil when:
+// etc) references — the latter through the paint pass's external SVG
+// cache (Renderer.externalSVGs). Returns nil when:
 //   - the value isn't a `url(...)` reference,
 //   - the same-doc registry lookup misses,
 //   - the external fetch / parse / id-lookup fails,
 //   - the filter is part of a reference cycle.
-func (sp *svgShapePainter) resolveSVGFilter(filterVal string) *svg.SVGResourceFilter {
+func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGResourceFilter {
 	docURL, fragID, ok := parseSVGFilterURL(filterVal)
-	if !ok || fragID == "" {
+	if !ok {
+		return nil
+	}
+	return resolveSVGFilterRef(pctx, docURL, fragID)
+}
+
+// resolveSVGFilterRef resolves a url()'s document and fragment to an
+// SVGResourceFilter, as resolveSVGFilterValue does.
+func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
+	if fragID == "" {
 		return nil
 	}
 	if docURL == "" {
 		// Same-document fast path: registry lookup.
-		if sp.ctx.Resources == nil {
+		if pctx.Resources == nil {
 			return nil
 		}
-		filter, found := sp.ctx.Resources.LookupAsFilter(fragID)
+		filter, found := pctx.Resources.LookupAsFilter(fragID)
 		if !found || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
 			return nil
 		}
 		return filter
 	}
-
-	// External: fetch + parse + build SVGResourceFilter on the fly.
-	if sp.ctx.Renderer == nil {
-		return nil
-	}
-	return externalSVGFilter(sp.ctx.Renderer.externalSVGFetcher, docURL, fragID, svg.NewSVGLengthContext(sp.ctx.viewport.Size))
+	// External: through the paint pass's cache, fetched and built once.
+	return pctx.Renderer.externalSVGs().filter(docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
 }
 
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
 // `splitFilterRef`. The input is the raw `filter="..."` value (e.g.
 // `url(support/x.svg#f)`). Returns docURL and fragID; ok=false if the
-// value isn't a recognized `url(...)` form.
+// value isn't a lone `url(...)`.
 func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
-	v := strings.TrimSpace(val)
-	// Case-insensitive `url(` prefix without allocating a lowered copy.
-	if len(v) < 4 || !strings.EqualFold(v[:4], "url(") {
+	// A lone url() is the whole value; anything after it makes a filter
+	// list (url() followed by functions), which the chain path builds. A
+	// malformed url() is a bad-url token: no filter.
+	url, rest, ok := css.ConsumeURL(val)
+	if !ok || rest != "" {
 		return "", "", false
 	}
-	closeIdx := strings.LastIndexByte(v, ')')
-	if closeIdx <= 3 {
-		return "", "", false
-	}
-	inner := strings.TrimSpace(v[4:closeIdx])
-	if len(inner) >= 2 {
-		first := inner[0]
-		last := inner[len(inner)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			inner = inner[1 : len(inner)-1]
-		}
-	}
-	docURL, fragID = splitFilterRef(inner)
+	docURL, fragID = splitURLFragment(url)
 	return docURL, fragID, true
 }
 
@@ -328,7 +325,8 @@ func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
 // rasterizeSVGMask, identical to the CSS-box mask path.
 func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *svgObjectPainter, willFill, willStroke bool) {
 	// Compute the shape's bbox in DEVICE pixels. The shape's
-	// FillBoundingBox is in user-space; map through DeviceFromUser.
+	// FillBoundingBox is in user-space; map it through the draw context's
+	// matrix (toDevice, below).
 	userBBox := sp.shape.FillBoundingBox
 	if !willStroke && userBBox.IsEmpty() {
 		return
@@ -344,7 +342,6 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// clip. Paint servers map user space through the matrix's affine part,
 	// which is exact only for an affine matrix (LOU-778).
 	toDevice := drawContextTransform(sp.ctx.dc)
-	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
 	deviceBBox, ok := projectRectInFront(toDevice, userBBox)
 	if !ok {
 		return
@@ -354,72 +351,21 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 		int(math.Ceil(deviceBBox.Right()))+1, int(math.Ceil(deviceBBox.Bottom()))+1,
 	).Intersect(sp.ctx.dc.ClipBounds())
 	bx, by, bw, bh := buffer.Min.X, buffer.Min.Y, buffer.Dx(), buffer.Dy()
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if !effectBufferUsable(bw, bh) {
 		return
 	}
 
 	// Render the shape's fill/stroke into a fresh buffer with the
 	// SAME transform stack the page DC has, so the rasterized
 	// geometry pixel-aligns with what DrawImage will composite back.
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	tmpR := NewRendererForImage(buf)
-	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
-	tmpR.dc.Translate(float64(-bx), float64(-by))
-	multiplyDCHomography(tmpR.dc, projectiveHomography(toDevice))
-	// Run a child paint context targeting the temp DC + renderer so
-	// fill-shader / stroke-shader fall back onto the temp buffer
-	// instead of the page target.
-	childCtx := *sp.ctx // shallow copy
-	childCtx.dc = tmpR.dc
-	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = geometry.Translate(float64(-bx), float64(-by)).Compose(deviceFromUser)
-	childOp := newSVGObjectPainter(tmpR.dc, op.style).withResources(
+	// Paint-server fills and strokes run through the buffer's paint
+	// context instead of the page target.
+	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice, sp.ctx.ancestorToDevice)
+	childOp := newSVGObjectPainter(childCtx.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
-
-	evenOdd := sp.shape.Style != nil && sp.shape.Style.GetFillRule() == css.SVGFillRuleEvenOdd
-	if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
+	if !sp.rasterizeShape(&childCtx, childOp, willFill, willStroke, sp.shape.Style) {
 		return
-	}
-	if willFill {
-		fillRes := childOp.applyFill()
-		switch fillRes.mode {
-		case svgPaintSolid:
-			if willStroke {
-				tmpR.dc.FillPreserve()
-			} else {
-				tmpR.dc.Fill()
-			}
-		case svgPaintShader:
-			tmpR.fillPathWithShader(&childCtx, &sp.shape.Path, fillRes.shader, evenOdd)
-			if willStroke {
-				tmpR.dc.ClearPath()
-				if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-					return
-				}
-			} else {
-				tmpR.dc.ClearPath()
-			}
-		case svgPaintSkip:
-			if willStroke {
-				tmpR.dc.ClearPath()
-				if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-					return
-				}
-			}
-		}
-	}
-	if willStroke {
-		strokeRes := childOp.applyStroke()
-		switch strokeRes.mode {
-		case svgPaintSolid:
-			tmpR.dc.Stroke()
-		case svgPaintShader:
-			tmpR.strokePathWithShader(&childCtx, &sp.shape.Path, strokeRes.shader, sp.shape.Style)
-			tmpR.dc.ClearPath()
-		case svgPaintSkip:
-			tmpR.dc.ClearPath()
-		}
 	}
 
 	// Rasterize the mask. The mask's user-space reference box is the
@@ -480,7 +426,7 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	region := masker.ResourceBoundingBox(boxLocalRef, lengthCtx)
 
 	maskBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
-	tmpR := NewRendererForImage(maskBuf)
+	tmpR := r.newChildRenderer(maskBuf)
 	// Buffer pixel (0, 0) = device pixel (bx, by). Compose the
 	// device-pixel translate with the user→device map so the mask
 	// children rasterize where the shape did.

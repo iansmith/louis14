@@ -15,15 +15,15 @@ import (
 type mockSVGFilterElement struct {
 	region           image.Rectangle
 	refBox           geometry.RectF
-	subregionVp      image.Rectangle
+	subregionVp      geometry.RectF
 	userSpaceOrigin  image.Point
 	primUnitsObjBBox bool
 }
 
 func (m *mockSVGFilterElement) FilterRegion() image.Rectangle { return m.region }
-func (m *mockSVGFilterElement) SubregionViewport() image.Rectangle {
-	if m.subregionVp.Empty() {
-		return m.region
+func (m *mockSVGFilterElement) SubregionViewport() geometry.RectF {
+	if m.subregionVp.IsEmpty() {
+		return geometry.NewRectF(float64(m.region.Min.X), float64(m.region.Min.Y), float64(m.region.Dx()), float64(m.region.Dy()))
 	}
 	return m.subregionVp
 }
@@ -140,7 +140,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-10, -10, 110, 110),
 		refBox:          geometry.NewRectF(0, 0, 100, 100),
-		subregionVp:     image.Rect(0, 0, 100, 100),
+		subregionVp:     geometry.NewRectF(0, 0, 100, 100),
 		userSpaceOrigin: image.Point{X: 0, Y: 0},
 	}
 	prim := &mockSVGFilterPrimitive{
