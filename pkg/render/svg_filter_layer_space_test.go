@@ -45,21 +45,22 @@ func TestHTMLFilter_UserSpaceLightAnchoredToBox(t *testing.T) {
 	}
 }
 
-// The filter region is clipped to the draw context's clip, grown by the
-// filter's reach, before the buffer cap is checked (filterLayerClip, as for a
-// CSS layer: get_layer_mapping_and_bounds, src/core/SkCanvas.cpp:570-600 @
-// skia d19e557a): a 6000-wide userSpaceOnUse region on a 120px <svg> is
-// filtered.
-func TestSVGFilter_RegionClippedBeforeCap(t *testing.T) {
+// A 6000-wide userSpaceOnUse region on a 120px <svg> is over the buffer cap
+// and paints unfiltered. This pins behaviour; it is not the fix. Skia bounds
+// the layer by the filter's input bounds (the reverse mapping,
+// onGetInputLayerBounds), which clips this region to the visible part; a
+// forward-MapRect reach is wrong for that (feTile, lighting and convolve
+// wrap at the clip; generators report the whole region). LOU-704.
+func TestSVGFilter_OverCapRegionNotClipped(t *testing.T) {
 	img := renderUserSpacePage(t, "", `<defs><filter id="wide" filterUnits="userSpaceOnUse" x="-3000" y="0" width="6000" height="120"><feOffset dx="10"/></filter></defs>
 <rect width="20" height="20" fill="green" filter="url(#wide)"/>`)
-	wantPixel(t, img, 5, 10, canvasWhite, "the rect moved 10px right")
-	wantPixel(t, img, 25, 10, canvasGreen, "the rect spans 10..30")
+	wantPixel(t, img, 5, 10, canvasGreen, "unfiltered: the rect is not offset")
+	wantPixel(t, img, 25, 10, canvasWhite, "unfiltered: nothing at 20..30")
 }
 
-// Over the buffer cap, even after clipping, an element paints unfiltered on
-// the SVG path as on the CSS layer path (prepareLayerFilter's fallback). The
-// caps themselves differ (4000 and 8000 px: LOU-799).
+// Over the buffer cap an element paints unfiltered on the SVG path as on
+// the CSS layer path (prepareLayerFilter's fallback). The caps themselves
+// differ (4000 and 8000 px: LOU-799).
 func TestSVGFilter_OverCapPaintsUnfiltered(t *testing.T) {
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}svg{display:block}</style>
 <svg width="4200" height="40"><rect x="20" y="10" width="4100" height="20" fill="green" filter="blur(2px)"/></svg>`, 4200, 40)

@@ -49,6 +49,8 @@ type mockSVGFilterPrimitive struct {
 	tag   string
 	attrs map[string]string
 	light LightSource
+	// imageSourceCalls counts ResolveImageSource calls.
+	imageSourceCalls int
 }
 
 func (p *mockSVGFilterPrimitive) TagName() string { return p.tag }
@@ -69,6 +71,7 @@ func (p *mockSVGFilterPrimitive) SpecularExponent() float64            { return 
 func (p *mockSVGFilterPrimitive) KernelUnitLength() (float64, float64) { return 1, 1 }
 func (p *mockSVGFilterPrimitive) LightSource() LightSource             { return p.light }
 func (p *mockSVGFilterPrimitive) ResolveImageSource(filterRegion, subregion image.Rectangle) (*image.RGBA, image.Rectangle, bool) {
+	p.imageSourceCalls++
 	return nil, image.Rectangle{}, false
 }
 
