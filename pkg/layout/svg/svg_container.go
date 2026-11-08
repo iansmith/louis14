@@ -286,6 +286,8 @@ func NewSVGContainer(tagName string) *SVGContainer {
 // `transform="translate(...)"` is honoured by the painter.
 func (c *SVGContainer) SetSVGTransform(t geometry.AffineTransform) {
 	c.transform = t
+	// Its ancestors map its boxes through it.
+	c.invalidateBoxes()
 }
 
 // AppendChild adds a child node to the container, in DOM order.

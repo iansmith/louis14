@@ -72,8 +72,8 @@ func consumeStringOrURI(s string) (value, rest string, ok bool) {
 		return value, rest, true
 	}
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') {
-		if value, rest, ok := consumeStringToken(s[1:], s[0]); ok {
-			return value, strings.TrimSpace(rest), true
+		if value, n, ok := consumeStringToken(s[1:], s[0]); ok {
+			return value, strings.TrimSpace(s[1+n:]), true
 		}
 	}
 	return "", "", false

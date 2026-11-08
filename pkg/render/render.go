@@ -42,7 +42,10 @@ type Renderer struct {
 	fonts              text.FontConfig
 	imageFetcher       images.ImageFetcher
 	externalSVGFetcher func(uri string) ([]byte, error)
-	scrollY            float64
+	// externalSVG caches external SVG documents and the filters built from
+	// them for the current paint pass (beginPaintPass resets it).
+	externalSVG *externalSVGCache
+	scrollY     float64
 
 	// paintingLayer is the layer being painted: url() references resolve
 	// in its document (lookupSVGResources). Set on every path into a
@@ -349,6 +352,7 @@ func (r *Renderer) SetCustomHighlights(highlights map[string][]*html.Range, orde
 // branch. LOU-130 Phase 2 wiring.
 func (r *Renderer) SetExternalSVGFetcher(fetcher func(uri string) ([]byte, error)) {
 	r.externalSVGFetcher = fetcher
+	r.externalSVG = nil // the next use builds a cache over the new fetcher
 }
 
 // SetScrollY sets the vertical scroll offset.
@@ -560,6 +564,29 @@ func (r *Renderer) beginPaintPass(viewportW, viewportH float64) {
 	r.embeddedViewport.H = viewportH
 	r.svgImagesForContainer = nil
 	r.tempFontIDs = r.tempFontIDs[:0]
+	r.externalSVG = newExternalSVGCache(r.externalSVGFetcher)
+}
+
+// newChildRenderer returns a renderer painting into buf for an offscreen
+// effect or resource buffer (a filter source, a mask, a clip), sharing the
+// paint pass's external SVG cache, so a filter nested there fetches and
+// builds its documents once with the rest of the paint.
+func (r *Renderer) newChildRenderer(buf *image.RGBA) *Renderer {
+	c := NewRendererForImage(buf)
+	c.externalSVG = r.externalSVGs()
+	return c
+}
+
+// externalSVGs is the paint pass's external SVG cache, made on first use
+// outside a paint pass (a filter built directly).
+func (r *Renderer) externalSVGs() *externalSVGCache {
+	if r == nil {
+		return nil
+	}
+	if r.externalSVG == nil {
+		r.externalSVG = newExternalSVGCache(r.externalSVGFetcher)
+	}
+	return r.externalSVG
 }
 
 // renderOnBase paints a whole document over the frame view's base
@@ -1499,10 +1526,10 @@ func transformFromHomography(h [9]float64) geometry.Transform {
 // with the renderer's resources and fetchers; the caller sets the boxes.
 func (r *Renderer) newFilterEffectBuilder(layer *PaintLayer) *FilterEffectBuilder {
 	return &FilterEffectBuilder{
-		CurrentColor:       layer.TextColor,
-		Resources:          r.lookupSVGResources(),
-		ExternalSVGFetcher: r.externalSVGFetcher,
-		ImageFetcher:       r.imageFetcher,
+		CurrentColor: layer.TextColor,
+		Resources:    r.lookupSVGResources(),
+		ExternalSVG:  r.externalSVGs(),
+		ImageFetcher: r.imageFetcher,
 	}
 }
 

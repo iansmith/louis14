@@ -54,13 +54,12 @@ type FilterEffectBuilder struct {
 	// `color-interpolation-filters`). May be nil — the builder then
 	// falls back to raw attribute lookup.
 	ResolveStyle func(svg.ElementAdapter) *css.Style
-	// ExternalSVGFetcher resolves `filter: url(doc#id)` where doc is a
-	// data: / file:// / http(s):// URL pointing at an external SVG
-	// document. Returns the raw document bytes. May be nil — in that
-	// case external references fall back to a null filter (caller
-	// paints unfiltered, matching Blink's tainted-resource behavior
-	// per Filter Effects 1 §3.1). LOU-130 Phase 2 wiring.
-	ExternalSVGFetcher func(uri string) ([]byte, error)
+	// ExternalSVG resolves `filter: url(doc#id)` where doc is another
+	// document (data:, file://, relative, http(s)), sharing the paint
+	// pass's fetched documents and built filters (externalSVGCache). Nil
+	// means external references produce no filter (Filter Effects 1 §3.1
+	// null filter).
+	ExternalSVG *externalSVGCache
 	// ImageFetcher resolves `<feImage href="path.png">` external image
 	// references. May be nil — feImage falls back to LoadImage which
 	// handles data: URIs and absolute filesystem paths without a
@@ -267,13 +266,12 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		referenceBox: b.ReferenceBox,
 		// The primitive subregion percentage viewport is FilterViewport,
 		// not the filter region, which can carry the default 10% expansion.
-		subregionViewport:  b.FilterViewport,
-		userSpaceOrigin:    b.userSpaceOriginPixel(),
-		space:              space,
-		resolveStyle:       b.ResolveStyle,
-		resources:          b.Resources,
-		imageFetcher:       b.ImageFetcher,
-		externalSVGFetcher: b.ExternalSVGFetcher,
+		subregionViewport: b.FilterViewport,
+		userSpaceOrigin:   b.userSpaceOriginPixel(),
+		space:             space,
+		resolveStyle:      b.ResolveStyle,
+		resources:         b.Resources,
+		imageFetcher:      b.ImageFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)
@@ -289,9 +287,6 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 // svg_filter_builder.cc:136-155 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // Shared by the CSS filter path and an SVG shape's filter attribute.
 func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string, lengthCtx svg.SVGLengthContext) *svg.SVGResourceFilter {
-	if fragID == "" || fetch == nil {
-		return nil
-	}
 	data, err := fetch(docURL)
 	if err != nil || len(data) == 0 {
 		return nil
@@ -313,15 +308,15 @@ func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string
 
 // buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
 // is a cross-document URL (data:, file://, http(s)://, or a relative
-// path resolved by the harness). Fetches the document via
-// ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
-// builds the FilterEffect graph. Returns nil on any failure — Blink's
+// path resolved by the harness). Resolves `<filter id="fragID">` through
+// the paint pass's external SVG cache (ExternalSVG), which fetches and
+// parses the document once, and builds the FilterEffect graph. Returns nil on any failure — Blink's
 // behavior for tainted/unreachable external filters is a null filter
 // (caller paints source unfiltered) per Filter Effects 1 §3.1. When
 // chainSource is non-nil, SourceGraphic references inside the fetched
 // filter are rewired to it (CSS filter-value-list chain composition).
 func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
-	resource := externalSVGFilter(b.ExternalSVGFetcher, docURL, fragID, b.viewportLengthContext())
+	resource := b.ExternalSVG.filter(docURL, fragID, b.viewportLengthContext())
 	if resource == nil {
 		return nil
 	}
@@ -340,10 +335,9 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		space:             space,
 		// No ResolveStyle for external documents — filter primitives
 		// read presentational attributes directly.
-		resolveStyle:       nil,
-		resources:          b.Resources,
-		imageFetcher:       b.ImageFetcher,
-		externalSVGFetcher: b.ExternalSVGFetcher,
+		resolveStyle: nil,
+		resources:    b.Resources,
+		imageFetcher: b.ImageFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	builder.SetSourceOverride(chainSource)

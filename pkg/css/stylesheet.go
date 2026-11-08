@@ -4798,9 +4798,23 @@ func splitDeclarationParts(declStr string) []string {
 // - \X where X is not a hex digit → literal character X (e.g., \r → r)
 // - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
 // - Trailing whitespace after hex escape is consumed
-func unescapeCSS(s string) string {
+func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false) }
+
+// unescapeCSSKeepingURLs is unescapeCSS that, when keepURLs is set, copies
+// each url() through raw, as Blink tokenizes the raw text once: a consumer
+// that tokenizes url() itself (ConsumeURL) then decodes its escapes once.
+// Only the filter property's consumer does so far; the other url()
+// consumers read the unescaped text.
+func unescapeCSSKeepingURLs(s string, keepURLs bool) string {
 	var result strings.Builder
 	for i := 0; i < len(s); {
+		if keepURLs && (s[i] == 'u' || s[i] == 'U') && (i == 0 || !isIdentContinue(s[i-1])) {
+			if _, n, ok := consumeURLSpan(s[i:]); ok {
+				result.WriteString(s[i : i+n])
+				i += n
+				continue
+			}
+		}
 		if s[i] != '\\' || i+1 >= len(s) {
 			result.WriteByte(s[i])
 			i++
@@ -4872,7 +4886,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
 		if property != "quotes" {
-			value = unescapeCSS(rawValue)
+			value = unescapeCSSKeepingURLs(rawValue, property == "filter")
 		} else {
 			value = rawValue
 		}

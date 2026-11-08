@@ -261,8 +261,8 @@ func (sp *svgShapePainter) paint() {
 // resolveSVGFilterValue parses an SVG element's `filter` value and resolves
 // it to an SVGResourceFilter. Handles both same-document (`url(#id)`) and
 // external (`url(doc#id)`, where doc is data:/file://, relative path,
-// etc) references — the latter via the renderer's ExternalSVGFetcher
-// (LOU-130 Phase 2). Returns nil when:
+// etc) references — the latter through the paint pass's external SVG
+// cache (Renderer.externalSVGs). Returns nil when:
 //   - the value isn't a `url(...)` reference,
 //   - the same-doc registry lookup misses,
 //   - the external fetch / parse / id-lookup fails,
@@ -278,15 +278,6 @@ func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGReso
 // resolveSVGFilterRef resolves a url()'s document and fragment to an
 // SVGResourceFilter, as resolveSVGFilterValue does.
 func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
-	if pctx.Renderer == nil {
-		return resolveSVGFilterRefWith(pctx, nil, docURL, fragID)
-	}
-	return resolveSVGFilterRefWith(pctx, pctx.Renderer.externalSVGFetcher, docURL, fragID)
-}
-
-// resolveSVGFilterRefWith is resolveSVGFilterRef fetching an external
-// document through fetch.
-func resolveSVGFilterRefWith(pctx *svgPaintContext, fetch func(string) ([]byte, error), docURL, fragID string) *svg.SVGResourceFilter {
 	if fragID == "" {
 		return nil
 	}
@@ -301,12 +292,8 @@ func resolveSVGFilterRefWith(pctx *svgPaintContext, fetch func(string) ([]byte, 
 		}
 		return filter
 	}
-
-	// External: fetch + parse + build SVGResourceFilter on the fly.
-	if fetch == nil {
-		return nil
-	}
-	return externalSVGFilter(fetch, docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
+	// External: through the paint pass's cache, fetched and built once.
+	return pctx.Renderer.externalSVGs().filter(docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
 }
 
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
@@ -439,7 +426,7 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	region := masker.ResourceBoundingBox(boxLocalRef, lengthCtx)
 
 	maskBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
-	tmpR := NewRendererForImage(maskBuf)
+	tmpR := r.newChildRenderer(maskBuf)
 	// Buffer pixel (0, 0) = device pixel (bx, by). Compose the
 	// device-pixel translate with the user→device map so the mask
 	// children rasterize where the shape did.
