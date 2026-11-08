@@ -1609,7 +1609,7 @@ func measureOrthogonalChild(
 // fallback size stands in.
 func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, childWDM WritingDirectionMode, parentSpace ConstraintSpace, availBlock, pctBlock, fallbackBlock float64) float64 {
 	fallback := orthogonalFallbackSize(childWDM, ctx)
-	if _, isCycle := ctx.GetOrthogonalLayout(node); isCycle {
+	if ctx.IsOrthogonalComputing(node) {
 		return fallback
 	}
 	key := orthogonalContributionSpace{availBlock, fallback, fallbackBlock,
@@ -1626,11 +1626,11 @@ func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, c
 		// constraint_space_builder.h:743-745.
 		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: pctBlock}).
 		Build()
-	ctx.SetOrthogonalComputing(node)
+	ctx.SetOrthogonalComputing(node, true)
 	enableSideEffects := ctx.DisableLayoutSideEffects()
 	result := layoutElement(ctx, node, space)
 	enableSideEffects()
-	ctx.SetOrthogonalResult(node, result)
+	ctx.SetOrthogonalComputing(node, false)
 	contribution := NewLogicalFragment(parentSpace.WritingDirection, result.Fragment).InlineSize()
 	if ctx.orthogonalContributions == nil {
 		ctx.orthogonalContributions = map[*LayoutInputNode]orthogonalContribution{}

@@ -60,10 +60,9 @@ type LayoutContext struct {
 	// If zero-value, DefaultFontConfig() is used.
 	FontConfig text.FontConfig
 
-	// OrthogonalLayoutCache caches layout results for orthogonal children
-	// during min/max sizing to avoid redundant layouts and detect cycles.
-	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
-	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
+	// OrthogonalLayoutCache holds the orthogonal flow roots being measured
+	// (orthogonalFlowRootContribution), to detect a cycle.
+	OrthogonalLayoutCache map[*LayoutInputNode]bool
 
 	// orthogonalContributions caches orthogonal flow roots' min/max
 	// contributions, so a min-content and a max-content pass share one
@@ -91,12 +90,6 @@ type LayoutContext struct {
 	SVGRoots map[*html.Node]*svg.SVGRoot
 }
 
-// orthogonalCacheEntry stores a cached layout result or a "computing" sentinel.
-type orthogonalCacheEntry struct {
-	Computing bool          // true while layout is in progress (cycle detection)
-	Result    *LayoutResult // cached result, nil if still computing
-}
-
 // orthogonalContribution is an orthogonal flow root's min/max contribution
 // (min equals max), for the parent-space inputs in space
 // (orthogonalFlowRootContribution).
@@ -111,34 +104,21 @@ type orthogonalContribution struct {
 // percentage inline size), and the percentage resolution inline size.
 type orthogonalContributionSpace [5]float64
 
-// GetOrthogonalLayout returns a cached layout result for an orthogonal child,
-// or nil if not cached. Returns (nil, true) if a cycle is detected.
-func (ctx *LayoutContext) GetOrthogonalLayout(node *LayoutInputNode) (*LayoutResult, bool) {
-	if ctx.OrthogonalLayoutCache == nil {
-		return nil, false
-	}
-	entry, ok := ctx.OrthogonalLayoutCache[node]
-	if !ok {
-		return nil, false
-	}
-	if entry.Computing {
-		return nil, true // cycle detected
-	}
-	return entry.Result, false
+// IsOrthogonalComputing reports whether an orthogonal flow root's
+// contribution is being measured: measuring it again is a cycle.
+func (ctx *LayoutContext) IsOrthogonalComputing(node *LayoutInputNode) bool {
+	return ctx.OrthogonalLayoutCache[node]
 }
 
-// SetOrthogonalComputing marks a node as being computed (cycle detection sentinel).
-func (ctx *LayoutContext) SetOrthogonalComputing(node *LayoutInputNode) {
-	if ctx.OrthogonalLayoutCache == nil {
-		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]*orthogonalCacheEntry)
+// SetOrthogonalComputing marks an orthogonal flow root as being measured,
+// or (false) no longer.
+func (ctx *LayoutContext) SetOrthogonalComputing(node *LayoutInputNode, computing bool) {
+	if !computing {
+		delete(ctx.OrthogonalLayoutCache, node)
+		return
 	}
-	ctx.OrthogonalLayoutCache[node] = &orthogonalCacheEntry{Computing: true}
-}
-
-// SetOrthogonalResult stores a cached layout result for an orthogonal child.
-func (ctx *LayoutContext) SetOrthogonalResult(node *LayoutInputNode, result *LayoutResult) {
 	if ctx.OrthogonalLayoutCache == nil {
-		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]*orthogonalCacheEntry)
+		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]bool)
 	}
-	ctx.OrthogonalLayoutCache[node] = &orthogonalCacheEntry{Result: result}
+	ctx.OrthogonalLayoutCache[node] = true
 }

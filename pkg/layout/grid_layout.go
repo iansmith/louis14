@@ -119,13 +119,14 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	containedIntrinsicBlockSize := 0.0
 	if sizeContained {
 		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
-		emptyRows := gla.computeRowSizes(explicitRows, rowAvailable, rowMinAvailable, rowGap, nil)
+		emptyRows := gla.computeRowSizes(explicitRows, rowAvailable, rowMinAvailable, rowGap, nil, nil)
 		containedIntrinsicBlockSize = gridTracksSpanSize(explicitRows, emptyRows, rowGap)
 		if !hasExplicitBlock {
 			rowAvailable = gla.clampBlockSize(containedIntrinsicBlockSize, wdm, geom)
 		}
 	}
-	rowSizes := gla.computeRowSizes(rowTracks, rowAvailable, rowMinAvailable, rowGap, items)
+	rowSizes := gla.computeRowSizes(rowTracks, rowAvailable, rowMinAvailable, rowGap, items,
+		gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
 	// The rows' intrinsic block size is their first pass's span
 	// (CalculateIntrinsicBlockSize after the first pass, :432-433).
 	rowsIntrinsicBlockSize := gla.totalTrackSize(rowSizes, rowGap)
@@ -140,7 +141,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	rowSizingAvailable := rowAvailable
 	if rowAvailable == Indefinite && gla.rowsDependOnAvailableSize(rowTracks) {
 		rowSizingAvailable = gla.clampBlockSize(rowsIntrinsicBlockSize, wdm, geom)
-		rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items)
+		rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items,
+			gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
 	}
 	// The additional column pass: an orthogonal item's column contribution
 	// depends on its rows, so once they are sized the columns are sized
@@ -153,7 +155,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		if rerun := gla.sizeColumns(slices.Clone(colSets), contentInlineSize, colGap, sizing, gridSizingLayout); !slices.Equal(rerun, colSizes) {
 			colSizes = rerun
 			gla.layoutItemsAtColumns(items, colSizes, colGap, hasExplicitBlock, explicitBlockSize)
-			rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items)
+			rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items,
+				gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
 		}
 	}
 
@@ -1331,8 +1334,22 @@ func (gla *GridLayoutAlgorithm) rowsDependOnAvailableSize(tracks []css.GridTrack
 // first pass (item.result, item.margins), whose block sizes the rows size
 // from.
 func (gla *GridLayoutAlgorithm) layoutItemsAtColumns(items []*gridItem, colSizes []float64, colGap float64, hasExplicitBlock bool, explicitBlockSize float64) {
-	wdm := gla.space.WritingDirection
+	blockSize := float64(Indefinite)
+	if hasExplicitBlock {
+		blockSize = explicitBlockSize
+	}
 	for _, item := range items {
+		item.result, item.margins = gla.layoutItemAtColumns(item, colSizes, colGap, blockSize)
+	}
+}
+
+// layoutItemAtColumns lays an in-flow item out at its columns' size, with
+// blockSize (the grid's definite content block size, or Indefinite) as its
+// available and percentage block size, and returns the result and its
+// margins. The first pass and the row contributions' measures share it.
+func (gla *GridLayoutAlgorithm) layoutItemAtColumns(item *gridItem, colSizes []float64, colGap, blockSize float64) (*LayoutResult, LogicalEdges) {
+	wdm := gla.space.WritingDirection
+	{
 		// Compute the inline size available to this item (sum of spanned columns + gaps).
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 
@@ -1353,10 +1370,7 @@ func (gla *GridLayoutAlgorithm) layoutItemsAtColumns(items []*gridItem, colSizes
 		// Pass explicitBlockSize as the available block so orthogonal children know
 		// the grid height when sizing their content (enabling correct line-wrapping).
 		// Mirrors Blink's GridLayoutAlgorithm::CreateConstraintSpaceForLayout.
-		firstPassBlock := float64(Indefinite)
-		if hasExplicitBlock {
-			firstPassBlock = explicitBlockSize
-		}
+		firstPassBlock := blockSize
 		// CSS Box Alignment §6.1 / CSS Grid §12.5: when justify-self is not
 		// "stretch" or "normal" and the item's inline-size is auto, the item
 		// must be sized to its max-content clamped to the track (ShrinkToFit),
@@ -1397,7 +1411,6 @@ func (gla *GridLayoutAlgorithm) layoutItemsAtColumns(items []*gridItem, colSizes
 			SetPercentageResolutionInlineSize(itemInline).
 			SetIsFixedInlineSize(isFixedInline).
 			Build()
-		item.result = layoutElement(gla.ctx, item.node, childSpace)
-		item.margins = ResolveMargins(item.style, wdm, itemInline)
+		return layoutElement(gla.ctx, item.node, childSpace), ResolveMargins(item.style, wdm, itemInline)
 	}
 }

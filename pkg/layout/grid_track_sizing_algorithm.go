@@ -780,38 +780,55 @@ func (gla *GridLayoutAlgorithm) stretchesAutoTracks(prop string) bool {
 	return v == "" || v == "normal" || v == "stretch"
 }
 
-// rowContributionBlockSize is a parallel item's block size for its row
-// contribution: its first-pass layout at its columns' size, unless a
-// percentage block size (block-size, or min/max) made that depend on the
-// grid's block size; then it is laid out again with its grid area's block
-// size indefinite, as Blink measures it (CreateConstraintSpaceForMeasure,
+// layoutRowContribution is how layout measures a parallel item's block
+// size for its row contribution: its first-pass layout at its columns'
+// size, unless that resolved a percentage block size (block-size, or its
+// min or max) against the grid's definite block size; then it is laid out
+// again at its columns with its grid area's block size indefinite, as
+// Blink measures it (CreateConstraintSpaceForMeasure,
 // grid_layout_algorithm.cc:1460-1500 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), storing nothing on the box.
-func (gla *GridLayoutAlgorithm) rowContributionBlockSize(item *gridItem, blockProp string) float64 {
+// The re-measures are cached per item for the pass.
+func (gla *GridLayoutAlgorithm) layoutRowContribution(colSizes []float64, colGap float64, hasExplicitBlock bool) rowContributionFunc {
 	wdm := gla.space.WritingDirection
-	laid := NewLogicalFragment(wdm, item.result.Fragment)
-	dependsOnBlock := false
-	for _, prop := range []string{blockProp, "min-" + blockProp, "max-" + blockProp} {
-		if v, ok := item.style.Get(prop); ok && (strings.HasSuffix(strings.TrimSpace(v), "%") || css.IsMathFunctionWithPercent(v)) {
-			dependsOnBlock = true
+	blockProp := logicalBlockSizeProperty(wdm)
+	remeasured := map[*gridItem]float64{}
+	return func(item *gridItem) (float64, LogicalEdges) {
+		if !hasExplicitBlock || !gridItemHasPercentageSize(item.style, blockProp) {
+			return NewLogicalFragment(wdm, item.result.Fragment).BlockSize(), item.margins
+		}
+		if b, ok := remeasured[item]; ok {
+			return b, item.margins
+		}
+		b := gla.measureItemAtColumns(item, colSizes, colGap)
+		remeasured[item] = b
+		return b, item.margins
+	}
+}
+
+// rowContributionFunc gives a parallel item's block size and margins for
+// its row contribution.
+type rowContributionFunc func(*gridItem) (float64, LogicalEdges)
+
+// gridItemHasPercentageSize reports whether the size property prop, or its
+// min or max, is a percentage (or calc() with one).
+func gridItemHasPercentageSize(style *css.Style, prop string) bool {
+	for _, p := range []string{prop, "min-" + prop, "max-" + prop} {
+		if v, ok := style.Get(p); ok && (strings.HasSuffix(strings.TrimSpace(v), "%") || css.IsMathFunctionWithPercent(v)) {
+			return true
 		}
 	}
-	if !dependsOnBlock {
-		return laid.BlockSize()
-	}
-	inline := laid.InlineSize()
-	space := NewConstraintSpaceBuilder(wdm, NewWritingDirectionMode(item.style), true).
-		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(wdm, gla.ctx)).
-		SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
-		SetAvailableSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
-		SetPercentageResolutionInlineSize(inline).
-		SetIsFixedInlineSize(true).
-		Build()
+	return false
+}
+
+// measureItemAtColumns is a parallel item's block size laid out at its
+// columns, as the first pass lays it out (layoutItemAtColumns), with its
+// grid area's block size indefinite, storing nothing on the box.
+func (gla *GridLayoutAlgorithm) measureItemAtColumns(item *gridItem, colSizes []float64, colGap float64) float64 {
 	enableSideEffects := gla.ctx.DisableLayoutSideEffects()
-	result := layoutElement(gla.ctx, item.node, space)
+	result, _ := gla.layoutItemAtColumns(item, colSizes, colGap, Indefinite)
 	enableSideEffects()
-	return NewLogicalFragment(wdm, result.Fragment).BlockSize()
+	return NewLogicalFragment(gla.space.WritingDirection, result.Fragment).BlockSize()
 }
 
 // computeRowSizes sizes a placed grid's rows for layout from their items'
@@ -819,9 +836,9 @@ func (gla *GridLayoutAlgorithm) rowContributionBlockSize(item *gridItem, blockPr
 // (grid_layout_algorithm.cc:1164-1189 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's content
 // block size or Indefinite; minAvailable its definite min block size.
-func (gla *GridLayoutAlgorithm) computeRowSizes(tracks []css.GridTrack, available, minAvailable, gap float64, items []*gridItem) []float64 {
+func (gla *GridLayoutAlgorithm) computeRowSizes(tracks []css.GridTrack, available, minAvailable, gap float64, items []*gridItem, contribution rowContributionFunc) []float64 {
 	sets := newGridSets(tracks, columnAvailable(available))
-	return sizeTracks(sets, available, minAvailable, gap, gla.rowSizingItems(sets, items), gridSizingLayout, gla.stretchesAutoTracks("align-content"))
+	return sizeTracks(sets, available, minAvailable, gap, gla.rowSizingItems(sets, items, contribution), gridSizingLayout, gla.stretchesAutoTracks("align-content"))
 }
 
 // rowSizingItems measures the items the row sizing of sets reads, from their
@@ -831,16 +848,7 @@ func (gla *GridLayoutAlgorithm) computeRowSizes(tracks []css.GridTrack, availabl
 // max-content inline sizes (ContributionSizeForGridItem's MinContentSize /
 // MaxContentSize / BlockContributionSize, grid_layout_algorithm.cc:577-815 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem) []*gridSizingItem {
-	blockProp := logicalBlockSizeProperty(gla.space.WritingDirection)
-	return gla.rowSizingItemsWith(sets, items, func(item *gridItem) (float64, LogicalEdges) {
-		return gla.rowContributionBlockSize(item, blockProp), item.margins
-	})
-}
-
-// rowSizingItemsWith is rowSizingItems with a parallel item's block size and
-// margins from parallelBlock.
-func (gla *GridLayoutAlgorithm) rowSizingItemsWith(sets []gridSet, items []*gridItem, parallelBlock func(*gridItem) (float64, LogicalEdges)) []*gridSizingItem {
+func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem, parallelBlock rowContributionFunc) []*gridSizingItem {
 	a := &gridTrackSizingAlgorithm{sets: sets}
 	wdm := gla.space.WritingDirection
 	blockProp := logicalBlockSizeProperty(wdm)
@@ -956,8 +964,8 @@ func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizing
 	}
 	rowGap, _ := gla.style.GetGridGap()
 	rowSets := newGridSets(tree.rowTracks, columnAvailable(rowAvailable))
-	rowItems := gla.rowSizingItemsWith(rowSets, tree.items, func(item *gridItem) (float64, LogicalEdges) {
-		return gla.measureItemBlockSize(item, gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)), ResolveMargins(item.style, wdm, 0)
+	rowItems := gla.rowSizingItems(rowSets, tree.items, func(item *gridItem) (float64, LogicalEdges) {
+		return gla.measureItemAtColumns(item, colSizes, colGap), ResolveMargins(item.style, wdm, 0)
 	})
 	rowSizes := sizeTracks(rowSets, rowAvailable, 0, rowGap, rowItems, gridSizingLayout, gla.stretchesAutoTracks("align-content"))
 	sizing := gla.remeasureBlockSizeDependentItems(tree.items, colSizing, rowSizes, rowGap)
@@ -1000,23 +1008,4 @@ func (gla *GridLayoutAlgorithm) remeasureBlockSizeDependentItems(items []*gridIt
 		sizing = append(sizing, it)
 	}
 	return sizing
-}
-
-// measureItemBlockSize lays a parallel item out at inline size for its
-// block size, its grid area's block size indefinite, storing nothing on the
-// box.
-func (gla *GridLayoutAlgorithm) measureItemBlockSize(item *gridItem, inline float64) float64 {
-	wdm := gla.space.WritingDirection
-	space := NewConstraintSpaceBuilder(wdm, NewWritingDirectionMode(item.style), true).
-		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(wdm, gla.ctx)).
-		SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
-		SetAvailableSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
-		SetPercentageResolutionInlineSize(inline).
-		SetIsFixedInlineSize(true).
-		Build()
-	enableSideEffects := gla.ctx.DisableLayoutSideEffects()
-	result := layoutElement(gla.ctx, item.node, space)
-	enableSideEffects()
-	return NewLogicalFragment(wdm, result.Fragment).BlockSize()
 }
