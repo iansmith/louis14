@@ -94,3 +94,22 @@ func TestGridAdditionalColumnPassForOrthogonalItem(t *testing.T) {
 		t.Errorf("grid %s, want 100 wide", boxDims(g))
 	}
 }
+
+// Layout runs the additional column pass too: the row pass sees an
+// orthogonal item's rows become definite (MayChangeBlockSizeDependentGrid-
+// ItemContributions, grid_layout_algorithm.cc:1146-1162, from
+// CompleteTrackSizingAlgorithm, :1191-1262), so the columns are sized again
+// with the item measured against its row and the rows after them (:478-484
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). In a 300x100 grid with
+// columns auto 1fr, the orthogonal item first measures one line, 50 wide;
+// against its 100px row it wraps to two, 100 wide, so the 1fr column
+// starts at 100.
+func TestGridLayoutAdditionalColumnPass(t *testing.T) {
+	ib := `<span style="display:inline-block; width:50px; height:100px"></span>`
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; width:300px; height:100px; grid-template-columns:auto 1fr">`+
+		`<div id=o style="writing-mode:vertical-rl; line-height:0">`+ib+ib+`</div><div id=b></div></div></body>`, nil)
+	o, b := findBox(fl.root, byID("o")), findBox(fl.root, byID("b"))
+	if o == nil || b == nil || o.Width != 100 || b.X != 100 {
+		t.Errorf("orthogonal item %s, #b %s; want the item 100 wide and #b at x=100", boxDims(o), boxDims(b))
+	}
+}
