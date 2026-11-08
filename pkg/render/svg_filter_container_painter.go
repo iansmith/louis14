@@ -20,8 +20,8 @@ import (
 // skip the normal child-paint loop). Returns false when the filter
 // resolves to nothing usable, so the caller falls back to unfiltered
 // child paint.
-func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform, filter *svg.SVGResourceFilter) bool {
-	if filter == nil || c == nil {
+func paintSVGContainerWithFilter(pctx *svgPaintContext, c svgFilteredElement, effective geometry.AffineTransform, filter *svg.SVGResourceFilter) bool {
+	if filter == nil {
 		return false
 	}
 
@@ -41,7 +41,7 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 	// "nothing to render" exit here.
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
 	graph, region, ok := buildSVGFilterElementGraph(pctx, filter,
-		deviceFromLocal.MapRect(c.ObjectBoundingBox()), deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}))
+		deviceFromLocal.MapRect(c.node.ObjectBoundingBox()), deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}))
 	if !ok {
 		return false
 	}
@@ -62,12 +62,12 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, eff
 // bounding boxes as the paint extent (SVGContentContainer::
 // ComputeStrokeBoundingBox). Returns false when no graph is produced, so
 // the caller paints the children unfiltered.
-func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform, ops []css.FilterFunction) bool {
+func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c svgFilteredElement, effective geometry.AffineTransform, ops []css.FilterFunction) bool {
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
 	graph, region, ok := buildSVGFilterChain(pctx, ops,
-		deviceFromLocal.MapRect(c.ObjectBoundingBox()),
-		snapRectFToDevice(deviceFromLocal.MapRect(c.StrokeBoundingBox())),
-		deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}), c.Style.GetColor())
+		deviceFromLocal.MapRect(c.node.ObjectBoundingBox()),
+		snapRectFToDevice(deviceFromLocal.MapRect(c.node.StrokeBoundingBox())),
+		deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}), c.style.GetColor())
 	if !ok {
 		return false
 	}
@@ -80,12 +80,12 @@ func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer
 // paintSVGContainerFilterSource paints the container's children, under its
 // own transform effective, into a buffer covering region (device pixels):
 // the filter's SourceGraphic, the union of its children's painted output.
-func paintSVGContainerFilterSource(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform, region image.Rectangle) *image.RGBA {
+func paintSVGContainerFilterSource(pctx *svgPaintContext, c svgFilteredElement, effective geometry.AffineTransform, region image.Rectangle) *image.RGBA {
 	srcBuf, childCtx := newSVGFilterSource(pctx, region)
 	// Apply the container's own transform inside the buffer, as
 	// paintSVGContainer's pushScopedSVGTransform does unfiltered.
 	guard := pushScopedSVGTransform(&childCtx, effective, geometry.RectF{})
-	for _, child := range c.Children {
+	for _, child := range c.content {
 		paintSVGNode(&childCtx, child)
 	}
 	guard.Close()
@@ -99,10 +99,29 @@ func paintSVGContainerFilterSource(pctx *svgPaintContext, c *svg.SVGContainer, e
 // (svgShapePainter.paint). Returns true when the filter path took ownership
 // of the paint (caller MUST skip its normal child loop), false otherwise.
 func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer, effective geometry.AffineTransform) bool {
-	if c == nil || c.Style == nil || pctx.clipPathContent {
+	if c == nil {
 		return false
 	}
-	filterVal, ok := c.Style.Get("filter")
+	return trySVGFilterDispatch(pctx, svgFilteredElement{node: c, style: c.Style, content: c.Children}, effective)
+}
+
+// svgFilteredElement is an SVG element painted through its filter: its node
+// (whose boxes, in its local space, the filter resolves against), its
+// style, and the content its filter's SourceGraphic holds: a container's
+// children; nothing yet for an <image>, whose image is not drawn (LOU-797).
+type svgFilteredElement struct {
+	node    svg.SVGNode
+	style   *css.Style
+	content []svg.SVGNode
+}
+
+// trySVGFilterDispatch is trySVGContainerFilterDispatch for any filtered
+// element c.
+func trySVGFilterDispatch(pctx *svgPaintContext, c svgFilteredElement, effective geometry.AffineTransform) bool {
+	if c.style == nil || pctx.clipPathContent {
+		return false
+	}
+	filterVal, ok := c.style.Get("filter")
 	if !ok || filterVal == "" || filterVal == "none" {
 		return false
 	}
@@ -111,6 +130,6 @@ func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer, e
 	}
 	// Anything else — CSS filter functions, or url() mixed with them —
 	// goes through the filter chain, as for an SVG shape.
-	ops := c.Style.GetFilter()
+	ops := c.style.GetFilter()
 	return len(ops) > 0 && paintSVGContainerWithFilterChain(pctx, c, effective, ops)
 }

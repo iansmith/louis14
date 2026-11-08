@@ -458,6 +458,10 @@ func hasValidBoundingBoxForContainer(child SVGNode) bool {
 		return c.boxes.valid(c.Children)
 	case *SVGViewportContainer:
 		return c.boxes.valid(c.Children)
+	case *SVGImage:
+		// LayoutSVGImage::IsObjectBoundingBoxValid (layout_svg_image.h:
+		// 59-62 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return !c.box.IsEmpty()
 	}
 	return !child.ObjectBoundingBox().IsEmpty()
 }
