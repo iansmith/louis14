@@ -407,7 +407,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// (BuildGridSizingTreeIgnoringChildren).
 		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
 		emptyRows := gla.resolveRowSizes(explicitRows, rowAvailable, rowGap, nil, wdm)
-		intrinsicBlockSize = gla.totalTrackSize(emptyRows, rowGap)
+		intrinsicBlockSize = gridTracksSpanSize(explicitRows, emptyRows, rowGap)
 	}
 
 	finalBlockSize := intrinsicBlockSize
@@ -959,6 +959,23 @@ func gridTrackIsFixed(t css.GridTrack) bool {
 // collapsed for holding no item (collapseAutoFitEmptyTracks).
 func gridTrackIsCollapsed(t css.GridTrack) bool {
 	return t.AutoFitExpanded && gridTrackIsFixed(t) && t.Size == 0
+}
+
+// gridTracksSpanSize is the size the tracks span: their sizes, and a gap
+// between each pair of tracks that are not collapsed auto-fit tracks, whose
+// gutters collapse too (CSS Grid 2 §7.2.2.1).
+func gridTracksSpanSize(tracks []css.GridTrack, sizes []float64, gap float64) float64 {
+	total, separated := 0.0, 0
+	for i, t := range tracks {
+		total += sizes[i]
+		if !gridTrackIsCollapsed(t) {
+			separated++
+		}
+	}
+	if separated > 1 {
+		total += gap * float64(separated-1)
+	}
+	return total
 }
 
 // resolveRowSizes sizes the rows from their definitions and their laid-out

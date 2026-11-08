@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -1186,7 +1187,9 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 
 // gridItemInlineContribution returns a grid item's min-content and max-content
 // contributions to the container's inline (column) axis, including the item's
-// margin, border, and padding. Orthogonal items contribute their block-size
+// margin, border, and padding, and those edges in the container's inline
+// axis (percentages against 0, as the grid area is indefinite while columns
+// size). Orthogonal items contribute their block-size
 // (viewed in the container's logical coords); parallel items contribute their
 // intrinsic inline sizes. Mirrors the MinContentSize / MaxContentSize /
 // BlockContributionSize contributions of Blink's
@@ -1196,12 +1199,14 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 //
 // Used by columnSizingItems, which measures the items the column track
 // sizing reads, for layout and for the grid's intrinsic inline size.
-func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib float64) {
+func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib, edges float64) {
 	childWDM := NewWritingDirectionMode(cs)
 	if containerWDM.IsOrthogonalTo(childWDM) {
 		// Orthogonal: block-size becomes inline contribution to parent.
 		// measureOrthogonalChild already includes margins in its return value.
-		return measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
 	// border/padding and margins in the child's own writing mode.
@@ -1216,7 +1221,8 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	mm := ComputeMinMaxSizes(ctx, node, childSpace)
-	return mm.MinContent + childBP + margins.InlineSum(), mm.MaxContent + childBP + margins.InlineSum()
+	edges = childBP + margins.InlineSum()
+	return mm.MinContent + edges, mm.MaxContent + edges, edges
 }
 
 // measureGridMinMax computes a grid container's min/max-content inline
@@ -1237,27 +1243,16 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
 	_, colGap := style.GetGridGap()
-	// The items are measured once and sized under both constraints, so a
-	// nested grid is not measured twice per level.
+	// The sets are built and the items measured once, then sized under
+	// both constraints, so a nested grid is not measured twice per level.
+	sets := newGridSets(tree.colTracks, gridIndefinite)
 	var sizing []*gridSizingItem
 	if !contained {
-		sizing = gla.columnSizingItems(tree.colTracks, Indefinite, tree.items)
+		sizing = gla.columnSizingItems(sets, tree.items)
 	}
 	totalColumnSize := func(constraint gridSizingConstraint) float64 {
-		sizes := gla.sizeColumns(tree.colTracks, Indefinite, colGap, sizing, constraint)
-		total, separated := 0.0, 0
-		for i, t := range tree.colTracks {
-			total += sizes[i]
-			// Gutters beside collapsed auto-fit tracks collapse too (CSS
-			// Grid 2 §7.2.2.1).
-			if !gridTrackIsCollapsed(t) {
-				separated++
-			}
-		}
-		if separated > 1 {
-			total += colGap * float64(separated-1)
-		}
-		return total
+		sizes := gla.sizeColumns(slices.Clone(sets), gridIndefinite, colGap, sizing, constraint)
+		return gridTracksSpanSize(tree.colTracks, sizes, colGap)
 	}
 	maxContent := totalColumnSize(gridSizingMaxContent)
 	minContent := totalColumnSize(gridSizingMinContent)

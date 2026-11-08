@@ -206,10 +206,10 @@ type gridSizingItem struct {
 	minContent, maxContent float64
 	// isScrollContainer: the item's automatic minimum size is 0.
 	isScrollContainer bool
-	// mainIsAuto: its size in the track axis is auto-like (auto,
-	// fit-content, stretch, a percentage or calc()); minIsAuto: its min
-	// size there is auto. minimumSize is its resolved min size, border box,
-	// plus its margins.
+	// mainIsAuto: its size in the track axis is auto-like
+	// (gridItemIsAutoLike); then minIsAuto: its min size there is auto, and
+	// minimumSize: its min size, border box, plus its margins
+	// (gridItemMinimum).
 	mainIsAuto, minIsAuto bool
 	minimumSize           float64
 }
@@ -711,35 +711,40 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's
 // content inline size, or Indefinite.
 func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, constraint gridSizingConstraint) []float64 {
-	return gla.sizeColumns(tracks, available, gap, gla.columnSizingItems(tracks, available, items), constraint)
+	sets := newGridSets(tracks, columnAvailable(available))
+	return gla.sizeColumns(sets, available, gap, gla.columnSizingItems(sets, items), constraint)
 }
 
-// columnSizingItems measures the items the column sizing reads: those
-// spanning an intrinsic track (ResolveIntrinsicTrackSizes) or a flexible
-// one (ExpandFlexibleTracks under indefinite free space, :1236-1251).
-// Measured once, they serve every constraint sizeColumns runs.
-func (gla *GridLayoutAlgorithm) columnSizingItems(tracks []css.GridTrack, available float64, items []*gridItem) []*gridSizingItem {
-	a := &gridTrackSizingAlgorithm{sets: newGridSets(tracks, columnAvailable(available))}
+// columnSizingItems measures the items the column sizing of sets reads:
+// those spanning an intrinsic track (ResolveIntrinsicTrackSizes) or a
+// flexible one (ExpandFlexibleTracks under indefinite free space,
+// :1236-1251). Measured once, they serve every constraint sizeColumns runs.
+func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridItem) []*gridSizingItem {
+	a := &gridTrackSizingAlgorithm{sets: sets}
 	wdm := gla.space.WritingDirection
 	var sizing []*gridSizingItem
 	for _, item := range items {
-		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(tracks))}
+		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(sets))}
 		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
 			continue
 		}
-		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
+		var edges float64
+		it.minContent, it.maxContent, edges = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
 		it.isScrollContainer = item.style.IsScrollContainer()
-		it.mainIsAuto, it.minIsAuto, it.minimumSize = gridItemMinimumInputs(item.style, wdm, gla.space)
+		if it.mainIsAuto = gridItemIsAutoLike(item.style, wdm); it.mainIsAuto {
+			it.minimumSize, it.minIsAuto = gridItemMinimum(it, item.style, wdm, edges)
+		}
 		sizing = append(sizing, it)
 	}
 	return sizing
 }
 
-// sizeColumns runs the column track sizing algorithm over measured items.
-func (gla *GridLayoutAlgorithm) sizeColumns(tracks []css.GridTrack, available, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint) []float64 {
+// sizeColumns runs the column track sizing algorithm over measured items,
+// sizing sets (from newGridSets for available) in place.
+func (gla *GridLayoutAlgorithm) sizeColumns(sets []gridSet, available, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint) []float64 {
 	available = columnAvailable(available)
 	a := &gridTrackSizingAlgorithm{
-		sets: newGridSets(tracks, available), gutter: gap,
+		sets: sets, gutter: gap,
 		constraint: constraint, available: available,
 		stretchAuto: gla.stretchesAutoColumns(),
 	}
@@ -767,27 +772,47 @@ func (gla *GridLayoutAlgorithm) stretchesAutoColumns() bool {
 	return v == "" || v == "normal" || v == "stretch"
 }
 
-// gridItemMinimumInputs is what an item's intrinsic-minimum contribution in
-// the container's inline (column) axis reads: whether its size there is
-// auto-like, whether its min size there is auto, and its resolved min size
-// (border box) plus margins (CalculateIntrinsicMinimumContribution,
-// grid_layout_utils.cc:506-600; the margin_sum ContributionSizeForGridItem
-// adds, grid_layout_algorithm.cc:806 @
+// gridItemIsAutoLike reports whether an item's size in the container's
+// inline (column) axis is auto-like for its minimum contribution: auto,
+// fit-content, stretch, a percentage, or calc() with a percentage (Blink's
+// kAuto, kFitContent, kStretch, kPercent, kCalculated: a calc() without a
+// percentage is a fixed length; ConvertLengthSizing,
+// style_builder_converter.cc:2130-2156 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The axis is the container's,
 // so an orthogonal item's block size is read, as Blink reads its
 // LogicalHeight.
-func gridItemMinimumInputs(style *css.Style, containerWDM WritingDirectionMode, space ConstraintSpace) (mainIsAuto, minIsAuto bool, minimumSize float64) {
-	prop := logicalInlineSizeProperty(containerWDM)
-	main, _ := style.Get(prop)
-	main = strings.TrimSpace(main)
-	mainIsAuto = main == "" || main == "auto" || main == "fit-content" || main == "stretch" ||
-		strings.HasSuffix(main, "%") || css.IsMathFunctionWithPercent(main) || strings.HasPrefix(main, "calc(")
-	minVal, ok := style.Get("min-" + prop)
-	minIsAuto = !ok || strings.TrimSpace(minVal) == "" || strings.TrimSpace(minVal) == "auto"
-	geom := ComputeFragmentGeometry(style, containerWDM, space.PercentageResolutionInlineSize)
-	minimumSize = ResolveMinInlineSize(style, containerWDM, space, geom).Float64() + geom.InlineBorderPadding() +
-		ResolveMargins(style, containerWDM, 0).InlineSum()
-	return mainIsAuto, minIsAuto, minimumSize
+func gridItemIsAutoLike(style *css.Style, containerWDM WritingDirectionMode) bool {
+	main, _ := style.Get(logicalInlineSizeProperty(containerWDM))
+	switch main = strings.TrimSpace(main); main {
+	case "", "auto", "fit-content", "-webkit-fit-content", "stretch", "-webkit-fill-available":
+		return true
+	}
+	return strings.HasSuffix(main, "%") || css.IsMathFunctionWithPercent(main)
+}
+
+// gridItemMinimum is an auto-like item's minimum contribution when its
+// automatic minimum does not apply, and whether its min size is auto. It is
+// its min size, border box, plus its margins: edges is its border, padding
+// and margins (gridItemInlineContribution). A percentage min size is
+// unresolvable against the indefinite grid area, so it is 0; an intrinsic
+// keyword is the matching contribution (CalculateIntrinsicMinimumContribution,
+// grid_layout_utils.cc:506-600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func gridItemMinimum(it *gridSizingItem, style *css.Style, containerWDM WritingDirectionMode, edges float64) (minimumSize float64, minIsAuto bool) {
+	prop := "min-" + logicalInlineSizeProperty(containerWDM)
+	v, ok := style.Get(prop)
+	switch v = strings.TrimSpace(v); {
+	case !ok || v == "" || v == "auto":
+		return edges, true
+	case v == "min-content" || v == "-webkit-min-content":
+		return it.minContent, false
+	case v == "max-content" || v == "-webkit-max-content", v == "fit-content" || v == "-webkit-fit-content":
+		// fit-content against an indefinite available size is max-content.
+		return it.maxContent, false
+	case strings.HasSuffix(v, "%") || css.IsMathFunctionWithPercent(v):
+		return edges, false
+	}
+	geom := ComputeFragmentGeometry(style, containerWDM)
+	return ResolveMinInlineSize(style, containerWDM, ConstraintSpace{WritingDirection: containerWDM}, geom).Float64() + edges, false
 }
 
 func boolInt(b bool) int {
