@@ -355,15 +355,7 @@ func (s *Style) Get(property string) (string, bool) {
 		return val, ok
 	}
 	hadVar := containsVarFunction(val)
-	varResolutionFailed := false
-	// Resolve var() references in the value
-	if hadVar {
-		val, varResolutionFailed = s.resolveVarsWithStatus(val)
-	}
-	// Resolve env() references in the value
-	if strings.Contains(val, "env(") {
-		val = resolveEnvValue(val)
-	}
+	val, varResolutionFailed := s.substituteVarAndEnv(val)
 	// CSS Variables §3 "Invalid at Computed Value Time" (IACVT): when a
 	// property's declared value contained a var() reference that failed to
 	// resolve (the referenced custom property is undefined OR cyclic AND no
@@ -497,6 +489,20 @@ func asciiToLower(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// substituteVarAndEnv substitutes var() references, then env() ones, in a
+// declared value, and reports whether a var() reference failed to resolve
+// (invalid at computed-value time; resolveVarsWithStatus).
+func (s *Style) substituteVarAndEnv(val string) (string, bool) {
+	failed := false
+	if containsVarFunction(val) {
+		val, failed = s.resolveVarsWithStatus(val)
+	}
+	if strings.Contains(val, "env(") {
+		val = resolveEnvValue(val)
+	}
+	return val, failed
 }
 
 // resolveVarReferences resolves CSS var() function references in a value
@@ -2546,12 +2552,11 @@ func expandShorthand(style *Style, property, value string) {
 	// Case-insensitive per CSS Syntax §4.3.10.
 	if containsVarFunction(value) {
 		if slices.Contains(varDeferredShorthands, property) {
-			// Store as the shorthand property; reexpandVarShorthands
-			// expands it once var() is substituted.
-			style.Set(property, value)
+			for _, lh := range shorthandLonghands[property] {
+				style.Set(lh, pendingSubstitutionValue(property, value))
+			}
 			return
 		}
-		// For "background", expandBackgroundProperty (css_parsing_utils.go) defers var() itself
 	}
 	// CSS Values 5 §11.5: if value contains a typed attr() function, defer
 	// shorthand expansion. attr() is resolved at cascade time via

@@ -3143,34 +3143,72 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 	return carriedInherit
 }
 
-// varDeferredShorthands lists the shorthands expandShorthand leaves
-// unexpanded when their declared value contains var() — substitution can't
-// happen at parse time because custom properties resolve in the cascade.
-// expandShorthand and reexpandVarShorthands both read this list.
+// varDeferredShorthands lists the shorthands whose var() values
+// expandShorthand cannot expand at parse time, since custom properties
+// resolve in the cascade. Each longhand gets a pending-substitution value
+// instead (pendingSubstitutionValue).
 var varDeferredShorthands = []string{
 	"margin", "padding", "border", "border-top", "border-right",
 	"border-bottom", "border-left", "border-width", "border-style",
 	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
-	"grid-area", "grid-row", "grid-column",
+	"grid-area", "grid-row", "grid-column", "background",
 }
 
-// reexpandVarShorthands substitutes var() in deferred shorthand values and
-// expands them into their longhands (CSS Variables 1 §3.2). Runs after
-// inheritance so the element's custom-property table is complete. On IACVT
-// (a var() reference that fails to resolve) the whole declaration is
-// invalid: drop the shorthand so the longhands keep their initial values.
-func reexpandVarShorthands(style *Style) {
-	for _, prop := range varDeferredShorthands {
-		raw, ok := style.Properties[prop]
-		if !ok || !containsVarFunction(raw) {
+// pendingSubstitutionPrefix starts a longhand value that is a pending
+// substitution of its shorthand's var() value. U+0000 cannot begin a
+// declared value.
+const pendingSubstitutionPrefix = "\x00pending-substitution:"
+
+// pendingSubstitutionValue is a longhand's value when its shorthand's
+// declared value contains var(): the shorthand and that value, substituted
+// and parsed at computed-value time. The longhand takes part in the cascade
+// at the shorthand's own priority and source position, so a later or
+// higher-priority declaration of the longhand overrides it
+// (CSSPendingSubstitutionValue, css_pending_substitution_value.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func pendingSubstitutionValue(shorthand, value string) string {
+	return pendingSubstitutionPrefix + shorthand + "\x00" + value
+}
+
+// parsePendingSubstitution splits a pendingSubstitutionValue into its
+// shorthand and declared value.
+func parsePendingSubstitution(v string) (shorthand, value string, ok bool) {
+	rest, ok := strings.CutPrefix(v, pendingSubstitutionPrefix)
+	if !ok {
+		return "", "", false
+	}
+	return strings.Cut(rest, "\x00")
+}
+
+// resolvePendingSubstitutions replaces each pending-substitution longhand
+// with its value from the shorthand: var() substituted, then the shorthand
+// expanded, once per shorthand value (StyleCascade::
+// ResolvePendingSubstitution, style_cascade.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Runs after inheritance so the
+// element's custom-property table is complete. A longhand the expansion does
+// not set (the value is invalid at computed-value time, or omits it) falls
+// back to its initial value.
+func resolvePendingSubstitutions(style *Style) {
+	expanded := map[string]*Style{}
+	for prop, v := range style.Properties {
+		shorthand, value, ok := parsePendingSubstitution(v)
+		if !ok {
 			continue
 		}
-		resolved, ok := style.Get(prop) // Get substitutes var()/env()
-		delete(style.Properties, prop)
-		if !ok {
-			continue // IACVT — longhands fall back to their defaults
+		key := shorthand + "\x00" + value
+		tmp, done := expanded[key]
+		if !done {
+			tmp = NewStyle()
+			if resolved, failed := style.substituteVarAndEnv(value); !failed {
+				expandShorthand(tmp, shorthand, resolved)
+			}
+			expanded[key] = tmp
 		}
-		expandShorthand(style, prop, resolved)
+		if lv, ok := tmp.Properties[prop]; ok {
+			style.Properties[prop] = lv
+		} else {
+			delete(style.Properties, prop)
+		}
 	}
 }
 
@@ -3297,14 +3335,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		// CSS Variables 1 §3.2: a shorthand whose declared value contains
-		// var() is substituted at computed-value time and only then expanded
-		// into its longhands. expandShorthand deferred those (stored them
-		// unexpanded under the shorthand name); now that inheritance has
-		// populated this element's custom-property table, substitute and
-		// expand. Mirrors Blink's pending-substitution values
-		// (css_pending_substitution_value.h @
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-		reexpandVarShorthands(style)
+		// var() is substituted at computed-value time and only then expanded.
+		// Its longhands carry pending-substitution values through the
+		// cascade; now that inheritance has populated this element's
+		// custom-property table, resolve them (resolvePendingSubstitutions).
+		resolvePendingSubstitutions(style)
 		// Resolve logical size properties (inline-size, block-size) based on the
 		// element's computed writing-mode. Must happen after inheritance so that
 		// inherited writing-mode is available.
@@ -3317,9 +3352,9 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		}
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
-		// A matching @container rule can re-introduce a var()-deferred
-		// shorthand; re-run that computed-time normalization (idempotent).
-		reexpandVarShorthands(style)
+		// A matching @container rule can add pending-substitution longhands;
+		// resolve those too (idempotent).
+		resolvePendingSubstitutions(style)
 		// The element's font properties are final here (@container rules
 		// included, which Blink applies inside the same cascade), so build its font
 		// (UpdateFont), then compute line-height against it, then record the lh
