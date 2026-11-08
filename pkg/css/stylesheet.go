@@ -5233,7 +5233,7 @@ func isValidColorValue(value string) bool {
 	// CSS Cascade 4 §6.1: every CSS property accepts the five CSS-wide
 	// keywords. They reach the longhand value verbatim and are resolved at
 	// cascade time by resolveCSSWideKeywords / resolveInheritValues.
-	if _, wide := cssWideKeyword(lower); wide {
+	if _, wide := cssWideKeyword(value); wide {
 		return true
 	}
 	// var() references are resolved later — always valid at parse time.
@@ -5547,9 +5547,8 @@ func isValidColumnCountValue(value string) bool {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func isValidPositiveIntegerValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
 	// CSS-wide keywords accepted on every property; resolved later.
-	if _, wide := cssWideKeyword(lower); wide {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5579,7 +5578,7 @@ func isValidColumnWidthValue(value string) bool {
 	if lower == "auto" {
 		return true
 	}
-	if _, wide := cssWideKeyword(lower); wide {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5602,7 +5601,7 @@ func isValidColumnWidthValue(value string) bool {
 func isValidColumnsShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	if _, wide := cssWideKeyword(lower); wide || lower == "auto" {
+	if _, wide := cssWideKeyword(trimmed); wide || lower == "auto" {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5685,8 +5684,7 @@ func isValidColumnsShorthand(value string) bool {
 // any slot (e.g. `normal`) make the declaration invalid.
 func isValidColumnRuleShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
-	if _, wide := cssWideKeyword(lower); wide {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5724,7 +5722,7 @@ func isValidColumnRuleShorthand(value string) bool {
 		}
 		// Color slot — must be a valid color (no CSS-wide keywords here; the
 		// whole-value CSS-wide branch above already returned).
-		if _, wide := cssWideKeyword(partLower); !wide && isValidColorValue(part) {
+		if _, wide := cssWideKeyword(part); !wide && isValidColorValue(part) {
 			if hasColor {
 				return false
 			}

@@ -437,7 +437,7 @@ func isResolvedColorValue(value string) bool {
 	if lower == "currentcolor" {
 		return true
 	}
-	if _, wide := cssWideKeyword(lower); wide {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	_, ok := ParseColor(trimmed)
@@ -4438,9 +4438,13 @@ func expandBorderSideProperty(style *Style, property, value string) {
 
 // cssWideKeyword returns value lowercased when it is one of the CSS-wide
 // keywords (CSS Cascade 4 §7.3 / Cascade 5: initial, inherit, unset, revert,
-// revert-layer).
+// revert-layer). It trims CSS whitespace only and matches ASCII
+// case-insensitively, as identifiers are (CSS Syntax 3 §4.3; Blink's
+// css_parsing_utils::IsCSSWideKeyword @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): Unicode folding would take
+// "İnitial" (U+0130) for `initial`.
 func cssWideKeyword(value string) (string, bool) {
-	kw := strings.ToLower(strings.TrimSpace(value))
+	kw := asciiToLower(strings.Trim(value, cssWhitespace))
 	switch kw {
 	case "inherit", "initial", "unset", "revert", "revert-layer":
 		return kw, true
@@ -8800,14 +8804,12 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 // §custom-idents). Counter names must be valid <custom-ident>s, so
 // `counter(inherit)` is a parse error.
 func isCSSWideKeyword(s string) bool {
-	if _, wide := cssWideKeyword(s); wide {
+	kw := asciiToLower(strings.Trim(s, cssWhitespace))
+	if kw == "default" || kw == "none" {
 		return true
 	}
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "default", "none":
-		return true
-	}
-	return false
+	_, wide := cssWideKeyword(kw)
+	return wide
 }
 
 // ParseContentValues parses a CSS content value into individual parts
@@ -9676,7 +9678,7 @@ func isGridLineIdent(tok string) bool {
 	if _, wide := cssWideKeyword(tok); wide {
 		return false
 	}
-	switch strings.ToLower(tok) {
+	switch asciiToLower(tok) {
 	case "auto", "span", "default":
 		return false
 	}
