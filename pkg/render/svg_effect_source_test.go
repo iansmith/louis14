@@ -15,7 +15,8 @@ func TestBuildSVGElementFilter_NilRenderer(t *testing.T) {
 	style := css.NewStyle()
 	style.Set("filter", "url(a.svg#f) blur(1px)")
 	box := geometry.NewRectF(0, 0, 10, 10)
-	if _, handled := buildSVGElementFilter(pctx, style.GetFilter(), box, box, css.Color{}); handled {
+	b := newSVGFilterEffectBuilder(pctx, box, css.Color{})
+	if _, handled := buildSVGElementFilter(pctx, b, b.resolveStages(style.GetFilter()), box); handled {
 		t.Error("built a filter without a renderer")
 	}
 }

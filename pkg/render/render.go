@@ -348,7 +348,7 @@ func (r *Renderer) SetCustomHighlights(highlights map[string][]*html.Range, orde
 // SetExternalSVGFetcher installs a closure that resolves
 // `filter: url(doc#id)` references to external SVG document bytes
 // (data:, file://, http(s)://, or harness-resolved relative URLs).
-// Consumed by FilterEffectBuilder.BuildReferenceFilter's external
+// Consumed by FilterEffectBuilder.lookupReferenceFilter's external
 // branch. LOU-130 Phase 2 wiring.
 func (r *Renderer) SetExternalSVGFetcher(fetcher func(uri string) ([]byte, error)) {
 	r.externalSVGFetcher = fetcher
@@ -1236,7 +1236,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	}
 
 	// Build the filter graph; SVG `filter: url(#id)` references resolve
-	// through the renderer's resource registry (BuildReferenceFilter).
+	// through the renderer's resource registry (lookupReferenceFilter).
 	builder := r.newFilterEffectBuilder(layer)
 	// The reference box: the border box, or, for a filter that moves pixels,
 	// the bounding box of the layer and its self-painting descendants
@@ -1257,7 +1257,8 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	paintExtent := filters.SnapRectOut(paintBounds)
 	// The graph runs in layer pixels: the builder maps its parameter-space
 	// boxes and parameters into the layer; the source extent is mapped here.
-	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, layer.Filters, func(m filters.Mapping) bool {
+	stages := builder.resolveStages(layer.Filters)
+	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, stages, func(m filters.Mapping) bool {
 		sub, ok := m.ParamToLayerPixels(paintBounds)
 		paintExtent = sub
 		return ok
@@ -1284,7 +1285,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// layer's own perspective) the chain keeps the region it had before.
 	refPixels := builder.LayerReferenceBox()
 	switch {
-	case hasReferenceFilter(layer.Filters):
+	case hasReferenceStage(stages):
 		filter.EnsureRegion(refPixels.Union(paintExtent), false)
 	case dmAffine:
 		if clip, ok := r.filterLayerClip(filter, mapping); ok {
@@ -1417,19 +1418,19 @@ func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform,
 	r.dc.Pop()
 }
 
-// layerSpaceFilter builds builder's graph of ops in the layer space ctm
+// layerSpaceFilter builds builder's graph of stages in the layer space ctm
 // decomposes into for it (skif::Mapping::decomposeCTM, src/core/
 // SkImageFilterTypes.cpp:259-298 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), once: the capability is read
-// from the list (FilterEffectBuilder.CTMCapability), the CTM decomposed, and
-// the graph built with builder.Mapping set to the result. An integer
+// from the stages (filterStagesCapability), the CTM decomposed, and the
+// graph built with builder.Mapping set to the result. An integer
 // translation is folded into LayerToDev (FoldIntegerTranslation). inLayer,
 // when non-nil, maps the caller's own boxes into the layer before the build
 // and reports false when it cannot. ok is false when the CTM does not
-// decompose or inLayer fails; filter is nil, with ok, when no stage of ops
-// builds anything.
-func (r *Renderer) layerSpaceFilter(ctm geometry.Transform, builder *FilterEffectBuilder, ops []css.FilterFunction, inLayer func(filters.Mapping) bool) (filter *filters.Filter, mapping filters.Mapping, ok bool) {
-	capability, builds := builder.CTMCapability(ops)
+// decompose or inLayer fails; filter is nil, with ok, when no stage builds
+// anything.
+func (r *Renderer) layerSpaceFilter(ctm geometry.Transform, builder *FilterEffectBuilder, stages []filterStage, inLayer func(filters.Mapping) bool) (filter *filters.Filter, mapping filters.Mapping, ok bool) {
+	capability, builds := filterStagesCapability(stages)
 	if !builds {
 		return nil, mapping, true
 	}
@@ -1441,7 +1442,7 @@ func (r *Renderer) layerSpaceFilter(ctm geometry.Transform, builder *FilterEffec
 	if inLayer != nil && !inLayer(mapping) {
 		return nil, mapping, false
 	}
-	return builder.BuildFilterEffect(ops), mapping, true
+	return builder.buildStages(stages), mapping, true
 }
 
 // filterLayerClip returns the draw context's clip in the filter layer's pixels,
@@ -1627,10 +1628,10 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	localBox := image.Rect(int(sx), int(sy), int(sx+sw), int(sy+sh))
 
 	builder := r.newFilterEffectBuilder(layer)
-	layerBox := localBox
+	var layerBox image.Rectangle
 	builder.ReferenceBox = rectFFromRect(localBox)
 	builder.FilterViewport = rectFFromRect(localBox)
-	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, ops, func(m filters.Mapping) bool {
+	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, builder.resolveStages(ops), func(m filters.Mapping) bool {
 		lb, ok := filters.MapRectAsM33(m.ParamToLayer, geometry.NewRectF(sx, sy, sw, sh))
 		layerBox = snapRectF(lb)
 		return ok

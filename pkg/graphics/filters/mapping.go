@@ -81,15 +81,17 @@ func (m *Mapping) DecomposeCTM(ctm geometry.Transform, capability MatrixCapabili
 }
 
 // FoldIntegerTranslation moves a ParamToLayer that is an integer
-// translation into LayerToDev, so the graph is evaluated in parameter space
-// and not rebuilt for the common translate-only CTM. Every primitive's
-// geometry moves with the boxes it is built from, by the same integer, so
-// the output is unchanged — save feTurbulence, whose noise is sampled at
-// layer coordinates: it is now sampled at parameter coordinates, as Skia's
-// SkPerlinNoiseShader evaluates noise in its local (parameter) space.
+// translation into LayerToDev, so for the common translate-only CTM the graph
+// runs in parameter space and the translation is applied when the layer is
+// drawn. Every primitive's geometry moves with the boxes it is built from, by
+// the same integer, so the output is unchanged; feTurbulence samples its
+// noise in parameter space through the mapping (FETurbulence.Mapping), as
+// Skia's SkPerlinNoiseShader evaluates noise in its local space, so it is
+// unchanged too.
 //
-// no Skia analog: Skia rebuilds nothing, as its graph is built once and
-// mapped at evaluation; louis14 builds its graph in the layer space.
+// no Skia analog: Skia maps its graph at evaluation; louis14 builds its graph
+// in the layer, so a layer equal to parameter space saves mapping every
+// parameter.
 func (m *Mapping) FoldIntegerTranslation() {
 	if !m.ParamToLayer.IsIdentityOrIntegerTranslation() {
 		return

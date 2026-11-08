@@ -106,7 +106,7 @@ func (b *FilterEffectBuilder) LayerReferenceBox() image.Rectangle {
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
 // Returns nil when the list is empty or contains only unsupported entries.
 //
-// A single `url(#id)` is dispatched to BuildReferenceFilter so the
+// A single `url(#id)` is built from its <filter> alone (buildStageReference) so the
 // reference filter's own region / interpolation space is preserved
 // (single-url tests rely on this). A mixed list walks the ops in order,
 // each `url()` becoming a sub-graph whose SourceGraphic is rewired to
@@ -114,41 +114,72 @@ func (b *FilterEffectBuilder) LayerReferenceBox() image.Rectangle {
 // FilterChain composition); each shorthand entry is built with the
 // running output as its source.
 func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filters.Filter {
-	if len(ops) == 0 {
+	return b.buildStages(b.resolveStages(ops))
+}
+
+// filterStage is one function of a filter list, with a url() stage's
+// <filter> resolved (lookupReferenceFilter) once per paint, for both the
+// capability (filterStagesCapability) and the build (buildStages).
+type filterStage struct {
+	op css.FilterFunction
+	// reference is a url() stage's <filter>, nil when it does not resolve;
+	// external reports one from another document.
+	reference *svg.SVGResourceFilter
+	external  bool
+}
+
+// resolveStages resolves each url() stage of ops to its <filter>.
+func (b *FilterEffectBuilder) resolveStages(ops []css.FilterFunction) []filterStage {
+	stages := make([]filterStage, len(ops))
+	for i, op := range ops {
+		stages[i].op = op
+		if op.Name == "url" {
+			stages[i].reference, stages[i].external = b.lookupReferenceFilter(op.URL.Absolute)
+		}
+	}
+	return stages
+}
+
+// buildStages is BuildFilterEffect over resolved stages.
+func (b *FilterEffectBuilder) buildStages(stages []filterStage) *filters.Filter {
+	if len(stages) == 0 {
 		return nil
 	}
-	if len(ops) == 1 && ops[0].Name == "url" {
-		return b.BuildReferenceFilter(ops[0].URL.Absolute)
+	if len(stages) == 1 && stages[0].op.Name == "url" {
+		return b.buildStageReference(stages[0], nil)
 	}
 	const space = filters.InterpolationSpaceSRGB
 	src := filters.NewSourceGraphic(space)
-	srcAlpha := filters.NewSourceAlpha(src, space)
-
-	var prev filters.FilterEffect = src
-	for _, op := range ops {
-		if op.Name == "url" {
-			sub := b.buildReferenceFilterWithSource(op.URL.Absolute, prev)
+	in := cssFilterInputs{
+		prev:         src,
+		srcAlpha:     filters.NewSourceAlpha(src, space),
+		space:        space,
+		currentColor: b.CurrentColor,
+		mapping:      b.Mapping,
+	}
+	for _, st := range stages {
+		if st.op.Name == "url" {
+			sub := b.buildStageReference(st, in.prev)
 			if sub != nil && sub.LastEffect != nil {
-				prev = sub.LastEffect
+				in.prev = sub.LastEffect
 			}
 			// An unresolvable url() (missing fragment, cycle, fetch
 			// fail) drops the entry per Filter Effects 1 §3.1 — the
 			// chain continues with the same `prev`.
 			continue
 		}
-		next := buildOneEffect(op, prev, src, srcAlpha, space, b.CurrentColor, b.Mapping)
-		if next != nil {
-			prev = next
+		if fn, ok := cssFilterFunctions[st.op.Name]; ok {
+			in.prev = fn.build(st.op, in)
 		}
 	}
-	if prev == src {
+	if in.prev == filters.FilterEffect(src) {
 		return nil
 	}
 
 	f := &filters.Filter{
 		Source:      src,
-		SourceAlpha: srcAlpha,
-		LastEffect:  prev,
+		SourceAlpha: in.srcAlpha,
+		LastEffect:  in.prev,
 	}
 	// A shorthand-only chain has no region; the caller sizes its buffer
 	// (filters.Filter.EnsureRegion). A chain with a url() stage starts from
@@ -156,16 +187,16 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	// (LOU-704 ports the exact sizing). An SVG shape's chain then unites its
 	// paint extent into it (buildSVGElementFilter); the HTML layer path keeps
 	// it as is (LOU-780).
-	if hasReferenceFilter(ops) {
+	if hasReferenceStage(stages) {
 		f.FilterRegion = f.MapRect(b.LayerReferenceBox())
 	}
 	return f
 }
 
-// hasReferenceFilter reports whether a filter list has a url() stage.
-func hasReferenceFilter(ops []css.FilterFunction) bool {
-	for _, op := range ops {
-		if op.Name == "url" {
+// hasReferenceStage reports whether a filter list has a url() stage.
+func hasReferenceStage(stages []filterStage) bool {
+	for _, st := range stages {
+		if st.op.Name == "url" {
 			return true
 		}
 	}
@@ -185,26 +216,26 @@ func hasReferenceFilter(ops []css.FilterFunction) bool {
 // Mirrors Blink's FilterEffectBuilder::BuildReferenceFilter +
 // SVGFilterBuilder::BuildGraph dispatch.
 func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
-	return b.buildReferenceFilterWithSource(id, nil)
+	filter, external := b.lookupReferenceFilter(id)
+	return b.buildStageReference(filterStage{reference: filter, external: external}, nil)
 }
 
-// buildReferenceFilterWithSource is BuildReferenceFilter with an optional
-// chain-source override: when prev is non-nil, "SourceGraphic" references
-// inside the resolved filter resolve to prev (the running output of an
-// outer CSS filter-value-list chain), mirroring Blink's
+// buildStageReference builds a url() stage's resolved <filter> (nil when it
+// did not resolve), with an optional chain-source override: when prev is
+// non-nil, "SourceGraphic" references inside the filter resolve to prev (the
+// running output of an outer CSS filter-value-list chain), mirroring Blink's
 // FilterEffectBuilder::Build* pattern of swapping SourceGraphic per stage.
-func (b *FilterEffectBuilder) buildReferenceFilterWithSource(id string, prev filters.FilterEffect) *filters.Filter {
-	filter, external := b.lookupReferenceFilter(id)
-	if filter == nil {
+func (b *FilterEffectBuilder) buildStageReference(st filterStage, prev filters.FilterEffect) *filters.Filter {
+	if st.reference == nil {
 		return nil
 	}
 	// External documents don't share the host page's cascade: their
 	// primitives read their presentation attributes.
 	resolveStyle := b.ResolveStyle
-	if external {
+	if st.external {
 		resolveStyle = nil
 	}
-	return b.buildResourceFilter(filter, resolveStyle, prev)
+	return b.buildResourceFilter(st.reference, resolveStyle, prev)
 }
 
 // lookupReferenceFilter resolves a `filter: url(...)` value (FilterFunction.
@@ -230,29 +261,25 @@ func (b *FilterEffectBuilder) lookupReferenceFilter(id string) (filter *svg.SVGR
 	return filter, false
 }
 
-// hasUserSpaceFilterRegion reports whether a url() stage of ops resolves to
-// a <filter> whose region is userSpaceOnUse, independent of the element's
-// box.
-func (b *FilterEffectBuilder) hasUserSpaceFilterRegion(ops []css.FilterFunction) bool {
-	for _, op := range ops {
-		if op.Name != "url" {
-			continue
-		}
-		if f, _ := b.lookupReferenceFilter(op.URL.Absolute); f != nil && f.FilterUnits == svg.SVGUnitUserSpaceOnUse {
+// hasUserSpaceFilterRegion reports whether a url() stage resolves to a
+// <filter> whose region is userSpaceOnUse, independent of the element's box.
+func hasUserSpaceFilterRegion(stages []filterStage) bool {
+	for _, st := range stages {
+		if st.reference != nil && st.reference.FilterUnits == svg.SVGUnitUserSpaceOnUse {
 			return true
 		}
 	}
 	return false
 }
 
-// CTMCapability is the most complex layer matrix the graph of ops can run
+// filterStagesCapability is the most complex layer matrix the graph of stages can run
 // in: the minimum over its nodes (SkImageFilter_Base::getCTMCapability,
 // src/core/SkImageFilter.cpp:337-345 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). It is read from the list, not a
 // built graph, so the graph is built once, in its layer
 // (Renderer.layerSpaceFilter):
 //   - a CSS filter function takes its Skia filter's capability
-//     (cssFilterFunctionCapability) and does not clip to bounds
+//     (cssFilterFunctions) and does not clip to bounds
 //     (filter_effect_builder.cc:355-362 @
 //     a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
 //   - every primitive of a url() stage clips to its subregion
@@ -263,38 +290,22 @@ func (b *FilterEffectBuilder) hasUserSpaceFilterRegion(ops []css.FilterFunction)
 //
 // A url() stage that does not resolve is dropped from the chain, and an
 // unknown function builds nothing; builds is false when no stage builds.
-func (b *FilterEffectBuilder) CTMCapability(ops []css.FilterFunction) (capability filters.MatrixCapability, builds bool) {
+func filterStagesCapability(stages []filterStage) (capability filters.MatrixCapability, builds bool) {
 	capability = filters.MatrixCapabilityComplex
-	for _, op := range ops {
-		switch op.Name {
-		case "url":
-			if f, _ := b.lookupReferenceFilter(op.URL.Absolute); f == nil {
+	for _, st := range stages {
+		if st.op.Name == "url" {
+			if st.reference == nil {
 				continue
 			}
 			capability = min(capability, filters.MatrixCapabilityScaleTranslate)
-		default:
-			c, ok := cssFilterFunctionCapability[op.Name]
-			if !ok {
-				continue
-			}
-			capability = min(capability, c)
+		} else if fn, ok := cssFilterFunctions[st.op.Name]; ok {
+			capability = min(capability, fn.capability)
+		} else {
+			continue
 		}
 		builds = true
 	}
 	return capability, builds
-}
-
-// cssFilterFunctionCapability is each CSS filter function buildOneEffect
-// builds, with the capability of the Skia filter it is: a colour function is
-// an SkColorFilterImageFilter, kComplex (SkColorFilterImageFilter.cpp:53 @
-// skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e); blur and drop-shadow keep
-// the default kScaleTranslate (SkImageFilter_Base.h:225-227).
-var cssFilterFunctionCapability = map[string]filters.MatrixCapability{
-	"grayscale": filters.MatrixCapabilityComplex, "sepia": filters.MatrixCapabilityComplex,
-	"saturate": filters.MatrixCapabilityComplex, "hue-rotate": filters.MatrixCapabilityComplex,
-	"invert": filters.MatrixCapabilityComplex, "opacity": filters.MatrixCapabilityComplex,
-	"brightness": filters.MatrixCapabilityComplex, "contrast": filters.MatrixCapabilityComplex,
-	"blur": filters.MatrixCapabilityScaleTranslate, "drop-shadow": filters.MatrixCapabilityScaleTranslate,
 }
 
 // filterInterpolationSpace is the operating space of an SVG <filter>'s
@@ -418,100 +429,89 @@ func splitURLFragment(v string) (docURL, fragID string) {
 	return v[:hashIdx], v[hashIdx+1:]
 }
 
-// buildOneEffect maps a single CSS filter function to its fe* equivalent
-// (the functions cssFilterFunctionCapability lists),
-// fed by prev. src / srcAlpha are the graph builtins (drop-shadow needs them).
-func buildOneEffect(op css.FilterFunction, prev filters.FilterEffect,
-	src *filters.SourceGraphic, srcAlpha *filters.SourceAlpha,
-	space filters.InterpolationSpace, currentColor css.Color, mapping filters.Mapping) filters.FilterEffect {
+// cssFilterInputs is what a CSS filter function's effect is built from: its
+// input (the running chain output), the graph's SourceAlpha, the operating
+// space, currentColor, and the mapping of its parameters (blur deviations,
+// shadow offsets, in CSS px) into the layer.
+type cssFilterInputs struct {
+	prev         filters.FilterEffect
+	srcAlpha     *filters.SourceAlpha
+	space        filters.InterpolationSpace
+	currentColor css.Color
+	mapping      filters.Mapping
+}
 
-	switch op.Name {
-	case "grayscale":
+// cssFilterFunction is how a CSS filter function builds: the capability of
+// the Skia filter it is (filterStagesCapability), and its fe* equivalent.
+type cssFilterFunction struct {
+	capability filters.MatrixCapability
+	build      func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect
+}
+
+// cssFilterFunctions is every CSS filter function the builder builds (url()
+// stages are built from their <filter>). A colour function is an
+// SkColorFilterImageFilter, kComplex (SkColorFilterImageFilter.cpp:53 @
+// skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e); blur and drop-shadow keep
+// the default kScaleTranslate (SkImageFilter_Base.h:225-227).
+var cssFilterFunctions = map[string]cssFilterFunction{
+	// grayscale(a): blend each row of the luminance basis toward identity
+	// by (1-a). Filter Effects 1 §13.
+	"grayscale": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		return filters.NewFEColorMatrix(in.prev, in.space, filters.ColorMatrixTypeMatrix, grayscaleMatrix(clampFilter01(op.Value)))
+	}},
+	"sepia": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		return filters.NewFEColorMatrix(in.prev, in.space, filters.ColorMatrixTypeMatrix, sepiaMatrix(clampFilter01(op.Value)))
+	}},
+	// saturate accepts <number> or <percentage>, clamped at 0 minimum.
+	"saturate": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		return filters.NewFEColorMatrix(in.prev, in.space, filters.ColorMatrixTypeSaturate, []float64{max(op.Value, 0)})
+	}},
+	"hue-rotate": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		return filters.NewFEColorMatrix(in.prev, in.space, filters.ColorMatrixTypeHueRotate, []float64{op.Value})
+	}},
+	// invert(a): table [a, 1-a] on R,G,B; alpha untouched.
+	"invert": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
 		a := clampFilter01(op.Value)
-		// grayscale(a): blend each row of the luminance basis toward identity
-		// by (1-a). Filter Effects 1 §13.
-		m := grayscaleMatrix(a)
-		return filters.NewFEColorMatrix(prev, space, filters.ColorMatrixTypeMatrix, m)
-
-	case "sepia":
-		a := clampFilter01(op.Value)
-		m := sepiaMatrix(a)
-		return filters.NewFEColorMatrix(prev, space, filters.ColorMatrixTypeMatrix, m)
-
-	case "saturate":
-		// saturate accepts <number> or <percentage>, clamped at 0 minimum.
-		s := op.Value
-		if s < 0 {
-			s = 0
-		}
-		return filters.NewFEColorMatrix(prev, space, filters.ColorMatrixTypeSaturate, []float64{s})
-
-	case "hue-rotate":
-		return filters.NewFEColorMatrix(prev, space, filters.ColorMatrixTypeHueRotate, []float64{op.Value})
-
-	case "invert":
-		a := clampFilter01(op.Value)
-		// invert(a): table [a, 1-a] on R,G,B; alpha untouched.
 		tbl := filters.TransferFunc{Type: filters.TransferTable, TableValues: []float64{a, 1 - a}}
-		ident := filters.TransferFunc{Type: filters.TransferIdentity}
-		return filters.NewFEComponentTransfer(prev, space,
-			[4]filters.TransferFunc{tbl, tbl, tbl, ident})
-
-	case "opacity":
-		a := clampFilter01(op.Value)
-		// opacity(a): table [0, a] on A only.
-		ident := filters.TransferFunc{Type: filters.TransferIdentity}
-		aFn := filters.TransferFunc{Type: filters.TransferTable, TableValues: []float64{0, a}}
-		return filters.NewFEComponentTransfer(prev, space,
-			[4]filters.TransferFunc{ident, ident, ident, aFn})
-
-	case "brightness":
-		// brightness(a): linear slope=a intercept=0 on R,G,B. a may exceed 1.
-		s := op.Value
-		if s < 0 {
-			s = 0
-		}
-		lin := filters.TransferFunc{Type: filters.TransferLinear, Slope: s, Intercept: 0}
-		ident := filters.TransferFunc{Type: filters.TransferIdentity}
-		return filters.NewFEComponentTransfer(prev, space,
-			[4]filters.TransferFunc{lin, lin, lin, ident})
-
-	case "contrast":
-		// contrast(a): linear slope=a intercept=-(0.5*a)+0.5 on R,G,B.
-		s := op.Value
-		if s < 0 {
-			s = 0
-		}
+		return filters.NewFEComponentTransfer(in.prev, in.space, [4]filters.TransferFunc{tbl, tbl, tbl, identityTransfer})
+	}},
+	// opacity(a): table [0, a] on A only.
+	"opacity": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		aFn := filters.TransferFunc{Type: filters.TransferTable, TableValues: []float64{0, clampFilter01(op.Value)}}
+		return filters.NewFEComponentTransfer(in.prev, in.space, [4]filters.TransferFunc{identityTransfer, identityTransfer, identityTransfer, aFn})
+	}},
+	// brightness(a): linear slope=a intercept=0 on R,G,B. a may exceed 1.
+	"brightness": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		lin := filters.TransferFunc{Type: filters.TransferLinear, Slope: max(op.Value, 0)}
+		return filters.NewFEComponentTransfer(in.prev, in.space, [4]filters.TransferFunc{lin, lin, lin, identityTransfer})
+	}},
+	// contrast(a): linear slope=a intercept=-(0.5*a)+0.5 on R,G,B.
+	"contrast": {filters.MatrixCapabilityComplex, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		s := max(op.Value, 0)
 		lin := filters.TransferFunc{Type: filters.TransferLinear, Slope: s, Intercept: -(0.5 * s) + 0.5}
-		ident := filters.TransferFunc{Type: filters.TransferIdentity}
-		return filters.NewFEComponentTransfer(prev, space,
-			[4]filters.TransferFunc{lin, lin, lin, ident})
-
-	case "blur":
-		// blur(r): FEGaussianBlur with stdDeviation = r (NOT r/2).
-		r := op.Value
-		if r < 0 {
-			r = 0
-		}
-		sx, sy := mapping.ParamToLayerSize(r, r)
-		return filters.NewFEGaussianBlur(prev, space, sx, sy)
-
-	case "drop-shadow":
+		return filters.NewFEComponentTransfer(in.prev, in.space, [4]filters.TransferFunc{lin, lin, lin, identityTransfer})
+	}},
+	// blur(r): FEGaussianBlur with stdDeviation = r (NOT r/2).
+	"blur": {filters.MatrixCapabilityScaleTranslate, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
+		r := max(op.Value, 0)
+		sx, sy := in.mapping.ParamToLayerSize(r, r)
+		return filters.NewFEGaussianBlur(in.prev, in.space, sx, sy)
+	}},
+	"drop-shadow": {filters.MatrixCapabilityScaleTranslate, func(op css.FilterFunction, in cssFilterInputs) filters.FilterEffect {
 		shadowColor := op.ShadowColor
 		if op.ShadowUseCurrentColor {
-			shadowColor = currentColor
+			shadowColor = in.currentColor
 		}
-		dx, dy := mapping.ParamToLayerVector(op.ShadowOffsetX, op.ShadowOffsetY)
-		sx, sy := mapping.ParamToLayerSize(op.ShadowBlur, op.ShadowBlur)
-		return filters.NewFEDropShadow(prev, srcAlpha, space,
+		dx, dy := in.mapping.ParamToLayerVector(op.ShadowOffsetX, op.ShadowOffsetY)
+		sx, sy := in.mapping.ParamToLayerSize(op.ShadowBlur, op.ShadowBlur)
+		return filters.NewFEDropShadow(in.prev, in.srcAlpha, in.space,
 			dx, dy, sx, sy,
 			shadowColor.R, shadowColor.G, shadowColor.B, shadowColor.A)
-
-	default:
-		// url() references and unknown functions are handled elsewhere.
-		return nil
-	}
+	}},
 }
+
+// identityTransfer leaves a channel unchanged.
+var identityTransfer = filters.TransferFunc{Type: filters.TransferIdentity}
 
 // grayscaleMatrix builds the 5x4 matrix for grayscale(a): each row is the
 // luminance vector (0.2126, 0.7152, 0.0722) blended toward identity by (1-a).

@@ -27,15 +27,13 @@ type svgElementFilter struct {
 	mapping filters.Mapping
 }
 
-// buildSVGElementFilter builds an SVG element's filter list ops in the user
-// space pctx's draw context paints in (the element's own transform
-// included): referenceBox is its fill box (SVGResources::
-// ReferenceBoxForEffects defaults to GeometryBox::kFillBox, svg_resources.cc:
-// 53-75 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and paintBox its paint
-// extent (its stroke bounding box), both in user space. userSpaceOnUse
-// coordinates are relative to the user-space origin and percentages to the
-// <svg>'s viewport (SVGViewportResolver, svg_resources.cc:375-381 @
-// a9f50e52). currentColor resolves `drop-shadow(... currentcolor)`.
+// buildSVGElementFilter builds an SVG element's resolved filter stages with
+// builder (newSVGFilterEffectBuilder: its reference box is the element's
+// fill box, SVGResources::ReferenceBoxForEffects defaults to
+// GeometryBox::kFillBox, svg_resources.cc:53-75 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) in the user space pctx's draw
+// context paints in, the element's own transform included. paintBox is its
+// paint extent (its stroke bounding box) in user space.
 //
 // A lone url() takes its <filter>'s region. Any other list (shorthand
 // functions, or url() mixed with them) takes the paint extent mapped
@@ -43,22 +41,22 @@ type svgElementFilter struct {
 // through the chain, and the paint extent is united in (Blink crops only a
 // url() stage, to its own filter region).
 //
-// handled is false when the element paints unfiltered: no graph is built
-// (no resolvable stage), the buffer is over the cap, or an element with no
+// handled is false when the element paints unfiltered: there is no
+// renderer, no graph is built (no resolvable stage), the buffer is over the
+// cap, or an element with no
 // paint extent (a group of only <text>: LOU-795) has no url() stage whose
 // region is its own (userSpaceOnUse). A handled nil filter paints nothing:
 // the CTM does not decompose, or the region is empty.
-func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, referenceBox, paintBox geometry.RectF, currentColor css.Color) (f *svgElementFilter, handled bool) {
-	builder := newSVGFilterEffectBuilder(pctx, referenceBox, currentColor)
-	if builder == nil || len(ops) == 0 {
-		return nil, false
-	}
+func buildSVGElementFilter(pctx *svgPaintContext, builder *FilterEffectBuilder, stages []filterStage, paintBox geometry.RectF) (f *svgElementFilter, handled bool) {
 	r := pctx.Renderer
-	lone := len(ops) == 1 && ops[0].Name == "url"
-	if !lone && paintBox.IsEmpty() && !builder.hasUserSpaceFilterRegion(ops) {
+	if r == nil || len(stages) == 0 {
 		return nil, false
 	}
-	graph, mapping, ok := r.layerSpaceFilter(drawContextTransform(pctx.dc), builder, ops, nil)
+	lone := len(stages) == 1 && stages[0].op.Name == "url"
+	if !lone && paintBox.IsEmpty() && !hasUserSpaceFilterRegion(stages) {
+		return nil, false
+	}
+	graph, mapping, ok := r.layerSpaceFilter(drawContextTransform(pctx.dc), builder, stages, nil)
 	switch {
 	case !ok:
 		return nil, true
@@ -73,15 +71,10 @@ func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, refe
 		}
 		region = graph.EnsureRegion(paintLayer, false)
 	}
-	// The buffer is the region clipped to the draw context's clip, grown by
-	// the filter's reach so pixels just outside it still feed the filtered
-	// pixels inside, as Skia bounds a layer (get_layer_mapping_and_bounds,
-	// src/core/SkCanvas.cpp:570-600 @ skia
-	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e; filterLayerClip), before
-	// the cap is checked.
-	if clip, ok := r.filterLayerClip(graph, mapping); ok {
-		region = region.Intersect(clip)
-	}
+	// The region is not clipped to the draw context's clip before the cap:
+	// Skia bounds the layer by the filter's input bounds (the reverse
+	// mapping), which louis14 does not have (LOU-704); a forward-MapRect
+	// reach would tile, light and wrap at the clip edge.
 	graph.FilterRegion = region
 	switch {
 	case region.Empty():
@@ -97,21 +90,21 @@ func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, refe
 // coordinates are relative to the user-space origin and percentages to the
 // <svg>'s viewport (SVGViewportResolver, svg_resources.cc:375-381 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and currentColor resolves
-// `drop-shadow(... currentcolor)`. nil without a renderer.
+// `drop-shadow(... currentcolor)`. Without a renderer it resolves
+// same-document filters only.
 func newSVGFilterEffectBuilder(pctx *svgPaintContext, referenceBox geometry.RectF, currentColor css.Color) *FilterEffectBuilder {
-	r := pctx.Renderer
-	if r == nil {
-		return nil
-	}
-	return &FilterEffectBuilder{
+	b := &FilterEffectBuilder{
 		ReferenceBox:    referenceBox,
 		FilterViewport:  pctx.viewport,
 		UserSpaceOrigin: &geometry.PointF{},
 		CurrentColor:    currentColor,
 		Resources:       pctx.Resources,
-		ExternalSVG:     r.externalSVGs(),
-		ImageFetcher:    r.imageFetcher,
 	}
+	if r := pctx.Renderer; r != nil {
+		b.ExternalSVG = r.externalSVGs()
+		b.ImageFetcher = r.imageFetcher
+	}
+	return b
 }
 
 // paint paints an SVG element through f: paintSource paints the element
@@ -154,19 +147,17 @@ func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPai
 // unfiltered otherwise; whether it should render is LOU-777. A shorthand
 // stage needs none.
 func (sp *svgShapePainter) paintWithFilter(ops []css.FilterFunction) bool {
-	if sp.shape.FillBoundingBox.IsEmpty() && hasReferenceFilter(ops) {
-		if b := newSVGFilterEffectBuilder(sp.ctx, sp.shape.FillBoundingBox, css.Color{}); b != nil && len(ops) == 1 {
-			f, _ := b.lookupReferenceFilter(ops[0].URL.Absolute)
-			return f != nil
-		}
-		return false
-	}
 	style := sp.shape.Style
 	var currentColor css.Color
 	if style != nil {
 		currentColor = style.GetColor()
 	}
-	f, handled := buildSVGElementFilter(sp.ctx, ops, sp.shape.FillBoundingBox, sp.shape.StrokeBoundingBox(), currentColor)
+	builder := newSVGFilterEffectBuilder(sp.ctx, sp.shape.FillBoundingBox, currentColor)
+	stages := builder.resolveStages(ops)
+	if sp.shape.FillBoundingBox.IsEmpty() && hasReferenceStage(stages) {
+		return len(stages) == 1 && stages[0].reference != nil
+	}
+	f, handled := buildSVGElementFilter(sp.ctx, builder, stages, sp.shape.StrokeBoundingBox())
 	if !handled {
 		return false
 	}

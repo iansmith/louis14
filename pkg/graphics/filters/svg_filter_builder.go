@@ -473,13 +473,13 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// Mirrors Blink SVGFEImageElement::Build's pass of the resolved
 		// subregion through to the FEImage constructor.
 		sub, set := resolvePrimitiveSubregion(elt, prim)
-		src, target, parNone := prim.ResolveImageSource(elt.FilterRegion(), sub)
-		fe := NewFEImage(b.space, src, target, parNone)
 		if set && sub.Empty() {
-			// A subregion that resolves to nothing draws nothing.
-			return NewSubregionClippedEffect(fe, sub)
+			// A subregion that resolves to nothing draws nothing: its image
+			// is neither resolved nor fetched.
+			return NewSubregionClippedEffect(NewFEImage(b.space, nil, sub, false), sub)
 		}
-		return fe
+		src, target, parNone := prim.ResolveImageSource(elt.FilterRegion(), sub)
+		return NewFEImage(b.space, src, target, parNone)
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")
 		// FEGaussianBlur scales its stdDeviation (fe_gaussian_blur.cc:74-83

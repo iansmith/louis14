@@ -26,7 +26,8 @@ func trySVGContainerFilterDispatch(pctx *svgPaintContext, c *svg.SVGContainer) b
 	if c == nil || c.Style == nil || pctx.clipPathContent {
 		return false
 	}
-	f, handled := buildSVGElementFilter(pctx, c.Style.GetFilter(), c.ObjectBoundingBox(), c.StrokeBoundingBox(), c.Style.GetColor())
+	builder := newSVGFilterEffectBuilder(pctx, c.ObjectBoundingBox(), c.Style.GetColor())
+	f, handled := buildSVGElementFilter(pctx, builder, builder.resolveStages(c.Style.GetFilter()), c.StrokeBoundingBox())
 	if !handled {
 		return false
 	}
