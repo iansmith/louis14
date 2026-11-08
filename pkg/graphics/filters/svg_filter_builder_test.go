@@ -98,7 +98,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseAnchoredAtUserOrigin(t *testing
 			"height": "100",
 		},
 	}
-	got := resolvePrimitiveSubregion(elt, prim)
+	got, _ := resolvePrimitiveSubregion(elt, prim)
 	want := image.Rect(8, 8, 108, 108)
 	if got != want {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
@@ -123,7 +123,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 			"height": "100",
 		},
 	}
-	got := resolvePrimitiveSubregion(elt, prim)
+	got, _ := resolvePrimitiveSubregion(elt, prim)
 	want := image.Rect(50, 50, 150, 150)
 	if got != want {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
@@ -151,7 +151,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 		tag:   "feflood",
 		attrs: map[string]string{"width": "100%"},
 	}
-	got := resolvePrimitiveSubregion(elt, prim)
+	got, _ := resolvePrimitiveSubregion(elt, prim)
 	// width="100%" → 100% × viewport.Dx() (100) = 100.
 	// x is unspecified → x defaults to region.Min.X = -10, so the rect
 	// spans -10..90.
@@ -186,7 +186,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes(t *testing.T) {
 	// y = userOrigin.Y (8) + 50% × 200 = 8 + 100 = 108.
 	// w = 50% × 200 = 100.
 	// h = 25% × 200 = 50.
-	got := resolvePrimitiveSubregion(elt, prim)
+	got, _ := resolvePrimitiveSubregion(elt, prim)
 	want := image.Rect(58, 108, 158, 158)
 	if got != want {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
@@ -211,7 +211,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 			"height": "40",
 		},
 	}
-	got := resolvePrimitiveSubregion(elt, prim)
+	got, _ := resolvePrimitiveSubregion(elt, prim)
 	want := image.Rect(28, 38, 78, 78)
 	if got != want {
 		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)

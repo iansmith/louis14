@@ -75,8 +75,8 @@ func TestSVGFilterBuilder_MapsSubregionIntoLayer(t *testing.T) {
 	prim := &mockSVGFilterPrimitive{tag: "feoffset", attrs: map[string]string{"x": "10", "width": "5"}}
 	// x: origin 1 + 10 = 11, width 5 → param [11, 16] → layer [26, 36]. y and
 	// height take the region's, mapped back and forth: [0, 200].
-	if got, want := resolvePrimitiveSubregion(elt, prim), image.Rect(26, 0, 36, 200); got != want {
-		t.Errorf("subregion = %v, want %v", got, want)
+	if got, _ := resolvePrimitiveSubregion(elt, prim); got != image.Rect(26, 0, 36, 200) {
+		t.Errorf("subregion = %v, want %v", got, image.Rect(26, 0, 36, 200))
 	}
 }
 

@@ -96,7 +96,7 @@ func TestSVGContainer_ChainURLWithEmptyFillBox(t *testing.T) {
 
 // A container's lone url() keeps its document part: url(other.svg#f)
 // resolves in other.svg even when the page has its own #f, as an SVG
-// shape's does (resolveSVGFilterRef).
+// shape's does: both resolve through FilterEffectBuilder.lookupReferenceFilter.
 func TestSVGContainer_ExternalURLFilter(t *testing.T) {
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">

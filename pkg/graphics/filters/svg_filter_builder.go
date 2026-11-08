@@ -392,7 +392,7 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		// generic post-evaluation clip per SVG Filter Effects 1 §15.7
 		// "Filter primitive subregion".
 		if prim.TagName() != "feflood" && prim.TagName() != "feimage" {
-			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
+			if sub, set := resolvePrimitiveSubregion(elt, prim); set {
 				wrapped := NewSubregionClippedEffect(eff, sub)
 				// Subregion wrapper carries the same tainted bit
 				// as the wrapped effect (it's a thin per-pixel
@@ -439,8 +439,12 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// feeds a linearRGB primitive the graph converts sRGB->linearRGB at
 		// that edge.
 		fe := NewFEFlood(InterpolationSpaceSRGB, r, g, bb, a)
-		sub := resolvePrimitiveSubregion(elt, prim)
-		if sub.Empty() {
+		sub, set := resolvePrimitiveSubregion(elt, prim)
+		if set && sub.Empty() {
+			// A subregion that resolves to nothing floods nothing.
+			return NewSubregionClippedEffect(fe, sub)
+		}
+		if !set {
 			// No explicit primitive subregion: feFlood covers the full
 			// filter region per SVG Filter Effects 1 §15.5. Default
 			// Subregion to the filter region so FEFlood.MapRect and
@@ -468,9 +472,13 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// already does internally via its TargetRect.Empty() fallback.
 		// Mirrors Blink SVGFEImageElement::Build's pass of the resolved
 		// subregion through to the FEImage constructor.
-		sub := resolvePrimitiveSubregion(elt, prim)
+		sub, set := resolvePrimitiveSubregion(elt, prim)
 		src, target, parNone := prim.ResolveImageSource(elt.FilterRegion(), sub)
 		fe := NewFEImage(b.space, src, target, parNone)
+		if set && sub.Empty() {
+			// A subregion that resolves to nothing draws nothing.
+			return NewSubregionClippedEffect(fe, sub)
+		}
 		return fe
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")
@@ -635,8 +643,10 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
 		// image. `in` is ignored (this is a generator). Mirrors Blink
 		// svg_fe_turbulence_element.cc and FETurbulence.
+		// The noise is in the filter's local space, whose origin is
+		// UserSpaceOrigin in parameter space.
 		t := newFETurbulenceFromPrimitive(b.space, prim)
-		t.Mapping = elt.Mapping()
+		t.Mapping = localMapping(elt)
 		return t
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
@@ -696,10 +706,30 @@ func resolve3dPoint(elt SVGFilterElement, x, y, z float64) (float64, float64, fl
 // is mapped as a point, which under the affine layer matrix gives Skia's
 // mapped direction vector.
 func layerPoint3(elt SVGFilterElement, x, y, z float64) (float64, float64, float64) {
+	// objectBoundingBox positions are fractions of the reference box, which
+	// is in parameter space; userSpaceOnUse ones are local.
+	m := localMapping(elt)
+	if elt.PrimitiveUnitsObjectBoundingBox() {
+		m = elt.Mapping()
+	}
 	x, y, z = resolve3dPoint(elt, x, y, z)
-	m := elt.Mapping()
 	lx, ly := m.ParamToLayerPoint(x, y)
 	return lx, ly, m.ParamToLayerZ(z)
+}
+
+// localMapping is elt's Mapping from the filter's local space instead of
+// parameter space: userSpaceOnUse light positions and the turbulence noise
+// are local to the element (Filter::Resolve3dPoint leaves them as they are,
+// filter.cc:77-88 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the
+// local origin is UserSpaceOrigin in parameter space: an SVG element's user
+// space origin, or a box's border-box origin (its filter reference box is in
+// the layer's local space, paint_property_tree_builder.cc:2414-2428 @
+// a9f50e52).
+func localMapping(elt SVGFilterElement) Mapping {
+	m := elt.Mapping()
+	o := elt.UserSpaceOrigin()
+	m.ParamToLayer.Translate(o.X, o.Y)
+	return m
 }
 
 // resolveLightSource returns ls with its positions resolved
@@ -749,13 +779,14 @@ func (b *SVGFilterBuilder) resolveInputAttr(prim SVGFilterPrimitive, name string
 }
 
 // resolvePrimitiveSubregion computes a filter primitive's subregion in layer
-// pixels from its x/y/width/height attributes. Returns the zero rect
-// (image.Rectangle{}) when no subregion attributes are set, signalling "use
-// the full filter region" — matches FEFlood.Subregion.Empty() convention.
+// pixels from its x/y/width/height attributes. set is false when none is
+// set ("use the full filter region"); a set subregion may be empty, when it
+// maps to nothing (behind the eye), and then clips the primitive away, as
+// Skia's crop to an empty rect does.
 //
 // The subregion resolves in parameter space, as Blink's
 // SVGFilterPrimitiveStandardAttributes resolves it in the element's local
-// space, and is then mapped into the layer (Mapping.ParamToLayerRect) and
+// space, and is then mapped into the layer (Mapping.ParamToLayerPixels) and
 // rounded out to whole pixels. Per SVG Filter Effects 1 §15.7:
 //   - primitiveUnits="objectBoundingBox": x/y/width/height are fractions
 //     of the reference box (missing x/y are 0%, missing width/height 100%).
@@ -765,13 +796,13 @@ func (b *SVGFilterBuilder) resolveInputAttr(prim SVGFilterPrimitive, name string
 //     against SubregionViewport (SVG Filter Effects 1 §7.11, Blink's
 //     SVGViewportResolver), not the filter region. A missing attribute
 //     takes the filter region's (ParamFilterRegion).
-func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) image.Rectangle {
+func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) (sub image.Rectangle, set bool) {
 	xStr, hasX := prim.Attribute("x")
 	yStr, hasY := prim.Attribute("y")
 	wStr, hasW := prim.Attribute("width")
 	hStr, hasH := prim.Attribute("height")
 	if !hasX && !hasY && !hasW && !hasH {
-		return image.Rectangle{}
+		return image.Rectangle{}, false
 	}
 	var x, y, w, h float64
 	if elt.PrimitiveUnitsObjectBoundingBox() {
@@ -814,11 +845,8 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 			h = resolvePctLen(hStr, viewport.Height())
 		}
 	}
-	layer, ok := elt.Mapping().ParamToLayerRect(geometry.NewRectF(x, y, w, h))
-	if !ok {
-		return image.Rectangle{}
-	}
-	return SnapRectOut(layer)
+	sub, _ = elt.Mapping().ParamToLayerPixels(geometry.NewRectF(x, y, w, h))
+	return sub, true
 }
 
 // NumberOptionalNumberAttr reads a number-optional-number attribute

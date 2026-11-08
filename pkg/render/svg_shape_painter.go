@@ -74,20 +74,8 @@ func (sp *svgShapePainter) paint() {
 	// that does not resolve falls through to the unfiltered paint below,
 	// the long-standing `filter="url(#missing)"` fallback.
 	if style != nil && !sp.ctx.clipPathContent {
-		if ops := style.GetFilter(); len(ops) > 0 {
-			// A url() stage needs a reference box: a shape whose fill box is
-			// empty (a horizontal <line>) paints nothing through a lone url()
-			// that resolves, and unfiltered otherwise; whether it should
-			// render is LOU-777. A shorthand stage needs none.
-			if sp.shape.FillBoundingBox.IsEmpty() && hasReferenceFilter(ops) {
-				if len(ops) == 1 {
-					if docURL, fragID := splitFilterRef(ops[0].URL.Absolute); resolveSVGFilterRef(sp.ctx, docURL, fragID) != nil {
-						return
-					}
-				}
-			} else if sp.paintWithFilter(ops) {
-				return
-			}
+		if ops := style.GetFilter(); len(ops) > 0 && sp.paintWithFilter(ops) {
+			return
 		}
 	}
 
@@ -258,29 +246,6 @@ func (sp *svgShapePainter) paint() {
 			dc.ClearPath()
 		}
 	}
-}
-
-// resolveSVGFilterRef resolves a url()'s document and fragment to an
-// SVGResourceFilter: same-document through the registry, external through
-// the paint pass's cache (Renderer.externalSVGs). nil when the fragment is
-// empty, the lookup or fetch misses, or the filter is in a reference cycle.
-func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
-	if fragID == "" {
-		return nil
-	}
-	if docURL == "" {
-		// Same-document fast path: registry lookup.
-		if pctx.Resources == nil {
-			return nil
-		}
-		filter, found := pctx.Resources.LookupAsFilter(fragID)
-		if !found || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
-			return nil
-		}
-		return filter
-	}
-	// External: through the paint pass's cache, fetched and built once.
-	return pctx.Renderer.externalSVGs().filter(docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
 }
 
 // paintWithSVGMask redirects the shape's fill/stroke into an

@@ -21,10 +21,10 @@ import (
 // layer and the remainder it is drawn with (skif::Mapping::decomposeCTM, as
 // for a CSS layer: Renderer.layerSpaceFilter). LOU-774.
 type svgElementFilter struct {
+	// graph's FilterRegion is the source and output buffer, in layer
+	// pixels.
 	graph   *filters.Filter
 	mapping filters.Mapping
-	// region is the source and output buffer, in layer pixels.
-	region image.Rectangle
 }
 
 // buildSVGElementFilter builds an SVG element's filter list ops in the user
@@ -49,29 +49,16 @@ type svgElementFilter struct {
 // region is its own (userSpaceOnUse). A handled nil filter paints nothing:
 // the CTM does not decompose, or the region is empty.
 func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, referenceBox, paintBox geometry.RectF, currentColor css.Color) (f *svgElementFilter, handled bool) {
+	builder := newSVGFilterEffectBuilder(pctx, referenceBox, currentColor)
+	if builder == nil || len(ops) == 0 {
+		return nil, false
+	}
 	r := pctx.Renderer
-	if r == nil || len(ops) == 0 {
-		return nil, false
-	}
 	lone := len(ops) == 1 && ops[0].Name == "url"
-	if !lone && paintBox.IsEmpty() && !hasUserSpaceFilterRegion(pctx, ops) {
+	if !lone && paintBox.IsEmpty() && !builder.hasUserSpaceFilterRegion(ops) {
 		return nil, false
 	}
-	builder := &FilterEffectBuilder{
-		ReferenceBox:    referenceBox,
-		FilterViewport:  pctx.viewport,
-		UserSpaceOrigin: &geometry.PointF{},
-		CurrentColor:    currentColor,
-		Resources:       pctx.Resources,
-		ExternalSVG:     r.externalSVGs(),
-		ImageFetcher:    r.imageFetcher,
-	}
-	graph, mapping, ok := r.layerSpaceFilter(drawContextTransform(pctx.dc), func(m *filters.Mapping) *filters.Filter {
-		if m != nil {
-			builder.Mapping = *m
-		}
-		return builder.BuildFilterEffect(ops)
-	})
+	graph, mapping, ok := r.layerSpaceFilter(drawContextTransform(pctx.dc), builder, ops, nil)
 	switch {
 	case !ok:
 		return nil, true
@@ -80,19 +67,51 @@ func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, refe
 	}
 	region := graph.FilterRegion
 	if !lone {
-		paintLayer := builder.layerRect(paintBox)
+		paintLayer, _ := builder.Mapping.ParamToLayerPixels(paintBox)
 		if !graph.FilterRegion.Empty() {
 			graph.FilterRegion = graph.FilterRegion.Union(graph.MapRect(paintLayer))
 		}
 		region = graph.EnsureRegion(paintLayer, false)
 	}
+	// The buffer is the region clipped to the draw context's clip, grown by
+	// the filter's reach so pixels just outside it still feed the filtered
+	// pixels inside, as Skia bounds a layer (get_layer_mapping_and_bounds,
+	// src/core/SkCanvas.cpp:570-600 @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e; filterLayerClip), before
+	// the cap is checked.
+	if clip, ok := r.filterLayerClip(graph, mapping); ok {
+		region = region.Intersect(clip)
+	}
+	graph.FilterRegion = region
 	switch {
 	case region.Empty():
 		return nil, true
 	case !effectBufferUsable(region.Dx(), region.Dy()):
 		return nil, false
 	}
-	return &svgElementFilter{graph: graph, mapping: mapping, region: region}, true
+	return &svgElementFilter{graph: graph, mapping: mapping}, true
+}
+
+// newSVGFilterEffectBuilder returns the builder for an SVG element's filter
+// in its user space: referenceBox is its fill box, userSpaceOnUse
+// coordinates are relative to the user-space origin and percentages to the
+// <svg>'s viewport (SVGViewportResolver, svg_resources.cc:375-381 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and currentColor resolves
+// `drop-shadow(... currentcolor)`. nil without a renderer.
+func newSVGFilterEffectBuilder(pctx *svgPaintContext, referenceBox geometry.RectF, currentColor css.Color) *FilterEffectBuilder {
+	r := pctx.Renderer
+	if r == nil {
+		return nil
+	}
+	return &FilterEffectBuilder{
+		ReferenceBox:    referenceBox,
+		FilterViewport:  pctx.viewport,
+		UserSpaceOrigin: &geometry.PointF{},
+		CurrentColor:    currentColor,
+		Resources:       pctx.Resources,
+		ExternalSVG:     r.externalSVGs(),
+		ImageFetcher:    r.imageFetcher,
+	}
 }
 
 // paint paints an SVG element through f: paintSource paints the element
@@ -104,7 +123,8 @@ func buildSVGElementFilter(pctx *svgPaintContext, ops []css.FilterFunction, refe
 // overflow clip) apply to it.
 func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPaintContext), afterFilter func(out *image.RGBA)) {
 	toLayer := f.mapping.ParamToLayer
-	srcBuf, childCtx := newSVGEffectSource(pctx, f.region, toLayer)
+	region := f.graph.FilterRegion
+	srcBuf, childCtx := newSVGEffectSource(pctx, region, toLayer)
 	paintSource(&childCtx)
 	f.graph.SetSourceImage(srcBuf)
 	// The sRGB transform is the end of the filter; clip and mask are outside
@@ -118,7 +138,7 @@ func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPai
 		afterFilter(out)
 	}
 	pctx.dc.ClearPath()
-	compositeEffectBufferOnto(pctx.dc, toLayer, out, f.region.Min.X, f.region.Min.Y)
+	compositeEffectBufferOnto(pctx.dc, toLayer, out, region.Min.X, region.Min.Y)
 }
 
 // paintWithFilter paints the shape through its filter list ops (a lone url()
@@ -128,7 +148,19 @@ func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPai
 // clipped and masked before it composites (ScopedSVGPaintState nests the clip
 // and mask recorders outside the filter's). It reports false when the shape
 // paints unfiltered.
+//
+// A url() stage needs a reference box: a shape whose fill box is empty (a
+// horizontal <line>) paints nothing through a lone url() that resolves, and
+// unfiltered otherwise; whether it should render is LOU-777. A shorthand
+// stage needs none.
 func (sp *svgShapePainter) paintWithFilter(ops []css.FilterFunction) bool {
+	if sp.shape.FillBoundingBox.IsEmpty() && hasReferenceFilter(ops) {
+		if b := newSVGFilterEffectBuilder(sp.ctx, sp.shape.FillBoundingBox, css.Color{}); b != nil && len(ops) == 1 {
+			f, _ := b.lookupReferenceFilter(ops[0].URL.Absolute)
+			return f != nil
+		}
+		return false
+	}
 	style := sp.shape.Style
 	var currentColor css.Color
 	if style != nil {
@@ -149,7 +181,7 @@ func (sp *svgShapePainter) paintWithFilter(ops []css.FilterFunction) bool {
 		)
 		sp.rasterizeShape(childCtx, childOp, willFill, willStroke, style)
 	}, func(out *image.RGBA) {
-		sp.applyClipMaskToFilterOutput(out, f.region, f.mapping.ParamToLayer)
+		sp.applyClipMaskToFilterOutput(out, f.graph.FilterRegion, f.mapping.ParamToLayer)
 	})
 	return true
 }
@@ -303,22 +335,6 @@ func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toFrame g
 	childCtx.Renderer = tmpR
 	childCtx.DeviceFromUser = toBuffer.Compose(geometry.AffineTransformFromTransform(toFrame))
 	return srcBuf, childCtx
-}
-
-// hasUserSpaceFilterRegion reports whether a url() stage of ops resolves to
-// a <filter> whose region is userSpaceOnUse, independent of the element's
-// box.
-func hasUserSpaceFilterRegion(pctx *svgPaintContext, ops []css.FilterFunction) bool {
-	for _, op := range ops {
-		if op.Name != "url" {
-			continue
-		}
-		docURL, fragID := splitFilterRef(op.URL.Absolute)
-		if f := resolveSVGFilterRef(pctx, docURL, fragID); f != nil && f.FilterUnits == svg.SVGUnitUserSpaceOnUse {
-			return true
-		}
-	}
-	return false
 }
 
 // rasterizeShape fills and strokes the shape onto pctx's draw context with

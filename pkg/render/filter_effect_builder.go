@@ -96,19 +96,11 @@ func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
 	return geometry.PointF{X: b.FilterViewport.X(), Y: b.FilterViewport.Y()}
 }
 
-// layerRect maps a parameter-space rect into the layer (Mapping) and rounds
-// it out to whole layer pixels; it is empty when the rect maps behind the eye.
-func (b *FilterEffectBuilder) layerRect(r geometry.RectF) image.Rectangle {
-	m, ok := b.Mapping.ParamToLayerRect(r)
-	if !ok {
-		return image.Rectangle{}
-	}
-	return filters.SnapRectOut(m)
-}
-
-// LayerReferenceBox is ReferenceBox in layer pixels (layerRect).
+// LayerReferenceBox is ReferenceBox in layer pixels
+// (Mapping.ParamToLayerPixels); it is empty when the box maps behind the eye.
 func (b *FilterEffectBuilder) LayerReferenceBox() image.Rectangle {
-	return b.layerRect(b.ReferenceBox)
+	r, _ := b.Mapping.ParamToLayerPixels(b.ReferenceBox)
+	return r
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -202,25 +194,107 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 // outer CSS filter-value-list chain), mirroring Blink's
 // FilterEffectBuilder::Build* pattern of swapping SourceGraphic per stage.
 func (b *FilterEffectBuilder) buildReferenceFilterWithSource(id string, prev filters.FilterEffect) *filters.Filter {
-	if id == "" {
+	filter, external := b.lookupReferenceFilter(id)
+	if filter == nil {
 		return nil
 	}
-
-	// FilterFunction.URL is the raw inside-of-`url(...)` content. It may
-	// be one of:
-	//   - "#frag"               → same-document, look up frag in Resources
-	//   - "data:...,...#frag"   → external data URL
-	//   - "file:///path#frag"   → external file URL
-	//   - "http(s)://host/p#f"  → external network URL
-	//   - "path/file.svg#frag"  → relative external URL (test harness
-	//                              resolves against document base)
-	//
-	// Same-document fast path: leading `#` (after trim/quote strip).
-	docURL, fragID := splitFilterRef(id)
-	if docURL == "" {
-		return b.buildSameDocReferenceFilter(fragID, prev)
+	// External documents don't share the host page's cascade: their
+	// primitives read their presentation attributes.
+	resolveStyle := b.ResolveStyle
+	if external {
+		resolveStyle = nil
 	}
-	return b.buildExternalReferenceFilter(docURL, fragID, prev)
+	return b.buildResourceFilter(filter, resolveStyle, prev)
+}
+
+// lookupReferenceFilter resolves a `filter: url(...)` value (FilterFunction.
+// URL: "#frag" in this document, or "doc#frag" for a data:, file:, http(s):
+// or relative document) to its <filter>: same-document through Resources,
+// external through the paint pass's cache (ExternalSVG), which fetches and
+// parses the document once. external reports the latter. nil when the
+// fragment is empty, the lookup or fetch misses, or the filter is part of a
+// reference cycle (Blink drops the reference: LayoutSVGResourceContainer::
+// FindCycle); Filter Effects 1 §3.1 then drops the stage.
+func (b *FilterEffectBuilder) lookupReferenceFilter(id string) (filter *svg.SVGResourceFilter, external bool) {
+	docURL, fragID := splitFilterRef(id)
+	if docURL != "" {
+		return b.ExternalSVG.filter(docURL, fragID, b.viewportLengthContext()), true
+	}
+	if b.Resources == nil || fragID == "" {
+		return nil, false
+	}
+	filter, ok := b.Resources.LookupAsFilter(fragID)
+	if !ok || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
+		return nil, false
+	}
+	return filter, false
+}
+
+// hasUserSpaceFilterRegion reports whether a url() stage of ops resolves to
+// a <filter> whose region is userSpaceOnUse, independent of the element's
+// box.
+func (b *FilterEffectBuilder) hasUserSpaceFilterRegion(ops []css.FilterFunction) bool {
+	for _, op := range ops {
+		if op.Name != "url" {
+			continue
+		}
+		if f, _ := b.lookupReferenceFilter(op.URL.Absolute); f != nil && f.FilterUnits == svg.SVGUnitUserSpaceOnUse {
+			return true
+		}
+	}
+	return false
+}
+
+// CTMCapability is the most complex layer matrix the graph of ops can run
+// in: the minimum over its nodes (SkImageFilter_Base::getCTMCapability,
+// src/core/SkImageFilter.cpp:337-345 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). It is read from the list, not a
+// built graph, so the graph is built once, in its layer
+// (Renderer.layerSpaceFilter):
+//   - a CSS filter function takes its Skia filter's capability
+//     (cssFilterFunctionCapability) and does not clip to bounds
+//     (filter_effect_builder.cc:355-362 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+//   - every primitive of a url() stage clips to its subregion
+//     (FilterEffect::clips_to_bounds_, filter_effect.cc:37; GetCropRect,
+//     filter_effect.cc:144-163 @ a9f50e52), which Skia applies as a crop
+//     filter (SkColorFilterImageFilter.cpp:92-93), kScaleTranslate: a
+//     rotated flood runs unrotated and is rotated when drawn.
+//
+// A url() stage that does not resolve is dropped from the chain, and an
+// unknown function builds nothing; builds is false when no stage builds.
+func (b *FilterEffectBuilder) CTMCapability(ops []css.FilterFunction) (capability filters.MatrixCapability, builds bool) {
+	capability = filters.MatrixCapabilityComplex
+	for _, op := range ops {
+		switch op.Name {
+		case "url":
+			if f, _ := b.lookupReferenceFilter(op.URL.Absolute); f == nil {
+				continue
+			}
+			capability = min(capability, filters.MatrixCapabilityScaleTranslate)
+		default:
+			c, ok := cssFilterFunctionCapability[op.Name]
+			if !ok {
+				continue
+			}
+			capability = min(capability, c)
+		}
+		builds = true
+	}
+	return capability, builds
+}
+
+// cssFilterFunctionCapability is each CSS filter function buildOneEffect
+// builds, with the capability of the Skia filter it is: a colour function is
+// an SkColorFilterImageFilter, kComplex (SkColorFilterImageFilter.cpp:53 @
+// skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e); blur and drop-shadow keep
+// the default kScaleTranslate (SkImageFilter_Base.h:225-227).
+var cssFilterFunctionCapability = map[string]filters.MatrixCapability{
+	"grayscale": filters.MatrixCapabilityComplex, "sepia": filters.MatrixCapabilityComplex,
+	"saturate": filters.MatrixCapabilityComplex, "hue-rotate": filters.MatrixCapabilityComplex,
+	"invert": filters.MatrixCapabilityComplex, "opacity": filters.MatrixCapabilityComplex,
+	"brightness": filters.MatrixCapabilityComplex, "contrast": filters.MatrixCapabilityComplex,
+	"blur": filters.MatrixCapabilityScaleTranslate, "drop-shadow": filters.MatrixCapabilityScaleTranslate,
 }
 
 // filterInterpolationSpace is the operating space of an SVG <filter>'s
@@ -249,26 +323,6 @@ func filterInterpolationSpace(filter *svg.SVGResourceFilter) filters.Interpolati
 	return filters.InterpolationSpaceLinearRGB
 }
 
-// buildSameDocReferenceFilter resolves a `filter: url(#id)` reference
-// against the in-page SVGResourceRegistry. The original (pre-LOU-130)
-// behavior for bare-fragment references. When chainSource is non-nil
-// the resolved filter's SourceGraphic references are rewired to
-// chainSource (CSS filter-value-list chain composition).
-func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource filters.FilterEffect) *filters.Filter {
-	if b.Resources == nil {
-		return nil
-	}
-	filter, ok := b.Resources.LookupAsFilter(id)
-	if !ok || filter == nil {
-		return nil
-	}
-	if filter.CycleState() == svg.SVGCycleHasCycle {
-		return nil
-	}
-
-	return b.buildResourceFilter(filter, b.ResolveStyle, chainSource)
-}
-
 // buildResourceFilter builds filter's graph: its region resolved from
 // filterUnits and the reference box in parameter space, then mapped into the
 // layer (userSpaceOnUse x/y relative to userSpaceOrigin), its primitives'
@@ -280,9 +334,10 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 func (b *FilterEffectBuilder) buildResourceFilter(filter *svg.SVGResourceFilter, resolveStyle func(svg.ElementAdapter) *css.Style, chainSource filters.FilterEffect) *filters.Filter {
 	space := filterInterpolationSpace(filter)
 	paramRegion := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
+	layerRegion, _ := b.Mapping.ParamToLayerPixels(paramRegion)
 	adapter := &svgFilterElementAdapter{
 		filter:            filter,
-		filterRegion:      b.layerRect(paramRegion),
+		filterRegion:      layerRegion,
 		paramRegion:       paramRegion,
 		referenceBox:      b.ReferenceBox,
 		subregionViewport: b.FilterViewport,
@@ -326,23 +381,6 @@ func externalSVGFilter(fetch func(string) ([]byte, error), docURL, fragID string
 	return filter
 }
 
-// buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
-// is a cross-document URL (data:, file://, http(s)://, or a relative
-// path resolved by the harness). Resolves `<filter id="fragID">` through
-// the paint pass's external SVG cache (ExternalSVG), which fetches and
-// parses the document once, and builds the FilterEffect graph. Returns nil on any failure — Blink's
-// behavior for tainted/unreachable external filters is a null filter
-// (caller paints source unfiltered) per Filter Effects 1 §3.1. When
-// chainSource is non-nil, SourceGraphic references inside the fetched
-// filter are rewired to it (CSS filter-value-list chain composition).
-func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
-	resource := b.ExternalSVG.filter(docURL, fragID, b.viewportLengthContext())
-	if resource == nil {
-		return nil
-	}
-	return b.buildResourceFilter(resource, nil, chainSource)
-}
-
 // splitFilterRef parses a `filter: url(...)` inner value into its
 // document and fragment parts. Handles:
 //
@@ -380,7 +418,8 @@ func splitURLFragment(v string) (docURL, fragID string) {
 	return v[:hashIdx], v[hashIdx+1:]
 }
 
-// buildOneEffect maps a single CSS filter function to its fe* equivalent,
+// buildOneEffect maps a single CSS filter function to its fe* equivalent
+// (the functions cssFilterFunctionCapability lists),
 // fed by prev. src / srcAlpha are the graph builtins (drop-shadow needs them).
 func buildOneEffect(op css.FilterFunction, prev filters.FilterEffect,
 	src *filters.SourceGraphic, srcAlpha *filters.SourceAlpha,

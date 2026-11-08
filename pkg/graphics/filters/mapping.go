@@ -30,33 +30,6 @@ const (
 	MatrixCapabilityComplex
 )
 
-// CTMCapability returns the capability of the graph rooted at e: the minimum
-// of e's own capability and its inputs'. Mirrors
-// SkImageFilter_Base::getCTMCapability (src/core/SkImageFilter.cpp:337-346).
-//
-// Per-effect capabilities follow the Skia filter each effect is built as:
-// color filters (SkColorFilterImageFilter.cpp:53 — Blink's FEColorMatrix,
-// FEComponentTransfer and SourceAlpha), shaders (SkShaderImageFilter.cpp:51 —
-// FEFlood, PaintFilterEffect), merges (SkMergeImageFilter.cpp:39) and blends
-// (SkBlendImageFilter.cpp:69 — FEBlend, FEComposite) are kComplex; every other
-// effect keeps the kScaleTranslate default (SkImageFilter_Base.h:225-227).
-// SourceGraphic is Skia's null input, which constrains nothing.
-func CTMCapability(e FilterEffect) MatrixCapability {
-	if e == nil {
-		return MatrixCapabilityComplex
-	}
-	result := MatrixCapabilityScaleTranslate
-	switch e.(type) {
-	case *SourceGraphic, *SourceAlpha, *FEColorMatrix, *FEComponentTransfer,
-		*FEFlood, *PaintFilterEffect, *FEMerge, *FEBlend, *FEComposite:
-		result = MatrixCapabilityComplex
-	}
-	for _, in := range e.InputEffects() {
-		result = min(result, CTMCapability(in))
-	}
-	return result
-}
-
 // Mapping splits a filter's total CTM into the matrix that maps the filter's
 // parameter (local) space into the layer the graph is evaluated in, and the
 // matrix that draws that layer into device space. Mirrors skif::Mapping
@@ -235,13 +208,17 @@ func (m Mapping) ParamToLayerZ(z float64) float64 {
 	return (x + y) / 2
 }
 
-// ParamToLayerRect maps a parameter-space rect into layer space: the bounds
-// of its mapped corners. ok is false when a corner maps behind w = 0.
-// Mirrors Mapping::map<SkRect> (src/core/SkImageFilterTypes.cpp @ skia
-// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), which maps through
-// SkMatrix::mapRect.
-func (m Mapping) ParamToLayerRect(r geometry.RectF) (geometry.RectF, bool) {
-	return MapRectAsM33(m.ParamToLayer, r)
+// ParamToLayerPixels maps a parameter-space rect into the layer, as
+// Mapping::map<SkRect> (src/core/SkImageFilterTypes.cpp @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) does through SkMatrix::mapRect,
+// and rounds it out to the layer pixels covering it (SnapRectOut). ok is
+// false, with an empty rect, when a corner maps behind the eye (w <= 0).
+func (m Mapping) ParamToLayerPixels(r geometry.RectF) (image.Rectangle, bool) {
+	l, ok := MapRectAsM33(m.ParamToLayer, r)
+	if !ok {
+		return image.Rectangle{}, false
+	}
+	return SnapRectOut(l), true
 }
 
 // MapRectAsM33 maps r's corners through t with the perspective divide and

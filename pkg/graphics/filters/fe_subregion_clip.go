@@ -19,9 +19,10 @@ type subregionClippedEffect struct {
 }
 
 // NewSubregionClippedEffect wraps `inner` so its output is clipped to
-// `subregion`. The wrapper's operating space matches the inner's.
+// `subregion`; an empty subregion clips everything. The wrapper's operating
+// space matches the inner's.
 func NewSubregionClippedEffect(inner FilterEffect, subregion image.Rectangle) FilterEffect {
-	if inner == nil || subregion.Empty() {
+	if inner == nil {
 		return inner
 	}
 	return &subregionClippedEffect{

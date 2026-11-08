@@ -1255,19 +1255,12 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// the shadow is cast from the whole painted shape, so the source buffer
 	// must cover it (drop-shadow-clipped).
 	paintExtent := filters.SnapRectOut(paintBounds)
-	filter, mapping, ok := r.layerSpaceFilter(ctm, func(m *filters.Mapping) *filters.Filter {
-		if m != nil {
-			// The graph runs in layer pixels: the builder maps its
-			// parameter-space boxes and parameters through m; the source
-			// extent is mapped here.
-			sub, ok := filters.MapRectAsM33(m.ParamToLayer, paintBounds)
-			if !ok {
-				return nil
-			}
-			paintExtent = filters.SnapRectOut(sub)
-			builder.Mapping = *m
-		}
-		return builder.BuildFilterEffect(layer.Filters)
+	// The graph runs in layer pixels: the builder maps its parameter-space
+	// boxes and parameters into the layer; the source extent is mapped here.
+	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, layer.Filters, func(m filters.Mapping) bool {
+		sub, ok := m.ParamToLayerPixels(paintBounds)
+		paintExtent = sub
+		return ok
 	})
 	if !ok {
 		return nil, false
@@ -1424,30 +1417,31 @@ func (r *Renderer) inOwnSpaceAndClips(layer *PaintLayer, own geometry.Transform,
 	r.dc.Pop()
 }
 
-// layerSpaceFilter builds a filter graph in the layer space ctm decomposes
-// into for it (skif::Mapping::decomposeCTM, src/core/SkImageFilterTypes.cpp:
-// 259-298 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). build(nil) builds
-// the graph in parameter space, which gives its capability; when the layer
-// is not parameter space, build(&m) builds it again in m's layer space. An
-// integer translation is folded into LayerToDev (FoldIntegerTranslation), so
-// a translate-only CTM builds once. ok is false when the CTM does not
-// decompose or build(&m) fails; filter is nil, with ok, when build(nil) built
-// nothing.
-func (r *Renderer) layerSpaceFilter(ctm geometry.Transform, build func(*filters.Mapping) *filters.Filter) (filter *filters.Filter, mapping filters.Mapping, ok bool) {
-	if filter = build(nil); filter == nil {
+// layerSpaceFilter builds builder's graph of ops in the layer space ctm
+// decomposes into for it (skif::Mapping::decomposeCTM, src/core/
+// SkImageFilterTypes.cpp:259-298 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), once: the capability is read
+// from the list (FilterEffectBuilder.CTMCapability), the CTM decomposed, and
+// the graph built with builder.Mapping set to the result. An integer
+// translation is folded into LayerToDev (FoldIntegerTranslation). inLayer,
+// when non-nil, maps the caller's own boxes into the layer before the build
+// and reports false when it cannot. ok is false when the CTM does not
+// decompose or inLayer fails; filter is nil, with ok, when no stage of ops
+// builds anything.
+func (r *Renderer) layerSpaceFilter(ctm geometry.Transform, builder *FilterEffectBuilder, ops []css.FilterFunction, inLayer func(filters.Mapping) bool) (filter *filters.Filter, mapping filters.Mapping, ok bool) {
+	capability, builds := builder.CTMCapability(ops)
+	if !builds {
 		return nil, mapping, true
 	}
-	if !mapping.DecomposeCTM(ctm, filters.CTMCapability(filter.LastEffect), r.filterDecompositionCenter(ctm)) {
+	if !mapping.DecomposeCTM(ctm, capability, r.filterDecompositionCenter(ctm)) {
 		return nil, mapping, false
 	}
 	mapping.FoldIntegerTranslation()
-	if mapping.ParamToLayer.IsIdentity() {
-		return filter, mapping, true
-	}
-	if filter = build(&mapping); filter == nil {
+	builder.Mapping = mapping
+	if inLayer != nil && !inLayer(mapping) {
 		return nil, mapping, false
 	}
-	return filter, mapping, true
+	return builder.BuildFilterEffect(ops), mapping, true
 }
 
 // filterLayerClip returns the draw context's clip in the filter layer's pixels,
@@ -1634,18 +1628,12 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 
 	builder := r.newFilterEffectBuilder(layer)
 	layerBox := localBox
-	filter, mapping, ok := r.layerSpaceFilter(ctm, func(m *filters.Mapping) *filters.Filter {
-		if m != nil {
-			lb, ok := filters.MapRectAsM33(m.ParamToLayer, geometry.NewRectF(sx, sy, sw, sh))
-			if !ok {
-				return nil
-			}
-			layerBox = snapRectF(lb)
-			builder.Mapping = *m
-		}
-		builder.ReferenceBox = rectFFromRect(localBox)
-		builder.FilterViewport = rectFFromRect(localBox)
-		return builder.BuildFilterEffect(ops)
+	builder.ReferenceBox = rectFFromRect(localBox)
+	builder.FilterViewport = rectFFromRect(localBox)
+	filter, mapping, ok := r.layerSpaceFilter(ctm, builder, ops, func(m filters.Mapping) bool {
+		lb, ok := filters.MapRectAsM33(m.ParamToLayer, geometry.NewRectF(sx, sy, sw, sh))
+		layerBox = snapRectF(lb)
+		return ok
 	})
 	if !ok || filter == nil {
 		return
