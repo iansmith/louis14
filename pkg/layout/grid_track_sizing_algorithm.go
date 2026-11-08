@@ -1,7 +1,10 @@
 package layout
 
 import (
+	"cmp"
 	"math"
+	"slices"
+	"strings"
 
 	"louis14/pkg/css"
 )
@@ -93,6 +96,10 @@ func newGridTrackSize(t css.GridTrack, available float64) gridTrackSize {
 		case t.MaxSize > 0:
 			s.max = fixed(t.MaxSize)
 		default:
+			// A zero maximum, or one the parser cannot represent:
+			// min-content, max-content and percentage maximums all arrive
+			// as MaxSize 0 (LOU-760). Either way the growth limit is the
+			// minimum (EnsureGrowthLimitIsNotLessThanBaseSize).
 			s.max = fixed(t.MinSize)
 		}
 		return s
@@ -199,6 +206,12 @@ type gridSizingItem struct {
 	minContent, maxContent float64
 	// isScrollContainer: the item's automatic minimum size is 0.
 	isScrollContainer bool
+	// mainIsAuto: its size in the track axis is auto-like (auto,
+	// fit-content, stretch, a percentage or calc()); minIsAuto: its min
+	// size there is auto. minimumSize is its resolved min size, border box,
+	// plus its margins.
+	mainIsAuto, minIsAuto bool
+	minimumSize           float64
 }
 
 func (it *gridSizingItem) span() int { return it.end - it.start }
@@ -232,19 +245,24 @@ func (a *gridTrackSizingAlgorithm) spansFlexible(it *gridSizingItem) bool {
 }
 
 // contribution mirrors GridLayoutAlgorithm::ContributionSizeForGridItem
-// (grid_layout_algorithm.cc:577-815). An intrinsic minimum is the item's
-// automatic minimum: its min-content contribution when it spans an auto
-// minimum and no flexible track with a span over 1, and is not a scroll
-// container; otherwise 0 (CalculateIntrinsicMinimumContribution, with no
-// explicit min-size or fixed-maximum clamp in louis14 yet).
+// (grid_layout_algorithm.cc:577-815). An intrinsic minimum, for an
+// auto-like size, is the item's resolved min size plus margins when its min
+// size is not auto, it is a scroll container, or it spans no auto minimum
+// or a flexible track with a span over 1; otherwise its min-content
+// contribution (CalculateIntrinsicMinimumContribution, grid_layout_utils.cc:
+// 506-600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the
+// clamp to a fixed spanned maximum.
 func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *gridSizingItem) float64 {
 	switch t {
 	case gridForContentBasedMinimums, gridForIntrinsicMaximums:
 		return it.minContent
 	case gridForIntrinsicMinimums:
+		if !it.mainIsAuto {
+			return it.minContent
+		}
 		special := !a.spansAny(it, gridTrackSize.hasAutoMin) || (a.spansFlexible(it) && it.span() > 1)
-		if special || it.isScrollContainer {
-			return 0
+		if !it.minIsAuto || it.isScrollContainer || special {
+			return it.minimumSize
 		}
 		return it.minContent
 	}
@@ -337,13 +355,10 @@ func distributeExtraSpaceToSets(extra, flexFactorSum float64, t gridContribution
 	if equal {
 		shareRatioSum = float64(growable)
 		if growable > 0 || isDistributionForGrowthLimits(t) {
-			// Least growth potential first, infinite last.
-			sortStable(toGrow, func(l, r *gridSet) bool {
-				gl, gr := growthPotential(l, t, true), growthPotential(r, t, true)
-				if gl == gridIndefinite || gr == gridIndefinite {
-					return gl != gridIndefinite
-				}
-				return gl < gr
+			// Least growth potential first, infinite last (gridIndefinite
+			// is +Inf, so it orders last).
+			slices.SortStableFunc(toGrow, func(l, r *gridSet) int {
+				return cmp.Compare(growthPotential(l, t, true), growthPotential(r, t, true))
 			})
 		}
 	}
@@ -397,16 +412,6 @@ func distributeExtraSpaceToSets(extra, flexFactorSum float64, t gridContribution
 			break
 		}
 		s.itemIncurredIncrease += share(s, beyond(s))
-	}
-}
-
-// sortStable is an insertion sort by less, stable as the small set lists
-// here need.
-func sortStable(sets []*gridSet, less func(l, r *gridSet) bool) {
-	for i := 1; i < len(sets); i++ {
-		for j := i; j > 0 && less(sets[j], sets[j-1]); j-- {
-			sets[j], sets[j-1] = sets[j-1], sets[j]
-		}
 	}
 }
 
@@ -486,40 +491,47 @@ func (a *gridTrackSizingAlgorithm) increaseTrackSizesToAccommodateGridItems(grou
 // flexible track first, grouped by span size, then all items spanning a
 // flexible track together.
 func (a *gridTrackSizingAlgorithm) resolveIntrinsicTrackSizes(items []*gridSizingItem) {
-	var ordered []*gridSizingItem
+	type ordering struct {
+		it       *gridSizingItem
+		flexible bool
+	}
+	var ordered []ordering
 	for _, it := range items {
 		if a.spansIntrinsic(it) {
-			ordered = append(ordered, it)
+			ordered = append(ordered, ordering{it, a.spansFlexible(it)})
 		}
 	}
-	flexLess := func(i, j int) bool {
-		fi, fj := a.spansFlexible(ordered[i]), a.spansFlexible(ordered[j])
-		if fi || fj {
-			return !fi && fj
+	// Items not spanning a flexible track first, by span size; then those
+	// spanning one, in order.
+	slices.SortStableFunc(ordered, func(l, r ordering) int {
+		if l.flexible || r.flexible {
+			return cmp.Compare(boolInt(l.flexible), boolInt(r.flexible))
 		}
-		return ordered[i].span() < ordered[j].span()
-	}
-	for i := 1; i < len(ordered); i++ {
-		for j := i; j > 0 && flexLess(j, j-1); j-- {
-			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		return cmp.Compare(l.it.span(), r.it.span())
+	})
+	group := func(o []ordering) []*gridSizingItem {
+		g := make([]*gridSizingItem, len(o))
+		for i := range o {
+			g[i] = o[i].it
 		}
+		return g
 	}
 	begin := 0
-	for begin < len(ordered) && !a.spansFlexible(ordered[begin]) {
+	for begin < len(ordered) && !ordered[begin].flexible {
 		end := begin + 1
-		for end < len(ordered) && !a.spansFlexible(ordered[end]) && ordered[end].span() == ordered[begin].span() {
+		for end < len(ordered) && !ordered[end].flexible && ordered[end].it.span() == ordered[begin].it.span() {
 			end++
 		}
-		group := ordered[begin:end]
+		g := group(ordered[begin:end])
 		for _, t := range []gridContributionType{gridForIntrinsicMinimums, gridForContentBasedMinimums,
 			gridForMaxContentMinimums, gridForIntrinsicMaximums, gridForMaxContentMaximums} {
-			a.increaseTrackSizesToAccommodateGridItems(group, t, false)
+			a.increaseTrackSizesToAccommodateGridItems(g, t, false)
 		}
 		begin = end
 	}
 	if begin < len(ordered) {
 		for _, t := range []gridContributionType{gridForIntrinsicMinimums, gridForContentBasedMinimums, gridForMaxContentMinimums} {
-			a.increaseTrackSizesToAccommodateGridItems(ordered[begin:], t, true)
+			a.increaseTrackSizesToAccommodateGridItems(group(ordered[begin:]), t, true)
 		}
 	}
 }
@@ -627,8 +639,8 @@ func (a *gridTrackSizingAlgorithm) findFrSize(start, end int, leftover float64) 
 		return 0
 	}
 	// Largest base size per flex factor first.
-	sortStable(flexible, func(l, r *gridSet) bool {
-		return l.baseSize*r.flexFactor() > r.baseSize*l.flexFactor()
+	slices.SortStableFunc(flexible, func(l, r *gridSet) int {
+		return cmp.Compare(r.baseSize*l.flexFactor(), l.baseSize*r.flexFactor())
 	})
 	for cur := 0; leftover > 0 && cur < len(flexible); {
 		flexSum = max(flexSum, 1)
@@ -722,6 +734,7 @@ func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, avail
 		}
 		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
 		it.isScrollContainer = item.style.IsScrollContainer()
+		it.mainIsAuto, it.minIsAuto, it.minimumSize = gridItemMinimumInputs(item.style, gla.space.WritingDirection, gla.space)
 		sizing = append(sizing, it)
 	}
 	a.computeUsedTrackSizes(sizing)
@@ -737,4 +750,34 @@ func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, avail
 func (gla *GridLayoutAlgorithm) stretchesAutoColumns() bool {
 	v, _ := gla.style.Get("justify-content")
 	return v == "" || v == "normal" || v == "stretch"
+}
+
+// gridItemMinimumInputs is what an item's intrinsic-minimum contribution in
+// the container's inline (column) axis reads: whether its size there is
+// auto-like, whether its min size there is auto, and its resolved min size
+// (border box) plus margins (CalculateIntrinsicMinimumContribution,
+// grid_layout_utils.cc:506-600; the margin_sum ContributionSizeForGridItem
+// adds, grid_layout_algorithm.cc:806 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The axis is the container's,
+// so an orthogonal item's block size is read, as Blink reads its
+// LogicalHeight.
+func gridItemMinimumInputs(style *css.Style, containerWDM WritingDirectionMode, space ConstraintSpace) (mainIsAuto, minIsAuto bool, minimumSize float64) {
+	prop := logicalInlineSizeProperty(containerWDM)
+	main, _ := style.Get(prop)
+	main = strings.TrimSpace(main)
+	mainIsAuto = main == "" || main == "auto" || main == "fit-content" || main == "stretch" ||
+		strings.HasSuffix(main, "%") || css.IsMathFunctionWithPercent(main) || strings.HasPrefix(main, "calc(")
+	minVal, ok := style.Get("min-" + prop)
+	minIsAuto = !ok || strings.TrimSpace(minVal) == "" || strings.TrimSpace(minVal) == "auto"
+	geom := ComputeFragmentGeometry(style, containerWDM, space.PercentageResolutionInlineSize)
+	minimumSize = ResolveMinInlineSize(style, containerWDM, space, geom).Float64() + geom.InlineBorderPadding() +
+		ResolveMargins(style, containerWDM, 0).InlineSum()
+	return mainIsAuto, minIsAuto, minimumSize
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

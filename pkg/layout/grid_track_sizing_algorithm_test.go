@@ -182,6 +182,7 @@ func TestSizeContainedGridSizesRowsFromItems(t *testing.T) {
 //   - The contained intrinsic block size sizes the explicit rows ignoring
 //     children, so every auto-fit row collapses
 //     (BuildGridSizingTreeIgnoringChildren, grid_layout_algorithm.cc:508-530)
+//
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func TestGridSizingReviewRound2(t *testing.T) {
 	for _, tc := range []struct {

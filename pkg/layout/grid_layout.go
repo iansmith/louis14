@@ -2,6 +2,7 @@ package layout
 
 import (
 	"math"
+	"slices"
 	"strings"
 
 	"louis14/pkg/css"
@@ -174,10 +175,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// For row auto-sizing, use the maximum content height of items in each row.
 	rowSizes := gla.resolveTrackSizes(rowTracks, rowAvailable, rowGap, false, items, numCols, numRows, wdm, geom)
 
-	// For auto rows, size them to the maximum content block-size of their items.
-	// In vertical writing modes, block-size is the physical width; in HTB it is height.
-	// Under size containment, skip — item contributions are zero.
-	for r := 0; r < numRows && !sizeContained; r++ {
+	// For auto rows, size them to the maximum content block-size of their
+	// items, margins included. In vertical writing modes, block-size is the
+	// physical width; in HTB it is height. Size containment sizes only the
+	// container (its intrinsic block size, below), not its rows.
+	for r := 0; r < numRows; r++ {
 		if r < len(rowTracks) && !rowTracks[r].Auto && rowTracks[r].Fr == 0 {
 			continue // fixed row
 		}
@@ -397,11 +399,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The generic
 	// sizeContainedIntrinsicBlockSize would zero even fixed row tracks.
 	if sizeContained {
-		explicitRows := rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]
+		// Ignoring children, every auto-fit row is empty and collapses
+		// (BuildGridSizingTreeIgnoringChildren).
+		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
 		emptyRows := gla.resolveTrackSizes(explicitRows, rowAvailable, rowGap, false, nil, numCols, len(explicitRows), wdm, geom)
 		intrinsicBlockSize = gla.totalTrackSize(emptyRows, rowGap)
-	} else {
-		intrinsicBlockSize = sizeContainedIntrinsicBlockSize(gla.style, hasExplicitBlock, intrinsicBlockSize)
 	}
 
 	finalBlockSize := intrinsicBlockSize
