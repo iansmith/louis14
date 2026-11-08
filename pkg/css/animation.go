@@ -276,7 +276,7 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 			// Mirrors Blink CSSToStyleMap::MapAnimationFromTo +
 			// StyleResolver::ApplyAnimation behavior at SHA
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-			if base != nil && isAnimationCSSWideKeyword(v) {
+			if base != nil && isCSSWideValueKeyword(v) {
 				if bv, bok := base.Get(prop); bok {
 					v = bv
 				}
@@ -609,21 +609,6 @@ func parsePxOrZero(s string) (float64, bool) {
 		return v, true
 	}
 	return 0, false
-}
-
-// isAnimationCSSWideKeyword reports whether a keyframe value is a CSS-wide
-// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`) that
-// must be substituted with the underlying cascaded value before
-// interpolation (Web Animations §3.4.3 / CSS Animations §2.2). The list
-// excludes `default` / `none` because they are not CSS-wide keywords for
-// property values (cf. style.go::isCSSWideKeyword, which serves a different
-// caller and includes the broader custom-ident reservation set).
-func isAnimationCSSWideKeyword(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "initial", "inherit", "unset", "revert", "revert-layer":
-		return true
-	}
-	return false
 }
 
 // lerpColor linearly interpolates two colors in (non-premultiplied) sRGB and

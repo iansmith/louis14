@@ -578,13 +578,13 @@ func (fla *FieldsetLayoutAlgorithm) relayoutWithoutFragmentation() *LayoutResult
 // content-box convention the content contribution sheds that padding.
 func measureFieldsetMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	var result MinMaxSizes
-	nodeBlockSize := resolveNodeBlockSizeForPercent(node, space)
+	availBlockSize, nodeBlockSize := nodeChildBlockSizes(node, space)
 	if legend := node.GetRenderedLegend(); legend != nil {
-		result.MinContent, result.MaxContent = childInlineContribution(ctx, legend, space, nodeBlockSize, false)
+		result.MinContent, result.MaxContent = childInlineContribution(ctx, legend, space, availBlockSize, nodeBlockSize, false)
 	}
 	if content := node.GetFieldsetContent(); content != nil {
 		paddingInline := ComputeFragmentGeometry(node.Style(), space.WritingDirection).Padding
-		minC, maxC := childInlineContribution(ctx, content, space, nodeBlockSize, false)
+		minC, maxC := childInlineContribution(ctx, content, space, availBlockSize, nodeBlockSize, false)
 		pad := paddingInline.InlineStart + paddingInline.InlineEnd
 		result.MinContent = max(result.MinContent, minC-pad)
 		result.MaxContent = max(result.MaxContent, maxC-pad)

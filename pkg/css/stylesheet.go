@@ -3386,7 +3386,7 @@ var supportedCSSProperties = map[string]struct{}{
 	// Flexbox
 	"flex": {}, "flex-direction": {}, "flex-wrap": {}, "flex-flow": {},
 	"flex-grow": {}, "flex-shrink": {}, "flex-basis": {},
-	"order": {}, "gap": {}, "row-gap": {}, "column-gap": {},
+	"order": {}, "gap": {}, "grid-gap": {}, "row-gap": {}, "column-gap": {},
 	"justify-content": {}, "justify-items": {}, "justify-self": {},
 	"align-items": {}, "align-self": {}, "align-content": {},
 	"place-items": {}, "place-self": {}, "place-content": {},
@@ -5060,9 +5060,17 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			continue
 		}
 
-		// Reject negative `column-gap` (CSS Multi-column 1 §4.1: <length [0,∞]>
-		// | normal). Required by WPT multicol-gap-negative-001.
-		if property == "column-gap" && !isValidColumnGapValue(value) {
+		// A gap is normal or a non-negative <length-percentage>; the gap
+		// shorthand and its alias grid-gap take one or two such components,
+		// or the whole declaration drops (ConsumeGapLength,
+		// css_parsing_utils.cc:6102-6110; Gap::ParseShorthand,
+		// shorthands_custom.cc:3583-3605 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Required by WPT
+		// multicol-gap-negative-001.
+		if (property == "column-gap" || property == "row-gap") && !isValidGapValue(value) {
+			continue
+		}
+		if (property == "gap" || property == "grid-gap") && !isValidGapShorthand(value) {
 			continue
 		}
 
@@ -5750,20 +5758,13 @@ func isLineStyleKeyword(part string) bool {
 	return false
 }
 
-// isValidColumnGapValue checks if value is a valid CSS column-gap:
-// `normal | <length-percentage [0,∞]>` (CSS Multi-column 1 §4.1 +
-// CSS Box Alignment 3). Negative values are invalid.
-func isValidColumnGapValue(value string) bool {
+// isValidGapValue checks if value is a valid row-gap or column-gap:
+// `normal | <length-percentage [0,∞]>` (CSS Box Alignment 3 §8.1;
+// ConsumeGapLength). Negative values are invalid.
+func isValidGapValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
-	if lower == "normal" {
-		return true
-	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
-		return true
-	}
-	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if strings.EqualFold(trimmed, "normal") || isCSSWideValueKeyword(trimmed) ||
+		containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
 		return true
 	}
 	// Percentage.
@@ -5783,6 +5784,27 @@ func isValidColumnGapValue(value string) bool {
 		return false
 	}
 	return w >= 0
+}
+
+// isValidGapShorthand reports whether value is a valid gap / grid-gap
+// declaration: a CSS-wide keyword or var() for the whole, or one or two
+// components each a valid gap (Gap::ParseShorthand, shorthands_custom.cc:
+// 3583-3605 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isValidGapShorthand(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if isCSSWideValueKeyword(trimmed) || containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+		return true
+	}
+	parts := splitShorthandParts(trimmed)
+	if len(parts) == 0 || len(parts) > 2 {
+		return false
+	}
+	for _, p := range parts {
+		if isCSSWideValueKeyword(p) || !isValidGapValue(p) {
+			return false
+		}
+	}
+	return true
 }
 
 // isInvalidBareNumber returns true if value is a non-zero number with no unit

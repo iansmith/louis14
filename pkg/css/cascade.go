@@ -3150,7 +3150,7 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 var varDeferredShorthands = []string{
 	"margin", "padding", "border", "border-top", "border-right",
 	"border-bottom", "border-left", "border-width", "border-style",
-	"border-color", "font", "flex", "flex-flow", "list-style", "gap",
+	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
 	"grid-area", "grid-row", "grid-column",
 }
 
