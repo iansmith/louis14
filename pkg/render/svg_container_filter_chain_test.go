@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"image/color"
 	"testing"
 
 	"louis14/pkg/render"
@@ -103,4 +104,64 @@ func TestSVGContainer_ExternalURLFilter(t *testing.T) {
 <g filter="url(other.svg#f)"><rect x="20" y="20" width="60" height="60" fill="blue"/></g></svg>`, 100, 100,
 		render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(ext), nil }))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external filter's flood")
+}
+
+// A group whose stroke box is empty — its only child is a <text>, whose
+// boxes louis14 leaves empty (LOU-795) — paints its children unfiltered
+// rather than into a buffer a few pixels wide.
+func TestSVGContainer_ChainWithEmptyStrokeBoxPaintsUnfiltered(t *testing.T) {
+	for _, filter := range []string{"blur(1px)", "drop-shadow(2px 2px 0 green)", "url(#f) blur(1px)"} {
+		img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="200" height="100"><filter id="f"><feOffset dx="0" dy="0"/></filter>
+<g style="filter:`+filter+`"><text x="10" y="60" font-size="40" fill="green">TEXT</text></g></svg>`, 200, 100)
+		if n := countPixels(img, func(c color.RGBA) bool { return c != canvasWhite }); n < 100 {
+			t.Errorf("filter %q: %d painted pixels, want the text (at least 100)", filter, n)
+		}
+	}
+}
+
+// A filtered <g> in a <mask> is never laid out, yet its stroke box is
+// known: its white rect still makes the mask opaque.
+func TestSVGContainer_FilteredGroupInMask(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><mask id="m"><g style="filter:blur(1px)"><rect width="100" height="100" fill="white"/></g></mask>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 100, 100)
+	wantPixel(t, img, 50, 50, canvasGreen, "the masked rect")
+}
+
+// transform-box: stroke-box on a <g> in a <mask> resolves against the
+// group's stroke box though the mask content is never laid out: scale(0.5)
+// about the box's centre leaves the mask's white at 25..75.
+func TestSVGContainer_StrokeBoxTransformInMask(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><mask id="m"><g style="transform-box:stroke-box;transform-origin:center;transform:scale(0.5)"><rect width="100" height="100" fill="white"/></g></mask>
+<rect width="100" height="100" fill="green" mask="url(#m)"/></svg>`, 100, 100)
+	wantPixel(t, img, 50, 50, canvasGreen, "the mask's scaled white, at the centre")
+	wantPixel(t, img, 10, 10, canvasWhite, "outside it")
+}
+
+// A nested <g> holding only a horizontal <line> counts toward its parent's
+// stroke box, as Blink counts a container whose bounding box is valid
+// (svg_content_container.cc:95-98 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the outer group's drop-shadow of it paints.
+func TestSVGContainer_ChainOnNestedGroupOfLine(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><g style="filter:drop-shadow(0 20px 0 green)"><g>
+<line x1="10" y1="20" x2="90" y2="20" stroke="green" stroke-width="10"/></g></g></svg>`, 100, 100)
+	wantPixel(t, img, 50, 40, canvasGreen, "the shadow")
+}
+
+// A url() and a CSS function in one filter value is a chain: its url() is
+// fetched once, as the chain's stage, not first as a lone url() whose
+// fragment runs to the last ')'.
+func TestSVGShape_URLThenFunctionFetchesOnce(t *testing.T) {
+	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
+	fetches := 0
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="red" filter="url(other.svg#f) blur(0px)"/></svg>`, 100, 100,
+		render.WithExternalSVGFetcher(func(string) ([]byte, error) { fetches++; return []byte(ext), nil }))
+	wantPixel(t, img, 50, 50, canvasGreen, "the external flood")
+	if fetches != 1 {
+		t.Errorf("fetched the external document %d times, want 1", fetches)
+	}
 }

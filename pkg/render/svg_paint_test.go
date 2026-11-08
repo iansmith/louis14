@@ -1444,3 +1444,40 @@ func TestSVG_MaskedGradientUnderTranslateZ(t *testing.T) {
 	}
 	wantTranslateZMatchesScale2(t, page, "the masked gradient under scale(2)")
 }
+
+// A lone url() filter's userSpaceOnUse primitive subregion percentages
+// resolve against the <svg> viewport, not the filter region (LOU-782;
+// SVGFilterPrimitiveStandardAttributes resolves the subregion through an
+// SVGViewportResolver @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): width 50%
+// of a 200px viewport covers the shape's whole filter region (x -2..22),
+// where 50% of the region would stop at x 10.
+func TestSVG_FilterSubregionPercentOfViewport(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="200" height="100">
+<filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green" x="0" y="0" width="50%" height="100%"/></filter>
+<rect width="20" height="20" fill="red" filter="url(#f)"/></svg>`, 200, 100)
+	wantPixel(t, img, 15, 5, canvasGreen, "the flood past 50% of the filter region")
+}
+
+// A filtered shape honours shape-rendering: crispEdges, as its unfiltered
+// paint does: a rect edge at x 10.5 leaves pixel 10 either filled or not,
+// never partly.
+func TestSVG_FilteredShapeCrispEdges(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><filter id="f" color-interpolation-filters="sRGB"><feOffset dx="0" dy="0"/></filter>
+<rect x="10.5" y="10" width="50" height="50" fill="rgb(0,128,0)" shape-rendering="crispEdges" filter="url(#f)"/></svg>`, 100, 100)
+	if c := img.RGBAAt(10, 30); c != canvasWhite && c != canvasGreen {
+		t.Errorf("pixel (10,30) = %v, want fully covered or not (crispEdges)", c)
+	}
+}
+
+// An empty shape paints nothing, filters included, as SVGShapePainter
+// returns early for IsShapeEmpty (svg_shape_painter.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a zero-width rect with a
+// userSpaceOnUse flood leaves the page white.
+func TestSVG_EmptyShapeWithFilterPaintsNothing(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><feFlood flood-color="red"/></filter>
+<rect width="0" height="50" filter="url(#f) blur(0px)"/></svg>`, 100, 100)
+	wantPixel(t, img, 50, 50, canvasWhite, "nothing painted")
+}

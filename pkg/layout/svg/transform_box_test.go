@@ -143,3 +143,58 @@ func TestSVGContainer_StrokeBoundingBox(t *testing.T) {
 		t.Errorf("container stroke bbox %v, want %v", got, want)
 	}
 }
+
+// lineShape returns an SVGShape for <line x1 y x2 y> with the given style
+// declarations.
+func lineShape(x1, x2, y float64, decls map[string]string) *SVGShape {
+	s := &SVGShape{TagName: "line", GeometryType: GeometryLine, Style: css.NewStyle(), Viewport: geometry.SizeF{Width: 400, Height: 300}}
+	s.Path.MoveTo(x1, y)
+	s.Path.LineTo(x2, y)
+	s.FillBoundingBox = s.Path.BoundingBox()
+	s.transform = geometry.Identity()
+	for k, v := range decls {
+		s.Style.Set(k, v)
+	}
+	return s
+}
+
+// A container's object bounding box unions its valid children even when
+// their boxes are empty (UpdateObjectBoundingBox's UnionEvenIfEmpty,
+// svg_content_container.cc:77-86 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// a horizontal <line> at y 0 extends the box of a rect at (40, 40) to the
+// line.
+func TestSVGContainer_ObjectBoundingBoxUnionsEmptyChildBoxes(t *testing.T) {
+	c := &SVGContainer{}
+	c.AppendChild(lineShape(0, 100, 0, map[string]string{"stroke": "black", "stroke-width": "2"}))
+	c.AppendChild(rectShape(40, 40, 60, 20, map[string]string{}))
+	c.UpdateSVGLayout(SVGLayoutInfo{})
+	if got, want := c.ObjectBoundingBox(), geometry.NewRectF(0, 0, 100, 60); got != want {
+		t.Errorf("container bbox %v, want %v", got, want)
+	}
+}
+
+// A nested container counts toward its parent when its object bounding box
+// is valid, empty or not (IsObjectBoundingBoxValid, svg_content_container.cc:
+// 95-98): a <g> holding only a horizontal <line> adds the line's stroke to
+// its parent's stroke box.
+func TestSVGContainer_NestedContainerWithEmptyBoxCounts(t *testing.T) {
+	inner := &SVGContainer{}
+	inner.AppendChild(lineShape(10, 90, 20, map[string]string{"stroke": "black", "stroke-width": "10"}))
+	outer := &SVGContainer{}
+	outer.AppendChild(inner)
+	outer.UpdateSVGLayout(SVGLayoutInfo{})
+	if got, want := outer.StrokeBoundingBox(), geometry.NewRectF(10, 15, 80, 10); got != want {
+		t.Errorf("outer stroke bbox %v, want %v", got, want)
+	}
+}
+
+// Content never laid out (a <mask>'s, a <pattern>'s, a <clipPath>'s) still
+// reports its stroke box: the cache is filled on demand, never returned
+// unfilled.
+func TestSVGContainer_StrokeBoundingBoxWithoutLayout(t *testing.T) {
+	c := &SVGContainer{}
+	c.AppendChild(rectShape(10, 10, 80, 80, map[string]string{}))
+	if got, want := c.StrokeBoundingBox(), geometry.NewRectF(10, 10, 80, 80); got != want {
+		t.Errorf("stroke bbox without layout %v, want %v", got, want)
+	}
+}
