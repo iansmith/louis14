@@ -38,3 +38,17 @@ func TestGridRowTrackSizing(t *testing.T) {
 		}
 	}
 }
+
+// Row contributions are measured with the item's grid area block size
+// indefinite (CreateConstraintSpaceForMeasure, grid_layout_algorithm.cc:
+// 1460-1500 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a percentage
+// height contributes as auto: in a 100px grid with rows 30px 1fr, a
+// height:100% item in the 1fr row leaves it its 70 of free space. Mirrors
+// WPT css-grid/grid-definition/fr-unit.
+func TestGridRowContributionPercentageHeightIsAuto(t *testing.T) {
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="display:grid; width:100px; height:100px; grid-template-rows:30px 1fr">`+
+		`<div style="height:30px"></div><div id=b style="height:100%"></div></div></body>`, nil)
+	if b := findBox(fl.root, byID("b")); b == nil || b.Y != 30 || b.Height != 70 {
+		t.Errorf("#b %s, want y=30 height=70", boxDims(b))
+	}
+}
