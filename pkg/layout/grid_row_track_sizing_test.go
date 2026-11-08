@@ -157,3 +157,22 @@ func TestGridReviewRound1(t *testing.T) {
 		}
 	}
 }
+
+// The additional pass sizes the rows again at the RESOLVED block size
+// (grid_layout_algorithm.cc:443-490 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not at the indefinite one: an
+// orthogonal item in row 1 first measures against the ICB, wrapping to two
+// lines (100 wide); against its 900px row it is one line (50), so column 2
+// widens and the wrapping item in row 2 needs one line, not two. The grid's
+// block size stays the first pass's, so the rerun stretches row 2 back to
+// its first-pass 40, and the auto-height item with it.
+func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
+	tall := `<span style="display:inline-block; width:50px; height:200px"></span>`
+	wide := `<span style="display:inline-block; width:50px; height:20px"></span>`
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0; line-height:0"><div style="display:grid; width:300px; grid-template-columns:auto 1fr; grid-template-rows:minmax(0, 900px) auto">`+
+		`<div style="writing-mode:vertical-rl">`+tall+tall+tall+tall+`</div>`+
+		`<div id=w style="grid-column:2; grid-row:2">`+wide+wide+wide+wide+wide+`</div></div></body>`, nil)
+	if w := findBox(fl.root, byID("w")); w == nil || w.Height != 40 || w.X != 50 {
+		t.Errorf("row-2 item %s, want at x=50, 40 tall (row 2 stretched to its first-pass size)", boxDims(w))
+	}
+}
