@@ -176,6 +176,29 @@ func (r RectF) IsEmpty() bool {
 	return r.Size.IsEmpty()
 }
 
+// Union returns the smallest rect containing r and o, an empty one
+// absorbed by the other. Mirrors gfx::RectF::Union
+// (ui/gfx/geometry/rect_f.cc:134-143 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r RectF) Union(o RectF) RectF {
+	if r.IsEmpty() {
+		return o
+	}
+	if o.IsEmpty() {
+		return r
+	}
+	return r.UnionEvenIfEmpty(o)
+}
+
+// UnionEvenIfEmpty returns the smallest rect containing r and o, empty or
+// not. Mirrors gfx::RectF::UnionEvenIfEmpty (rect_f.cc:145-151 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r RectF) UnionEvenIfEmpty(o RectF) RectF {
+	minX, minY := min(r.X(), o.X()), min(r.Y(), o.Y())
+	maxX, maxY := max(r.Right(), o.Right()), max(r.Bottom(), o.Bottom())
+	return NewRectF(minX, minY, maxX-minX, maxY-minY)
+}
+
 // MapPoint returns t applied to p.
 func (t AffineTransform) MapPoint(p PointF) PointF {
 	return PointF{

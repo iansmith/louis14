@@ -124,7 +124,7 @@ type SVGFilterElement interface {
 	// SVG-element filter it is the host SVG viewport. Adapters that don't
 	// distinguish the two may return FilterRegion() (the historical
 	// behaviour, exact whenever region == viewport).
-	SubregionViewport() image.Rectangle
+	SubregionViewport() geometry.RectF
 	// ReferenceBox returns the referencing element's reference box in
 	// absolute device pixels, unsnapped, as Blink's Filter::ReferenceBox
 	// (a gfx::RectF). For objectBoundingBox primitive units the builder
@@ -752,8 +752,8 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	// expansion. Mirrors Blink's SVGFilterPrimitiveStandardAttributes,
 	// which resolves the subregion through an SVGViewportResolver.
 	viewport := elt.SubregionViewport()
-	vpW := float64(viewport.Dx())
-	vpH := float64(viewport.Dy())
+	vpW := viewport.Width()
+	vpH := viewport.Height()
 	resolvePctLen := func(s string, base float64) float64 {
 		v, isPct := parseLength(s, 0)
 		if isPct {

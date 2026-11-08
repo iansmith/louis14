@@ -26,8 +26,9 @@ type FilterEffectBuilder struct {
 	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
 	// pixel-snapped border box (BackdropFilterBounds).
 	ReferenceBox geometry.RectF
-	// FilterViewport is, in absolute device pixels, a layer's border box or
-	// an SVG shape's <svg> viewport: the viewport userSpaceOnUse percentages
+	// FilterViewport is, in absolute device pixels, a layer's pixel-snapped
+	// border box or an SVG element's <svg> viewport (unsnapped, as Blink
+	// resolves it in floats): the viewport userSpaceOnUse percentages
 	// resolve against (filter_effect_builder.cc:528-537 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For a layer its size is
 	// Blink's FilterViewport (ComputeFilterViewport, core/paint/
@@ -36,9 +37,9 @@ type FilterEffectBuilder struct {
 	// sets UserSpaceOrigin instead (SVGViewportResolver, svg_resources.cc:
 	// 375-381 @ a9f50e52). It may be empty: a 0x0 box keeps its 0x0
 	// viewport.
-	FilterViewport image.Rectangle
+	FilterViewport geometry.RectF
 	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
-	// are relative to in place of FilterViewport.Min: an SVG shape's user
+	// are relative to in place of FilterViewport's origin: an SVG shape's user
 	// space origin in device pixels, whose viewport is its <svg>'s.
 	UserSpaceOrigin *geometry.PointF
 	// CurrentColor resolves currentColor for drop-shadow.
@@ -78,7 +79,7 @@ type FilterEffectBuilder struct {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *FilterEffectBuilder) viewportLengthContext() svg.SVGLengthContext {
 	return svg.NewSVGLengthContext(geometry.SizeF{
-		Width: float64(b.FilterViewport.Dx()), Height: float64(b.FilterViewport.Dy()),
+		Width: b.FilterViewport.Width(), Height: b.FilterViewport.Height(),
 	})
 }
 
@@ -88,7 +89,7 @@ func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
 	if b.UserSpaceOrigin != nil {
 		return *b.UserSpaceOrigin
 	}
-	return geometry.PointF{X: float64(b.FilterViewport.Min.X), Y: float64(b.FilterViewport.Min.Y)}
+	return geometry.PointF{X: b.FilterViewport.X(), Y: b.FilterViewport.Y()}
 }
 
 // userSpaceOriginPixel is userSpaceOrigin rounded to a device pixel, as the
@@ -256,7 +257,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 
 	// Resolve the filter region from filterUnits + the reference box, both
 	// in absolute device pixels. userSpaceOnUse x/y are relative to the
-	// layer's local origin, FilterViewport.Min.
+	// layer's local origin, FilterViewport's origin.
 	regionF := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	region := snapRectFToDevice(regionF)
 

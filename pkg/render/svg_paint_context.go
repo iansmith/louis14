@@ -77,6 +77,12 @@ type svgPaintContext struct {
 	// everything.
 	regionClip *image.Rectangle
 
+	// ancestorToDevice is the draw context's matrix under the <svg> root:
+	// the page's CSS transforms the root paints within, on top of which
+	// the draw context composes DeviceFromUser. It is the identity in an
+	// effect or resource buffer, which paints in the buffer's frame.
+	ancestorToDevice geometry.Transform
+
 	// clipPathContent is set while painting <clipPath> content, which
 	// clips with its geometry only: its filters, masks and other
 	// non-geometric effects are not applied

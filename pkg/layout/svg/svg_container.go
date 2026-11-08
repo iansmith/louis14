@@ -154,6 +154,7 @@ func (v *SVGViewportContainer) AppendChild(child SVGNode) {
 		return
 	}
 	v.Children = append(v.Children, child)
+	v.boxes.filled = false
 }
 
 // ChildLengthContext returns the SVGLengthContext that the nested
@@ -277,6 +278,7 @@ func (c *SVGContainer) AppendChild(child SVGNode) {
 		return
 	}
 	c.Children = append(c.Children, child)
+	c.boxes.filled = false
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes, each
@@ -293,43 +295,41 @@ func (c *SVGContainer) StrokeBoundingBox() geometry.RectF {
 }
 
 // computeStrokeBoundingBox unions each rendered child's stroke bounding box
-// mapped into the container's space. Mirrors
-// SVGContentContainer::ComputeStrokeBoundingBox
+// mapped into the container's space, an empty one absorbed (plain Union).
+// Mirrors SVGContentContainer::ComputeStrokeBoundingBox
 // (core/layout/svg/svg_content_container.cc:254-266 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func computeStrokeBoundingBox(children []SVGNode) geometry.RectF {
-	r, _ := unionChildBoxes(children, SVGNode.StrokeBoundingBox)
-	return r
+func computeStrokeBoundingBox(children []SVGNode) (box geometry.RectF) {
+	unionChildBoxes(children, SVGNode.StrokeBoundingBox, func(r geometry.RectF) { box = box.Union(r) })
+	return box
 }
 
-// unionChildBoxes unions box(child) over the children whose bounding box
-// is valid (hasValidBoundingBoxForContainer), each mapped through the
-// child's transform into the container's space (the child's transform is
-// its attribute: LocalTransform; LOU-648). An empty child box still extends
-// the union, as UpdateObjectBoundingBox's UnionEvenIfEmpty does
-// (svg_content_container.cc:77-86 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// valid reports whether any child counted (object_bounding_box_valid_).
-func unionChildBoxes(children []SVGNode, box func(SVGNode) geometry.RectF) (union geometry.RectF, valid bool) {
+// unionChildBoxes calls add with the box of each child whose bounding box
+// is valid (hasValidBoundingBoxForContainer), mapped through the child's
+// transform into the container's space (the child's transform is its
+// attribute: LocalTransform; LOU-648).
+func unionChildBoxes(children []SVGNode, box func(SVGNode) geometry.RectF, add func(geometry.RectF)) {
 	for _, child := range children {
-		if !hasValidBoundingBoxForContainer(child) {
-			continue
+		if hasValidBoundingBoxForContainer(child) {
+			add(child.LocalTransform().MapRect(box(child)))
 		}
-		r := child.LocalTransform().MapRect(box(child))
-		if !valid {
-			union, valid = r, true
-			continue
-		}
-		union = unionRectsEvenIfEmpty(union, r)
 	}
-	return union, valid
 }
 
-// unionRectsEvenIfEmpty is the smallest rect containing both a and b,
-// empty or not (gfx::RectF::UnionEvenIfEmpty).
-func unionRectsEvenIfEmpty(a, b geometry.RectF) geometry.RectF {
-	minX, minY := min(a.X(), b.X()), min(a.Y(), b.Y())
-	maxX, maxY := max(a.Right(), b.Right()), max(a.Bottom(), b.Bottom())
-	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY)
+// computeObjectBoundingBox unions the children's object bounding boxes,
+// empty ones included, as UpdateObjectBoundingBox does with
+// UnionEvenIfEmpty (svg_content_container.cc:77-86, 196-224 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); valid reports whether any
+// child counted (object_bounding_box_valid_).
+func computeObjectBoundingBox(children []SVGNode) (box geometry.RectF, valid bool) {
+	unionChildBoxes(children, SVGNode.ObjectBoundingBox, func(r geometry.RectF) {
+		if valid {
+			box = box.UnionEvenIfEmpty(r)
+		} else {
+			box, valid = r, true
+		}
+	})
+	return box, valid
 }
 
 // containerBoxes caches a container's object and stroke bounding boxes
@@ -345,7 +345,7 @@ type containerBoxes struct {
 }
 
 func (b *containerBoxes) update(children []SVGNode) {
-	b.objectBox, b.objectBoxIsValid = unionChildBoxes(children, SVGNode.ObjectBoundingBox)
+	b.objectBox, b.objectBoxIsValid = computeObjectBoundingBox(children)
 	b.strokeBox = computeStrokeBoundingBox(children)
 	b.filled = true
 }

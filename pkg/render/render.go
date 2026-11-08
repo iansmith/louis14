@@ -1222,7 +1222,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		referenceBox = paintBounds
 	}
 	builder.ReferenceBox = referenceBox
-	builder.FilterViewport = snapRectFToDevice(borderBox)
+	builder.FilterViewport = rectFFromRect(snapRectFToDevice(borderBox))
 	// SourceGraphic extent: the layer's paint bounds, which can extend beyond
 	// the border box (positioned or overflowing descendants). For drop-shadow
 	// the shadow is cast from the whole painted shape, so the source buffer
@@ -1243,7 +1243,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 			if !ok || !subOK || !vpOK {
 				return nil
 			}
-			builder.FilterViewport = snapRectF(vp)
+			builder.FilterViewport = rectFFromRect(snapRectF(vp))
 			builder.ReferenceBox = ref
 			paintExtent = snapRectFToDevice(sub)
 			builder.Mapping = *m
@@ -1648,7 +1648,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 			builder.Mapping = *m
 		}
 		builder.ReferenceBox = rectFFromRect(layerBox)
-		builder.FilterViewport = layerBox
+		builder.FilterViewport = rectFFromRect(layerBox)
 		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {

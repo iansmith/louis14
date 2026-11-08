@@ -33,7 +33,7 @@ type svgFilterElementAdapter struct {
 	// (border) box on the CSS `filter: url(...)` HTML-box path. An empty
 	// one (a degenerate viewport) falls back to filterRegion via
 	// SubregionViewport().
-	subregionViewport image.Rectangle
+	subregionViewport geometry.RectF
 	// userSpaceOrigin is the SVG element's user-space (0, 0) point
 	// mapped to absolute device pixels. The userSpaceOnUse subregion
 	// anchor for filter primitives uses this — NOT filterRegion.Min,
@@ -82,9 +82,9 @@ func (a *svgFilterElementAdapter) ReferenceBox() geometry.RectF { return a.refer
 // SubregionViewport implements filters.SVGFilterElement. Returns the
 // subregion viewport, or the filter region when it is empty (a degenerate
 // viewport).
-func (a *svgFilterElementAdapter) SubregionViewport() image.Rectangle {
-	if a.subregionViewport.Empty() {
-		return a.filterRegion
+func (a *svgFilterElementAdapter) SubregionViewport() geometry.RectF {
+	if a.subregionViewport.IsEmpty() {
+		return rectFFromRect(a.filterRegion)
 	}
 	return a.subregionViewport
 }

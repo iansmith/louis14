@@ -270,7 +270,16 @@ func (sp *svgShapePainter) paint() {
 //   - the filter is part of a reference cycle.
 func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGResourceFilter {
 	docURL, fragID, ok := parseSVGFilterURL(filterVal)
-	if !ok || fragID == "" {
+	if !ok {
+		return nil
+	}
+	return resolveSVGFilterRef(pctx, docURL, fragID)
+}
+
+// resolveSVGFilterRef resolves a url()'s document and fragment to an
+// SVGResourceFilter, as resolveSVGFilterValue does.
+func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
+	if fragID == "" {
 		return nil
 	}
 	if docURL == "" {
@@ -302,34 +311,36 @@ func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
 	if len(v) < 4 || !strings.EqualFold(v[:4], "url(") {
 		return "", "", false
 	}
-	// The url() token ends at its first ')' outside quotes. Anything after
-	// it makes the value a filter list (url() followed by functions), which
-	// the chain path builds; a lone url() is the whole value.
+	// The url() token ends at its first ')' outside quotes and not escaped
+	// by a backslash (CSS Syntax 3 §4.3.6). A backslash escapes the next
+	// character literally; hex escapes (§4.3.7) are not decoded. Anything after it makes
+	// the value a filter list (url() followed by functions), which the
+	// chain path builds; a lone url() is the whole value.
+	var inner strings.Builder
 	closeIdx, quote := -1, byte(0)
 	for i := 4; i < len(v) && closeIdx < 0; i++ {
 		switch c := v[i]; {
+		case c == '\\' && i+1 < len(v):
+			i++
+			inner.WriteByte(v[i])
 		case quote != 0:
 			if c == quote {
 				quote = 0
+			} else {
+				inner.WriteByte(c)
 			}
 		case c == '"' || c == '\'':
 			quote = c
 		case c == ')':
 			closeIdx = i
+		default:
+			inner.WriteByte(c)
 		}
 	}
 	if closeIdx < 0 || strings.TrimSpace(v[closeIdx+1:]) != "" {
 		return "", "", false
 	}
-	inner := strings.TrimSpace(v[4:closeIdx])
-	if len(inner) >= 2 {
-		first := inner[0]
-		last := inner[len(inner)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			inner = inner[1 : len(inner)-1]
-		}
-	}
-	docURL, fragID = splitFilterRef(inner)
+	docURL, fragID = splitFilterRef(strings.TrimSpace(inner.String()))
 	return docURL, fragID, true
 }
 
@@ -381,7 +392,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// geometry pixel-aligns with what DrawImage will composite back.
 	// Paint-server fills and strokes run through the buffer's paint
 	// context instead of the page target.
-	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice)
+	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice, sp.ctx.ancestorToDevice)
 	childOp := newSVGObjectPainter(childCtx.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
