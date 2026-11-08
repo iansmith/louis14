@@ -437,8 +437,7 @@ func isResolvedColorValue(value string) bool {
 	if lower == "currentcolor" {
 		return true
 	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	_, ok := ParseColor(trimmed)
@@ -4439,9 +4438,13 @@ func expandBorderSideProperty(style *Style, property, value string) {
 
 // cssWideKeyword returns value lowercased when it is one of the CSS-wide
 // keywords (CSS Cascade 4 §7.3 / Cascade 5: initial, inherit, unset, revert,
-// revert-layer).
+// revert-layer). It trims CSS whitespace only and matches ASCII
+// case-insensitively, as identifiers are (CSS Syntax 3 §4.3; Blink's
+// css_parsing_utils::IsCSSWideKeyword @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): Unicode folding would take
+// "İnitial" (U+0130) for `initial`.
 func cssWideKeyword(value string) (string, bool) {
-	kw := strings.ToLower(strings.TrimSpace(value))
+	kw := asciiToLower(strings.Trim(value, cssWhitespace))
 	switch kw {
 	case "inherit", "initial", "unset", "revert", "revert-layer":
 		return kw, true
@@ -8796,31 +8799,17 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 	return values, true
 }
 
-// isCSSWideValueKeyword reports whether a property value is a CSS-wide
-// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`; CSS
-// Cascade 5 §7.3). A keyframe value that is one must be substituted with
-// the underlying cascaded value before interpolation (Web Animations §3.4.3
-// / CSS Animations §2.2); a shorthand takes one only as its whole value.
-// The list excludes `default` / `none`, which style.go::isCSSWideKeyword
-// adds for the custom-ident reservation set.
-func isCSSWideValueKeyword(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "initial", "inherit", "unset", "revert", "revert-layer":
-		return true
-	}
-	return false
-}
-
 // isCSSWideKeyword reports whether an identifier is one of the CSS-wide
 // keywords reserved against use as a <custom-ident> (CSS Values 4
 // §custom-idents). Counter names must be valid <custom-ident>s, so
 // `counter(inherit)` is a parse error.
 func isCSSWideKeyword(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "inherit", "initial", "unset", "revert", "revert-layer", "default", "none":
+	kw := asciiToLower(strings.Trim(s, cssWhitespace))
+	if kw == "default" || kw == "none" {
 		return true
 	}
-	return false
+	_, wide := cssWideKeyword(kw)
+	return wide
 }
 
 // ParseContentValues parses a CSS content value into individual parts
@@ -9686,8 +9675,11 @@ func gridLineInteger(tok string) (int, bool) {
 // name: an identifier other than the CSS-wide keywords, auto and span
 // (ConsumeCustomIdentForGridLine).
 func isGridLineIdent(tok string) bool {
-	switch strings.ToLower(tok) {
-	case "auto", "span", "initial", "inherit", "unset", "revert", "revert-layer", "default":
+	if _, wide := cssWideKeyword(tok); wide {
+		return false
+	}
+	switch asciiToLower(tok) {
+	case "auto", "span", "default":
 		return false
 	}
 	return isIdentToken(tok)

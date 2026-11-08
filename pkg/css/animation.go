@@ -276,7 +276,7 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 			// Mirrors Blink CSSToStyleMap::MapAnimationFromTo +
 			// StyleResolver::ApplyAnimation behavior at SHA
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-			if base != nil && isCSSWideValueKeyword(v) {
+			if _, wide := cssWideKeyword(v); wide && base != nil {
 				if bv, bok := base.Get(prop); bok {
 					v = bv
 				}

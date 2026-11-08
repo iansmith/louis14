@@ -5233,8 +5233,7 @@ func isValidColorValue(value string) bool {
 	// CSS Cascade 4 §6.1: every CSS property accepts the five CSS-wide
 	// keywords. They reach the longhand value verbatim and are resolved at
 	// cascade time by resolveCSSWideKeywords / resolveInheritValues.
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(value); wide {
 		return true
 	}
 	// var() references are resolved later — always valid at parse time.
@@ -5290,9 +5289,7 @@ func isValidImageValue(value string) bool {
 	if containsVarFunction(trimmed) {
 		return true
 	}
-	lower := strings.ToLower(trimmed)
-	switch lower {
-	case "none", "inherit", "initial", "unset", "revert", "revert-layer":
+	if _, wide := cssWideKeyword(trimmed); wide || strings.EqualFold(trimmed, "none") {
 		return true
 	}
 	// Multi-layer values: every comma-separated layer must be a valid <image>.
@@ -5379,9 +5376,7 @@ func normalizeAndValidateFontFamily(value string) (string, bool) {
 	// CSS-wide keywords reach the longhand value verbatim and are resolved at
 	// cascade time. They are valid as the entire value but never as one entry
 	// in a comma list.
-	lower := strings.ToLower(trimmed)
-	switch lower {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return trimmed, true
 	}
 	// var() references defer to runtime substitution
@@ -5552,10 +5547,8 @@ func isValidColumnCountValue(value string) bool {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func isValidPositiveIntegerValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
 	// CSS-wide keywords accepted on every property; resolved later.
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5585,8 +5578,7 @@ func isValidColumnWidthValue(value string) bool {
 	if lower == "auto" {
 		return true
 	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5609,8 +5601,7 @@ func isValidColumnWidthValue(value string) bool {
 func isValidColumnsShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	if lower == "auto" || lower == "inherit" || lower == "initial" ||
-		lower == "unset" || lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(trimmed); wide || lower == "auto" {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5693,9 +5684,7 @@ func isValidColumnsShorthand(value string) bool {
 // any slot (e.g. `normal`) make the declaration invalid.
 func isValidColumnRuleShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5733,8 +5722,7 @@ func isValidColumnRuleShorthand(value string) bool {
 		}
 		// Color slot — must be a valid color (no CSS-wide keywords here; the
 		// whole-value CSS-wide branch above already returned).
-		if isValidColorValue(part) && partLower != "inherit" && partLower != "initial" &&
-			partLower != "unset" && partLower != "revert" && partLower != "revert-layer" {
+		if _, wide := cssWideKeyword(part); !wide && isValidColorValue(part) {
 			if hasColor {
 				return false
 			}
@@ -5763,7 +5751,7 @@ func isLineStyleKeyword(part string) bool {
 // ConsumeGapLength). Negative values are invalid.
 func isValidGapValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	if strings.EqualFold(trimmed, "normal") || isCSSWideValueKeyword(trimmed) ||
+	if _, wide := cssWideKeyword(trimmed); wide || strings.EqualFold(trimmed, "normal") ||
 		containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
 		return true
 	}
@@ -5792,7 +5780,7 @@ func isValidGapValue(value string) bool {
 // 3583-3605 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func isValidGapShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	if isCSSWideValueKeyword(trimmed) || containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if _, wide := cssWideKeyword(trimmed); wide || containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
 		return true
 	}
 	parts := splitShorthandParts(trimmed)
@@ -5800,7 +5788,7 @@ func isValidGapShorthand(value string) bool {
 		return false
 	}
 	for _, p := range parts {
-		if isCSSWideValueKeyword(p) || !isValidGapValue(p) {
+		if _, wide := cssWideKeyword(p); wide || !isValidGapValue(p) {
 			return false
 		}
 	}
