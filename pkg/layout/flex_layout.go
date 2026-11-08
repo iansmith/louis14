@@ -655,7 +655,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		contentBlockSize = explicitBlockSize
 		hasDefiniteBlock = true
 	}
-	mainGap, crossGap := fla.resolveGaps(wdm, isRow, contentInlineSize, contentBlockSize, hasDefiniteBlock)
+	mainGap, crossGap := fla.resolveGaps(isRow, contentInlineSize, contentBlockSize, hasDefiniteBlock)
 
 	// §9.3 — Collect flex items.
 	allItems := fla.collectItems(builder, wdm, contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
@@ -4014,42 +4014,21 @@ func (fla *FlexLayoutAlgorithm) getAlignContent() string {
 	return "stretch"
 }
 
-// resolveGaps returns the main and cross gap values.
-func (fla *FlexLayoutAlgorithm) resolveGaps(wdm WritingDirectionMode, isRow bool, contentInlineSize float64, contentBlockSize float64, hasDefiniteBlock bool) (mainGap, crossGap float64) {
-	// row-gap and column-gap.
-	// Per CSS Align Level 3 §8.1 and CSSWG issue #5081:
-	// - column-gap percentages resolve against the inline-size (always definite)
-	// - row-gap percentages resolve against the block-size; if indefinite, resolve to 0
-	var rowGap, colGap float64
-	if v, ok := fla.style.GetLength("row-gap"); ok {
-		rowGap = v
-	} else if pct, ok := fla.style.GetPercentage("row-gap"); ok {
-		if hasDefiniteBlock {
-			rowGap = layoutunit.ResolvePercent(
-				layoutunit.FromFloat64Round(contentBlockSize), pct).Float64()
-		}
-		// else: indefinite block-size → percentage row-gap resolves to 0
+// resolveGaps returns the main and cross gaps: column-gap between the items
+// of a row flexbox and row-gap between its lines, the other way round for a
+// column one; a percentage row gap against an indefinite block size is 0
+// (css.Style.ResolveGap).
+func (fla *FlexLayoutAlgorithm) resolveGaps(isRow bool, contentInlineSize float64, contentBlockSize float64, hasDefiniteBlock bool) (mainGap, crossGap float64) {
+	rowBase := float64(Indefinite)
+	if hasDefiniteBlock {
+		rowBase = contentBlockSize
 	}
-	if v, ok := fla.style.GetLength("column-gap"); ok {
-		colGap = v
-	} else if pct, ok := fla.style.GetPercentage("column-gap"); ok {
-		colGap = layoutunit.ResolvePercent(
-			layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
-	}
-	// gap shorthand may have been resolved to row-gap/column-gap already.
+	rowGap, _ := fla.style.ResolveGap("row-gap", rowBase)
+	colGap, _ := fla.style.ResolveGap("column-gap", contentInlineSize)
 	if isRow {
-		// main = column direction, cross = row direction (in terms of gap).
-		// Actually: flex-direction:row means items flow in inline direction.
-		// column-gap = gap between items (main axis).
-		// row-gap = gap between lines (cross axis).
-		mainGap = colGap
-		crossGap = rowGap
-	} else {
-		mainGap = rowGap
-		crossGap = colGap
+		return colGap, rowGap
 	}
-	_ = wdm
-	return
+	return rowGap, colGap
 }
 
 // parseFloat parses a CSS property as float64, returning defaultVal if absent/invalid.

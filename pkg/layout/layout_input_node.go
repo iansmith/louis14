@@ -27,9 +27,9 @@ import (
 //     serve as the stable identity that Blink uses *LayoutBox for (break
 //     tokens resume by node identity; a column box's break token names
 //     the multicol node itself, as Blink's does).
-//   - Where Blink keys maps by *LayoutBox (e.g., FragmentedOofData's
-//     multicols-with-pending-OOFs map, OrthogonalLayoutCache), louis14
-//     keys them by *LayoutInputNode. Same identity, one fewer indirection.
+//   - Where Blink keys a map by *LayoutBox (e.g., FragmentedOofData's
+//     multicols-with-pending-OOFs map), louis14 keys it by
+//     *LayoutInputNode. Same identity, one fewer indirection.
 //   - The downstream paint-tree type is Box (types.go); the Box pointer
 //     on this struct is the layout-tree → paint-tree link.
 type LayoutInputNode struct {

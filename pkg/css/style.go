@@ -2701,9 +2701,12 @@ func expandShorthand(style *Style, property, value string) {
 			}
 		}
 		_ = foundPos
-	case "gap":
-		// gap shorthand: sets both row-gap and column-gap
-		parts := strings.Fields(value)
+	case "gap", "grid-gap":
+		// gap (and its alias grid-gap): row-gap, then column-gap, the one
+		// value for both; components are split respecting parentheses, so
+		// a calc() is one (Gap::ParseShorthand; grid-gap is gap's alias in
+		// css_properties.json5 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		parts := splitShorthandParts(value)
 		if len(parts) == 1 {
 			style.Set("row-gap", parts[0])
 			style.Set("column-gap", parts[0])
@@ -3917,7 +3920,7 @@ func findBorderImageSourceEnd(s string) int {
 
 // GetColumnRuleWidth returns the column-rule-width in pixels. Lengths in
 // font-relative units (em/rem/ex/ch) resolve against this style's own
-// computed font-size, matching how GetBorderWidth and GetColumnGapMulticol
+// computed font-size, matching how GetBorderWidth and GetColumnGapMulticolWithBase
 // handle the same units.
 func (s *Style) GetColumnRuleWidth() float64 {
 	if v, ok := s.Get("column-rule-width"); ok {
@@ -8288,52 +8291,28 @@ func (s *Style) GetColumnWrap() string {
 	return "auto"
 }
 
-// GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em).
-// Percentage values are NOT resolved here (no percent base) — callers that have
-// a percent base should use GetColumnGapMulticolWithBase.
-func (s *Style) GetColumnGapMulticol() float64 {
-	return s.GetColumnGapMulticolWithBase(0)
-}
-
-// GetColumnGapMulticolWithBase returns the column-gap with percentage values
-// resolved against `percentBase` (the multicol container's content-box
-// inline-size, per CSS Multicol L1 §2.3 "Percentages [for column-gap] are
-// relative to the dimension of the box."). When percentBase is 0, percentages
-// fall through to the 1em default — preserves the no-base call sites'
-// behavior.
+// GetColumnGapMulticolWithBase returns the column-gap, a percentage resolved
+// against percentBase, the multicol container's content inline size (CSS
+// Multicol L1 §2.3); normal is 1em (ResolveColumnGapForMulticol).
 func (s *Style) GetColumnGapMulticolWithBase(percentBase float64) float64 {
-	if val, ok := s.Get("column-gap"); ok {
-		val = strings.TrimSpace(val)
-		if val == "normal" {
-			return s.GetFontSize()
-		}
-		if strings.HasSuffix(val, "%") && percentBase > 0 {
-			numStr := strings.TrimSuffix(val, "%")
-			if num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
-				return num * percentBase / 100.0
-			}
-		}
-		if w, ok := s.GetLengthForVal(val); ok {
-			return w
-		}
-	}
-	return s.GetFontSize() // multicol default is "normal" = 1em
+	return s.multicolGap("column-gap", percentBase)
 }
 
-// GetRowGapMulticol returns the row-gap between column rows in a
-// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Default `normal`
-// computes to 1em, matching `column-gap` and Blink's row_gap_ resolution
-// in column_layout_algorithm.cc. Mirrors GetColumnGapMulticol so
-// font-relative units resolve against the element's own font metrics.
-func (s *Style) GetRowGapMulticol() float64 {
-	if val, ok := s.Get("row-gap"); ok {
-		val = strings.TrimSpace(val)
-		if val == "normal" {
-			return s.GetFontSize()
-		}
-		if w, ok := s.GetLengthForVal(val); ok {
-			return w
-		}
+// GetRowGapMulticolWithBase returns the row-gap between column rows in a
+// column-wrap: wrap multicol (CSS Multicol L2 §4.2.6), a percentage
+// resolved against percentBase, the multicol's content block size, 0 when
+// indefinite (negative); normal is 1em, as for column-gap
+// (ResolveRowGapForMulticol, length_utils.cc:1370-1374 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) GetRowGapMulticolWithBase(percentBase float64) float64 {
+	return s.multicolGap("row-gap", percentBase)
+}
+
+// multicolGap is the gap longhand prop resolved against base, 1em when
+// normal.
+func (s *Style) multicolGap(prop string, base float64) float64 {
+	if gap, ok := s.ResolveGap(prop, base); ok {
+		return gap
 	}
 	return s.GetFontSize()
 }
@@ -8814,6 +8793,21 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 		}
 	}
 	return values, true
+}
+
+// isCSSWideValueKeyword reports whether a property value is a CSS-wide
+// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`; CSS
+// Cascade 5 §7.3). A keyframe value that is one must be substituted with
+// the underlying cascaded value before interpolation (Web Animations §3.4.3
+// / CSS Animations §2.2); a shorthand takes one only as its whole value.
+// The list excludes `default` / `none`, which style.go::isCSSWideKeyword
+// adds for the custom-ident reservation set.
+func isCSSWideValueKeyword(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "initial", "inherit", "unset", "revert", "revert-layer":
+		return true
+	}
+	return false
 }
 
 // isCSSWideKeyword reports whether an identifier is one of the CSS-wide
@@ -9518,23 +9512,18 @@ func parseGridTracks(val string) []GridTrack {
 	return tracks
 }
 
-// GetGridGap returns the grid-gap value (shorthand for row-gap and column-gap)
-func (s *Style) GetGridGap() (rowGap, columnGap float64) {
-	// Try grid-gap first (older syntax)
-	if gap, ok := s.GetLength("grid-gap"); ok {
-		return gap, gap
+// ResolveGap resolves the gap longhand prop (row-gap or column-gap): a
+// length with the element's conversion data (em, vh, ...), and a percentage,
+// alone or in a math function, against base, its axis's available size,
+// clamped to 0 when indefinite (base < 0); normal or unset is not a length
+// (CalculateGutterSize, core/layout/grid/grid_track_sizing_algorithm.cc:
+// 156-176 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) ResolveGap(prop string, base float64) (float64, bool) {
+	if v, ok := s.Get(prop); !ok || strings.TrimSpace(v) == "normal" {
+		return 0, false
 	}
-
-	// Try gap (newer syntax)
-	if gap, ok := s.GetLength("gap"); ok {
-		return gap, gap
-	}
-
-	// Try individual properties
-	rowGap, _ = s.GetLength("row-gap")
-	columnGap, _ = s.GetLength("column-gap")
-
-	return rowGap, columnGap
+	gap, ok := s.resolveLengthOrPercent(prop, max(base, 0), base < 0)
+	return max(0, gap), ok
 }
 
 // GridAreaInfo holds grid area placement (1-indexed, end exclusive)
