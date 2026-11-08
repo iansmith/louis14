@@ -437,8 +437,7 @@ func isResolvedColorValue(value string) bool {
 	if lower == "currentcolor" {
 		return true
 	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	_, ok := ParseColor(trimmed)
@@ -8822,8 +8821,11 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 // §custom-idents). Counter names must be valid <custom-ident>s, so
 // `counter(inherit)` is a parse error.
 func isCSSWideKeyword(s string) bool {
+	if _, wide := cssWideKeyword(s); wide {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "inherit", "initial", "unset", "revert", "revert-layer", "default", "none":
+	case "default", "none":
 		return true
 	}
 	return false
@@ -9697,8 +9699,11 @@ func gridLineInteger(tok string) (int, bool) {
 // name: an identifier other than the CSS-wide keywords, auto and span
 // (ConsumeCustomIdentForGridLine).
 func isGridLineIdent(tok string) bool {
+	if _, wide := cssWideKeyword(tok); wide {
+		return false
+	}
 	switch strings.ToLower(tok) {
-	case "auto", "span", "initial", "inherit", "unset", "revert", "revert-layer", "default":
+	case "auto", "span", "default":
 		return false
 	}
 	return isIdentToken(tok)

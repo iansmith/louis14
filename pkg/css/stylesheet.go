@@ -5225,8 +5225,7 @@ func isValidColorValue(value string) bool {
 	// CSS Cascade 4 §6.1: every CSS property accepts the five CSS-wide
 	// keywords. They reach the longhand value verbatim and are resolved at
 	// cascade time by resolveCSSWideKeywords / resolveInheritValues.
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	// var() references are resolved later — always valid at parse time.
@@ -5282,9 +5281,7 @@ func isValidImageValue(value string) bool {
 	if containsVarFunction(trimmed) {
 		return true
 	}
-	lower := strings.ToLower(trimmed)
-	switch lower {
-	case "none", "inherit", "initial", "unset", "revert", "revert-layer":
+	if _, wide := cssWideKeyword(trimmed); wide || strings.EqualFold(trimmed, "none") {
 		return true
 	}
 	// Multi-layer values: every comma-separated layer must be a valid <image>.
@@ -5371,9 +5368,7 @@ func normalizeAndValidateFontFamily(value string) (string, bool) {
 	// CSS-wide keywords reach the longhand value verbatim and are resolved at
 	// cascade time. They are valid as the entire value but never as one entry
 	// in a comma list.
-	lower := strings.ToLower(trimmed)
-	switch lower {
-	case "inherit", "initial", "unset", "revert", "revert-layer":
+	if _, wide := cssWideKeyword(trimmed); wide {
 		return trimmed, true
 	}
 	// var() references defer to runtime substitution
@@ -5546,8 +5541,7 @@ func isValidPositiveIntegerValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
 	// CSS-wide keywords accepted on every property; resolved later.
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5577,8 +5571,7 @@ func isValidColumnWidthValue(value string) bool {
 	if lower == "auto" {
 		return true
 	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5601,8 +5594,7 @@ func isValidColumnWidthValue(value string) bool {
 func isValidColumnsShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	if lower == "auto" || lower == "inherit" || lower == "initial" ||
-		lower == "unset" || lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide || lower == "auto" {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5686,8 +5678,7 @@ func isValidColumnsShorthand(value string) bool {
 func isValidColumnRuleShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
@@ -5725,8 +5716,7 @@ func isValidColumnRuleShorthand(value string) bool {
 		}
 		// Color slot — must be a valid color (no CSS-wide keywords here; the
 		// whole-value CSS-wide branch above already returned).
-		if isValidColorValue(part) && partLower != "inherit" && partLower != "initial" &&
-			partLower != "unset" && partLower != "revert" && partLower != "revert-layer" {
+		if _, wide := cssWideKeyword(partLower); !wide && isValidColorValue(part) {
 			if hasColor {
 				return false
 			}
@@ -5759,8 +5749,7 @@ func isValidColumnGapValue(value string) bool {
 	if lower == "normal" {
 		return true
 	}
-	if lower == "inherit" || lower == "initial" || lower == "unset" ||
-		lower == "revert" || lower == "revert-layer" {
+	if _, wide := cssWideKeyword(lower); wide {
 		return true
 	}
 	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
