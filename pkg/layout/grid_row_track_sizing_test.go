@@ -78,3 +78,19 @@ func TestGridRowsRerunAtResolvedBlockSize(t *testing.T) {
 		}
 	}
 }
+
+// A grid's intrinsic inline size runs the additional column pass when an
+// item's column contribution depends on its rows (ComputeTotalColumnSize,
+// grid_layout_algorithm.cc:287-314 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an orthogonal item with two
+// 50x100 inline-blocks first measures one line, 50 wide; the grid's 100px
+// row then makes it wrap to two, 100 wide, so the grid's min-content is
+// 100. Mirrors WPT css-grid/grid-with-orthogonal-child-within-flexbox.
+func TestGridAdditionalColumnPassForOrthogonalItem(t *testing.T) {
+	ib := `<span style="display:inline-block; width:50px; height:100px"></span>`
+	fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0"><div id=g style="display:inline-grid; height:100px; width:min-content">`+
+		`<div style="writing-mode:vertical-rl; line-height:0">`+ib+ib+`</div></div></body>`, nil)
+	if g := findBox(fl.root, byID("g")); g == nil || g.Width != 100 {
+		t.Errorf("grid %s, want 100 wide", boxDims(g))
+	}
+}
