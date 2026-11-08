@@ -164,64 +164,18 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// --- Track sizing: rows ---
-	// Compute the effective available block size for row stretch/fr distribution.
-	// When the grid has no explicit height but has min-height, the grid's used
-	// block size will be at least min-height — use it as the available size so
-	// the §12.5 stretch step and fr distribution can fill the space.
-	rowAvailable := explicitBlockSize
-	if !hasExplicitBlock {
-		minBlock := ResolveMinBlockSize(gla.style, wdm, gla.space, geom)
-		if mb := minBlock.Float64(); mb > 0 {
-			rowAvailable = mb
-		}
+	// Rows run the track sizing algorithm at the grid's available block
+	// size, indefinite without one; a definite min block size is what auto
+	// rows stretch into then (CompleteTrackSizingAlgorithm(kForRows,
+	// kLayout), grid_layout_algorithm.cc:429-430 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Size containment sizes only
+	// the container's intrinsic block size (below), not its rows.
+	rowAvailable := float64(Indefinite)
+	if hasExplicitBlock {
+		rowAvailable = explicitBlockSize
 	}
-
-	// For row auto-sizing, use the maximum content height of items in each row.
-	rowSizes := gla.resolveRowSizes(rowTracks, rowAvailable, rowGap, items, wdm)
-
-	// For auto rows, size them to the maximum content block-size of their
-	// items, margins included. In vertical writing modes, block-size is the
-	// physical width; in HTB it is height. Size containment sizes only the
-	// container (its intrinsic block size, below), not its rows.
-	for r := 0; r < numRows; r++ {
-		if r < len(rowTracks) && !rowTracks[r].Auto && rowTracks[r].Fr == 0 {
-			continue // fixed row
-		}
-		maxHeight := 0.0
-		for _, item := range items {
-			if item.rowStart <= r && item.rowEnd > r {
-				span := item.rowEnd - item.rowStart
-				if span <= 0 {
-					span = 1
-				}
-				var itemH float64
-				if wdm.IsVertical() {
-					itemH = item.result.Fragment.Size.WidthF64()
-				} else {
-					itemH = item.result.Fragment.Size.HeightF64()
-				}
-				itemH += item.margins.BlockStart + item.margins.BlockEnd
-				// Distribute item block-size evenly across spanned rows.
-				contribution := itemH / float64(span)
-				if contribution > maxHeight {
-					maxHeight = contribution
-				}
-			}
-		}
-		if maxHeight > rowSizes[r] {
-			rowSizes[r] = maxHeight
-		}
-	}
-
-	// Distribute fr units for rows if the available block size is definite
-	// (explicit height or min-height).
-	if rowAvailable > 0 {
-		totalRowGaps := rowGap * float64(numRows-1)
-		if numRows <= 1 {
-			totalRowGaps = 0
-		}
-		gla.distributeFr(rowTracks, rowSizes, rowAvailable-totalRowGaps)
-	}
+	rowMinAvailable := max(0, ResolveMinBlockSize(gla.style, wdm, gla.space, geom).Float64())
+	rowSizes := gla.computeRowSizes(rowTracks, rowAvailable, rowMinAvailable, rowGap, items)
 
 	// Re-layout items that have percentage heights or need stretching.
 	for i, item := range items {
@@ -406,7 +360,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// Ignoring children, every auto-fit row is empty and collapses
 		// (BuildGridSizingTreeIgnoringChildren).
 		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
-		emptyRows := gla.resolveRowSizes(explicitRows, rowAvailable, rowGap, nil, wdm)
+		emptyRows := gla.computeRowSizes(explicitRows, rowAvailable, rowMinAvailable, rowGap, nil)
 		intrinsicBlockSize = gridTracksSpanSize(explicitRows, emptyRows, rowGap)
 	}
 
@@ -976,148 +930,6 @@ func gridTracksSpanSize(tracks []css.GridTrack, sizes []float64, gap float64) fl
 		total += gap * float64(separated-1)
 	}
 	return total
-}
-
-// resolveRowSizes sizes the rows from their definitions and their laid-out
-// items' block sizes: louis14's fragment-based row sizing, until the rows run
-// the GridTrackSizingAlgorithm port (LOU-793).
-func (gla *GridLayoutAlgorithm) resolveRowSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, wdm WritingDirectionMode) []float64 {
-	n := len(tracks)
-	sizes := make([]float64, n)
-
-	// First pass: resolve fixed sizes and percentages.
-	for i, t := range tracks {
-		if t.Size > 0 {
-			sizes[i] = t.Size
-		} else if t.Percent > 0 && available > 0 {
-			sizes[i] = available * t.Percent / 100
-		} else if t.IsMinMax {
-			sizes[i] = t.MinSize
-		} else if t.IsFitContent {
-			sizes[i] = 0 // will be resolved later
-		} else if t.MinContent || t.MaxContent {
-			sizes[i] = 0 // will be resolved from content
-		}
-	}
-
-	// Size containment sizes the container as if empty, not its rows: they
-	// still size from its items, as the columns do (computeColumnSizes).
-
-	// Resolve min-content/max-content/auto tracks from item content sizes.
-	for i, t := range tracks {
-		if !t.Auto && !t.MinContent && !t.MaxContent && t.Fr == 0 && !t.IsFitContent && !(t.IsMinMax && t.MaxAuto) {
-			continue
-		}
-		maxSize := 0.0
-		for _, item := range items {
-			start, end := item.rowStart, item.rowEnd
-			if start <= i && end > i {
-				span := max(end-start, 1)
-				if item.result != nil {
-					var itemSize float64
-					if wdm.IsVertical() {
-						itemSize = item.result.Fragment.Size.WidthF64()
-					} else {
-						itemSize = item.result.Fragment.Size.HeightF64()
-					}
-					maxSize = max(maxSize, itemSize/float64(span))
-				}
-			}
-		}
-		if t.IsFitContent && maxSize > t.FitContentMax {
-			maxSize = t.FitContentMax
-		}
-		if t.IsMinMax {
-			if maxSize < t.MinSize {
-				maxSize = t.MinSize
-			}
-			if t.MaxSize > 0 && maxSize > t.MaxSize {
-				maxSize = t.MaxSize
-			}
-		}
-		if maxSize > sizes[i] {
-			sizes[i] = maxSize
-		}
-	}
-
-	// Distribute fr units.
-	gla.distributeFr(tracks, sizes, available-gap*float64(n-1))
-
-	// CSS Grid §12.5 step 5: stretch auto tracks to fill remaining free space
-	// when the container has a definite size (justify/align-content: normal).
-	// This distributes the container's own free space — not item content — so
-	// it runs even under size containment (which only zeroes item contributions).
-	if available >= 0 {
-		totalUsed := 0.0
-		autoCount := 0
-		for i, t := range tracks {
-			if t.Auto && t.Fr == 0 {
-				autoCount++
-			} else {
-				totalUsed += sizes[i]
-			}
-		}
-		if autoCount > 0 {
-			totalGap := gap * float64(n-1)
-			freeSpace := available - totalUsed - totalGap
-			if freeSpace > 0 {
-				share := freeSpace / float64(autoCount)
-				for i, t := range tracks {
-					if t.Auto && t.Fr == 0 && sizes[i] < share {
-						sizes[i] = share
-					}
-				}
-			}
-		}
-	}
-
-	return sizes
-}
-
-// distributeFr distributes remaining space among fr tracks.
-func (gla *GridLayoutAlgorithm) distributeFr(tracks []css.GridTrack, sizes []float64, totalAvailable float64) {
-	n := len(tracks)
-	if n == 0 {
-		return
-	}
-
-	// Calculate used space by non-fr tracks.
-	usedSpace := 0.0
-	totalFr := 0.0
-	for i, t := range tracks {
-		if t.Fr > 0 {
-			totalFr += t.Fr
-		} else if t.IsMinMax && t.MaxFr > 0 {
-			totalFr += t.MaxFr
-		} else {
-			usedSpace += sizes[i]
-		}
-	}
-
-	if totalFr <= 0 {
-		return
-	}
-
-	freeSpace := totalAvailable - usedSpace
-	if freeSpace < 0 {
-		freeSpace = 0
-	}
-
-	frSize := freeSpace / totalFr
-	for i, t := range tracks {
-		if t.Fr > 0 {
-			sizes[i] = t.Fr * frSize
-			if t.IsMinMax && sizes[i] < t.MinSize {
-				sizes[i] = t.MinSize
-			}
-		} else if t.IsMinMax && t.MaxFr > 0 {
-			s := t.MaxFr * frSize
-			if s < t.MinSize {
-				s = t.MinSize
-			}
-			sizes[i] = s
-		}
-	}
 }
 
 // spannedSize returns the total size of tracks from start to end (exclusive), including gaps.
