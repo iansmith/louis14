@@ -3386,7 +3386,7 @@ var supportedCSSProperties = map[string]struct{}{
 	// Flexbox
 	"flex": {}, "flex-direction": {}, "flex-wrap": {}, "flex-flow": {},
 	"flex-grow": {}, "flex-shrink": {}, "flex-basis": {},
-	"order": {}, "gap": {}, "row-gap": {}, "column-gap": {},
+	"order": {}, "gap": {}, "grid-gap": {}, "row-gap": {}, "column-gap": {},
 	"justify-content": {}, "justify-items": {}, "justify-self": {},
 	"align-items": {}, "align-self": {}, "align-content": {},
 	"place-items": {}, "place-self": {}, "place-content": {},

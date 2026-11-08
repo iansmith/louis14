@@ -183,7 +183,11 @@ func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
 //     row-gap, and a calc() value is one component.
 //   - A gap resolves with the element's conversion data (1em) and a
 //     calc() percentage against its axis (CalculateGutterSize,
-//     grid_track_sizing_algorithm.cc:156-176).
+//     grid_track_sizing_algorithm.cc:156-176). In an auto-height grid a
+//     percentage row gap is 0 in the first pass, so calc(5px + 1%) gives a
+//     25px block size, and the additional pass it forces sizes the rows
+//     again with 5px + 1% of 25 (GridLayoutAlgorithm::LayoutInternal,
+//     grid_layout_algorithm.cc:443-487): 15.25.
 //   - Under size containment a percentage row gap resolves against the
 //     contained block size (grid_available_size_, :41-55).
 //   - Rows align with negative free space too (unsafe by default):
@@ -191,6 +195,7 @@ func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
 //   - An orthogonal child is measured against its parent's min/max-clamped
 //     definite block size (ChildAvailableSize): height:300px with
 //     max-height:100px wraps vertical-rl content taller than 100.
+//
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func TestGridReviewRound2(t *testing.T) {
 	ib := `<span style="display:inline-block; width:20px; height:60px"></span>`
@@ -206,7 +211,7 @@ func TestGridReviewRound2(t *testing.T) {
 		{"calc() column gap with a percentage", ``, `<div style="display:grid; width:200px; column-gap:calc(10% + 4px); grid-template-columns:50px 50px"><div></div><div id=b></div></div>`,
 			"b", func(b *Box) bool { return b.X == 74 }, "at x=74"},
 		{"grid-gap with a calc() component", ``, `<div style="display:grid; width:200px; grid-gap:calc(5px + 1%) 20px; grid-template-columns:50px 50px; grid-template-rows:10px 10px"><div></div><div id=c></div><div></div><div id=b></div></div>`,
-			"b", func(b *Box) bool { return b.X == 70 && b.Y == 15 }, "at (70,15)"},
+			"b", func(b *Box) bool { return b.X == 70 && b.Y == 15.25 }, "at (70,15.25)"},
 		{"contained percentage row gap", ``, `<div style="display:grid; contain:size; min-height:100px; row-gap:10%; grid-template-rows:20px 20px"><div></div><div id=b></div></div>`,
 			"b", func(b *Box) bool { return b.Y == 30 }, "at y=30"},
 		{"unsafe row alignment", ``, `<div style="display:grid; height:100px; align-content:center; grid-template-rows:100px 100px"><div id=b></div><div></div></div>`,

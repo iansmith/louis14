@@ -507,9 +507,6 @@ func measureMulticolMinMax(node *LayoutInputNode, ctx *LayoutContext, space Cons
 	// cla.cc:477 ResolveColumnGapForMulticol(Style(), LayoutUnit()):
 	// percentage gaps resolve against a zero base during intrinsic sizing.
 	gap := style.GetColumnGapMulticolWithBase(0)
-	if v, ok := style.Get("column-gap"); ok && strings.HasSuffix(strings.TrimSpace(v), "%") {
-		gap = 0
-	}
 	gapExtra := gap * float64(count-1)
 	// column-count (and therefore column-gap) is ignored for min-content when
 	// column-width is specified (cla.cc:480-486).
@@ -649,7 +646,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	fonts := ctx.FontConfig
 	wdm := space.WritingDirection
 
-	blockForPct := resolveNodeBlockSizeForPercent(node, space)
+	availBlock, blockForPct := nodeChildBlockSizes(node, space)
 
 	// CSS 2.1 §16.6 / CSS Text 4 §3.4: when the inline container suppresses
 	// soft wrapping (`white-space: nowrap | pre`, `text-wrap: nowrap`), the
@@ -702,7 +699,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 			// min-content (LineBreaker::HandleBlockInInline →
 			// ComputeMinMaxContentSizeForBlockChild, inline/
 			// line_breaker.cc:3293-3296 @ a9f50e522efa).
-			min, max := childInlineContribution(ctx, line.Results[0].Item.LayoutNode, space, blockForPct, false)
+			min, max := childInlineContribution(ctx, line.Results[0].Item.LayoutNode, space, availBlock, blockForPct, false)
 			blockInInlineMax[line.Results[0].Item] = max
 			minContent = math.Max(minContent, min)
 			continue
@@ -712,7 +709,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		}
 		// A float's min-content contribution is a lower bound
 		// (inline_node.cc:2273-2276 @ d4ecdfed88f962439247c2ad36b8fe47805b1520).
-		for _, f := range lineFloats(ctx, &line, space, blockForPct) {
+		for _, f := range lineFloats(ctx, &line, space, availBlock, blockForPct) {
 			if f.min > minContent {
 				minContent = f.min
 			}
@@ -730,7 +727,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 			maxContent = math.Max(maxContent, blockInInlineMax[line.Results[0].Item])
 			continue
 		}
-		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, blockForPct), cbDirection, line.Width, maxContent)
+		maxContent = floatsMaxSizeForLine(lineFloats(ctx, &line, space, availBlock, blockForPct), cbDirection, line.Width, maxContent)
 	}
 
 	// CSS Text §7.1: text-indent contributes to the intrinsic inline-size of
@@ -777,14 +774,14 @@ type inlineFloat struct {
 // Blink's ComputeContentSize loop (inline_node.cc:2243-2280 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), which measures each float as a
 // new formatting context with its inline margins.
-func lineFloats(ctx *LayoutContext, line *LineInfo, space ConstraintSpace, blockForPct float64) []inlineFloat {
+func lineFloats(ctx *LayoutContext, line *LineInfo, space ConstraintSpace, availBlock, blockForPct float64) []inlineFloat {
 	var floats []inlineFloat
 	for i := range line.Results {
 		r := &line.Results[i]
 		if r.Item.Type != InlineItemFloat || r.Item.LayoutNode == nil || r.Item.LayoutNode.Style() == nil {
 			continue
 		}
-		min, max := childInlineContribution(ctx, r.Item.LayoutNode, space, blockForPct, false)
+		min, max := childInlineContribution(ctx, r.Item.LayoutNode, space, availBlock, blockForPct, false)
 		floats = append(floats, inlineFloat{style: r.Item.LayoutNode.Style(), min: min, max: max})
 	}
 	return floats
@@ -882,7 +879,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	// available and percentage block size (BuildSpaceForIntrinsicInlineSize,
 	// flex_layout_algorithm.cc:672-682 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	flexChildBlock := resolveNodeBlockSizeForPercent(node, space)
+	flexChildAvail, flexChildPct := nodeChildBlockSizes(node, space)
 	style := node.Style()
 	wdm := space.WritingDirection
 
@@ -921,16 +918,12 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	}
 
 	// Resolve main-axis gap for intrinsic sizing.
-	var mainGap float64
+	// Percentages resolve against an indefinite base, 0.
+	gapProp := "row-gap"
 	if isRow {
-		if v, ok := style.GetLength("column-gap"); ok {
-			mainGap = v
-		}
-	} else {
-		if v, ok := style.GetLength("row-gap"); ok {
-			mainGap = v
-		}
+		gapProp = "column-gap"
 	}
+	mainGap, _ := style.ResolveGap(gapProp, Indefinite)
 
 	var sumMin, sumMax float64
 	var maxMin, maxMax float64
@@ -1073,7 +1066,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				// block-axis. Use measureOrthogonalChild, which lays out the
 				// child and returns its block-size (+ parent-WDM inline margins)
 				// as the contribution to the parent's inline/main axis.
-				oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildBlock, flexChildBlock)
+				oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildAvail, flexChildPct)
 				childMin = oMin
 				childMax = oMax
 			} else if isRow {
@@ -1151,7 +1144,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				// parent's inline-size, so we need measureOrthogonalChild.
 				isOrthogonal := wdm.IsOrthogonalTo(childWDM)
 				if isOrthogonal {
-					oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildBlock, flexChildBlock)
+					oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space, flexChildAvail, flexChildPct)
 					childMin = oMin
 					childMax = oMax
 				} else {
@@ -1251,7 +1244,7 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	gla := NewGridLayoutAlgorithm(ctx, node, space)
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
-	_, colGap := gla.gridGaps(Indefinite, Indefinite)
+	colGap, _ := gla.style.ResolveGap("column-gap", Indefinite)
 	// The sets are built and the items measured once, then sized under
 	// both constraints, so a nested grid is not measured twice per level.
 	sets := newGridSets(tree.colTracks, gridIndefinite)
@@ -1365,15 +1358,28 @@ func propertyHasPercent(style *css.Style, prop string) bool {
 // border-box element under intrinsic sizing leaks into the resolved content
 // block-size, miscomputing descendants' percentage heights.
 func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace) float64 {
+	_, pct := nodeChildBlockSizes(node, space)
+	return pct
+}
+
+// nodeChildBlockSizes returns a node's content block sizes for its
+// children during intrinsic sizing, from one fragment geometry: avail,
+// what its min/max algorithm's ChildAvailableSize() carries to an
+// orthogonal child — a block size fixed by the space, or its own definite
+// one clamped by its min and max block sizes, Indefinite when auto (the
+// orthogonal child then falls back to the ICB; CalculateInitialFragmentGeometry
+// with is_intrinsic, length_utils.cc:1739-1744; ComputeInitialBlockSizeForFragment,
+// :929-941 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — and pct, the size
+// descendants' percentages resolve against (resolveNodeBlockSizeForPercent),
+// which can be an ancestor's.
+func nodeChildBlockSizes(node *LayoutInputNode, space ConstraintSpace) (avail, pct float64) {
 	nodeStyle := node.Style()
 	if nodeStyle == nil {
-		return Indefinite
+		return Indefinite, Indefinite
 	}
 	wdm := space.WritingDirection
 	nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
-	if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
-		return bs.Float64()
-	}
+	fixed := float64(Indefinite)
 	if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
 		space.AvailableSize.BlockSize.Float64() >= 0 {
 		// Parent algorithm (OOF, flex) fixed the block-size via IsFixedBlockSize.
@@ -1383,11 +1389,18 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 		// top/bottom-derived block-size would propagate the CB's height
 		// (CSS 2.1 §10.5 says percentages resolve against the abspos's own
 		// height once it is definite).
-		content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
-		if content < 0 {
-			content = 0
+		fixed = max(0, space.AvailableSize.BlockSize.Float64()-nodeGeom.BlockBorderPadding())
+	}
+	if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
+		avail = fixed
+		if avail == Indefinite {
+			bp := nodeGeom.BlockBorderPadding()
+			avail = clampDefiniteBorderBoxBlock(nodeStyle, wdm, space, nodeGeom, bs.Float64()+bp) - bp
 		}
-		return content
+		return avail, bs.Float64()
+	}
+	if fixed != Indefinite {
+		return fixed, fixed
 	}
 	if pctBlock := space.PercentageResolutionSize.BlockSize.Float64(); pctBlock >= 0 {
 		// Parent provided a definite block percentage resolution size
@@ -1397,9 +1410,9 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 		// tests < 0 (constraint_space.go) — so a 0 here was explicitly
 		// provided and percentage heights must resolve to 0 against it,
 		// not fall back to intrinsic sizing.
-		return pctBlock
+		return Indefinite, pctBlock
 	}
-	return Indefinite
+	return Indefinite, Indefinite
 }
 
 // buildParallelChildMinMaxSpace builds the constraint space for a parallel
@@ -1457,7 +1470,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	cbDirection := node.Style().GetDirection()
 
-	nodeBlockSize := resolveNodeBlockSizeForPercent(node, space)
+	availBlockSize, nodeBlockSize := nodeChildBlockSizes(node, space)
 
 	// Accumulate float inline sizes by side for max-content computation.
 	// Mirrors Blink's NGBlockLayoutAlgorithm::ComputeMinMaxSizes: at max-content
@@ -1499,7 +1512,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		// (shouldPreventColumnSpannerDescendants: new FC, spanner itself,
 		// table internals, transforms — layout_box.cc:3003 analogue).
 		childInColumnBfc := isInColumnBfc && !shouldPreventColumnSpannerDescendants(child)
-		childMin, childMax := childInlineContribution(ctx, child, space, nodeBlockSize, childInColumnBfc)
+		childMin, childMax := childInlineContribution(ctx, child, space, availBlockSize, nodeBlockSize, childInColumnBfc)
 
 		floatType := childStyle.Floating(cbDirection)
 		if !isOrthogonal && floatType != css.FloatNone {
@@ -1557,7 +1570,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 // inside a div with height: 100px). Mirrors
 // ComputeMinAndMaxContentContribution plus the ComputeMarginsFor inline sum
 // that Blink's block and inline min/max algorithms add to it.
-func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space ConstraintSpace, nodeBlockSize float64, childInColumnBfc bool) (min, max float64) {
+func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space ConstraintSpace, availBlockSize, nodeBlockSize float64, childInColumnBfc bool) (min, max float64) {
 	childStyle := child.Style()
 	parentWDM := space.WritingDirection
 	childWDM := NewWritingDirectionMode(childStyle)
@@ -1566,7 +1579,7 @@ func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space C
 		// (MinMaxConstraintSpaceBuilder with ChildAvailableSize() and
 		// PercentageSizeForChild(), block_layout_algorithm.cc:459-462 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space, nodeBlockSize, nodeBlockSize)
+		return measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space, availBlockSize, nodeBlockSize)
 	}
 	childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
 	childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)

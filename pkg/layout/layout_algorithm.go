@@ -60,9 +60,10 @@ type LayoutContext struct {
 	// If zero-value, DefaultFontConfig() is used.
 	FontConfig text.FontConfig
 
-	// OrthogonalLayoutCache holds the orthogonal flow roots being measured
-	// (orthogonalFlowRootContribution), to detect a cycle.
-	OrthogonalLayoutCache map[*LayoutInputNode]bool
+	// orthogonalInProgress is the set of orthogonal flow roots whose
+	// contribution is being measured (orthogonalFlowRootContribution), to
+	// detect a cycle.
+	orthogonalInProgress map[*LayoutInputNode]bool
 
 	// orthogonalContributions caches orthogonal flow roots' min/max
 	// contributions, so a min-content and a max-content pass share one
@@ -107,18 +108,18 @@ type orthogonalContributionSpace [5]float64
 // IsOrthogonalComputing reports whether an orthogonal flow root's
 // contribution is being measured: measuring it again is a cycle.
 func (ctx *LayoutContext) IsOrthogonalComputing(node *LayoutInputNode) bool {
-	return ctx.OrthogonalLayoutCache[node]
+	return ctx.orthogonalInProgress[node]
 }
 
 // SetOrthogonalComputing marks an orthogonal flow root as being measured,
 // or (false) no longer.
 func (ctx *LayoutContext) SetOrthogonalComputing(node *LayoutInputNode, computing bool) {
 	if !computing {
-		delete(ctx.OrthogonalLayoutCache, node)
+		delete(ctx.orthogonalInProgress, node)
 		return
 	}
-	if ctx.OrthogonalLayoutCache == nil {
-		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]bool)
+	if ctx.orthogonalInProgress == nil {
+		ctx.orthogonalInProgress = make(map[*LayoutInputNode]bool)
 	}
-	ctx.OrthogonalLayoutCache[node] = true
+	ctx.orthogonalInProgress[node] = true
 }

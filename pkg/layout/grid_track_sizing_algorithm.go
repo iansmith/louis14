@@ -227,9 +227,6 @@ type gridTrackSizingAlgorithm struct {
 	available  float64 // gridIndefinite when indefinite
 	// stretchAuto: the content distribution lets auto tracks stretch.
 	stretchAuto bool
-	// forColumns: the tracks are columns; the sizing constraint applies to
-	// their free space only.
-	forColumns bool
 	// minAvailable is the container's definite min size in this axis, 0
 	// when it has none: StretchAutoTracks' free space when the available
 	// size is indefinite (Blink's min_available_size_).
@@ -562,13 +559,7 @@ func (a *gridTrackSizingAlgorithm) totalTrackSize() float64 {
 // of a definite available size when sizing for layout, infinite under a
 // max-content constraint, and zero under a min-content constraint.
 func (a *gridTrackSizingAlgorithm) determineFreeSpace() float64 {
-	constraint := a.constraint
-	if !a.forColumns {
-		// Both min-content and max-content block sizes are the size of the
-		// content after layout (:1307-1309).
-		constraint = gridSizingLayout
-	}
-	switch constraint {
+	switch a.constraint {
 	case gridSizingMaxContent:
 		return gridIndefinite
 	case gridSizingMinContent:
@@ -751,18 +742,18 @@ func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridI
 // sizeColumns runs the column track sizing algorithm over measured items,
 // sizing sets (from newGridSets for available) in place.
 func (gla *GridLayoutAlgorithm) sizeColumns(sets []gridSet, available, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint) []float64 {
-	return sizeTracks(sets, available, 0, gap, sizing, constraint, gla.stretchesAutoTracks("justify-content"), true)
+	return sizeTracks(sets, available, 0, gap, sizing, constraint, gla.stretchesAutoTracks("justify-content"))
 }
 
 // sizeTracks runs the track sizing algorithm over measured items, sizing
 // sets (from newGridSets for available) in place, and returns their used
 // sizes. minAvailable is the container's definite min size in the axis.
-func sizeTracks(sets []gridSet, available, minAvailable, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint, stretchAuto, forColumns bool) []float64 {
+func sizeTracks(sets []gridSet, available, minAvailable, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint, stretchAuto bool) []float64 {
 	available = columnAvailable(available)
 	a := &gridTrackSizingAlgorithm{
 		sets: sets, gutter: gap,
 		constraint: constraint, available: available,
-		stretchAuto: stretchAuto, minAvailable: minAvailable, forColumns: forColumns,
+		stretchAuto: stretchAuto, minAvailable: minAvailable,
 	}
 	a.computeUsedTrackSizes(sizing)
 	sizes := make([]float64, len(a.sets))
@@ -847,7 +838,7 @@ func (gla *GridLayoutAlgorithm) measureItemAtColumns(item *gridItem, colSizes []
 // block size or Indefinite; minAvailable its definite min block size.
 func (gla *GridLayoutAlgorithm) computeRowSizes(tracks []css.GridTrack, available, minAvailable, gap float64, items []*gridItem, contribution rowContributionFunc) []float64 {
 	sets := newGridSets(tracks, columnAvailable(available))
-	return sizeTracks(sets, available, minAvailable, gap, gla.rowSizingItems(sets, items, contribution), gridSizingLayout, gla.stretchesAutoTracks("align-content"), false)
+	return sizeTracks(sets, available, minAvailable, gap, gla.rowSizingItems(sets, items, contribution), gridSizingLayout, gla.stretchesAutoTracks("align-content"))
 }
 
 // rowSizingItems measures the items the row sizing of sets reads, from their
@@ -975,7 +966,7 @@ func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizing
 		rowAvailable = gla.clampBlockSizeAround(b.Float64(), b.Float64(), wdm, geom)
 	}
 	rowMinAvailable := max(0, ResolveMinBlockSize(gla.style, wdm, gla.space, geom).Float64())
-	rowGap, _ := gla.gridGaps(Indefinite, rowAvailable)
+	rowGap, _ := gla.style.ResolveGap("row-gap", rowAvailable)
 	rowSets := newGridSets(tree.rowTracks, columnAvailable(rowAvailable))
 	rowItems := gla.rowSizingItems(rowSets, tree.items, func(item *gridItem) (float64, LogicalEdges) {
 		// Measured once per item and column span across both constraints.
@@ -987,7 +978,11 @@ func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizing
 		}
 		return b, ResolveMargins(item.style, wdm, 0)
 	})
-	rowSizes := sizeTracks(rowSets, rowAvailable, rowMinAvailable, rowGap, rowItems, constraint, gla.stretchesAutoTracks("align-content"), false)
+	// Rows size for layout under either constraint: a min-content or
+	// max-content block size is the content's after layout
+	// (DetermineFreeSpace, grid_track_sizing_algorithm.cc:1307-1309 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	rowSizes := sizeTracks(rowSets, rowAvailable, rowMinAvailable, rowGap, rowItems, gridSizingLayout, gla.stretchesAutoTracks("align-content"))
 	sizing := gla.remeasureBlockSizeDependentItems(colSizing, rowSizes, rowGap)
 	return gla.sizeColumns(slices.Clone(colSets), gridIndefinite, colGap, sizing, constraint)
 }
