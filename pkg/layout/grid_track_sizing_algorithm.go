@@ -788,6 +788,40 @@ func (gla *GridLayoutAlgorithm) stretchesAutoTracks(prop string) bool {
 	return v == "" || v == "normal" || v == "stretch"
 }
 
+// rowContributionBlockSize is a parallel item's block size for its row
+// contribution: its first-pass layout at its columns' size, unless a
+// percentage block size (block-size, or min/max) made that depend on the
+// grid's block size; then it is laid out again with its grid area's block
+// size indefinite, as Blink measures it (CreateConstraintSpaceForMeasure,
+// grid_layout_algorithm.cc:1460-1500 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), storing nothing on the box.
+func (gla *GridLayoutAlgorithm) rowContributionBlockSize(item *gridItem, blockProp string) float64 {
+	wdm := gla.space.WritingDirection
+	laid := NewLogicalFragment(wdm, item.result.Fragment)
+	dependsOnBlock := false
+	for _, prop := range []string{blockProp, "min-" + blockProp, "max-" + blockProp} {
+		if v, ok := item.style.Get(prop); ok && (strings.HasSuffix(strings.TrimSpace(v), "%") || css.IsMathFunctionWithPercent(v)) {
+			dependsOnBlock = true
+		}
+	}
+	if !dependsOnBlock {
+		return laid.BlockSize()
+	}
+	inline := laid.InlineSize()
+	space := NewConstraintSpaceBuilder(wdm, NewWritingDirectionMode(item.style), true).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(wdm, gla.ctx)).
+		SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: inline, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(inline).
+		SetIsFixedInlineSize(true).
+		Build()
+	enableSideEffects := gla.ctx.DisableLayoutSideEffects()
+	result := layoutElement(gla.ctx, item.node, space)
+	enableSideEffects()
+	return NewLogicalFragment(wdm, result.Fragment).BlockSize()
+}
+
 // computeRowSizes sizes a placed grid's rows for layout from their items'
 // layout at their columns' size: Blink's ComputeUsedTrackSizes for kForRows
 // (grid_layout_algorithm.cc:1164-1189 @
@@ -830,7 +864,7 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			it.minContent, it.maxContent = mm.MinContent+edges, mm.MaxContent+edges
 		} else {
 			edges = ComputeFragmentGeometry(item.style, wdm).BlockBorderPadding() + item.margins.BlockStart + item.margins.BlockEnd
-			block := NewLogicalFragment(wdm, item.result.Fragment).BlockSize() + item.margins.BlockStart + item.margins.BlockEnd
+			block := gla.rowContributionBlockSize(item, blockProp) + item.margins.BlockStart + item.margins.BlockEnd
 			it.minContent, it.maxContent = block, block
 		}
 		it.isScrollContainer = item.style.IsScrollContainer()
