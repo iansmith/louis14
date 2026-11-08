@@ -170,3 +170,41 @@ func TestSizeContainedGridSizesRowsFromItems(t *testing.T) {
 		t.Errorf("#b %s, want at y=20", boxDims(b))
 	}
 }
+
+// Round 2 of the #410 review.
+//   - Size containment sizes only the container: a contained grid's auto
+//     row still holds its item's margin box.
+//   - An item's intrinsic-minimum contribution, when the automatic minimum
+//     does not apply (it spans a flexible track and more than one track) or
+//     it is a scroll container, is its min-size plus its margins, not 0
+//     (ContributionSizeForGridItem's kForIntrinsicMinimums,
+//     grid_layout_algorithm.cc:727-778; CalculateIntrinsicMinimumContribution).
+//   - The contained intrinsic block size sizes the explicit rows ignoring
+//     children, so every auto-fit row collapses
+//     (BuildGridSizingTreeIgnoringChildren, grid_layout_algorithm.cc:508-530)
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestGridSizingReviewRound2(t *testing.T) {
+	for _, tc := range []struct {
+		name, html, id string
+		check          func(b *Box) bool
+		want           string
+	}{
+		{"contained row holds the item's margins",
+			`<div style="display:grid; width:100px; contain:size; grid-template-rows:auto auto"><div style="height:20px; margin-bottom:10px"></div><div id=b style="height:10px"></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 30 }, "at y=30"},
+		{"spanning item's margins at min-content",
+			`<div id=g style="display:inline-grid; width:min-content; grid-template-columns:1fr 1fr"><div style="grid-column:1/3; margin-left:20px; height:10px"></div></div>`,
+			"g", func(b *Box) bool { return b.Width == 20 }, "20 wide"},
+		{"scroll container's margins at min-content",
+			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; margin:0 15px; height:10px"><div style="width:100px;height:10px"></div></div></div>`,
+			"g", func(b *Box) bool { return b.Width == 30 }, "30 wide"},
+		{"contained auto-fit rows collapse",
+			`<div id=g style="display:grid; contain:size; grid-template-rows:repeat(auto-fit, 100px)"><div style="height:10px"></div></div><div id=after style="height:5px"></div>`,
+			"after", func(b *Box) bool { return b.Y == 0 }, "at y=0 (the contained grid 0 tall)"},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0">`+tc.html+`</body>`, nil)
+		if b := findBox(fl.root, byID(tc.id)); b == nil || !tc.check(b) {
+			t.Errorf("%s: #%s %s, want %s", tc.name, tc.id, boxDims(b), tc.want)
+		}
+	}
+}
