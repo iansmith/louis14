@@ -176,3 +176,47 @@ func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
 		t.Errorf("row-2 item %s, want at x=50, 40 tall (row 2 stretched to its first-pass size)", boxDims(w))
 	}
 }
+
+// Round 2 of the #411 review.
+//   - gap and grid-gap expand into row-gap / column-gap at cascade time
+//     (grid-gap is gap's alias), so a later grid-gap replaces an earlier
+//     row-gap, and a calc() value is one component.
+//   - A gap resolves with the element's conversion data (1em) and a
+//     calc() percentage against its axis (CalculateGutterSize,
+//     grid_track_sizing_algorithm.cc:156-176).
+//   - Under size containment a percentage row gap resolves against the
+//     contained block size (grid_available_size_, :41-55).
+//   - Rows align with negative free space too (unsafe by default):
+//     center places 200px of rows in 100px at -50.
+//   - An orthogonal child is measured against its parent's min/max-clamped
+//     definite block size (ChildAvailableSize): height:300px with
+//     max-height:100px wraps vertical-rl content taller than 100.
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestGridReviewRound2(t *testing.T) {
+	ib := `<span style="display:inline-block; width:20px; height:60px"></span>`
+	for _, tc := range []struct {
+		name, css, html, id string
+		check               func(b *Box) bool
+		want                string
+	}{
+		{"1em row gap", ``, `<div style="display:grid; font-size:20px; row-gap:1em; grid-template-rows:10px 10px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 30 }, "at y=30"},
+		{"later grid-gap beats row-gap", `.a{row-gap:5px} .b{grid-gap:30px}`, `<div class="a b" style="display:grid; grid-template-rows:10px 10px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 40 }, "at y=40"},
+		{"calc() column gap with a percentage", ``, `<div style="display:grid; width:200px; column-gap:calc(10% + 4px); grid-template-columns:50px 50px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.X == 74 }, "at x=74"},
+		{"grid-gap with a calc() component", ``, `<div style="display:grid; width:200px; grid-gap:calc(5px + 1%) 20px; grid-template-columns:50px 50px; grid-template-rows:10px 10px"><div></div><div id=c></div><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.X == 70 && b.Y == 15 }, "at (70,15)"},
+		{"contained percentage row gap", ``, `<div style="display:grid; contain:size; min-height:100px; row-gap:10%; grid-template-rows:20px 20px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 30 }, "at y=30"},
+		{"unsafe row alignment", ``, `<div style="display:grid; height:100px; align-content:center; grid-template-rows:100px 100px"><div id=b></div><div></div></div>`,
+			"b", func(b *Box) bool { return b.Y == -50 }, "at y=-50"},
+		{"orthogonal child of a max-height block", ``, `<div id=p style="width:max-content; height:300px; max-height:100px"><div style="writing-mode:vertical-rl; line-height:0">` + ib + ib + `</div></div>`,
+			"p", func(b *Box) bool { return b.Width == 40 }, "40 wide"},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><style>`+tc.css+`</style><body style="margin:0; font-size:0">`+tc.html+`</body>`, nil)
+		if b := findBox(fl.root, byID(tc.id)); b == nil || !tc.check(b) {
+			t.Errorf("%s: #%s %s, want %s", tc.name, tc.id, boxDims(b), tc.want)
+		}
+	}
+}
