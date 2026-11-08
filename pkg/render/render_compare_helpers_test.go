@@ -33,3 +33,14 @@ func countPixels(img *image.RGBA, match func(color.RGBA) bool) int {
 	}
 	return n
 }
+
+// fixedSVGFetcher serves doc for every external SVG document fetched,
+// recording each requested URI in uris when it is non-nil.
+func fixedSVGFetcher(doc string, uris *[]string) render.RenderOption {
+	return render.WithExternalSVGFetcher(func(uri string) ([]byte, error) {
+		if uris != nil {
+			*uris = append(*uris, uri)
+		}
+		return []byte(doc), nil
+	})
+}

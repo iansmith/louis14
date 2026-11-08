@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image/color"
+	"strings"
 	"testing"
 
 	"louis14/pkg/render"
@@ -102,7 +103,7 @@ func TestSVGContainer_ExternalURLFilter(t *testing.T) {
 <svg width="100" height="100">
 <filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="red"/></filter>
 <g filter="url(other.svg#f)"><rect x="20" y="20" width="60" height="60" fill="blue"/></g></svg>`, 100, 100,
-		render.WithExternalSVGFetcher(func(string) ([]byte, error) { return []byte(ext), nil }))
+		fixedSVGFetcher(ext, nil))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external filter's flood")
 }
 
@@ -156,12 +157,37 @@ func TestSVGContainer_ChainOnNestedGroupOfLine(t *testing.T) {
 // fragment runs to the last ')'.
 func TestSVGShape_URLThenFunctionFetchesOnce(t *testing.T) {
 	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
-	fetches := 0
+	var fetches []string
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="red" filter="url(other.svg#f) blur(0px)"/></svg>`, 100, 100,
-		render.WithExternalSVGFetcher(func(string) ([]byte, error) { fetches++; return []byte(ext), nil }))
+		fixedSVGFetcher(ext, &fetches))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external flood")
-	if fetches != 1 {
-		t.Errorf("fetched the external document %d times, want 1", fetches)
+	if len(fetches) != 1 {
+		t.Errorf("fetched the external document %d times, want 1", len(fetches))
+	}
+}
+
+// A url() stage whose <filter> region is userSpaceOnUse does not depend on
+// the element's box, so a group whose paint extent is empty (an unstroked
+// horizontal line) still paints it, as Blink installs a filter on any
+// element: the flood covers the region.
+func TestSVGContainer_UserSpaceURLChainOnEmptyPaintBox(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><filter id="flood" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
+<g style="filter:url(#flood) blur(1px)"><line x1="10" y1="50" x2="90" y2="50"/></g></svg>`, 100, 100)
+	wantPixel(t, img, 50, 20, canvasGreen, "the flood")
+}
+
+// A backslash escapes a ')' or a quote inside a url() token: url(a\).svg#f)
+// is one lone url() naming the document "a).svg".
+func TestSVGShape_URLTokenEscapes(t *testing.T) {
+	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
+	var docs []string
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="red" filter="url(a\).svg#f)"/></svg>`, 100, 100,
+		fixedSVGFetcher(ext, &docs))
+	wantPixel(t, img, 50, 50, canvasGreen, "the external flood")
+	if len(docs) != 1 || !strings.HasSuffix(docs[0], "a).svg") {
+		t.Errorf("fetched %q, want one fetch of a).svg", docs)
 	}
 }

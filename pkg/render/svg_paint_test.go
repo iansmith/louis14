@@ -1481,3 +1481,16 @@ func TestSVG_EmptyShapeWithFilterPaintsNothing(t *testing.T) {
 <rect width="0" height="50" filter="url(#f) blur(0px)"/></svg>`, 100, 100)
 	wantPixel(t, img, 50, 50, canvasWhite, "nothing painted")
 }
+
+// A lone url()'s subregion percentages resolve against the <svg>'s float
+// viewport, as its region does: with width 150.1, x="99%" is user 148.6, so
+// the flood starts in pixel 148; an outward-snapped viewport (width 151)
+// would start it at 149.5, in pixel 149.
+func TestSVG_FilterSubregionPercentOfFloatViewport(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="150.1" height="50" style="display:block">
+<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="150" height="50" color-interpolation-filters="sRGB"><feFlood flood-color="green" x="99%" y="0" width="10" height="100%"/></filter>
+<rect width="150" height="50" fill="white" filter="url(#f)"/></svg>`, 160, 50)
+	assertNotWhite(t, img, 148, 25, "the flood from pixel 148")
+	wantPixel(t, img, 147, 25, canvasWhite, "before it")
+}

@@ -199,3 +199,35 @@ func TestSVGContainer_StrokeBoundingBoxWithoutLayout(t *testing.T) {
 		t.Errorf("stroke bbox without layout %v, want %v", got, want)
 	}
 }
+
+// A container's stroke box unions its children's stroke boxes with plain
+// Union, which absorbs empty ones (ComputeStrokeBoundingBox,
+// svg_content_container.cc:254-266; gfx::RectF::Union, rect_f.cc:134-143 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an unstroked horizontal line
+// does not stretch it to a rect far below; only the object box extends by
+// empty boxes (UnionEvenIfEmpty).
+func TestSVGContainer_StrokeBoxAbsorbsEmptyChildBoxes(t *testing.T) {
+	c := NewSVGContainer("g")
+	c.AppendChild(lineShape(0, 100, 0, map[string]string{}))
+	c.AppendChild(rectShape(40, 200, 60, 20, map[string]string{}))
+	c.UpdateSVGLayout(SVGLayoutInfo{})
+	if got, want := c.StrokeBoundingBox(), geometry.NewRectF(40, 200, 60, 20); got != want {
+		t.Errorf("stroke bbox %v, want %v", got, want)
+	}
+}
+
+// Appending a child refills a container's boxes, filled lazily or at
+// layout.
+func TestSVGContainer_AppendChildRefillsBoxes(t *testing.T) {
+	for _, c := range []interface {
+		SVGNode
+		AppendChild(SVGNode)
+	}{NewSVGContainer("g"), &SVGViewportContainer{}} {
+		c.AppendChild(rectShape(10, 10, 10, 10, map[string]string{}))
+		_ = c.StrokeBoundingBox()
+		c.AppendChild(rectShape(50, 50, 10, 10, map[string]string{}))
+		if got, want := c.StrokeBoundingBox(), geometry.NewRectF(10, 10, 50, 50); got != want {
+			t.Errorf("%T: stroke bbox after AppendChild %v, want %v", c, got, want)
+		}
+	}
+}
