@@ -63,9 +63,10 @@ type MulticolLayoutAlgorithm struct {
 	// Resolved once in Layout(), before the block-start clear.
 	declaredBorderScrollbarPadding LogicalEdges
 	// rowGapSize is the block-axis gap between column rows in a
-	// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Read from
-	// the element's `row-gap` property via GetRowGapMulticol. Resolved
-	// once in Layout(); `normal` computes to 1em. Matches Blink's
+	// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6), from the
+	// element's `row-gap` via GetRowGapMulticolWithBase, a percentage
+	// against the content block size. Resolved once in Layout(); `normal`
+	// computes to 1em. Matches Blink's
 	// row_gap_ in column_layout_algorithm.cc used by
 	// RemainingRowHeightAtOffset / row-wrap loop (cla.cc:789–836).
 	rowGapSize float64
@@ -684,10 +685,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		mla.consumedRowBlockSize = mla.space.BreakToken.MulticolData.ConsumedRowBlockSize
 	}
 
-	// F3 (2026-04-24): row-gap between column rows when column-wrap:wrap.
-	// Resolve once per layout; `normal` computes to 1em. Matches Blink's
-	// row_gap_ in column_layout_algorithm.cc.
-	mla.rowGapSize = mla.style.GetRowGapMulticol()
+	// F3 (2026-04-24): row-gap between column rows when column-wrap:wrap,
+	// resolved once per layout against the content block size
+	// (ResolveRowGapForMulticol(Style(), ChildAvailableSize().block_size),
+	// column_layout_algorithm.cc:268-269 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); `normal` computes to 1em.
+	mla.rowGapSize = mla.style.GetRowGapMulticolWithBase(mla.containerPercentResolutionBlockSize)
 
 	// Blink cla.cc:289-294 @ a9f50e522efa: accumulate gap geometry only when
 	// the style has a gap rule (HasGapRule; louis14 has no row-rule

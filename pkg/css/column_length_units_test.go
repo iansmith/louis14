@@ -24,8 +24,8 @@ func TestMulticolLengths_FontRelativeUnits(t *testing.T) {
 		{"column-width", "2em", (*Style).GetColumnWidth, 40},
 		{"column-width", "3ch", (*Style).GetColumnWidth, 36},
 		{"column-width", "10vw", (*Style).GetColumnWidth, 80},
-		{"column-gap", "3ch", (*Style).GetColumnGapMulticol, 36},
-		{"row-gap", "3ch", (*Style).GetRowGapMulticol, 36},
+		{"column-gap", "3ch", func(s *Style) float64 { return s.GetColumnGapMulticolWithBase(0) }, 36},
+		{"row-gap", "3ch", func(s *Style) float64 { return s.GetRowGapMulticolWithBase(-1) }, 36},
 		{"column-height", "3ch", (*Style).GetColumnHeight, 36},
 	} {
 		if got := tc.get(newStyle(tc.prop, tc.val)); got != tc.want {

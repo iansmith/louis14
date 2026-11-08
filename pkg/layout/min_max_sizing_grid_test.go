@@ -72,31 +72,17 @@ func TestMeasureGridMinMax_OrthogonalChildBlockSize(t *testing.T) {
 	mm := measureGridMinMax(layoutRoot, ctx, space)
 
 	// The orthogonal child contributes its block size (its physical width)
-	// to the grid's inline axis. louis14's measureOrthogonalChild lays it out
-	// at its min-content inline size (100: one inline-block per line, two
-	// lines, 100 wide) for the min contribution, and at its max-content
-	// inline size (200: both on one line, 50 wide) for the max. Blink lays an
-	// orthogonal grid item out once and gives 50 for both
-	// (GridLayoutAlgorithm::ContributionSizeForGridItem's
+	// to the grid's inline axis, laid out once at its available inline size:
+	// both inline-blocks fit one 200px line, 50 wide. So its min-content and
+	// max-content contributions are both 50, as Blink lays an orthogonal flow
+	// root out once (GridLayoutAlgorithm::ContributionSizeForGridItem's
 	// BlockContributionSize, grid_layout_algorithm.cc:662-715;
 	// BlockNode::ComputeMinMaxSizes, block_node.cc:981-1008 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); that gap is LOU-770.
-	if mm.MinContent != 100 { // LOU-793: expect 50
-		t.Errorf("MinContent: got %.2f, want 100 (block size at the child's min-content)", mm.MinContent)
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if mm.MinContent != 50 {
+		t.Errorf("MinContent: got %.2f, want 50 (the child's block size, laid out once)", mm.MinContent)
 	}
-	// Deliberately away from Blink, tracked by LOU-793: Blink gives 50/50
-	// for this configuration (its first column pass gives 50, the auto row
-	// grows to the item's 200 max-content, the additional column pass gives
-	// 50 again: GridLayoutAlgorithm::ComputeMinMaxSizes,
-	// grid_layout_algorithm.cc:287-327 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 gives 100 because
-	// measureOrthogonalChild's min-content contribution of 100 (the LOU-770
-	// bug) feeds a faithful ResolveIntrinsicTrackSizes: the auto column's
-	// base size is its items' min-content contribution
-	// (grid_track_sizing_algorithm.cc:911-1022), and its growth limit is
-	// raised to it (grid_track_collection.cc:463-466). LOU-793, which
-	// absorbs LOU-770, makes this 50/50.
-	if mm.MaxContent != 100 { // LOU-793: expect 50
-		t.Errorf("MaxContent: got %.2f, want 100 (the min-content base size; see above)", mm.MaxContent)
+	if mm.MaxContent != 50 {
+		t.Errorf("MaxContent: got %.2f, want 50 (the child's block size, laid out once)", mm.MaxContent)
 	}
 }
