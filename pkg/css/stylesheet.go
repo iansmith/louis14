@@ -5782,7 +5782,7 @@ func isValidGapValue(value string) bool {
 // 3583-3605 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func isValidGapShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	if isCSSWideValueKeyword(trimmed) || containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if _, wide := cssWideKeyword(trimmed); wide || containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
 		return true
 	}
 	parts := splitShorthandParts(trimmed)
@@ -5790,7 +5790,7 @@ func isValidGapShorthand(value string) bool {
 		return false
 	}
 	for _, p := range parts {
-		if isCSSWideValueKeyword(p) || !isValidGapValue(p) {
+		if _, wide := cssWideKeyword(p); wide || !isValidGapValue(p) {
 			return false
 		}
 	}

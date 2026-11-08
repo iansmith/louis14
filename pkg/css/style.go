@@ -8795,21 +8795,6 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 	return values, true
 }
 
-// isCSSWideValueKeyword reports whether a property value is a CSS-wide
-// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`; CSS
-// Cascade 5 §7.3). A keyframe value that is one must be substituted with
-// the underlying cascaded value before interpolation (Web Animations §3.4.3
-// / CSS Animations §2.2); a shorthand takes one only as its whole value.
-// The list excludes `default` / `none`, which style.go::isCSSWideKeyword
-// adds for the custom-ident reservation set.
-func isCSSWideValueKeyword(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "initial", "inherit", "unset", "revert", "revert-layer":
-		return true
-	}
-	return false
-}
-
 // isCSSWideKeyword reports whether an identifier is one of the CSS-wide
 // keywords reserved against use as a <custom-ident> (CSS Values 4
 // §custom-idents). Counter names must be valid <custom-ident>s, so
