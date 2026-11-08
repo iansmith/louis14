@@ -177,7 +177,9 @@ func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
 	}
 }
 
-// Round 2 of the #411 review.
+// TestGapResolutionAlignmentAndChildBlockSizes covers how gaps parse and
+// resolve, how grid tracks align in the resolved size, and the block sizes
+// a container hands its children while it is intrinsically sized.
 //   - gap and grid-gap expand into row-gap / column-gap at cascade time
 //     (grid-gap is gap's alias), so a later grid-gap replaces an earlier
 //     row-gap, and a calc() value is one component.
@@ -190,14 +192,26 @@ func TestGridAdditionalPassRowsAtResolvedBlockSize(t *testing.T) {
 //     grid_layout_algorithm.cc:443-487): 15.25.
 //   - Under size containment a percentage row gap resolves against the
 //     contained block size (grid_available_size_, :41-55).
+//   - Each gap component is normal or a non-negative <length-percentage>,
+//     or the declaration drops and the earlier longhand stays
+//     (Gap::ParseShorthand, shorthands_custom.cc:3583-3605;
+//     ConsumeGapLength, css_parsing_utils.cc:6102-6110).
 //   - Rows align with negative free space too (unsafe by default):
-//     center places 200px of rows in 100px at -50.
+//     center places 200px of rows in 100px at -50. space-between, -around
+//     and -evenly distribute only non-negative free space, start-aligned
+//     with their gaps otherwise, rows and columns alike
+//     (ComputeFirstSetGeometry, grid_track_sizing_algorithm.cc:221-261).
 //   - An orthogonal child is measured against its parent's min/max-clamped
 //     definite block size (ChildAvailableSize): height:300px with
-//     max-height:100px wraps vertical-rl content taller than 100.
+//     max-height:100px wraps vertical-rl content taller than 100. A
+//     percentage block size resolves against that clamped size too
+//     (CalculateChildPercentageSize, length_utils.cc:1810-1828).
+//   - A multicol's percentage row gap resolves against its definite block
+//     size (ResolveRowGapForMulticol with ChildAvailableSize().block_size,
+//     column_layout_algorithm.cc:268-269).
 //
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
-func TestGridReviewRound2(t *testing.T) {
+func TestGapResolutionAlignmentAndChildBlockSizes(t *testing.T) {
 	ib := `<span style="display:inline-block; width:20px; height:60px"></span>`
 	for _, tc := range []struct {
 		name, css, html, id string
@@ -218,6 +232,22 @@ func TestGridReviewRound2(t *testing.T) {
 			"b", func(b *Box) bool { return b.Y == -50 }, "at y=-50"},
 		{"orthogonal child of a max-height block", ``, `<div id=p style="width:max-content; height:300px; max-height:100px"><div style="writing-mode:vertical-rl; line-height:0">` + ib + ib + `</div></div>`,
 			"p", func(b *Box) bool { return b.Width == 40 }, "40 wide"},
+		{"space-between with negative free space", ``, `<div style="display:grid; height:100px; align-content:space-between; grid-template-rows:100px 100px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 100 }, "at y=100"},
+		{"space-around with negative free space", ``, `<div style="display:grid; height:100px; align-content:space-around; grid-template-rows:100px 100px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 100 }, "at y=100"},
+		{"space-evenly columns with negative free space", ``, `<div style="display:grid; width:100px; justify-content:space-evenly; grid-template-columns:100px 100px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.X == 100 }, "at x=100"},
+		{"negative grid-gap drops", `.a{row-gap:10px} .b{grid-gap:-5px}`, `<div class="a b" style="display:grid; grid-template-rows:10px 10px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 20 }, "at y=20"},
+		{"gap with an invalid component drops", `.a{row-gap:10px} .b{gap:5px auto}`, `<div class="a b" style="display:grid; grid-template-rows:10px 10px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 20 }, "at y=20"},
+		{"negative row-gap drops", `.a{row-gap:10px} .b{row-gap:-5px}`, `<div class="a b" style="display:grid; grid-template-rows:10px 10px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 20 }, "at y=20"},
+		{"percentage child of a max-height block", ``, `<div id=p style="width:max-content; height:300px; max-height:100px"><div style="height:50%; aspect-ratio:1"></div></div>`,
+			"p", func(b *Box) bool { return b.Width == 50 }, "50 wide (its child 50% of 100 tall, square)"},
+		{"multicol percentage row gap", ``, `<div style="height:400px; columns:1; column-gap:0; column-fill:auto; column-height:100px; column-wrap:wrap; row-gap:10%"><div style="height:100px"></div><div id=b style="height:100px"></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 140 }, "at y=140"},
 	} {
 		fl := layoutFallbackHTML(t, `<!DOCTYPE html><style>`+tc.css+`</style><body style="margin:0; font-size:0">`+tc.html+`</body>`, nil)
 		if b := findBox(fl.root, byID(tc.id)); b == nil || !tc.check(b) {
