@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -1184,42 +1185,28 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
 }
 
-// fitContentTrackSize returns a fit-content(arg) track's used size:
-// max(min-content, min(max-content, arg)). The min-content base is never
-// clamped by the argument; only the max-content growth limit is. A FitContentMax
-// of 0 means no argument was resolved, so the growth limit is left unclamped.
-// Mirrors Blink's GrowthPotentialForSet fit-content branch
-// (grid_track_sizing_algorithm.cc:503, SHA 4883d11fef): the max sizing function
-// is treated as max-content until it reaches the argument.
-func fitContentTrackSize(minContent, maxContent, arg float64) float64 {
-	growth := maxContent
-	if arg > 0 && growth > arg {
-		growth = arg
-	}
-	if minContent > growth {
-		return minContent
-	}
-	return growth
-}
-
 // gridItemInlineContribution returns a grid item's min-content and max-content
 // contributions to the container's inline (column) axis, including the item's
-// margin, border, and padding. Orthogonal items contribute their block-size
+// margin, border, and padding, and those edges in the container's inline
+// axis (percentages against 0, as the grid area is indefinite while columns
+// size). Orthogonal items contribute their block-size
 // (viewed in the container's logical coords); parallel items contribute their
-// intrinsic inline sizes. Mirrors Blink's
-// GridTrackSizingAlgorithm::ContributionSizeForGridItem
-// (third_party/blink/renderer/core/layout/grid/grid_track_sizing_algorithm.cc,
-// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// intrinsic inline sizes. Mirrors the MinContentSize / MaxContentSize /
+// BlockContributionSize contributions of Blink's
+// GridLayoutAlgorithm::ContributionSizeForGridItem
+// (core/layout/grid/grid_layout_algorithm.cc:577 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
-// Shared by measureGridMinMax (container intrinsic sizing) and
-// GridLayoutAlgorithm.resolveTrackSizes (the inline track-sizing pass, where
-// items are not yet laid out so item.result is unavailable).
-func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib float64) {
+// Used by columnSizingItems, which measures the items the column track
+// sizing reads, for layout and for the grid's intrinsic inline size.
+func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib, edges float64) {
 	childWDM := NewWritingDirectionMode(cs)
 	if containerWDM.IsOrthogonalTo(childWDM) {
 		// Orthogonal: block-size becomes inline contribution to parent.
 		// measureOrthogonalChild already includes margins in its return value.
-		return measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space)
+		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
 	// border/padding and margins in the child's own writing mode.
@@ -1234,84 +1221,42 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	mm := ComputeMinMaxSizes(ctx, node, childSpace)
-	return mm.MinContent + childBP + margins.InlineSum(), mm.MaxContent + childBP + margins.InlineSum()
+	edges = childBP + margins.InlineSum()
+	return mm.MinContent + edges, mm.MaxContent + edges, edges
 }
 
-// measureGridMinMax computes the min/max-content inline-size contributions
-// for a grid container: the sum of its column track sizes plus gaps.
-// Mirrors Blink's GridLayoutAlgorithm::ComputeMinMaxSizes, which builds the
-// grid sizing tree first, so placement and its implicit tracks take part,
-// and builds it ignoring children under inline-size containment
-// (layout/grid/grid_layout_algorithm.cc:279-284 @
+// measureGridMinMax computes a grid container's min/max-content inline
+// sizes: its columns sized by the track sizing algorithm under a
+// max-content and under a min-content constraint, plus gaps, the max
+// encompassing the min. Mirrors Blink's GridLayoutAlgorithm::
+// ComputeMinMaxSizes, which builds the grid sizing tree first, so placement
+// and its implicit tracks take part, ignoring children under inline-size
+// containment, then runs ComputeTotalColumnSize for each constraint
+// (layout/grid/grid_layout_algorithm.cc:257-326 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-//
-// Each column then contributes, from the items placed in it:
-//   - Fixed length → its size.
-//   - <percentage> → 0 (Blink only resolves percentages once an outer
-//     size is known).
-//   - <flex> (fr) → 0 for min-content, its items' max-content for
-//     max-content (CSS Grid §12.7.1).
-//   - auto / min-content / max-content / fit-content / minmax(…, auto) →
-//     its items' corresponding intrinsic contributions.
 func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	style := node.Style()
 	if style == nil {
 		return MinMaxSizes{}
 	}
 	gla := NewGridLayoutAlgorithm(ctx, node, space)
-	// Under size/inline-size containment, the container is sized as if it
-	// had no content; fixed tracks and gaps still contribute.
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
 	_, colGap := style.GetGridGap()
-	trackMin, trackMax := gla.columnContributions(tree.items, tree.colTracks, colGap, nil)
-
-	var minSum, maxSum float64
-	for i, t := range tree.colTracks {
-		lo, hi := trackMin[i], trackMax[i]
-		switch {
-		case t.Size > 0:
-			minSum += t.Size
-			maxSum += t.Size
-		case t.IsMinMax:
-			// minmax(min, max): min contributes MinSize, max contributes MaxSize
-			// (or the corresponding intrinsic when MaxAuto).
-			minSum += t.MinSize
-			if t.MaxAuto {
-				maxSum += max(t.MinSize, hi)
-			} else if t.MaxSize > 0 {
-				maxSum += t.MaxSize
-			} else {
-				maxSum += t.MinSize
-			}
-		case t.IsFitContent:
-			// fit-content(arg) used size = max(min-content, min(max-content, arg)).
-			minSum += lo
-			maxSum += fitContentTrackSize(lo, hi, t.FitContentMax)
-		case t.MinContent:
-			minSum += lo
-			maxSum += lo
-		case t.MaxContent, t.Auto:
-			minSum += lo
-			maxSum += hi
-		case t.Fr > 0:
-			maxSum += hi
-		}
+	// The sets are built and the items measured once, then sized under
+	// both constraints, so a nested grid is not measured twice per level.
+	sets := newGridSets(tree.colTracks, gridIndefinite)
+	var sizing []*gridSizingItem
+	if !contained {
+		sizing = gla.columnSizingItems(sets, tree.items)
 	}
-	// Gutters beside collapsed auto-fit tracks collapse too (CSS Grid 2
-	// §7.2.2.1), so only the remaining tracks are separated by gaps.
-	n := 0
-	for _, t := range tree.colTracks {
-		if !gridTrackIsCollapsed(t) {
-			n++
-		}
+	totalColumnSize := func(constraint gridSizingConstraint) float64 {
+		sizes := gla.sizeColumns(slices.Clone(sets), gridIndefinite, colGap, sizing, constraint)
+		return gridTracksSpanSize(tree.colTracks, sizes, colGap)
 	}
-	if n > 1 && colGap > 0 {
-		gaps := colGap * float64(n-1)
-		minSum += gaps
-		maxSum += gaps
-	}
-	return MinMaxSizes{MinContent: minSum, MaxContent: maxSum}
+	maxContent := totalColumnSize(gridSizingMaxContent)
+	minContent := totalColumnSize(gridSizingMinContent)
+	return MinMaxSizes{MinContent: minContent, MaxContent: max(maxContent, minContent)}
 }
 
 // resolveFlexBasisForIntrinsic resolves a flex item's flex-basis to a definite
