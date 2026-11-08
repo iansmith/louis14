@@ -162,7 +162,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	// (filters.Filter.EnsureRegion). A chain with a url() stage starts from
 	// the reference box mapped through the chain, with no per-stage crop
 	// (LOU-704 ports the exact sizing). An SVG shape's chain then unites its
-	// paint extent into it (paintWithFilterChain); the HTML layer path keeps
+	// paint extent into it (buildSVGElementFilter); the HTML layer path keeps
 	// it as is (LOU-780).
 	if hasReferenceFilter(ops) {
 		f.FilterRegion = f.MapRect(b.LayerReferenceBox())

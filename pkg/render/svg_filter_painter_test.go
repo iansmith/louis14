@@ -8,77 +8,6 @@ import (
 	"louis14/pkg/layout/svg"
 )
 
-// TestCompositeFilterOutputOntoTarget_ClipRespected demonstrates that
-// compositeFilterOutputOntoTarget must honour the supplied clipRect.
-// Filter output (e.g. the 10% default expansion of the filter region in
-// SVG Filter Effects) routinely extends outside the host SVG element's
-// viewport, and the SVG UA stylesheet sets overflow:hidden so that
-// content must NOT escape onto the page background.
-//
-// Setup: a 20x20 white target; a 10x10 source buffer of opaque red; the
-// composite is positioned with dx=0, dy=0 so the source buffer would
-// otherwise land at target (0,0)-(10,10). A clipRect at target (5,5)-(15,15)
-// must constrain the write — pixels in the buffer that fall outside the
-// clipRect (i.e. the source's top-left quadrant at target (0..4, 0..4))
-// must NOT modify the target.
-//
-// Pre-fix: compositeFilterOutputOntoTarget bypassed the DC's clip stack
-// and wrote every in-bounds source pixel into r.target.Pix, so the
-// top-left of the target picked up red where it should have stayed
-// white. That's the bucket-J tainting failure: filter overflow leaks
-// past the SVG viewport clip.
-func TestCompositeFilterOutputOntoTarget_ClipRespected(t *testing.T) {
-	const W, H = 20, 20
-
-	// White target.
-	target := image.NewRGBA(image.Rect(0, 0, W, H))
-	white := color.RGBA{255, 255, 255, 255}
-	for y := 0; y < H; y++ {
-		for x := 0; x < W; x++ {
-			target.SetRGBA(x, y, white)
-		}
-	}
-
-	// 10x10 source buffer, fully opaque red. The composite path
-	// expects premultiplied bytes from the filter graph; opaque red
-	// has identical straight-alpha and premultiplied bytes.
-	src := image.NewRGBA(image.Rect(0, 0, 10, 10))
-	red := color.RGBA{255, 0, 0, 255}
-	for y := 0; y < 10; y++ {
-		for x := 0; x < 10; x++ {
-			src.SetRGBA(x, y, red)
-		}
-	}
-
-	r := NewRendererForImage(target)
-
-	// Clip rect (5,5)-(15,15). Composite at offset (0, 0) — without
-	// the clip the source would write to target (0,0)-(10,10) which
-	// overlaps both the clipped region (5..10, 5..10) and the
-	// outside-clip top-left quadrant (0..5, 0..10) + (0..10, 0..5).
-	clip := image.Rect(5, 5, 15, 15)
-	compositeFilterOutputOntoTarget(r, src, 0, 0, clip)
-
-	// Inside-clip pixels must be red; outside-clip pixels must remain white.
-	for y := 0; y < H; y++ {
-		for x := 0; x < W; x++ {
-			got := target.RGBAAt(x, y)
-			inClip := x >= clip.Min.X && x < clip.Max.X && y >= clip.Min.Y && y < clip.Max.Y
-			inSrcArea := x < 10 && y < 10
-			var want color.RGBA
-			if inClip && inSrcArea {
-				want = red
-			} else {
-				want = white
-			}
-			if got != want {
-				t.Errorf("pixel (%d,%d): want %v, got %v (inClip=%v inSrcArea=%v)",
-					x, y, want, got, inClip, inSrcArea)
-			}
-		}
-	}
-}
-
 // TestApplyClipCoverageToFilterOutput asserts the kDstIn alpha-coverage
 // step that applyClipMaskToFilterOutput relies on for SVG
 // `filter` + `clip-path` / `mask` interaction (svg-filter-vs-clip-path,
@@ -137,52 +66,6 @@ func solidPremultipliedBuffer(c color.RGBA) *image.RGBA {
 	buf := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	fillRGBA(buf, c)
 	return buf
-}
-
-// TestCompositeFilterOutputOntoTarget_PremultipliedSourceOver — the filter
-// output is premultiplied, and reaches the page through SkBlendMode::kSrcOver:
-// out = src + dst*(1-srcA), rounded (rasterPipelineSpriteBlit). Green (0,128,0) at
-// .75 over white is (64,160,64); the former straight-alpha shim gave (64,192,64).
-//
-// A source pixel with RGB > A saturates as Skia's to_unorm does
-// (src/opts/SkRasterPipeline_opts.h:2269-2272 @
-// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
-func TestCompositeFilterOutputOntoTarget_PremultipliedSourceOver(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		src  color.RGBA
-		dst  color.RGBA
-		want color.RGBA
-	}{
-		{
-			name: "green 75% over white",
-			src:  color.RGBA{0, 96, 0, 191},
-			dst:  color.RGBA{255, 255, 255, 255},
-			want: color.RGBA{64, 160, 64, 255},
-		},
-		{
-			name: "red 50% over transparent",
-			src:  color.RGBA{128, 0, 0, 128},
-			dst:  color.RGBA{},
-			want: color.RGBA{128, 0, 0, 128},
-		},
-		{
-			name: "RGB above alpha saturates",
-			src:  color.RGBA{255, 0, 0, 128},
-			dst:  color.RGBA{255, 255, 255, 255},
-			want: color.RGBA{255, 127, 127, 255},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target := solidPremultipliedBuffer(tc.dst)
-			r := NewRendererForImage(target)
-			src := solidPremultipliedBuffer(tc.src)
-			compositeFilterOutputOntoTarget(r, src, 0, 0, target.Bounds())
-			if got := target.RGBAAt(1, 1); got != tc.want {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
 }
 
 // TestCompositeBufferWithOpacityOnto_PremultipliedSourceOver pins Skia's float
@@ -270,38 +153,13 @@ func checkPlacement(t *testing.T, target *image.RGBA, want image.Rectangle, insi
 	}
 }
 
-// TestComposite_OriginsOffsetsAndClipping — both composites place a buffer whose
-// bounds need not start at (0,0) onto a target whose bounds need not either.
-// compositeFilterOutputOntoTarget maps the buffer's Min to (dx,dy);
-// compositeBufferWithOpacityOnto adds (dx,dy) to the buffer's coordinates,
+// TestComposite_OriginsOffsetsAndClipping — compositeBufferWithOpacityOnto
+// places a buffer whose bounds need not start at (0,0) onto a target whose
+// bounds need not either: it adds (dx,dy) to the buffer's coordinates,
 // because paintLayerIsolated passes a buffer already addressed in target space.
 func TestComposite_OriginsOffsetsAndClipping(t *testing.T) {
 	target8 := image.Rect(0, 0, 8, 8)
 	targetFar := image.Rect(100, 100, 108, 108)
-
-	t.Run("filter", func(t *testing.T) {
-		for _, tc := range []compositePlacementCase{
-			{name: "zero origin", targetBox: target8, srcBox: image.Rect(0, 0, 2, 2), dx: 3, dy: 4, want: image.Rect(3, 4, 5, 6)},
-			{name: "buffer origin is ignored", targetBox: target8, srcBox: image.Rect(50, 60, 52, 62), dx: 3, dy: 4, want: image.Rect(3, 4, 5, 6)},
-			{name: "target origin", targetBox: targetFar, srcBox: image.Rect(0, 0, 2, 2), dx: 103, dy: 104, want: image.Rect(103, 104, 105, 106)},
-			{name: "clipped", targetBox: target8, srcBox: image.Rect(50, 60, 52, 62), dx: 3, dy: 4, clip: image.Rect(4, 0, 8, 5), want: image.Rect(4, 4, 5, 5)},
-			{name: "off the target", targetBox: target8, srcBox: image.Rect(0, 0, 2, 2), dx: 7, dy: -1, want: image.Rect(7, 0, 8, 1)},
-			{name: "outside the clip", targetBox: target8, srcBox: image.Rect(0, 0, 2, 2), dx: 3, dy: 4, clip: image.Rect(0, 0, 2, 2), want: image.Rectangle{}},
-			{name: "sub-image", targetBox: target8, srcBox: image.Rect(10, 10, 12, 12), subImage: true, dx: 3, dy: 4, want: image.Rect(3, 4, 5, 6)},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				target := image.NewRGBA(tc.targetBox)
-				fillRGBA(target, color.RGBA{255, 255, 255, 255})
-				clip := tc.clip
-				if clip.Empty() {
-					clip = tc.targetBox
-				}
-				r := NewRendererForImage(target)
-				compositeFilterOutputOntoTarget(r, newPlacementSource(tc.srcBox, tc.subImage), tc.dx, tc.dy, clip)
-				checkPlacement(t, target, tc.want, placementRed)
-			})
-		}
-	})
 
 	t.Run("opacity", func(t *testing.T) {
 		for _, tc := range []compositePlacementCase{
