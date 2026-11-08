@@ -714,16 +714,6 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 	a.stretchAutoTracks()
 }
 
-// computeColumnSizes sizes a placed grid's columns under constraint and
-// returns their used sizes: Blink's GridLayoutAlgorithm::ComputeUsedTrackSizes
-// for kForColumns (grid_layout_algorithm.cc:1164-1189 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's
-// content inline size, or Indefinite.
-func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, constraint gridSizingConstraint) []float64 {
-	sets := newGridSets(tracks, columnAvailable(available))
-	return gla.sizeColumns(sets, available, gap, gla.columnSizingItems(sets, items), constraint)
-}
-
 // columnSizingItems measures the items the column sizing of sets reads:
 // those spanning an intrinsic track (ResolveIntrinsicTrackSizes) or a
 // flexible one (ExpandFlexibleTracks under indefinite free space,
@@ -954,17 +944,11 @@ func boolInt(b bool) int {
 // Not ported: block-size dependence other than orthogonality (a percentage
 // or stretched block size).
 func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizingTree, colSets []gridSet, colSizing []*gridSizingItem, colSizes []float64, colGap float64, constraint gridSizingConstraint) []float64 {
-	wdm := gla.space.WritingDirection
-	var dependent []*gridItem
-	for _, item := range tree.items {
-		if wdm.IsOrthogonalTo(NewWritingDirectionMode(item.style)) {
-			dependent = append(dependent, item)
-		}
-	}
-	if len(dependent) == 0 {
+	if !gla.hasBlockSizeDependentItem(tree.items) {
 		return colSizes
 	}
 	// The rows, at the grid's definite block size or indefinite.
+	wdm := gla.space.WritingDirection
 	geom := ComputeFragmentGeometry(gla.style, wdm, gla.space.PercentageResolutionInlineSize)
 	rowAvailable := float64(Indefinite)
 	if b, ok := ResolveBlockSize(gla.style, wdm, gla.space, geom); ok {
@@ -976,25 +960,43 @@ func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizing
 		return gla.measureItemBlockSize(item, gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)), ResolveMargins(item.style, wdm, 0)
 	})
 	rowSizes := sizeTracks(rowSets, rowAvailable, 0, rowGap, rowItems, gridSizingLayout, gla.stretchesAutoTracks("align-content"))
+	sizing := gla.remeasureBlockSizeDependentItems(tree.items, colSizing, rowSizes, rowGap)
+	return gla.sizeColumns(slices.Clone(colSets), gridIndefinite, colGap, sizing, constraint)
+}
 
-	// The orthogonal items, measured against their rows' span.
-	byItem := map[*gridItem]float64{}
-	for _, item := range dependent {
-		rows := gla.spannedSize(rowSizes, item.rowStart, min(item.rowEnd, len(rowSizes)), rowGap)
-		childWDM := NewWritingDirectionMode(item.style)
-		byItem[item] = orthogonalFlowRootContribution(gla.ctx, item.node, childWDM, gla.space, rows, gla.space.OrthogonalFallbackBlockSize) +
-			ResolveMargins(item.style, wdm, 0).InlineSum()
+// hasBlockSizeDependentItem reports whether an item's column contribution
+// depends on its rows: an orthogonal item.
+func (gla *GridLayoutAlgorithm) hasBlockSizeDependentItem(items []*gridItem) bool {
+	for _, item := range items {
+		if gla.space.WritingDirection.IsOrthogonalTo(NewWritingDirectionMode(item.style)) {
+			return true
+		}
 	}
+	return false
+}
+
+// remeasureBlockSizeDependentItems is colSizing with each orthogonal
+// item's contribution measured against its rows' span (the single layout,
+// orthogonalFlowRootContribution, plus margins), or nil when there is none;
+// the additional column pass, for measurement and for layout.
+func (gla *GridLayoutAlgorithm) remeasureBlockSizeDependentItems(items []*gridItem, colSizing []*gridSizingItem, rowSizes []float64, rowGap float64) []*gridSizingItem {
+	if !gla.hasBlockSizeDependentItem(items) {
+		return nil
+	}
+	wdm := gla.space.WritingDirection
 	sizing := make([]*gridSizingItem, 0, len(colSizing))
 	for _, it := range colSizing {
-		if c, ok := byItem[it.item]; ok {
+		if childWDM := NewWritingDirectionMode(it.item.style); wdm.IsOrthogonalTo(childWDM) {
+			rows := gla.spannedSize(rowSizes, it.item.rowStart, min(it.item.rowEnd, len(rowSizes)), rowGap)
+			c := orthogonalFlowRootContribution(gla.ctx, it.item.node, childWDM, gla.space, rows, gla.space.OrthogonalFallbackBlockSize) +
+				ResolveMargins(it.item.style, wdm, 0).InlineSum()
 			cp := *it
 			cp.minContent, cp.maxContent = c, c
 			it = &cp
 		}
 		sizing = append(sizing, it)
 	}
-	return gla.sizeColumns(slices.Clone(colSets), gridIndefinite, colGap, sizing, constraint)
+	return sizing
 }
 
 // measureItemBlockSize lays a parallel item out at inline size for its
