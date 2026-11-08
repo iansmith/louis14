@@ -176,14 +176,15 @@ func TestSVGContainer_ObjectBoundingBoxUnionsEmptyChildBoxes(t *testing.T) {
 // A nested container counts toward its parent when its object bounding box
 // is valid, empty or not (IsObjectBoundingBoxValid, svg_content_container.cc:
 // 95-98): a <g> holding only a horizontal <line> adds the line's stroke to
-// its parent's stroke box.
+// its parent's stroke box. (The line's stroke box is louis14's uniform
+// approximation, half the width on every side: LOU-667.)
 func TestSVGContainer_NestedContainerWithEmptyBoxCounts(t *testing.T) {
-	inner := &SVGContainer{}
+	inner := NewSVGContainer("g")
 	inner.AppendChild(lineShape(10, 90, 20, map[string]string{"stroke": "black", "stroke-width": "10"}))
-	outer := &SVGContainer{}
+	outer := NewSVGContainer("g")
 	outer.AppendChild(inner)
 	outer.UpdateSVGLayout(SVGLayoutInfo{})
-	if got, want := outer.StrokeBoundingBox(), geometry.NewRectF(10, 15, 80, 10); got != want {
+	if got, want := outer.StrokeBoundingBox(), geometry.NewRectF(5, 15, 90, 10); got != want {
 		t.Errorf("outer stroke bbox %v, want %v", got, want)
 	}
 }

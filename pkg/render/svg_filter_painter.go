@@ -301,10 +301,22 @@ func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toDevice 
 	childCtx := *pctx
 	childCtx.dc = tmpR.dc
 	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = toBuffer.Compose(geometry.AffineTransformFromTransform(toDevice))
-	childCtx.contentToDevice = toBuffer.Compose(pctx.contentToDevice)
+	//
+	// toDevice can carry an ancestor matrix on top of pctx's DeviceFromUser
+	// (a masked shape's buffer is placed by the draw context's whole
+	// matrix); the clips move through that ancestor part too, so they stay
+	// in the frame the buffer is placed in. A mask-region clip becomes its
+	// bounding box under a rotating or skewing ancestor, and the ancestor's
+	// projective part is dropped (LOU-778).
+	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
+	ancestor := geometry.Identity()
+	if inv, ok := pctx.DeviceFromUser.Invert(); ok {
+		ancestor = deviceFromUser.Compose(inv)
+	}
+	childCtx.DeviceFromUser = toBuffer.Compose(deviceFromUser)
+	childCtx.contentToDevice = toBuffer.Compose(ancestor).Compose(pctx.contentToDevice)
 	if pctx.regionClip != nil {
-		clip := pctx.regionClip.Sub(region.Min)
+		clip := snapRectFToDevice(toBuffer.Compose(ancestor).MapRect(rectFFromRect(*pctx.regionClip)))
 		childCtx.regionClip = &clip
 	}
 	return srcBuf, childCtx
@@ -322,16 +334,21 @@ func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toDevice 
 // when the region is not a usable buffer. Shared by SVG shapes and
 // containers.
 func buildSVGFilterElementGraph(pctx *svgPaintContext, filter *svg.SVGResourceFilter, referenceBox geometry.RectF, userOrigin geometry.PointF) (graph *filters.Filter, region image.Rectangle, ok bool) {
-	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
-	region = snapRectFToDevice(filter.ResourceBoundingBox(referenceBox, userOrigin, svg.NewSVGLengthContext(viewportDeviceSize)))
+	viewportDevice := pctx.DeviceFromUser.MapRect(pctx.viewport)
+	region = snapRectFToDevice(filter.ResourceBoundingBox(referenceBox, userOrigin, svg.NewSVGLengthContext(viewportDevice.Size)))
 	if !effectBufferUsable(region.Dx(), region.Dy()) {
 		return nil, image.Rectangle{}, false
 	}
 	space := filterInterpolationSpace(filter)
 	adapter := &svgFilterElementAdapter{
-		filter:             filter,
-		filterRegion:       region,
-		referenceBox:       referenceBox,
+		filter:       filter,
+		filterRegion: region,
+		referenceBox: referenceBox,
+		// Primitive subregion percentages resolve against the <svg>
+		// viewport, as the region's do (SVGFilterPrimitiveStandardAttributes
+		// resolves them through an SVGViewportResolver), not against the
+		// filter region.
+		subregionViewport:  snapRectFToDevice(viewportDevice),
 		userSpaceOrigin:    roundPoint(userOrigin),
 		space:              space,
 		resources:          pctx.Resources,
@@ -358,6 +375,12 @@ func buildSVGFilterChain(pctx *svgPaintContext, ops []css.FilterFunction, refere
 	// A lone url() is painted through the <filter> element's own region
 	// (buildSVGFilterElementGraph); here it is one that did not resolve.
 	if len(ops) == 1 && ops[0].Name == "url" {
+		return nil, image.Rectangle{}, false
+	}
+	// An element with no paint extent (a group of only <text>, whose boxes
+	// are empty: LOU-795) is painted unfiltered rather than into a buffer
+	// a few pixels wide.
+	if paintBox.Empty() {
 		return nil, image.Rectangle{}, false
 	}
 	builder := &FilterEffectBuilder{
@@ -405,6 +428,7 @@ func (sp *svgShapePainter) paintSVGShapeFilterSource(region image.Rectangle, wil
 // the masked-shape buffer.
 func (sp *svgShapePainter) rasterizeShape(pctx *svgPaintContext, childOp *svgObjectPainter, willFill, willStroke bool, style *css.Style) bool {
 	tmpR := pctx.Renderer
+	tmpR.dc.SetAntiAlias(shouldAntiAliasSVGShape(style))
 	evenOdd := style != nil && style.GetFillRule() == css.SVGFillRuleEvenOdd
 	if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
 		return false

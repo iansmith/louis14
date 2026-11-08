@@ -92,9 +92,9 @@ type SVGRoot struct {
 
 	// bbox accumulated by UpdateSVGLayout. Phase 1: always empty.
 	bbox geometry.RectF
-	// strokeBBox is the children's stroke bounding boxes, cached by
-	// UpdateSVGLayout (StrokeBoundingBox).
-	strokeBBox geometry.RectF
+	// boxes caches the children's stroke bounding box (StrokeBoundingBox);
+	// the root's object box is bbox.
+	boxes containerBoxes
 }
 
 // ObjectBoundingBox returns the union of children's bounding boxes (in
@@ -104,7 +104,7 @@ func (r *SVGRoot) ObjectBoundingBox() geometry.RectF { return r.bbox }
 // StrokeBoundingBox returns the union of the children's stroke bounding
 // boxes (SVGContentContainer::ComputeStrokeBoundingBox).
 func (r *SVGRoot) StrokeBoundingBox() geometry.RectF {
-	return r.strokeBBox
+	return r.boxes.stroke(r.Children)
 }
 
 // LocalTransform returns the viewBox→viewport mapping. Phase 1: this is
@@ -129,7 +129,7 @@ func (r *SVGRoot) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult {
 		}
 	}
 	r.bbox = geometry.RectF{} // Phase 1.
-	r.strokeBBox = computeStrokeBoundingBox(r.Children)
+	r.boxes.update(r.Children)
 	return combined
 }
 

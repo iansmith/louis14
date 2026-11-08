@@ -47,7 +47,10 @@ func shouldAntiAliasSVGShape(style *css.Style) bool {
 // StrokePreserve when both passes are active, so the path
 // rasterizer's work is shared.
 func (sp *svgShapePainter) paint() {
-	if sp.shape == nil {
+	// An empty shape paints nothing, its filters included, as
+	// SVGShapePainter::Paint returns for IsShapeEmpty (svg_shape_painter.cc:
+	// 47 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if sp.shape == nil || sp.shape.Path.Empty() {
 		return
 	}
 
@@ -292,15 +295,30 @@ func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGReso
 // parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
 // `splitFilterRef`. The input is the raw `filter="..."` value (e.g.
 // `url(support/x.svg#f)`). Returns docURL and fragID; ok=false if the
-// value isn't a recognized `url(...)` form.
+// value isn't a lone `url(...)`.
 func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
 	v := strings.TrimSpace(val)
 	// Case-insensitive `url(` prefix without allocating a lowered copy.
 	if len(v) < 4 || !strings.EqualFold(v[:4], "url(") {
 		return "", "", false
 	}
-	closeIdx := strings.LastIndexByte(v, ')')
-	if closeIdx <= 3 {
+	// The url() token ends at its first ')' outside quotes. Anything after
+	// it makes the value a filter list (url() followed by functions), which
+	// the chain path builds; a lone url() is the whole value.
+	closeIdx, quote := -1, byte(0)
+	for i := 4; i < len(v) && closeIdx < 0; i++ {
+		switch c := v[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == ')':
+			closeIdx = i
+		}
+	}
+	if closeIdx < 0 || strings.TrimSpace(v[closeIdx+1:]) != "" {
 		return "", "", false
 	}
 	inner := strings.TrimSpace(v[4:closeIdx])
@@ -364,7 +382,6 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// Paint-server fills and strokes run through the buffer's paint
 	// context instead of the page target.
 	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice)
-	childCtx.dc.SetAntiAlias(shouldAntiAliasSVGShape(sp.shape.Style))
 	childOp := newSVGObjectPainter(childCtx.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
