@@ -8299,12 +8299,14 @@ func (s *Style) GetColumnGapMulticolWithBase(percentBase float64) float64 {
 	return s.multicolGap("column-gap", percentBase)
 }
 
-// GetRowGapMulticol returns the row-gap between column rows in a
-// column-wrap: wrap multicol (CSS Multicol L2 §4.2.6), a percentage against
-// an indefinite base (-1), so 0; normal is 1em, as for column-gap (Blink's
-// row_gap_ resolution in column_layout_algorithm.cc).
-func (s *Style) GetRowGapMulticol() float64 {
-	return s.multicolGap("row-gap", -1)
+// GetRowGapMulticolWithBase returns the row-gap between column rows in a
+// column-wrap: wrap multicol (CSS Multicol L2 §4.2.6), a percentage
+// resolved against percentBase, the multicol's content block size, 0 when
+// indefinite (negative); normal is 1em, as for column-gap
+// (ResolveRowGapForMulticol, length_utils.cc:1370-1374 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s *Style) GetRowGapMulticolWithBase(percentBase float64) float64 {
+	return s.multicolGap("row-gap", percentBase)
 }
 
 // multicolGap is the gap longhand prop resolved against base, 1em when
@@ -8792,6 +8794,21 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 		}
 	}
 	return values, true
+}
+
+// isCSSWideValueKeyword reports whether a property value is a CSS-wide
+// keyword (`initial`, `inherit`, `unset`, `revert`, `revert-layer`; CSS
+// Cascade 5 §7.3). A keyframe value that is one must be substituted with
+// the underlying cascaded value before interpolation (Web Animations §3.4.3
+// / CSS Animations §2.2); a shorthand takes one only as its whole value.
+// The list excludes `default` / `none`, which style.go::isCSSWideKeyword
+// adds for the custom-ident reservation set.
+func isCSSWideValueKeyword(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "initial", "inherit", "unset", "revert", "revert-layer":
+		return true
+	}
+	return false
 }
 
 // isCSSWideKeyword reports whether an identifier is one of the CSS-wide

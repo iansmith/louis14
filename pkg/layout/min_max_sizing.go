@@ -1363,15 +1363,16 @@ func resolveNodeBlockSizeForPercent(node *LayoutInputNode, space ConstraintSpace
 }
 
 // nodeChildBlockSizes returns a node's content block sizes for its
-// children during intrinsic sizing, from one fragment geometry: avail,
-// what its min/max algorithm's ChildAvailableSize() carries to an
-// orthogonal child — a block size fixed by the space, or its own definite
-// one clamped by its min and max block sizes, Indefinite when auto (the
-// orthogonal child then falls back to the ICB; CalculateInitialFragmentGeometry
-// with is_intrinsic, length_utils.cc:1739-1744; ComputeInitialBlockSizeForFragment,
-// :929-941 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — and pct, the size
-// descendants' percentages resolve against (resolveNodeBlockSizeForPercent),
-// which can be an ancestor's.
+// children during intrinsic sizing: avail, what its min/max algorithm's
+// ChildAvailableSize() carries to an orthogonal child — a block size fixed
+// by the space, or its own definite one clamped by its min and max block
+// sizes, Indefinite when auto (the orthogonal child then falls back to the
+// ICB; CalculateInitialFragmentGeometry with is_intrinsic,
+// length_utils.cc:1739-1744; ComputeInitialBlockSizeForFragment, :929-941)
+// — and pct, the size descendants' percentages resolve against: avail when
+// definite (PercentageSizeForChild from CalculateChildPercentageSize,
+// :1810-1828 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), else the
+// space's percentage block size, which can be an ancestor's.
 func nodeChildBlockSizes(node *LayoutInputNode, space ConstraintSpace) (avail, pct float64) {
 	nodeStyle := node.Style()
 	if nodeStyle == nil {
@@ -1391,16 +1392,13 @@ func nodeChildBlockSizes(node *LayoutInputNode, space ConstraintSpace) (avail, p
 		// height once it is definite).
 		fixed = max(0, space.AvailableSize.BlockSize.Float64()-nodeGeom.BlockBorderPadding())
 	}
-	if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
-		avail = fixed
-		if avail == Indefinite {
-			bp := nodeGeom.BlockBorderPadding()
-			avail = clampDefiniteBorderBoxBlock(nodeStyle, wdm, space, nodeGeom, bs.Float64()+bp) - bp
-		}
-		return avail, bs.Float64()
+	avail = fixed
+	if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok && avail == Indefinite {
+		bp := nodeGeom.BlockBorderPadding()
+		avail = clampDefiniteBorderBoxBlock(nodeStyle, wdm, space, nodeGeom, bs.Float64()+bp) - bp
 	}
-	if fixed != Indefinite {
-		return fixed, fixed
+	if avail != Indefinite {
+		return avail, avail
 	}
 	if pctBlock := space.PercentageResolutionSize.BlockSize.Float64(); pctBlock >= 0 {
 		// Parent provided a definite block percentage resolution size

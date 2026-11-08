@@ -74,7 +74,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		rowBlockBase = explicitBlockSize
 	}
-	rowGap, colGap := gla.gridGaps(contentInlineSize, rowBlockBase)
+	rowGap, _ := gla.style.ResolveGap("row-gap", rowBlockBase)
+	colGap, _ := gla.style.ResolveGap("column-gap", contentInlineSize)
 	tree := gla.buildGridSizingTree(contentInlineSize, explicitBlockSize, false)
 	items, oofChildren := tree.items, tree.oofChildren
 	colTracks, rowTracks := tree.colTracks, tree.rowTracks
@@ -438,7 +439,8 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	if explicitBlockSize > 0 {
 		blockBase = explicitBlockSize
 	}
-	rowGap, colGap := gla.gridGaps(contentInlineSize, blockBase)
+	rowGap, _ := gla.style.ResolveGap("row-gap", blockBase)
+	colGap, _ := gla.style.ResolveGap("column-gap", contentInlineSize)
 	autoFlow := gla.style.GetGridAutoFlow()
 
 	// Parse grid-template-areas for named area placement.
@@ -1013,7 +1015,12 @@ func (gla *GridLayoutAlgorithm) totalTrackSize(sizes []float64, gap float64) flo
 	return total
 }
 
-// computeTrackOffsets computes the starting offset for each track.
+// computeTrackOffsets computes the starting offset for each track. A
+// position alignment applies negative free space too (unsafe by default);
+// space-between, -around and -evenly distribute only non-negative free
+// space, and are start-aligned with their gaps otherwise
+// (ComputeFirstSetGeometry, grid_track_sizing_algorithm.cc:221-261 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (gla *GridLayoutAlgorithm) computeTrackOffsets(sizes []float64, gap, containerSize float64, contentAlign string, n int) []float64 {
 	offsets := make([]float64, n)
 	totalSize := gla.totalTrackSize(sizes, gap)
@@ -1028,17 +1035,17 @@ func (gla *GridLayoutAlgorithm) computeTrackOffsets(sizes []float64, gap, contai
 	case "end", "flex-end":
 		startOffset = freeSpace
 	case "space-between":
-		if n > 1 {
+		if n > 1 && freeSpace >= 0 {
 			adjustedGap = gap + freeSpace/float64(n-1)
 		}
 	case "space-around":
-		if n > 0 {
+		if n > 0 && freeSpace >= 0 {
 			extra := freeSpace / float64(n)
 			startOffset = extra / 2
 			adjustedGap = gap + extra
 		}
 	case "space-evenly":
-		if n > 0 {
+		if freeSpace >= 0 {
 			extra := freeSpace / float64(n+1)
 			startOffset = extra
 			adjustedGap = gap + extra
@@ -1420,13 +1427,4 @@ func (gla *GridLayoutAlgorithm) layoutItemAtColumns(item *gridItem, colSizes []f
 		SetIsFixedInlineSize(isFixedInline).
 		Build()
 	return layoutElement(gla.ctx, item.node, childSpace), ResolveMargins(item.style, wdm, itemInline)
-}
-
-// gridGaps resolves the grid's row and column gaps against the block size
-// for rows and the inline size for columns, Indefinite for either an
-// indefinite one; normal is 0 (css.Style.ResolveGap).
-func (gla *GridLayoutAlgorithm) gridGaps(inlineBase, blockBase float64) (rowGap, colGap float64) {
-	rowGap, _ = gla.style.ResolveGap("row-gap", blockBase)
-	colGap, _ = gla.style.ResolveGap("column-gap", inlineBase)
-	return rowGap, colGap
 }
