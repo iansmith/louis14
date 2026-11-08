@@ -175,7 +175,38 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		rowAvailable = explicitBlockSize
 	}
 	rowMinAvailable := max(0, ResolveMinBlockSize(gla.style, wdm, gla.space, geom).Float64())
+
+	// Under size containment the intrinsic block size is the grid's as if
+	// empty: its explicit rows sized with no items, plus gaps; with an
+	// indefinite block size, the block size it resolves to is the rows'
+	// available size from the start (GridLayoutAlgorithm's constructor,
+	// grid_layout_algorithm.cc:41-55; ComputeIntrinsicBlockSizeIgnoringChildren,
+	// :508-530 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Ignoring
+	// children, every auto-fit row is empty and collapses.
+	containedIntrinsicBlockSize := 0.0
+	if sizeContained {
+		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
+		emptyRows := gla.computeRowSizes(explicitRows, rowAvailable, rowMinAvailable, rowGap, nil)
+		containedIntrinsicBlockSize = gridTracksSpanSize(explicitRows, emptyRows, rowGap)
+		if !hasExplicitBlock {
+			rowAvailable = gla.clampBlockSize(containedIntrinsicBlockSize, wdm, geom)
+		}
+	}
 	rowSizes := gla.computeRowSizes(rowTracks, rowAvailable, rowMinAvailable, rowGap, items)
+	// The rows' intrinsic block size is their first pass's span
+	// (CalculateIntrinsicBlockSize after the first pass, :432-433).
+	rowsIntrinsicBlockSize := gla.totalTrackSize(rowSizes, rowGap)
+	if sizeContained {
+		rowsIntrinsicBlockSize = containedIntrinsicBlockSize
+	}
+	// With an indefinite block size, rows that depend on the available
+	// size are sized again at the block size the grid resolves to (the
+	// additional pass, :443-490; NeedsAdditionalLayoutPass,
+	// grid_layout_utils.cc). The column pass is not rerun: only
+	// block-size-dependent items would change it (LOU-793 M4).
+	if rowAvailable == Indefinite && gla.rowsDependOnAvailableSize(rowTracks) {
+		rowSizes = gla.computeRowSizes(rowTracks, gla.clampBlockSize(rowsIntrinsicBlockSize, wdm, geom), rowMinAvailable, rowGap, items)
+	}
 
 	// Re-layout items that have percentage heights or need stretching.
 	for i, item := range items {
@@ -346,41 +377,17 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		builder.SetLastBaseline(gridFirstBL)
 	}
 
-	// Compute final block-size.
-	intrinsicBlockSize := totalRowSize
-
-	// CSS Contain 1 §4.2: under size containment the intrinsic block size is
-	// the grid's as if empty: its explicit rows sized with no items, plus
-	// gaps (its rows for layout still size from its items). Mirrors
-	// GridLayoutAlgorithm::ComputeIntrinsicBlockSizeIgnoringChildren
-	// (grid_layout_algorithm.cc:508-530 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The generic
-	// sizeContainedIntrinsicBlockSize would zero even fixed row tracks.
-	if sizeContained {
-		// Ignoring children, every auto-fit row is empty and collapses
-		// (BuildGridSizingTreeIgnoringChildren).
-		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
-		emptyRows := gla.computeRowSizes(explicitRows, rowAvailable, rowMinAvailable, rowGap, nil)
-		intrinsicBlockSize = gridTracksSpanSize(explicitRows, emptyRows, rowGap)
-	}
-
+	// Compute final block-size: the explicit one, else the intrinsic one,
+	// clamped by min/max (intrinsic keywords there resolving against the
+	// intrinsic block size). The contained intrinsic block size is above;
+	// the generic sizeContainedIntrinsicBlockSize would zero even fixed row
+	// tracks.
+	intrinsicBlockSize := rowsIntrinsicBlockSize
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
 	}
-
-	// Apply min/max block constraints.
-	// Intrinsic keywords (min-content / max-content / fit-content) resolve
-	// against intrinsicBlockSize — the natural content height (total row size).
-	minBlock := ResolveMinBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsicBlockSize)
-	if finalBlockSize < minBlock {
-		finalBlockSize = minBlock
-	}
-	if maxBlock, hasMax := ResolveMaxBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsicBlockSize); hasMax {
-		if finalBlockSize > maxBlock {
-			finalBlockSize = maxBlock
-		}
-	}
+	finalBlockSize = gla.clampBlockSizeAround(finalBlockSize, intrinsicBlockSize, wdm, geom)
 
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
@@ -1336,4 +1343,38 @@ func (g gridTrackGeometry) outOfFlowLines(style *css.Style, columns bool, trackC
 		end = span.end
 	}
 	return start, end
+}
+
+// clampBlockSizeAround clamps a content block size by the grid's min/max
+// block size, intrinsic keywords there resolving against intrinsic.
+func (gla *GridLayoutAlgorithm) clampBlockSizeAround(size, intrinsic float64, wdm WritingDirectionMode, geom FragmentGeometry) float64 {
+	size = max(size, ResolveMinBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsic))
+	if maxBlock, hasMax := ResolveMaxBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsic); hasMax {
+		size = min(size, maxBlock)
+	}
+	return size
+}
+
+// clampBlockSize is the content block size an indefinite grid resolves to
+// from its intrinsic block size (ComputeBlockSizeForFragment).
+func (gla *GridLayoutAlgorithm) clampBlockSize(intrinsic float64, wdm WritingDirectionMode, geom FragmentGeometry) float64 {
+	return gla.clampBlockSizeAround(intrinsic, intrinsic, wdm, geom)
+}
+
+// rowsDependOnAvailableSize reports whether the rows resolve differently
+// once the block size is definite: a flexible or percentage row, or a
+// percentage row gap (NeedsAdditionalLayoutPass, grid_layout_utils.cc;
+// IsDependentOnAvailableSize, grid_track_collection.cc:1133-1137,
+// 1191-1195 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the
+// flex-item case of an initial block size forced indefinite.
+func (gla *GridLayoutAlgorithm) rowsDependOnAvailableSize(tracks []css.GridTrack) bool {
+	if v, ok := gla.style.Get("row-gap"); ok && strings.Contains(v, "%") {
+		return true
+	}
+	for _, t := range tracks {
+		if t.Fr > 0 || t.MaxFr > 0 || t.Percent > 0 {
+			return true
+		}
+	}
+	return false
 }
