@@ -113,3 +113,44 @@ func TestGridLayoutAdditionalColumnPass(t *testing.T) {
 		t.Errorf("orthogonal item %s, #b %s; want the item 100 wide and #b at x=100", boxDims(o), boxDims(b))
 	}
 }
+
+// Round 1 of the #411 review.
+//   - An orthogonal child of a block is measured against the block's own
+//     available block size (ChildAvailableSize, block_layout_algorithm.cc:
+//     459-462): a width:max-content, height:100px block around vertical-rl
+//     text wider than 100 wraps it, so the block is two lines wide.
+//   - A replaced item's percentage height contributes to its auto row as
+//     auto, its natural 100, not as a percentage of the grid
+//     (CreateConstraintSpaceForMeasure, grid_layout_algorithm.cc:1460-1500).
+//   - Rows are aligned against the resolved block size: min-height:200px,
+//     align-content:center, rows of 70 start at 65 (:458-473).
+//   - A percentage row gap resolves against the grid's block size, so with
+//     an indefinite one it is resolved in the rerun (:443-490): 10% of the
+//     grid's 100px min-height is 10.
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func TestGridReviewRound1(t *testing.T) {
+	ib := `<span style="display:inline-block; width:20px; height:60px"></span>`
+	for _, tc := range []struct {
+		name, html, id string
+		check          func(b *Box) bool
+		want           string
+	}{
+		{"orthogonal child of a definite-height block",
+			`<div id=p style="width:max-content; height:100px"><div style="writing-mode:vertical-rl; line-height:0">` + ib + ib + `</div></div>`,
+			"p", func(b *Box) bool { return b.Width == 40 }, "40 wide"},
+		{"replaced percentage height in an auto row",
+			`<div style="display:grid; height:300px; grid-template-rows:auto 1fr; align-content:start"><img src="x.png" style="height:100%; width:auto; aspect-ratio:1" width=100 height=100><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 100 }, "at y=100"},
+		{"align-content against min-height",
+			`<div style="display:grid; min-height:200px; align-content:center; grid-template-rows:30px 40px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 95 }, "at y=95 (rows start at 65)"},
+		{"percentage row gap",
+			`<div style="display:grid; min-height:100px; row-gap:10%; grid-template-rows:20px 20px"><div></div><div id=b></div></div>`,
+			"b", func(b *Box) bool { return b.Y == 30 }, "at y=30"},
+	} {
+		fl := layoutFallbackHTML(t, `<!DOCTYPE html><body style="margin:0; font-size:0">`+tc.html+`</body>`, nil)
+		if b := findBox(fl.root, byID(tc.id)); b == nil || !tc.check(b) {
+			t.Errorf("%s: #%s %s, want %s", tc.name, tc.id, boxDims(b), tc.want)
+		}
+	}
+}
