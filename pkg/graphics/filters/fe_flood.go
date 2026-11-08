@@ -9,8 +9,8 @@ type FEFlood struct {
 	baseEffect
 	R, G, B uint8
 	A       float64
-	// Subregion, when non-empty, limits the flood to that rect (absolute
-	// device coordinates) — the SVG primitive subregion. Empty means the
+	// Subregion, when non-empty, limits the flood to that rect (layer
+	// pixels) — the SVG primitive subregion. Empty means the
 	// whole filter region.
 	Subregion image.Rectangle
 }

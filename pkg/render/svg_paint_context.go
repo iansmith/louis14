@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"louis14/pkg/graphics/filters"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -142,7 +143,7 @@ func newBufferPaintContext(tmpR *Renderer, viewport geometry.SizeF, deviceFromUs
 func dcRegionClip(dc textshape.DrawContext, region geometry.RectF) *image.Rectangle {
 	clip := image.Rectangle{}
 	if r, ok := projectRectInFront(drawContextTransform(dc), region); ok {
-		clip = snapRectFToDevice(r)
+		clip = filters.SnapRectOut(r)
 	}
 	return &clip
 }

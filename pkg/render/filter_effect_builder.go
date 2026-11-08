@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 	"strings"
 
 	"louis14/pkg/css"
@@ -20,13 +19,19 @@ import (
 // do not clip to a primitive subregion (Filter Effects 1 §13, and Blink's
 // filter_effect_builder.cc).
 type FilterEffectBuilder struct {
-	// ReferenceBox is the filter reference box in absolute device pixels,
-	// unsnapped (Blink's gfx::RectF): the border box, or for a filter that
+	// ReferenceBox, FilterViewport and UserSpaceOrigin are in parameter
+	// space, the local space the filter's parameters are in, which Mapping
+	// maps into the layer the graph runs in: Blink builds the filter in the
+	// element's local space (Filter::ReferenceBox, a gfx::RectF) and Skia maps
+	// it (skif::Mapping, src/core/SkImageFilterTypes.h @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). LOU-774.
+	//
+	// ReferenceBox is the filter reference box, unsnapped: the border box, or for a filter that
 	// moves pixels the layer's bounding box including its self-painting
 	// descendants (UpdateFilterReferenceBox). A backdrop filter's is the
 	// pixel-snapped border box (BackdropFilterBounds).
 	ReferenceBox geometry.RectF
-	// FilterViewport is, in absolute device pixels, a layer's pixel-snapped
+	// FilterViewport is a layer's pixel-snapped
 	// border box or an SVG element's <svg> viewport (unsnapped, as Blink
 	// resolves it in floats): the viewport userSpaceOnUse percentages
 	// resolve against (filter_effect_builder.cc:528-537 @
@@ -39,8 +44,8 @@ type FilterEffectBuilder struct {
 	// viewport.
 	FilterViewport geometry.RectF
 	// UserSpaceOrigin, when set, is the origin userSpaceOnUse coordinates
-	// are relative to in place of FilterViewport's origin: an SVG shape's user
-	// space origin in device pixels, whose viewport is its <svg>'s.
+	// are relative to in place of FilterViewport's origin: an SVG element's
+	// user-space origin, whose viewport is its <svg>'s.
 	UserSpaceOrigin *geometry.PointF
 	// CurrentColor resolves currentColor for drop-shadow.
 	CurrentColor css.Color
@@ -66,10 +71,10 @@ type FilterEffectBuilder struct {
 	// fetcher. Same fetcher the renderer's `<img>`/background-image
 	// path uses; see Renderer.imageFetcher.
 	ImageFetcher func(uri string) ([]byte, error)
-	// Mapping maps the filter functions' parameters (blur deviations,
-	// shadow offsets, in CSS px) into the layer the graph is evaluated
-	// in, as Skia's filters map theirs through skif::Mapping. The zero
-	// value is the identity.
+	// Mapping maps parameter space (the boxes above, blur deviations, shadow
+	// offsets, an SVG <filter>'s primitives) into the layer the graph is
+	// evaluated in, as Skia's filters map theirs through skif::Mapping. The
+	// zero value is the identity.
 	Mapping filters.Mapping
 }
 
@@ -91,10 +96,19 @@ func (b *FilterEffectBuilder) userSpaceOrigin() geometry.PointF {
 	return geometry.PointF{X: b.FilterViewport.X(), Y: b.FilterViewport.Y()}
 }
 
-// userSpaceOriginPixel is userSpaceOrigin rounded to a device pixel, as the
-// filter element adapter takes it.
-func (b *FilterEffectBuilder) userSpaceOriginPixel() image.Point {
-	return roundPoint(b.userSpaceOrigin())
+// layerRect maps a parameter-space rect into the layer (Mapping) and rounds
+// it out to whole layer pixels; it is empty when the rect maps behind the eye.
+func (b *FilterEffectBuilder) layerRect(r geometry.RectF) image.Rectangle {
+	m, ok := b.Mapping.ParamToLayerRect(r)
+	if !ok {
+		return image.Rectangle{}
+	}
+	return filters.SnapRectOut(m)
+}
+
+// LayerReferenceBox is ReferenceBox in layer pixels (layerRect).
+func (b *FilterEffectBuilder) LayerReferenceBox() image.Rectangle {
+	return b.layerRect(b.ReferenceBox)
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -151,7 +165,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	// paint extent into it (paintWithFilterChain); the HTML layer path keeps
 	// it as is (LOU-780).
 	if hasReferenceFilter(ops) {
-		f.FilterRegion = f.MapRect(snapRectFToDevice(b.ReferenceBox))
+		f.FilterRegion = f.MapRect(b.LayerReferenceBox())
 	}
 	return f
 }
@@ -252,24 +266,30 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource
 		return nil
 	}
 
+	return b.buildResourceFilter(filter, b.ResolveStyle, chainSource)
+}
+
+// buildResourceFilter builds filter's graph: its region resolved from
+// filterUnits and the reference box in parameter space, then mapped into the
+// layer (userSpaceOnUse x/y relative to userSpaceOrigin), its primitives'
+// subregion percentages against FilterViewport, not the filter region, which
+// can carry the default 10% expansion. resolveStyle resolves primitive
+// styles (nil for an external document, whose primitives read their
+// presentation attributes). A non-nil chainSource replaces SourceGraphic
+// (CSS filter-value-list chain composition).
+func (b *FilterEffectBuilder) buildResourceFilter(filter *svg.SVGResourceFilter, resolveStyle func(svg.ElementAdapter) *css.Style, chainSource filters.FilterEffect) *filters.Filter {
 	space := filterInterpolationSpace(filter)
-
-	// Resolve the filter region from filterUnits + the reference box, both
-	// in absolute device pixels. userSpaceOnUse x/y are relative to the
-	// layer's local origin, FilterViewport's origin.
-	regionF := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
-	region := snapRectFToDevice(regionF)
-
+	paramRegion := filter.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
 	adapter := &svgFilterElementAdapter{
-		filter:       filter,
-		filterRegion: region,
-		referenceBox: b.ReferenceBox,
-		// The primitive subregion percentage viewport is FilterViewport,
-		// not the filter region, which can carry the default 10% expansion.
+		filter:            filter,
+		filterRegion:      b.layerRect(paramRegion),
+		paramRegion:       paramRegion,
+		referenceBox:      b.ReferenceBox,
 		subregionViewport: b.FilterViewport,
-		userSpaceOrigin:   b.userSpaceOriginPixel(),
+		userSpaceOrigin:   b.userSpaceOrigin(),
+		mapping:           b.Mapping,
 		space:             space,
-		resolveStyle:      b.ResolveStyle,
+		resolveStyle:      resolveStyle,
 		resources:         b.Resources,
 		imageFetcher:      b.ImageFetcher,
 	}
@@ -320,28 +340,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 	if resource == nil {
 		return nil
 	}
-	space := filterInterpolationSpace(resource)
-
-	// Resolve the filter region — same logic as the same-doc path.
-	regionF := resource.ResourceBoundingBox(b.ReferenceBox, b.userSpaceOrigin(), b.viewportLengthContext())
-	region := snapRectFToDevice(regionF)
-
-	adapter := &svgFilterElementAdapter{
-		filter:            resource,
-		filterRegion:      region,
-		referenceBox:      b.ReferenceBox,
-		subregionViewport: b.FilterViewport,
-		userSpaceOrigin:   b.userSpaceOriginPixel(),
-		space:             space,
-		// No ResolveStyle for external documents — filter primitives
-		// read presentational attributes directly.
-		resolveStyle: nil,
-		resources:    b.Resources,
-		imageFetcher: b.ImageFetcher,
-	}
-	builder := filters.NewSVGFilterBuilder(space)
-	builder.SetSourceOverride(chainSource)
-	return builder.BuildGraph(adapter)
+	return b.buildResourceFilter(resource, nil, chainSource)
 }
 
 // splitFilterRef parses a `filter: url(...)` inner value into its
@@ -516,29 +515,4 @@ func sepiaMatrix(a float64) []float64 {
 		r2[0], r2[1], r2[2], 0, 0,
 		0, 0, 0, 1, 0,
 	}
-}
-
-// snapRectFToDevice converts a float user-space filter-region rect into an
-// integer device-pixel rect. Edges are first nudged to the nearest integer
-// when within a small epsilon (objectBoundingBox math introduces float noise:
-// e.g. an exact -10% of a 100px box computes to 7.9999999998, not 8.0), then
-// floor/ceil out so the integer region fully covers the float region. Without
-// the epsilon snap, int()/floor() of 7.9999999998 truncates to 7 — a 1px
-// offset on the filter region top, visible as a 1px seam on the filter output.
-func snapRectFToDevice(r geometry.RectF) image.Rectangle {
-	const eps = 1e-6
-	snap := func(v float64) float64 {
-		if n := math.Round(v); math.Abs(v-n) < eps {
-			return n
-		}
-		return v
-	}
-	x0 := snap(r.X())
-	y0 := snap(r.Y())
-	x1 := snap(r.X() + r.Width())
-	y1 := snap(r.Y() + r.Height())
-	return image.Rect(
-		int(math.Floor(x0)), int(math.Floor(y0)),
-		int(math.Ceil(x1)), int(math.Ceil(y1)),
-	)
 }

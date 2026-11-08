@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"louis14/pkg/graphics/filters"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -66,7 +67,7 @@ func paintSVGContainerWithFilterChain(pctx *svgPaintContext, c *svg.SVGContainer
 	deviceFromLocal := pctx.DeviceFromUser.Compose(effective)
 	graph, region, ok := buildSVGFilterChain(pctx, ops,
 		deviceFromLocal.MapRect(c.ObjectBoundingBox()),
-		snapRectFToDevice(deviceFromLocal.MapRect(c.StrokeBoundingBox())),
+		filters.SnapRectOut(deviceFromLocal.MapRect(c.StrokeBoundingBox())),
 		deviceFromLocal.MapPoint(geometry.PointF{X: 0, Y: 0}), c.Style.GetColor())
 	if !ok {
 		return false

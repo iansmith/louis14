@@ -3,7 +3,6 @@ package render
 import (
 	"image"
 	"image/color"
-	"math"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -242,11 +241,6 @@ func (c *svgPaintContext) userSpaceOriginDevice() geometry.PointF {
 	return c.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
 }
 
-// roundPoint rounds p to the nearest device pixel.
-func roundPoint(p geometry.PointF) image.Point {
-	return image.Pt(int(math.Round(p.X)), int(math.Round(p.Y)))
-}
-
 // compositeSVGFilterResult writes either the filter output (out) or the
 // unfiltered source (srcBuf, used when ApplyToSRGB returned nil) onto the
 // page DC's target at region, clipped to the SVG viewport. The viewport clip
@@ -315,7 +309,7 @@ func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toDevice,
 	childCtx.contentToDevice = toBufferFromPage.Compose(pctx.contentToDevice)
 	childCtx.ancestorToDevice = geometry.Transform{}
 	if pctx.regionClip != nil {
-		clip := snapRectFToDevice(toBufferFromPage.MapRect(rectFFromRect(*pctx.regionClip)))
+		clip := filters.SnapRectOut(toBufferFromPage.MapRect(rectFFromRect(*pctx.regionClip)))
 		childCtx.regionClip = &clip
 	}
 	return srcBuf, childCtx
@@ -334,7 +328,8 @@ func newSVGEffectSource(pctx *svgPaintContext, region image.Rectangle, toDevice,
 // containers.
 func buildSVGFilterElementGraph(pctx *svgPaintContext, filter *svg.SVGResourceFilter, referenceBox geometry.RectF, userOrigin geometry.PointF) (graph *filters.Filter, region image.Rectangle, ok bool) {
 	viewportDevice := pctx.DeviceFromUser.MapRect(pctx.viewport)
-	region = snapRectFToDevice(filter.ResourceBoundingBox(referenceBox, userOrigin, svg.NewSVGLengthContext(viewportDevice.Size)))
+	paramRegion := filter.ResourceBoundingBox(referenceBox, userOrigin, svg.NewSVGLengthContext(viewportDevice.Size))
+	region = filters.SnapRectOut(paramRegion)
 	if !effectBufferUsable(region.Dx(), region.Dy()) {
 		return nil, image.Rectangle{}, false
 	}
@@ -342,13 +337,14 @@ func buildSVGFilterElementGraph(pctx *svgPaintContext, filter *svg.SVGResourceFi
 	adapter := &svgFilterElementAdapter{
 		filter:       filter,
 		filterRegion: region,
+		paramRegion:  paramRegion,
 		referenceBox: referenceBox,
 		// Primitive subregion percentages resolve against the <svg>
 		// viewport, as the region's do (SVGFilterPrimitiveStandardAttributes
 		// resolves them through an SVGViewportResolver), not against the
 		// filter region.
 		subregionViewport: viewportDevice,
-		userSpaceOrigin:   roundPoint(userOrigin),
+		userSpaceOrigin:   userOrigin,
 		space:             space,
 		resources:         pctx.Resources,
 		imageFetcher:      pctx.Renderer.imageFetcher,
@@ -511,7 +507,7 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 		return false
 	}
 	graph, region, ok := buildSVGFilterChain(sp.ctx, ops, referenceBox,
-		snapRectFToDevice(sp.shapeDevicePaintBox()), sp.ctx.userSpaceOriginDevice(), currentColor)
+		filters.SnapRectOut(sp.shapeDevicePaintBox()), sp.ctx.userSpaceOriginDevice(), currentColor)
 	if !ok {
 		return false
 	}

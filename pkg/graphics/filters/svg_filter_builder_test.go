@@ -16,20 +16,24 @@ type mockSVGFilterElement struct {
 	region           image.Rectangle
 	refBox           geometry.RectF
 	subregionVp      geometry.RectF
-	userSpaceOrigin  image.Point
+	userSpaceOrigin  geometry.PointF
 	primUnitsObjBBox bool
+	mapping          Mapping
 }
 
 func (m *mockSVGFilterElement) FilterRegion() image.Rectangle { return m.region }
-func (m *mockSVGFilterElement) SubregionViewport() geometry.RectF {
-	if m.subregionVp.IsEmpty() {
-		return geometry.NewRectF(float64(m.region.Min.X), float64(m.region.Min.Y), float64(m.region.Dx()), float64(m.region.Dy()))
-	}
-	return m.subregionVp
+
+// ParamFilterRegion is m.region mapped back into parameter space.
+func (m *mockSVGFilterElement) ParamFilterRegion() geometry.RectF {
+	r := geometry.NewRectF(float64(m.region.Min.X), float64(m.region.Min.Y), float64(m.region.Dx()), float64(m.region.Dy()))
+	p, _ := MapRectAsM33(m.mapping.ParamToLayer.InverseOrIdentity(), r)
+	return p
 }
+func (m *mockSVGFilterElement) SubregionViewport() geometry.RectF      { return m.subregionVp }
 func (m *mockSVGFilterElement) ReferenceBox() geometry.RectF           { return m.refBox }
 func (m *mockSVGFilterElement) PrimitiveUnitsObjectBoundingBox() bool  { return m.primUnitsObjBBox }
-func (m *mockSVGFilterElement) UserSpaceOrigin() image.Point           { return m.userSpaceOrigin }
+func (m *mockSVGFilterElement) UserSpaceOrigin() geometry.PointF       { return m.userSpaceOrigin }
+func (m *mockSVGFilterElement) Mapping() Mapping                       { return m.mapping }
 func (m *mockSVGFilterElement) InterpolationSpace() InterpolationSpace { return InterpolationSpaceSRGB }
 func (m *mockSVGFilterElement) PrimitiveInterpolationSpace(SVGFilterPrimitive) InterpolationSpace {
 	return InterpolationSpaceSRGB
@@ -83,7 +87,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseAnchoredAtUserOrigin(t *testing
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-2, -2, 110, 110),
 		refBox:          geometry.NewRectF(8, 8, 100, 100),
-		userSpaceOrigin: image.Point{X: 8, Y: 8},
+		userSpaceOrigin: geometry.PointF{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
 		tag: "fedisplacementmap",
@@ -108,7 +112,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(40, 40, 150, 150),
 		refBox:          geometry.NewRectF(50, 50, 100, 100),
-		userSpaceOrigin: image.Point{X: 50, Y: 50},
+		userSpaceOrigin: geometry.PointF{X: 50, Y: 50},
 	}
 	prim := &mockSVGFilterPrimitive{
 		tag: "fedisplacementmap",
@@ -141,7 +145,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
 		region:          image.Rect(-10, -10, 110, 110),
 		refBox:          geometry.NewRectF(0, 0, 100, 100),
 		subregionVp:     geometry.NewRectF(0, 0, 100, 100),
-		userSpaceOrigin: image.Point{X: 0, Y: 0},
+		userSpaceOrigin: geometry.PointF{X: 0, Y: 0},
 	}
 	prim := &mockSVGFilterPrimitive{
 		tag:   "feflood",
@@ -166,7 +170,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(8, 8, 208, 208),
 		refBox:          geometry.NewRectF(8, 8, 200, 200),
-		userSpaceOrigin: image.Point{X: 8, Y: 8},
+		userSpaceOrigin: geometry.PointF{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
 		tag: "fegaussianblur",
@@ -196,7 +200,7 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset(t *testing.T) {
 	elt := &mockSVGFilterElement{
 		region:          image.Rect(-2, -2, 110, 110),
 		refBox:          geometry.NewRectF(8, 8, 100, 100),
-		userSpaceOrigin: image.Point{X: 8, Y: 8},
+		userSpaceOrigin: geometry.PointF{X: 8, Y: 8},
 	}
 	prim := &mockSVGFilterPrimitive{
 		tag: "fedisplacementmap",

@@ -1249,30 +1249,22 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 		referenceBox = paintBounds
 	}
 	builder.ReferenceBox = referenceBox
-	builder.FilterViewport = rectFFromRect(snapRectFToDevice(borderBox))
+	builder.FilterViewport = rectFFromRect(filters.SnapRectOut(borderBox))
 	// SourceGraphic extent: the layer's paint bounds, which can extend beyond
 	// the border box (positioned or overflowing descendants). For drop-shadow
 	// the shadow is cast from the whole painted shape, so the source buffer
 	// must cover it (drop-shadow-clipped).
-	paintExtent := snapRectFToDevice(paintBounds)
+	paintExtent := filters.SnapRectOut(paintBounds)
 	filter, mapping, ok := r.layerSpaceFilter(ctm, func(m *filters.Mapping) *filters.Filter {
 		if m != nil {
-			// The graph's geometry (reference box, filter region, primitive
-			// subregions) and its parameters are built in layer pixels: the
-			// boxes are mapped into the layer. The viewport's corners are
-			// rounded to align with the pixel-snapped rasterization of the
-			// box; the reference box stays unsnapped, as Blink scales
-			// objectBoundingBox lengths by the float box (filter.cc:65-87 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			ref, ok := mapRectToLayer(m.ParamToLayer, referenceBox)
-			sub, subOK := mapRectToLayer(m.ParamToLayer, paintBounds)
-			vp, vpOK := mapRectToLayer(m.ParamToLayer, borderBox)
-			if !ok || !subOK || !vpOK {
+			// The graph runs in layer pixels: the builder maps its
+			// parameter-space boxes and parameters through m; the source
+			// extent is mapped here.
+			sub, ok := filters.MapRectAsM33(m.ParamToLayer, paintBounds)
+			if !ok {
 				return nil
 			}
-			builder.FilterViewport = rectFFromRect(snapRectF(vp))
-			builder.ReferenceBox = ref
-			paintExtent = snapRectFToDevice(sub)
+			paintExtent = filters.SnapRectOut(sub)
 			builder.Mapping = *m
 		}
 		return builder.BuildFilterEffect(layer.Filters)
@@ -1297,7 +1289,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// 570-600 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) and grown by
 	// the filter's reach (filterLayerClip). Without a clip (a projective ancestor, or the
 	// layer's own perspective) the chain keeps the region it had before.
-	refPixels := snapRectFToDevice(builder.ReferenceBox)
+	refPixels := builder.LayerReferenceBox()
 	switch {
 	case hasReferenceFilter(layer.Filters):
 		filter.EnsureRegion(refPixels.Union(paintExtent), false)
@@ -1473,12 +1465,12 @@ func (r *Renderer) filterLayerClip(filter *filters.Filter, mapping filters.Mappi
 	if !mapping.LayerToDev.GetInverse(&inv) {
 		return image.Rectangle{}, false
 	}
-	layerClip, ok := mapRectToLayer(inv, rectFFromRect(c))
+	layerClip, ok := filters.MapRectAsM33(inv, rectFFromRect(c))
 	if !ok {
 		return image.Rectangle{}, false
 	}
 	// No reach to measure leaves the region unclipped.
-	return outsetByReach(filter, snapRectFToDevice(layerClip))
+	return outsetByReach(filter, filters.SnapRectOut(layerClip))
 }
 
 // outsetByReach outsets rect by the filter's reach: on each axis, the larger
@@ -1590,29 +1582,6 @@ func (r *Renderer) filterDecompositionCenter(ctm geometry.Transform) geometry.Po
 	return geometry.PointF{X: v[0] / v[3], Y: v[1] / v[3]}
 }
 
-// mapRectToLayer maps r's corners through t (with the perspective divide)
-// and returns their bounds. It reports false when a corner maps behind the
-// eye (w ≤ 0). The divide is done in float64; geometry.Transform.MapPoint
-// narrows to float32 (gfx::PointF), which would move the snapped edges.
-func mapRectToLayer(t geometry.Transform, r geometry.RectF) (geometry.RectF, bool) {
-	minX, minY := math.Inf(1), math.Inf(1)
-	maxX, maxY := math.Inf(-1), math.Inf(-1)
-	for _, p := range [4]geometry.PointF{
-		{X: r.X(), Y: r.Y()}, {X: r.Right(), Y: r.Y()},
-		{X: r.X(), Y: r.Bottom()}, {X: r.Right(), Y: r.Bottom()},
-	} {
-		w := t.Rc(3, 0)*p.X + t.Rc(3, 1)*p.Y + t.Rc(3, 3)
-		if w <= 0 {
-			return geometry.RectF{}, false
-		}
-		x := (t.Rc(0, 0)*p.X + t.Rc(0, 1)*p.Y + t.Rc(0, 3)) / w
-		y := (t.Rc(1, 0)*p.X + t.Rc(1, 1)*p.Y + t.Rc(1, 3)) / w
-		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
-		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
-	}
-	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
-}
-
 // backdropFilterOperations returns the operations the layer's backdrop is
 // filtered with: its backdrop-filter followed by its filter, which Blink
 // appends because the backdrop's effect node comes before the filter's
@@ -1667,15 +1636,15 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer, ops []css.FilterFuncti
 	layerBox := localBox
 	filter, mapping, ok := r.layerSpaceFilter(ctm, func(m *filters.Mapping) *filters.Filter {
 		if m != nil {
-			lb, ok := mapRectToLayer(m.ParamToLayer, geometry.NewRectF(sx, sy, sw, sh))
+			lb, ok := filters.MapRectAsM33(m.ParamToLayer, geometry.NewRectF(sx, sy, sw, sh))
 			if !ok {
 				return nil
 			}
 			layerBox = snapRectF(lb)
 			builder.Mapping = *m
 		}
-		builder.ReferenceBox = rectFFromRect(layerBox)
-		builder.FilterViewport = rectFFromRect(layerBox)
+		builder.ReferenceBox = rectFFromRect(localBox)
+		builder.FilterViewport = rectFFromRect(localBox)
 		return builder.BuildFilterEffect(ops)
 	})
 	if !ok || filter == nil {
@@ -1796,7 +1765,7 @@ func (r *Renderer) sampleBackdrop(region, box image.Rectangle, mapping filters.M
 	toLocal := mapping.ParamToLayer.InverseOrIdentity()
 	la, lb, lc := toLocal.Rc(0, 0), toLocal.Rc(0, 1), toLocal.Rc(0, 3)
 	ld, le, lf := toLocal.Rc(1, 0), toLocal.Rc(1, 1), toLocal.Rc(1, 3)
-	devBox, ok := mapRectToLayer(ctm, rectFFromRect(box))
+	devBox, ok := filters.MapRectAsM33(ctm, rectFFromRect(box))
 	if !ok {
 		return out
 	}
@@ -1852,7 +1821,7 @@ func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
 
 	// Buffer extent: the layer's paint bounds, so an overflowing blended
 	// descendant is fully captured.
-	extent := snapRectFToDevice(r.localBoundingBoxIncludingSelfPaintingDescendants(layer).ToRectF())
+	extent := filters.SnapRectOut(r.localBoundingBoxIncludingSelfPaintingDescendants(layer).ToRectF())
 	bx, by := extent.Min.X, extent.Min.Y
 	bw, bh := extent.Dx(), extent.Dy()
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {

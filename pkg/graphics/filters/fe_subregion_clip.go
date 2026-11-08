@@ -40,7 +40,7 @@ func (e *subregionClippedEffect) ApplyEffect(inputs []*image.RGBA, region image.
 	in := firstInput(inputs, region)
 	out := newRGBA(region)
 	// The buffer is in "region" coordinates: pixel (0, 0) = region.Min
-	// in device space.
+	// in layer pixels.
 	clip := region.Intersect(e.subregion)
 	if clip.Empty() {
 		return out // entirely transparent

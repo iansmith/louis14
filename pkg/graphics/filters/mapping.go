@@ -1,6 +1,7 @@
 package filters
 
 import (
+	"image"
 	"math"
 
 	"louis14/pkg/geometry"
@@ -214,4 +215,76 @@ func mapPointAsM33(t geometry.Transform, x, y float64) (float64, float64) {
 	w := t.Rc(3, 0)*x + t.Rc(3, 1)*y + t.Rc(3, 3)
 	return (t.Rc(0, 0)*x + t.Rc(0, 1)*y + t.Rc(0, 3)) / w,
 		(t.Rc(1, 0)*x + t.Rc(1, 1)*y + t.Rc(1, 3)) / w
+}
+
+// ParamToLayerPoint maps a parameter-space point (a light position) into
+// layer space. Mirrors Mapping::map<SkPoint>
+// (src/core/SkImageFilterTypes.cpp @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func (m Mapping) ParamToLayerPoint(x, y float64) (float64, float64) {
+	return mapPointAsM33(m.ParamToLayer, x, y)
+}
+
+// ParamToLayerZ maps a parameter-space depth (a light's z, a lighting
+// surface scale) into layer space: the midpoint of the vector (z, z) mapped,
+// as LayerSpace<ZValue>::Map does (src/effects/imagefilters/
+// SkLightingImageFilter.cpp:63-67 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func (m Mapping) ParamToLayerZ(z float64) float64 {
+	x, y := m.ParamToLayerVector(z, z)
+	return (x + y) / 2
+}
+
+// ParamToLayerRect maps a parameter-space rect into layer space: the bounds
+// of its mapped corners. ok is false when a corner maps behind w = 0.
+// Mirrors Mapping::map<SkRect> (src/core/SkImageFilterTypes.cpp @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), which maps through
+// SkMatrix::mapRect.
+func (m Mapping) ParamToLayerRect(r geometry.RectF) (geometry.RectF, bool) {
+	return MapRectAsM33(m.ParamToLayer, r)
+}
+
+// MapRectAsM33 maps r's corners through t with the perspective divide and
+// returns their bounds; ok is false when a corner maps to w <= 0.
+func MapRectAsM33(t geometry.Transform, r geometry.RectF) (geometry.RectF, bool) {
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for _, p := range [4]geometry.PointF{
+		{X: r.X(), Y: r.Y()}, {X: r.Right(), Y: r.Y()},
+		{X: r.X(), Y: r.Bottom()}, {X: r.Right(), Y: r.Bottom()},
+	} {
+		if t.Rc(3, 0)*p.X+t.Rc(3, 1)*p.Y+t.Rc(3, 3) <= 0 {
+			return geometry.RectF{}, false
+		}
+		x, y := mapPointAsM33(t, p.X, p.Y)
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
+}
+
+// SnapRectOut converts a float rect into the integer pixel rect covering it. Edges are first nudged to the nearest integer
+// when within a small epsilon (objectBoundingBox math introduces float noise:
+// e.g. an exact -10% of a 100px box computes to 7.9999999998, not 8.0), then
+// floor/ceil out so the integer region fully covers the float region. Without
+// the epsilon snap, int()/floor() of 7.9999999998 truncates to 7 — a 1px
+// offset on the filter region top, visible as a 1px seam on the filter output.
+// gfx::ToEnclosingRectIgnoringError (ui/gfx/geometry/rect_conversions.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with a fixed error.
+func SnapRectOut(r geometry.RectF) image.Rectangle {
+	const eps = 1e-6
+	snap := func(v float64) float64 {
+		if n := math.Round(v); math.Abs(v-n) < eps {
+			return n
+		}
+		return v
+	}
+	x0 := snap(r.X())
+	y0 := snap(r.Y())
+	x1 := snap(r.X() + r.Width())
+	y1 := snap(r.Y() + r.Height())
+	return image.Rect(
+		int(math.Floor(x0)), int(math.Floor(y0)),
+		int(math.Ceil(x1)), int(math.Ceil(y1)),
+	)
 }

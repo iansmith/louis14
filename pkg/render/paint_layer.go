@@ -1,6 +1,7 @@
 package render
 
 import (
+	"louis14/pkg/graphics/filters"
 	"sort"
 	"strings"
 
@@ -2578,11 +2579,11 @@ func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRec
 	}
 	builder := r.newFilterEffectBuilder(layer)
 	builder.ReferenceBox = rect.ToRectF()
-	builder.FilterViewport = rectFFromRect(snapRectFToDevice(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)))
+	builder.FilterViewport = rectFFromRect(filters.SnapRectOut(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)))
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
 		return rect
 	}
-	m := filter.MapRect(snapRectFToDevice(builder.ReferenceBox))
+	m := filter.MapRect(builder.LayerReferenceBox())
 	return geometry.PhysicalRectEnclosingRect(rectFFromRect(m))
 }

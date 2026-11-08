@@ -1,6 +1,7 @@
 package render
 
 import (
+	"louis14/pkg/graphics/filters"
 	"math"
 
 	"mazarin/textshape"
@@ -218,7 +219,7 @@ func (r *Renderer) boxPaintBounds(l *PaintLayer, member bool) geometry.RectF {
 	} else {
 		bounds = r.localBoundingBoxIncludingSelfPaintingDescendants(l)
 	}
-	b := snapRectFToDevice(bounds.ToRectF())
+	b := filters.SnapRectOut(bounds.ToRectF())
 	return rectFFromRect(b)
 }
 

@@ -83,7 +83,7 @@ func (e *FEDiffuseLighting) ApplyEffect(inputs []*image.RGBA, region image.Recta
 	for y := 0; y < h; y++ {
 		outRow := y * out.Stride
 		for x := 0; x < w; x++ {
-			// Surface point in absolute device pixels with z lifted
+			// Surface point in layer pixels with z lifted
 			// by alpha-bump (per spec). The (+0.5, +0.5) shifts to
 			// the pixel centre, the same convention used by Skia's
 			// shaders.
