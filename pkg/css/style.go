@@ -3220,6 +3220,14 @@ func expandShorthand(style *Style, property, value string) {
 // Mirrors Blink's properties/shorthands/all.cc at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates CSSPropertyIDIterator
 // over every longhand and skips kDirection, kUnicodeBidi, and custom properties.
+// allShorthandCovers reports whether `all` sets prop: every longhand but
+// direction and unicode-bidi, whose initial values come from the document
+// language and bidi context, not CSS. Custom properties (--*) are not
+// longhands (CSS Cascade 4 §6.3).
+func allShorthandCovers(prop string) bool {
+	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
+}
+
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3228,13 +3236,8 @@ func expandAllShorthand(style *Style, value string) {
 		// dropped. Mirrors Blink's CSSPropertyParser::ParseSingleValue check.
 		return
 	}
-	for _, prop := range cssLonghandProperties {
-		// Exclusions per CSS Cascade 3 §8:
-		//   - direction, unicode-bidi (their initial values are based on
-		//     the document language and unicode-bidi context, not on CSS).
-		//   - custom properties (--*) — filtered structurally elsewhere
-		//     since the longhand list never contains them.
-		if prop == "direction" || prop == "unicode-bidi" {
+	for prop := range cssLonghandProperties {
+		if !allShorthandCovers(prop) {
 			continue
 		}
 		switch keyword {

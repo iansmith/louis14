@@ -333,11 +333,11 @@ var shorthandLonghands = func() map[string][]string {
 // cssLonghandProperties is every non-shorthand property, the set the `all`
 // shorthand expands to (Blink's all.cc iterates the longhands of
 // CSSPropertyIDIterator).
-var cssLonghandProperties = func() []string {
-	var out []string
+var cssLonghandProperties = func() map[string]bool {
+	out := make(map[string]bool)
 	for _, p := range cssProperties {
 		if p.longhands == nil {
-			out = append(out, p.name)
+			out[p.name] = true
 		}
 	}
 	return out
