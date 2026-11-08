@@ -84,7 +84,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// --- Track sizing: columns ---
-	colSizes := gla.resolveTrackSizes(colTracks, contentInlineSize, colGap, true, items, numCols, numRows, wdm, geom)
+	// Size containment sizes only the container as if empty: its columns
+	// still size from its items, as GridLayoutAlgorithm::Layout builds the
+	// sizing tree with its children (grid_layout_algorithm.cc:416-422 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	colSizes := gla.computeColumnSizes(colTracks, contentInlineSize, colGap, items, gridSizingLayout)
 
 	// --- Layout items to determine row intrinsic sizes ---
 	// First pass: layout items with resolved column sizes to get natural heights.
@@ -173,7 +177,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// For row auto-sizing, use the maximum content height of items in each row.
-	rowSizes := gla.resolveTrackSizes(rowTracks, rowAvailable, rowGap, false, items, numCols, numRows, wdm, geom)
+	rowSizes := gla.resolveRowSizes(rowTracks, rowAvailable, rowGap, items, wdm)
 
 	// For auto rows, size them to the maximum content block-size of their
 	// items, margins included. In vertical writing modes, block-size is the
@@ -402,7 +406,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// Ignoring children, every auto-fit row is empty and collapses
 		// (BuildGridSizingTreeIgnoringChildren).
 		explicitRows := collapseAutoFitEmptyTracks(slices.Clone(rowTracks[:min(len(rowTracks), tree.lines.explicitRows)]), nil, false)
-		emptyRows := gla.resolveTrackSizes(explicitRows, rowAvailable, rowGap, false, nil, numCols, len(explicitRows), wdm, geom)
+		emptyRows := gla.resolveRowSizes(explicitRows, rowAvailable, rowGap, nil, wdm)
 		intrinsicBlockSize = gla.totalTrackSize(emptyRows, rowGap)
 	}
 
@@ -957,17 +961,10 @@ func gridTrackIsCollapsed(t css.GridTrack) bool {
 	return t.AutoFitExpanded && gridTrackIsFixed(t) && t.Size == 0
 }
 
-// resolveTrackSizes resolves track sizes from track definitions.
-func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, available, gap float64, isInline bool, items []*gridItem, numCols, numRows int, wdm WritingDirectionMode, geom FragmentGeometry) []float64 {
-	// Columns are sized by the GridTrackSizingAlgorithm port; rows below
-	// keep louis14's fragment-based sizing (LOU-757 for its stretch).
-	// Size containment sizes only the container as if empty: its columns
-	// still size from its items, as GridLayoutAlgorithm::Layout builds the
-	// sizing tree with its children (grid_layout_algorithm.cc:416-422 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if isInline {
-		return gla.computeColumnSizes(tracks, available, gap, items, false, gridSizingLayout)
-	}
+// resolveRowSizes sizes the rows from their definitions and their laid-out
+// items' block sizes: louis14's fragment-based row sizing, until the rows run
+// the GridTrackSizingAlgorithm port (LOU-793).
+func (gla *GridLayoutAlgorithm) resolveRowSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, wdm WritingDirectionMode) []float64 {
 	n := len(tracks)
 	sizes := make([]float64, n)
 

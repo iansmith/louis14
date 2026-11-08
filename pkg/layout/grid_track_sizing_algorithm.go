@@ -709,33 +709,39 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 // returns their used sizes: Blink's GridLayoutAlgorithm::ComputeUsedTrackSizes
 // for kForColumns (grid_layout_algorithm.cc:1164-1189 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). available is the grid's
-// content inline size, or Indefinite. Only items spanning an intrinsic or
-// flexible track are measured.
-func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, ignoreItems bool, constraint gridSizingConstraint) []float64 {
-	if available < 0 {
-		available = gridIndefinite
+// content inline size, or Indefinite.
+func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, available, gap float64, items []*gridItem, constraint gridSizingConstraint) []float64 {
+	return gla.sizeColumns(tracks, available, gap, gla.columnSizingItems(tracks, available, items), constraint)
+}
+
+// columnSizingItems measures the items the column sizing reads: those
+// spanning an intrinsic track (ResolveIntrinsicTrackSizes) or a flexible
+// one (ExpandFlexibleTracks under indefinite free space, :1236-1251).
+// Measured once, they serve every constraint sizeColumns runs.
+func (gla *GridLayoutAlgorithm) columnSizingItems(tracks []css.GridTrack, available float64, items []*gridItem) []*gridSizingItem {
+	a := &gridTrackSizingAlgorithm{sets: newGridSets(tracks, columnAvailable(available))}
+	wdm := gla.space.WritingDirection
+	var sizing []*gridSizingItem
+	for _, item := range items {
+		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(tracks))}
+		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
+			continue
+		}
+		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
+		it.isScrollContainer = item.style.IsScrollContainer()
+		it.mainIsAuto, it.minIsAuto, it.minimumSize = gridItemMinimumInputs(item.style, wdm, gla.space)
+		sizing = append(sizing, it)
 	}
+	return sizing
+}
+
+// sizeColumns runs the column track sizing algorithm over measured items.
+func (gla *GridLayoutAlgorithm) sizeColumns(tracks []css.GridTrack, available, gap float64, sizing []*gridSizingItem, constraint gridSizingConstraint) []float64 {
+	available = columnAvailable(available)
 	a := &gridTrackSizingAlgorithm{
 		sets: newGridSets(tracks, available), gutter: gap,
 		constraint: constraint, available: available,
 		stretchAuto: gla.stretchesAutoColumns(),
-	}
-	var sizing []*gridSizingItem
-	for _, item := range items {
-		if ignoreItems {
-			break
-		}
-		it := &gridSizingItem{start: item.colStart, end: min(item.colEnd, len(tracks))}
-		// Intrinsic tracks take contributions (ResolveIntrinsicTrackSizes),
-		// and flexible ones under indefinite free space
-		// (ExpandFlexibleTracks, :1236-1251).
-		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
-			continue
-		}
-		it.minContent, it.maxContent = gridItemInlineContribution(item.node, item.style, gla.space.WritingDirection, gla.ctx, gla.space)
-		it.isScrollContainer = item.style.IsScrollContainer()
-		it.mainIsAuto, it.minIsAuto, it.minimumSize = gridItemMinimumInputs(item.style, gla.space.WritingDirection, gla.space)
-		sizing = append(sizing, it)
 	}
 	a.computeUsedTrackSizes(sizing)
 	sizes := make([]float64, len(a.sets))
@@ -743,6 +749,15 @@ func (gla *GridLayoutAlgorithm) computeColumnSizes(tracks []css.GridTrack, avail
 		sizes[i] = a.sets[i].baseSize
 	}
 	return sizes
+}
+
+// columnAvailable is an available size for the column sizing: Indefinite
+// as gridIndefinite.
+func columnAvailable(available float64) float64 {
+	if available < 0 {
+		return gridIndefinite
+	}
+	return available
 }
 
 // stretchesAutoColumns reports whether justify-content lets auto columns

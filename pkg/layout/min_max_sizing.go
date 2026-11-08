@@ -1188,14 +1188,14 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 // contributions to the container's inline (column) axis, including the item's
 // margin, border, and padding. Orthogonal items contribute their block-size
 // (viewed in the container's logical coords); parallel items contribute their
-// intrinsic inline sizes. Mirrors Blink's
-// GridTrackSizingAlgorithm::ContributionSizeForGridItem
-// (third_party/blink/renderer/core/layout/grid/grid_track_sizing_algorithm.cc,
-// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// intrinsic inline sizes. Mirrors the MinContentSize / MaxContentSize /
+// BlockContributionSize contributions of Blink's
+// GridLayoutAlgorithm::ContributionSizeForGridItem
+// (core/layout/grid/grid_layout_algorithm.cc:577 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
-// Shared by measureGridMinMax (container intrinsic sizing) and
-// GridLayoutAlgorithm.resolveTrackSizes (the inline track-sizing pass, where
-// items are not yet laid out so item.result is unavailable).
+// Used by columnSizingItems, which measures the items the column track
+// sizing reads, for layout and for the grid's intrinsic inline size.
 func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerWDM WritingDirectionMode, ctx *LayoutContext, space ConstraintSpace) (minContrib, maxContrib float64) {
 	childWDM := NewWritingDirectionMode(cs)
 	if containerWDM.IsOrthogonalTo(childWDM) {
@@ -1237,8 +1237,14 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
 	_, colGap := style.GetGridGap()
+	// The items are measured once and sized under both constraints, so a
+	// nested grid is not measured twice per level.
+	var sizing []*gridSizingItem
+	if !contained {
+		sizing = gla.columnSizingItems(tree.colTracks, Indefinite, tree.items)
+	}
 	totalColumnSize := func(constraint gridSizingConstraint) float64 {
-		sizes := gla.computeColumnSizes(tree.colTracks, Indefinite, colGap, tree.items, contained, constraint)
+		sizes := gla.sizeColumns(tree.colTracks, Indefinite, colGap, sizing, constraint)
 		total, separated := 0.0, 0
 		for i, t := range tree.colTracks {
 			total += sizes[i]
