@@ -98,12 +98,11 @@ func TestSVGContainer_ChainURLWithEmptyFillBox(t *testing.T) {
 // resolves in other.svg even when the page has its own #f, as an SVG
 // shape's does (resolveSVGFilterValue).
 func TestSVGContainer_ExternalURLFilter(t *testing.T) {
-	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100">
 <filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="red"/></filter>
 <g filter="url(other.svg#f)"><rect x="20" y="20" width="60" height="60" fill="blue"/></g></svg>`, 100, 100,
-		fixedSVGFetcher(ext, nil))
+		fixedSVGFetcher(extGreenFlood, nil))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external filter's flood")
 }
 
@@ -156,11 +155,10 @@ func TestSVGContainer_ChainOnNestedGroupOfLine(t *testing.T) {
 // fetched once, as the chain's stage, not first as a lone url() whose
 // fragment runs to the last ')'.
 func TestSVGShape_URLThenFunctionFetchesOnce(t *testing.T) {
-	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
 	var fetches []string
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="red" filter="url(other.svg#f) blur(0px)"/></svg>`, 100, 100,
-		fixedSVGFetcher(ext, &fetches))
+		fixedSVGFetcher(extGreenFlood, &fetches))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external flood")
 	if len(fetches) != 1 {
 		t.Errorf("fetched the external document %d times, want 1", len(fetches))
@@ -181,13 +179,50 @@ func TestSVGContainer_UserSpaceURLChainOnEmptyPaintBox(t *testing.T) {
 // A backslash escapes a ')' or a quote inside a url() token: url(a\).svg#f)
 // is one lone url() naming the document "a).svg".
 func TestSVGShape_URLTokenEscapes(t *testing.T) {
-	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
 	var docs []string
 	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
 <svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="red" filter="url(a\).svg#f)"/></svg>`, 100, 100,
-		fixedSVGFetcher(ext, &docs))
+		fixedSVGFetcher(extGreenFlood, &docs))
 	wantPixel(t, img, 50, 50, canvasGreen, "the external flood")
 	if len(docs) != 1 || !strings.HasSuffix(docs[0], "a).svg") {
 		t.Errorf("fetched %q, want one fetch of a).svg", docs)
 	}
 }
+
+// An external url() stage of a container's chain on an empty paint box is
+// fetched once: the guard's look at its filterUnits and the chain share it.
+func TestSVGContainer_EmptyPaintBoxExternalURLFetchesOnce(t *testing.T) {
+	ext := `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`
+	var fetches []string
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><g style="filter:url(other.svg#f) blur(1px)"><line x1="10" y1="50" x2="90" y2="50"/></g></svg>`, 100, 100,
+		fixedSVGFetcher(ext, &fetches))
+	wantPixel(t, img, 50, 20, canvasGreen, "the external flood")
+	if len(fetches) != 1 {
+		t.Errorf("fetched the external document %d times, want 1", len(fetches))
+	}
+}
+
+// A filter value's url() decodes hex escapes: url(#\31 23) names #123.
+func TestSVGShape_URLTokenHexEscape(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><filter id="123" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter>
+<rect x="20" y="20" width="60" height="60" fill="red" filter="url(#\31 23)"/></svg>`, 100, 100)
+	wantPixel(t, img, 50, 50, canvasGreen, "the filter #123")
+}
+
+// A malformed url() (text outside its one string) is a bad-url token: no
+// filter, and no fetch.
+func TestSVGShape_BadURLTokenFetchesNothing(t *testing.T) {
+	var fetches []string
+	img := render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}</style>
+<svg width="100" height="100"><rect x="20" y="20" width="60" height="60" fill="green" filter="url('a.svg#f' x)"/></svg>`, 100, 100,
+		fixedSVGFetcher(extGreenFlood, &fetches))
+	wantPixel(t, img, 50, 50, canvasGreen, "the unfiltered rect")
+	if len(fetches) != 0 {
+		t.Errorf("a bad url() fetched %q, want nothing", fetches)
+	}
+}
+
+// extGreenFlood is an external SVG document whose #f floods green.
+const extGreenFlood = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f" color-interpolation-filters="sRGB"><feFlood flood-color="green"/></filter></svg>`

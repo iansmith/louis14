@@ -231,3 +231,16 @@ func TestSVGContainer_AppendChildRefillsBoxes(t *testing.T) {
 		}
 	}
 }
+
+// Appending to a nested container refills its ancestors' boxes too.
+func TestSVGContainer_AppendChildRefillsAncestors(t *testing.T) {
+	inner := NewSVGContainer("g")
+	outer := NewSVGContainer("g")
+	outer.AppendChild(inner)
+	inner.AppendChild(rectShape(10, 10, 10, 10, map[string]string{}))
+	_ = outer.StrokeBoundingBox()
+	inner.AppendChild(rectShape(50, 50, 10, 10, map[string]string{}))
+	if got, want := outer.StrokeBoundingBox(), geometry.NewRectF(10, 10, 50, 50); got != want {
+		t.Errorf("outer stroke bbox after a nested AppendChild %v, want %v", got, want)
+	}
+}
