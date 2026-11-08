@@ -155,7 +155,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// the columns are sized again against those rows, then the rows again,
 	// at the resolved block size (:478-484).
 	needsAdditionalPass := rowAvailable == Indefinite && gla.rowsDependOnAvailableSize(rowTracks)
-	if sizing := gla.remeasureBlockSizeDependentItems(items, colSizing, rowSizes, rowGap); sizing != nil {
+	if sizing := gla.remeasureBlockSizeDependentItems(colSizing, rowSizes, rowGap); sizing != nil {
 		if rerun := gla.sizeColumns(slices.Clone(colSets), contentInlineSize, colGap, sizing, gridSizingLayout); !slices.Equal(rerun, colSizes) {
 			colSizes = rerun
 			gla.layoutItemsAtColumns(items, colSizes, colGap, hasExplicitBlock, explicitBlockSize)

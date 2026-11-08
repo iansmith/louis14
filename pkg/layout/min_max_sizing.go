@@ -1259,10 +1259,11 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	if !contained {
 		sizing = gla.columnSizingItems(sets, tree.items)
 	}
+	measured := map[gridItemMeasure]float64{}
 	totalColumnSize := func(constraint gridSizingConstraint) float64 {
 		sizes := gla.sizeColumns(slices.Clone(sets), gridIndefinite, colGap, sizing, constraint)
 		if !contained {
-			sizes = gla.measureBlockSizeDependentColumns(tree, sets, sizing, sizes, colGap, constraint)
+			sizes = gla.measureBlockSizeDependentColumns(tree, sets, sizing, sizes, colGap, constraint, measured)
 		}
 		return gridTracksSpanSize(tree.colTracks, sizes, colGap)
 	}

@@ -134,7 +134,7 @@ func TestMaximizeTracks(t *testing.T) {
 		{"min-content", gridSizingMinContent, gridIndefinite, [2]float64{20, 20}},
 	} {
 		a := &gridTrackSizingAlgorithm{sets: newGridSets([]css.GridTrack{{Auto: true}, {Auto: true}}, tc.available),
-			constraint: tc.constraint, available: tc.available}
+			constraint: tc.constraint, available: tc.available, forColumns: true}
 		a.resolveIntrinsicTrackSizes([]*gridSizingItem{{start: 0, end: 1, minContent: 20, maxContent: 100}, {start: 1, end: 2, minContent: 20, maxContent: 60}})
 		a.setIndefiniteGrowthLimitsToBaseSize()
 		a.maximizeTracks()
