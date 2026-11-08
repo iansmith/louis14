@@ -962,7 +962,7 @@ func (gla *GridLayoutAlgorithm) measureBlockSizeDependentColumns(tree gridSizing
 	if b, ok := ResolveBlockSize(gla.style, wdm, gla.space, geom); ok {
 		rowAvailable = b.Float64()
 	}
-	rowGap, _ := gla.style.GetGridGap()
+	rowGap, _ := gla.gridGaps(Indefinite, rowAvailable)
 	rowSets := newGridSets(tree.rowTracks, columnAvailable(rowAvailable))
 	rowItems := gla.rowSizingItems(rowSets, tree.items, func(item *gridItem) (float64, LogicalEdges) {
 		return gla.measureItemAtColumns(item, colSizes, colGap), ResolveMargins(item.style, wdm, 0)

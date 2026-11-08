@@ -3,6 +3,7 @@ package layout
 import (
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -70,7 +71,11 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	sizeContained := gla.style != nil && gla.style.ShouldApplySizeContainment()
 
-	rowGap, colGap := gla.style.GetGridGap()
+	rowBlockBase := float64(Indefinite)
+	if hasExplicitBlock {
+		rowBlockBase = explicitBlockSize
+	}
+	rowGap, colGap := gla.gridGaps(contentInlineSize, rowBlockBase)
 	tree := gla.buildGridSizingTree(contentInlineSize, explicitBlockSize, false)
 	items, oofChildren := tree.items, tree.oofChildren
 	colTracks, rowTracks := tree.colTracks, tree.rowTracks
@@ -125,39 +130,44 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			rowAvailable = gla.clampBlockSize(containedIntrinsicBlockSize, wdm, geom)
 		}
 	}
+	// The first pass (CompleteTrackSizingAlgorithm(kForRows, kLayout),
+	// grid_layout_algorithm.cc:429-430 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rowSizes := gla.computeRowSizes(rowTracks, rowAvailable, rowMinAvailable, rowGap, items,
 		gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
 	// The rows' intrinsic block size is their first pass's span
-	// (CalculateIntrinsicBlockSize after the first pass, :432-433).
+	// (CalculateIntrinsicBlockSize after the first pass, :432-433), and the
+	// block size it resolves to is what the rows are aligned in and sized
+	// again in (:443-473).
 	rowsIntrinsicBlockSize := gla.totalTrackSize(rowSizes, rowGap)
 	if sizeContained {
 		rowsIntrinsicBlockSize = containedIntrinsicBlockSize
 	}
-	// With an indefinite block size, rows that depend on the available
-	// size are sized again at the block size the grid resolves to (the
-	// additional pass, :443-490; NeedsAdditionalLayoutPass,
-	// grid_layout_utils.cc). The column pass is not rerun: only
-	// block-size-dependent items would change it (LOU-793 M4).
-	rowSizingAvailable := rowAvailable
-	if rowAvailable == Indefinite && gla.rowsDependOnAvailableSize(rowTracks) {
-		rowSizingAvailable = gla.clampBlockSize(rowsIntrinsicBlockSize, wdm, geom)
-		rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items,
-			gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
+	resolvedBlockSize := gla.clampBlockSizeAround(rowsIntrinsicBlockSize, rowsIntrinsicBlockSize, wdm, geom)
+	if hasExplicitBlock {
+		resolvedBlockSize = gla.clampBlockSizeAround(explicitBlockSize, rowsIntrinsicBlockSize, wdm, geom)
 	}
-	// The additional column pass: an orthogonal item's column contribution
-	// depends on its rows, so once they are sized the columns are sized
-	// again with it measured against its rows, and if that changes them the
-	// items are laid out again at the new columns and the rows sized again
-	// (MayChangeBlockSizeDependentGridItemContributions,
-	// grid_layout_algorithm.cc:1146-1162; the rerun, :478-484 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// The additional pass (:443-490), with an indefinite block size, when
+	// the rows depend on the available size (NeedsAdditionalLayoutPass,
+	// grid_layout_utils.cc), or, whatever the block size, when an
+	// orthogonal item's column contribution changes against its first-pass
+	// rows (MayChangeBlockSizeDependentGridItemContributions, :1146-1162):
+	// the columns are sized again against those rows, then the rows again,
+	// at the resolved block size (:478-484).
+	needsAdditionalPass := rowAvailable == Indefinite && gla.rowsDependOnAvailableSize(rowTracks)
 	if sizing := gla.remeasureBlockSizeDependentItems(items, colSizing, rowSizes, rowGap); sizing != nil {
 		if rerun := gla.sizeColumns(slices.Clone(colSets), contentInlineSize, colGap, sizing, gridSizingLayout); !slices.Equal(rerun, colSizes) {
 			colSizes = rerun
 			gla.layoutItemsAtColumns(items, colSizes, colGap, hasExplicitBlock, explicitBlockSize)
-			rowSizes = gla.computeRowSizes(rowTracks, rowSizingAvailable, rowMinAvailable, rowGap, items,
-				gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
+			needsAdditionalPass = true
 		}
+	}
+	if needsAdditionalPass {
+		if rowAvailable == Indefinite {
+			rowGap, _ = gla.gridGaps(contentInlineSize, resolvedBlockSize)
+		}
+		rowSizes = gla.computeRowSizes(rowTracks, resolvedBlockSize, rowMinAvailable, rowGap, items,
+			gla.layoutRowContribution(colSizes, colGap, hasExplicitBlock))
 	}
 
 	// Re-layout items that have percentage heights or need stretching.
@@ -258,10 +268,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	colOffsets := gla.computeTrackOffsets(colSizes, colGap, contentInlineSize, justifyContent, numCols)
-	rowOffsets := gla.computeTrackOffsets(rowSizes, rowGap, totalRowSize, alignContent, numRows)
-	if hasExplicitBlock {
-		rowOffsets = gla.computeTrackOffsets(rowSizes, rowGap, explicitBlockSize, alignContent, numRows)
-	}
+	// Rows align in the resolved block size (:458-473).
+	rowOffsets := gla.computeTrackOffsets(rowSizes, rowGap, max(totalRowSize, resolvedBlockSize), alignContent, numRows)
 
 	for _, item := range items {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
@@ -334,11 +342,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// the generic sizeContainedIntrinsicBlockSize would zero even fixed row
 	// tracks.
 	intrinsicBlockSize := rowsIntrinsicBlockSize
-	finalBlockSize := intrinsicBlockSize
-	if hasExplicitBlock {
-		finalBlockSize = explicitBlockSize
-	}
-	finalBlockSize = gla.clampBlockSizeAround(finalBlockSize, intrinsicBlockSize, wdm, geom)
+	finalBlockSize := resolvedBlockSize
 
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
@@ -428,7 +432,11 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 	// Parse grid template definitions with named lines.
 	colTracks, colLineNames := gla.style.GetGridTemplateColumnsWithNames()
 	rowTracks, rowLineNames := gla.style.GetGridTemplateRowsWithNames()
-	rowGap, colGap := gla.style.GetGridGap()
+	blockBase := float64(Indefinite)
+	if explicitBlockSize > 0 {
+		blockBase = explicitBlockSize
+	}
+	rowGap, colGap := gla.gridGaps(contentInlineSize, blockBase)
 	autoFlow := gla.style.GetGridAutoFlow()
 
 	// Parse grid-template-areas for named area placement.
@@ -1319,7 +1327,7 @@ func (gla *GridLayoutAlgorithm) clampBlockSize(intrinsic float64, wdm WritingDir
 // 1191-1195 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the
 // flex-item case of an initial block size forced indefinite.
 func (gla *GridLayoutAlgorithm) rowsDependOnAvailableSize(tracks []css.GridTrack) bool {
-	if v, ok := gla.style.Get("row-gap"); ok && strings.Contains(v, "%") {
+	if row, _ := gla.gridGapValues(); strings.Contains(row, "%") {
 		return true
 	}
 	for _, t := range tracks {
@@ -1413,4 +1421,49 @@ func (gla *GridLayoutAlgorithm) layoutItemAtColumns(item *gridItem, colSizes []f
 			Build()
 		return layoutElement(gla.ctx, item.node, childSpace), ResolveMargins(item.style, wdm, itemInline)
 	}
+}
+
+// gridGapValues is the grid's row and column gap values: row-gap and
+// column-gap, which the gap (or grid-gap) shorthand sets, one value for both
+// or a row then a column value.
+func (gla *GridLayoutAlgorithm) gridGapValues() (row, column string) {
+	for _, shorthand := range []string{"gap", "grid-gap"} {
+		if v, ok := gla.style.Get(shorthand); ok {
+			if parts := strings.Fields(v); len(parts) == 2 {
+				row, column = parts[0], parts[1]
+			} else {
+				row, column = v, v
+			}
+		}
+	}
+	if v, ok := gla.style.Get("row-gap"); ok {
+		row = v
+	}
+	if v, ok := gla.style.Get("column-gap"); ok {
+		column = v
+	}
+	return row, column
+}
+
+// gridGaps resolves the grid's row and column gaps: a percentage against
+// the block size for rows and the inline size for columns, and 0 against an
+// indefinite one (CalculateGutterSize, grid_track_sizing_algorithm.cc:
+// 156-176 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); normal is 0.
+func (gla *GridLayoutAlgorithm) gridGaps(inlineBase, blockBase float64) (rowGap, colGap float64) {
+	row, column := gla.gridGapValues()
+	resolve := func(v string, base float64) float64 {
+		v = strings.TrimSpace(v)
+		if pct, ok := strings.CutSuffix(v, "%"); ok {
+			p, err := strconv.ParseFloat(pct, 64)
+			if err != nil || base < 0 {
+				return 0
+			}
+			return max(0, base*p/100)
+		}
+		if l, ok := css.ParseLength(v); ok {
+			return max(0, l)
+		}
+		return 0
+	}
+	return resolve(row, blockBase), resolve(column, inlineBase)
 }

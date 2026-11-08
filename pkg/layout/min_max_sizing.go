@@ -1251,7 +1251,7 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	gla := NewGridLayoutAlgorithm(ctx, node, space)
 	contained := style.ShouldApplySizeContainment() || style.ShouldApplyInlineSizeContainment()
 	tree := gla.buildGridSizingTree(0, 0, contained)
-	_, colGap := style.GetGridGap()
+	_, colGap := gla.gridGaps(Indefinite, Indefinite)
 	// The sets are built and the items measured once, then sized under
 	// both constraints, so a nested grid is not measured twice per level.
 	sets := newGridSets(tree.colTracks, gridIndefinite)
