@@ -83,3 +83,81 @@ func TestPendingSubstitutionMatchesLiteral(t *testing.T) {
 		}
 	}
 }
+
+// TestPendingSubstitutionResolvedBeforeKeywordsAndInheritance: pending
+// substitutions resolve inside the element's (and a pseudo-element's)
+// cascade, after custom properties and before CSS-wide keywords and
+// inheritance (StyleCascade::Apply resolves the pending value as it applies
+// the longhand, then CSS-wide keywords and inheritance follow, @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestPendingSubstitutionResolvedBeforeKeywordsAndInheritance(t *testing.T) {
+	initial := func(prop string) string {
+		v, _ := styleByID(t, cascadeHTML(t, `<div id="f"></div>`, nil), "f").Get(prop)
+		return v
+	}
+	for _, tc := range []struct{ name, css, prop, want string }{
+		// A CSS-wide keyword from a var() fallback is applied, not stored.
+		{"fallback inherit (font)", `#p{font-size:30px} #t{font:var(--nope, inherit)}`, "font-size", "30px"},
+		{"fallback inherit (margin)", `#p{margin-left:7px} #t{margin:var(--nope, inherit)}`, "margin-left", "7px"},
+		{"fallback initial", `#t{margin-left:5px} #t.t{margin:var(--nope, initial)}`, "margin-left", initial("margin-left")},
+		{"fallback unset", `#t{margin-left:5px} #t.t{margin:var(--nope, unset)}`, "margin-left", initial("margin-left")},
+		// Invalid at computed-value time is unset: inherited properties
+		// inherit, others take their initial value.
+		{"IACVT inherits an inherited longhand", `#p{font-size:30px} #t{font:var(--nope)}`, "font-size", "30px"},
+		{"IACVT resets a non-inherited longhand", `#t{margin-left:5px} #t.t{margin:var(--nope)}`, "margin-left", initial("margin-left")},
+		// A cycle (--a ↔ --b) leaves var() unresolved: IACVT, never a fresh
+		// pending value.
+		{"cycle is IACVT", `#p{font-size:30px} #t{--a:var(--b); --b:var(--a); font:var(--a)}`, "font-size", "30px"},
+		// A substituted longhand is validated as a declared value: an
+		// invalid color makes the whole declaration IACVT.
+		{"invalid substituted color is IACVT", `#t{border:5px solid red} #t.t{--c:1px solid notacolor; border:var(--c)}`, "border-left-width", initial("border-left-width")},
+		{"invalid substituted color resets the color too", `#t{border:5px solid red} #t.t{--c:1px solid notacolor; border:var(--c)}`, "border-left-color", initial("border-left-color")},
+		// The @container second pass follows the same rules.
+		{"@container IACVT inherits", `#p{font-size:30px; container-type:inline-size; width:500px} #t{font-size:10px} @container (min-width: 100px) { #t{font:var(--nope)} }`, "font-size", "30px"},
+		{"@container fallback inherit", `#p{font-size:30px; container-type:inline-size; width:500px} #t{font-size:10px} @container (min-width: 100px) { #t{font:var(--nope, inherit)} }`, "font-size", "30px"},
+	} {
+		st := styleByID(t, cascadeHTML(t, `<style>`+tc.css+`</style><div id="p"><div id="t" class="t"></div></div>`, nil), "t")
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("%s: %s = %q, want %q", tc.name, tc.prop, got, tc.want)
+		}
+	}
+
+	// The cascaded-property record sees the resolved state: an IACVT
+	// inherited longhand is inherited, not cascaded, so it does not block
+	// transition propagation.
+	st := styleByID(t, cascadeHTML(t, `<style>#p{font-size:30px} #t{font:var(--nope)}</style><div id="p"><div id="t"></div></div>`, nil), "t")
+	if st.CascadedProps["font-size"] {
+		t.Errorf("IACVT font: CascadedProps has font-size, want it inherited (not cascaded)")
+	}
+}
+
+// TestPendingSubstitutionPseudoElements: pseudo-elements resolve pending
+// substitutions in their own cascade: ::before, ::marker, ::first-line and
+// the highlight ::selection.
+func TestPendingSubstitutionPseudoElements(t *testing.T) {
+	src := `<style>#c{--c:green; --f:italic 20px serif; display:list-item}
+		#c::before{content:"x"; background:var(--c)}
+		#c::selection{background:var(--c)}
+		#c::marker{font:var(--f)}
+		#c::first-line{font:var(--f)}</style><div id="c">y</div>`
+	doc, _ := html.Parse(src)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	var c *html.Node
+	for n := range styles {
+		if id, _ := n.GetAttribute("id"); id == "c" {
+			c = n
+		}
+	}
+	sheets := ParseDocumentStylesheets(doc)
+	for _, tc := range []struct{ pseudo, prop, want string }{
+		{"before", "background-color", "green"},
+		{"selection", "background-color", "green"},
+		{"marker", "font-style", "italic"},
+		{"first-line", "font-style", "italic"},
+	} {
+		st := ComputePseudoElementStyle(c, tc.pseudo, sheets, 800, 600, styles[c])
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("::%s %s = %q, want %q", tc.pseudo, tc.prop, got, tc.want)
+		}
+	}
+}
