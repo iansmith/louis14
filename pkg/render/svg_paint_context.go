@@ -1,8 +1,6 @@
 package render
 
 import (
-	"image"
-
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/layout/svg"
@@ -18,19 +16,12 @@ import (
 //
 // Phase 2 carries:
 //   - dc: the DrawContext to paint into.
-//   - contentToDevice: maps the SVG root's content box into page
-//     (device) pixels: transformToPixelSnappedBorderBox. The
-//     viewBox→viewport transform is applied AFTER it, so a shape at
-//     user-units (10, 20) inside <svg> whose content origin is page
-//     (50, 100) paints at page-space (60, 120) (modulo the viewBox map
-//     and a document-element root's snap scale).
 //   - viewport: the user-space rectangle the SVG content paints into.
 //     Currently equals (0, 0, containerWidth, containerHeight) but
 //     Phase 3's nested <svg> will push a smaller viewport here.
 type svgPaintContext struct {
-	dc              textshape.DrawContext
-	contentToDevice geometry.AffineTransform
-	viewport        geometry.RectF
+	dc       textshape.DrawContext
+	viewport geometry.RectF
 
 	// CurrentTransform is the accumulated affine transform from the
 	// SVG root down to the current paint scope (NOT including the
@@ -46,7 +37,8 @@ type svgPaintContext struct {
 
 	// DeviceFromUser maps a point in the current node's local
 	// user-space coordinate system to the destination image's device
-	// pixel coordinate system. Equal to the composed transform stack
+	// pixel coordinate system (in an effect buffer, the buffer's pixels:
+	// newSVGEffectSource). Equal to the composed transform stack
 	// the DrawContext has pushed:
 	//
 	//   contentToDevice · root.LocalToBorderBoxTransform ·
@@ -71,17 +63,6 @@ type svgPaintContext struct {
 	// paint servers to resolve `url(#id)` references. nil before Phase
 	// 4 (and harmless in Phase 1-3 because no painter dereferences it).
 	Resources *svg.SVGResourceRegistry
-
-	// regionClip, when set, further clips what composites in device pixels
-	// (viewportDeviceClip): a <mask>'s region. An empty region clips
-	// everything.
-	regionClip *image.Rectangle
-
-	// ancestorToDevice is the draw context's matrix under the <svg> root:
-	// the page's CSS transforms the root paints within, on top of which
-	// the draw context composes DeviceFromUser. It is the identity in an
-	// effect or resource buffer, which paints in the buffer's frame.
-	ancestorToDevice geometry.Transform
 
 	// clipPathContent is set while painting <clipPath> content, which
 	// clips with its geometry only: its filters, masks and other
@@ -115,52 +96,15 @@ func setDCColor(dc textshape.DrawContext, c css.Color) {
 // painted into tmpR's buffer, whose content is the viewport (user units)
 // scaled onto the whole buffer: <mask> and <clipPath> children (their
 // viewport is the buffer, in pixels) and <pattern> tile content.
-// contentToDevice is that scale, so a filtered child composites inside the
-// buffer (viewportDeviceClip). A mask also sets regionClip; <clipPath>
-// content sets clipPathContent, as it paints its geometry without effects.
+// <clipPath> content sets clipPathContent, as it paints its geometry without
+// effects.
 func newBufferPaintContext(tmpR *Renderer, viewport geometry.SizeF, deviceFromUser geometry.AffineTransform, resources *svg.SVGResourceRegistry) *svgPaintContext {
-	size := tmpR.target.Bounds().Size()
-	contentToDevice := geometry.Identity()
-	if viewport.Width > 0 && viewport.Height > 0 {
-		contentToDevice = geometry.Scale(float64(size.X)/viewport.Width, float64(size.Y)/viewport.Height)
-	}
 	return &svgPaintContext{
 		dc:               tmpR.dc,
-		contentToDevice:  contentToDevice,
 		viewport:         geometry.NewRectF(0, 0, viewport.Width, viewport.Height),
 		CurrentTransform: geometry.Identity(),
 		DeviceFromUser:   deviceFromUser,
 		Resources:        resources,
 		Renderer:         tmpR,
 	}
-}
-
-// dcRegionClip returns region, in dc's current coordinates, as the device
-// pixels the part of it in front of the camera covers through dc's whole
-// matrix (projectRectInFront): a mask region's regionClip. A region wholly
-// behind the camera clips everything.
-func dcRegionClip(dc textshape.DrawContext, region geometry.RectF) *image.Rectangle {
-	clip := image.Rectangle{}
-	if r, ok := projectRectInFront(drawContextTransform(dc), region); ok {
-		clip = snapRectFToDevice(r)
-	}
-	return &clip
-}
-
-// viewportDeviceClip returns the SVG root viewport in device pixels, for the
-// filter composite paths that write straight to the target image and so
-// bypass the DrawContext clip stack. The edges are int()-truncated, while
-// paintSVGRoot's fallback viewport clip rounds via pixelSnap, so any edge can
-// differ by 1px from it whenever the content origin is fractional (fractional border or
-// padding) or the viewport size is fractional (LOU-426 follow-up).
-//
-// no Blink analog: Blink composites filter output under the replaced
-// content clip property node; louis14's filter composite bypasses the DC.
-func (c *svgPaintContext) viewportDeviceClip() image.Rectangle {
-	d := c.contentToDevice.MapRect(c.viewport)
-	clip := image.Rect(int(d.X()), int(d.Y()), int(d.X()+d.Width()), int(d.Y()+d.Height()))
-	if c.regionClip != nil {
-		clip = clip.Intersect(*c.regionClip)
-	}
-	return clip
 }

@@ -91,7 +91,7 @@ type SVGFilterPrimitive interface {
 
 	// ResolveImageSource returns a pre-rasterised premultiplied RGBA
 	// for an `<feImage>` primitive given the filter region and the
-	// primitive's resolved subregion (both in absolute device pixels).
+	// primitive's resolved subregion (both in layer pixels).
 	// Returns a nil image for primitives that aren't feImage or for an
 	// feImage whose href can't be resolved (matches the spec's
 	// "transparent black" fallback for unresolved tspan / use references
@@ -110,10 +110,15 @@ type SVGFilterPrimitive interface {
 // concrete svg.SVGResourceFilter behind this interface so this
 // package stays decoupled from pkg/layout/svg.
 type SVGFilterElement interface {
-	// FilterRegion returns the resolved filter region in absolute
-	// device pixels (the rect every fe* primitive's output covers).
+	// FilterRegion returns the resolved filter region in layer pixels
+	// (the rect every fe* primitive's output covers).
 	FilterRegion() image.Rectangle
-	// SubregionViewport returns the device-pixel rect whose width/height
+	// ParamFilterRegion returns the filter region in parameter space,
+	// unsnapped, as Blink's Filter::FilterRegion (a gfx::RectF in the
+	// element's local space): a missing userSpaceOnUse subregion attribute
+	// takes its edge.
+	ParamFilterRegion() geometry.RectF
+	// SubregionViewport returns the parameter-space rect whose width/height
 	// are the percentage basis for filter primitive subregion
 	// (x/y/width/height) attributes in primitiveUnits=userSpaceOnUse.
 	// Per SVG Filter Effects 1 §7.11 these percentages resolve against
@@ -122,24 +127,29 @@ type SVGFilterElement interface {
 	// the default 10% expansion. For a CSS `filter: url(...)` on an HTML
 	// box the viewport is the element's border (reference) box; for an
 	// SVG-element filter it is the host SVG viewport. Adapters that don't
-	// distinguish the two may return FilterRegion() (the historical
-	// behaviour, exact whenever region == viewport).
+	// distinguish the two may return the filter region (the historical
+	// behaviour, exact whenever region == viewport); an empty one falls
+	// back to it.
 	SubregionViewport() geometry.RectF
 	// ReferenceBox returns the referencing element's reference box in
-	// absolute device pixels, unsnapped, as Blink's Filter::ReferenceBox
-	// (a gfx::RectF). For objectBoundingBox primitive units the builder
-	// maps primitive subregions, lengths and light positions through it.
+	// parameter space, unsnapped, as Blink's Filter::ReferenceBox (a
+	// gfx::RectF in the element's local space). For objectBoundingBox
+	// primitive units the builder scales primitive subregions, lengths and
+	// light positions by it.
 	ReferenceBox() geometry.RectF
-	// UserSpaceOrigin returns the SVG element's user-space (0, 0)
-	// point in absolute device pixels. The userSpaceOnUse coordinate
-	// space for filter primitive subregion attributes anchors here —
-	// NOT at FilterRegion().Min, which can include the filter
-	// region's default 10% expansion. Mirrors Blink's behavior of
-	// resolving primitive x/y in user-space coordinates and then
-	// mapping through the same SVG→device transform the element
-	// itself uses (see Blink
-	// core/svg/svg_fe_primitive_standard_attributes.cc).
-	UserSpaceOrigin() image.Point
+	// UserSpaceOrigin returns the point userSpaceOnUse primitive
+	// coordinates are relative to, in parameter space: an SVG element's
+	// user-space (0, 0), or a CSS box's local origin. Not
+	// FilterRegion().Min, which can include the filter region's default
+	// 10% expansion.
+	UserSpaceOrigin() geometry.PointF
+	// Mapping maps parameter space (where ReferenceBox, SubregionViewport,
+	// UserSpaceOrigin and the primitives' attributes live) into the layer
+	// the graph runs in (FilterRegion's pixels), as Skia maps each image
+	// filter's parameters through skif::Mapping::paramToLayer
+	// (src/core/SkImageFilterTypes.h @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). LOU-774.
+	Mapping() Mapping
 	// PrimitiveUnitsObjectBoundingBox reports whether primitiveUnits
 	// is "objectBoundingBox" (true) or "userSpaceOnUse" (false).
 	PrimitiveUnitsObjectBoundingBox() bool
@@ -382,7 +392,7 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		// generic post-evaluation clip per SVG Filter Effects 1 §15.7
 		// "Filter primitive subregion".
 		if prim.TagName() != "feflood" && prim.TagName() != "feimage" {
-			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
+			if sub, set := resolvePrimitiveSubregion(elt, prim); set {
 				wrapped := NewSubregionClippedEffect(eff, sub)
 				// Subregion wrapper carries the same tainted bit
 				// as the wrapped effect (it's a thin per-pixel
@@ -429,8 +439,12 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// feeds a linearRGB primitive the graph converts sRGB->linearRGB at
 		// that edge.
 		fe := NewFEFlood(InterpolationSpaceSRGB, r, g, bb, a)
-		sub := resolvePrimitiveSubregion(elt, prim)
-		if sub.Empty() {
+		sub, set := resolvePrimitiveSubregion(elt, prim)
+		if set && sub.Empty() {
+			// A subregion that resolves to nothing floods nothing.
+			return NewSubregionClippedEffect(fe, sub)
+		}
+		if !set {
 			// No explicit primitive subregion: feFlood covers the full
 			// filter region per SVG Filter Effects 1 §15.5. Default
 			// Subregion to the filter region so FEFlood.MapRect and
@@ -458,16 +472,20 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// already does internally via its TargetRect.Empty() fallback.
 		// Mirrors Blink SVGFEImageElement::Build's pass of the resolved
 		// subregion through to the FEImage constructor.
-		sub := resolvePrimitiveSubregion(elt, prim)
+		sub, set := resolvePrimitiveSubregion(elt, prim)
+		if set && sub.Empty() {
+			// A subregion that resolves to nothing draws nothing: its image
+			// is neither resolved nor fetched.
+			return NewSubregionClippedEffect(NewFEImage(b.space, nil, sub, false), sub)
+		}
 		src, target, parNone := prim.ResolveImageSource(elt.FilterRegion(), sub)
-		fe := NewFEImage(b.space, src, target, parNone)
-		return fe
+		return NewFEImage(b.space, src, target, parNone)
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")
 		// FEGaussianBlur scales its stdDeviation (fe_gaussian_blur.cc:74-83
 		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		stdX, stdY := NumberOptionalNumberAttr(prim, "stdDeviation", 0)
-		stdX, stdY = applyScale(elt, stdX, stdY)
+		stdX, stdY = layerSize(elt, stdX, stdY)
 		return NewFEGaussianBlur(in, b.space, stdX, stdY)
 	case "fecolormatrix":
 		in := b.resolveInputAttr(prim, "in")
@@ -479,7 +497,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		dy, _ := parseFloatAttr(prim, "dy", 0)
 		// FEOffset scales its offset (fe_offset.cc:55-65 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		dx, dy = applyScale(elt, dx, dy)
+		dx, dy = layerVector(elt, dx, dy)
 		return NewFEOffset(in, b.space, dx, dy)
 	case "feblend":
 		in := b.resolveInputAttr(prim, "in")
@@ -535,9 +553,9 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// (fe_drop_shadow.cc:59-72 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		dx, _ := parseFloatAttr(prim, "dx", 2)
 		dy, _ := parseFloatAttr(prim, "dy", 2)
-		dx, dy = applyScale(elt, dx, dy)
+		dx, dy = layerVector(elt, dx, dy)
 		stdX, stdY := NumberOptionalNumberAttr(prim, "stdDeviation", 2)
-		stdX, stdY = applyScale(elt, stdX, stdY)
+		stdX, stdY = layerSize(elt, stdX, stdY)
 		r, g, bb, a := prim.FloodColor()
 		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, stdY, r, g, bb, a)
 	case "fedisplacementmap":
@@ -555,7 +573,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// axes (fe_displacement_map.cc:126); MapEffect pads each axis by
 		// its own scaled scale (fe_displacement_map.cc:43-48 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		scaleX, scaleY := applyScale(elt, scale, scale)
+		scaleX, scaleY := layerSize(elt, scale, scale)
 		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scaleX, scaleY)
 	case "fediffuselighting":
 		// Per SVG Filter Effects 1 §feDiffuseLighting. The primitive
@@ -565,7 +583,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// light source is the first matching child element.
 		in := b.resolveInputAttr(prim, "in")
 		r, g, bb, a := prim.LightingColor()
-		surfaceScale := prim.SurfaceScale()
+		surfaceScale := elt.Mapping().ParamToLayerZ(prim.SurfaceScale())
 		diffuseConstant := prim.DiffuseConstant()
 		kULx, kULy := prim.KernelUnitLength()
 		return NewFEDiffuseLighting(in, b.space, r, g, bb, a,
@@ -576,7 +594,7 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		// exponent). Output alpha = max(R, G, B) per spec.
 		in := b.resolveInputAttr(prim, "in")
 		r, g, bb, a := prim.LightingColor()
-		surfaceScale := prim.SurfaceScale()
+		surfaceScale := elt.Mapping().ParamToLayerZ(prim.SurfaceScale())
 		specularConstant := prim.SpecularConstant()
 		specularExponent := prim.SpecularExponent()
 		kULx, kULy := prim.KernelUnitLength()
@@ -619,13 +637,17 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		rx, ry := NumberOptionalNumberAttr(prim, "radius", 0)
 		// FEMorphology scales its radii (fe_morphology.cc:86-97 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		rx, ry = applyScale(elt, rx, ry)
+		rx, ry = layerSize(elt, rx, ry)
 		return NewFEMorphology(in, b.space, op, rx, ry)
 	case "feturbulence":
 		// Per SVG Filter Effects 1 §feTurbulence. Generates a Perlin-noise
 		// image. `in` is ignored (this is a generator). Mirrors Blink
 		// svg_fe_turbulence_element.cc and FETurbulence.
-		return newFETurbulenceFromPrimitive(b.space, prim)
+		// The noise is in the filter's local space, whose origin is
+		// UserSpaceOrigin in parameter space.
+		t := newFETurbulenceFromPrimitive(b.space, prim)
+		t.Mapping = localMapping(elt)
+		return t
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
 	// returns nullptr for unknown / unsupported primitives, which
@@ -647,6 +669,23 @@ func applyScale(elt SVGFilterElement, x, y float64) (float64, float64) {
 	return x * ref.Width(), y * ref.Height()
 }
 
+// layerSize resolves a primitive's horizontal and vertical lengths (a blur's
+// deviations, a morphology radius, a displacement scale: applyScale) and maps
+// them into the layer as Skia maps an SkSize (Mapping.ParamToLayerSize). The
+// sign survives the mapping, so an invalid negative length stays invalid and
+// a negative displacement scale keeps its direction.
+func layerSize(elt SVGFilterElement, x, y float64) (float64, float64) {
+	x, y = applyScale(elt, x, y)
+	lx, ly := elt.Mapping().ParamToLayerSize(x, y)
+	return math.Copysign(lx, x), math.Copysign(ly, y)
+}
+
+// layerVector resolves a primitive's offset (applyScale) and maps it into the
+// layer as Skia maps a Vector (Mapping.ParamToLayerVector).
+func layerVector(elt SVGFilterElement, x, y float64) (float64, float64) {
+	return elt.Mapping().ParamToLayerVector(applyScale(elt, x, y))
+}
+
 // resolve3dPoint maps a light position under primitiveUnits=
 // "objectBoundingBox": x and y are fractions of the reference box, and z of
 // its diagonal over sqrt(2) (Filter::Resolve3dPoint, filter.cc:77-87 @
@@ -660,6 +699,39 @@ func resolve3dPoint(elt SVGFilterElement, x, y, z float64) (float64, float64, fl
 	return x*w + ref.X(), y*h + ref.Y(), z * math.Sqrt((w*w+h*h)/2)
 }
 
+// layerPoint3 resolves a light position (resolve3dPoint) and maps it into
+// the layer: x and y as a point, z as a depth (SkLightingImageFilter::
+// onFilterImage, src/effects/imagefilters/SkLightingImageFilter.cpp:527-532
+// @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). A spot light's pointsAt
+// is mapped as a point, which under the affine layer matrix gives Skia's
+// mapped direction vector.
+func layerPoint3(elt SVGFilterElement, x, y, z float64) (float64, float64, float64) {
+	// objectBoundingBox positions are fractions of the reference box, which
+	// is in parameter space; userSpaceOnUse ones are local.
+	m := localMapping(elt)
+	if elt.PrimitiveUnitsObjectBoundingBox() {
+		m = elt.Mapping()
+	}
+	x, y, z = resolve3dPoint(elt, x, y, z)
+	lx, ly := m.ParamToLayerPoint(x, y)
+	return lx, ly, m.ParamToLayerZ(z)
+}
+
+// localMapping is elt's Mapping from the filter's local space instead of
+// parameter space: userSpaceOnUse light positions and the turbulence noise
+// are local to the element (Filter::Resolve3dPoint leaves them as they are,
+// filter.cc:77-88 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the
+// local origin is UserSpaceOrigin in parameter space: an SVG element's user
+// space origin, or a box's border-box origin (its filter reference box is in
+// the layer's local space, paint_property_tree_builder.cc:2414-2428 @
+// a9f50e52).
+func localMapping(elt SVGFilterElement) Mapping {
+	m := elt.Mapping()
+	o := elt.UserSpaceOrigin()
+	m.ParamToLayer.Translate(o.X, o.Y)
+	return m
+}
+
 // resolveLightSource returns ls with its positions resolved
 // (resolve3dPoint), as SVGFEPointLightElement and SVGFESpotLightElement
 // ::GetLightSource build their sources (svg_fe_point_light_element.cc:33,
@@ -669,13 +741,32 @@ func resolve3dPoint(elt SVGFilterElement, x, y, z float64) (float64, float64, fl
 func resolveLightSource(elt SVGFilterElement, ls LightSource) LightSource {
 	switch l := ls.(type) {
 	case *PointLightSource:
-		return NewPointLightSource(resolve3dPoint(elt, l.X, l.Y, l.Z))
+		return NewPointLightSource(layerPoint3(elt, l.X, l.Y, l.Z))
 	case *SpotLightSource:
-		x, y, z := resolve3dPoint(elt, l.X, l.Y, l.Z)
-		px, py, pz := resolve3dPoint(elt, l.PointsAtX, l.PointsAtY, l.PointsAtZ)
+		x, y, z := layerPoint3(elt, l.X, l.Y, l.Z)
+		px, py, pz := layerPoint3(elt, l.PointsAtX, l.PointsAtY, l.PointsAtZ)
 		return NewSpotLightSource(x, y, z, px, py, pz, l.SpecularExponent, l.LimitingConeAngle)
+	case *DistantLightSource:
+		return layerDistantLight(elt.Mapping(), l)
 	}
 	return ls
+}
+
+// layerDistantLight maps a distant light's direction into the layer: its x
+// and y as a vector, its z as a depth (SkLightingImageFilter::onFilterImage,
+// src/effects/imagefilters/SkLightingImageFilter.cpp:531-532 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), kept as an azimuth and
+// elevation. An identity mapping returns l as is, so its angles are not
+// round-tripped through atan2.
+func layerDistantLight(m Mapping, l *DistantLightSource) *DistantLightSource {
+	if m.ParamToLayer.IsIdentity() {
+		return l
+	}
+	x, y, z, _ := l.Direction(0, 0, 0)
+	x, y = m.ParamToLayerVector(x, y)
+	z = m.ParamToLayerZ(z)
+	const deg = 180 / math.Pi
+	return NewDistantLightSource(math.Atan2(y, x)*deg, math.Atan2(z, math.Hypot(x, y))*deg)
 }
 
 // resolveInputAttr reads the named attribute (`in` or `in2`) and
@@ -687,108 +778,75 @@ func (b *SVGFilterBuilder) resolveInputAttr(prim SVGFilterPrimitive, name string
 	return b.lastEffect
 }
 
-// resolvePrimitiveSubregion computes a filter primitive's subregion
-// in absolute device-pixel coordinates from its x/y/width/height
-// attributes. Returns the zero rect (image.Rectangle{}) when no
-// subregion attributes are set, signalling "use the full filter
-// region" — matches FEFlood.Subregion.Empty() convention.
+// resolvePrimitiveSubregion computes a filter primitive's subregion in layer
+// pixels from its x/y/width/height attributes. set is false when none is
+// set ("use the full filter region"); a set subregion may be empty, when it
+// maps to nothing (behind the eye), and then clips the primitive away, as
+// Skia's crop to an empty rect does.
 //
-// Resolution per SVG Filter Effects 1 §15.7:
-//   - primitiveUnits="userSpaceOnUse": x/y/width/height are in
-//     user-space units, then mapped to absolute device pixels via the
-//     filter region (which is itself in absolute device pixels).
-//     Phase 7's caller supplies the filter region already in device
-//     pixels, so this case applies x/y/w/h directly within that.
-//   - primitiveUnits="objectBoundingBox": x/y/width/height are
-//     fractions of the referencing element's bbox; we map onto
-//     ReferenceBox().
-func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) image.Rectangle {
+// The subregion resolves in parameter space, as Blink's
+// SVGFilterPrimitiveStandardAttributes resolves it in the element's local
+// space, and is then mapped into the layer (Mapping.ParamToLayerPixels) and
+// rounded out to whole pixels. Per SVG Filter Effects 1 §15.7:
+//   - primitiveUnits="objectBoundingBox": x/y/width/height are fractions
+//     of the reference box (missing x/y are 0%, missing width/height 100%).
+//   - primitiveUnits="userSpaceOnUse": x/y are user-space coordinates
+//     relative to UserSpaceOrigin — not the filter region's origin, which
+//     can carry the default 10% expansion — and percentages resolve
+//     against SubregionViewport (SVG Filter Effects 1 §7.11, Blink's
+//     SVGViewportResolver), not the filter region. A missing attribute
+//     takes the filter region's (ParamFilterRegion).
+func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) (sub image.Rectangle, set bool) {
 	xStr, hasX := prim.Attribute("x")
 	yStr, hasY := prim.Attribute("y")
 	wStr, hasW := prim.Attribute("width")
 	hStr, hasH := prim.Attribute("height")
 	if !hasX && !hasY && !hasW && !hasH {
-		return image.Rectangle{}
+		return image.Rectangle{}, false
 	}
+	var x, y, w, h float64
 	if elt.PrimitiveUnitsObjectBoundingBox() {
 		ref := elt.ReferenceBox()
-		refW := ref.Width()
-		refH := ref.Height()
-		// Defaults: x=0%, y=0%, width=100%, height=100% of the bbox.
-		x := parseFracPercent(xStr, 0.0) * refW
-		y := parseFracPercent(yStr, 0.0) * refH
-		w := refW
-		h := refH
+		x = ref.X() + parseFracPercent(xStr, 0.0)*ref.Width()
+		y = ref.Y() + parseFracPercent(yStr, 0.0)*ref.Height()
+		w, h = ref.Width(), ref.Height()
 		if hasW {
-			w = parseFracPercent(wStr, 1.0) * refW
+			w = parseFracPercent(wStr, 1.0) * ref.Width()
 		}
 		if hasH {
-			h = parseFracPercent(hStr, 1.0) * refH
+			h = parseFracPercent(hStr, 1.0) * ref.Height()
 		}
-		return image.Rect(
-			int(math.Floor(ref.X()+x)),
-			int(math.Floor(ref.Y()+y)),
-			int(math.Ceil(ref.X()+x+w)),
-			int(math.Ceil(ref.Y()+y+h)),
-		)
-	}
-	// userSpaceOnUse: x/y/w/h are in user-space units. Per SVG Filter
-	// Effects 1 §15.4 they're interpreted in the SVG element's
-	// user-coordinate system, whose (0, 0) maps to UserSpaceOrigin in
-	// absolute device coords. NOT region.Min — the default filter
-	// region expands 10% beyond the element bounds, so its origin can
-	// be outside the user-space origin (typically by 10% of the
-	// reference-box width/height, in the negative direction). When
-	// x/y attrs are missing they default to "the full filter region",
-	// which is exactly what region.Min represents — but when supplied
-	// as raw lengths they are user-space coords and must be shifted
-	// by UserSpaceOrigin.
-	region := elt.FilterRegion()
-	userOrigin := elt.UserSpaceOrigin()
-	// Per SVG Filter Effects 1 §7.11: percentages on filter primitive
-	// subregion attrs in userSpaceOnUse resolve against the nearest
-	// VIEWPORT (width for x/width, height for y/height), NOT the filter
-	// region — the two differ when the region carries the default 10%
-	// expansion. Mirrors Blink's SVGFilterPrimitiveStandardAttributes,
-	// which resolves the subregion through an SVGViewportResolver.
-	viewport := elt.SubregionViewport()
-	vpW := viewport.Width()
-	vpH := viewport.Height()
-	resolvePctLen := func(s string, base float64) float64 {
-		v, isPct := parseLength(s, 0)
-		if isPct {
-			return v * base
+	} else {
+		region := elt.ParamFilterRegion()
+		origin := elt.UserSpaceOrigin()
+		viewport := elt.SubregionViewport()
+		if viewport.IsEmpty() {
+			// A degenerate viewport falls back to the filter region.
+			viewport = region
 		}
-		return v
+		resolvePctLen := func(s string, base float64) float64 {
+			v, isPct := parseLength(s, 0)
+			if isPct {
+				return v * base
+			}
+			return v
+		}
+		x, y, w, h = region.X(), region.Y(), region.Width(), region.Height()
+		if hasX {
+			x = origin.X + resolvePctLen(xStr, viewport.Width())
+		}
+		if hasY {
+			y = origin.Y + resolvePctLen(yStr, viewport.Height())
+		}
+		if hasW {
+			w = resolvePctLen(wStr, viewport.Width())
+		}
+		if hasH {
+			h = resolvePctLen(hStr, viewport.Height())
+		}
 	}
-	// Missing x/y/width/height default to the full filter region (region
-	// origin + region extent), per spec. Present attrs resolve against
-	// the viewport and anchor at the user-space origin.
-	var x, y float64
-	if hasX {
-		x = float64(userOrigin.X) + resolvePctLen(xStr, vpW)
-	} else {
-		x = float64(region.Min.X)
-	}
-	if hasY {
-		y = float64(userOrigin.Y) + resolvePctLen(yStr, vpH)
-	} else {
-		y = float64(region.Min.Y)
-	}
-	w := float64(region.Dx())
-	h := float64(region.Dy())
-	if hasW {
-		w = resolvePctLen(wStr, vpW)
-	}
-	if hasH {
-		h = resolvePctLen(hStr, vpH)
-	}
-	return image.Rect(
-		int(math.Floor(x)),
-		int(math.Floor(y)),
-		int(math.Ceil(x+w)),
-		int(math.Ceil(y+h)),
-	)
+	sub, _ = elt.Mapping().ParamToLayerPixels(geometry.NewRectF(x, y, w, h))
+	return sub, true
 }
 
 // NumberOptionalNumberAttr reads a number-optional-number attribute

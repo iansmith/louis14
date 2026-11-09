@@ -53,27 +53,29 @@ func (sp *svgShapePainter) paint() {
 		return
 	}
 
-	// SVG-level filter: url(#id) or url(doc#id). Per CSS Masking 1 §3.7
-	// rendering order is filter → clip → mask → composite. We dispatch
-	// the filter path BEFORE the rest of the paint so the shape's
-	// rasterization happens into an offscreen buffer the filter graph
-	// consumes. If the filter resolves to an SVGResourceFilter (either
-	// from the in-page registry, or — LOU-130 Phase 2 — by fetching an
-	// external SVG document), paintWithSVGFilter routes through it;
-	// otherwise we fall through to the regular paint path.
-	if style := sp.shape.Style; style != nil && !sp.ctx.clipPathContent {
-		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
-			if filter := resolveSVGFilterValue(sp.ctx, filterVal); filter != nil {
-				sp.paintWithSVGFilter(filter)
-				return
-			}
-			// Single-url misses (unknown id, cycle, etc.) AND the chain
-			// path (when it returns false) both fall through to the
-			// unfiltered paint below — preserves the long-standing
-			// `filter="url(#missing)"` fallback behavior.
-			if ops := style.GetFilter(); len(ops) > 0 && sp.paintWithFilterChain(ops) {
-				return
-			}
+	// The shape's transform (svg.ElementTransform: its CSS transform, or
+	// its SVG transform attribute), as for a container. The scope guard wraps
+	// the filter, the path build, fill and stroke so rasterization happens in
+	// the transformed coordinate space, and the filter is built in it.
+	// Mirrors Blink's SVGShapePainter applying LocalSVGTransform via a
+	// ScopedSVGTransformState, and the filter's local transform space
+	// (buildSVGElementFilter).
+	style := sp.shape.Style
+	effective := svg.ElementTransform(sp.shape, style, sp.shape.Viewport)
+	if !effective.IsIdentity() {
+		guard := pushScopedSVGTransform(sp.ctx, effective, geometry.RectF{})
+		defer guard.Close()
+	}
+
+	// SVG-level filter: url(#id), url(doc#id), CSS filter functions, or a
+	// mix. Per CSS Masking 1 §3.7 rendering order is filter → clip → mask →
+	// composite, so the filter path paints the shape into an offscreen
+	// buffer the graph consumes and clips and masks the output. A filter
+	// that does not resolve falls through to the unfiltered paint below,
+	// the long-standing `filter="url(#missing)"` fallback.
+	if style != nil && !sp.ctx.clipPathContent {
+		if ops := style.GetFilter(); len(ops) > 0 && sp.paintWithFilter(ops) {
+			return
 		}
 	}
 
@@ -84,7 +86,6 @@ func (sp *svgShapePainter) paint() {
 	// painter reads it directly. A nil style means the shape's
 	// element didn't get cascade attention — fall back to SVG
 	// property defaults inside the object painter.
-	style := sp.shape.Style
 	op := newSVGObjectPainter(dc, style)
 	// Phase 4: wire the paint context's resource registry +
 	// shape-relative reference box for `url(#id)` paint resolution.
@@ -106,17 +107,6 @@ func (sp *svgShapePainter) paint() {
 	dc.Push()
 	defer dc.Pop()
 	dc.SetAntiAlias(shouldAntiAliasSVGShape(style))
-
-	// The shape's transform (svg.ElementTransform: its CSS transform, or
-	// its SVG transform attribute), as for a container. The scope guard wraps the path build,
-	// fill and stroke so rasterization happens in the transformed
-	// coordinate space. Mirrors Blink's SVGShapePainter applying
-	// LocalSVGTransform via a ScopedSVGTransformState.
-	effective := svg.ElementTransform(sp.shape, style, sp.shape.Viewport)
-	if !effective.IsIdentity() {
-		guard := pushScopedSVGTransform(sp.ctx, effective, geometry.RectF{})
-		defer guard.Close()
-	}
 
 	// SVG-level clip-path: url(#id). Per SVG 2 §15.3, a `clip-path`
 	// presentation attribute on a shape clips its rendering to the
@@ -258,60 +248,6 @@ func (sp *svgShapePainter) paint() {
 	}
 }
 
-// resolveSVGFilterValue parses an SVG element's `filter` value and resolves
-// it to an SVGResourceFilter. Handles both same-document (`url(#id)`) and
-// external (`url(doc#id)`, where doc is data:/file://, relative path,
-// etc) references — the latter through the paint pass's external SVG
-// cache (Renderer.externalSVGs). Returns nil when:
-//   - the value isn't a `url(...)` reference,
-//   - the same-doc registry lookup misses,
-//   - the external fetch / parse / id-lookup fails,
-//   - the filter is part of a reference cycle.
-func resolveSVGFilterValue(pctx *svgPaintContext, filterVal string) *svg.SVGResourceFilter {
-	docURL, fragID, ok := parseSVGFilterURL(filterVal)
-	if !ok {
-		return nil
-	}
-	return resolveSVGFilterRef(pctx, docURL, fragID)
-}
-
-// resolveSVGFilterRef resolves a url()'s document and fragment to an
-// SVGResourceFilter, as resolveSVGFilterValue does.
-func resolveSVGFilterRef(pctx *svgPaintContext, docURL, fragID string) *svg.SVGResourceFilter {
-	if fragID == "" {
-		return nil
-	}
-	if docURL == "" {
-		// Same-document fast path: registry lookup.
-		if pctx.Resources == nil {
-			return nil
-		}
-		filter, found := pctx.Resources.LookupAsFilter(fragID)
-		if !found || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
-			return nil
-		}
-		return filter
-	}
-	// External: through the paint pass's cache, fetched and built once.
-	return pctx.Renderer.externalSVGs().filter(docURL, fragID, svg.NewSVGLengthContext(pctx.viewport.Size))
-}
-
-// parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
-// `splitFilterRef`. The input is the raw `filter="..."` value (e.g.
-// `url(support/x.svg#f)`). Returns docURL and fragID; ok=false if the
-// value isn't a lone `url(...)`.
-func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
-	// A lone url() is the whole value; anything after it makes a filter
-	// list (url() followed by functions), which the chain path builds. A
-	// malformed url() is a bad-url token: no filter.
-	url, rest, ok := css.ConsumeURL(val)
-	if !ok || rest != "" {
-		return "", "", false
-	}
-	docURL, fragID = splitURLFragment(url)
-	return docURL, fragID, true
-}
-
 // paintWithSVGMask redirects the shape's fill/stroke into an
 // offscreen buffer sized to the shape's device-space bbox, applies
 // the resolved `<mask>` element's children as a kDstIn alpha
@@ -360,7 +296,7 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// geometry pixel-aligns with what DrawImage will composite back.
 	// Paint-server fills and strokes run through the buffer's paint
 	// context instead of the page target.
-	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice, sp.ctx.ancestorToDevice)
+	buf, childCtx := newSVGEffectSource(sp.ctx, buffer, toDevice)
 	childOp := newSVGObjectPainter(childCtx.dc, op.style).withResources(
 		op.resources, op.refBox, op.lengthCtx,
 	)
@@ -382,24 +318,27 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 	// Composite the masked buffer back at (bx, by), the device position
 	// it was rasterized at. Clear any in-flight path first.
 	sp.ctx.dc.ClearPath()
-	compositeMaskedShapeOnto(sp.ctx.dc, toDevice, buf, bx, by)
+	compositeEffectBufferOnto(sp.ctx.dc, toDevice, buf, bx, by)
 }
 
-// compositeMaskedShapeOnto draws buf, rasterized through toDevice (dc's
-// whole matrix), onto dc at device (bx, by). toDevice is undone for the
-// blit, so what is left is the identity to rounding: an affine one makes the
-// blit a pixel copy (under the clip); under a projective dc the blit is
-// still a homography resample, through a near-identity one, which matches
-// the unmasked shape to within a unit per channel
-// (TestSVG_PerspectiveMaskedShapeUnchanged).
+// compositeEffectBufferOnto draws buf, rasterized through toBuffer (a map
+// from dc's current space into buf's pixels), onto dc at buffer pixel
+// (bx, by): toBuffer is undone for the blit. A masked shape's buffer is
+// rasterized through dc's whole matrix, so what is left is the identity to
+// rounding: an affine one makes the blit a pixel copy (under the clip); under
+// a projective dc the blit is still a homography resample, through a
+// near-identity one, which matches the unmasked shape to within a unit per
+// channel (TestSVG_PerspectiveMaskedShapeUnchanged). A filter's buffer is
+// in its layer, so what is left is the layer's remainder (fLayerToDevMatrix:
+// svgElementFilter.paint).
 //
-// no Blink analog: Blink records the masked content into the paint
-// operation stream under the mask's effect; louis14 composites a
+// no Blink analog: Blink records the masked or filtered content into the
+// paint operation stream under the effect; louis14 composites a
 // pre-rasterized buffer.
-func compositeMaskedShapeOnto(dc textshape.DrawContext, toDevice geometry.Transform, buf *image.RGBA, bx, by int) {
+func compositeEffectBufferOnto(dc textshape.DrawContext, toBuffer geometry.Transform, buf *image.RGBA, bx, by int) {
 	dc.Push()
 	defer dc.Pop()
-	multiplyDCHomography(dc, projectiveHomography(homographyTransform(toDevice).InverseOrIdentity()))
+	multiplyDCHomography(dc, projectiveHomography(homographyTransform(toBuffer).InverseOrIdentity()))
 	dc.DrawImage(buf, bx, by)
 }
 
@@ -468,7 +407,6 @@ func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, r
 	tmpR.dc.Clip()
 
 	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, dfu, r.lookupSVGResources())
-	pctx.regionClip = dcRegionClip(tmpR.dc, regionLocal)
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

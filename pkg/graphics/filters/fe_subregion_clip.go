@@ -19,9 +19,10 @@ type subregionClippedEffect struct {
 }
 
 // NewSubregionClippedEffect wraps `inner` so its output is clipped to
-// `subregion`. The wrapper's operating space matches the inner's.
+// `subregion`; an empty subregion clips everything. The wrapper's operating
+// space matches the inner's.
 func NewSubregionClippedEffect(inner FilterEffect, subregion image.Rectangle) FilterEffect {
-	if inner == nil || subregion.Empty() {
+	if inner == nil {
 		return inner
 	}
 	return &subregionClippedEffect{
@@ -40,7 +41,7 @@ func (e *subregionClippedEffect) ApplyEffect(inputs []*image.RGBA, region image.
 	in := firstInput(inputs, region)
 	out := newRGBA(region)
 	// The buffer is in "region" coordinates: pixel (0, 0) = region.Min
-	// in device space.
+	// in layer pixels.
 	clip := region.Intersect(e.subregion)
 	if clip.Empty() {
 		return out // entirely transparent

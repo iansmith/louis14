@@ -18,7 +18,8 @@ type renderPageConfig struct {
 	externalSVGFetcher func(uri string) ([]byte, error)
 }
 
-// WithImageFetcher installs the layout engine's image fetcher.
+// WithImageFetcher installs the image fetcher on the layout engine and the
+// renderer, as production wires one fetcher into both.
 func WithImageFetcher(f func(uri string) ([]byte, error)) RenderOption {
 	return func(c *renderPageConfig) { c.imageFetcher = f }
 }
@@ -62,6 +63,9 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	boxes := engine.Layout(doc)
 	target := image.NewRGBA(image.Rect(0, 0, w, h))
 	r := NewRendererForImage(target)
+	if c.imageFetcher != nil {
+		r.SetImageFetcher(c.imageFetcher)
+	}
 	if c.externalSVGFetcher != nil {
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
 	}

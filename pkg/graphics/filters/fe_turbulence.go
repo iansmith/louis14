@@ -44,6 +44,13 @@ type FETurbulence struct {
 	NumOctaves  int
 	Seed        float64
 	StitchTiles bool
+	// Mapping maps the noise's parameter space into the layer the effect
+	// runs in; the noise is sampled in parameter space, as
+	// SkPerlinNoiseShader's local matrix is the layer matrix
+	// (FilterResult::MakeFromShader, src/core/SkImageFilterTypes.cpp @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). The zero value is the
+	// identity.
+	Mapping Mapping
 }
 
 // NewFETurbulence constructs a turbulence generator. A negative baseFrequency
@@ -245,15 +252,15 @@ func (e *FETurbulence) ApplyEffect(_ []*image.RGBA, region image.Rectangle) *ima
 		return v
 	}
 
+	layerToParam := e.Mapping.ParamToLayer.InverseOrIdentity()
 	for py := 0; py < h; py++ {
-		// Sample at the pixel centre in the filter's coordinate system. The
-		// turbulence function is defined in the filter region's user space;
-		// region.Min is the absolute device origin, so the in-region sample
-		// point is (region.Min + pixel + 0.5).
-		fy := float64(region.Min.Y) + float64(py) + 0.5
+		// Sample at the pixel centre, region.Min + pixel + 0.5 in layer
+		// pixels, mapped back into the parameter space the turbulence
+		// function is defined in.
+		ly := float64(region.Min.Y) + float64(py) + 0.5
 		row := py * out.Stride
 		for px := 0; px < w; px++ {
-			fx := float64(region.Min.X) + float64(px) + 0.5
+			fx, fy := mapPointAsM33(layerToParam, float64(region.Min.X)+float64(px)+0.5, ly)
 			r := clamp01(e.turbulenceSum(pd, 0, fx, fy))
 			g := clamp01(e.turbulenceSum(pd, 1, fx, fy))
 			b := clamp01(e.turbulenceSum(pd, 2, fx, fy))
