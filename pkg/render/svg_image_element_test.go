@@ -118,3 +118,41 @@ func TestSVGEffects_ClipMaskReferenceBoxAwayFromOrigin(t *testing.T) {
 		wantPixel(t, img, 20, 20, canvasWhite, effect+": outside the box")
 	}
 }
+
+// A percentage in an <image>'s CSS x, y, width or height, bare or inside
+// calc(), is of the SVG viewport: width for x and width, height for y and
+// height (SVGViewportResolver, as LayoutSVGImage::UpdateBoundingBox
+// resolves them, layout_svg_image.cc:140-153 @ a9f50e52), not of the page.
+// On an 800px page, a 200x100 <svg>'s calc(50%) is 100 wide and 50 high.
+func TestSVGImageElement_CalcPercentOfSVGViewport(t *testing.T) {
+	page := func(size string) *image.RGBA {
+		return render.RenderPage(t, `<!DOCTYPE html><style>body{margin:0}svg{display:block}</style>
+<svg width="200" height="100"><defs><filter id="obb"><feFlood flood-color="green"/></filter></defs>
+<g filter="url(#obb)"><image style="`+size+`"/></g></svg>`, 800, 120)
+	}
+	img := page("width:calc(50%);height:calc(50%)")
+	wantPixel(t, img, 50, 25, canvasGreen, "calc(50%): a 100x50 box")
+	wantPixel(t, img, 150, 25, canvasWhite, "calc(50%): 50% of 200, not of the 800px page")
+	img = page("width:calc(10% + 5px);height:50px")
+	wantPixel(t, img, 20, 25, canvasGreen, "calc(10% + 5px): a 25px-wide box")
+	wantPixel(t, img, 50, 25, canvasWhite, "calc(10% + 5px): 10% of 200, not of the 800px page")
+	img = page("x:calc(25%);y:calc(20%);width:20px;height:20px")
+	wantPixel(t, img, 60, 30, canvasGreen, "x 25% of 200 and y 20% of 100: a box at (50,20)")
+	wantPixel(t, img, 10, 10, canvasWhite, "the box is not at the origin")
+}
+
+// An <image> built by script keeps its geometry: createElementNS gives it
+// the SVG namespace (Document::createElementNS, document.cc @ a9f50e52), so
+// its x, y, width and height map to CSS as a parsed one's do.
+func TestSVGImageElement_ScriptBuiltKeepsGeometry(t *testing.T) {
+	img, _ := renderScripted(t, `<!DOCTYPE html><style>body{margin:0}svg{display:block}</style>
+<svg width="120" height="120"><defs><filter id="obb"><feFlood flood-color="green"/></filter></defs><g id="g" filter="url(#obb)"></g></svg>
+<script>
+var im = document.createElementNS("http://www.w3.org/2000/svg", "image");
+im.setAttribute("x", "20"); im.setAttribute("y", "20");
+im.setAttribute("width", "50"); im.setAttribute("height", "50");
+document.getElementById("g").appendChild(im);
+</script>`, 120, 120)
+	wantPixel(t, img, 45, 45, canvasGreen, "the group's flood over the script-built image's box")
+	wantPixel(t, img, 5, 5, canvasWhite, "the box starts at (20,20), not (0,0)")
+}
