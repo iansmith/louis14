@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -762,21 +761,9 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			// Skip if already set by an important rule
-			if importantProps[property] {
-				continue
-			}
+		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, false, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-		}
+		})
 	}
 	// Final layer's revert-layer entries — resolve against the snapshot of
 	// the last layer iterated. resolveCSSWideKeywords below still handles
@@ -839,21 +826,9 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentImportantLayerPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if rule.Important["all"] {
-			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-				importantProps["all"] = true
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			if rule.Important[property] {
-				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-				importantProps[property] = true
-			}
-		}
+		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, true, importantProps, nil, func(property, value string) {
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+		})
 	}
 	flushImportantLayer()
 
@@ -1741,6 +1716,34 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	if isHighlight {
 		highlightAuthorProps = make(map[string]bool)
 	}
+	// pseudoAllowed filters a declaration to the pseudo-element's applicable
+	// properties; recordPseudoAuthor records an applied one as author-set.
+	// `all` resets every property, the highlight color pair included, so it
+	// counts as authoring that pair too — otherwise
+	// applySelectionCascade/applyHighlightPairedColorCascade sees neither
+	// side as author-set and reapplies the UA pair default over it.
+	pseudoAllowed := func(property string) bool {
+		return !(isMarker && !markerAllowedProperty(property)) &&
+			!(isSelection && !selectionAllowedProperty(property)) &&
+			!(isTargetText && !targetTextAllowedProperty(property)) &&
+			!(isCustomHighlight && !highlightAllowedProperty(property))
+	}
+	recordPseudoAuthor := func(property string) {
+		if property == "all" {
+			if isHighlight {
+				highlightAuthorProps["color"] = true
+				highlightAuthorProps["background-color"] = true
+			}
+			return
+		}
+		if isMarker {
+			markerAuthorProps[property] = true
+		}
+		if isHighlight {
+			highlightAuthorProps[property] = true
+			recordHighlightShorthandLonghands(highlightAuthorProps, property)
+		}
+	}
 
 	// Capture the pre-author baseline for `revert` resolution (mirrors
 	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
@@ -1772,50 +1775,10 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-				// `all` resets EVERY property (including color/background-
-				// color) to its all-declared value, so it counts as
-				// authoring the highlight color pair too — otherwise
-				// applySelectionCascade/applyHighlightPairedColorCascade
-				// sees neither side as author-set and reapplies the UA
-				// pair default over whatever `all` just set.
-				if isHighlight {
-					highlightAuthorProps["color"] = true
-					highlightAuthorProps["background-color"] = true
-				}
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			// Skip if already set by an important rule
-			if importantProps[property] {
-				continue
-			}
-			if isMarker && !markerAllowedProperty(property) {
-				continue
-			}
-			if isSelection && !selectionAllowedProperty(property) {
-				continue
-			}
-			if isTargetText && !targetTextAllowedProperty(property) {
-				continue
-			}
-			if isCustomHighlight && !highlightAllowedProperty(property) {
-				continue
-			}
+		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, false, importantProps, pseudoAllowed, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-			if isMarker {
-				markerAuthorProps[property] = true
-			}
-			if isHighlight {
-				highlightAuthorProps[property] = true
-				recordHighlightShorthandLonghands(highlightAuthorProps, property)
-			}
-		}
+			recordPseudoAuthor(property)
+		})
 	}
 	if currentLayerPriority != -1 {
 		resolveRevertLayerOnly(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
@@ -1858,48 +1821,10 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			pseudoCurrentImportantPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if rule.Important["all"] {
-			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
-					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-					importantProps["all"] = true
-					// See the normal-priority `all` handling above for why
-					// this must also mark the highlight color pair authored.
-					if isHighlight {
-						highlightAuthorProps["color"] = true
-						highlightAuthorProps["background-color"] = true
-					}
-				}
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			if rule.Important[property] {
-				if isMarker && !markerAllowedProperty(property) {
-					continue
-				}
-				if isSelection && !selectionAllowedProperty(property) {
-					continue
-				}
-				if isTargetText && !targetTextAllowedProperty(property) {
-					continue
-				}
-				if isCustomHighlight && !highlightAllowedProperty(property) {
-					continue
-				}
-				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-				importantProps[property] = true
-				if isMarker {
-					markerAuthorProps[property] = true
-				}
-				if isHighlight {
-					highlightAuthorProps[property] = true
-					recordHighlightShorthandLonghands(highlightAuthorProps, property)
-				}
-			}
-		}
+		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, true, importantProps, pseudoAllowed, func(property, value string) {
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			recordPseudoAuthor(property)
+		})
 	}
 	pseudoFlushImportant()
 
@@ -3450,6 +3375,61 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	}
 }
 
+// applyDeclarationPass applies the declarations of one importance from a
+// declaration block (a rule's, a style attribute's, an @container rule's):
+// `all` first, since parseDeclarations keeps only the declarations after it,
+// then the rest. The normal pass leaves the properties importantProps holds;
+// the important pass adds what it sets to importantProps, an `all` every
+// longhand it covers. allowed, when non-nil, filters the properties (a
+// pseudo-element's applicable set); apply applies one declaration.
+func applyDeclarationPass(style *Style, decls map[string]string, declImportant map[string]bool, important bool, importantProps map[string]bool, allowed func(string) bool, apply func(property, value string)) {
+	takes := func(p string) bool {
+		return declImportant[p] == important && (allowed == nil || allowed(p))
+	}
+	if v, ok := decls["all"]; ok && takes("all") {
+		switch {
+		case important:
+			apply("all", v)
+			importantProps["all"] = true
+			for p := range cssLonghandProperties {
+				if allShorthandCovers(p) {
+					importantProps[p] = true
+				}
+			}
+			for p := range logicalLonghandStorageKeys {
+				importantProps[p] = true
+			}
+		case !importantProps["all"]:
+			// `all` sets every longhand it covers; restore the important ones.
+			kept := make(map[string]*string, len(importantProps))
+			for p := range importantProps {
+				if v, ok := style.Properties[p]; ok {
+					kept[p] = &v
+				} else {
+					kept[p] = nil
+				}
+			}
+			apply("all", v)
+			for p, v := range kept {
+				if v != nil {
+					style.Properties[p] = *v
+				} else {
+					delete(style.Properties, p)
+				}
+			}
+		}
+	}
+	for p, v := range decls {
+		if p == "all" || !takes(p) || (!important && importantProps[p]) {
+			continue
+		}
+		apply(p, v)
+		if important {
+			importantProps[p] = true
+		}
+	}
+}
+
 // applyContainerQueryRules applies the @container rules matching node, whose
 // queries are evaluated against ancestor containers' computed sizes, after
 // the element's cascade and inheritance, and reports whether any matched.
@@ -3472,30 +3452,11 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 	if len(matched) == 0 {
 		return false
 	}
-	important := style.cascadeImportant
 	for _, pass := range []bool{false, true} {
 		for _, rule := range matched {
-			if allVal, ok := rule.Declarations["all"]; ok && rule.Important["all"] == pass {
-				kept := make(map[string]string)
-				if !pass {
-					for p := range important {
-						if v, ok := style.Properties[p]; ok {
-							kept[p] = v
-						}
-					}
-				}
-				expandShorthand(style, "all", allVal)
-				maps.Copy(style.Properties, kept)
-			}
-			for property, value := range rule.Declarations {
-				if property == "all" || rule.Important[property] != pass || (!pass && important[property]) {
-					continue
-				}
+			applyDeclarationPass(style, rule.Declarations, rule.Important, pass, style.cascadeImportant, nil, func(property, value string) {
 				expandShorthand(style, property, value)
-				if pass {
-					important[property] = true
-				}
-			}
+			})
 		}
 	}
 	return true
