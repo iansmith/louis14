@@ -3175,9 +3175,7 @@ func expandShorthand(style *Style, property, value string) {
 		// CSS Cascade 3 §8 / CSS Cascade 4 §6.3: the `all` shorthand resets
 		// every longhand CSS property to the supplied CSS-wide keyword, with
 		// three exclusions: `direction`, `unicode-bidi`, and custom properties
-		// (--*). Mirrors Blink's all.cc expansion at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates the longhand
-		// table via CSSPropertyIDIterator with these same exclusions.
+		// (--*). See expandAllShorthand for the Blink citations.
 		expandAllShorthand(style, value)
 	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
 		// CSS Backgrounds 3 §5.1: the border-*-width longhands accept line-width
@@ -3217,17 +3215,16 @@ func expandShorthand(style *Style, property, value string) {
 //     `revert` its spec semantics of rolling back to the prior cascade origin,
 //     which for author-origin declarations is the UA result.
 //
-// Mirrors Blink's properties/shorthands/all.cc at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates CSSPropertyIDIterator
-// over every longhand and skips kDirection, kUnicodeBidi, and custom properties.
-// allShorthandCovers reports whether `all` sets prop: every longhand but
-// direction and unicode-bidi, whose initial values come from the document
-// language and bidi context, not CSS. Custom properties (--*) are not
-// longhands (CSS Cascade 4 §6.3).
-func allShorthandCovers(prop string) bool {
-	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
-}
-
+// Mirrors Blink, which expands `all` like any shorthand given a CSS-wide
+// keyword (CSSPropertyParser::ParseCSSWideKeyword ->
+// AddExpandedPropertyForValue, css_property_parser.cc:447-469,
+// css_parsing_utils.cc:4347-4358) over the longhands css_properties.json5
+// generates for it (:8800), every longhand but the affected_by_all: false
+// direction (:1393) and unicode-bidi (:6686), all @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Custom properties are not
+// longhands. A covered key that is not a longhand itself, a logical
+// longhand's internal _-prefixed key or a var() shorthand's, is dropped: its
+// physical longhands carry the keyword.
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3279,6 +3276,25 @@ func expandAllShorthand(style *Style, value string) {
 			style.Set(prop, "revert-layer")
 		}
 	}
+	for k := range style.Properties {
+		if !cssLonghandProperties[k] && allShorthandCovers(k) {
+			delete(style.Properties, k)
+		}
+	}
+}
+
+// allShorthandCovers reports whether `all` sets prop: every longhand but
+// direction and unicode-bidi, whose initial values come from the document
+// language and bidi context, not CSS (CSS Cascade 4 §6.3). A logical
+// longhand's internal _-prefixed key counts as the longhand, and a var()
+// shorthand stored under its own name as its longhands, all of which `all`
+// sets.
+func allShorthandCovers(prop string) bool {
+	prop = strings.TrimPrefix(prop, "_")
+	if slices.Contains(varDeferredShorthands, prop) {
+		return true
+	}
+	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
 }
 
 // nonDefaultInitialValues maps CSS longhand properties whose `initial` /

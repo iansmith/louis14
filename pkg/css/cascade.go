@@ -3458,9 +3458,15 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 			if !evaluateContainerQuery(node, rule.ContainerQuery, styles) {
 				continue
 			}
-			// Apply declarations
+			// Apply declarations, `all` first: parseDeclarations kept only
+			// the declarations after it, as the main cascade assumes.
+			if allVal, ok := rule.Declarations["all"]; ok {
+				expandShorthand(style, "all", allVal)
+			}
 			for property, value := range rule.Declarations {
-				expandShorthand(style, property, value)
+				if property != "all" {
+					expandShorthand(style, property, value)
+				}
 			}
 		}
 	}

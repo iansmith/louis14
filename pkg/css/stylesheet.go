@@ -5133,10 +5133,11 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// declared longhands that must be reset). Store it verbatim; the
 		// cascade-time expandShorthand call applies it before the rule's other
 		// declarations, which by then are only the ones after it (below).
-		// Mirrors Blink's all.cc which never participates
-		// in StyleBuilder expansion the way other shorthands do; it's handled by
-		// the cascade's CSSProperty(kAll)::ApplyValue at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		// Blink expands it at parse time like any shorthand given a CSS-wide
+		// keyword (CSSPropertyParser::ParseCSSWideKeyword,
+		// css_property_parser.cc:447-469 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 defers it for the
+		// cascade-time context above.
 		if property == "all" {
 			// Within one declaration block, !important declarations beat
 			// non-important ones regardless of source order (CSS Cascade 4
