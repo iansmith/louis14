@@ -5155,24 +5155,11 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		style := NewStyle()
 		expandShorthand(style, property, value)
 
-		// Copy all expanded properties to declarations, validating color values
+		// Copy all expanded properties to declarations, validating each.
 		for k, v := range style.Properties {
-			if isColorProperty(k) {
-				if !isValidColorValue(v) {
-					continue
-				}
-			}
-			if isImageProperty(k) {
-				if !isValidImageValue(v) {
-					continue
-				}
-			}
-			if k == "font-family" {
-				normalized, ok := normalizeAndValidateFontFamily(v)
-				if !ok {
-					continue
-				}
-				v = normalized
+			v, ok := validateDeclaredLonghand(k, v)
+			if !ok {
+				continue
 			}
 			// Within one declaration block, an !important declaration beats
 			// a later non-important one (CSS Cascade 4 §8.3). Skip the write
@@ -5208,6 +5195,22 @@ func isLengthProperty(prop string) bool {
 		return true
 	}
 	return false
+}
+
+// validateDeclaredLonghand checks a longhand value a shorthand expanded to
+// as a declared value would be checked, returning it normalized (a
+// font-family list) or false when it is invalid: a color property needs a
+// color, an image property an image.
+func validateDeclaredLonghand(prop, value string) (string, bool) {
+	switch {
+	case isColorProperty(prop):
+		return value, isValidColorValue(value)
+	case isImageProperty(prop):
+		return value, isValidImageValue(value)
+	case prop == "font-family":
+		return normalizeAndValidateFontFamily(value)
+	}
+	return value, true
 }
 
 // isColorProperty returns true for CSS properties that expect color values

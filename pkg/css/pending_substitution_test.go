@@ -75,9 +75,17 @@ func TestPendingSubstitutionMatchesLiteral(t *testing.T) {
 	} {
 		literal := computed(`.b{` + tc.shorthand + `:` + tc.value + `}`)
 		viaVar := computed(`.a{` + tc.earlier + `} .b{--v:` + tc.value + `; ` + tc.shorthand + `:var(--v)}`)
+		// An absent longhand is its initial value, which the var() form may
+		// set explicitly so that an inherited longhand does not inherit.
+		value := func(st *Style, lh string) string {
+			if v, ok := st.Get(lh); ok {
+				return v
+			}
+			return nonDefaultInitialValues[lh]
+		}
 		for _, lh := range shorthandLonghands[tc.shorthand] {
-			want, _ := literal.Get(lh)
-			if got, _ := viaVar.Get(lh); got != want {
+			want := value(literal, lh)
+			if got := value(viaVar, lh); got != want {
 				t.Errorf("%s: var(--v) with --v:%s: %s = %q, want %q (as the literal)", tc.shorthand, tc.value, lh, got, want)
 			}
 		}

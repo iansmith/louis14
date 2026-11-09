@@ -3477,6 +3477,21 @@ func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
 	return snap
 }
 
+// applyInitialOrUnset applies `initial` or `unset` (kw) to a non-custom
+// property: `unset` on an inherited property becomes `inherit`, for the
+// inheritance pass to resolve; otherwise the property takes its initial
+// value, stored when its getter's fallback differs from it
+// (nonDefaultInitialValues) and dropped otherwise (CSS Cascade 4 §7.3).
+func applyInitialOrUnset(s *Style, prop, kw string) {
+	if kw == "unset" && inheritableProperties[prop] {
+		s.Set(prop, "inherit")
+	} else if init, ok := nonDefaultInitialValues[prop]; ok {
+		s.Set(prop, init)
+	} else {
+		delete(s.Properties, prop)
+	}
+}
+
 // resolveCSSWideKeywords handles the longhand-level CSS-wide keywords that
 // expandShorthand stores verbatim — `initial`, `unset`, `revert`, and
 // `revert-layer`. `inherit` is resolved separately in resolveInheritValues
@@ -3535,11 +3550,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				s.Set(prop, "")
 				continue
 			}
-			if init, ok := nonDefaultInitialValues[prop]; ok {
-				s.Set(prop, init)
-			} else {
-				delete(s.Properties, prop)
-			}
+			applyInitialOrUnset(s, prop, "initial")
 		case "unset":
 			if isCustom {
 				// CSS Custom Properties §2.2: custom properties are inherited
@@ -3550,13 +3561,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				s.Set(prop, "inherit")
 				continue
 			}
-			if inheritableProperties[prop] {
-				s.Set(prop, "inherit")
-			} else if init, ok := nonDefaultInitialValues[prop]; ok {
-				s.Set(prop, init)
-			} else {
-				delete(s.Properties, prop)
-			}
+			applyInitialOrUnset(s, prop, "unset")
 		case "revert":
 			if snapVal, ok := originSnap[prop]; ok {
 				s.Set(prop, snapVal)

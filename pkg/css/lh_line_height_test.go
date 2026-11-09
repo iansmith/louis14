@@ -65,8 +65,8 @@ func TestLineHeight_InheritsComputedLength(t *testing.T) {
 }
 
 // TestLineHeight_VarFontShorthandInheritsComputedLength: a line-height set by
-// a var()-deferred `font` shorthand (expanded after the main cascade, in
-// reexpandVarShorthands) is absolutized too.
+// a var() `font` shorthand (pending substitution, resolved in
+// resolvePendingSubstitutions) is absolutized too.
 func TestLineHeight_VarFontShorthandInheritsComputedLength(t *testing.T) {
 	doc, _ := html.Parse(`<style>div { --f: 10px/2em serif; font: var(--f); }
 		span { font-size: 40px; }</style><div><span>x</span></div>`)
