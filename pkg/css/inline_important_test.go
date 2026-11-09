@@ -92,6 +92,8 @@ func TestLogicalLonghandsResolveAtTheirCascadePosition(t *testing.T) {
 		{"vertical-rl: inline normal logical leaves author normal margin-left", `#t{writing-mode:vertical-rl; margin-left:1px}`, `margin-inline-start:5px`, want{"margin-left": "1px", "margin-top": "5px"}},
 		{"later logical beats earlier physical", `#t{margin-left:1px} #t.t{margin-inline-start:5px}`, ``, want{"margin-left": "5px"}},
 		{"later physical beats earlier logical", `#t.t{margin-left:1px} #t{margin-inline-start:5px}`, ``, want{"margin-left": "1px"}},
+		{"in a block, later physical beats earlier logical", `#t{margin-inline-start:5px; margin-left:1px}`, ``, want{"margin-left": "1px"}},
+		{"in a block, later logical beats earlier physical", `#t{margin-left:1px; margin-inline-start:5px}`, ``, want{"margin-left": "5px"}},
 		{"later physical beats earlier logical size", `#t{writing-mode:vertical-rl; inline-size:50px; height:7px}`, ``, want{"height": "7px"}},
 		{"inset-inline-start under rtl", `#t{direction:rtl; position:absolute; inset-inline-start:5px}`, ``, want{"right": "5px", "left": initial("left")}},
 		{"logical initial resets the physical side", `#t{margin-left:5px; margin-inline-start:initial}`, ``, want{"margin-left": initial("margin-left")}},
@@ -128,6 +130,23 @@ func TestInlineStyleComments(t *testing.T) {
 		st := styleByID(t, cascadeHTML(t, `<div id="t" style="`+tc.inline+`"></div>`, nil), "t")
 		if got, _ := st.Get(tc.prop); got != tc.want {
 			t.Errorf("style=%q: %s = %q, want %q", tc.inline, tc.prop, got, tc.want)
+		}
+	}
+}
+
+// TestNoLogicalStorageKeyLeavesTheCascade: every logical longhand's
+// storage key is resolved onto its physical longhand and dropped by the
+// time the document's styles are computed, so no later pass can mistake it
+// for a declaration.
+func TestNoLogicalStorageKeyLeavesTheCascade(t *testing.T) {
+	doc, _ := html.Parse(`<style>#a{margin-inline:1px 2px; padding-block:3px; inset-inline-start:4px; border-inline-start:1px solid red; inline-size:5px; max-block-size:6px}
+		#b{writing-mode:vertical-rl; direction:rtl; margin-block-start:inherit; padding-inline-end:initial}</style>
+		<div id="a"><p id="b">x</p><ul><li>y</li></ul><h1>z</h1></div>`)
+	for n, st := range ApplyStylesToDocument(doc, 800, 600) {
+		for key := range st.Properties {
+			if logicalLonghandStorageKeys[key] != "" {
+				t.Errorf("<%s> keeps logical storage key %s = %q", n.TagName, key, st.Properties[key])
+			}
 		}
 	}
 }

@@ -39,9 +39,10 @@ import (
 // CalculateTransitionUpdateForStandardProperty). louis14 matches the name
 // against the computed Properties map directly, so only PHYSICAL longhand
 // names (and `all`) take effect — shorthand and logical (`margin-inline-*`)
-// names are not expanded/mapped. The engine calls this pass after
-// ResolveLogicalPropertiesInTree, so both style maps are physical-keyed and
-// `all` covers logical declarations via their resolved physical keys.
+// names are not expanded/mapped. The cascade has already mapped logical
+// longhands onto physical ones (resolveDirectionAwareProperties), so both
+// style maps are physical-keyed and `all` covers logical declarations via
+// their resolved physical keys.
 // Sufficient for the WPT css-pseudo transition tests.
 
 // resolvedTransition is one entry of the after-change style's transition

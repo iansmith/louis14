@@ -2,6 +2,8 @@ package css
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -99,12 +101,16 @@ const (
 
 // Rule represents a CSS rule (selector + declarations)
 type Rule struct {
-	Selector       Selector
-	Declarations   map[string]string // property -> value
-	Important      map[string]bool   // tracks which properties are !important
-	MediaQuery     *MediaQuery       // Phase 22: Optional media query wrapper
-	ContainerQuery *ContainerQuery   // Optional @container query wrapper
-	LayerName      string            // @layer name (empty = unlayered)
+	Selector     Selector
+	Declarations map[string]string // property -> value
+	Important    map[string]bool   // tracks which properties are !important
+	// DeclarationOrder is the block's declared properties in source order
+	// (a property declared twice at its last position), the order
+	// applyDeclarationPass applies them in. Nil applies them in any order.
+	DeclarationOrder []string
+	MediaQuery       *MediaQuery     // Phase 22: Optional media query wrapper
+	ContainerQuery   *ContainerQuery // Optional @container query wrapper
+	LayerName        string          // @layer name (empty = unlayered)
 
 	// ImportMediaQueries carries the comma-separated media-query-list from a
 	// conditional `@import url(...) <media-query-list>;` that brought this
@@ -338,7 +344,7 @@ type Stylesheet struct {
 	DefaultNamespace string
 }
 
-// stripCSSComments removes all /* ... */ comments from CSS source, while
+// StripComments removes all /* ... */ comments from CSS source, while
 // preserving string literals (comments inside strings are not stripped).
 //
 // Each comment is replaced with a single space so that adjacent tokens
@@ -355,7 +361,7 @@ type Stylesheet struct {
 // Mirrors Blink's CSSTokenizer::ConsumeToken behavior at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which never bridges between CDO
 // and CDC — they are emitted as solo tokens regardless of context.
-func stripCSSComments(css string) string {
+func StripComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
 	i := 0
@@ -804,7 +810,7 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	}
 
 	// Strip comments before parsing
-	css = stripCSSComments(css)
+	css = StripComments(css)
 
 	// CSS Syntax §5.4.1 `parse-a-stylesheet` discards CDO and CDC tokens at
 	// the top level — this is how the legacy `<style><!-- ... --></style>`
@@ -1207,9 +1213,10 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		}
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{
-			Selector:     selector,
-			Declarations: declResult.Declarations,
-			Important:    declResult.Important,
+			Selector:         selector,
+			Declarations:     declResult.Declarations,
+			Important:        declResult.Important,
+			DeclarationOrder: declResult.Order,
 		})
 	}
 
@@ -1283,9 +1290,10 @@ func parseRule(ruleStr string) (Rule, error) {
 	declResult := parseDeclarations(declStr)
 
 	return Rule{
-		Selector:     selector,
-		Declarations: declResult.Declarations,
-		Important:    declResult.Important,
+		Selector:         selector,
+		Declarations:     declResult.Declarations,
+		Important:        declResult.Important,
+		DeclarationOrder: declResult.Order,
 	}, nil
 }
 
@@ -4848,6 +4856,8 @@ func isHexDigit(c byte) bool {
 type DeclarationResult struct {
 	Declarations map[string]string
 	Important    map[string]bool
+	// Order is the declared properties in source order (Rule.DeclarationOrder).
+	Order []string
 }
 
 // parseDeclarations parses CSS declarations into a map.
@@ -4863,6 +4873,8 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		Declarations: make(map[string]string),
 		Important:    make(map[string]bool),
 	}
+	positions := make(map[string]int) // each declaration's source position
+	position := 0
 
 	parts := splitDeclarationParts(declStr)
 
@@ -5159,6 +5171,8 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 				}
 			}
 			result.Declarations["all"] = value
+			position++
+			positions["all"] = position
 			if isImportant {
 				result.Important["all"] = true
 			}
@@ -5198,12 +5212,18 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 				continue
 			}
 			result.Declarations[k] = v
+			position++
+			positions[k] = position
 			if isImportant {
 				result.Important[k] = true
 			}
 		}
 	}
 
+	// The declarations kept, in source order.
+	result.Order = slices.SortedFunc(maps.Keys(result.Declarations), func(a, b string) int {
+		return positions[a] - positions[b]
+	})
 	return result
 }
 

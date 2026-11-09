@@ -320,8 +320,7 @@ var inheritableProperties = func() map[string]bool {
 
 // logicalLonghands are the flow-relative longhands (CSS Logical Properties
 // 1), each stored under an internal _-prefixed key until
-// resolveLogicalBoxProperties / resolveLogicalSizeProperties map it onto its
-// physical side.
+// resolveDirectionAwareProperties maps it onto its physical longhand.
 var logicalLonghands = []cssProperty{
 	{"inline-size", false, nil},               // :8194
 	{"block-size", false, nil},                // :8209

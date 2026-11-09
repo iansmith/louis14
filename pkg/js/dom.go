@@ -1345,7 +1345,12 @@ func setTextContent(node *html.Node, text string) {
 // SetPropertyInternal, core/css/abstract_property_set_css_style_declaration.cc:
 // 254-282 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Only display is
 // validated here; other properties are stored as written (LOU-684).
+// A value carrying a priority annotation (`red !important`) is invalid: the
+// priority comes only through setProperty's third argument.
 func cssomValueAccepted(property, value string) bool {
+	if _, important, ok := css.SplitPriority(value); !ok || important {
+		return false
+	}
 	return property != "display" || css.IsValidDisplayValue(value)
 }
 
@@ -1508,11 +1513,13 @@ type cssDeclarations []cssDeclaration
 
 // parseDeclarationList splits a CSS declaration list into its
 // declarations in source order, the priority split off each value
-// (css.SplitPriority). A declaration without a colon or with a malformed
-// priority is skipped; a later one replaces an earlier one of the same name.
+// (css.SplitPriority), comments stripped. A declaration without a colon or
+// with a malformed priority is skipped; a later one replaces an earlier one
+// of the same name, unless that one is important and it is not (as the
+// cascade orders a block, CSS Cascade 4 §6.4).
 func parseDeclarationList(s string) cssDeclarations {
 	var decls cssDeclarations
-	for _, decl := range css.SplitDeclarations(s) {
+	for _, decl := range css.SplitDeclarations(css.StripComments(s)) {
 		idx := strings.IndexByte(decl, ':')
 		if idx < 0 {
 			continue
@@ -1521,7 +1528,11 @@ func parseDeclarationList(s string) cssDeclarations {
 		if !ok {
 			continue
 		}
-		decls = decls.set(strings.TrimSpace(decl[:idx]), value, important)
+		name := strings.TrimSpace(decl[:idx])
+		if decls.get(name).important && !important {
+			continue
+		}
+		decls = decls.set(name, value, important)
 	}
 	return decls
 }
@@ -1625,7 +1636,10 @@ func mergeInlineStyle(node *html.Node, values map[string]string) {
 	}
 	inline := parseDeclarationList(node.Attributes["style"])
 	for prop, v := range values {
-		inline = inline.set(prop, v, false)
+		// An inline !important declaration outranks the animation.
+		if !inline.get(prop).important {
+			inline = inline.set(prop, v, false)
+		}
 	}
 	node.Attributes["style"] = serializeInlineStyle(inline)
 }
