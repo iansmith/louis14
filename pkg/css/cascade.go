@@ -4014,43 +4014,57 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// Unlike the paint attributes above these are meaningful ONLY on <svg> —
 	// width/height on <img>/<td>/<div> carry legacy HTML semantics that are not
 	// CSS lengths — so gate on the tag.
-	if node.TagName == "svg" {
-		for _, attr := range [...]string{"width", "height"} {
-			val, ok := node.GetAttribute(attr)
-			if !ok {
-				continue
-			}
-			cssLen, ok := svgLengthAttrToCSS(val)
-			if !ok {
-				continue
-			}
-			if _, exists := style.Get(attr); !exists {
-				style.Set(attr, cssLen)
-			}
+	//
+	// An <image>'s x, y, width and height map to the CSS x, y, width and
+	// height properties (SVGImageElement binds its x_/y_/width_/height_
+	// SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight,
+	// svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// which LayoutSVGImage::UpdateBoundingBox reads; x and y may be negative.
+	// Both are SVG elements: an HTML-namespace <image> keeps its
+	// attributes.
+	var geometryAttrs []string
+	switch {
+	case node.NamespaceURI() != html.SVGNamespaceURI:
+	case node.TagName == "svg":
+		geometryAttrs = []string{"width", "height"}
+	case node.TagName == "image":
+		geometryAttrs = []string{"x", "y", "width", "height"}
+	}
+	for _, attr := range geometryAttrs {
+		val, ok := node.GetAttribute(attr)
+		if !ok {
+			continue
+		}
+		cssLen, ok := svgLengthAttrToCSS(val, attr == "x" || attr == "y")
+		if !ok {
+			continue
+		}
+		if _, exists := style.Get(attr); !exists {
+			style.Set(attr, cssLen)
 		}
 	}
 }
 
-// svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
-// to a CSS length string: an SVG <length> or <percentage>, a bare number being
+// svgLengthAttrToCSS converts an SVG geometry presentation-attribute value
+// (width/height; x/y with negativeOK) to a CSS length string: an SVG <length> or <percentage>, a bare number being
 // a user unit, equivalent to CSS px (so "0" -> "0px", "120" -> "120px",
 // "100%" -> "100%"). Mirrors SVGSVGElement::CollectStyleForPresentationAttribute
 // mapping the attribute's SVGLength to the CSS width/height
-// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative,
-// non-finite, or non-numeric values are rejected (a negative or infinite
+// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative
+// values (unless negativeOK), non-finite or non-numeric ones are rejected (a negative or infinite
 // width/height is an SVG error → the box falls back to its default sizing).
 // strconv.ParseFloat accepts "Inf"/"Infinity" and "NaN", so explicit
 // math.IsInf / math.IsNaN guards keep them from becoming "+Infpx" / "NaNpx".
-func svgLengthAttrToCSS(val string) (string, bool) {
+func svgLengthAttrToCSS(val string, negativeOK bool) (string, bool) {
 	s := strings.TrimSpace(val)
 	if n, err := strconv.ParseFloat(s, 64); err == nil {
-		if n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+		if (n < 0 && !negativeOK) || math.IsInf(n, 0) || math.IsNaN(n) {
 			return "", false
 		}
 		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
 	}
 	lower := strings.ToLower(s)
-	if strings.HasPrefix(s, "-") || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
+	if (strings.HasPrefix(s, "-") && !negativeOK) || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
 		return "", false
 	}
 	if v, ok := validateCSSLength(s); ok {

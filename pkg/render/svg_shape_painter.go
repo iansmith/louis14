@@ -257,8 +257,8 @@ func (sp *svgShapePainter) paint() {
 // shape into a buffer, rasterize the mask subtree into a parallel
 // buffer, modulate, composite. Phase 5 implements the case where the
 // shape has only a single shape geometry (the hand-check tests). The
-// mask's MaskContentUnits + MaskUnits resolution flows through
-// rasterizeSVGMask, identical to the CSS-box mask path.
+// mask's MaskUnits and MaskContentUnits resolve through
+// rasterizeSVGElementMask against the fill box (ReferenceBoxForEffects).
 func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *svgObjectPainter, willFill, willStroke bool) {
 	// Compute the shape's bbox in DEVICE pixels. The shape's
 	// FillBoundingBox is in user-space; map it through the draw context's
@@ -304,12 +304,11 @@ func (sp *svgShapePainter) paintWithSVGMask(masker *svg.SVGResourceMasker, op *s
 		return
 	}
 
-	// Rasterize the mask. The mask's user-space reference box is the
-	// shape's FillBoundingBox in user-space; the rasterizer needs
-	// the buffer extent and the page-pixel offset (bx, by) so the
-	// buffer alignment is consistent.
-	maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-		masker, userBBox, bw, bh, bx, by, toDevice,
+	// Rasterize the mask against the shape's fill box, its reference box
+	// for effects, into a buffer aligned with the shape's: the same extent
+	// and device-pixel offset (bx, by).
+	maskBuf := sp.ctx.Renderer.rasterizeSVGElementMask(
+		masker, sp.shape.FillBoundingBox, sp.ctx.viewport.Size, bw, bh, bx, by, toDevice,
 	)
 	if maskBuf != nil {
 		applySVGMaskToBuffer(buf, maskBuf, masker.MaskType)
@@ -342,69 +341,43 @@ func compositeEffectBufferOnto(dc textshape.DrawContext, toBuffer geometry.Trans
 	dc.DrawImage(buf, bx, by)
 }
 
-// rasterizeSVGMaskAtDeviceBBox is the SVG-shape variant of
-// rasterizeSVGMask: same signature except the refBox is in USER
-// space (the shape's FillBoundingBox) and we receive the existing
-// DeviceFromUser so the mask children rasterize at the same scale
-// as the shape did.
+// rasterizeSVGElementMask rasterizes masker for an SVG element into a
+// bufW×bufH buffer whose pixel (0, 0) is (bx, by) in the frame toDevice maps
+// the element's user space into. referenceBox is the element's reference box
+// for effects in user space (SVGResources::ReferenceBoxForEffects), viewport
+// the size of its nearest <svg> viewport.
 //
-// Mirrors the CSS-box rasterizeSVGMask but operates in the SVG paint
-// walk's user-space coordinate system.
-func (r *Renderer) rasterizeSVGMaskAtDeviceBBox(masker *svg.SVGResourceMasker, refBoxUser geometry.RectF, bufW, bufH, bx, by int, toDevice geometry.Transform) *image.RGBA {
+// Mirrors Blink's mask on an SVG element: the mask region is resolved by
+// LayoutSVGResourceContainer::ResolveRectangle, fractions of the reference
+// box for objectBoundingBox and user-space lengths with percentages of the
+// viewport for userSpaceOnUse (layout_svg_resource_container.cc:115-137 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the content is drawn in user
+// space, translated and scaled to the reference box for objectBoundingBox
+// maskContentUnits (MaskToContentTransform, svg_mask_painter.cc:34-47).
+func (r *Renderer) rasterizeSVGElementMask(masker *svg.SVGResourceMasker, referenceBox geometry.RectF, viewport geometry.SizeF, bufW, bufH, bx, by int, toDevice geometry.Transform) *image.RGBA {
 	if masker == nil || bufW <= 0 || bufH <= 0 {
 		return nil
 	}
-	lengthCtx := svg.NewSVGLengthContext(geometry.SizeF{
-		Width: refBoxUser.Width(), Height: refBoxUser.Height(),
-	})
-	// For SVG-shape mask references, the mask's coords resolve in
-	// the shape's user-space, with the shape at user-space origin
-	// (refBoxUser.X, refBoxUser.Y). Mirrors how Blink's mask
-	// resolution uses the shape's ObjectBoundingBox in user-space.
-	boxLocalRef := geometry.NewRectF(0, 0, refBoxUser.Width(), refBoxUser.Height())
-	region := masker.ResourceBoundingBox(boxLocalRef, lengthCtx)
+	region := masker.ResourceBoundingBox(referenceBox, svg.NewSVGLengthContext(viewport))
 
 	maskBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
 	tmpR := r.newChildRenderer(maskBuf)
-	// Buffer pixel (0, 0) = device pixel (bx, by). Compose the
-	// device-pixel translate with the user→device map so the mask
-	// children rasterize where the shape did.
+	// Buffer pixel (0, 0) is (bx, by); the element's user space maps through
+	// toDevice. The mask region clips in user space.
 	tmpR.dc.Translate(float64(-bx), float64(-by))
 	multiplyDCHomography(tmpR.dc, projectiveHomography(toDevice))
+	tmpR.dc.DrawRectangle(region.X(), region.Y(), region.Width(), region.Height())
+	tmpR.dc.Clip()
+
 	// The mask content's paint servers map user space through the matrix's
 	// affine part (LOU-778 under a projective one).
-	deviceFromUser := geometry.AffineTransformFromTransform(toDevice)
-	// Box-local frame inside the user-space DC.
-	tmpR.dc.Translate(refBoxUser.X(), refBoxUser.Y())
-
-	var dfu geometry.AffineTransform
-	pageFromBoxLocal := geometry.Translate(refBoxUser.X(), refBoxUser.Y())
-	bufferFromPage := geometry.Translate(-float64(bx), -float64(by))
-	switch masker.MaskContentUnits {
-	case svg.SVGUnitObjectBoundingBox:
-		tmpR.dc.MultiplyMatrix(refBoxUser.Width(), 0, 0, refBoxUser.Height(), 0, 0)
-		dfu = bufferFromPage.Compose(deviceFromUser).Compose(pageFromBoxLocal).Compose(
-			geometry.Scale(refBoxUser.Width(), refBoxUser.Height()),
-		)
-	default:
-		dfu = bufferFromPage.Compose(deviceFromUser).Compose(pageFromBoxLocal)
+	dfu := geometry.Translate(-float64(bx), -float64(by)).Compose(geometry.AffineTransformFromTransform(toDevice))
+	if masker.MaskContentUnits == svg.SVGUnitObjectBoundingBox {
+		content := geometry.Translate(referenceBox.X(), referenceBox.Y()).Compose(
+			geometry.Scale(referenceBox.Width(), referenceBox.Height()))
+		tmpR.dc.MultiplyMatrix(content.A, content.B, content.C, content.D, content.E, content.F)
+		dfu = dfu.Compose(content)
 	}
-
-	// Clip to mask region (in the DC's current coord system —
-	// box-local for userSpaceOnUse content, unit-square for
-	// objectBoundingBox content).
-	regionLocal := region
-	if masker.MaskContentUnits == svg.SVGUnitObjectBoundingBox &&
-		refBoxUser.Width() != 0 && refBoxUser.Height() != 0 {
-		regionLocal = geometry.NewRectF(
-			region.X()/refBoxUser.Width(),
-			region.Y()/refBoxUser.Height(),
-			region.Width()/refBoxUser.Width(),
-			region.Height()/refBoxUser.Height(),
-		)
-	}
-	tmpR.dc.DrawRectangle(regionLocal.X(), regionLocal.Y(), regionLocal.Width(), regionLocal.Height())
-	tmpR.dc.Clip()
 
 	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, dfu, r.lookupSVGResources())
 	for _, child := range masker.Children {

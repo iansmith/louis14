@@ -449,7 +449,9 @@ func (c *SVGContainer) Paint(ctx *SVGPaintContext) {}
 // still adds its stroke; a container when its object bounding box is valid,
 // empty or not (a <g> of one such <line>). Hidden containers (<defs>, the
 // resources) build no container node. Any other node stands in with a
-// non-empty object bounding box (SVGText: LOU-795).
+// non-empty object bounding box: an <image> (LayoutSVGImage::
+// IsObjectBoundingBoxValid, layout_svg_image.h:59-62 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), or SVGText (LOU-795).
 func hasValidBoundingBoxForContainer(child SVGNode) bool {
 	switch c := child.(type) {
 	case *SVGShape:

@@ -129,7 +129,11 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 	// inside it (buildSVGElementFilter).
 	guard := pushScopedSVGTransform(pctx, svg.ElementTransform(c, c.Style, c.Viewport), geometry.RectF{})
 	defer guard.Close()
-	if trySVGContainerFilterDispatch(pctx, c) {
+	if trySVGFilterDispatch(pctx, c, c.Style, func(childCtx *svgPaintContext) {
+		for _, child := range c.Children {
+			paintSVGNode(childCtx, child)
+		}
+	}) {
 		return
 	}
 

@@ -209,7 +209,7 @@ func appendStyleRefs(refs []string, style *css.Style) []string {
 
 // appendNodeRefs walks an SVGNode subtree and accumulates references
 // from each descendant's style. Container types recurse into their
-// Children; leaf types (SVGShape) contribute their own style. Resource
+// Children; leaf types (SVGShape, SVGImage) contribute their own style. Resource
 // elements (clipper/masker/pattern/gradient) don't appear as descendants
 // of other resources via Children — they live in the registry — so
 // the recursion terminates at the existing svg-tree boundary.
@@ -219,6 +219,8 @@ func appendNodeRefs(refs []string, node SVGNode) []string {
 	}
 	switch n := node.(type) {
 	case *SVGShape:
+		refs = appendStyleRefs(refs, n.Style)
+	case *SVGImage:
 		refs = appendStyleRefs(refs, n.Style)
 	case *SVGContainer:
 		refs = appendStyleRefs(refs, n.Style)

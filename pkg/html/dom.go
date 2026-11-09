@@ -102,7 +102,7 @@ type Node struct {
 	// Unset means the XHTML namespace: the HTML parser's InsertHTMLElement
 	// path, JS createElement and the synthetic html/head/body all create
 	// HTML elements, so only the foreign-content path (<svg>, <math> and
-	// their descendants) sets it. Mirrors Blink Element::tag_name_'s
+	// their descendants) and JS createElementNS (SetNamespaceURI) set it. Mirrors Blink Element::tag_name_'s
 	// namespace (Element::namespaceURI, core/dom/element.h:701 @
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520).
 	namespaceURI string
@@ -136,6 +136,17 @@ const (
 	SVGNamespaceURI    = "http://www.w3.org/2000/svg"
 	MathMLNamespaceURI = "http://www.w3.org/1998/Math/MathML"
 )
+
+// SetNamespaceURI sets the namespace an element is created in, as
+// Document::createElementNS builds the element's QualifiedName from its
+// namespace argument (core/dom/document.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *Node) SetNamespaceURI(ns string) {
+	if ns == XHTMLNamespaceURI {
+		ns = ""
+	}
+	n.namespaceURI = ns
+}
 
 // NamespaceURI returns the element's namespace URI; XHTMLNamespaceURI when
 // none was set. Mirrors Blink Element::namespaceURI (core/dom/element.h:701
