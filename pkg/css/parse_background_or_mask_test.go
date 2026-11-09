@@ -30,7 +30,7 @@ func TestParseBackgroundOrMask_SlashSize_Background334(t *testing.T) {
 		t.Fatalf("got %d layers, want 1", len(layers))
 	}
 	l := layers[0]
-	if !l.SizeSet || l.Size != (BackgroundSize{Width: -100}) {
+	if !l.SizeSet || l.Size != (BackgroundSize{Width: -100, HasWidth: true}) {
 		t.Errorf("size = %+v (set=%v), want 100%% auto", l.Size, l.SizeSet)
 	}
 	if l.Repeat != (BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatNoRepeat}) {
@@ -141,9 +141,9 @@ func TestParseBackgroundOrMask_LocalAttachmentMultiLayer(t *testing.T) {
 		size   BackgroundSize
 		x, y   float64 // resolved in a 100x100 area for the layer's tile
 	}{
-		{BackgroundAttachmentLocal, BackgroundSize{Width: -100, Height: -100}, 0, 0},
-		{BackgroundAttachmentScroll, BackgroundSize{Width: 20, Height: -100}, 0, 0},
-		{BackgroundAttachmentScroll, BackgroundSize{Width: 20, Height: -100}, 80, 0},
+		{BackgroundAttachmentLocal, BackgroundSize{Width: -100, Height: -100, HasWidth: true, HasHeight: true}, 0, 0},
+		{BackgroundAttachmentScroll, BackgroundSize{Width: 20, Height: -100, HasWidth: true, HasHeight: true}, 0, 0},
+		{BackgroundAttachmentScroll, BackgroundSize{Width: 20, Height: -100, HasWidth: true, HasHeight: true}, 80, 0},
 	}
 	for i, w := range want {
 		l := layers[i]
