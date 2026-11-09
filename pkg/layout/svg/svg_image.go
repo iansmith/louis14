@@ -42,19 +42,19 @@ func NewSVGImage(elt ElementAdapter, style *css.Style, lengthCtx SVGLengthContex
 	}
 	img := &SVGImage{Element: elt, Style: style, Viewport: lengthCtx.ViewportSize(), Href: ElementHref(elt)}
 	length := func(name string, mode SVGLengthMode) float64 {
-		var v string
-		if style != nil {
-			v, _ = style.Get(name)
-			// A CSS length, its units and math functions included,
-			// resolves with the CSS machinery.
-			if px, ok := style.GetLengthForVal(v); ok {
-				return px
-			}
-		} else {
-			v, _ = elt.Attribute(name)
+		if style == nil {
+			v, _ := elt.Attribute(name)
+			return lengthCtx.Resolve(v, mode)
 		}
-		// An SVG length, a percentage of the viewport, or auto (0).
-		return lengthCtx.Resolve(v, mode)
+		// A CSS <length-percentage>, units and math functions included,
+		// its percentages of the SVG viewport (SVGViewportResolver): width
+		// for x and width, height for y and height. Auto is 0.
+		base := img.Viewport.Width
+		if mode == LengthModeHeight {
+			base = img.Viewport.Height
+		}
+		v, _ := style.ResolveLengthPercentage(name, base)
+		return v
 	}
 	img.box = geometry.NewRectF(
 		length("x", LengthModeWidth), length("y", LengthModeHeight),
