@@ -354,9 +354,9 @@ func clampNegativeToZero(s geometry.PhysicalSize) geometry.PhysicalSize {
 	}
 }
 
-// resolveFillSizeLength resolves one background-size component: louis14's
-// BackgroundSize stores 0 for auto, a negative value for a percentage, a
-// positive value for pixels.
+// resolveFillSizeLength resolves one set background-size component: louis14's
+// BackgroundSize stores a percentage negated and a length in pixels (auto is
+// HasWidth / HasHeight false).
 func resolveFillSizeLength(v float64, area geometry.LayoutUnit) geometry.LayoutUnit {
 	if v < 0 {
 		return layoutunit.ResolvePercent(area, -v)
@@ -409,7 +409,7 @@ func (g *BackgroundImageGeometry) calculateFillTileSize(fl *css.FillLayer, info 
 
 	// kSizeLength.
 	g.tileSize = areaSize
-	widthAuto, heightAuto := size.Width == 0, size.Height == 0
+	widthAuto, heightAuto := !size.HasWidth, !size.HasHeight
 	if !widthAuto {
 		g.tileSize.Width = resolveFillSizeLength(size.Width, areaSize.Width)
 	}
@@ -456,7 +456,7 @@ func (g *BackgroundImageGeometry) calculateRepeatAndPosition(fl *css.FillLayer, 
 	if repeatX == css.BackgroundRepeatRound && z.Less(snappedAreaSize.Width) && z.Less(g.tileSize.Width) {
 		roundedWidth := computeRoundedTileSize(snappedAreaSize.Width, g.tileSize.Width)
 		// Maintain aspect ratio if background-size: auto is set.
-		if fl.Size.Height == 0 && !fl.Size.Cover && !fl.Size.Contain && repeatY != css.BackgroundRepeatRound {
+		if !fl.Size.HasHeight && !fl.Size.Cover && !fl.Size.Contain && repeatY != css.BackgroundRepeatRound {
 			g.tileSize.Height = resolveClampedHeightForRatio(roundedWidth, g.tileSize)
 		}
 		g.tileSize.Width = roundedWidth
@@ -466,7 +466,7 @@ func (g *BackgroundImageGeometry) calculateRepeatAndPosition(fl *css.FillLayer, 
 	}
 	if repeatY == css.BackgroundRepeatRound && z.Less(snappedAreaSize.Height) && z.Less(g.tileSize.Height) {
 		roundedHeight := computeRoundedTileSize(snappedAreaSize.Height, g.tileSize.Height)
-		if fl.Size.Width == 0 && !fl.Size.Cover && !fl.Size.Contain && repeatX != css.BackgroundRepeatRound {
+		if !fl.Size.HasWidth && !fl.Size.Cover && !fl.Size.Contain && repeatX != css.BackgroundRepeatRound {
 			g.tileSize.Width = resolveClampedWidthForRatio(roundedHeight, g.tileSize)
 		}
 		g.tileSize.Height = roundedHeight
