@@ -45,9 +45,15 @@ func NewSVGImage(elt ElementAdapter, style *css.Style, lengthCtx SVGLengthContex
 		var v string
 		if style != nil {
 			v, _ = style.Get(name)
+			// A CSS length, its units and math functions included,
+			// resolves with the CSS machinery.
+			if px, ok := style.GetLengthForVal(v); ok {
+				return px
+			}
 		} else {
 			v, _ = elt.Attribute(name)
 		}
+		// An SVG length, a percentage of the viewport, or auto (0).
 		return lengthCtx.Resolve(v, mode)
 	}
 	img.box = geometry.NewRectF(

@@ -130,11 +130,12 @@ func (f *svgElementFilter) paint(pctx *svgPaintContext, style *css.Style, paintS
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	out := f.graph.ApplyToSRGB()
 	if out == nil {
-		// A degenerate graph: draw the unfiltered source.
+		// A degenerate graph (no last effect or an empty region, which
+		// buildSVGElementFilter does not hand on): draw the unfiltered
+		// source, still clipped and masked.
 		out = srcBuf
-	} else {
-		f.applyClipMask(pctx, style, out)
 	}
+	f.applyClipMask(pctx, style, out)
 	pctx.dc.ClearPath()
 	compositeEffectBufferOnto(pctx.dc, toLayer, out, region.Min.X, region.Min.Y)
 }
@@ -231,8 +232,8 @@ func (f *svgElementFilter) applyClipMask(pctx *svgPaintContext, style *css.Style
 		if id, ok := css.ParseURLReference(maskVal); ok && pctx.Resources != nil {
 			if masker, found := pctx.Resources.LookupMasker(id); found &&
 				masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
-				maskBuf := pctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-					masker, f.referenceBox,
+				maskBuf := pctx.Renderer.rasterizeSVGElementMask(
+					masker, f.referenceBox, pctx.viewport.Size,
 					region.Dx(), region.Dy(), region.Min.X, region.Min.Y,
 					toLayer,
 				)

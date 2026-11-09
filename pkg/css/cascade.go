@@ -3970,11 +3970,14 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight,
 	// svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
 	// which LayoutSVGImage::UpdateBoundingBox reads; x and y may be negative.
+	// Both are SVG elements: an HTML-namespace <image> keeps its
+	// attributes.
 	var geometryAttrs []string
-	switch node.TagName {
-	case "svg":
+	switch {
+	case node.NamespaceURI() != html.SVGNamespaceURI:
+	case node.TagName == "svg":
 		geometryAttrs = []string{"width", "height"}
-	case "image":
+	case node.TagName == "image":
 		geometryAttrs = []string{"x", "y", "width", "height"}
 	}
 	for _, attr := range geometryAttrs {
