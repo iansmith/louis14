@@ -107,3 +107,17 @@ func TestBackgroundGeometry_TransformedBoxImageNotDoubleOffset(t *testing.T) {
 	wantRGB(t, img, 110, 40, 255, 165, 0, "rotated: orange half now on the left")
 	wantRGB(t, img, 130, 40, 0, 0, 255, "rotated: blue half now on the right")
 }
+
+// LOU-803: a background-size component of 0 is a zero length, not auto. A
+// zero tile dimension gives an empty tile (CalculateFillTileSize's
+// kSizeLength branch keeps it, background_image_geometry.cc:406-482), and
+// an empty tile paints no image (box_painter_base.cc:1281), so only the
+// background colour shows: vars-background-shorthand-001's fourth box.
+// "0" and "0 auto" cover the one- and two-value parses.
+func TestBackgroundSizeZeroPaintsNoImage(t *testing.T) {
+	for _, size := range []string{"0 0", "0", "0px 20px", "20px 0%", "0 auto"} {
+		img := RenderPage(t, `<!DOCTYPE html><style>body{margin:0}
+div{width:50px;height:50px;background:green linear-gradient(red, red) center / `+size+`}</style><div></div>`, 60, 60)
+		wantRGB(t, img, 25, 25, 0, 128, 0, "background-size: "+size+": no gradient tile")
+	}
+}
