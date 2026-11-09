@@ -763,6 +763,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, false, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			finalStyle.setCascadeRank(property, cascadeRankAuthorNormal)
 		})
 	}
 	// Final layer's revert-layer entries — resolve against the snapshot of
@@ -828,6 +829,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, true, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			finalStyle.setCascadeRank(property, cascadeRankAuthorImportant)
 		})
 	}
 	flushImportantLayer()
@@ -848,17 +850,9 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// with is_inline_style, StyleCascade @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; CSS Cascade 5 §6.4).
 	if styleAttr, ok := node.GetAttribute("style"); ok {
-		inlineStyle, inlineImportant := parseInlineStyleWithImportance(styleAttr, ctx)
+		inline := parseInlineDeclarations(styleAttr, ctx)
 		preInlineSnap := snapshotForAllRevert(finalStyle)
-		for property, value := range inlineStyle.Properties {
-			if importantProps[property] && !inlineImportant[property] {
-				continue
-			}
-			finalStyle.Set(property, value)
-			if inlineImportant[property] {
-				importantProps[property] = true
-			}
-		}
+		applyInlineDeclarations(finalStyle, inline, importantProps, finalStyle.setCascadeRank)
 		resolveRevertLayerOnly(finalStyle, revertSnap, preInlineSnap)
 	}
 
@@ -2913,6 +2907,57 @@ func resolveLogicalSizeProperties(style *Style) {
 	}
 }
 
+// Cascade ranks of the author-level origins, in increasing priority (CSS
+// Cascade 5 §6.4: author normal < style attribute normal < author important
+// < style attribute important; CascadePriority with is_inline_style @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). 0 is below them all (the UA
+// and presentational attributes).
+const (
+	cascadeRankAuthorNormal int8 = iota + 1
+	cascadeRankInlineNormal
+	cascadeRankAuthorImportant
+	cascadeRankInlineImportant
+)
+
+// setCascadeRank records the cascade rank property was last set at, for
+// the properties the logical box remap compares: the logical storage keys
+// and the physical sides they map onto.
+func (s *Style) setCascadeRank(property string, rank int8) {
+	if logicalLonghandStorageKeys[property] == "" && !physicalBoxSides[property] {
+		return
+	}
+	if s.cascadeRank == nil {
+		s.cascadeRank = make(map[string]int8)
+	}
+	s.cascadeRank[property] = rank
+}
+
+// physicalBoxSides are the physical margin, padding and border longhands a
+// logical box longhand maps onto (resolveLogicalBoxProperties).
+var physicalBoxSides = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, side := range []string{"top", "right", "bottom", "left"} {
+		for _, p := range []string{"margin-", "padding-"} {
+			m[p+side] = true
+		}
+		for _, suffix := range []string{"-width", "-style", "-color"} {
+			m["border-"+side+suffix] = true
+		}
+	}
+	return m
+}()
+
+// logicalWins reports whether a logical declaration stored under marker
+// maps onto its physical side: when that side is unset, or was set at a
+// lower cascade rank. At equal rank the physical declaration stays (louis14
+// does not record source order across declarations).
+func (s *Style) logicalWins(marker, physical string) bool {
+	if _, set := s.Get(physical); !set {
+		return true
+	}
+	return s.cascadeRank[marker] > s.cascadeRank[physical]
+}
+
 // resolveLogicalBoxProperties resolves logical margin/padding/border properties
 // (e.g. border-inline-start, margin-block-end) to physical properties based on
 // the element's computed writing-mode. Must be called after inheritance.
@@ -3043,7 +3088,7 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 			// set by a higher-cascade-priority source (e.g., author stylesheet
 			// setting padding-top should not be overridden by UA's logical
 			// padding-inline-start resolving to the same physical side).
-			if _, alreadySet := style.Get(correctProp); !alreadySet {
+			if style.logicalWins(m.markerPrefix, correctProp) {
 				style.Set(correctProp, val)
 			}
 			if m.wrongSide != m.correctSide {
@@ -3069,7 +3114,7 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 			if val, ok := style.Get(marker); ok {
 				correctProp := "border-" + m.correctSide + suffix
 
-				if _, alreadySet := style.Get(correctProp); !alreadySet {
+				if style.logicalWins(marker, correctProp) {
 					style.Set(correctProp, val)
 					carriedInherit = carriedInherit || val == "inherit"
 				}

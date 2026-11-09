@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -156,6 +155,10 @@ type Style struct {
 	// rules; applyContainerQueryRules).
 	cascadeImportant map[string]bool
 	revertSnapshot   allShorthandRevertSnapshot
+	// cascadeRank is the author-level cascade rank each property was last
+	// set at (setCascadeRank), for the logical-to-physical remap
+	// (logicalWins).
+	cascadeRank map[string]int8
 
 	// FontFeatureValues is the document-wide @font-feature-values rule list,
 	// snapshot at cascade time. CSS Fonts 4 §11.4: named alternates in
@@ -2435,133 +2438,44 @@ func (s *Style) HasExplicitZIndex() bool {
 	return false
 }
 
-// stripImportantSuffix returns (value-without-!important, true) if value has a
-// trailing "!important" token; otherwise returns (value, false). Used by
-// shorthand expanders so the parser can ignore the priority suffix in the
-// value-token stream. The actual cascade-priority bookkeeping is handled by
-// the per-rule importantProps tracking in cascade.go and by the rule parser's
-// Rule.Important map (cascade.go:466). For inline styles we currently treat
-// !important as best-effort: the suffix is stripped so the longhand value
-// parses correctly, but the priority is not yet tracked separately from the
-// inline ordering. This matches the pre-Phase-1 behavior for shorthand
-// properties (e.g. `text-decoration: underline !important`).
-func stripImportantSuffix(value string) (string, bool) {
-	v := strings.TrimSpace(value)
-	if len(v) < len("!important") {
-		return value, false
-	}
-	// Case-insensitive trailing match.
-	tail := v[len(v)-len("!important"):]
-	if strings.EqualFold(tail, "!important") {
-		return strings.TrimSpace(v[:len(v)-len("!important")]), true
-	}
-	return value, false
-}
-
 // ParseInlineStyle parses a `style=""` attribute's contents. ctx carries
 // the owning document's BaseDir; every url() token in the value is rewritten
 // to its absolute form against ctx before being stored in Style.Properties.
 // Pass nil for "no base URL" (test fixtures that don't exercise URL composition).
 func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
-	style, _ := parseInlineStyleWithImportance(styleAttr, ctx)
+	style := NewStyle()
+	applyInlineDeclarations(style, parseInlineDeclarations(styleAttr, ctx), make(map[string]bool), nil)
 	return style
 }
 
-// parseInlineStyleWithImportance is ParseInlineStyle that also returns the
-// longhands set by !important declarations. Within the attribute an
-// important declaration beats a later normal one, as in a rule's
-// declaration block (CSS Cascade 4 §6.4).
-func parseInlineStyleWithImportance(styleAttr string, ctx *ParserContext) (*Style, map[string]bool) {
-	style := NewStyle()
-	important := make(map[string]bool)
-	// Resolve every `url(...)` token against ctx.BaseDir up front — matches
-	// the Blink invariant that every url() consumed during parse goes
-	// through CSSParserContext::CompleteURL. See ParseStylesheet for the
-	// rationale on rewriting at the source-text level.
-	styleAttr = ctx.RewriteURLs(styleAttr)
-	// Use the same paren/quote-aware splitter the stylesheet parser uses.
-	// A naive strings.Split(";") mangles values like
-	// `filter: url("data:image/svg+xml;utf8,...")` at the `;` inside the
-	// data-URL MIME prefix.
-	declarations := splitDeclarationParts(styleAttr)
-	for _, decl := range declarations {
-		decl = strings.TrimSpace(decl)
-		if decl == "" {
-			continue
+// applyInlineDeclarations applies a style attribute's declarations to style:
+// the normal pass, which leaves importantProps, then the important pass,
+// which adds to it. record, when non-nil, is told each property applied and
+// its cascade rank.
+func applyInlineDeclarations(style *Style, decls DeclarationResult, importantProps map[string]bool, record func(property string, rank int8)) {
+	for _, important := range []bool{false, true} {
+		rank := cascadeRankInlineNormal
+		if important {
+			rank = cascadeRankInlineImportant
 		}
-		parts := strings.SplitN(decl, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		property := strings.TrimSpace(strings.ToLower(parts[0]))
-		value := strings.TrimSpace(parts[1])
-
-		// Strip the !important suffix before parsing, recording it.
-		value, isImportant := stripImportantSuffix(value)
-
-		// CSS Custom Properties §2 / §3: validate name + value (mirrors the
-		// rule-parser gate in parseDeclarations).
-		if strings.HasPrefix(property, "--") {
-			if !isValidCustomPropertyName(property) || !isValidCustomPropertyValue(value) {
-				continue
+		applyDeclarationPass(style, decls.Declarations, decls.Important, important, importantProps, nil, func(property, value string) {
+			expandShorthand(style, property, value)
+			if record != nil {
+				record(property, rank)
 			}
-		}
-
-		// ParseBackgroundSize gate (see parseDeclarations).
-		if property == "background-size" && !isValidBackgroundSizeValue(value) {
-			continue
-		}
-
-		// Display::ParseSingleValue gate (see parseDeclarations).
-		if property == "display" && !IsValidDisplayValue(value) {
-			continue
-		}
-
-		// Phase 2: Expand shorthand properties. A normal declaration leaves
-		// the longhands an earlier important one set.
-		if property == "all" {
-			// `all` writes the style directly (`initial` deletes); restore
-			// what it may not override.
-			applyInlineAll(style, important, value, isImportant)
-			continue
-		}
-		tmp := NewStyle()
-		expandShorthand(tmp, property, value)
-		for p, v := range tmp.Properties {
-			if !isImportant && important[p] {
-				continue
-			}
-			style.Properties[p] = v
-			if isImportant {
-				important[p] = true
-			}
-		}
+		})
 	}
-	return style, important
 }
 
-// applyInlineAll applies an inline `all` declaration to style. A normal one
-// keeps the longhands an earlier important declaration set; an important
-// one makes every longhand it covers important.
-func applyInlineAll(style *Style, important map[string]bool, value string, isImportant bool) {
-	if _, ok := cssWideKeyword(value); !ok {
-		return // `all` takes only a CSS-wide keyword
-	}
-	kept := make(map[string]string)
-	for p := range important {
-		if v, ok := style.Properties[p]; ok && !isImportant {
-			kept[p] = v
-		}
-	}
-	expandShorthand(style, "all", value)
-	maps.Copy(style.Properties, kept)
-	if isImportant {
-		for p := range cssLonghandProperties {
-			if allShorthandCovers(p) {
-				important[p] = true
-			}
-		}
-	}
+// parseInlineDeclarations parses a style attribute as the declaration list
+// a rule's block is (parseDeclarations: validation, in-block !important),
+// once its url() tokens are resolved against ctx — one declaration-list
+// parser for both, as Blink's (CSSParser::ParseInlineStyleDeclaration @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func parseInlineDeclarations(styleAttr string, ctx *ParserContext) DeclarationResult {
+	// Resolve every url() token against ctx.BaseDir up front, as
+	// ParseStylesheet does (CSSParserContext::CompleteURL).
+	return parseDeclarations(ctx.RewriteURLs(styleAttr))
 }
 
 // normalizeVendorPrefixedValue resolves common vendor-prefixed length/width keywords

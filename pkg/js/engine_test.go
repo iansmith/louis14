@@ -388,30 +388,29 @@ func TestCamelToKebab(t *testing.T) {
 
 func TestParseSerializeInlineStyle(t *testing.T) {
 	input := "color: red; font-size: 16px"
-	m := parseInlineStyle(input)
-	if m["color"] != "red" {
-		t.Errorf("color = %q, want red", m["color"])
+	m := parseDeclarationList(input)
+	if got := m.get("color").value; got != "red" {
+		t.Errorf("color = %q, want red", got)
 	}
-	if m["font-size"] != "16px" {
-		t.Errorf("font-size = %q, want 16px", m["font-size"])
+	if got := m.get("font-size").value; got != "16px" {
+		t.Errorf("font-size = %q, want 16px", got)
 	}
 
 	// Modify and serialize
-	m["color"] = "blue"
-	s := serializeInlineStyle(m)
-	m2 := parseInlineStyle(s)
-	if m2["color"] != "blue" {
-		t.Errorf("after serialize, color = %q, want blue", m2["color"])
+	m = m.set("color", "blue", false)
+	m2 := parseDeclarationList(serializeInlineStyle(m))
+	if got := m2.get("color").value; got != "blue" {
+		t.Errorf("after serialize, color = %q, want blue", got)
 	}
-	if m2["font-size"] != "16px" {
-		t.Errorf("after serialize, font-size = %q, want 16px", m2["font-size"])
+	if got := m2.get("font-size").value; got != "16px" {
+		t.Errorf("after serialize, font-size = %q, want 16px", got)
 	}
 }
 
 // containsDecl checks if an inline style string contains a particular property:value.
 func containsDecl(style, prop, val string) bool {
-	m := parseInlineStyle(style)
-	return m[prop] == val
+	d := parseDeclarationList(style).get(prop)
+	return d.name != "" && d.value == val
 }
 
 // TestElementScrollOffsetSetters pins Element.scrollLeft / scrollTop as

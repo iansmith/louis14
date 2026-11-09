@@ -56,3 +56,12 @@ func TestInlineStyleImportantRound1(t *testing.T) {
 		}
 	}
 }
+
+// TestRulePriorityWithoutValueIsDropped: in a rule block too, a priority
+// with no value before it is an invalid declaration.
+func TestRulePriorityWithoutValueIsDropped(t *testing.T) {
+	st := styleByID(t, cascadeHTML(t, `<style>#t{margin-left:3px} #t{margin-left: !important}</style><div id="t"></div>`, nil), "t")
+	if got, _ := st.Get("margin-left"); got != "3px" {
+		t.Errorf("margin-left: !important in a rule: margin-left = %q, want 3px", got)
+	}
+}
