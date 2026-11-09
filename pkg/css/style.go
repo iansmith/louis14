@@ -149,6 +149,13 @@ type Style struct {
 	// Shared by reference across Clone(); never mutated post-cascade.
 	CascadedProps map[string]bool
 
+	// cascadeImportant is the set of properties the element's cascade set
+	// with !important, and revertSnapshot its UA + presentational-attribute
+	// snapshot, for the declarations applied after the cascade (@container
+	// rules; applyContainerQueryRules).
+	cascadeImportant map[string]bool
+	revertSnapshot   allShorthandRevertSnapshot
+
 	// FontFeatureValues is the document-wide @font-feature-values rule list,
 	// snapshot at cascade time. CSS Fonts 4 §11.4: named alternates in
 	// `font-variant-alternates: stylistic(name) | styleset(name) | …` resolve
@@ -2545,7 +2552,7 @@ func expandShorthand(style *Style, property, value string) {
 	// (var() will be resolved later when the property is read).
 	// Case-insensitive per CSS Syntax §4.3.10.
 	if containsVarFunction(value) {
-		if slices.Contains(varDeferredShorthands, property) {
+		if isVarDeferredShorthand[property] {
 			// Store as the shorthand property; reexpandVarShorthands
 			// expands it once var() is substituted.
 			style.Set(property, value)
@@ -3200,20 +3207,12 @@ func expandShorthand(style *Style, property, value string) {
 // values are the CSS-wide keywords: initial, inherit, unset, revert,
 // revert-layer.
 //
-// Implementation strategy per keyword:
-//   - initial: delete each longhand from the style map so the property's
-//     getter fallback returns its initial value.
-//   - inherit: store the literal "inherit" string for each longhand so the
-//     post-cascade resolveInheritValues pass copies the parent's value.
-//   - unset: behaves as `inherit` for inherited properties, as `initial`
-//     otherwise. The inherited set is louis14's existing inheritableProperties
-//     map (the source-of-truth for inheritability used by ApplyInheritedProperties).
-//   - revert / revert-layer: store the literal "revert" string. ComputeStyle
-//     takes a UA+presentational-attribute snapshot before stylesheet rules run;
-//     a post-cascade pass restores those snapshot values for any property whose
-//     final value is "revert" (and deletes the property otherwise). This gives
-//     `revert` its spec semantics of rolling back to the prior cascade origin,
-//     which for author-origin declarations is the UA result.
+// Each covered longhand is set to the keyword through expandShorthand, as a
+// CSS-wide keyword on any shorthand is (setLonghandsToCSSWideKeyword), so a
+// logical longhand also writes its storage key. The cascade's CSS-wide
+// keyword passes then resolve the keyword per longhand: resolveCSSWideKeywords
+// (initial, unset, revert against the UA + presentational-attribute snapshot,
+// revert-layer against the layer's) and resolveInheritValues (inherit).
 //
 // Mirrors Blink, which expands `all` like any shorthand given a CSS-wide
 // keyword (CSSPropertyParser::ParseCSSWideKeyword ->
@@ -3222,9 +3221,8 @@ func expandShorthand(style *Style, property, value string) {
 // generates for it (:8800), every longhand but the affected_by_all: false
 // direction (:1393) and unicode-bidi (:6686), all @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Custom properties are not
-// longhands. A covered key that is not a longhand itself, a logical
-// longhand's internal _-prefixed key or a var() shorthand's, is dropped: its
-// physical longhands carry the keyword.
+// longhands. A var() shorthand stored under its own name follows its
+// longhands: rolled back by revert and revert-layer, dropped otherwise.
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3233,52 +3231,29 @@ func expandAllShorthand(style *Style, value string) {
 		// dropped. Mirrors Blink's CSSPropertyParser::ParseSingleValue check.
 		return
 	}
+	// Each longhand takes the keyword through expandShorthand, so a logical
+	// longhand writes it under its storage key too, and the CSS-wide keyword
+	// passes resolve it there (revert against that key's snapshot).
 	for prop := range cssLonghandProperties {
-		if !allShorthandCovers(prop) {
-			continue
-		}
-		switch keyword {
-		case "initial":
-			if init, ok := nonDefaultInitialValues[prop]; ok {
-				// Some longhands have a CSS-spec initial value that differs
-				// from louis14's getter fallback (e.g. `display` initial is
-				// `inline` per CSS Display §2, but GetDisplay returns
-				// DisplayBlock when the property is absent). Setting the
-				// canonical initial keeps `all: initial` spec-conformant
-				// rather than relying on the absence-of-property fallback.
-				style.Set(prop, init)
-			} else {
-				delete(style.Properties, prop)
-			}
-		case "inherit":
-			style.Set(prop, "inherit")
-		case "unset":
-			if inheritableProperties[prop] {
-				style.Set(prop, "inherit")
-			} else if init, ok := nonDefaultInitialValues[prop]; ok {
-				style.Set(prop, init)
-			} else {
-				delete(style.Properties, prop)
-			}
-		case "revert":
-			// Post-cascade resolveCSSWideKeywords replaces this sentinel with
-			// the UA + presentational-attribute snapshot value (or deletes
-			// the property if there was none). Mirrors CSS Cascade 4 §6.1.2.
-			style.Set(prop, "revert")
-		case "revert-layer":
-			// CSS Cascade 5 §6.1.3: `revert-layer` is distinct from `revert`
-			// — it rolls back to the start of the current cascade layer, not
-			// to the previous origin. Preserve the sentinel literally so the
-			// per-layer resolveRevertLayerOnly pass in ComputeStyle uses the
-			// correct snapshot. Collapsing it to "revert" here (the previous
-			// bug) made `all: revert-layer` equivalent to `all: revert` and
-			// broke revert-layer-003.
-			style.Set(prop, "revert-layer")
+		switch {
+		case !allShorthandCovers(prop):
+		case logicalLonghandStorageKeys["_"+prop] != "":
+			expandShorthand(style, prop, keyword)
+		default:
+			style.Set(prop, keyword)
 		}
 	}
-	for k := range style.Properties {
-		if !cssLonghandProperties[k] && allShorthandCovers(k) {
-			delete(style.Properties, k)
+	// A var() shorthand stored under its own name: its longhands now carry
+	// the keyword. revert and revert-layer roll the shorthand back with them
+	// (to a lower layer's declaration, say); any other keyword drops it.
+	for _, prop := range varDeferredShorthands {
+		if _, ok := style.Properties[prop]; !ok {
+			continue
+		}
+		if keyword == "revert" || keyword == "revert-layer" {
+			style.Set(prop, keyword)
+		} else {
+			delete(style.Properties, prop)
 		}
 	}
 }
@@ -3286,12 +3261,14 @@ func expandAllShorthand(style *Style, value string) {
 // allShorthandCovers reports whether `all` sets prop: every longhand but
 // direction and unicode-bidi, whose initial values come from the document
 // language and bidi context, not CSS (CSS Cascade 4 §6.3). A logical
-// longhand's internal _-prefixed key counts as the longhand, and a var()
+// longhand's internal storage key counts as the longhand, and a var()
 // shorthand stored under its own name as its longhands, all of which `all`
 // sets.
 func allShorthandCovers(prop string) bool {
-	prop = strings.TrimPrefix(prop, "_")
-	if slices.Contains(varDeferredShorthands, prop) {
+	if lh, ok := logicalLonghandStorageKeys[prop]; ok {
+		prop = lh
+	}
+	if isVarDeferredShorthand[prop] {
 		return true
 	}
 	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"

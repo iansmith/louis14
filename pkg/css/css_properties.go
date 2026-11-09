@@ -28,56 +28,23 @@ type cssProperty struct {
 // When adding support for a CSS property, add its entry here: the `all`
 // shorthand, inheritance (ApplyInheritedProperties, pseudo-element styles,
 // `unset`) and CSS-wide keywords on shorthands all read this table.
-var cssProperties = []cssProperty{
+var cssProperties = append([]cssProperty{
 	// Longhands (and louis14 single-value properties).
-	{"display", false, nil},    // :3439
-	{"position", false, nil},   // :5232
-	{"float", false, nil},      // :3646
-	{"clear", false, nil},      // :3044
-	{"visibility", true, nil},  // :6815
-	{"top", false, nil},        // :6532
-	{"right", false, nil},      // :5384
-	{"bottom", false, nil},     // :2878
-	{"left", false, nil},       // :4158
-	{"width", false, nil},      // :8095
-	{"min-width", false, nil},  // :4567
-	{"max-width", false, nil},  // :4519
-	{"height", false, nil},     // :3925
-	{"min-height", false, nil}, // :4543
-	{"max-height", false, nil}, // :4495
-	// Logical longhands, stored under an internal _-prefixed key until
-	// resolveLogicalBoxProperties / resolveLogicalSizeProperties map them
-	// onto their physical side.
-	{"inline-size", false, nil},                  // :8194
-	{"block-size", false, nil},                   // :8209
-	{"min-inline-size", false, nil},              // :8224
-	{"min-block-size", false, nil},               // :8237
-	{"max-inline-size", false, nil},              // :8251
-	{"max-block-size", false, nil},               // :8265
-	{"margin-inline-start", false, nil},          // :8279
-	{"margin-inline-end", false, nil},            // :8295
-	{"margin-block-start", false, nil},           // :8312
-	{"margin-block-end", false, nil},             // :8328
-	{"padding-inline-start", false, nil},         // :8344
-	{"padding-inline-end", false, nil},           // :8356
-	{"padding-block-start", false, nil},          // :8368
-	{"padding-block-end", false, nil},            // :8380
-	{"border-inline-start-width", false, nil},    // :8392
-	{"border-inline-start-style", false, nil},    // :8404
-	{"border-inline-start-color", false, nil},    // :8416
-	{"border-inline-end-width", false, nil},      // :8427
-	{"border-inline-end-style", false, nil},      // :8439
-	{"border-inline-end-color", false, nil},      // :8451
-	{"border-block-start-width", false, nil},     // :8462
-	{"border-block-start-style", false, nil},     // :8474
-	{"border-block-start-color", false, nil},     // :8486
-	{"border-block-end-width", false, nil},       // :8497
-	{"border-block-end-style", false, nil},       // :8509
-	{"border-block-end-color", false, nil},       // :8521
-	{"inset-inline-start", false, nil},           // :8532
-	{"inset-inline-end", false, nil},             // :8546
-	{"inset-block-start", false, nil},            // :8560
-	{"inset-block-end", false, nil},              // :8574
+	{"display", false, nil},                      // :3439
+	{"position", false, nil},                     // :5232
+	{"float", false, nil},                        // :3646
+	{"clear", false, nil},                        // :3044
+	{"visibility", true, nil},                    // :6815
+	{"top", false, nil},                          // :6532
+	{"right", false, nil},                        // :5384
+	{"bottom", false, nil},                       // :2878
+	{"left", false, nil},                         // :4158
+	{"width", false, nil},                        // :8095
+	{"min-width", false, nil},                    // :4567
+	{"max-width", false, nil},                    // :4519
+	{"height", false, nil},                       // :3925
+	{"min-height", false, nil},                   // :4543
+	{"max-height", false, nil},                   // :4495
 	{"margin-top", false, nil},                   // :4377
 	{"margin-right", false, nil},                 // :4350
 	{"margin-bottom", false, nil},                // :4297
@@ -337,7 +304,7 @@ var cssProperties = []cssProperty{
 	{"animation", false, []string{"animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-name", "animation-timeline", "animation-range-start", "animation-range-end"}}, // :9036
 	{"text-emphasis", false, []string{"text-emphasis-style", "text-emphasis-color"}},                                                            // :10137
 	{"text-decoration", false, []string{"text-decoration-line", "text-decoration-thickness", "text-decoration-style", "text-decoration-color"}}, // :10023
-}
+}, logicalLonghands...)
 
 // inheritableProperties is the set of inherited properties: Blink's
 // CSSProperty::IsInherited (`inherited: true` in css_properties.json5).
@@ -347,6 +314,53 @@ var inheritableProperties = func() map[string]bool {
 		if p.inherited {
 			m[p.name] = true
 		}
+	}
+	return m
+}()
+
+// logicalLonghands are the flow-relative longhands (CSS Logical Properties
+// 1), each stored under an internal _-prefixed key until
+// resolveLogicalBoxProperties / resolveLogicalSizeProperties map it onto its
+// physical side.
+var logicalLonghands = []cssProperty{
+	{"inline-size", false, nil},               // :8194
+	{"block-size", false, nil},                // :8209
+	{"min-inline-size", false, nil},           // :8224
+	{"min-block-size", false, nil},            // :8237
+	{"max-inline-size", false, nil},           // :8251
+	{"max-block-size", false, nil},            // :8265
+	{"margin-inline-start", false, nil},       // :8279
+	{"margin-inline-end", false, nil},         // :8295
+	{"margin-block-start", false, nil},        // :8312
+	{"margin-block-end", false, nil},          // :8328
+	{"padding-inline-start", false, nil},      // :8344
+	{"padding-inline-end", false, nil},        // :8356
+	{"padding-block-start", false, nil},       // :8368
+	{"padding-block-end", false, nil},         // :8380
+	{"border-inline-start-width", false, nil}, // :8392
+	{"border-inline-start-style", false, nil}, // :8404
+	{"border-inline-start-color", false, nil}, // :8416
+	{"border-inline-end-width", false, nil},   // :8427
+	{"border-inline-end-style", false, nil},   // :8439
+	{"border-inline-end-color", false, nil},   // :8451
+	{"border-block-start-width", false, nil},  // :8462
+	{"border-block-start-style", false, nil},  // :8474
+	{"border-block-start-color", false, nil},  // :8486
+	{"border-block-end-width", false, nil},    // :8497
+	{"border-block-end-style", false, nil},    // :8509
+	{"border-block-end-color", false, nil},    // :8521
+	{"inset-inline-start", false, nil},        // :8532
+	{"inset-inline-end", false, nil},          // :8546
+	{"inset-block-start", false, nil},         // :8560
+	{"inset-block-end", false, nil},           // :8574
+}
+
+// logicalLonghandStorageKeys maps the internal key each logical longhand is
+// stored under to the longhand.
+var logicalLonghandStorageKeys = func() map[string]string {
+	m := make(map[string]string, len(logicalLonghands))
+	for _, p := range logicalLonghands {
+		m["_"+p.name] = p.name
 	}
 	return m
 }()
