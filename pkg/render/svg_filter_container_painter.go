@@ -10,8 +10,9 @@ import (
 // filter functions, or a mix, built in the element's user space, its own
 // transform included, which pctx's draw context is already in
 // (buildSVGElementFilter). paintContent paints what the filter's source
-// graphic holds: a container's children; nil for an <image>, whose image is
-// not drawn yet (LOU-797). Mirrors Blink's SVGContainerPainter, whose filter
+// graphic holds: a container's children; nothing yet for an <image>, whose
+// image is not drawn (LOU-797). The filtered output is clipped and masked
+// (svgElementFilter.paint). Mirrors Blink's SVGContainerPainter, whose filter
 // effect node is installed when the container has a filter
 // (SVGElementResourceClient::UpdateFilterData → FilterEffectBuilder::
 // BuildFilterOperations, svg_resources.cc:371-422 @
@@ -33,10 +34,7 @@ func trySVGFilterDispatch(pctx *svgPaintContext, node svg.SVGNode, style *css.St
 		return false
 	}
 	if f != nil {
-		if paintContent == nil {
-			paintContent = func(*svgPaintContext) {}
-		}
-		f.paint(pctx, paintContent, nil)
+		f.paint(pctx, style, paintContent)
 	}
 	return true
 }

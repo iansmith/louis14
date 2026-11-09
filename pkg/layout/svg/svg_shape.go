@@ -208,15 +208,6 @@ func (s *SVGShape) Paint(ctx *SVGPaintContext) {
 	// SVGShapePainter).
 }
 
-// xywhLengths resolves an element's x, y, width and height attributes
-// against ctx, each 0 when missing (a <rect>'s or an <image>'s box).
-func xywhLengths(elt ElementAdapter, ctx SVGLengthContext) (x, y, w, h float64) {
-	return getLength(elt, "x", LengthModeWidth, ctx, 0),
-		getLength(elt, "y", LengthModeHeight, ctx, 0),
-		getLength(elt, "width", LengthModeWidth, ctx, 0),
-		getLength(elt, "height", LengthModeHeight, ctx, 0)
-}
-
 // buildRectPath builds the geometry for `<rect>`. Per SVG 1.1 §9.2:
 //   - x, y default to 0
 //   - width, height default to 0 (zero-sized rect produces nothing)
@@ -227,7 +218,10 @@ func xywhLengths(elt ElementAdapter, ctx SVGLengthContext) (x, y, w, h float64) 
 // Negative width/height makes the rect invalid (the spec says "shall be
 // treated as an error" — Blink's behavior is to skip the path).
 func buildRectPath(shape *SVGShape, elt ElementAdapter, ctx SVGLengthContext) {
-	x, y, w, h := xywhLengths(elt, ctx)
+	x := getLength(elt, "x", LengthModeWidth, ctx, 0)
+	y := getLength(elt, "y", LengthModeHeight, ctx, 0)
+	w := getLength(elt, "width", LengthModeWidth, ctx, 0)
+	h := getLength(elt, "height", LengthModeHeight, ctx, 0)
 	if w <= 0 || h <= 0 {
 		shape.GeometryType = GeometryRect
 		return

@@ -75,9 +75,8 @@ func (p *svgFilterPrimitiveAdapter) ResolveImageSource(filterRegion, subregion i
 	return src, target, parNone
 }
 
-// readImageHref reads the `href` attribute (preferring the plain form
-// over the legacy `xlink:href`, per SVG 2 §6.4) from the feImage
-// element. Returns "" when neither attribute is set.
+// readImageHref returns the feImage element's href (svg.ElementHref: href
+// when specified, even empty, else xlink:href), "" when it has none.
 func (p *svgFilterPrimitiveAdapter) readImageHref() string {
 	if p.elt == nil {
 		return ""

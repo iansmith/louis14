@@ -27,19 +27,32 @@ type SVGImage struct {
 	transform geometry.AffineTransform
 }
 
-// NewSVGImage builds an SVGImage from an <image> element, resolving its
-// x, y, width and height against lengthCtx (LayoutSVGImage::
-// UpdateBoundingBox, layout_svg_image.cc:140-153 @ a9f50e52). A missing or
-// auto width or height is 0: louis14 does not load the image, so it has no
-// natural size to take (CalculateObjectSize's no-image branch,
-// layout_svg_image.cc:110-112, uses the style size as is).
-func NewSVGImage(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGImage {
+// NewSVGImage builds an SVGImage from an <image> element with its computed
+// style, resolving its x, y, width and height against lengthCtx
+// (LayoutSVGImage::UpdateBoundingBox, layout_svg_image.cc:140-153 @
+// a9f50e52). They are the computed CSS x, y, width and height, which the
+// attributes map to (svg_image_element.cc:41-64); without a style (only a
+// tree built with no style resolver), the attributes. An auto or missing
+// width or height is 0 (Resolve gives 0 for both): louis14 does not
+// load the image, so it has no natural size to take (CalculateObjectSize's
+// no-image branch, layout_svg_image.cc:110-112, uses the style size as is).
+func NewSVGImage(elt ElementAdapter, style *css.Style, lengthCtx SVGLengthContext) *SVGImage {
 	if elt == nil {
 		return nil
 	}
-	img := &SVGImage{Element: elt, Viewport: lengthCtx.ViewportSize(), Href: ElementHref(elt)}
-	x, y, w, h := xywhLengths(elt, lengthCtx)
-	img.box = geometry.NewRectF(x, y, max(w, 0), max(h, 0))
+	img := &SVGImage{Element: elt, Style: style, Viewport: lengthCtx.ViewportSize(), Href: ElementHref(elt)}
+	length := func(name string, mode SVGLengthMode) float64 {
+		var v string
+		if style != nil {
+			v, _ = style.Get(name)
+		} else {
+			v, _ = elt.Attribute(name)
+		}
+		return lengthCtx.Resolve(v, mode)
+	}
+	img.box = geometry.NewRectF(
+		length("x", LengthModeWidth), length("y", LengthModeHeight),
+		max(length("width", LengthModeWidth), 0), max(length("height", LengthModeHeight), 0))
 	v, _ := elt.Attribute("transform")
 	img.transform = ParseSVGTransform(v)
 	return img
@@ -99,11 +112,11 @@ func newSVGLeaf(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver St
 		}
 		return shape, true
 	case tag == "image":
-		img := NewSVGImage(elt, lengthCtx)
+		var style *css.Style
 		if styleResolver != nil {
-			img.Style = styleResolver(elt)
+			style = styleResolver(elt)
 		}
-		return img, true
+		return NewSVGImage(elt, style, lengthCtx), true
 	}
 	return nil, false
 }

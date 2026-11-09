@@ -25,6 +25,10 @@ type svgElementFilter struct {
 	// pixels.
 	graph   *filters.Filter
 	mapping filters.Mapping
+	// referenceBox is the element's reference box for effects, in user
+	// space: the filter's, and its clip-path's and mask's
+	// (SVGResources::ReferenceBoxForEffects).
+	referenceBox geometry.RectF
 }
 
 // buildSVGElementFilter builds an SVG element's resolved filter stages with
@@ -82,7 +86,7 @@ func buildSVGElementFilter(pctx *svgPaintContext, builder *FilterEffectBuilder, 
 	case !effectBufferUsable(region.Dx(), region.Dy()):
 		return nil, false
 	}
-	return &svgElementFilter{graph: graph, mapping: mapping}, true
+	return &svgElementFilter{graph: graph, mapping: mapping, referenceBox: builder.ReferenceBox}, true
 }
 
 // newSVGFilterEffectBuilder returns the builder for an SVG element's filter
@@ -107,14 +111,15 @@ func newSVGFilterEffectBuilder(pctx *svgPaintContext, referenceBox geometry.Rect
 	return b
 }
 
-// paint paints an SVG element through f: paintSource paints the element
-// into the source buffer through the given paint context (the element's user
-// space mapped into the layer), the graph runs over it, afterFilter (when
-// non-nil) modulates the filtered output, and the output is drawn through
+// paint paints an SVG element with style through f: paintSource paints the
+// element into the source buffer through the given paint context (the
+// element's user space mapped into the layer), the graph runs over it, the
+// element's clip-path and mask modulate the filtered output (applyClipMask),
+// and the output is drawn through
 // pctx's draw context with the layer's remainder (fLayerToDevMatrix), so
 // ancestor transforms and the draw context's clips (the <svg> viewport's
 // overflow clip) apply to it.
-func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPaintContext), afterFilter func(out *image.RGBA)) {
+func (f *svgElementFilter) paint(pctx *svgPaintContext, style *css.Style, paintSource func(*svgPaintContext)) {
 	toLayer := f.mapping.ParamToLayer
 	region := f.graph.FilterRegion
 	srcBuf, childCtx := newSVGEffectSource(pctx, region, toLayer)
@@ -127,8 +132,8 @@ func (f *svgElementFilter) paint(pctx *svgPaintContext, paintSource func(*svgPai
 	if out == nil {
 		// A degenerate graph: draw the unfiltered source.
 		out = srcBuf
-	} else if afterFilter != nil {
-		afterFilter(out)
+	} else {
+		f.applyClipMask(pctx, style, out)
 	}
 	pctx.dc.ClearPath()
 	compositeEffectBufferOnto(pctx.dc, toLayer, out, region.Min.X, region.Min.Y)
@@ -165,23 +170,21 @@ func (sp *svgShapePainter) paintWithFilter(ops []css.FilterFunction) bool {
 		return true
 	}
 	willFill, willStroke := svgPaints(style)
-	f.paint(sp.ctx, func(childCtx *svgPaintContext) {
+	f.paint(sp.ctx, style, func(childCtx *svgPaintContext) {
 		childOp := newSVGObjectPainter(childCtx.dc, style).withResources(
 			sp.ctx.Resources, sp.shape.FillBoundingBox,
 			svg.NewSVGLengthContext(sp.ctx.viewport.Size),
 		)
 		sp.rasterizeShape(childCtx, childOp, willFill, willStroke, style)
-	}, func(out *image.RGBA) {
-		sp.applyClipMaskToFilterOutput(out, f.graph.FilterRegion, f.mapping.ParamToLayer)
 	})
 	return true
 }
 
-// svgShapeHasClipOrMask reports whether a shape's style carries a
+// svgHasClipOrMask reports whether an SVG element's style carries a
 // clip-path: url(#id) reference or a mask: url(#id). Used to skip the
 // post-filter clip/mask stage entirely for the common case of a filtered
-// shape with neither effect.
-func svgShapeHasClipOrMask(style *css.Style) bool {
+// element with neither effect.
+func svgHasClipOrMask(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
@@ -194,10 +197,11 @@ func svgShapeHasClipOrMask(style *css.Style) bool {
 	return false
 }
 
-// applyClipMaskToFilterOutput modulates the alpha of a filtered output
-// buffer `out` (sized to `region`, buffer pixel (0,0) == region.Min in
-// layer pixels, which toLayer maps user space into) by the shape's
-// `clip-path` and/or `mask`, in that order. Per CSS Masking 1 §3.7 the filtered content is what gets
+// applyClipMask modulates the alpha of f's filtered output buffer `out`
+// (its FilterRegion, buffer pixel (0,0) == region.Min in layer pixels, which
+// ParamToLayer maps user space into) by the element's `clip-path` and/or
+// `mask` (style), resolved against f's reference box, in that order: for a
+// shape, a container or an <image>. Per CSS Masking 1 §3.7 the filtered content is what gets
 // clipped and masked — mirrors Blink ScopedSVGPaintState nesting the
 // clip/mask recorders around the filter recorder.
 //
@@ -205,30 +209,30 @@ func svgShapeHasClipOrMask(style *css.Style) bool {
 // premultiplied buffer (kDstIn): clip-path produces a binary 0/255
 // coverage from its geometry; mask produces luminance/alpha coverage
 // from the rasterized `<mask>` children.
-func (sp *svgShapePainter) applyClipMaskToFilterOutput(out *image.RGBA, region image.Rectangle, toLayer geometry.Transform) {
-	style := sp.shape.Style
-	if !svgShapeHasClipOrMask(style) {
-		// Common case: a filtered shape with neither clip-path nor mask
+func (f *svgElementFilter) applyClipMask(pctx *svgPaintContext, style *css.Style, out *image.RGBA) {
+	if !svgHasClipOrMask(style) {
+		// Common case: a filtered element with neither clip-path nor mask
 		// pays nothing beyond this guard (no buffer allocation, no
 		// rasterization).
 		return
 	}
+	region, toLayer := f.graph.FilterRegion, f.mapping.ParamToLayer
 	// clip-path: url(#id). The clipper geometry rasterized into a
 	// region-sized coverage buffer becomes a binary alpha mask on the
 	// filtered output.
 	if cp := style.GetClipPath(); cp != nil && cp.Type == css.ClipPathReference {
-		if cov := sp.rasterizeClipCoverageForRegion(cp.ReferenceID, region, toLayer); cov != nil {
+		if cov := rasterizeClipCoverageForRegion(pctx, cp.ReferenceID, f.referenceBox, region, toLayer); cov != nil {
 			applySVGMaskToBuffer(out, cov, svg.SVGMaskTypeAlpha)
 		}
 	}
 	// mask: url(#id). Rasterize the masker into a region-sized buffer
 	// and apply it as a kDstIn luminance/alpha modulator.
 	if maskVal := style.GetMaskImage(); maskVal != "" && maskVal != "none" {
-		if id, ok := css.ParseURLReference(maskVal); ok && sp.ctx.Resources != nil {
-			if masker, found := sp.ctx.Resources.LookupMasker(id); found &&
+		if id, ok := css.ParseURLReference(maskVal); ok && pctx.Resources != nil {
+			if masker, found := pctx.Resources.LookupMasker(id); found &&
 				masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
-				maskBuf := sp.ctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
-					masker, sp.shape.FillBoundingBox,
+				maskBuf := pctx.Renderer.rasterizeSVGMaskAtDeviceBBox(
+					masker, f.referenceBox,
 					region.Dx(), region.Dy(), region.Min.X, region.Min.Y,
 					toLayer,
 				)
@@ -250,11 +254,11 @@ func (sp *svgShapePainter) applyClipMaskToFilterOutput(out *image.RGBA, region i
 //
 // Mirrors how Blink's SVGClipPainter rasterizes a content clip into an
 // alpha layer that then masks the painted (here: filtered) content.
-func (sp *svgShapePainter) rasterizeClipCoverageForRegion(clipPathReferenceID string, region image.Rectangle, toLayer geometry.Transform) *image.RGBA {
-	if sp.ctx.Resources == nil || clipPathReferenceID == "" {
+func rasterizeClipCoverageForRegion(pctx *svgPaintContext, clipPathReferenceID string, referenceBox geometry.RectF, region image.Rectangle, toLayer geometry.Transform) *image.RGBA {
+	if pctx.Resources == nil || clipPathReferenceID == "" {
 		return nil
 	}
-	clipper, ok := sp.ctx.Resources.LookupClipper(clipPathReferenceID)
+	clipper, ok := pctx.Resources.LookupClipper(clipPathReferenceID)
 	if !ok || clipper == nil || !clipper.HasContent() ||
 		clipper.CycleState() == svg.SVGCycleHasCycle {
 		return nil
@@ -264,16 +268,16 @@ func (sp *svgShapePainter) rasterizeClipCoverageForRegion(clipPathReferenceID st
 		return nil
 	}
 	cov := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	tmpR := sp.ctx.Renderer.newChildRenderer(cov)
+	tmpR := pctx.Renderer.newChildRenderer(cov)
 	// Buffer pixel (0,0) == layer pixel region.Min; compose that translate
 	// with the user→layer map so the clip geometry rasterizes where the
-	// shape did.
+	// element did.
 	tmpR.dc.Translate(float64(-region.Min.X), float64(-region.Min.Y))
 	multiplyDCHomography(tmpR.dc, projectiveHomography(toLayer))
 	// Shape-based clipper fast path: replay the path filled opaque
-	// white. The shape's user-space FillBoundingBox is the reference
-	// box for objectBoundingBox-unit clip geometry.
-	if path, ok := clipper.AsPath(sp.shape.FillBoundingBox); ok {
+	// white. The element's user-space reference box is the one
+	// objectBoundingBox-unit clip geometry resolves against.
+	if path, ok := clipper.AsPath(referenceBox); ok {
 		if !buildSVGPathOnDC(tmpR.dc, &path) {
 			return nil
 		}

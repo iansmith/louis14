@@ -54,6 +54,11 @@ func (e *externalSVGElement) SVGChildren() []ElementAdapter {
 // bearing path.
 func (e *externalSVGElement) TextContent() string { return e.text }
 
+// xlinkNamespace is the XLink namespace an external document binds the
+// xlink prefix to; the decoder reports a bound prefix as its namespace URL
+// and an unbound one as the prefix itself.
+const xlinkNamespace = "http://www.w3.org/1999/xlink"
+
 // ParseExternalSVG parses an SVG document's bytes into a tree of
 // ElementAdapters. The returned element is the root `<svg>` (or
 // whichever top-level element appears first). Unknown content
@@ -61,7 +66,8 @@ func (e *externalSVGElement) TextContent() string { return e.text }
 // resolution only needs the element tree.
 //
 // Returns an error if the input is empty or has no element content.
-// Tolerant of XML namespaces (the local name is used).
+// Tolerant of XML namespaces (the local name is used; xlink attributes keep
+// their prefix).
 func ParseExternalSVG(data []byte) (ElementAdapter, error) {
 	dec := xml.NewDecoder(strings.NewReader(string(data)))
 	// Filter elements may declare default namespaces; we accept any
@@ -88,8 +94,13 @@ func ParseExternalSVG(data []byte) (ElementAdapter, error) {
 			}
 			for _, a := range t.Attr {
 				// Keep both original case and lowercased — Attribute()
-				// looks up either form. Strip namespace prefix.
+				// looks up either form. Strip namespace prefix, except
+				// xlink's: xlink:href stays distinct from href, which wins
+				// over it (ElementHref).
 				name := a.Name.Local
+				if a.Name.Space == xlinkNamespace || a.Name.Space == "xlink" {
+					name = "xlink:" + name
+				}
 				elt.attrs[name] = a.Value
 				if low := strings.ToLower(name); low != name {
 					elt.attrs[low] = a.Value
