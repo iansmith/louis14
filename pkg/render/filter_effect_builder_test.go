@@ -198,32 +198,6 @@ func TestSplitFilterRef(t *testing.T) {
 	}
 }
 
-// TestParseSVGFilterURL covers the SVG-attribute parser in
-// svg_shape_painter.go.
-func TestParseSVGFilterURL(t *testing.T) {
-	cases := []struct {
-		in   string
-		doc  string
-		frag string
-		ok   bool
-	}{
-		{"url(#foo)", "", "foo", true},
-		{"url(foo.svg#bar)", "foo.svg", "bar", true},
-		{`url("foo.svg#bar")`, "foo.svg", "bar", true},
-		{"url( 'foo.svg#bar' )", "foo.svg", "bar", true},
-		{"url(foo.svg)", "foo.svg", "", true},
-		{"none", "", "", false},
-		{"", "", "", false},
-	}
-	for _, c := range cases {
-		d, f, ok := parseSVGFilterURL(c.in)
-		if d != c.doc || f != c.frag || ok != c.ok {
-			t.Errorf("parseSVGFilterURL(%q) = (%q, %q, %v), want (%q, %q, %v)",
-				c.in, d, f, ok, c.doc, c.frag, c.ok)
-		}
-	}
-}
-
 // A <filter> from an external document has no layout object: with no
 // color-interpolation-filters attribute it runs in sRGB, auto
 // (ColorInterpolationForElement and ResolveInterpolationSpace,

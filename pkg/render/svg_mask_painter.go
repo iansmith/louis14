@@ -151,7 +151,6 @@ func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geomet
 	// declared at the page scope — feed them the document's id map
 	// (lookupSVGResources).
 	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, deviceFromUser, r.lookupSVGResources())
-	pctx.regionClip = dcRegionClip(tmpR.dc, regionLocal)
 	for _, child := range masker.Children {
 		paintSVGNode(pctx, child)
 	}

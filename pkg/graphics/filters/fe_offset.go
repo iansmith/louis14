@@ -5,7 +5,7 @@ import (
 	"math"
 )
 
-// FEOffset translates its input by (DX, DY) device pixels. Mirrors
+// FEOffset translates its input by (DX, DY) layer pixels. Mirrors
 // platform/graphics/filters/fe_offset.cc.
 type FEOffset struct {
 	baseEffect

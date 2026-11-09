@@ -18,31 +18,34 @@ import (
 // reference + a separately-resolved viewport + reference box.
 //
 // The adapter is stateless — it carries pre-computed coordinates
-// (filter region + reference box in device pixels) and the resolved
+// (the filter region in layer pixels, the reference box, viewport and
+// user-space origin in parameter space, and their mapping) and the resolved
 // interpolation space; everything else routes back to the
 // SVGResourceFilter and its primitive ElementAdapter children.
 type svgFilterElementAdapter struct {
-	filter       *svg.SVGResourceFilter
+	filter *svg.SVGResourceFilter
+	// filterRegion is the filter region in layer pixels, paramRegion in
+	// parameter space.
 	filterRegion image.Rectangle
+	paramRegion  geometry.RectF
+	// referenceBox, subregionViewport and userSpaceOrigin are in parameter
+	// space, which mapping maps into the layer (filters.SVGFilterElement).
 	referenceBox geometry.RectF
-	// subregionViewport is the device-pixel rect whose width/height are
-	// the percentage basis for filter primitive subregion attrs in
+	// subregionViewport is the rect whose width/height are the percentage
+	// basis for filter primitive subregion attrs in
 	// primitiveUnits=userSpaceOnUse (per SVG Filter Effects 1 §7.11,
 	// these resolve against the nearest viewport, NOT the filter region):
 	// the <svg> viewport on the SVG-element paths, the element's reference
 	// (border) box on the CSS `filter: url(...)` HTML-box path. An empty
-	// one (a degenerate viewport) falls back to filterRegion via
-	// SubregionViewport().
+	// one (a degenerate viewport) falls back to the filter region
+	// (resolvePrimitiveSubregion).
 	subregionViewport geometry.RectF
-	// userSpaceOrigin is the SVG element's user-space (0, 0) point
-	// mapped to absolute device pixels. The userSpaceOnUse subregion
-	// anchor for filter primitives uses this — NOT filterRegion.Min,
-	// which can include the default 10% filter-region expansion.
-	// Populated by callers (svg_filter_painter.go via the SVG paint
-	// context's DeviceFromUser transform; filter_effect_builder.go
-	// via the reference box origin for CSS filter: url(...) — no
-	// SVG transform exists in that path).
-	userSpaceOrigin image.Point
+	// userSpaceOrigin is the point userSpaceOnUse primitive coordinates are
+	// relative to: an SVG element's user-space (0, 0), or a CSS box's local
+	// origin. NOT the filter region's origin, which can include the default
+	// 10% filter-region expansion.
+	userSpaceOrigin geometry.PointF
+	mapping         filters.Mapping
 	space           filters.InterpolationSpace
 	// resolveStyle is called for each filter-primitive ElementAdapter
 	// so the adapter can read presentational attributes (flood-color,
@@ -69,21 +72,20 @@ type svgFilterElementAdapter struct {
 // FilterRegion implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) FilterRegion() image.Rectangle { return a.filterRegion }
 
+// ParamFilterRegion implements filters.SVGFilterElement.
+func (a *svgFilterElementAdapter) ParamFilterRegion() geometry.RectF { return a.paramRegion }
+
 // ReferenceBox implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) ReferenceBox() geometry.RectF { return a.referenceBox }
 
-// SubregionViewport implements filters.SVGFilterElement. Returns the
-// subregion viewport, or the filter region when it is empty (a degenerate
-// viewport).
-func (a *svgFilterElementAdapter) SubregionViewport() geometry.RectF {
-	if a.subregionViewport.IsEmpty() {
-		return rectFFromRect(a.filterRegion)
-	}
-	return a.subregionViewport
-}
+// SubregionViewport implements filters.SVGFilterElement.
+func (a *svgFilterElementAdapter) SubregionViewport() geometry.RectF { return a.subregionViewport }
 
 // UserSpaceOrigin implements filters.SVGFilterElement.
-func (a *svgFilterElementAdapter) UserSpaceOrigin() image.Point { return a.userSpaceOrigin }
+func (a *svgFilterElementAdapter) UserSpaceOrigin() geometry.PointF { return a.userSpaceOrigin }
+
+// Mapping implements filters.SVGFilterElement.
+func (a *svgFilterElementAdapter) Mapping() filters.Mapping { return a.mapping }
 
 // PrimitiveUnitsObjectBoundingBox implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) PrimitiveUnitsObjectBoundingBox() bool {

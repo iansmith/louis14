@@ -7,29 +7,6 @@ import (
 	"louis14/pkg/geometry"
 )
 
-func TestCTMCapability(t *testing.T) {
-	src := NewSourceGraphic(InterpolationSpaceSRGB)
-	color := NewFEColorMatrix(src, InterpolationSpaceSRGB, ColorMatrixTypeSaturate, []float64{0})
-	blur := NewFEGaussianBlur(src, InterpolationSpaceSRGB, 2, 2)
-	cases := []struct {
-		name string
-		e    FilterEffect
-		want MatrixCapability
-	}{
-		{"source", src, MatrixCapabilityComplex},
-		{"color matrix", color, MatrixCapabilityComplex},
-		{"blur", blur, MatrixCapabilityScaleTranslate},
-		// The minimum over the graph: a color matrix fed by a blur.
-		{"color over blur", NewFEColorMatrix(blur, InterpolationSpaceSRGB, ColorMatrixTypeSaturate, []float64{0}), MatrixCapabilityScaleTranslate},
-		{"offset", NewFEOffset(color, InterpolationSpaceSRGB, 1, 1), MatrixCapabilityScaleTranslate},
-	}
-	for _, c := range cases {
-		if got := CTMCapability(c.e); got != c.want {
-			t.Errorf("%s: CTMCapability = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 func nearTransform(a, b geometry.Transform) bool {
 	for r := 0; r < 4; r++ {
 		for c := 0; c < 4; c++ {

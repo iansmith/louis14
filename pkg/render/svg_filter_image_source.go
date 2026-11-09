@@ -13,7 +13,7 @@ import (
 
 // ResolveImageSource implements filters.SVGFilterPrimitive for
 // `<feImage>`. Returns a pre-rasterised premultiplied RGBA + the
-// target rect (the primitive subregion in absolute device pixels) +
+// target rect (the primitive subregion in layer pixels) +
 // whether `preserveAspectRatio="none"` is set.
 //
 // Mirrors the dispatch in Blink's FEImage::CreateImageFilter
