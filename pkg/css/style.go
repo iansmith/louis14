@@ -2357,6 +2357,16 @@ func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool
 	return EvalMathFunction(val, s.cssToLengthConversionDataWithPercentBase(percentBase, false))
 }
 
+// ResolveLengthPercentage resolves property as a <length-percentage> through
+// this style's conversion data, its percentages (bare, or in calc() / min()
+// / max() / clamp()) of percentBase, a zero base giving 0: Length::Evaluate
+// with the use-time percentage base (length.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). False when unset, auto or
+// invalid.
+func (s *Style) ResolveLengthPercentage(property string, percentBase float64) (float64, bool) {
+	return s.resolveLengthOrPercent(property, percentBase, true)
+}
+
 // resolveLengthOrPercent resolves property as a <length-percentage> through
 // this style's conversion data, taking percentages (bare, or in calc() /
 // min() / max() / clamp() alike) of reference; false when unset, auto or

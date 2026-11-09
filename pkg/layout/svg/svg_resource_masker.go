@@ -134,13 +134,11 @@ func (m *SVGResourceMasker) Style() *css.Style { return m.elementStyle }
 //   - In objectBoundingBox mode: x/y/width/height are fractions of
 //     `target`; default -10%/-10%/120%/120% if attributes are absent.
 //     The returned rect is in `target`'s user-space.
-//   - In userSpaceOnUse mode: attributes are user-space lengths; the
-//     defaults still mirror the objectBoundingBox proportions, applied
-//     against `target` for back-compat with what Blink does when the
-//     attributes are missing in userSpaceOnUse.
+//   - In userSpaceOnUse mode: attributes are user-space lengths, and
+//     percentages, the -10%/-10%/120%/120% defaults included, are of the
+//     viewport.
 //
-// `lengthCtx` is the length context active in the mask's declaration
-// scope — used for percent resolution in userSpaceOnUse mode.
+// `lengthCtx` is the viewport userSpaceOnUse percentages resolve against.
 func (m *SVGResourceMasker) ResourceBoundingBox(target geometry.RectF, lengthCtx SVGLengthContext) geometry.RectF {
 	// Default values per SVG 1.1 §14.4.
 	defX := -0.10
@@ -161,12 +159,16 @@ func (m *SVGResourceMasker) ResourceBoundingBox(target geometry.RectF, lengthCtx
 			h*target.Height(),
 		)
 	case SVGUnitUserSpaceOnUse:
-		// userSpaceOnUse: attribute values are in user units. Defaults
-		// per Blink: -10%/-10%/120%/120% of `target`, projected.
-		x := target.X() + defX*target.Width()
-		y := target.Y() + defY*target.Height()
-		w := defW * target.Width()
-		h := defH * target.Height()
+		// userSpaceOnUse: lengths in user units, and percentages — the
+		// -10%/-10%/120%/120% defaults included — of the viewport
+		// (LayoutSVGResourceContainer::ResolveRectangle,
+		// layout_svg_resource_container.cc:124-137 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		vp := lengthCtx.ViewportSize()
+		x := defX * vp.Width
+		y := defY * vp.Height
+		w := defW * vp.Width
+		h := defH * vp.Height
 		if m.X.HasValue {
 			x = m.X.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeWidth, lengthCtx, x)
 		}

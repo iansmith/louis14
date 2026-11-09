@@ -9,7 +9,7 @@ import (
 )
 
 // TestApplyClipCoverageToFilterOutput asserts the kDstIn alpha-coverage
-// step that applyClipMaskToFilterOutput relies on for SVG
+// step that svgElementFilter.applyClipMask relies on for SVG
 // `filter` + `clip-path` / `mask` interaction (svg-filter-vs-clip-path,
 // svg-filter-vs-mask). Per CSS Masking 1 §3.7 the FILTERED result is
 // clipped: a clip-path becomes a binary 0/255 alpha coverage applied to
