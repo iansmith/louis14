@@ -61,3 +61,19 @@ func TestStylePriorityCannotBeInjected(t *testing.T) {
 		t.Errorf("after an animation write, color = %q important=%v, want red important", d.value, d.important)
 	}
 }
+
+// TestStyleSetPropertyIgnoresCommentedPriority: a comment in a CSSOM value
+// is not syntax, so `5px /* !important */` is the value 5px.
+func TestStyleSetPropertyIgnoresCommentedPriority(t *testing.T) {
+	doc := parseHTML(t, `<div id="el"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var s = document.getElementById("el").style;
+		s.setProperty("width", "5px /* !important */");
+		if (s.getPropertyValue("width") === "") throw new Error("width with a commented priority was rejected");
+		if (s.getPropertyPriority("width") !== "") throw new Error("a commented priority set the priority");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}

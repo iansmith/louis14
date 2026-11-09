@@ -150,3 +150,39 @@ func TestNoLogicalStorageKeyLeavesTheCascade(t *testing.T) {
 		}
 	}
 }
+
+// TestDirectionAwareCascadePositionsRound3: a var() shorthand's longhands
+// and an animation's values take part in the logical/physical resolution at
+// their cascade position: the shorthand's own, and the animation origin's
+// rank, above author normal declarations and below important ones (CSS
+// Cascade 5 §6.1; StyleCascade @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestDirectionAwareCascadePositionsRound3(t *testing.T) {
+	for _, tc := range []struct{ name, css, inline, prop, want string }{
+		{"var() shorthand in a later rule beats a logical longhand", `#t{margin-inline-start:5px} #t.t{--x:1px; margin:var(--x)}`, ``, "margin-left", "1px"},
+		{"var() shorthand later in the block beats a logical longhand", `#t{--x:1px; margin-inline-start:5px; margin:var(--x)}`, ``, "margin-left", "1px"},
+		{"var() shorthand later in the style attribute beats a logical longhand", ``, `--x:1px; margin-inline-start:5px; margin:var(--x)`, "margin-left", "1px"},
+		{"var() border shorthand beats an earlier logical colour", `#t{--c:green; border-inline-start-color:red; border:1px solid var(--c)}`, ``, "border-left-color", "green"},
+		{"animated logical beats an author physical", `#t{margin-left:1px; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "5px"},
+		{"animated physical beats an author logical", `#t{margin-inline-start:1px; animation:a 10s paused} @keyframes a{to{margin-left:5px}}`, ``, "margin-left", "5px"},
+		{"author important physical beats an animated logical", `#t{margin-left:1px !important; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "1px"},
+	} {
+		st := styleByID(t, cascadeHTML(t, `<style>`+tc.css+`</style><div><div id="t" class="t" style="`+tc.inline+`"></div></div>`, nil), "t")
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("%s: %s = %q, want %q", tc.name, tc.prop, got, tc.want)
+		}
+	}
+
+	// A pseudo-element resolves an animated logical longhand too.
+	doc, _ := html.Parse(`<style>#t::before{content:"x"; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}</style><div id="t">y</div>`)
+	for n, st := range ApplyStylesToDocument(doc, 800, 600) {
+		if id, _ := n.GetAttribute("id"); id == "t" {
+			before := ComputePseudoElementStyle(n, "before", ParseDocumentStylesheets(doc), 800, 600, st)
+			if got, _ := before.Get("margin-left"); got != "5px" {
+				t.Errorf("::before animated margin-inline-start: margin-left = %q, want 5px", got)
+			}
+			if _, kept := before.Properties["_margin-inline-start"]; kept {
+				t.Errorf("::before keeps the storage key _margin-inline-start")
+			}
+		}
+	}
+}

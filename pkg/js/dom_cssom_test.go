@@ -136,3 +136,29 @@ func TestRuleStyleSetInvalidDisplayKeepsPreviousValue(t *testing.T) {
 		t.Errorf("display = %q, want %q", got, "flex")
 	}
 }
+
+// TestStyleSheetsRuleEditsReachTheCascade: a CSSOM edit of a rule's
+// declarations reaches the cascade, so an added declaration applies and a
+// removed one stops applying (CSSStyleRule::style mutates the rule's
+// property set, core/css/css_style_rule.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestStyleSheetsRuleEditsReachTheCascade(t *testing.T) {
+	doc := parseHTML(t, `<style>div{color:cyan} div{background-color:red;color:blue}</style><div id="d">x</div>`)
+	css.ParseDocumentStylesheets(doc)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		document.styleSheets[0].cssRules[0].style.backgroundColor = "magenta";
+		document.styleSheets[0].cssRules[1].style.color = "";
+		delete document.styleSheets[0].cssRules[1].style.backgroundColor;
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	st := css.ApplyStylesToDocument(doc, 800, 600)[getElementById(doc.Root, "d")]
+	if got, _ := st.Get("background-color"); got != "magenta" {
+		t.Errorf("background-color = %q, want magenta (added to rule 0, removed from rule 1)", got)
+	}
+	if got, _ := st.Get("color"); got != "cyan" {
+		t.Errorf("color = %q, want cyan (removed from rule 1)", got)
+	}
+}
