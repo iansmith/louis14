@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -102,12 +101,10 @@ const (
 // Rule represents a CSS rule (selector + declarations)
 type Rule struct {
 	Selector     Selector
-	Declarations map[string]string // property -> value
-	Important    map[string]bool   // tracks which properties are !important
-	// DeclarationOrder is the block's declared properties in source order
-	// (a property declared twice at its last position), the order
-	// applyDeclarationPass applies them in. Nil applies them in any order.
-	DeclarationOrder []string
+	// *DeclarationResult is the rule's declaration block: Declarations,
+	// Important and Order. A selector list's rules share one block, as
+	// Blink's one rule for the list does.
+	*DeclarationResult
 	MediaQuery       *MediaQuery     // Phase 22: Optional media query wrapper
 	ContainerQuery   *ContainerQuery // Optional @container query wrapper
 	LayerName        string          // @layer name (empty = unlayered)
@@ -1214,9 +1211,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{
 			Selector:         selector,
-			Declarations:     declResult.Declarations,
-			Important:        declResult.Important,
-			DeclarationOrder: declResult.Order,
+			DeclarationResult: declResult,
 		})
 	}
 
@@ -1291,9 +1286,7 @@ func parseRule(ruleStr string) (Rule, error) {
 
 	return Rule{
 		Selector:         selector,
-		Declarations:     declResult.Declarations,
-		Important:        declResult.Important,
-		DeclarationOrder: declResult.Order,
+		DeclarationResult: declResult,
 	}, nil
 }
 
@@ -4852,12 +4845,42 @@ func isHexDigit(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
-// DeclarationResult holds parsed declarations and their important flags
+// DeclarationResult is a declaration block: each property's value, the
+// properties declared !important, and the properties in source order (a
+// property declared twice at its last position), the order the cascade
+// applies them in (applyDeclarationPass). Set and Remove keep the three in
+// step; they are the only writers (CSSPropertyValueSet's ordered vector @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type DeclarationResult struct {
 	Declarations map[string]string
 	Important    map[string]bool
-	// Order is the declared properties in source order (Rule.DeclarationOrder).
-	Order []string
+	Order        []string
+}
+
+// newDeclarationResult returns an empty declaration block.
+func newDeclarationResult() *DeclarationResult {
+	return &DeclarationResult{Declarations: make(map[string]string), Important: make(map[string]bool)}
+}
+
+// Set declares property with value and priority, as the block's last
+// declaration.
+func (d *DeclarationResult) Set(property, value string, important bool) {
+	d.Remove(property)
+	d.Declarations[property] = value
+	if important {
+		d.Important[property] = true
+	}
+	d.Order = append(d.Order, property)
+}
+
+// Remove drops property's declaration.
+func (d *DeclarationResult) Remove(property string) {
+	if _, ok := d.Declarations[property]; !ok {
+		return
+	}
+	delete(d.Declarations, property)
+	delete(d.Important, property)
+	d.Order = slices.DeleteFunc(d.Order, func(p string) bool { return p == property })
 }
 
 // parseDeclarations parses CSS declarations into a map.
@@ -4867,14 +4890,9 @@ type DeclarationResult struct {
 // This implements CSS Animations §4.1, which treats !important inside
 // @keyframes as invalid. Blink: CSSParserImpl::ConsumeKeyframeStyleRule @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult {
+func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult {
 	skipImportant := len(dropImportant) > 0 && dropImportant[0]
-	result := DeclarationResult{
-		Declarations: make(map[string]string),
-		Important:    make(map[string]bool),
-	}
-	positions := make(map[string]int) // each declaration's source position
-	position := 0
+	result := newDeclarationResult()
 
 	parts := splitDeclarationParts(declStr)
 
@@ -5166,16 +5184,10 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			// ones remain to override it.
 			for k := range result.Declarations {
 				if allShorthandCovers(k) && (isImportant || !result.Important[k]) {
-					delete(result.Declarations, k)
-					delete(result.Important, k)
+					result.Remove(k)
 				}
 			}
-			result.Declarations["all"] = value
-			position++
-			positions["all"] = position
-			if isImportant {
-				result.Important["all"] = true
-			}
+			result.Set("all", value, isImportant)
 			continue
 		}
 
@@ -5211,19 +5223,10 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			if !isImportant && result.Important[k] {
 				continue
 			}
-			result.Declarations[k] = v
-			position++
-			positions[k] = position
-			if isImportant {
-				result.Important[k] = true
-			}
+			result.Set(k, v, isImportant)
 		}
 	}
 
-	// The declarations kept, in source order.
-	result.Order = slices.SortedFunc(maps.Keys(result.Declarations), func(a, b string) int {
-		return positions[a] - positions[b]
-	})
 	return result
 }
 

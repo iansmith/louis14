@@ -1,6 +1,7 @@
 package js
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -121,16 +122,10 @@ func (s *ruleStyleAccessor) Get(key string) goja.Value {
 func (s *ruleStyleAccessor) Set(key string, val goja.Value) bool {
 	prop := camelToKebab(key)
 	if v := val.String(); strings.TrimSpace(v) == "" {
-		delete(s.rule.Declarations, prop)
-	} else if !cssomValueAccepted(prop, v) {
-		return true
-	} else {
-		if s.rule.Declarations == nil {
-			s.rule.Declarations = make(map[string]string)
-		}
-		s.rule.Declarations[prop] = v
+		s.rule.Remove(prop)
+	} else if cssomValueAccepted(prop, v) {
+		s.rule.Set(prop, v, false)
 	}
-	delete(s.rule.Important, prop)
 	return true
 }
 
@@ -139,16 +134,10 @@ func (s *ruleStyleAccessor) Has(key string) bool {
 }
 
 func (s *ruleStyleAccessor) Delete(key string) bool {
-	prop := camelToKebab(key)
-	delete(s.rule.Declarations, prop)
-	delete(s.rule.Important, prop)
+	s.rule.Remove(camelToKebab(key))
 	return true
 }
 
 func (s *ruleStyleAccessor) Keys() []string {
-	keys := make([]string, 0, len(s.rule.Declarations))
-	for k := range s.rule.Declarations {
-		keys = append(keys, k)
-	}
-	return keys
+	return slices.Clone(s.rule.Order)
 }

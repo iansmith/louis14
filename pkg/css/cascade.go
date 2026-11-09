@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -746,7 +745,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, rule.DeclarationOrder, false, importantProps, nil, func(property, value string) {
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, false, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			finalStyle.setCascadePosition(property, cascadeRankAuthorNormal)
 		})
@@ -812,7 +811,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentImportantLayerPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, rule.DeclarationOrder, true, importantProps, nil, func(property, value string) {
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, true, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			finalStyle.setCascadePosition(property, cascadeRankAuthorImportant)
 		})
@@ -1756,7 +1755,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, rule.DeclarationOrder, false, importantProps, pseudoAllowed, func(property, value string) {
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, false, importantProps, pseudoAllowed, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			finalStyle.setCascadePosition(property, cascadeRankAuthorNormal)
 			recordPseudoAuthor(property)
@@ -1803,7 +1802,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			pseudoCurrentImportantPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		applyDeclarationPass(finalStyle, rule.Declarations, rule.Important, rule.DeclarationOrder, true, importantProps, pseudoAllowed, func(property, value string) {
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, true, importantProps, pseudoAllowed, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 			finalStyle.setCascadePosition(property, cascadeRankAuthorImportant)
 			recordPseudoAuthor(property)
@@ -3255,8 +3254,9 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 // the important pass adds what it sets to importantProps, an `all` every
 // longhand it covers. allowed, when non-nil, filters the properties (a
 // pseudo-element's applicable set); apply applies one declaration. The
-// declarations go in source order (order; any order when nil).
-func applyDeclarationPass(style *Style, decls map[string]string, declImportant map[string]bool, order []string, important bool, importantProps map[string]bool, allowed func(string) bool, apply func(property, value string)) {
+// declarations go in source order (block.Order).
+func applyDeclarationPass(style *Style, block *DeclarationResult, important bool, importantProps map[string]bool, allowed func(string) bool, apply func(property, value string)) {
+	decls, declImportant := block.Declarations, block.Important
 	takes := func(p string) bool {
 		return declImportant[p] == important && (allowed == nil || allowed(p))
 	}
@@ -3293,11 +3293,7 @@ func applyDeclarationPass(style *Style, decls map[string]string, declImportant m
 			}
 		}
 	}
-	props := order
-	if props == nil {
-		props = slices.Collect(maps.Keys(decls))
-	}
-	for _, p := range props {
+	for _, p := range block.Order {
 		if p == "all" || !takes(p) || (!important && importantProps[p]) {
 			continue
 		}
@@ -3336,7 +3332,7 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 			if pass {
 				rank = cascadeRankAuthorImportant
 			}
-			applyDeclarationPass(style, rule.Declarations, rule.Important, rule.DeclarationOrder, pass, style.cascadeImportant, nil, func(property, value string) {
+			applyDeclarationPass(style, rule.DeclarationResult, pass, style.cascadeImportant, nil, func(property, value string) {
 				expandShorthand(style, property, value)
 				style.setCascadePosition(property, rank)
 			})

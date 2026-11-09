@@ -2463,13 +2463,13 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 // the normal pass, which leaves importantProps, then the important pass,
 // which adds to it. record, when non-nil, is told each property applied and
 // its cascade rank.
-func applyInlineDeclarations(style *Style, decls DeclarationResult, importantProps map[string]bool, record func(property string, rank int8)) {
+func applyInlineDeclarations(style *Style, decls *DeclarationResult, importantProps map[string]bool, record func(property string, rank int8)) {
 	for _, important := range []bool{false, true} {
 		rank := cascadeRankInlineNormal
 		if important {
 			rank = cascadeRankInlineImportant
 		}
-		applyDeclarationPass(style, decls.Declarations, decls.Important, decls.Order, important, importantProps, nil, func(property, value string) {
+		applyDeclarationPass(style, decls, important, importantProps, nil, func(property, value string) {
 			expandShorthand(style, property, value)
 			if record != nil {
 				record(property, rank)
@@ -2483,7 +2483,7 @@ func applyInlineDeclarations(style *Style, decls DeclarationResult, importantPro
 // once its url() tokens are resolved against ctx — one declaration-list
 // parser for both, as Blink's (CSSParser::ParseInlineStyleDeclaration @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func parseInlineDeclarations(styleAttr string, ctx *ParserContext) DeclarationResult {
+func parseInlineDeclarations(styleAttr string, ctx *ParserContext) *DeclarationResult {
 	// Resolve every url() token against ctx.BaseDir up front, as
 	// ParseStylesheet does (CSSParserContext::CompleteURL).
 	// Comments go first, as for a stylesheet, so a `!` or `;` in one is
