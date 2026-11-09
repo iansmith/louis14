@@ -107,3 +107,28 @@ func TestParseExternalSVG_Empty(t *testing.T) {
 		t.Fatal("expected error for empty input")
 	}
 }
+
+// An external document keeps href and xlink:href apart, so ElementHref's
+// precedence (href when specified, SVGAnimatedHref::UseXLink,
+// svg_animated_href.cc:79-81 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
+// holds there as in the page.
+func TestParseExternalSVG_HrefAndXlinkHrefDistinct(t *testing.T) {
+	for _, c := range []struct{ attrs, want string }{
+		{`href="a.png" xlink:href="b.png"`, "a.png"},
+		{`xlink:href="b.png" href="a.png"`, "a.png"},
+		{`href="" xlink:href="b.png"`, ""},
+		{`xlink:href="b.png"`, "b.png"},
+	} {
+		root, err := ParseExternalSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image id="i" ` + c.attrs + `/></svg>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, ok := FindElementByID(root, "i")
+		if !ok {
+			t.Fatalf("<image %s>: not found", c.attrs)
+		}
+		if got := ElementHref(img); got != c.want {
+			t.Errorf("<image %s>: ElementHref = %q, want %q", c.attrs, got, c.want)
+		}
+	}
+}
