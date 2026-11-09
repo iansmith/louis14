@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -2455,7 +2456,17 @@ func stripImportantSuffix(value string) (string, bool) {
 // to its absolute form against ctx before being stored in Style.Properties.
 // Pass nil for "no base URL" (test fixtures that don't exercise URL composition).
 func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
+	style, _ := parseInlineStyleWithImportance(styleAttr, ctx)
+	return style
+}
+
+// parseInlineStyleWithImportance is ParseInlineStyle that also returns the
+// longhands set by !important declarations. Within the attribute an
+// important declaration beats a later normal one, as in a rule's
+// declaration block (CSS Cascade 4 §6.4).
+func parseInlineStyleWithImportance(styleAttr string, ctx *ParserContext) (*Style, map[string]bool) {
 	style := NewStyle()
+	important := make(map[string]bool)
 	// Resolve every `url(...)` token against ctx.BaseDir up front — matches
 	// the Blink invariant that every url() consumed during parse goes
 	// through CSSParserContext::CompleteURL. See ParseStylesheet for the
@@ -2478,15 +2489,8 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 		property := strings.TrimSpace(strings.ToLower(parts[0]))
 		value := strings.TrimSpace(parts[1])
 
-		// Strip the !important suffix before parsing. Inline-style priority is
-		// not tracked separately from inline-normal in cascade.go today (the
-		// note at cascade.go:494 acknowledges this), so the suffix must be
-		// removed from the value or it leaks into longhand parsers. Mirrors
-		// the rule-parser path at stylesheet.go:1917-1929 which has always
-		// stripped !important.
-		if stripped, _ := stripImportantSuffix(value); stripped != value {
-			value = stripped
-		}
+		// Strip the !important suffix before parsing, recording it.
+		value, isImportant := stripImportantSuffix(value)
 
 		// CSS Custom Properties §2 / §3: validate name + value (mirrors the
 		// rule-parser gate in parseDeclarations).
@@ -2506,10 +2510,51 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 			continue
 		}
 
-		// Phase 2: Expand shorthand properties
-		expandShorthand(style, property, value)
+		// Phase 2: Expand shorthand properties. A normal declaration leaves
+		// the longhands an earlier important one set.
+		if property == "all" {
+			// `all` writes the style directly (`initial` deletes); restore
+			// what it may not override.
+			applyInlineAll(style, important, value, isImportant)
+			continue
+		}
+		tmp := NewStyle()
+		expandShorthand(tmp, property, value)
+		for p, v := range tmp.Properties {
+			if !isImportant && important[p] {
+				continue
+			}
+			style.Properties[p] = v
+			if isImportant {
+				important[p] = true
+			}
+		}
 	}
-	return style
+	return style, important
+}
+
+// applyInlineAll applies an inline `all` declaration to style. A normal one
+// keeps the longhands an earlier important declaration set; an important
+// one makes every longhand it covers important.
+func applyInlineAll(style *Style, important map[string]bool, value string, isImportant bool) {
+	if _, ok := cssWideKeyword(value); !ok {
+		return // `all` takes only a CSS-wide keyword
+	}
+	kept := make(map[string]string)
+	for p := range important {
+		if v, ok := style.Properties[p]; ok && !isImportant {
+			kept[p] = v
+		}
+	}
+	expandShorthand(style, "all", value)
+	maps.Copy(style.Properties, kept)
+	if isImportant {
+		for _, p := range cssLonghandProperties {
+			if p != "direction" && p != "unicode-bidi" {
+				important[p] = true
+			}
+		}
+	}
 }
 
 // normalizeVendorPrefixedValue resolves common vendor-prefixed length/width keywords

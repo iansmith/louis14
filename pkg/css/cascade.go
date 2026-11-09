@@ -865,13 +865,22 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// inline styles then rolls back to that pre-inline state, restoring
 	// the unlayered/layered author value the stylesheets produced
 	// (revert-layer-009).
-	// Note: inline !important would override stylesheet !important, but we don't track that yet
+	//
+	// An inline normal declaration stays below an author !important one; an
+	// inline !important declaration sorts above it, and joins importantProps
+	// so the animation origin cannot override it either (CascadePriority
+	// with is_inline_style, StyleCascade @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; CSS Cascade 5 §6.4).
 	if styleAttr, ok := node.GetAttribute("style"); ok {
-		inlineStyle := ParseInlineStyle(styleAttr, ctx)
+		inlineStyle, inlineImportant := parseInlineStyleWithImportance(styleAttr, ctx)
 		preInlineSnap := snapshotForAllRevert(finalStyle)
 		for property, value := range inlineStyle.Properties {
-			if !importantProps[property] {
-				finalStyle.Set(property, value)
+			if importantProps[property] && !inlineImportant[property] {
+				continue
+			}
+			finalStyle.Set(property, value)
+			if inlineImportant[property] {
+				importantProps[property] = true
 			}
 		}
 		resolveRevertLayerOnly(finalStyle, revertSnap, preInlineSnap)
