@@ -10997,7 +10997,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 
 		// Size
 		if i < len(sizeParts) {
-			if sz, ok := parseSizeValue(sizeParts[i], ParseLength); ok {
+			if sz, ok := parseSizeValue(sizeParts[i], s.GetLengthForVal); ok {
 				layer.Size = sz
 				layer.SizeSet = true
 			}
