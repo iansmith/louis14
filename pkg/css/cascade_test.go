@@ -453,6 +453,39 @@ func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
 	}
 }
 
+// An <image>'s x, y, width and height map to CSS only for an SVG <image>
+// (svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// an HTML-namespace <image> keeps them as attributes.
+func TestSVGImageGeometryAttrsMapToCSS(t *testing.T) {
+	doc, err := html.Parse(`<image x="5" y="5" width="40" height="20"><svg><image x="-5" y="-6" width="40" height="20"/></svg>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen int
+	for node, style := range ApplyStylesToDocument(doc, 800, 600) {
+		if node.TagName != "image" {
+			continue
+		}
+		seen++
+		var got [4]string
+		mapped := false
+		for i, p := range [...]string{"x", "y", "width", "height"} {
+			v, ok := style.Get(p)
+			got[i], mapped = v, mapped || ok
+		}
+		if node.NamespaceURI() == html.SVGNamespaceURI {
+			if got != [4]string{"-5px", "-6px", "40px", "20px"} {
+				t.Errorf("SVG <image>: x, y, width, height = %q, want -5px -6px 40px 20px", got)
+			}
+		} else if mapped {
+			t.Errorf("HTML <image>: x, y, width, height = %q mapped to CSS, want none", got)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d <image> elements, want 2", seen)
+	}
+}
+
 // TestSVGLengthAttrToCSS covers the bare-number conversion and the rejection of
 // values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
 // "Infinity", so without the math.IsInf guard width="Infinity" would become the

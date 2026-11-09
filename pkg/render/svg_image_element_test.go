@@ -55,7 +55,10 @@ func TestSVGImageElement_ImageRunsItsFilter(t *testing.T) {
 // CSSPropertyID::kX/kY/kWidth/kHeight, svg_image_element.cc:41-64), so CSS
 // sets them too.
 func TestSVGImageElement_BoxPropagatesToGroup(t *testing.T) {
-	for _, size := range []string{`width="40" height="20"`, `style="width:40px;height:20px"`} {
+	// CSS lengths resolve with CSS units and math: 0.2in is 19.2px, and
+	// calc() works.
+	for _, size := range []string{`width="40" height="20"`, `style="width:40px;height:20px"`,
+		`style="width:calc(10px + 30px);height:0.2in"`} {
 		img := renderSVGImagePage(t, `<g filter="url(#obb)"><image x="10" y="10" `+size+`/></g>`)
 		wantPixel(t, img, 30, 20, canvasGreen, size+": the group's flood over the image's box")
 		wantPixel(t, img, 5, 5, canvasWhite, size+": outside the group's region")
@@ -89,4 +92,29 @@ func TestFEImage_EmptyHrefWinsOverXlinkHref(t *testing.T) {
 <filter id="fi" filterUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><feImage href="" xlink:href="#src"/></filter></defs>
 <rect width="100" height="100" fill="blue" filter="url(#fi)"/>`)
 	wantPixel(t, img, 20, 20, canvasWhite, "no image: href is specified and empty")
+}
+
+// A filtered element's clip-path and mask resolve against its own reference
+// box, wherever it sits, as Blink resolves them for any element
+// (SVGResources::ReferenceBoxForEffects): userSpaceOnUse in user space with
+// percentages of the viewport (LayoutSVGResourceContainer::ResolveRectangle,
+// layout_svg_resource_container.cc:124-137 @ a9f50e52; no content transform,
+// MaskToContentTransform, svg_mask_painter.cc:34-47), objectBoundingBox as
+// fractions of the box. Each <g> sits at (50,50)-(90,90) under the red flood
+// over (0,0)-(100,100).
+func TestSVGEffects_ClipMaskReferenceBoxAwayFromOrigin(t *testing.T) {
+	const defs = `<defs>
+<mask id="mu" maskUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><rect width="40" height="40" fill="white"/></mask>
+<mask id="mo" maskContentUnits="objectBoundingBox"><rect width=".5" height=".5" fill="white"/></mask>
+<clipPath id="co" clipPathUnits="objectBoundingBox"><rect width=".5" height=".5"/></clipPath></defs>`
+	const boxContent = `<rect x="50" y="50" width="40" height="40" fill="blue"/></g>`
+	img := renderSVGImagePage(t, defs+`<g filter="url(#flood)" mask="url(#mu)">`+boxContent)
+	wantPixel(t, img, 20, 20, canvasRed, "userSpaceOnUse mask: the flood kept over (0,0)-(40,40) in user space")
+	wantPixel(t, img, 60, 60, canvasWhite, "userSpaceOnUse mask: not offset to the group's box")
+	for _, effect := range []string{`mask="url(#mo)"`, `clip-path="url(#co)"`} {
+		img := renderSVGImagePage(t, defs+`<g filter="url(#flood)" `+effect+`>`+boxContent)
+		wantPixel(t, img, 60, 60, canvasRed, effect+": kept over the box's top-left quarter (50..70)")
+		wantPixel(t, img, 80, 80, canvasWhite, effect+": the rest of the box masked away")
+		wantPixel(t, img, 20, 20, canvasWhite, effect+": outside the box")
+	}
 }
