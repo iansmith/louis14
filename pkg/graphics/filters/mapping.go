@@ -1,6 +1,7 @@
 package filters
 
 import (
+	"image"
 	"math"
 
 	"louis14/pkg/geometry"
@@ -28,33 +29,6 @@ const (
 	// layer is device space (kComplex).
 	MatrixCapabilityComplex
 )
-
-// CTMCapability returns the capability of the graph rooted at e: the minimum
-// of e's own capability and its inputs'. Mirrors
-// SkImageFilter_Base::getCTMCapability (src/core/SkImageFilter.cpp:337-346).
-//
-// Per-effect capabilities follow the Skia filter each effect is built as:
-// color filters (SkColorFilterImageFilter.cpp:53 — Blink's FEColorMatrix,
-// FEComponentTransfer and SourceAlpha), shaders (SkShaderImageFilter.cpp:51 —
-// FEFlood, PaintFilterEffect), merges (SkMergeImageFilter.cpp:39) and blends
-// (SkBlendImageFilter.cpp:69 — FEBlend, FEComposite) are kComplex; every other
-// effect keeps the kScaleTranslate default (SkImageFilter_Base.h:225-227).
-// SourceGraphic is Skia's null input, which constrains nothing.
-func CTMCapability(e FilterEffect) MatrixCapability {
-	if e == nil {
-		return MatrixCapabilityComplex
-	}
-	result := MatrixCapabilityScaleTranslate
-	switch e.(type) {
-	case *SourceGraphic, *SourceAlpha, *FEColorMatrix, *FEComponentTransfer,
-		*FEFlood, *PaintFilterEffect, *FEMerge, *FEBlend, *FEComposite:
-		result = MatrixCapabilityComplex
-	}
-	for _, in := range e.InputEffects() {
-		result = min(result, CTMCapability(in))
-	}
-	return result
-}
 
 // Mapping splits a filter's total CTM into the matrix that maps the filter's
 // parameter (local) space into the layer the graph is evaluated in, and the
@@ -107,15 +81,17 @@ func (m *Mapping) DecomposeCTM(ctm geometry.Transform, capability MatrixCapabili
 }
 
 // FoldIntegerTranslation moves a ParamToLayer that is an integer
-// translation into LayerToDev, so the graph is evaluated in parameter space
-// and not rebuilt for the common translate-only CTM. Every primitive's
-// geometry moves with the boxes it is built from, by the same integer, so
-// the output is unchanged — save feTurbulence, whose noise is sampled at
-// layer coordinates: it is now sampled at parameter coordinates, as Skia's
-// SkPerlinNoiseShader evaluates noise in its local (parameter) space.
+// translation into LayerToDev, so for the common translate-only CTM the graph
+// runs in parameter space and the translation is applied when the layer is
+// drawn. Every primitive's geometry moves with the boxes it is built from, by
+// the same integer, so the output is unchanged; feTurbulence samples its
+// noise in parameter space through the mapping (FETurbulence.Mapping), as
+// Skia's SkPerlinNoiseShader evaluates noise in its local space, so it is
+// unchanged too.
 //
-// no Skia analog: Skia rebuilds nothing, as its graph is built once and
-// mapped at evaluation; louis14 builds its graph in the layer space.
+// no Skia analog: Skia maps its graph at evaluation; louis14 builds its graph
+// in the layer, so a layer equal to parameter space saves mapping every
+// parameter.
 func (m *Mapping) FoldIntegerTranslation() {
 	if !m.ParamToLayer.IsIdentityOrIntegerTranslation() {
 		return
@@ -214,4 +190,80 @@ func mapPointAsM33(t geometry.Transform, x, y float64) (float64, float64) {
 	w := t.Rc(3, 0)*x + t.Rc(3, 1)*y + t.Rc(3, 3)
 	return (t.Rc(0, 0)*x + t.Rc(0, 1)*y + t.Rc(0, 3)) / w,
 		(t.Rc(1, 0)*x + t.Rc(1, 1)*y + t.Rc(1, 3)) / w
+}
+
+// ParamToLayerPoint maps a parameter-space point (a light position) into
+// layer space. Mirrors Mapping::map<SkPoint>
+// (src/core/SkImageFilterTypes.cpp @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func (m Mapping) ParamToLayerPoint(x, y float64) (float64, float64) {
+	return mapPointAsM33(m.ParamToLayer, x, y)
+}
+
+// ParamToLayerZ maps a parameter-space depth (a light's z, a lighting
+// surface scale) into layer space: the midpoint of the vector (z, z) mapped,
+// as LayerSpace<ZValue>::Map does (src/effects/imagefilters/
+// SkLightingImageFilter.cpp:63-67 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e).
+func (m Mapping) ParamToLayerZ(z float64) float64 {
+	x, y := m.ParamToLayerVector(z, z)
+	return (x + y) / 2
+}
+
+// ParamToLayerPixels maps a parameter-space rect into the layer, as
+// Mapping::map<SkRect> (src/core/SkImageFilterTypes.cpp @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) does through SkMatrix::mapRect,
+// and rounds it out to the layer pixels covering it (SnapRectOut). ok is
+// false, with an empty rect, when a corner maps behind the eye (w <= 0).
+func (m Mapping) ParamToLayerPixels(r geometry.RectF) (image.Rectangle, bool) {
+	l, ok := MapRectAsM33(m.ParamToLayer, r)
+	if !ok {
+		return image.Rectangle{}, false
+	}
+	return SnapRectOut(l), true
+}
+
+// MapRectAsM33 maps r's corners through t with the perspective divide and
+// returns their bounds; ok is false when a corner maps to w <= 0.
+func MapRectAsM33(t geometry.Transform, r geometry.RectF) (geometry.RectF, bool) {
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for _, p := range [4]geometry.PointF{
+		{X: r.X(), Y: r.Y()}, {X: r.Right(), Y: r.Y()},
+		{X: r.X(), Y: r.Bottom()}, {X: r.Right(), Y: r.Bottom()},
+	} {
+		if t.Rc(3, 0)*p.X+t.Rc(3, 1)*p.Y+t.Rc(3, 3) <= 0 {
+			return geometry.RectF{}, false
+		}
+		x, y := mapPointAsM33(t, p.X, p.Y)
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	return geometry.NewRectF(minX, minY, maxX-minX, maxY-minY), true
+}
+
+// SnapRectOut converts a float rect into the integer pixel rect covering it. Edges are first nudged to the nearest integer
+// when within a small epsilon (objectBoundingBox math introduces float noise:
+// e.g. an exact -10% of a 100px box computes to 7.9999999998, not 8.0), then
+// floor/ceil out so the integer region fully covers the float region. Without
+// the epsilon snap, int()/floor() of 7.9999999998 truncates to 7 — a 1px
+// offset on the filter region top, visible as a 1px seam on the filter output.
+// gfx::ToEnclosingRectIgnoringError (ui/gfx/geometry/rect_conversions.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with a fixed error.
+func SnapRectOut(r geometry.RectF) image.Rectangle {
+	const eps = 1e-6
+	snap := func(v float64) float64 {
+		if n := math.Round(v); math.Abs(v-n) < eps {
+			return n
+		}
+		return v
+	}
+	x0 := snap(r.X())
+	y0 := snap(r.Y())
+	x1 := snap(r.X() + r.Width())
+	y1 := snap(r.Y() + r.Height())
+	return image.Rect(
+		int(math.Floor(x0)), int(math.Floor(y0)),
+		int(math.Ceil(x1)), int(math.Ceil(y1)),
+	)
 }
