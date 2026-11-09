@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -950,6 +951,8 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
 	// declared set. Literal `inherit` values re-inherit and are excluded.
 	recordCascadedProps(finalStyle)
+	finalStyle.cascadeImportant = importantProps
+	finalStyle.revertSnapshot = revertSnap
 
 	return finalStyle
 }
@@ -3146,13 +3149,24 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 // varDeferredShorthands lists the shorthands expandShorthand leaves
 // unexpanded when their declared value contains var() — substitution can't
 // happen at parse time because custom properties resolve in the cascade.
-// expandShorthand and reexpandVarShorthands both read this list.
+// reexpandVarShorthands expands them in this order (a fixed one, so a
+// `border` and a `border-top` both stored resolve the same way every time);
+// isVarDeferredShorthand is the same list as a set for lookups
+// (expandShorthand, allShorthandCovers, expandAllShorthand).
 var varDeferredShorthands = []string{
 	"margin", "padding", "border", "border-top", "border-right",
 	"border-bottom", "border-left", "border-width", "border-style",
 	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
 	"grid-area", "grid-row", "grid-column",
 }
+
+var isVarDeferredShorthand = func() map[string]bool {
+	m := make(map[string]bool, len(varDeferredShorthands))
+	for _, p := range varDeferredShorthands {
+		m[p] = true
+	}
+	return m
+}()
 
 // reexpandVarShorthands substitutes var() in deferred shorthand values and
 // expands them into their longhands (CSS Variables 1 §3.2). Runs after
@@ -3304,22 +3318,11 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// expand. Mirrors Blink's pending-substitution values
 		// (css_pending_substitution_value.h @
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-		reexpandVarShorthands(style)
-		// Resolve logical size properties (inline-size, block-size) based on the
-		// element's computed writing-mode. Must happen after inheritance so that
-		// inherited writing-mode is available.
-		resolveLogicalSizeProperties(style)
-		// Resolve logical box properties (margin/padding/border-inline/block),
-		// then any `inherit` a logical declaration carried onto its physical
-		// side (resolveInheritKeywords).
-		if resolveLogicalBoxProperties(style) {
-			resolveInheritKeywords(node, style, styles)
-		}
+		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
-		applyContainerQueryRules(node, stylesheets, styles, style)
-		// A matching @container rule can re-introduce a var()-deferred
-		// shorthand; re-run that computed-time normalization (idempotent).
-		reexpandVarShorthands(style)
+		if applyContainerQueryRules(node, stylesheets, styles, style) {
+			resolveLateDeclarations(node, style, styles)
+		}
 		// The element's font properties are final here (@container rules
 		// included, which Blink applies inside the same cascade), so build its font
 		// (UpdateFont), then compute line-height against it, then record the lh
@@ -3438,31 +3441,78 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	}
 }
 
-// applyContainerQueryRules evaluates @container rules for a node by checking
-// ancestor containers' computed sizes. Called after base style computation.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) {
+// applyContainerQueryRules applies the @container rules matching node, whose
+// queries are evaluated against ancestor containers' computed sizes, after
+// the element's cascade and inheritance, and reports whether any matched.
+// Like the main cascade it runs a normal pass, which leaves the properties
+// the cascade set with !important, then an important pass, each applying a
+// rule's `all` before its other declarations.
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) bool {
+	var matched []Rule
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
-			if rule.ContainerQuery == nil {
+			// @container rules for the element itself, not a pseudo-element.
+			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
 				continue
 			}
-			// Skip pseudo-element rules
-			if rule.Selector.PseudoElement != "" {
-				continue
-			}
-			// Check if selector matches this node
-			if !MatchesSelector(node, rule.Selector) {
-				continue
-			}
-			// Evaluate the container query against ancestors
-			if !evaluateContainerQuery(node, rule.ContainerQuery, styles) {
-				continue
-			}
-			// Apply declarations
-			for property, value := range rule.Declarations {
-				expandShorthand(style, property, value)
+			if MatchesSelector(node, rule.Selector) && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
+				matched = append(matched, rule)
 			}
 		}
+	}
+	if len(matched) == 0 {
+		return false
+	}
+	important := style.cascadeImportant
+	for _, pass := range []bool{false, true} {
+		for _, rule := range matched {
+			if allVal, ok := rule.Declarations["all"]; ok && rule.Important["all"] == pass {
+				kept := make(map[string]string)
+				if !pass {
+					for p := range important {
+						if v, ok := style.Properties[p]; ok {
+							kept[p] = v
+						}
+					}
+				}
+				expandShorthand(style, "all", allVal)
+				maps.Copy(style.Properties, kept)
+			}
+			for property, value := range rule.Declarations {
+				if property == "all" || rule.Important[property] != pass || (!pass && important[property]) {
+					continue
+				}
+				expandShorthand(style, property, value)
+				if pass {
+					important[property] = true
+				}
+			}
+		}
+	}
+	return true
+}
+
+// resolveLateDeclarations resolves what declarations applied after the
+// cascade and inheritance (applyContainerQueryRules) leave: var()
+// shorthands, CSS-wide keywords (revert and revert-layer against the
+// cascade's UA + presentational-attribute snapshot; @container rules carry
+// no layer), then logical properties onto their physical side.
+func resolveLateDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	resolveCSSWideKeywords(style, style.revertSnapshot, nil)
+	resolveInheritValues(node, style, styles)
+	resolveComputedTimeDeclarations(node, style, styles)
+}
+
+// resolveComputedTimeDeclarations resolves what waits for the element's
+// inherited values: var() shorthands (substituted, then expanded), then
+// logical size and box properties onto their physical side for the computed
+// writing-mode and direction, and any `inherit` a logical declaration
+// carried onto a physical property.
+func resolveComputedTimeDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	reexpandVarShorthands(style)
+	resolveLogicalSizeProperties(style)
+	if resolveLogicalBoxProperties(style) {
+		resolveInheritKeywords(node, style, styles)
 	}
 }
 
@@ -3964,43 +4014,57 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// Unlike the paint attributes above these are meaningful ONLY on <svg> —
 	// width/height on <img>/<td>/<div> carry legacy HTML semantics that are not
 	// CSS lengths — so gate on the tag.
-	if node.TagName == "svg" {
-		for _, attr := range [...]string{"width", "height"} {
-			val, ok := node.GetAttribute(attr)
-			if !ok {
-				continue
-			}
-			cssLen, ok := svgLengthAttrToCSS(val)
-			if !ok {
-				continue
-			}
-			if _, exists := style.Get(attr); !exists {
-				style.Set(attr, cssLen)
-			}
+	//
+	// An <image>'s x, y, width and height map to the CSS x, y, width and
+	// height properties (SVGImageElement binds its x_/y_/width_/height_
+	// SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight,
+	// svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// which LayoutSVGImage::UpdateBoundingBox reads; x and y may be negative.
+	// Both are SVG elements: an HTML-namespace <image> keeps its
+	// attributes.
+	var geometryAttrs []string
+	switch {
+	case node.NamespaceURI() != html.SVGNamespaceURI:
+	case node.TagName == "svg":
+		geometryAttrs = []string{"width", "height"}
+	case node.TagName == "image":
+		geometryAttrs = []string{"x", "y", "width", "height"}
+	}
+	for _, attr := range geometryAttrs {
+		val, ok := node.GetAttribute(attr)
+		if !ok {
+			continue
+		}
+		cssLen, ok := svgLengthAttrToCSS(val, attr == "x" || attr == "y")
+		if !ok {
+			continue
+		}
+		if _, exists := style.Get(attr); !exists {
+			style.Set(attr, cssLen)
 		}
 	}
 }
 
-// svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
-// to a CSS length string: an SVG <length> or <percentage>, a bare number being
+// svgLengthAttrToCSS converts an SVG geometry presentation-attribute value
+// (width/height; x/y with negativeOK) to a CSS length string: an SVG <length> or <percentage>, a bare number being
 // a user unit, equivalent to CSS px (so "0" -> "0px", "120" -> "120px",
 // "100%" -> "100%"). Mirrors SVGSVGElement::CollectStyleForPresentationAttribute
 // mapping the attribute's SVGLength to the CSS width/height
-// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative,
-// non-finite, or non-numeric values are rejected (a negative or infinite
+// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative
+// values (unless negativeOK), non-finite or non-numeric ones are rejected (a negative or infinite
 // width/height is an SVG error → the box falls back to its default sizing).
 // strconv.ParseFloat accepts "Inf"/"Infinity" and "NaN", so explicit
 // math.IsInf / math.IsNaN guards keep them from becoming "+Infpx" / "NaNpx".
-func svgLengthAttrToCSS(val string) (string, bool) {
+func svgLengthAttrToCSS(val string, negativeOK bool) (string, bool) {
 	s := strings.TrimSpace(val)
 	if n, err := strconv.ParseFloat(s, 64); err == nil {
-		if n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+		if (n < 0 && !negativeOK) || math.IsInf(n, 0) || math.IsNaN(n) {
 			return "", false
 		}
 		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
 	}
 	lower := strings.ToLower(s)
-	if strings.HasPrefix(s, "-") || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
+	if (strings.HasPrefix(s, "-") && !negativeOK) || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
 		return "", false
 	}
 	if v, ok := validateCSSLength(s); ok {

@@ -259,18 +259,25 @@ func registerDocumentNodeMethods(ctx *domContext, docObj *goja.Object, doc *html
 		}
 		return newElement(call.Arguments[0].String())
 	})
-	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
-	// a namespace (html.Node.NamespaceURI), but this binding still ignores
-	// its namespace argument, so the element reports the XHTML namespace;
-	// element identity in the renderer is by lowercase tag name (matching
-	// the tokenizer). The argument is accepted for compatibility with WPT
-	// tests that build SVG nodes via
-	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
+	// createElementNS(namespaceURI, qualifiedName): the element takes the
+	// namespace (Document::createElementNS, core/dom/document.cc @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a script-built SVG
+	// element is styled as a parsed one is. Its local name is the qualified
+	// name after any prefix; element identity in the renderer is by
+	// lowercase tag name (matching the tokenizer).
 	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
 			panic(vm.NewTypeError("Failed to execute 'createElementNS' on 'Document': 2 arguments required"))
 		}
-		return newElement(call.Arguments[1].String())
+		qname := call.Arguments[1].String()
+		if i := strings.IndexByte(qname, ':'); i >= 0 {
+			qname = qname[i+1:]
+		}
+		el := newElementNode(strings.ToLower(qname))
+		if ns := call.Arguments[0]; !goja.IsNull(ns) && !goja.IsUndefined(ns) {
+			el.SetNamespaceURI(ns.String())
+		}
+		return ctx.elementProxy(el)
 	})
 	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
 		text := ""

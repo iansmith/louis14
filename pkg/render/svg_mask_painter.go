@@ -53,108 +53,12 @@ import (
 // and height the effect is as if the mask had a fill value of 0
 // (black, transparent)").
 func (r *Renderer) rasterizeSVGMask(masker *svg.SVGResourceMasker, refBox geometry.RectF, bufW, bufH int, bx, by int) *image.RGBA {
-	if masker == nil || bufW <= 0 || bufH <= 0 {
-		return nil
-	}
-	// Resolve the mask region against a BOX-LOCAL refBox: (0, 0, w, h).
-	// This produces region coordinates in the referencing element's
-	// local frame (the same frame the children's userSpaceOnUse coords
-	// live in for a CSS-box mask reference). Mirrors Blink's
-	// SVGMaskPainter approach: the mask is rasterized in the
-	// referencing element's coordinate system, with the element at
-	// the origin.
-	boxLocalRef := geometry.NewRectF(0, 0, refBox.Width(), refBox.Height())
-	lengthCtx := svg.NewSVGLengthContext(geometry.SizeF{
-		Width: refBox.Width(), Height: refBox.Height(),
-	})
-	region := masker.ResourceBoundingBox(boxLocalRef, lengthCtx)
-
-	// Build the alpha-source buffer. It's the SAME size as the
-	// referencing element's buffer so the kDstIn composite is
-	// per-pixel-aligned. Pixels outside the mask region are left at
-	// alpha 0 (mask value = 0 → masked-away per SVG 1.1 §14.4).
-	maskBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
-
-	// Build a child renderer + paint context that targets maskBuf.
-	// MaskContentUnits decides how the children's coords map:
-	//   - userSpaceOnUse: children coords are in the referencing
-	//     element's user-space (= page coords for a CSS box).
-	//   - objectBoundingBox: children coords are fractions of refBox.
-	tmpR := r.newChildRenderer(maskBuf)
-	tmpR.dc.Push()
-	defer tmpR.dc.Pop()
-	// Translate so refBox.X/refBox.Y in user-space maps to (-bx, -by)
-	// in the buffer — i.e., page-space (refBox.X, refBox.Y) lands at
-	// buffer pixel (refBox.X-bx, refBox.Y-by). The buffer's pixel
-	// origin (0, 0) corresponds to page-space (bx, by).
-	tmpR.dc.Translate(float64(-bx), float64(-by))
-
-	// For both unit modes the children's local "user-space" is BOX-
-	// LOCAL: (0, 0) is the top-left of refBox. Blink's
-	// SVGMaskPainter::ComputeMaskToContentTransform treats the
-	// reference box as the origin: userSpaceOnUse coords are in the
-	// referencing element's coordinate system (which for a CSS-box
-	// mask reference is the box-local frame), and objectBoundingBox
-	// is the unit square mapped onto the box. The reftest
-	// mask-opacity-1d.html bakes this in: its mask `<rect x="0"
-	// y="50" width="100" height="50" fill="#ffffff"/>` is meant to
-	// cover the bottom half of the 100x100 masked div — only the
-	// box-local interpretation produces that geometry.
-	tmpR.dc.Translate(refBox.X(), refBox.Y())
-
-	// deviceFromUser is the composed transform mapping the children's
-	// user-space coords (box-local for userSpaceOnUse; bbox-normalized
-	// for objectBoundingBox) into device buffer pixel coords. Used by
-	// paint servers inside the mask (gradient/pattern references) and
-	// path bounding-box mapping. Mirrors what svgPaintContext.
-	// DeviceFromUser carries elsewhere in the painter cluster.
-	var deviceFromUser geometry.AffineTransform
-	pageFromBoxLocal := geometry.Translate(refBox.X(), refBox.Y())
-	bufferFromPage := geometry.Translate(-float64(bx), -float64(by))
-	switch masker.MaskContentUnits {
-	case svg.SVGUnitObjectBoundingBox:
-		// Children's (0..1, 0..1) maps to refBox.
-		tmpR.dc.MultiplyMatrix(refBox.Width(), 0, 0, refBox.Height(), 0, 0)
-		deviceFromUser = bufferFromPage.Compose(pageFromBoxLocal).Compose(
-			geometry.Scale(refBox.Width(), refBox.Height()),
-		)
-	default:
-		// userSpaceOnUse: children paint in box-local coords (already
-		// composed with translate(refBox.X, refBox.Y) above).
-		deviceFromUser = bufferFromPage.Compose(pageFromBoxLocal)
-	}
-
-	// Clip the mask buffer to the resolved mask region. SVG 1.1 §14.4:
-	// content outside the mask region contributes 0 — we get the same
-	// effect by clipping the painter to that region. The DC is in
-	// box-local coords (we translated by (refBox.X, refBox.Y) above);
-	// for maskContentUnits=objectBoundingBox we have an additional
-	// scale matrix mapping (0..1)→box-local, so we need to convert the
-	// region (which is in box-local coords) into the (0..1) space.
-	regionLocal := region
-	if masker.MaskContentUnits == svg.SVGUnitObjectBoundingBox {
-		if refBox.Width() != 0 && refBox.Height() != 0 {
-			regionLocal = geometry.NewRectF(
-				region.X()/refBox.Width(),
-				region.Y()/refBox.Height(),
-				region.Width()/refBox.Width(),
-				region.Height()/refBox.Height(),
-			)
-		}
-	}
-	tmpR.dc.DrawRectangle(regionLocal.X(), regionLocal.Y(), regionLocal.Width(), regionLocal.Height())
-	tmpR.dc.Clip()
-
-	// Paint the mask's children into the buffer. They're SVG nodes,
-	// so we run them through the SVG paint dispatch.
-	// The mask's children may reference paint servers (gradients, etc.)
-	// declared at the page scope — feed them the document's id map
-	// (lookupSVGResources).
-	pctx := newBufferPaintContext(tmpR, geometry.SizeF{Width: float64(bufW), Height: float64(bufH)}, deviceFromUser, r.lookupSVGResources())
-	for _, child := range masker.Children {
-		paintSVGNode(pctx, child)
-	}
-	return maskBuf
+	// A CSS box's user space has its origin at the box (mask-opacity-1d's
+	// mask <rect y="50"> covers the bottom half of its 100x100 div), and the
+	// box is its viewport.
+	size := geometry.SizeF{Width: refBox.Width(), Height: refBox.Height()}
+	return r.rasterizeSVGElementMask(masker, geometry.NewRectF(0, 0, size.Width, size.Height), size,
+		bufW, bufH, bx, by, geometry.Translate(refBox.X(), refBox.Y()).ToTransform())
 }
 
 // compositeBufferWithOpacityOnto draws a premultiplied buffer onto the target at

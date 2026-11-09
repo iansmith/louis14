@@ -129,6 +129,8 @@ func paintSVGNode(ctx *svgPaintContext, node svg.SVGNode) {
 	case *svg.SVGShape:
 		sp := &svgShapePainter{ctx: ctx, shape: n}
 		sp.paint()
+	case *svg.SVGImage:
+		paintSVGImageElement(ctx, n)
 	case *svg.SVGText:
 		tp := &svgTextPainter{ctx: ctx, text: n}
 		tp.paint()

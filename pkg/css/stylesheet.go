@@ -5130,12 +5130,14 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// The `all` shorthand cannot be expanded at parse time because its
 		// resolution depends on cascade-time context (the property snapshot for
 		// `revert`, inheritance for `inherit`, and the per-element set of
-		// declared longhands that must be reset). Store it verbatim so the
-		// cascade-time expandShorthand call applies it after every other
-		// declaration in the rule. Mirrors Blink's all.cc which never participates
-		// in StyleBuilder expansion the way other shorthands do; it's handled by
-		// the cascade's CSSProperty(kAll)::ApplyValue at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		// declared longhands that must be reset). Store it verbatim; the
+		// cascade-time expandShorthand call applies it before the rule's other
+		// declarations, which by then are only the ones after it (below).
+		// Blink expands it at parse time like any shorthand given a CSS-wide
+		// keyword (CSSPropertyParser::ParseCSSWideKeyword,
+		// css_property_parser.cc:447-469 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 defers it for the
+		// cascade-time context above.
 		if property == "all" {
 			// Within one declaration block, !important declarations beat
 			// non-important ones regardless of source order (CSS Cascade 4
@@ -5143,6 +5145,17 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			// would otherwise overwrite an earlier important one.
 			if !isImportant && result.Important["all"] {
 				continue
+			}
+			// `all` applies at its source position: it replaces the earlier
+			// declarations in this block of the longhands it covers, unless
+			// they are !important and it is not. The cascade applies a
+			// rule's `all` before its other declarations, so only the later
+			// ones remain to override it.
+			for k := range result.Declarations {
+				if allShorthandCovers(k) && (isImportant || !result.Important[k]) {
+					delete(result.Declarations, k)
+					delete(result.Important, k)
+				}
 			}
 			result.Declarations["all"] = value
 			if isImportant {
