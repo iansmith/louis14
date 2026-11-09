@@ -95,3 +95,48 @@ func TestAllCoversEveryAffectedLonghand(t *testing.T) {
 		}
 	}
 }
+
+// TestAllKeywordsReachStorageKeysAndLateRules: `all` writes each longhand
+// through expandShorthand, so a logical longhand's keyword lands on its
+// internal storage key and reverts against that key's snapshot; a var()
+// shorthand's key rolls back under revert-layer; @container rules honour
+// importance and resolve the CSS-wide keywords `all` leaves (CSS Cascade 5
+// §6.1.3, §7.3; Blink @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestAllKeywordsReachStorageKeysAndLateRules(t *testing.T) {
+	get := func(src, prop string) string {
+		v, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get(prop)
+		return v
+	}
+	// A <p>'s UA margin-block-start under a vertical-rl parent, with no
+	// author declarations at all.
+	uaRight := get(`<style>#p{writing-mode:vertical-rl}</style><div id="p"><p id="t"></p></div>`, "margin-right")
+	fresh := get(`<div id="t"></div>`, "margin-left")
+	for _, tc := range []struct{ name, src, prop, want string }{
+		{"all:revert keeps the UA logical margin on its physical side",
+			`<style>#p{writing-mode:vertical-rl} #t{margin:5px; all:revert}</style><div id="p"><p id="t"></p></div>`, "margin-right", uaRight},
+		{"all:revert-layer rolls a logical margin back under rtl",
+			`<style>#p{direction:rtl} @layer a { #t{margin-inline-start:7px} } #t{margin:1px; all:revert-layer}</style><div id="p"><div id="t"></div></div>`, "margin-right", "7px"},
+		{"all:revert-layer rolls back to a lower layer's var() shorthand",
+			`<style>@layer a { #t{--m:3px; margin:var(--m)} } #t{margin:1px; all:revert-layer}</style><div id="t"></div>`, "margin-left", "3px"},
+		{"all:revert drops a layer's var() shorthand (back to the UA origin)",
+			`<style>@layer a { #t{--m:3px; margin:var(--m)} } #t{all:revert}</style><div id="t"></div>`, "margin-left", fresh},
+		{"@container all:unset inherits an inherited longhand",
+			`<style>#p{color:green; container-type:inline-size; width:500px} #t{color:red} @container (min-width: 100px) { #t{all:unset} }</style><div id="p"><div id="t"></div></div>`, "color", "green"},
+		{"@container all:unset resets a non-inherited longhand",
+			`<style>#p{container-type:inline-size; width:500px} #t{margin-left:5px} @container (min-width: 100px) { #t{all:unset} }</style><div id="p"><div id="t"></div></div>`, "margin-left", fresh},
+		{"@container normal declaration yields to an author !important one",
+			`<style>#p{container-type:inline-size; width:500px} #t{margin-left:1px !important} @container (min-width: 100px) { #t{margin-left:5px} }</style><div id="p"><div id="t"></div></div>`, "margin-left", "1px"},
+		{"@container !important declaration beats a normal one",
+			`<style>#p{container-type:inline-size; width:500px} #t{margin-left:1px} @container (min-width: 100px) { #t{margin-left:5px !important} #t.t{margin-left:9px} }</style><div id="p"><div id="t" class="t"></div></div>`, "margin-left", "5px"},
+	} {
+		if got := get(tc.src, tc.prop); got != tc.want {
+			t.Errorf("%s: %s = %q, want %q", tc.name, tc.prop, got, tc.want)
+		}
+	}
+
+	// Internal markers that are not a logical longhand's storage key are
+	// not `all`'s to erase.
+	if allShorthandCovers("_writing-mode-inherited") {
+		t.Errorf("allShorthandCovers(_writing-mode-inherited) = true, want false")
+	}
+}
