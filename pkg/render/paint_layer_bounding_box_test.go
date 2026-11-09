@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image"
+	"louis14/pkg/graphics/filters"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func boundingBoxOf(t *testing.T, page, id string) image.Rectangle {
 	t.Helper()
 	root, _ := layoutAndBuildPaintTree(t, page)
 	r := NewRendererForImage(image.NewRGBA(image.Rect(0, 0, 800, 600)))
-	return snapRectFToDevice(r.localBoundingBoxIncludingSelfPaintingDescendants(layerWithID(t, root, id)).ToRectF())
+	return filters.SnapRectOut(r.localBoundingBoxIncludingSelfPaintingDescendants(layerWithID(t, root, id)).ToRectF())
 }
 
 // TestLocalBoundingBox_SelfPaintingUnderNonSelfPaintingChild — a float inside a

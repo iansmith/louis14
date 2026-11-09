@@ -121,7 +121,7 @@ func TestBuildSVGTree_TextWithTspanChild_FallsBackToContainer(t *testing.T) {
 // `<text filter="url(#id)">` must fall back to SVGContainer too,
 // because svgTextPainter (pkg/render/svg_text_painter.go) has no SVG
 // filter-graph dispatch — only SVGContainer's paint path
-// (trySVGContainerFilterDispatch) applies `<filter>` presentation
+// (trySVGFilterDispatch) applies `<filter>` presentation
 // properties, and it does so even for a childless/empty container
 // (e.g. a `<feFlood>`-only filter that produces its own output
 // regardless of source content), which is exactly what this WPT test

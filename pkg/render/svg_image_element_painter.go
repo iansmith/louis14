@@ -1,6 +1,9 @@
 package render
 
-import "louis14/pkg/layout/svg"
+import (
+	"louis14/pkg/geometry"
+	"louis14/pkg/layout/svg"
+)
 
 // paintSVGImageElement paints an SVG <image>. Mirrors Blink's
 // SVGImagePainter::Paint (core/paint/svg_image_painter.cc:41-93 @
@@ -15,9 +18,11 @@ func paintSVGImageElement(pctx *svgPaintContext, img *svg.SVGImage) {
 	if img == nil || !img.HasImage() {
 		return
 	}
-	// A filter runs whatever the visibility (ScopedSVGPaintState::
-	// ComputePaintBehavior), as for a shape or container; the content is
-	// not drawn yet.
-	trySVGFilterDispatch(pctx, svgFilteredElement{node: img, style: img.Style},
-		svg.ElementTransform(img, img.Style, img.Viewport))
+	// The filter is built inside the element's transform (as for a shape
+	// or container: buildSVGElementFilter) and runs whatever the visibility
+	// (ScopedSVGPaintState::ComputePaintBehavior); the content is not drawn
+	// yet.
+	guard := pushScopedSVGTransform(pctx, svg.ElementTransform(img, img.Style, img.Viewport), geometry.RectF{})
+	defer guard.Close()
+	trySVGFilterDispatch(pctx, img, img.Style, nil)
 }

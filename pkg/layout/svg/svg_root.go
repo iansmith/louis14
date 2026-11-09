@@ -505,7 +505,7 @@ func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolv
 // there. `<text>` falling back to the generic SVGContainer path
 // instead of becoming an SVGText preserves the pre-existing (and
 // still-correct) container-level filter dispatch
-// (trySVGContainerFilterDispatch in pkg/render/svg_filter_container_painter.go),
+// (trySVGFilterDispatch in pkg/render/svg_filter_container_painter.go),
 // which runs even for an empty/childless container — exactly what a
 // filtered `<text>` degrades to under SVGContainer, and exactly the
 // case svg-visibility-hidden-element-with-filter-003.html exercises

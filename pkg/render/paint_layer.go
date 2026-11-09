@@ -1,6 +1,7 @@
 package render
 
 import (
+	"louis14/pkg/graphics/filters"
 	"sort"
 	"strings"
 
@@ -1388,8 +1389,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// than the SVG root itself) carry CSS `filter` only because the SVG
 	// presentation attribute `filter="url(#id)"` maps to the CSS property
 	// through the cascade. The SVG paint walk (svg_shape_painter.go) is the
-	// authoritative consumer: paintWithSVGFilter is called from
-	// svgShapePainter.paint when the shape has a `filter` style. Letting the
+	// authoritative consumer: svgShapePainter.paintWithFilter is called
+	// from svgShapePainter.paint when the shape has a `filter` style. Letting the
 	// generic CSS-layer dispatch ALSO run paintLayerWithFilter would
 	// double-paint the filter, and on the CSS path the reference box / region
 	// resolves from the layer's HTML border-box (which has degenerate
@@ -2578,11 +2579,11 @@ func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRec
 	}
 	builder := r.newFilterEffectBuilder(layer)
 	builder.ReferenceBox = rect.ToRectF()
-	builder.FilterViewport = rectFFromRect(snapRectFToDevice(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)))
+	builder.FilterViewport = rectFFromRect(filters.SnapRectOut(geometry.NewRectF(layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height)))
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
 		return rect
 	}
-	m := filter.MapRect(snapRectFToDevice(builder.ReferenceBox))
+	m := filter.MapRect(builder.LayerReferenceBox())
 	return geometry.PhysicalRectEnclosingRect(rectFFromRect(m))
 }

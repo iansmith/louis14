@@ -5,7 +5,7 @@ import "math"
 // LightSource is the abstract interface every concrete SVG light source
 // implements (`<feDistantLight>`, `<fePointLight>`, `<feSpotLight>`).
 // Mirrors Blink's platform/graphics/filters/light_source.{h,cc} — a
-// single virtual method that, given the absolute device-pixel surface
+// single virtual method that, given the layer-pixel surface
 // coordinate of the pixel being shaded, returns the unit-length light
 // direction L pointing FROM the surface TOWARDS the light source, plus a
 // visibility factor in [0, 1] that lets cone-limited sources (spot light)
@@ -26,7 +26,7 @@ type LightSource interface {
 	// Direction returns the unit-length direction vector pointing from
 	// the surface point (x, y, z) toward the light, and a visibility
 	// factor in [0, 1] for cone-limited sources. (x, y, z) is in
-	// absolute device pixels with z = SurfaceScale * alpha / 255.
+	// layer pixels with z = SurfaceScale * alpha / 255.
 	Direction(x, y, z float64) (Lx, Ly, Lz, Visibility float64)
 }
 
@@ -104,12 +104,12 @@ func normalizeDeg360(deg float64) float64 {
 // position. Visibility is always 1 — a point light radiates in all
 // directions.
 type PointLightSource struct {
-	// X, Y, Z are the light's position in absolute device pixels (z
+	// X, Y, Z are the light's position in layer pixels (z
 	// uses the same units as x/y — the height-field convention).
 	X, Y, Z float64
 }
 
-// NewPointLightSource constructs a PointLightSource at the given device-
+// NewPointLightSource constructs a PointLightSource at the given layer-
 // pixel position.
 func NewPointLightSource(x, y, z float64) *PointLightSource {
 	return &PointLightSource{X: x, Y: y, Z: z}

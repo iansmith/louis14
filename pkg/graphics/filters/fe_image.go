@@ -25,7 +25,7 @@ import (
 //
 // The interface to the source-resolver is intentionally narrow: the
 // builder hands FEImage either a pre-rasterised RGBA + subregion in
-// absolute device pixels, or nil for the spec's "no image" path
+// layer pixels, or nil for the spec's "no image" path
 // (tspan reference, unresolved fragment, etc.) which is supposed to
 // produce transparent output identical to a feMerge with no inputs.
 type FEImage struct {
@@ -37,7 +37,7 @@ type FEImage struct {
 	SourceImage *image.RGBA
 
 	// TargetRect is where in the filter region to place the image, in
-	// absolute device coordinates. Typically equal to the primitive
+	// layer pixels. Typically equal to the primitive
 	// subregion (resolved from x/y/width/height attributes against the
 	// filter region or reference box). When TargetRect is empty, FEImage
 	// falls back to the full filter region passed to ApplyEffect.
@@ -56,7 +56,7 @@ type FEImage struct {
 }
 
 // NewFEImage creates a leaf FEImage node. `src` may be nil (no image
-// resolved); `target` is the primitive subregion in absolute device
+// resolved); `target` is the primitive subregion in layer
 // pixels (empty for "use the filter region").
 func NewFEImage(space InterpolationSpace, src *image.RGBA, target image.Rectangle, parNone bool) *FEImage {
 	return &FEImage{
