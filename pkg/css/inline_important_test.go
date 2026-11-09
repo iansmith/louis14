@@ -1,6 +1,10 @@
 package css
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/html"
+)
 
 // TestInlineStyleImportant: a style attribute's !important flags are
 // honoured. Within the attribute an important declaration beats a later
@@ -63,5 +67,67 @@ func TestRulePriorityWithoutValueIsDropped(t *testing.T) {
 	st := styleByID(t, cascadeHTML(t, `<style>#t{margin-left:3px} #t{margin-left: !important}</style><div id="t"></div>`, nil), "t")
 	if got, _ := st.Get("margin-left"); got != "3px" {
 		t.Errorf("margin-left: !important in a rule: margin-left = %q, want 3px", got)
+	}
+}
+
+// TestLogicalLonghandsResolveAtTheirCascadePosition: a logical longhand
+// cascades only as itself and maps onto its physical longhand at computed
+// time for the element's writing-mode and direction, where the later of the
+// two in cascade order (origin, importance, then order) wins
+// (CSSProperty::ResolveDirectionAwareProperty; StyleCascade @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It never sets the
+// horizontal-tb LTR side as a declaration of its own.
+func TestLogicalLonghandsResolveAtTheirCascadePosition(t *testing.T) {
+	initial := func(prop string) string {
+		v, _ := styleByID(t, cascadeHTML(t, `<div id="f"></div>`, nil), "f").Get(prop)
+		return v
+	}
+	type want map[string]string
+	for _, tc := range []struct {
+		name, css, inline string
+		want              want
+	}{
+		{"rtl: inline important logical leaves author important margin-left", `#t{direction:rtl; margin-left:1px !important}`, `margin-inline-start:5px !important`, want{"margin-left": "1px", "margin-right": "5px"}},
+		{"vertical-rl: inline important logical leaves author important margin-left", `#t{writing-mode:vertical-rl; margin-left:1px !important}`, `margin-inline-start:5px !important`, want{"margin-left": "1px", "margin-top": "5px"}},
+		{"vertical-rl: inline normal logical leaves author normal margin-left", `#t{writing-mode:vertical-rl; margin-left:1px}`, `margin-inline-start:5px`, want{"margin-left": "1px", "margin-top": "5px"}},
+		{"later logical beats earlier physical", `#t{margin-left:1px} #t.t{margin-inline-start:5px}`, ``, want{"margin-left": "5px"}},
+		{"later physical beats earlier logical", `#t.t{margin-left:1px} #t{margin-inline-start:5px}`, ``, want{"margin-left": "1px"}},
+		{"later physical beats earlier logical size", `#t{writing-mode:vertical-rl; inline-size:50px; height:7px}`, ``, want{"height": "7px"}},
+		{"inset-inline-start under rtl", `#t{direction:rtl; position:absolute; inset-inline-start:5px}`, ``, want{"right": "5px", "left": initial("left")}},
+		{"logical initial resets the physical side", `#t{margin-left:5px; margin-inline-start:initial}`, ``, want{"margin-left": initial("margin-left")}},
+		{"logical inherit takes the parent's physical side", `#p{margin-left:7px} #t{margin-inline-start:inherit}`, ``, want{"margin-left": "7px"}},
+	} {
+		st := styleByID(t, cascadeHTML(t, `<style>`+tc.css+`</style><div id="p"><div id="t" class="t" style="`+tc.inline+`"></div></div>`, nil), "t")
+		for prop, w := range tc.want {
+			if got, _ := st.Get(prop); got != w {
+				t.Errorf("%s: %s = %q, want %q", tc.name, prop, got, w)
+			}
+		}
+	}
+
+	// A pseudo-element maps its logical longhands too.
+	doc, _ := html.Parse(`<style>#t::before{content:"x"; direction:rtl; margin-inline-start:5px}</style><div id="t">y</div>`)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	for n, st := range styles {
+		if id, _ := n.GetAttribute("id"); id == "t" {
+			before := ComputePseudoElementStyle(n, "before", ParseDocumentStylesheets(doc), 800, 600, st)
+			if got, _ := before.Get("margin-right"); got != "5px" {
+				t.Errorf("::before rtl margin-inline-start: margin-right = %q, want 5px", got)
+			}
+		}
+	}
+}
+
+// TestInlineStyleComments: comments in a style attribute are stripped as in
+// a stylesheet, so a `!` or `;` inside one is not syntax.
+func TestInlineStyleComments(t *testing.T) {
+	for _, tc := range []struct{ inline, prop, want string }{
+		{`color: green /* ! */`, "color", "green"},
+		{`margin-left: 4px /* ; x */`, "margin-left", "4px"},
+	} {
+		st := styleByID(t, cascadeHTML(t, `<div id="t" style="`+tc.inline+`"></div>`, nil), "t")
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("style=%q: %s = %q, want %q", tc.inline, tc.prop, got, tc.want)
+		}
 	}
 }
