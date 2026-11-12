@@ -49,3 +49,14 @@ func TestRewindTrailingOpenTags(t *testing.T) {
 		}
 	})
 }
+
+// A line that ends where an opening punctuation mark was retracted (LB14,
+// retractTrailingOpenPunct) must not end with the open tag before it.
+func TestRewindTrailingOpenTagsAfterOpenPunctRetract(t *testing.T) {
+	src := `<!DOCTYPE html><body style="margin:0"><div style="width:70px;font:10px/1 Ahem">foo ` +
+		`<span id="t" style="` + rewindEdges + `">( bar</span></div>`
+	r := oofPageRects(t, src)["t"]
+	if len(r) == 0 || r[0].y == 0 {
+		t.Errorf("span fragments = %+v, want none on line 1 (its open tag moves with the retracted \"(\")", r)
+	}
+}
