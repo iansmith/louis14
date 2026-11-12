@@ -1090,7 +1090,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				truncator = NewLineTruncator(lineStyle, opportunity, line.BaseDirection, fonts)
 			}
 		}
-		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
+		lineFragment, lineHeight, lineAscent, lineOffsetForTextAlign, residualStack, lineOOFCandidates := createLineBoxEx(
 			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, relativeAvailableSize, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers, truncator,
 		)
 		openInlineStack = residualStack
@@ -1240,8 +1240,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// This is the block offset of the line + the line's ascent.
 		lastBaselineOffset = blockOffset + lineAscent
 
+		// text-align moves the line box (SetBfcLineOffset,
+		// inline/inline_layout_algorithm.cc:479-486 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The line box lays out
+		// line-left to line-right, so in an RTL block its inline offset is
+		// from the other edge of the line's available width.
+		lineBoxInlineOffset := lineInlineOffset + lineOffsetForTextAlign
+		if wdm.IsRTL() {
+			lineBoxInlineOffset = lineInlineOffset + lineVisualInline - lineOffsetForTextAlign -
+				ToLogicalSize(geomSizeToOld(lineFragment.Size), wdm.WM).InlineSize
+		}
 		lineOffset := LogicalOffset{
-			InlineOffset: lineInlineOffset,
+			InlineOffset: lineBoxInlineOffset,
 			BlockOffset:  blockOffset,
 		}
 		// The line is kept: its floats go in with it, before it.
@@ -2169,7 +2179,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), LogicalSize{}, nil, nil, nil, true, nil, nil)
+	frag, h, a, _, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), LogicalSize{}, nil, nil, nil, true, nil, nil)
 	return frag, h, a
 }
 
@@ -2200,7 +2210,7 @@ func createLineBoxEx(
 	isFirstLine bool,
 	atomicInlineContainers map[*InlineItem]AtomicInlineContainers,
 	truncator *LineTruncator,
-) (*PhysicalFragment, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, residualSpanStack, oofCandidates)
+) (*PhysicalFragment, float64, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, lineOffsetForTextAlign, residualSpanStack, oofCandidates)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
 	var lineOOFCandidates []OutOfFlowCandidate
@@ -3219,8 +3229,15 @@ func createLineBoxEx(
 	// Truncate the line for 'text-overflow' (InlineLayoutAlgorithm::
 	// CreateLine, inline/inline_layout_algorithm.cc:447-457 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	// The line box is as wide as its content (ComputeInlinePositions'
+	// extent, inline/inline_layout_algorithm.cc:380, :622 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the text-align offset
+	// moves the line box, not its children (:479-486): the children are
+	// placed relative to the line's content start, and the caller adds
+	// alignOffset to the line box's offset.
+	inlineSize := max(inlinePos-alignOffset, 0)
 	if truncator != nil {
-		truncator.TruncateLine(line.Width, &lineBox, LineBoxPlacement{
+		inlineSize = truncator.TruncateLine(inlineSize, &lineBox, LineBoxPlacement{
 			LineOffsetForTextAlign: alignOffset,
 			MaxAscent:              maxAscent,
 			WritingDirection:       wdm,
@@ -3228,12 +3245,14 @@ func createLineBoxEx(
 			PaintGroup:             flPaintGroup(nil),
 		})
 	}
+	lineBuilder.SetInlineSize(inlineSize)
 	for _, c := range lineBox {
+		c.Offset.InlineOffset -= alignOffset
 		lineBuilder.AddChildWithRelativeOffset(c.Fragment, c.Offset, c.RelativeOffset)
 	}
 
 	result := lineBuilder.Build()
-	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates
+	return result.Fragment, lineHeight, maxAscent, alignOffset, residualSpanStack, lineOOFCandidates
 }
 
 // needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must

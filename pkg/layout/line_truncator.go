@@ -90,11 +90,10 @@ func (t *LineTruncator) measure(style *css.Style, s string, wdm WritingDirection
 		letterSpacing, wordSpacing, isVerticalMeasurement(style, wdm))
 }
 
-// TruncateLine truncates lineBox, whose content is lineWidth wide. Mirrors
-// LineTruncator::TruncateLine (line_truncator.cc:173-240), less its
-// returned inline size: louis14's line box keeps the available inline
-// size.
-func (t *LineTruncator) TruncateLine(lineWidth float64, lineBox *LogicalLineItems, p LineBoxPlacement) {
+// TruncateLine truncates lineBox, whose content is lineWidth wide, and
+// returns the line's new inline size. Mirrors LineTruncator::TruncateLine
+// (line_truncator.cc:173-240).
+func (t *LineTruncator) TruncateLine(lineWidth float64, lineBox *LogicalLineItems, p LineBoxPlacement) float64 {
 	t.SetupEllipsis(p.WritingDirection)
 
 	// The in-flow children in visual order: Blink's line box holds them in
@@ -106,7 +105,7 @@ func (t *LineTruncator) TruncateLine(lineWidth float64, lineBox *LogicalLineItem
 		}
 	}
 	if len(inFlow) == 0 {
-		return
+		return lineWidth
 	}
 	sort.SliceStable(inFlow, func(a, b int) bool {
 		return (*lineBox)[inFlow[a]].Offset.InlineOffset < (*lineBox)[inFlow[b]].Offset.InlineOffset
@@ -137,7 +136,7 @@ func (t *LineTruncator) TruncateLine(lineWidth float64, lineBox *LogicalLineItem
 
 	// Abort if ellipsis could not be placed.
 	if ellipsized < 0 {
-		return
+		return lineWidth
 	}
 
 	// Truncate the text fragment if needed: hide the original and insert
@@ -152,14 +151,15 @@ func (t *LineTruncator) TruncateLine(lineWidth float64, lineBox *LogicalLineItem
 		ellipsized++
 	}
 
-	t.PlaceEllipsisNextTo(lineBox, ellipsized, p)
+	ellipsisOffset := t.PlaceEllipsisNextTo(lineBox, ellipsized, p)
+	return max(ellipsisOffset-p.LineOffsetForTextAlign+t.ellipsisWidth, lineWidth)
 }
 
 // PlaceEllipsisNextTo adds the ellipsis next to the child at index
-// ellipsized. Mirrors
+// ellipsized and returns its inline offset. Mirrors
 // LineTruncator::PlaceEllipsisNextTo (line_truncator.cc:98-140): the
 // ellipsis is styled by the line style and sits on the line's baseline.
-func (t *LineTruncator) PlaceEllipsisNextTo(lineBox *LogicalLineItems, ellipsized int, p LineBoxPlacement) {
+func (t *LineTruncator) PlaceEllipsisNextTo(lineBox *LogicalLineItems, ellipsized int, p LineBoxPlacement) float64 {
 	child := (*lineBox)[ellipsized]
 	offset := child.Offset.InlineOffset + child.InlineSize
 	if !t.isLtr() {
@@ -190,6 +190,7 @@ func (t *LineTruncator) PlaceEllipsisNextTo(lineBox *LogicalLineItems, ellipsize
 		RelativeOffset: child.RelativeOffset,
 		InlineSize:     t.ellipsisWidth,
 	})
+	return offset
 }
 
 // HideChild hides child from paint, keeping its geometry. Mirrors
