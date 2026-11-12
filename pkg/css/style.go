@@ -12377,33 +12377,6 @@ type ScrollbarColorValue struct {
 	IsAuto bool
 }
 
-// splitScrollbarColorValues splits a CSS value string containing two color values.
-// Colors can be functions like rgb(r,g,b) which contain commas, so we track paren depth.
-func splitScrollbarColorValues(v string) []string {
-	var results []string
-	depth := 0
-	start := 0
-	for i, c := range v {
-		if c == '(' {
-			depth++
-		}
-		if c == ')' {
-			depth--
-		}
-		if depth == 0 && c == ' ' && i > start {
-			token := strings.TrimSpace(v[start:i])
-			if token != "" {
-				results = append(results, token)
-				start = i + 1
-			}
-		}
-	}
-	if last := strings.TrimSpace(v[start:]); last != "" {
-		results = append(results, last)
-	}
-	return results
-}
-
 // GetScrollbarColor returns the scrollbar-color value.
 // Returns IsAuto=true for "auto" or when unset.
 func (s *Style) GetScrollbarColor() ScrollbarColorValue {
@@ -12415,10 +12388,15 @@ func (s *Style) GetScrollbarColor() ScrollbarColorValue {
 	if v == "" || v == "auto" {
 		return ScrollbarColorValue{IsAuto: true}
 	}
-	parts := splitScrollbarColorValues(v)
-	if len(parts) >= 2 {
-		thumbColor, thumbOk := ParseColor(parts[0])
-		trackColor, trackOk := ParseColor(parts[1])
+	// auto | <color>{2}: exactly two colors.
+	parts := splitComponentValues(v)
+	if len(parts) == 2 {
+		// Each <color> resolves currentColor against this element's color
+		// (StyleBuilderConverter::ConvertScrollbarColor,
+		// style_builder_converter.cc:3775 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		thumbColor, thumbOk := s.ResolvedColor(parts[0])
+		trackColor, trackOk := s.ResolvedColor(parts[1])
 		if thumbOk && trackOk {
 			return ScrollbarColorValue{Thumb: thumbColor, Track: trackColor}
 		}

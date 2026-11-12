@@ -39,3 +39,33 @@ func TestColorGettersResolveCurrentColorInColorMix(t *testing.T) {
 		t.Errorf("border-top-color = %+v, want %+v", got, green)
 	}
 }
+
+// scrollbar-color's thumb and track <color>s (auto | <color>{2},
+// ScrollbarColor::ParseSingleValue, longhands_custom.cc:8890-8915; computed
+// by StyleBuilderConverter::ConvertScrollbarColor, style_builder_converter.cc:
+// 3775 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) resolve currentColor, in
+// any case, and a color-mix() referencing it, against the element's color
+// (LOU-908).
+func TestScrollbarColorResolvesCurrentColor(t *testing.T) {
+	blue := Color{B: 255, A: 1}
+	for _, tt := range []struct {
+		value        string
+		thumb, track Color
+	}{
+		{"currentColor blue", green, blue},
+		{"blue CURRENTCOLOR", blue, green},
+		{currentColorMix + " " + currentColorMix, green, green},
+		{"currentColor\tblue", green, blue},
+	} {
+		s := ParseInlineStyle("color: green; scrollbar-color: "+tt.value, nil)
+		if got := s.GetScrollbarColor(); got.IsAuto || got.Thumb != tt.thumb || got.Track != tt.track {
+			t.Errorf("scrollbar-color: %s = %+v, want thumb %+v track %+v", tt.value, got, tt.thumb, tt.track)
+		}
+	}
+	// Three colors are not <color>{2}.
+	s := NewStyle()
+	s.Set("scrollbar-color", "red blue green")
+	if got := s.GetScrollbarColor(); !got.IsAuto {
+		t.Errorf("scrollbar-color: red blue green = %+v, want auto", got)
+	}
+}
