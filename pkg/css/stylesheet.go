@@ -4873,44 +4873,109 @@ func (d *DeclarationResult) Set(property, value string, important bool) {
 	d.Order = append(d.Order, property)
 }
 
-// SetDeclaration parses `property: value` as a declaration of this block
-// (comments stripped, then parseDeclarations) and sets what it stores —
-// a logical longhand under its storage key, a shorthand as its longhands —
-// as the block's last declarations, not important, replacing what property
-// set before (MutableCSSPropertyValueSet::ParseAndSetProperty @
+// SetDeclaration parses value as exactly property's value (comments
+// stripped) and sets what a declaration of it stores — a logical longhand
+// under its storage key, a shorthand as all its longhands, those its value
+// omits at their initial value — as the block's last declarations, not
+// important, replacing what property set before
+// (MutableCSSPropertyValueSet::ParseAndSetProperty; CSSParser::ParseValue,
+// core/css/parser/css_parser.cc:179-230 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It reports false, changing
-// nothing, when the declaration is invalid.
+// nothing, when value is not one valid value of property: a `;` in it would
+// start another declaration, so it rejects the value.
 func (d *DeclarationResult) SetDeclaration(property, value string) bool {
-	parsed := parseDeclarations(property + ": " + StripComments(value))
+	value = StripComments(value)
+	// One value: no `;` starting another declaration, and no priority
+	// (that comes only through setProperty's third argument).
+	if len(SplitDeclarations(value)) != 1 {
+		return false
+	}
+	if _, important, ok := SplitPriority(value); !ok || important {
+		return false
+	}
+	parsed := parseDeclarations(property + ": " + value)
+	keys := declarationKeys(property)
 	if len(parsed.Order) == 0 {
 		return false
 	}
-	d.RemoveDeclaration(property)
 	for _, p := range parsed.Order {
-		d.Set(p, parsed.Declarations[p], false)
+		if _, ok := keys[p]; !ok && p != property {
+			return false
+		}
+	}
+	d.removeKeys(property, keys)
+	if v, whole := parsed.Declarations[property]; whole {
+		// Stored whole (a longhand, or a var() shorthand awaiting
+		// substitution): its longhands are pending, not initial.
+		d.Set(property, v, false)
+		return true
+	}
+	for _, p := range shorthandOrder(property, keys) {
+		v, set := parsed.Declarations[p]
+		if !set {
+			v = "initial"
+		}
+		d.Set(p, v, false)
 	}
 	return true
+}
+
+// declarationKeys is what a declaration of property can store: the keys
+// `property: initial` stores (a shorthand's longhands, a logical longhand's
+// storage key, or property itself).
+func declarationKeys(property string) map[string]string {
+	return parseDeclarations(property + ": initial").Declarations
+}
+
+// shorthandOrder lists keys in property's longhand order (shorthandLonghands,
+// each longhand under its own name or its logical storage key), so a
+// shorthand write sets its longhands in a fixed order.
+func shorthandOrder(property string, keys map[string]string) []string {
+	longhands := shorthandLonghands[property]
+	if longhands == nil {
+		longhands = []string{property}
+	}
+	var out []string
+	for _, lh := range longhands {
+		for _, k := range []string{lh, "_" + lh} {
+			if _, ok := keys[k]; ok {
+				out = append(out, k)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // RemoveDeclaration drops what a declaration of property sets: property
 // itself (a var() shorthand stored whole), and every key `property:
 // initial` stores (its longhands and logical storage keys).
 func (d *DeclarationResult) RemoveDeclaration(property string) {
-	keys := parseDeclarations(property + ": initial").Declarations
+	d.removeKeys(property, declarationKeys(property))
+}
+
+func (d *DeclarationResult) removeKeys(property string, keys map[string]string) {
 	d.RemoveFunc(func(p string) bool {
 		_, set := keys[p]
 		return set || p == property
 	})
 }
 
-// Value returns property's declared value: under its own name, or a logical
-// longhand's under its storage key.
+// Value returns property's declared value: under its own name, a logical
+// longhand's under its storage key, or a shorthand's serialized from its
+// longhands (serializeShorthand).
 func (d *DeclarationResult) Value(property string) (string, bool) {
 	if v, ok := d.Declarations[property]; ok {
 		return v, true
 	}
-	v, ok := d.Declarations["_"+property]
-	return v, ok && logicalLonghandStorageKeys["_"+property] != ""
+	if logicalLonghandStorageKeys["_"+property] != "" {
+		v, ok := d.Declarations["_"+property]
+		return v, ok
+	}
+	if _, ok := shorthandLonghands[property]; ok {
+		return d.serializeShorthand(property), true
+	}
+	return "", false
 }
 
 // RemoveFunc drops the declarations of the properties drop selects, in one

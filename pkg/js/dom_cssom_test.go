@@ -212,6 +212,8 @@ func TestStyleSheetsRuleWritesParseAsOneValue(t *testing.T) {
 		{"margin reads back four values", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.margin="1px 2px"; if (r[0].style.margin !== "1px 2px") throw new Error("margin read back " + JSON.stringify(r[0].style.margin));`, "margin-left", "2px"},
 		{"font reads back", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.font="bold 12px serif"; if (r[0].style.font !== "bold 12px serif") throw new Error("font read back " + JSON.stringify(r[0].style.font));`, "font-size", "12px"},
 		{"border reads back", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.border="1px solid lime"; if (r[0].style.border !== "1px solid lime") throw new Error("border read back " + JSON.stringify(r[0].style.border));`, "border-left-color", "lime"},
+		{"border-color reads back collapsed", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.borderColor="lime"; if (r[0].style.borderColor !== "lime") throw new Error("border-color read back " + JSON.stringify(r[0].style.borderColor));`, "border-left-color", "lime"},
+		{"priority in the value is rejected", `<style>#d{width:3px}</style><div id="d">x</div>`, `r[0].style.width="9px !important";`, "width", "3px"},
 		{"partial shorthand reads back empty", `<style>#d{margin-top:1px}</style><div id="d">x</div>`, `if (r[0].style.margin !== "") throw new Error("margin read back " + JSON.stringify(r[0].style.margin));`, "margin-top", "1px"},
 	} {
 		doc := parseHTML(t, tc.html)
