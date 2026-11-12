@@ -308,15 +308,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 	case pc == "only-child":
 		return isNthChild(node, 1) && isLastChild(node)
 	case pc == "root":
-		if node.Parent == nil || node.Parent.TagName != "document" {
-			return false
-		}
-		for _, child := range node.Parent.Children {
-			if child.Type == html.ElementNode {
-				return child == node
-			}
-		}
-		return false
+		return isRootElement(node)
 	case pc == "empty":
 		return len(node.Children) == 0
 	case strings.HasPrefix(pc, "nth-child("):
@@ -422,16 +414,9 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		return isHyperlink(node)
 	case pc == "scope":
 		// :scope matches the element serving as the scope reference.
-		// In a static document context, approximate as :root (first element child of document).
-		if node.Parent == nil || node.Parent.TagName != "document" {
-			return false
-		}
-		for _, child := range node.Parent.Children {
-			if child.Type == html.ElementNode {
-				return child == node
-			}
-		}
-		return false
+		// In a static document context, approximate as :root (LOU-860
+		// ports @scope).
+		return isRootElement(node)
 	case pc == "link":
 		// Per CSS Selectors 4 §6.6.1, `:link` matches a non-visited hyperlink
 		// and `:visited` matches a visited one — they are mutually exclusive
