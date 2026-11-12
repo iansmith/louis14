@@ -248,7 +248,9 @@ func (b *Box) ScrollPosition() html.ScrollOffset {
 // size and the scrollport has extent in the other axis; when both axes are
 // auto and the overflow fits the scrollport with the scrollbars included,
 // neither is needed. A frozen scrollbar keeps its state. A change marks the
-// ancestors' intrinsic inline sizes dirty for their relayout check.
+// ancestors' intrinsic inline sizes dirty for their relayout check. When
+// blockSizeFinal is false (a table cell before the table stretches it),
+// only the inline-axis scrollbar is decided.
 // Mirrors PaintLayerScrollableArea::UpdateAfterLayout /
 // ComputeScrollbarExistence / HasHorizontalOverflow / HasVerticalOverflow
 // / TryRemovingAutoScrollbars (core/paint/paint_layer_scrollable_area.cc:
@@ -256,13 +258,23 @@ func (b *Box) ScrollPosition() html.ScrollOffset {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). HasHorizontalOverflow's
 // allowance for a vertical scrollbar added during a relayout is omitted:
 // its NeedsRelayout flag has no setter at that SHA, so it never applies.
-func updateScrollbarsAfterLayout(node *LayoutInputNode, result *LayoutResult) bool {
+func updateScrollbarsAfterLayout(node *LayoutInputNode, result *LayoutResult, blockSizeFinal bool, wdm WritingDirectionMode) bool {
 	style := node.Style()
 	if result == nil || result.Status != LayoutResultSuccess || style == nil ||
 		classicScrollbarWidth(style) == 0 {
 		return false
 	}
 	autoX, autoY := style.GetOverflowX() == css.OverflowAuto, style.GetOverflowY() == css.OverflowAuto
+	if !blockSizeFinal {
+		// The block-axis scrollbar waits for the box's final block size.
+		// (An orthogonal cell is stretched along its inline axis instead;
+		// LOU-918 covers it.)
+		if wdm.IsVertical() {
+			autoX = false
+		} else {
+			autoY = false
+		}
+	}
 	if !autoX && !autoY {
 		return false
 	}

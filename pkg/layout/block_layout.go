@@ -2356,18 +2356,18 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	}
 	node.intrinsicLogicalWidthsDirty = false
 	result := layoutAndStore(ctx, node, space)
-	// A table cell's layout here is at its measure size, before the table
-	// stretches it to its row; Blink decides its auto scrollbars on the
-	// final layout (UpdateAfterLayout runs after each layout). louis14 has
-	// no final-size cell layout yet (LOU-839; LOU-918), so a cell keeps no auto
-	// scrollbars.
-	if ctx.LayoutSideEffectsDisabled() || sequenceNumberAfter(space.BreakToken) > 0 ||
-		space.TableSectionData != nil {
+	if ctx.LayoutSideEffectsDisabled() || sequenceNumberAfter(space.BreakToken) > 0 {
 		return result
 	}
+	// A table cell is laid out here at its final inline size but before the
+	// table stretches its block size to the row; Blink decides its auto
+	// scrollbars on the final layout (UpdateAfterLayout runs after each
+	// layout). louis14 has no final-size cell layout yet (LOU-839), so a
+	// cell decides only its inline-axis scrollbar (LOU-918).
+	blockSizeFinal := space.TableSectionData == nil
 	wdm := space.WritingDirection
 	hadHorizontal, hadVertical := node.hasHorizontalScrollbar, node.hasVerticalScrollbar
-	if !updateScrollbarsAfterLayout(node, result) &&
+	if !updateScrollbarsAfterLayout(node, result, blockSizeFinal, wdm) &&
 		(!node.intrinsicLogicalWidthsDirty || !inlineSizeChangedAfterLayout(ctx, node, style, space, result)) {
 		return result
 	}
@@ -2380,7 +2380,7 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		addScrollbarFreeze(before, after, wdm, node)
 		before = after
 		result = layoutAndStore(ctx, node, space)
-		if !updateScrollbarsAfterLayout(node, result) {
+		if !updateScrollbarsAfterLayout(node, result, blockSizeFinal, wdm) {
 			return result
 		}
 	}
