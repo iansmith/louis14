@@ -1,6 +1,10 @@
 package css
 
-import "sync"
+import (
+	"sync"
+
+	"louis14/pkg/html"
+)
 
 // StyleSheetContents mirrors Blink's
 // `core/css/style_sheet_contents.h::StyleSheetContents` @
@@ -26,13 +30,20 @@ import "sync"
 // exercises sheet sharing across documents, and the LOU-139 resource-cache
 // ticket is the right home for that primitive.
 type StyleSheetContents struct {
+	// Text is the sheet's source, its owner's text. A rule mutation
+	// (insertRule / deleteRule) re-parses the sheet from its edited rules
+	// but leaves Text, the cache key, alone.
 	Text    string
 	Context *ParserContext
 	Href    string // empty for <style> blocks; the link's href for external sheets
+	// Owner is the <style> or <link> element the sheet belongs to
+	// (StyleSheet::ownerNode), or nil.
+	Owner *html.Node
 
-	once     sync.Once
+	mu       sync.Mutex
 	parsed   *Stylesheet
 	parseErr error
+	rules    []*CSSOMRule // the CSSOM rule list, built on first use
 }
 
 // NewStyleSheetContents wraps a piece of CSS source text together with the
@@ -43,10 +54,13 @@ func NewStyleSheetContents(text string, ctx *ParserContext) *StyleSheetContents 
 }
 
 // ParsedStylesheet returns the parsed Stylesheet, parsing on first call and
-// returning the same cached result thereafter. Safe for concurrent callers.
+// returning the same cached result until a rule mutation re-parses it.
+// Safe for concurrent callers.
 func (s *StyleSheetContents) ParsedStylesheet() (*Stylesheet, error) {
-	s.once.Do(func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.parsed == nil && s.parseErr == nil {
 		s.parsed, s.parseErr = ParseStylesheet(s.Text, s.Context)
-	})
+	}
 	return s.parsed, s.parseErr
 }

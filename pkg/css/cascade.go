@@ -1442,7 +1442,7 @@ func findHTMLElement(node *html.Node) *html.Node {
 // lets the 4-6 callers within one layout pass share a single parse;
 // see StyleSheetContents for the Blink-aligned wrapper.
 func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
-	sheets := getOrBuildStyleSheetContents(doc)
+	sheets := DocumentStyleSheetContents(doc)
 	out := make([]*Stylesheet, 0, len(sheets))
 	for _, sheet := range sheets {
 		parsed, err := sheet.ParsedStylesheet()
@@ -1453,7 +1453,8 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 	return out
 }
 
-// getOrBuildStyleSheetContents returns the cached []*StyleSheetContents for
+// DocumentStyleSheetContents returns doc's author sheets in tree order (the
+// sheets document.styleSheets lists): the cached []*StyleSheetContents for
 // doc, rebuilding it if Stylesheets has been mutated since the last call
 // (length or any source text/href differs, or doc.BaseDir changed).
 //
@@ -1470,16 +1471,32 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 // The wrappers parse lazily on first ParsedStylesheet() call, so this
 // function is cheap on the hot path — only the source-slice equality check
 // runs per call.
-func getOrBuildStyleSheetContents(doc *html.Document) []*StyleSheetContents {
+func DocumentStyleSheetContents(doc *html.Document) []*StyleSheetContents {
 	if cached, ok := doc.ParsedStylesheetsCache.([]*StyleSheetContents); ok && styleSheetCacheMatches(cached, doc.Stylesheets, doc.BaseDir) {
 		return cached
 	}
+	// An element keeps its sheet while its source is unchanged, as Blink's
+	// StyleElement / HTMLLinkElement keep sheet_ until their text or href
+	// changes: rule mutations (insertRule / deleteRule) live on the sheet,
+	// not the source.
+	cached, _ := doc.ParsedStylesheetsCache.([]*StyleSheetContents)
+	byOwner := make(map[*html.Node]*StyleSheetContents, len(cached))
+	for _, c := range cached {
+		if c.Owner != nil {
+			byOwner[c.Owner] = c
+		}
+	}
 	sheets := make([]*StyleSheetContents, len(doc.Stylesheets))
 	for i, source := range doc.Stylesheets {
+		if c := byOwner[source.Owner]; c != nil && styleSheetSourceMatches(c, source, doc.BaseDir) {
+			sheets[i] = c
+			continue
+		}
 		ctx := NewParserContext(sheetBaseDir(source, doc.BaseDir))
 		ctx.Fetcher = doc.CSSResourceFetcher
 		sheets[i] = NewStyleSheetContents(source.Text, ctx)
 		sheets[i].Href = source.Href
+		sheets[i].Owner = source.Owner
 	}
 	doc.ParsedStylesheetsCache = sheets
 	return sheets
@@ -1505,11 +1522,14 @@ func sheetBaseDir(source html.StylesheetSource, docBaseDir string) string {
 // doesn't force a re-parse of the CSS.
 func styleSheetCacheMatches(cached []*StyleSheetContents, sources []html.StylesheetSource, docBaseDir string) bool {
 	return slices.EqualFunc(cached, sources, func(s *StyleSheetContents, src html.StylesheetSource) bool {
-		if s.Text != src.Text || s.Href != src.Href {
-			return false
-		}
-		return s.Context.baseDir() == sheetBaseDir(src, docBaseDir)
+		return s.Owner == src.Owner && styleSheetSourceMatches(s, src, docBaseDir)
 	})
+}
+
+// styleSheetSourceMatches reports whether s was built from src: the same
+// source text and href at the same base.
+func styleSheetSourceMatches(s *StyleSheetContents, src html.StylesheetSource, docBaseDir string) bool {
+	return s.Text == src.Text && s.Href == src.Href && s.Context.baseDir() == sheetBaseDir(src, docBaseDir)
 }
 
 // resolvePseudoInheritKeyword resolves any property whose value is the literal

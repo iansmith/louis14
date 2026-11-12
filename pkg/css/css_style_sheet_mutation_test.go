@@ -106,7 +106,7 @@ func TestInsertRuleImportAndBase(t *testing.T) {
 // top-level rules (CSSRuleList), not the selectors louis14 flattens a
 // selector list into.
 func TestInsertRuleAfterParseAndTopLevelCount(t *testing.T) {
-	c := NewStyleSheetContents("p {}", NewParserContext(""))
+	c := NewStyleSheetContents("p { color: blue }", NewParserContext(""))
 	if got := selectorsOf(t, c); len(got) != 1 {
 		t.Fatalf("precondition: %q", got)
 	}
@@ -129,7 +129,10 @@ func TestInsertRuleOrdering(t *testing.T) {
 		index       int
 		want        string // "" = inserted
 	}{
-		{"@layer a; p {}", "@import url(x.css);", 1, ""},
+		// With no @import or @namespace, a leading @layer statement is an
+		// ordinary rule (:291-295): an @import may go only before it.
+		{"@layer a; p {}", "@import url(x.css);", 1, "HierarchyRequestError"},
+		{"@layer a; p {}", "@import url(x.css);", 0, ""},
 		{"@import url(x.css);", "@layer a;", 0, ""},
 		{"p {}", "@namespace svg url(http://www.w3.org/2000/svg);", 0, "InvalidStateError"},
 		{"@import url(x.css); p {}", "@namespace svg url(http://www.w3.org/2000/svg);", 1, "InvalidStateError"},
@@ -144,5 +147,19 @@ func TestInsertRuleOrdering(t *testing.T) {
 		case tt.want != "" && (!errors.As(err, &me) || me.Name != tt.want):
 			t.Errorf("sheet %q: InsertRule(%q, %d) = %v, want %s", tt.sheet, tt.rule, tt.index, err, tt.want)
 		}
+	}
+}
+
+// The rule list holds the rules Blink keeps: @charset and a rule with an
+// invalid selector take no place in it, and a nested rule's style is its
+// own declarations, not a nested rule's.
+func TestRuleListIsBlinksRules(t *testing.T) {
+	c := NewStyleSheetContents(`@charset "utf-8"; a[ { color: red } p { color: blue }`, NewParserContext(""))
+	if c.RuleCount() != 1 {
+		t.Errorf("RuleCount = %d, want 1 (only p)", c.RuleCount())
+	}
+	c = NewStyleSheetContents("p { & span { color: red } }", NewParserContext(""))
+	if d := c.RuleDeclarations(c.Rules()[0]); d != nil {
+		t.Errorf("p's declarations = %v, want none (its only declaration is the nested span's)", d.Declarations)
 	}
 }
