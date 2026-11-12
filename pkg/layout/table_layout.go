@@ -277,7 +277,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	blockOffset := 0.0
 	for _, cap := range topCaptions {
 		tla.addCaptionResult(builder, wdm,
-			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
+			tla.layoutCaption(cap, wdm, tableContentInline), &blockOffset)
 	}
 
 	// Layout each row — single-pass pipeline (refactor-b ckpt 3).
@@ -982,7 +982,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// @ d4ecdfed88f9).
 	for _, cap := range bottomCaptions {
 		tla.addCaptionResult(builder, wdm,
-			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
+			tla.layoutCaption(cap, wdm, tableContentInline), &blockOffset)
 	}
 
 	// Negative caption margins can pull blockOffset below 0; Blink clamps
@@ -2036,25 +2036,23 @@ type captionResult struct {
 // layoutCaption lays out one caption and resolves its margins. Mirrors Blink
 // ComputeCaptionMargins (table_layout_algorithm.cc:118-128),
 // CreateCaptionConstraintSpace (:61-90) and LayoutCaption (:92-111), all @
-// d4ecdfed88f9. Margins are resolved in the table's writing direction, as
-// Blink passes the table's to ComputeMarginsFor.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Margins are resolved in the
+// table's writing direction, as Blink passes the table's to
+// ComputeMarginsFor.
 //
-// Divergences from Blink:
-//   - Percentage margins and the caption's available size use
-//     availableInline (the table content box from initial geometry); Blink
-//     uses the final table border-box inline size. They agree for an
-//     explicit-width table with no inline border or padding.
-//   - Auto inline margins resolve against tableContentInline, the final table
-//     content inline size; Blink uses the border-box inline size, which it
-//     also floors at the caption's min size (ComputeCaptionConstraint,
-//     :38-59 @ d4ecdfed88f9), which louis14 does not port.
+// The caption lays out at the table's final inline size: its available
+// and percentage-resolution inline size, and the base its margins resolve
+// against, are tableInline (GenerateFragment, :1230-1243). Divergence from Blink:
+// tableInline is the table's content box, where Blink uses its border box,
+// because louis14 places captions inside the table's border and padding
+// (addCaptionResult; LOU-573). They agree when the table has no inline
+// border or padding.
 //
 // An auto-width caption stretches to the available size minus its inline
 // margins: Blink's kStretchImplicit (:73) feeds the kStretch inline size,
-// which subtracts the box's own margins (length_utils.cc:46-58 @
-// d4ecdfed88f9). Percentage sizes still resolve against availableInline.
-func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDirectionMode, availableInline, tableContentInline float64) captionResult {
-	margins := ResolveMargins(cap.style, wdm, availableInline)
+// which subtracts the box's own margins (length_utils.cc:46-62).
+func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDirectionMode, tableInline float64) captionResult {
+	margins := ResolveMargins(cap.style, wdm, tableInline)
 	capWDM := wdm
 	if cap.style != nil {
 		capWDM = NewWritingDirectionMode(cap.style)
@@ -2065,18 +2063,18 @@ func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDire
 			orthogonalFallbackSize(capWDM, tla.ctx)).
 		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{
-			InlineSize: max(0, availableInline-margins.InlineSum()),
+			InlineSize: max(0, tableInline-margins.InlineSum()),
 			BlockSize:  Indefinite,
 		}).
 		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: availableInline,
+			InlineSize: tableInline,
 			BlockSize:  0,
 		}).
-		SetPercentageResolutionInlineSize(availableInline).
+		SetPercentageResolutionInlineSize(tableInline).
 		Build()
 
 	result := layoutElement(tla.ctx, cap.node, capSpace)
-	margins = resolveInlineAutoMargins(cap.style, wdm, tableContentInline,
+	margins = resolveInlineAutoMargins(cap.style, wdm, tableInline,
 		NewLogicalFragment(wdm, result.Fragment).InlineSize(), margins)
 	return captionResult{result: result, margins: margins}
 }
