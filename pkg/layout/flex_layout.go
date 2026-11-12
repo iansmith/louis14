@@ -32,6 +32,15 @@ type FlexLayoutAlgorithm struct {
 	// first layout pass before the line cross-size is known.
 	containerCrossSize float64
 	hasDefiniteCross   bool
+
+	// childPercentageSize is the percentage size the container gives its
+	// items: its content box, the block size Indefinite when the container's
+	// is. Mirrors Blink's child_percentage_size_ (flex/flex_layout_algorithm.cc:
+	// 182-185, flex_layout_algorithm.h:228 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), CalculateChildPercentageSize
+	// over ChildAvailableSize; its anonymous-space and quirks-mode branches are
+	// not ported (LOU-825).
+	childPercentageSize LogicalSize
 }
 
 // NewFlexLayoutAlgorithm creates a flex layout algorithm for the given node.
@@ -647,6 +656,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	fla.containerCrossSize = containerCrossSize
 	fla.hasDefiniteCross = hasDefiniteCross
+	fla.childPercentageSize = CalculateChildAvailableSize(fla.space, fla.node, geom)
 
 	// Resolve gap properties.
 	contentBlockSize := 0.0
@@ -1996,9 +2006,13 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		order := fla.parseInt(childStyle, "order", 0)
 
 		// Constraint space for computing intrinsic sizes (§4.5, min/max).
+		// Its percentage size is childPercentageSize, as Blink's flex-basis
+		// and layout spaces' are (BuildSpaceForFlexBasis,
+		// flex/flex_layout_algorithm.cc:685-697; BuildSpaceForLayout :720,
+		// :802 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		itemSizingSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionSize(fla.childPercentageSize).
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			SetIsInsideFlexibleBox(true).
 			Build()
@@ -3383,15 +3397,13 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			BlockSize:  mainSize + item.mainBorderPadding(),
 		}
 		b.SetAvailableSize(avail)
-		// Percentage resolution: per CSS2.1 §10.2 and Flexbox §4, a flex item's
-		// containing block is the flex container, so percentage inline-sizes
-		// resolve against the container's content inline-size — NOT the flex
-		// line's cross-size. For multi-line column flex, using the line cross
-		// would make width:50% resolve against half the container.
-		b.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: contentInlineSize,
-			BlockSize:  mainSize,
-		})
+		// Percentage resolution: a flex item's containing block is the flex
+		// container, so the item's percentages resolve against
+		// childPercentageSize, its content box (BuildSpaceForLayout,
+		// flex/flex_layout_algorithm.cc:720, :802) — not the flex line's
+		// cross size, nor the item's own flexed main size (its descendants
+		// resolve against that through its fixed block size).
+		b.SetPercentageResolutionSize(fla.childPercentageSize)
 		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(crossIsFixed)
 		b.SetIsFixedBlockSize(true)
@@ -4445,11 +4457,13 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 
 	// §4.5: "In all cases, the size is capped by the item's max main size property, if definite."
+	// The max main length resolves against childPercentageSize
+	// (BuildSpaceForLayout, flex/flex_layout_algorithm.cc:720, :802).
 	{
 		maxSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionSize(fla.childPercentageSize).
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		if mainIsItemInline {

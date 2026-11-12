@@ -59,3 +59,24 @@ func TestFlexItemPercentMaxMainSize(t *testing.T) {
 		})
 	}
 }
+
+// A column item's descendants resolve their percentages against the item's
+// flexed (fixed) block size, not the container's: the item's own
+// percentage size is childPercentageSize, but its children see its fixed
+// block size (CalculateChildPercentageSize over the item's
+// ChildAvailableSize, length_utils.cc:1810-1828 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFlexColumnItemChildPercentHeight(t *testing.T) {
+	for _, container := range []string{"height:200px", "height:auto"} {
+		t.Run(container, func(t *testing.T) {
+			src := `<!DOCTYPE html><body style="margin:0"><div style="display:flex;flex-direction:column;width:100px;` + container + `"><div style="flex:0 0 80px"><div id="t" style="height:50%"></div></div></div>`
+			b := findBoxByID(layoutRootTestHTML(t, src), "t")
+			if b == nil {
+				t.Fatal("no #t box")
+			}
+			if b.Height != 40 {
+				t.Errorf("child height = %v, want 40 (50%% of the item's flexed 80px)", b.Height)
+			}
+		})
+	}
+}
