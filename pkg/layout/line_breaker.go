@@ -747,7 +747,8 @@ func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
 	if i == 0 || i == len(line.Results) {
 		return
 	}
-	lb.rewind(line, i)
+	// The marker was counted in line.Width.
+	line.Width -= lb.rewind(line, i)
 	if lb.position < 0 {
 		lb.position = 0
 		line.Width = 0
@@ -1981,27 +1982,29 @@ func (lb *LineBreaker) rewindTrailingOpenTags(line *LineInfo) {
 	if end == 0 || end == len(line.Results) {
 		return
 	}
+	// Trailing open tags only advanced the position, never line.Width.
 	lb.rewind(line, end)
 }
 
 // rewind moves the line's results from index end on back to the item
 // stream: they are removed, their inline sizes taken off the position, and
-// the next line starts at the first of them. Mirrors LineBreaker::Rewind
-// (inline/line_breaker.cc:4422 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for
-// whole items.
-func (lb *LineBreaker) rewind(line *LineInfo, end int) {
+// the next line starts at the first of them. It returns the removed inline
+// size; line.Width is the caller's to adjust. Mirrors LineBreaker::Rewind
+// (inline/line_breaker.cc:4422-4483 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for whole items.
+func (lb *LineBreaker) rewind(line *LineInfo, end int) float64 {
 	first := line.Results[end]
 	removed := 0.0
 	for _, r := range line.Results[end:] {
 		removed += r.InlineSize
 	}
 	lb.position -= removed
-	line.Width -= removed
 	lb.currentItemIndex = first.ItemIndex
 	lb.currentTextOffset = first.Item.StartOffset
 	lb.done = false
 	line.IsLastLine = false
 	line.Results = line.Results[:end]
+	return removed
 }
 
 // retractTrailingOpenPunct implements Unicode LBA Rule LB14 ("do not break
