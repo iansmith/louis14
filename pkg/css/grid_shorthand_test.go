@@ -1,6 +1,7 @@
 package css
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -144,7 +145,10 @@ func TestInvalidGridDeclarationsAreDropped(t *testing.T) {
 	}
 	for _, decl := range valid {
 		prop, _, _ := strings.Cut(decl, ":")
-		if _, ok := parseDeclarations(decl).Declarations[prop]; !ok {
+		got := parseDeclarations(decl).Declarations
+		// A shorthand is stored as its longhands.
+		stored := func(p string) bool { _, ok := got[p]; return ok }
+		if !stored(prop) && !slices.ContainsFunc(shorthandLonghands[prop], stored) {
 			t.Errorf("%s: want it kept", decl)
 		}
 	}

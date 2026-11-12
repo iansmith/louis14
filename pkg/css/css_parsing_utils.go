@@ -801,9 +801,10 @@ func isFunction(tok, name string) bool {
 // isGridLineNames reports whether tok is a bracketed <line-names> token.
 func isGridLineNames(tok string) bool { return strings.HasPrefix(tok, "[") }
 
-// consumeGridLineNames is ConsumeGridLineNames: a bracketed list of
-// <custom-ident>s other than auto and span. An empty list is consumed but
-// reported only for a subgrid's <line-name-list>.
+// consumeGridLineNames is ConsumeGridLineNames (:7041-7076): a bracketed
+// list of <custom-ident>s other than auto and span. It reports whether it
+// consumed a list of names; an empty list is consumed too, but reported
+// only for a subgrid's <line-name-list>.
 func consumeGridLineNames(s *componentStream, isSubgrid bool) bool {
 	tok := s.peek()
 	if !isGridLineNames(tok) || !strings.HasSuffix(tok, "]") {
@@ -815,11 +816,8 @@ func consumeGridLineNames(s *componentStream, isSubgrid bool) bool {
 			return false
 		}
 	}
-	if !isSubgrid && len(names) == 0 {
-		return false
-	}
 	s.consume()
-	return true
+	return isSubgrid || len(names) > 0
 }
 
 // consumeGridTrackRepeatFunction is ConsumeGridTrackRepeatFunction.
