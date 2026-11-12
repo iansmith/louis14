@@ -380,9 +380,23 @@ const (
 // element's propagated overflow is not modelled. A fieldset container does
 // not respect overflow: its anonymous content box carries it
 // (LayoutFieldset::RespectsCSSOverflow, forms/layout_fieldset.h:61-64 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Table rows and row groups do
+// not either (LayoutTableRow / LayoutTableSection::RespectsCSSOverflow,
+// table/layout_table_row.h:70-73, table/layout_table_section.h:52-55 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func respectsCSSOverflow(style *css.Style, node *html.Node) bool {
-	return style != nil && !isNonAtomicInline(style, node) && !IsFieldsetContainerElement(node, style)
+	return style != nil && !isNonAtomicInline(style, node) && !IsFieldsetContainerElement(node, style) &&
+		!isTableRowOrSection(style)
+}
+
+// isTableRowOrSection reports whether style makes a table row or row group
+// box (Blink's LayoutTableRow / LayoutTableSection).
+func isTableRowOrSection(style *css.Style) bool {
+	switch style.GetDisplay() {
+	case css.DisplayTableRow, css.DisplayTableRowGroup, css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup:
+		return true
+	}
+	return false
 }
 
 // hasNonVisibleOverflow mirrors LayoutObject::HasNonVisibleOverflow as set
