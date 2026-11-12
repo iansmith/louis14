@@ -4011,14 +4011,17 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight,
 	// svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
 	// which LayoutSVGImage::UpdateBoundingBox reads; x and y may be negative.
-	// Both are SVG elements: an HTML-namespace <image> keeps its
-	// attributes.
+	// A <rect> binds the same four (svg_rect_element.cc:32-56), which
+	// LayoutSVGRect::UpdateShapeFromElement reads (layout_svg_rect.cc:70-95).
+	// Its rx / ry map too in Blink, but louis14 has no rx / ry properties
+	// and reads them from the attributes. All are SVG elements: an
+	// HTML-namespace <image> or <rect> keeps its attributes.
 	var geometryAttrs []string
 	switch {
 	case node.NamespaceURI() != html.SVGNamespaceURI:
 	case node.TagName == "svg":
 		geometryAttrs = []string{"width", "height"}
-	case node.TagName == "image":
+	case node.TagName == "image", node.TagName == "rect":
 		geometryAttrs = []string{"x", "y", "width", "height"}
 	}
 	for _, attr := range geometryAttrs {
