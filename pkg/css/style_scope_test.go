@@ -381,7 +381,7 @@ func TestScopeAnchorTakesNoDefaultNamespace(t *testing.T) {
 // disallowed (DisallowPseudoElementsScope, css_selector_parser.cc:190 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the whole rule is dropped.
 func TestScopeBoundaryRejectsPseudoElements(t *testing.T) {
-	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)"} {
+	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)", "(.r::placeholder)", "(.r::part(x))"} {
 		t.Run(prelude, func(t *testing.T) {
 			// Applied, the scoped red would beat the unscoped green on
 			// proximity; green means the rule was dropped and the sheet
@@ -392,5 +392,21 @@ func TestScopeBoundaryRejectsPseudoElements(t *testing.T) {
 				t.Errorf("#t color = %q, want green: @scope %s must be dropped", got, prelude)
 			}
 		})
+	}
+}
+
+// A parentless `&` is a simple selector anywhere in a compound, after a
+// pseudo-class too (Blink parses it as kPseudoParent, ConsumeSimpleSelector
+// css_selector_parser.cc:1416 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestNestingParentAfterPseudoClass(t *testing.T) {
+	styles := cascadeHTML(t, `<style>:root& { color: green } div.a& { color: red }</style>
+	<div class="a" id="d"></div>`, nil)
+	if got, _ := styleByTag(t, styles, "html").Get("color"); got != "green" {
+		t.Errorf("<html> color = %q, want green from :root& (the root, :scope)", got)
+	}
+	// & is :scope, the root: a non-root .a is not it.
+	if got := colorOf(t, styles, "d"); got == "red" {
+		t.Errorf("#d matched div.a&: & after a class must still be :scope")
 	}
 }
