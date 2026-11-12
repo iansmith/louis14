@@ -1329,9 +1329,12 @@ func hasPercentLogicalWidth(style *css.Style, wdm WritingDirectionMode) bool {
 // Length::HasPercent.
 func propertyHasPercent(style *css.Style, prop string) bool {
 	val, ok := style.Get(prop)
-	if !ok {
-		return false
-	}
+	return ok && valueHasPercent(val)
+}
+
+// valueHasPercent reports whether a <length-percentage> value is a
+// percentage or a math function with a percentage term.
+func valueHasPercent(val string) bool {
 	val = strings.TrimSpace(val)
 	if strings.HasSuffix(val, "%") {
 		if _, ok := css.ParsePercentage(val); ok {
@@ -1414,27 +1417,28 @@ func nodeChildBlockSizes(node *LayoutInputNode, space ConstraintSpace) (avail, p
 }
 
 // buildParallelChildMinMaxSpace builds the constraint space for a parallel
-// (non-orthogonal) child during intrinsic min/max measurement. When the node
-// has a definite content block-size, it is threaded as both the available and
-// percentage-resolution block-size so percentage-height descendants (and
-// aspect-ratio transfer) resolve against it. isNewFC marks children that
-// establish an independent formatting context (e.g. column-span:all spanners).
-// Shared by measureBlockMinMax and the multicol spanner walk.
+// (non-orthogonal) child during intrinsic min/max measurement. Its
+// percentage-resolution inline-size is indefinite, as Blink's
+// MinMaxConstraintSpaceBuilder makes it (constraint_space_builder.h:722-764
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the child's percentage
+// inline lengths resolve per ResolveInlineLengthInternal's indefinite rule.
+// When the node has a definite content block-size, it is threaded as both
+// the available and percentage-resolution block-size so percentage-height
+// descendants (and aspect-ratio transfer) resolve against it
+// (SetAvailableBlockSize, SetPercentageResolutionBlockSize,
+// block_layout_algorithm.cc:459-464). isNewFC marks children that establish
+// an independent formatting context (e.g. column-span:all spanners). Shared
+// by measureBlockMinMax and the multicol spanner walk.
 func buildParallelChildMinMaxSpace(space ConstraintSpace, childWDM WritingDirectionMode, ctx *LayoutContext, nodeBlockSize float64, isNewFC bool) ConstraintSpace {
 	csBuilder := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, isNewFC).
 		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: nodeBlockSize})
 	if nodeBlockSize != Indefinite {
-		// Definite block-size: set both the percentage-resolution and available
-		// block-size so IsBlockSizeIndefinite() is false and percentage heights
-		// resolve against it.
-		csBuilder.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: space.PercentageResolutionInlineSize,
-			BlockSize:  nodeBlockSize,
-		})
+		// Definite block-size: also the available block-size.
 		csBuilder.SetAvailableSize(LogicalSize{
 			InlineSize: space.AvailableSize.InlineSize.Float64(),
 			BlockSize:  nodeBlockSize,
