@@ -128,13 +128,12 @@ func (e *Engine) dispatchImageLoaderEvent(ctx *domContext, node *html.Node, even
 		return
 	}
 	target := ctx.elementProxy(node)
-	event := e.vm.NewObject()
-	_ = event.Set("type", eventType)
-	_ = event.Set("target", target)
-	_ = event.Set("currentTarget", target)
+	ev := ctx.newDOMEvent(eventType, false, target)
+	_ = ev.obj.Set("currentTarget", target)
+	_ = ev.obj.Set("eventPhase", eventPhaseAtTarget)
 	// An exception in one handler is reported and does not stop the
 	// event loop.
-	_, _ = fn(target, event)
+	_, _ = fn(target, ev.obj)
 }
 
 // startParsedImageLoads starts, in tree order, the request of each parsed

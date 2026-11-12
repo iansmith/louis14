@@ -366,9 +366,7 @@ func (e *Engine) Execute(doc *html.Document) error {
 				return fmt.Errorf("body onload: %w", err)
 			}
 		}
-		for _, l := range ctx.docEventListeners["load"] {
-			_, _ = l.fn(goja.Undefined())
-		}
+		ctx.fireDocumentLoadListeners()
 		return nil
 	}); err != nil {
 		return err
@@ -403,14 +401,17 @@ func (e *Engine) Execute(doc *html.Document) error {
 	return nil
 }
 
-// fireTestRendered invokes document.addEventListener("TestRendered", ...)
-// callbacks registered during script execution. A failing listener is
-// skipped rather than aborting, matching the element-onload loop above —
-// one broken handler shouldn't stop the others.
+// fireTestRendered dispatches the reftest harness's "TestRendered" event:
+// a bubbling event at the root element, so root-element listeners run and
+// then the document's (wptrunner's reftest-wait support dispatches
+// `new Event("TestRendered", {bubbles: true})` at
+// document.documentElement). A failing listener does not stop the others.
 func fireTestRendered(ctx *domContext) {
-	for _, l := range ctx.docEventListeners["TestRendered"] {
-		_, _ = l.fn(goja.Undefined())
+	target := documentElement(ctx.doc)
+	if target == nil {
+		target = ctx.doc.Root
 	}
+	ctx.dispatchEvent(target, "TestRendered", true)
 }
 
 // findBodyNode walks the document tree to find the <body> element.
