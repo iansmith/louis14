@@ -4210,6 +4210,13 @@ func fontSizeConversionData(s, parent *Style) calcContext {
 	ctx.lhSize = parent.GetLineHeight()
 	ctx.percentBase = ctx.fontSize
 	ctx.viewportWidth, ctx.viewportHeight = s.ViewportWidth, s.ViewportHeight
+	// The writing mode is the element's own (StyleBuilder().GetWritingMode(),
+	// style_resolver_state.cc:235 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// which it inherits when it declares none: inheritance runs after
+	// font-size is computed.
+	if _, declared := s.Get("writing-mode"); declared {
+		ctx.verticalWritingMode = IsVerticalWritingMode(s)
+	}
 	return ctx
 }
 
