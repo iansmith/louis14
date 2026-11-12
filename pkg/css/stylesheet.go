@@ -100,14 +100,14 @@ const (
 
 // Rule represents a CSS rule (selector + declarations)
 type Rule struct {
-	Selector     Selector
+	Selector Selector
 	// *DeclarationResult is the rule's declaration block: Declarations,
 	// Important and Order. A selector list's rules share one block, as
 	// Blink's one rule for the list does.
 	*DeclarationResult
-	MediaQuery       *MediaQuery     // Phase 22: Optional media query wrapper
-	ContainerQuery   *ContainerQuery // Optional @container query wrapper
-	LayerName        string          // @layer name (empty = unlayered)
+	MediaQuery     *MediaQuery     // Phase 22: Optional media query wrapper
+	ContainerQuery *ContainerQuery // Optional @container query wrapper
+	LayerName      string          // @layer name (empty = unlayered)
 
 	// ImportMediaQueries carries the comma-separated media-query-list from a
 	// conditional `@import url(...) <media-query-list>;` that brought this
@@ -1210,7 +1210,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		}
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{
-			Selector:         selector,
+			Selector:          selector,
 			DeclarationResult: declResult,
 		})
 	}
@@ -1285,7 +1285,7 @@ func parseRule(ruleStr string) (Rule, error) {
 	declResult := parseDeclarations(declStr)
 
 	return Rule{
-		Selector:         selector,
+		Selector:          selector,
 		DeclarationResult: declResult,
 	}, nil
 }
@@ -4873,6 +4873,19 @@ func (d *DeclarationResult) Set(property, value string, important bool) {
 	d.Order = append(d.Order, property)
 }
 
+// RemoveFunc drops the declarations of the properties drop selects, in one
+// pass over Order.
+func (d *DeclarationResult) RemoveFunc(drop func(property string) bool) {
+	d.Order = slices.DeleteFunc(d.Order, func(p string) bool {
+		if !drop(p) {
+			return false
+		}
+		delete(d.Declarations, p)
+		delete(d.Important, p)
+		return true
+	})
+}
+
 // Remove drops property's declaration.
 func (d *DeclarationResult) Remove(property string) {
 	if _, ok := d.Declarations[property]; !ok {
@@ -5182,11 +5195,9 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 			// they are !important and it is not. The cascade applies a
 			// rule's `all` before its other declarations, so only the later
 			// ones remain to override it.
-			for k := range result.Declarations {
-				if allShorthandCovers(k) && (isImportant || !result.Important[k]) {
-					result.Remove(k)
-				}
-			}
+			result.RemoveFunc(func(k string) bool {
+				return allShorthandCovers(k) && (isImportant || !result.Important[k])
+			})
 			result.Set("all", value, isImportant)
 			continue
 		}

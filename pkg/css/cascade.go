@@ -1899,10 +1899,6 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		inheritParents = []*Style{highlightParent}
 	}
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
-	// Logical longhands onto their physical sides, as for an element.
-	if resolveDirectionAwareProperties(finalStyle) {
-		resolvePseudoInheritKeyword(finalStyle, inheritParents)
-	}
 
 	// Store viewport dimensions before the animation pass — keyframe
 	// interpolation resolves viewport-relative length endpoints against this
@@ -1919,6 +1915,11 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// animation's `inherit` is computed against the same inheritance parent
 	// as above.
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	// Logical longhands onto their physical sides, as for an element, once
+	// the animations have applied theirs.
+	if resolveDirectionAwareProperties(finalStyle) {
+		resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	}
 	// sibling-index() / sibling-count() resolve against the originating
 	// element, before the font step (resolveTreeCountingFunctions).
 	resolveTreeCountingFunctions(node, finalStyle)
@@ -2808,13 +2809,16 @@ func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 }
 
 // Cascade ranks of the author-level origins, in increasing priority (CSS
-// Cascade 5 §6.4: author normal < style attribute normal < author important
-// < style attribute important; CascadePriority with is_inline_style @
+// Cascade 5 §6.4: author normal < style attribute normal < animations <
+// author important < style attribute important; CascadePriority with
+// is_inline_style, and CascadeOrigin's kAuthor < kAnimation < kAuthor
+// important, cascade_origin.h:15-27 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). 0 is below them all (the UA
 // and presentational attributes).
 const (
 	cascadeRankAuthorNormal int8 = iota + 1
 	cascadeRankInlineNormal
+	cascadeRankAnimation
 	cascadeRankAuthorImportant
 	cascadeRankInlineImportant
 )
@@ -2832,9 +2836,11 @@ func (p cascadePosition) after(q cascadePosition) bool {
 
 // setCascadePosition records the cascade position property was set at, for the
 // properties resolveDirectionAwareProperties compares: the logical
-// longhands' storage keys and the physical longhands they map onto.
+// longhands' storage keys and the physical longhands they map onto, and a
+// var() shorthand, whose longhands take its position when it is expanded
+// (reexpandVarShorthands).
 func (s *Style) setCascadePosition(property string, rank int8) {
-	if logicalLonghandStorageKeys[property] == "" && !directionAwareTargets[property] {
+	if !tracksCascadePosition(property) && !isVarDeferredShorthand[property] {
 		return
 	}
 	if s.cascadePositions == nil {
@@ -2842,6 +2848,13 @@ func (s *Style) setCascadePosition(property string, rank int8) {
 	}
 	s.cascadeSeq++
 	s.cascadePositions[property] = cascadePosition{rank, s.cascadeSeq}
+}
+
+// tracksCascadePosition reports whether resolveDirectionAwareProperties
+// compares property's cascade position: a logical longhand's storage key or
+// a physical longhand one maps onto.
+func tracksCascadePosition(property string) bool {
+	return logicalLonghandStorageKeys[property] != "" || directionAwareTargets[property]
 }
 
 // directionAwareTargets are the physical longhands a logical longhand maps
@@ -2990,7 +3003,18 @@ func reexpandVarShorthands(style *Style) {
 		if !ok {
 			continue // IACVT — longhands fall back to their defaults
 		}
-		expandShorthand(style, prop, resolved)
+		// The longhands cascade at the shorthand's position, so a logical
+		// longhand declared before it loses to them
+		// (resolveDirectionAwareProperties).
+		pos, positioned := style.cascadePositions[prop]
+		tmp := NewStyle()
+		expandShorthand(tmp, prop, resolved)
+		for k, v := range tmp.Properties {
+			style.Properties[k] = v
+			if positioned && tracksCascadePosition(k) {
+				style.cascadePositions[k] = pos
+			}
+		}
 	}
 }
 

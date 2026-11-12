@@ -1348,6 +1348,8 @@ func setTextContent(node *html.Node, text string) {
 // A value carrying a priority annotation (`red !important`) is invalid: the
 // priority comes only through setProperty's third argument.
 func cssomValueAccepted(property, value string) bool {
+	// A comment is not syntax: `5px /* !important */` is 5px.
+	value = css.StripComments(value)
 	if _, important, ok := css.SplitPriority(value); !ok || important {
 		return false
 	}

@@ -773,6 +773,7 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 					continue
 				}
 				style.Set(lp, lv)
+				style.setCascadePosition(lp, cascadeRankAnimation)
 			}
 		}
 	}
