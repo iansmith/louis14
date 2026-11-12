@@ -80,6 +80,7 @@ func TestGridShorthandsSerialize(t *testing.T) {
 		{"grid-template: 10px / 20px", "grid-template", "10px / 20px"},
 		{"grid-template: none", "grid-template", "none"},
 		{`grid-template: [p] "a" 10px [q] "b"`, "grid-template", `[p] "a" 10px [q] "b"`},
+		{`grid-template: [] "a" 10px [] "b"`, "grid-template", `"a" 10px "b"`},
 		// grid-auto-* set alongside grid-template cannot be expressed by grid.
 		{"grid-template: 10px / 20px; grid-auto-flow: column; grid-auto-rows: 5px; grid-auto-columns: auto", "grid", ""},
 	}
@@ -132,6 +133,14 @@ func TestInvalidGridDeclarationsAreDropped(t *testing.T) {
 		`grid-template-areas: "a a ." "b b ."`,
 		"grid-template-rows: var(--x)",
 		"grid-auto-columns: inherit",
+		// An empty <line-names> is consumed and dropped, not a parse error
+		// (ConsumeGridLineNames, css_parsing_utils.cc:7041-7076).
+		"grid-template-columns: 1fr [] 1fr",
+		"grid-template-columns: [] 1fr",
+		`grid-template: [] "a" 10px [] / 1fr`,
+		"grid-template-columns: repeat(2, [] 1fr [])",
+		"grid-template-columns: subgrid [] [a]",
+		`grid-template: "a" / [] 1fr []`,
 	}
 	for _, decl := range valid {
 		prop, _, _ := strings.Cut(decl, ":")
